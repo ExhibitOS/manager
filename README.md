@@ -25,3 +25,11 @@ T00-02에서 toolchain·지원 환경·build/lint/typecheck/test 명령을 확�
 작업 전 [AGENTS.md](AGENTS.md)를 읽고 `codex/<작업명>` 브랜치와 PR로 변경한다. 일반 문제는 이 저장소의 Issue/PR에서 다룬다. 취약점·토큰·비공개 작품을 일반 Issue에 게시하지 않는다. GitHub private vulnerability reporting이 활성화돼 있으면 사용하고, 없으면 조직 관리자에게 비공개 보고한다. 아직 전용 보안 연락처나 security reporting 기능이 설정됐다고 가정하지 않는다.
 
 기획·상태 조정 자료는 접근 권한이 있는 에이전트가 operations에서 확인한다. 제품의 빌드와 배포는 이 운영 문서 없이 실행할 수 있어야 한다.
+
+## 라이선스
+
+프로젝트가 소유하는 코드·설정·스크립트와 문서는 [Apache-2.0](LICENSE)으로 제공합니다.
+외부 코드·package·폰트·이미지·작품과 함께 배포하는 platform은 각각 원래 조건을 유지합니다.
+원본 LICENSE와 관련 copyright·NOTICE를 보존하고 수정 파일에는 변경 고지를 남깁니다.
+이 라이선스는 상표 허락이나 사용자 작품의 display/export 권한을 부여하지 않습니다.
+현재 제품 코드·dependency·배포 image가 없는 준비 단계이며, 추가 시 출처와 재배포 조건을 확인합니다.
