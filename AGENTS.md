@@ -15,7 +15,7 @@ spec의 versioned OED와 platform의 공개 lifecycle API/CLI·health 계약을 
 
 ## 공개·보안 경계
 
-이 저장소는 공개 후보이며 현재 GitHub에서는 비공개다. operations 및 Capture 저장소는 빌드·설치·CI 의존성이 될 수 없다. private submodule, private package와 secret을 필수 조건으로 추가하지 않는다. 공개 전환·라이선스 적용은 별도 기록과 검토 후 수행한다.
+이 저장소는 공개 후보이며 현재 GitHub에서는 비공개다. operations 및 Capture 저장소는 빌드·설치·CI 의존성이 될 수 없다. private submodule, private package와 secret을 필수 조건으로 추가하지 않는다. 현재 프로젝트 소유 자료는 README와 LICENSE의 Apache-2.0 범위를 따른다. 공개 전환과 향후 라이선스 변경은 별도 기록과 검토 후 수행한다.
 
 인증은 OS credential store 또는 환경별 secret store로 관리한다. 토큰, signing key, 원본 작품·사진·개인정보는 Git이나 로그에 기록하지 않는다. fixture는 synthetic 또는 재배포 권리를 확인한 자료를 사용한다. 실제 데이터 삭제·운영 변경은 복구를 검증한 가역적 방식만 사용한다. 신규 유료 서비스는 비용 확인과 전체 월 10,000원 예산 통제가 필요하며, 이 준비 단계에서는 사용하지 않는다.
 
