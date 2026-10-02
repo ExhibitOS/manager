@@ -25,3 +25,16 @@ export const client:ManagerClient={native:isTauri(),status:async()=>parseStatus(
 export const statusLabel=(state:string)=>({not_installed:'설치 전',running:'관람 준비 완료',stopped:'정지됨',degraded:'일부 기능 준비 중',runtime_unavailable:'실행 도구 확인 필요'}[state]??'상태 확인 필요');
 export const actionLabel=(action:Job['action'])=>({install:'설치',start:'시작',stop:'정지',restart:'재시작',retry:'다시 시도'}[action]);
 export function formatBytes(value:number|null){if(value===null)return '측정할 수 없음';if(value<1024)return `${value} B`;if(value<1048576)return `${(value/1024).toFixed(1)} KiB`;if(value<1073741824)return `${(value/1048576).toFixed(1)} MiB`;return `${(value/1073741824).toFixed(1)} GiB`;}
+
+// Unknown provider states remain unverified; display labels do not change readiness.
+export const serviceStateLabel=(state:string)=>({running:'실행 중',exited:'정지됨',stopped:'정지됨',created:'시작 전',restarting:'다시 시작 중',paused:'일시 정지',dead:'실행 실패'}[state.toLowerCase()]??'상태 확인 필요');
+export const healthLabel=(health:string|null)=>health?({healthy:'응답 정상',unhealthy:'응답 확인 필요',starting:'준비 중'}[health.toLowerCase()]??'응답 확인 필요'):'응답 검사 없음';
+export function nextStep(status:Status|null,engineReady:boolean,active:boolean,native:boolean):string{
+ if(!native)return '데스크톱 앱을 열면 실행 도구를 확인하고 설치를 시작할 수 있습니다.';
+ if(active)return '진행 중인 작업이 끝나면 상태를 다시 확인합니다. 중복 실행은 막혀 있습니다.';
+ if(!status)return '상태 다시 확인을 눌러 실행 상태를 확인하세요.';
+ if(!engineReady)return '실행 도구를 시작하거나 설치한 뒤 실행 도구 다시 확인을 누르세요.';
+ if(!status.installed)return '검증된 설치 패키지를 준비하고 전시 설치를 누르세요.';
+ if(status.readiness.ready)return '전시 열기를 눌러 관람을 시작하세요.';
+ return status.state==='stopped'?'시작을 눌러 전시 서버를 켜세요.':'작업 기록의 안내를 확인하고 서버 준비 상태를 다시 확인하세요.';
+}
