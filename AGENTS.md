@@ -21,7 +21,7 @@ spec의 versioned OED와 platform의 공개 lifecycle API/CLI·health 계약을 
 
 ## 검증과 완료
 
-현재 제품 구현, CI, test suite와 toolchain은 없다. 없는 build/test가 통과했다고 보고하지 않는다. T00-02에서 실제 검사 명령을 README에 추가한 뒤 각 변경에 해당하는 검사를 수행한다. 계획된 검사: fresh install, start/stop 재시도, 중단된 update, backup/restore, version mismatch와 rollback을 검증한다.
+현재 Tauri2/Rust lifecycle 구현과 로컬 검사 명령은 README에 있다. Node24.21.0/npm11.19.0과 rust-toolchain.toml의 Rust를 사용하고 변경 범위에 맞춰 npm/cargo 검사를 실행한다. 단위 검사, 브라우저 preview, CLI의 실제 engine 작업, unsigned native build, native GUI, Windows 및 서명·공증 결과를 구분한다. fresh install/start/stop/retry는 T08-01, backup/restore와 update/rollback은 후속 task의 실제 acceptance로 검증한다. Hosted CI는 비용 통제가 검증되기 전 자동 실행하지 않는다. 실행하지 않은 검사나 후속 기능을 완료로 보고하지 않는다.
 
 문서 변경은 `git diff --check`, 링크/예제와 tracked tree를 확인한다. 코드가 추가되면 정상·실패·권한·재시도 경로를 task acceptance에 맞춰 검증하고 환경·명령·결과·제한을 남긴다. 기기·서명 검증은 실물 증거 없이 완료 처리하지 않는다.
 
