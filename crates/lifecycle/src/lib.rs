@@ -144,6 +144,14 @@ impl std::fmt::Display for LifecycleError {
 }
 impl std::error::Error for LifecycleError {}
 type Result<T> = std::result::Result<T, LifecycleError>;
+// Docker reports sha256-prefixed IDs; Podman reports the same digest without a prefix.
+fn same_local_image_id(actual: &str, reference: &str) -> bool {
+    let Some(expected) = reference.strip_prefix("sha256:") else {
+        return false;
+    };
+    let actual = actual.strip_prefix("sha256:").unwrap_or(actual);
+    hash_valid(expected) && hash_valid(actual) && actual == expected
+}
 fn err(code: &str) -> LifecycleError {
     let guidance = match code {
         "RUNTIME_MISSING" => "컨테이너 실행 도구를 설치한 후 다시 시도하세요.",
@@ -979,7 +987,11 @@ impl LifecycleService {
                     15,
                 )?)
                 .map_err(|_| err("IMAGE_INTEGRITY"))?;
-                if image.reference.starts_with("sha256:") && inspected[0]["Id"] != image.reference {
+                if image.reference.starts_with("sha256:")
+                    && !inspected[0]["Id"]
+                        .as_str()
+                        .is_some_and(|id| same_local_image_id(id, &image.reference))
+                {
                     return Err(err("IMAGE_INTEGRITY"));
                 }
                 if image.reference.contains("@sha256:")
@@ -1279,6 +1291,17 @@ impl LifecycleService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_image_ids_preserve_exact_digest_across_engine_representation() {
+        let digest = "a".repeat(64);
+        let reference = format!("sha256:{digest}");
+        assert!(same_local_image_id(&digest, &reference));
+        assert!(same_local_image_id(&reference, &reference));
+        assert!(!same_local_image_id(&"b".repeat(64), &reference));
+        assert!(!same_local_image_id(&format!("md5:{digest}"), &reference));
+        assert!(!same_local_image_id(&digest.to_uppercase(), &reference));
+        assert!(!same_local_image_id(&digest, &digest));
+    }
     fn root() -> PathBuf {
         std::env::temp_dir().join(format!("exhibitos-manager-core-{}", Uuid::new_v4()))
     }

@@ -55,3 +55,14 @@ npm run desktop:build
 ## 검증 범위 기록
 
 실제 명령 결과와 기기·엔진 정보는 해당 commit의 검증 기록에 남긴다. 웹 preview, Rust 단위 검사, macOS 앱 빌드, 네이티브 GUI, 실제 engine 설치·시작·정지, Windows, 서명·공증을 구분한다. 하나의 성공을 다른 검증의 성공으로 기록하지 않는다. 현재 단계의 GUI에는 백업·복원이나 업데이트 완료 메시지를 만들지 않는다.
+
+## Podman 개발 검사
+
+실제 검사 후보는 rootless Podman6.1.3와 독립 Compose5.5.1 제공자이다.
+같은 실행 환경에서 `PODMAN_COMPOSE_PROVIDER`를 해당 독립 CLI 경로로 설정한다.
+필요한 경우 `CONTAINER_CONNECTION`으로 검증용 named connection을 지정한다.
+Docker Desktop 서버와 privileged socket helper를 설치할 필요는 없다.
+Compose1.x 제공자는 이 adapter의 JSON 계약에 맞지 않아 준비 완료로 표시하지 않는다.
+이미지 archive의 engine별 ID는 서로 다를 수 있으므로 해당 producer의 bundle을
+사용한다. sha256 접두어 차이만 정규화하며 다른 digest는 거부한다.
+기존 VM·연결·사용자 데이터는 변경하거나 자동 삭제하지 않는다.
