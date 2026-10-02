@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-install"
+description = "Enables the manager_install command without any pre-configured scope."
+commands.allow = ["manager_install"]
+
+[[permission]]
+identifier = "deny-manager-install"
+description = "Denies the manager_install command without any pre-configured scope."
+commands.deny = ["manager_install"]

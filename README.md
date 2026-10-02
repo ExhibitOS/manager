@@ -1,35 +1,50 @@
-# ExhibitOS manager
+# ExhibitOS Manager
 
-Desktop lifecycle manager. Windows/macOS에서 설치, runtime 시작·종료, 상태 확인, 백업·복원, 업데이트·rollback을 제공한다.
+로컬 전시 서버의 설치·시작·정지·재시작·상태와 작업 기록을 관리하는
+Tauri2/Rust 데스크톱 앱의 개발 구현입니다. 현재 Windows 실환경 검사,
+macOS 서명·공증과 배포용 설치 프로그램은 완료되지 않았습니다. 백업·복원,
+업데이트·rollback과 cloud wizard는 후속 작업입니다.
 
-## 현재 상태
+[데스크톱 사용법](docs/desktop.md)은 runtime bundle 준비, 실행 도구 검사,
+실패 복구, 저장 공간 표시와 실제 네이티브 권한 경계를 설명합니다.
+웹 preview는 실제 실행 도구를 제어하지 않습니다. 앱은 검증된 Platform OCI
+bundle을 별도 프로세스로 실행하며 공개 lifecycle readiness protocol1을
+검사합니다. 빌드와 실행에 operations나 Capture 코드는 필요하지 않습니다.
 
-2026-10-01 기준 README와 에이전트 작업 규칙만 있는 준비 단계다. 제품 코드, 실행 환경, dependency manifest, CI, 자동 테스트와 설치 파일은 아직 없다. 아래 기능과 검사는 계획이며 구현 완료를 뜻하지 않는다.
+## 개발
 
-## 책임과 계약
+Node24.21.0/npm11.19.0, Rust1.99.0 (`rust-toolchain.toml`)을 사용합니다.
+macOS 네이티브 빌드는 Xcode compiler/SDK가 필요합니다.
 
-spec의 versioned OED와 platform의 공개 lifecycle API/CLI·health 계약을 소비한다.
+```sh
+npm ci
+npm run check
+npm run test:browser
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+npm run desktop:build
+```
 
-이 저장소는 공개 후보이며 현재 GitHub에서는 비공개다. operations 및 Capture 저장소는 빌드·설치·CI 의존성이 될 수 없다. private submodule, private package와 secret을 필수 조건으로 추가하지 않는다. 공개 전환·라이선스 적용은 별도 기록과 검토 후 수행한다.
+macOS 개발 앱 경로는 `target/release/bundle/macos/ExhibitOS Manager.app`입니다.
+`npm run desktop:dev`로 개발 앱을 시작합니다. Docker 또는 Podman과 Compose가
+별도로 필요하며 설치 여부뿐 아니라 daemon 연결을 검사합니다. 버전과 해시가
+검증된 runtime bundle이 준비되기 전에는 서버 설치를 성공으로 표시하지 않습니다.
+앱 자체 빌드 성공과 실제 서버 lifecycle·Windows·서명 검증은 구분합니다.
+자동 hosted CI나 유료 서비스는 활성화하지 않습니다.
 
-## 구현 순서
+## 데이터와 기여
 
-T08-01 → T08-02 → T08-03; cloud wizard는 T10-04.
-
-T00-02에서 toolchain·지원 환경·build/lint/typecheck/test 명령을 확정하고 실제 설정을 추가한다. 이후 task마다 코드·오류 검사·사용법과 검증 증거를 함께 작성한다. fresh install, start/stop 재시도, 중단된 update, backup/restore, version mismatch와 rollback을 검증한다.
-
-현재 실행 가능한 제품 build/test 명령은 없다. 이 문서 변경은 `git diff --check`와 tracked tree/의존 경계 검토로 확인한다.
-
-## 기여와 보안 보고
-
-작업 전 [AGENTS.md](AGENTS.md)를 읽고 `codex/<작업명>` 브랜치와 PR로 변경한다. 일반 문제는 이 저장소의 Issue/PR에서 다룬다. 취약점·토큰·비공개 작품을 일반 Issue에 게시하지 않는다. GitHub private vulnerability reporting이 활성화돼 있으면 사용하고, 없으면 조직 관리자에게 비공개 보고한다. 아직 전용 보안 연락처나 security reporting 기능이 설정됐다고 가정하지 않는다.
-
-기획·상태 조정 자료는 접근 권한이 있는 에이전트가 operations에서 확인한다. 제품의 빌드와 배포는 이 운영 문서 없이 실행할 수 있어야 한다.
+작업 전 [AGENTS.md](AGENTS.md)를 읽고 `codex/<task>` 브랜치와 검증된 PR을
+사용합니다. root별 private 환경 파일과 durable 작업 기록은 Git 밖의
+OS app-data/지정 개발 경로에 보존합니다. 정지는 volume을 삭제하지 않습니다.
+원본 작품, 토큰, 서명 키, 비밀번호와 raw container 로그를 Git/Issue에 넣지 마세요.
+취약점은 활성화된 GitHub private reporting 또는 조직 관리자에게 비공개로
+보고합니다. 현재 설치 코드가 실제 사용자 데이터의 복구 검증을 대신하지 않습니다.
 
 ## 라이선스
 
-프로젝트가 소유하는 코드·설정·스크립트와 문서는 [Apache-2.0](LICENSE)으로 제공합니다.
-외부 코드·package·폰트·이미지·작품과 함께 배포하는 platform은 각각 원래 조건을 유지합니다.
-원본 LICENSE와 관련 copyright·NOTICE를 보존하고 수정 파일에는 변경 고지를 남깁니다.
-이 라이선스는 상표 허락이나 사용자 작품의 display/export 권한을 부여하지 않습니다.
-현재 제품 코드·dependency·배포 image가 없는 준비 단계이며, 추가 시 출처와 재배포 조건을 확인합니다.
+Manager 소유 코드·설정·문서는 [Apache-2.0](LICENSE)입니다. 실행하는 Platform은
+AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를 보존합니다.
+외부 라이브러리와 작품은 각각 원래 권리를 유지합니다. 이 라이선스는 상표나
+사용자 작품의 display/export 권한을 부여하지 않습니다. 현재 저장소는 비공개이며
+공개 여부는 source/권리/secret/독립 build 검토 후 결정합니다.

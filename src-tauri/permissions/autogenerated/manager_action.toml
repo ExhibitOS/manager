@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-action"
+description = "Enables the manager_action command without any pre-configured scope."
+commands.allow = ["manager_action"]
+
+[[permission]]
+identifier = "deny-manager-action"
+description = "Denies the manager_action command without any pre-configured scope."
+commands.deny = ["manager_action"]
