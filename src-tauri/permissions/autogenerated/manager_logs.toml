@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-logs"
+description = "Enables the manager_logs command without any pre-configured scope."
+commands.allow = ["manager_logs"]
+
+[[permission]]
+identifier = "deny-manager-logs"
+description = "Denies the manager_logs command without any pre-configured scope."
+commands.deny = ["manager_logs"]
