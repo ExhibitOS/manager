@@ -156,6 +156,11 @@ fn err(code: &str) -> LifecycleError {
     let guidance = match code {
         "RUNTIME_MISSING" => "컨테이너 실행 도구를 설치한 후 다시 시도하세요.",
         "ENGINE_UNAVAILABLE" => "컨테이너 실행 도구를 시작한 후 다시 시도하세요.",
+        "COMPOSE_UNAVAILABLE" => "Compose 실행 도구를 설치하거나 설정한 후 다시 시도하세요.",
+        "ENGINE_TIMEOUT" => "실행 도구의 응답이 늦습니다. 상태를 확인한 후 다시 시도하세요.",
+        "ENGINE_OUTPUT_INVALID" | "ENGINE_OUTPUT_LIMIT" => {
+            "실행 도구의 응답을 확인하지 못했습니다. 실행 도구를 확인한 후 다시 시도하세요."
+        }
         "ENGINE_PERMISSION" => "실행 도구 접근 권한을 확인한 후 다시 시도하세요.",
         "PORT_IN_USE" => {
             "전시에 사용할 포트를 다른 앱이 사용하고 있습니다. 해당 앱을 종료한 후 다시 시도하세요."
@@ -171,6 +176,184 @@ fn err(code: &str) -> LifecycleError {
         code: code.into(),
         guidance: guidance.into(),
     }
+}
+// Detection converts generic failed connections into actionable state, preserving native
+// permission/timeout/output bounds. Only successfully parsed versions are compared.
+fn detection_error(error: LifecycleError, compose: bool) -> LifecycleError {
+    if error.code == "ENGINE_OPERATION_FAILED" {
+        err(if compose {
+            "COMPOSE_UNAVAILABLE"
+        } else {
+            "ENGINE_UNAVAILABLE"
+        })
+    } else {
+        error
+    }
+}
+fn probe_failure(
+    kind: &str,
+    installed: bool,
+    error: LifecycleError,
+    engine_version: Option<String>,
+    compose_version: Option<String>,
+) -> EngineProbe {
+    EngineProbe {
+        kind: kind.into(),
+        installed,
+        available: false,
+        engine_version,
+        compose_version,
+        error_code: Some(error.code),
+        guidance: Some(error.guidance),
+    }
+}
+fn version_major(value: &str) -> Option<u32> {
+    if value.is_empty() || value.len() > 64 {
+        return None;
+    }
+    let valid_suffix = |s: &str| {
+        !s.is_empty()
+            && s.split('.').all(|part| {
+                !part.is_empty() && part.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+            })
+    };
+    let without_build = if let Some((core, build)) = value.split_once('+') {
+        if !valid_suffix(build) {
+            return None;
+        }
+        core
+    } else {
+        value
+    };
+    let core = if let Some((core, pre)) = without_build.split_once('-') {
+        if !valid_suffix(pre) {
+            return None;
+        }
+        core
+    } else {
+        without_build
+    };
+    let parts: Vec<_> = core.split('.').collect();
+    if parts.len() != 3
+        || !parts.iter().all(|part| {
+            !part.is_empty()
+                && part.bytes().all(|c| c.is_ascii_digit())
+                && part.parse::<u32>().is_ok()
+        })
+    {
+        return None;
+    }
+    parts[0].parse().ok()
+}
+fn probe_engine(kind: &str, mut command: impl FnMut(&[String]) -> Result<Vec<u8>>) -> EngineProbe {
+    let version = match command(&[
+        "version".into(),
+        "--format".into(),
+        if kind == "docker" {
+            "{{json .}}".into()
+        } else {
+            "json".into()
+        },
+    ]) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return probe_failure(
+                kind,
+                e.code != "RUNTIME_MISSING",
+                detection_error(e, false),
+                None,
+                None,
+            );
+        }
+    };
+    let value: Value = match serde_json::from_slice(&version) {
+        Ok(v) => v,
+        Err(_) => return probe_failure(kind, true, err("ENGINE_OUTPUT_INVALID"), None, None),
+    };
+    let version = value["Client"]["Version"]
+        .as_str()
+        .or_else(|| value["client"]["version"].as_str())
+        .or_else(|| value["Version"].as_str())
+        .unwrap_or("");
+    let Some(major) = version_major(version) else {
+        return probe_failure(kind, true, err("ENGINE_OUTPUT_INVALID"), None, None);
+    };
+    let version = version.to_string();
+    let info = command(&[
+        "info".into(),
+        "--format".into(),
+        if kind == "docker" {
+            "{{json .}}".into()
+        } else {
+            "json".into()
+        },
+    ]);
+    let compose = command(&["compose".into(), "version".into(), "--short".into()]);
+    let cv = compose
+        .as_ref()
+        .ok()
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .map(|v| v.trim().trim_start_matches('v'))
+        .filter(|v| version_major(v).is_some())
+        .map(String::from);
+    if let Err(e) = info {
+        return probe_failure(kind, true, detection_error(e, false), Some(version), cv);
+    }
+    if let Err(e) = compose {
+        return probe_failure(kind, true, detection_error(e, true), Some(version), None);
+    }
+    let Some(cv) = cv else {
+        return probe_failure(
+            kind,
+            true,
+            err("ENGINE_OUTPUT_INVALID"),
+            Some(version),
+            None,
+        );
+    };
+    if major < if kind == "docker" { 24 } else { 5 } || version_major(&cv).is_none_or(|v| v < 2) {
+        return probe_failure(kind, true, err("VERSION_MISMATCH"), Some(version), Some(cv));
+    }
+    EngineProbe {
+        kind: kind.into(),
+        installed: true,
+        available: true,
+        engine_version: Some(version),
+        compose_version: Some(cv),
+        error_code: None,
+        guidance: None,
+    }
+}
+fn choose_engine(probes: &[EngineProbe], preferred: Option<&str>) -> Result<String> {
+    if let Some(kind) = preferred {
+        if !matches!(kind, "docker" | "podman") {
+            return Err(err("BUNDLE_INVALID"));
+        }
+        let probe = probes
+            .iter()
+            .find(|p| p.kind == kind)
+            .ok_or_else(|| err("RUNTIME_MISSING"))?;
+        return if probe.available {
+            Ok(probe.kind.clone())
+        } else {
+            Err(err(probe
+                .error_code
+                .as_deref()
+                .unwrap_or("ENGINE_UNAVAILABLE")))
+        };
+    }
+    probes
+        .iter()
+        .find(|p| p.kind == "podman" && p.available)
+        .or_else(|| probes.iter().find(|p| p.available))
+        .map(|p| p.kind.clone())
+        .ok_or_else(|| {
+            err(if probes.iter().any(|p| p.installed) {
+                "ENGINE_UNAVAILABLE"
+            } else {
+                "RUNTIME_MISSING"
+            })
+        })
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -604,32 +787,31 @@ impl LifecycleService {
         Ok(m)
     }
     fn engine(&self, m: &BundleManifest, install: bool) -> Result<String> {
-        let path = self.root.join("engine.json");
-        if path.exists() {
-            let kind: String = read_json(&path)?;
-            if matches!(kind.as_str(), "docker" | "podman") {
-                return Ok(kind);
+        self.engine_with_probe(m, install, || self.detect())
+    }
+    fn engine_with_probe(
+        &self,
+        m: &BundleManifest,
+        install: bool,
+        detect: impl FnOnce() -> Result<Vec<EngineProbe>>,
+    ) -> Result<String> {
+        if self.root.join("installed.json").exists() {
+            let kind: String = read_json(&self.root.join("engine.json"))?;
+            if !matches!(kind.as_str(), "docker" | "podman") {
+                return Err(err("STATE_INVALID"));
             }
-            return Err(err("STATE_INVALID"));
+            if m.preferred_engine
+                .as_deref()
+                .is_some_and(|preferred| preferred != kind)
+            {
+                return Err(err("BUNDLE_CHANGED"));
+            }
+            return Ok(kind);
         }
         if !install {
             return Err(err("NOT_INSTALLED"));
         }
-        let probes = self.detect()?;
-        let preferred = m.preferred_engine.as_deref().unwrap_or("podman");
-        let chosen = probes
-            .iter()
-            .find(|p| p.kind == preferred && p.available)
-            .or_else(|| probes.iter().find(|p| p.available))
-            .ok_or_else(|| {
-                err(if probes.iter().any(|p| p.installed) {
-                    "ENGINE_UNAVAILABLE"
-                } else {
-                    "RUNTIME_MISSING"
-                })
-            })?;
-        write_json(&self.root, "engine.json", &chosen.kind)?;
-        Ok(chosen.kind.clone())
+        choose_engine(&detect()?, m.preferred_engine.as_deref())
     }
     fn runtime_env(&self, m: &BundleManifest) -> Result<()> {
         let path = self.root.join("runtime.env");
@@ -673,99 +855,10 @@ impl LifecycleService {
         Ok(())
     }
     pub fn detect(&self) -> Result<Vec<EngineProbe>> {
-        let mut probes = Vec::new();
-        for kind in ["podman", "docker"] {
-            let version = run(
-                kind,
-                &[
-                    "version".into(),
-                    "--format".into(),
-                    if kind == "docker" {
-                        "{{json .}}".into()
-                    } else {
-                        "json".into()
-                    },
-                ],
-                None,
-                10,
-            );
-            let probe = match version {
-                Err(e) => EngineProbe {
-                    kind: kind.into(),
-                    installed: e.code != "RUNTIME_MISSING",
-                    available: false,
-                    engine_version: None,
-                    compose_version: None,
-                    error_code: Some(e.code),
-                    guidance: Some(e.guidance),
-                },
-                Ok(data) => {
-                    let v: Value = serde_json::from_slice(&data).unwrap_or(Value::Null);
-                    let version = v["Client"]["Version"]
-                        .as_str()
-                        .or_else(|| v["client"]["version"].as_str())
-                        .or_else(|| v["Version"].as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let engine_ready = run(
-                        kind,
-                        &[
-                            "info".into(),
-                            "--format".into(),
-                            if kind == "docker" {
-                                "{{json .}}".into()
-                            } else {
-                                "json".into()
-                            },
-                        ],
-                        None,
-                        10,
-                    )
-                    .is_ok();
-                    let compose = run(
-                        kind,
-                        &["compose".into(), "version".into(), "--short".into()],
-                        None,
-                        10,
-                    );
-                    let cv = compose
-                        .ok()
-                        .and_then(|v| String::from_utf8(v).ok())
-                        .map(|v| v.trim().trim_start_matches('v').to_string());
-                    let supported = engine_ready
-                        && version
-                            .split('.')
-                            .next()
-                            .and_then(|v| v.parse::<u32>().ok())
-                            .is_some_and(|v| v >= if kind == "docker" { 24 } else { 5 })
-                        && cv.as_ref().is_some_and(|v| {
-                            v.split('.')
-                                .next()
-                                .and_then(|v| v.parse::<u32>().ok())
-                                .is_some_and(|v| v >= 2)
-                        });
-                    EngineProbe {
-                        kind: kind.into(),
-                        installed: true,
-                        available: supported,
-                        engine_version: Some(version),
-                        compose_version: cv,
-                        error_code: if supported {
-                            None
-                        } else {
-                            Some("VERSION_MISMATCH".into())
-                        },
-                        guidance: if supported {
-                            None
-                        } else {
-                            Some(err("VERSION_MISMATCH").guidance)
-                        },
-                    }
-                }
-            };
-            probes.push(probe);
-        }
-        Ok(probes)
+        Ok(["podman", "docker"]
+            .into_iter()
+            .map(|kind| probe_engine(kind, |args| run(kind, args, None, 10)))
+            .collect())
     }
     fn recover_jobs(&self) -> Result<()> {
         let Ok(_guard) = self.lock() else {
@@ -1005,6 +1098,7 @@ impl LifecycleService {
                     return Err(err("IMAGE_INTEGRITY"));
                 }
             }
+            write_json(&self.root, "engine.json", &engine)?;
             write_json(&self.root, "installed.json", &m)?;
             return Ok(());
         }
@@ -1302,6 +1396,12 @@ mod tests {
         assert!(!same_local_image_id(&digest.to_uppercase(), &reference));
         assert!(!same_local_image_id(&digest, &digest));
     }
+    pub(super) fn root_for_detection() -> PathBuf {
+        root()
+    }
+    pub(super) fn manifest_for_detection() -> BundleManifest {
+        manifest()
+    }
     fn root() -> PathBuf {
         std::env::temp_dir().join(format!("exhibitos-manager-core-{}", Uuid::new_v4()))
     }
@@ -1478,5 +1578,159 @@ mod tests {
         assert!(!text.contains("postgresql://"));
         assert!(!text.contains("password"));
         assert!(text.contains("ENGINE_PERMISSION"));
+    }
+}
+
+#[cfg(test)]
+mod detection_tests {
+    use super::*;
+    fn probe(kind: &str, failure: Option<(&str, &str)>) -> EngineProbe {
+        probe_engine(kind, |args| {
+            if let Some((stage, code)) = failure
+                && args[0] == stage
+            {
+                return Err(err(code));
+            }
+            Ok(match args[0].as_str(){"version"=>serde_json::to_vec(&serde_json::json!({"Client":{"Version":if kind=="docker"{"29.8.0"}else{"5.8.2"}}})).unwrap(),"compose"=>b"5.5.1\n".to_vec(),_=>b"{}".to_vec()})
+        })
+    }
+    #[test]
+    fn qualified_versions_remain_available() {
+        for kind in ["podman", "docker"] {
+            let p = probe(kind, None);
+            assert!(p.available);
+            assert!(p.error_code.is_none());
+            assert_eq!(p.compose_version.as_deref(), Some("5.5.1"));
+        }
+    }
+    #[test]
+    fn stopped_version_or_info_is_unavailable_not_upgrade() {
+        for stage in ["version", "info"] {
+            let p = probe("podman", Some((stage, "ENGINE_OPERATION_FAILED")));
+            assert!(p.installed);
+            assert!(!p.available);
+            assert_eq!(p.error_code.as_deref(), Some("ENGINE_UNAVAILABLE"));
+            assert!(p.guidance.unwrap().contains("시작"));
+            if stage == "info" {
+                assert_eq!(p.engine_version.as_deref(), Some("5.8.2"));
+                assert_eq!(p.compose_version.as_deref(), Some("5.5.1"));
+            }
+        }
+    }
+    #[test]
+    fn compose_provider_failure_has_separate_recovery() {
+        let p = probe("podman", Some(("compose", "ENGINE_OPERATION_FAILED")));
+        assert_eq!(p.error_code.as_deref(), Some("COMPOSE_UNAVAILABLE"));
+        assert!(p.guidance.unwrap().contains("Compose"));
+        assert!(p.compose_version.is_none());
+    }
+    #[test]
+    fn permission_timeout_and_output_bounds_are_preserved() {
+        for stage in ["version", "info", "compose"] {
+            for code in ["ENGINE_PERMISSION", "ENGINE_TIMEOUT", "ENGINE_OUTPUT_LIMIT"] {
+                let p = probe("docker", Some((stage, code)));
+                assert_eq!(p.error_code.as_deref(), Some(code));
+                assert!(p.installed);
+                assert!(!p.available);
+            }
+        }
+    }
+    #[test]
+    fn absent_command_differs_from_existing_denied_command() {
+        let p = probe("podman", Some(("version", "RUNTIME_MISSING")));
+        assert!(!p.installed);
+        assert_eq!(p.error_code.as_deref(), Some("RUNTIME_MISSING"));
+    }
+    #[test]
+    fn invalid_versions_are_bounded_not_reclassified_as_unsupported() {
+        for text in [
+            "",
+            "29",
+            "29.8",
+            "29.8.0+",
+            "5.8.2-+abc",
+            "secret://credential",
+            "29.8.0\nSECRET=credential",
+        ] {
+            assert!(version_major(text).is_none());
+        }
+        assert_eq!(version_major("5.8.2-dev.1+build.2"), Some(5));
+        let p =
+            probe_engine("docker", |_| {
+                Ok(serde_json::to_vec(
+                    &serde_json::json!({"Client":{"Version":"secret://credential"}}),
+                )
+                .unwrap())
+            });
+        assert_eq!(p.error_code.as_deref(), Some("ENGINE_OUTPUT_INVALID"));
+        assert!(p.engine_version.is_none());
+        assert!(!serde_json::to_string(&p).unwrap().contains("credential"));
+    }
+    #[test]
+    fn successfully_parsed_old_versions_require_upgrade() {
+        let p = probe_engine("docker", |args| {
+            Ok(if args[0] == "version" {
+                b"{\"Client\":{\"Version\":\"23.0.0\"}}".to_vec()
+            } else if args[0] == "compose" {
+                b"2.0.0".to_vec()
+            } else {
+                b"{}".to_vec()
+            })
+        });
+        assert_eq!(p.error_code.as_deref(), Some("VERSION_MISMATCH"));
+    }
+    #[test]
+    fn explicit_producer_never_falls_back_and_failed_selection_writes_no_pin() {
+        let s = LifecycleService::new(super::tests::root_for_detection()).unwrap();
+        let mut m = super::tests::manifest_for_detection();
+        m.preferred_engine = Some("podman".into());
+        let docker = probe("docker", None);
+        let unavailable = probe("podman", Some(("info", "ENGINE_OPERATION_FAILED")));
+        assert_eq!(
+            s.engine_with_probe(&m, true, || Ok(vec![unavailable.clone(), docker.clone()]))
+                .unwrap_err()
+                .code,
+            "ENGINE_UNAVAILABLE"
+        );
+        assert!(!s.root.join("engine.json").exists());
+        write_json(&s.root, "engine.json", &"docker").unwrap();
+        assert_eq!(
+            s.engine_with_probe(&m, true, || Ok(vec![probe("podman", None), docker.clone()]))
+                .unwrap(),
+            "podman"
+        );
+        assert_eq!(
+            read_json::<String>(&s.root.join("engine.json")).unwrap(),
+            "docker"
+        );
+        m.preferred_engine = None;
+        assert_eq!(
+            s.engine_with_probe(&m, true, || Ok(vec![unavailable, docker]))
+                .unwrap(),
+            "docker"
+        );
+    }
+    #[test]
+    fn installed_engine_is_preserved_without_detection_or_silent_switch() {
+        let s = LifecycleService::new(super::tests::root_for_detection()).unwrap();
+        let mut m = super::tests::manifest_for_detection();
+        write_json(&s.root, "installed.json", &m).unwrap();
+        write_json(&s.root, "engine.json", &"docker").unwrap();
+        assert_eq!(
+            s.engine_with_probe(&m, true, || panic!("installed pin must not be redetected"))
+                .unwrap(),
+            "docker"
+        );
+        m.preferred_engine = Some("podman".into());
+        assert_eq!(
+            s.engine_with_probe(&m, true, || panic!("must not switch existing engine"))
+                .unwrap_err()
+                .code,
+            "BUNDLE_CHANGED"
+        );
+        assert_eq!(
+            read_json::<String>(&s.root.join("engine.json")).unwrap(),
+            "docker"
+        );
     }
 }

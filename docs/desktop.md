@@ -21,6 +21,20 @@ root 안의 `bundle/manifest.json`, `bundle/compose.yaml`과 manifest에 지정�
 
 Finder에서 실행할 때도 backend는 표준 Docker/Podman 설치 경로를 검사한다. 엔진 daemon이 정지했거나 Compose가 없으면 안내에 따라 실행 도구를 준비하고 다시 확인한다. Manager는 관리자 암호나 registry token을 입력받지 않고 raw container 로그를 화면에 노출하지 않는다.
 
+실행 도구가 응답하지 않으면 `ENGINE_UNAVAILABLE`, 접근이 거부되면
+`ENGINE_PERMISSION`, 제한 시간 안에 응답하지 않으면 `ENGINE_TIMEOUT`으로
+안내한다. Compose provider가 실행되지 않으면 `COMPOSE_UNAVAILABLE`이다.
+버전 문자열을 정상적으로 확인한 뒤 지원 범위를 벗어났을 때만
+`VERSION_MISMATCH`를 표시하며, raw 오류 출력이나 credential을 반환하지 않는다.
+
+manifest에 `preferredEngine`이 명시되면 그 패키지를 만든 실행 도구를 요구한다.
+해당 도구가 꺼져 있어도 다른 도구로 자동 전환하지 않는다. 이 필드가 없는 기존
+bundle은 사용 가능한 도구를 선택할 수 있다. 설치의 image 검증이 모두 통과한
+뒤에만 engine 선택을 기록하며, 실패한 초기 설치의 임시 선택은 retry를 고정하지
+않는다. 설치 완료된 root의 실행 도구는 유지하며, 다른 producer를 요구하는
+bundle을 덮어 설치하는 동작은 거부한다.
+
+
 ## 개발 빌드와 검사
 
 Node 24.21.0/npm 11.19.0과 `rust-toolchain.toml`의 Rust를 사용한다. macOS의 네이티브 compiler/SDK가 필요하다. Windows는 해당 OS의 Tauri 빌드 요구 사항과 실제 설치·실행 검증이 추가로 필요하다.
