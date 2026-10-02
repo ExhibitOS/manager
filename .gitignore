@@ -1,0 +1,11 @@
+node_modules/
+dist/
+target/
+src-tauri/target/
+src-tauri/gen/
+test-results/
+playwright-report/
+.env
+.env.*
+runtime.env
+.DS_Store
