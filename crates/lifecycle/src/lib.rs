@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Trusted-bundle desktop lifecycle. No shell, arbitrary compose paths or destructive volume removal.
+pub mod update;
+
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
