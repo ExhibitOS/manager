@@ -44,6 +44,13 @@ struct Authentication {
     backup_id: String,
     manifest_sha256: String,
 }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestorationContext {
+    pub fresh: bool,
+    pub job: Option<RestorationJob>,
+    pub receipt: Option<RestorationReceipt>,
+}
 struct Helper<'a> {
     id: &'a str,
     image: &'a str,
@@ -271,6 +278,28 @@ impl LifecycleService {
             write_json(&self.root, "restoration.json", &job)?;
         }
         Ok(())
+    }
+    /// Read one coherent candidate snapshot; never creates or overwrites a candidate.
+    pub fn restoration_context(&self) -> Result<RestorationContext> {
+        let _lock = self.lock()?;
+        let job = self.restoration_status()?;
+        let fresh = match fresh_root(&self.root) {
+            Ok(()) => true,
+            Err(error) if error.code == "RESTORE_FRESH_ROOT_REQUIRED" => false,
+            Err(error) => return Err(error),
+        };
+        let receipt = match &job {
+            Some(job) if job.state == "completed" => Some(read_json(&checked_path(
+                &self.root,
+                &format!("restore-{}/receipt.json", job.id),
+            )?)?),
+            _ => None,
+        };
+        Ok(RestorationContext {
+            fresh,
+            job,
+            receipt,
+        })
     }
     pub fn restoration_status(&self) -> Result<Option<RestorationJob>> {
         let path = self.root.join("restoration.json");
@@ -813,6 +842,44 @@ impl LifecycleService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn context_checks_freshness_and_failure_without_mutating_candidates() {
+        let root = std::env::temp_dir().join(format!("restore-context-{}", Uuid::new_v4()));
+        let service = LifecycleService::new(root).unwrap();
+        assert!(service.restoration_context().unwrap().fresh);
+        private_bytes(
+            &service.root.join("operator-data"),
+            b"synthetic retained data",
+        )
+        .unwrap();
+        let context = service.restoration_context().unwrap();
+        assert!(!context.fresh);
+        assert!(context.job.is_none());
+        assert!(context.receipt.is_none());
+        let job = RestorationJob {
+            id: Uuid::new_v4().to_string(),
+            state: "failed".into(),
+            stage: "restoring-and-verifying".into(),
+            error_code: Some("ENGINE_OPERATION_FAILED".into()),
+            created_at: 1,
+            updated_at: 2,
+        };
+        write_json(&service.root, "restoration.json", &job).unwrap();
+        let before = fs::read(service.root.join("restoration.json")).unwrap();
+        let context = service.restoration_context().unwrap();
+        assert_eq!(context.job.unwrap().state, "failed");
+        assert!(context.receipt.is_none());
+        assert_eq!(
+            before,
+            fs::read(service.root.join("restoration.json")).unwrap()
+        );
+        assert_eq!(
+            fs::read(service.root.join("operator-data")).unwrap(),
+            b"synthetic retained data"
+        );
+        let _lock = service.lock().unwrap();
+        assert_eq!(service.restoration_context().err().unwrap().code, "BUSY");
+    }
     #[test]
     fn failed_or_interrupted_restore_never_allows_writer_resumption() {
         let root = std::env::temp_dir().join(format!("restore-gate-{}", Uuid::new_v4()));

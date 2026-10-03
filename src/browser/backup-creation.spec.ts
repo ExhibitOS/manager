@@ -8,6 +8,7 @@ for(const scenario of ['success','failure','malformed','wrong-image'] as const)t
   let stopped=false;
   Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string,args?:{input:unknown})=>{
    fixture.__creationCalls.push(cmd);
+   if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};
    if(cmd==='manager_status'){if(stopped)await new Promise<void>(resolve=>{fixture.__resolveStatusRefresh=resolve;});return {installed:true,bundleId:'synthetic',version:'0.1.0',state:stopped?'stopped':'running',services:[],readiness:{ready:!stopped,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};}
    if(cmd==='manager_detect')return [{kind:'docker',installed:true,available:true,engineVersion:'synthetic',composeVersion:'synthetic',errorCode:null,guidance:null}];
    if(cmd==='manager_jobs'||cmd==='manager_logs'||cmd==='manager_backup_jobs')return [];
@@ -64,6 +65,7 @@ for(const scenario of ['success','failure','malformed','wrong-image'] as const)t
 for(const state of ['running','interrupted','malformed'] as const)test(`persisted ${state} backup history never invents completion or repeats mutations`,async({page})=>{
  await page.addInitScript(({state})=>{
   Object.assign(window,{isTauri:true,__historyFixed:false,__historyMutations:0,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
+   if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};
    if(cmd==='manager_status')return {installed:true,bundleId:'synthetic',version:'0.1.0',state:'stopped',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
    if(cmd==='manager_detect')return [{kind:'docker',installed:true,available:true,engineVersion:'synthetic',composeVersion:'synthetic',errorCode:null,guidance:null}];
    if(cmd==='manager_jobs'||cmd==='manager_logs')return [];
@@ -92,6 +94,7 @@ test('a pre-backup status request cannot resurrect stale ready state during crea
   let reads=0,finished=false;
   const status=()=>({installed:true,bundleId:'synthetic',version:'0.1.0',state:finished?'stopped':'running',services:[],readiness:{ready:!finished,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null});
   Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
+   if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};
    if(cmd==='manager_status'){reads++;const old=status();if(reads===2)await new Promise<void>(resolve=>{fixture.__oldStatus=resolve;});return old;}
    if(cmd==='manager_detect')return [{kind:'docker',installed:true,available:true,engineVersion:'synthetic',composeVersion:'synthetic',errorCode:null,guidance:null}];
    if(cmd==='manager_jobs'||cmd==='manager_logs'||cmd==='manager_backup_jobs')return [];

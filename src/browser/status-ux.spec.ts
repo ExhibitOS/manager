@@ -8,6 +8,7 @@ for(const scenario of ['running','failed','ready'] as const)test(`synthetic ${sc
   Object.assign(window,{isTauri:true,__uxCalls:[],__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
    (window as unknown as {__uxCalls:string[]}).__uxCalls.push(cmd);
    if(cmd==='manager_backup_jobs')return [];
+   if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};
    if(cmd==='manager_status')return status;
    if(cmd==='manager_detect')return [{kind:'docker',installed:true,available:true,engineVersion:'synthetic',composeVersion:'synthetic',errorCode:null,guidance:null}];
    if(cmd==='manager_jobs')return [job];
