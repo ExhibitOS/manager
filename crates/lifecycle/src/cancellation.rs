@@ -293,7 +293,7 @@ impl LifecycleService {
         v.updated_at = now();
         self.save_maintenance(&v)
     }
-    fn stop_cancelled_candidate(&self, kind: &str) -> Result<()> {
+    pub(crate) fn stop_cancelled_candidate(&self, kind: &str) -> Result<()> {
         if kind != "restoration" || !self.root.join("bundle/manifest.json").exists() {
             return Ok(());
         }

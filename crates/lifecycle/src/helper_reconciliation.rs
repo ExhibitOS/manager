@@ -429,7 +429,7 @@ impl LifecycleService {
         )?;
         Ok(id)
     }
-    fn reconciliation_target(&self, kind: &str, id: &str) -> Result<()> {
+    pub(crate) fn reconciliation_target(&self, kind: &str, id: &str) -> Result<()> {
         names(kind, id)?;
         let (target, state, stage, created, updated, error) = if kind == "backup" {
             let bytes = source_bytes(
@@ -545,6 +545,18 @@ impl LifecycleService {
         }
         names(kind, target)?;
         let _lock = self.lock()?;
+        self.reconcile_helper_locked(kind, target, preserve_candidates)
+    }
+    pub(crate) fn reconcile_helper_locked(
+        &self,
+        kind: &str,
+        target: &str,
+        preserve_candidates: bool,
+    ) -> Result<ReconciliationReceipt> {
+        if !preserve_candidates {
+            return Err(err("RECONCILIATION_ACK_REQUIRED"));
+        }
+        names(kind, target)?;
         if cfg!(windows) {
             return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
         }

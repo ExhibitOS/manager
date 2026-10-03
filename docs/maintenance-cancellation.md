@@ -50,3 +50,5 @@ python3 scripts/test-maintenance-cancellation.py --kind restoration --mode owner
 ```
 
 `crash`는 새 작업의 CLI 프로세스만 종료한 뒤 재열기의 `interrupted`/`INTERRUPTED`와 별도 guarded helper 정지를 확인합니다. `ownership-conflict`는 새 합성 helper의 이름을 일시 변경해 소유권 불일치를 만들고 `uncertain`/`CANCEL_UNCERTAIN` 및 자동 정지 거부를 확인합니다. 정확한 이름을 복구한 뒤에만 별도 guarded 정지를 수행합니다. 두 경우 모두 별도 정지 후에도 원래 실패·중단 journal과 취소 상태를 성공으로 바꾸지 않습니다. 원본 사본·키·설정·서비스 상태와 후보 volume witness를 확인하며 후보는 삭제하지 않습니다. 이 검사들은 실제 Docker/CLI 증거이고 GUI·powerloss·Windows 검증을 대신하지 않습니다.
+
+실패·중단 작업은 [명시적 재시도 CLI](maintenance-retry.md)에서 실제 helper 정지와 새 UUID 연결을 확인하고 별도의 작업으로 다시 수행할 수 있습니다. 앱 화면의 재시도 연결은 아직 별도입니다.

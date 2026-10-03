@@ -271,6 +271,18 @@ fn volume_for(
     }
     Ok(name.into())
 }
+fn backup_network_members(
+    net: &Value,
+    database: &str,
+    platform: &str,
+    platform_running: bool,
+) -> bool {
+    net["Containers"].as_object().is_some_and(|v| {
+        v.contains_key(database)
+            && (!platform_running || v.contains_key(platform))
+            && v.keys().all(|id| id == database || id == platform)
+    })
+}
 fn layout(
     service: &LifecycleService,
     m: &BundleManifest,
@@ -346,6 +358,7 @@ fn layout(
         return Err(err("BACKUP_CONFIGURATION_INVALID"));
     }
     if db["State"]["Running"] != true
+        || !app["State"]["Running"].is_boolean()
         || app["Mounts"].as_array().is_none_or(|v| v.len() != 2)
         || db["Mounts"].as_array().is_none_or(|v| v.len() != 1)
     {
@@ -373,9 +386,7 @@ fn layout(
     )?;
     if !labels_valid(&net["Labels"], m)
         || net["Driver"] != "bridge"
-        || !net["Containers"]
-            .as_object()
-            .is_some_and(|v| v.len() == 2 && v.contains_key(&database) && v.contains_key(&platform))
+        || !backup_network_members(&net, &database, &platform, app["State"]["Running"] == true)
         || !db["NetworkSettings"]["Networks"][&network]["Aliases"]
             .as_array()
             .is_some_and(|v| v.iter().any(|v| v == "database"))
@@ -578,6 +589,15 @@ impl LifecycleService {
         external_writers_quiesced: bool,
     ) -> Result<BackupCreationReceipt> {
         let _lock = self.lock()?;
+        self.create_backup_locked(image, key, external_writers_quiesced, None)
+    }
+    pub(crate) fn create_backup_locked(
+        &self,
+        image: &str,
+        key: &Path,
+        external_writers_quiesced: bool,
+        retry: Option<super::retry::RetryLink<'_>>,
+    ) -> Result<BackupCreationReceipt> {
         if cfg!(windows) {
             return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
         }
@@ -621,6 +641,9 @@ impl LifecycleService {
             updated_at: now(),
         };
         write_json(&workspace, "job.json", &job)?;
+        if let Some(link) = retry {
+            link.started(&id)?;
+        }
         self.begin_maintenance("backup", &id, &job.stage)?;
         let container = format!("exhibitos-backup-{id}");
         let volume = format!("exhibitos-backup-work-{id}");
@@ -886,6 +909,52 @@ impl LifecycleService {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quiesced_platform_network_accepts_only_owned_database_and_optional_own_platform() {
+        use serde_json::json;
+        assert!(backup_network_members(
+            &json!({"Containers":{"db":{}}}),
+            "db",
+            "app",
+            false
+        ));
+        assert!(backup_network_members(
+            &json!({"Containers":{"db":{},"app":{}}}),
+            "db",
+            "app",
+            false
+        ));
+        assert!(backup_network_members(
+            &json!({"Containers":{"db":{},"app":{}}}),
+            "db",
+            "app",
+            true
+        ));
+        assert!(!backup_network_members(
+            &json!({"Containers":{"db":{}}}),
+            "db",
+            "app",
+            true
+        ));
+        assert!(!backup_network_members(
+            &json!({"Containers":{"db":{},"foreign":{}}}),
+            "db",
+            "app",
+            false
+        ));
+        assert!(!backup_network_members(
+            &json!({"Containers":{"app":{}}}),
+            "db",
+            "app",
+            false
+        ));
+        assert!(!backup_network_members(
+            &json!({"Containers":[]}),
+            "db",
+            "app",
+            false
+        ));
+    }
     use super::*;
     #[test]
     fn owned_helpers_gate_writers_and_ambiguous_identity_fails_closed() {
