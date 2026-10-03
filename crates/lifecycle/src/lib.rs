@@ -1056,6 +1056,9 @@ impl LifecycleService {
         {
             return Err(err("STORAGE_QUOTA"));
         }
+        if *action != Action::Stop {
+            self.ensure_backup_helpers_idle(&engine)?;
+        }
         let bundle = self.root.join("bundle");
         self.runtime_env(&m)?;
         self.validate_compose(&m, &engine)?;
