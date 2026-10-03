@@ -151,6 +151,9 @@ impl LifecycleService {
     /// starts/stops an engine, activates a restore or deletes earlier workspaces.
     pub fn prepare_installation_backup(&self) -> Result<InstallationBackupReceipt> {
         let _lock = self.lock()?;
+        self.prepare_installation_backup_locked()
+    }
+    pub(crate) fn prepare_installation_backup_locked(&self) -> Result<InstallationBackupReceipt> {
         if cfg!(windows) {
             return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
         }

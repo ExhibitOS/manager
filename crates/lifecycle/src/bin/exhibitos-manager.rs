@@ -5,16 +5,22 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if !matches!(args.len(), 4 | 7)
         || args[1] != "--root"
-        || (args.len() == 7 && args[3] != "verify-backup")
+        || (args.len() == 7 && !matches!(args[3].as_str(), "verify-backup" | "create-backup"))
     {
         eprintln!(
-            "usage: exhibitos-manager --root <private absolute directory> detect|install|start|stop|restart|retry|status|jobs|logs|open-url|prepare-installation-backup; verify-backup <trusted image ID> <private key file> <archive directory>"
+            "usage: exhibitos-manager --root <private absolute directory> detect|install|start|stop|restart|retry|status|jobs|logs|open-url|prepare-installation-backup|backup-jobs; create-backup <trusted image ID> <private key file> --external-writers-quiesced; verify-backup <trusted image ID> <private key file> <archive directory>"
         );
         std::process::exit(2);
     }
     let result = (|| -> Result<serde_json::Value, exhibitos_lifecycle::LifecycleError> {
         let s = LifecycleService::new(PathBuf::from(&args[2]))?;
         let value = match args[3].as_str() {
+            "create-backup" if args.len() == 7 => serde_json::to_value(s.create_backup(
+                &args[4],
+                std::path::Path::new(&args[5]),
+                args[6] == "--external-writers-quiesced",
+            )?),
+            "backup-jobs" => serde_json::to_value(s.backup_jobs()?),
             "verify-backup" if args.len() == 7 => serde_json::to_value(s.verify_backup(
                 &args[4],
                 std::path::Path::new(&args[5]),

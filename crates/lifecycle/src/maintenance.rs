@@ -13,7 +13,7 @@ pub struct VerificationReceipt {
     pub authenticated_manifest_sha256: String,
     pub at: u64,
 }
-fn input_path(path: &Path, directory: bool) -> Result<()> {
+pub(crate) fn input_path(path: &Path, directory: bool) -> Result<()> {
     let text = path.to_str().ok_or_else(|| err("BACKUP_PATH_INVALID"))?;
     if !path.is_absolute()
         || text.len() > 2048
