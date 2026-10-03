@@ -43,6 +43,50 @@ async fn blocking<T: Send + 'static>(
         .await
         .map_err(|_| error("MANAGER_OPERATION"))?
 }
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct VerificationInput {
+    image: String,
+    key_path: String,
+    source_path: String,
+}
+impl VerificationInput {
+    fn validate(&self) -> Result<(), LifecycleError> {
+        if !self.image.strip_prefix("sha256:").is_some_and(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        }) || [&self.key_path, &self.source_path].iter().any(|path| {
+            path.len() > 2048
+                || !PathBuf::from(path.as_str()).is_absolute()
+                || path.chars().any(|c| c.is_control() || c == ',')
+        }) {
+            return Err(LifecycleError {
+                code: "BACKUP_INPUT_INVALID".into(),
+                guidance: "준비한 백업·키의 전체 경로와 검증된 실행 패키지 ID를 확인하세요.".into(),
+            });
+        }
+        Ok(())
+    }
+}
+#[tauri::command]
+async fn manager_verify_backup(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    input: VerificationInput,
+) -> Result<exhibitos_lifecycle::maintenance::VerificationReceipt, LifecycleError> {
+    caller(&window)?;
+    input.validate()?;
+    blocking(state.0.clone(), move |service| {
+        service.verify_backup(
+            &input.image,
+            std::path::Path::new(&input.key_path),
+            std::path::Path::new(&input.source_path),
+        )
+    })
+    .await
+}
 #[tauri::command]
 async fn manager_status(
     window: WebviewWindow,
@@ -154,7 +198,8 @@ pub fn run() {
             manager_action,
             manager_jobs,
             manager_logs,
-            manager_open_exhibition
+            manager_open_exhibition,
+            manager_verify_backup
         ])
         .run(tauri::generate_context!())
         .expect("Manager desktop startup failed");
@@ -162,6 +207,42 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn verification_request_rejects_commands_key_contents_and_mount_injection() {
+        let valid = VerificationInput {
+            image: format!("sha256:{}", "a".repeat(64)),
+            key_path: std::env::temp_dir()
+                .join("synthetic-key")
+                .to_string_lossy()
+                .into(),
+            source_path: std::env::temp_dir()
+                .join("synthetic-archive")
+                .to_string_lossy()
+                .into(),
+        };
+        assert!(valid.validate().is_ok());
+        for image in ["image:latest", "sha256:abc", "shell command"] {
+            let value = VerificationInput {
+                image: image.into(),
+                key_path: valid.key_path.clone(),
+                source_path: valid.source_path.clone(),
+            };
+            assert_eq!(value.validate().unwrap_err().code, "BACKUP_INPUT_INVALID");
+        }
+        for path in [
+            "key contents",
+            "relative",
+            "/private/tmp/key,target=/evil",
+            "/private/tmp/key\nSECRET=private",
+        ] {
+            let value = VerificationInput {
+                image: valid.image.clone(),
+                key_path: path.into(),
+                source_path: valid.source_path.clone(),
+            };
+            assert!(value.validate().is_err());
+        }
+    }
     #[test]
     fn remote_sources_and_privileged_url_replacements_are_denied() {
         for source in [

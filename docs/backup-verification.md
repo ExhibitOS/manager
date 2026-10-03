@@ -3,8 +3,8 @@
 `LifecycleService::verify_backup`와 `exhibitos-manager verify-backup`은 Platform의
 공개 service-backup CLI를 별도 유지보수 이미지에서 실행한다. 실제 암호화
 사본의 manifest와 각 파일의 인증·크기·해시·닫힌 inventory를 검사한다.
-백업 생성, DB/blob 복원, 서비스 활성화, 자동 업데이트·rollback과 Manager UI는
-이 경로가 수행하지 않는다. 인증 검증은 독립 새 환경 복원 검증을 대체하지 않는다.
+백업 생성, DB/blob 복원, 서비스 활성화, 자동 업데이트·rollback은
+이 경로가 수행하지 않는다. 로컬 Manager 창의 검증 화면은 같은 adapter를 호출한다. 인증 검증은 독립 새 환경 복원 검증을 대체하지 않는다.
 
 ## 준비와 실행
 
@@ -79,3 +79,31 @@ python3 scripts/test-backup-verification.py \
 
 시험은 새 root에 별도 잘못된 key와 alias/후보를 추가하며 원본 key/사본은
 바꾸지 않는다. 재실행은 새 root로 수행하고 이전 작업 공간은 보존한다.
+
+## Manager 검증 화면 연결
+
+설치와 엔진 확인이 끝난 로컬 앱 창에서 백업 사본 검증을 사용할 수 있다.
+암호화 사본 폴더·외부 키 파일의 실제 전체 경로와 운영자가 준비한 고정 이미지
+ID를 입력한다. 키 내용·DB 연결 정보는 입력하지 않는다. 입력은 화면 세션에만
+보존하며 browser storage나 로그에 저장하지 않는다. 이미지 입력은 검증된
+실행 패키지 설정에 있고 신뢰할 local content ID만 받는다. 이미지 준비/배포
+서명 검증·native file picker·자동 key 관리 기능은 아직 포함하지 않는다.
+
+`manager_verify_backup`은 기존 로컬 main window origin guard와 명시적 Tauri
+capability를 사용하고 deny-unknown-fields 입력을 검사한 뒤 기존 adapter에
+전달한다. 웹 preview에는 네이티브 실행 권한이 없다. frontend의 입력 제한·버튼
+비활성화는 native 경로·key mode·manifest·image/engine 검사와 lock을 대신하지 않는다.
+
+검증 중 같은 화면의 설치·시작·재시작·재시도와 중복 검증을 막는다. 진행률을
+추측하지 않고 indeterminate 상태를 보여 주며, 자동 poll은 자체 작업 중 멈춘다.
+실패는 alert에 키보드 초점을 옮기고 원본과 실패 후보 보존을 안내한다. 재검증은
+사용자가 같은 검증 버튼을 눌러 새 후보를 만들며 기존 후보를 덮어쓰지 않는다.
+성공은 파일 수·인증 hash를 보여 주되 DB 복원을 실행했다고 표시하지 않는다.
+입력이 바뀌면 이전 성공을 현재 사본 결과처럼 보이지 않게 제거한다.
+
+실제 browser presentation 검사14 PASS: 기본 웹 권한 없음/기존 status UX와
+synthetic success/failure/malformed IPC, exact input dispatch·중복 submit 차단·
+관련 작업 제외·불완전 응답 거부·실패 초점·입력 변경의 stale success 제거·
+320/640/1120px overflow와44px input target 검사. 합성 IPC 결과는 실제 네이티브
+엔진/암호화 성공 증거가 아니며 기존 actual CLI8tests와 구분한다. 실제
+macOS GUI에서 입력→검증→receipt 확인과 Windows·VoiceOver 검사는 아직 남아 있다.

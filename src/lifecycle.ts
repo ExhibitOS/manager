@@ -20,8 +20,8 @@ export function parseStatus(v:unknown):Status{
 function parseEngines(v:unknown):EngineProbe[]{if(!Array.isArray(v)||v.length>4||v.some(e=>!object(e)||!text(e.kind,32)||typeof e.installed!=='boolean'||typeof e.available!=='boolean'||!optional(e.engineVersion)||!optional(e.composeVersion)||!optional(e.errorCode)||!optional(e.guidance)))throw Error('MANAGER_PROTOCOL');return v as EngineProbe[];}
 function parseLogs(v:unknown):LogEvent[]{if(!Array.isArray(v)||v.length>500||v.some(e=>!object(e)||!number(e.at)||!optional(e.jobId)||!text(e.code,128)||!text(e.message,512)))throw Error('MANAGER_PROTOCOL');return v as LogEvent[];}
 export function managerError(v:unknown):ManagerError{if(object(v)&&text(v.code,128)&&/^[A-Z_]+$/.test(v.code)&&text(v.guidance))return {code:v.code,guidance:v.guidance};return {code:'MANAGER_CONNECTION',guidance:'실행 상태를 확인할 수 없습니다. 데스크톱 앱을 다시 열고 상태를 확인하세요.'};}
-export interface ManagerClient{native:boolean;status():Promise<Status>;engines():Promise<EngineProbe[]>;jobs():Promise<Job[]>;logs():Promise<LogEvent[]>;install():Promise<Job>;action(action:Action):Promise<Job>;open():Promise<void>}
-export const client:ManagerClient={native:isTauri(),status:async()=>parseStatus(await invoke('manager_status')),engines:async()=>parseEngines(await invoke('manager_detect')),jobs:async()=>{const v=await invoke('manager_jobs');if(!Array.isArray(v)||v.length>200)throw Error('MANAGER_PROTOCOL');return v.map(parseJob);},logs:async()=>parseLogs(await invoke('manager_logs')),install:async()=>parseJob(await invoke('manager_install')),action:async(action)=>{if(!['start','stop','restart','retry'].includes(action))throw Error('MANAGER_ACTION');return parseJob(await invoke('manager_action',{action}));},open:async()=>{await invoke('manager_open_exhibition');}};
+export interface ManagerClient{native:boolean;status():Promise<Status>;engines():Promise<EngineProbe[]>;jobs():Promise<Job[]>;logs():Promise<LogEvent[]>;install():Promise<Job>;action(action:Action):Promise<Job>;open():Promise<void>;verifyBackup(input:VerificationInput):Promise<VerificationReceipt>}
+export const client:ManagerClient={native:isTauri(),status:async()=>parseStatus(await invoke('manager_status')),engines:async()=>parseEngines(await invoke('manager_detect')),jobs:async()=>{const v=await invoke('manager_jobs');if(!Array.isArray(v)||v.length>200)throw Error('MANAGER_PROTOCOL');return v.map(parseJob);},logs:async()=>parseLogs(await invoke('manager_logs')),install:async()=>parseJob(await invoke('manager_install')),action:async(action)=>{if(!['start','stop','restart','retry'].includes(action))throw Error('MANAGER_ACTION');return parseJob(await invoke('manager_action',{action}));},open:async()=>{await invoke('manager_open_exhibition');},verifyBackup:async(input)=>{if(!validVerificationInput(input))throw {code:'BACKUP_INPUT_INVALID',guidance:'백업·키의 전체 경로와 실행 패키지 ID를 확인하세요.'};const receipt=parseVerificationReceipt(await invoke('manager_verify_backup',{input}));if(receipt.image!==input.image)throw Error('MANAGER_PROTOCOL');return receipt;}};
 export const statusLabel=(state:string)=>({not_installed:'설치 전',running:'관람 준비 완료',stopped:'정지됨',degraded:'일부 기능 준비 중',runtime_unavailable:'실행 도구 확인 필요'}[state]??'상태 확인 필요');
 export const actionLabel=(action:Job['action'])=>({install:'설치',start:'시작',stop:'정지',restart:'재시작',retry:'다시 시도'}[action]);
 export function formatBytes(value:number|null){if(value===null)return '측정할 수 없음';if(value<1024)return `${value} B`;if(value<1048576)return `${(value/1024).toFixed(1)} KiB`;if(value<1073741824)return `${(value/1048576).toFixed(1)} MiB`;return `${(value/1073741824).toFixed(1)} GiB`;}
@@ -37,4 +37,15 @@ export function nextStep(status:Status|null,engineReady:boolean,active:boolean,n
  if(!status.installed)return '검증된 설치 패키지를 준비하고 전시 설치를 누르세요.';
  if(status.readiness.ready)return '전시 열기를 눌러 관람을 시작하세요.';
  return status.state==='stopped'?'시작을 눌러 전시 서버를 켜세요.':'작업 기록의 안내를 확인하고 서버 준비 상태를 다시 확인하세요.';
+}
+
+export interface VerificationInput{image:string;keyPath:string;sourcePath:string}
+export interface VerificationReceipt{id:string;operation:'verified';files:number;image:string;authenticatedManifestSha256:string;at:number}
+const digest=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
+export function validVerificationInput(value:VerificationInput):boolean{
+ return /^sha256:[a-f0-9]{64}$/.test(value.image)&&[value.keyPath,value.sourcePath].every(path=>path.length>0&&path.length<=2048&&![...path].some(c=>c.charCodeAt(0)<32||c.charCodeAt(0)===127||c===',')&&(/^(?:\/|[A-Za-z]:[\\/])/.test(path)));
+}
+export function parseVerificationReceipt(value:unknown):VerificationReceipt{
+ if(!object(value)||Object.keys(value).sort().join(',')!=='at,authenticatedManifestSha256,files,id,image,operation'||!text(value.id,36)||!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.id)||value.operation!=='verified'||!number(value.files)||value.files<1||value.files>1000000||!text(value.image,71)||!/^sha256:[a-f0-9]{64}$/.test(value.image)||!digest(value.authenticatedManifestSha256)||!number(value.at))throw Error('MANAGER_PROTOCOL');
+ return value as unknown as VerificationReceipt;
 }
