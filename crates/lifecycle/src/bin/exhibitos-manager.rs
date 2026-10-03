@@ -3,25 +3,63 @@ use exhibitos_lifecycle::{Action, LifecycleService};
 use std::path::PathBuf;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if !matches!(args.len(), 4 | 7 | 9)
+    if !matches!(args.len(), 4 | 7 | 9 | 12)
         || args[1] != "--root"
         || (args.len() == 7
             && !matches!(
                 args[3].as_str(),
                 "verify-backup" | "create-backup" | "reconcile-helper" | "cancel-maintenance"
             ))
-        || (args.len() == 9 && args[3] != "restore-backup")
+        || (args.len() == 9 && !matches!(args[3].as_str(), "restore-backup" | "retry-backup"))
+        || (args.len() == 12 && args[3] != "retry-restoration")
     {
         eprintln!(
-            "usage: exhibitos-manager --root <private absolute directory> detect|install|start|stop|restart|retry|status|jobs|logs|open-url|prepare-installation-backup|backup-jobs|restoration-status|helper-reconciliations|maintenance-context; cancel-maintenance <backup|restoration> <active UUID> --preserve-candidates; reconcile-helper <backup|restoration> <failed job UUID> --preserve-candidates; create-backup <trusted image ID> <private key file> --external-writers-quiesced; verify-backup <trusted image ID> <private key file> <archive directory>; restore-backup <trusted image ID> <private key file> <archive directory> <new loopback port> --fresh-installation"
+            "usage: exhibitos-manager --root <private absolute directory> detect|install|start|stop|restart|retry|status|jobs|logs|open-url|prepare-installation-backup|backup-jobs|restoration-status|helper-reconciliations|maintenance-context|maintenance-retries; retry-backup <failed UUID> <trusted image ID> <external key> --preserve-candidates --external-writers-quiesced; retry-restoration <failed UUID> <new private root> <trusted image ID> <external key> <archive> <new port> --preserve-candidates --fresh-installation; cancel-maintenance <backup|restoration> <active UUID> --preserve-candidates; reconcile-helper <backup|restoration> <failed job UUID> --preserve-candidates; create-backup <trusted image ID> <private key file> --external-writers-quiesced; verify-backup <trusted image ID> <private key file> <archive directory>; restore-backup <trusted image ID> <private key file> <archive directory> <new loopback port> --fresh-installation"
         );
         std::process::exit(2);
     }
     let result = (|| -> Result<serde_json::Value, exhibitos_lifecycle::LifecycleError> {
         let s = LifecycleService::new(PathBuf::from(&args[2]))?;
         let value = match args[3].as_str() {
+            "maintenance-retries" if args.len() == 4 => {
+                serde_json::to_value(s.maintenance_retries()?)
+            }
+            "retry-backup" if args.len() == 9 => serde_json::to_value(s.retry_backup(
+                &args[4],
+                &args[5],
+                std::path::Path::new(&args[6]),
+                args[7] == "--preserve-candidates",
+                args[8] == "--external-writers-quiesced",
+            )?),
+            "retry-restoration" if args.len() == 12 => {
+                if args[10] != "--preserve-candidates" || args[11] != "--fresh-installation" {
+                    return Err(exhibitos_lifecycle::LifecycleError {
+                        code: "RETRY_ACK_REQUIRED".into(),
+                        guidance: "실패 후보 보존과 새 복원 공간 사용을 확인하세요.".into(),
+                    });
+                }
+                let destination = LifecycleService::new(PathBuf::from(&args[5]))?;
+                serde_json::to_value(s.retry_restoration(
+                    &args[4],
+                    exhibitos_lifecycle::retry::RestorationRetryInput {
+                        destination: &destination,
+                        image: &args[6],
+                        key: std::path::Path::new(&args[7]),
+                        archive: std::path::Path::new(&args[8]),
+                        port: args[9].parse().unwrap_or(0),
+                        preserve_candidates: true,
+                        fresh_installation: true,
+                    },
+                )?)
+            }
             "maintenance-context" => serde_json::to_value(s.maintenance_context()?),
-            "cancel-maintenance" if args.len()==7 => serde_json::to_value(s.request_maintenance_cancel(&args[4], &args[5], args[6]=="--preserve-candidates")?),
+            "cancel-maintenance" if args.len() == 7 => {
+                serde_json::to_value(s.request_maintenance_cancel(
+                    &args[4],
+                    &args[5],
+                    args[6] == "--preserve-candidates",
+                )?)
+            }
             "helper-reconciliations" => serde_json::to_value(s.helper_reconciliations()?),
             "reconcile-helper" if args.len() == 7 => serde_json::to_value(s.reconcile_helper(
                 &args[4],

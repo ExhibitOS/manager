@@ -9,6 +9,7 @@ pub mod maintenance;
 pub mod profile_backup;
 pub mod restoration;
 mod restoration_auxiliary;
+pub mod retry;
 pub mod update;
 
 use fs2::FileExt;
@@ -182,6 +183,15 @@ fn err(code: &str) -> LifecycleError {
             "새 사본 파일 이름을 사용하세요. 기존 사본을 덮어쓰지 않습니다."
         }
 
+        "RETRY_ACK_REQUIRED" => {
+            "원본·실패 후보 보존과 외부 writer 중지 또는 새 복원 공간 사용을 다시 확인하세요."
+        }
+        "RETRY_RECOVERY_REQUIRED" => {
+            "이전 재시도 후보를 보존하고 해당 새 작업의 실제 정지·상태를 확인하세요. 자동 재개하지 않습니다."
+        }
+        "RETRY_TARGET_INVALID" | "RETRY_SOURCE_CHANGED" => {
+            "재시도 대상 기록을 확인할 수 없습니다. 원래 기록과 모든 후보를 보존하고 비공개 상태를 검사하세요."
+        }
         "CANCELLED" => {
             "취소를 확인했습니다. 후보와 데이터는 보존되며 서버를 자동 재개하지 않습니다."
         }
@@ -835,6 +845,7 @@ impl LifecycleService {
         service.recover_restoration()?;
         service.recover_helper_reconciliations()?;
         service.recover_maintenance_cancellation()?;
+        service.recover_maintenance_retries()?;
         Ok(service)
     }
     fn lock(&self) -> Result<File> {

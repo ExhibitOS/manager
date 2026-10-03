@@ -112,7 +112,7 @@ fn private_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
         .and_then(|()| file.sync_all())
         .map_err(|_| err("STATE_UNAVAILABLE"))
 }
-fn fresh_root(root: &Path) -> Result<()> {
+pub(crate) fn fresh_root(root: &Path) -> Result<()> {
     for item in fs::read_dir(root).map_err(|_| err("STATE_UNAVAILABLE"))? {
         let item = item.map_err(|_| err("STATE_UNAVAILABLE"))?;
         if item.file_name() != "operation.lock" {
@@ -438,6 +438,17 @@ impl LifecycleService {
         acknowledged: bool,
     ) -> Result<RestorationReceipt> {
         let _lock = self.lock()?;
+        self.restore_backup_locked(image, key, source, port, acknowledged, None)
+    }
+    pub(crate) fn restore_backup_locked(
+        &self,
+        image: &str,
+        key: &Path,
+        source: &Path,
+        port: u16,
+        acknowledged: bool,
+        retry: Option<super::retry::RetryLink<'_>>,
+    ) -> Result<RestorationReceipt> {
         if cfg!(windows) {
             return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
         }
@@ -489,6 +500,9 @@ impl LifecycleService {
             updated_at: now(),
         };
         write_json(&self.root, "restoration.json", &job)?;
+        if let Some(link) = retry {
+            link.started(&id)?;
+        }
         self.begin_maintenance("restoration", &id, &job.stage)?;
         let outcome = (|| -> Result<RestorationReceipt> {
             let bytes = self.restoration_helper(Helper {

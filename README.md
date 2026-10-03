@@ -69,3 +69,5 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 진행 중 백업 생성·복원의 [취소 요청과 정지 확인](docs/maintenance-cancellation.md)을 지원합니다. 요청과 정지 완료를 구분하며 후보와 데이터를 보존합니다.
 
 앱을 닫은 상태의 [암호화 관리 공간 설정 백업·복원](docs/profile-backup.md)은 전시 데이터 사본과 별도로 선택 목록·이력·공간 정보를 보존하는 개발 CLI입니다.
+
+중단된 백업·복원의 [명시적 새 작업 재시도](docs/maintenance-retry.md)는 실패 후보와 이전 journal을 보존하는 개발 CLI입니다. 앱 재시도 화면 연결은 후속 작업입니다.
