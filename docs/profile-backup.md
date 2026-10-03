@@ -45,3 +45,5 @@ python3 scripts/test-profile-backup.py --profile-cli '<built exhibitos-profile>'
 설정 사본은 로컬 private 파일의 atomic write/link와 flock 동작에 의존합니다. 네트워크 filesystem/동기화 도구의 외부 변경까지 보장하지 않습니다. 부분 publish 뒤 pending hardlink가 남았으면 사본과 pending의 실제 byte hash를 별도 확인하고 앱을 닫은 상태로 inspect하세요. 확인되지 않은 pending을 자동 삭제하거나 정상 사본으로 추측하지 않습니다. 사용자는 암호화 사본과 외부 키의 별도 보관·실제 복원 검사를 유지해야 합니다.
 
 기존 관리 profile 디렉터리의 POSIX 소유권·0700 권한이 예상과 다르면 새 앱은 자동으로 권한을 고치지 않고 거부합니다. 이전 버전으로 초기화된 정상 private profile의 목록 형식과 공간 ID는 유지합니다. 완화된 권한은 원본과 OS 접근 정책을 확인한 뒤에만 수정해야 합니다. 보존한 손상 목록·진단 디렉터리는 typed 암호화 설정 inventory 밖이며 필요한 경우 별도 private 보관 정책을 유지합니다. 기본 사본 확장자 .exb와 key.bin/*-key.bin, profile metadata 이름은 Git-ignore하지만 임의 이름의 secret을 식별하는 보안 경계는 아닙니다. 항상 소스 저장소 밖에 보관하세요.
+
+실패 진단: `PROFILE_DESTINATION_EXISTS`는 실제 기존 파일과의 충돌일 때만 반환합니다. 대상 경로 조회 또는 새 파일 생성이 실패하면 `PROFILE_DESTINATION_UNAVAILABLE`로 경로·권한·여유 공간을 확인하세요. 이미 생성한 암호화 pending의 publish/link 또는 동기화 실패는 `PROFILE_WRITE_UNCERTAIN`이며 성공으로 처리하지 않습니다. pending과 기존 사본을 보존하고 실제 파일 상태를 확인한 뒤 새로운 이름으로 재시도하세요. raw OS 오류나 private 경로는 반환하지 않습니다.

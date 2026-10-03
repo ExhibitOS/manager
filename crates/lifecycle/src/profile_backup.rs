@@ -291,13 +291,27 @@ fn sync(path: &Path) -> Result<()> {
         .map_err(|_| err("PROFILE_WRITE_UNCERTAIN"))
 }
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
-    let mut file = private_options()
-        .open(path)
-        .map_err(|_| err("PROFILE_DESTINATION_EXISTS"))?;
+    let mut file = private_options().open(path).map_err(|e| {
+        err(if e.kind() == std::io::ErrorKind::AlreadyExists {
+            "PROFILE_DESTINATION_EXISTS"
+        } else {
+            "PROFILE_DESTINATION_UNAVAILABLE"
+        })
+    })?;
     file.write_all(bytes)
         .and_then(|()| file.sync_all())
         .map_err(|_| err("PROFILE_WRITE_UNCERTAIN"))?;
     sync(path.parent().ok_or_else(|| err("PROFILE_PATH_INVALID"))?)
+}
+fn publish(temporary: &Path, archive: &Path) -> Result<()> {
+    fs::hard_link(temporary, archive).map_err(|e| {
+        err(if e.kind() == std::io::ErrorKind::AlreadyExists {
+            "PROFILE_DESTINATION_EXISTS"
+        } else {
+            // The encrypted pending already exists; retain it and never imply completion.
+            "PROFILE_WRITE_UNCERTAIN"
+        })
+    })
 }
 fn acknowledgement(ack: bool) -> Result<()> {
     if !cfg!(unix) {
@@ -319,8 +333,10 @@ pub fn backup(profile: &Path, key: &Path, archive: &Path, ack: bool) -> Result<P
     let parent = archive_parent(profile, archive, key)?;
     let key = external_key(profile, key)?;
     // Caller never gets a partially written destination: a retained private temporary is published by no-replace link.
-    if fs::symlink_metadata(archive).is_ok() {
-        return Err(err("PROFILE_DESTINATION_EXISTS"));
+    match fs::symlink_metadata(archive) {
+        Ok(_) => return Err(err("PROFILE_DESTINATION_EXISTS")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(err("PROFILE_DESTINATION_UNAVAILABLE")),
     }
     let _session = session_lock(profile, true)?;
     let _profile = lock_file(profile, "operation.lock", true)?;
@@ -359,7 +375,7 @@ pub fn backup(profile: &Path, key: &Path, archive: &Path, ack: bool) -> Result<P
     // Verify authentication and closed schema before publishing; failed encrypted pending files remain for inspection.
     let opened = decrypt(&bytes, &key)?;
     validate(&opened)?;
-    fs::hard_link(&temporary, archive).map_err(|_| err("PROFILE_DESTINATION_EXISTS"))?;
+    publish(&temporary, archive)?;
     fs::remove_file(&temporary).map_err(|_| err("PROFILE_WRITE_UNCERTAIN"))?;
     sync(&parent)?;
     Ok(ProfileReceipt {
@@ -569,6 +585,7 @@ pub fn restore(profile: &Path, key: &Path, archive: &Path, ack: bool) -> Result<
 mod tests {
     use super::installations::InstallationController;
     use super::*;
+    use std::collections::BTreeSet;
     use std::os::unix::fs::PermissionsExt;
     fn fixture() -> (PathBuf, PathBuf, PathBuf) {
         let parent = fs::canonicalize(std::env::temp_dir())
@@ -584,6 +601,64 @@ mod tests {
         write_new(&k, &[7u8; 32]).unwrap();
         let a = parent.join("profile.exb");
         (p, k, a)
+    }
+    #[test]
+    fn destination_io_failures_are_not_collisions_and_never_remove_pending() {
+        let (p, k, a) = fixture();
+        let before = fs::read(p.join("installation-selection.json")).unwrap();
+        let absent_parent = k.with_file_name("absent-parent").join("archive.exb");
+        assert_eq!(
+            write_new(&absent_parent, b"private").unwrap_err().code,
+            "PROFILE_DESTINATION_UNAVAILABLE"
+        );
+        let pending = k.with_file_name("retained.pending");
+        write_new(&pending, b"ciphertext witness").unwrap();
+        assert_eq!(
+            publish(&pending, &absent_parent).unwrap_err().code,
+            "PROFILE_WRITE_UNCERTAIN"
+        );
+        assert_eq!(fs::read(&pending).unwrap(), b"ciphertext witness");
+        write_new(&a, b"existing archive").unwrap();
+        assert_eq!(
+            publish(&pending, &a).unwrap_err().code,
+            "PROFILE_DESTINATION_EXISTS"
+        );
+        assert_eq!(
+            write_new(&a, b"replacement").unwrap_err().code,
+            "PROFILE_DESTINATION_EXISTS"
+        );
+        assert_eq!(fs::read(&a).unwrap(), b"existing archive");
+        assert_eq!(
+            fs::read(p.join("installation-selection.json")).unwrap(),
+            before
+        );
+    }
+    #[test]
+    fn inaccessible_destination_refuses_before_profile_locks_or_pending_files() {
+        let (p, k, _) = fixture();
+        let profile_before: BTreeSet<_> = fs::read_dir(&p)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        let too_long = k.with_file_name("x".repeat(300));
+        let before: BTreeSet<_> = fs::read_dir(k.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            backup(&p, &k, &too_long, true).unwrap_err().code,
+            "PROFILE_DESTINATION_UNAVAILABLE"
+        );
+        let after: BTreeSet<_> = fs::read_dir(k.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(before, after);
+        let profile_after: BTreeSet<_> = fs::read_dir(&p)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(profile_before, profile_after);
     }
     #[test]
     fn live_windows_and_offline_lock_exclude_each_other() {

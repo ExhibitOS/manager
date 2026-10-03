@@ -16,6 +16,7 @@ at=int(time.time()*1000);first=str(uuid.uuid4());second=str(uuid.uuid4());regist
 for root in [profile/'local-runtime',profile/'installations'/second]:root.mkdir(mode=0o700);private(root/'synthetic-witness',b'private synthetic space witness')
 source_hashes={str(f.relative_to(profile)):sha(f) for f in profile.rglob('*') if f.is_file()};keyhash=sha(key)
 empty=base/'empty-runtime-root';empty.mkdir(mode=0o700);call(empty,'backup',expected='PROFILE_FORMAT_INVALID');assert not list(empty.iterdir()) and not archive.exists();step('missing registry backup source refuses before creating lock files in a fresh runtime folder')
+before_paths=sorted(str(f.relative_to(base)) for f in base.rglob('*'));call(profile,'backup',archivepath=outside/('x'*300),expected='PROFILE_DESTINATION_UNAVAILABLE');assert sorted(str(f.relative_to(base)) for f in base.rglob('*'))==before_paths and (profile/'installation-selection.json').read_bytes()==raw and sha(key)==keyhash;step('actual inaccessible archive name returns destination-unavailable before creating profile locks or pending files')
 call(profile,'backup',ack=False,expected='PROFILE_ACK_REQUIRED');assert not archive.exists();step('acknowledgement rejects before archive creation')
 for path in [profile/'profile-session.lock',profile/'operation.lock',profile/'local-runtime/operation.lock']:
  path.touch(mode=0o600)
