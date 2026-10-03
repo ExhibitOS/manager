@@ -175,6 +175,9 @@ fn err(code: &str) -> LifecycleError {
         "PROFILE_WRITE_UNCERTAIN" => {
             "설정 기록 완료를 확인할 수 없습니다. 앱을 닫아 둔 채 보존한 이전 목록·후보·사본을 검사하세요."
         }
+        "PROFILE_DESTINATION_UNAVAILABLE" => {
+            "설정 사본 경로에 접근하거나 새 파일을 만들 수 없습니다. 경로·권한·저장 공간을 확인하고 기존 사본을 보존하세요."
+        }
         "PROFILE_DESTINATION_EXISTS" => {
             "새 사본 파일 이름을 사용하세요. 기존 사본을 덮어쓰지 않습니다."
         }
