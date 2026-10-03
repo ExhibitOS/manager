@@ -94,6 +94,63 @@ impl CreationInput {
         .validate()
     }
 }
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RestorationInput {
+    image: String,
+    key_path: String,
+    source_path: String,
+    port: u16,
+    fresh_installation_accepted: bool,
+}
+impl RestorationInput {
+    fn validate(&self) -> Result<(), LifecycleError> {
+        if !self.fresh_installation_accepted {
+            return Err(LifecycleError {
+                code: "BACKUP_OPERATOR_ACK_REQUIRED".into(),
+                guidance:
+                    "이 앱의 비어 있는 설치 공간에 새 전시를 복원하고 시작하는 데 동의하세요."
+                        .into(),
+            });
+        }
+        if self.port < 1024 {
+            return Err(error("BACKUP_INPUT_INVALID"));
+        }
+        VerificationInput {
+            image: self.image.clone(),
+            key_path: self.key_path.clone(),
+            source_path: self.source_path.clone(),
+        }
+        .validate()
+    }
+}
+#[tauri::command]
+async fn manager_restore_backup(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    input: RestorationInput,
+) -> Result<exhibitos_lifecycle::restoration::RestorationReceipt, LifecycleError> {
+    caller(&window)?;
+    input.validate()?;
+    blocking(state.0.clone(), move |service| {
+        service.restore_backup(
+            &input.image,
+            std::path::Path::new(&input.key_path),
+            std::path::Path::new(&input.source_path),
+            input.port,
+            input.fresh_installation_accepted,
+        )
+    })
+    .await
+}
+#[tauri::command]
+async fn manager_restoration_context(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+) -> Result<exhibitos_lifecycle::restoration::RestorationContext, LifecycleError> {
+    caller(&window)?;
+    blocking(state.0.clone(), |service| service.restoration_context()).await
+}
 #[tauri::command]
 async fn manager_create_backup(
     window: WebviewWindow,
@@ -250,7 +307,9 @@ pub fn run() {
             manager_open_exhibition,
             manager_verify_backup,
             manager_create_backup,
-            manager_backup_jobs
+            manager_backup_jobs,
+            manager_restore_backup,
+            manager_restoration_context
         ])
         .run(tauri::generate_context!())
         .expect("Manager desktop startup failed");
@@ -258,6 +317,51 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn restoration_wire_requires_explicit_fresh_acknowledgement_and_bounded_port() {
+        let valid = serde_json::json!({"image":format!("sha256:{}", "a".repeat(64)),"keyPath":"/private/tmp/key","sourcePath":"/private/tmp/archive","port":4500,"freshInstallationAccepted":true});
+        assert!(
+            serde_json::from_value::<RestorationInput>(valid.clone())
+                .unwrap()
+                .validate()
+                .is_ok()
+        );
+        for (key, value) in [
+            ("command", serde_json::json!("shell")),
+            ("keyBytes", serde_json::json!("secret")),
+            ("port", serde_json::json!(65536)),
+            ("port", serde_json::json!("4500")),
+            ("freshInstallationAccepted", serde_json::json!("true")),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[key] = value;
+            assert!(serde_json::from_value::<RestorationInput>(invalid).is_err());
+        }
+        for (key, value, code) in [
+            (
+                "freshInstallationAccepted",
+                serde_json::json!(false),
+                "BACKUP_OPERATOR_ACK_REQUIRED",
+            ),
+            ("port", serde_json::json!(80), "BACKUP_INPUT_INVALID"),
+            (
+                "sourcePath",
+                serde_json::json!("/tmp/source,target=/host"),
+                "BACKUP_INPUT_INVALID",
+            ),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[key] = value;
+            assert_eq!(
+                serde_json::from_value::<RestorationInput>(invalid)
+                    .unwrap()
+                    .validate()
+                    .unwrap_err()
+                    .code,
+                code
+            );
+        }
+    }
     #[test]
     fn creation_requires_both_acknowledgements_and_safe_input() {
         let mut input = CreationInput {

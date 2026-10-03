@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import {describe,it,expect} from 'vitest';
-import {parseJob,parseStatus,managerError,formatBytes,statusLabel,validVerificationInput,parseVerificationReceipt,validCreationInput,parseCreationReceipt,parseBackupJob} from './lifecycle';
+import {parseJob,parseStatus,managerError,formatBytes,statusLabel,validVerificationInput,parseVerificationReceipt,validCreationInput,parseCreationReceipt,parseBackupJob,validRestorationInput,parseRestorationContext,parseRestorationReceipt} from './lifecycle';
 const status={installed:false,bundleId:null,version:null,state:'not_installed',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0,quotaBytes:5368709120},activeJob:null};
 describe('Manager lifecycle boundary',()=>{
  it('preserves unknown storage/readiness without claiming success',()=>{const value=parseStatus(status);expect(formatBytes(value.storage.usedBytes)).toBe('측정할 수 없음');expect(value.readiness.ready).toBe(false);expect(statusLabel(value.state)).toBe('설치 전');});
@@ -36,5 +36,25 @@ describe('Backup creation receipt and journal boundary',()=>{
   expect(parseBackupJob(backupJob).state).toBe('completed');
   expect(parseBackupJob({...backupJob,state:'interrupted',stage:'pausing-writers',errorCode:'INTERRUPTED'}).state).toBe('interrupted');
   for(const value of [{...backupJob,stage:'saving-images'},{...backupJob,errorCode:'PRIVATE'},{...backupJob,state:'interrupted',errorCode:null},{...backupJob,state:'running',errorCode:'INTERRUPTED'},{...backupJob,updatedAt:0},{...backupJob,updatedAt:Number.MAX_SAFE_INTEGER},{...backupJob,private:'secret'}])expect(()=>parseBackupJob(value)).toThrow('MANAGER_PROTOCOL');
+ });
+});
+
+const restored={id:verification.id,operation:'restored-and-running',backupId:creation.backupId,authenticatedManifestSha256:'b'.repeat(64),bundleId:'34567890-1234-1234-1234-123456789012',projectName:'exhibitos-34567890-1234-1234-1234-123456789012',openUrl:'http://127.0.0.1:4500',at:2};
+const restoredJob={id:verification.id,state:'completed',stage:'complete',errorCode:null,createdAt:1,updatedAt:2};
+describe('Fresh restoration native boundary',()=>{
+ it('requires fresh acknowledgement and rejects unsafe ports and mount paths',()=>{
+  const input={image,keyPath:'/private/key',sourcePath:'/private/archive',port:4500,freshInstallationAccepted:true};
+  expect(validRestorationInput(input)).toBe(true);
+  for(const value of [{...input,freshInstallationAccepted:false},{...input,port:80},{...input,port:65536},{...input,port:4500.5},{...input,port:NaN},{...input,keyPath:'key bytes'},{...input,sourcePath:'/private/source,target=/host'}])expect(validRestorationInput(value)).toBe(false);
+ });
+ it('does not accept verification-only receipts or external exhibition addresses',()=>{
+  expect(parseRestorationReceipt(restored).openUrl).toBe('http://127.0.0.1:4500');
+  for(const value of [{...restored,operation:'verified'},{...restored,openUrl:'https://example.com'},{...restored,openUrl:'http://127.0.0.1:4500/?secret=x'},{...restored,openUrl:'http://127.0.0.1:80'},{...restored,projectName:'foreign'},{...restored,private:'secret'}])expect(()=>parseRestorationReceipt(value)).toThrow('MANAGER_PROTOCOL');
+ });
+ it('requires completed history to bind an actual receipt and fences incomplete candidates',()=>{
+  expect(parseRestorationContext({fresh:true,job:null,receipt:null}).fresh).toBe(true);
+  expect(parseRestorationContext({fresh:false,job:restoredJob,receipt:restored}).receipt?.backupId).toBe(creation.backupId);
+  expect(parseRestorationContext({fresh:false,job:{...restoredJob,state:'interrupted',stage:'checking-runtime',errorCode:'INTERRUPTED'},receipt:null}).job?.state).toBe('interrupted');
+  for(const value of [{fresh:true,job:restoredJob,receipt:restored},{fresh:false,job:restoredJob,receipt:null},{fresh:false,job:restoredJob,receipt:{...restored,id:creation.backupId}},{fresh:false,job:{...restoredJob,updatedAt:0},receipt:restored},{fresh:false,job:{...restoredJob,state:'failed'},receipt:null},{fresh:false,job:{...restoredJob,stage:'unknown'},receipt:restored},{fresh:false,job:null,receipt:restored},{fresh:false,job:null,receipt:null,private:'secret'}])expect(()=>parseRestorationContext(value)).toThrow('MANAGER_PROTOCOL');
  });
 });

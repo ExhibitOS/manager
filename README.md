@@ -2,14 +2,14 @@
 
 로컬 전시 서버의 설치·시작·정지·재시작·상태와 작업 기록을 관리하는
 Tauri2/Rust 데스크톱 앱의 개발 구현입니다. 현재 Windows 실환경 검사,
-macOS 서명·공증과 배포용 설치 프로그램은 완료되지 않았습니다. 앱의 복원 화면,
+macOS 서명·공증과 배포용 설치 프로그램은 완료되지 않았습니다. 앱의 실제 복원 GUI 조작·취소/재개,
 업데이트·rollback과 cloud wizard는 후속 작업입니다.
 [설치된 전시의 백업 생성](docs/backup-creation.md)은 개발 CLI에서 Docker 기반
 설치의 DB·작품·서명 설정·설치 파일·images를 암호화·인증하며 전시 writer를 정지 상태로 둡니다.
 로컬 앱 창의 생성 화면에 같은 adapter를 연결했으며 실제 네이티브 GUI 조작과
 Windows/Podman 검증은 남아 있습니다. [새 설치 복원 CLI](docs/backup-restoration.md)는
 암호화 사본의 DB·작품·서명 설정·이미지를 원본과 분리된 새 Docker 설치에 복구하고
-전시 readiness를 확인하는 개발 경로입니다. 복원 화면·취소/재개·cold engine과
+전시 readiness를 확인하는 개발 경로입니다. 로컬 앱 복원 화면도 같은 코어에 연결했으며 실제 GUI 조작·취소/재개·cold engine과
 전체 frozen corpus qualification은 별도 조건입니다. 개발 CLI와 백업 검증 화면의
 [암호화 백업 인증 검증](docs/backup-verification.md)은 네트워크 없이 실제 유지보수
 이미지를 실행하며 새 비공개 작업 공간에만 복호화합니다. 로컬 앱 창에 검증 화면을 연결했으며 실제 네이티브 GUI 조작 검증은 아직 남아 있습니다. 엔진 실행과 분리된
