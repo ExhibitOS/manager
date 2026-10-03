@@ -6,6 +6,7 @@ pub mod helper_reconciliation;
 pub mod installation_backup;
 pub mod installations;
 pub mod maintenance;
+pub mod profile_backup;
 pub mod restoration;
 mod restoration_auxiliary;
 pub mod update;
@@ -164,6 +165,20 @@ fn same_local_image_id(actual: &str, reference: &str) -> bool {
 }
 fn err(code: &str) -> LifecycleError {
     let guidance = match code {
+        "PROFILE_BUSY" => {
+            "모든 Manager 앱과 해당 공간의 작업을 종료한 뒤 다시 실행하세요. 데이터와 기존 사본은 유지됩니다."
+        }
+        "PROFILE_ACK_REQUIRED" => "모든 앱을 종료하고 원본 공간·외부 키·사본 보존을 확인하세요.",
+        "PROFILE_AUTHENTICATION_FAILED" => {
+            "설정 사본 인증에 실패했습니다. 외부 키와 원래 사본을 확인하세요. 기존 목록은 교체하지 않았습니다."
+        }
+        "PROFILE_WRITE_UNCERTAIN" => {
+            "설정 기록 완료를 확인할 수 없습니다. 앱을 닫아 둔 채 보존한 이전 목록·후보·사본을 검사하세요."
+        }
+        "PROFILE_DESTINATION_EXISTS" => {
+            "새 사본 파일 이름을 사용하세요. 기존 사본을 덮어쓰지 않습니다."
+        }
+
         "CANCELLED" => {
             "취소를 확인했습니다. 후보와 데이터는 보존되며 서버를 자동 재개하지 않습니다."
         }
