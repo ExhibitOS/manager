@@ -48,6 +48,7 @@ pub struct InstallationController {
     _profile_session: Option<File>,
     mode: String,
     current: RwLock<Selected>,
+    maintenance_destination: RwLock<Option<MaintenanceRoute>>,
 }
 pub(crate) fn uuid(value: &str) -> bool {
     Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value)
@@ -197,6 +198,26 @@ fn selected(profile: &Path, entry: Entry) -> Selected {
         error_code,
     }
 }
+struct MaintenanceRoute {
+    path: PathBuf,
+    audit_id: Option<String>,
+}
+pub struct RestorationRetryOptions<'a> {
+    pub image: &'a str,
+    pub key: &'a Path,
+    pub archive: &'a Path,
+    pub port: u16,
+    pub preserve_candidates: bool,
+    pub fresh_installation: bool,
+}
+struct DestinationLease<'a>(&'a RwLock<Option<MaintenanceRoute>>);
+impl Drop for DestinationLease<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut route) = self.0.write() {
+            *route = None;
+        }
+    }
+}
 impl InstallationController {
     pub fn new(profile: PathBuf, override_root: Option<PathBuf>) -> Result<Self> {
         if let Some(path) = override_root {
@@ -264,6 +285,7 @@ impl InstallationController {
             _profile_session: Some(session),
             mode: "managed".into(),
             current: RwLock::new(current),
+            maintenance_destination: RwLock::new(None),
         })
     }
     fn pinned(path: PathBuf, mode: &str) -> Result<Self> {
@@ -294,6 +316,7 @@ impl InstallationController {
             _profile_session: None,
             mode: mode.into(),
             current: RwLock::new(current),
+            maintenance_destination: RwLock::new(None),
         })
     }
     fn context_for(&self, current: &Selected, registry: Option<&Registry>) -> InstallationContext {
@@ -364,6 +387,167 @@ impl InstallationController {
         })?;
         private_directory(&current.path)?;
         task(service)
+    }
+    /// Keep selection and registry locked while using a distinct registered root.
+    /// Raw paths never enter this desktop adapter. The core enforces freshness.
+    fn with_retry_destination<T>(
+        &self,
+        token: &str,
+        destination_id: &str,
+        task: impl FnOnce(
+            &LifecycleService,
+            &LifecycleService,
+            &dyn Fn(&str) -> Result<()>,
+        ) -> Result<T>,
+    ) -> Result<T> {
+        self.with_current(token, |source| {
+            if !uuid(destination_id) {
+                return Err(err("INSTALLATION_SELECTION_INVALID"));
+            }
+            let profile = self
+                .profile
+                .as_ref()
+                .ok_or_else(|| err("INSTALLATION_SELECTION_DISABLED"))?;
+            let _profile = profile_lock(profile)?;
+            let (registry, _) =
+                load(&profile.root)?.ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
+            let source_entry = registry
+                .installations
+                .iter()
+                .find(|entry| root(&profile.root, entry) == source.root)
+                .ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
+            if registry.active_id != source_entry.id {
+                return Err(err("INSTALLATION_SELECTION_CHANGED"));
+            }
+            let entry = registry
+                .installations
+                .iter()
+                .find(|entry| entry.id == destination_id && entry.id != source_entry.id)
+                .ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
+            let path = root(&profile.root, entry);
+            private_directory(&path)?;
+            super::restoration::fresh_root(&path)?;
+            let destination = LifecycleService { root: path.clone() };
+            {
+                let mut route = self
+                    .maintenance_destination
+                    .try_write()
+                    .map_err(|_| err("BUSY"))?;
+                if route.is_some() {
+                    return Err(err("BUSY"));
+                }
+                *route = Some(MaintenanceRoute {
+                    path,
+                    audit_id: None,
+                });
+            }
+            let _route = DestinationLease(&self.maintenance_destination);
+            let link = |id: &str| {
+                if !uuid(id) {
+                    return Err(err("STATE_INVALID"));
+                }
+                let mut route = self
+                    .maintenance_destination
+                    .write()
+                    .map_err(|_| err("BUSY"))?;
+                let route = route.as_mut().ok_or_else(|| err("STATE_INVALID"))?;
+                if route.audit_id.is_some() {
+                    return Err(err("STATE_INVALID"));
+                }
+                route.audit_id = Some(id.into());
+                Ok(())
+            };
+            task(source, &destination, &link)
+        })
+    }
+    pub fn retry_restoration(
+        &self,
+        token: &str,
+        destination_id: &str,
+        target: &str,
+        input: RestorationRetryOptions<'_>,
+    ) -> Result<super::retry::RetryReceipt<super::restoration::RestorationReceipt>> {
+        self.with_retry_destination(token, destination_id, |source, destination, link| {
+            source.retry_restoration_observed(
+                target,
+                super::retry::RestorationRetryInput {
+                    destination,
+                    image: input.image,
+                    key: input.key,
+                    archive: input.archive,
+                    port: input.port,
+                    preserve_candidates: input.preserve_candidates,
+                    fresh_installation: input.fresh_installation,
+                },
+                link,
+            )
+        })
+    }
+    fn retry_child(
+        source: &LifecycleService,
+        route: &MaintenanceRoute,
+    ) -> Result<(LifecycleService, String)> {
+        let audit = source.retry_record(route.audit_id.as_deref().ok_or_else(|| err("BUSY"))?)?;
+        if audit.kind != "restoration"
+            || audit.destination_root_sha256 != digest(route.path.to_string_lossy().as_bytes())
+        {
+            return Err(err("STATE_INVALID"));
+        }
+        let id = audit.new_job_id.ok_or_else(|| err("BUSY"))?;
+        private_directory(&route.path)?;
+        Ok((
+            LifecycleService {
+                root: route.path.clone(),
+            },
+            id,
+        ))
+    }
+    pub fn maintenance_context(
+        &self,
+        token: &str,
+    ) -> Result<Option<super::cancellation::MaintenanceContext>> {
+        self.with_current(token, |source| {
+            let route = self
+                .maintenance_destination
+                .try_read()
+                .map_err(|_| err("BUSY"))?;
+            if let Some(route) = route.as_ref() {
+                let (destination, id) = Self::retry_child(source, route)?;
+                let context = destination.maintenance_context()?;
+                if context
+                    .as_ref()
+                    .is_some_and(|v| v.kind != "restoration" || v.id != id)
+                {
+                    return Err(err("CANCEL_TARGET_INVALID"));
+                }
+                Ok(context)
+            } else {
+                source.maintenance_context()
+            }
+        })
+    }
+    pub fn request_maintenance_cancel(
+        &self,
+        token: &str,
+        kind: &str,
+        target: &str,
+        preserve: bool,
+    ) -> Result<super::cancellation::MaintenanceContext> {
+        self.with_current(token, |source| {
+            let route = self
+                .maintenance_destination
+                .try_read()
+                .map_err(|_| err("BUSY"))?;
+            if let Some(route) = route.as_ref() {
+                let (destination, id) = Self::retry_child(source, route)?;
+                if kind != "restoration" || target != id {
+                    return Err(err("CANCEL_TARGET_INVALID"));
+                }
+                destination.request_maintenance_cancel(kind, &id, preserve)
+            } else {
+                source.request_maintenance_cancel(kind, target, preserve)
+            }
+        })
     }
     pub fn create(&self, token: &str, acknowledged: bool) -> Result<InstallationContext> {
         let mut current = self.current.try_write().map_err(|_| err("BUSY"))?;
@@ -464,6 +648,283 @@ mod tests {
         let mut f = private_options().open(path).unwrap();
         f.write_all(bytes).unwrap();
         f.sync_all().unwrap();
+    }
+    #[test]
+    fn nonfresh_registered_retry_destination_is_refused_without_recovering_its_journal() {
+        let (profile, controller) = fixture();
+        let original = controller.context().unwrap();
+        let destination = controller.create(&original.selection_token, true).unwrap();
+        let path = profile.join("installations").join(&destination.active_id);
+        let job=serde_json::to_vec(&serde_json::json!({"id":Uuid::new_v4().to_string(),"state":"running","stage":"authenticating","errorCode":null,"createdAt":1,"updatedAt":2})).unwrap();
+        write_private(&path.join("restoration.json"), &job);
+        let source = controller
+            .select(&destination.selection_token, &original.active_id, true)
+            .unwrap();
+        assert_eq!(
+            controller
+                .with_retry_destination(
+                    &source.selection_token,
+                    &destination.active_id,
+                    |_, _, _| Ok(())
+                )
+                .unwrap_err()
+                .code,
+            "RESTORE_FRESH_ROOT_REQUIRED"
+        );
+        assert_eq!(fs::read(path.join("restoration.json")).unwrap(), job);
+        assert!(!path.join("maintenance-active.json").exists());
+    }
+    #[test]
+    fn registered_retry_destination_fences_selection_and_routes_only_live_child_cancellation() {
+        use std::sync::{Arc, mpsc};
+        let (profile, controller) = fixture();
+        let first = controller.context().unwrap();
+        let new = controller.create(&first.selection_token, true).unwrap();
+        let current = controller
+            .select(&new.selection_token, &first.active_id, true)
+            .unwrap();
+        let controller = Arc::new(controller);
+        let before = fs::read(profile.join("installation-selection.json")).unwrap();
+        for destination in [
+            current.active_id.as_str(),
+            "../foreign",
+            "12345678-1234-1234-1234-123456789012",
+        ] {
+            assert!(
+                controller
+                    .with_retry_destination::<()>(
+                        &current.selection_token,
+                        destination,
+                        |_, _, _| panic!("invalid destination invoked")
+                    )
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            controller
+                .with_retry_destination(&first.selection_token, &new.active_id, |_, _, _| Ok(()))
+                .unwrap_err()
+                .code,
+            "INSTALLATION_SELECTION_CHANGED"
+        );
+        let child = Uuid::new_v4().to_string();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = controller.clone();
+        let token = current.selection_token.clone();
+        let target = new.active_id.clone();
+        let child_id = child.clone();
+        let thread = std::thread::spawn(move || {
+            worker.with_retry_destination(&token, &target, |source, destination, link| {
+                assert_ne!(source.root, destination.root);
+                let _operation = destination.lock()?;
+                let at = now();
+                write_json(
+                    &destination.root,
+                    "restoration.json",
+                    &super::restoration::RestorationJob {
+                        id: child_id.clone(),
+                        state: "running".into(),
+                        stage: "authenticating".into(),
+                        error_code: None,
+                        created_at: at,
+                        updated_at: at,
+                    },
+                )?;
+                let parent = Uuid::new_v4().to_string();
+                write_json(
+                    &source.root,
+                    &format!("maintenance-retry-{parent}.json"),
+                    &super::retry::MaintenanceRetry {
+                        id: parent.clone(),
+                        target_id: Uuid::new_v4().to_string(),
+                        kind: "restoration".into(),
+                        state: "running".into(),
+                        new_job_id: Some(child_id.clone()),
+                        original_job_sha256: "a".repeat(64),
+                        destination_root_sha256: digest(
+                            destination.root.to_string_lossy().as_bytes(),
+                        ),
+                        error_code: None,
+                        created_at: at,
+                        updated_at: at,
+                    },
+                )?;
+                link(&parent)?;
+                destination.begin_maintenance("restoration", &child_id, "authenticating")?;
+                ready_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            })
+        });
+        ready_rx.recv().unwrap();
+        assert_eq!(
+            controller
+                .select(&current.selection_token, &new.active_id, true)
+                .err()
+                .unwrap()
+                .code,
+            "BUSY"
+        );
+        let context = controller
+            .maintenance_context(&current.selection_token)
+            .unwrap()
+            .unwrap();
+        assert_eq!(context.id, child);
+        let cancel = controller
+            .request_maintenance_cancel(&current.selection_token, "restoration", &child, true)
+            .unwrap();
+        assert_eq!(cancel.state, "requested");
+        assert!(
+            controller
+                .with_current(&current.selection_token, |s| s.maintenance_context())
+                .unwrap()
+                .is_none()
+        );
+        release_tx.send(()).unwrap();
+        thread.join().unwrap().unwrap();
+        assert!(
+            controller
+                .maintenance_context(&current.selection_token)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            fs::read(profile.join("installation-selection.json")).unwrap(),
+            before
+        );
+        assert_eq!(
+            fs::read(
+                profile
+                    .join("installations")
+                    .join(&new.active_id)
+                    .join(format!("maintenance-{child}.json"))
+            )
+            .map(
+                |bytes| serde_json::from_slice::<super::super::cancellation::MaintenanceContext>(
+                    &bytes
+                )
+                .unwrap()
+                .state
+            )
+            .unwrap(),
+            "requested"
+        );
+    }
+    #[test]
+    fn retry_route_refuses_foreign_live_job_before_and_after_parent_link() {
+        use std::sync::{Arc, mpsc};
+        let (profile, controller) = fixture();
+        let first = controller.context().unwrap();
+        let destination = controller.create(&first.selection_token, true).unwrap();
+        let current = controller
+            .select(&destination.selection_token, &first.active_id, true)
+            .unwrap();
+        let controller = Arc::new(controller);
+        let foreign = Uuid::new_v4().to_string();
+        let intended = Uuid::new_v4().to_string();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (continue_tx, continue_rx) = mpsc::channel();
+        let worker = controller.clone();
+        let token = current.selection_token.clone();
+        let destination_id = destination.active_id.clone();
+        let foreign_id = foreign.clone();
+        let thread = std::thread::spawn(move || {
+            worker.with_retry_destination(&token, &destination_id, |source, destination, link| {
+                let _operation = destination.lock()?;
+                let at = now();
+                write_json(
+                    &destination.root,
+                    "restoration.json",
+                    &super::restoration::RestorationJob {
+                        id: foreign_id.clone(),
+                        state: "running".into(),
+                        stage: "authenticating".into(),
+                        error_code: None,
+                        created_at: at,
+                        updated_at: at,
+                    },
+                )?;
+                destination.begin_maintenance("restoration", &foreign_id, "authenticating")?;
+                ready_tx.send(()).unwrap();
+                continue_rx.recv().unwrap();
+                let parent = Uuid::new_v4().to_string();
+                write_json(
+                    &source.root,
+                    &format!("maintenance-retry-{parent}.json"),
+                    &super::retry::MaintenanceRetry {
+                        id: parent.clone(),
+                        target_id: Uuid::new_v4().to_string(),
+                        kind: "restoration".into(),
+                        state: "running".into(),
+                        new_job_id: Some(intended.clone()),
+                        original_job_sha256: "a".repeat(64),
+                        destination_root_sha256: digest(
+                            destination.root.to_string_lossy().as_bytes(),
+                        ),
+                        error_code: None,
+                        created_at: at,
+                        updated_at: at,
+                    },
+                )?;
+                link(&parent)?;
+                ready_tx.send(()).unwrap();
+                continue_rx.recv().unwrap();
+                Ok(())
+            })
+        });
+        ready_rx.recv().unwrap();
+        let root = profile.join("installations").join(&destination.active_id);
+        let job_before = fs::read(root.join("restoration.json")).unwrap();
+        let context_before = fs::read(root.join(format!("maintenance-{foreign}.json"))).unwrap();
+        assert_eq!(
+            controller
+                .maintenance_context(&current.selection_token)
+                .unwrap_err()
+                .code,
+            "BUSY"
+        );
+        assert_eq!(
+            controller
+                .request_maintenance_cancel(&current.selection_token, "restoration", &foreign, true)
+                .unwrap_err()
+                .code,
+            "BUSY"
+        );
+        continue_tx.send(()).unwrap();
+        ready_rx.recv().unwrap();
+        assert_eq!(
+            controller
+                .maintenance_context(&current.selection_token)
+                .unwrap_err()
+                .code,
+            "CANCEL_TARGET_INVALID"
+        );
+        assert_eq!(
+            controller
+                .request_maintenance_cancel(&current.selection_token, "restoration", &foreign, true)
+                .unwrap_err()
+                .code,
+            "CANCEL_TARGET_INVALID"
+        );
+        assert_eq!(fs::read(root.join("restoration.json")).unwrap(), job_before);
+        assert_eq!(
+            fs::read(root.join(format!("maintenance-{foreign}.json"))).unwrap(),
+            context_before
+        );
+        assert!(
+            !root
+                .join(format!("maintenance-cancel-{foreign}.json"))
+                .exists()
+        );
+        continue_tx.send(()).unwrap();
+        thread.join().unwrap().unwrap();
+        assert!(
+            controller
+                .maintenance_context(&current.selection_token)
+                .unwrap()
+                .is_none()
+        );
     }
     #[test]
     fn create_select_and_restart_preserve_original_bytes_and_reject_stale_tokens() {

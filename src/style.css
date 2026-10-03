@@ -15,3 +15,5 @@
 .helper-reconciliation{margin-bottom:24px}.helper-reconciliation fieldset{border:0;padding:0;margin:20px 0}.helper-reconciliation legend{font-weight:700;margin-bottom:12px}.helper-reconciliation select{display:block;width:100%;min-height:44px;padding:10px;border:1px solid var(--line,#ccc);border-radius:8px;background:var(--surface,#fff);color:inherit;margin:8px 0 16px}
 
 .maintenance-cancellation .maintenance-ack{display:flex;align-items:center;gap:12px;min-height:44px;padding:10px 12px;margin:12px 0;border:1px solid #cbd5c4;border-radius:8px}.maintenance-ack input{width:24px;height:24px;flex:0 0 24px;accent-color:#255343}
+
+.maintenance-retry select{display:block;width:100%;max-width:100%;min-width:0;min-height:44px;padding:10px;border:1px solid #bcc8bd;border-radius:8px;background:#fafcf8;color:inherit;margin:8px 0 16px;font:inherit}.maintenance-retry .code{overflow-wrap:anywhere}

@@ -10,7 +10,7 @@ for(const scenario of ['confirmed','uncertain','malformed','stale-poll','unknown
    if(cmd==='manager_cancel_maintenance'){inputs.push(args);value={...value,state:'requested'};return scenario==='malformed'?{...value,state:'confirmed',errorCode:'CANCELLED'}:value;}
    if(cmd==='manager_status')return {installed:false,bundleId:null,version:null,state:'not_installed',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
    if(cmd==='manager_detect')return [];
-   if(['manager_jobs','manager_logs','manager_backup_jobs','manager_helper_reconciliations'].includes(cmd))return [];
+   if(['manager_jobs','manager_logs','manager_backup_jobs','manager_helper_reconciliations','manager_maintenance_retries'].includes(cmd))return [];
    if(cmd==='manager_restoration_context')return {fresh:false,job:{id,state:'running',stage:'authenticating',errorCode:null,createdAt:1,updatedAt:2},receipt:null};
    throw Error('Unexpected mutation');
   }}});

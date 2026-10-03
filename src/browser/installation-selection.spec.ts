@@ -8,6 +8,7 @@ test('synthetic space promotion preserves old space, fences requests and clears 
   const calls:{cmd:string;args:Record<string,unknown>}[]=[];
   Object.assign(window,{isTauri:true,__selectionCalls:calls,__TAURI_INTERNALS__:{invoke:async(cmd:string,args:Record<string,unknown>={})=>{
    calls.push({cmd,args});if(cmd==='manager_maintenance_context')return null;
+   if(cmd==='manager_maintenance_retries')return [];
    if(cmd==='manager_helper_reconciliations')return [];
    if(cmd==='manager_installations')return structuredClone(context);
    if(args.selectionToken!==context.selectionToken)throw {code:'INSTALLATION_SELECTION_CHANGED',guidance:'관리 공간이 바뀌었습니다.'};
@@ -36,6 +37,7 @@ for(const mode of ['override','platform-unverified','managed-missing'] as const)
   const id='56789012-1234-1234-1234-123456789012';
   Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
    if(cmd==='manager_maintenance_context')return null;
+   if(cmd==='manager_maintenance_retries')return [];
    if(cmd==='manager_helper_reconciliations')return [];
    if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:id,mode:mode==='managed-missing'?'managed':mode,installations:[{id,kind:mode==='override'?'override':'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:mode!=='managed-missing'}],errorCode:mode==='managed-missing'?'INSTALLATION_ROOT_UNAVAILABLE':null};
    if(cmd==='manager_detect')return [];
