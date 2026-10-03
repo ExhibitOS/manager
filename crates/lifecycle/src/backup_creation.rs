@@ -621,12 +621,14 @@ impl LifecycleService {
             updated_at: now(),
         };
         write_json(&workspace, "job.json", &job)?;
+        self.begin_maintenance("backup", &id, &job.stage)?;
         let container = format!("exhibitos-backup-{id}");
         let volume = format!("exhibitos-backup-work-{id}");
         let outcome = (|| -> Result<BackupCreationReceipt> {
             let stage = |job: &mut BackupCreationJob, value: &str| -> Result<()> {
                 job.stage = value.into();
                 job.updated_at = now();
+                self.maintenance_stage("backup", &id, value)?;
                 write_json(&workspace, "job.json", job)
             };
             if fs2::available_space(&workspace).map_err(|_| err("STORAGE_UNAVAILABLE"))?
@@ -641,6 +643,7 @@ impl LifecycleService {
             let mut image_inventory = Vec::new();
             let mut image_bytes = 0;
             for (index, pin) in m.images.iter().enumerate() {
+                self.maintenance_checkpoint("backup", &id)?;
                 let content = local_image(&engine, &pin.reference)?;
                 let filename = format!("image-{index}.tar");
                 let path = deployment.join(&filename);
@@ -801,8 +804,9 @@ impl LifecycleService {
                 "-e".into(),
                 HELPER.into(),
             ]);
-            let result: HelperResult = serde_json::from_slice(&run(&engine, &args, None, 3600)?)
-                .map_err(|_| err("BACKUP_RESULT_INVALID"))?;
+            let result: HelperResult =
+                serde_json::from_slice(&self.run_maintenance_helper("backup", &id, &args)?)
+                    .map_err(|_| err("BACKUP_RESULT_INVALID"))?;
             stage(&mut job, "copying-authenticated-archive")?;
             run(
                 &engine,
@@ -825,31 +829,59 @@ impl LifecycleService {
                 writers_paused: true,
                 at: now(),
             };
-            write_json(&workspace, "receipt.json", &value)?;
-            stage(&mut job, "complete")?;
+
             Ok(value)
         })();
-        // Only the exact new helper may be removed. Its newly allocated volume is retained,
-        // including failed candidates and authenticated plaintext, for private inspection.
-        if let Ok(value) = inspected(&engine, &["inspect".into(), container.clone()])
-            && value["Config"]["Labels"]["com.exhibitos.backup"] == id
-        {
-            let _ = run(
-                &engine,
-                &["rm".into(), "--force".into(), container],
-                None,
-                30,
-            );
-        }
-        job.updated_at = now();
-        if outcome.is_ok() {
-            job.state = "completed".into();
+        // Keep stopped/failed helpers and all volumes; cancellation must verify stop.
+        let _terminal = self.maintenance_finish_guard("backup", &id)?;
+        let outcome = if self.maintenance_requested("backup", &id)? {
+            if outcome
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.code != "CANCELLED")
+            {
+                Err(err("CANCEL_UNCERTAIN"))
+            } else {
+                self.maintenance_checkpoint("backup", &id).and(outcome)
+            }
         } else {
-            job.state = "failed".into();
+            outcome
+        };
+        job.updated_at = now();
+        if let Ok(receipt) = &outcome {
+            write_json(&workspace, "receipt.json", receipt)?;
+            job.state = "completed".into();
+            job.stage = "complete".into();
+        } else {
+            job.state = if outcome
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.code == "CANCELLED")
+            {
+                "interrupted"
+            } else {
+                "failed"
+            }
+            .into();
             job.error_code = outcome.as_ref().err().map(|e| e.code.clone());
         }
         write_json(&workspace, "job.json", &job)?;
-        outcome.map_err(|_| err("BACKUP_CREATION_FAILED"))
+        let terminal = match job.error_code.as_deref() {
+            None => "completed",
+            Some("CANCELLED") => "confirmed",
+            Some("CANCEL_UNCERTAIN") => "uncertain",
+            _ => "failed",
+        };
+        self.finish_maintenance(terminal, job.error_code.as_deref())?;
+        outcome.map_err(|e| {
+            err(
+                if ["CANCELLED", "CANCEL_UNCERTAIN"].contains(&e.code.as_str()) {
+                    &e.code
+                } else {
+                    "BACKUP_CREATION_FAILED"
+                },
+            )
+        })
     }
 }
 #[cfg(test)]

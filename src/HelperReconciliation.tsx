@@ -18,7 +18,7 @@ export function HelperReconciliation({native,active,backupJobs,restoration,targe
  return <section className="panel helper-reconciliation" aria-labelledby="helper-heading">
   <p className="eyebrow">RECOVER WITHOUT ERASING</p><h2 id="helper-heading">중단된 작업의 helper 확인</h2>
   <p>백업·복원 실패 후 남아 있는 보조 실행을 확인하고 해당 작업의 helper만 정지합니다. 사본·키·부분 DB·volume을 삭제하지 않으며 container 삭제 명령을 보내지 않습니다.</p>
-  <p id="helper-scope" className="note">원래 작업을 성공으로 바꾸거나 서버를 재개하지 않습니다. 복원 재시도는 관리 공간 선택에서 새 공간을 만든 뒤 진행하세요. 실행 중인 작업 취소 기능은 아직 제공하지 않습니다. 엔진의 --rm 설정이 있는 helper는 정지 후 자동 제거될 수 있지만 작업 공간과 데이터는 보존됩니다.</p>
+  <p id="helper-scope" className="note">원래 작업을 성공으로 바꾸거나 서버를 재개하지 않습니다. 복원 재시도는 관리 공간 선택에서 새 공간을 만든 뒤 진행하세요. 실행 중인 백업·복원은 위의 취소 요청에서 처리합니다. 엔진의 --rm 설정이 있는 helper는 정지 후 자동 제거될 수 있지만 작업 공간과 데이터는 보존됩니다.</p>
   <form onSubmit={event=>void submit(event)} aria-describedby="helper-scope"><fieldset disabled={disabled||candidates.length===0}><legend>실패·중단 작업 선택</legend>
    <label htmlFor="helper-target">현재 공간의 작업</label><select id="helper-target" value={selected?target:''} onChange={event=>{setTarget(event.target.value);setAck(false);setResult(null);setError(null);}}>
     <option value="">확인할 작업을 선택하세요</option>{candidates.map(([kind,id])=><option key={`${kind}:${id}`} value={`${kind}:${id}`}>{kind==='backup'?'백업':'복원'} · {id}</option>)}

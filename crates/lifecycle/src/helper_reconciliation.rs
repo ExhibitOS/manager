@@ -77,7 +77,7 @@ fn validate_record(job: &ReconciliationJob) -> Result<()> {
     }
     Ok(())
 }
-fn list(
+pub(crate) fn list(
     mut command: impl FnMut(&[String]) -> Result<Vec<u8>>,
     name: &str,
     label: &str,
@@ -602,7 +602,7 @@ impl LifecycleService {
             }
         }
     }
-    fn reconcile_helper_engine(
+    pub(crate) fn reconcile_helper_engine(
         &self,
         kind: &str,
         target: &str,

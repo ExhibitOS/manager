@@ -22,7 +22,7 @@ export function BackupRestoration({native,active,engineReady,context,historyErro
   <p>원래 계정·DB·작품·서명 설정과 실행 이미지를 되살리고 새 전시를 시작합니다. 기존 전시와 사본·외부 키는 보존합니다.</p>
   <div className="job-summary needs-attention" id="restoration-scope"><h3>비어 있는 설치 공간에서 시작하세요.</h3><p>이 관리 앱의 설치 공간이 비어 있을 때만 복원합니다. 기존 설치나 실패 후보를 덮어쓰지 않습니다. 원래 전시의 쓰기는 멈춘 채 보관하고, 새 전시가 정상인지 확인한 후 사용할 전시를 결정하세요.</p><p>성공하면 새 주소에서 전시가 시작됩니다. 기존 계정으로 로그인할 수 있습니다. 키를 잃어버렸다면 복원할 수 없습니다.</p></div>
   {!native?<p className="note">데스크톱 앱에서만 실제 복원을 실행할 수 있습니다.</p>:context&&!context.fresh&&!job?<p className="note">현재 설치 공간에 기존 파일이 있어 복원을 시작할 수 없습니다. 기존 파일을 지우지 말고 별도의 비어 있는 설치 공간을 준비하세요.</p>:!engineReady?<p className="note">Docker와 Compose를 시작하고 실행 도구를 다시 확인하세요.</p>:!context&&!pending&&!historyError?<p className="note">저장된 복원 상태와 빈 설치 공간을 확인하고 있습니다.</p>:null}
-  <p className="note">현재 복원 경로는 macOS·Docker 기준입니다. Windows·Podman, 전체 작품 검증과 앱의 취소·재개 기능은 준비 중입니다.</p>
+  <p className="note">현재 복원 경로는 macOS·Docker 기준입니다. Windows·Podman과 전체 작품 검증은 준비 중입니다. 실행 중 취소는 위의 취소 요청을 사용하며 자동 재개하지 않습니다.</p>
   <form onSubmit={event=>void submit(event)} aria-describedby="restoration-scope">
    <fieldset disabled={disabled}><legend>복원할 사본과 별도 키</legend>
     <label htmlFor="restoration-source">복원할 암호화 백업 폴더의 전체 경로</label><input id="restoration-source" value={input.sourcePath} onChange={event=>change('sourcePath',event.target.value)} maxLength={2048} autoComplete="off" spellCheck={false}/>

@@ -426,7 +426,7 @@ impl LifecycleService {
         ]);
         // A client error/timeout does not prove the daemon helper is stopped. Preserve it
         // for exact-owned reconciliation; named auxiliary storage survives --rm exits.
-        run("docker", &args, None, 3600)
+        self.run_maintenance_helper("restoration", id, &args)
     }
     /// Explicitly acknowledged fresh Docker target only. Original archive/key remain read-only.
     pub fn restore_backup(
@@ -489,6 +489,7 @@ impl LifecycleService {
             updated_at: now(),
         };
         write_json(&self.root, "restoration.json", &job)?;
+        self.begin_maintenance("restoration", &id, &job.stage)?;
         let outcome = (|| -> Result<RestorationReceipt> {
             let bytes = self.restoration_helper(Helper {
                 id: &id,
@@ -517,6 +518,7 @@ impl LifecycleService {
             }
             job.stage = "validating-installation".into();
             job.updated_at = now();
+            self.maintenance_stage("restoration", &id, &job.stage)?;
             write_json(&self.root, "restoration.json", &job)?;
             let configuration = workspace.join("configuration");
             let original_bytes = source_bytes(
@@ -620,6 +622,7 @@ impl LifecycleService {
             let bundle = self.root.join("bundle");
             directory(&bundle)?;
             for (index, preserved) in images.iter().enumerate() {
+                self.maintenance_checkpoint("restoration", &id)?;
                 let path = checked_path(&workspace.join("deployment"), &preserved.archive)?;
                 let hashed = hash_file(&path)?;
                 if hashed.bytes != preserved.bytes || hashed.sha256 != preserved.sha256 {
@@ -673,6 +676,7 @@ impl LifecycleService {
             }
             job.stage = "importing-images".into();
             job.updated_at = now();
+            self.maintenance_stage("restoration", &id, &job.stage)?;
             write_json(&self.root, "restoration.json", &job)?;
             self.operation(&Action::Install)?;
             for expected in [&database, &platform] {
@@ -682,6 +686,7 @@ impl LifecycleService {
             self.validate_ownership(&manifest, "docker")?;
             job.stage = "creating-fresh-target".into();
             job.updated_at = now();
+            self.maintenance_stage("restoration", &id, &job.stage)?;
             write_json(&self.root, "restoration.json", &job)?;
             run(
                 "docker",
@@ -728,6 +733,7 @@ impl LifecycleService {
             )?;
             let deadline = Instant::now() + Duration::from_secs(90);
             loop {
+                self.maintenance_checkpoint("restoration", &id)?;
                 let ids = String::from_utf8(run(
                     "docker",
                     &compose_args(&manifest, &["ps", "--all", "--quiet", "database"]),
@@ -758,6 +764,7 @@ impl LifecycleService {
             }
             job.stage = "restoring-and-verifying".into();
             job.updated_at = now();
+            self.maintenance_stage("restoration", &id, &job.stage)?;
             write_json(&self.root, "restoration.json", &job)?;
             let extras = vec![
                 "--env-file".into(),
@@ -793,6 +800,7 @@ impl LifecycleService {
             }
             job.stage = "checking-runtime".into();
             job.updated_at = now();
+            self.maintenance_stage("restoration", &id, &job.stage)?;
             write_json(&self.root, "restoration.json", &job)?;
             drop(reserved_port);
             self.operation(&Action::Start)?;
@@ -806,19 +814,39 @@ impl LifecycleService {
                 open_url: manifest.open_url,
                 at: now(),
             };
-            write_json(&workspace, "receipt.json", &receipt)?;
             Ok(receipt)
         })();
+        let _terminal = self.maintenance_finish_guard("restoration", &id)?;
+        let outcome = if self.maintenance_requested("restoration", &id)? {
+            if outcome
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.code != "CANCELLED")
+            {
+                Err(err("CANCEL_UNCERTAIN"))
+            } else {
+                self.maintenance_checkpoint("restoration", &id).and(outcome)
+            }
+        } else {
+            outcome
+        };
         job.updated_at = now();
         match outcome {
             Ok(receipt) => {
+                write_json(&workspace, "receipt.json", &receipt)?;
                 job.state = "completed".into();
                 job.stage = "complete".into();
                 write_json(&self.root, "restoration.json", &job)?;
+                self.finish_maintenance("completed", None)?;
                 Ok(receipt)
             }
             Err(error) => {
-                job.state = "failed".into();
+                job.state = if error.code == "CANCELLED" {
+                    "interrupted"
+                } else {
+                    "failed"
+                }
+                .into();
                 job.error_code = Some(error.code.clone());
                 write_json(&self.root, "restoration.json", &job)?;
                 // Pause only this new candidate, after rechecking exact ownership. Preserve all volumes/data.
@@ -832,7 +860,19 @@ impl LifecycleService {
                         180,
                     );
                 }
-                Err(err("RESTORE_FAILED"))
+                let state = match error.code.as_str() {
+                    "CANCELLED" => "confirmed",
+                    "CANCEL_UNCERTAIN" => "uncertain",
+                    _ => "failed",
+                };
+                self.finish_maintenance(state, Some(&error.code))?;
+                Err(err(
+                    if ["CANCELLED", "CANCEL_UNCERTAIN"].contains(&error.code.as_str()) {
+                        &error.code
+                    } else {
+                        "RESTORE_FAILED"
+                    },
+                ))
             }
         }
     }

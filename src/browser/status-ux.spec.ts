@@ -9,6 +9,7 @@ for(const scenario of ['running','failed','ready'] as const)test(`synthetic ${sc
    (window as unknown as {__uxCalls:string[]}).__uxCalls.push(cmd);
    if(cmd==='manager_backup_jobs')return [];
    if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};
+   if(cmd==='manager_maintenance_context')return null;
    if(cmd==='manager_helper_reconciliations')return [];
    if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:'56789012-1234-1234-1234-123456789012',mode:'managed',installations:[{id:'56789012-1234-1234-1234-123456789012',kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true}],errorCode:null};
    if(cmd==='manager_status')return status;
