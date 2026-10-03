@@ -113,6 +113,30 @@ fn list(
     }
     Ok(ids)
 }
+fn owned_work_bind(value: &Value, mount: &Value, expected: &str, desktop: bool) -> bool {
+    if mount["Type"] != "bind" {
+        return false;
+    }
+    if mount["Source"] == expected {
+        return true;
+    }
+    // Docker Desktop may expose the VM bind path. Accept only its exact mapping
+    // together with its exact host or VM path in the mount configuration and
+    // independently verified Docker Desktop engine metadata.
+    cfg!(target_os = "macos")
+        && desktop
+        && mount["Source"] == format!("/host_mnt{expected}")
+        && value["HostConfig"]["Mounts"]
+            .as_array()
+            .is_some_and(|mounts| {
+                let matching: Vec<_> = mounts.iter().filter(|m| m["Target"] == "/work").collect();
+                matching.len() == 1
+                    && matching[0]["Type"] == "bind"
+                    && (matching[0]["Source"] == expected
+                        || matching[0]["Source"] == format!("/host_mnt{expected}"))
+                    && (matching[0]["ReadOnly"].is_null() || matching[0]["ReadOnly"] == false)
+            })
+}
 fn validate_helper(
     service: &LifecycleService,
     kind: &str,
@@ -120,6 +144,7 @@ fn validate_helper(
     cid: &str,
     value: &Value,
     declared: &BTreeSet<String>,
+    desktop: bool,
 ) -> Result<bool> {
     let (name, label) = names(kind, target)?;
     if !container_id(cid)
@@ -164,7 +189,7 @@ fn validate_helper(
             let valid = if kind == "backup" {
                 mount["Type"] == "volume" && mount["Name"] == expected_work
             } else {
-                mount["Type"] == "bind" && mount["Source"] == expected_work
+                owned_work_bind(value, mount, &expected_work, desktop)
             };
             if !valid || !rw {
                 return Err(err("OWNERSHIP_CONFLICT"));
@@ -173,7 +198,11 @@ fn validate_helper(
         } else if rw {
             if declared.contains(dest)
                 && mount["Type"] == "volume"
-                && mount["Name"].as_str().is_some_and(container_id)
+                && mount["Name"].as_str().is_some_and(|name| {
+                    container_id(name)
+                        || kind == "restoration"
+                            && name == format!("exhibitos-restore-aux-{target}")
+                })
                 && mount["Driver"] == "local"
             {
                 continue;
@@ -206,7 +235,7 @@ fn validate_helper(
         .ok_or_else(|| err("ENGINE_OUTPUT_INVALID"))
 }
 
-fn declared_volumes(
+pub(crate) fn declared_volumes(
     command: &mut impl FnMut(&[String]) -> Result<Vec<u8>>,
     helper: &Value,
 ) -> Result<BTreeSet<String>> {
@@ -254,8 +283,14 @@ fn auxiliary_volumes(helper: &Value, declared: &BTreeSet<String>) -> Vec<(String
         })
         .collect()
 }
-fn check_volume(command: &mut impl FnMut(&[String]) -> Result<Vec<u8>>, name: &str) -> Result<()> {
-    if !container_id(name) {
+pub(crate) fn check_volume(
+    command: &mut impl FnMut(&[String]) -> Result<Vec<u8>>,
+    name: &str,
+) -> Result<()> {
+    let named_target = name
+        .strip_prefix("exhibitos-restore-aux-")
+        .filter(|id| uuid(id));
+    if !container_id(name) && named_target.is_none() {
         return Err(err("OWNERSHIP_CONFLICT"));
     }
     let values: Value =
@@ -264,6 +299,7 @@ fn check_volume(command: &mut impl FnMut(&[String]) -> Result<Vec<u8>>, name: &s
     if values.as_array().is_none_or(|v| v.len() != 1)
         || values[0]["Name"] != name
         || values[0]["Driver"] != "local"
+        || named_target.is_some_and(|id| values[0]["Labels"]["com.exhibitos.restoration"] != id)
         || !(values[0]["Options"].is_null()
             || values[0]["Options"]
                 .as_object()
@@ -591,15 +627,34 @@ impl LifecycleService {
             Ok(value[0].clone())
         };
         let first = inspect(&mut command)?;
+        let desktop = if kind == "restoration"
+            && first["Mounts"].as_array().is_some_and(|mounts| {
+                mounts.iter().any(|m| {
+                    m["Destination"] == "/work"
+                        && m["Source"]
+                            .as_str()
+                            .is_some_and(|s| s.starts_with("/host_mnt/"))
+                })
+            }) {
+            let bytes = command(&["info".into(), "--format".into(), "{{json .}}".into()])?;
+            if bytes.len() > 256 * 1024 {
+                return Err(err("ENGINE_OUTPUT_LIMIT"));
+            }
+            let info: Value =
+                serde_json::from_slice(&bytes).map_err(|_| err("ENGINE_OUTPUT_INVALID"))?;
+            info["OperatingSystem"] == "Docker Desktop" && info["OSType"] == "linux"
+        } else {
+            false
+        };
         let declared = declared_volumes(&mut command, &first)?;
-        let running = validate_helper(self, kind, target, id, &first, &declared)?;
+        let running = validate_helper(self, kind, target, id, &first, &declared, desktop)?;
         let auxiliary = auxiliary_volumes(&first, &declared);
         for (_, volume) in &auxiliary {
             check_volume(&mut command, volume)?;
         }
         let retention = if running
             && first["HostConfig"]["AutoRemove"] == true
-            && !auxiliary.is_empty()
+            && auxiliary.iter().any(|(_, name)| container_id(name))
         {
             Some(self.retain_auxiliary_volumes(target, nonce, &first, &auxiliary, &mut command)?)
         } else {
@@ -607,7 +662,7 @@ impl LifecycleService {
         };
         if running {
             let current = inspect(&mut command)?;
-            if !validate_helper(self, kind, target, id, &current, &declared)?
+            if !validate_helper(self, kind, target, id, &current, &declared, desktop)?
                 || first["Image"] != current["Image"]
                 || first["Mounts"] != current["Mounts"]
                 || first["HostConfig"]["AutoRemove"] != current["HostConfig"]["AutoRemove"]
@@ -632,7 +687,15 @@ impl LifecycleService {
         if remaining != ids {
             return Err(err("RECONCILIATION_UNCERTAIN"));
         }
-        if validate_helper(self, kind, target, id, &inspect(&mut command)?, &declared)? {
+        if validate_helper(
+            self,
+            kind,
+            target,
+            id,
+            &inspect(&mut command)?,
+            &declared,
+            desktop,
+        )? {
             return Err(err("RECONCILIATION_UNCERTAIN"));
         }
         Ok("stopped".into())
@@ -911,6 +974,72 @@ mod tests {
         }
         let helper = serde_json::json!({"Image":format!("sha256:{}","b".repeat(64))});
         assert!(declared_volumes(&mut |_|Ok(serde_json::to_vec(&serde_json::json!([{"Id":helper["Image"],"Config":{"Volumes":{"/foreign":{}}}}])).unwrap()),&helper).is_err());
+    }
+    #[test]
+    fn named_restoration_auxiliary_survives_stop_without_anchor_and_foreign_labels_reject() {
+        for foreign in [false, true] {
+            let (service, id) = fixture("restoration");
+            let mut value = helper(&service, "restoration", &id);
+            value["HostConfig"]["AutoRemove"] = true.into();
+            let volume = format!("exhibitos-restore-aux-{id}");
+            value["Mounts"].as_array_mut().unwrap().push(serde_json::json!({"Type":"volume","Driver":"local","Name":volume,"Destination":"/var/lib/postgresql","RW":true}));
+            let mut stopped = false;
+            let result=service.reconcile_helper_engine("restoration",&id,&Uuid::new_v4().to_string(),|args|match args[0].as_str(){
+                "ps"=>Ok(if stopped{Vec::new()}else{"a".repeat(64).into_bytes()}),
+                "image"=>Ok(serde_json::to_vec(&serde_json::json!([{"Id":value["Image"],"Config":{"Volumes":{"/var/lib/postgresql":{}}}}])).unwrap()),
+                "inspect"=>Ok(serde_json::to_vec(&vec![value.clone()]).unwrap()),
+                "volume"=>Ok(serde_json::to_vec(&serde_json::json!([{"Name":volume,"Driver":"local","Options":null,"Labels":{"com.exhibitos.restoration":if foreign{"foreign"}else{&id}}}])).unwrap()),
+                "stop"=>{stopped=true;Ok(Vec::new())},
+                _=>panic!("Named volumes must not create an extra anchor or delete data"),
+            });
+            assert_eq!(stopped, !foreign);
+            if foreign {
+                assert!(result.is_err());
+            } else {
+                assert_eq!(result.unwrap(), "absent");
+            }
+        }
+    }
+    #[test]
+    fn desktop_vm_bind_mapping_requires_exact_original_host_mount_and_rejects_aliases() {
+        let path = "/private/tmp/owned-root/restore-owned";
+        let mut value = serde_json::json!({"HostConfig":{"Mounts":[{"Type":"bind","Target":"/work","Source":path,"ReadOnly":false}]}});
+        let mut mount = serde_json::json!({"Type":"bind","Source":format!("/host_mnt{path}")});
+        assert_eq!(
+            owned_work_bind(&value, &mount, path, true),
+            cfg!(target_os = "macos")
+        );
+        value["HostConfig"]["Mounts"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("ReadOnly");
+        assert_eq!(
+            owned_work_bind(&value, &mount, path, true),
+            cfg!(target_os = "macos")
+        );
+        value["HostConfig"]["Mounts"][0]["Source"] = format!("/host_mnt{path}").into();
+        assert_eq!(
+            owned_work_bind(&value, &mount, path, true),
+            cfg!(target_os = "macos")
+        );
+        assert!(!owned_work_bind(&value, &mount, path, false));
+        value["HostConfig"]["Mounts"][0]["Source"] = path.into();
+        value["HostConfig"]["Mounts"][0]["ReadOnly"] = true.into();
+        assert!(!owned_work_bind(&value, &mount, path, true));
+        value["HostConfig"]["Mounts"][0]["ReadOnly"] = false.into();
+        value["HostConfig"]["Mounts"][0]["Source"] = "/private/tmp/foreign".into();
+        assert!(!owned_work_bind(&value, &mount, path, true));
+        value["HostConfig"]["Mounts"][0]["Source"] = path.into();
+        let duplicate = value["HostConfig"]["Mounts"][0].clone();
+        value["HostConfig"]["Mounts"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        assert!(!owned_work_bind(&value, &mount, path, true));
+        mount["Source"] = format!("/host_mnt{path}/../other").into();
+        assert!(!owned_work_bind(&value, &mount, path, true));
+        mount["Source"] = path.into();
+        assert!(owned_work_bind(&value, &mount, path, true));
     }
     #[test]
     fn acknowledgement_root_membership_and_active_lock_precede_engine_and_history_changes() {
