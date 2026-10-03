@@ -2,6 +2,8 @@
 //! Explicit maintenance retry into new jobs. Original journals and candidate data are retained.
 use super::installation_backup::source_bytes;
 use super::*;
+mod recovery;
+pub use recovery::{RetryDiagnosis, RetryRecoveryReceipt};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MaintenanceRetry {
@@ -71,8 +73,18 @@ fn validate(v: &MaintenanceRetry) -> Result<()> {
     }
     Ok(())
 }
+pub(crate) fn reserved_empty_backup_workspace(
+    source: &LifecycleService,
+    child: &str,
+) -> Result<bool> {
+    recovery::reserved_empty_backup_workspace(source, child)
+}
 impl RetryLink<'_> {
+    pub(crate) fn reserved(&self, id: &str) -> Result<()> {
+        recovery::reserve(self.owner, self.record, id)
+    }
     pub(crate) fn started(self, id: &str) -> Result<()> {
+        recovery::assert_reserved(self.owner, self.record, id)?;
         self.record.new_job_id = Some(id.into());
         self.record.state = "running".into();
         self.record.updated_at = now();
@@ -175,13 +187,19 @@ impl LifecycleService {
         if all.len() >= 1000 {
             return Err(err("JOB_HISTORY_FULL"));
         }
-        if all.iter().any(|v| {
-            v.target_id == target
-                && v.kind == kind
-                && (["preparing", "running", "interrupted"].contains(&v.state.as_str())
-                    || v.state == "failed" && v.new_job_id.is_some())
-        }) {
-            return Err(err("RETRY_RECOVERY_REQUIRED"));
+        for v in &all {
+            if v.target_id != target || v.kind != kind {
+                continue;
+            }
+            let fenced = ["preparing", "running", "interrupted"].contains(&v.state.as_str())
+                || v.state == "failed" && v.new_job_id.is_some();
+            let ambiguous = v.state == "failed"
+                && v.new_job_id.is_none()
+                && (v.error_code.as_deref() == Some("RETRY_NOT_STARTED")
+                    || recovery::has_reservation(self, v)?);
+            if fenced || ambiguous && !recovery::cleared(self, v)? {
+                return Err(err("RETRY_RECOVERY_REQUIRED"));
+            }
         }
         let at = now();
         let v = MaintenanceRetry {
@@ -196,6 +214,7 @@ impl LifecycleService {
             created_at: at,
             updated_at: at,
         };
+        recovery::prepare(self, &v)?;
         self.save_retry(&v)?;
         Ok(v)
     }
@@ -226,7 +245,12 @@ impl LifecycleService {
                 })
             }
             Err(e) => {
-                v.state = "failed".into();
+                v.state = if v.new_job_id.is_none() && recovery::has_reservation(self, &v)? {
+                    "interrupted"
+                } else {
+                    "failed"
+                }
+                .into();
                 v.error_code = Some(e.code.clone());
                 self.save_retry(&v)?;
                 Err(e)
@@ -347,6 +371,14 @@ mod tests {
         )
         .unwrap()
     }
+    fn start(s: &LifecycleService, v: &mut MaintenanceRetry, id: &str) {
+        let link = RetryLink {
+            owner: s,
+            record: v,
+        };
+        link.reserved(id).unwrap();
+        link.started(id).unwrap();
+    }
     fn failed(s: &LifecycleService) -> String {
         let id = Uuid::new_v4().to_string();
         let at = now();
@@ -368,12 +400,7 @@ mod tests {
         let before = fs::read(s.root.join("restoration.json")).unwrap();
         let mut v = s.begin_retry("restoration", &id, &fixture().root).unwrap();
         let new_id = Uuid::new_v4().to_string();
-        RetryLink {
-            owner: &s,
-            record: &mut v,
-        }
-        .started(&new_id)
-        .unwrap();
+        start(&s, &mut v, &new_id);
         let h = s.maintenance_retries().unwrap();
         assert_eq!(h[0].state, "interrupted");
         assert_eq!(h[0].new_job_id.as_deref(), Some(new_id.as_str()));
@@ -391,12 +418,7 @@ mod tests {
         let id = failed(&s);
         let original = s.retry_target_bytes("restoration", &id).unwrap();
         let mut v = s.begin_retry("restoration", &id, &fixture().root).unwrap();
-        RetryLink {
-            owner: &s,
-            record: &mut v,
-        }
-        .started(&Uuid::new_v4().to_string())
-        .unwrap();
+        start(&s, &mut v, &Uuid::new_v4().to_string());
         assert_eq!(
             s.finish_retry::<()>(v, Err(err("ENGINE_UNAVAILABLE")))
                 .unwrap_err()
@@ -417,24 +439,14 @@ mod tests {
         let id = failed(&s);
         let original = s.retry_target_bytes("restoration", &id).unwrap();
         let mut v = s.begin_retry("restoration", &id, &fixture().root).unwrap();
-        RetryLink {
-            owner: &s,
-            record: &mut v,
-        }
-        .started(&Uuid::new_v4().to_string())
-        .unwrap();
+        start(&s, &mut v, &Uuid::new_v4().to_string());
         let receipt = s.finish_retry(v, Ok(())).unwrap();
         assert_ne!(receipt.new_job_id, id);
         assert!(receipt.data_preserved);
         assert_eq!(s.retry_target_bytes("restoration", &id).unwrap(), original);
         assert_eq!(s.maintenance_retries().unwrap()[0].state, "completed");
         let mut v = s.begin_retry("restoration", &id, &fixture().root).unwrap();
-        RetryLink {
-            owner: &s,
-            record: &mut v,
-        }
-        .started(&Uuid::new_v4().to_string())
-        .unwrap();
+        start(&s, &mut v, &Uuid::new_v4().to_string());
         fs::write(s.root.join("restoration.json"), b"changed").unwrap();
         assert_eq!(
             s.finish_retry(v, Ok(())).unwrap_err().code,

@@ -189,6 +189,15 @@ fn err(code: &str) -> LifecycleError {
         "RETRY_RECOVERY_REQUIRED" => {
             "이전 재시도 후보를 보존하고 해당 새 작업의 실제 정지·상태를 확인하세요. 자동 재개하지 않습니다."
         }
+        "RETRY_RECOVERY_UNPROVEN"
+        | "RETRY_PROOF_MISSING"
+        | "RETRY_CANDIDATE_CONFLICT"
+        | "RETRY_RECOVERY_UNCERTAIN" => {
+            "재시도 예약·후보·복구 증거가 없거나 불확실합니다. 모든 기록과 후보를 보존하고 diagnose-retry로 확인하세요. 기록 삭제로 우회하지 않습니다."
+        }
+        "RETRY_DESTINATION_INVALID" | "RETRY_DIAGNOSIS_TARGET_INVALID" => {
+            "실패·중단 재시도의 UUID와 기록에 일치하는 별도 목적지 공간을 지정하세요. 기존 공간을 변경하거나 지우지 않습니다."
+        }
         "RETRY_TARGET_INVALID" | "RETRY_SOURCE_CHANGED" => {
             "재시도 대상 기록을 확인할 수 없습니다. 원래 기록과 모든 후보를 보존하고 비공개 상태를 검사하세요."
         }

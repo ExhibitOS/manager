@@ -62,4 +62,4 @@ python3 scripts/test-maintenance-retry.py --kind backup \
 
 취소 라우팅은 경로만으로 목적지 작업을 선택하지 않습니다. source/destination 작업 잠금 안에서 생성된 이번 재시도 parent 기록을 연결하고, 그 기록에 저장된 새 child UUID와 목적지 hash를 검증합니다. 아직 parent/child 연결 전이면 `BUSY`, 목적지의 현재 작업이 다른 UUID·종류이면 `CANCEL_TARGET_INVALID`로 거부하며 그 작업의 취소 상태를 쓰지 않습니다. 원래 공간 선택은 유지됩니다.
 
-프로세스 종료로 새 child UUID가 없는 중단 기록만 남은 경우에도 원래 UUID를 즉시 반복하지 않습니다. 현재 자동 진단·해제 경로는 미구현입니다. 원래 기록·후보를 보존하고 실제 helper/작업 상태를 확인해야 하며 기록 삭제로 우회하지 마세요. 이 복구 조건과 네이티브 취소 UI 검증이 남으므로 전체 backup/restore acceptance 완료를 뜻하지 않습니다.
+새 child UUID가 없는 중단은 [증거 기반 재시도 진단·복구 CLI](retry-recovery.md)를 사용합니다. 준비·예약과 후보가 일치한 경우에만 연결을 복구하거나 실제 생성 전 중단을 해제합니다. 증거 없는 이전 기록·불완전 후보·변경된 원본은 계속 차단합니다. 네이티브 진단 화면과 전체 backup/restore acceptance는 후속 조건입니다.
