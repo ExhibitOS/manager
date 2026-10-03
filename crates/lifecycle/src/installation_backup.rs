@@ -35,7 +35,12 @@ pub struct InstallationBackupReceipt {
     pub inventory_sha256: String,
     pub at: u64,
 }
-fn source_bytes(root: &Path, relative: &str, limit: u64, private: bool) -> Result<Vec<u8>> {
+pub(crate) fn source_bytes(
+    root: &Path,
+    relative: &str,
+    limit: u64,
+    private: bool,
+) -> Result<Vec<u8>> {
     let path = checked_path(root, relative)?;
     let mut options = OpenOptions::new();
     options.read(true);
@@ -104,7 +109,11 @@ fn source_bytes(root: &Path, relative: &str, limit: u64, private: bool) -> Resul
     }
     Ok(bytes)
 }
-fn environment_valid(bytes: &[u8], manifest: &BundleManifest) -> Result<()> {
+pub(crate) fn environment_valid(bytes: &[u8], manifest: &BundleManifest) -> Result<()> {
+    let port = manifest
+        .ports
+        .first()
+        .ok_or_else(|| err("BACKUP_CONFIGURATION_INVALID"))?;
     let value = std::str::from_utf8(bytes).map_err(|_| err("BACKUP_CONFIGURATION_INVALID"))?;
     let mut values = BTreeMap::new();
     for line in value.lines() {
@@ -129,7 +138,7 @@ fn environment_valid(bytes: &[u8], manifest: &BundleManifest) -> Result<()> {
         }
     }
     if values.len() != 6
-        || values["EXHIBITOS_PORT"] != manifest.ports[0].to_string()
+        || values["EXHIBITOS_PORT"] != port.to_string()
         || Uuid::parse_str(values["TENANT_ID"]).is_err()
         || values["ADMIN_SUBJECT"].len() > 128
         || values["POSTGRES_PASSWORD"].len() < 12

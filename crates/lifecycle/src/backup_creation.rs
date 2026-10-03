@@ -28,9 +28,9 @@ pub struct BackupCreationReceipt {
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FileHash {
-    bytes: u64,
-    sha256: String,
+pub(crate) struct FileHash {
+    pub(crate) bytes: u64,
+    pub(crate) sha256: String,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -73,7 +73,7 @@ fn private_directory(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn hash_file(path: &Path) -> Result<FileHash> {
+pub(crate) fn hash_file(path: &Path) -> Result<FileHash> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -152,7 +152,7 @@ fn labels_valid(labels: &Value, m: &BundleManifest) -> bool {
         && labels["com.exhibitos.project"] == m.project_name
         && labels["com.exhibitos.schema"] == m.schema_version
 }
-fn inspected(engine: &str, args: &[String]) -> Result<Value> {
+pub(crate) fn inspected(engine: &str, args: &[String]) -> Result<Value> {
     let value: Value = serde_json::from_slice(&run(engine, args, None, 30)?)
         .map_err(|_| err("BACKUP_LAYOUT_UNSUPPORTED"))?;
     if value.as_array().is_none_or(|v| v.len() != 1) {
@@ -160,7 +160,7 @@ fn inspected(engine: &str, args: &[String]) -> Result<Value> {
     }
     Ok(value[0].clone())
 }
-fn local_image(engine: &str, reference: &str) -> Result<String> {
+pub(crate) fn local_image(engine: &str, reference: &str) -> Result<String> {
     let image = inspected(
         engine,
         &["image".into(), "inspect".into(), reference.into()],
