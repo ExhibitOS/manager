@@ -10,6 +10,8 @@ fn main() {
             "manager_logs",
             "manager_open_exhibition",
             "manager_verify_backup",
+            "manager_create_backup",
+            "manager_backup_jobs",
         ]),
     ))
     .expect("Manager desktop permission manifest must build");
