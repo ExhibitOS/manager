@@ -4,7 +4,7 @@
 import argparse,hashlib,json,socket,subprocess,tempfile,time,uuid
 from pathlib import Path
 from urllib.request import Request,urlopen
-p=argparse.ArgumentParser();p.add_argument('--reuse-backup-target');p.add_argument('--kind',choices=['backup','restoration'],required=True);p.add_argument('--manager',required=True);p.add_argument('--fixture',required=True);p.add_argument('--docker',default='docker');a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--pre-child-crash',action='store_true');p.add_argument('--reuse-backup-target');p.add_argument('--kind',choices=['backup','restoration'],required=True);p.add_argument('--manager',required=True);p.add_argument('--fixture',required=True);p.add_argument('--docker',default='docker');a=p.parse_args()
 base=Path(tempfile.mkdtemp(prefix='exhibitos-manager-maintenance-retry-',dir='/private/tmp')).resolve();base.chmod(0o700);fixture=Path(a.fixture).resolve();proof=json.loads((fixture/'backup-creation-report.json').read_bytes());image=proof['receipt']['image'];original=fixture/'retained-source-manager';key=fixture/'key.bin';archive=original/('backup-creation-'+proof['receipt']['id'])/'archive';old=original if a.kind=='backup' else base/'failed-manager';dst=base/'fresh-manager';dst.mkdir(mode=0o700)
 if a.kind=='restoration':old.mkdir(mode=0o700)
 def digest(path):return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -69,12 +69,36 @@ try:
  history=[v for v in invoke(old,'maintenance-retries') if v['id'] not in {h['id'] for h in initial_history}];assert len(history)==1 and history[0]['state']=='failed' and history[0]['newJobId'] is None
  docker('rename',cid,('exhibitos-backup-' if a.kind=='backup' else 'exhibitos-restore-')+job_id);renamed=False
  step('real name/label ownership conflict never stops helper or starts a child; safe failed retry record retained')
+ if a.pre_child_crash:
+  assert a.kind=='restoration' and initial_running is True
+  known={v['id'] for v in invoke(old,'maintenance-retries')}
+  worker=subprocess.Popen([str(v) for v in [a.manager,'--root',old,action,*retry_args]],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+  deadline=time.monotonic()+30;pending=None
+  while time.monotonic()<deadline:
+   assert worker.poll() is None,'Retry ended before pre-child observation'
+   for path in old.glob('maintenance-retry-*.json'):
+    v=json.loads(path.read_bytes())
+    if v['id'] not in known and v['state']=='preparing' and v['newJobId'] is None and not (old/('retry-child-intent-'+v['id']+'.json')).exists():pending=v;break
+   if pending:break
+   time.sleep(.005)
+  assert pending and worker.poll() is None
+  worker.kill();out,errors=worker.communicate(timeout=30);assert not errors and worker.returncode!=0
+  assert not (old/('retry-child-intent-'+pending['id']+'.json')).exists()
+  parent_bytes=(old/('maintenance-retry-'+pending['id']+'.json')).read_bytes()
+  proof_recovery=invoke(old,'diagnose-retry',pending['id'],dst);assert proof_recovery['outcome']=='no-child-created' and proof_recovery['canReconcile']
+  assert (old/('maintenance-retry-'+pending['id']+'.json')).read_bytes()==parent_bytes and job_path.read_bytes()==old_bytes
+  recovered=invoke(old,'reconcile-retry',pending['id'],dst,'--preserve-candidates');assert recovered['newJobId'] is None and recovered['dataPreserved']
+  clearance=json.loads((old/('retry-clearance-'+pending['id']+'-'+recovered['diagnosisId']+'.json')).read_bytes());assert clearance['auditSha256']==digest(old/('maintenance-retry-'+pending['id']+'.json'))
+  # The dead worker's already-dispatched helper-stop can finish; current guarded reconciliation confirms exact identity and stop again.
+  invoke(old,'reconcile-helper','restoration',job_id,'--preserve-candidates')
+  step('actual retry worker killed before child reservation; pure diagnosis and durable clearance restore explicit retry eligibility with original journal preserved')
  receipt=invoke(old,action,*retry_args);assert receipt['targetId']==job_id and receipt['dataPreserved'] is True and receipt['newJobId']!=job_id and receipt['result']['id']==receipt['newJobId']
  assert job_path.read_bytes()==old_bytes;history=invoke(old,'maintenance-retries');record=next(v for v in history if v['id']==receipt['id']);assert record['state']=='completed' and record['newJobId']==receipt['newJobId'] and record['originalJobSha256']==hashlib.sha256(old_bytes).hexdigest()
  status=command([a.docker,'inspect',cid],False)
  if status.returncode==0:assert json.loads(status.stdout)[0]['State']['Running'] is False
+ preparation_path=old/('retry-preparation-'+receipt['id']+'.json');preparation=json.loads(preparation_path.read_bytes());reservation=json.loads((old/('retry-child-intent-'+receipt['id']+'.json')).read_bytes());assert preparation['formatVersion']==1 and preparation['targetId']==job_id and preparation['originalJobSha256']==hashlib.sha256(old_bytes).hexdigest() and reservation['formatVersion']==1 and reservation['retryId']==receipt['id'] and reservation['jobId']==receipt['newJobId'] and reservation['preparationSha256']==digest(preparation_path)
  witness=docker('run','--pull=never','--rm','--network','none','--read-only','--user','0:0','--mount',f'type=volume,source={volume},target={volume_target},readonly,volume-nocopy','--entrypoint','node',image,'-e',f"process.stdout.write(require('node:fs').readFileSync('{volume_target}/retry-witness'))");assert witness==b'candidate data preserved'
- step('guarded old helper stop and preserved candidate witness precede new UUID operation and durable retry link')
+ step('guarded old helper stop and preserved candidate witness precede new UUID operation; durable child reservation and exact preparation hash verified')
  if a.kind=='restoration':
   result=receipt['result'];assert result['operation']=='restored-and-running' and result['backupId']==proof['receipt']['backupId']
   m=json.loads((dst/'bundle/manifest.json').read_bytes());assert m['projectName']!=source_project

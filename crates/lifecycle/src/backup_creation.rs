@@ -465,19 +465,18 @@ fn validate_copy(root: &Path, result: &HelperResult) -> Result<()> {
     }
     Ok(())
 }
-fn validate_backup_helper(helper: &Value, jobs: &[BackupCreationJob]) -> Result<()> {
+fn validate_backup_helper(helper: &Value, jobs: &[String]) -> Result<()> {
     let name = helper["Name"].as_str();
     let owner = helper["Config"]["Labels"]["com.exhibitos.backup"].as_str();
     let known_name = jobs
         .iter()
-        .any(|job| name == Some(format!("/exhibitos-backup-{}", job.id).as_str()));
-    let known_owner = jobs.iter().any(|job| owner == Some(job.id.as_str()));
+        .any(|job| name == Some(format!("/exhibitos-backup-{job}").as_str()));
+    let known_owner = jobs.iter().any(|job| owner == Some(job.as_str()));
     if !known_name && !known_owner {
         return Ok(());
     }
     if !jobs.iter().any(|job| {
-        owner == Some(job.id.as_str())
-            && name == Some(format!("/exhibitos-backup-{}", job.id).as_str())
+        owner == Some(job.as_str()) && name == Some(format!("/exhibitos-backup-{job}").as_str())
     }) {
         return Err(err("OWNERSHIP_CONFLICT"));
     }
@@ -529,6 +528,12 @@ impl LifecycleService {
             if result.len() >= 1000 {
                 return Err(err("JOB_HISTORY_FULL"));
             }
+            if fs::symlink_metadata(item.path().join("job.json"))
+                .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+                && super::retry::reserved_empty_backup_workspace(self, id)?
+            {
+                continue;
+            }
             let job: BackupCreationJob = read_json(&item.path().join("job.json"))?;
             if job.id != id
                 || job.operation != "create"
@@ -543,7 +548,18 @@ impl LifecycleService {
     }
     /// Must run under the operation lock before allowing managed writers to resume.
     pub(crate) fn ensure_backup_helpers_idle(&self, engine: &str) -> Result<()> {
-        let jobs = self.read_backup_jobs()?;
+        let mut jobs: Vec<String> = self.read_backup_jobs()?.into_iter().map(|j| j.id).collect();
+        for item in fs::read_dir(&self.root).map_err(|_| err("STATE_UNAVAILABLE"))? {
+            let name = item.map_err(|_| err("STATE_UNAVAILABLE"))?.file_name();
+            if let Some(id) = name
+                .to_str()
+                .and_then(|n| n.strip_prefix("backup-creation-"))
+                && !jobs.iter().any(|j| j == id)
+                && super::retry::reserved_empty_backup_workspace(self, id)?
+            {
+                jobs.push(id.into());
+            }
+        }
         if jobs.is_empty() {
             return Ok(());
         }
@@ -629,6 +645,9 @@ impl LifecycleService {
             .join(format!("backup-preparation-{}", prepared.id));
         let layout = layout(self, &m, &engine, &preparation)?;
         let id = Uuid::new_v4().to_string();
+        if let Some(link) = retry.as_ref() {
+            link.reserved(&id)?;
+        }
         let workspace = self.root.join(format!("backup-creation-{id}"));
         private_directory(&workspace)?;
         let mut job = BackupCreationJob {
@@ -959,15 +978,7 @@ mod tests {
     #[test]
     fn owned_helpers_gate_writers_and_ambiguous_identity_fails_closed() {
         let id = Uuid::new_v4().to_string();
-        let jobs = vec![BackupCreationJob {
-            id: id.clone(),
-            operation: "create".into(),
-            state: "interrupted".into(),
-            stage: "synthetic".into(),
-            error_code: Some("INTERRUPTED".into()),
-            created_at: 1,
-            updated_at: 2,
-        }];
+        let jobs = [id.clone()];
         let mut helper = serde_json::json!({"Name":format!("/exhibitos-backup-{id}"),"Config":{"Labels":{"com.exhibitos.backup":id}},"State":{"Running":true}});
         assert_eq!(
             validate_backup_helper(&helper, &jobs).unwrap_err().code,
@@ -985,7 +996,7 @@ mod tests {
             validate_backup_helper(&helper, &jobs).unwrap_err().code,
             "OWNERSHIP_CONFLICT"
         );
-        helper["Name"] = format!("/exhibitos-backup-{}", jobs[0].id).into();
+        helper["Name"] = format!("/exhibitos-backup-{}", jobs[0]).into();
         helper["Config"]["Labels"]["com.exhibitos.backup"] = Uuid::new_v4().to_string().into();
         assert_eq!(
             validate_backup_helper(&helper, &jobs).unwrap_err().code,

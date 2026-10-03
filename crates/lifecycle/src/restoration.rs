@@ -489,6 +489,9 @@ impl LifecycleService {
         }
         local_image("docker", image)?;
         let id = Uuid::new_v4().to_string();
+        if let Some(link) = retry.as_ref() {
+            link.reserved(&id)?;
+        }
         let workspace = self.root.join(format!("restore-{id}"));
         directory(&workspace)?;
         let mut job = RestorationJob {
