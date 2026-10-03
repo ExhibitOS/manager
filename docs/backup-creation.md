@@ -3,8 +3,9 @@
 `create-backup`은 현재 Docker 기반 Manager 설치의 DB·작품 bytes·서명 설정·설치
 파일과 두 실행 image archive를 암호화한다. 백업을 다시 복호화해 인증하고,
 호스트로 복사한 ciphertext의 전체 파일 목록·바이트 수·해시·private 권한을
-확인한 뒤에만 완료 receipt를 기록한다. **Manager 복원 활성화·네이티브 생성 UI·
-Windows·Podman·OEX·signed update/rollback은 아직 별도 구현·검증이 필요하다.**
+확인한 뒤에만 완료 receipt를 기록한다. 로컬 앱 창에는 같은 producer를 호출하는 생성 화면과 durable 작업 기록을 연결했다.
+**Manager 복원 활성화·실제 네이티브 GUI·Windows·Podman·OEX·signed
+update/rollback은 아직 별도 구현·검증이 필요하다.**
 
 ## 준비와 실행
 
@@ -106,3 +107,78 @@ python3 scripts/test-backup-creation-recovery.py \
   --manager "$PWD/target/debug/exhibitos-manager" \
   --fixture '<printed absolute synthetic fixture directory>'
 ```
+
+
+## 로컬 Manager 생성 화면
+
+전시 설치와 실행 도구 확인 후 ‘설치된 전시 백업’에서 외부 key 파일의 실제
+전체 경로와 신뢰할 로컬 immutable 유지보수 image ID를 준비한다. Key bytes는
+입력하지 않는다. 입력은 화면 메모리에만 유지하고 local/session storage나
+로그에 저장하지 않는다. 키 생성·파일 picker·credential store 자동 등록은
+아직 제공하지 않으므로 기존의 별도 비공개 32-byte key(0600)를 준비한다.
+
+다른 앱·worker·스크립트의 DB/blob/configuration writer가 실제로 중지되었는지
+운영자가 확인하고, 전시가 중단되며 수동 재개해야 한다는 별도 체크박스까지
+동의해야 ‘전시를 멈추고 백업 생성’을 실행할 수 있다. `manager_create_backup`
+네이티브 command도 두 acknowledgement를 boolean으로 검사하고 unknown
+fields를 거부한 후 기존 producer의 lock·image·path·key mode·ownership·writer
+검사를 실행한다. 로컬 main window origin와 명시적 Tauri capability가 필요하며
+웹 preview나 remote page는 실행 권한이 없다. UI 확인만으로 외부 quiescence가
+증명되는 것은 아니다.
+
+작업 중에는 중복 생성·검증·설치·시작·재시작·재시도를 막는다. 예상 진행률을
+만들지 않고 indeterminate 상태를 표시한다. 백업 완료 receipt의 정확한 필드,
+operation, image binding, 두 UUID, 인증 hash, 파일 count와 `writersPaused:true`가
+일치해야 성공을 표시한다. ‘created’만 있는 응답이나 다른 image/restore 응답은
+완료로 취급하지 않는다. 성공·실패 이후에는 두 동의를 해제하므로 새 생성 시
+다시 확인해야 한다. 오류는 alert에 키보드 초점을 옮기고 사본/원본 보존과
+남은 helper 조사를 안내하며, raw engine exceptions는 표시하지 않는다.
+
+새 암호화 사본은 설치 root의 `backup-creation-<job id>/archive/`에 보관한다.
+이 화면은 외부 매체로 자동 복사하거나 key를 보관하지 않으며, 동일한 디스크의
+사본만으로 디스크 고장 복구가 보장되지 않는다. 원본 credentials/서명 설정과
+민감한 인증 검사의 plaintext/work volume은 기존 producer 정책대로 보존한다.
+
+‘백업 생성 기록’은 `manager_backup_jobs`를 통해 실제 영속 job을 읽는다. 창을
+다시 열어도 interrupted/failed가 completed로 바뀌었다고 표시하지 않는다.
+기록을 읽지 못하면 새 생성·검증·lifecycle mutation을 중지하되 실행 도구 다시
+확인으로 정상 기록을 다시 읽을 수 있다. 진행 중인 저장 작업이 있으면 다른
+변경을 막고 polling으로 상태를 확인한다. 취소/자동 retry/orphan reconciliation은
+아직 제공하지 않으며, 중단 ID와 정확한 label을 확인해 남은 helper를 조사한 뒤
+새 작업을 명시적으로 생성한다. 실패 후보나 volume을 자동으로 삭제하지 않는다.
+
+브라우저의 synthetic IPC 검사는 이 입력·dispatch·presentation 경계를 검사하며
+actual native GUI/engine/crypto/restore acceptance를 대신하지 않는다. 기존 실제
+CLI producer와 새 PostgreSQL/blob restore 증거는 별도로 보존한다.
+
+
+### 생성 화면의 검증 기록 — 2026-10-03
+
+최종 frontend 파일 18개의 SHA-256을 비교한 별도 임시 경로에서 `npm ci`,
+`npm run check`(typecheck/lint/단위8/production build), `npm run test:browser`
+30개가 통과했다. 정상·실패·malformed/wrong-image 응답, 두 동의/키 경로,
+중복 submit, mutation·검증 제외, stale readiness 제거(기존 in-flight status 응답의 세대 거부 포함), 화면을 다시 연 뒤
+running/interrupted 기록, malformed history의 fail-closed와 다시 확인, 동의
+초기화, stale success 제거, session storage 없음, 오류 초점과320/640/1120px
+레이아웃·44px form targets를 검사했다. Screenshot의 desktop 정상 및320px
+실패 화면도 직접 확인했고, 안내 문구 대비와 checkbox target을 개선했다.
+
+Rust workspace46(core28/Unixpermission1/update13/native wrapper4), locked/offline
+검사와 strict all-target Clippy, rustfmt, diff whitespace 검사도 통과했다.
+새 네이티브 JSON request 시험에 필요한 기존 serde_json1.0.151을 test-only로
+명시했으며 lockfile에는 이 dependency edge만 추가했다. 최초 시험의 누락된
+직접 dependency 오류는 수정 후 재검증했다. 저장 공간 절약을 위해 검증은
+incremental/debug info 없이 수행했고, 로컬 SDK의 stripping helper 문제는
+strip=none으로 피했다. 보안 설정이나 기존 SDK 파일은 변경하지 않았다.
+
+문서 폴더의 FileProvider가 지연시킨 원래 workspace lint는 exact final-source
+독립 검사 완료 후 해당 owned process만 종료했다. 이를 통과로 바꾸어 기록하지
+않는다. Synthetic IPC와 native wrapper 컴파일/단위 검사는 실제 macOS 앱의
+입력→생성→receipt 조작이나 VoiceOver·Windows·새 engine 복원을 증명하지 않는다.
+실제 Mac은 현재 잠금 상태라 GUI 조작 검사는 남아 있다. 실제 CLI11항목 사본
+생성 및 원본 unavailable PostgreSQL/blob/config/images 복원 증거는 앞선
+producer 검사와 별도로 유지하며 이번 UI 변경에서 반복 실행하지 않았다.
+
+생성 직후 새 status 응답이 지연되어도 설치·시작·재시도 버튼을 활성화하지 않는다. 완료 응답이 유실되거나 malformed이면 실패를 단정하지 않고 완료 여부를 확인하지 못했다고 안내한다. 소스 변경으로 오래된 frontend snapshot을 대상으로 하던 native build 두 번은 해당 owned Cargo만 SIGINT로 종료하고 dependencies/logs를 보존했다. 최종 source와 같은 snapshot/config로 다시 패키징하며 취소한 시도를 통과로 기록하지 않는다.
+
+최종 macOS 개발 앱 패키징은 같은18개 frontend source hash를 확인한 production snapshot을 사용해 통과했다. 임시 Tauri build override로 검증된 `dist`를 embed하고 지연된 workspace beforeBuildCommand만 건너뛰었으며 override는 source/config에 저장하지 않았다. Mach-O arm64 실행 파일은11,868,792bytes, SHA-256 `49a8ff9a677091539c55eae109be211615196c69ebba8816dba21d316edf2777`이다. Linker ad-hoc signature만 존재하고 TeamIdentifier·sealed bundle resources는 없으므로 배포 서명·공증·실제 GUI acceptance가 아니다.

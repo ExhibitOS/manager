@@ -6,3 +6,7 @@
 .service-list li{display:grid;grid-template-columns:minmax(0,1fr) minmax(90px,.8fr);align-items:start}
 
 .backup-verification fieldset{border:0;padding:0;margin:18px 0;min-width:0}.backup-verification legend{font-weight:650;margin-bottom:12px}.backup-verification label{display:block;margin:12px 0 6px;font-weight:600;font-size:14px}.backup-verification input{width:100%;min-width:0;min-height:44px;border:1px solid #bcc8bd;border-radius:8px;padding:9px 12px;color:#183532;background:#fafcf8}.backup-verification input:disabled{color:#526452;background:#f0f2ec}.backup-verification .job-summary,.verification-result{margin-top:18px}.verification-result{padding:18px;border:1px solid #b8ceb0;border-radius:10px;background:#eef5e9}.verification-result p{color:#365439}.verification-result dt{flex-shrink:1}.verification-result dd{min-width:0}.verification-result code{font-size:12px;overflow-wrap:anywhere}@media(max-width:400px){.verification-result dl>div{display:block}.verification-result dd{text-align:left;margin-top:6px}}
+
+.backup-creation .backup-ack{display:flex;align-items:center;gap:12px;min-height:44px;padding:10px 12px;border:1px solid #cbd5c4;border-radius:8px;font-weight:500}.backup-creation .backup-ack input{width:24px;height:24px;min-height:24px;flex:0 0 24px;accent-color:#255343}.backup-history{margin-top:24px}.backup-history .alert{margin-top:12px}.backup-history .code{overflow-wrap:anywhere}
+
+.backup-verification .note{color:#526452}

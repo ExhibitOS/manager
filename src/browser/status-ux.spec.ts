@@ -7,6 +7,7 @@ for(const scenario of ['running','failed','ready'] as const)test(`synthetic ${sc
   const status={installed:true,bundleId:'synthetic',version:'0.1.0',state:scenario==='ready'?'running':'stopped',services:[{name:'synthetic-service-with-a-long-name-for-narrow-layout',state:'running',health:'healthy'}],readiness:{ready:scenario==='ready',version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:scenario==='running'?job:null};
   Object.assign(window,{isTauri:true,__uxCalls:[],__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
    (window as unknown as {__uxCalls:string[]}).__uxCalls.push(cmd);
+   if(cmd==='manager_backup_jobs')return [];
    if(cmd==='manager_status')return status;
    if(cmd==='manager_detect')return [{kind:'docker',installed:true,available:true,engineVersion:'synthetic',composeVersion:'synthetic',errorCode:null,guidance:null}];
    if(cmd==='manager_jobs')return [job];

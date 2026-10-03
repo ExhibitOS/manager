@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import {describe,it,expect} from 'vitest';
-import {parseJob,parseStatus,managerError,formatBytes,statusLabel,validVerificationInput,parseVerificationReceipt} from './lifecycle';
+import {parseJob,parseStatus,managerError,formatBytes,statusLabel,validVerificationInput,parseVerificationReceipt,validCreationInput,parseCreationReceipt,parseBackupJob} from './lifecycle';
 const status={installed:false,bundleId:null,version:null,state:'not_installed',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0,quotaBytes:5368709120},activeJob:null};
 describe('Manager lifecycle boundary',()=>{
  it('preserves unknown storage/readiness without claiming success',()=>{const value=parseStatus(status);expect(formatBytes(value.storage.usedBytes)).toBe('측정할 수 없음');expect(value.readiness.ready).toBe(false);expect(statusLabel(value.state)).toBe('설치 전');});
@@ -17,5 +17,24 @@ describe('Backup verification native boundary',()=>{
  it('never treats restore, unknown fields, unsafe counters or incomplete receipts as authenticated success',()=>{
   expect(parseVerificationReceipt(verification).operation).toBe('verified');
   for(const value of [{...verification,operation:'restored'},{...verification,private:'key contents'},{...verification,files:0},{...verification,files:1000001},{...verification,authenticatedManifestSha256:'bad'},{...verification,id:'synthetic'},{...verification,at:Number.MAX_SAFE_INTEGER+1}])expect(()=>parseVerificationReceipt(value)).toThrow('MANAGER_PROTOCOL');
+ });
+});
+
+const creation={id:verification.id,backupId:'23456789-1234-1234-1234-123456789012',operation:'created-and-authenticated',files:11,image,authenticatedManifestSha256:'b'.repeat(64),writersPaused:true,at:2};
+const backupJob={id:verification.id,operation:'create',state:'completed',stage:'complete',errorCode:null,createdAt:1,updatedAt:2};
+describe('Backup creation receipt and journal boundary',()=>{
+ it('requires distinct writer and downtime acknowledgements plus safe paths',()=>{
+  const input={image,keyPath:'/private/key',externalWritersQuiesced:true,downtimeAccepted:true};
+  expect(validCreationInput(input)).toBe(true);
+  for(const value of [{...input,externalWritersQuiesced:false},{...input,downtimeAccepted:false},{...input,keyPath:'private key contents'},{...input,keyPath:'/private/key,target=/host'},{...input,image:'trusted:latest'}])expect(validCreationInput(value)).toBe(false);
+ });
+ it('refuses unverified copies, unknown fields and unbound writer claims',()=>{
+  expect(parseCreationReceipt(creation).writersPaused).toBe(true);
+  for(const value of [{...creation,operation:'created'},{...creation,operation:'restored'},{...creation,writersPaused:false},{...creation,backupId:'unsafe/path'},{...creation,files:0},{...creation,private:'secret'},{...creation,authenticatedManifestSha256:'bad'}])expect(()=>parseCreationReceipt(value)).toThrow('MANAGER_PROTOCOL');
+ });
+ it('keeps interrupted jobs separate from completed authenticated receipts',()=>{
+  expect(parseBackupJob(backupJob).state).toBe('completed');
+  expect(parseBackupJob({...backupJob,state:'interrupted',stage:'pausing-writers',errorCode:'INTERRUPTED'}).state).toBe('interrupted');
+  for(const value of [{...backupJob,stage:'saving-images'},{...backupJob,errorCode:'PRIVATE'},{...backupJob,state:'interrupted',errorCode:null},{...backupJob,state:'running',errorCode:'INTERRUPTED'},{...backupJob,updatedAt:0},{...backupJob,updatedAt:Number.MAX_SAFE_INTEGER},{...backupJob,private:'secret'}])expect(()=>parseBackupJob(value)).toThrow('MANAGER_PROTOCOL');
  });
 });

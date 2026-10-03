@@ -70,6 +70,55 @@ impl VerificationInput {
         Ok(())
     }
 }
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreationInput {
+    image: String,
+    key_path: String,
+    external_writers_quiesced: bool,
+    downtime_accepted: bool,
+}
+impl CreationInput {
+    fn validate(&self) -> Result<(), LifecycleError> {
+        if !self.external_writers_quiesced || !self.downtime_accepted {
+            return Err(LifecycleError {
+                code: "BACKUP_OPERATOR_ACK_REQUIRED".into(),
+                guidance: "외부 쓰기 중지와 전시 중단을 확인한 후 새 백업을 시작하세요.".into(),
+            });
+        }
+        VerificationInput {
+            image: self.image.clone(),
+            key_path: self.key_path.clone(),
+            source_path: self.key_path.clone(),
+        }
+        .validate()
+    }
+}
+#[tauri::command]
+async fn manager_create_backup(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    input: CreationInput,
+) -> Result<exhibitos_lifecycle::backup_creation::BackupCreationReceipt, LifecycleError> {
+    caller(&window)?;
+    input.validate()?;
+    blocking(state.0.clone(), move |service| {
+        service.create_backup(
+            &input.image,
+            std::path::Path::new(&input.key_path),
+            input.external_writers_quiesced,
+        )
+    })
+    .await
+}
+#[tauri::command]
+async fn manager_backup_jobs(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+) -> Result<Vec<exhibitos_lifecycle::backup_creation::BackupCreationJob>, LifecycleError> {
+    caller(&window)?;
+    blocking(state.0.clone(), |service| service.backup_jobs()).await
+}
 #[tauri::command]
 async fn manager_verify_backup(
     window: WebviewWindow,
@@ -199,7 +248,9 @@ pub fn run() {
             manager_jobs,
             manager_logs,
             manager_open_exhibition,
-            manager_verify_backup
+            manager_verify_backup,
+            manager_create_backup,
+            manager_backup_jobs
         ])
         .run(tauri::generate_context!())
         .expect("Manager desktop startup failed");
@@ -207,6 +258,55 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn creation_requires_both_acknowledgements_and_safe_input() {
+        let mut input = CreationInput {
+            image: format!("sha256:{}", "a".repeat(64)),
+            key_path: std::env::temp_dir()
+                .join("synthetic-key")
+                .to_string_lossy()
+                .into(),
+            external_writers_quiesced: true,
+            downtime_accepted: true,
+        };
+        assert!(input.validate().is_ok());
+        input.external_writers_quiesced = false;
+        assert_eq!(
+            input.validate().unwrap_err().code,
+            "BACKUP_OPERATOR_ACK_REQUIRED"
+        );
+        input.external_writers_quiesced = true;
+        input.downtime_accepted = false;
+        assert_eq!(
+            input.validate().unwrap_err().code,
+            "BACKUP_OPERATOR_ACK_REQUIRED"
+        );
+        input.downtime_accepted = true;
+        input.key_path = "private key bytes".into();
+        assert_eq!(input.validate().unwrap_err().code, "BACKUP_INPUT_INVALID");
+        input.key_path = "/private/tmp/key,target=/host".into();
+        assert!(input.validate().is_err());
+    }
+    #[test]
+    fn creation_wire_input_rejects_unknown_commands_and_non_boolean_acknowledgements() {
+        let input = serde_json::json!({
+            "image":format!("sha256:{}", "a".repeat(64)),
+            "keyPath":"/private/tmp/synthetic-key",
+            "externalWritersQuiesced":true,
+            "downtimeAccepted":true
+        });
+        assert!(serde_json::from_value::<CreationInput>(input.clone()).is_ok());
+        for (key, value) in [
+            ("command", serde_json::json!("rm --force")),
+            ("keyBytes", serde_json::json!("private")),
+            ("externalWritersQuiesced", serde_json::json!("true")),
+            ("downtimeAccepted", serde_json::json!(null)),
+        ] {
+            let mut invalid = input.clone();
+            invalid[key] = value;
+            assert!(serde_json::from_value::<CreationInput>(invalid).is_err());
+        }
+    }
     #[test]
     fn verification_request_rejects_commands_key_contents_and_mount_injection() {
         let valid = VerificationInput {
