@@ -5,7 +5,7 @@ use exhibitos_lifecycle::{
 use std::{path::PathBuf, sync::Arc};
 use tauri::{Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use url::Url;
-struct DesktopState(Arc<LifecycleService>);
+struct DesktopState(Arc<exhibitos_lifecycle::installations::InstallationController>);
 fn error(code: &str) -> LifecycleError {
     LifecycleError {
         code: code.into(),
@@ -36,12 +36,65 @@ fn caller(window: &WebviewWindow) -> Result<(), LifecycleError> {
     Ok(())
 }
 async fn blocking<T: Send + 'static>(
-    state: Arc<LifecycleService>,
+    state: Arc<exhibitos_lifecycle::installations::InstallationController>,
+    selection_token: String,
     task: impl FnOnce(&LifecycleService) -> Result<T, LifecycleError> + Send + 'static,
 ) -> Result<T, LifecycleError> {
-    tauri::async_runtime::spawn_blocking(move || task(&state))
+    tauri::async_runtime::spawn_blocking(move || state.with_current(&selection_token, task))
         .await
         .map_err(|_| error("MANAGER_OPERATION"))?
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreationSelectionInput {
+    preserve_existing: bool,
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SelectionInput {
+    target_id: String,
+    preserve_existing: bool,
+}
+#[tauri::command]
+async fn manager_installations(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+) -> Result<exhibitos_lifecycle::installations::InstallationContext, LifecycleError> {
+    caller(&window)?;
+    let controller = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || controller.context())
+        .await
+        .map_err(|_| error("MANAGER_OPERATION"))?
+}
+#[tauri::command]
+async fn manager_create_installation(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    selection_token: String,
+    input: CreationSelectionInput,
+) -> Result<exhibitos_lifecycle::installations::InstallationContext, LifecycleError> {
+    caller(&window)?;
+    let controller = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        controller.create(&selection_token, input.preserve_existing)
+    })
+    .await
+    .map_err(|_| error("MANAGER_OPERATION"))?
+}
+#[tauri::command]
+async fn manager_select_installation(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    selection_token: String,
+    input: SelectionInput,
+) -> Result<exhibitos_lifecycle::installations::InstallationContext, LifecycleError> {
+    caller(&window)?;
+    let controller = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        controller.select(&selection_token, &input.target_id, input.preserve_existing)
+    })
+    .await
+    .map_err(|_| error("MANAGER_OPERATION"))?
 }
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -128,11 +181,12 @@ impl RestorationInput {
 async fn manager_restore_backup(
     window: WebviewWindow,
     state: State<'_, DesktopState>,
+    selection_token: String,
     input: RestorationInput,
 ) -> Result<exhibitos_lifecycle::restoration::RestorationReceipt, LifecycleError> {
     caller(&window)?;
     input.validate()?;
-    blocking(state.0.clone(), move |service| {
+    blocking(state.0.clone(), selection_token, move |service| {
         service.restore_backup(
             &input.image,
             std::path::Path::new(&input.key_path),
@@ -147,19 +201,24 @@ async fn manager_restore_backup(
 async fn manager_restoration_context(
     window: WebviewWindow,
     state: State<'_, DesktopState>,
+    selection_token: String,
 ) -> Result<exhibitos_lifecycle::restoration::RestorationContext, LifecycleError> {
     caller(&window)?;
-    blocking(state.0.clone(), |service| service.restoration_context()).await
+    blocking(state.0.clone(), selection_token, |service| {
+        service.restoration_context()
+    })
+    .await
 }
 #[tauri::command]
 async fn manager_create_backup(
     window: WebviewWindow,
     state: State<'_, DesktopState>,
+    selection_token: String,
     input: CreationInput,
 ) -> Result<exhibitos_lifecycle::backup_creation::BackupCreationReceipt, LifecycleError> {
     caller(&window)?;
     input.validate()?;
-    blocking(state.0.clone(), move |service| {
+    blocking(state.0.clone(), selection_token, move |service| {
         service.create_backup(
             &input.image,
             std::path::Path::new(&input.key_path),
@@ -172,19 +231,24 @@ async fn manager_create_backup(
 async fn manager_backup_jobs(
     window: WebviewWindow,
     state: State<'_, DesktopState>,
+    selection_token: String,
 ) -> Result<Vec<exhibitos_lifecycle::backup_creation::BackupCreationJob>, LifecycleError> {
     caller(&window)?;
-    blocking(state.0.clone(), |service| service.backup_jobs()).await
+    blocking(state.0.clone(), selection_token, |service| {
+        service.backup_jobs()
+    })
+    .await
 }
 #[tauri::command]
 async fn manager_verify_backup(
     window: WebviewWindow,
     state: State<'_, DesktopState>,
+    selection_token: String,
     input: VerificationInput,
 ) -> Result<exhibitos_lifecycle::maintenance::VerificationReceipt, LifecycleError> {
     caller(&window)?;
     input.validate()?;
-    blocking(state.0.clone(), move |service| {
+    blocking(state.0.clone(), selection_token, move |service| {
         service.verify_backup(
             &input.image,
             std::path::Path::new(&input.key_path),
@@ -197,53 +261,65 @@ async fn manager_verify_backup(
 async fn manager_status(
     window: WebviewWindow,
     state: State<'_, DesktopState>,
+    selection_token: String,
 ) -> Result<Status, LifecycleError> {
     caller(&window)?;
-    blocking(state.0.clone(), |service| service.status()).await
+    blocking(state.0.clone(), selection_token, |service| service.status()).await
 }
 #[tauri::command]
 async fn manager_detect(
     window: WebviewWindow,
     state: State<'_, DesktopState>,
+    selection_token: String,
 ) -> Result<Vec<EngineProbe>, LifecycleError> {
     caller(&window)?;
-    blocking(state.0.clone(), |service| service.detect()).await
+    blocking(state.0.clone(), selection_token, |service| service.detect()).await
 }
 #[tauri::command]
 async fn manager_install(
     window: WebviewWindow,
     state: State<'_, DesktopState>,
+    selection_token: String,
 ) -> Result<Job, LifecycleError> {
     caller(&window)?;
-    blocking(state.0.clone(), |service| service.install()).await
+    blocking(state.0.clone(), selection_token, |service| {
+        service.install()
+    })
+    .await
 }
 #[tauri::command]
 async fn manager_action(
     window: WebviewWindow,
     state: State<'_, DesktopState>,
+    selection_token: String,
     action: Action,
 ) -> Result<Job, LifecycleError> {
     caller(&window)?;
     if action == Action::Install {
         return Err(error("MANAGER_ACTION"));
     }
-    blocking(state.0.clone(), move |service| service.execute(action)).await
+    blocking(state.0.clone(), selection_token, move |service| {
+        service.execute(action)
+    })
+    .await
 }
 #[tauri::command]
 async fn manager_jobs(
     window: WebviewWindow,
     state: State<'_, DesktopState>,
+    selection_token: String,
 ) -> Result<Vec<Job>, LifecycleError> {
     caller(&window)?;
-    blocking(state.0.clone(), |service| service.jobs()).await
+    blocking(state.0.clone(), selection_token, |service| service.jobs()).await
 }
 #[tauri::command]
 async fn manager_logs(
     window: WebviewWindow,
     state: State<'_, DesktopState>,
+    selection_token: String,
 ) -> Result<Vec<LogEvent>, LifecycleError> {
     caller(&window)?;
-    blocking(state.0.clone(), |service| service.logs()).await
+    blocking(state.0.clone(), selection_token, |service| service.logs()).await
 }
 fn allowed_exhibition_url(value: &str) -> bool {
     let Ok(url) = Url::parse(value) else {
@@ -262,9 +338,10 @@ fn allowed_exhibition_url(value: &str) -> bool {
 async fn manager_open_exhibition(
     window: WebviewWindow,
     state: State<'_, DesktopState>,
+    selection_token: String,
 ) -> Result<(), LifecycleError> {
     caller(&window)?;
-    blocking(state.0.clone(), |service| {
+    blocking(state.0.clone(), selection_token, |service| {
         let url = service.open_url()?;
         if !allowed_exhibition_url(&url) {
             return Err(error("MANAGER_OPEN_URL"));
@@ -277,18 +354,21 @@ async fn manager_open_exhibition(
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let root = match std::env::var_os("EXHIBITOS_MANAGER_ROOT") {
+            let override_root = match std::env::var_os("EXHIBITOS_MANAGER_ROOT") {
                 Some(root) => {
                     let path = PathBuf::from(root);
                     if !path.is_absolute() {
                         return Err("Manager runtime root must be absolute".into());
                     }
-                    path
+                    Some(path)
                 }
-                None => app.path().app_data_dir()?.join("local-runtime"),
+                None => None,
             };
-            let service = LifecycleService::new(root)?;
-            app.manage(DesktopState(Arc::new(service)));
+            let controller = exhibitos_lifecycle::installations::InstallationController::new(
+                app.path().app_data_dir()?,
+                override_root,
+            )?;
+            app.manage(DesktopState(Arc::new(controller)));
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("ExhibitOS Manager")
                 .inner_size(1120.0, 900.0)
@@ -309,7 +389,10 @@ pub fn run() {
             manager_create_backup,
             manager_backup_jobs,
             manager_restore_backup,
-            manager_restoration_context
+            manager_restoration_context,
+            manager_installations,
+            manager_create_installation,
+            manager_select_installation
         ])
         .run(tauri::generate_context!())
         .expect("Manager desktop startup failed");
@@ -446,6 +529,27 @@ mod tests {
             };
             assert!(value.validate().is_err());
         }
+    }
+    #[test]
+    fn selection_input_rejects_raw_paths_commands_and_non_boolean_consent() {
+        let valid = serde_json::json!({"targetId":"12345678-1234-1234-1234-123456789012", "preserveExisting":true});
+        assert!(serde_json::from_value::<SelectionInput>(valid.clone()).is_ok());
+        for (key, value) in [
+            ("path", serde_json::json!("/private/data")),
+            ("command", serde_json::json!("shell")),
+            ("preserveExisting", serde_json::json!("true")),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[key] = value;
+            assert!(serde_json::from_value::<SelectionInput>(invalid).is_err());
+        }
+        assert!(
+            serde_json::from_value::<CreationSelectionInput>(
+                serde_json::json!({"preserveExisting":true})
+            )
+            .is_ok()
+        );
+        assert!(serde_json::from_value::<CreationSelectionInput>(valid).is_err());
     }
     #[test]
     fn remote_sources_and_privileged_url_replacements_are_denied() {

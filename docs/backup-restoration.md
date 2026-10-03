@@ -1,4 +1,4 @@
-# 암호화 사본에서 새 설치 복원 — 개발 CLI
+# 암호화 사본에서 새 설치 복원 — 개발 앱과 CLI
 
 `restore-backup`은 Manager producer가 만든 draft2 서비스 백업을 **비어 있는 새 설치 root**에 복원한다. 기존 설치·암호화 사본·외부 키를 덮어쓰지 않는다. 현재 macOS/Docker reference 구성의 개발 구현이다. Windows ACL/Podman, 실제 앱 GUI 조작, 취소·재개, cold-engine 및 전체 frozen corpus qualification, 업데이트·rollback과 배포 서명은 별도 조건이다.
 
@@ -73,3 +73,5 @@ mkdir -m 700 "$fresh_root" && EXHIBITOS_MANAGER_ROOT="$fresh_root" \
 동의는 완료·오류 후 해제된다. 중복 설치·시작·백업·검증을 막고, 낡은 응답이 변경 후 상태를 복구하지 못하게 한다. 영수증을 받았어도 현재 서버 응답을 다시 확인할 때까지 전시 열기는 비활성 상태다. 앱 재시작 시 completed job은 같은 ID의 영수증/설치 manifest와 연결돼야 한다. 실패·중단 기록은 완료로 표시하지 않으며 일반 다시 시도를 차단한다. 새 후보 정지는 허용하지만 원본·volumes·부분 DB를 삭제하거나 자동 재실행하지 않는다.
 
 입력 경로는 React 세션 메모리에만 유지한다. backend의 durable job/영수증은 key bytes·경로·비밀번호를 포함하지 않으며 private 설치 공간에 저장된다. 인증을 마친 plaintext/이미지/DB/설정/키·volumes의 백업 범위는 Git 밖이다. 브라우저 미리보기의 합성 IPC 검사는 실제 엔진 복원이나 네이티브 GUI 검증을 대신하지 않는다.
+
+일반 macOS 앱에서는 [관리 공간 선택](installation-selection.md)에서 새 복원 공간을 만들고 아래 복원 폼을 사용한다. `EXHIBITOS_MANAGER_ROOT`를 지정하는 실행은 격리된 개발 검증용 고정 공간이며 일반 사용의 필수 절차가 아니다. 실제 네이티브 GUI 조작 검증은 별도로 남아 있다.
