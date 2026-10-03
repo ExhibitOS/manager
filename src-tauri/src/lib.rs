@@ -82,10 +82,10 @@ async fn manager_maintenance_context(
     selection_token: String,
 ) -> Result<Option<exhibitos_lifecycle::cancellation::MaintenanceContext>, LifecycleError> {
     caller(&window)?;
-    blocking(state.0.clone(), selection_token, |service| {
-        service.maintenance_context()
-    })
-    .await
+    let controller = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || controller.maintenance_context(&selection_token))
+        .await
+        .map_err(|_| error("MANAGER_OPERATION"))?
 }
 #[tauri::command]
 async fn manager_cancel_maintenance(
@@ -95,10 +95,17 @@ async fn manager_cancel_maintenance(
     input: ReconciliationInput,
 ) -> Result<exhibitos_lifecycle::cancellation::MaintenanceContext, LifecycleError> {
     caller(&window)?;
-    blocking(state.0.clone(), selection_token, move |service| {
-        service.request_maintenance_cancel(&input.kind, &input.target_id, input.preserve_candidates)
+    let controller = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        controller.request_maintenance_cancel(
+            &selection_token,
+            &input.kind,
+            &input.target_id,
+            input.preserve_candidates,
+        )
     })
     .await
+    .map_err(|_| error("MANAGER_OPERATION"))?
 }
 #[tauri::command]
 async fn manager_helper_reconciliations(
@@ -233,6 +240,138 @@ impl RestorationInput {
         }
         .validate()
     }
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BackupRetryInput {
+    target_id: String,
+    preserve_candidates: bool,
+    image: String,
+    key_path: String,
+    external_writers_quiesced: bool,
+    downtime_accepted: bool,
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RestorationRetryRequest {
+    target_id: String,
+    destination_id: String,
+    preserve_candidates: bool,
+    image: String,
+    key_path: String,
+    source_path: String,
+    port: u16,
+    fresh_installation_accepted: bool,
+}
+fn retry_id(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(i, b)| {
+            if [8, 13, 18, 23].contains(&i) {
+                b == b'-'
+            } else {
+                b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
+            }
+        })
+}
+impl BackupRetryInput {
+    fn validate(&self) -> Result<(), LifecycleError> {
+        if !retry_id(&self.target_id) || !self.preserve_candidates {
+            return Err(error("RETRY_ACK_REQUIRED"));
+        }
+        CreationInput {
+            image: self.image.clone(),
+            key_path: self.key_path.clone(),
+            external_writers_quiesced: self.external_writers_quiesced,
+            downtime_accepted: self.downtime_accepted,
+        }
+        .validate()
+    }
+}
+impl RestorationRetryRequest {
+    fn validate(&self) -> Result<(), LifecycleError> {
+        if !retry_id(&self.target_id)
+            || !retry_id(&self.destination_id)
+            || !self.preserve_candidates
+        {
+            return Err(error("RETRY_ACK_REQUIRED"));
+        }
+        RestorationInput {
+            image: self.image.clone(),
+            key_path: self.key_path.clone(),
+            source_path: self.source_path.clone(),
+            port: self.port,
+            fresh_installation_accepted: self.fresh_installation_accepted,
+        }
+        .validate()
+    }
+}
+#[tauri::command]
+async fn manager_maintenance_retries(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    selection_token: String,
+) -> Result<Vec<exhibitos_lifecycle::retry::MaintenanceRetry>, LifecycleError> {
+    caller(&window)?;
+    blocking(state.0.clone(), selection_token, |s| {
+        s.maintenance_retries()
+    })
+    .await
+}
+#[tauri::command]
+async fn manager_retry_backup(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    selection_token: String,
+    input: BackupRetryInput,
+) -> Result<
+    exhibitos_lifecycle::retry::RetryReceipt<
+        exhibitos_lifecycle::backup_creation::BackupCreationReceipt,
+    >,
+    LifecycleError,
+> {
+    caller(&window)?;
+    input.validate()?;
+    blocking(state.0.clone(), selection_token, move |s| {
+        s.retry_backup(
+            &input.target_id,
+            &input.image,
+            std::path::Path::new(&input.key_path),
+            input.preserve_candidates,
+            input.external_writers_quiesced,
+        )
+    })
+    .await
+}
+#[tauri::command]
+async fn manager_retry_restoration(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    selection_token: String,
+    input: RestorationRetryRequest,
+) -> Result<
+    exhibitos_lifecycle::retry::RetryReceipt<exhibitos_lifecycle::restoration::RestorationReceipt>,
+    LifecycleError,
+> {
+    caller(&window)?;
+    input.validate()?;
+    let controller = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        controller.retry_restoration(
+            &selection_token,
+            &input.destination_id,
+            &input.target_id,
+            exhibitos_lifecycle::installations::RestorationRetryOptions {
+                image: &input.image,
+                key: std::path::Path::new(&input.key_path),
+                archive: std::path::Path::new(&input.source_path),
+                port: input.port,
+                preserve_candidates: input.preserve_candidates,
+                fresh_installation: input.fresh_installation_accepted,
+            },
+        )
+    })
+    .await
+    .map_err(|_| error("MANAGER_OPERATION"))?
 }
 #[tauri::command]
 async fn manager_restore_backup(
@@ -451,6 +590,9 @@ pub fn run() {
             manager_helper_reconciliations,
             manager_maintenance_context,
             manager_cancel_maintenance,
+            manager_maintenance_retries,
+            manager_retry_backup,
+            manager_retry_restoration,
             manager_installations,
             manager_create_installation,
             manager_select_installation
@@ -461,6 +603,57 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retry_wire_rejects_paths_commands_stale_shapes_and_missing_acknowledgments() {
+        let valid = serde_json::json!({"targetId":"12345678-1234-1234-1234-123456789012","destinationId":"23456789-1234-1234-1234-123456789012","preserveCandidates":true,"image":format!("sha256:{}","a".repeat(64)),"keyPath":"/private/tmp/key","sourcePath":"/private/tmp/archive","port":4500,"freshInstallationAccepted":true});
+        assert!(
+            serde_json::from_value::<RestorationRetryRequest>(valid.clone())
+                .unwrap()
+                .validate()
+                .is_ok()
+        );
+        for (key, value) in [
+            ("destinationPath", serde_json::json!("/other/root")),
+            ("command", serde_json::json!("shell")),
+            ("preserveCandidates", serde_json::json!("true")),
+            ("port", serde_json::json!(65536)),
+        ] {
+            let mut v = valid.clone();
+            v[key] = value;
+            assert!(serde_json::from_value::<RestorationRetryRequest>(v).is_err());
+        }
+        for (key, value) in [
+            ("targetId", serde_json::json!("../foreign")),
+            ("destinationId", serde_json::json!("/private/tmp")),
+            ("preserveCandidates", serde_json::json!(false)),
+            ("freshInstallationAccepted", serde_json::json!(false)),
+            ("keyPath", serde_json::json!("/tmp/key,target=/evil")),
+        ] {
+            let mut v = valid.clone();
+            v[key] = value;
+            assert!(
+                serde_json::from_value::<RestorationRetryRequest>(v)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
+        let backup = serde_json::json!({"targetId":"12345678-1234-1234-1234-123456789012","preserveCandidates":true,"image":format!("sha256:{}","a".repeat(64)),"keyPath":"/private/tmp/key","externalWritersQuiesced":true,"downtimeAccepted":true});
+        assert!(
+            serde_json::from_value::<BackupRetryInput>(backup.clone())
+                .unwrap()
+                .validate()
+                .is_ok()
+        );
+        let mut missing = backup;
+        missing["downtimeAccepted"] = serde_json::json!(false);
+        assert!(
+            serde_json::from_value::<BackupRetryInput>(missing)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
     #[test]
     fn restoration_wire_requires_explicit_fresh_acknowledgement_and_bounded_port() {
         let valid = serde_json::json!({"image":format!("sha256:{}", "a".repeat(64)),"keyPath":"/private/tmp/key","sourcePath":"/private/tmp/archive","port":4500,"freshInstallationAccepted":true});

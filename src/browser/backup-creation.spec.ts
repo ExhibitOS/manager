@@ -10,6 +10,7 @@ for(const scenario of ['success','failure','malformed','wrong-image'] as const)t
    fixture.__creationCalls.push(cmd);
    if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};
    if(cmd==='manager_maintenance_context')return null;
+   if(cmd==='manager_maintenance_retries')return [];
    if(cmd==='manager_helper_reconciliations')return [];
    if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:'56789012-1234-1234-1234-123456789012',mode:'managed',installations:[{id:'56789012-1234-1234-1234-123456789012',kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true}],errorCode:null};
    if(cmd==='manager_status'){if(stopped)await new Promise<void>(resolve=>{fixture.__resolveStatusRefresh=resolve;});return {installed:true,bundleId:'synthetic',version:'0.1.0',state:stopped?'stopped':'running',services:[],readiness:{ready:!stopped,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};}
@@ -70,6 +71,7 @@ for(const state of ['running','interrupted','malformed'] as const)test(`persiste
   Object.assign(window,{isTauri:true,__historyFixed:false,__historyMutations:0,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
    if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};
    if(cmd==='manager_maintenance_context')return null;
+   if(cmd==='manager_maintenance_retries')return [];
    if(cmd==='manager_helper_reconciliations')return [];
    if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:'56789012-1234-1234-1234-123456789012',mode:'managed',installations:[{id:'56789012-1234-1234-1234-123456789012',kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true}],errorCode:null};
    if(cmd==='manager_status')return {installed:true,bundleId:'synthetic',version:'0.1.0',state:'stopped',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
@@ -102,6 +104,7 @@ test('a pre-backup status request cannot resurrect stale ready state during crea
   Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
    if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};
    if(cmd==='manager_maintenance_context')return null;
+   if(cmd==='manager_maintenance_retries')return [];
    if(cmd==='manager_helper_reconciliations')return [];
    if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:'56789012-1234-1234-1234-123456789012',mode:'managed',installations:[{id:'56789012-1234-1234-1234-123456789012',kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true}],errorCode:null};
    if(cmd==='manager_status'){reads++;const old=status();if(reads===2)await new Promise<void>(resolve=>{fixture.__oldStatus=resolve;});return old;}

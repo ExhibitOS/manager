@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: Apache-2.0
+import {useEffect,useRef,useState} from 'react';
+import {managerError,installationLabel,validBackupRetryInput,validRestorationRetryInput,type BackupJob,type RestorationContext,type InstallationContext,type ManagerError,type MaintenanceRetry,type RetryRequest,type RetryReceipt} from './lifecycle';
+interface Props{native:boolean;active:boolean;engineReady:boolean;installation:InstallationContext|null;backupJobs:BackupJob[];restoration:RestorationContext|null;targetError:ManagerError|null;history:MaintenanceRetry[];historyError:ManagerError|null;retry(request:RetryRequest):Promise<RetryReceipt>}
+export function MaintenanceRetryPanel({native,active,engineReady,installation,backupJobs,restoration,targetError,history,historyError,retry}:Props){
+ const [target,setTarget]=useState(''),[image,setImage]=useState(''),[keyPath,setKeyPath]=useState(''),[sourcePath,setSourcePath]=useState(''),[destinationId,setDestinationId]=useState(''),[port,setPort]=useState(4500),[preserve,setPreserve]=useState(false),[operator,setOperator]=useState(false),[pending,setPending]=useState(false),[result,setResult]=useState<RetryReceipt|null>(null),[resultDestination,setResultDestination]=useState(''),[error,setError]=useState<ManagerError|null>(null),[destinationNames,setDestinationNames]=useState<Record<string,string>>({});
+ const live=useRef(true),working=useRef(false),errorElement=useRef<HTMLDivElement>(null);
+ useEffect(()=>{live.current=true;return()=>{live.current=false;};},[]);useEffect(()=>{if(error)errorElement.current?.focus();},[error]);
+ useEffect(()=>{let cancelled=false;setDestinationNames({});void Promise.all((installation?.installations??[]).map(async r=>{const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(r.path));const hash=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');return [hash,`${r.id}${r.available?'':' · 공간 접근 확인 필요'}`] as const;})).then(entries=>{if(!cancelled)setDestinationNames(Object.fromEntries(entries));}).catch(()=>{if(!cancelled)setDestinationNames({});});return()=>{cancelled=true;};},[installation]);
+ const candidates:{kind:'backup'|'restoration';id:string}[]=backupJobs.filter(j=>['failed','interrupted'].includes(j.state)).map(j=>({kind:'backup',id:j.id}));
+ if(restoration?.job&&['failed','interrupted'].includes(restoration.job.state))candidates.push({kind:'restoration',id:restoration.job.id});
+ const selected=candidates.find(c=>`${c.kind}:${c.id}`===target),kind=selected?.kind;
+ const fenced=selected&&history.some(j=>j.kind===kind&&j.targetId===selected.id&&(['preparing','running','interrupted'].includes(j.state)||j.state==='failed'&&j.newJobId!==null));
+ const destinations=installation?.mode==='managed'?installation.installations.filter(r=>r.id!==installation.activeId&&r.available):[];
+ const destination=destinations.find(r=>r.id===destinationId);
+ const baseDisabled=!native||!engineReady||active||pending||!!targetError||!!historyError||!installation||!!installation.errorCode;
+ const disabled=baseDisabled||!!fenced;
+ const request:RetryRequest|null=selected?(kind==='backup'?{kind:'backup',input:{targetId:selected.id,image,keyPath,preserveCandidates:preserve,externalWritersQuiesced:operator,downtimeAccepted:operator}}:{kind:'restoration',input:{targetId:selected.id,destinationId,image,keyPath,sourcePath,port,preserveCandidates:preserve,freshInstallationAccepted:operator}}):null;
+ const valid=request&&(request.kind==='backup'?validBackupRetryInput(request.input):!!destination&&validRestorationRetryInput(request.input));
+ function resetConsent(){setPreserve(false);setOperator(false);setResult(null);setError(null);}
+ async function submit(event:React.SubmitEvent<HTMLFormElement>){
+  event.preventDefault();if(disabled||working.current||!request||!valid)return;
+  working.current=true;setPending(true);setError(null);setResult(null);const chosen=destinationId;
+  try{const value=await retry(request);if(live.current){setResult(value);setResultDestination(value.kind==='restoration'?chosen:'');}}
+  catch(e){if(live.current)setError(managerError(e));}
+  finally{working.current=false;if(live.current){setPending(false);setPreserve(false);setOperator(false);}}
+ }
+ if(!candidates.length&&!history.length&&!targetError&&!historyError)return null;
+ return <section className="panel backup-verification backup-creation maintenance-retry" aria-labelledby="retry-heading"><p className="eyebrow">KEEP THE ORIGINAL · START A NEW JOB</p><h2 id="retry-heading">중단된 백업·복원 재시도</h2>
+ <p id="retry-scope">원래 기록과 실패 후보를 보존하고 helper 정지를 확인한 뒤 새로운 작업을 만듭니다. 복원은 별도의 비어 있는 관리 공간에서 새 전시를 시작합니다. 백업 재시도는 전시 writer를 자동 재개하지 않습니다.</p>
+ {(targetError||historyError)&&<div className="alert" role="alert"><p>현재 공간의 작업 또는 재시도 기록을 확인할 수 없습니다. 상태를 다시 확인하기 전에는 새 작업을 실행하지 않습니다.</p></div>}
+ <form onSubmit={event=>void submit(event)} aria-describedby="retry-scope"><fieldset disabled={baseDisabled}><legend>실패·중단 작업과 새 작업 준비</legend>
+ <label htmlFor="retry-target">재시도할 현재 공간의 작업</label><select id="retry-target" value={selected?target:''} onChange={e=>{setTarget(e.target.value);resetConsent();}}><option value="">작업을 선택하세요</option>{candidates.map(c=><option key={`${c.kind}:${c.id}`} value={`${c.kind}:${c.id}`}>{c.kind==='backup'?'백업':'복원'} · {c.id}</option>)}</select>
+ <label htmlFor="retry-key">별도 비공개 키 파일의 전체 경로</label><input id="retry-key" maxLength={2048} value={keyPath} autoComplete="off" spellCheck={false} onChange={e=>{setKeyPath(e.target.value);resetConsent();}}/>
+ <p className="note">키 내용은 입력하지 마세요. 경로는 이 화면의 임시 입력이며 다른 관리 공간을 선택하면 지워집니다.</p>
+ {kind==='restoration'&&<><label htmlFor="retry-destination">별도로 준비한 복원 공간</label><select id="retry-destination" value={destination?destinationId:''} onChange={e=>{setDestinationId(e.target.value);resetConsent();}}><option value="">현재 공간과 다른 공간을 선택하세요</option>{destinations.map(r=><option key={r.id} value={r.id}>{installationLabel(r)} · {r.id}</option>)}</select><p className="note">빈 공간이 없다면 위에서 새 복원 공간을 만들고 선택한 뒤, 원래 실패 작업의 공간으로 다시 돌아오세요. 실제 빈 공간 여부는 실행 전에 검사하며 기존 파일을 덮어쓰지 않습니다.</p>{destination&&<p className="code">복원 목적지: {destination.path}</p>}<label htmlFor="retry-source">복원할 암호화 사본 폴더의 전체 경로</label><input id="retry-source" maxLength={2048} value={sourcePath} autoComplete="off" spellCheck={false} onChange={e=>{setSourcePath(e.target.value);resetConsent();}}/><label htmlFor="retry-port">새 전시의 사용하지 않는 로컬 포트</label><input id="retry-port" type="number" min={1024} max={65535} step={1} value={Number.isFinite(port)?port:''} onChange={e=>{setPort(e.target.value===''?NaN:Number(e.target.value));resetConsent();}}/></>}
+ <details open><summary>검증된 실행 패키지 설정</summary><label htmlFor="retry-image">유지보수 이미지의 고정 ID</label><input id="retry-image" value={image} maxLength={71} autoComplete="off" spellCheck={false} onChange={e=>{setImage(e.target.value);resetConsent();}}/><p className="note">신뢰할 운영자가 준비한 sha256: 이미지 ID를 사용합니다. 사본 인증은 배포 서명 확인을 대신하지 않습니다.</p></details>
+ <label className="backup-ack"><input type="checkbox" checked={preserve} onChange={e=>setPreserve(e.target.checked)}/><span>원래 작업 기록·실패 후보·데이터를 모두 보존하고 새 작업을 만드는 데 동의합니다.</span></label>
+ <label className="backup-ack"><input type="checkbox" checked={operator} onChange={e=>setOperator(e.target.checked)}/><span>{kind==='restoration'?'원래 전시의 쓰기를 중지했고, 선택한 별도 빈 공간에서 새 전시를 복원·시작하는 데 동의합니다.':'외부 쓰기를 중지했고 전시 중단에 동의합니다. 완료 후 writer를 직접 확인하고 다시 시작합니다.'}</span></label>
+ </fieldset><button type="submit" className="primary" disabled={disabled||!valid}>{pending?'새 작업 실행과 결과 확인 중…':'새 작업으로 재시도'}</button></form>
+ {fenced&&<p role="status" className="note">이 대상에는 확인이 필요한 재시도 기록이 있습니다. 표시된 새 작업 ID와 목적지 공간을 확인하세요. 새 작업 ID가 없으면 원래 기록과 후보를 보존하고 상태 진단이 필요합니다. 원래 작업을 반복 실행하지 않습니다.</p>}
+ {pending&&<div role="status"><p>기존 helper와 후보를 확인하고 새 작업을 실행합니다. 위의 취소 요청은 새 작업이 시작된 후 해당 작업으로 연결됩니다. 실제 정지 확인까지 기다리세요.</p><progress aria-label="유지보수 재시도 진행 중"/></div>}
+ {error&&<div className="alert" role="alert" ref={errorElement} tabIndex={-1}><strong>{error.guidance}</strong><p className="code">확인 코드: {error.code}</p><p>새 작업의 완료가 확인되지 않았습니다. 원래 기록과 후보는 보존됩니다. 새 작업 ID가 기록됐으면 해당 공간에서 확인하세요.</p></div>}
+ {result&&<div className="verification-result" role="status"><h3>{result.kind==='backup'?'새 백업 생성·인증 확인':'별도 공간의 새 전시 복원·시작 확인'}</h3><p>원래 실패·중단 작업은 성공으로 변경하지 않았습니다.</p><p className="code">새 작업 ID: {result.newJobId}</p>{result.kind==='restoration'?<><p className="code">목적지 공간 ID: {resultDestination}</p><p>위의 관리 공간 선택에서 이 목적지를 선택해 실제 전시 상태를 확인하세요. 원래 공간 선택은 유지했습니다.</p><p>새 전시 주소: {result.result.openUrl}</p></>:<p>전시 writer는 자동 재개하지 않았습니다. 사본과 키를 별도로 보관하고 상태를 확인하세요.</p>}</div>}
+ <div role="region" aria-label="유지보수 재시도 기록"><h3>새 작업 연결 기록</h3>{history.length?<ol className="job-list">{[...history].reverse().slice(0,10).map(j=><li key={j.id}><strong>{j.kind==='backup'?'백업':'복원'} 재시도</strong><span>{{preparing:'새 작업 준비 중',running:'새 작업 실행 중',completed:'새 작업 완료 기록',failed:'재시도 실패',interrupted:'재시도 중단'}[j.state]}</span><p className="code">원래 작업: {j.targetId}</p><p className="code">새 작업: {j.newJobId??'생성 확인 전'}</p><p className="code">목적지 공간: {destinationNames[j.destinationRootSha256]??'등록된 목적지 공간을 확인하지 못했습니다. 경로와 기록을 보존하고 진단하세요.'}</p>{j.errorCode&&<p className="code">확인 코드: {j.errorCode}</p>}<time dateTime={new Date(j.updatedAt).toISOString()}>{new Date(j.updatedAt).toLocaleString('ko-KR')}</time></li>)}</ol>:<p className="note">저장된 재시도 기록이 없습니다.</p>}</div>
+ </section>;
+}

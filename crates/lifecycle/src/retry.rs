@@ -89,6 +89,23 @@ impl LifecycleService {
             .map_err(|_| err("STATE_UNAVAILABLE"))?;
         Ok(())
     }
+    pub(crate) fn retry_record(&self, id: &str) -> Result<MaintenanceRetry> {
+        if !uuid(id) {
+            return Err(err("STATE_INVALID"));
+        }
+        let v: MaintenanceRetry = serde_json::from_slice(&source_bytes(
+            &self.root,
+            &format!("maintenance-retry-{id}.json"),
+            8192,
+            true,
+        )?)
+        .map_err(|_| err("STATE_INVALID"))?;
+        validate(&v)?;
+        if v.id != id {
+            return Err(err("STATE_INVALID"));
+        }
+        Ok(v)
+    }
     fn retry_history(&self) -> Result<Vec<MaintenanceRetry>> {
         let mut all = Vec::new();
         for e in fs::read_dir(&self.root).map_err(|_| err("STATE_UNAVAILABLE"))? {
@@ -259,6 +276,14 @@ impl LifecycleService {
         target: &str,
         input: RestorationRetryInput<'_>,
     ) -> Result<RetryReceipt<restoration::RestorationReceipt>> {
+        self.retry_restoration_observed(target, input, &|_| Ok(()))
+    }
+    pub(crate) fn retry_restoration_observed(
+        &self,
+        target: &str,
+        input: RestorationRetryInput<'_>,
+        observe: &dyn Fn(&str) -> Result<()>,
+    ) -> Result<RetryReceipt<restoration::RestorationReceipt>> {
         if !input.preserve_candidates || !input.fresh_installation {
             return Err(err("RETRY_ACK_REQUIRED"));
         }
@@ -293,6 +318,7 @@ impl LifecycleService {
         restoration::fresh_root(dst)?;
         let mut v = self.begin_retry("restoration", target, dst)?;
         let result = (|| {
+            observe(&v.id)?;
             self.reconcile_helper_locked("restoration", target, true)?;
             self.stop_cancelled_candidate("restoration")?;
             input.destination.restore_backup_locked(

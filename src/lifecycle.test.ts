@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import {describe,it,expect} from 'vitest';
-import {parseMaintenanceContext,validReconciliationInput,parseReconciliationReceipt,parseReconciliationJob,parseInstallationContext,parseJob,parseStatus,managerError,formatBytes,statusLabel,validVerificationInput,parseVerificationReceipt,validCreationInput,parseCreationReceipt,parseBackupJob,validRestorationInput,parseRestorationContext,parseRestorationReceipt} from './lifecycle';
+import {parseMaintenanceRetry,parseRetryReceipt,validBackupRetryInput,validRestorationRetryInput,parseMaintenanceContext,validReconciliationInput,parseReconciliationReceipt,parseReconciliationJob,parseInstallationContext,parseJob,parseStatus,managerError,formatBytes,statusLabel,validVerificationInput,parseVerificationReceipt,validCreationInput,parseCreationReceipt,parseBackupJob,validRestorationInput,parseRestorationContext,parseRestorationReceipt} from './lifecycle';
 const status={installed:false,bundleId:null,version:null,state:'not_installed',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0,quotaBytes:5368709120},activeJob:null};
 describe('Manager lifecycle boundary',()=>{
  it('preserves unknown storage/readiness without claiming success',()=>{const value=parseStatus(status);expect(formatBytes(value.storage.usedBytes)).toBe('측정할 수 없음');expect(value.readiness.ready).toBe(false);expect(statusLabel(value.state)).toBe('설치 전');});
@@ -79,4 +79,25 @@ describe('Active maintenance cancellation boundary',()=>{
  const value={id:'23456789-1234-1234-1234-123456789012',kind:'restoration',state:'requested',stage:'authenticating',errorCode:null,createdAt:1,updatedAt:2};
  it('keeps requests separate from confirmed stops and crash/uncertain states',()=>{expect(parseMaintenanceContext(value)?.state).toBe('requested');expect(parseMaintenanceContext({...value,state:'confirmed',errorCode:'CANCELLED'})?.state).toBe('confirmed');expect(parseMaintenanceContext({...value,state:'uncertain',errorCode:'CANCEL_UNCERTAIN'})?.state).toBe('uncertain');expect(parseMaintenanceContext(null)).toBeNull();});
  it('rejects wrong identity, false completion, malformed dates and unknown fields',()=>{for(const v of [{...value,id:'container'},{...value,kind:'install'},{...value,state:'confirmed'},{...value,state:'uncertain',errorCode:'CANCELLED'},{...value,state:'requested',errorCode:'CANCELLED'},{...value,updatedAt:0},{...value,stage:'rm --force'},{...value,command:'shell'}])expect(()=>parseMaintenanceContext(v)).toThrow('MANAGER_PROTOCOL');});
+});
+
+describe('Maintenance retry protocol',()=>{
+ const targetId='12345678-1234-1234-1234-123456789012',id='23456789-1234-1234-1234-123456789012',child='34567890-1234-1234-1234-123456789012',image=`sha256:${'a'.repeat(64)}`;
+ const audit={id,targetId,kind:'backup',state:'running',newJobId:child,originalJobSha256:'a'.repeat(64),destinationRootSha256:'b'.repeat(64),errorCode:null,createdAt:1,updatedAt:2};
+ it('requires a distinct linked child, bounded time and honest terminal state',()=>{
+  expect(parseMaintenanceRetry(audit).newJobId).toBe(child);
+  for(const v of [{...audit,id:targetId},{...audit,newJobId:targetId},{...audit,newJobId:null},{...audit,state:'preparing'},{...audit,state:'failed'},{...audit,errorCode:'INTERRUPTED'},{...audit,updatedAt:0},{...audit,destinationRootSha256:'/private/root'},{...audit,key:'secret'}])expect(()=>parseMaintenanceRetry(v)).toThrow('MANAGER_PROTOCOL');
+  expect(parseMaintenanceRetry({...audit,state:'failed',newJobId:null,errorCode:'OWNERSHIP_CONFLICT'}).newJobId).toBeNull();
+ });
+ it('refuses a success receipt for a different child, old job or altered result',()=>{
+  const result={id:child,backupId:id,operation:'created-and-authenticated',files:11,image,authenticatedManifestSha256:'a'.repeat(64),writersPaused:true,at:2};
+  const receipt={id,targetId,newJobId:child,kind:'backup',dataPreserved:true,result};expect(parseRetryReceipt(receipt).newJobId).toBe(child);
+  for(const v of [{...receipt,newJobId:targetId},{...receipt,dataPreserved:false},{...receipt,result:{...result,id:targetId}},{...receipt,result:{...result,writersPaused:false}},{...receipt,kind:'restoration'},{...receipt,command:'shell'}])expect(()=>parseRetryReceipt(v)).toThrow('MANAGER_PROTOCOL');
+ });
+ it('requires independent preservation, downtime and fresh destination consent',()=>{
+  const backup={targetId,image,keyPath:'/private/key',preserveCandidates:true,externalWritersQuiesced:true,downtimeAccepted:true};expect(validBackupRetryInput(backup)).toBe(true);
+  expect(validBackupRetryInput({...backup,preserveCandidates:false})).toBe(false);expect(validBackupRetryInput({...backup,downtimeAccepted:false})).toBe(false);expect(validBackupRetryInput({...backup,targetId:'../job'})).toBe(false);
+  const restore={targetId,destinationId:child,image,keyPath:'/private/key',sourcePath:'/private/archive',port:4500,preserveCandidates:true,freshInstallationAccepted:true};expect(validRestorationRetryInput(restore)).toBe(true);
+  expect(validRestorationRetryInput({...restore,destinationId:'/private/root'})).toBe(false);expect(validRestorationRetryInput({...restore,freshInstallationAccepted:false})).toBe(false);
+ });
 });

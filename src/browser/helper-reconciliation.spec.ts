@@ -15,6 +15,7 @@ for(const scenario of ['backup-stopped','restoration-absent','ownership-failure'
    if(cmd==='manager_backup_jobs')return kind==='backup'?[original]:[];
    if(cmd==='manager_restoration_context')return {fresh:false,job:kind==='restoration'?restoreJob:null,receipt:null};
    if(cmd==='manager_maintenance_context')return null;
+   if(cmd==='manager_maintenance_retries')return [];
    if(cmd==='manager_helper_reconciliations')return history;
    if(cmd==='manager_reconcile_helper'){
     inputs.push(args);await new Promise<void>(r=>{resolve=r;});

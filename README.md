@@ -70,4 +70,4 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 
 앱을 닫은 상태의 [암호화 관리 공간 설정 백업·복원](docs/profile-backup.md)은 전시 데이터 사본과 별도로 선택 목록·이력·공간 정보를 보존하는 개발 CLI입니다.
 
-중단된 백업·복원의 [명시적 새 작업 재시도](docs/maintenance-retry.md)는 실패 후보와 이전 journal을 보존하는 개발 CLI입니다. 앱 재시도 화면 연결은 후속 작업입니다.
+중단된 백업·복원의 [명시적 새 작업 재시도](docs/maintenance-retry.md)는 실패 후보와 이전 journal을 보존하는 개발 CLI와 로컬 앱 화면입니다. 복원은 등록된 별도 공간에서 실행하며 앱 화면의 실제 네이티브 GUI·Windows 검증은 남아 있습니다.
