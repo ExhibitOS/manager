@@ -356,6 +356,8 @@ impl LifecycleService {
             extra,
             script,
         } = request;
+        let auxiliary =
+            self.prepare_restoration_auxiliary(id, image, |args| run("docker", args, None, 60))?;
         let container = format!("exhibitos-restore-{id}");
         let mut args = vec![
             "run".into(),
@@ -407,6 +409,12 @@ impl LifecycleService {
         ] {
             args.extend(["--mount".into(), mount]);
         }
+        if let Some(volume) = auxiliary {
+            args.extend([
+                "--mount".into(),
+                format!("type=volume,source={volume},target=/var/lib/postgresql,volume-nocopy"),
+            ]);
+        }
         args.extend_from_slice(extra);
         args.extend([
             "--entrypoint".into(),
@@ -416,19 +424,9 @@ impl LifecycleService {
             "-e".into(),
             script.into(),
         ]);
-        let result = run("docker", &args, None, 3600);
-        if result.is_err()
-            && let Ok(value) = inspected("docker", &["inspect".into(), container.clone()])
-            && value["Config"]["Labels"]["com.exhibitos.restoration"] == id
-        {
-            let _ = run(
-                "docker",
-                &["rm".into(), "--force".into(), container],
-                None,
-                30,
-            );
-        }
-        result
+        // A client error/timeout does not prove the daemon helper is stopped. Preserve it
+        // for exact-owned reconciliation; named auxiliary storage survives --rm exits.
+        run("docker", &args, None, 3600)
     }
     /// Explicitly acknowledged fresh Docker target only. Original archive/key remain read-only.
     pub fn restore_backup(

@@ -77,3 +77,10 @@ mkdir -m 700 "$fresh_root" && EXHIBITOS_MANAGER_ROOT="$fresh_root" \
 일반 macOS 앱에서는 [관리 공간 선택](installation-selection.md)에서 새 복원 공간을 만들고 아래 복원 폼을 사용한다. `EXHIBITOS_MANAGER_ROOT`를 지정하는 실행은 격리된 개발 검증용 고정 공간이며 일반 사용의 필수 절차가 아니다. 실제 네이티브 GUI 조작 검증은 별도로 남아 있다.
 
 실패·중단 후 남은 보조 실행은 [helper 확인과 정지](helper-reconciliation.md)에서 명시적으로 확인할 수 있다. 원래 작업을 성공 처리하거나 후보 데이터를 삭제하지 않으며 실행 중 작업 취소는 아직 별도 구현 항목이다.
+
+
+### Helper 보조 volume 보존
+
+복원 인증·DB/blob 복구 helper가 사용하는 image의 `Config.Volumes`를 immutable content ID로 확인합니다. 알려진 `/var/lib/postgresql` 선언은 작업별 `exhibitos-restore-aux-<UUID>` named local volume에 `volume-nocopy`로 연결합니다. image/작업/volume 대응은 private0600 `restoration-aux-<UUID>.json`에 남깁니다. 같은 작업의 다음 단계는 동일한 소유 volume과 기록을 재사용하며, 원래 volume이 사라졌다면 새 빈 volume을 만들어 진행하지 않습니다. 알 수 없는 image volume·foreign label·driver/options·손상되거나 symlink인 기록은 helper 실행 전 거부합니다.
+
+`--rm`에 의해 종료 helper는 자동 제거될 수 있지만 명시적으로 연결한 named volume은 보존합니다. Docker client 오류·timeout은 daemon helper의 정지 증거가 아니므로 `rm --force`로 정리하지 않습니다. 남은 helper는 실패 기록과 함께 유지하고 [소유권 확인·정지](helper-reconciliation.md)에서 실제 상태를 확인합니다. 기존 익명 volume을 가진 helper의 보존 anchor 경로도 유지합니다. 보조 volume·연결 기록과 실패 후보는 Git 밖이며, 자동 만료/삭제는 없습니다. 이 보존 경로는 실행 중 취소나 전체 복원·운영 백업을 완료한 것으로 표시하지 않습니다.

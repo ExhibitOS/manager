@@ -26,6 +26,7 @@ key_before=key.read_bytes();checks=[];target=attempt/'new-manager';target.mkdir(
 def command(args,timeout=900):return subprocess.run(args,capture_output=True,timeout=timeout)
 def docker(*args):
  r=command([a.docker,*args]);assert r.returncode==0,'Owned Docker command failed';return r.stdout
+new_helpers=[]
 private_env=dict(line.split('=',1) for line in (original/'runtime.env').read_text().splitlines())
 private_values=[private_env['POSTGRES_PASSWORD'],private_env['ADMIN_PASSWORD']]
 def invoke(root,action,*args,ok=True):
@@ -54,6 +55,28 @@ try:
  wrong=attempt/'wrong-key';wrong.write_bytes(secrets.token_bytes(32));wrong.chmod(0o600);root=fresh('wrong-key-target');assert restore(root,keyfile=wrong)['code']=='RESTORE_FAILED'
  job=invoke(root,'restoration-status');assert job['state']=='failed' and job['stage']=='authenticating' and not (root/'installed.json').exists()
  assert invoke(root,'start',ok=False)['errorCode']=='RESTORE_RECOVERY_REQUIRED'
+ auxiliary_path=root/('restoration-aux-'+job['id']+'.json');auxiliary=json.loads(auxiliary_path.read_bytes());auxiliary_before=auxiliary_path.read_bytes()
+ assert auxiliary_path.stat().st_mode&0o777==0o600 and auxiliary['targetId']==job['id'] and auxiliary['image']==image
+ volume=auxiliary['volume'];owned=json.loads(docker('volume','inspect',volume))[0]
+ assert owned['Name']==volume and owned['Driver']=='local' and owned['Labels']['com.exhibitos.restoration']==job['id']
+ step('failed real authentication retains a private correlated named auxiliary volume after auto-remove helper exit')
+ witness=b'synthetic failed restoration helper candidate'
+ cid=docker('run','--pull=never','--rm','-d','--name','exhibitos-restore-'+job['id'],'--label','com.exhibitos.restoration='+job['id'],'--network','none','--read-only','--user','0:0','--cap-drop','ALL','--security-opt','no-new-privileges:true','--mount',f'type=volume,source={volume},target=/var/lib/postgresql,volume-nocopy','--mount',f"type=bind,source={root/('restore-'+job['id'])},target=/work",'--entrypoint','node',image,'-e',"require('node:fs').writeFileSync('/var/lib/postgresql/witness','synthetic failed restoration helper candidate',{mode:0o600});setInterval(()=>{},1000)").decode().strip()
+ new_helpers.append((cid,job['id']))
+ import time
+ for _ in range(10):
+  read=command([a.docker,'exec',cid,'node','-e',"process.stdout.write(require('node:fs').readFileSync('/var/lib/postgresql/witness'))"])
+  if read.returncode==0:break
+  time.sleep(0.2)
+ assert read.stdout==witness
+ observed=json.loads(docker('inspect',cid))[0]
+ observation={'id':cid,'mounts':observed['Mounts'],'hostMounts':observed['HostConfig']['Mounts'],'nameScoped':docker('ps','--all','--no-trunc','--filter','name=exhibitos-restore-'+job['id'],'--format','{{.ID}}').decode().splitlines(),'labelScoped':docker('ps','--all','--no-trunc','--filter','label=com.exhibitos.restoration='+job['id'],'--format','{{.ID}}').decode().splitlines()}
+ debug=root/'named-helper-observation.json';debug.write_text(json.dumps(observation,indent=2)+'\n');debug.chmod(0o600)
+ job_before=(root/'restoration.json').read_bytes();confirmed=invoke(root,'reconcile-helper','restoration',job['id'],'--preserve-candidates');assert confirmed['helperState']=='absent' and confirmed['writersResumed'] is False
+ retained=docker('run','--pull=never','--rm','--network','none','--read-only','--user','0:0','--mount',f'type=volume,source={volume},target=/var/lib/postgresql,readonly,volume-nocopy','--entrypoint','node',image,'-e',"process.stdout.write(require('node:fs').readFileSync('/var/lib/postgresql/witness'))")
+ assert retained==witness and auxiliary_path.read_bytes()==auxiliary_before and (root/'restoration.json').read_bytes()==job_before
+ assert not list(root.glob('helper-retention-*.json'))
+ step('actual named-volume helper stops with witness and original failure/auxiliary journals preserved without anonymous-volume anchor')
  step('actual wrong key retains failed journal and blocks ordinary writer start without installing target')
  corrupted=base/'corrupted-archive'
  if not corrupted.exists():
@@ -64,6 +87,7 @@ try:
  step('actual authenticated ciphertext corruption rejects before target installation')
  original.rename(offline);assert not original.exists()
  receipt=restore(target,ok=True);assert receipt['operation']=='restored-and-running' and receipt['backupId']==report['receipt']['backupId'] and receipt['authenticatedManifestSha256']==report['receipt']['authenticatedManifestSha256']
+ completed_auxiliary=json.loads((target/('restoration-aux-'+receipt['id']+'.json')).read_text());assert json.loads(docker('volume','inspect',completed_auxiliary['volume']))[0]['Labels']['com.exhibitos.restoration']==receipt['id']
  restored_manifest=json.loads((target/'bundle/manifest.json').read_text());assert restored_manifest['bundleId']!=manifest['bundleId'] and restored_manifest['projectName']!=manifest['projectName'] and restored_manifest['ports']==[port]
  new_env=dict(line.split('=',1) for line in (target/'runtime.env').read_text().splitlines());assert all(new_env[k]==v for k,v in private_env.items() if k!='EXHIBITOS_PORT')
  assert invoke(target,'restoration-status')['state']=='completed' and invoke(target,'status')['state']=='running'
@@ -87,6 +111,11 @@ try:
  result=attempt/'restoration-report.json';result.write_text(json.dumps(output,indent=2)+'\n');result.chmod(0o600)
  print('Report '+str(result));print('SHA256 '+hashlib.sha256(result.read_bytes()).hexdigest())
 finally:
+ for cid,job_id in new_helpers:
+  inspected=command([a.docker,'inspect',cid])
+  if inspected.returncode==0:
+   helper=json.loads(inspected.stdout)[0];assert helper['Config']['Labels']['com.exhibitos.restoration']==job_id
+   if helper['State']['Running']:docker('stop','--time','1',cid)
  if (target/'bundle/manifest.json').exists():
   new=json.loads((target/'bundle/manifest.json').read_text());project=new['projectName']
   for cid in docker('ps','--all','--filter','label=com.docker.compose.project='+project,'--format','{{.ID}}').decode().splitlines():

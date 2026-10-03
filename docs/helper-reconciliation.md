@@ -43,3 +43,7 @@ python3 scripts/test-helper-reconciliation.py \
 도구는 새로운 합성 helper·private roots·work volumes만 만들며 실제 정지, 이름/label·중복 충돌 거부, 활성 lock 거부, 원래 journal·work bytes·이전 container 상태 보존과 감사 기록 재조회/중단 복구를 검사한다. 자동 제거 helper의 익명 volume에 합성 witness를 쓰고 정지 후 동일 bytes, 실행하지 않은 보존 컨테이너와 0600 연결 기록을 확인한다. 정지된 테스트 candidates·보존 컨테이너·volume은 보존한다. 결과는 실행 후에만 통과로 기록한다. unit의 합성 engine 응답, browser의 합성 IPC, 실제 Docker 검사와 네이티브 GUI 검증을 구분한다.
 
 Windows/Podman·실제 native GUI·실행 중 취소·서명된 update/rollback·cold-engine·전체 frozen corpus·OEX 검증은 이 기능으로 완료되지 않는다. 호스트 잠금 해제와 iCloud 설정 변경은 사용자의 별도 진행 의사를 따른다.
+
+새 복원 helper는 `restoration-aux-<작업 UUID>.json`으로 연결한 작업별 named auxiliary volume을 사용합니다. 정확한 작업 이름·local driver·빈 options와 `com.exhibitos.restoration` 소유 label을 확인하고 정지 후 volume 존재를 재확인합니다. named volume에는 익명 volume용 보존 anchor를 추가하지 않습니다. 이전에 실행한 anonymous-volume helper의 anchor 보존 방식은 그대로 지원합니다.
+
+macOS Docker Desktop이 `/work` bind를 VM 경로 `/host_mnt<host path>`로 보고할 때에는, engine info의 `OperatingSystem: Docker Desktop`·`OSType: linux`, 정확한 전체 VM 경로와 `HostConfig.Mounts`의 정확한 host 또는 동일 VM source·bind type·쓰기 설정·단일 `/work` 항목이 모두 일치해야 합니다. basename·임의 prefix 제거·`..` 경로·중복 target을 허용하지 않습니다. 다른 운영체제에는 이 매핑 예외를 적용하지 않습니다.

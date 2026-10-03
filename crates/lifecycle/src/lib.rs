@@ -6,6 +6,7 @@ pub mod installation_backup;
 pub mod installations;
 pub mod maintenance;
 pub mod restoration;
+mod restoration_auxiliary;
 pub mod update;
 
 use fs2::FileExt;
