@@ -3,6 +3,7 @@
 pub mod backup_creation;
 pub mod installation_backup;
 pub mod maintenance;
+pub mod restoration;
 pub mod update;
 
 use fs2::FileExt;
@@ -159,6 +160,18 @@ fn same_local_image_id(actual: &str, reference: &str) -> bool {
 }
 fn err(code: &str) -> LifecycleError {
     let guidance = match code {
+        "RESTORE_FRESH_ROOT_REQUIRED" => {
+            "복원은 비어 있는 새 비공개 설치 폴더에서 실행하세요. 기존 설치와 실패 후보를 보존하세요."
+        }
+        "RESTORE_RECOVERY_REQUIRED" => {
+            "복원이 완료되지 않았습니다. 실패 후보와 소유 리소스를 확인하고 별도 새 설치에서 다시 복원하세요. 전시를 자동 시작하지 않습니다."
+        }
+        "RESTORE_RESULT_INVALID" | "RESTORE_LAYOUT_UNSUPPORTED" => {
+            "이 사본의 설치 구성과 이미지 정보를 안전하게 복원할 수 없습니다. 원본과 후보를 보존해 확인하세요."
+        }
+        "RESTORE_FAILED" => {
+            "새 설치 복원을 완료하지 못했습니다. 원본 사본과 기존 설치는 보존되며 실패 후보를 확인하세요."
+        }
         "RUNTIME_MISSING" => "컨테이너 실행 도구를 설치한 후 다시 시도하세요.",
         "ENGINE_UNAVAILABLE" => "컨테이너 실행 도구를 시작한 후 다시 시도하세요.",
         "COMPOSE_UNAVAILABLE" => "Compose 실행 도구를 설치하거나 설정한 후 다시 시도하세요.",
@@ -746,6 +759,7 @@ impl LifecycleService {
         let service = Self { root };
         service.recover_jobs()?;
         service.recover_backup_jobs()?;
+        service.recover_restoration()?;
         Ok(service)
     }
     fn lock(&self) -> Result<File> {
@@ -1017,7 +1031,9 @@ impl LifecycleService {
         jobs.push(job.clone());
         write_json(&self.root, "jobs.json", &jobs)?;
         self.event(&job, "STARTED", "작업을 시작했습니다.")?;
-        let result = self.operation(&job.action);
+        let result = self
+            .ensure_restoration_complete(&job.action)
+            .and_then(|()| self.operation(&job.action));
         job.updated_at = now();
         match result {
             Ok(()) => {
