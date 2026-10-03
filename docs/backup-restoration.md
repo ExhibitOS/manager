@@ -75,3 +75,5 @@ mkdir -m 700 "$fresh_root" && EXHIBITOS_MANAGER_ROOT="$fresh_root" \
 입력 경로는 React 세션 메모리에만 유지한다. backend의 durable job/영수증은 key bytes·경로·비밀번호를 포함하지 않으며 private 설치 공간에 저장된다. 인증을 마친 plaintext/이미지/DB/설정/키·volumes의 백업 범위는 Git 밖이다. 브라우저 미리보기의 합성 IPC 검사는 실제 엔진 복원이나 네이티브 GUI 검증을 대신하지 않는다.
 
 일반 macOS 앱에서는 [관리 공간 선택](installation-selection.md)에서 새 복원 공간을 만들고 아래 복원 폼을 사용한다. `EXHIBITOS_MANAGER_ROOT`를 지정하는 실행은 격리된 개발 검증용 고정 공간이며 일반 사용의 필수 절차가 아니다. 실제 네이티브 GUI 조작 검증은 별도로 남아 있다.
+
+실패·중단 후 남은 보조 실행은 [helper 확인과 정지](helper-reconciliation.md)에서 명시적으로 확인할 수 있다. 원래 작업을 성공 처리하거나 후보 데이터를 삭제하지 않으며 실행 중 작업 취소는 아직 별도 구현 항목이다.

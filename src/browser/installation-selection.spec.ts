@@ -7,7 +7,8 @@ test('synthetic space promotion preserves old space, fences requests and clears 
   let context={selectionToken:'45678901-1234-1234-1234-123456789012',activeId:old,mode:'managed',installations:[{id:old,kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true}],errorCode:null};
   const calls:{cmd:string;args:Record<string,unknown>}[]=[];
   Object.assign(window,{isTauri:true,__selectionCalls:calls,__TAURI_INTERNALS__:{invoke:async(cmd:string,args:Record<string,unknown>={})=>{
-   calls.push({cmd,args});if(cmd==='manager_installations')return structuredClone(context);
+   calls.push({cmd,args});if(cmd==='manager_helper_reconciliations')return [];
+   if(cmd==='manager_installations')return structuredClone(context);
    if(args.selectionToken!==context.selectionToken)throw {code:'INSTALLATION_SELECTION_CHANGED',guidance:'관리 공간이 바뀌었습니다.'};
    if(cmd==='manager_create_installation'){context={...context,selectionToken:'78901234-1234-1234-1234-123456789012',activeId:fresh,installations:[...context.installations,{id:fresh,kind:'recovery',createdAt:2,path:`/private/tmp/synthetic-profile/installations/${fresh}`,available:true}]};return structuredClone(context);}
    if(cmd==='manager_select_installation'){context={...context,selectionToken:'89012345-1234-1234-1234-123456789012',activeId:old};return structuredClone(context);}
@@ -33,6 +34,7 @@ for(const mode of ['override','platform-unverified','managed-missing'] as const)
  await page.addInitScript(({mode})=>{
   const id='56789012-1234-1234-1234-123456789012';
   Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
+   if(cmd==='manager_helper_reconciliations')return [];
    if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:id,mode:mode==='managed-missing'?'managed':mode,installations:[{id,kind:mode==='override'?'override':'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:mode!=='managed-missing'}],errorCode:mode==='managed-missing'?'INSTALLATION_ROOT_UNAVAILABLE':null};
    if(cmd==='manager_detect')return [];
    if(cmd==='manager_status'||cmd==='manager_restoration_context')throw {code:'INSTALLATION_ROOT_UNAVAILABLE',guidance:'현재 폴더 확인 필요'};

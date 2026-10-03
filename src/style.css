@@ -12,3 +12,4 @@
 .backup-verification .note{color:#526452}
 
 .installation-selection{margin-bottom:24px}.installation-selection fieldset{border:0;padding:0;margin:20px 0}.installation-selection legend{font-weight:700;margin-bottom:12px}.installation-selection select{display:block;width:100%;min-height:44px;padding:10px;border:1px solid var(--line,#ccc);border-radius:8px;background:var(--surface,#fff);color:inherit;margin:8px 0 16px}.installation-path{overflow-wrap:anywhere;font-family:monospace}
+.helper-reconciliation{margin-bottom:24px}.helper-reconciliation fieldset{border:0;padding:0;margin:20px 0}.helper-reconciliation legend{font-weight:700;margin-bottom:12px}.helper-reconciliation select{display:block;width:100%;min-height:44px;padding:10px;border:1px solid var(--line,#ccc);border-radius:8px;background:var(--surface,#fff);color:inherit;margin:8px 0 16px}
