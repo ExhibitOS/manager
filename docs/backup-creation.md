@@ -190,3 +190,5 @@ producer 검사와 별도로 유지하며 이번 UI 변경에서 반복 실행�
 helper는 label 및 이름 범위의 합집합으로 찾는다. 원래 소유 label은 남았으나 이름이 변경되었거나, 원래 이름에 다른 label이 붙은 경우 OWNERSHIP_CONFLICT로 실패한다. 실제 Running 응답이 bool이 아니면 ENGINE_OUTPUT_INVALID로 차단한다. 다른 설치의 helper는 작업 ID가 관계없으면 영향을 주지 않는다. 정지는 writer를 계속 정지시키는 비상 경로로 허용하며 자동 helper 종료/데이터 삭제/사본 성공 판정은 하지 않는다.
 
 이 보호는 보존된 작업 기록과 실제 실행 도구 응답에 의존한다. 실행 도구 관리자가 job/label/name 모두를 임의 변경하는 행위를 격리하는 sandbox는 아니다. 취소·정확한 orphan 정리 UI와 전체 복원 활성화는 여전히 후속 구현이다.
+
+실패·중단 후 남은 보조 실행은 [helper 확인과 정지](helper-reconciliation.md)에서 명시적으로 확인할 수 있다. 원래 작업을 성공 처리하거나 후보 데이터를 삭제하지 않으며 실행 중 작업 취소는 아직 별도 구현 항목이다.

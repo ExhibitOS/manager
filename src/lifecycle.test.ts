@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import {describe,it,expect} from 'vitest';
-import {parseInstallationContext,parseJob,parseStatus,managerError,formatBytes,statusLabel,validVerificationInput,parseVerificationReceipt,validCreationInput,parseCreationReceipt,parseBackupJob,validRestorationInput,parseRestorationContext,parseRestorationReceipt} from './lifecycle';
+import {validReconciliationInput,parseReconciliationReceipt,parseReconciliationJob,parseInstallationContext,parseJob,parseStatus,managerError,formatBytes,statusLabel,validVerificationInput,parseVerificationReceipt,validCreationInput,parseCreationReceipt,parseBackupJob,validRestorationInput,parseRestorationContext,parseRestorationReceipt} from './lifecycle';
 const status={installed:false,bundleId:null,version:null,state:'not_installed',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0,quotaBytes:5368709120},activeJob:null};
 describe('Manager lifecycle boundary',()=>{
  it('preserves unknown storage/readiness without claiming success',()=>{const value=parseStatus(status);expect(formatBytes(value.storage.usedBytes)).toBe('측정할 수 없음');expect(value.readiness.ready).toBe(false);expect(statusLabel(value.state)).toBe('설치 전');});
@@ -66,4 +66,11 @@ describe('Installation registry boundary',()=>{
  it('rejects duplicates, injected paths, unregistered selection and malformed tokens',()=>{
   for(const value of [{...selection,selectionToken:'bad'},{...selection,activeId:selection.selectionToken},{...selection,command:'shell'},{...selection,installations:[...selection.installations,...selection.installations]},{...selection,installations:[{...selection.installations[0],path:'relative'}]},{...selection,installations:[...selection.installations,{id:selection.selectionToken,kind:'recovery',createdAt:1,path:'/private/other',available:true}]}])expect(()=>parseInstallationContext(value)).toThrow('MANAGER_PROTOCOL');
  });
+});
+
+const reconciliation={id:'12345678-1234-1234-1234-123456789012',targetId:'23456789-1234-1234-1234-123456789012',kind:'backup',operation:'helper-reconciled',helperState:'stopped',dataPreserved:true,writersResumed:false,at:2};
+describe('Helper reconciliation boundary',()=>{
+ it('requires known operation identity and explicit preservation acknowledgement',()=>{expect(validReconciliationInput({kind:'backup',targetId:reconciliation.targetId,preserveCandidates:true})).toBe(true);expect(validReconciliationInput({kind:'backup',targetId:'container id',preserveCandidates:true})).toBe(false);expect(validReconciliationInput({kind:'restoration',targetId:reconciliation.targetId,preserveCandidates:false})).toBe(false);});
+ it('rejects mutation claims and never conflates helper state with restoration completion',()=>{expect(parseReconciliationReceipt(reconciliation).writersResumed).toBe(false);for(const value of [{...reconciliation,writersResumed:true},{...reconciliation,dataPreserved:false},{...reconciliation,operation:'restored-and-running'},{...reconciliation,helperState:'running'},{...reconciliation,raw:'credentials'},{...reconciliation,at:Number.MAX_SAFE_INTEGER}])expect(()=>parseReconciliationReceipt(value)).toThrow('MANAGER_PROTOCOL');});
+ it('keeps checking/interrupted records separate from verified helper states',()=>{const job={id:reconciliation.id,targetId:reconciliation.targetId,kind:'backup',state:'interrupted',helperState:null,errorCode:'INTERRUPTED',createdAt:1,updatedAt:2};expect(parseReconciliationJob(job).helperState).toBe(null);for(const value of [{...job,state:'completed'},{...job,state:'checking',errorCode:'INTERRUPTED'},{...job,errorCode:null},{...job,helperState:'stopped'},{...job,updatedAt:0},{...job,command:'rm'}])expect(()=>parseReconciliationJob(value)).toThrow('MANAGER_PROTOCOL');});
 });

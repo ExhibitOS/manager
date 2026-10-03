@@ -63,3 +63,5 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 공개 여부는 source/권리/secret/독립 build 검토 후 결정합니다.
 
 관리 공간 전환과 보존·복구 경계는 [관리 공간 선택](docs/installation-selection.md)을 참조하세요.
+
+[실패·중단 helper 확인](docs/helper-reconciliation.md)은 해당 작업의 보조 실행만 정지하고 데이터를 보존하는 복구 경로입니다. 실행 중 취소·자동 재개와 원래 백업·복원 성공 판정은 별도입니다.

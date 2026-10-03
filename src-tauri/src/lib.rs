@@ -55,6 +55,38 @@ struct SelectionInput {
     target_id: String,
     preserve_existing: bool,
 }
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReconciliationInput {
+    kind: String,
+    target_id: String,
+    preserve_candidates: bool,
+}
+#[tauri::command]
+async fn manager_reconcile_helper(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    selection_token: String,
+    input: ReconciliationInput,
+) -> Result<exhibitos_lifecycle::helper_reconciliation::ReconciliationReceipt, LifecycleError> {
+    caller(&window)?;
+    blocking(state.0.clone(), selection_token, move |service| {
+        service.reconcile_helper(&input.kind, &input.target_id, input.preserve_candidates)
+    })
+    .await
+}
+#[tauri::command]
+async fn manager_helper_reconciliations(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    selection_token: String,
+) -> Result<Vec<exhibitos_lifecycle::helper_reconciliation::ReconciliationJob>, LifecycleError> {
+    caller(&window)?;
+    blocking(state.0.clone(), selection_token, |service| {
+        service.helper_reconciliations()
+    })
+    .await
+}
 #[tauri::command]
 async fn manager_installations(
     window: WebviewWindow,
@@ -390,6 +422,8 @@ pub fn run() {
             manager_backup_jobs,
             manager_restore_backup,
             manager_restoration_context,
+            manager_reconcile_helper,
+            manager_helper_reconciliations,
             manager_installations,
             manager_create_installation,
             manager_select_installation
@@ -528,6 +562,20 @@ mod tests {
                 source_path: valid.source_path.clone(),
             };
             assert!(value.validate().is_err());
+        }
+    }
+    #[test]
+    fn reconciliation_wire_input_rejects_raw_targets_and_non_boolean_consent() {
+        let valid = serde_json::json!({"kind":"backup","targetId":"12345678-1234-1234-1234-123456789012","preserveCandidates":true});
+        assert!(serde_json::from_value::<ReconciliationInput>(valid.clone()).is_ok());
+        for (key, value) in [
+            ("container", serde_json::json!("foreign")),
+            ("command", serde_json::json!("rm")),
+            ("preserveCandidates", serde_json::json!("true")),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[key] = value;
+            assert!(serde_json::from_value::<ReconciliationInput>(invalid).is_err());
         }
     }
     #[test]

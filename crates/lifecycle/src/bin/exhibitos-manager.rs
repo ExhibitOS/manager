@@ -5,17 +5,27 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if !matches!(args.len(), 4 | 7 | 9)
         || args[1] != "--root"
-        || (args.len() == 7 && !matches!(args[3].as_str(), "verify-backup" | "create-backup"))
+        || (args.len() == 7
+            && !matches!(
+                args[3].as_str(),
+                "verify-backup" | "create-backup" | "reconcile-helper"
+            ))
         || (args.len() == 9 && args[3] != "restore-backup")
     {
         eprintln!(
-            "usage: exhibitos-manager --root <private absolute directory> detect|install|start|stop|restart|retry|status|jobs|logs|open-url|prepare-installation-backup|backup-jobs|restoration-status; create-backup <trusted image ID> <private key file> --external-writers-quiesced; verify-backup <trusted image ID> <private key file> <archive directory>; restore-backup <trusted image ID> <private key file> <archive directory> <new loopback port> --fresh-installation"
+            "usage: exhibitos-manager --root <private absolute directory> detect|install|start|stop|restart|retry|status|jobs|logs|open-url|prepare-installation-backup|backup-jobs|restoration-status|helper-reconciliations; reconcile-helper <backup|restoration> <failed job UUID> --preserve-candidates; create-backup <trusted image ID> <private key file> --external-writers-quiesced; verify-backup <trusted image ID> <private key file> <archive directory>; restore-backup <trusted image ID> <private key file> <archive directory> <new loopback port> --fresh-installation"
         );
         std::process::exit(2);
     }
     let result = (|| -> Result<serde_json::Value, exhibitos_lifecycle::LifecycleError> {
         let s = LifecycleService::new(PathBuf::from(&args[2]))?;
         let value = match args[3].as_str() {
+            "helper-reconciliations" => serde_json::to_value(s.helper_reconciliations()?),
+            "reconcile-helper" if args.len() == 7 => serde_json::to_value(s.reconcile_helper(
+                &args[4],
+                &args[5],
+                args[6] == "--preserve-candidates",
+            )?),
             "restoration-status" => serde_json::to_value(s.restoration_status()?),
             "restore-backup" if args.len() == 9 => serde_json::to_value(s.restore_backup(
                 &args[4],

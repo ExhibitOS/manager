@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Trusted-bundle desktop lifecycle. No shell, arbitrary compose paths or destructive volume removal.
 pub mod backup_creation;
+pub mod helper_reconciliation;
 pub mod installation_backup;
 pub mod installations;
 pub mod maintenance;
@@ -215,6 +216,12 @@ fn err(code: &str) -> LifecycleError {
         }
         "BACKUP_PLATFORM_UNVERIFIED" => "이 운영체제의 백업 검증 연결은 아직 검증되지 않았습니다.",
         "VERSION_MISMATCH" => "호환되는 전시 실행 패키지가 필요합니다.",
+        "RECONCILIATION_INPUT_INVALID" => "지원되는 백업·복원 작업 ID를 선택하세요.",
+        "RECONCILIATION_ACK_REQUIRED" => "후보 데이터 보존과 helper만 정지하는 것을 확인하세요.",
+        "RECONCILIATION_TARGET_INVALID" => "현재 공간의 실패·중단 작업만 확인·정지할 수 있습니다.",
+        "RECONCILIATION_UNCERTAIN" => {
+            "helper의 정지 여부가 확인되지 않았습니다. 데이터와 기록을 보존하고 다시 확인하세요."
+        }
         "INSTALLATION_SELECTION_CHANGED" => {
             "관리 공간이 바뀌었습니다. 상태를 다시 확인한 뒤 작업하세요."
         }
@@ -782,6 +789,7 @@ impl LifecycleService {
         service.recover_jobs()?;
         service.recover_backup_jobs()?;
         service.recover_restoration()?;
+        service.recover_helper_reconciliations()?;
         Ok(service)
     }
     fn lock(&self) -> Result<File> {
