@@ -8,7 +8,7 @@ fn main() {
         || (args.len() == 7 && args[3] != "verify-backup")
     {
         eprintln!(
-            "usage: exhibitos-manager --root <private absolute directory> detect|install|start|stop|restart|retry|status|jobs|logs|open-url; verify-backup <trusted image ID> <private key file> <archive directory>"
+            "usage: exhibitos-manager --root <private absolute directory> detect|install|start|stop|restart|retry|status|jobs|logs|open-url|prepare-installation-backup; verify-backup <trusted image ID> <private key file> <archive directory>"
         );
         std::process::exit(2);
     }
@@ -20,6 +20,7 @@ fn main() {
                 std::path::Path::new(&args[5]),
                 std::path::Path::new(&args[6]),
             )?),
+            "prepare-installation-backup" => serde_json::to_value(s.prepare_installation_backup()?),
             "detect" => serde_json::to_value(s.detect()?),
             "install" => serde_json::to_value(s.install()?),
             "start" => serde_json::to_value(s.execute(Action::Start)?),
