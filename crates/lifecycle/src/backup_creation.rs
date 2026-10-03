@@ -454,6 +454,28 @@ fn validate_copy(root: &Path, result: &HelperResult) -> Result<()> {
     }
     Ok(())
 }
+fn validate_backup_helper(helper: &Value, jobs: &[BackupCreationJob]) -> Result<()> {
+    let name = helper["Name"].as_str();
+    let owner = helper["Config"]["Labels"]["com.exhibitos.backup"].as_str();
+    let known_name = jobs
+        .iter()
+        .any(|job| name == Some(format!("/exhibitos-backup-{}", job.id).as_str()));
+    let known_owner = jobs.iter().any(|job| owner == Some(job.id.as_str()));
+    if !known_name && !known_owner {
+        return Ok(());
+    }
+    if !jobs.iter().any(|job| {
+        owner == Some(job.id.as_str())
+            && name == Some(format!("/exhibitos-backup-{}", job.id).as_str())
+    }) {
+        return Err(err("OWNERSHIP_CONFLICT"));
+    }
+    match helper["State"]["Running"].as_bool() {
+        Some(true) => Err(err("BACKUP_ORPHAN_PENDING")),
+        Some(false) => Ok(()),
+        None => Err(err("ENGINE_OUTPUT_INVALID")),
+    }
+}
 impl LifecycleService {
     pub(crate) fn recover_backup_jobs(&self) -> Result<()> {
         let guard = match self.lock() {
@@ -508,6 +530,41 @@ impl LifecycleService {
         result.sort_by_key(|job| job.created_at);
         Ok(result)
     }
+    /// Must run under the operation lock before allowing managed writers to resume.
+    pub(crate) fn ensure_backup_helpers_idle(&self, engine: &str) -> Result<()> {
+        let jobs = self.read_backup_jobs()?;
+        if jobs.is_empty() {
+            return Ok(());
+        }
+        // Union label and name scopes: a renamed helper or removed ownership label
+        // must not silently stop fencing writers. Foreign installations remain ignored.
+        let mut helpers = std::collections::BTreeSet::new();
+        for filter in ["label=com.exhibitos.backup", "name=exhibitos-backup-"] {
+            let output = String::from_utf8(run(
+                engine,
+                &[
+                    "ps".into(),
+                    "--all".into(),
+                    "--filter".into(),
+                    filter.into(),
+                    "--format".into(),
+                    "{{.ID}}".into(),
+                ],
+                None,
+                30,
+            )?)
+            .map_err(|_| err("ENGINE_OUTPUT_INVALID"))?;
+            helpers.extend(output.lines().map(str::to_owned));
+        }
+        for id in &helpers {
+            if id.len() < 12 || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(err("ENGINE_OUTPUT_INVALID"));
+            }
+            let helper = inspected(engine, &["inspect".into(), id.clone()])?;
+            validate_backup_helper(&helper, &jobs)?;
+        }
+        Ok(())
+    }
     pub fn backup_jobs(&self) -> Result<Vec<BackupCreationJob>> {
         self.recover_backup_jobs()?;
         self.read_backup_jobs()
@@ -544,42 +601,7 @@ impl LifecycleService {
         if engine != "docker" {
             return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
         }
-        let helpers = String::from_utf8(run(
-            &engine,
-            &[
-                "ps".into(),
-                "--all".into(),
-                "--filter".into(),
-                "label=com.exhibitos.backup".into(),
-                "--format".into(),
-                "{{.ID}}".into(),
-            ],
-            None,
-            30,
-        )?)
-        .map_err(|_| err("ENGINE_OUTPUT_INVALID"))?;
-        for id in helpers.lines() {
-            if id.len() < 12 || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return Err(err("ENGINE_OUTPUT_INVALID"));
-            }
-            let helper = inspected(&engine, &["inspect".into(), id.into()])?;
-            if previous_jobs
-                .iter()
-                .any(|job| helper["Name"] == format!("/exhibitos-backup-{}", job.id))
-            {
-                let owner = helper["Config"]["Labels"]["com.exhibitos.backup"]
-                    .as_str()
-                    .ok_or_else(|| err("OWNERSHIP_CONFLICT"))?;
-                if !previous_jobs.iter().any(|job| {
-                    job.id == owner && helper["Name"] == format!("/exhibitos-backup-{}", job.id)
-                }) {
-                    return Err(err("OWNERSHIP_CONFLICT"));
-                }
-                if helper["State"]["Running"] == true {
-                    return Err(err("BACKUP_ORPHAN_PENDING"));
-                }
-            }
-        }
+        self.ensure_backup_helpers_idle(&engine)?;
         local_image(&engine, image)?;
         let prepared = self.prepare_installation_backup_locked()?;
         let preparation = self
@@ -833,6 +855,45 @@ impl LifecycleService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn owned_helpers_gate_writers_and_ambiguous_identity_fails_closed() {
+        let id = Uuid::new_v4().to_string();
+        let jobs = vec![BackupCreationJob {
+            id: id.clone(),
+            operation: "create".into(),
+            state: "interrupted".into(),
+            stage: "synthetic".into(),
+            error_code: Some("INTERRUPTED".into()),
+            created_at: 1,
+            updated_at: 2,
+        }];
+        let mut helper = serde_json::json!({"Name":format!("/exhibitos-backup-{id}"),"Config":{"Labels":{"com.exhibitos.backup":id}},"State":{"Running":true}});
+        assert_eq!(
+            validate_backup_helper(&helper, &jobs).unwrap_err().code,
+            "BACKUP_ORPHAN_PENDING"
+        );
+        helper["State"]["Running"] = false.into();
+        assert!(validate_backup_helper(&helper, &jobs).is_ok());
+        helper["State"]["Running"] = "false".into();
+        assert_eq!(
+            validate_backup_helper(&helper, &jobs).unwrap_err().code,
+            "ENGINE_OUTPUT_INVALID"
+        );
+        helper["Name"] = "/renamed-helper".into();
+        assert_eq!(
+            validate_backup_helper(&helper, &jobs).unwrap_err().code,
+            "OWNERSHIP_CONFLICT"
+        );
+        helper["Name"] = format!("/exhibitos-backup-{}", jobs[0].id).into();
+        helper["Config"]["Labels"]["com.exhibitos.backup"] = Uuid::new_v4().to_string().into();
+        assert_eq!(
+            validate_backup_helper(&helper, &jobs).unwrap_err().code,
+            "OWNERSHIP_CONFLICT"
+        );
+        helper["Name"] = "/foreign-helper".into();
+        helper["State"]["Running"] = true.into();
+        assert!(validate_backup_helper(&helper, &jobs).is_ok());
+    }
     #[test]
     fn ack_image_and_key_boundaries_precede_engine_or_writer_changes() {
         let root = std::env::temp_dir().join(format!("backup-create-test-{}", Uuid::new_v4()));

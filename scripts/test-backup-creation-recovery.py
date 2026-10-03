@@ -23,8 +23,29 @@ try:
  jobs=json.loads(subprocess.check_output([str(manager),'--root',str(root),'backup-jobs'],text=True))
  oldjob=next(v for v in jobs if v['id']==id);assert oldjob['state']=='interrupted' and oldjob['stage']=='synthetic-orphan'
  assert not (workspace/'receipt.json').exists()
- report={'format':1,'checks':['existing actual backup work volume has exact ownership/local-driver/no-options','actual orphan helper blocks new creation before writer changes','reopened durable running job becomes interrupted, never successful'],'limits':['only new synthetic orphan helper; full creation preceding guard tested separately']}
- p=base/'orphan-proof-report.json';p.write_text(json.dumps(report,indent=2)+'\n');p.chmod(0o600)
+ project=json.loads((root/'bundle/manifest.json').read_text())['projectName']
+ states=lambda:subprocess.check_output([docker,'ps','--all','--filter','label=com.docker.compose.project='+project,'--format','{{.ID}} {{.State}}'],text=True).splitlines()
+ states_before=sorted(states())
+ before={name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in ['engine.json','installed.json','runtime.env','bundle/manifest.json','bundle/compose.yaml']}
+ def blocked(action,code):
+  result=subprocess.run([str(manager),'--root',str(root),action],capture_output=True,timeout=180)
+  value=json.loads(result.stdout);assert result.returncode and value['state']=='failed' and value['errorCode']==code and not result.stderr,(action,value)
+ for action in ['start','restart','install','retry']:blocked(action,'BACKUP_ORPHAN_PENDING')
+ renamed=container+'-renamed'
+ subprocess.run([docker,'rename',container,renamed],check=True,capture_output=True)
+ try:
+  blocked('start','OWNERSHIP_CONFLICT')
+ finally:
+  subprocess.run([docker,'rename',renamed,container],check=True,capture_output=True)
+ info=json.loads(subprocess.check_output([docker,'inspect',container],text=True))[0]
+ assert info['Config']['Labels']['com.exhibitos.backup']==id
+ subprocess.run([docker,'stop','--time','1',container],check=True,capture_output=True)
+ positive=subprocess.run([str(manager),'--root',str(root),'install'],capture_output=True,timeout=300)
+ assert positive.returncode==0 and json.loads(positive.stdout)['state']=='completed' and not positive.stderr
+ after={name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in before}
+ assert before==after and sorted(states())==states_before
+ report={'format':1,'checks':['existing actual backup work volume has exact ownership/local-driver/no-options','actual orphan helper blocks new creation before writer changes','reopened durable running job becomes interrupted, never successful','actual start/restart/install/retry refuse active helper','renamed owned helper fails closed','stopped correctly owned helper permits actual install','installed metadata/original credentials and actual service states unchanged'],'limits':['only new synthetic orphan helper; full creation preceding guard tested separately']}
+ p=base/'writer-guard-proof-report.json';p.write_text(json.dumps(report,indent=2)+'\n');p.chmod(0o600)
  print('PASS actual orphan boundary and work-volume ownership; report SHA256 '+hashlib.sha256(p.read_bytes()).hexdigest())
 finally:
  info=json.loads(subprocess.check_output([docker,'inspect',container],text=True))[0]

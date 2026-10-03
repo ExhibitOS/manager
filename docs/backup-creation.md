@@ -182,3 +182,11 @@ producer 검사와 별도로 유지하며 이번 UI 변경에서 반복 실행�
 생성 직후 새 status 응답이 지연되어도 설치·시작·재시도 버튼을 활성화하지 않는다. 완료 응답이 유실되거나 malformed이면 실패를 단정하지 않고 완료 여부를 확인하지 못했다고 안내한다. 소스 변경으로 오래된 frontend snapshot을 대상으로 하던 native build 두 번은 해당 owned Cargo만 SIGINT로 종료하고 dependencies/logs를 보존했다. 최종 source와 같은 snapshot/config로 다시 패키징하며 취소한 시도를 통과로 기록하지 않는다.
 
 최종 macOS 개발 앱 패키징은 같은18개 frontend source hash를 확인한 production snapshot을 사용해 통과했다. 임시 Tauri build override로 검증된 `dist`를 embed하고 지연된 workspace beforeBuildCommand만 건너뛰었으며 override는 source/config에 저장하지 않았다. Mach-O arm64 실행 파일은11,868,792bytes, SHA-256 `49a8ff9a677091539c55eae109be211615196c69ebba8816dba21d316edf2777`이다. Linker ad-hoc signature만 존재하고 TeamIdentifier·sealed bundle resources는 없으므로 배포 서명·공증·실제 GUI acceptance가 아니다.
+
+## 중단된 helper와 전시 재개 보호
+
+백업 helper가 남아 있는 상태에서 전시 writer를 시작하면 보존 작업과 새 쓰기가 겹칠 수 있다. Manager의 설치·시작·재시작·해당 작업 재시도는 operation lock 안에서 기존 백업 job과 실행 도구의 실제 helper 상태를 검사한다. 완료/중단/실패 기록만으로 helper가 끝났다고 추정하지 않는다. 작업 ID와 이름·label이 일치하는 helper가 실행 중이면 BACKUP_ORPHAN_PENDING으로 실패하며 전시와 설치 설정을 변경하지 않는다.
+
+helper는 label 및 이름 범위의 합집합으로 찾는다. 원래 소유 label은 남았으나 이름이 변경되었거나, 원래 이름에 다른 label이 붙은 경우 OWNERSHIP_CONFLICT로 실패한다. 실제 Running 응답이 bool이 아니면 ENGINE_OUTPUT_INVALID로 차단한다. 다른 설치의 helper는 작업 ID가 관계없으면 영향을 주지 않는다. 정지는 writer를 계속 정지시키는 비상 경로로 허용하며 자동 helper 종료/데이터 삭제/사본 성공 판정은 하지 않는다.
+
+이 보호는 보존된 작업 기록과 실제 실행 도구 응답에 의존한다. 실행 도구 관리자가 job/label/name 모두를 임의 변경하는 행위를 격리하는 sandbox는 아니다. 취소·정확한 orphan 정리 UI와 전체 복원 활성화는 여전히 후속 구현이다.
