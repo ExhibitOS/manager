@@ -3,15 +3,23 @@ use exhibitos_lifecycle::{Action, LifecycleService};
 use std::path::PathBuf;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() != 4 || args[1] != "--root" {
+    if !matches!(args.len(), 4 | 7)
+        || args[1] != "--root"
+        || (args.len() == 7 && args[3] != "verify-backup")
+    {
         eprintln!(
-            "usage: exhibitos-manager --root <private absolute directory> detect|install|start|stop|restart|retry|status|jobs|logs|open-url"
+            "usage: exhibitos-manager --root <private absolute directory> detect|install|start|stop|restart|retry|status|jobs|logs|open-url; verify-backup <trusted image ID> <private key file> <archive directory>"
         );
         std::process::exit(2);
     }
     let result = (|| -> Result<serde_json::Value, exhibitos_lifecycle::LifecycleError> {
         let s = LifecycleService::new(PathBuf::from(&args[2]))?;
         let value = match args[3].as_str() {
+            "verify-backup" if args.len() == 7 => serde_json::to_value(s.verify_backup(
+                &args[4],
+                std::path::Path::new(&args[5]),
+                std::path::Path::new(&args[6]),
+            )?),
             "detect" => serde_json::to_value(s.detect()?),
             "install" => serde_json::to_value(s.install()?),
             "start" => serde_json::to_value(s.execute(Action::Start)?),
