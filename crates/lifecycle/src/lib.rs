@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Trusted-bundle desktop lifecycle. No shell, arbitrary compose paths or destructive volume removal.
+pub mod backup_creation;
 pub mod installation_backup;
 pub mod maintenance;
 pub mod update;
@@ -185,6 +186,18 @@ fn err(code: &str) -> LifecycleError {
         }
         "BACKUP_CONFIGURATION_INVALID" => {
             "현재 설치 환경 형식을 확인하세요. 기존 비밀번호를 바꾸거나 설정을 지우지 마세요."
+        }
+        "BACKUP_ORPHAN_PENDING" => {
+            "이전 백업의 유지보수 helper가 아직 실행 중입니다. 작업 ID와 정확한 label을 확인해 해당 helper를 정지한 뒤 재시도하세요. 이전 사본과 volume은 보존하세요."
+        }
+        "BACKUP_CREATION_FAILED" => {
+            "백업 생성이 완료되지 않았습니다. 작업 기록과 보존된 후보를 확인하세요. 전시 writer는 정지 상태일 수 있으며 기존 데이터와 사본은 삭제하지 않았습니다."
+        }
+        "BACKUP_OPERATOR_ACK_REQUIRED" => {
+            "다른 앱·스크립트의 DB·작품·설정 변경을 중지했는지 확인한 뒤 백업을 실행하세요."
+        }
+        "BACKUP_LAYOUT_UNSUPPORTED" => {
+            "현재 설치의 volume·network·서비스 구성을 백업 producer가 지원하는지 확인하세요. 원본 설정을 변경하지 마세요."
         }
         "BACKUP_PLATFORM_UNVERIFIED" => "이 운영체제의 백업 검증 연결은 아직 검증되지 않았습니다.",
         "VERSION_MISMATCH" => "호환되는 전시 실행 패키지가 필요합니다.",
@@ -732,6 +745,7 @@ impl LifecycleService {
         }
         let service = Self { root };
         service.recover_jobs()?;
+        service.recover_backup_jobs()?;
         Ok(service)
     }
     fn lock(&self) -> Result<File> {
