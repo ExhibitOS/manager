@@ -7,7 +7,8 @@ test('synthetic space promotion preserves old space, fences requests and clears 
   let context={selectionToken:'45678901-1234-1234-1234-123456789012',activeId:old,mode:'managed',installations:[{id:old,kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true}],errorCode:null};
   const calls:{cmd:string;args:Record<string,unknown>}[]=[];
   Object.assign(window,{isTauri:true,__selectionCalls:calls,__TAURI_INTERNALS__:{invoke:async(cmd:string,args:Record<string,unknown>={})=>{
-   calls.push({cmd,args});if(cmd==='manager_helper_reconciliations')return [];
+   calls.push({cmd,args});if(cmd==='manager_maintenance_context')return null;
+   if(cmd==='manager_helper_reconciliations')return [];
    if(cmd==='manager_installations')return structuredClone(context);
    if(args.selectionToken!==context.selectionToken)throw {code:'INSTALLATION_SELECTION_CHANGED',guidance:'관리 공간이 바뀌었습니다.'};
    if(cmd==='manager_create_installation'){context={...context,selectionToken:'78901234-1234-1234-1234-123456789012',activeId:fresh,installations:[...context.installations,{id:fresh,kind:'recovery',createdAt:2,path:`/private/tmp/synthetic-profile/installations/${fresh}`,available:true}]};return structuredClone(context);}
@@ -34,6 +35,7 @@ for(const mode of ['override','platform-unverified','managed-missing'] as const)
  await page.addInitScript(({mode})=>{
   const id='56789012-1234-1234-1234-123456789012';
   Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
+   if(cmd==='manager_maintenance_context')return null;
    if(cmd==='manager_helper_reconciliations')return [];
    if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:id,mode:mode==='managed-missing'?'managed':mode,installations:[{id,kind:mode==='override'?'override':'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:mode!=='managed-missing'}],errorCode:mode==='managed-missing'?'INSTALLATION_ROOT_UNAVAILABLE':null};
    if(cmd==='manager_detect')return [];

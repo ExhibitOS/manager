@@ -47,3 +47,5 @@ Windows/Podman·실제 native GUI·실행 중 취소·서명된 update/rollback�
 새 복원 helper는 `restoration-aux-<작업 UUID>.json`으로 연결한 작업별 named auxiliary volume을 사용합니다. 정확한 작업 이름·local driver·빈 options와 `com.exhibitos.restoration` 소유 label을 확인하고 정지 후 volume 존재를 재확인합니다. named volume에는 익명 volume용 보존 anchor를 추가하지 않습니다. 이전에 실행한 anonymous-volume helper의 anchor 보존 방식은 그대로 지원합니다.
 
 macOS Docker Desktop이 `/work` bind를 VM 경로 `/host_mnt<host path>`로 보고할 때에는, engine info의 `OperatingSystem: Docker Desktop`·`OSType: linux`, 정확한 전체 VM 경로와 `HostConfig.Mounts`의 정확한 host 또는 동일 VM source·bind type·쓰기 설정·단일 `/work` 항목이 모두 일치해야 합니다. basename·임의 prefix 제거·`..` 경로·중복 target을 허용하지 않습니다. 다른 운영체제에는 이 매핑 예외를 적용하지 않습니다.
+
+진행 중 백업 생성·새 설치 복원은 [취소 요청과 실제 정지 확인](maintenance-cancellation.md)을 사용합니다. 요청 저장·앱 종료·helper 확인을 취소 성공으로 혼동하지 마세요.

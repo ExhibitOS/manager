@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Trusted-bundle desktop lifecycle. No shell, arbitrary compose paths or destructive volume removal.
 pub mod backup_creation;
+pub mod cancellation;
 pub mod helper_reconciliation;
 pub mod installation_backup;
 pub mod installations;
@@ -163,6 +164,16 @@ fn same_local_image_id(actual: &str, reference: &str) -> bool {
 }
 fn err(code: &str) -> LifecycleError {
     let guidance = match code {
+        "CANCELLED" => {
+            "취소를 확인했습니다. 후보와 데이터는 보존되며 서버를 자동 재개하지 않습니다."
+        }
+        "CANCEL_UNCERTAIN" => {
+            "정지 확인이 불확실합니다. 후보를 보존하고 helper와 실제 서버 상태를 확인하세요."
+        }
+        "CANCEL_ACK_REQUIRED" | "CANCEL_INPUT_INVALID" | "CANCEL_TARGET_INVALID" => {
+            "현재 진행 중인 작업과 후보 보존 동의를 확인하세요."
+        }
+        "CANCEL_RECOVERY_REQUIRED" => "중단된 취소 기록을 확인하고 후보를 보존하세요.",
         "RESTORE_FRESH_ROOT_REQUIRED" => {
             "복원은 비어 있는 새 비공개 설치 폴더에서 실행하세요. 기존 설치와 실패 후보를 보존하세요."
         }
@@ -565,6 +576,15 @@ fn engine_executable(kind: &str) -> Option<PathBuf> {
 }
 // Both streams are drained, but output is capped. Raw engine errors never leave this module.
 fn run(binary: &str, args: &[String], cwd: Option<&Path>, seconds: u64) -> Result<Vec<u8>> {
+    run_observed(binary, args, cwd, seconds, || Ok(()))
+}
+fn run_observed(
+    binary: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    seconds: u64,
+    mut observe: impl FnMut() -> Result<()>,
+) -> Result<Vec<u8>> {
     let executable = if matches!(binary, "docker" | "podman") {
         engine_executable(binary).ok_or_else(|| err("RUNTIME_MISSING"))?
     } else {
@@ -634,6 +654,11 @@ fn run(binary: &str, args: &[String], cwd: Option<&Path>, seconds: u64) -> Resul
         match child.try_wait() {
             Ok(Some(s)) => break s,
             Ok(None) => {
+                if let Err(error) = observe() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error);
+                }
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -791,6 +816,7 @@ impl LifecycleService {
         service.recover_backup_jobs()?;
         service.recover_restoration()?;
         service.recover_helper_reconciliations()?;
+        service.recover_maintenance_cancellation()?;
         Ok(service)
     }
     fn lock(&self) -> Result<File> {

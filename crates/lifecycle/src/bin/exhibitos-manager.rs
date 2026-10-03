@@ -8,18 +8,20 @@ fn main() {
         || (args.len() == 7
             && !matches!(
                 args[3].as_str(),
-                "verify-backup" | "create-backup" | "reconcile-helper"
+                "verify-backup" | "create-backup" | "reconcile-helper" | "cancel-maintenance"
             ))
         || (args.len() == 9 && args[3] != "restore-backup")
     {
         eprintln!(
-            "usage: exhibitos-manager --root <private absolute directory> detect|install|start|stop|restart|retry|status|jobs|logs|open-url|prepare-installation-backup|backup-jobs|restoration-status|helper-reconciliations; reconcile-helper <backup|restoration> <failed job UUID> --preserve-candidates; create-backup <trusted image ID> <private key file> --external-writers-quiesced; verify-backup <trusted image ID> <private key file> <archive directory>; restore-backup <trusted image ID> <private key file> <archive directory> <new loopback port> --fresh-installation"
+            "usage: exhibitos-manager --root <private absolute directory> detect|install|start|stop|restart|retry|status|jobs|logs|open-url|prepare-installation-backup|backup-jobs|restoration-status|helper-reconciliations|maintenance-context; cancel-maintenance <backup|restoration> <active UUID> --preserve-candidates; reconcile-helper <backup|restoration> <failed job UUID> --preserve-candidates; create-backup <trusted image ID> <private key file> --external-writers-quiesced; verify-backup <trusted image ID> <private key file> <archive directory>; restore-backup <trusted image ID> <private key file> <archive directory> <new loopback port> --fresh-installation"
         );
         std::process::exit(2);
     }
     let result = (|| -> Result<serde_json::Value, exhibitos_lifecycle::LifecycleError> {
         let s = LifecycleService::new(PathBuf::from(&args[2]))?;
         let value = match args[3].as_str() {
+            "maintenance-context" => serde_json::to_value(s.maintenance_context()?),
+            "cancel-maintenance" if args.len()==7 => serde_json::to_value(s.request_maintenance_cancel(&args[4], &args[5], args[6]=="--preserve-candidates")?),
             "helper-reconciliations" => serde_json::to_value(s.helper_reconciliations()?),
             "reconcile-helper" if args.len() == 7 => serde_json::to_value(s.reconcile_helper(
                 &args[4],

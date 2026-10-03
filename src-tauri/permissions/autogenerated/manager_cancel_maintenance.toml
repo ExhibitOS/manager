@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-cancel-maintenance"
+description = "Enables the manager_cancel_maintenance command without any pre-configured scope."
+commands.allow = ["manager_cancel_maintenance"]
+
+[[permission]]
+identifier = "deny-manager-cancel-maintenance"
+description = "Denies the manager_cancel_maintenance command without any pre-configured scope."
+commands.deny = ["manager_cancel_maintenance"]

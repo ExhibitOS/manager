@@ -76,6 +76,31 @@ async fn manager_reconcile_helper(
     .await
 }
 #[tauri::command]
+async fn manager_maintenance_context(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    selection_token: String,
+) -> Result<Option<exhibitos_lifecycle::cancellation::MaintenanceContext>, LifecycleError> {
+    caller(&window)?;
+    blocking(state.0.clone(), selection_token, |service| {
+        service.maintenance_context()
+    })
+    .await
+}
+#[tauri::command]
+async fn manager_cancel_maintenance(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    selection_token: String,
+    input: ReconciliationInput,
+) -> Result<exhibitos_lifecycle::cancellation::MaintenanceContext, LifecycleError> {
+    caller(&window)?;
+    blocking(state.0.clone(), selection_token, move |service| {
+        service.request_maintenance_cancel(&input.kind, &input.target_id, input.preserve_candidates)
+    })
+    .await
+}
+#[tauri::command]
 async fn manager_helper_reconciliations(
     window: WebviewWindow,
     state: State<'_, DesktopState>,
@@ -424,6 +449,8 @@ pub fn run() {
             manager_restoration_context,
             manager_reconcile_helper,
             manager_helper_reconciliations,
+            manager_maintenance_context,
+            manager_cancel_maintenance,
             manager_installations,
             manager_create_installation,
             manager_select_installation
