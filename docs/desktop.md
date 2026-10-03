@@ -1,6 +1,6 @@
 # Manager 데스크톱 사용법
 
-이 문서는 T08-01의 로컬 설치·시작·정지·재시작·상태와 작업 기록을 다룬다. 백업·복원, 업데이트·rollback, cloud 설정은 이 화면에서 아직 제공하지 않는다. Manager 자체와 실행하는 platform은 서로 다른 라이선스를 유지한다.
+이 문서는 T08-01의 로컬 설치·시작·정지·재시작·상태와 작업 기록을 다룬다. 백업 생성·인증·새 설치 복원과 관리 공간 선택을 제공한다. 업데이트·rollback과 cloud 설정은 아직 제공하지 않는다. Manager 자체와 실행하는 platform은 서로 다른 라이선스를 유지한다.
 
 ## 처음 실행하기
 
@@ -15,7 +15,7 @@
 
 ## 운영자가 준비하는 경로
 
-기본 root는 Tauri가 반환하는 OS app-data 경로 아래의 `local-runtime`이다. macOS identifier는 `org.exhibitos.manager`이다. 개발·검증은 실행 프로세스의 `EXHIBITOS_MANAGER_ROOT`에 절대 경로를 지정해 사용자 데이터와 격리한다. 프런트엔드는 경로를 바꾸거나 임의 Compose 파일을 고를 권한이 없다.
+기본 root는 Tauri가 반환하는 OS app-data 경로 아래의 `local-runtime`이다. macOS identifier는 `org.exhibitos.manager`이다. 개발·검증은 실행 프로세스의 `EXHIBITOS_MANAGER_ROOT`에 절대 경로를 지정해 사용자 데이터와 격리한다. 일반 macOS 앱은 [관리 공간 선택](installation-selection.md)으로 앱이 관리하는 새 공간 또는 등록된 공간을 선택한다. 임의 폴더·Compose 파일은 선택하지 않는다.
 
 root 안의 `bundle/manifest.json`, `bundle/compose.yaml`과 manifest에 지정된 image archive는 신뢰한 배포 채널에서 받아 준비한다. 자체 파일 해시는 잘못된 파일을 감지하지만 신뢰하지 않은 배포자를 신뢰하게 만들지는 않는다. 운영자는 bundle 출처와 게시된 해시를 별도로 검증한다. manifest의 version/protocol, image digest, archive 크기·해시, services, ports, readiness URL과 최소 여유 공간은 lifecycle core의 검증을 통과해야 한다. Compose 프로젝트와 저장 volume은 해당 root의 관리 대상으로 격리한다.
 

@@ -2,6 +2,7 @@
 //! Trusted-bundle desktop lifecycle. No shell, arbitrary compose paths or destructive volume removal.
 pub mod backup_creation;
 pub mod installation_backup;
+pub mod installations;
 pub mod maintenance;
 pub mod restoration;
 pub mod update;
@@ -214,6 +215,27 @@ fn err(code: &str) -> LifecycleError {
         }
         "BACKUP_PLATFORM_UNVERIFIED" => "이 운영체제의 백업 검증 연결은 아직 검증되지 않았습니다.",
         "VERSION_MISMATCH" => "호환되는 전시 실행 패키지가 필요합니다.",
+        "INSTALLATION_SELECTION_CHANGED" => {
+            "관리 공간이 바뀌었습니다. 상태를 다시 확인한 뒤 작업하세요."
+        }
+        "INSTALLATION_SELECTION_INVALID" => {
+            "저장된 관리 공간 목록을 확인할 수 없습니다. 기존 폴더와 선택 기록을 보존하고 진단하세요."
+        }
+        "INSTALLATION_ROOT_UNAVAILABLE" => {
+            "선택한 설치 공간을 읽을 수 없습니다. 원본을 보존하고 다른 공간을 선택하거나 새 복원 공간을 만드세요."
+        }
+        "INSTALLATION_SELECTION_ACK_REQUIRED" => {
+            "전환이 서버를 중지하지 않으며 기존 데이터를 보존하는 데 동의하세요."
+        }
+        "INSTALLATION_SELECTION_DISABLED" => {
+            "이 실행은 관리 공간이 고정되어 있습니다. 지정 실행 설정 또는 플랫폼 지원을 확인하세요."
+        }
+        "INSTALLATION_SELECTION_LIMIT" => {
+            "보존 중인 관리 공간이 한도에 도달했습니다. 데이터를 지우지 말고 보관 정책을 확인하세요."
+        }
+        "INSTALLATION_SELECTION_UNCERTAIN" => {
+            "선택 기록 저장 여부가 불명확합니다. 기존 폴더와 기록을 보존하고 관리 앱을 다시 열어 확인하세요."
+        }
         "BUNDLE_INVALID" | "BUNDLE_CHANGED" => "검증된 설치 패키지를 다시 준비해 주세요.",
         "READINESS_TIMEOUT" => "서버 준비가 끝나지 않았습니다. 상태를 확인한 후 다시 시도하세요.",
         _ => "작업을 완료하지 못했습니다. 상태를 확인한 후 다시 시도하세요.",

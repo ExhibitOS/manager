@@ -10,3 +10,5 @@
 .backup-creation .backup-ack{display:flex;align-items:center;gap:12px;min-height:44px;padding:10px 12px;border:1px solid #cbd5c4;border-radius:8px;font-weight:500}.backup-creation .backup-ack input{width:24px;height:24px;min-height:24px;flex:0 0 24px;accent-color:#255343}.backup-history{margin-top:24px}.backup-history .alert{margin-top:12px}.backup-history .code{overflow-wrap:anywhere}
 
 .backup-verification .note{color:#526452}
+
+.installation-selection{margin-bottom:24px}.installation-selection fieldset{border:0;padding:0;margin:20px 0}.installation-selection legend{font-weight:700;margin-bottom:12px}.installation-selection select{display:block;width:100%;min-height:44px;padding:10px;border:1px solid var(--line,#ccc);border-radius:8px;background:var(--surface,#fff);color:inherit;margin:8px 0 16px}.installation-path{overflow-wrap:anywhere;font-family:monospace}

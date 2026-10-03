@@ -14,6 +14,9 @@ fn main() {
             "manager_backup_jobs",
             "manager_restore_backup",
             "manager_restoration_context",
+            "manager_installations",
+            "manager_create_installation",
+            "manager_select_installation",
         ]),
     ))
     .expect("Manager desktop permission manifest must build");

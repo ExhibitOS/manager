@@ -9,6 +9,7 @@ for(const scenario of ['success','failure','malformed','wrong-port'] as const)te
   const receipt={id:'12345678-1234-1234-1234-123456789012',operation:'restored-and-running',backupId:'23456789-1234-1234-1234-123456789012',authenticatedManifestSha256:'b'.repeat(64),bundleId:'34567890-1234-1234-1234-123456789012',projectName:'exhibitos-34567890-1234-1234-1234-123456789012',openUrl:'http://127.0.0.1:4500',at:2};
   Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string,args?:{input:unknown})=>{
    f.__restoreCalls.push(cmd);
+   if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:'56789012-1234-1234-1234-123456789012',mode:'managed',installations:[{id:'56789012-1234-1234-1234-123456789012',kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true}],errorCode:null};
    if(cmd==='manager_status'){if(attempted)await new Promise<void>(resolve=>{f.__restoreRefresh=resolve;});return {installed:attempted&&scenario!=='failure',bundleId:attempted?receipt.bundleId:null,version:null,state:attempted?'running':'not_installed',services:[],readiness:{ready:attempted&&scenario!=='failure',version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};}
    if(cmd==='manager_detect')return [{kind:'docker',installed:true,available:true,engineVersion:'synthetic',composeVersion:'synthetic',errorCode:null,guidance:null}];
    if(cmd==='manager_jobs'||cmd==='manager_logs'||cmd==='manager_backup_jobs')return [];
@@ -55,6 +56,7 @@ for(const scenario of ['success','failure','malformed','wrong-port'] as const)te
 for(const state of ['completed','failed','interrupted','running','malformed','unavailable'] as const)test(`persisted restoration ${state} fences unsafe writes and never invents success`,async({page})=>{
  await page.addInitScript(({state})=>{
   Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
+   if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:'56789012-1234-1234-1234-123456789012',mode:'managed',installations:[{id:'56789012-1234-1234-1234-123456789012',kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true}],errorCode:null};
    if(cmd==='manager_status')return {installed:true,bundleId:'synthetic',version:null,state:'running',services:[],readiness:{ready:true,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
    if(cmd==='manager_detect')return [{kind:'docker',installed:true,available:true,engineVersion:'synthetic',composeVersion:'synthetic',errorCode:null,guidance:null}];
    if(cmd==='manager_jobs'||cmd==='manager_logs'||cmd==='manager_backup_jobs')return [];

@@ -61,3 +61,5 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 외부 라이브러리와 작품은 각각 원래 권리를 유지합니다. 이 라이선스는 상표나
 사용자 작품의 display/export 권한을 부여하지 않습니다. 현재 저장소는 비공개이며
 공개 여부는 source/권리/secret/독립 build 검토 후 결정합니다.
+
+관리 공간 전환과 보존·복구 경계는 [관리 공간 선택](docs/installation-selection.md)을 참조하세요.
