@@ -72,6 +72,8 @@ for(const state of ['completed','failed','interrupted','running','malformed','un
   if(state==='malformed'||state==='unavailable')await expect(region.getByText('저장된 복원 상태를 확인할 수 없습니다.',{exact:true})).toBeVisible();
   else await expect(region.getByText({failed:'복원 실패',interrupted:'복원 중단',running:'복원 진행 중'}[state],{exact:true})).toBeVisible();
   await expect(region.getByRole('heading',{name:'새 전시 복원과 시작을 확인했습니다.'})).toHaveCount(0);
+  await expect(page.getByRole('region',{name:'실제 전시 상태'}).getByText('복원 상태 확인 필요',{exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'전시 열기',exact:true})).toBeDisabled();
   for(const name of ['전시 설치','시작','재시작','백업 사본 검증','전시를 멈추고 백업 생성'])await expect(page.getByRole('button',{name,exact:true})).toBeDisabled();
   if(state!=='running')await expect(page.getByRole('button',{name:'정지',exact:true})).toBeEnabled();
  }

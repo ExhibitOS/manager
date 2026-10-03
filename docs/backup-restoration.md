@@ -64,8 +64,7 @@ Rust workspace 51개와 엄격한 all-target Clippy, CLI 빌드가 통과했다.
 ```sh
 # 실제 새 경로를 선택한다. 기존 디렉터리가 있으면 mkdir가 실패해야 한다.
 fresh_root="$HOME/ExhibitOS-Recovery-$(date +%Y%m%d-%H%M%S)"
-mkdir -m 700 "$fresh_root"
-EXHIBITOS_MANAGER_ROOT="$fresh_root" \
+mkdir -m 700 "$fresh_root" && EXHIBITOS_MANAGER_ROOT="$fresh_root" \
   '/absolute/path/ExhibitOS Manager.app/Contents/MacOS/exhibitos-manager-desktop'
 ```
 
