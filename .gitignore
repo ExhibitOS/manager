@@ -12,3 +12,14 @@ runtime.env
 
 __pycache__/
 *.pyc
+
+# Private profile recovery artifacts and external key defaults
+*.exb
+*-key.bin
+key.bin
+.profile-backup-*.pending
+.profile-registry-*.pending
+/installation-selection.json
+/selection-history/
+/profile-session.lock
+/profile-restore-*/

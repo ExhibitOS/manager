@@ -6,17 +6,17 @@ use std::sync::RwLock;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Entry {
-    id: String,
-    kind: String,
-    created_at: u64,
+pub(crate) struct Entry {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) created_at: u64,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Registry {
-    format: u32,
-    active_id: String,
-    installations: Vec<Entry>,
+pub(crate) struct Registry {
+    pub(crate) format: u32,
+    pub(crate) active_id: String,
+    pub(crate) installations: Vec<Entry>,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,13 +45,14 @@ struct Selected {
 }
 pub struct InstallationController {
     profile: Option<LifecycleService>,
+    _profile_session: Option<File>,
     mode: String,
     current: RwLock<Selected>,
 }
-fn uuid(value: &str) -> bool {
+pub(crate) fn uuid(value: &str) -> bool {
     Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value)
 }
-fn private_directory(path: &Path) -> Result<()> {
+pub(crate) fn private_directory(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path).map_err(|_| err("INSTALLATION_ROOT_UNAVAILABLE"))?;
     if metadata.is_symlink() || !metadata.is_dir() {
         return Err(err("INSTALLATION_ROOT_UNAVAILABLE"));
@@ -68,7 +69,7 @@ fn private_directory(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn profile_lock(profile: &LifecycleService) -> Result<File> {
+pub(crate) fn profile_lock(profile: &LifecycleService) -> Result<File> {
     let file = profile.lock()?;
     let metadata = file
         .metadata()
@@ -88,7 +89,7 @@ fn profile_lock(profile: &LifecycleService) -> Result<File> {
     }
     Ok(file)
 }
-fn new_directory(path: &Path) -> Result<()> {
+pub(crate) fn new_directory(path: &Path) -> Result<()> {
     fs::create_dir(path).map_err(|_| err("STATE_UNAVAILABLE"))?;
     #[cfg(unix)]
     {
@@ -98,14 +99,14 @@ fn new_directory(path: &Path) -> Result<()> {
     }
     private_directory(path)
 }
-fn root(profile: &Path, entry: &Entry) -> PathBuf {
+pub(crate) fn root(profile: &Path, entry: &Entry) -> PathBuf {
     if entry.kind == "default" {
         profile.join("local-runtime")
     } else {
         profile.join("installations").join(&entry.id)
     }
 }
-fn valid(registry: &Registry) -> Result<()> {
+pub(crate) fn valid(registry: &Registry) -> Result<()> {
     if registry.format != 1
         || !uuid(&registry.active_id)
         || registry.installations.is_empty()
@@ -135,7 +136,7 @@ fn valid(registry: &Registry) -> Result<()> {
     }
     Ok(())
 }
-fn load(profile: &Path) -> Result<Option<(Registry, Vec<u8>)>> {
+pub(crate) fn load(profile: &Path) -> Result<Option<(Registry, Vec<u8>)>> {
     match fs::symlink_metadata(profile.join("installation-selection.json")) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(_) => Err(err("INSTALLATION_SELECTION_INVALID")),
@@ -204,6 +205,23 @@ impl InstallationController {
         if cfg!(windows) {
             return Self::pinned(profile.join("local-runtime"), "platform-unverified");
         }
+        match fs::symlink_metadata(&profile) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir_all(&profile).map_err(|_| err("STATE_UNAVAILABLE"))?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&profile, fs::Permissions::from_mode(0o700))
+                        .map_err(|_| err("STATE_UNAVAILABLE"))?;
+                }
+            }
+            Err(_) => return Err(err("STATE_UNAVAILABLE")),
+            Ok(m) if m.is_dir() && !m.is_symlink() => {}
+            Ok(_) => return Err(err("INSTALLATION_ROOT_UNAVAILABLE")),
+        }
+        let profile = fs::canonicalize(profile).map_err(|_| err("STATE_UNAVAILABLE"))?;
+        private_directory(&profile)?;
+        let session = super::profile_backup::session_lock(&profile, false)?;
         let profile = LifecycleService::new(profile)?;
         let profile = LifecycleService {
             root: fs::canonicalize(&profile.root).map_err(|_| err("STATE_UNAVAILABLE"))?,
@@ -243,6 +261,7 @@ impl InstallationController {
         drop(_lock);
         Ok(Self {
             profile: Some(profile),
+            _profile_session: Some(session),
             mode: "managed".into(),
             current: RwLock::new(current),
         })
@@ -272,6 +291,7 @@ impl InstallationController {
         };
         Ok(Self {
             profile: None,
+            _profile_session: None,
             mode: mode.into(),
             current: RwLock::new(current),
         })
