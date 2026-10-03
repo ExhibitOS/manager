@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Trusted-bundle desktop lifecycle. No shell, arbitrary compose paths or destructive volume removal.
+pub mod maintenance;
 pub mod update;
 
 use fs2::FileExt;
@@ -169,6 +170,16 @@ fn err(code: &str) -> LifecycleError {
         }
         "STORAGE_QUOTA" => "저장 공간이 부족합니다. 공간을 확보한 후 다시 시도하세요.",
         "BUSY" => "진행 중인 작업이 끝날 때까지 기다려 주세요.",
+        "BACKUP_IMAGE_INVALID" | "IMAGE_INTEGRITY" => {
+            "검증된 유지보수 이미지의 고정 ID를 확인하세요."
+        }
+        "BACKUP_PATH_INVALID" | "BACKUP_PRIVATE_PERMISSIONS" | "BACKUP_PATH_OVERLAP" => {
+            "백업과 키의 실제 경로·비공개 권한을 확인하고 서로 분리하세요."
+        }
+        "BACKUP_VERIFICATION_FAILED" | "BACKUP_RESULT_INVALID" => {
+            "백업 인증 검사를 통과하지 못했습니다. 기존 사본과 키를 보존하고 새 검증 작업으로 확인하세요."
+        }
+        "BACKUP_PLATFORM_UNVERIFIED" => "이 운영체제의 백업 검증 연결은 아직 검증되지 않았습니다.",
         "VERSION_MISMATCH" => "호환되는 전시 실행 패키지가 필요합니다.",
         "BUNDLE_INVALID" | "BUNDLE_CHANGED" => "검증된 설치 패키지를 다시 준비해 주세요.",
         "READINESS_TIMEOUT" => "서버 준비가 끝나지 않았습니다. 상태를 확인한 후 다시 시도하세요.",
