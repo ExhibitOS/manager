@@ -616,6 +616,7 @@ fn valid_name(name: &str) -> Result<()> {
 fn pin_ancestors(path: &Path) -> Result<Vec<(PathBuf, File, Identity)>> {
     let mut current = PathBuf::new();
     let mut result = Vec::new();
+    let mut rooted = false;
     for component in path.components() {
         match component {
             Component::Prefix(prefix) => {
@@ -626,9 +627,22 @@ fn pin_ancestors(path: &Path) -> Result<Vec<(PathBuf, File, Identity)>> {
                     return Err(err("PROFILE_PATH_INVALID"));
                 }
                 current.push(prefix.as_os_str());
+                // A verbatim drive prefix alone can report is_absolute(), but
+                // opening \\?\C: addresses a volume, not its root directory.
+                // Retain the root and each ancestor only after an explicit root.
+                continue;
             }
-            Component::RootDir => current.push(component.as_os_str()),
+            Component::RootDir => {
+                if current.as_os_str().is_empty() {
+                    return Err(err("PROFILE_PATH_INVALID"));
+                }
+                current.push(component.as_os_str());
+                rooted = true;
+            }
             Component::Normal(value) => {
+                if !rooted {
+                    return Err(err("PROFILE_PATH_INVALID"));
+                }
                 let text = value.to_str().ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
                 if text.contains(':') || text.ends_with(['.', ' ']) {
                     return Err(err("PROFILE_PATH_INVALID"));
@@ -637,7 +651,7 @@ fn pin_ancestors(path: &Path) -> Result<Vec<(PathBuf, File, Identity)>> {
             }
             _ => return Err(err("PROFILE_PATH_INVALID")),
         }
-        if current.is_absolute() {
+        if rooted {
             let file = open(&current, true)?;
             let id = identity(&file, true)?;
             result.push((current.clone(), file, id));
@@ -660,6 +674,42 @@ mod tests {
             &parent.join(format!("exhibitos-acl-test-{}", uuid::Uuid::new_v4())),
         )
         .unwrap()
+    }
+    #[test]
+    fn canonical_verbatim_ancestors_reopen_the_same_private_directory() {
+        let dir = fresh();
+        let lexical_parent = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap());
+        let lexical = lexical_parent.join(dir.path().file_name().unwrap());
+        assert!(matches!(
+            dir.path().components().next(),
+            Some(Component::Prefix(prefix))
+                if matches!(prefix.kind(), std::path::Prefix::VerbatimDisk(_))
+        ));
+        let canonical = PrivateDirectory::inspect(dir.path()).unwrap();
+        let ordinary = PrivateDirectory::inspect(&lexical).unwrap();
+        assert_eq!(canonical.id, dir.id);
+        assert_eq!(ordinary.id, dir.id);
+        assert_eq!(canonical.ancestors.len(), ordinary.ancestors.len());
+        for ((path, _, canonical_id), (_, _, ordinary_id)) in
+            canonical.ancestors.iter().zip(&ordinary.ancestors)
+        {
+            assert!(path.components().any(|part| part == Component::RootDir));
+            assert_eq!(canonical_id, ordinary_id);
+        }
+        // Never accept a drive-relative path, bare volume or network namespace.
+        for invalid in [
+            r"C:relative",
+            r"\\?\C:",
+            r"\\server\share\folder",
+            r"\\.\C:",
+        ] {
+            assert!(pin_ancestors(Path::new(invalid)).is_err());
+        }
+        let path = dir.path().to_path_buf();
+        drop(ordinary);
+        drop(canonical);
+        drop(dir);
+        std::fs::remove_dir(path).unwrap();
     }
     #[test]
     fn private_records_refuse_existing_names_aliases_and_rename() {
