@@ -54,6 +54,8 @@ pub(crate) fn uuid(value: &str) -> bool {
     Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value)
 }
 pub(crate) fn private_directory(path: &Path) -> Result<()> {
+    #[cfg(windows)]
+    super::windows_private::PrivateDirectory::inspect(path)?.check()?;
     let metadata = fs::symlink_metadata(path).map_err(|_| err("INSTALLATION_ROOT_UNAVAILABLE"))?;
     if metadata.is_symlink() || !metadata.is_dir() {
         return Err(err("INSTALLATION_ROOT_UNAVAILABLE"));
@@ -91,6 +93,9 @@ pub(crate) fn profile_lock(profile: &LifecycleService) -> Result<File> {
     Ok(file)
 }
 pub(crate) fn new_directory(path: &Path) -> Result<()> {
+    #[cfg(windows)]
+    let _directory = super::windows_private::PrivateDirectory::create(path)?;
+    #[cfg(not(windows))]
     fs::create_dir(path).map_err(|_| err("STATE_UNAVAILABLE"))?;
     #[cfg(unix)]
     {
@@ -163,17 +168,8 @@ pub(crate) fn save(profile: &Path, registry: &Registry, previous: Option<&[u8]>)
             Ok(_) => private_directory(&history)?,
             Err(_) => return Err(err("STATE_UNAVAILABLE")),
         }
-        let mut file = private_options()
-            .open(history.join(format!(
-                "{}-{}-{}.json",
-                now(),
-                Uuid::new_v4(),
-                digest(bytes)
-            )))
-            .map_err(|_| err("STATE_UNAVAILABLE"))?;
-        file.write_all(bytes)
-            .and_then(|()| file.sync_all())
-            .map_err(|_| err("STATE_UNAVAILABLE"))?;
+        let name = format!("{}-{}-{}.json", now(), Uuid::new_v4(), digest(bytes));
+        write_private_new(&history, &name, bytes, 64 * 1024)?;
         File::open(&history)
             .and_then(|f| f.sync_all())
             .map_err(|_| err("STATE_UNAVAILABLE"))?;
