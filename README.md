@@ -73,3 +73,5 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 중단된 백업·복원의 [명시적 새 작업 재시도](docs/maintenance-retry.md)는 실패 후보와 이전 journal을 보존하는 개발 CLI와 로컬 앱 화면입니다. 복원은 등록된 별도 공간에서 실행하며 앱 화면의 실제 네이티브 GUI·Windows 검증은 남아 있습니다.
 
 새 작업 ID 연결 전 앱이 종료된 경우의 [재시도 진단·복구](docs/retry-recovery.md)는 준비·예약과 후보 hash를 확인해 원래 기록을 보존합니다. 앱의 진단 화면도 같은 코어를 사용하며 실제 네이티브 GUI와 전체 복원·update 인수 검증은 별도입니다.
+
+[Host profile 전체 파일 사본·비활성 추출 개발 CLI](docs/host-checkpoint.md)는 작업 journal과 후보 bytes를 별도 스트리밍 사본에 보존합니다. 외부 engine 볼륨과 live profile 활성화는 포함하지 않습니다.
