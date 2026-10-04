@@ -417,3 +417,34 @@ container (accepted), and running read-only container (accepted). Its three
 helpers and empty volume are scoped to that invocation and removed afterward.
 Run `cargo test -p exhibitos-lifecycle --lib actual_engine_volume_writer_census
 --locked -- --ignored --nocapture` only with the documented local image available.
+
+## Current source native volume bindings
+
+Source observations now additionally require exactly two writable named Platform
+mounts at `/data/blobs` and `/data/config`, and one writable named database mount
+at `/var/lib/postgresql`. Each actual mount must match the resolved Compose volume
+name, the bundle/project/schema ownership labels, local driver and supported
+volume options. The three names must be distinct. Bind substitutions, extra/missing
+mounts, read-only substitutions and aliases refuse. Existing backup producer
+volume validation is shared with this observer instead of accepting arbitrary names.
+
+The source receipt adds `blobVolume`, `configurationVolume` and `databaseVolume`.
+Candidate preparation and host deployment comparison require those names to remain
+equal before/after their existing work, alongside source container IDs. CLI output
+is additive; public Spec and durable update journals are unchanged. These are
+observed bindings, not volume-content equality or immutable Docker volume identities:
+a privileged external actor can recreate a volume with the same name and labels.
+Native configuration/blob byte checks and stopped DB snapshot observation remain
+necessary before applying an update. The product does not start or mutate source
+services/volumes in this observation.
+
+`cargo test -p exhibitos-lifecycle --lib actual_engine_source_volume_identity
+--locked -- --ignored --nocapture` verifies real local Docker volume ownership and
+actual container mounts using empty synthetic fixtures and existing immutable
+Platform335f8f2 and maintenance8f0e7b0 images. An initial fixture used the maintenance
+image for the app: its declared database volume created an unexpected extra mount,
+which the strict layout check correctly rejected. The corrected fixture uses the
+Platform image for the app. Known test helpers and three empty named volumes are
+removed; the failed fixture's automatically generated anonymous volume is retained
+for later separately scoped review. This test does not execute the full profile/CLI
+source comparison or certify current DB/blob/config content.

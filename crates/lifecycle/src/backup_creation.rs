@@ -215,7 +215,7 @@ pub(crate) fn one_container(
         value,
     ))
 }
-fn volume_for(
+pub(crate) fn volume_for(
     engine: &str,
     m: &BundleManifest,
     config: &Value,
