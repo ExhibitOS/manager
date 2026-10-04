@@ -30,6 +30,34 @@ for kind in ['database','objects','configuration']:
  out=docker('run','--pull','never','--name',name,'--label',label,'--network','none','--read-only','--user','0:0','--cap-drop','ALL','--cap-add','DAC_OVERRIDE','--cap-add','CHOWN','--cap-add','FOWNER','--security-opt','no-new-privileges:true','--pids-limit','32','--memory','256m','--tmpfs','/var/lib/postgresql:rw,nosuid,nodev,size=1m','--mount','type=volume,src='+old+',dst=/source,readonly,volume-nocopy','--mount','type=volume,src='+new+',dst=/snapshot,volume-nocopy','--env','EXHIBITOS_COPY_KIND='+kind,'--entrypoint','node',helper,'--input-type=module','-e',copy_script)
  copies[kind]=json.loads(out);assert copies[kind]['kind']==kind
  print('PASS bounded readonly source '+kind+' copied/hash/mode/owner matched',flush=True)
+# A component checkpoint is explicitly distinct from the completed probe report.
+assert before_files=={n:hashlib.sha256((source/n).read_bytes()).hexdigest() for n in files}
+assert intent()['intent']==before_intent['intent'] and set(before_states)<=set(states())
+checkpoint=root/'inventory-checkpoint.json'
+checkpoint.write_text(json.dumps({'kind':'isolated-volume-copy-checkpoint','project':project,'copies':copies,'originalFilesStatesIntentPreserved':True,'updateExecuted':False}));checkpoint.chmod(0o600)
+inventories={}
+def observe(phase):
+ result=subprocess.run(['python3',str(Path(__file__).with_name('inspect-target-inventory.py')),'--probe',str(root),'--docker',str(a.docker),'--checkpoint'],capture_output=True,text=True,timeout=300)
+ assert result.returncode==0,'step inventory failed; private helper/copies retained'
+ name=next(line.removeprefix('PrivateReport ') for line in result.stdout.splitlines() if line.startswith('PrivateReport '))
+ path=Path(name);assert path.parent==root
+ value=json.loads(path.read_text());assert not value['inventory']['issues']
+ inventories[phase]={'path':name,'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'value':value}
+ print('PASS full stopped-copy inventory '+phase,flush=True)
+ return value
+baseline=observe('before_target')
+def compare(previous,current):
+ assert previous['identity']==current['identity']
+ left=previous['inventory'];right=current['inventory']
+ for key in ['schemaVersion','schemaDigest','migrations','objects','references','issues']:assert left[key]==right[key],key
+ old={t['name']:t for t in left['tables']};new={t['name']:t for t in right['tables']};assert old.keys()==new.keys()
+ for name in old:
+  if name!='auth_sessions':assert old[name]==new[name],name
+ assert new['auth_sessions']['rowCount']==old['auth_sessions']['rowCount']+1
+ assert len(current['authSessions'])==len(previous['authSessions'])+1
+ assert len(set(current['authSessions']))==len(current['authSessions'])
+ assert set(previous['authSessions'])<set(current['authSessions'])
+
 with socket.socket() as s:s.bind(('127.0.0.1',0));port=s.getsockname()[1]
 env=(source/'runtime.env').read_text();lines=env.splitlines();lines=[('EXHIBITOS_PORT='+str(port) if line.startswith('EXHIBITOS_PORT=') else line) for line in lines];(root/'runtime.env').write_text('\n'.join(lines)+'\n');(root/'runtime.env').chmod(0o600)
 for v in compose['services'].values():v['labels']={'com.exhibitos.compatibility':project};v['restart']='no'
@@ -60,7 +88,9 @@ try:
  print('PASS actual target Runtime readiness/data/login/web on independent copies',flush=True)
  # Preserve the target container; add a separate previous-version container rather
  # than replacing an installed runtime. Only the copied database is shared.
- docker(*cmd,'stop','--timeout','30','platform')
+ docker(*cmd,'stop','--timeout','30')
+ target_inventory=observe('after_target_login');compare(baseline,target_inventory)
+ docker(*cmd,'up','--detach','--no-deps','--pull','never','database')
  (root/'compose-target.json').write_text(json.dumps(compose));(root/'compose-target.json').chmod(0o600)
  previous=json.loads(json.dumps(compose['services']['platform']));previous['image']='sha256:'+plan['sourceImage'];compose['services']['previous-platform']=previous
  (root/'compose.json').write_text(json.dumps(compose))
@@ -82,8 +112,10 @@ try:
 
 finally:
  docker(*cmd,'stop','--timeout','30')
+previous_inventory=observe('after_previous_login');compare(target_inventory,previous_inventory)
+checks.append('full identity/schema/migrations/49non-session entries/blobs/references preserved; each login adds one unchanged-existing session row')
 assert before_files=={n:hashlib.sha256((source/n).read_bytes()).hexdigest() for n in files};assert intent()['intent']==before_intent['intent']
 after=set(states());assert set(before_states)<=after
 for cid in existing:assert not json.loads(docker('inspect',cid))[0]['State']['Running']
-report={'format':1,'checks':checks,'targetImage':plan['targetImage'],'targetSchemaDeclaration':plan['targetSchema'],'project':project,'copies':copies,'readiness':ready,'originalFilesStatesIntentPreserved':True,'updateExecuted':False,'preflightVerified':False,'limits':['isolated development target probe; not registered target health receipt or installation apply','schema fingerprint/full inventory/failure paths after target startup not independently observed; prior-runtime success on synthetic copies is not full rollback acceptance','new copied DB changes during target startup/login; original volumes readonly during copy and source stays stopped','all private files/helper containers/copied volumes retained; no production trust/data/volume mutation']}
+report={'format':1,'checks':checks,'targetImage':plan['targetImage'],'targetSchemaDeclaration':plan['targetSchema'],'project':project,'copies':copies,'inventoryObservations':inventories,'readiness':ready,'originalFilesStatesIntentPreserved':True,'updateExecuted':False,'preflightVerified':False,'limits':['isolated development target probe; not registered target health receipt or installation apply','full inventory observed before/after each Runtime login; failures/full corpus and actual installation rollback remain unqualified','new copied DB changes during target startup/login; original volumes readonly during copy and source stays stopped','all private files/helper containers/copied volumes retained; no production trust/data/volume mutation']}
 (root/'report.json').write_text(json.dumps(report,indent=2)+'\n');(root/'report.json').chmod(0o600);print('Report '+str(root/'report.json'),flush=True)

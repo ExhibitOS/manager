@@ -3,9 +3,10 @@
 import argparse,json,subprocess,uuid,hashlib
 from pathlib import Path
 if not __debug__: raise RuntimeError('assertions require Python without -O')
-p=argparse.ArgumentParser();p.add_argument('--probe',type=Path,required=True);p.add_argument('--docker',type=Path,required=True);a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--probe',type=Path,required=True);p.add_argument('--docker',type=Path,required=True);p.add_argument('--checkpoint',action='store_true');a=p.parse_args()
 assert a.probe.is_absolute() and a.probe.resolve()==a.probe
-prior=json.loads((a.probe/'report.json').read_text());assert prior['originalFilesStatesIntentPreserved'] and not prior['updateExecuted']
+prior=json.loads((a.probe/('inventory-checkpoint.json' if a.checkpoint else 'report.json')).read_text());assert prior['originalFilesStatesIntentPreserved'] and not prior['updateExecuted']
+if a.checkpoint: assert prior['kind']=='isolated-volume-copy-checkpoint' and set(prior['copies'])=={'database','objects','configuration'}
 project=prior['project'];assert project.startswith('exhibitos-compatibility-');uuid.UUID(project.removeprefix('exhibitos-compatibility-'))
 def docker(*args):
  r=subprocess.run([str(a.docker),*args],capture_output=True,timeout=300)
@@ -17,7 +18,7 @@ assert all(not x['State']['Running'] for x in json.loads(docker('inspect',*ids))
 for kind in ['database','objects']:
  v=json.loads(docker('volume','inspect',project+'_'+kind))[0];assert v['Driver']=='local' and not v.get('Options') and v['Labels']['com.exhibitos.compatibility']==project
 code=Path('crates/lifecycle/src/source_inventory_reader.mjs').read_text()
-code=code.replace("import {main} from '/opt/exhibitos/scripts/service-backup.mjs';", "import pg from '/opt/exhibitos/node_modules/pg/lib/index.js'; const {Pool}=pg;\nimport {FileBlobStore,collectServiceInventory} from '/opt/exhibitos/packages/storage/dist/index.js';")
+code=code.replace("import {main} from '/opt/exhibitos/scripts/service-backup.mjs';", "import {createHash} from 'node:crypto';\nimport pg from '/opt/exhibitos/node_modules/pg/lib/index.js'; const {Pool}=pg;\nimport {FileBlobStore,collectServiceInventory} from '/opt/exhibitos/packages/storage/dist/index.js';")
 start=code.index(" result=await main(");end=code.index('\n}catch(e)',start)
 code=code[:start]+''' const pool=new Pool({connectionString:'postgresql://exhibitos@localhost/exhibitos?host='+encodeURIComponent(socket),connectionTimeoutMillis:15000,statement_timeout:60000});
  try{
@@ -27,7 +28,8 @@ code=code[:start]+''' const pool=new Pool({connectionString:'postgresql://exhibi
    await c.query('SELECT pg_advisory_xact_lock(82002)');
    const identity=(await c.query("SELECT (pg_control_system()).system_identifier::text AS system_identifier,(SELECT oid::text FROM pg_database WHERE datname=current_database()) AS database_oid,current_database() AS database")).rows[0];
    const inventory=await collectServiceInventory(c,new FileBlobStore('/blobs'),{migrationDirectory:'/opt/exhibitos/database/migrations'});
-   await c.query('ROLLBACK');result={identity,inventory};
+   const authSessions=(await c.query('SELECT to_jsonb(t)::text AS raw FROM auth_sessions t ORDER BY to_jsonb(t)::text COLLATE \"C\"')).rows.map(r=>createHash('sha256').update(r.raw).digest('hex')).sort();
+   await c.query('ROLLBACK');result={identity,inventory,authSessions};
   }finally{c.release();}
  }finally{await pool.end();}
 ''' +code[end:]
