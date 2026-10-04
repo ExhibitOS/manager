@@ -177,6 +177,9 @@ impl ExecutionSession<'_> {
             if files != repeated
                 || before.platform_container != after.platform_container
                 || before.database_container != after.database_container
+                || before.blob_volume != after.blob_volume
+                || before.configuration_volume != after.configuration_volume
+                || before.database_volume != after.database_volume
             {
                 return Err(crate::err("UPDATE_SOURCE_CHANGED"));
             }
@@ -268,6 +271,9 @@ impl ExecutionSession<'_> {
         let after_source = after_source?;
         if before_source.platform_container != after_source.platform_container
             || before_source.database_container != after_source.database_container
+            || before_source.blob_volume != after_source.blob_volume
+            || before_source.configuration_volume != after_source.configuration_volume
+            || before_source.database_volume != after_source.database_volume
         {
             return Err(crate::err("UPDATE_SOURCE_CHANGED"));
         }

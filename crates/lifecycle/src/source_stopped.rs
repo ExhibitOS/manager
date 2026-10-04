@@ -9,6 +9,9 @@ pub struct SourceStoppedReceipt {
     pub platform_container: String,
     pub database_container: String,
     pub runtime_image_sha256: String,
+    pub blob_volume: String,
+    pub configuration_volume: String,
+    pub database_volume: String,
     pub observed_at: u64,
 }
 fn stopped(value: &Value) -> bool {
@@ -146,6 +149,38 @@ fn observe_volume_users(engine: &str, app: &Value, db: &Value) -> Result<()> {
     }
     check_volume_users(rows, &names, &[app_id, db_id])
 }
+fn check_mount_layout(app: &Value, db: &Value) -> Result<()> {
+    for (container, expected) in [
+        (app, &["/data/blobs", "/data/config"][..]),
+        (db, &["/var/lib/postgresql"][..]),
+    ] {
+        let mounts = container["Mounts"]
+            .as_array()
+            .ok_or_else(|| err("BACKUP_LAYOUT_UNSUPPORTED"))?;
+        if mounts.len() != expected.len() {
+            return Err(err("BACKUP_LAYOUT_UNSUPPORTED"));
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for target in expected {
+            let matches: Vec<_> = mounts
+                .iter()
+                .filter(|m| m["Destination"] == *target)
+                .collect();
+            if matches.len() != 1 {
+                return Err(err("BACKUP_LAYOUT_UNSUPPORTED"));
+            }
+            let mount = matches[0];
+            let name = mount["Name"]
+                .as_str()
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| err("BACKUP_LAYOUT_UNSUPPORTED"))?;
+            if mount["Type"] != "volume" || mount["RW"] != true || !names.insert(name) {
+                return Err(err("BACKUP_LAYOUT_UNSUPPORTED"));
+            }
+        }
+    }
+    Ok(())
+}
 pub(super) fn observe(
     source: &LifecycleService,
     plan: &crate::update::Plan,
@@ -188,6 +223,29 @@ pub(super) fn observe(
     if !hash_valid(&plan.source_image) || app["Image"] != expected {
         return Err(err("UPDATE_SOURCE_IMAGE_MISMATCH"));
     }
+    check_mount_layout(&app, &db)?;
+    let config: Value = serde_json::from_slice(&run(
+        &engine,
+        &compose_args(&m, &["config", "--format", "json"]),
+        Some(&source.root.join("bundle")),
+        30,
+    )?)
+    .map_err(|_| err("BACKUP_LAYOUT_UNSUPPORTED"))?;
+    let blobs =
+        crate::backup_creation::volume_for(&engine, &m, &config, "platform", "/data/blobs", &app)?;
+    let configuration =
+        crate::backup_creation::volume_for(&engine, &m, &config, "platform", "/data/config", &app)?;
+    let database = crate::backup_creation::volume_for(
+        &engine,
+        &m,
+        &config,
+        "database",
+        "/var/lib/postgresql",
+        &db,
+    )?;
+    if blobs == configuration || blobs == database || configuration == database {
+        return Err(err("BACKUP_LAYOUT_UNSUPPORTED"));
+    }
     observe_volume_users(&engine, &app, &db)?;
     Ok(SourceStoppedReceipt {
         source_instance: plan.source_instance.clone(),
@@ -195,6 +253,9 @@ pub(super) fn observe(
         platform_container,
         database_container,
         runtime_image_sha256: plan.source_image.clone(),
+        blob_volume: blobs,
+        configuration_volume: configuration,
+        database_volume: database,
         observed_at: now(),
     })
 }
@@ -291,6 +352,157 @@ mod tests {
                 .code,
             "UPDATE_SOURCE_NOT_STOPPED"
         );
+    }
+    #[test]
+    fn stopped_source_mount_layout_rejects_aliases_binds_and_missing_mounts() {
+        let app = serde_json::json!({"Mounts":[{"Type":"volume","Name":"blobs","Destination":"/data/blobs","RW":true},{"Type":"volume","Name":"config","Destination":"/data/config","RW":true}]});
+        let db = serde_json::json!({"Mounts":[{"Type":"volume","Name":"db","Destination":"/var/lib/postgresql","RW":true}]});
+        assert!(check_mount_layout(&app, &db).is_ok());
+        for field in ["Name", "Type", "Destination", "RW"] {
+            let mut bad = app.clone();
+            bad["Mounts"][0].as_object_mut().unwrap().remove(field);
+            assert!(check_mount_layout(&bad, &db).is_err());
+        }
+        let mut bad = app.clone();
+        bad["Mounts"][1]["Name"] = "blobs".into();
+        assert!(check_mount_layout(&bad, &db).is_err());
+        let mut bad = app.clone();
+        bad["Mounts"][0]["Type"] = "bind".into();
+        assert!(check_mount_layout(&bad, &db).is_err());
+        let mut bad = app.clone();
+        bad["Mounts"][0]["RW"] = false.into();
+        assert!(check_mount_layout(&bad, &db).is_err());
+        let mut bad = db.clone();
+        bad["Mounts"]
+            .as_array_mut()
+            .unwrap()
+            .push(db["Mounts"][0].clone());
+        assert!(check_mount_layout(&app, &bad).is_err());
+    }
+    #[test]
+    #[ignore = "requires local Docker and the qualified existing maintenance image"]
+    fn actual_engine_source_volume_identity() {
+        let project = format!("exhibitos-identities-{}", uuid::Uuid::new_v4());
+        let m: BundleManifest = serde_json::from_value(serde_json::json!({
+            "schemaVersion":"org.exhibitos.runtime-bundle/v1","bundleId":uuid::Uuid::new_v4().to_string(),
+            "version":"synthetic","protocolVersion":"1","composeSha256":"0".repeat(64),
+            "projectName":project,"services":["platform","database"],"images":[],"ports":[],
+            "openUrl":"http://127.0.0.1:1","readinessUrl":"http://127.0.0.1:1","minimumFreeBytes":0
+        })).unwrap();
+        let image = "sha256:8f0e7b042ff0b93a646b919f5a8a5ee2f41cc22debcd5bd9ef49eacd06537e06";
+        let call = |args: &[String]| run("docker", args, None, 30).unwrap();
+        let names: Vec<_> = ["blobs", "config", "db"]
+            .iter()
+            .map(|suffix| format!("{project}_{suffix}"))
+            .collect();
+        for name in &names {
+            call(&[
+                "volume".into(),
+                "create".into(),
+                "--label".into(),
+                format!("com.exhibitos.bundle={}", m.bundle_id),
+                "--label".into(),
+                format!("com.exhibitos.project={project}"),
+                "--label".into(),
+                format!("com.exhibitos.schema={}", m.schema_version),
+                name.clone(),
+            ]);
+        }
+        let config = serde_json::json!({"services":{"platform":{"volumes":[{"target":"/data/blobs","type":"volume","source":"blobs"},{"target":"/data/config","type":"volume","source":"config"}]},"database":{"volumes":[{"target":"/var/lib/postgresql","type":"volume","source":"db"}]}},"volumes":{"blobs":{"name":names[0]},"config":{"name":names[1]},"db":{"name":names[2]}}});
+        let mut ids = Vec::new();
+        for (index, mounts) in [
+            vec![
+                format!("type=volume,source={},target=/data/blobs", names[0]),
+                format!("type=volume,source={},target=/data/config", names[1]),
+            ],
+            vec![format!(
+                "type=volume,source={},target=/var/lib/postgresql",
+                names[2]
+            )],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut args = vec![
+                "create".into(),
+                "--network".into(),
+                "none".into(),
+                "--entrypoint".into(),
+                "sleep".into(),
+            ];
+            for mount in mounts {
+                args.extend(["--mount".into(), mount]);
+            }
+            let selected_image = if index == 0 {
+                "sha256:335f8f2c1437841266c41e79912b1160b03ce500511acc94afa338c4c8f6215b"
+            } else {
+                image
+            };
+            args.extend([selected_image.into(), "300".into()]);
+            ids.push(String::from_utf8(call(&args)).unwrap().trim().to_owned());
+        }
+        let inspected = |id: &str| -> Value {
+            serde_json::from_slice::<Value>(&call(&["inspect".into(), id.into()])).unwrap()[0]
+                .clone()
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let app = inspected(&ids[0]);
+            let db = inspected(&ids[1]);
+            check_mount_layout(&app, &db).unwrap();
+            for (service, target, actual, name) in [
+                ("platform", "/data/blobs", &app, &names[0]),
+                ("platform", "/data/config", &app, &names[1]),
+                ("database", "/var/lib/postgresql", &db, &names[2]),
+            ] {
+                assert_eq!(
+                    crate::backup_creation::volume_for(
+                        "docker", &m, &config, service, target, actual
+                    )
+                    .unwrap(),
+                    *name
+                );
+            }
+            let mut foreign = m.clone();
+            foreign.bundle_id = uuid::Uuid::new_v4().to_string();
+            assert_eq!(
+                crate::backup_creation::volume_for(
+                    "docker",
+                    &foreign,
+                    &config,
+                    "platform",
+                    "/data/blobs",
+                    &app
+                )
+                .unwrap_err()
+                .code,
+                "OWNERSHIP_CONFLICT"
+            );
+            let mut wrong = config.clone();
+            wrong["volumes"]["blobs"]["name"] = names[1].clone().into();
+            assert_eq!(
+                crate::backup_creation::volume_for(
+                    "docker",
+                    &m,
+                    &wrong,
+                    "platform",
+                    "/data/blobs",
+                    &app
+                )
+                .unwrap_err()
+                .code,
+                "OWNERSHIP_CONFLICT"
+            );
+        }));
+        // These helpers were never started; these volumes contain no application data.
+        for id in &ids {
+            call(&["rm".into(), id.clone()]);
+        }
+        for name in &names {
+            call(&["volume".into(), "rm".into(), name.clone()]);
+        }
+        if let Err(payload) = result {
+            std::panic::resume_unwind(payload);
+        }
     }
     #[test]
     #[ignore = "requires local Docker and the qualified existing maintenance image"]
