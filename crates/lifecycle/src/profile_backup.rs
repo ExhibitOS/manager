@@ -9,8 +9,8 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, OsRng, Payload, rand_core::RngCore},
 };
-pub(crate) use host_checkpoint::checkpoint_host_anchored;
 pub use host_checkpoint::{HostReceipt, checkpoint_host, extract_host};
+pub(crate) use host_checkpoint::{checkpoint_host_anchored, checkpoint_host_borrowed};
 use std::collections::BTreeMap;
 const MAGIC: &[u8] = b"ExhibitOS-profile-v1\0";
 const LIMIT: u64 = 64 * 1024 * 1024;
@@ -122,8 +122,28 @@ fn lock_file(root: &Path, name: &str, exclusive: bool) -> Result<File> {
 /// Hold the pathname fence as well as the legacy inode fence. The anchor is
 /// outside the replaceable profile and must never be unlinked by maintenance.
 pub(crate) struct ProfileSession {
+    profile: PathBuf,
+    identity: fs::Metadata,
+    exclusive: bool,
     _anchor: File,
     _legacy: File,
+}
+impl ProfileSession {
+    pub(crate) fn check_exclusive(&self, profile: &Path) -> Result<()> {
+        canonical_private(profile)?;
+        let current = fs::symlink_metadata(profile).map_err(|_| err("PROFILE_PATH_INVALID"))?;
+        if !self.exclusive || self.profile != profile {
+            return Err(err("PROFILE_LOCK_INVALID"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if (current.dev(), current.ino()) != (self.identity.dev(), self.identity.ino()) {
+                return Err(err("PROFILE_LOCK_INVALID"));
+            }
+        }
+        Ok(())
+    }
 }
 /// Resolve a stable logical profile path without creating that profile. A
 /// controller must acquire this guard before creating/opening a replacement.
@@ -190,6 +210,9 @@ pub(crate) fn anchored_session(
 ) -> Result<ProfileSession> {
     canonical_private(profile)?;
     Ok(ProfileSession {
+        profile: profile.into(),
+        identity: fs::symlink_metadata(profile).map_err(|_| err("PROFILE_PATH_INVALID"))?,
+        exclusive,
         _anchor: anchor,
         _legacy: lock_file(profile, "profile-session.lock", exclusive)?,
     })

@@ -425,9 +425,11 @@ pub fn checkpoint_host(
         apps_closed,
         writers_stopped,
         None,
+        None,
+        || Ok(()),
         || Ok(()),
     )
-    .map(|(receipt, ())| receipt)
+    .map(|(receipt, (), ())| receipt)
 }
 pub(crate) fn checkpoint_host_anchored<T>(
     profile: &Path,
@@ -444,19 +446,44 @@ pub(crate) fn checkpoint_host_anchored<T>(
         true,
         writers_stopped,
         Some(anchor),
+        None,
+        || Ok(()),
+        after,
+    )
+    .map(|(receipt, (), after)| (receipt, after))
+}
+pub(crate) fn checkpoint_host_borrowed<B, T>(
+    profile: &Path,
+    key: &Path,
+    archive: &Path,
+    session: &ProfileSession,
+    before: impl FnOnce() -> Result<B>,
+    after: impl FnOnce() -> Result<T>,
+) -> Result<(HostReceipt, B, T)> {
+    checkpoint_host_guarded(
+        profile,
+        key,
+        archive,
+        true,
+        true,
+        None,
+        Some(session),
+        before,
         after,
     )
 }
 #[allow(clippy::too_many_arguments)]
-fn checkpoint_host_guarded<T>(
+fn checkpoint_host_guarded<B, T>(
     profile: &Path,
     key: &Path,
     archive: &Path,
     apps_closed: bool,
     writers_stopped: bool,
     anchor: Option<File>,
+    borrowed: Option<&ProfileSession>,
+    before: impl FnOnce() -> Result<B>,
     after: impl FnOnce() -> Result<T>,
-) -> Result<(HostReceipt, T)> {
+) -> Result<(HostReceipt, B, T)> {
     acknowledgement(apps_closed)?;
     if !writers_stopped {
         return Err(err("HOST_WRITER_ACK_REQUIRED"));
@@ -465,9 +492,17 @@ fn checkpoint_host_guarded<T>(
     let parent = archive_parent(profile, archive, key)?;
     let key = external_key(profile, key)?;
     no_destination(archive)?;
-    let _session = match anchor {
-        Some(anchor) => anchored_session(profile, anchor, true)?,
-        None => session_lock(profile, true)?,
+    let _session = if let Some(session) = borrowed {
+        if anchor.is_some() {
+            return Err(err("PROFILE_LOCK_INVALID"));
+        }
+        session.check_exclusive(profile)?;
+        None
+    } else {
+        Some(match anchor {
+            Some(anchor) => anchored_session(profile, anchor, true)?,
+            None => session_lock(profile, true)?,
+        })
     };
     let _profile = lock_file(profile, "operation.lock", true)?;
     let s = capture(profile)?;
@@ -477,6 +512,10 @@ fn checkpoint_host_guarded<T>(
         if r.available {
             excluded.insert(format!("{}/operation.lock", r.relative));
         }
+    }
+    let prepared = before()?;
+    if let Some(session) = borrowed {
+        session.check_exclusive(profile)?;
     }
     let id = Uuid::new_v4().to_string();
     let m = inventory(profile, &excluded, &id)?;
@@ -519,7 +558,14 @@ fn checkpoint_host_guarded<T>(
     publish(&pending, archive)?;
     fs::remove_file(&pending).map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
     sync(&parent)?;
-    Ok((receipt(&m, "host-profile-checkpoint", &encoded), paired))
+    if let Some(session) = borrowed {
+        session.check_exclusive(profile)?;
+    }
+    Ok((
+        receipt(&m, "host-profile-checkpoint", &encoded),
+        prepared,
+        paired,
+    ))
 }
 fn publish_directory(source: &Path, target: &Path) -> Result<()> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -702,6 +748,106 @@ mod tests {
         write_new(&k, &[17; 32]).unwrap();
         let a = base.join("archive.exb");
         (p, k, a)
+    }
+    #[test]
+    fn borrowed_fence_spans_callbacks_and_captures_prepared_bytes() {
+        let (p, k, a) = fixture();
+        let session = session_lock(&p, true).unwrap();
+        let witness = p.join("local-runtime/prepared-witness");
+        let (receipt, (), ()) = checkpoint_host_borrowed(
+            &p,
+            &k,
+            &a,
+            &session,
+            || {
+                assert!(session_lock(&p, false).is_err());
+                assert!(lock_file(&p, "operation.lock", true).is_err());
+                assert!(lock_file(&p.join("local-runtime"), "operation.lock", true).is_err());
+                write_new(&witness, b"prepared-under-fence")
+            },
+            || {
+                assert!(session_lock(&p, true).is_err());
+                assert!(lock_file(&p.join("local-runtime"), "operation.lock", true).is_err());
+                Ok(())
+            },
+        )
+        .unwrap();
+        drop(session);
+        let target = k.with_file_name("extracted");
+        let opened = extract_host(&p, &k, &a, &target, true).unwrap();
+        assert_eq!(receipt.manifest_sha256, opened.manifest_sha256);
+        assert_eq!(
+            fs::read(target.join("profile/local-runtime/prepared-witness")).unwrap(),
+            b"prepared-under-fence"
+        );
+    }
+    #[test]
+    fn borrowed_fence_rejects_wrong_scope_shared_guard_and_post_archive_changes() {
+        let (p, k, a) = fixture();
+        let (other, _, _) = fixture();
+        let wrong = session_lock(&other, true).unwrap();
+        assert_eq!(
+            checkpoint_host_borrowed(&p, &k, &a, &wrong, || Ok(()), || Ok(()))
+                .unwrap_err()
+                .code,
+            "PROFILE_LOCK_INVALID"
+        );
+        let shared = session_lock(&p, false).unwrap();
+        assert_eq!(
+            checkpoint_host_borrowed(&p, &k, &a, &shared, || Ok(()), || Ok(()))
+                .unwrap_err()
+                .code,
+            "PROFILE_LOCK_INVALID"
+        );
+        drop(shared);
+        let held = session_lock(&p, true).unwrap();
+        assert_eq!(
+            checkpoint_host_borrowed(
+                &p,
+                &k,
+                &a,
+                &held,
+                || Ok(()),
+                || write_new(&p.join("local-runtime/late-writer"), b"late")
+            )
+            .unwrap_err()
+            .code,
+            "HOST_SOURCE_CHANGED"
+        );
+        assert!(!a.exists());
+    }
+    #[test]
+    fn callback_failure_never_publishes_borrowed_archive() {
+        let (p, k, a) = fixture();
+        let held = session_lock(&p, true).unwrap();
+        assert_eq!(
+            checkpoint_host_borrowed(
+                &p,
+                &k,
+                &a,
+                &held,
+                || Err::<(), _>(err("UPDATE_SOURCE_CHANGED")),
+                || Ok(())
+            )
+            .unwrap_err()
+            .code,
+            "UPDATE_SOURCE_CHANGED"
+        );
+        assert!(!a.exists());
+        assert_eq!(
+            checkpoint_host_borrowed(
+                &p,
+                &k,
+                &a,
+                &held,
+                || Ok(()),
+                || Err::<(), _>(err("UPDATE_SOURCE_CHANGED"))
+            )
+            .unwrap_err()
+            .code,
+            "UPDATE_SOURCE_CHANGED"
+        );
+        assert!(!a.exists());
     }
     #[test]
     fn host_bytes_above_profile_envelope_limit_extract_exact_without_activation() {

@@ -35,6 +35,19 @@ pub struct SourceRecoveryReceipt {
     pub update_executed: bool,
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceHostTrustReceipt {
+    pub host: profile_backup::HostReceipt,
+    pub trust: TrustCheckpointReceipt,
+    pub source: SourceRecoveryReceipt,
+    pub after_archive_inventory: SourceInventoryReceipt,
+    pub after_archive_configuration: ConfigurationInventoryReceipt,
+    pub external_volumes_saved: bool,
+    pub live_authority_restored: bool,
+    pub preflight_verified: bool,
+    pub update_executed: bool,
+}
 /// Holds the Store borrow and both profile fences. No arbitrary root, controller
 /// bootstrap, activation, journal transition, or externally supplied success flag.
 pub struct ExecutionSession<'a> {
@@ -343,6 +356,15 @@ impl ExecutionSession<'_> {
         acknowledged: bool,
         roots_held: bool,
     ) -> crate::Result<ConfigurationInventoryReceipt> {
+        self.verify_configuration_inventory_at(image, acknowledged, roots_held, None)
+    }
+    fn verify_configuration_inventory_at(
+        &self,
+        image: &str,
+        acknowledged: bool,
+        roots_held: bool,
+        export_parent: Option<&Path>,
+    ) -> crate::Result<ConfigurationInventoryReceipt> {
         self.check()?;
         if !acknowledged {
             return Err(crate::err("BACKUP_OPERATOR_ACK_REQUIRED"));
@@ -422,9 +444,8 @@ impl ExecutionSession<'_> {
                 &manifest,
                 &self.source.manifest()?,
             )?;
-            let exported = self
-                .source
-                .root
+            let exported = export_parent
+                .unwrap_or(&self.source.root)
                 .join(format!("source-image-observation-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&exported).map_err(|_| crate::err("STATE_UNAVAILABLE"))?;
             #[cfg(unix)]
@@ -488,6 +509,14 @@ impl ExecutionSession<'_> {
         image: &str,
         acknowledged: bool,
     ) -> crate::Result<SourceRecoveryReceipt> {
+        self.verify_source_recovery_scoped(image, acknowledged, false)
+    }
+    fn verify_source_recovery_scoped(
+        &self,
+        image: &str,
+        acknowledged: bool,
+        roots_held: bool,
+    ) -> crate::Result<SourceRecoveryReceipt> {
         self.check()?;
         if !acknowledged {
             return Err(crate::err("BACKUP_OPERATOR_ACK_REQUIRED"));
@@ -510,8 +539,16 @@ impl ExecutionSession<'_> {
         let original =
             fs::symlink_metadata(&root).map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?;
         let target = LifecycleService::open_retry_diagnostics(root.clone())?;
-        let _source = self.source.lock()?;
-        let _target = target.lock()?;
+        let _source = if roots_held {
+            None
+        } else {
+            Some(self.source.lock()?)
+        };
+        let _target = if roots_held {
+            None
+        } else {
+            Some(target.lock()?)
+        };
         let inventory = self.verify_source_inventory_scoped(image, true, true)?;
         let configuration = self.verify_configuration_inventory_scoped(image, true, true)?;
         let repeated_inventory = self.verify_source_inventory_scoped(image, true, true)?;
@@ -542,6 +579,167 @@ impl ExecutionSession<'_> {
             preflight_verified: false,
             update_executed: false,
         })
+    }
+    /// Cooperative host/root fences span fresh source observations, host+trust
+    /// archives and a final read-only source comparison. External volumes are
+    /// observed against the existing backup, not newly archived by this method.
+    pub fn checkpoint_source_host_trust(
+        &self,
+        image: &str,
+        key_file: &Path,
+        target: &Path,
+        external_writers_quiesced: bool,
+        host_writers_stopped: bool,
+    ) -> crate::Result<SourceHostTrustReceipt> {
+        self.check()?;
+        if !external_writers_quiesced {
+            return Err(crate::err("BACKUP_OPERATOR_ACK_REQUIRED"));
+        }
+        if !host_writers_stopped {
+            return Err(crate::err("HOST_WRITER_ACK_REQUIRED"));
+        }
+        let parent = target
+            .parent()
+            .ok_or_else(|| crate::err("PROFILE_PATH_INVALID"))?;
+        if !target.is_absolute()
+            || fs::canonicalize(parent).ok().as_deref() != Some(parent)
+            || target.starts_with(&self.store.profile)
+            || target.starts_with(&self.store.root)
+            || target.exists()
+        {
+            return Err(crate::err("PROFILE_PATH_INVALID"));
+        }
+        installations::private_directory(parent)?;
+        if !key_file.is_absolute()
+            || fs::canonicalize(key_file).ok().as_deref() != Some(key_file)
+            || key_file.starts_with(&self.store.profile)
+            || key_file.starts_with(&self.store.root)
+        {
+            return Err(crate::err("PROFILE_KEY_INVALID"));
+        }
+        let mut key = read_record(key_file).map_err(|_| crate::err("PROFILE_KEY_INVALID"))?;
+        if key.len() != 32 {
+            key.fill(0);
+            return Err(crate::err("PROFILE_KEY_INVALID"));
+        }
+        let result = (|| {
+            let stage = parent.join(format!(
+                "pending-source-host-trust-{}",
+                uuid::Uuid::new_v4()
+            ));
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder
+                .create(&stage)
+                .map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?;
+            let source = std::cell::RefCell::new(None);
+            let (host, (), (trust, source, after_archive_inventory, after_archive_configuration)) =
+                profile_backup::checkpoint_host_borrowed(
+                    &self.store.profile,
+                    key_file,
+                    &stage.join("host.bin"),
+                    &self._session,
+                    || {
+                        *source.borrow_mut() =
+                            Some(self.verify_source_recovery_scoped(image, true, true)?);
+                        Ok(())
+                    },
+                    || {
+                        self.check()?;
+                        if read_record(key_file).map_err(|_| crate::err("PROFILE_KEY_INVALID"))?
+                            != key
+                        {
+                            return Err(crate::err("PROFILE_KEY_INVALID"));
+                        }
+                        let trust = self
+                            .store
+                            .archive_trust_checkpoint(
+                                &stage.join("trust.bin"),
+                                key.as_slice()
+                                    .try_into()
+                                    .map_err(|_| crate::err("PROFILE_KEY_INVALID"))?,
+                            )
+                            .map_err(|e| crate::err(e.code()))?;
+                        let after = self.verify_source_inventory_scoped(image, true, true)?;
+                        let source = source
+                            .borrow_mut()
+                            .take()
+                            .ok_or_else(|| crate::err("UPDATE_SOURCE_PROOF_MISSING"))?;
+                        let before = &source.repeated_inventory;
+                        if before.source_content_sha256 != after.source_content_sha256
+                            || before.inventory.inventory_sha256 != after.inventory.inventory_sha256
+                            || before.inventory.schema_sha256 != after.inventory.schema_sha256
+                            || before.inventory.authenticated_manifest_sha256
+                                != after.inventory.authenticated_manifest_sha256
+                            || before.source_instance != after.source_instance
+                            || before.target_instance != after.target_instance
+                            || before.source_database_volume != after.source_database_volume
+                            || before.source_blob_volume != after.source_blob_volume
+                        {
+                            return Err(crate::err("UPDATE_SOURCE_CHANGED"));
+                        }
+                        let after_configuration = self.verify_configuration_inventory_at(
+                            image,
+                            true,
+                            true,
+                            Some(&stage),
+                        )?;
+                        let before_configuration = &source.configuration;
+                        if before_configuration.configuration_volume
+                            != after_configuration.configuration_volume
+                            || serde_json::to_value(&before_configuration.files).ok()
+                                != serde_json::to_value(&after_configuration.files).ok()
+                            || serde_json::to_value(&before_configuration.images).ok()
+                                != serde_json::to_value(&after_configuration.images).ok()
+                            || before_configuration.authenticated_manifest_sha256
+                                != after_configuration.authenticated_manifest_sha256
+                        {
+                            return Err(crate::err("UPDATE_SOURCE_CHANGED"));
+                        }
+                        Ok((trust, source, after, after_configuration))
+                    },
+                )?;
+            self.check()?;
+            if read_record(key_file).map_err(|_| crate::err("PROFILE_KEY_INVALID"))? != key {
+                return Err(crate::err("PROFILE_KEY_INVALID"));
+            }
+            let mut after_archive_configuration = after_archive_configuration;
+            let export_relative = Path::new(&after_archive_configuration.export_workspace)
+                .strip_prefix(&stage)
+                .map_err(|_| crate::err("UPDATE_SOURCE_CHANGED"))?;
+            after_archive_configuration.export_workspace =
+                target.join(export_relative).to_string_lossy().into_owned();
+            let receipt = SourceHostTrustReceipt {
+                host,
+                trust,
+                source,
+                after_archive_inventory,
+                after_archive_configuration,
+                external_volumes_saved: false,
+                live_authority_restored: false,
+                preflight_verified: false,
+                update_executed: false,
+            };
+            let mut marker = private_file(&stage.join("verified.json"), true)
+                .map_err(|e| crate::err(e.code()))?;
+            marker
+                .write_all(
+                    &serde_json::to_vec(&receipt)
+                        .map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?,
+                )
+                .and_then(|_| marker.sync_all())
+                .map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?;
+            sync_dir(&stage).map_err(|e| crate::err(e.code()))?;
+            publish(&stage, target).map_err(|e| crate::err(e.code()))?;
+            sync_dir(parent).map_err(|e| crate::err(e.code()))?;
+            Ok(receipt)
+        })();
+        key.fill(0);
+        result
     }
     /// Retained physical stopped-source copy; no logical inventory or full preflight proof.
     pub fn snapshot_source_database(
@@ -1241,6 +1439,30 @@ mod tests {
         assert!(!target.join("restoration.json").exists());
         drop(lease);
         assert_eq!(s.receipt().generation, 2);
+    }
+    #[test]
+    fn integrated_checkpoint_refuses_both_missing_acknowledgements_before_writes() {
+        let (p, mut store) = prepared("default");
+        registered(&p, SOURCE, "default");
+        let session = store.execution().unwrap();
+        let destination = p.parent().unwrap().join("unpublished-pair");
+        let key = p.parent().unwrap().join("absent-key");
+        let image = format!("sha256:{}", "a".repeat(64));
+        assert_eq!(
+            session
+                .checkpoint_source_host_trust(&image, &key, &destination, false, true)
+                .unwrap_err()
+                .code,
+            "BACKUP_OPERATOR_ACK_REQUIRED"
+        );
+        assert_eq!(
+            session
+                .checkpoint_source_host_trust(&image, &key, &destination, true, false)
+                .unwrap_err()
+                .code,
+            "HOST_WRITER_ACK_REQUIRED"
+        );
+        assert!(!destination.exists());
     }
     #[test]
     fn combined_recovery_refuses_missing_ack_and_candidate_without_engine_work() {

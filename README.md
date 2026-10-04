@@ -103,3 +103,5 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 [호스트·신뢰 묶음 사본](docs/paired-host-trust-checkpoint.md)은 같은 cooperative 잠금에서 두 암호화 사본을 만들고 비활성 경로 추출을 지원합니다. 현재 외부 서비스 볼륨 백업·authority 복원·실제 업데이트 인수 조건은 별도로 유지합니다.
 
 [같은 fence의 현재 원본 결합 관측](docs/source-recovery-bundle.md)은 DB/blob 앞뒤와 전체 설정·이미지 바이트를 함께 인증 백업에 대조합니다. Host/trust/data 전체 복원 지점과 Applying 권한은 후속 통합 조건입니다.
+
+[원본·호스트·신뢰 기록 통합 관측](docs/source-host-trust-checkpoint.md)은 같은 cooperative fence 안에서 현재 서비스와 인증 백업을 대조하고 호스트·신뢰 사본을 생성한 뒤 다시 대조합니다. 새 외부 volume 백업·전체 복원·실제 업데이트 완료는 별도 조건입니다.

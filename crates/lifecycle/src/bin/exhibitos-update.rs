@@ -289,6 +289,28 @@ fn run() -> Result<(), String> {
         );
         return Ok(());
     }
+    if a[1] == "checkpoint-source-host-trust" {
+        if a.len() != 15
+            || a[6] != "--image"
+            || a[8] != "--key-file"
+            || a[10] != "--destination"
+            || a[12] != "--external-writers-quiesced"
+            || a[13] != "--host-writers-stopped"
+        {
+            return Err(usage());
+        }
+        let mut store = Store::open(profile, installation).map_err(code)?;
+        let receipt = store
+            .execution()
+            .map_err(|e| e.code)?
+            .checkpoint_source_host_trust(&a[7], Path::new(&a[9]), Path::new(&a[11]), true, true)
+            .map_err(|e| e.code)?;
+        println!(
+            "{}",
+            serde_json::to_string(&receipt).map_err(|_| "UPDATE_RECEIPT_INVALID")?
+        );
+        return Ok(());
+    }
     if a[1] == "checkpoint-host-trust" {
         if a.len() != 12
             || a[6] != "--key-file"
