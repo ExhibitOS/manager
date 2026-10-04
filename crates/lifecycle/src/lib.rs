@@ -11,6 +11,7 @@ pub mod profile_backup;
 pub mod restoration;
 mod restoration_auxiliary;
 pub mod retry;
+pub mod signed_release;
 pub mod update;
 
 use fs2::FileExt;

@@ -87,3 +87,5 @@ update/restore/health failures, every in-flight restart stage, malformed persist
 records and forbidden transitions with synthetic identities only. It does not
 execute a database or engine update, perform cryptography, restore actual data or
 qualify Windows/native UI.
+
+The separate [signed release verifier](signed-releases.md) now produces actual signature/artifact observations for exact plan image/schema/source binding. It does not supply restoration, runtime compatibility, source snapshot, space or rollback proof; this decision model remains independent of execution.
