@@ -910,6 +910,7 @@ mod tests {
         drop(c);
         assert!(!a.exists());
     }
+    #[cfg(unix)]
     #[test]
     fn links_unsafe_paths_and_permissions_never_publish() {
         let (p, k, a) = fixture();
