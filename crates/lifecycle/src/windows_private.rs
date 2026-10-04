@@ -5,6 +5,7 @@ use crate::{err, Result};
 use std::{
     ffi::c_void,
     fs::File,
+    io::{Read, Seek, SeekFrom, Write},
     mem,
     os::windows::{
         ffi::OsStrExt,
@@ -371,6 +372,9 @@ impl PrivateDirectory {
         Ok(())
     }
     pub fn create_record(&self, name: &str) -> Result<File> {
+        self.create_record_sharing(name, fsapi::FILE_SHARE_READ | fsapi::FILE_SHARE_WRITE)
+    }
+    fn create_record_sharing(&self, name: &str, sharing: u32) -> Result<File> {
         self.check()?;
         valid_name(name)?;
         let path = self.path.join(name);
@@ -384,7 +388,7 @@ impl PrivateDirectory {
             fsapi::CreateFileW(
                 wide(&path)?.as_ptr(),
                 0x80000000 | 0x40000000 | fsapi::READ_CONTROL,
-                fsapi::FILE_SHARE_READ | fsapi::FILE_SHARE_WRITE,
+                sharing,
                 &attributes,
                 fsapi::CREATE_NEW,
                 fsapi::FILE_ATTRIBUTE_NORMAL | fsapi::FILE_FLAG_OPEN_REPARSE_POINT,
@@ -406,6 +410,126 @@ impl PrivateDirectory {
             return Err(err("WINDOWS_PROFILE_IDENTITY_INVALID"));
         }
         Ok(())
+    }
+}
+
+/// A private immutable-generation record with its directory fence alive for every access.
+/// No raw handle escapes; holding it denies new write/delete handles on Windows.
+pub struct BoundRecord<'a> {
+    directory: &'a PrivateDirectory,
+    file: File,
+    name: String,
+    id: Identity,
+}
+impl PrivateDirectory {
+    pub fn write_new_record<'a>(
+        &'a self,
+        name: &str,
+        bytes: &[u8],
+        limit: usize,
+    ) -> Result<BoundRecord<'a>> {
+        if limit > 16 * 1024 * 1024 || bytes.len() > limit {
+            return Err(err("WINDOWS_PROFILE_RECORD_QUOTA"));
+        }
+        let file = self.create_record_sharing(name, fsapi::FILE_SHARE_READ)?;
+        fs2::FileExt::try_lock_exclusive(&file).map_err(|_| err("WINDOWS_PROFILE_BUSY"))?;
+        let mut record = BoundRecord {
+            directory: self,
+            id: identity(&file, false)?,
+            file,
+            name: name.into(),
+        };
+        record.check()?;
+        record
+            .file
+            .write_all(bytes)
+            .map_err(|_| err("WINDOWS_PROFILE_RECORD_IO"))?;
+        record
+            .file
+            .sync_all()
+            .map_err(|_| err("WINDOWS_PROFILE_RECORD_IO"))?;
+        record.check()?;
+        Ok(record)
+    }
+    /// Open only under this already-held directory fence; no unsafe namespace adoption.
+    pub fn read_record<'a>(&'a self, name: &str) -> Result<BoundRecord<'a>> {
+        valid_name(name)?;
+        self.check()?;
+        let path = wide(&self.path.join(name))?;
+        let handle = unsafe {
+            fsapi::CreateFileW(
+                path.as_ptr(),
+                0x80000000 | fsapi::READ_CONTROL,
+                fsapi::FILE_SHARE_READ,
+                ptr::null(),
+                fsapi::OPEN_EXISTING,
+                fsapi::FILE_FLAG_OPEN_REPARSE_POINT,
+                ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(err("WINDOWS_PROFILE_RECORD_OPEN_REFUSED"));
+        }
+        let file = unsafe { File::from_raw_handle(handle.cast()) };
+        self.check_record(&file, name)?;
+        fs2::FileExt::try_lock_shared(&file).map_err(|_| err("WINDOWS_PROFILE_BUSY"))?;
+        let record = BoundRecord {
+            directory: self,
+            id: identity(&file, false)?,
+            file,
+            name: name.into(),
+        };
+        record.check()?;
+        Ok(record)
+    }
+}
+impl BoundRecord<'_> {
+    pub fn check(&self) -> Result<()> {
+        self.directory.check_record(&self.file, &self.name)?;
+        if identity(&self.file, false)? != self.id {
+            return Err(err("WINDOWS_PROFILE_IDENTITY_INVALID"));
+        }
+        Ok(())
+    }
+    pub fn read_bounded(&mut self, limit: usize) -> Result<Vec<u8>> {
+        if limit > 16 * 1024 * 1024 {
+            return Err(err("WINDOWS_PROFILE_RECORD_QUOTA"));
+        }
+        self.check()?;
+        let before = self
+            .file
+            .metadata()
+            .map_err(|_| err("WINDOWS_PROFILE_RECORD_IO"))?
+            .len();
+        if before > limit as u64 {
+            return Err(err("WINDOWS_PROFILE_RECORD_QUOTA"));
+        }
+        self.file
+            .seek(SeekFrom::Start(0))
+            .map_err(|_| err("WINDOWS_PROFILE_RECORD_IO"))?;
+        let mut bytes = Vec::new();
+        (&mut self.file)
+            .take(limit as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| err("WINDOWS_PROFILE_RECORD_IO"))?;
+        self.check()?;
+        if bytes.len() > limit
+            || bytes.len() as u64 != before
+            || self
+                .file
+                .metadata()
+                .map_err(|_| err("WINDOWS_PROFILE_RECORD_IO"))?
+                .len()
+                != before
+        {
+            return Err(err("WINDOWS_PROFILE_RECORD_CHANGED"));
+        }
+        Ok(bytes)
+    }
+}
+impl Drop for BoundRecord<'_> {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
     }
 }
 
@@ -562,6 +686,48 @@ mod tests {
         drop(file);
         drop(dir);
         std::fs::remove_file(path.join("synthetic.json")).unwrap();
+        std::fs::remove_dir(path).unwrap();
+    }
+    #[test]
+    fn bound_record_reopens_exact_bytes_without_allowing_writer_handles() {
+        let dir = fresh();
+        let path = dir.path().to_owned();
+        let mut created = dir
+            .write_new_record("generation-1.json", b"synthetic-only", 1024)
+            .unwrap();
+        assert_eq!(created.read_bounded(1024).unwrap(), b"synthetic-only");
+        assert!(dir
+            .write_new_record("generation-1.json", b"replacement", 1024)
+            .is_err());
+        assert!(dir.read_record("generation-1.json").is_err());
+        drop(created);
+        let mut first = dir.read_record("generation-1.json").unwrap();
+        let mut second = dir.read_record("generation-1.json").unwrap();
+        assert_eq!(first.read_bounded(1024).unwrap(), b"synthetic-only");
+        assert_eq!(second.read_bounded(1024).unwrap(), b"synthetic-only");
+        assert!(std::fs::OpenOptions::new()
+            .write(true)
+            .open(path.join("generation-1.json"))
+            .is_err());
+        assert!(std::fs::remove_file(path.join("generation-1.json")).is_err());
+        assert!(first.read_bounded(1).is_err());
+        assert!(dir.write_new_record("too-large", b"xx", 1).is_err());
+        assert!(!path.join("too-large").exists());
+        drop(second);
+        drop(first);
+        drop(dir);
+        std::fs::remove_file(path.join("generation-1.json")).unwrap();
+        std::fs::remove_dir(path).unwrap();
+    }
+    #[test]
+    fn bound_reader_refuses_existing_writer_without_modifying_it() {
+        let dir = fresh();
+        let path = dir.path().to_owned();
+        let file = dir.create_record("generation-1.json").unwrap();
+        assert!(dir.read_record("generation-1.json").is_err());
+        drop(file);
+        drop(dir);
+        std::fs::remove_file(path.join("generation-1.json")).unwrap();
         std::fs::remove_dir(path).unwrap();
     }
 }
