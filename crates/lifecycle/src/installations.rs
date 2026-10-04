@@ -388,6 +388,84 @@ impl InstallationController {
         private_directory(&current.path)?;
         task(service)
     }
+    // Diagnosis must remain available when ordinary startup rejects an incomplete candidate.
+    fn with_retry_diagnostics<T>(
+        &self,
+        token: &str,
+        destination_id: Option<&str>,
+        task: impl FnOnce(&LifecycleService, Option<&Path>) -> Result<T>,
+    ) -> Result<T> {
+        let current = self.current.try_read().map_err(|_| err("BUSY"))?;
+        if !uuid(token) || current.token != token {
+            return Err(err("INSTALLATION_SELECTION_CHANGED"));
+        }
+        let source = LifecycleService::open_retry_diagnostics(current.path.clone())?;
+        if let Some(profile) = &self.profile {
+            let _profile = profile_lock(profile)?;
+            let (registry, _) =
+                load(&profile.root)?.ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
+            let entry = registry
+                .installations
+                .iter()
+                .find(|e| e.id == current.entry.id)
+                .ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
+            if registry.active_id != entry.id || root(&profile.root, entry) != current.path {
+                return Err(err("INSTALLATION_SELECTION_CHANGED"));
+            }
+            let destination = match destination_id {
+                None => None,
+                Some(id) => {
+                    if !uuid(id) || id == entry.id {
+                        return Err(err("RETRY_DESTINATION_INVALID"));
+                    }
+                    let target = registry
+                        .installations
+                        .iter()
+                        .find(|e| e.id == id)
+                        .ok_or_else(|| err("RETRY_DESTINATION_INVALID"))?;
+                    let path = root(&profile.root, target);
+                    private_directory(&path)?;
+                    Some(path)
+                }
+            };
+            task(&source, destination.as_deref())
+        } else {
+            if destination_id.is_some() {
+                return Err(err("INSTALLATION_SELECTION_DISABLED"));
+            }
+            task(&source, None)
+        }
+    }
+    pub fn retry_diagnostic_history(
+        &self,
+        token: &str,
+    ) -> Result<Vec<super::retry::MaintenanceRetry>> {
+        self.with_retry_diagnostics(token, None, |s, _| s.retry_diagnostic_history())
+    }
+    pub fn diagnose_retry(
+        &self,
+        token: &str,
+        retry_id: &str,
+        destination_id: Option<&str>,
+    ) -> Result<super::retry::RetryDiagnosis> {
+        self.with_retry_diagnostics(token, destination_id, |s, destination| {
+            s.diagnose_maintenance_retry(retry_id, destination)
+        })
+    }
+    pub fn reconcile_retry(
+        &self,
+        token: &str,
+        retry_id: &str,
+        destination_id: Option<&str>,
+        preserve: bool,
+    ) -> Result<super::retry::RetryRecoveryReceipt> {
+        if !preserve {
+            return Err(err("RETRY_ACK_REQUIRED"));
+        }
+        self.with_retry_diagnostics(token, destination_id, |s, destination| {
+            s.reconcile_maintenance_retry(retry_id, destination, preserve)
+        })
+    }
     /// Keep selection and registry locked while using a distinct registered root.
     /// Raw paths never enter this desktop adapter. The core enforces freshness.
     fn with_retry_destination<T>(
@@ -648,6 +726,101 @@ mod tests {
         let mut f = private_options().open(path).unwrap();
         f.write_all(bytes).unwrap();
         f.sync_all().unwrap();
+    }
+    #[test]
+    fn raw_diagnosis_survives_actual_incomplete_candidate_startup_without_rewriting_it() {
+        let (profile, controller) = fixture();
+        let path = profile.join("local-runtime");
+        let candidate = path.join(format!("backup-creation-{}", Uuid::new_v4()));
+        fs::create_dir(&candidate).unwrap();
+        fs::set_permissions(&candidate, fs::Permissions::from_mode(0o700)).unwrap();
+        write_private(
+            &candidate.join("witness"),
+            b"preserved incomplete candidate",
+        );
+        drop(controller);
+        let reopened = InstallationController::new(profile, None).unwrap();
+        let context = reopened.context().unwrap();
+        assert!(context.error_code.is_some());
+        assert!(
+            reopened
+                .retry_diagnostic_history(&context.selection_token)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            fs::read(candidate.join("witness")).unwrap(),
+            b"preserved incomplete candidate"
+        );
+        assert!(!candidate.join("job.json").exists());
+        assert_eq!(
+            reopened
+                .retry_diagnostic_history(&Uuid::new_v4().to_string())
+                .unwrap_err()
+                .code,
+            "INSTALLATION_SELECTION_CHANGED"
+        );
+    }
+    #[test]
+    fn diagnosis_resolves_only_registered_roots_and_fences_selection_without_startup_recovery() {
+        let (profile, controller) = fixture();
+        let first = controller.context().unwrap();
+        let second = controller.create(&first.selection_token, true).unwrap();
+        let current = controller
+            .select(&second.selection_token, &first.active_id, true)
+            .unwrap();
+        let destination = profile.join("installations").join(&second.active_id);
+        let witness = destination.join("witness");
+        write_private(&witness, b"not a fresh root");
+        controller
+            .with_retry_diagnostics(
+                &current.selection_token,
+                Some(&second.active_id),
+                |source, target| {
+                    assert_eq!(source.root, profile.join("local-runtime"));
+                    assert_eq!(target, Some(destination.as_path()));
+                    assert_eq!(
+                        controller
+                            .create(&current.selection_token, true)
+                            .err()
+                            .unwrap()
+                            .code,
+                        "BUSY"
+                    );
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(fs::read(&witness).unwrap(), b"not a fresh root");
+        for target in [
+            current.active_id.clone(),
+            Uuid::new_v4().to_string(),
+            "../foreign".into(),
+        ] {
+            assert_eq!(
+                controller
+                    .with_retry_diagnostics(&current.selection_token, Some(&target), |_, _| Ok(()))
+                    .unwrap_err()
+                    .code,
+                "RETRY_DESTINATION_INVALID"
+            );
+        }
+        assert_eq!(
+            controller.context().unwrap().selection_token,
+            current.selection_token
+        );
+        assert_eq!(
+            controller
+                .reconcile_retry(
+                    &current.selection_token,
+                    &Uuid::new_v4().to_string(),
+                    None,
+                    false
+                )
+                .unwrap_err()
+                .code,
+            "RETRY_ACK_REQUIRED"
+        );
     }
     #[test]
     fn nonfresh_registered_retry_destination_is_refused_without_recovering_its_journal() {
