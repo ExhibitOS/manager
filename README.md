@@ -85,3 +85,5 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 [업데이트 준비 기록 CLI](docs/update-intent.md)는 검증한 릴리스와 대상·백업·원본 계획을 수락 기록과 함께 저장합니다. 실제 적용·마이그레이션·건강 확인·롤백은 후속 실행 단계입니다.
 
 [정지 원본 DB 사본 개발 CLI](docs/source-database-snapshot.md)는 원본 네이티브 볼륨을 읽기 전용으로 새 고유 볼륨에 복사해 내용·권한·소유자와 정상 종료 상태를 검사합니다. 현재 DB/blob 논리 인벤토리 비교와 전체 업데이트 preflight는 후속 조건입니다.
+
+[현재 원본 DB·작품 인벤토리 개발 CLI](docs/source-inventory.md)는 원본을 정지 상태로 유지하고 새 DB 사본과 읽기 전용 작품 볼륨에서 인증된 백업의 전체 데이터 인벤토리를 대조합니다. 전체 설정/preflight·업데이트 실행은 별도입니다.

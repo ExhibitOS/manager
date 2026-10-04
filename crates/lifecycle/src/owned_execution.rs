@@ -17,6 +17,9 @@ pub use source_images::SourceImageReceipt;
 #[path = "source_database.rs"]
 mod source_database;
 pub use source_database::DatabaseSnapshotReceipt;
+#[path = "source_inventory.rs"]
+mod source_inventory;
+pub use source_inventory::SourceInventoryReceipt;
 
 /// Holds the Store borrow and both profile fences. No arbitrary root, controller
 /// bootstrap, activation, journal transition, or externally supplied success flag.
@@ -405,6 +408,131 @@ impl ExecutionSession<'_> {
                 snapshot_volume,
                 maintenance_image: image.into(),
                 proof,
+                observed_at: crate::now(),
+            })
+        })();
+        self.check()?;
+        installations::private_directory(&root)?;
+        if !identity(
+            &identity_before,
+            &fs::symlink_metadata(&root).map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?,
+        ) {
+            return Err(crate::err("UPDATE_TARGET_CHANGED"));
+        }
+        result
+    }
+    /// Current logical DB/blob inventory from isolated source snapshots; full preflight remains.
+    pub fn verify_source_inventory(
+        &self,
+        image: &str,
+        acknowledged: bool,
+    ) -> crate::Result<SourceInventoryReceipt> {
+        self.check()?;
+        if !acknowledged {
+            return Err(crate::err("BACKUP_OPERATOR_ACK_REQUIRED"));
+        }
+        let intent = self
+            .store
+            .intent()
+            .ok_or_else(|| crate::err("UPDATE_INTENT_MISSING"))?;
+        if intent.update.stage() != crate::update::Stage::Prepared {
+            return Err(crate::err("UPDATE_CANDIDATE_STAGE_INVALID"));
+        }
+        let plan = intent.update.plan();
+        crate::restoration::RestorationBinding::from_plan(plan)?;
+        let (registry, _) = installations::load(&self.store.profile)?
+            .ok_or_else(|| crate::err("UPDATE_SOURCE_CHANGED"))?;
+        let entry = registry
+            .installations
+            .iter()
+            .find(|e| e.id == plan.target_instance && e.kind == "recovery")
+            .ok_or_else(|| crate::err("UPDATE_TARGET_UNREGISTERED"))?;
+        let root = installations::root(&self.store.profile, entry);
+        installations::private_directory(&self.store.profile.join("installations"))?;
+        installations::private_directory(&root)?;
+        let identity_before =
+            fs::symlink_metadata(&root).map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?;
+        let target = LifecycleService::open_retry_diagnostics(root.clone())?;
+        let _source_lock = self.source.lock()?;
+        let _target_lock = target.lock()?;
+        let result = (|| {
+            let job = target
+                .restoration_status()?
+                .filter(|j| j.state == "completed")
+                .ok_or_else(|| crate::err("UPDATE_SOURCE_PROOF_MISSING"))?;
+            let workspace = root.join(format!("restore-{}", job.id));
+            let receipt: crate::restoration::RestorationReceipt =
+                crate::read_json(&crate::checked_path(&workspace, "receipt.json")?)?;
+            let files = source_deployment::authenticated_files(
+                &self.source.root,
+                &workspace,
+                &receipt,
+                plan,
+            )?;
+            let before = source_stopped::observe(&self.source, plan)?;
+            let raw = crate::installation_backup::source_bytes(
+                &workspace.join("authenticated"),
+                "manifest.json",
+                16 * 1024 * 1024,
+                true,
+            )?;
+            let binding = crate::restoration::RestorationBinding::from_plan(plan)?;
+            binding.authenticated(
+                &receipt.backup_id,
+                &receipt.authenticated_manifest_sha256,
+                &raw,
+            )?;
+            if fs2::available_space(&self.source.root)
+                .map_err(|_| crate::err("STORAGE_UNAVAILABLE"))?
+                < 6 * 1024 * 1024 * 1024
+            {
+                return Err(crate::err("RESTORE_SPACE_REQUIRED"));
+            }
+            let (snapshot_volume, proof) = source_database::copy(image, &before.database_volume)?;
+            let manifest_path =
+                crate::checked_path(&workspace.join("authenticated"), "manifest.json")?;
+            let inventory = source_inventory::compare(
+                image,
+                &snapshot_volume,
+                &before.blob_volume,
+                &manifest_path,
+                &receipt.authenticated_manifest_sha256,
+            )?;
+            source_inventory::matched(&inventory, plan)?;
+            let (repeated_snapshot_volume, repeated_copy) =
+                source_database::copy(image, &before.database_volume)?;
+            if proof.content_sha256 != repeated_copy.content_sha256
+                || proof.bytes != repeated_copy.bytes
+                || proof.entries != repeated_copy.entries
+                || proof.files != repeated_copy.files
+            {
+                return Err(crate::err("UPDATE_SOURCE_CHANGED"));
+            }
+            let repeated = source_deployment::authenticated_files(
+                &self.source.root,
+                &workspace,
+                &receipt,
+                plan,
+            )?;
+            let after = source_stopped::observe(&self.source, plan)?;
+            if files != repeated
+                || before.platform_container != after.platform_container
+                || before.database_container != after.database_container
+                || before.blob_volume != after.blob_volume
+                || before.configuration_volume != after.configuration_volume
+                || before.database_volume != after.database_volume
+            {
+                return Err(crate::err("UPDATE_SOURCE_CHANGED"));
+            }
+            Ok(SourceInventoryReceipt {
+                source_instance: plan.source_instance.clone(),
+                target_instance: plan.target_instance.clone(),
+                source_database_volume: before.database_volume,
+                source_blob_volume: before.blob_volume,
+                snapshot_volume,
+                repeated_snapshot_volume,
+                source_content_sha256: proof.content_sha256,
+                inventory,
                 observed_at: crate::now(),
             })
         })();
