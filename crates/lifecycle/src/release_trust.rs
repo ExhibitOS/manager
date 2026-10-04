@@ -39,6 +39,9 @@ struct Record {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     update_event: Option<UpdateEvent>,
 }
+#[path = "trust_checkpoint.rs"]
+mod trust_checkpoint;
+pub use trust_checkpoint::TrustCheckpointReceipt;
 #[path = "owned_execution.rs"]
 mod owned_execution;
 #[path = "trust_update.rs"]
