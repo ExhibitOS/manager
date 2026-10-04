@@ -35,6 +35,20 @@ struct Record {
     acceptance: Option<Accepted>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     intent: Option<UpdateIntent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    update_event: Option<UpdateEvent>,
+}
+/// Only trusted executor observations may enter this journal; no CLI accepts preflight flags.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "evidence",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+enum UpdateEvent {
+    Begin(Box<crate::update::Preflight>),
+    Interrupted,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -50,10 +64,7 @@ impl UpdateIntent {
         &self.update
     }
     fn validate(&self) -> Result<(), Error> {
-        if self.envelope.is_empty()
-            || self.envelope.len() > MAX_ENVELOPE
-            || self.update.stage() != crate::update::Stage::Prepared
-        {
+        if self.envelope.is_empty() || self.envelope.len() > MAX_ENVELOPE {
             return Err(invalid());
         }
         self.update.validate().map_err(|_| invalid())?;
@@ -270,6 +281,47 @@ fn transition(old: &Record, next: &Record) -> Result<(), Error> {
     {
         return Err(Error::TrustRollback);
     }
+    if let Some(event) = &next.update_event {
+        if next.policy_generation != old.policy_generation
+            || next.acceptance != old.acceptance
+            || next.revoked_keys != old.revoked_keys
+            || serde_json::to_vec(&next.policy).map_err(|_| invalid())?
+                != serde_json::to_vec(&old.policy).map_err(|_| invalid())?
+        {
+            return Err(invalid());
+        }
+        let mut expected = old.intent.clone().ok_or_else(invalid)?;
+        match event {
+            UpdateEvent::Begin(evidence) => expected
+                .update
+                .begin_update((**evidence).clone())
+                .map_err(|_| invalid())?,
+            UpdateEvent::Interrupted => {
+                // An explicit no-op recovery event cannot grow the journal.
+                if expected.update.stage() != crate::update::Stage::Applying {
+                    return Err(invalid());
+                }
+                expected
+                    .update
+                    .recover_after_restart()
+                    .map_err(|_| invalid())?;
+            }
+        }
+        if serde_json::to_vec(&Some(expected)).map_err(|_| invalid())?
+            != serde_json::to_vec(&next.intent).map_err(|_| invalid())?
+        {
+            return Err(invalid());
+        }
+        return Ok(());
+    }
+    if old.intent.is_none()
+        && next
+            .intent
+            .as_ref()
+            .is_some_and(|i| i.update.stage() != crate::update::Stage::Prepared)
+    {
+        return Err(invalid());
+    }
     if old.intent.is_some()
         && serde_json::to_vec(&old.intent).map_err(|_| invalid())?
             != serde_json::to_vec(&next.intent).map_err(|_| invalid())?
@@ -428,6 +480,7 @@ impl Store {
             revoked_keys: vec![],
             acceptance: None,
             intent: None,
+            update_event: None,
         };
         valid_record(&r, &scope)?;
         let h = write(&root, &r)?;
@@ -510,6 +563,7 @@ impl Store {
                 || !r.revoked_keys.is_empty()
                 || r.acceptance.is_some()
                 || r.intent.is_some()
+                || r.update_event.is_some()
             {
                 return Err(invalid());
             }
@@ -517,7 +571,7 @@ impl Store {
             previous = Some(r);
         }
         let current = previous.ok_or_else(invalid)?;
-        let s = Self {
+        let mut s = Self {
             root,
             scope,
             root_identity,
@@ -528,6 +582,23 @@ impl Store {
             uncertain: false,
         };
         s.check_root()?;
+        if s.intent()
+            .is_some_and(|i| i.update.stage() == crate::update::Stage::Applying)
+        {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| invalid())?
+                .as_secs();
+            let mut next = s.current.clone();
+            next.intent
+                .as_mut()
+                .ok_or_else(invalid)?
+                .update
+                .recover_after_restart()
+                .map_err(|_| invalid())?;
+            next.update_event = Some(UpdateEvent::Interrupted);
+            s.commit(next, now)?;
+        }
         Ok(s)
     }
     pub fn policy(&self) -> &Policy {
@@ -597,6 +668,7 @@ impl Store {
         }
         let newkeys = keys(&policy)?;
         let mut next = self.current.clone();
+        next.update_event = None;
         next.acceptance = None;
         next.policy_generation = next.policy_generation.checked_add(1).ok_or_else(invalid)?;
         for k in keys(&next.policy)? {
@@ -682,6 +754,7 @@ impl Store {
         }
         let update = crate::update::Update::new(plan).map_err(|_| Error::PlanMismatch)?;
         let mut next = self.current.clone();
+        next.update_event = None;
         next.policy.minimum_sequence = fresh.release.sequence;
         next.policy.minimum_issued_at = next.policy.minimum_issued_at.max(fresh.release.issued_at);
         next.acceptance = Some(Accepted {
@@ -700,6 +773,37 @@ impl Store {
             artifact_sha256: fresh.release.artifact.sha256,
             update,
         });
+        self.commit(next, now)
+    }
+    /// Persist Applying before the trusted executor performs any runtime mutation.
+    /// Holds both filesystem fences until Store is dropped. The executor must supply
+    /// actual plan-bound compatibility, backup restoration, source and space evidence.
+    /// This API does not itself run or quiesce an engine, restore data, or prove health.
+    pub fn begin_update(
+        &mut self,
+        mut evidence: crate::update::Preflight,
+        verified: &VerifiedRelease,
+        now: u64,
+    ) -> Result<TrustReceipt, Error> {
+        let intent = self.current.intent.as_ref().ok_or_else(invalid)?;
+        let fresh = self.verify_for_preparation(intent.envelope.as_bytes(), now)?;
+        if !verified.artifact_verified
+            || fresh.payload_sha256 != verified.payload_sha256
+            || fresh.key_id != verified.key_id
+            || fresh.source_schema_sha256 != verified.source_schema_sha256
+            || !fresh.binds(intent.update.plan())
+        {
+            return Err(Error::PlanMismatch);
+        }
+        verified.bind_preflight(&mut evidence, now)?;
+        let mut next = self.current.clone();
+        next.intent
+            .as_mut()
+            .ok_or_else(invalid)?
+            .update
+            .begin_update(evidence.clone())
+            .map_err(|_| Error::PlanMismatch)?;
+        next.update_event = Some(UpdateEvent::Begin(Box::new(evidence)));
         self.commit(next, now)
     }
     /// Complete signature+artifact proof required; revalidate pinned policy/time
@@ -723,6 +827,7 @@ impl Store {
         }
         let r = fresh.release();
         let mut next = self.current.clone();
+        next.update_event = None;
         next.policy.minimum_sequence = r.sequence;
         next.policy.minimum_issued_at = next.policy.minimum_issued_at.max(r.issued_at);
         next.acceptance = Some(Accepted {
@@ -1170,5 +1275,147 @@ mod tests {
             Store::open(&p, "default"),
             Err(Error::TrustInvalid)
         ));
+    }
+    fn prepared_fixture() -> (PathBuf, Store, VerifiedRelease) {
+        let (p, k, policy, release) = fixture();
+        let envelope = seal(&k, &release);
+        let mut store = Store::provision(&p, "default", policy, 10).unwrap();
+        let mut verified = store.verify_for_preparation(&envelope, 20).unwrap();
+        verified
+            .verify_artifact(&mut b"fixture".as_slice())
+            .unwrap();
+        store
+            .prepare_update(&envelope, &verified, plan(), 20)
+            .unwrap();
+        (p, store, verified)
+    }
+    // Synthetic trusted observations exercise storage only, not real backup/engine proof.
+    fn observations() -> crate::update::Preflight {
+        crate::update::Preflight {
+            plan: plan(),
+            signature_verified: false,
+            artifact_verified: false,
+            compatibility_verified: true,
+            backup_restore_verified: true,
+            current_source_matches_backup: true,
+            available_free_bytes: 1024,
+            image_only_rollback_verified: false,
+        }
+    }
+    #[test]
+    fn applying_is_durable_and_reopen_records_interruption_once() {
+        let (p, mut s, verified) = prepared_fixture();
+        let root = s.root.clone();
+        let before = fs::read(root.join("00000000000000000002.json")).unwrap();
+        assert_eq!(
+            s.begin_update(observations(), &verified, 21)
+                .unwrap()
+                .generation,
+            3
+        );
+        assert_eq!(
+            s.intent().unwrap().update().stage(),
+            crate::update::Stage::Applying
+        );
+        assert!(matches!(Store::open(&p, "default"), Err(Error::TrustBusy)));
+        drop(s);
+        let s = Store::open(&p, "default").unwrap();
+        assert_eq!(s.receipt().generation, 4);
+        assert_eq!(s.receipt().minimum_sequence, 2);
+        assert_eq!(
+            s.intent().unwrap().update().stage(),
+            crate::update::Stage::RecoveryRequired
+        );
+        assert_eq!(
+            s.intent().unwrap().update().failure(),
+            Some(crate::update::Failure::Interrupted)
+        );
+        assert_eq!(
+            fs::read(root.join("00000000000000000002.json")).unwrap(),
+            before
+        );
+        drop(s);
+        assert_eq!(Store::open(&p, "default").unwrap().receipt().generation, 4);
+    }
+    #[test]
+    fn begin_requires_all_noncryptographic_observations_without_advancing() {
+        let (_, mut s, verified) = prepared_fixture();
+        for n in 0..5 {
+            let mut e = observations();
+            match n {
+                0 => e.compatibility_verified = false,
+                1 => e.backup_restore_verified = false,
+                2 => e.current_source_matches_backup = false,
+                3 => e.available_free_bytes = 1023,
+                _ => e.plan.backup_id = "different-backup".into(),
+            }
+            assert_eq!(
+                s.begin_update(e, &verified, 21).unwrap_err(),
+                Error::PlanMismatch
+            );
+            assert_eq!(s.receipt().generation, 2);
+            assert_eq!(
+                s.intent().unwrap().update().stage(),
+                crate::update::Stage::Prepared
+            );
+        }
+    }
+    #[test]
+    fn begin_rechecks_artifact_expiry_revocation_and_clock() {
+        let (_, mut s, verified) = prepared_fixture();
+        let envelope = s.intent().unwrap().envelope.clone();
+        let unverified = s.verify_for_preparation(envelope.as_bytes(), 21).unwrap();
+        assert_eq!(
+            s.begin_update(observations(), &unverified, 21).unwrap_err(),
+            Error::PlanMismatch
+        );
+        assert!(s.begin_update(observations(), &verified, 101).is_err());
+        assert_eq!(
+            s.begin_update(observations(), &verified, 19).unwrap_err(),
+            Error::TrustClockRollback
+        );
+        let mut policy = s.policy().clone();
+        let next_key = SigningKey::from_bytes(&[32; 32]);
+        policy.public_keys = vec![
+            next_key
+                .verifying_key()
+                .to_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+        ];
+        s.replace_policy(policy, 1, 21).unwrap();
+        assert_eq!(
+            s.begin_update(observations(), &verified, 22).unwrap_err(),
+            Error::UntrustedKey
+        );
+        assert_eq!(s.receipt().generation, 3);
+    }
+    #[test]
+    fn altered_transition_or_noop_recovery_cannot_publish() {
+        let (_, mut s, verified) = prepared_fixture();
+        s.begin_update(observations(), &verified, 21).unwrap();
+        let mut next = s.current.clone();
+        next.intent
+            .as_mut()
+            .unwrap()
+            .update
+            .recover_after_restart()
+            .unwrap();
+        next.update_event = Some(UpdateEvent::Interrupted);
+        next.policy.minimum_sequence += 1;
+        assert!(s.commit(next, 22).is_err());
+        assert_eq!(s.receipt().generation, 3);
+        let mut next = s.current.clone();
+        next.intent
+            .as_mut()
+            .unwrap()
+            .update
+            .recover_after_restart()
+            .unwrap();
+        next.update_event = Some(UpdateEvent::Interrupted);
+        s.commit(next, 22).unwrap();
+        assert!(s.commit(s.current.clone(), 23).is_err());
+        assert_eq!(s.receipt().generation, 4);
     }
 }
