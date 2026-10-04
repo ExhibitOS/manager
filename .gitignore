@@ -23,3 +23,6 @@ key.bin
 /selection-history/
 /profile-session.lock
 /profile-restore-*/
+
+# Stable logical-profile lock infrastructure; never archive/unlink as data
+.exhibitos-profile-session-*.lock

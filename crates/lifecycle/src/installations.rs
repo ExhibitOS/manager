@@ -45,7 +45,7 @@ struct Selected {
 }
 pub struct InstallationController {
     profile: Option<LifecycleService>,
-    _profile_session: Option<File>,
+    _profile_session: Option<super::profile_backup::ProfileSession>,
     mode: String,
     current: RwLock<Selected>,
     maintenance_destination: RwLock<Option<MaintenanceRoute>>,
@@ -226,6 +226,20 @@ impl InstallationController {
         if cfg!(windows) {
             return Self::pinned(profile.join("local-runtime"), "platform-unverified");
         }
+        let parent = profile
+            .parent()
+            .ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
+        match fs::symlink_metadata(&profile) {
+            Ok(m) if m.is_dir() && !m.is_symlink() => {
+                let canonical = fs::canonicalize(&profile).map_err(|_| err("STATE_UNAVAILABLE"))?;
+                private_directory(&canonical)?;
+            }
+            Ok(_) => return Err(err("INSTALLATION_ROOT_UNAVAILABLE")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(err("STATE_UNAVAILABLE")),
+        }
+        fs::create_dir_all(parent).map_err(|_| err("STATE_UNAVAILABLE"))?;
+        let (profile, anchor) = super::profile_backup::anchor_lock(&profile, false)?;
         match fs::symlink_metadata(&profile) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 fs::create_dir_all(&profile).map_err(|_| err("STATE_UNAVAILABLE"))?;
@@ -242,7 +256,7 @@ impl InstallationController {
         }
         let profile = fs::canonicalize(profile).map_err(|_| err("STATE_UNAVAILABLE"))?;
         private_directory(&profile)?;
-        let session = super::profile_backup::session_lock(&profile, false)?;
+        let session = super::profile_backup::anchored_session(&profile, anchor, false)?;
         let profile = LifecycleService::new(profile)?;
         let profile = LifecycleService {
             root: fs::canonicalize(&profile.root).map_err(|_| err("STATE_UNAVAILABLE"))?,
