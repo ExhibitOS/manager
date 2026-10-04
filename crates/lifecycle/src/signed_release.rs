@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Offline signed runtime release verification. No trust-on-first-use, download,
 //! policy persistence, migration, engine mutation or backup attestation.
+#[path = "release_trust.rs"]
+pub mod trust;
 use crate::update::{Plan, Preflight};
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -26,6 +28,16 @@ pub enum Error {
     ArtifactMismatch,
     ArtifactUnavailable,
     PlanMismatch,
+    TrustInvalid,
+    TrustMissing,
+    TrustExists,
+    TrustBusy,
+    TrustRollback,
+    TrustStalePolicy,
+    TrustClockRollback,
+    TrustWriteUncertain,
+    TrustLimit,
+    TrustPlatformUnverified,
 }
 
 impl Error {
@@ -42,6 +54,16 @@ impl Error {
             Self::ArtifactMismatch => "UPDATE_ARTIFACT_MISMATCH",
             Self::ArtifactUnavailable => "UPDATE_ARTIFACT_UNAVAILABLE",
             Self::PlanMismatch => "UPDATE_PLAN_MISMATCH",
+            Self::TrustInvalid => "UPDATE_TRUST_INVALID",
+            Self::TrustMissing => "UPDATE_TRUST_MISSING",
+            Self::TrustExists => "UPDATE_TRUST_EXISTS",
+            Self::TrustBusy => "UPDATE_TRUST_BUSY",
+            Self::TrustRollback => "UPDATE_TRUST_ROLLBACK",
+            Self::TrustStalePolicy => "UPDATE_POLICY_STALE",
+            Self::TrustClockRollback => "UPDATE_CLOCK_ROLLBACK",
+            Self::TrustWriteUncertain => "UPDATE_TRUST_WRITE_UNCERTAIN",
+            Self::TrustLimit => "UPDATE_TRUST_LIMIT",
+            Self::TrustPlatformUnverified => "UPDATE_TRUST_PLATFORM_UNVERIFIED",
         }
     }
 }

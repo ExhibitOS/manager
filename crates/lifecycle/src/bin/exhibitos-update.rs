@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Offline verifier; does not install, persist trust or mutate engine/data.
+//! Offline verification and explicit local trust administration; no engine mutation.
 use exhibitos_lifecycle::signed_release::{self, Policy};
 use std::{
     fs::{File, OpenOptions},
@@ -95,7 +95,7 @@ fn same(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
     }
 }
 fn main() {
-    if let Err(code) = verify() {
+    if let Err(code) = run() {
         println!("{}", serde_json::json!({"code":code}));
         std::process::exit(1);
     }
@@ -146,6 +146,94 @@ fn verify() -> Result<(), String> {
     println!(
         "{}",
         serde_json::to_string(&verified.receipt()).map_err(|_| "UPDATE_RECEIPT_INVALID")?
+    );
+    Ok(())
+}
+
+fn now() -> Result<u64, String> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|t| t.as_secs())
+        .map_err(|_| "UPDATE_CLOCK_UNVERIFIED".into())
+}
+fn policy(path: &str) -> Result<Policy, String> {
+    serde_json::from_slice(&bounded(
+        Path::new(path),
+        signed_release::MAX_PAYLOAD as u64,
+        true,
+    )?)
+    .map_err(|_| "UPDATE_POLICY_INVALID".into())
+}
+fn artifact(verified: &mut signed_release::VerifiedRelease, path: &Path) -> Result<(), String> {
+    if path.file_name().and_then(|n| n.to_str()) != Some(verified.release().artifact.name.as_str())
+    {
+        return Err("UPDATE_ARTIFACT_NAME_MISMATCH".into());
+    }
+    let mut f = open(path)?;
+    let before = f.metadata().map_err(|_| "UPDATE_INPUT_INVALID")?;
+    verified
+        .verify_artifact(&mut f)
+        .map_err(|e| e.code().to_string())?;
+    let after = f.metadata().map_err(|_| "UPDATE_INPUT_INVALID")?;
+    let current = std::fs::symlink_metadata(path).map_err(|_| "UPDATE_INPUT_INVALID")?;
+    if current.is_symlink() || !same(&before, &after) || !same(&after, &current) {
+        return Err("UPDATE_ARTIFACT_CHANGED".into());
+    }
+    Ok(())
+}
+fn run() -> Result<(), String> {
+    use signed_release::trust::Store;
+    let a: Vec<String> = std::env::args().collect();
+    if a.get(1).map(String::as_str) == Some("verify") {
+        return verify();
+    }
+    let code = |e: signed_release::Error| e.code().to_string();
+    let usage = || {
+        "UPDATE_USAGE: trust-provision|trust-policy|trust-status|accept require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
+    };
+    if a.len() < 7
+        || a[2] != "--profile"
+        || a[4] != "--installation"
+        || a.last().map(String::as_str) != Some("--apps-closed")
+    {
+        return Err(usage());
+    }
+    let profile = Path::new(&a[3]);
+    let installation = &a[5];
+    let result = match a[1].as_str() {
+        "trust-provision" if a.len() == 9 && a[6] == "--policy" => {
+            Store::provision(profile, installation, policy(&a[7])?, now()?)
+                .map_err(code)?
+                .receipt()
+        }
+        "trust-policy"
+            if a.len() == 11 && a[6] == "--policy" && a[8] == "--expected-generation" =>
+        {
+            let mut s = Store::open(profile, installation).map_err(code)?;
+            let expected = a[9].parse::<u64>().map_err(|_| usage())?;
+            s.replace_policy(policy(&a[7])?, expected, now()?)
+                .map_err(code)?
+        }
+        "trust-status" if a.len() == 7 => {
+            Store::open(profile, installation).map_err(code)?.receipt()
+        }
+        "accept" if a.len() == 11 && a[6] == "--release" && a[8] == "--artifact" => {
+            let mut s = Store::open(profile, installation).map_err(code)?;
+            let envelope = bounded(Path::new(&a[7]), signed_release::MAX_ENVELOPE as u64, false)?;
+            let mut v = s.verify(&envelope, now()?).map_err(code)?;
+            artifact(&mut v, Path::new(&a[9]))?;
+            let trust = s.accept(&envelope, &v, now()?).map_err(code)?;
+            println!(
+                "{}",
+                serde_json::json!({"verification":v.receipt(),"trust":trust})
+            );
+            return Ok(());
+        }
+        _ => return Err(usage()),
+    };
+    println!(
+        "{}",
+        serde_json::to_string(&result).map_err(|_| "UPDATE_RECEIPT_INVALID")?
     );
     Ok(())
 }
