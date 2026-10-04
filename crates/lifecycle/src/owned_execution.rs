@@ -2,6 +2,9 @@
 //! Existing registered source adapters under the borrowed exclusive trust fence.
 use super::*;
 use crate::{LifecycleService, Status, maintenance::VerificationReceipt};
+#[path = "source_stopped.rs"]
+mod source_stopped;
+pub use source_stopped::SourceStoppedReceipt;
 
 /// Holds the Store borrow and both profile fences. No arbitrary root, controller
 /// bootstrap, activation, journal transition, or externally supplied success flag.
@@ -91,6 +94,27 @@ impl ExecutionSession<'_> {
         self.check()?;
         result
     }
+    /// Fresh direct engine observations; not a current data snapshot or full preflight.
+    pub fn verify_source_stopped(
+        &self,
+        external_writers_quiesced: bool,
+    ) -> crate::Result<SourceStoppedReceipt> {
+        self.check()?;
+        if !external_writers_quiesced {
+            return Err(crate::err("BACKUP_OPERATOR_ACK_REQUIRED"));
+        }
+        let _lock = self.source.lock()?;
+        let result = source_stopped::observe(
+            &self.source,
+            self.store
+                .intent()
+                .ok_or_else(|| crate::err("UPDATE_INTENT_MISSING"))?
+                .update
+                .plan(),
+        );
+        self.check()?;
+        result
+    }
     /// Restore the exact planned source backup into the already-registered fresh
     /// target. Prepared intent has reserved this target identity durably; no
     /// journal transition, signed-update activation or selection change occurs here.
@@ -129,7 +153,19 @@ impl ExecutionSession<'_> {
             fs::symlink_metadata(&root).map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?;
         let target = LifecycleService::open_retry_diagnostics(root.clone())?;
         let _source_lock = self.source.lock()?;
+        // Preserve no-overwrite precedence even when the source is unavailable.
+        {
+            let _lock = target.lock()?;
+            crate::restoration::fresh_root(&root)?;
+        }
+        let before_source = source_stopped::observe(&self.source, plan)?;
         let result = target.restore_update_candidate(image, key, archive, port, &binding);
+        let after_source = source_stopped::observe(&self.source, plan)?;
+        if before_source.platform_container != after_source.platform_container
+            || before_source.database_container != after_source.database_container
+        {
+            return Err(crate::err("UPDATE_SOURCE_CHANGED"));
+        }
         self.check()?;
         installations::private_directory(&root)?;
         if !identity(
@@ -420,5 +456,45 @@ mod tests {
         assert!(!target.join("restoration.json").exists());
         drop(lease);
         assert_eq!(s.receipt().generation, 2);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod source_stop_tests {
+    use super::super::tests::{fixture, plan, seal};
+    use super::*;
+    #[test]
+    fn missing_installed_source_and_ack_refuse_without_engine_bootstrap() {
+        let (p, k, policy, r) = fixture();
+        let mut store = Store::provision(&p, "default", policy, 10).unwrap();
+        let envelope = seal(&k, &r);
+        let mut v = store.verify_for_preparation(&envelope, 20).unwrap();
+        v.verify_artifact(&mut b"fixture".as_slice()).unwrap();
+        let mut planned = plan();
+        let id = "ab6a178b-a401-48c1-b0aa-ddf87b059e31";
+        planned.source_instance = id.into();
+        store.prepare_update(&envelope, &v, planned, 20).unwrap();
+        fs::write(p.join("installation-selection.json"),serde_json::to_vec(&serde_json::json!({"format":1,"activeId":id,"installations":[{"id":id,"kind":"default","createdAt":0}]})).unwrap()).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            p.join("installation-selection.json"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let root = p.join("local-runtime");
+        installations::new_directory(&root).unwrap();
+        let lease = store.execution().unwrap();
+        assert_eq!(
+            lease.verify_source_stopped(false).unwrap_err().code,
+            "BACKUP_OPERATOR_ACK_REQUIRED"
+        );
+        assert_eq!(
+            lease.verify_source_stopped(true).unwrap_err().code,
+            "UPDATE_SOURCE_NOT_INSTALLED"
+        );
+        assert!(!root.join("engine.json").exists());
+        assert!(!root.join("installed.json").exists());
+        drop(lease);
+        assert_eq!(store.receipt().generation, 2);
     }
 }

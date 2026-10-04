@@ -182,7 +182,7 @@ pub(crate) fn local_image(engine: &str, reference: &str) -> Result<String> {
     }
     Ok(id.into())
 }
-fn one_container(
+pub(crate) fn one_container(
     service: &LifecycleService,
     m: &BundleManifest,
     engine: &str,
