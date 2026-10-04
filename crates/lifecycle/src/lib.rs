@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Trusted-bundle desktop lifecycle. No shell, arbitrary compose paths or destructive volume removal.
+#[cfg(windows)]
+pub mod windows_private;
 mod process_window;
 pub mod backup_creation;
 pub mod cancellation;
