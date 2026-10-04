@@ -97,3 +97,5 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 [개발 OCI 캐시 가져오기](docs/development-oci-import.md)는 같은 staged 파일 핸들에서 구조 검증과 Docker 가져오기를 수행하고 기존 서비스·볼륨·태그를 보존합니다. 설치 업데이트·실제 health·rollback은 후속 단계입니다.
 
 [실제 Runtime 릴리스 계획과 복원 후보 검사](docs/genuine-update-plan.md)는 실제 artifact에 새 준비 계획을 연결합니다. 복원 후보는 원본 버전 Runtime을 검사하며 신규 target 적용·health·rollback은 별도입니다.
+
+[독립 사본 target Runtime 검사](docs/target-runtime-probe.md)는 신규 버전과 이전 버전의 기본 동작을 별도 synthetic 사본에서 검사합니다. 실제 설치 전환·전체 호환성·rollback 인수 조건은 별도입니다.
