@@ -1,12 +1,36 @@
 # SPDX-License-Identifier: Apache-2.0
 """Development target execution on new synthetic volume copies; no installation apply."""
-import argparse,json,subprocess,hashlib,uuid,os,socket,time,shutil
+import argparse,json,subprocess,hashlib,uuid,os,socket,time,shutil,stat
 if not __debug__:
  raise RuntimeError("development assertions require Python without -O")
 from pathlib import Path
-p=argparse.ArgumentParser();p.add_argument('--fixture',type=Path,required=True);p.add_argument('--cli',type=Path,required=True);p.add_argument('--docker',type=Path,required=True);p.add_argument('--interrupt-target',action='store_true');a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--fixture',type=Path,required=True);p.add_argument('--cli',type=Path,required=True);p.add_argument('--docker',type=Path,required=True);p.add_argument('--interrupt-target',action='store_true');p.add_argument('--plan-file',type=Path);a=p.parse_args()
 assert a.fixture.resolve()==a.fixture and a.fixture.is_absolute()
-binding=json.loads((a.fixture/'genuine-release-binding.json').read_text());plan=binding['plan'];source=a.fixture/'profile-1/installations'/plan['targetInstance'];manifest=json.loads((source/'bundle/manifest.json').read_text());compose=json.loads((source/'bundle/compose.yaml').read_text());assert hashlib.sha256((source/'bundle/compose.yaml').read_bytes()).hexdigest()==manifest['composeSha256']
+binding=json.loads((a.fixture/'genuine-release-binding.json').read_text());plan=binding['plan']
+plan_file_proof=None
+if a.plan_file:
+ assert a.plan_file.is_absolute() and a.plan_file.resolve()==a.plan_file
+ def unique(pairs):
+  value={}
+  for key,item in pairs:
+   assert key not in value,'duplicate private plan field'
+   value[key]=item
+  return value
+ def private_plan(path):
+  fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+  try:
+   m=os.fstat(fd);assert stat.S_ISREG(m.st_mode) and m.st_nlink==1 and m.st_uid==os.getuid() and stat.S_IMODE(m.st_mode) in (0o600,0o400) and m.st_size<=16384
+   raw=os.read(fd,16385);after=os.fstat(fd);current=path.lstat()
+   identity=lambda v:(v.st_dev,v.st_ino,v.st_size,v.st_mode,v.st_mtime_ns,v.st_ctime_ns,v.st_nlink,v.st_uid)
+   assert len(raw)==m.st_size and identity(m)==identity(after)==identity(current)
+   return json.loads(raw,object_pairs_hook=unique),hashlib.sha256(raw).hexdigest()
+  finally:os.close(fd)
+ plan,plan_hash=private_plan(a.plan_file);assert set(plan)==set(binding['plan'])
+ plan_file_proof={'path':str(a.plan_file),'sha256':plan_hash,'boundToCurrentPreparedIntent':True}
+def intent():
+ r=subprocess.run([str(a.cli),'update-intent','--profile',str(a.fixture/'profile-1'),'--installation','default','--apps-closed'],capture_output=True,text=True,timeout=30);assert r.returncode==0;return json.loads(r.stdout)
+before_intent=intent();assert before_intent['intent']['update']['plan']==plan and before_intent['intent']['update']['stage']=='prepared'
+source=a.fixture/'profile-1/installations'/plan['targetInstance'];manifest=json.loads((source/'bundle/manifest.json').read_text());compose=json.loads((source/'bundle/compose.yaml').read_text());assert hashlib.sha256((source/'bundle/compose.yaml').read_bytes()).hexdigest()==manifest['composeSha256']
 assert json.loads((source/'restoration.json').read_text())['state']=='completed'
 root=a.fixture/('target-probe-'+str(uuid.uuid4()));root.mkdir(mode=0o700);project='exhibitos-compatibility-'+str(uuid.uuid4());label='com.exhibitos.compatibility='+project
 helper='sha256:8f0e7b042ff0b93a646b919f5a8a5ee2f41cc22debcd5bd9ef49eacd06537e06'
@@ -14,9 +38,7 @@ def docker(*args):
  r=subprocess.run([str(a.docker),*args],capture_output=True,timeout=300);assert r.returncode==0,'bounded Docker command refused; private copies retained';assert len(r.stdout)+len(r.stderr)<1024*1024;return r.stdout
 
 def states():return sorted(docker('ps','--all','--no-trunc','--format','{{.ID}} {{.State}}').decode().splitlines())
-def intent():
- r=subprocess.run([str(a.cli),'update-intent','--profile',str(a.fixture/'profile-1'),'--installation','default','--apps-closed'],capture_output=True,text=True,timeout=30);assert r.returncode==0;return json.loads(r.stdout)
-before_states=states();before_intent=intent();assert before_intent['intent']['update']['plan']==plan and before_intent['intent']['update']['stage']=='prepared'
+before_states=states();assert intent()==before_intent
 existing=docker('ps','--all','--quiet','--filter','label=com.docker.compose.project='+manifest['projectName']).decode().split();assert existing
 for cid in existing:assert not json.loads(docker('inspect',cid))[0]['State']['Running']
 files=['installed.json','engine.json','runtime.env','bundle/manifest.json','bundle/compose.yaml','restoration.json'];before_files={n:hashlib.sha256((source/n).read_bytes()).hexdigest() for n in files}
@@ -144,5 +166,7 @@ checks.append('full identity/schema/migrations/49non-session entries/blobs/refer
 assert before_files=={n:hashlib.sha256((source/n).read_bytes()).hexdigest() for n in files};assert intent()['intent']==before_intent['intent']
 after=set(states());assert set(before_states)<=after
 for cid in existing:assert not json.loads(docker('inspect',cid))[0]['State']['Running']
-report={'format':1,'checks':checks,'targetImage':plan['targetImage'],'targetSchemaDeclaration':plan['targetSchema'],'project':project,'copies':copies,'inventoryObservations':inventories,'readiness':ready,'interruptionInjected':a.interrupt_target,'originalFilesStatesIntentPreserved':True,'updateExecuted':False,'preflightVerified':False,'limits':['isolated development target probe; not registered target health receipt or installation apply','full inventory observed before/after each Runtime login; failures/full corpus and actual installation rollback remain unqualified','new copied DB changes during target startup/login; original volumes readonly during copy and source stays stopped','all private files/helper containers/copied volumes retained; no production trust/data/volume mutation']}
+if a.plan_file:
+ final_plan,final_hash=private_plan(a.plan_file);assert final_plan==plan and final_hash==plan_file_proof['sha256']
+report={'format':1,'plan':plan,'planFileProof':plan_file_proof,'checks':checks,'targetImage':plan['targetImage'],'targetSchemaDeclaration':plan['targetSchema'],'project':project,'copies':copies,'inventoryObservations':inventories,'readiness':ready,'interruptionInjected':a.interrupt_target,'originalFilesStatesIntentPreserved':True,'updateExecuted':False,'preflightVerified':False,'limits':['isolated development target probe; not registered target health receipt or installation apply','full inventory observed before/after each Runtime login; failures/full corpus and actual installation rollback remain unqualified','new copied DB changes during target startup/login; original volumes readonly during copy and source stays stopped','all private files/helper containers/copied volumes retained; no production trust/data/volume mutation']}
 (root/'report.json').write_text(json.dumps(report,indent=2)+'\n');(root/'report.json').chmod(0o600);print('Report '+str(root/'report.json'),flush=True)
