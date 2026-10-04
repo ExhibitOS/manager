@@ -391,3 +391,29 @@ restoration journal and Prepared intent. Inspect/stop the owned candidate explic
 This does not silently discard a candidate, replay restoration, or qualify current
 DB/blob/config-volume equality. A full fresh restoration with this additional
 post-restore guard remains a separate acceptance test.
+
+## Observed shared-volume writers
+
+Source-stopped observations now query Docker for all containers attached to each
+currently mounted named source volume, regardless of name or ownership label. A
+foreign writable mount with running, paused, restarting, dead or ambiguous state
+refuses with `UPDATE_SOURCE_VOLUME_WRITER`. Missing/malformed mount access or an
+incomplete Engine census refuses. Stopped foreign users and actual read-only
+mounts are accepted; unrelated volumes do not block the source. No foreign
+container is stopped, removed or modified. Candidate preparation and source host
+deployment comparison use this guard through their existing source observations.
+
+This remains a momentary observation under cooperative Manager locks. It does
+not prevent an external container starting afterward, host access to volume files,
+remote/database clients or writers through bind mounts. Operator acknowledgement,
+independent current data/config observations and the full update/restore gates
+remain required; this check does not authorize Applying. Journal/Spec formats
+and existing acknowledgement requirements are unchanged.
+
+The opt-in Rust test `actual_engine_volume_writer_census` uses the already-local
+qualified maintenance image and a unique empty synthetic volume to inspect an
+actual running writable foreign container (refused), stopped writable foreign
+container (accepted), and running read-only container (accepted). Its three
+helpers and empty volume are scoped to that invocation and removed afterward.
+Run `cargo test -p exhibitos-lifecycle --lib actual_engine_volume_writer_census
+--locked -- --ignored --nocapture` only with the documented local image available.
