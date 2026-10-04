@@ -39,12 +39,12 @@ struct RestorationRoute<'a> {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PreservedImage {
-    reference: String,
-    content_id: String,
-    archive: String,
-    bytes: u64,
-    sha256: String,
+pub(crate) struct PreservedImage {
+    pub(crate) reference: String,
+    pub(crate) content_id: String,
+    pub(crate) archive: String,
+    pub(crate) bytes: u64,
+    pub(crate) sha256: String,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -131,7 +131,10 @@ pub(crate) fn fresh_root(root: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn preserved_images(bytes: &[u8], original: &BundleManifest) -> Result<Vec<PreservedImage>> {
+pub(crate) fn preserved_images(
+    bytes: &[u8],
+    original: &BundleManifest,
+) -> Result<Vec<PreservedImage>> {
     let images: Vec<PreservedImage> =
         serde_json::from_slice(bytes).map_err(|_| err("RESTORE_LAYOUT_UNSUPPORTED"))?;
     if images.len() != 2

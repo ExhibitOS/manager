@@ -485,3 +485,34 @@ unqualified. Real-Engine Rust regression `actual_native_configuration_content_an
 checks a separately owned synthetic Linux volume's matching/changed bytes, public
 mode, ownership and additional/alias refusals, then restores its original bytes,
 0600/1000 metadata and one-file scope. That synthetic volume is retained privately.
+
+## Fresh current Engine image mappings
+
+`verify-update-source-images --profile <absolute profile> --installation default|UUID
+--external-writers-quiesced --apps-closed` observes both original pinned image
+references directly from Docker under the existing profile/source/target fences.
+Prepared's exact completed registered recovery candidate and raw manifest binding
+are required. The private extracted manager-image-inventory.json must match its
+unique authenticated configuration record; its two references/order, bounded
+archive sizes/hashes and exact image-0/image-1 deployment records must agree with
+the original installed bundle and authenticated manifest.
+
+The historical map supplies expected values only. Fresh current Engine lookups
+run twice and must resolve every pinned reference to the expected content ID; both
+currently installed service containers must also use the matching resolved Compose
+image. Current host/source/container/volume bindings and raw configuration/manifest
+copies are rechecked around the observations. No image is pulled, loaded, tagged,
+saved or removed, and no source service starts. Receipt includes source/target,
+backup/manifest, observed references/content IDs and time.
+
+Success reports currentImageMappingsVerified:true, imageBytesVerified:false,
+configurationInventoryVerified:false, preflightVerified:false, updateExecuted:false.
+Engine metadata and a content-ID reference do not independently inspect stored
+image layers or regenerate tar bytes. DB/blob snapshots, complete configuration
+evidence, full owned profile/CLI flow, signed application/rollback and coherent
+current security/data recovery remain required. Privileged external Engine changes
+after observation remain possible; acknowledgement is not isolation. Public Spec
+and durable journals are unchanged. The opt-in actual_engine_current_image_mappings
+Rust test inspects existing immutable local images and refuses an incorrect expected
+content ID without any Engine mutation; it does not execute the full profile/CLI
+container-binding path.
