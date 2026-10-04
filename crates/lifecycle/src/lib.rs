@@ -6,6 +6,7 @@ pub mod helper_reconciliation;
 pub mod installation_backup;
 pub mod installations;
 pub mod maintenance;
+mod maintenance_stream;
 pub mod profile_backup;
 pub mod restoration;
 mod restoration_auxiliary;

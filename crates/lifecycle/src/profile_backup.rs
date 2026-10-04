@@ -323,6 +323,25 @@ fn acknowledgement(ack: bool) -> Result<()> {
     Ok(())
 }
 pub fn backup(profile: &Path, key: &Path, archive: &Path, ack: bool) -> Result<ProfileReceipt> {
+    backup_mode(profile, key, archive, ack, false)
+}
+/// Opt-in authenticated stream envelope. Profile payload/quota and lock scope
+/// are unchanged; this does not yet capture maintenance journals or candidates.
+pub fn backup_stream(
+    profile: &Path,
+    key: &Path,
+    archive: &Path,
+    ack: bool,
+) -> Result<ProfileReceipt> {
+    backup_mode(profile, key, archive, ack, true)
+}
+fn backup_mode(
+    profile: &Path,
+    key: &Path,
+    archive: &Path,
+    ack: bool,
+    stream: bool,
+) -> Result<ProfileReceipt> {
     acknowledgement(ack)?;
     canonical_private(profile)?;
     // Reject an empty/wrong source before creating any profile lock files.
@@ -353,23 +372,39 @@ pub fn backup(profile: &Path, key: &Path, archive: &Path, ack: bool) -> Result<P
     if plain.len() as u64 > LIMIT - 128 {
         return Err(err("PROFILE_QUOTA"));
     }
-    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| err("PROFILE_KEY_INVALID"))?;
-    let mut nonce = [0u8; 12];
-    OsRng
-        .try_fill_bytes(&mut nonce)
-        .map_err(|_| err("PROFILE_RANDOM_UNAVAILABLE"))?;
-    let encrypted = cipher
-        .encrypt(
-            Nonce::from_slice(&nonce),
-            Payload {
-                msg: &plain,
-                aad: MAGIC,
-            },
-        )
-        .map_err(|_| err("PROFILE_ENCRYPTION_FAILED"))?;
-    let mut bytes = MAGIC.to_vec();
-    bytes.extend(nonce);
-    bytes.extend(encrypted);
+    let bytes = if stream {
+        let mut bytes = Vec::new();
+        super::maintenance_stream::seal(
+            &mut plain.as_slice(),
+            &mut bytes,
+            &key,
+            MAGIC,
+            LIMIT - 128,
+        )?;
+        bytes
+    } else {
+        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| err("PROFILE_KEY_INVALID"))?;
+        let mut nonce = [0u8; 12];
+        OsRng
+            .try_fill_bytes(&mut nonce)
+            .map_err(|_| err("PROFILE_RANDOM_UNAVAILABLE"))?;
+        let encrypted = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: &plain,
+                    aad: MAGIC,
+                },
+            )
+            .map_err(|_| err("PROFILE_ENCRYPTION_FAILED"))?;
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend(nonce);
+        bytes.extend(encrypted);
+        bytes
+    };
+    if bytes.len() as u64 > LIMIT {
+        return Err(err("PROFILE_QUOTA"));
+    }
     let temporary = parent.join(format!(".profile-backup-{}.pending", s.id));
     write_new(&temporary, &bytes)?;
     // Verify authentication and closed schema before publishing; failed encrypted pending files remain for inspection.
@@ -388,6 +423,15 @@ pub fn backup(profile: &Path, key: &Path, archive: &Path, ack: bool) -> Result<P
     })
 }
 fn decrypt(bytes: &[u8], key: &[u8]) -> Result<Snapshot> {
+    if bytes.starts_with(super::maintenance_stream::MAGIC) {
+        if bytes.len() as u64 > LIMIT {
+            return Err(err("PROFILE_AUTHENTICATION_FAILED"));
+        }
+        let mut plain = Vec::new();
+        super::maintenance_stream::open(&mut &bytes[..], &mut plain, key, MAGIC, LIMIT - 128)
+            .map_err(|_| err("PROFILE_AUTHENTICATION_FAILED"))?;
+        return serde_json::from_slice(&plain).map_err(|_| err("PROFILE_FORMAT_INVALID"));
+    }
     if bytes.len() < MAGIC.len() + 12 + 16
         || bytes.len() as u64 > LIMIT
         || !bytes.starts_with(MAGIC)
@@ -601,6 +645,30 @@ mod tests {
         write_new(&k, &[7u8; 32]).unwrap();
         let a = parent.join("profile.exb");
         (p, k, a)
+    }
+    #[test]
+    fn opt_in_stream_profile_restores_same_registry_and_rejects_truncated_prefix() {
+        let (p, k, a) = fixture();
+        let before = fs::read(p.join("installation-selection.json")).unwrap();
+        let receipt = backup_stream(&p, &k, &a, true).unwrap();
+        let bytes = fs::read(&a).unwrap();
+        assert!(bytes.starts_with(super::super::maintenance_stream::MAGIC));
+        assert_eq!(restore(&p, &k, &a, true).unwrap().id, receipt.id);
+        assert_eq!(
+            fs::read(p.join("installation-selection.json")).unwrap(),
+            before
+        );
+        let bad = a.with_file_name("truncated-stream.exb");
+        write_new(&bad, &bytes[..bytes.len() - 1]).unwrap();
+        assert_eq!(
+            restore(&p, &k, &bad, true).unwrap_err().code,
+            "PROFILE_AUTHENTICATION_FAILED"
+        );
+        assert_eq!(
+            fs::read(p.join("installation-selection.json")).unwrap(),
+            before
+        );
+        assert_eq!(fs::read(&a).unwrap(), bytes);
     }
     #[test]
     fn destination_io_failures_are_not_collisions_and_never_remove_pending() {
