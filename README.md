@@ -87,3 +87,5 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 [정지 원본 DB 사본 개발 CLI](docs/source-database-snapshot.md)는 원본 네이티브 볼륨을 읽기 전용으로 새 고유 볼륨에 복사해 내용·권한·소유자와 정상 종료 상태를 검사합니다. 현재 DB/blob 논리 인벤토리 비교와 전체 업데이트 preflight는 후속 조건입니다.
 
 [현재 원본 DB·작품 인벤토리 개발 CLI](docs/source-inventory.md)는 원본을 정지 상태로 유지하고 새 DB 사본과 읽기 전용 작품 볼륨에서 인증된 백업의 전체 데이터 인벤토리를 대조합니다. 전체 설정/preflight·업데이트 실행은 별도입니다.
+
+[현재 설정 전체·이미지 바이트 개발 CLI](docs/configuration-inventory.md)는 지원되는 설정7개의 현재 bytes와 새 Engine image export를 인증된 백업에 대조합니다. 누락·추가 설정과 바이트가 다른 export는 거부하며 전체 preflight·업데이트 실행을 대신하지 않습니다.
