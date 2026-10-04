@@ -93,3 +93,5 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 [실제 개발 Runtime OCI 패키지 검증](docs/genuine-runtime-release.md)은 로컬 이미지 아카이브의 구조·바이트·마이그레이션과 개발 서명을 검사합니다. 실제 업데이트 실행·health·rollback은 후속 검증입니다.
 
 [서명된 Runtime 비공개 staging](docs/runtime-staging.md)은 새 고유 사본과 읽기 전용 핸들에서 실제 바이트를 검증하는 Unix 개발 CLI입니다. OCI import·실제 적용 권한은 제공하지 않습니다.
+
+[개발 OCI 캐시 가져오기](docs/development-oci-import.md)는 같은 staged 파일 핸들에서 구조 검증과 Docker 가져오기를 수행하고 기존 서비스·볼륨·태그를 보존합니다. 설치 업데이트·실제 health·rollback은 후속 단계입니다.
