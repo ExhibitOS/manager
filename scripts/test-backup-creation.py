@@ -21,10 +21,15 @@ p=argparse.ArgumentParser()
 for name in ('manager','runtime-image','maintenance-image','postgres-image'):
     p.add_argument('--'+name,required=True)
 p.add_argument('--docker',default='docker')
+p.add_argument('--workspace-parent',type=Path,default=Path('/private/tmp'))
 a=p.parse_args()
 for image in (a.runtime_image,a.maintenance_image):assert re.fullmatch(r'sha256:[a-f0-9]{64}',image)
 assert re.fullmatch(r'[A-Za-z0-9/_.:-]+@sha256:[a-f0-9]{64}',a.postgres_image)
-base=Path(tempfile.mkdtemp(prefix='exhibitos-manager-backup-create-',dir='/private/tmp')).resolve()
+parent=a.workspace_parent
+assert parent.is_absolute() and parent.resolve()==parent and parent.is_dir(), 'Use an existing canonical workspace parent'
+assert parent.stat().st_uid==os.getuid(), 'Workspace parent must belong to the operator'
+if parent!=Path('/private/tmp'):assert parent.stat().st_mode&0o077==0, 'Persistent fixture parent must be private'
+base=Path(tempfile.mkdtemp(prefix='exhibitos-manager-backup-create-',dir=parent)).resolve()
 root=base/'manager';root.mkdir(mode=0o700);bundle=root/'bundle';bundle.mkdir(mode=0o700)
 key=base/'key.bin';key.write_bytes(secrets.token_bytes(32));key.chmod(0o600)
 with socket.socket() as s:s.bind(('127.0.0.1',0));port=s.getsockname()[1]

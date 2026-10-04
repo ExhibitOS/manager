@@ -90,6 +90,13 @@ python3 scripts/test-backup-creation.py \
   --postgres-image 'postgres:18.6@sha256:<verified registry digest>'
 ```
 
+기본 fixture 부모는 `/private/tmp`다. 임시 파일 정리에 영향을 받지 않고 후속
+검사를 이어가려면 `--workspace-parent <existing canonical absolute directory>`를
+추가한다. 지정 폴더는 현재 사용자 소유이고 group/other 접근 권한이 없어야
+한다(예:0700). 검사는 그 아래 고유한 새 폴더를 만들며 기존 fixture를
+덮어쓰거나 삭제하지 않는다. 암호화 사본·외부 키·복호화 자료는 Git 밖에
+보존하고, 이 로컬 검사용 자료를 독립 원격 백업으로 취급하지 않는다.
+
 검사는 actual Manager install/start, 사전 권한·ack·lock 거부, backup creation,
 원래 설치 재시작, source path/DB unavailable 및 별도 empty PostgreSQL/blob
 복원과 원래 credentials·signing key·양쪽 image archive의 일치를 확인한다.
