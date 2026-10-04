@@ -81,7 +81,7 @@ store. A missing or corrupt store refuses open/accept and never automatically
 bootstraps from an archive or feed. Parent-folder relocation changes the namespace
 and requires a separately authorized security-state migration; it is not automatic.
 
-Each immutable, bounded24KiB record contains the policy, monotonically increasing
+Each immutable, bounded96KiB record contains the policy, monotonically increasing
 journal/policy generations, observed time, revoked IDs, acceptance identity and
 previous record hash. On open, the full contiguous chain is checked, including
 monotonic policy transitions and scope. New records use fresh private staging,
@@ -93,7 +93,7 @@ and marks diagnostic receipts `writeUncertain:true`. Close and reopen before any
 persisted state, and never assume the previous floor still applies. No automatic
 record, pending file or user-data deletion occurs.
 
-Current bounds:4096 committed records,256 permanently revoked IDs, at most65
+Current bounds:4096 committed records (96KiB maximum per record),256 permanently revoked IDs, at most65
 additional directory entries including the lock/pending records. Exceeding bounds
 fails closed. Automatic compaction/rotation is absent and must preserve the highest
 security floors and revocations. Record hashes detect chain corruption/gaps; they
@@ -114,3 +114,6 @@ macOS atomic publication and filesystem behavior are locally tested. Linux uses
 paths, including Windows ACL/publication, refuse. Actual power-loss/disk-failure qualification remains required. No native app package/UI build or
 production OS signing qualification is implied by CLI tests. Old binaries unaware
 of this journal must not be used for release acceptance.
+
+The [persisted update preparation](update-intent.md) binds actual signed bytes and
+plan to the same atomic acceptance record; it does not execute an update.
