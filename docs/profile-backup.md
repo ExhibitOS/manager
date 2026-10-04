@@ -60,3 +60,11 @@ python3 scripts/test-profile-backup.py --profile-cli '<built exhibitos-profile>'
 암호화 codec은 최대1MiB 단위로 읽고 각 record의 AES-GCM nonce를 OS 난수로 생성합니다. archive identity, payload 용도, record 순서·종류·길이를 associated data로 인증합니다. 별도 종료 record는 전체 plaintext 길이와 SHA256을 인증하며 종료 record 없는 정상 prefix나 추가 trailing bytes를 완료로 인정하지 않습니다. 사본 공개 전에 전체 인증·닫힌 schema 검사를 수행합니다.
 
 이 옵션은 **관리 공간 설정만** 보관합니다. 기존 snapshot은 여전히 제한된 메모리에 직렬화되며 아직 journal·불완전 candidate·DB/blob/engine volume을 수집하지 않습니다. 이 codec을 재사용할 별도의 관리 작업 사본은 root/profile/session 잠금, helper/writer 정지 확인, host 파일/외부 volume 구분, streaming manifest, private quarantine과 가역적 canonical root 복원까지 연결하고 실제 검사해야 합니다. codec 또는 설정 round trip을 전체 후보 복구의 증거로 사용하지 마세요.
+
+## Profile 교체 중 경로 잠금
+
+현재 앱과 offline CLI는 기존 profile 안의 `profile-session.lock`과 함께 부모 폴더의 `.exhibitos-profile-session-<canonical profile path SHA256>.lock`을 보유합니다. 앱은 같은 경로의 공유 잠금을 **profile 생성 전**에 확보하며 offline 작업은 배타 잠금을 확보합니다. profile을 이름 변경하거나 새 inode로 교체해도 같은 canonical 경로의 잠금은 계속 유지됩니다. 부모 경로 alias는 canonicalize하여 같은 anchor를 사용합니다. 현재 설정 복원은 여전히 pointer 복원이며 이 변경이 후보 데이터/폴더 교체를 실행하지는 않습니다.
+
+Anchor는 파일 이름이 아닌 내부 경로 기반 fence입니다. 0600·현재 UID·일반 파일·단일 hardlink·inode 일치를 검사하고 symlink/권한 오류를 거부합니다. 부모는 현재 UID 소유이며 다른 사용자가 쓰지 못하는 폴더 또는 현재 UID/root가 소유한 sticky 공유 임시 폴더여야 합니다. 기존 내부 잠금도 유지하므로 이전 앱의 열린 세션과 충돌하면 거부합니다. 단, 이전 binary는 외부 anchor를 이해하지 못하므로 향후 폴더 교체 작업 중 이전 앱을 새로 실행하면 안 됩니다. 모든 이전 앱/CLI/외부 writer 종료 동의는 그대로 필요합니다. Windows·관리자/비협조적 외부 namespace 변경을 검증한 보안 격리로 주장하지 않습니다.
+
+Anchor는 복원할 데이터가 아닌 잠금 인프라이므로 profile 사본에 포함하지 않으며 unlink·이동·덮어쓰기로 정리하지 않습니다. 검사 실패나 `PROFILE_BUSY`에서는 기존 폴더·잠금·기록을 유지하세요. 부모 폴더 자체를 이동한 경우는 다른 canonical 경로이며 자동 migration하지 않습니다. 전체 작업 기록·후보 사본과 가역적 root 교체는 아직 후속 구현입니다.

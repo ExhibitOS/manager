@@ -115,8 +115,87 @@ fn lock_file(root: &Path, name: &str, exclusive: bool) -> Result<File> {
     .map_err(|_| err("PROFILE_BUSY"))?;
     Ok(file)
 }
-pub(crate) fn session_lock(profile: &Path, exclusive: bool) -> Result<File> {
-    lock_file(profile, "profile-session.lock", exclusive)
+/// Hold the pathname fence as well as the legacy inode fence. The anchor is
+/// outside the replaceable profile and must never be unlinked by maintenance.
+pub(crate) struct ProfileSession {
+    _anchor: File,
+    _legacy: File,
+}
+/// Resolve a stable logical profile path without creating that profile. A
+/// controller must acquire this guard before creating/opening a replacement.
+pub(crate) fn anchor_lock(profile: &Path, exclusive: bool) -> Result<(PathBuf, File)> {
+    let parent = fs::canonicalize(
+        profile
+            .parent()
+            .ok_or_else(|| err("PROFILE_PATH_INVALID"))?,
+    )
+    .map_err(|_| err("PROFILE_PATH_INVALID"))?;
+    let name = profile
+        .file_name()
+        .ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
+    let target = parent.join(name);
+    let text = target.to_str().ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
+    let metadata = fs::symlink_metadata(&parent).map_err(|_| err("PROFILE_PATH_INVALID"))?;
+    if !metadata.is_dir() || metadata.is_symlink() {
+        return Err(err("PROFILE_PATH_INVALID"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // Private/owner-writable parent, or sticky shared temp parent. Sticky
+        // protects this uid-owned anchor against other users' unlink/rename.
+        let private_parent =
+            metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o022 == 0;
+        let sticky_parent = metadata.mode() & 0o1000 != 0
+            && (metadata.uid() == 0 || metadata.uid() == unsafe { libc::geteuid() });
+        if !private_parent && !sticky_parent {
+            return Err(err("PROFILE_PATH_INVALID"));
+        }
+    }
+    if !cfg!(unix) {
+        return Err(err("PROFILE_PLATFORM_UNVERIFIED"));
+    }
+    let filename = format!(
+        ".exhibitos-profile-session-{}.lock",
+        digest(text.as_bytes())
+    );
+    let anchor = lock_file(&parent, &filename, exclusive)?;
+    // lock_file checks file identity, private ownership/mode and no hardlinks.
+    // Recheck the parent mapping after obtaining the guard; unsupported external
+    // rename/edit of the parent is never silently treated as the same profile.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let current_parent =
+            fs::symlink_metadata(&parent).map_err(|_| err("PROFILE_PATH_INVALID"))?;
+        if (metadata.dev(), metadata.ino()) != (current_parent.dev(), current_parent.ino())
+            || current_parent.is_symlink()
+        {
+            return Err(err("PROFILE_PATH_INVALID"));
+        }
+    }
+    if fs::canonicalize(profile.parent().unwrap()).ok().as_ref() != Some(&parent) {
+        return Err(err("PROFILE_PATH_INVALID"));
+    }
+    Ok((target, anchor))
+}
+pub(crate) fn anchored_session(
+    profile: &Path,
+    anchor: File,
+    exclusive: bool,
+) -> Result<ProfileSession> {
+    canonical_private(profile)?;
+    Ok(ProfileSession {
+        _anchor: anchor,
+        _legacy: lock_file(profile, "profile-session.lock", exclusive)?,
+    })
+}
+pub(crate) fn session_lock(profile: &Path, exclusive: bool) -> Result<ProfileSession> {
+    let (target, anchor) = anchor_lock(profile, exclusive)?;
+    if target != profile {
+        return Err(err("PROFILE_PATH_INVALID"));
+    }
+    anchored_session(profile, anchor, exclusive)
 }
 fn relative(id: &str, kind: &str) -> String {
     if kind == "default" {
@@ -645,6 +724,135 @@ mod tests {
         write_new(&k, &[7u8; 32]).unwrap();
         let a = parent.join("profile.exb");
         (p, k, a)
+    }
+    #[test]
+    fn unsafe_existing_profile_does_not_create_sibling_anchor() {
+        let (p, _, _) = fixture();
+        let unsafe_profile = p.with_file_name("unsafe-profile");
+        installations::new_directory(&unsafe_profile).unwrap();
+        fs::set_permissions(&unsafe_profile, fs::Permissions::from_mode(0o755)).unwrap();
+        let names = || {
+            fs::read_dir(p.parent().unwrap())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect::<BTreeSet<_>>()
+        };
+        let before = names();
+        assert_eq!(
+            InstallationController::new(unsafe_profile.clone(), None)
+                .err()
+                .unwrap()
+                .code,
+            "INSTALLATION_ROOT_UNAVAILABLE"
+        );
+        assert_eq!(names(), before);
+        assert_eq!(fs::read_dir(&unsafe_profile).unwrap().count(), 0);
+    }
+    #[test]
+    fn offline_anchor_survives_root_move_and_blocks_app_before_profile_creation() {
+        let (p, _, _) = fixture();
+        let bytes = fs::read(p.join("installation-selection.json")).unwrap();
+        let held = session_lock(&p, true).unwrap();
+        let retained = p.with_file_name("retained-anchor-source");
+        fs::rename(&p, &retained).unwrap();
+        assert_eq!(
+            InstallationController::new(p.clone(), None)
+                .err()
+                .unwrap()
+                .code,
+            "PROFILE_BUSY"
+        );
+        assert!(!p.exists());
+        installations::new_directory(&p).unwrap();
+        assert_eq!(
+            InstallationController::new(p.clone(), None)
+                .err()
+                .unwrap()
+                .code,
+            "PROFILE_BUSY"
+        );
+        assert_eq!(fs::read_dir(&p).unwrap().count(), 0);
+        assert_eq!(
+            fs::read(retained.join("installation-selection.json")).unwrap(),
+            bytes
+        );
+        drop(held);
+        fs::rename(&p, p.with_file_name("retained-empty-replacement")).unwrap();
+        fs::rename(&retained, &p).unwrap();
+        assert!(InstallationController::new(p, None).is_ok());
+    }
+    #[test]
+    fn legacy_lock_and_canonical_parent_alias_keep_both_fences() {
+        let (p, k, a) = fixture();
+        let legacy = lock_file(&p, "profile-session.lock", true).unwrap();
+        assert_eq!(
+            backup_stream(&p, &k, &a, true).unwrap_err().code,
+            "PROFILE_BUSY"
+        );
+        assert_eq!(
+            InstallationController::new(p.clone(), None)
+                .err()
+                .unwrap()
+                .code,
+            "PROFILE_BUSY"
+        );
+        drop(legacy);
+        let held = session_lock(&p, true).unwrap();
+        let alias = p
+            .parent()
+            .unwrap()
+            .with_file_name(format!("profile-parent-alias-{}", Uuid::new_v4()));
+        std::os::unix::fs::symlink(p.parent().unwrap(), &alias).unwrap();
+        assert_eq!(
+            InstallationController::new(alias.join("profile"), None)
+                .err()
+                .unwrap()
+                .code,
+            "PROFILE_BUSY"
+        );
+        drop(held);
+        assert!(InstallationController::new(p, None).is_ok());
+    }
+    #[test]
+    fn anchor_symlink_hardlink_permissions_and_unsafe_parent_refuse_without_pointer_changes() {
+        let (p, k, a) = fixture();
+        let pointer = fs::read(p.join("installation-selection.json")).unwrap();
+        let name = format!(
+            ".exhibitos-profile-session-{}.lock",
+            digest(p.to_string_lossy().as_bytes())
+        );
+        let anchor = p.parent().unwrap().join(name);
+        fs::set_permissions(&anchor, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            backup(&p, &k, &a, true).unwrap_err().code,
+            "PROFILE_LOCK_INVALID"
+        );
+        fs::set_permissions(&anchor, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::rename(&anchor, anchor.with_extension("retained")).unwrap();
+        std::os::unix::fs::symlink(anchor.with_extension("retained"), &anchor).unwrap();
+        assert_eq!(
+            backup(&p, &k, &a, true).unwrap_err().code,
+            "PROFILE_LOCK_INVALID"
+        );
+        fs::rename(&anchor, anchor.with_extension("retained-symlink")).unwrap();
+        fs::hard_link(anchor.with_extension("retained"), &anchor).unwrap();
+        assert_eq!(
+            backup(&p, &k, &a, true).unwrap_err().code,
+            "PROFILE_LOCK_INVALID"
+        );
+        assert_eq!(
+            fs::read(p.join("installation-selection.json")).unwrap(),
+            pointer
+        );
+        assert!(!a.exists());
+        let (other, _, _) = fixture();
+        let parent = other.parent().unwrap();
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o777)).unwrap();
+        assert_eq!(
+            anchor_lock(&other, true).err().unwrap().code,
+            "PROFILE_PATH_INVALID"
+        );
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).unwrap();
     }
     #[test]
     fn opt_in_stream_profile_restores_same_registry_and_rejects_truncated_prefix() {
