@@ -14,6 +14,14 @@ pub struct StagedArtifact {
     identity: Metadata,
 }
 impl StagedArtifact {
+    pub(crate) fn retained_input(&mut self) -> Result<File, Error> {
+        self.file
+            .seek(SeekFrom::Start(0))
+            .map_err(|_| Error::ArtifactUnavailable)?;
+        self.file
+            .try_clone()
+            .map_err(|_| Error::ArtifactUnavailable)
+    }
     pub fn path(&self) -> &Path {
         &self.path
     }
