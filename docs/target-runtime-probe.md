@@ -15,3 +15,9 @@ Python 최적화 옵션은 거부합니다. Fixture에는 `genuine-release-bindi
 2026-10-04 macOS ARM64/Docker 실제 실행에서 세 볼륨 복사, target 기본 흐름, 이전 Runtime 기본 흐름이 통과했습니다. 이는 개발용 독립 사본 검사입니다. 전체 schema/data inventory 비교, 실패·중단 경로, cold engine, Windows/Podman, 등록된 설치 health receipt, 최신 trust/time/source/resource/security recovery 통합, 실제 apply/migration/rollback은 완료되지 않았습니다. 관리자·외부 writer로부터의 완전한 격리도 입증하지 않습니다. Docker 명령 응답 크기는 완료 후 확인하므로 악의적인 daemon 응답의 메모리 사용을 완전히 제한하지 않습니다.
 
 후속 probe는 세 단계의 전체 stopped-copy 인벤토리를 기록합니다. 신규/이전 Runtime을 각각 정지한 뒤 관측하여 DB identity/schema/migration/non-session tables/blob/reference 보존과 로그인당 정확히 한 세션 행 추가·기존 세션 행 hash 보존을 비교합니다. 상세 결과와 제한은 [전체 인벤토리](target-inventory.md)를 참고하세요.
+
+## 실제 프로세스 중단 검사
+
+`--interrupt-target`는 위의 새 synthetic 사본에서만 target Runtime에 SIGKILL을 보내 종료137을 확인한 후 같은 컨테이너를 명시적으로 재시작합니다. Readiness 복구 후 Runtime을 정지하고 copied PostgreSQL에 SIGKILL을 보내 종료137을 확인한 다음 DB와 Runtime을 다시 시작합니다. 정확한 관측 container ID의 새 고유 project/service/compatibility label이 일치해야 하며 원본 컨테이너는 종료하지 않습니다.
+
+회복한 readiness와 DB witness를 확인한 뒤 서비스 정지·전체 인벤토리 비교·이전 Runtime 기동과 후속 인벤토리를 수행합니다. 원본 파일/states/Prepared intent와 새 사본/helper 보존 경계는 동일합니다. PostgreSQL 사본의 crash recovery는 실제 쓰기를 수행하며 원본은 별개로 정지 상태를 유지합니다. 이것은 개발 fixture의 process interruption 검사이며 물리적 host 전원 손실, fsync 손실, migration 중단, 업데이트 Applying journal 복구나 실제 설치 rollback qualification은 아닙니다.
