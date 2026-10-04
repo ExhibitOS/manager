@@ -5,6 +5,7 @@ use super::*;
 use crate::{installations, profile_backup};
 use fs2::FileExt;
 use std::{
+    collections::BTreeSet,
     fs::{self, File, Metadata, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -38,18 +39,9 @@ struct Record {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     update_event: Option<UpdateEvent>,
 }
-/// Only trusted executor observations may enter this journal; no CLI accepts preflight flags.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    content = "evidence",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
-enum UpdateEvent {
-    Begin(Box<crate::update::Preflight>),
-    Interrupted,
-}
+#[path = "trust_update.rs"]
+mod update_journal;
+use update_journal::{UpdateEvent, evolve, in_flight, remember_ids, validate_new_ids};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateIntent {
@@ -110,6 +102,8 @@ pub struct Store {
     current: Record,
     current_sha256: String,
     uncertain: bool,
+    used_operations: BTreeSet<String>,
+    used_instances: BTreeSet<String>,
 }
 fn invalid() -> Error {
     Error::TrustInvalid
@@ -290,24 +284,9 @@ fn transition(old: &Record, next: &Record) -> Result<(), Error> {
         {
             return Err(invalid());
         }
-        let mut expected = old.intent.clone().ok_or_else(invalid)?;
-        match event {
-            UpdateEvent::Begin(evidence) => expected
-                .update
-                .begin_update((**evidence).clone())
-                .map_err(|_| invalid())?,
-            UpdateEvent::Interrupted => {
-                // An explicit no-op recovery event cannot grow the journal.
-                if expected.update.stage() != crate::update::Stage::Applying {
-                    return Err(invalid());
-                }
-                expected
-                    .update
-                    .recover_after_restart()
-                    .map_err(|_| invalid())?;
-            }
-        }
-        if serde_json::to_vec(&Some(expected)).map_err(|_| invalid())?
+        let expected =
+            evolve(old.intent.as_ref().ok_or_else(invalid)?, event).map_err(|_| invalid())?;
+        if serde_json::to_vec(&expected).map_err(|_| invalid())?
             != serde_json::to_vec(&next.intent).map_err(|_| invalid())?
         {
             return Err(invalid());
@@ -495,6 +474,8 @@ impl Store {
             current: r,
             current_sha256: h,
             uncertain: false,
+            used_operations: BTreeSet::new(),
+            used_instances: BTreeSet::new(),
         })
     }
     pub fn open(profile: &Path, installation: &str) -> Result<Self, Error> {
@@ -544,6 +525,8 @@ impl Store {
         }
         paths.sort();
         let mut previous = None;
+        let mut used_operations = BTreeSet::new();
+        let mut used_instances = BTreeSet::new();
         let mut h = "0".repeat(64);
         for (index, p) in paths.iter().enumerate() {
             if p.file_name().and_then(|s| s.to_str())
@@ -567,6 +550,13 @@ impl Store {
             {
                 return Err(invalid());
             }
+            validate_new_ids(previous.as_ref(), &r, &used_operations, &used_instances)?;
+            remember_ids(
+                previous.as_ref(),
+                &r,
+                &mut used_operations,
+                &mut used_instances,
+            );
             h = hash(&b);
             previous = Some(r);
         }
@@ -580,11 +570,11 @@ impl Store {
             current,
             current_sha256: h,
             uncertain: false,
+            used_operations,
+            used_instances,
         };
         s.check_root()?;
-        if s.intent()
-            .is_some_and(|i| i.update.stage() == crate::update::Stage::Applying)
-        {
+        if s.intent().is_some_and(|i| in_flight(i.update.stage())) {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|_| invalid())?
@@ -641,6 +631,12 @@ impl Store {
         next.observed_at = now;
         valid_record(&next, &self.scope)?;
         transition(&self.current, &next)?;
+        validate_new_ids(
+            Some(&self.current),
+            &next,
+            &self.used_operations,
+            &self.used_instances,
+        )?;
         self.uncertain = true;
         let h = write(&self.root, &next)?;
         installations::private_directory(&self.root).map_err(|_| Error::TrustWriteUncertain)?;
@@ -650,6 +646,12 @@ impl Store {
         ) {
             return Err(Error::TrustWriteUncertain);
         }
+        remember_ids(
+            Some(&self.current),
+            &next,
+            &mut self.used_operations,
+            &mut self.used_instances,
+        );
         self.current = next;
         self.current_sha256 = h;
         self.uncertain = false;
@@ -846,7 +848,7 @@ mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
     use std::os::unix::fs::{PermissionsExt, symlink};
-    fn fixture() -> (PathBuf, SigningKey, Policy, Release) {
+    pub(super) fn fixture() -> (PathBuf, SigningKey, Policy, Release) {
         let parent =
             std::env::temp_dir().join(format!("exhibitos-release-trust-{}", uuid::Uuid::new_v4()));
         let mut d = fs::DirBuilder::new();
@@ -894,7 +896,7 @@ mod tests {
         };
         (profile, key, policy, release)
     }
-    fn seal(key: &SigningKey, r: &Release) -> Vec<u8> {
+    pub(super) fn seal(key: &SigningKey, r: &Release) -> Vec<u8> {
         let payload = serde_json::to_string(r).unwrap();
         serde_json::to_vec(&Envelope {
             format: 1,
@@ -1128,7 +1130,7 @@ mod tests {
             Err(Error::TrustMissing)
         ));
     }
-    fn plan() -> crate::update::Plan {
+    pub(super) fn plan() -> crate::update::Plan {
         crate::update::Plan {
             operation_id: "update-1".into(),
             source_instance: "source-1".into(),
@@ -1276,7 +1278,7 @@ mod tests {
             Err(Error::TrustInvalid)
         ));
     }
-    fn prepared_fixture() -> (PathBuf, Store, VerifiedRelease) {
+    pub(super) fn prepared_fixture() -> (PathBuf, Store, VerifiedRelease) {
         let (p, k, policy, release) = fixture();
         let envelope = seal(&k, &release);
         let mut store = Store::provision(&p, "default", policy, 10).unwrap();
@@ -1290,7 +1292,7 @@ mod tests {
         (p, store, verified)
     }
     // Synthetic trusted observations exercise storage only, not real backup/engine proof.
-    fn observations() -> crate::update::Preflight {
+    pub(super) fn observations() -> crate::update::Preflight {
         crate::update::Preflight {
             plan: plan(),
             signature_verified: false,

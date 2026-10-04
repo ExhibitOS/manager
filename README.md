@@ -16,6 +16,10 @@ Windows/Podman 검증은 남아 있습니다. [새 설치 복원 CLI](docs/backu
 [업데이트 안전 판정 코어](docs/update-safety.md)는 검증 결과를 입력받아 실패와
 중단 복구를 판정하며, 실제 업데이트·서명·복원 기능을 실행하지 않습니다.
 
+[영구 업데이트 기록](docs/update-intent.md)은 서명·실제 아티팩트 검증을 연결하고
+준비·적용·health·복원·롤백 상태와 중단 복구를 private 저널에 저장합니다.
+실제 업데이트 실행 어댑터와 운영 환경의 전체 복원 검증은 아직 남아 있습니다.
+
 [설치 설정 보존](docs/installation-backup.md)은 기존 설치·환경 파일을 암호화 서비스 백업에 포함하기 위한 private 준비 기능이며 전체 백업 완료가 아닙니다.
 
 [데스크톱 사용법](docs/desktop.md)은 runtime bundle 준비, 실행 도구 검사,

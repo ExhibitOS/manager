@@ -189,7 +189,7 @@ fn run() -> Result<(), String> {
     }
     let code = |e: signed_release::Error| e.code().to_string();
     let usage = || {
-        "UPDATE_USAGE: trust-provision|trust-policy|trust-status|accept require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
+        "UPDATE_USAGE: trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|discard-update-intent require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
     };
     if a.len() < 7
         || a[2] != "--profile"
@@ -241,6 +241,23 @@ fn run() -> Result<(), String> {
             println!(
                 "{}",
                 serde_json::json!({"trust":trust,"intent":store.intent(),"executed":false})
+            );
+            return Ok(());
+        }
+        "discard-update-intent"
+            if a.len() == 12
+                && a[6] == "--operation-id"
+                && a[8] == "--expected-generation"
+                && a[10] == "--preserve-data" =>
+        {
+            let mut store = Store::open(profile, installation).map_err(code)?;
+            let expected = a[9].parse::<u64>().map_err(|_| usage())?;
+            let trust = store
+                .discard_prepared(&a[7], expected, now()?)
+                .map_err(code)?;
+            println!(
+                "{}",
+                serde_json::json!({"trust":trust,"intent":store.intent(),"executed":false,"dataPreserved":true})
             );
             return Ok(());
         }

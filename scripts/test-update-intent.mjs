@@ -74,5 +74,28 @@ assert.equal(call('update-intent',[],null,consumedProfile).trust.generation,5);
 assert.equal(hash(readFileSync(applyingPath)),applyingHash);assert.deepEqual(readFileSync(previousPath),previousBytes);
 step('actual CLI open durably marks synthetic Applying as Interrupted/RecoveryRequired exactly once, retaining plan, floors and original records; no engine proof');
 
-const report={format:1,checks,recovered,prepared,recoveredIntent,fixture:base,cliSha256:hash(readFileSync(cli)),initial,accepted,current,final:status(),journal:readdirSync(store),limits:['synthetic artifact, not a deployable OCI bundle; no engine update/migration/activation/restore','trusted local OS administrator policy replacement, no signed remote rotation/production root','same-UID or complete security-journal rollback not resisted; retain external journal during profile recovery','no native GUI/Windows/Linux filesystem qualification; private signing keys transient memory only']};
+function discard(p,operation,generation,error=null){return call('discard-update-intent',['--operation-id',operation,'--expected-generation',String(generation),'--preserve-data'],error,p);}
+discard(intentProfile,'foreign',2,'UPDATE_PLAN_MISMATCH');
+discard(intentProfile,plan.operationId,1,'UPDATE_OPERATION_STALE');
+const missingAcknowledgment=spawnSync(cli,['discard-update-intent','--profile',intentProfile,'--installation','default','--operation-id',plan.operationId,'--expected-generation','2','--apps-closed'],{encoding:'utf8'});
+assert.notEqual(missingAcknowledgment.status,0);assert.match(JSON.parse(missingAcknowledgment.stdout).code,/^UPDATE_USAGE/);
+assert.equal(call('update-intent',[],null,intentProfile).trust.generation,2);
+step('real CLI discard requires exact operation/generation and preserve-data acknowledgment without changing stale or foreign intents');
+const discarded=discard(intentProfile,plan.operationId,2);
+assert.equal(discarded.intent,null);assert.equal(discarded.dataPreserved,true);assert.equal(discarded.executed,false);
+assert.equal(discarded.trust.generation,3);assert.equal(discarded.trust.minimumSequence,41);
+assert.equal(existsSync(join(base,'retained-intent-profile')),true);
+step('prepared-only discard appends history while preserving source/profile and accepted release floor across real CLI processes');
+prepare(intentProfile,put({...plan,targetInstance:'target-2'}),envelope,'UPDATE_IDENTITY_REUSED');
+prepare(intentProfile,put({...plan,operationId:'intent-2'}),envelope,'UPDATE_IDENTITY_REUSED');
+assert.equal(call('trust-status',[],null,intentProfile).generation,3);
+step('historical operation and target IDs cannot be reused after discard and reopen');
+const rePrepared=prepare(intentProfile,put({...plan,operationId:'intent-2',targetInstance:'target-2'}));
+assert.equal(rePrepared.trust.generation,4);assert.equal(rePrepared.trust.minimumSequence,41);
+discard(intentProfile,plan.operationId,2,'UPDATE_OPERATION_STALE');
+discard(consumedProfile,plan.operationId,5,'UPDATE_OPERATION_PENDING');
+assert.equal(call('update-intent',[],null,consumedProfile).intent.update.stage,'recovery_required');
+step('fresh IDs permit a new prepared attempt; stale callbacks and recovery-required discard remain fenced');
+
+const report={format:1,checks,recovered,discarded,rePrepared,prepared,recoveredIntent,fixture:base,cliSha256:hash(readFileSync(cli)),initial,accepted,current,final:status(),journal:readdirSync(store),limits:['synthetic artifact, not a deployable OCI bundle; no engine update/migration/activation/restore','trusted local OS administrator policy replacement, no signed remote rotation/production root','same-UID or complete security-journal rollback not resisted; retain external journal during profile recovery','no native GUI/Windows/Linux filesystem qualification; private signing keys transient memory only']};
 const path=join(base,'update-intent-report.json');writeFileSync(path,JSON.stringify(report,null,2)+'\n',{mode:0o600});console.log('Report '+path);console.log('SHA256 '+hash(readFileSync(path)));
