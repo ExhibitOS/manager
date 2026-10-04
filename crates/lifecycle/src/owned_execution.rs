@@ -25,6 +25,15 @@ mod source_full_configuration;
 #[path = "source_image_bytes.rs"]
 mod source_image_bytes;
 pub use source_full_configuration::ConfigurationInventoryReceipt;
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceRecoveryReceipt {
+    pub inventory: SourceInventoryReceipt,
+    pub configuration: ConfigurationInventoryReceipt,
+    pub repeated_inventory: SourceInventoryReceipt,
+    pub preflight_verified: bool,
+    pub update_executed: bool,
+}
 
 /// Holds the Store borrow and both profile fences. No arbitrary root, controller
 /// bootstrap, activation, journal transition, or externally supplied success flag.
@@ -326,6 +335,14 @@ impl ExecutionSession<'_> {
         image: &str,
         acknowledged: bool,
     ) -> crate::Result<ConfigurationInventoryReceipt> {
+        self.verify_configuration_inventory_scoped(image, acknowledged, false)
+    }
+    fn verify_configuration_inventory_scoped(
+        &self,
+        image: &str,
+        acknowledged: bool,
+        roots_held: bool,
+    ) -> crate::Result<ConfigurationInventoryReceipt> {
         self.check()?;
         if !acknowledged {
             return Err(crate::err("BACKUP_OPERATOR_ACK_REQUIRED"));
@@ -352,8 +369,16 @@ impl ExecutionSession<'_> {
         let identity_before =
             fs::symlink_metadata(&root).map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?;
         let target = LifecycleService::open_retry_diagnostics(root.clone())?;
-        let _source_lock = self.source.lock()?;
-        let _target_lock = target.lock()?;
+        let _source_lock = if roots_held {
+            None
+        } else {
+            Some(self.source.lock()?)
+        };
+        let _target_lock = if roots_held {
+            None
+        } else {
+            Some(target.lock()?)
+        };
         let result = (|| {
             let job = target
                 .restoration_status()?
@@ -455,6 +480,68 @@ impl ExecutionSession<'_> {
             return Err(crate::err("UPDATE_TARGET_CHANGED"));
         }
         result
+    }
+    /// DB/blob before and after full configuration/image bytes under the same
+    /// source+registered-target locks. Does not authorize Applying or prove recovery.
+    pub fn verify_source_recovery_bundle(
+        &self,
+        image: &str,
+        acknowledged: bool,
+    ) -> crate::Result<SourceRecoveryReceipt> {
+        self.check()?;
+        if !acknowledged {
+            return Err(crate::err("BACKUP_OPERATOR_ACK_REQUIRED"));
+        }
+        let plan = self
+            .store
+            .intent()
+            .ok_or_else(|| crate::err("UPDATE_INTENT_MISSING"))?
+            .update
+            .plan();
+        let (registry, _) = installations::load(&self.store.profile)?
+            .ok_or_else(|| crate::err("UPDATE_SOURCE_CHANGED"))?;
+        let entry = registry
+            .installations
+            .iter()
+            .find(|e| e.id == plan.target_instance && e.kind == "recovery")
+            .ok_or_else(|| crate::err("UPDATE_TARGET_UNREGISTERED"))?;
+        let root = installations::root(&self.store.profile, entry);
+        installations::private_directory(&root)?;
+        let original =
+            fs::symlink_metadata(&root).map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?;
+        let target = LifecycleService::open_retry_diagnostics(root.clone())?;
+        let _source = self.source.lock()?;
+        let _target = target.lock()?;
+        let inventory = self.verify_source_inventory_scoped(image, true, true)?;
+        let configuration = self.verify_configuration_inventory_scoped(image, true, true)?;
+        let repeated_inventory = self.verify_source_inventory_scoped(image, true, true)?;
+        if inventory.source_content_sha256 != repeated_inventory.source_content_sha256
+            || inventory.inventory.inventory_sha256 != repeated_inventory.inventory.inventory_sha256
+            || inventory.inventory.schema_sha256 != repeated_inventory.inventory.schema_sha256
+            || inventory.inventory.authenticated_manifest_sha256
+                != configuration.authenticated_manifest_sha256
+            || inventory.source_instance != configuration.source_instance
+            || inventory.target_instance != configuration.target_instance
+            || inventory.source_database_volume != repeated_inventory.source_database_volume
+            || inventory.source_blob_volume != repeated_inventory.source_blob_volume
+        {
+            return Err(crate::err("UPDATE_SOURCE_CHANGED"));
+        }
+        self.check()?;
+        installations::private_directory(&root)?;
+        if !identity(
+            &original,
+            &fs::symlink_metadata(&root).map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?,
+        ) {
+            return Err(crate::err("UPDATE_TARGET_CHANGED"));
+        }
+        Ok(SourceRecoveryReceipt {
+            inventory,
+            configuration,
+            repeated_inventory,
+            preflight_verified: false,
+            update_executed: false,
+        })
     }
     /// Retained physical stopped-source copy; no logical inventory or full preflight proof.
     pub fn snapshot_source_database(
@@ -568,6 +655,14 @@ impl ExecutionSession<'_> {
         image: &str,
         acknowledged: bool,
     ) -> crate::Result<SourceInventoryReceipt> {
+        self.verify_source_inventory_scoped(image, acknowledged, false)
+    }
+    fn verify_source_inventory_scoped(
+        &self,
+        image: &str,
+        acknowledged: bool,
+        roots_held: bool,
+    ) -> crate::Result<SourceInventoryReceipt> {
         self.check()?;
         if !acknowledged {
             return Err(crate::err("BACKUP_OPERATOR_ACK_REQUIRED"));
@@ -594,8 +689,16 @@ impl ExecutionSession<'_> {
         let identity_before =
             fs::symlink_metadata(&root).map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?;
         let target = LifecycleService::open_retry_diagnostics(root.clone())?;
-        let _source_lock = self.source.lock()?;
-        let _target_lock = target.lock()?;
+        let _source_lock = if roots_held {
+            None
+        } else {
+            Some(self.source.lock()?)
+        };
+        let _target_lock = if roots_held {
+            None
+        } else {
+            Some(target.lock()?)
+        };
         let result = (|| {
             let job = target
                 .restoration_status()?
@@ -1138,6 +1241,28 @@ mod tests {
         assert!(!target.join("restoration.json").exists());
         drop(lease);
         assert_eq!(s.receipt().generation, 2);
+    }
+    #[test]
+    fn combined_recovery_refuses_missing_ack_and_candidate_without_engine_work() {
+        let (p, mut store) = prepared("default");
+        registered(&p, SOURCE, "default");
+        let session = store.execution().unwrap();
+        assert_eq!(
+            session
+                .verify_source_recovery_bundle(&format!("sha256:{}", "a".repeat(64)), false)
+                .unwrap_err()
+                .code,
+            "BACKUP_OPERATOR_ACK_REQUIRED"
+        );
+        assert_eq!(
+            session
+                .verify_source_recovery_bundle(&format!("sha256:{}", "a".repeat(64)), true)
+                .unwrap_err()
+                .code,
+            "UPDATE_TARGET_UNREGISTERED"
+        );
+        drop(session);
+        assert_eq!(store.receipt().generation, 2);
     }
 }
 
