@@ -217,6 +217,41 @@ fn run() -> Result<(), String> {
         "trust-status" if a.len() == 7 => {
             Store::open(profile, installation).map_err(code)?.receipt()
         }
+        "prepare-update"
+            if a.len() == 13
+                && a[6] == "--release"
+                && a[8] == "--artifact"
+                && a[10] == "--plan" =>
+        {
+            let mut store = Store::open(profile, installation).map_err(code)?;
+            let envelope = bounded(Path::new(&a[7]), signed_release::MAX_ENVELOPE as u64, false)?;
+            let plan: exhibitos_lifecycle::update::Plan = serde_json::from_slice(&bounded(
+                Path::new(&a[11]),
+                exhibitos_lifecycle::update::MAX_RECORD_BYTES as u64,
+                true,
+            )?)
+            .map_err(|_| "UPDATE_PLAN_INVALID")?;
+            let mut v = store
+                .verify_for_preparation(&envelope, now()?)
+                .map_err(code)?;
+            artifact(&mut v, Path::new(&a[9]))?;
+            let trust = store
+                .prepare_update(&envelope, &v, plan, now()?)
+                .map_err(code)?;
+            println!(
+                "{}",
+                serde_json::json!({"trust":trust,"intent":store.intent(),"executed":false})
+            );
+            return Ok(());
+        }
+        "update-intent" if a.len() == 7 => {
+            let store = Store::open(profile, installation).map_err(code)?;
+            println!(
+                "{}",
+                serde_json::json!({"trust":store.receipt(),"intent":store.intent(),"executed":false})
+            );
+            return Ok(());
+        }
         "accept" if a.len() == 11 && a[6] == "--release" && a[8] == "--artifact" => {
             let mut s = Store::open(profile, installation).map_err(code)?;
             let envelope = bounded(Path::new(&a[7]), signed_release::MAX_ENVELOPE as u64, false)?;

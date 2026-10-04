@@ -9,10 +9,10 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
 };
-const MAX_RECORD: u64 = 24 * 1024;
+const MAX_RECORD: u64 = 96 * 1024;
 const MAX_RECORDS: usize = 4096;
 const MAX_REVOKED: usize = 256;
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Accepted {
     sequence: u64,
@@ -33,6 +33,48 @@ struct Record {
     policy: Policy,
     revoked_keys: Vec<String>,
     acceptance: Option<Accepted>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    intent: Option<UpdateIntent>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateIntent {
+    envelope: String,
+    key_id: String,
+    payload_sha256: String,
+    artifact_sha256: String,
+    update: crate::update::Update,
+}
+impl UpdateIntent {
+    pub fn update(&self) -> &crate::update::Update {
+        &self.update
+    }
+    fn validate(&self) -> Result<(), Error> {
+        if self.envelope.is_empty()
+            || self.envelope.len() > MAX_ENVELOPE
+            || self.update.stage() != crate::update::Stage::Prepared
+        {
+            return Err(invalid());
+        }
+        self.update.validate().map_err(|_| invalid())?;
+        let e: Envelope = serde_json::from_str(&self.envelope).map_err(|_| invalid())?;
+        let r: Release = serde_json::from_str(&e.payload).map_err(|_| invalid())?;
+        if e.format != 1
+            || e.algorithm != "ed25519"
+            || hex::<64>(&e.signature).is_none()
+            || e.key_id != self.key_id
+            || hex::<32>(&self.key_id).is_none()
+            || hash(e.payload.as_bytes()) != self.payload_sha256
+            || r.artifact.sha256 != self.artifact_sha256
+            || hex::<32>(&self.artifact_sha256).is_none()
+            || r.artifact.runtime_image_sha256 != self.update.plan().target_image
+            || r.artifact.schema_sha256 != self.update.plan().target_schema
+            || !r.source_schemas.contains(&self.update.plan().source_schema)
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -173,6 +215,20 @@ fn keys(p: &Policy) -> Result<Vec<String>, Error> {
 }
 fn valid_record(r: &Record, scope: &str) -> Result<(), Error> {
     let ids = keys(&r.policy)?;
+    if let Some(i) = &r.intent {
+        i.validate()?;
+        let e: Envelope = serde_json::from_str(&i.envelope).map_err(|_| invalid())?;
+        let release: Release = serde_json::from_str(&e.payload).map_err(|_| invalid())?;
+        if let Some(a) = &r.acceptance
+            && (release.sequence != a.sequence
+                || release.issued_at != a.issued_at
+                || i.key_id != a.key_id
+                || i.payload_sha256 != a.payload_sha256
+                || i.artifact_sha256 != a.artifact_sha256)
+        {
+            return Err(invalid());
+        }
+    }
     if r.format != 1
         || r.scope != scope
         || r.generation == 0
@@ -214,7 +270,27 @@ fn transition(old: &Record, next: &Record) -> Result<(), Error> {
     {
         return Err(Error::TrustRollback);
     }
+    if old.intent.is_some()
+        && serde_json::to_vec(&old.intent).map_err(|_| invalid())?
+            != serde_json::to_vec(&next.intent).map_err(|_| invalid())?
+    {
+        return Err(invalid());
+    }
     if next.policy_generation == old.policy_generation {
+        if next.policy.minimum_sequence == old.policy.minimum_sequence
+            && next.intent.is_some()
+            && old.intent.is_none()
+        {
+            if next.acceptance.is_none()
+                || next.acceptance != old.acceptance
+                || next.revoked_keys != old.revoked_keys
+                || serde_json::to_vec(&next.policy).map_err(|_| invalid())?
+                    != serde_json::to_vec(&old.policy).map_err(|_| invalid())?
+            {
+                return Err(invalid());
+            }
+            return Ok(());
+        }
         let a = next.acceptance.as_ref().ok_or_else(invalid)?;
         let mut expected = old.policy.clone();
         expected.minimum_sequence = a.sequence;
@@ -351,6 +427,7 @@ impl Store {
             policy,
             revoked_keys: vec![],
             acceptance: None,
+            intent: None,
         };
         valid_record(&r, &scope)?;
         let h = write(&root, &r)?;
@@ -432,6 +509,7 @@ impl Store {
             } else if r.policy_generation != 1
                 || !r.revoked_keys.is_empty()
                 || r.acceptance.is_some()
+                || r.intent.is_some()
             {
                 return Err(invalid());
             }
@@ -538,6 +616,92 @@ impl Store {
         }
         super::verify(envelope, self.policy(), now)
     }
+    pub fn intent(&self) -> Option<&UpdateIntent> {
+        self.current.intent.as_ref()
+    }
+    /// Allows only the exact already accepted payload at the current sequence,
+    /// under current keys/schema/time policy. Does not lower the durable floor.
+    pub fn verify_for_preparation(
+        &self,
+        envelope: &[u8],
+        now: u64,
+    ) -> Result<VerifiedRelease, Error> {
+        match self.verify(envelope, now) {
+            Ok(v) => Ok(v),
+            Err(Error::Replay) => {
+                if envelope.len() > MAX_ENVELOPE {
+                    return Err(Error::InvalidEnvelope);
+                }
+                let accepted = self.current.acceptance.as_ref().ok_or(Error::Replay)?;
+                let e: Envelope =
+                    serde_json::from_slice(envelope).map_err(|_| Error::InvalidEnvelope)?;
+                if envelope.len() > MAX_ENVELOPE
+                    || hash(e.payload.as_bytes()) != accepted.payload_sha256
+                    || e.key_id != accepted.key_id
+                    || accepted.sequence != self.policy().minimum_sequence
+                {
+                    return Err(Error::Replay);
+                }
+                let mut policy = self.policy().clone();
+                policy.minimum_sequence = policy
+                    .minimum_sequence
+                    .checked_sub(1)
+                    .ok_or(Error::Replay)?;
+                let v = super::verify(envelope, &policy, now)?;
+                if v.release.sequence != accepted.sequence
+                    || v.release.issued_at != accepted.issued_at
+                    || v.release.artifact.sha256 != accepted.artifact_sha256
+                {
+                    return Err(Error::Replay);
+                }
+                Ok(v)
+            }
+            Err(e) => Err(e),
+        }
+    }
+    /// Durable intent only. No backup/image/schema/source evidence is fabricated.
+    /// Actual artifact proof and exact plan binding are required before publication.
+    pub fn prepare_update(
+        &mut self,
+        envelope: &[u8],
+        verified: &VerifiedRelease,
+        plan: crate::update::Plan,
+        now: u64,
+    ) -> Result<TrustReceipt, Error> {
+        if self.current.intent.is_some() {
+            return Err(Error::TrustOperationBusy);
+        }
+        let fresh = self.verify_for_preparation(envelope, now)?;
+        if !verified.artifact_verified
+            || fresh.payload_sha256 != verified.payload_sha256
+            || fresh.key_id != verified.key_id
+            || fresh.source_schema_sha256 != verified.source_schema_sha256
+            || !fresh.binds(&plan)
+        {
+            return Err(Error::PlanMismatch);
+        }
+        let update = crate::update::Update::new(plan).map_err(|_| Error::PlanMismatch)?;
+        let mut next = self.current.clone();
+        next.policy.minimum_sequence = fresh.release.sequence;
+        next.policy.minimum_issued_at = next.policy.minimum_issued_at.max(fresh.release.issued_at);
+        next.acceptance = Some(Accepted {
+            sequence: fresh.release.sequence,
+            issued_at: fresh.release.issued_at,
+            key_id: fresh.key_id.clone(),
+            payload_sha256: fresh.payload_sha256.clone(),
+            artifact_sha256: fresh.release.artifact.sha256.clone(),
+        });
+        next.intent = Some(UpdateIntent {
+            envelope: std::str::from_utf8(envelope)
+                .map_err(|_| Error::InvalidEnvelope)?
+                .into(),
+            key_id: fresh.key_id,
+            payload_sha256: fresh.payload_sha256,
+            artifact_sha256: fresh.release.artifact.sha256,
+            update,
+        });
+        self.commit(next, now)
+    }
     /// Complete signature+artifact proof required; revalidate pinned policy/time
     /// and exact payload before durably consuming the generation. No activation.
     pub fn accept(
@@ -546,6 +710,9 @@ impl Store {
         verified: &VerifiedRelease,
         now: u64,
     ) -> Result<TrustReceipt, Error> {
+        if self.current.intent.is_some() {
+            return Err(Error::TrustOperationBusy);
+        }
         let fresh = self.verify(envelope, now)?;
         if !verified.artifact_verified
             || fresh.payload_sha256 != verified.payload_sha256
@@ -854,6 +1021,154 @@ mod tests {
         assert!(matches!(
             Store::open(&p, "5c3ac1e0-27ea-407d-b0ae-15d074bf4c9c"),
             Err(Error::TrustMissing)
+        ));
+    }
+    fn plan() -> crate::update::Plan {
+        crate::update::Plan {
+            operation_id: "update-1".into(),
+            source_instance: "source-1".into(),
+            target_instance: "target-1".into(),
+            source_image: "d".repeat(64),
+            target_image: "b".repeat(64),
+            source_schema: "a".repeat(64),
+            target_schema: "c".repeat(64),
+            backup_id: "backup-1".into(),
+            backup_manifest: "e".repeat(64),
+            source_inventory: "f".repeat(64),
+            required_free_bytes: 1024,
+        }
+    }
+    #[test]
+    fn intent_and_new_acceptance_publish_atomically_and_survive_profile_replacement() {
+        let (p, k, policy, r) = fixture();
+        let e = seal(&k, &r);
+        let mut s = Store::provision(&p, "default", policy, 10).unwrap();
+        let mut v = s.verify_for_preparation(&e, 20).unwrap();
+        v.verify_artifact(&mut b"fixture".as_slice()).unwrap();
+        let receipt = s.prepare_update(&e, &v, plan(), 20).unwrap();
+        assert_eq!(receipt.generation, 2);
+        assert_eq!(receipt.minimum_sequence, 2);
+        assert_eq!(
+            s.intent().unwrap().update().stage(),
+            crate::update::Stage::Prepared
+        );
+        assert_eq!(s.accept(&e, &v, 21).unwrap_err(), Error::TrustOperationBusy);
+        drop(s);
+        fs::rename(&p, p.with_file_name("retained-intent-profile")).unwrap();
+        let mut s = Store::open(&p, "default").unwrap();
+        assert_eq!(s.intent().unwrap().update().plan(), &plan());
+        assert_eq!(
+            s.prepare_update(&e, &v, plan(), 21).unwrap_err(),
+            Error::TrustOperationBusy
+        );
+        let mut core = s.intent().unwrap().update().clone();
+        let mut evidence = crate::update::Preflight {
+            plan: plan(),
+            signature_verified: false,
+            artifact_verified: false,
+            compatibility_verified: false,
+            backup_restore_verified: false,
+            current_source_matches_backup: false,
+            available_free_bytes: 1024,
+            image_only_rollback_verified: false,
+        };
+        v.bind_preflight(&mut evidence, 21).unwrap();
+        assert_eq!(
+            core.begin_update(evidence).unwrap_err(),
+            crate::update::Error::CompatibilityUnverified
+        );
+        assert_eq!(s.receipt().generation, 2);
+    }
+    #[test]
+    fn exact_already_accepted_release_can_prepare_without_lowering_or_reaccepting() {
+        let (p, k, policy, r) = fixture();
+        let e = seal(&k, &r);
+        let mut s = Store::provision(&p, "default", policy, 10).unwrap();
+        let mut v = s.verify(&e, 20).unwrap();
+        v.verify_artifact(&mut b"fixture".as_slice()).unwrap();
+        s.accept(&e, &v, 20).unwrap();
+        drop(s);
+        let mut s = Store::open(&p, "default").unwrap();
+        assert_eq!(s.verify(&e, 21).unwrap_err(), Error::Replay);
+        let mut fresh = s.verify_for_preparation(&e, 21).unwrap();
+        assert!(!fresh.receipt().artifact_verified);
+        fresh.verify_artifact(&mut b"fixture".as_slice()).unwrap();
+        s.prepare_update(&e, &fresh, plan(), 21).unwrap();
+        assert_eq!(s.receipt().minimum_sequence, 2);
+        assert_eq!(s.receipt().generation, 3);
+        drop(s);
+        let s = Store::open(&p, "default").unwrap();
+        assert_eq!(s.intent().unwrap().update().plan(), &plan());
+    }
+    #[test]
+    fn mismatched_plan_missing_artifact_expiry_and_foreign_consumed_payload_refuse() {
+        let (p, k, policy, mut r) = fixture();
+        let e = seal(&k, &r);
+        let mut s = Store::provision(&p, "default", policy, 10).unwrap();
+        let mut v = s.verify_for_preparation(&e, 20).unwrap();
+        assert_eq!(
+            s.prepare_update(&e, &v, plan(), 20).unwrap_err(),
+            Error::PlanMismatch
+        );
+        v.verify_artifact(&mut b"fixture".as_slice()).unwrap();
+        let mut wrong = plan();
+        wrong.source_schema = "0".repeat(64);
+        assert_eq!(
+            s.prepare_update(&e, &v, wrong, 20).unwrap_err(),
+            Error::PlanMismatch
+        );
+        assert_eq!(
+            s.prepare_update(&e, &v, plan(), 100).unwrap_err(),
+            Error::Expired
+        );
+        assert_eq!(s.receipt().generation, 1);
+        s.accept(&e, &v, 20).unwrap();
+        r.version = "0.3.0-dev.1".into();
+        assert_eq!(
+            s.verify_for_preparation(&seal(&k, &r), 21).unwrap_err(),
+            Error::Replay
+        );
+        assert!(s.intent().is_none());
+    }
+    #[test]
+    fn no_overwrite_intent_failure_keeps_floor_and_all_sources() {
+        let (p, k, policy, r) = fixture();
+        let e = seal(&k, &r);
+        let mut s = Store::provision(&p, "default", policy, 10).unwrap();
+        let collision = s.root.join(format!("{:020}.json", 2));
+        private_file(&collision, true)
+            .unwrap()
+            .write_all(b"retained")
+            .unwrap();
+        let mut v = s.verify_for_preparation(&e, 20).unwrap();
+        v.verify_artifact(&mut b"fixture".as_slice()).unwrap();
+        assert_eq!(
+            s.prepare_update(&e, &v, plan(), 20).unwrap_err(),
+            Error::TrustWriteUncertain
+        );
+        assert_eq!(s.receipt().minimum_sequence, 1);
+        assert!(s.receipt().write_uncertain);
+        assert!(s.intent().is_none());
+        assert_eq!(fs::read(collision).unwrap(), b"retained");
+    }
+    #[test]
+    fn journal_intent_cannot_bind_a_different_accepted_sequence() {
+        let (p, k, policy, r) = fixture();
+        let e = seal(&k, &r);
+        let mut s = Store::provision(&p, "default", policy, 10).unwrap();
+        let mut v = s.verify_for_preparation(&e, 20).unwrap();
+        v.verify_artifact(&mut b"fixture".as_slice()).unwrap();
+        s.prepare_update(&e, &v, plan(), 20).unwrap();
+        let record = s.root.join(format!("{:020}.json", 2));
+        drop(s);
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+        value["policy"]["minimumSequence"] = serde_json::json!(3);
+        value["acceptance"]["sequence"] = serde_json::json!(3);
+        fs::write(record, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(matches!(
+            Store::open(&p, "default"),
+            Err(Error::TrustInvalid)
         ));
     }
 }
