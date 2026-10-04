@@ -516,3 +516,10 @@ and durable journals are unchanged. The opt-in actual_engine_current_image_mappi
 Rust test inspects existing immutable local images and refuses an incorrect expected
 content ID without any Engine mutation; it does not execute the full profile/CLI
 container-binding path.
+
+
+### Prepared artifact under the execution fence
+
+`exhibitos-update stage-prepared-artifact --profile <absolute private profile> --installation default --artifact <absolute runtime.tar> --staging-parent <absolute external private directory> --apps-closed` stages the artifact from the current Prepared intent. It takes no caller policy, envelope, plan, or verified flags. The existing Store/profile/source fence stays held while current policy, exact intent binding, signature, actual bytes, time and retained read-only file identity are checked. The staging parent must be outside the profile/security journal. Partial files are retained on failure.
+
+The opaque retained object is intended for the update executor; it must be reverified under the same session before use. The CLI receipt is diagnostic and cannot authorize Applying. OCI internals/import, restored backup, compatibility, current data, resources, coherent security/data recovery and actual update/rollback remain separate requirements. Windows private filesystem staging is still unqualified.

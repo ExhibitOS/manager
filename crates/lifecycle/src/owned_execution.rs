@@ -107,7 +107,138 @@ impl Store {
         Ok(lease)
     }
 }
+/// Opaque retained bytes for the executor. This is not a preflight or apply permit.
+pub struct PreparedArtifact {
+    staged: crate::signed_release::artifact::StagedArtifact,
+    verified: VerifiedRelease,
+    plan: crate::update::Plan,
+    generation: u64,
+    envelope: String,
+    profile: PathBuf,
+    profile_identity: Metadata,
+}
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedArtifactReceipt {
+    pub operation_id: String,
+    pub artifact_sha256: String,
+    pub artifact_bytes: u64,
+    pub staged_path: PathBuf,
+    pub trust_generation: u64,
+    pub preflight_verified: bool,
+    pub update_executed: bool,
+}
 impl ExecutionSession<'_> {
+    /// Stage the current intent's exact signed artifact under the borrowed execution
+    /// fence. No caller policy/envelope/plan or success booleans are accepted.
+    pub fn stage_prepared_artifact(
+        &self,
+        source: &Path,
+        parent: &Path,
+    ) -> crate::Result<PreparedArtifact> {
+        let mut artifact = self.stage_prepared_artifact_at(source, parent, crate::now())?;
+        self.reverify_prepared_artifact(&mut artifact)?;
+        Ok(artifact)
+    }
+    fn stage_prepared_artifact_at(
+        &self,
+        source: &Path,
+        parent: &Path,
+        now: u64,
+    ) -> crate::Result<PreparedArtifact> {
+        self.check()?;
+        if parent.starts_with(&self.store.profile) || parent.starts_with(&self.store.root) {
+            return Err(crate::err("UPDATE_ARTIFACT_UNAVAILABLE"));
+        }
+        let intent = self
+            .store
+            .intent()
+            .ok_or_else(|| crate::err("UPDATE_INTENT_MISSING"))?;
+        if intent.update.stage() != crate::update::Stage::Prepared {
+            return Err(crate::err("UPDATE_CANDIDATE_STAGE_INVALID"));
+        }
+        let plan = intent.update.plan().clone();
+        let envelope = intent.envelope.clone();
+        let mut verified = self
+            .store
+            .verify_for_preparation(envelope.as_bytes(), now)
+            .map_err(|e| crate::err(e.code()))?;
+        if !verified.binds(&plan)
+            || verified.payload_sha256 != intent.payload_sha256
+            || verified.key_id != intent.key_id
+            || verified.release.artifact.sha256 != intent.artifact_sha256
+        {
+            return Err(crate::err("UPDATE_PLAN_MISMATCH"));
+        }
+        let _source_lock = self.source.lock()?;
+        let staged = crate::signed_release::artifact::stage(&mut verified, source, parent, now)
+            .map_err(|e| crate::err(e.code()))?;
+        let mut result = PreparedArtifact {
+            staged,
+            verified,
+            plan,
+            generation: self.store.receipt().generation,
+            envelope,
+            profile: self.store.profile.clone(),
+            profile_identity: self.profile_identity.clone(),
+        };
+        self.reverify_prepared_artifact_at(&mut result, now)?;
+        self.check()?;
+        Ok(result)
+    }
+    /// Revalidate current trust/time/plan and the retained handle before later use.
+    /// A returned receipt deliberately never authorizes an Applying transition.
+    pub fn reverify_prepared_artifact(
+        &self,
+        artifact: &mut PreparedArtifact,
+    ) -> crate::Result<PreparedArtifactReceipt> {
+        self.reverify_prepared_artifact_at(artifact, crate::now())
+    }
+    fn reverify_prepared_artifact_at(
+        &self,
+        artifact: &mut PreparedArtifact,
+        now: u64,
+    ) -> crate::Result<PreparedArtifactReceipt> {
+        self.check()?;
+        let intent = self
+            .store
+            .intent()
+            .ok_or_else(|| crate::err("UPDATE_INTENT_MISSING"))?;
+        if artifact.profile != self.store.profile
+            || !identity(&artifact.profile_identity, &self.profile_identity)
+            || intent.update.stage() != crate::update::Stage::Prepared
+            || intent.update.plan() != &artifact.plan
+            || intent.envelope != artifact.envelope
+            || self.store.receipt().generation != artifact.generation
+        {
+            return Err(crate::err("UPDATE_OPERATION_STALE"));
+        }
+        let mut fresh = self
+            .store
+            .verify_for_preparation(intent.envelope.as_bytes(), now)
+            .map_err(|e| crate::err(e.code()))?;
+        if !fresh.binds(&artifact.plan)
+            || fresh.payload_sha256 != artifact.verified.payload_sha256
+            || fresh.key_id != artifact.verified.key_id
+        {
+            return Err(crate::err("UPDATE_PLAN_MISMATCH"));
+        }
+        artifact
+            .staged
+            .reverify(&mut fresh, now)
+            .map_err(|e| crate::err(e.code()))?;
+        self.check()?;
+        artifact.verified = fresh;
+        Ok(PreparedArtifactReceipt {
+            operation_id: artifact.plan.operation_id.clone(),
+            artifact_sha256: artifact.verified.release.artifact.sha256.clone(),
+            artifact_bytes: artifact.verified.release.artifact.bytes,
+            staged_path: artifact.staged.path().to_owned(),
+            trust_generation: artifact.generation,
+            preflight_verified: false,
+            update_executed: false,
+        })
+    }
     fn check(&self) -> crate::Result<()> {
         self.store.check_root().map_err(|e| crate::err(e.code()))?;
         installations::private_directory(&self.store.profile)?;
@@ -1242,6 +1373,117 @@ mod tests {
         };
         installations::new_directory(&root).unwrap();
         root
+    }
+    #[test]
+    fn owned_artifact_rechecks_expiry_and_retained_path_without_transition() {
+        let (p, mut store) = prepared("default");
+        registered(&p, SOURCE, "default");
+        let parent = p
+            .parent()
+            .unwrap()
+            .join(format!("artifact-owned-{}", uuid::Uuid::new_v4()));
+        installations::new_directory(&parent).unwrap();
+        let source = parent.join("runtime.tar");
+        fs::write(&source, b"fixture").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).unwrap();
+        let original = store.current_sha256.clone();
+        let session = store.execution().unwrap();
+        let mut artifact = session
+            .stage_prepared_artifact_at(&source, &parent, 21)
+            .unwrap();
+        let receipt = session
+            .reverify_prepared_artifact_at(&mut artifact, 22)
+            .unwrap();
+        assert!(!receipt.preflight_verified && !receipt.update_executed);
+        assert_eq!(
+            session
+                .reverify_prepared_artifact_at(&mut artifact, 100)
+                .unwrap_err()
+                .code,
+            "UPDATE_RELEASE_EXPIRED"
+        );
+        let staged = artifact.staged.path().to_owned();
+        fs::rename(&staged, staged.with_extension("original")).unwrap();
+        fs::write(&staged, b"fixture").unwrap();
+        fs::set_permissions(&staged, fs::Permissions::from_mode(0o400)).unwrap();
+        assert_eq!(
+            session
+                .reverify_prepared_artifact_at(&mut artifact, 22)
+                .unwrap_err()
+                .code,
+            "UPDATE_ARTIFACT_MISMATCH"
+        );
+        drop(session);
+        assert_eq!(store.current_sha256, original);
+        assert_eq!(
+            store.intent().unwrap().update.stage(),
+            crate::update::Stage::Prepared
+        );
+    }
+    #[test]
+    fn identical_plan_in_another_profile_cannot_reuse_retained_artifact() {
+        let (p, mut store) = prepared("default");
+        registered(&p, SOURCE, "default");
+        let parent = p
+            .parent()
+            .unwrap()
+            .join(format!("artifact-scope-{}", uuid::Uuid::new_v4()));
+        installations::new_directory(&parent).unwrap();
+        let source = parent.join("runtime.tar");
+        fs::write(&source, b"fixture").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).unwrap();
+        let session = store.execution().unwrap();
+        let mut artifact = session
+            .stage_prepared_artifact_at(&source, &parent, 21)
+            .unwrap();
+        drop(session);
+        let (other, mut second) = prepared("default");
+        registered(&other, SOURCE, "default");
+        let second_session = second.execution().unwrap();
+        assert_eq!(
+            second_session
+                .reverify_prepared_artifact_at(&mut artifact, 21)
+                .unwrap_err()
+                .code,
+            "UPDATE_OPERATION_STALE"
+        );
+        assert_eq!(
+            second_session.store.intent().unwrap().update.stage(),
+            crate::update::Stage::Prepared
+        );
+    }
+    #[test]
+    fn owned_artifact_rejects_source_bytes_and_profile_staging() {
+        let (p, mut store) = prepared("default");
+        registered(&p, SOURCE, "default");
+        let parent = p
+            .parent()
+            .unwrap()
+            .join(format!("artifact-refusal-{}", uuid::Uuid::new_v4()));
+        installations::new_directory(&parent).unwrap();
+        let source = parent.join("runtime.tar");
+        fs::write(&source, b"changed").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).unwrap();
+        let original = store.current_sha256.clone();
+        let session = store.execution().unwrap();
+        assert_eq!(
+            session
+                .stage_prepared_artifact_at(&source, &p, 21)
+                .err()
+                .unwrap()
+                .code,
+            "UPDATE_ARTIFACT_UNAVAILABLE"
+        );
+        assert_eq!(
+            session
+                .stage_prepared_artifact_at(&source, &parent, 21)
+                .err()
+                .unwrap()
+                .code,
+            "UPDATE_ARTIFACT_MISMATCH"
+        );
+        drop(session);
+        assert_eq!(store.current_sha256, original);
     }
     #[test]
     fn missing_registry_or_wrong_source_cannot_bootstrap_execution() {

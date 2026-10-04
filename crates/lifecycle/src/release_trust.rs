@@ -48,7 +48,10 @@ mod owned_execution;
 mod target_registration;
 #[path = "trust_update.rs"]
 mod update_journal;
-pub use owned_execution::{ExecutionSession, SourceHostTrustReceipt, SourceRecoveryReceipt};
+pub use owned_execution::{
+    ExecutionSession, PreparedArtifact, PreparedArtifactReceipt, SourceHostTrustReceipt,
+    SourceRecoveryReceipt,
+};
 pub use target_registration::RegisteredUpdateTarget;
 use update_journal::{UpdateEvent, evolve, in_flight, remember_ids, validate_new_ids};
 #[derive(Debug, Clone, Serialize, Deserialize)]
