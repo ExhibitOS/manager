@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Owner-only NTFS objects for the future managed Windows profile adapter.
 //! Existing user directories/ACLs are inspected, never rewritten or adopted.
-use crate::{err, Result};
+#[path = "windows_json_storage.rs"]
+mod json_storage;
+use crate::{Result, err};
+pub(crate) use json_storage::{read_json_path, write_json_root};
 use std::{
     ffi::c_void,
     fs::File,
@@ -15,7 +18,7 @@ use std::{
     ptr,
 };
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, LocalFree, HANDLE, INVALID_HANDLE_VALUE},
+    Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, LocalFree},
     Security::{
         self as sec,
         Authorization::{
@@ -271,7 +274,13 @@ fn open(path: &Path, directory: bool) -> Result<File> {
         fsapi::CreateFileW(
             path.as_ptr(),
             fsapi::READ_CONTROL | fsapi::FILE_READ_ATTRIBUTES,
-            fsapi::FILE_SHARE_READ | fsapi::FILE_SHARE_WRITE,
+            fsapi::FILE_SHARE_READ
+                | fsapi::FILE_SHARE_WRITE
+                | if directory {
+                    0
+                } else {
+                    fsapi::FILE_SHARE_DELETE
+                },
             ptr::null(),
             fsapi::OPEN_EXISTING,
             fsapi::FILE_FLAG_OPEN_REPARSE_POINT
@@ -349,6 +358,47 @@ impl PrivateDirectory {
         result.check()?;
         Ok(result)
     }
+    /// Inspect an existing protected owner-only directory without changing permissions.
+    /// This is not an identity witness across backup restore or namespace replacement.
+    pub(crate) fn inspect(path: &Path) -> Result<Self> {
+        if !path.is_absolute() {
+            return Err(err("PROFILE_PATH_INVALID"));
+        }
+        let original_parent = path.parent().ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
+        let ancestors = pin_ancestors(original_parent)?;
+        let parent_path = original_parent
+            .canonicalize()
+            .map_err(|_| err("PROFILE_PATH_INVALID"))?;
+        let leaf = path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
+        valid_name(leaf)?;
+        let path = parent_path.join(leaf);
+        let parent = open(&parent_path, true)?;
+        let sid = Sid::current()?;
+        acl(&parent, &sid, false)?;
+        let parent_id = identity(&parent, true)?;
+        // Open lexical leaf before canonicalizing: junctions cannot be silently resolved.
+        let file = open(&path, true)?;
+        acl(&file, &sid, true)?;
+        let id = identity(&file, true)?;
+        let path = path
+            .canonicalize()
+            .map_err(|_| err("PROFILE_PATH_INVALID"))?;
+        let value = Self {
+            path,
+            file,
+            parent,
+            parent_path,
+            id,
+            parent_id,
+            sid,
+            ancestors,
+        };
+        value.check()?;
+        Ok(value)
+    }
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -375,6 +425,9 @@ impl PrivateDirectory {
         self.create_record_sharing(name, fsapi::FILE_SHARE_READ | fsapi::FILE_SHARE_WRITE)
     }
     fn create_record_sharing(&self, name: &str, sharing: u32) -> Result<File> {
+        self.create_record_access(name, sharing, 0)
+    }
+    fn create_record_access(&self, name: &str, sharing: u32, extra_access: u32) -> Result<File> {
         self.check()?;
         valid_name(name)?;
         let path = self.path.join(name);
@@ -387,7 +440,7 @@ impl PrivateDirectory {
         let handle = unsafe {
             fsapi::CreateFileW(
                 wide(&path)?.as_ptr(),
-                0x80000000 | 0x40000000 | fsapi::READ_CONTROL,
+                0x80000000 | 0x40000000 | fsapi::READ_CONTROL | extra_access,
                 sharing,
                 &attributes,
                 fsapi::CREATE_NEW,
@@ -696,19 +749,22 @@ mod tests {
             .write_new_record("generation-1.json", b"synthetic-only", 1024)
             .unwrap();
         assert_eq!(created.read_bounded(1024).unwrap(), b"synthetic-only");
-        assert!(dir
-            .write_new_record("generation-1.json", b"replacement", 1024)
-            .is_err());
+        assert!(
+            dir.write_new_record("generation-1.json", b"replacement", 1024)
+                .is_err()
+        );
         assert!(dir.read_record("generation-1.json").is_err());
         drop(created);
         let mut first = dir.read_record("generation-1.json").unwrap();
         let mut second = dir.read_record("generation-1.json").unwrap();
         assert_eq!(first.read_bounded(1024).unwrap(), b"synthetic-only");
         assert_eq!(second.read_bounded(1024).unwrap(), b"synthetic-only");
-        assert!(std::fs::OpenOptions::new()
-            .write(true)
-            .open(path.join("generation-1.json"))
-            .is_err());
+        assert!(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(path.join("generation-1.json"))
+                .is_err()
+        );
         assert!(std::fs::remove_file(path.join("generation-1.json")).is_err());
         assert!(first.read_bounded(1).is_err());
         assert!(dir.write_new_record("too-large", b"xx", 1).is_err());
