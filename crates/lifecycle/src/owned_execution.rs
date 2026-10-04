@@ -128,6 +128,13 @@ pub struct PreparedArtifactReceipt {
     pub preflight_verified: bool,
     pub update_executed: bool,
 }
+// Lifecycle log timestamps use milliseconds; signed release times are Unix seconds.
+fn release_now() -> crate::Result<u64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|v| v.as_secs())
+        .map_err(|_| crate::err("UPDATE_CLOCK_UNVERIFIED"))
+}
 impl ExecutionSession<'_> {
     /// Stage the current intent's exact signed artifact under the borrowed execution
     /// fence. No caller policy/envelope/plan or success booleans are accepted.
@@ -136,7 +143,7 @@ impl ExecutionSession<'_> {
         source: &Path,
         parent: &Path,
     ) -> crate::Result<PreparedArtifact> {
-        let mut artifact = self.stage_prepared_artifact_at(source, parent, crate::now())?;
+        let mut artifact = self.stage_prepared_artifact_at(source, parent, release_now()?)?;
         self.reverify_prepared_artifact(&mut artifact)?;
         Ok(artifact)
     }
@@ -192,7 +199,7 @@ impl ExecutionSession<'_> {
         &self,
         artifact: &mut PreparedArtifact,
     ) -> crate::Result<PreparedArtifactReceipt> {
-        self.reverify_prepared_artifact_at(artifact, crate::now())
+        self.reverify_prepared_artifact_at(artifact, release_now()?)
     }
     fn reverify_prepared_artifact_at(
         &self,
