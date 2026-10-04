@@ -151,7 +151,7 @@ pub(crate) fn load(profile: &Path) -> Result<Option<(Registry, Vec<u8>)>> {
         }
     }
 }
-fn save(profile: &Path, registry: &Registry, previous: Option<&[u8]>) -> Result<()> {
+pub(crate) fn save(profile: &Path, registry: &Registry, previous: Option<&[u8]>) -> Result<()> {
     valid(registry)?;
     if fs2::available_space(profile).map_err(|_| err("STORAGE_UNAVAILABLE"))? < 256 * 1024 {
         return Err(err("STORAGE_QUOTA"));

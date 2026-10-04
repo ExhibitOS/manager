@@ -246,7 +246,7 @@ fn run() -> Result<(), String> {
     }
     let code = |e: signed_release::Error| e.code().to_string();
     let usage = || {
-        "UPDATE_USAGE: trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|discard-update-intent|execution-status|verify-update-backup|verify-update-source-stopped|verify-update-source-deployment|verify-update-source-configuration|verify-update-source-images|snapshot-update-source-database|verify-update-source-inventory|verify-update-configuration-inventory|prepare-update-candidate require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
+        "UPDATE_USAGE: trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|register-update-target|discard-update-intent|execution-status|verify-update-backup|verify-update-source-stopped|verify-update-source-deployment|verify-update-source-configuration|verify-update-source-images|snapshot-update-source-database|verify-update-source-inventory|verify-update-configuration-inventory|prepare-update-candidate require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
     };
     if a.len() < 7
         || a[2] != "--profile"
@@ -286,6 +286,18 @@ fn run() -> Result<(), String> {
         println!(
             "{}",
             serde_json::to_string(&result?).map_err(|_| "UPDATE_RECEIPT_INVALID")?
+        );
+        return Ok(());
+    }
+    if a[1] == "register-update-target" {
+        if a.len() != 8 || a[6] != "--preserve-active" {
+            return Err(usage());
+        }
+        let store = Store::open(profile, installation).map_err(code)?;
+        let receipt = store.register_update_target(true).map_err(|e| e.code)?;
+        println!(
+            "{}",
+            serde_json::to_string(&receipt).map_err(|_| "UPDATE_RECEIPT_INVALID")?
         );
         return Ok(());
     }
