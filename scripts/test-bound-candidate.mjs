@@ -3,12 +3,14 @@
 // No original path moves, data deletion, release activation, or exported signing key.
 import assert from 'node:assert/strict';
 import {generateKeyPairSync, sign, createHash, randomUUID} from 'node:crypto';
-import {mkdtempSync, mkdirSync, chmodSync, readFileSync, writeFileSync, copyFileSync, readdirSync, realpathSync, existsSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, chmodSync, readFileSync, writeFileSync, copyFileSync, readdirSync, realpathSync, existsSync, statSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
 const [cliArg, managerArg, fixtureArg, ...resumeArgs] = process.argv.slice(2);
-const resuming = resumeArgs.length > 0;
+const genuine = resumeArgs[0] === '--genuine-release';
+if (genuine) assert.ok(resumeArgs.length===4 && resumeArgs[2]==='--workspace-parent');
+const resuming = !genuine && resumeArgs.length > 0;
 if (resuming) assert.ok(resumeArgs.length === 6 && resumeArgs[0] === '--resume-existing' && resumeArgs[2] === '--archive-baseline' && resumeArgs[4] === '--producer-record');
 assert.ok(fixtureArg, 'usage: node scripts/test-bound-candidate.mjs <update CLI> <manager CLI> <retained synthetic creation fixture>');
 const cli = resolve(cliArg), manager = resolve(managerArg), fixture = realpathSync(fixtureArg);
@@ -33,8 +35,10 @@ const platform = imageInventory.find(i => i.reference === oldManifest.images[0].
 assert.ok(platform && platform.contentId.startsWith('sha256:'));
 const sourceImage = platform.contentId.slice(7);
 const sourceSchema = hash(canonical({schemaDigest:backup.inventory.schemaDigest,schemaVersion:backup.inventory.schemaVersion,migrations:backup.inventory.migrations}));
-const base = resuming ? realpathSync(resumeArgs[1]) : realpathSync(mkdtempSync(join(tmpdir(), 'exhibitos-bound-candidate-proof-')));
-assert.ok(base.startsWith(realpathSync(tmpdir()) + '/exhibitos-bound-candidate-proof-')); chmodSync(base, 0o700);
+const workspaceParent = genuine ? realpathSync(resumeArgs[3]) : realpathSync(tmpdir());
+if(genuine) { const m=statSync(workspaceParent);assert.equal(m.uid,process.getuid());assert.equal(m.mode&0o777,0o700); }
+const base = resuming ? realpathSync(resumeArgs[1]) : realpathSync(mkdtempSync(join(workspaceParent, 'exhibitos-bound-candidate-proof-')));
+assert.ok(base.startsWith(workspaceParent + '/exhibitos-bound-candidate-proof-')); chmodSync(base, 0o700);
 const producer = resuming ? JSON.parse(readFileSync(resumeArgs[5])) : null;
 if (producer) assert.equal(producer.fixture,base);
 const files = ['installed.json','engine.json','runtime.env','bundle/manifest.json','bundle/compose.yaml'];
@@ -64,11 +68,14 @@ if (!resuming) writeFileSync(checkpoint,JSON.stringify({files:oldFiles,archive:o
 assert.ok(oldStates.length && oldStates.every(s => s.endsWith('exited')), 'Retained synthetic source must already be stopped');
 const checks = [], step = text => { checks.push(text); console.log('PASS '+text); };
 const kp = generateKeyPairSync('ed25519'), raw = kp.publicKey.export({type:'spki',format:'der'}).subarray(-32), now = Math.floor(Date.now()/1000);
-const artifact = join(base,'runtime.tar'), data = Buffer.alloc(1024,0x73);
+const genuineRoot = genuine ? realpathSync(resumeArgs[1]) : null;
+const genuineProof = genuine ? JSON.parse(readFileSync(join(genuineRoot,'oci-final-proof.json'))) : null;
+const artifact = join(base,'runtime.tar'), data = genuine ? readFileSync(join(genuineRoot,'runtime.tar')) : Buffer.alloc(1024,0x73);
+if(genuine) { assert.equal(data.length,genuineProof.artifactBytes); assert.equal(hash(data),genuineProof.artifactSha256); assert.equal(sourceSchema,genuineProof.sourceSchemaSha256); assert.equal(genuineProof.target,'linux-arm64'); }
 if (!resuming) writeFileSync(artifact,data,{mode:0o600}); else assert.equal(hash(readFileSync(artifact)),hash(data));
 function put(value,name) { const path=join(base,name+'.json');writeFileSync(path,JSON.stringify(value),{mode:0o600});return path; }
 const policyFile = resuming ? join(base,'policy.json') : put({format:1,channel:'development',target:'linux-arm64',protocolVersion:1,sourceSchemaSha256:sourceSchema,minimumSequence:40,minimumIssuedAt:now-20,publicKeys:[raw.toString('hex')]},'policy');
-const release = {format:1,product:'ExhibitOS/runtime',channel:'development',target:'linux-arm64',version:'0.2.0-dev.2',sequence:41,issuedAt:now-10,expiresAt:now+3600,protocolVersion:1,sourceSchemas:[sourceSchema],artifact:{name:'runtime.tar',bytes:data.length,sha256:hash(data),runtimeImageSha256:'b'.repeat(64),schemaSha256:'c'.repeat(64)}};
+const release = {format:1,product:'ExhibitOS/runtime',channel:'development',target:'linux-arm64',version:genuine ? genuineProof.version : '0.2.0-dev.2',sequence:41,issuedAt:now-10,expiresAt:now+3600,protocolVersion:1,sourceSchemas:[sourceSchema],artifact:{name:'runtime.tar',bytes:data.length,sha256:hash(data),runtimeImageSha256:genuine ? genuineProof.runtimeImageSha256 : 'b'.repeat(64),schemaSha256:genuine ? genuineProof.targetSchemaSha256 : 'c'.repeat(64)}};
 const payload=JSON.stringify(release), bytes=Buffer.from(payload), length=Buffer.alloc(8);length.writeBigUInt64BE(BigInt(bytes.length));
 const releaseFile=resuming ? join(base,'release.json') : put({format:1,algorithm:'ed25519',keyId:hash(raw),payload,signature:sign(null,Buffer.concat([Buffer.from('ExhibitOS-runtime-release-v1\0'),length,bytes]),kp.privateKey).toString('hex')},'release');
 function call(profile,command,extra=[],error=null) {
@@ -85,7 +92,7 @@ function setup(manifestHash=hash(plain)) {
     const registry=JSON.stringify({format:1,activeId:sourceId,installations:[{id:sourceId,kind:'default',createdAt:0},{id:targetId,kind:'recovery',createdAt:0}]});
     writeFileSync(join(profile,'installation-selection.json'),registry,{mode:0o600});
     call(profile,'trust-provision',['--policy',policyFile]);
-    const plan={operationId:randomUUID(),sourceInstance:sourceId,targetInstance:targetId,sourceImage,targetImage:'b'.repeat(64),sourceSchema,targetSchema:'c'.repeat(64),backupId:backup.id,backupManifest:manifestHash,sourceInventory:inventoryHash,requiredFreeBytes:2*1024*1024*1024};
+    const plan={operationId:randomUUID(),sourceInstance:sourceId,targetInstance:targetId,sourceImage,targetImage:release.artifact.runtimeImageSha256,sourceSchema,targetSchema:release.artifact.schemaSha256,backupId:backup.id,backupManifest:manifestHash,sourceInventory:inventoryHash,requiredFreeBytes:2*1024*1024*1024};
     call(profile,'prepare-update',['--release',releaseFile,'--artifact',artifact,'--plan',put(plan,'plan-'+n)]);
     return {profile,target,registry,plan};
 }
@@ -149,3 +156,5 @@ assert.deepEqual(sourceHashes(),oldFiles);assert.deepEqual(inventory(archive),ol
 step('new candidate stopped with volumes/data retained; original deployment/archive/key/source container states, selection and journal preserved');
 const report={format:1,checks,fixture:base,resumedCompletedCandidate:resuming,producer,originalFileBaseline:resuming?'retained registered source copy before restoration':'initial persisted checkpoint',originalArchiveBaseline:resuming?realpathSync(resumeArgs[3]):archive,keysAndStatesBaseline:resuming?'resume observation; initial helper used read-only source/key mounts':'initial persisted checkpoint',cliSha256:hash(readFileSync(cli)),managerSha256:hash(readFileSync(manager)),restoration:prepared.restoration,plan:selected.plan,intentGeneration:intent.trust.generation,limits:['actual macOS Docker source-version candidate, not signed target update/migration/rollback activation','source inventory bound to archived snapshot, not current-source quiescence proof; compatibility and full preflight remain','same engine cached images imported; no cold engine/full frozen corpus/Windows/Podman/native GUI qualification','all candidates, volumes, plaintext and original data retained; signing keys not exported to Git/logs']};
 const reportPath=join(base,'bound-candidate-report.json');writeFileSync(reportPath,JSON.stringify(report,null,2)+'\n',{mode:0o600});console.log(JSON.stringify({report:reportPath,checks:checks.length}));
+
+if(genuine) { const identity={format:1,artifactBytes:data.length,artifactSha256:hash(data),targetImage:release.artifact.runtimeImageSha256,targetSchema:release.artifact.schemaSha256,sourceSchema,version:release.version,plan:selected.plan,fixture:base,limits:['genuine development artifact and candidate restoration only','candidate initially uses original backup Runtime, target image not applied or health-tested','fresh fixture trust policy, not production authority/current coherent security-state recovery']};writeFileSync(join(base,'genuine-release-binding.json'),JSON.stringify(identity,null,2)+'\n',{mode:0o600,flag:'wx'});console.log('GenuineBinding '+join(base,'genuine-release-binding.json'));}
