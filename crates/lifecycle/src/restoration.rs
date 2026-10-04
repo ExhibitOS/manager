@@ -26,6 +26,16 @@ pub struct RestorationReceipt {
     pub project_name: String,
     pub open_url: String,
     pub at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_verification: Option<RestorationProof>,
+}
+#[path = "restoration_binding.rs"]
+mod binding;
+pub(crate) use binding::RestorationBinding;
+pub use binding::RestorationProof;
+struct RestorationRoute<'a> {
+    retry: Option<super::retry::RetryLink<'a>>,
+    binding: Option<&'a RestorationBinding>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -326,6 +336,10 @@ impl LifecycleService {
                 || receipt.operation != "restored-and-running"
                 || Uuid::parse_str(&receipt.backup_id).is_err()
                 || !hash_valid(&receipt.authenticated_manifest_sha256)
+                || receipt
+                    .source_verification
+                    .as_ref()
+                    .is_some_and(|p| !p.valid())
                 || receipt.bundle_id != manifest.bundle_id
                 || receipt.project_name != manifest.project_name
                 || receipt.open_url != manifest.open_url
@@ -449,6 +463,50 @@ impl LifecycleService {
         acknowledged: bool,
         retry: Option<super::retry::RetryLink<'_>>,
     ) -> Result<RestorationReceipt> {
+        self.restore_backup_routed(
+            image,
+            key,
+            source,
+            port,
+            acknowledged,
+            RestorationRoute {
+                retry,
+                binding: None,
+            },
+        )
+    }
+    pub(crate) fn restore_update_candidate(
+        &self,
+        image: &str,
+        key: &Path,
+        source: &Path,
+        port: u16,
+        binding: &RestorationBinding,
+    ) -> Result<RestorationReceipt> {
+        binding.validate()?;
+        let _lock = self.lock()?;
+        self.restore_backup_routed(
+            image,
+            key,
+            source,
+            port,
+            true,
+            RestorationRoute {
+                retry: None,
+                binding: Some(binding),
+            },
+        )
+    }
+    fn restore_backup_routed(
+        &self,
+        image: &str,
+        key: &Path,
+        source: &Path,
+        port: u16,
+        acknowledged: bool,
+        route: RestorationRoute<'_>,
+    ) -> Result<RestorationReceipt> {
+        let RestorationRoute { retry, binding } = route;
         if cfg!(windows) {
             return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
         }
@@ -469,6 +527,14 @@ impl LifecycleService {
             return Err(err("BACKUP_PATH_OVERLAP"));
         }
         fresh_root(&self.root)?;
+        // Existing/failed targets are identified before a new-operation space
+        // budget; low disk must not disguise the no-overwrite refusal.
+        if let Some(binding) = binding
+            && fs2::available_space(&self.root).map_err(|_| err("STORAGE_UNAVAILABLE"))?
+                < binding.required_free_bytes()
+        {
+            return Err(err("STORAGE_QUOTA"));
+        }
         if port < 1024 {
             return Err(err("BACKUP_PATH_INVALID"));
         }
@@ -532,6 +598,18 @@ impl LifecycleService {
                 != authentication.manifest_sha256
             {
                 return Err(err("RESTORE_RESULT_INVALID"));
+            }
+            if let Some(binding) = binding {
+                binding.authenticated(
+                    &authentication.backup_id,
+                    &authentication.manifest_sha256,
+                    &source_bytes(
+                        &workspace.join("authenticated"),
+                        "manifest.json",
+                        16 * 1024 * 1024,
+                        true,
+                    )?,
+                )?;
             }
             job.stage = "validating-installation".into();
             job.updated_at = now();
@@ -627,6 +705,9 @@ impl LifecycleService {
                     != "/data/config"
             {
                 return Err(err("RESTORE_LAYOUT_UNSUPPORTED"));
+            }
+            if let Some(binding) = binding {
+                binding.runtime_image(&platform)?;
             }
             let mut manifest = original;
             manifest.bundle_id = Uuid::new_v4().to_string();
@@ -830,6 +911,7 @@ impl LifecycleService {
                 project_name: manifest.project_name,
                 open_url: manifest.open_url,
                 at: now(),
+                source_verification: binding.map(|b| b.proof().clone()),
             };
             Ok(receipt)
         })();

@@ -86,3 +86,16 @@ mkdir -m 700 "$fresh_root" && EXHIBITOS_MANAGER_ROOT="$fresh_root" \
 `--rm`에 의해 종료 helper는 자동 제거될 수 있지만 명시적으로 연결한 named volume은 보존합니다. Docker client 오류·timeout은 daemon helper의 정지 증거가 아니므로 `rm --force`로 정리하지 않습니다. 남은 helper는 실패 기록과 함께 유지하고 [소유권 확인·정지](helper-reconciliation.md)에서 실제 상태를 확인합니다. 기존 익명 volume을 가진 helper의 보존 anchor 경로도 유지합니다. 보조 volume·연결 기록과 실패 후보는 Git 밖이며, 자동 만료/삭제는 없습니다. 이 보존 경로는 실행 중 취소나 전체 복원·운영 백업을 완료한 것으로 표시하지 않습니다.
 
 진행 중 백업 생성·새 설치 복원은 [취소 요청과 실제 정지 확인](maintenance-cancellation.md)을 사용합니다. 요청 저장·앱 종료·helper 확인을 취소 성공으로 혼동하지 마세요.
+
+## Planned update candidate binding
+
+The update CLI's [source-version candidate preparation](update-intent.md#actual-source-version-candidate-preparation)
+reuses this actual restoration adapter while retaining the owned profile/source
+fences. Authenticated backup UUID/manifest/inventory/full schema+migration and
+Platform image must match the stored plan before import/target installation.
+Successful bound restoration includes optional `sourceVerification` in its private
+receipt; ordinary restore calls omit that field and old receipts remain readable.
+This creates and starts an independent original-version candidate, keeps active
+selection and update stage unchanged, and does not prove complete update preflight
+or rollback. Existing empty-root, permission, acknowledgement, cancellation,
+helper ownership and 2GiB space requirements remain in force.
