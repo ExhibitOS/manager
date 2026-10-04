@@ -3,6 +3,9 @@
 use super::*;
 #[path = "trust_checkpoint_encrypted.rs"]
 mod encrypted;
+#[path = "paired_host_trust.rs"]
+mod paired;
+pub use paired::HostTrustReceipt;
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrustCheckpointReceipt {

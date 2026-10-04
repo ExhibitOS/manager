@@ -99,3 +99,5 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 [실제 Runtime 릴리스 계획과 복원 후보 검사](docs/genuine-update-plan.md)는 실제 artifact에 새 준비 계획을 연결합니다. 복원 후보는 원본 버전 Runtime을 검사하며 신규 target 적용·health·rollback은 별도입니다.
 
 [독립 사본 target Runtime 검사](docs/target-runtime-probe.md)는 신규 버전과 이전 버전의 기본 동작을 별도 synthetic 사본에서 검사합니다. 실제 설치 전환·전체 호환성·rollback 인수 조건은 별도입니다.
+
+[호스트·신뢰 묶음 사본](docs/paired-host-trust-checkpoint.md)은 같은 cooperative 잠금에서 두 암호화 사본을 만들고 비활성 경로 추출을 지원합니다. 현재 외부 서비스 볼륨 백업·authority 복원·실제 업데이트 인수 조건은 별도로 유지합니다.
