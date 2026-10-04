@@ -152,3 +152,61 @@ Tests use explicitly synthetic trusted preflight/restore/health observations for
 real local journal/API and separate CLI-process checks. They do not qualify actual
 engine updates, migrations, complete backup restoration, power loss, native GUI,
 Windows/Podman or coherent security-state+host+volume recovery.
+
+## Owned registered-source adapters
+
+`Store::execution()` borrows the exclusive Store for the lifetime of an execution
+session, duplicates its existing anchor descriptor without changing the lock,
+and acquires the legacy exclusive profile-session fence. It loads an existing
+private installation registry; no controller bootstrap, missing directory creation,
+arbitrary root override or selection change is allowed. The scoped default entry
+or explicit registered UUID must equal `plan.sourceInstance`. Canonical private
+profile/source inode identities and the exact registry bytes are checked before
+and after every adapter call, including failed calls. Missing/corrupt/aliased or
+replaced roots refuse execution. This is local namespace membership, not global
+runtime identity or plan image/schema/inventory attestation.
+
+```sh
+./target/release/exhibitos-update execution-status \
+  --profile '<same logical profile>' --installation default --apps-closed
+./target/release/exhibitos-update verify-update-backup \
+  --profile '<same logical profile>' --installation default \
+  --maintenance-image 'sha256:<trusted local immutable maintenance image>' \
+  --key '<external private 32-byte key file>' \
+  --archive '<private encrypted archive directory>' --apps-closed
+```
+
+Status uses the existing root operation lock and actual lifecycle status adapter.
+Archive verification uses the existing operation lock, private path/key guards,
+immutable local image inspection and network-isolated authenticated decryption
+adapter. Its plaintext manifest hash must equal `plan.backupManifest`; a different
+authenticated archive yields `UPDATE_BACKUP_MISMATCH`. A mismatch or failed helper
+retains its private candidate for inspection. Neither command changes the update
+stage or supplies preflight/health/restore receipts. Outputs explicitly report
+`updateExecuted:false`; authentication also reports `restoreVerified:false`.
+Normal source containers/data are not stopped, restored, migrated or activated.
+
+No new journal schema, package dependency or public format change. The engine
+commands are additive CLI functionality; existing journal-only diagnostics still
+work when the profile is absent. Keep the app closed throughout these commands.
+Same-UID hostile filesystem mutation and whole security-chain rollback remain
+outside the trusted-account boundary. Actual update/import/migration, full restore
+inventory and source quiescence/compatibility/space verification remain required.
+
+Reproduce using only retained synthetic fixtures:
+
+```sh
+node scripts/test-owned-execution.mjs \
+  ./target/release/exhibitos-update '<synthetic installed root>' \
+  'sha256:<maintenance image>' '<private synthetic key file>' \
+  '<synthetic archive>' '<authenticated plaintext manifest sha256>'
+```
+
+The script creates separate private registered profiles, copies only the five
+installed deployment files, authenticates actual ciphertext, checks wrong keys,
+foreign source/manifest and legacy process locking, and asserts original deployment
+file/archive/key hashes and persistent container states remain unchanged. Test
+artifacts and candidates are retained; the signing key is transient in memory.
+The copied profile references an existing synthetic Docker project, so this does
+not qualify multi-instance/global runtime identity, a real OCI update or full
+restore. Native GUI, Windows/Podman and production acceptance remain separate.

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Offline verification and explicit local trust administration; no engine mutation.
+//! Local trust administration and fenced source diagnostics/archive authentication.
 use exhibitos_lifecycle::signed_release::{self, Policy};
 use std::{
     fs::{File, OpenOptions},
@@ -189,7 +189,7 @@ fn run() -> Result<(), String> {
     }
     let code = |e: signed_release::Error| e.code().to_string();
     let usage = || {
-        "UPDATE_USAGE: trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|discard-update-intent require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
+        "UPDATE_USAGE: trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|discard-update-intent|execution-status|verify-update-backup require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
     };
     if a.len() < 7
         || a[2] != "--profile"
@@ -258,6 +258,37 @@ fn run() -> Result<(), String> {
             println!(
                 "{}",
                 serde_json::json!({"trust":trust,"intent":store.intent(),"executed":false,"dataPreserved":true})
+            );
+            return Ok(());
+        }
+        "execution-status" if a.len() == 7 => {
+            let mut store = Store::open(profile, installation).map_err(code)?;
+            let status = store
+                .execution()
+                .map_err(|e| e.code)?
+                .source_status()
+                .map_err(|e| e.code)?;
+            println!(
+                "{}",
+                serde_json::json!({"status":status,"updateExecuted":false})
+            );
+            return Ok(());
+        }
+        "verify-update-backup"
+            if a.len() == 13
+                && a[6] == "--maintenance-image"
+                && a[8] == "--key"
+                && a[10] == "--archive" =>
+        {
+            let mut store = Store::open(profile, installation).map_err(code)?;
+            let receipt = store
+                .execution()
+                .map_err(|e| e.code)?
+                .verify_backup(&a[7], Path::new(&a[9]), Path::new(&a[11]))
+                .map_err(|e| e.code)?;
+            println!(
+                "{}",
+                serde_json::json!({"verification":receipt,"updateExecuted":false,"restoreVerified":false})
             );
             return Ok(());
         }

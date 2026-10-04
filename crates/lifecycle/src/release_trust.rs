@@ -39,8 +39,11 @@ struct Record {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     update_event: Option<UpdateEvent>,
 }
+#[path = "owned_execution.rs"]
+mod owned_execution;
 #[path = "trust_update.rs"]
 mod update_journal;
+pub use owned_execution::ExecutionSession;
 use update_journal::{UpdateEvent, evolve, in_flight, remember_ids, validate_new_ids};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -94,6 +97,8 @@ pub struct TrustReceipt {
 /// Open never bootstraps missing/corrupt trust. The caller selects default or a
 /// registered installation UUID and must preserve that scope through recovery.
 pub struct Store {
+    profile: PathBuf,
+    installation: String,
     root: PathBuf,
     scope: String,
     root_identity: Metadata,
@@ -190,7 +195,7 @@ fn read_record(path: &Path) -> Result<Vec<u8>, Error> {
     }
     Ok(b)
 }
-fn scope(profile: &Path, installation: &str) -> Result<(PathBuf, String, File), Error> {
+fn scope(profile: &Path, installation: &str) -> Result<(PathBuf, String, PathBuf, File), Error> {
     if !profile.is_absolute() {
         return Err(invalid());
     }
@@ -213,7 +218,7 @@ fn scope(profile: &Path, installation: &str) -> Result<(PathBuf, String, File), 
         .parent()
         .ok_or_else(invalid)?
         .join(format!(".exhibitos-release-trust-{id}"));
-    Ok((root, id, anchor))
+    Ok((root, id, profile, anchor))
 }
 fn keys(p: &Policy) -> Result<Vec<String>, Error> {
     Ok(p.keys()?.into_iter().map(|(id, _)| id).collect())
@@ -433,7 +438,7 @@ impl Store {
         now: u64,
     ) -> Result<Self, Error> {
         keys(&policy)?;
-        let (root, scope, anchor) = scope(profile, installation)?;
+        let (root, scope, profile, anchor) = scope(profile, installation)?;
         let mut d = fs::DirBuilder::new();
         #[cfg(unix)]
         {
@@ -466,6 +471,8 @@ impl Store {
         sync_dir(root.parent().ok_or_else(invalid)?)?;
         let root_identity = fs::symlink_metadata(&root).map_err(|_| invalid())?;
         Ok(Self {
+            profile,
+            installation: installation.into(),
             root,
             scope,
             root_identity,
@@ -479,7 +486,7 @@ impl Store {
         })
     }
     pub fn open(profile: &Path, installation: &str) -> Result<Self, Error> {
-        let (root, scope, anchor) = scope(profile, installation)?;
+        let (root, scope, profile, anchor) = scope(profile, installation)?;
         if !root.exists() {
             return Err(Error::TrustMissing);
         }
@@ -562,6 +569,8 @@ impl Store {
         }
         let current = previous.ok_or_else(invalid)?;
         let mut s = Self {
+            profile,
+            installation: installation.into(),
             root,
             scope,
             root_identity,
