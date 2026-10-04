@@ -47,3 +47,16 @@ python3 scripts/test-profile-backup.py --profile-cli '<built exhibitos-profile>'
 기존 관리 profile 디렉터리의 POSIX 소유권·0700 권한이 예상과 다르면 새 앱은 자동으로 권한을 고치지 않고 거부합니다. 이전 버전으로 초기화된 정상 private profile의 목록 형식과 공간 ID는 유지합니다. 완화된 권한은 원본과 OS 접근 정책을 확인한 뒤에만 수정해야 합니다. 보존한 손상 목록·진단 디렉터리는 typed 암호화 설정 inventory 밖이며 필요한 경우 별도 private 보관 정책을 유지합니다. 기본 사본 확장자 .exb와 key.bin/*-key.bin, profile metadata 이름은 Git-ignore하지만 임의 이름의 secret을 식별하는 보안 경계는 아닙니다. 항상 소스 저장소 밖에 보관하세요.
 
 실패 진단: `PROFILE_DESTINATION_EXISTS`는 실제 기존 파일과의 충돌일 때만 반환합니다. 대상 경로 조회 또는 새 파일 생성이 실패하면 `PROFILE_DESTINATION_UNAVAILABLE`로 경로·권한·여유 공간을 확인하세요. 이미 생성한 암호화 pending의 publish/link 또는 동기화 실패는 `PROFILE_WRITE_UNCERTAIN`이며 성공으로 처리하지 않습니다. pending과 기존 사본을 보존하고 실제 파일 상태를 확인한 뒤 새로운 이름으로 재시도하세요. raw OS 오류나 private 경로는 반환하지 않습니다.
+
+## 스트리밍 envelope 개발 옵션
+
+`backup-stream` 명령은 동일한 설정 snapshot을 새 `ExhibitOS-stream-v1` envelope에 저장합니다. 기본 `backup`은 기존 profile-v1 형식을 유지하며 현재 `restore`는 두 형식을 모두 읽습니다. 이전 binary는 새 envelope를 읽을 수 없으므로 새 사본에는 현재 CLI를 사용하세요. 선택 목록 payload·64MiB 사본 한도·앱 종료/공간 잠금·가역적 복원·외부 private 키 조건은 그대로입니다.
+
+```sh
+./target/release/exhibitos-profile --profile '<canonical private app-data directory>' backup-stream \
+  '<external 32-byte key file>' '<new external profile archive>' --apps-closed
+```
+
+암호화 codec은 최대1MiB 단위로 읽고 각 record의 AES-GCM nonce를 OS 난수로 생성합니다. archive identity, payload 용도, record 순서·종류·길이를 associated data로 인증합니다. 별도 종료 record는 전체 plaintext 길이와 SHA256을 인증하며 종료 record 없는 정상 prefix나 추가 trailing bytes를 완료로 인정하지 않습니다. 사본 공개 전에 전체 인증·닫힌 schema 검사를 수행합니다.
+
+이 옵션은 **관리 공간 설정만** 보관합니다. 기존 snapshot은 여전히 제한된 메모리에 직렬화되며 아직 journal·불완전 candidate·DB/blob/engine volume을 수집하지 않습니다. 이 codec을 재사용할 별도의 관리 작업 사본은 root/profile/session 잠금, helper/writer 정지 확인, host 파일/외부 volume 구분, streaming manifest, private quarantine과 가역적 canonical root 복원까지 연결하고 실제 검사해야 합니다. codec 또는 설정 round trip을 전체 후보 복구의 증거로 사용하지 마세요.

@@ -4,14 +4,24 @@ use exhibitos_lifecycle::profile_backup;
 use std::path::Path;
 fn main() {
     let a: Vec<String> = std::env::args().collect();
-    if a.len() != 7 || a[1] != "--profile" || !["backup", "restore"].contains(&a[3].as_str()) {
+    if a.len() != 7
+        || a[1] != "--profile"
+        || !["backup", "backup-stream", "restore"].contains(&a[3].as_str())
+    {
         eprintln!(
-            "usage: exhibitos-profile --profile <canonical private profile> backup|restore <external 32-byte private key> <external archive file> --apps-closed"
+            "usage: exhibitos-profile --profile <canonical private profile> backup|backup-stream|restore <external 32-byte private key> <external archive file> --apps-closed"
         );
         std::process::exit(2);
     }
     let result = if a[3] == "backup" {
         profile_backup::backup(
+            Path::new(&a[2]),
+            Path::new(&a[4]),
+            Path::new(&a[5]),
+            a[6] == "--apps-closed",
+        )
+    } else if a[3] == "backup-stream" {
+        profile_backup::backup_stream(
             Path::new(&a[2]),
             Path::new(&a[4]),
             Path::new(&a[5]),

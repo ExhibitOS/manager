@@ -3,12 +3,12 @@
 """Actual encrypted offline profile round-trip with retained synthetic data only."""
 import argparse,fcntl,hashlib,json,os,shutil,subprocess,tempfile,time,uuid
 from pathlib import Path
-p=argparse.ArgumentParser();p.add_argument('--profile-cli',required=True);a=p.parse_args();base=Path(tempfile.mkdtemp(prefix='exhibitos-manager-profile-proof-',dir='/private/tmp'));base.chmod(0o700);profile=base/'source-profile';profile.mkdir(mode=0o700);outside=base/'external';outside.mkdir(mode=0o700);key=outside/'profile-key.bin';key.write_bytes(os.urandom(32));key.chmod(0o600);archive=outside/'profile.exb';checks=[]
+p=argparse.ArgumentParser();p.add_argument('--profile-cli',required=True);p.add_argument('--stream',action='store_true');a=p.parse_args();base=Path(tempfile.mkdtemp(prefix='exhibitos-manager-profile-proof-',dir='/private/tmp'));base.chmod(0o700);profile=base/'source-profile';profile.mkdir(mode=0o700);outside=base/'external';outside.mkdir(mode=0o700);key=outside/'profile-key.bin';key.write_bytes(os.urandom(32));key.chmod(0o600);archive=outside/'profile.exb';checks=[]
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def private(p,b):p.write_bytes(b);p.chmod(0o600)
 def step(s):checks.append(s);print('PASS '+s,flush=True)
 def call(root,kind,keypath=key,archivepath=archive,ack=True,expected=None):
- r=subprocess.run([a.profile_cli,'--profile',str(root),kind,str(keypath),str(archivepath),'--apps-closed' if ack else '--no-consent'],capture_output=True,timeout=90);assert not r.stderr;v=json.loads(r.stdout)
+ r=subprocess.run([a.profile_cli,'--profile',str(root),('backup-stream' if a.stream and kind=='backup' else kind),str(keypath),str(archivepath),'--apps-closed' if ack else '--no-consent'],capture_output=True,timeout=90);assert not r.stderr;v=json.loads(r.stdout)
  if expected is None:assert r.returncode==0,v.get('code','unknown')
  else:assert r.returncode!=0 and v['code']==expected,(v.get('code','unknown'),expected)
  return v
