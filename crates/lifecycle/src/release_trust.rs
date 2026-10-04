@@ -44,9 +44,12 @@ mod trust_checkpoint;
 pub use trust_checkpoint::{HostTrustReceipt, TrustCheckpointReceipt};
 #[path = "owned_execution.rs"]
 mod owned_execution;
+#[path = "update_target_registration.rs"]
+mod target_registration;
 #[path = "trust_update.rs"]
 mod update_journal;
 pub use owned_execution::{ExecutionSession, SourceHostTrustReceipt, SourceRecoveryReceipt};
+pub use target_registration::RegisteredUpdateTarget;
 use update_journal::{UpdateEvent, evolve, in_flight, remember_ids, validate_new_ids};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

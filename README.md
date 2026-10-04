@@ -105,3 +105,5 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 [같은 fence의 현재 원본 결합 관측](docs/source-recovery-bundle.md)은 DB/blob 앞뒤와 전체 설정·이미지 바이트를 함께 인증 백업에 대조합니다. Host/trust/data 전체 복원 지점과 Applying 권한은 후속 통합 조건입니다.
 
 [원본·호스트·신뢰 기록 통합 관측](docs/source-host-trust-checkpoint.md)은 같은 cooperative fence 안에서 현재 서비스와 인증 백업을 대조하고 호스트·신뢰 사본을 생성한 뒤 다시 대조합니다. 새 외부 volume 백업·전체 복원·실제 업데이트 완료는 별도 조건입니다.
+
+[만료 개발 계획 갱신](docs/development-plan-renewal.md)은 비활성 새 후보를 등록하고 기존 floor·키 폐기·ID 예약을 보존하는 명시적 개발 절차입니다. 새 후보의 실제 서비스 복원과 업데이트 검증은 이후 수행합니다.

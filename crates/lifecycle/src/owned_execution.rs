@@ -1441,6 +1441,51 @@ mod tests {
         assert_eq!(s.receipt().generation, 2);
     }
     #[test]
+    fn fresh_target_registration_preserves_active_source_intent_and_existing_bytes() {
+        let (p, store) = prepared("default");
+        let root = registered(&p, SOURCE, "default");
+        fs::write(root.join("original-witness"), b"keep source").unwrap();
+        let trust = serde_json::to_vec(&store.receipt()).unwrap();
+        let intent = serde_json::to_vec(&store.intent()).unwrap();
+        assert_eq!(
+            store.register_update_target(false).unwrap_err().code,
+            "UPDATE_TARGET_ACK_REQUIRED"
+        );
+        assert!(!p.join("installations").exists());
+        let first = store.register_update_target(true).unwrap();
+        let second = store.register_update_target(true).unwrap();
+        assert_eq!(first.source_instance, SOURCE);
+        assert_eq!(first.active_instance, SOURCE);
+        assert_ne!(first.target_instance, second.target_instance);
+        assert!(!first.activated && !first.runtime_started);
+        assert_eq!(
+            fs::read(root.join("original-witness")).unwrap(),
+            b"keep source"
+        );
+        assert_eq!(fs::read_dir(&first.target_path).unwrap().count(), 0);
+        assert_eq!(serde_json::to_vec(&store.receipt()).unwrap(), trust);
+        assert_eq!(serde_json::to_vec(&store.intent()).unwrap(), intent);
+        let (registry, _) = installations::load(&p).unwrap().unwrap();
+        assert_eq!(registry.active_id, SOURCE);
+        assert_eq!(registry.installations.len(), 3);
+    }
+    #[test]
+    fn fresh_registration_refuses_source_mismatch_and_aliased_namespace() {
+        let (p, store) = prepared("default");
+        registered(&p, "e7980e6c-cbae-454f-906b-1f4924cc2a4e", "default");
+        assert_eq!(
+            store.register_update_target(true).unwrap_err().code,
+            "UPDATE_SOURCE_MISMATCH"
+        );
+        let (p, store) = prepared("default");
+        registered(&p, SOURCE, "default");
+        let other = p.parent().unwrap().join("retained-other");
+        installations::new_directory(&other).unwrap();
+        symlink(&other, p.join("installations")).unwrap();
+        assert!(store.register_update_target(true).is_err());
+        assert_eq!(fs::read_dir(other).unwrap().count(), 0);
+    }
+    #[test]
     fn integrated_checkpoint_refuses_both_missing_acknowledgements_before_writes() {
         let (p, mut store) = prepared("default");
         registered(&p, SOURCE, "default");
