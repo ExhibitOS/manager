@@ -8,8 +8,9 @@ import {BackupRestoration} from './BackupRestoration';
 import {HelperReconciliation} from './HelperReconciliation';
 import {InstallationSelection} from './InstallationSelection';
 import {MaintenanceCancellation} from './MaintenanceCancellation';
+import {RetryDiagnosisPanel} from './RetryDiagnosis';
 import {MaintenanceRetryPanel} from './MaintenanceRetry';
-import type {VerificationInput,CreationInput,BackupJob,RestorationInput,RestorationContext,InstallationContext,ReconciliationInput,ReconciliationJob,MaintenanceRetry,RetryRequest} from './lifecycle';
+import type {VerificationInput,CreationInput,BackupJob,RestorationInput,RestorationContext,InstallationContext,ReconciliationInput,ReconciliationJob,MaintenanceRetry,RetryRequest,RetryDiagnosisInput} from './lifecycle';
 export function App(){
  const [cancellationActive,setCancellationActive]=useState(false);
  const [status,setStatus]=useState<Status|null>(null),[engines,setEngines]=useState<EngineProbe[]>([]),[jobs,setJobs]=useState<Job[]>([]),[logs,setLogs]=useState<LogEvent[]>([]),[error,setError]=useState<ManagerError|null>(null),[busy,setBusy]=useState(false),[loading,setLoading]=useState(false),[notice,setNotice]=useState('');
@@ -78,6 +79,17 @@ export function App(){
   catch(e){if(live.current)setNotice('재시도 완료 여부를 확인하지 못했습니다. 원래 작업과 새 작업 기록·후보를 보존하고 확인하세요.');throw e;}
   finally{working.current=false;if(live.current){setBusy(false);void refresh();}}
  }
+ async function diagnoseRetry(input:RetryDiagnosisInput){
+  if(working.current||!client.native)throw {code:'BUSY',guidance:'진행 중인 작업이 끝날 때까지 기다려 주세요.'};
+  statusGeneration.current++;working.current=true;setBusy(true);
+  try{return await client.diagnoseRetry(input);}finally{working.current=false;if(live.current){setBusy(false);void refresh();}}
+ }
+ async function reconcileRetry(input:RetryDiagnosisInput){
+  if(working.current||!client.native)throw {code:'BUSY',guidance:'진행 중인 작업이 끝날 때까지 기다려 주세요.'};
+  statusGeneration.current++;working.current=true;setBusy(true);setStatus(null);
+  try{const receipt=await client.reconcileRetry(input);if(live.current)setNotice('재시도 연결 기록만 복구했습니다. 전시·helper 실행이나 데이터 복원은 수행하지 않았습니다.');return receipt;}
+  finally{working.current=false;if(live.current){setBusy(false);void refresh();}}
+ }
  async function changeInstallation(target:string|null,preserveExisting:boolean){
   if(working.current||!client.native)throw {code:'BUSY',guidance:'진행 중인 작업이 끝날 때까지 기다려 주세요.'};
   statusGeneration.current++;working.current=true;setBusy(true);setStatus(null);setRestoration(null);setInstallation(null);setError(null);setJobs([]);setLogs([]);setBackupJobs([]);setReconciliationJobs([]);setReconciliationError(null);setRetryJobs([]);setRetryError(null);setBackupHistoryError(null);setRestorationError(null);setNotice('기존 데이터를 보존하고 관리 공간을 변경합니다.');
@@ -100,6 +112,7 @@ export function App(){
  <section className="panel" id="controls" tabIndex={-1} aria-label="전시 설치와 실행"><h2>설치와 실행</h2><ol className="steps"><li><span>1</span><div><h3>실행 도구 확인</h3><p>Docker 또는 Podman과 Compose가 실행돼 있어야 합니다.</p>{engines.length?<ul className="engine-list">{engines.map(e=><li key={e.kind}><strong>{e.kind==='docker'?'Docker':e.kind==='podman'?'Podman':e.kind}</strong> {e.available?'사용 가능':e.installed?'시작 또는 설정 필요':'설치 필요'}{e.engineVersion&&<small> 버전 {e.engineVersion}</small>}{!e.available&&e.guidance&&<p>{e.guidance}</p>}</li>)}</ul>:<p className="note">{loading?'실행 도구를 확인하고 있습니다.':'실행 도구를 아직 확인하지 못했습니다.'}</p>}<button disabled={!client.native||loading||active} onClick={()=>void refresh()}>실행 도구 다시 확인</button></div></li><li><span>2</span><div><h3>검증된 전시 설치</h3><p>준비된 설치 패키지를 검증한 후 설치합니다. 설치 후에 전시를 시작할 수 있습니다.</p><button disabled={!client.native||!engineReady||active||!!backupHistoryError||!!reconciliationError||!!retryError||restorationBlocked||installationBlocked||!status||!!status.installed} onClick={()=>void operation('install')}>전시 설치</button></div></li><li><span>3</span><div><h3>전시 시작</h3><p>시작하면 서버가 준비됐는지 확인합니다. 정지는 저장 데이터를 삭제하지 않습니다.</p><div className="button-row"><button className="primary" disabled={!canStart||ready} onClick={()=>void operation('start')}>시작</button><button disabled={!client.native||!status?.installed||!engineReady||active||status?.state==='stopped'} onClick={()=>void operation('stop')}>정지</button><button disabled={!canStart} onClick={()=>void operation('restart')}>재시작</button></div></div></li></ol></section></div>
  <section className="panel storage" aria-label="저장 공간"><div><h2>저장 공간</h2><p>전시 데이터는 별도로 보존됩니다. 사용량이 측정되지 않으면 아래에 표시합니다.</p></div><dl><div><dt>전시 사용량</dt><dd>{formatBytes(status?.storage.usedBytes??null)}</dd></div><div><dt>디스크 여유 공간</dt><dd>{status?formatBytes(status.storage.freeBytes):'확인되지 않음'}</dd></div><div><dt>필요한 여유 공간</dt><dd>{status?formatBytes(status.storage.minimumFreeBytes):'확인되지 않음'}</dd></div>{status?.storage.quotaBytes!==undefined&&<div><dt>안내 용량</dt><dd>{formatBytes(status.storage.quotaBytes)}</dd></div>}</dl></section>
  <MaintenanceCancellation key={'cancel:'+(installation?.selectionToken??'unknown-installation')} native={client.native} available={!installationBlocked} onActivity={setCancellationActive}/>
+ <RetryDiagnosisPanel key={'diagnosis:'+(installation?.selectionToken??'unknown')} native={client.native} active={busy||status?.activeJob?.state==='running'} installation={installation} history={retryJobs} historyError={retryError} diagnose={diagnoseRetry} reconcile={reconcileRetry}/>
  <MaintenanceRetryPanel key={`retry-${installation?.selectionToken??'unknown'}`} native={client.native} active={active} engineReady={engineReady} installation={installation} backupJobs={backupJobs} restoration={restoration} targetError={backupHistoryError??restorationError??installationError} history={retryJobs} historyError={retryError} retry={retryMaintenance}/>
  <HelperReconciliation key={'helper:'+(installation?.selectionToken??'unknown-installation')} native={client.native} active={active||installationBlocked} backupJobs={backupJobs} restoration={restoration} targetError={backupHistoryError??restorationError} history={reconciliationJobs} historyError={reconciliationError} reconcile={reconcileHelper}/>
  <BackupRestoration key={'restoration:'+(installation?.selectionToken??'unknown-installation')} native={client.native} active={active||!!retryError||!!backupHistoryError||!!reconciliationError||installationBlocked} engineReady={engines.some(e=>e.kind==='docker'&&e.available)} context={restoration} historyError={restorationError} restore={restoreBackup}/>

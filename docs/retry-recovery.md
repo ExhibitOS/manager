@@ -1,6 +1,6 @@
 # 연결되지 않은 재시도 작업 진단·복구
 
-새 재시도에서 앱·CLI가 종료되어 새 작업 ID가 parent 기록에 남지 않은 경우의 **개발 CLI**입니다. 백업·복원 실행, 원래 데이터 복구, 네이티브 진단 화면 완료를 뜻하지 않습니다. 작업과 후보를 보존하며 자동 재시도하지 않습니다.
+새 재시도에서 앱·CLI가 종료되어 새 작업 ID가 parent 기록에 남지 않은 경우의 **개발 CLI와 앱 진단 화면**입니다. 백업·복원 실행, 원래 데이터 복구, 네이티브 진단 화면 완료를 뜻하지 않습니다. 작업과 후보를 보존하며 자동 재시도하지 않습니다.
 
 ## 실행 절차
 
@@ -35,13 +35,24 @@ cargo build --release --locked -p exhibitos-lifecycle --bin exhibitos-manager
 
 UUID·공간 hash 불일치, 다른 child journal, 원래 journal hash 변경, symlink·권한 오류나 부분적으로 저장된 증거는 오류로 거부합니다. 알 수 없는 상태를 성공·정지로 표시하지 않습니다.
 
+## 앱 화면에서 확인하기
+
+1. 원래 재시도 기록이 있는 관리 공간을 선택하고 **재시도 연결 진단**에서 원래 실패 작업 ID가 아닌 **재시도 기록 ID**를 선택합니다. 복원 목적지는 등록된 공간 중 기록의 목적지 hash와 일치하는 공간만 사용합니다. 임의 경로·명령·키 내용을 입력하지 않습니다. 목적지 등록이 없거나 접근할 수 없으면 CLI 절차로 전환하며 후보를 이동·삭제하지 않습니다.
+2. **기록을 변경하지 않고 진단**을 누릅니다. 이 기능은 전시 실행 도구가 없어도 사용할 수 있습니다. 일반 상태 조회가 불완전 후보 때문에 실패해도 진단 전용 history와 raw root opening을 사용하며 일반 시작 복구를 수행하지 않습니다. 이미 진행 중인 작업이나 실제 source/destination 잠금은 거부합니다.
+3. 복구 가능한 증거가 있을 때만 데이터·후보 보존 동의와 **증거를 다시 검사하고 연결 기록 복구**가 나타납니다. 버튼을 누르면 서버가 등록된 목적지와 증거를 잠금 아래에서 다시 검사합니다. 화면에 저장한 진단 결과만 믿고 차단을 풀지 않습니다.
+4. 복구 후 표시된 child ID의 실제 상태·helper를 별도로 확인하거나 원래 작업의 새 재시도를 직접 선택합니다. 복구가 전시·helper를 재개하거나 데이터 사본을 복원하지 않습니다. 일반 상태 조회가 계속 실패하면 앱을 닫고 다시 열어 상태를 확인합니다. 후보는 그대로 보존합니다.
+
+화면은 입력 변경·공간 token 변경 시 이전 진단과 동의를 지우며 중복 호출을 막습니다. 네이티브 caller/origin 검사, 닫힌 UUID/동의 입력, controller의 선택 read guard와 profile 잠금이 현재 source와 등록된 destination을 보호합니다. 진단 목적지는 이미 후보가 있을 수 있으므로 일반 재시도의 fresh-root constructor를 사용하지 않습니다. 현재 공간의 일반 service 초기화가 실패했어도 기존 private root만 엄격히 검사하며 새 폴더를 만들지 않습니다. `manager_maintenance_retries`는 이 진단 전용 read path를 사용하여 조회 중 기록을 중단 상태로 다시 쓰지 않습니다. 이 조회 방식은 이전 앱의 일반 startup recovery와 다르며 시작 복구는 원래 service 경로에 남습니다.
+
+브라우저 검사는 합성 native RPC입니다. 실제 controller/private filesystem 검사와 네이티브 빌드는 별도 증거이며 Mac 잠금·Windows·서명과 전체 인수 조건을 대신하지 않습니다.
+
 ## 저장 순서와 호환성
 
 새 재시도는 source의 `retry-preparation-<parent UUID>.json` (private format1)을 parent audit보다 먼저 저장합니다. 원래 journal hash, 목적지 hash와 검증된 backup workspace UUID 목록을 보관합니다. 새 candidate 디렉터리/journal 생성 **이전**에 `retry-child-intent-<parent UUID>.json` (format1)에 child UUID와 정확한 preparation bytes의 SHA256을 저장하고 fsync합니다. helper는 journal 생성과 parent 연결 후에만 실행합니다. 증거에 키·토큰·raw engine 응답·목적지 원문 경로를 저장하지 않습니다.
 
 복구는 `retry-diagnosis-<UUID>-before.json`에 parent의 정확한 이전 bytes, 별도 diagnosis에 판정을 보관합니다. 생성되지 않은 child를 입증한 경우에는 `retry-clearance-<parent UUID>-<diagnosis UUID>.json`의 최종 parent SHA256 증거를 **먼저** durable 저장한 뒤 parent를 변경합니다. 중간 종료 시 parent의 차단이 유지됩니다. 불완전한 metadata 복원 등으로 clearance만 없는 경우도 현재 reader는 반복을 거부하며, 명시적 복구가 증거를 다시 검사할 수 있습니다. 빈 예약 폴더도 삭제하지 않습니다. 원래 job과 child job은 다시 쓰지 않습니다.
 
-기존 public retry/history/receipt JSON은 바꾸지 않았습니다. 새 CLI 결과와 private 기록을 추가했습니다. 준비 증거가 없는 예전 parent는 진단할 수 있지만 차단 해제를 추측하지 않습니다. 이전 binary는 새 예약·clearance 규칙이나 보존한 빈 후보를 이해하지 못하므로 **새 기록이 있는 공간의 작업에는 현재 CLI·앱을 사용**해야 합니다. 명령 연결은 개발 CLI이며 진단·복구의 네이티브 IPC/UI는 후속 작업입니다.
+기존 public retry/history/receipt JSON은 바꾸지 않았습니다. 새 CLI 결과와 private 기록을 추가했습니다. 준비 증거가 없는 예전 parent는 진단할 수 있지만 차단 해제를 추측하지 않습니다. 이전 binary는 새 예약·clearance 규칙이나 보존한 빈 후보를 이해하지 못하므로 **새 기록이 있는 공간의 작업에는 현재 CLI·앱을 사용**해야 합니다. 진단·복구는 개발 CLI와 앱의 로컬 IPC/UI에 연결했습니다. 실제 네이티브 화면 조작·Windows 인수 검증은 별도입니다.
 
 ## 실제 검증과 범위
 

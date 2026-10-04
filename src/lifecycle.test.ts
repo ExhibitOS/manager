@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import {describe,it,expect} from 'vitest';
-import {parseMaintenanceRetry,parseRetryReceipt,validBackupRetryInput,validRestorationRetryInput,parseMaintenanceContext,validReconciliationInput,parseReconciliationReceipt,parseReconciliationJob,parseInstallationContext,parseJob,parseStatus,managerError,formatBytes,statusLabel,validVerificationInput,parseVerificationReceipt,validCreationInput,parseCreationReceipt,parseBackupJob,validRestorationInput,parseRestorationContext,parseRestorationReceipt} from './lifecycle';
+import {parseRetryDiagnosis,parseRetryRecoveryReceipt,validRetryDiagnosisInput,parseMaintenanceRetry,parseRetryReceipt,validBackupRetryInput,validRestorationRetryInput,parseMaintenanceContext,validReconciliationInput,parseReconciliationReceipt,parseReconciliationJob,parseInstallationContext,parseJob,parseStatus,managerError,formatBytes,statusLabel,validVerificationInput,parseVerificationReceipt,validCreationInput,parseCreationReceipt,parseBackupJob,validRestorationInput,parseRestorationContext,parseRestorationReceipt} from './lifecycle';
 const status={installed:false,bundleId:null,version:null,state:'not_installed',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0,quotaBytes:5368709120},activeJob:null};
 describe('Manager lifecycle boundary',()=>{
  it('preserves unknown storage/readiness without claiming success',()=>{const value=parseStatus(status);expect(formatBytes(value.storage.usedBytes)).toBe('측정할 수 없음');expect(value.readiness.ready).toBe(false);expect(statusLabel(value.state)).toBe('설치 전');});
@@ -100,4 +100,17 @@ describe('Maintenance retry protocol',()=>{
   const restore={targetId,destinationId:child,image,keyPath:'/private/key',sourcePath:'/private/archive',port:4500,preserveCandidates:true,freshInstallationAccepted:true};expect(validRestorationRetryInput(restore)).toBe(true);
   expect(validRestorationRetryInput({...restore,destinationId:'/private/root'})).toBe(false);expect(validRestorationRetryInput({...restore,freshInstallationAccepted:false})).toBe(false);
  });
+});
+
+it('diagnosis rejects unsafe or contradictory proof and recovery only binds the proven parent',()=>{
+ const retryId='12345678-1234-1234-1234-123456789012',targetId='23456789-1234-1234-1234-123456789012',child='34567890-1234-1234-1234-123456789012';
+ const proof={retryId,targetId,kind:'restoration',outcome:'child-found',newJobId:child,childJobSha256:'a'.repeat(64),canReconcile:true,dataPreserved:true};
+ expect(parseRetryDiagnosis(proof).newJobId).toBe(child);
+ for(const v of [{...proof,command:'shell'},{...proof,newJobId:retryId},{...proof,childJobSha256:null},{...proof,outcome:'unproven'},{...proof,dataPreserved:false},{...proof,canReconcile:'true'}])expect(()=>parseRetryDiagnosis(v)).toThrow('MANAGER_PROTOCOL');
+ expect(parseRetryDiagnosis({...proof,outcome:'no-child-created',childJobSha256:null}).newJobId).toBe(child);
+ const receipt={diagnosisId:'45678901-1234-1234-1234-123456789012',retryId,outcome:'no-child-created',newJobId:null,dataPreserved:true};
+ expect(parseRetryRecoveryReceipt(receipt).newJobId).toBeNull();
+ for(const v of [{...receipt,newJobId:child},{...receipt,outcome:'unproven'},{...receipt,diagnosisId:retryId},{...receipt,dataPreserved:false},{...receipt,path:'/private'}])expect(()=>parseRetryRecoveryReceipt(v)).toThrow('MANAGER_PROTOCOL');
+ expect(validRetryDiagnosisInput({retryId,destinationId:null,preserveCandidates:false})).toBe(true);
+ expect(validRetryDiagnosisInput({retryId,destinationId:'/private',preserveCandidates:true})).toBe(false);
 });

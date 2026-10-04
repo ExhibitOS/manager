@@ -305,6 +305,66 @@ impl RestorationRetryRequest {
         .validate()
     }
 }
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RetryDiagnosisInput {
+    retry_id: String,
+    destination_id: Option<String>,
+    preserve_candidates: bool,
+}
+impl RetryDiagnosisInput {
+    fn validate(&self, reconcile: bool) -> Result<(), LifecycleError> {
+        if !retry_id(&self.retry_id) || self.destination_id.as_ref().is_some_and(|id| !retry_id(id))
+        {
+            return Err(error("RETRY_DIAGNOSIS_TARGET_INVALID"));
+        }
+        if reconcile && !self.preserve_candidates {
+            return Err(error("RETRY_ACK_REQUIRED"));
+        }
+        Ok(())
+    }
+}
+#[tauri::command]
+async fn manager_diagnose_retry(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    selection_token: String,
+    input: RetryDiagnosisInput,
+) -> Result<exhibitos_lifecycle::retry::RetryDiagnosis, LifecycleError> {
+    caller(&window)?;
+    input.validate(false)?;
+    let controller = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        controller.diagnose_retry(
+            &selection_token,
+            &input.retry_id,
+            input.destination_id.as_deref(),
+        )
+    })
+    .await
+    .map_err(|_| error("MANAGER_OPERATION"))?
+}
+#[tauri::command]
+async fn manager_reconcile_retry(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    selection_token: String,
+    input: RetryDiagnosisInput,
+) -> Result<exhibitos_lifecycle::retry::RetryRecoveryReceipt, LifecycleError> {
+    caller(&window)?;
+    input.validate(true)?;
+    let controller = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        controller.reconcile_retry(
+            &selection_token,
+            &input.retry_id,
+            input.destination_id.as_deref(),
+            input.preserve_candidates,
+        )
+    })
+    .await
+    .map_err(|_| error("MANAGER_OPERATION"))?
+}
 #[tauri::command]
 async fn manager_maintenance_retries(
     window: WebviewWindow,
@@ -312,10 +372,12 @@ async fn manager_maintenance_retries(
     selection_token: String,
 ) -> Result<Vec<exhibitos_lifecycle::retry::MaintenanceRetry>, LifecycleError> {
     caller(&window)?;
-    blocking(state.0.clone(), selection_token, |s| {
-        s.maintenance_retries()
+    let controller = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        controller.retry_diagnostic_history(&selection_token)
     })
     .await
+    .map_err(|_| error("MANAGER_OPERATION"))?
 }
 #[tauri::command]
 async fn manager_retry_backup(
@@ -591,6 +653,8 @@ pub fn run() {
             manager_maintenance_context,
             manager_cancel_maintenance,
             manager_maintenance_retries,
+            manager_diagnose_retry,
+            manager_reconcile_retry,
             manager_retry_backup,
             manager_retry_restoration,
             manager_installations,
@@ -603,6 +667,35 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn diagnostic_wire_rejects_raw_paths_commands_and_requires_preservation_for_recovery() {
+        let good = serde_json::json!({"retryId":"12345678-1234-1234-1234-123456789012", "destinationId":null,"preserveCandidates":false});
+        let value: RetryDiagnosisInput = serde_json::from_value(good.clone()).unwrap();
+        assert!(value.validate(false).is_ok());
+        assert_eq!(value.validate(true).unwrap_err().code, "RETRY_ACK_REQUIRED");
+        for (key, value) in [
+            ("path", serde_json::json!("/private/tmp")),
+            ("command", serde_json::json!("shell")),
+            ("preserveCandidates", serde_json::json!("true")),
+        ] {
+            let mut changed = good.clone();
+            changed[key] = value;
+            assert!(serde_json::from_value::<RetryDiagnosisInput>(changed).is_err());
+        }
+        for (key, value) in [
+            ("retryId", serde_json::json!("../foreign")),
+            ("destinationId", serde_json::json!("/private/tmp")),
+        ] {
+            let mut changed = good.clone();
+            changed[key] = value;
+            assert!(
+                serde_json::from_value::<RetryDiagnosisInput>(changed)
+                    .unwrap()
+                    .validate(false)
+                    .is_err()
+            );
+        }
+    }
     #[test]
     fn retry_wire_rejects_paths_commands_stale_shapes_and_missing_acknowledgments() {
         let valid = serde_json::json!({"targetId":"12345678-1234-1234-1234-123456789012","destinationId":"23456789-1234-1234-1234-123456789012","preserveCandidates":true,"image":format!("sha256:{}","a".repeat(64)),"keyPath":"/private/tmp/key","sourcePath":"/private/tmp/archive","port":4500,"freshInstallationAccepted":true});
