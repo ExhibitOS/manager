@@ -254,9 +254,9 @@ impl InstallationController {
         private_directory(&profile)?;
         let session = super::profile_backup::anchored_session(&profile, anchor, false)?;
         let profile = LifecycleService::new(profile)?;
-        let profile = LifecycleService {
-            root: fs::canonicalize(&profile.root).map_err(|_| err("STATE_UNAVAILABLE"))?,
-        };
+        let profile = LifecycleService::bound_existing(
+            fs::canonicalize(&profile.root).map_err(|_| err("STATE_UNAVAILABLE"))?,
+        )?;
         private_directory(&profile.root)?;
         let _lock = profile_lock(&profile)?;
         let registry = match load(&profile.root)? {
@@ -515,7 +515,7 @@ impl InstallationController {
             let path = root(&profile.root, entry);
             private_directory(&path)?;
             super::restoration::fresh_root(&path)?;
-            let destination = LifecycleService { root: path.clone() };
+            let destination = LifecycleService::bound_existing(path.clone())?;
             {
                 let mut route = self
                     .maintenance_destination
@@ -583,12 +583,7 @@ impl InstallationController {
         }
         let id = audit.new_job_id.ok_or_else(|| err("BUSY"))?;
         private_directory(&route.path)?;
-        Ok((
-            LifecycleService {
-                root: route.path.clone(),
-            },
-            id,
-        ))
+        Ok((LifecycleService::bound_existing(route.path.clone())?, id))
     }
     pub fn maintenance_context(
         &self,

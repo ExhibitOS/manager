@@ -505,7 +505,14 @@ impl LifecycleService {
     /// Existing private root only; bypasses normal job recovery so incomplete candidates can be diagnosed.
     pub fn open_retry_diagnostics(root: PathBuf) -> Result<Self> {
         maintenance::input_path(&root, true)?;
-        Ok(Self { root })
+        #[cfg(windows)]
+        {
+            Self::bound_existing(root)
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(Self { root })
+        }
     }
     pub fn retry_diagnostic_history(&self) -> Result<Vec<MaintenanceRetry>> {
         maintenance::input_path(&self.root, true)?;
@@ -543,9 +550,7 @@ impl LifecycleService {
         {
             return Err(err("RETRY_DESTINATION_INVALID"));
         }
-        let service = LifecycleService {
-            root: path.to_path_buf(),
-        };
+        let service = LifecycleService::bound_existing(path.to_path_buf())?;
         let _destination = service.lock()?;
         task(&record, &service)
     }
