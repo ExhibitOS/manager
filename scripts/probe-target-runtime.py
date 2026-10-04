@@ -4,7 +4,7 @@ import argparse,json,subprocess,hashlib,uuid,os,socket,time,shutil
 if not __debug__:
  raise RuntimeError("development assertions require Python without -O")
 from pathlib import Path
-p=argparse.ArgumentParser();p.add_argument('--fixture',type=Path,required=True);p.add_argument('--cli',type=Path,required=True);p.add_argument('--docker',type=Path,required=True);a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--fixture',type=Path,required=True);p.add_argument('--cli',type=Path,required=True);p.add_argument('--docker',type=Path,required=True);p.add_argument('--interrupt-target',action='store_true');a=p.parse_args()
 assert a.fixture.resolve()==a.fixture and a.fixture.is_absolute()
 binding=json.loads((a.fixture/'genuine-release-binding.json').read_text());plan=binding['plan'];source=a.fixture/'profile-1/installations'/plan['targetInstance'];manifest=json.loads((source/'bundle/manifest.json').read_text());compose=json.loads((source/'bundle/compose.yaml').read_text());assert hashlib.sha256((source/'bundle/compose.yaml').read_bytes()).hexdigest()==manifest['composeSha256']
 assert json.loads((source/'restoration.json').read_text())['state']=='completed'
@@ -86,6 +86,33 @@ try:
  with urllib.request.urlopen(url,timeout=5) as response:assert response.status==200 and len(response.read())>100
  checks=['actual target image/protocol readiness with zero restarts','synthetic existing database witness and blob preserved in copies','preserved administrator login/web on target Runtime']
  print('PASS actual target Runtime readiness/data/login/web on independent copies',flush=True)
+ if a.interrupt_target:
+  # Only exact observed containers in this new synthetic project may be killed.
+  for cid,service in [(app,'platform'),(db,'database')]:
+   owned=json.loads(docker('inspect',cid))[0]
+   assert owned['Config']['Labels']['com.docker.compose.project']==project
+   assert owned['Config']['Labels']['com.docker.compose.service']==service
+   assert owned['Config']['Labels']['com.exhibitos.compatibility']==project
+  docker('kill','--signal','KILL',app)
+  killed=json.loads(docker('inspect',app))[0];assert not killed['State']['Running'] and killed['State']['ExitCode']==137
+  docker('start',app)
+  def recovered():
+   for n in range(120):
+    try:
+     with urllib.request.urlopen(url+'/api/v1/readiness',timeout=2) as response:value=json.load(response)
+     if value.get('ready') and value.get('protocolVersion')=='1':return
+    except Exception:pass
+    time.sleep(1)
+   raise RuntimeError('isolated Runtime interruption recovery failed')
+  recovered()
+  docker(*cmd,'stop','--timeout','30','platform')
+  docker('kill','--signal','KILL',db)
+  killed_db=json.loads(docker('inspect',db))[0];assert not killed_db['State']['Running'] and killed_db['State']['ExitCode']==137
+  docker('start',db);docker('start',app);recovered()
+  assert docker('exec',db,'psql','-U','exhibitos','-d','exhibitos','-Atc','SELECT witness FROM synthetic_manager_backup WHERE id=1').decode().strip()=='Manager backup original data'
+  checks.append('explicit target process and copied PostgreSQL SIGKILL observed137; manual same-container restart/readiness/witness recovered')
+  print('PASS actual isolated target and database abrupt interruption/restart',flush=True)
+
  # Preserve the target container; add a separate previous-version container rather
  # than replacing an installed runtime. Only the copied database is shared.
  docker(*cmd,'stop','--timeout','30')
@@ -117,5 +144,5 @@ checks.append('full identity/schema/migrations/49non-session entries/blobs/refer
 assert before_files=={n:hashlib.sha256((source/n).read_bytes()).hexdigest() for n in files};assert intent()['intent']==before_intent['intent']
 after=set(states());assert set(before_states)<=after
 for cid in existing:assert not json.loads(docker('inspect',cid))[0]['State']['Running']
-report={'format':1,'checks':checks,'targetImage':plan['targetImage'],'targetSchemaDeclaration':plan['targetSchema'],'project':project,'copies':copies,'inventoryObservations':inventories,'readiness':ready,'originalFilesStatesIntentPreserved':True,'updateExecuted':False,'preflightVerified':False,'limits':['isolated development target probe; not registered target health receipt or installation apply','full inventory observed before/after each Runtime login; failures/full corpus and actual installation rollback remain unqualified','new copied DB changes during target startup/login; original volumes readonly during copy and source stays stopped','all private files/helper containers/copied volumes retained; no production trust/data/volume mutation']}
+report={'format':1,'checks':checks,'targetImage':plan['targetImage'],'targetSchemaDeclaration':plan['targetSchema'],'project':project,'copies':copies,'inventoryObservations':inventories,'readiness':ready,'interruptionInjected':a.interrupt_target,'originalFilesStatesIntentPreserved':True,'updateExecuted':False,'preflightVerified':False,'limits':['isolated development target probe; not registered target health receipt or installation apply','full inventory observed before/after each Runtime login; failures/full corpus and actual installation rollback remain unqualified','new copied DB changes during target startup/login; original volumes readonly during copy and source stays stopped','all private files/helper containers/copied volumes retained; no production trust/data/volume mutation']}
 (root/'report.json').write_text(json.dumps(report,indent=2)+'\n');(root/'report.json').chmod(0o600);print('Report '+str(root/'report.json'),flush=True)
