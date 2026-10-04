@@ -5,6 +5,9 @@ use crate::{LifecycleService, Status, maintenance::VerificationReceipt};
 #[path = "source_stopped.rs"]
 mod source_stopped;
 pub use source_stopped::SourceStoppedReceipt;
+#[path = "source_deployment.rs"]
+mod source_deployment;
+pub use source_deployment::SourceDeploymentReceipt;
 
 /// Holds the Store borrow and both profile fences. No arbitrary root, controller
 /// bootstrap, activation, journal transition, or externally supplied success flag.
@@ -115,6 +118,87 @@ impl ExecutionSession<'_> {
         self.check()?;
         result
     }
+    /// Current host deployment bytes against the exact authenticated restored backup.
+    /// DB/blob/config-volume equality and full preflight remain separate.
+    pub fn verify_source_deployment(
+        &self,
+        acknowledged: bool,
+    ) -> crate::Result<SourceDeploymentReceipt> {
+        self.check()?;
+        if !acknowledged {
+            return Err(crate::err("BACKUP_OPERATOR_ACK_REQUIRED"));
+        }
+        let intent = self
+            .store
+            .intent()
+            .ok_or_else(|| crate::err("UPDATE_INTENT_MISSING"))?;
+        if intent.update.stage() != crate::update::Stage::Prepared {
+            return Err(crate::err("UPDATE_CANDIDATE_STAGE_INVALID"));
+        }
+        let plan = intent.update.plan();
+        crate::restoration::RestorationBinding::from_plan(plan)?;
+        let (registry, _) = installations::load(&self.store.profile)?
+            .ok_or_else(|| crate::err("UPDATE_SOURCE_CHANGED"))?;
+        let entry = registry
+            .installations
+            .iter()
+            .find(|e| e.id == plan.target_instance && e.kind == "recovery")
+            .ok_or_else(|| crate::err("UPDATE_TARGET_UNREGISTERED"))?;
+        let root = installations::root(&self.store.profile, entry);
+        installations::private_directory(&self.store.profile.join("installations"))?;
+        installations::private_directory(&root)?;
+        let identity_before =
+            fs::symlink_metadata(&root).map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?;
+        let target = LifecycleService::open_retry_diagnostics(root.clone())?;
+        let _source_lock = self.source.lock()?;
+        let _target_lock = target.lock()?;
+        let result = (|| {
+            let job = target
+                .restoration_status()?
+                .filter(|j| j.state == "completed")
+                .ok_or_else(|| crate::err("UPDATE_SOURCE_PROOF_MISSING"))?;
+            let workspace = root.join(format!("restore-{}", job.id));
+            let receipt: crate::restoration::RestorationReceipt =
+                crate::read_json(&crate::checked_path(&workspace, "receipt.json")?)?;
+            let files = source_deployment::authenticated_files(
+                &self.source.root,
+                &workspace,
+                &receipt,
+                plan,
+            )?;
+            let before = source_stopped::observe(&self.source, plan)?;
+            let repeated = source_deployment::authenticated_files(
+                &self.source.root,
+                &workspace,
+                &receipt,
+                plan,
+            )?;
+            let after = source_stopped::observe(&self.source, plan)?;
+            if files != repeated
+                || before.platform_container != after.platform_container
+                || before.database_container != after.database_container
+            {
+                return Err(crate::err("UPDATE_SOURCE_CHANGED"));
+            }
+            Ok(SourceDeploymentReceipt {
+                source_instance: plan.source_instance.clone(),
+                target_instance: plan.target_instance.clone(),
+                backup_id: receipt.backup_id,
+                authenticated_manifest_sha256: receipt.authenticated_manifest_sha256,
+                files,
+                observed_at: crate::now(),
+            })
+        })();
+        self.check()?;
+        installations::private_directory(&root)?;
+        if !identity(
+            &identity_before,
+            &fs::symlink_metadata(&root).map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?,
+        ) {
+            return Err(crate::err("UPDATE_TARGET_CHANGED"));
+        }
+        result
+    }
     /// Restore the exact planned source backup into the already-registered fresh
     /// target. Prepared intent has reserved this target identity durably; no
     /// journal transition, signed-update activation or selection change occurs here.
@@ -160,12 +244,19 @@ impl ExecutionSession<'_> {
         }
         let before_source = source_stopped::observe(&self.source, plan)?;
         let result = target.restore_update_candidate(image, key, archive, port, &binding);
-        let after_source = source_stopped::observe(&self.source, plan)?;
-        if before_source.platform_container != after_source.platform_container
-            || before_source.database_container != after_source.database_container
-        {
-            return Err(crate::err("UPDATE_SOURCE_CHANGED"));
-        }
+        let post_check = (|| -> crate::Result<()> {
+            if let Ok(receipt) = &result {
+                let _target_lock = target.lock()?;
+                source_deployment::authenticated_files(
+                    &self.source.root,
+                    &root.join(format!("restore-{}", receipt.id)),
+                    receipt,
+                    plan,
+                )?;
+            }
+            Ok(())
+        })();
+        let after_source = source_stopped::observe(&self.source, plan);
         self.check()?;
         installations::private_directory(&root)?;
         if !identity(
@@ -174,6 +265,13 @@ impl ExecutionSession<'_> {
         ) {
             return Err(crate::err("UPDATE_TARGET_CHANGED"));
         }
+        let after_source = after_source?;
+        if before_source.platform_container != after_source.platform_container
+            || before_source.database_container != after_source.database_container
+        {
+            return Err(crate::err("UPDATE_SOURCE_CHANGED"));
+        }
+        post_check?;
         result
     }
     /// Actual authenticated decryption, bound to the prepared manifest hash.
