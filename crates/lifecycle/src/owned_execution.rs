@@ -8,6 +8,9 @@ pub use source_stopped::SourceStoppedReceipt;
 #[path = "source_deployment.rs"]
 mod source_deployment;
 pub use source_deployment::SourceDeploymentReceipt;
+#[path = "source_configuration.rs"]
+mod source_configuration;
+pub use source_configuration::NativeConfigurationReceipt;
 
 /// Holds the Store borrow and both profile fences. No arbitrary root, controller
 /// bootstrap, activation, journal transition, or externally supplied success flag.
@@ -189,6 +192,107 @@ impl ExecutionSession<'_> {
                 backup_id: receipt.backup_id,
                 authenticated_manifest_sha256: receipt.authenticated_manifest_sha256,
                 files,
+                observed_at: crate::now(),
+            })
+        })();
+        self.check()?;
+        installations::private_directory(&root)?;
+        if !identity(
+            &identity_before,
+            &fs::symlink_metadata(&root).map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?,
+        ) {
+            return Err(crate::err("UPDATE_TARGET_CHANGED"));
+        }
+        result
+    }
+    /// Current native freeze key only; full configuration/image/data gates remain.
+    pub fn verify_source_configuration(
+        &self,
+        image: &str,
+        acknowledged: bool,
+    ) -> crate::Result<NativeConfigurationReceipt> {
+        self.check()?;
+        if !acknowledged {
+            return Err(crate::err("BACKUP_OPERATOR_ACK_REQUIRED"));
+        }
+        let intent = self
+            .store
+            .intent()
+            .ok_or_else(|| crate::err("UPDATE_INTENT_MISSING"))?;
+        if intent.update.stage() != crate::update::Stage::Prepared {
+            return Err(crate::err("UPDATE_CANDIDATE_STAGE_INVALID"));
+        }
+        let plan = intent.update.plan();
+        crate::restoration::RestorationBinding::from_plan(plan)?;
+        let (registry, _) = installations::load(&self.store.profile)?
+            .ok_or_else(|| crate::err("UPDATE_SOURCE_CHANGED"))?;
+        let entry = registry
+            .installations
+            .iter()
+            .find(|e| e.id == plan.target_instance && e.kind == "recovery")
+            .ok_or_else(|| crate::err("UPDATE_TARGET_UNREGISTERED"))?;
+        let root = installations::root(&self.store.profile, entry);
+        installations::private_directory(&self.store.profile.join("installations"))?;
+        installations::private_directory(&root)?;
+        let identity_before =
+            fs::symlink_metadata(&root).map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?;
+        let target = LifecycleService::open_retry_diagnostics(root.clone())?;
+        let _source_lock = self.source.lock()?;
+        let _target_lock = target.lock()?;
+        let result = (|| {
+            let job = target
+                .restoration_status()?
+                .filter(|j| j.state == "completed")
+                .ok_or_else(|| crate::err("UPDATE_SOURCE_PROOF_MISSING"))?;
+            let workspace = root.join(format!("restore-{}", job.id));
+            let receipt: crate::restoration::RestorationReceipt =
+                crate::read_json(&crate::checked_path(&workspace, "receipt.json")?)?;
+            let files = source_deployment::authenticated_files(
+                &self.source.root,
+                &workspace,
+                &receipt,
+                plan,
+            )?;
+            let before = source_stopped::observe(&self.source, plan)?;
+            let raw = crate::installation_backup::source_bytes(
+                &workspace.join("authenticated"),
+                "manifest.json",
+                16 * 1024 * 1024,
+                true,
+            )?;
+            let binding = crate::restoration::RestorationBinding::from_plan(plan)?;
+            binding.authenticated(
+                &receipt.backup_id,
+                &receipt.authenticated_manifest_sha256,
+                &raw,
+            )?;
+            let expected = source_configuration::expected(&raw)?;
+            let observed =
+                source_configuration::observe(image, &before.configuration_volume, &expected)?;
+            let repeated = source_deployment::authenticated_files(
+                &self.source.root,
+                &workspace,
+                &receipt,
+                plan,
+            )?;
+            let after = source_stopped::observe(&self.source, plan)?;
+            if files != repeated
+                || before.platform_container != after.platform_container
+                || before.database_container != after.database_container
+                || before.blob_volume != after.blob_volume
+                || before.configuration_volume != after.configuration_volume
+                || before.database_volume != after.database_volume
+            {
+                return Err(crate::err("UPDATE_SOURCE_CHANGED"));
+            }
+            Ok(NativeConfigurationReceipt {
+                source_instance: plan.source_instance.clone(),
+                target_instance: plan.target_instance.clone(),
+                backup_id: receipt.backup_id,
+                authenticated_manifest_sha256: receipt.authenticated_manifest_sha256,
+                configuration_volume: before.configuration_volume,
+                maintenance_image: image.into(),
+                file: observed,
                 observed_at: crate::now(),
             })
         })();
@@ -595,6 +699,20 @@ mod source_stop_tests {
         assert_eq!(
             lease.verify_source_stopped(true).unwrap_err().code,
             "UPDATE_SOURCE_NOT_INSTALLED"
+        );
+        assert_eq!(
+            lease
+                .verify_source_configuration(&format!("sha256:{}", "a".repeat(64)), false)
+                .unwrap_err()
+                .code,
+            "BACKUP_OPERATOR_ACK_REQUIRED"
+        );
+        assert_eq!(
+            lease
+                .verify_source_configuration(&format!("sha256:{}", "a".repeat(64)), true)
+                .unwrap_err()
+                .code,
+            "UPDATE_RESTORE_BINDING_INVALID"
         );
         assert!(!root.join("engine.json").exists());
         assert!(!root.join("installed.json").exists());
