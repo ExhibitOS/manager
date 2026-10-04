@@ -48,7 +48,7 @@ fn save(image: &str, path: &Path, limit: u64) -> Result<crate::backup_creation::
         .open(path)
         .map_err(|_| err("STATE_UNAVAILABLE"))?;
     let binary = engine_executable("docker").ok_or_else(|| err("RUNTIME_MISSING"))?;
-    let mut child = Command::new(binary)
+    let mut child = process_window::background_command(binary)
         .args(["image", "save", image])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

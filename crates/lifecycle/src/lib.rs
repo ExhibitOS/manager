@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Trusted-bundle desktop lifecycle. No shell, arbitrary compose paths or destructive volume removal.
+mod process_window;
 pub mod backup_creation;
 pub mod cancellation;
 pub mod helper_reconciliation;
@@ -23,7 +24,7 @@ use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     sync::mpsc,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -650,7 +651,7 @@ fn run_observed_inputs(
     } else {
         PathBuf::from(binary)
     };
-    let mut command = Command::new(executable);
+    let mut command = process_window::background_command(executable);
     if matches!(binary, "docker" | "podman") {
         let mut paths: Vec<PathBuf> =
             std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
