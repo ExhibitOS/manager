@@ -83,3 +83,5 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 [서명된 Runtime 릴리스 검증 CLI](docs/signed-releases.md)는 고정된 공개키 정책과 실제 artifact hash를 검사합니다. [별도 신뢰 기록 CLI](docs/release-trust.md)는 프로필 복원 영역 밖에 정책·폐기 키·수락 버전 기록을 저장합니다. 다운로드·업데이트 실행·backup/rollback 검증은 후속 연결 조건입니다.
 
 [업데이트 준비 기록 CLI](docs/update-intent.md)는 검증한 릴리스와 대상·백업·원본 계획을 수락 기록과 함께 저장합니다. 실제 적용·마이그레이션·건강 확인·롤백은 후속 실행 단계입니다.
+
+[정지 원본 DB 사본 개발 CLI](docs/source-database-snapshot.md)는 원본 네이티브 볼륨을 읽기 전용으로 새 고유 볼륨에 복사해 내용·권한·소유자와 정상 종료 상태를 검사합니다. 현재 DB/blob 논리 인벤토리 비교와 전체 업데이트 preflight는 후속 조건입니다.
