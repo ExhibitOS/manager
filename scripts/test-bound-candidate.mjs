@@ -91,7 +91,7 @@ function setup(manifestHash=hash(plain)) {
 }
 // Reserve a fresh host loopback port using Python; the restore adapter reserves it again.
 const portProcess=spawnSync('python3',['-c','import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'],{encoding:'utf8'});assert.equal(portProcess.status,0);const port=portProcess.stdout.trim();
-const extra=['--maintenance-image',image,'--key',keyFile,'--archive',archive,'--port',port,'--fresh-candidate'];
+const extra=['--maintenance-image',image,'--key',keyFile,'--archive',archive,'--port',port,'--fresh-candidate','--external-writers-quiesced'];
 function existing(index) {
     const profile=join(base,'profile-'+index), plan=JSON.parse(readFileSync(join(base,'plan-'+(index+1)+'.json')));
     const registry=readFileSync(join(profile,'installation-selection.json'),'utf8');

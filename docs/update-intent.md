@@ -229,7 +229,7 @@ changes the active selection. Existing/failed targets are never erased or reused
   --key '<external private 32-byte key file>' \
   --archive '<private Manager-produced draft2 service archive>' \
   --port '<unused loopback port above 1023>' \
-  --fresh-candidate --apps-closed
+  --fresh-candidate --external-writers-quiesced --apps-closed
 ```
 
 The command requires Prepared, explicit fresh-candidate acknowledgement, both
@@ -238,8 +238,12 @@ operation lock guards its empty-root test and full restore. Both the plan's free
 space budget and existing 2GiB restore minimum apply; neither is an estimate of
 available provider quota. Source/target identities and registry bytes are checked
 again after execution, including failure. A replaced namespace cannot return
-success. A stopped source is used by the synthetic reference test, but the command
-does not itself prove source writer quiescence or a current source snapshot match.
+success. The command directly inspects both owned source Docker containers before and after
+restoration and requires exited/created state, PID zero, and Running/Paused/Restarting/Dead
+false, with the Platform image equal to plan.sourceImage. Container IDs must remain
+equal. It never stops or starts source services. --external-writers-quiesced is an
+additional explicit operator acknowledgement; these observations do not isolate
+external DB/blob/config writers or prove a current source snapshot match.
 
 Before image import or creating the candidate's installed bundle/services, the
 existing isolated helper authenticates the archive. Rust then checks its exact
@@ -316,3 +320,22 @@ are compared to the registered source copy made before restoration and ciphertex
 to the independent copy. Its report distinguishes the original producer binary,
 current verification binary and resume-time key/container-state baseline. This
 mode is test observation, not automatic product recovery or update preflight.
+
+## Direct source stop observation
+
+`verify-update-source-stopped --profile <absolute profile> --installation default|UUID
+--external-writers-quiesced --apps-closed` performs the same owned source check under
+the borrowed exclusive profile fence and source operation lock, with helper-idle,
+Compose/ownership/volume validation. It requires both Platform and database stopped,
+exact registered source and plan Runtime content ID. Running, paused, restarting,
+dead, missing or ambiguous states refuse. It does not stop anything or write update
+events; output includes sourceStopped:true, preflightVerified:false, updateExecuted:false.
+The receipt is a momentary observation, not a persisted authorization token.
+
+Candidate preparation now additionally requires this explicit acknowledgement and
+successful observations before and after restoration. Existing-target no-overwrite
+refusal remains first. Source state change after restoration refuses success and
+retains the candidate and its restoration journal; do not replay automatically.
+Source snapshot/inventory equality, external writer isolation, resource reservation
+and compatibility remain necessary for Applying. Older candidate CLI invocations
+must add --external-writers-quiesced; public Spec and journal formats are unchanged.
