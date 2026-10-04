@@ -21,3 +21,27 @@ Python 최적화 옵션은 거부합니다. Fixture에는 `genuine-release-bindi
 `--interrupt-target`는 위의 새 synthetic 사본에서만 target Runtime에 SIGKILL을 보내 종료137을 확인한 후 같은 컨테이너를 명시적으로 재시작합니다. Readiness 복구 후 Runtime을 정지하고 copied PostgreSQL에 SIGKILL을 보내 종료137을 확인한 다음 DB와 Runtime을 다시 시작합니다. 정확한 관측 container ID의 새 고유 project/service/compatibility label이 일치해야 하며 원본 컨테이너는 종료하지 않습니다.
 
 회복한 readiness와 DB witness를 확인한 뒤 서비스 정지·전체 인벤토리 비교·이전 Runtime 기동과 후속 인벤토리를 수행합니다. 원본 파일/states/Prepared intent와 새 사본/helper 보존 경계는 동일합니다. PostgreSQL 사본의 crash recovery는 실제 쓰기를 수행하며 원본은 별개로 정지 상태를 유지합니다. 이것은 개발 fixture의 process interruption 검사이며 물리적 host 전원 손실, fsync 손실, migration 중단, 업데이트 Applying journal 복구나 실제 설치 rollback qualification은 아닙니다.
+
+## 갱신된 현재 계획으로 검사
+
+개발 계획 갱신 후 이전 target의 검사를 새 target 성공으로 재사용하지 않는다.
+새 후보를 실제 복원·정지한 뒤 현재 Prepared와 정확히 같은 private 계획을 지정한다.
+
+```sh
+python3 scripts/probe-target-runtime.py \
+  --fixture /absolute/private/development-fixture \
+  --cli /absolute/exhibitos-update \
+  --docker /absolute/docker \
+  --plan-file /absolute/private/renewed-plan.json \
+  --interrupt-target
+```
+
+계획은 owner의 regular single-link400/600 파일,16KiB 이하, canonical 절대 경로다.
+중복/알 수 없는 JSON 필드를 거부한다. 실제 Store의 current Prepared와 exact plan이
+일치해야 후보 경로에 접근하거나 Engine resource를 만들 수 있다. 검사 후 같은 파일
+identity/bytes와 계획을 다시 확인하고 report에 plan·file SHA를 기록한다.
+기존 fixture의 서명/계획 파일은 덮어쓰지 않는다.
+
+이 경로도 새로운 독립 synthetic 복사본의 Runtime/전체 inventory 관측이다.
+registered target에 target image를 적용하거나 활성 전시를 전환하는 명령이 아니며,
+전체 preflight·migration·health 실패·복원 실패·실제 rollback 인수 조건은 남는다.
