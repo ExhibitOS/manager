@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! App-closed, authenticated profile metadata recovery. Runtime data is never copied or erased.
+#[path = "host_checkpoint.rs"]
+mod host_checkpoint;
 use super::installation_backup::source_bytes;
 use super::installations::{self, Registry};
 use super::*;
@@ -7,6 +9,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, OsRng, Payload, rand_core::RngCore},
 };
+pub use host_checkpoint::{HostReceipt, checkpoint_host, extract_host};
 use std::collections::BTreeMap;
 const MAGIC: &[u8] = b"ExhibitOS-profile-v1\0";
 const LIMIT: u64 = 64 * 1024 * 1024;

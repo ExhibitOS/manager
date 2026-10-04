@@ -4,6 +4,28 @@ use exhibitos_lifecycle::profile_backup;
 use std::path::Path;
 fn main() {
     let a: Vec<String> = std::env::args().collect();
+    if a.len() >= 4 && a[1] == "--profile" {
+        if a[3] == "checkpoint-host" && a.len() == 8 {
+            emit(profile_backup::checkpoint_host(
+                Path::new(&a[2]),
+                Path::new(&a[4]),
+                Path::new(&a[5]),
+                a[6] == "--apps-closed",
+                a[7] == "--host-writers-stopped",
+            ));
+            return;
+        }
+        if a[3] == "extract-host" && a.len() == 8 {
+            emit(profile_backup::extract_host(
+                Path::new(&a[2]),
+                Path::new(&a[4]),
+                Path::new(&a[5]),
+                Path::new(&a[6]),
+                a[7] == "--extract-only",
+            ));
+            return;
+        }
+    }
     if a.len() != 7
         || a[1] != "--profile"
         || !["backup", "backup-stream", "restore"].contains(&a[3].as_str())
@@ -35,6 +57,9 @@ fn main() {
             a[6] == "--apps-closed",
         )
     };
+    emit(result);
+}
+fn emit<T: serde::Serialize>(result: std::result::Result<T, exhibitos_lifecycle::LifecycleError>) {
     match result {
         Ok(v) => println!("{}", serde_json::to_string(&v).unwrap()),
         Err(e) => {
