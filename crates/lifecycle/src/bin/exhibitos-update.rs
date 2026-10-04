@@ -197,6 +197,45 @@ fn artifact(verified: &mut signed_release::VerifiedRelease, path: &Path) -> Resu
     }
     Ok(())
 }
+fn checkpoint_key(path: &Path, profile: &Path) -> Result<[u8; 32], String> {
+    if !path.is_absolute()
+        || std::fs::canonicalize(path).map_err(|_| "UPDATE_KEY_INVALID")? != path
+        || path.starts_with(profile)
+    {
+        return Err("UPDATE_KEY_INVALID".into());
+    }
+    let mut file = open(path)?;
+    let before = file.metadata().map_err(|_| "UPDATE_KEY_INVALID")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if before.uid() != unsafe { libc::geteuid() }
+            || before.mode() & 0o7777 != 0o600
+            || before.len() != 32
+        {
+            return Err("UPDATE_KEY_INVALID".into());
+        }
+    }
+    #[cfg(not(unix))]
+    return Err("UPDATE_KEY_PLATFORM_UNVERIFIED".into());
+    let mut key = [0u8; 32];
+    let validation = (|| -> Result<(), String> {
+        file.read_exact(&mut key)
+            .map_err(|_| "UPDATE_KEY_INVALID")?;
+        let after = file.metadata().map_err(|_| "UPDATE_KEY_INVALID")?;
+        let current = std::fs::symlink_metadata(path).map_err(|_| "UPDATE_KEY_INVALID")?;
+        if !same(&before, &after) || !same(&after, &current) || current.is_symlink() {
+            return Err("UPDATE_KEY_INVALID".into());
+        }
+        Ok(())
+    })();
+    if let Err(error) = validation {
+        key.fill(0);
+        return Err(error);
+    }
+    Ok(key)
+}
+
 fn run() -> Result<(), String> {
     use signed_release::trust::Store;
     let a: Vec<String> = std::env::args().collect();
@@ -218,6 +257,38 @@ fn run() -> Result<(), String> {
     }
     let profile = Path::new(&a[3]);
     let installation = &a[5];
+    if matches!(
+        a[1].as_str(),
+        "archive-trust-checkpoint" | "extract-trust-checkpoint"
+    ) {
+        let extracting = a[1] == "extract-trust-checkpoint";
+        if a.len() != if extracting { 13 } else { 11 }
+            || a[6] != "--key-file"
+            || a[8] != "--archive"
+            || (extracting && a[10] != "--destination")
+        {
+            return Err(usage());
+        }
+        let mut key = checkpoint_key(Path::new(&a[7]), profile)?;
+        let result = (|| {
+            let store = Store::open(profile, installation).map_err(code)?;
+            if extracting {
+                store
+                    .extract_trust_checkpoint(Path::new(&a[9]), Path::new(&a[11]), &key)
+                    .map_err(code)
+            } else {
+                store
+                    .archive_trust_checkpoint(Path::new(&a[9]), &key)
+                    .map_err(code)
+            }
+        })();
+        key.fill(0);
+        println!(
+            "{}",
+            serde_json::to_string(&result?).map_err(|_| "UPDATE_RECEIPT_INVALID")?
+        );
+        return Ok(());
+    }
     let result = match a[1].as_str() {
         "trust-provision" if a.len() == 9 && a[6] == "--policy" => {
             Store::provision(profile, installation, policy(&a[7])?, now()?)
