@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Trusted-bundle desktop lifecycle. No shell, arbitrary compose paths or destructive volume removal.
-#[cfg(windows)]
-pub mod windows_private;
-mod process_window;
 pub mod backup_creation;
 pub mod cancellation;
 pub mod helper_reconciliation;
@@ -10,12 +7,15 @@ pub mod installation_backup;
 pub mod installations;
 pub mod maintenance;
 mod maintenance_stream;
+mod process_window;
 pub mod profile_backup;
 pub mod restoration;
 mod restoration_auxiliary;
 pub mod retry;
 pub mod signed_release;
 pub mod update;
+#[cfg(windows)]
+pub mod windows_private;
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -171,6 +171,21 @@ fn same_local_image_id(actual: &str, reference: &str) -> bool {
 }
 fn err(code: &str) -> LifecycleError {
     let guidance = match code {
+        "WINDOWS_PROFILE_PUBLICATION_UNCERTAIN" => {
+            "기록 교체의 완료 여부를 확인할 수 없습니다. 앱을 닫고 현재 기록과 임시 후보를 보존한 뒤 상태를 진단하세요. 확인 없이 같은 작업을 다시 실행하지 마세요."
+        }
+        "WINDOWS_PROFILE_BUSY" => {
+            "다른 Manager 작업이 기록을 사용하고 있습니다. 해당 작업이 끝난 뒤 다시 확인하세요."
+        }
+        "WINDOWS_PROFILE_PUBLICATION_REFUSED" => {
+            "기록을 교체하지 못했습니다. 열린 파일·작업, 파일 권한과 저장 공간을 확인하고 기존 기록과 임시 후보를 보존하세요."
+        }
+        "WINDOWS_PROFILE_ACL_INVALID"
+        | "WINDOWS_PROFILE_PARENT_UNSAFE"
+        | "WINDOWS_PROFILE_IDENTITY_INVALID"
+        | "WINDOWS_PROFILE_PUBLICATION_LOCK_INVALID" => {
+            "관리 공간의 소유자·접근 권한·파일 식별자를 확인할 수 없습니다. 기존 파일과 권한을 보존하고 진단 결과를 확인하세요."
+        }
         "PROFILE_BUSY" => {
             "모든 Manager 앱과 해당 공간의 작업을 종료한 뒤 다시 실행하세요. 데이터와 기존 사본은 유지됩니다."
         }
@@ -557,27 +572,42 @@ fn checked_path(root: &Path, relative: &str) -> Result<PathBuf> {
     Ok(path)
 }
 fn read_json<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<T> {
-    let m = fs::symlink_metadata(path).map_err(|_| err("STATE_UNAVAILABLE"))?;
-    if !m.is_file() || m.file_type().is_symlink() || m.len() > 4 * 1024 * 1024 {
-        return Err(err("STATE_INVALID"));
+    #[cfg(windows)]
+    {
+        serde_json::from_slice(&windows_private::read_json_path(path)?)
+            .map_err(|_| err("STATE_INVALID"))
     }
-    serde_json::from_slice(&fs::read(path).map_err(|_| err("STATE_UNAVAILABLE"))?)
-        .map_err(|_| err("STATE_INVALID"))
+    #[cfg(not(windows))]
+    {
+        let m = fs::symlink_metadata(path).map_err(|_| err("STATE_UNAVAILABLE"))?;
+        if !m.is_file() || m.file_type().is_symlink() || m.len() > 4 * 1024 * 1024 {
+            return Err(err("STATE_INVALID"));
+        }
+        serde_json::from_slice(&fs::read(path).map_err(|_| err("STATE_UNAVAILABLE"))?)
+            .map_err(|_| err("STATE_INVALID"))
+    }
 }
 fn write_json<T: Serialize>(root: &Path, name: &str, value: &T) -> Result<()> {
     let payload = serde_json::to_vec(value).map_err(|_| err("STATE_INVALID"))?;
     if payload.len() > 4 * 1024 * 1024 {
         return Err(err("JOB_HISTORY_FULL"));
     }
-    let temp = root.join(format!(".{}.tmp", Uuid::new_v4()));
-    let mut f = private_options()
-        .open(&temp)
-        .map_err(|_| err("STATE_UNAVAILABLE"))?;
-    f.write_all(&payload)
-        .and_then(|_| f.sync_all())
-        .map_err(|_| err("STATE_UNAVAILABLE"))?;
-    fs::rename(&temp, root.join(name)).map_err(|_| err("STATE_UNAVAILABLE"))?;
-    Ok(())
+    #[cfg(windows)]
+    {
+        windows_private::write_json_root(root, name, &payload)
+    }
+    #[cfg(not(windows))]
+    {
+        let temp = root.join(format!(".{}.tmp", Uuid::new_v4()));
+        let mut f = private_options()
+            .open(&temp)
+            .map_err(|_| err("STATE_UNAVAILABLE"))?;
+        f.write_all(&payload)
+            .and_then(|_| f.sync_all())
+            .map_err(|_| err("STATE_UNAVAILABLE"))?;
+        fs::rename(&temp, root.join(name)).map_err(|_| err("STATE_UNAVAILABLE"))?;
+        Ok(())
+    }
 }
 fn engine_executable(kind: &str) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> =

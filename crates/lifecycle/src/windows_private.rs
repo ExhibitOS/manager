@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Owner-only NTFS objects for the future managed Windows profile adapter.
 //! Existing user directories/ACLs are inspected, never rewritten or adopted.
-use crate::{err, Result};
+#[path = "windows_json_storage.rs"]
+mod json_storage;
+use crate::{Result, err};
+pub(crate) use json_storage::{read_json_path, write_json_root};
 use std::{
     ffi::c_void,
     fs::File,
@@ -15,7 +18,7 @@ use std::{
     ptr,
 };
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, LocalFree, HANDLE, INVALID_HANDLE_VALUE},
+    Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, LocalFree},
     Security::{
         self as sec,
         Authorization::{
@@ -271,7 +274,13 @@ fn open(path: &Path, directory: bool) -> Result<File> {
         fsapi::CreateFileW(
             path.as_ptr(),
             fsapi::READ_CONTROL | fsapi::FILE_READ_ATTRIBUTES,
-            fsapi::FILE_SHARE_READ | fsapi::FILE_SHARE_WRITE,
+            fsapi::FILE_SHARE_READ
+                | fsapi::FILE_SHARE_WRITE
+                | if directory {
+                    0
+                } else {
+                    fsapi::FILE_SHARE_DELETE
+                },
             ptr::null(),
             fsapi::OPEN_EXISTING,
             fsapi::FILE_FLAG_OPEN_REPARSE_POINT
@@ -349,6 +358,47 @@ impl PrivateDirectory {
         result.check()?;
         Ok(result)
     }
+    /// Inspect an existing protected owner-only directory without changing permissions.
+    /// This is not an identity witness across backup restore or namespace replacement.
+    pub(crate) fn inspect(path: &Path) -> Result<Self> {
+        if !path.is_absolute() {
+            return Err(err("PROFILE_PATH_INVALID"));
+        }
+        let original_parent = path.parent().ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
+        let ancestors = pin_ancestors(original_parent)?;
+        let parent_path = original_parent
+            .canonicalize()
+            .map_err(|_| err("PROFILE_PATH_INVALID"))?;
+        let leaf = path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
+        valid_name(leaf)?;
+        let path = parent_path.join(leaf);
+        let parent = open(&parent_path, true)?;
+        let sid = Sid::current()?;
+        acl(&parent, &sid, false)?;
+        let parent_id = identity(&parent, true)?;
+        // Open lexical leaf before canonicalizing: junctions cannot be silently resolved.
+        let file = open(&path, true)?;
+        acl(&file, &sid, true)?;
+        let id = identity(&file, true)?;
+        let path = path
+            .canonicalize()
+            .map_err(|_| err("PROFILE_PATH_INVALID"))?;
+        let value = Self {
+            path,
+            file,
+            parent,
+            parent_path,
+            id,
+            parent_id,
+            sid,
+            ancestors,
+        };
+        value.check()?;
+        Ok(value)
+    }
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -375,6 +425,9 @@ impl PrivateDirectory {
         self.create_record_sharing(name, fsapi::FILE_SHARE_READ | fsapi::FILE_SHARE_WRITE)
     }
     fn create_record_sharing(&self, name: &str, sharing: u32) -> Result<File> {
+        self.create_record_access(name, sharing, 0)
+    }
+    fn create_record_access(&self, name: &str, sharing: u32, extra_access: u32) -> Result<File> {
         self.check()?;
         valid_name(name)?;
         let path = self.path.join(name);
@@ -387,7 +440,7 @@ impl PrivateDirectory {
         let handle = unsafe {
             fsapi::CreateFileW(
                 wide(&path)?.as_ptr(),
-                0x80000000 | 0x40000000 | fsapi::READ_CONTROL,
+                0x80000000 | 0x40000000 | fsapi::READ_CONTROL | extra_access,
                 sharing,
                 &attributes,
                 fsapi::CREATE_NEW,
@@ -563,6 +616,7 @@ fn valid_name(name: &str) -> Result<()> {
 fn pin_ancestors(path: &Path) -> Result<Vec<(PathBuf, File, Identity)>> {
     let mut current = PathBuf::new();
     let mut result = Vec::new();
+    let mut rooted = false;
     for component in path.components() {
         match component {
             Component::Prefix(prefix) => {
@@ -573,9 +627,22 @@ fn pin_ancestors(path: &Path) -> Result<Vec<(PathBuf, File, Identity)>> {
                     return Err(err("PROFILE_PATH_INVALID"));
                 }
                 current.push(prefix.as_os_str());
+                // A verbatim drive prefix alone can report is_absolute(), but
+                // opening \\?\C: addresses a volume, not its root directory.
+                // Retain the root and each ancestor only after an explicit root.
+                continue;
             }
-            Component::RootDir => current.push(component.as_os_str()),
+            Component::RootDir => {
+                if current.as_os_str().is_empty() {
+                    return Err(err("PROFILE_PATH_INVALID"));
+                }
+                current.push(component.as_os_str());
+                rooted = true;
+            }
             Component::Normal(value) => {
+                if !rooted {
+                    return Err(err("PROFILE_PATH_INVALID"));
+                }
                 let text = value.to_str().ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
                 if text.contains(':') || text.ends_with(['.', ' ']) {
                     return Err(err("PROFILE_PATH_INVALID"));
@@ -584,7 +651,7 @@ fn pin_ancestors(path: &Path) -> Result<Vec<(PathBuf, File, Identity)>> {
             }
             _ => return Err(err("PROFILE_PATH_INVALID")),
         }
-        if current.is_absolute() {
+        if rooted {
             let file = open(&current, true)?;
             let id = identity(&file, true)?;
             result.push((current.clone(), file, id));
@@ -607,6 +674,42 @@ mod tests {
             &parent.join(format!("exhibitos-acl-test-{}", uuid::Uuid::new_v4())),
         )
         .unwrap()
+    }
+    #[test]
+    fn canonical_verbatim_ancestors_reopen_the_same_private_directory() {
+        let dir = fresh();
+        let lexical_parent = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap());
+        let lexical = lexical_parent.join(dir.path().file_name().unwrap());
+        assert!(matches!(
+            dir.path().components().next(),
+            Some(Component::Prefix(prefix))
+                if matches!(prefix.kind(), std::path::Prefix::VerbatimDisk(_))
+        ));
+        let canonical = PrivateDirectory::inspect(dir.path()).unwrap();
+        let ordinary = PrivateDirectory::inspect(&lexical).unwrap();
+        assert_eq!(canonical.id, dir.id);
+        assert_eq!(ordinary.id, dir.id);
+        assert_eq!(canonical.ancestors.len(), ordinary.ancestors.len());
+        for ((path, _, canonical_id), (_, _, ordinary_id)) in
+            canonical.ancestors.iter().zip(&ordinary.ancestors)
+        {
+            assert!(path.components().any(|part| part == Component::RootDir));
+            assert_eq!(canonical_id, ordinary_id);
+        }
+        // Never accept a drive-relative path, bare volume or network namespace.
+        for invalid in [
+            r"C:relative",
+            r"\\?\C:",
+            r"\\server\share\folder",
+            r"\\.\C:",
+        ] {
+            assert!(pin_ancestors(Path::new(invalid)).is_err());
+        }
+        let path = dir.path().to_path_buf();
+        drop(ordinary);
+        drop(canonical);
+        drop(dir);
+        std::fs::remove_dir(path).unwrap();
     }
     #[test]
     fn private_records_refuse_existing_names_aliases_and_rename() {
@@ -696,19 +799,22 @@ mod tests {
             .write_new_record("generation-1.json", b"synthetic-only", 1024)
             .unwrap();
         assert_eq!(created.read_bounded(1024).unwrap(), b"synthetic-only");
-        assert!(dir
-            .write_new_record("generation-1.json", b"replacement", 1024)
-            .is_err());
+        assert!(
+            dir.write_new_record("generation-1.json", b"replacement", 1024)
+                .is_err()
+        );
         assert!(dir.read_record("generation-1.json").is_err());
         drop(created);
         let mut first = dir.read_record("generation-1.json").unwrap();
         let mut second = dir.read_record("generation-1.json").unwrap();
         assert_eq!(first.read_bounded(1024).unwrap(), b"synthetic-only");
         assert_eq!(second.read_bounded(1024).unwrap(), b"synthetic-only");
-        assert!(std::fs::OpenOptions::new()
-            .write(true)
-            .open(path.join("generation-1.json"))
-            .is_err());
+        assert!(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(path.join("generation-1.json"))
+                .is_err()
+        );
         assert!(std::fs::remove_file(path.join("generation-1.json")).is_err());
         assert!(first.read_bounded(1).is_err());
         assert!(dir.write_new_record("too-large", b"xx", 1).is_err());
