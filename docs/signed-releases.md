@@ -95,8 +95,11 @@ Persist release generation and issued-time floors durably only after complete
 verification, under the installation operation lock. Failed downloads/signatures
 must not advance them. Recheck policy revocation/floors, time, source identity,
 artifact handle, compatibility and verified restore evidence at mutation time.
-The current CLI does **not** implement floor persistence. A fresh caller-provided
-policy does not establish replay resistance for previous accepted releases.
+The read-only `verify --policy` command does **not** implement floor persistence.
+A fresh caller-provided policy does not establish replay resistance for previous
+accepted releases. The separate [local trust journal](release-trust.md) now persists
+policy, permanent local key revocation and sequence/time floors through explicit
+app-closed `accept`; it does not execute an update or provide remote signed rotation.
 Reliable clock and private durable policy store, authenticated key rotation/
 revocation, deployment-specific development/production roots, authenticated
 transport with bounded staging, bundle validation, pre-update verified backup,

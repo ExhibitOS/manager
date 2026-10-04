@@ -76,4 +76,4 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 
 [Host profile 전체 파일 사본·비활성 추출 개발 CLI](docs/host-checkpoint.md)는 작업 journal과 후보 bytes를 별도 스트리밍 사본에 보존합니다. 외부 engine 볼륨과 live profile 활성화는 포함하지 않습니다.
 
-[서명된 Runtime 릴리스 검증 CLI](docs/signed-releases.md)는 고정된 공개키 정책과 실제 artifact hash를 검사합니다. 다운로드·업데이트 실행·신뢰 정책 저장·backup/rollback 검증은 후속 연결 조건입니다.
+[서명된 Runtime 릴리스 검증 CLI](docs/signed-releases.md)는 고정된 공개키 정책과 실제 artifact hash를 검사합니다. [별도 신뢰 기록 CLI](docs/release-trust.md)는 프로필 복원 영역 밖에 정책·폐기 키·수락 버전 기록을 저장합니다. 다운로드·업데이트 실행·backup/rollback 검증은 후속 연결 조건입니다.
