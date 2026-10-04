@@ -61,7 +61,7 @@ fn read_public(path: &Path) -> Result<Vec<u8>> {
         return Err(err("WINDOWS_PROFILE_RECORD_OPEN_REFUSED"));
     }
     let mut file = unsafe { File::from_raw_handle(handle.cast()) };
-    acl(&file, &sid, false)?;
+    public_acl(&file, &sid)?;
     let before = identity(&file, false)?;
     if identity(&open(path, false)?, false)? != before {
         return Err(err("WINDOWS_PROFILE_IDENTITY_INVALID"));
@@ -78,7 +78,7 @@ fn read_public(path: &Path) -> Result<Vec<u8>> {
         .take(JSON_LIMIT as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| err("WINDOWS_PROFILE_RECORD_IO"))?;
-    acl(&file, &sid, false)?;
+    public_acl(&file, &sid)?;
     if bytes.len() as u64 != len
         || identity(&file, false)? != before
         || identity(&open(path, false)?, false)? != before
@@ -323,6 +323,20 @@ mod tests {
             true
         );
         assert!(PrivateDirectory::inspect(&bundle).is_err());
+        // Public ownership compatibility must not allow unrelated writers.
+        let status = crate::process_window::background_command("icacls.exe")
+            .arg(bundle.join("manifest.json"))
+            .args(["/grant", "*S-1-1-0:W"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(crate::read_json::<serde_json::Value>(&bundle.join("manifest.json")).is_err());
+        assert_eq!(
+            std::fs::read(bundle.join("manifest.json")).unwrap(),
+            b"{\"synthetic\":true}"
+        );
         std::fs::remove_file(bundle.join("manifest.json")).unwrap();
         std::fs::remove_dir(bundle).unwrap();
         cleanup(root);

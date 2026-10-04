@@ -44,6 +44,12 @@ impl Sid {
         self.0.as_ptr().cast_mut().cast()
     }
     fn current() -> Result<Self> {
+        Self::from_token(sec::TokenUser, mem::size_of::<sec::TOKEN_USER>())
+    }
+    fn default_owner() -> Result<Self> {
+        Self::from_token(sec::TokenOwner, mem::size_of::<sec::TOKEN_OWNER>())
+    }
+    fn from_token(class: sec::TOKEN_INFORMATION_CLASS, minimum: usize) -> Result<Self> {
         let mut token: HANDLE = ptr::null_mut();
         if unsafe { OpenProcessToken(GetCurrentProcess(), sec::TOKEN_QUERY, &mut token) } == 0 {
             return Err(err("WINDOWS_PROFILE_TOKEN_UNAVAILABLE"));
@@ -51,9 +57,9 @@ impl Sid {
         let result = (|| {
             let mut bytes = 0;
             unsafe {
-                sec::GetTokenInformation(token, sec::TokenUser, ptr::null_mut(), 0, &mut bytes);
+                sec::GetTokenInformation(token, class, ptr::null_mut(), 0, &mut bytes);
             }
-            if bytes < mem::size_of::<sec::TOKEN_USER>() as u32 || bytes > 65536 {
+            if bytes < minimum as u32 || bytes > 65536 {
                 return Err(err("WINDOWS_PROFILE_TOKEN_UNAVAILABLE"));
             }
             let capacity = bytes;
@@ -61,7 +67,7 @@ impl Sid {
             if unsafe {
                 sec::GetTokenInformation(
                     token,
-                    sec::TokenUser,
+                    class,
                     storage.as_mut_ptr().cast(),
                     bytes,
                     &mut bytes,
@@ -70,12 +76,14 @@ impl Sid {
             {
                 return Err(err("WINDOWS_PROFILE_TOKEN_UNAVAILABLE"));
             }
-            if bytes < mem::size_of::<sec::TOKEN_USER>() as u32 || bytes > capacity {
+            if bytes < minimum as u32 || bytes > capacity {
                 return Err(err("WINDOWS_PROFILE_TOKEN_UNAVAILABLE"));
             }
-            let user = unsafe { &*storage.as_ptr().cast::<sec::TOKEN_USER>() };
+            // Both TOKEN_USER and TOKEN_OWNER begin with a SID pointer; the
+            // class-specific minimum and bounded SID tail are checked first.
+            let token_sid = unsafe { *storage.as_ptr().cast::<sec::PSID>() };
             let start = storage.as_ptr() as usize;
-            let sid_start = user.User.Sid as usize;
+            let sid_start = token_sid as usize;
             if sid_start < start
                 || sid_start
                     .checked_add(8)
@@ -83,7 +91,7 @@ impl Sid {
             {
                 return Err(err("WINDOWS_PROFILE_TOKEN_UNAVAILABLE"));
             }
-            let prefix = user.User.Sid.cast::<u8>();
+            let prefix = token_sid.cast::<u8>();
             let required = 8 + 4 * usize::from(unsafe { *prefix.add(1) });
             if sid_start
                 .checked_add(required)
@@ -91,15 +99,15 @@ impl Sid {
             {
                 return Err(err("WINDOWS_PROFILE_TOKEN_UNAVAILABLE"));
             }
-            if unsafe { sec::IsValidSid(user.User.Sid) } == 0 {
+            if unsafe { sec::IsValidSid(token_sid) } == 0 {
                 return Err(err("WINDOWS_PROFILE_TOKEN_UNAVAILABLE"));
             }
-            let len = unsafe { sec::GetLengthSid(user.User.Sid) };
+            let len = unsafe { sec::GetLengthSid(token_sid) };
             if len == 0 || len > 256 {
                 return Err(err("WINDOWS_PROFILE_TOKEN_UNAVAILABLE"));
             }
             let mut sid = Self(vec![0; (len as usize).div_ceil(4)]);
-            if unsafe { sec::CopySid(len, sid.0.as_mut_ptr().cast(), user.User.Sid) } == 0 {
+            if unsafe { sec::CopySid(len, sid.0.as_mut_ptr().cast(), token_sid) } == 0 {
                 return Err(err("WINDOWS_PROFILE_TOKEN_UNAVAILABLE"));
             }
             Ok(sid)
@@ -160,6 +168,14 @@ fn descriptor(sid: &Sid, directory: bool) -> Result<Local> {
     Ok(Local(sd))
 }
 fn acl(file: &File, sid: &Sid, private: bool) -> Result<()> {
+    acl_owner(file, sid, private, None)
+}
+/// Public input may use this token's default group owner, unlike private state.
+fn public_acl(file: &File, sid: &Sid) -> Result<()> {
+    let default_owner = Sid::default_owner()?;
+    acl_owner(file, sid, false, Some(&default_owner))
+}
+fn acl_owner(file: &File, sid: &Sid, private: bool, default_owner: Option<&Sid>) -> Result<()> {
     let mut owner = ptr::null_mut();
     let mut dacl = ptr::null_mut();
     let mut sd = ptr::null_mut();
@@ -182,7 +198,9 @@ fn acl(file: &File, sid: &Sid, private: bool) -> Result<()> {
     if owner.is_null()
         || dacl.is_null()
         || unsafe { sec::IsValidSid(owner) } == 0
-        || unsafe { sec::EqualSid(owner, sid.ptr()) } == 0
+        || (unsafe { sec::EqualSid(owner, sid.ptr()) } == 0
+            && !default_owner
+                .is_some_and(|value| unsafe { sec::EqualSid(owner, value.ptr()) } != 0))
         || unsafe { sec::IsValidAcl(dacl) } == 0
     {
         return Err(err("WINDOWS_PROFILE_ACL_INVALID"));
@@ -709,6 +727,60 @@ mod tests {
         drop(ordinary);
         drop(canonical);
         drop(dir);
+        std::fs::remove_dir(path).unwrap();
+    }
+    #[test]
+    fn installed_private_folder_and_raw_records_refuse_adoption_and_rewrite() {
+        let root = fresh();
+        let path = root.path().join("selection-history");
+        crate::installations::new_directory(&path).unwrap();
+        crate::installations::private_directory(&path).unwrap();
+        assert!(crate::installations::new_directory(&path).is_err());
+        crate::write_private_new(&path, "generation.json", b"synthetic-history", 64).unwrap();
+        assert!(crate::write_private_new(&path, "generation.json", b"replacement", 64).is_err());
+        assert!(crate::write_private_new(&path, "oversized", b"too-long", 1).is_err());
+        assert!(!path.join("oversized").exists());
+        assert_eq!(
+            crate::installation_backup::source_bytes(
+                root.path(),
+                "selection-history/generation.json",
+                64,
+                true
+            )
+            .unwrap(),
+            b"synthetic-history"
+        );
+        assert!(
+            crate::installation_backup::source_bytes(
+                root.path(),
+                "selection-history/generation.json",
+                1,
+                true
+            )
+            .is_err()
+        );
+        crate::write_private_new(&path, "empty", b"", 64).unwrap();
+        assert!(
+            crate::installation_backup::source_bytes(
+                root.path(),
+                "selection-history/empty",
+                64,
+                true
+            )
+            .is_err()
+        );
+        // An inherited public directory must be refused, without ACL adoption.
+        let public = root.path().join("public-child");
+        std::fs::create_dir(&public).unwrap();
+        assert!(crate::installations::private_directory(&public).is_err());
+        assert!(crate::write_private_new(&public, "secret", b"synthetic-only", 64).is_err());
+        assert!(!public.join("secret").exists());
+        std::fs::remove_dir(public).unwrap();
+        std::fs::remove_file(path.join("generation.json")).unwrap();
+        std::fs::remove_file(path.join("empty")).unwrap();
+        std::fs::remove_dir(path).unwrap();
+        let path = root.path().to_path_buf();
+        drop(root);
         std::fs::remove_dir(path).unwrap();
     }
     #[test]

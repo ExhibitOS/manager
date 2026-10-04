@@ -42,6 +42,23 @@ pub(crate) fn source_bytes(
     private: bool,
 ) -> Result<Vec<u8>> {
     let path = checked_path(root, relative)?;
+    #[cfg(windows)]
+    if private {
+        let _root_fence = super::windows_private::PrivateDirectory::inspect(root)?;
+        let parent = path.parent().ok_or_else(|| err("BACKUP_SOURCE_INVALID"))?;
+        let directory = super::windows_private::PrivateDirectory::inspect(parent)?;
+        let name = path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .ok_or_else(|| err("BACKUP_SOURCE_INVALID"))?;
+        let limit = usize::try_from(limit).map_err(|_| err("BACKUP_SOURCE_INVALID"))?;
+        let bytes = directory.read_record(name)?.read_bounded(limit)?;
+        if bytes.is_empty() {
+            return Err(err("BACKUP_SOURCE_INVALID"));
+        }
+        _root_fence.check()?;
+        return Ok(bytes);
+    }
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]

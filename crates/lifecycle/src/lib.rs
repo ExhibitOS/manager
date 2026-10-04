@@ -557,6 +557,27 @@ fn private_options() -> OpenOptions {
     }
     o
 }
+/// Immutable private bytes; never adopts or overwrites an existing record.
+fn write_private_new(root: &Path, name: &str, bytes: &[u8], limit: usize) -> Result<()> {
+    if bytes.len() > limit {
+        return Err(err("WINDOWS_PROFILE_RECORD_QUOTA"));
+    }
+    #[cfg(windows)]
+    {
+        let directory = windows_private::PrivateDirectory::inspect(root)?;
+        let _record = directory.write_new_record(name, bytes, limit)?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let mut file = private_options()
+            .open(root.join(name))
+            .map_err(|_| err("STATE_UNAVAILABLE"))?;
+        file.write_all(bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|_| err("STATE_UNAVAILABLE"))
+    }
+}
 fn checked_path(root: &Path, relative: &str) -> Result<PathBuf> {
     if !safe_relative(relative) {
         return Err(err("BUNDLE_INVALID"));
@@ -1034,6 +1055,15 @@ impl LifecycleService {
     fn runtime_env(&self, m: &BundleManifest) -> Result<()> {
         let path = self.root.join("runtime.env");
         if path.exists() {
+            #[cfg(windows)]
+            {
+                let directory = windows_private::PrivateDirectory::inspect(&self.root)
+                    .map_err(|_| err("SECRET_FILE_INVALID"))?;
+                directory
+                    .read_record("runtime.env")
+                    .and_then(|mut file| file.read_bounded(8192))
+                    .map_err(|_| err("SECRET_FILE_INVALID"))?;
+            }
             let info = fs::symlink_metadata(&path).map_err(|_| err("SECRET_FILE_INVALID"))?;
             if !info.is_file() || info.file_type().is_symlink() || info.len() > 8192 {
                 return Err(err("SECRET_FILE_INVALID"));
@@ -1064,11 +1094,7 @@ impl LifecycleService {
             secret(),
             Uuid::new_v4()
         );
-        let mut file = private_options()
-            .open(path)
-            .map_err(|_| err("SECRET_FILE_INVALID"))?;
-        file.write_all(contents.as_bytes())
-            .and_then(|_| file.sync_all())
+        write_private_new(&self.root, "runtime.env", contents.as_bytes(), 8192)
             .map_err(|_| err("SECRET_FILE_INVALID"))?;
         Ok(())
     }
