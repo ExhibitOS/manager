@@ -257,6 +257,30 @@ fn run() -> Result<(), String> {
     }
     let profile = Path::new(&a[3]);
     let installation = &a[5];
+    if a[1] == "qualify-prepared-oci" {
+        if a.len() != 16
+            || a[6] != "--artifact"
+            || a[8] != "--staging-parent"
+            || a[10] != "--python"
+            || a[12] != "--source-commit"
+            || a[14] != "--development-cache-import"
+        {
+            return Err(usage());
+        }
+        let mut store = Store::open(profile, installation).map_err(code)?;
+        let session = store.execution().map_err(|e| e.code.to_string())?;
+        let mut staged = session
+            .stage_prepared_artifact(Path::new(&a[7]), Path::new(&a[9]))
+            .map_err(|e| e.code.to_string())?;
+        let receipt = session
+            .qualify_prepared_oci(&mut staged, Path::new(&a[11]), &a[13], true, true)
+            .map_err(|e| e.code.to_string())?;
+        println!(
+            "{}",
+            serde_json::to_string(&receipt).map_err(|_| "UPDATE_RESULT_INVALID")?
+        );
+        return Ok(());
+    }
     if a[1] == "stage-prepared-artifact" {
         if a.len() != 11 || a[6] != "--artifact" || a[8] != "--staging-parent" {
             return Err(usage());

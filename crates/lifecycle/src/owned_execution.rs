@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Existing registered source adapters under the borrowed exclusive trust fence.
 use super::*;
+#[path = "prepared_oci.rs"]
+mod prepared_oci;
 use crate::{LifecycleService, Status, maintenance::VerificationReceipt};
+pub use prepared_oci::PreparedOciReceipt;
 #[path = "source_stopped.rs"]
 mod source_stopped;
 pub use source_stopped::SourceStoppedReceipt;

@@ -622,6 +622,27 @@ fn run_observed(
     args: &[String],
     cwd: Option<&Path>,
     seconds: u64,
+    observe: impl FnMut() -> Result<()>,
+) -> Result<Vec<u8>> {
+    run_observed_input(binary, args, cwd, seconds, None, observe)
+}
+fn run_observed_input(
+    binary: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    seconds: u64,
+    input: Option<File>,
+    observe: impl FnMut() -> Result<()>,
+) -> Result<Vec<u8>> {
+    run_observed_inputs(binary, args, cwd, seconds, input, None, observe)
+}
+fn run_observed_inputs(
+    binary: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    seconds: u64,
+    input: Option<File>,
+    extra: Option<File>,
     mut observe: impl FnMut() -> Result<()>,
 ) -> Result<Vec<u8>> {
     let executable = if matches!(binary, "docker" | "podman") {
@@ -646,11 +667,30 @@ fn run_observed(
     }
     command
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(input.map(Stdio::from).unwrap_or_else(Stdio::null))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(dir) = cwd {
         command.current_dir(dir);
+    }
+    #[cfg(unix)]
+    if let Some(ref file) = extra {
+        use std::os::{fd::AsRawFd, unix::process::CommandExt};
+        let fd = file.as_raw_fd();
+        // Only the child clears close-on-exec; parent descriptor protection remains.
+        unsafe {
+            command.pre_exec(move || {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags == -1 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(unix))]
+    if extra.is_some() {
+        return Err(err("UPDATE_OCI_PLATFORM_UNVERIFIED"));
     }
     let mut child = command.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
