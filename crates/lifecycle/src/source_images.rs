@@ -27,7 +27,7 @@ fn file_record<'a>(manifest: &'a Value, name: &str, role: &str) -> Result<&'a Va
     }
     Ok(selected[0])
 }
-fn bound_inventory(
+pub(super) fn bound_inventory(
     bytes: &[u8],
     manifest: &Value,
     original: &BundleManifest,

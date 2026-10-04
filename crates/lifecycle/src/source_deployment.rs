@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Five current Manager host files only; never DB/blob/config-volume inventory proof.
 use crate::*;
-const FILES: [(&str, &str, u64); 5] = [
+pub(super) const FILES: [(&str, &str, u64); 5] = [
     (
         "manager-bundle-manifest.json",
         "bundle/manifest.json",
