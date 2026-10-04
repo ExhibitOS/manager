@@ -189,7 +189,7 @@ fn run() -> Result<(), String> {
     }
     let code = |e: signed_release::Error| e.code().to_string();
     let usage = || {
-        "UPDATE_USAGE: trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|discard-update-intent|execution-status|verify-update-backup require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
+        "UPDATE_USAGE: trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|discard-update-intent|execution-status|verify-update-backup|prepare-update-candidate require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
     };
     if a.len() < 7
         || a[2] != "--profile"
@@ -258,6 +258,27 @@ fn run() -> Result<(), String> {
             println!(
                 "{}",
                 serde_json::json!({"trust":trust,"intent":store.intent(),"executed":false,"dataPreserved":true})
+            );
+            return Ok(());
+        }
+        "prepare-update-candidate"
+            if a.len() == 16
+                && a[6] == "--maintenance-image"
+                && a[8] == "--key"
+                && a[10] == "--archive"
+                && a[12] == "--port"
+                && a[14] == "--fresh-candidate" =>
+        {
+            let mut store = Store::open(profile, installation).map_err(code)?;
+            let port = a[13].parse::<u16>().map_err(|_| usage())?;
+            let receipt = store
+                .execution()
+                .map_err(|e| e.code)?
+                .prepare_target_candidate(&a[7], Path::new(&a[9]), Path::new(&a[11]), port, true)
+                .map_err(|e| e.code)?;
+            println!(
+                "{}",
+                serde_json::json!({"restoration":receipt,"candidatePrepared":true,"updateExecuted":false,"preflightVerified":false,"intent":store.intent()})
             );
             return Ok(());
         }

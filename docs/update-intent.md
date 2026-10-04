@@ -210,3 +210,109 @@ artifacts and candidates are retained; the signing key is transient in memory.
 The copied profile references an existing synthetic Docker project, so this does
 not qualify multi-instance/global runtime identity, a real OCI update or full
 restore. Native GUI, Windows/Podman and production acceptance remain separate.
+
+## Actual source-version candidate preparation
+
+`prepare-update-candidate` executes a real fresh restoration into the registered
+recovery entry whose UUID is exactly `plan.targetInstance`. The signed Prepared
+journal already reserves that target identity durably. The source and target must
+be distinct existing canonical private roots in the same unchanged registry.
+Create the new recovery space using the existing Manager installation selector,
+return to the intended source, close the app, and prepare the exact source/target
+plan before running this command. The command neither registers missing spaces nor
+changes the active selection. Existing/failed targets are never erased or reused.
+
+```sh
+./target/release/exhibitos-update prepare-update-candidate \
+  --profile '<same logical profile>' --installation default \
+  --maintenance-image 'sha256:<trusted immutable local maintenance image>' \
+  --key '<external private 32-byte key file>' \
+  --archive '<private Manager-produced draft2 service archive>' \
+  --port '<unused loopback port above 1023>' \
+  --fresh-candidate --apps-closed
+```
+
+The command requires Prepared, explicit fresh-candidate acknowledgement, both
+exclusive profile fences and the original source operation lock. The target
+operation lock guards its empty-root test and full restore. Both the plan's free
+space budget and existing 2GiB restore minimum apply; neither is an estimate of
+available provider quota. Source/target identities and registry bytes are checked
+again after execution, including failure. A replaced namespace cannot return
+success. A stopped source is used by the synthetic reference test, but the command
+does not itself prove source writer quiescence or a current source snapshot match.
+
+Before image import or creating the candidate's installed bundle/services, the
+existing isolated helper authenticates the archive. Rust then checks its exact
+plaintext bytes against `plan.backupManifest`, its UUID against `plan.backupId`,
+its inventory fingerprint against `plan.sourceInventory`, and its complete
+schema/migration fingerprint against `plan.sourceSchema`. The configured Platform
+image is resolved through the authenticated preserved image inventory and must
+match `plan.sourceImage`. Existing image archives are hash/content-ID verified
+through actual Docker load and inspection; no mutable image tag or registry pull
+can supply these proofs. Binding mismatches remain private failed candidates.
+
+Fingerprint definitions for this source-backup adapter:
+
+- `sourceInventory`: SHA-256 of compact JSON for the complete authenticated
+  `manifest.inventory`, with recursively UTF-8-byte-sorted object keys, preserved
+  array order and integer numbers bounded to JavaScript safe integer range.
+  `createdAt` is retained; this identifies the exact archived snapshot.
+- `sourceSchema`: the same canonical SHA-256 algorithm over
+  `{schemaDigest, schemaVersion, migrations}` from that inventory. Every ordered
+  migration's closed `{name, sha256}` entry is included, so a data-only migration
+  checksum changes this identity even when the physical SQL schema stays equal.
+- `sourceImage`: the Platform's immutable preserved content ID without the
+  `sha256:` prefix. The PostgreSQL image cannot substitute for the Platform image.
+
+A physical SQL hash alone cannot qualify a sourceSchema plan for this adapter.
+Existing journal-only diagnostics and unbound restoration remain unchanged;
+regenerate an authorized exact plan/policy/release with the full fingerprint,
+rather than lowering security floors or editing a prepared intent.
+
+The normal restoration adapter restores and verifies the actual PostgreSQL/blob
+inventory into new named volumes, preserves signing/configuration credentials,
+starts the restored **source-version** candidate on a new loopback port and checks
+Runtime readiness. Success adds optional `sourceVerification` to its private
+receipt (`inventorySha256`, full `schemaSha256`, `runtimeImageSha256`). It is absent
+for existing unbound restore calls/receipts; older closed readers reject a new
+bound receipt rather than silently consuming its additional proof. No public
+format or dependencies changed. New receipt readers validate proof shapes.
+
+Output reports `candidatePrepared:true`, `updateExecuted:false` and
+`preflightVerified:false`. The update journal stays Prepared with null preflight.
+Actual source-version restoration is one required preflight component; current
+source equality/quiescence, migration/data compatibility, resource reservation,
+actual signed target OCI import/application and observed target image/schema/health
+remain necessary before Applying. This command is not completed update or rollback.
+The candidate's separate restoration journal provides failure/interruption/helper
+reconciliation; no automatic replay occurs. Explicit Prepared intent discard does
+not stop/delete its candidate services, volumes, journals or registry entry, and
+history retains its target ID reservation. Preserve and explicitly inspect/stop
+owned candidates when reconciling or abandoning an attempt.
+
+The real synthetic regression is `scripts/test-bound-candidate.mjs <update CLI>
+<manager CLI> <retained synthetic creation fixture>`. It verifies actual foreign
+manifest refusal before target installation, separate full DB/blob/config/image
+restoration, schema+migration/inventory/image bindings, actual witness/blob/signing
+key, administrator HTTP login/web, repeat refusal, original hashes/container
+states and unchanged active selection/Prepared journal. It stops only its new
+completed synthetic candidate and retains all new data/volumes/failure candidates.
+It does not move the original path or export a private signing key. Cached Docker
+images, native GUI, cold-engine/full frozen corpus, Windows/Podman, production
+roots, signed target update and whole security-state recovery remain separate.
+
+The no-overwrite fresh-root guard runs under the target lock before a new-operation
+space budget, so a repeat attempt still reports an existing/failed target when
+available disk has fallen. Successful candidates can consume substantial temporary
+space (authenticated/restored plaintext plus imported deployment copies); preserve
+those candidates and originals rather than weaken the 2GiB floor.
+
+The regression script persists a private source baseline before a new restore.
+After a terminal test assertion failure, it can observe the same completed owned
+candidate without replaying restoration using `--resume-existing <private test
+workspace> --archive-baseline <independent retained same-backup ciphertext copy>
+--producer-record <private original CLI/hash record>`. Original deployment files
+are compared to the registered source copy made before restoration and ciphertext
+to the independent copy. Its report distinguishes the original producer binary,
+current verification binary and resume-time key/container-state baseline. This
+mode is test observation, not automatic product recovery or update preflight.

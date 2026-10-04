@@ -91,6 +91,55 @@ impl ExecutionSession<'_> {
         self.check()?;
         result
     }
+    /// Restore the exact planned source backup into the already-registered fresh
+    /// target. Prepared intent has reserved this target identity durably; no
+    /// journal transition, signed-update activation or selection change occurs here.
+    pub fn prepare_target_candidate(
+        &self,
+        image: &str,
+        key: &Path,
+        archive: &Path,
+        port: u16,
+        acknowledged: bool,
+    ) -> crate::Result<crate::restoration::RestorationReceipt> {
+        self.check()?;
+        if !acknowledged {
+            return Err(crate::err("BACKUP_OPERATOR_ACK_REQUIRED"));
+        }
+        let intent = self
+            .store
+            .intent()
+            .ok_or_else(|| crate::err("UPDATE_INTENT_MISSING"))?;
+        if intent.update.stage() != crate::update::Stage::Prepared {
+            return Err(crate::err("UPDATE_CANDIDATE_STAGE_INVALID"));
+        }
+        let plan = intent.update.plan();
+        let binding = crate::restoration::RestorationBinding::from_plan(plan)?;
+        let (registry, _) = installations::load(&self.store.profile)?
+            .ok_or_else(|| crate::err("UPDATE_SOURCE_CHANGED"))?;
+        let entry = registry
+            .installations
+            .iter()
+            .find(|e| e.id == plan.target_instance && e.kind == "recovery")
+            .ok_or_else(|| crate::err("UPDATE_TARGET_UNREGISTERED"))?;
+        let root = installations::root(&self.store.profile, entry);
+        installations::private_directory(&self.store.profile.join("installations"))?;
+        installations::private_directory(&root)?;
+        let before =
+            fs::symlink_metadata(&root).map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?;
+        let target = LifecycleService::open_retry_diagnostics(root.clone())?;
+        let _source_lock = self.source.lock()?;
+        let result = target.restore_update_candidate(image, key, archive, port, &binding);
+        self.check()?;
+        installations::private_directory(&root)?;
+        if !identity(
+            &before,
+            &fs::symlink_metadata(&root).map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?,
+        ) {
+            return Err(crate::err("UPDATE_TARGET_CHANGED"));
+        }
+        result
+    }
     /// Actual authenticated decryption, bound to the prepared manifest hash.
     /// Authentication alone cannot authorize update or prove complete restoration.
     pub fn verify_backup(
@@ -125,6 +174,9 @@ mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
     const SOURCE: &str = "ab6a178b-a401-48c1-b0aa-ddf87b059e31";
     fn prepared(scope: &str) -> (PathBuf, Store) {
+        prepared_with_budget(scope, 1024)
+    }
+    fn prepared_with_budget(scope: &str, budget: u64) -> (PathBuf, Store) {
         let (p, k, policy, r) = fixture();
         let mut s = Store::provision(&p, scope, policy, 10).unwrap();
         let e = seal(&k, &r);
@@ -132,6 +184,9 @@ mod tests {
         v.verify_artifact(&mut b"fixture".as_slice()).unwrap();
         let mut plan = plan();
         plan.source_instance = SOURCE.into();
+        plan.required_free_bytes = budget;
+        plan.target_instance = "cc414c3c-dd99-45e2-8307-131a49f72d68".into();
+        plan.backup_id = "45ec39e9-5c19-47e6-9aaf-176978521a73".into();
         s.prepare_update(&e, &v, plan, 20).unwrap();
         (p, s)
     }
@@ -258,5 +313,112 @@ mod tests {
         assert_eq!(lease.source.root, root);
         assert!(!lease.source_status().unwrap().installed);
         assert_eq!(fs::read(path).unwrap(), before);
+    }
+    fn register_target(p: &Path) -> PathBuf {
+        let (mut r, _) = installations::load(p).unwrap().unwrap();
+        let id = "cc414c3c-dd99-45e2-8307-131a49f72d68";
+        r.installations.push(installations::Entry {
+            id: id.into(),
+            kind: "recovery".into(),
+            created_at: 0,
+        });
+        fs::write(
+            p.join("installation-selection.json"),
+            serde_json::to_vec(&r).unwrap(),
+        )
+        .unwrap();
+        let parent = p.join("installations");
+        installations::new_directory(&parent).unwrap();
+        let target = parent.join(id);
+        installations::new_directory(&target).unwrap();
+        target
+    }
+    #[test]
+    fn candidate_requires_ack_existing_registered_target_and_private_namespace() {
+        let (p, mut s) = prepared("default");
+        registered(&p, SOURCE, "default");
+        let lease = s.execution().unwrap();
+        assert_eq!(
+            lease
+                .prepare_target_candidate("tag", &p, &p, 13200, false)
+                .unwrap_err()
+                .code,
+            "BACKUP_OPERATOR_ACK_REQUIRED"
+        );
+        assert_eq!(
+            lease
+                .prepare_target_candidate("tag", &p, &p, 13200, true)
+                .unwrap_err()
+                .code,
+            "UPDATE_TARGET_UNREGISTERED"
+        );
+        assert!(!p.join("installations").exists());
+        drop(lease);
+        assert_eq!(s.receipt().generation, 2);
+        let target = register_target(&p);
+        let retained = p.join("retained-target");
+        fs::rename(&target, &retained).unwrap();
+        symlink(&retained, &target).unwrap();
+        let lease = s.execution().unwrap();
+        assert!(
+            lease
+                .prepare_target_candidate("tag", &p, &p, 13200, true)
+                .is_err()
+        );
+        assert_eq!(fs::read_dir(retained).unwrap().count(), 0);
+    }
+    #[test]
+    fn candidate_preparation_rejects_applying_before_any_target_mutation() {
+        let (p, mut s) = prepared("default");
+        registered(&p, SOURCE, "default");
+        let target = register_target(&p);
+        let envelope = s.intent().unwrap().envelope.as_bytes().to_vec();
+        let mut v = s.verify_for_preparation(&envelope, 20).unwrap();
+        v.verify_artifact(&mut b"fixture".as_slice()).unwrap();
+        let mut observations = super::super::tests::observations();
+        observations.plan = s.intent().unwrap().update.plan().clone();
+        s.begin_update(observations, &v, 21).unwrap();
+        let lease = s.execution().unwrap();
+        assert_eq!(
+            lease
+                .prepare_target_candidate("tag", &p, &p, 13200, true)
+                .unwrap_err()
+                .code,
+            "UPDATE_CANDIDATE_STAGE_INVALID"
+        );
+        assert_eq!(fs::read_dir(target).unwrap().count(), 0);
+    }
+    #[test]
+    fn existing_target_is_refused_before_an_unsatisfiable_new_operation_budget() {
+        let (p, mut s) = prepared_with_budget("default", u64::MAX);
+        registered(&p, SOURCE, "default");
+        let target = register_target(&p);
+        fs::write(target.join("retained-candidate"), b"keep").unwrap();
+        let key = p.parent().unwrap().join("synthetic-test-key.bin");
+        fs::write(&key, [7u8; 32]).unwrap();
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+        let archive = p.parent().unwrap().join("synthetic-archive");
+        installations::new_directory(&archive).unwrap();
+        let lease = s.execution().unwrap();
+        assert_eq!(
+            lease
+                .prepare_target_candidate(
+                    &format!("sha256:{}", "a".repeat(64)),
+                    &key,
+                    &archive,
+                    13200,
+                    true
+                )
+                .unwrap_err()
+                .code,
+            "RESTORE_FRESH_ROOT_REQUIRED"
+        );
+        assert_eq!(
+            fs::read(target.join("retained-candidate")).unwrap(),
+            b"keep"
+        );
+        assert!(!target.join("restoration.json").exists());
+        drop(lease);
+        assert_eq!(s.receipt().generation, 2);
     }
 }
