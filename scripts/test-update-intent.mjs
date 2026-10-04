@@ -50,5 +50,29 @@ const consumedProfile=freshProfile('already-accepted-profile');call('accept',['-
 const mismatchProfile=freshProfile('mismatched-plan-profile');prepare(mismatchProfile,put({...plan,targetImage:'0'.repeat(64)}),envelope,'UPDATE_PLAN_MISMATCH');assert.equal(call('trust-status',[],null,mismatchProfile).generation,1);assert.equal(call('update-intent',[],null,mismatchProfile).intent,null);step('actual wrong-image intent fails without consuming release or writing a prepared operation');
 renameSync(intentProfile,join(base,'retained-intent-profile'));const afterRemoval=call('update-intent',[],null,intentProfile);assert.deepEqual(afterRemoval.intent,prepared.intent);assert.equal(afterRemoval.trust.minimumSequence,41);step('actual profile namespace removal preserves original intent and floor without recreating profile or executing runtime');
 
-const report={format:1,checks,prepared,recoveredIntent,fixture:base,cliSha256:hash(readFileSync(cli)),initial,accepted,current,final:status(),journal:readdirSync(store),limits:['synthetic artifact, not a deployable OCI bundle; no engine update/migration/activation/restore','trusted local OS administrator policy replacement, no signed remote rotation/production root','same-UID or complete security-journal rollback not resisted; retain external journal during profile recovery','no native GUI/Windows/Linux filesystem qualification; private signing keys transient memory only']};
+// Synthetic trusted journal event: exercises actual separate CLI-process recovery,
+// not a real engine, backup-restoration or preflight verifier.
+const recoveryStore=join(base,readdirSync(base).filter(n=>n.startsWith('.exhibitos-release-trust-')).find(n=>{
+    const last=join(base,n,'00000000000000000003.json');
+    if(!existsSync(last))return false;
+    const r=JSON.parse(readFileSync(last));return r.intent?.update?.plan?.operationId==='intent-1';
+}));
+const previousPath=join(recoveryStore,'00000000000000000003.json');
+const previousBytes=readFileSync(previousPath),applying=JSON.parse(previousBytes);
+const preflight={plan,signatureVerified:true,artifactVerified:true,compatibilityVerified:true,backupRestoreVerified:true,currentSourceMatchesBackup:true,availableFreeBytes:1024,imageOnlyRollbackVerified:false};
+applying.generation=4;applying.previousSha256=hash(previousBytes);
+applying.intent.update.stage='applying';applying.intent.update.preflight=preflight;
+applying.updateEvent={kind:'begin',evidence:preflight};
+const applyingPath=join(recoveryStore,'00000000000000000004.json');
+writeFileSync(applyingPath,JSON.stringify(applying),{mode:0o600});
+const applyingHash=hash(readFileSync(applyingPath));
+const recovered=call('update-intent',[],null,consumedProfile);
+assert.equal(recovered.trust.generation,5);assert.equal(recovered.trust.minimumSequence,41);
+assert.equal(recovered.intent.update.stage,'recovery_required');assert.equal(recovered.intent.update.failure,'interrupted');
+assert.deepEqual(recovered.intent.update.plan,plan);
+assert.equal(call('update-intent',[],null,consumedProfile).trust.generation,5);
+assert.equal(hash(readFileSync(applyingPath)),applyingHash);assert.deepEqual(readFileSync(previousPath),previousBytes);
+step('actual CLI open durably marks synthetic Applying as Interrupted/RecoveryRequired exactly once, retaining plan, floors and original records; no engine proof');
+
+const report={format:1,checks,recovered,prepared,recoveredIntent,fixture:base,cliSha256:hash(readFileSync(cli)),initial,accepted,current,final:status(),journal:readdirSync(store),limits:['synthetic artifact, not a deployable OCI bundle; no engine update/migration/activation/restore','trusted local OS administrator policy replacement, no signed remote rotation/production root','same-UID or complete security-journal rollback not resisted; retain external journal during profile recovery','no native GUI/Windows/Linux filesystem qualification; private signing keys transient memory only']};
 const path=join(base,'update-intent-report.json');writeFileSync(path,JSON.stringify(report,null,2)+'\n',{mode:0o600});console.log('Report '+path);console.log('SHA256 '+hash(readFileSync(path)));
