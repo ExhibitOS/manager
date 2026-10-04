@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Exact complete history under the existing fences; never activates/rewinds trust.
 use super::*;
+#[path = "trust_checkpoint_encrypted.rs"]
+mod encrypted;
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrustCheckpointReceipt {
