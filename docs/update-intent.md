@@ -339,3 +339,55 @@ retains the candidate and its restoration journal; do not replay automatically.
 Source snapshot/inventory equality, external writer isolation, resource reservation
 and compatibility remain necessary for Applying. Older candidate CLI invocations
 must add --external-writers-quiesced; public Spec and journal formats are unchanged.
+
+## Current source host deployment comparison
+
+`verify-update-source-deployment --profile <absolute profile> --installation default|UUID
+--external-writers-quiesced --apps-closed` requires Prepared and its exact already
+registered recovery target with a completed bound restoration receipt. Both source
+and target operation locks and exclusive profile fences remain held. The original
+candidate root identity/registry is rechecked even on failure; no arbitrary manifest,
+root, receipt, UUID override or supplied verification flag is accepted.
+
+The adapter checks the receipt backup UUID/manifest hash and complete inventory,
+schema+migration and Runtime proof against the stored plan, then reads that candidate's
+private authenticated manifest and independently rechecks its exact raw bytes and
+all plan bindings. Unbound/failed/interrupted candidates cannot supply this proof.
+It compares current source bytes/lengths for these five uniquely named configuration
+records: manager-bundle-manifest.json -> bundle/manifest.json, manager-compose.yaml ->
+bundle/compose.yaml, manager-runtime.env -> runtime.env, manager-installed.json ->
+installed.json and manager-engine.json -> engine.json. Missing/duplicate records,
+wrong roles, malformed hashes/sizes, private mode/ownership/alias/hardlink failures
+and changed bytes refuse. File reads are bounded and check file identity before/after.
+Current files are compared twice with direct source-stopped/image observations;
+source container IDs must remain unchanged. Output contains paths/lengths/hashes,
+never environment values or credentials.
+
+Success reports hostDeploymentVerified:true, dataInventoryVerified:false,
+preflightVerified:false, updateExecuted:false. It does not advance the Prepared
+journal or qualify full source equality: PostgreSQL rows/sequences/schema/migrations,
+all object/reference bytes and the live configuration volume/freeze signing key
+still require independent current observations. manager-image-inventory.json is a
+backup-generated image mapping, not one of the five current source host files.
+External/noncooperating writers remain operator-acknowledged rather than isolated.
+The completed candidate receipt is historical restoration evidence, not a fresh
+candidate DB/blob inventory or current health attestation. Actual signed target
+application/migrations/rollback and coherent security+data recovery remain required.
+
+Synthetic regression: scripts/test-source-deployment.mjs <update CLI> <retained
+synthetic bound-candidate workspace>. It observes the retained completed candidate,
+temporarily changes only owned synthetic source/manifest/receipt/registry copies
+and restores their exact bytes in finally blocks, checking each refusal, repeat
+proof, original source files, container states and unchanged Prepared intent.
+It performs no new restoration or source start/stop. Native GUI, Windows/Podman,
+cold/full corpus and global instance isolation remain separate qualifications.
+
+
+Successful fresh candidate preparation now performs this same authenticated
+five-file comparison before reporting candidatePrepared:true. If the source
+host bytes changed since the backup, restoration may already have completed into
+a new candidate; the command refuses success and preserves its services/data,
+restoration journal and Prepared intent. Inspect/stop the owned candidate explicitly.
+This does not silently discard a candidate, replay restoration, or qualify current
+DB/blob/config-volume equality. A full fresh restoration with this additional
+post-restore guard remains a separate acceptance test.
