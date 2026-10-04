@@ -102,13 +102,14 @@ fn main() {
 }
 fn verify() -> Result<(), String> {
     let a: Vec<String> = std::env::args().collect();
-    if a.len() != 8
-        || a[1] != "verify"
+    let staging = a.get(1).is_some_and(|s| s == "stage");
+    if ((!staging && a.len() != 8) || (staging && (a.len() != 10 || a[8] != "--staging-parent")))
+        || !matches!(a[1].as_str(), "verify" | "stage")
         || a[2] != "--policy"
         || a[4] != "--release"
         || a[6] != "--artifact"
     {
-        return Err("UPDATE_USAGE: exhibitos-update verify --policy <trusted policy> --release <signed envelope> --artifact <local artifact>".into());
+        return Err("UPDATE_USAGE: exhibitos-update verify|stage --policy <trusted policy> --release <signed envelope> --artifact <local artifact> [--staging-parent <private absolute directory>]".into());
     }
     let policy: Policy = serde_json::from_slice(&bounded(
         Path::new(&a[3]),
@@ -127,6 +128,21 @@ fn verify() -> Result<(), String> {
     if path.file_name().and_then(|n| n.to_str()) != Some(verified.release().artifact.name.as_str())
     {
         return Err("UPDATE_ARTIFACT_NAME_MISMATCH".into());
+    }
+    if staging {
+        let mut staged =
+            signed_release::artifact::stage(&mut verified, path, Path::new(&a[9]), now)
+                .map_err(|e| e.code().to_string())?;
+        let finished = self::now()?;
+        signed_release::verify(&envelope, &policy, finished).map_err(|e| e.code().to_string())?;
+        staged
+            .reverify(&mut verified, finished)
+            .map_err(|e| e.code().to_string())?;
+        println!(
+            "{}",
+            serde_json::json!({"verification":verified.receipt(),"staged":true,"stagedPath":staged.path(),"ociInternalsVerified":false,"activated":false})
+        );
+        return Ok(());
     }
     let mut artifact = open(path)?;
     let before = artifact.metadata().map_err(|_| "UPDATE_INPUT_INVALID")?;
@@ -184,7 +200,9 @@ fn artifact(verified: &mut signed_release::VerifiedRelease, path: &Path) -> Resu
 fn run() -> Result<(), String> {
     use signed_release::trust::Store;
     let a: Vec<String> = std::env::args().collect();
-    if a.get(1).map(String::as_str) == Some("verify") {
+    if a.get(1)
+        .is_some_and(|s| matches!(s.as_str(), "verify" | "stage"))
+    {
         return verify();
     }
     let code = |e: signed_release::Error| e.code().to_string();

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Offline signed runtime release verification. No trust-on-first-use, download,
 //! policy persistence, migration, engine mutation or backup attestation.
+#[path = "release_artifact.rs"]
+pub mod artifact;
 #[path = "release_trust.rs"]
 pub mod trust;
 use crate::update::{Plan, Preflight};
