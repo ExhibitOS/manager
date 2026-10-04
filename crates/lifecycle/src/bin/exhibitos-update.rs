@@ -289,6 +289,24 @@ fn run() -> Result<(), String> {
         );
         return Ok(());
     }
+    if a[1] == "checkpoint-host-trust" {
+        if a.len() != 12
+            || a[6] != "--key-file"
+            || a[8] != "--destination"
+            || a[10] != "--host-writers-stopped"
+        {
+            return Err(usage());
+        }
+        let store = Store::open(profile, installation).map_err(code)?;
+        let receipt = store
+            .checkpoint_host_trust(Path::new(&a[7]), Path::new(&a[9]), true)
+            .map_err(|e| e.code)?;
+        println!(
+            "{}",
+            serde_json::to_string(&receipt).map_err(|_| "UPDATE_RECEIPT_INVALID")?
+        );
+        return Ok(());
+    }
     let result = match a[1].as_str() {
         "trust-provision" if a.len() == 9 && a[6] == "--policy" => {
             Store::provision(profile, installation, policy(&a[7])?, now()?)

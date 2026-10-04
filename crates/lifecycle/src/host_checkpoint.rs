@@ -418,6 +418,45 @@ pub fn checkpoint_host(
     apps_closed: bool,
     writers_stopped: bool,
 ) -> Result<HostReceipt> {
+    checkpoint_host_guarded(
+        profile,
+        key,
+        archive,
+        apps_closed,
+        writers_stopped,
+        None,
+        || Ok(()),
+    )
+    .map(|(receipt, ())| receipt)
+}
+pub(crate) fn checkpoint_host_anchored<T>(
+    profile: &Path,
+    key: &Path,
+    archive: &Path,
+    writers_stopped: bool,
+    anchor: File,
+    after: impl FnOnce() -> Result<T>,
+) -> Result<(HostReceipt, T)> {
+    checkpoint_host_guarded(
+        profile,
+        key,
+        archive,
+        true,
+        writers_stopped,
+        Some(anchor),
+        after,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn checkpoint_host_guarded<T>(
+    profile: &Path,
+    key: &Path,
+    archive: &Path,
+    apps_closed: bool,
+    writers_stopped: bool,
+    anchor: Option<File>,
+    after: impl FnOnce() -> Result<T>,
+) -> Result<(HostReceipt, T)> {
     acknowledgement(apps_closed)?;
     if !writers_stopped {
         return Err(err("HOST_WRITER_ACK_REQUIRED"));
@@ -426,7 +465,10 @@ pub fn checkpoint_host(
     let parent = archive_parent(profile, archive, key)?;
     let key = external_key(profile, key)?;
     no_destination(archive)?;
-    let _session = session_lock(profile, true)?;
+    let _session = match anchor {
+        Some(anchor) => anchored_session(profile, anchor, true)?,
+        None => session_lock(profile, true)?,
+    };
     let _profile = lock_file(profile, "operation.lock", true)?;
     let s = capture(profile)?;
     let _roots = root_locks(profile, &s.spaces)?;
@@ -460,6 +502,7 @@ pub fn checkpoint_host(
         .map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
     output.sync_all().map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
     drop(output);
+    let paired = after()?;
     let second = inventory(profile, &excluded, &id)?;
     if m.items != second.items || m.registry_sha256 != second.registry_sha256 {
         return Err(err("HOST_SOURCE_CHANGED"));
@@ -476,7 +519,7 @@ pub fn checkpoint_host(
     publish(&pending, archive)?;
     fs::remove_file(&pending).map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
     sync(&parent)?;
-    Ok(receipt(&m, "host-profile-checkpoint", &encoded))
+    Ok((receipt(&m, "host-profile-checkpoint", &encoded), paired))
 }
 fn publish_directory(source: &Path, target: &Path) -> Result<()> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
