@@ -448,3 +448,40 @@ Platform image for the app. Known test helpers and three empty named volumes are
 removed; the failed fixture's automatically generated anonymous volume is retained
 for later separately scoped review. This test does not execute the full profile/CLI
 source comparison or certify current DB/blob/config content.
+
+## Current native freeze signing configuration
+
+`verify-update-source-configuration --profile <absolute profile> --installation
+default|UUID --image sha256:<trusted local maintenance content ID>
+--external-writers-quiesced --apps-closed` holds the exclusive profile/source/target
+fences and requires the exact registered completed recovery candidate of Prepared.
+It authenticates that candidate's raw manifest against the stored plan, validates
+its restoration bindings and current five host files, and derives the unique
+freeze-signing-key configuration record. An extracted historical key is never
+used as the current reader. The current source native volume is derived from
+owned actual Docker mounts, not an arbitrary path or caller success flag.
+
+A network-disabled, read-only, capability-free UID1000 helper reads only the
+source configuration volume. The supported native layout contains exactly
+`freeze-signing-key.json`. Canonical regular single-link0600/UID1000 files under
+1MiB are read twice with file identity/timestamp and measured shared-filesystem
+backend guards. Buffers are zeroed; output contains only name/size/digest. Changed
+bytes, public permissions, foreign ownership and additional/alias files refuse.
+The adapter compares the result with the authenticated record, rechecks current
+host files and source container/volume bindings, and retains the Prepared intent.
+The receipt binds source/target IDs, backup/raw-manifest hash, volume name, immutable
+helper image and observation time. Helpers are stopped/observed and removed by
+exact ID/ownership without force or volume deletion; uncertain creation/cleanup
+refuses and retains the helper for review. No archive key is required.
+
+Success reports nativeFreezeKeyVerified:true, configurationInventoryVerified:false,
+preflightVerified:false, updateExecuted:false. The backup-generated image mapping
+still needs independent fresh Engine evidence, and full DB/blob/current security
+history and actual application/rollback remain necessary. This is a momentary
+observation, not external-writer isolation, atomic configuration snapshot or an
+Applying authorization. UID1000/native Docker is the supported initial scope;
+Windows/Podman/other ownership and the full profile/CLI synthetic path remain
+unqualified. Real-Engine Rust regression `actual_native_configuration_content_and_metadata`
+checks a separately owned synthetic Linux volume's matching/changed bytes, public
+mode, ownership and additional/alias refusals, then restores its original bytes,
+0600/1000 metadata and one-file scope. That synthetic volume is retained privately.
