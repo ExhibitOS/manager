@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+mod startup;
 use exhibitos_lifecycle::{
     Action, EngineProbe, Job, LifecycleError, LifecycleService, LogEvent, Status,
 };
@@ -610,29 +611,26 @@ async fn manager_open_exhibition(
 }
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let result = tauri::Builder::default()
         .setup(|app| {
-            let override_root = match std::env::var_os("EXHIBITOS_MANAGER_ROOT") {
-                Some(root) => {
-                    let path = PathBuf::from(root);
-                    if !path.is_absolute() {
-                        return Err("Manager runtime root must be absolute".into());
-                    }
-                    Some(path)
-                }
-                None => None,
-            };
+            let override_root = startup::override_root(std::env::var_os("EXHIBITOS_MANAGER_ROOT"))?;
+            let profile = app
+                .path()
+                .app_data_dir()
+                .map_err(|_| startup::Failure::from_code("MANAGER_DATA_PATH_UNAVAILABLE"))?;
             let controller = exhibitos_lifecycle::installations::InstallationController::new(
-                app.path().app_data_dir()?,
+                profile,
                 override_root,
-            )?;
+            )
+            .map_err(|error| startup::Failure::from_code(&error.code))?;
             app.manage(DesktopState(Arc::new(controller)));
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("ExhibitOS Manager")
                 .inner_size(1120.0, 900.0)
                 .min_inner_size(640.0, 620.0)
                 .on_navigation(local_frontend)
-                .build()?;
+                .build()
+                .map_err(|_| startup::Failure::from_code("MANAGER_WEBVIEW_UNAVAILABLE"))?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -661,8 +659,15 @@ pub fn run() {
             manager_create_installation,
             manager_select_installation
         ])
-        .run(tauri::generate_context!())
-        .expect("Manager desktop startup failed");
+        .run(tauri::generate_context!());
+    if let Err(error) = result {
+        let failure = match error {
+            tauri::Error::Setup(setup) => startup::Failure::from_code(&setup.to_string()),
+            _ => startup::Failure::from_code("MANAGER_STARTUP_FAILED"),
+        };
+        failure.report();
+        std::process::exit(1);
+    }
 }
 #[cfg(test)]
 mod tests {
