@@ -74,7 +74,9 @@ fn bind_matches(actual: &Value, requested: &str) -> bool {
     }
     #[cfg(target_os = "macos")]
     {
-        actual.as_str().is_some_and(|s| s == format!("/host_mnt{requested}"))
+        actual
+            .as_str()
+            .is_some_and(|s| s == format!("/host_mnt{requested}"))
     }
     #[cfg(not(target_os = "macos"))]
     false
@@ -127,7 +129,7 @@ fn helper_valid(
                 })
         })
 }
-fn observe(
+pub(super) fn observe(
     ctx: &candidate_inventory::CandidateContext<'_>,
     image: &str,
 ) -> Result<EphemeralObservation> {

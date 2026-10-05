@@ -5,7 +5,7 @@ use super::*;
 mod candidate_configuration;
 #[path = "candidate_recovery.rs"]
 mod candidate_recovery;
-pub use candidate_recovery::CandidateRecoveryReceipt;
+pub use candidate_recovery::{CandidateRecoveryReceipt, EphemeralCandidateRecoveryReceipt};
 #[path = "candidate_inventory.rs"]
 mod candidate_inventory;
 pub use candidate_configuration::CandidateConfigurationReceipt;
@@ -1920,6 +1920,23 @@ mod tests {
                 .code,
             "UPDATE_TARGET_UNREGISTERED"
         );
+        for acknowledged in [false, true] {
+            assert_eq!(
+                session
+                    .verify_restored_candidate_recovery_ephemeral(
+                        "untrusted",
+                        Path::new("/untrusted-parent"),
+                        acknowledged
+                    )
+                    .unwrap_err()
+                    .code,
+                if acknowledged {
+                    "UPDATE_TARGET_UNREGISTERED"
+                } else {
+                    "BACKUP_OPERATOR_ACK_REQUIRED"
+                }
+            );
+        }
         for acknowledged in [false, true] {
             assert_eq!(
                 session

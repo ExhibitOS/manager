@@ -60,3 +60,17 @@ exhibitos-update verify-restored-candidate-inventory-ephemeral \
 Each helper has no network, a readonly root, readonly original database/blob/manifest mounts, restricted capabilities, a64-process limit, 3GiB memory and equal memory+swap limit. The snapshot is a4GiB tmpfs capacity with a3GiB total process/memory ceiling; the existing physical2GiB copy limit and2GiB free-space headroom remain. The Engine must report at least3.5GiB RAM. This is an eligibility check, not a reservation: other workloads or large copies may still cause OOM, which refuses verification. Host/VM paging is outside this helper's guarantee. Base-image declared volumes are masked by tmpfs; unexpected declared volumes are refused before create to prevent accidental anonymous volumes. macOS Docker Desktop's exact `/host_mnt` bind representation is accepted; unrelated paths and writable original mounts are refused. Windows runtime qualification remains pending.
 
 Tmpfs disappears when the helper stops, including failures; no persistent failure DB copy is retained by this opt-in path. Original volumes and host records remain untouched. Failed helper metadata and small private command reports are retained for diagnosis. Only exact owned, stopped helpers whose physical/logical proof validated are removed automatically; this path contains no volume deletion. Persistent snapshot commands remain available when a durable diagnostic copy is required. Existing snapshots and previous recovery baselines are not retired by this command.
+
+### Full candidate recovery observation with bounded temporary data
+
+`verify-restored-candidate-recovery-ephemeral` combines the bounded candidate inventory path with the full remapped configuration, freeze-key and current image-byte checks in one retained session. The order is current DB/blob → configuration/key/two image exports → current DB/blob again → late configuration check → final source/candidate/root/receipt/manifest/trust guards. A separate invocation or saved JSON success cannot replace any step.
+
+```sh
+exhibitos-update verify-restored-candidate-recovery-ephemeral \
+  --profile /absolute/private/profile --installation default \
+  --image sha256:QUALIFIED_LOCAL_MAINTENANCE_IMAGE_ID \
+  --export-parent /absolute/private/external-export-parent \
+  --external-writers-quiesced --apps-closed
+```
+
+The export parent must pass the existing private canonical path checks and be outside the source/candidate profile. Both host and export filesystem need10GiB available: 2GiB image bytes, 2GiB growth/headroom, and6GiB retained floor. The existing configuration verifier's10GiB budget and full file/image checks are unchanged; no persistent DB copy is budgeted because both database observations use bounded tmpfs. The memory/resource/OOM eligibility and limitations above also apply. Only the fresh verified image exports are retired after all final checks, leaving their small hash marker; failed exports remain for diagnosis. Original volumes, keys, old image archives and recovery baselines remain unchanged. The receipt still explicitly records `preflightVerified=false` and `updateExecuted=false`: fresh release policy, compatibility, coherent authority/host recovery and actual execution/rollback acceptance remain separate gates.
