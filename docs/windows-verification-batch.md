@@ -101,3 +101,18 @@ cargo test -p exhibitos-lifecycle --lib windows_generation_publication --locked
 4개 합성 검사는 정확한 bytes 재열기·read handle의 writer/rename 거부, 기존 이름·case alias 보존 및 pending 유지, 잘못된 이름/한도 거부, 동시 발행2개 중 정확히1개 성공을 확인한다. Native 실행은 최종 단일 배치까지 미실행이다. 생성된 작은 전용 fixture만 정상 검사 후 정리하고 실패 시 보존한다.
 
 이 helper의 file sync는 directory/power-loss durability 증거가 아니다. Windows `Store::provision/open`은 전체 root identity·case-safe scope·읽기·lock·directory publication/durability 연결이 아직 없어 platform gate를 유지한다. 따라서 실제 Windows trust 업데이트·checkpoint·전체 백업/복원은 이 변경만으로 실행 가능하거나 통과한 상태가 아니다.
+
+
+## WIN-06 Windows trust root·읽기·잠금 선행 구현
+
+Store 소스에는 보호된 NTFS root 가드를 저장소 전체 수명 동안 유지하는 adapter를 연결했다. 부모 native directory ID와 대소문자를 통일한 ASCII profile leaf 이름으로 논리 scope를 계산하며, 같은 부모의 case alias와 missing/replacement profile은 같은 scope를 사용한다. 다른 installation UUID는 별도 scope를 쓴다. 새로운 원본/부모 namespace로의 trust 이식 권한을 부여하지 않는다.
+
+기록 읽기는 owner-only ACL·native file identity·single-link를 검사하는 bound read handle로96KiB 이하 bytes를 읽고 빈 committed 기록을 거부한다. trust.lock은 기존 bytes/ACL을 바꾸지 않고 exclusive native lock으로 연다. pending-UUID 기록은 bounded private input으로 검사하고 부분/빈 bytes가 있어도 committed history나 floor로 채택하지 않는다. Root ACL/경로 변화, writer/hardlink/초과 크기, 중복 lock은 거부한다.
+
+```powershell
+cargo test -p exhibitos-lifecycle --lib windows_trust_root --locked
+```
+
+5개 새 합성 native 검사는 scope case alias/부재 보존·installation 구분, exclusive lock/root rename 거부, writer/hardlink/빈/초과 기록, 새 root에 대한 Everyone read ACL grant 거부, partial pending 보존을 확인한다. MSVC 교차 컴파일만 통과했으며 실제 Windows 검사는 단일 최종 배치까지 미실행이다.
+
+전체 Store 플랫폼 gate는 유지한다. [Microsoft Directory Handles](https://learn.microsoft.com/en-us/windows/win32/fileio/obtaining-a-handle-to-a-directory)와 [FlushFileBuffers](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)의 공식 문서는 현재 구현에 필요한 directory publication/power-loss durability 보장을 증명하지 않는다. File sync나 이 adapter의 guard를 그 증거로 대체하지 않는다. 남은 directory durability·host/archive·authority-loss/full recovery·executor 연결 및 crash corpus가 필요하다.

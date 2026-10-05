@@ -10,6 +10,9 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
 };
+#[cfg(windows)]
+#[path = "windows_trust_root.rs"]
+mod windows_root;
 const MAX_RECORD: u64 = 96 * 1024;
 const MAX_RECORDS: usize = 4096;
 const MAX_REVOKED: usize = 256;
@@ -110,7 +113,10 @@ pub struct Store {
     installation: String,
     root: PathBuf,
     scope: String,
+    #[cfg(not(windows))]
     root_identity: Metadata,
+    #[cfg(windows)]
+    native_root: windows_root::NativeRoot,
     _anchor: profile_backup::ProfileAnchor,
     _lock: File,
     current: Record,
@@ -169,6 +175,7 @@ fn private_file(path: &Path, create: bool) -> Result<File, Error> {
     }
     Ok(f)
 }
+#[cfg(not(windows))]
 fn read_record(path: &Path) -> Result<Vec<u8>, Error> {
     let mut f = private_file(path, false)?;
     let before = f.metadata().map_err(|_| invalid())?;
@@ -212,6 +219,15 @@ fn read_record(path: &Path) -> Result<Vec<u8>, Error> {
     }
     Ok(b)
 }
+#[cfg(windows)]
+fn read_record(path: &Path) -> Result<Vec<u8>, Error> {
+    let root = windows_root::NativeRoot::inspect(path.parent().ok_or_else(invalid)?)?;
+    root.read(
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(invalid)?,
+    )
+}
 fn scope(
     profile: &Path,
     installation: &str,
@@ -232,12 +248,18 @@ fn scope(
             invalid()
         }
     })?;
-    let path = profile.to_str().ok_or_else(invalid)?;
-    let id = hash(format!("ExhibitOS-release-trust-v1\0{path}\0{installation}").as_bytes());
-    let root = profile
-        .parent()
-        .ok_or_else(invalid)?
-        .join(format!(".exhibitos-release-trust-{id}"));
+    #[cfg(windows)]
+    let (root, id) = windows_root::namespace(&profile, installation)?;
+    #[cfg(not(windows))]
+    let (root, id) = {
+        let path = profile.to_str().ok_or_else(invalid)?;
+        let id = hash(format!("ExhibitOS-release-trust-v1\0{path}\0{installation}").as_bytes());
+        let root = profile
+            .parent()
+            .ok_or_else(invalid)?
+            .join(format!(".exhibitos-release-trust-{id}"));
+        (root, id)
+    };
     Ok((root, id, profile, anchor))
 }
 fn keys(p: &Policy) -> Result<Vec<String>, Error> {
@@ -380,6 +402,7 @@ fn transition(old: &Record, next: &Record) -> Result<(), Error> {
     }
     Ok(())
 }
+#[cfg(not(windows))]
 fn lock(root: &Path) -> Result<File, Error> {
     installations::private_directory(root).map_err(|_| invalid())?;
     let p = root.join("trust.lock");
@@ -390,6 +413,10 @@ fn lock(root: &Path) -> Result<File, Error> {
     // Read-only descriptor supports exclusive flock on qualified Unix platforms.
     f.try_lock_exclusive().map_err(|_| Error::TrustBusy)?;
     Ok(f)
+}
+#[cfg(windows)]
+fn lock(root: &Path) -> Result<File, Error> {
+    windows_root::NativeRoot::inspect(root)?.lock()
 }
 fn sync_dir(root: &Path) -> Result<(), Error> {
     File::open(root)
@@ -478,19 +505,24 @@ impl Store {
     ) -> Result<Self, Error> {
         keys(&policy)?;
         let (root, scope, profile, anchor) = scope(profile, installation)?;
-        let mut d = fs::DirBuilder::new();
-        #[cfg(unix)]
+        #[cfg(windows)]
+        let native_root = windows_root::NativeRoot::create(&root)?;
+        #[cfg(not(windows))]
         {
-            use std::os::unix::fs::DirBuilderExt;
-            d.mode(0o700);
-        }
-        d.create(&root).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::AlreadyExists {
-                Error::TrustExists
-            } else {
-                invalid()
+            let mut d = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                d.mode(0o700);
             }
-        })?;
+            d.create(&root).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    Error::TrustExists
+                } else {
+                    invalid()
+                }
+            })?;
+        }
         let lock = lock(&root)?;
         let r = Record {
             format: 1,
@@ -508,13 +540,17 @@ impl Store {
         valid_record(&r, &scope)?;
         let h = write(&root, &r)?;
         sync_dir(root.parent().ok_or_else(invalid)?)?;
+        #[cfg(not(windows))]
         let root_identity = fs::symlink_metadata(&root).map_err(|_| invalid())?;
         Ok(Self {
             profile,
             installation: installation.into(),
             root,
             scope,
+            #[cfg(not(windows))]
             root_identity,
+            #[cfg(windows)]
+            native_root,
             _anchor: anchor,
             _lock: lock,
             current: r,
@@ -529,7 +565,10 @@ impl Store {
         if !root.exists() {
             return Err(Error::TrustMissing);
         }
+        #[cfg(windows)]
+        let native_root = windows_root::NativeRoot::inspect(&root)?;
         let lock = lock(&root)?;
+        #[cfg(not(windows))]
         let root_identity = fs::symlink_metadata(&root).map_err(|_| invalid())?;
         let mut paths = Vec::new();
         let mut entries = 0;
@@ -552,7 +591,10 @@ impl Store {
                     return Err(invalid());
                 }
                 // Incomplete, private uncommitted writes do not advance floors.
+                #[cfg(not(windows))]
                 let _ = private_file(&entry.path(), false)?;
+                #[cfg(windows)]
+                native_root.validate_pending(name)?;
                 continue;
             }
             if name.len() != 25
@@ -612,7 +654,10 @@ impl Store {
             installation: installation.into(),
             root,
             scope,
+            #[cfg(not(windows))]
             root_identity,
+            #[cfg(windows)]
+            native_root,
             _anchor: anchor,
             _lock: lock,
             current,
@@ -653,18 +698,28 @@ impl Store {
             write_uncertain: self.uncertain,
         }
     }
+    fn check_root_identity(&self) -> Result<(), Error> {
+        #[cfg(windows)]
+        {
+            self.native_root.check()
+        }
+        #[cfg(not(windows))]
+        {
+            installations::private_directory(&self.root).map_err(|_| invalid())?;
+            if !identity(
+                &self.root_identity,
+                &fs::symlink_metadata(&self.root).map_err(|_| invalid())?,
+            ) {
+                return Err(invalid());
+            }
+            Ok(())
+        }
+    }
     fn check_root(&self) -> Result<(), Error> {
         if self.uncertain {
             return Err(Error::TrustWriteUncertain);
         }
-        installations::private_directory(&self.root).map_err(|_| invalid())?;
-        if !identity(
-            &self.root_identity,
-            &fs::symlink_metadata(&self.root).map_err(|_| invalid())?,
-        ) {
-            return Err(invalid());
-        }
-        Ok(())
+        self.check_root_identity()
     }
     fn commit(&mut self, mut next: Record, now: u64) -> Result<TrustReceipt, Error> {
         if now < self.current.observed_at {
@@ -687,13 +742,8 @@ impl Store {
         )?;
         self.uncertain = true;
         let h = write(&self.root, &next)?;
-        installations::private_directory(&self.root).map_err(|_| Error::TrustWriteUncertain)?;
-        if !identity(
-            &self.root_identity,
-            &fs::symlink_metadata(&self.root).map_err(|_| Error::TrustWriteUncertain)?,
-        ) {
-            return Err(Error::TrustWriteUncertain);
-        }
+        self.check_root_identity()
+            .map_err(|_| Error::TrustWriteUncertain)?;
         remember_ids(
             Some(&self.current),
             &next,
