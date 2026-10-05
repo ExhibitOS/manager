@@ -612,7 +612,7 @@ fn publish_directory(source: &Path, target: &Path) -> Result<()> {
 }
 // Delete only this fresh, fully authenticated intermediate, after the archive
 // and external key were rechecked. Replaced/changed candidates are preserved.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn retire_plaintext(path: &Path, plain: File, expected: &fs::Metadata) -> Result<()> {
     let held = plain.metadata().map_err(|_| fail())?;
     let current = fs::symlink_metadata(path).map_err(|_| fail())?;
