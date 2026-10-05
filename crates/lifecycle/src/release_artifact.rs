@@ -44,19 +44,52 @@ pub fn verify_public_input(v: &mut VerifiedRelease, source: &Path, now: u64) -> 
 }
 
 #[cfg(unix)]
-use std::{
-    fs::OpenOptions,
-    io::{Read, Write},
-};
+use std::fs::OpenOptions;
+#[cfg(any(unix, windows))]
+use std::io::{Read, Write};
 
-#[derive(Debug)]
+#[cfg_attr(not(windows), derive(Debug))]
 pub struct StagedArtifact {
     file: File,
     path: PathBuf,
     identity: Metadata,
+    #[cfg(windows)]
+    directory: crate::windows_private::PrivateDirectory,
+}
+#[cfg(windows)]
+impl std::fmt::Debug for StagedArtifact {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StagedArtifact").finish_non_exhaustive()
+    }
 }
 impl StagedArtifact {
+    fn check(&self) -> Result<(), Error> {
+        #[cfg(windows)]
+        self.directory
+            .check_record(
+                &self.file,
+                self.path
+                    .file_name()
+                    .and_then(|v| v.to_str())
+                    .ok_or(Error::ArtifactUnavailable)?,
+            )
+            .map_err(|_| Error::ArtifactUnavailable)?;
+        if !same(
+            &self.identity,
+            &self
+                .file
+                .metadata()
+                .map_err(|_| Error::ArtifactUnavailable)?,
+        ) || !same(
+            &self.identity,
+            &fs::symlink_metadata(&self.path).map_err(|_| Error::ArtifactUnavailable)?,
+        ) {
+            return Err(Error::ArtifactMismatch);
+        }
+        Ok(())
+    }
     pub(crate) fn retained_input(&mut self) -> Result<File, Error> {
+        self.check()?;
         self.file
             .seek(SeekFrom::Start(0))
             .map_err(|_| Error::ArtifactUnavailable)?;
@@ -71,34 +104,14 @@ impl StagedArtifact {
     pub fn reverify(&mut self, release: &mut VerifiedRelease, now: u64) -> Result<(), Error> {
         release.artifact_verified = false;
         valid_time(release, now)?;
-        if !same(
-            &self.identity,
-            &self
-                .file
-                .metadata()
-                .map_err(|_| Error::ArtifactUnavailable)?,
-        ) || !same(
-            &self.identity,
-            &fs::symlink_metadata(&self.path).map_err(|_| Error::ArtifactUnavailable)?,
-        ) {
-            return Err(Error::ArtifactMismatch);
-        }
+        self.check()?;
         self.file
             .seek(SeekFrom::Start(0))
             .map_err(|_| Error::ArtifactUnavailable)?;
         release.verify_artifact(&mut self.file)?;
-        if !same(
-            &self.identity,
-            &self
-                .file
-                .metadata()
-                .map_err(|_| Error::ArtifactUnavailable)?,
-        ) || !same(
-            &self.identity,
-            &fs::symlink_metadata(&self.path).map_err(|_| Error::ArtifactUnavailable)?,
-        ) {
+        if let Err(error) = self.check() {
             release.artifact_verified = false;
-            return Err(Error::ArtifactMismatch);
+            return Err(error);
         }
         self.file.seek(SeekFrom::Start(0)).map_err(|_| {
             release.artifact_verified = false;
@@ -145,7 +158,16 @@ fn same(a: &Metadata, b: &Metadata) -> bool {
             b.gid(),
         )
 }
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn same(a: &Metadata, b: &Metadata) -> bool {
+    // Native identity/ACL/single-link checks are supplied by the retained
+    // PrivateDirectory fence. Metadata supplements them, never replaces them.
+    a.is_file()
+        && b.is_file()
+        && a.len() == b.len()
+        && matches!((a.modified(), b.modified()), (Ok(x), Ok(y)) if x == y)
+}
+#[cfg(not(any(unix, windows)))]
 fn same(_a: &Metadata, _b: &Metadata) -> bool {
     false
 }
@@ -301,7 +323,117 @@ pub fn stage(
     staged.reverify(v, now)?;
     Ok(staged)
 }
-#[cfg(not(unix))]
+/// Windows owner-only staging with retained NTFS input and output fences.
+/// Failed fresh candidates remain for diagnosis; no Engine/trust mutation.
+#[cfg(windows)]
+pub fn stage(
+    v: &mut VerifiedRelease,
+    source: &Path,
+    parent: &Path,
+    now: u64,
+) -> Result<StagedArtifact, Error> {
+    use crate::windows_private::{PrivateDirectory, PublicRecord};
+    v.artifact_verified = false;
+    let result = (|| {
+        valid_time(v, now)?;
+        if source.file_name().and_then(|n| n.to_str()) != Some(v.release.artifact.name.as_str()) {
+            return Err(Error::ArtifactMismatch);
+        }
+        let parent_guard =
+            PrivateDirectory::inspect(parent).map_err(|_| Error::ArtifactUnavailable)?;
+        if v.release.artifact.bytes > 2 * 1024 * 1024 * 1024
+            || fs2::available_space(parent_guard.path()).map_err(|_| Error::ArtifactUnavailable)?
+                < v.release
+                    .artifact
+                    .bytes
+                    .saturating_add(2 * 1024 * 1024 * 1024)
+        {
+            return Err(Error::ArtifactUnavailable);
+        }
+        let mut input = PublicRecord::open(source).map_err(|_| Error::ArtifactUnavailable)?;
+        let before = input
+            .checked_metadata()
+            .map_err(|_| Error::ArtifactUnavailable)?;
+        if before.len() != v.release.artifact.bytes {
+            return Err(Error::ArtifactMismatch);
+        }
+        let directory = PrivateDirectory::create(
+            &parent_guard
+                .path()
+                .join(format!("runtime-stage-{}", uuid::Uuid::new_v4())),
+        )
+        .map_err(|_| Error::ArtifactUnavailable)?;
+        parent_guard
+            .check()
+            .map_err(|_| Error::ArtifactUnavailable)?;
+        let name = v.release.artifact.name.clone();
+        let path = directory.path().join(&name);
+        let mut out = directory
+            .create_record(&name)
+            .map_err(|_| Error::ArtifactUnavailable)?;
+        let mut count = 0u64;
+        let mut buffer = [0u8; 65536];
+        loop {
+            let n = input
+                .read(&mut buffer)
+                .map_err(|_| Error::ArtifactUnavailable)?;
+            if n == 0 {
+                break;
+            }
+            count = count
+                .checked_add(n as u64)
+                .filter(|n| *n <= v.release.artifact.bytes)
+                .ok_or(Error::ArtifactMismatch)?;
+            out.write_all(&buffer[..n])
+                .map_err(|_| Error::ArtifactUnavailable)?;
+        }
+        if count != v.release.artifact.bytes
+            || !same(
+                &before,
+                &input
+                    .checked_metadata()
+                    .map_err(|_| Error::ArtifactUnavailable)?,
+            )
+        {
+            return Err(Error::ArtifactMismatch);
+        }
+        directory
+            .check_record(&out, &name)
+            .map_err(|_| Error::ArtifactUnavailable)?;
+        out.sync_all().map_err(|_| Error::ArtifactUnavailable)?;
+        drop(out);
+        // Drop the write-capable handle before opening the immutable read/share
+        // fence. Failed reopen/hash checks never authorize the candidate.
+        let file = directory
+            .retained_read_file(&name)
+            .map_err(|_| Error::ArtifactUnavailable)?;
+        let identity = file.metadata().map_err(|_| Error::ArtifactUnavailable)?;
+        let mut staged = StagedArtifact {
+            file,
+            path,
+            identity,
+            directory,
+        };
+        staged.reverify(v, now)?;
+        parent_guard
+            .check()
+            .map_err(|_| Error::ArtifactUnavailable)?;
+        if !same(
+            &before,
+            &input
+                .checked_metadata()
+                .map_err(|_| Error::ArtifactUnavailable)?,
+        ) {
+            return Err(Error::ArtifactMismatch);
+        }
+        Ok(staged)
+    })();
+    if result.is_err() {
+        v.artifact_verified = false;
+    }
+    result
+}
+#[cfg(not(any(unix, windows)))]
 pub fn stage(
     v: &mut VerifiedRelease,
     _source: &Path,
@@ -514,5 +646,106 @@ mod windows_artifact_inputs {
         assert!(verify_public_input(&mut v, &source, 150).is_err());
         assert!(!v.receipt().artifact_verified);
         assert_eq!(fs::read(moved).unwrap(), vec![13u8; 7]);
+    }
+    #[test]
+    fn windows_artifact_staging_retains_exact_read_only_copy_without_activation() {
+        let (mut v, source) = fixture(131073);
+        let root = source.parent().unwrap().to_path_buf();
+        let before = fs::read(&source).unwrap();
+        let mut staged = stage(&mut v, &source, &root, 150).unwrap();
+        assert_ne!(staged.path(), source);
+        assert_eq!(fs::read(staged.path()).unwrap(), before);
+        assert!(OpenOptions::new().write(true).open(staged.path()).is_err());
+        assert!(fs::rename(staged.path(), root.join("moved.tar")).is_err());
+        assert!(fs::rename(staged.path().parent().unwrap(), root.join("moved-stage")).is_err());
+        let mut retained = staged.retained_input().unwrap();
+        assert!(retained.write_all(b"refuse write").is_err());
+        let mut copied = Vec::new();
+        retained.read_to_end(&mut copied).unwrap();
+        assert_eq!(copied, before);
+        staged.reverify(&mut v, 151).unwrap();
+        assert!(v.receipt().artifact_verified);
+        assert!(!v.receipt().activated);
+        assert_eq!(fs::read(&source).unwrap(), before);
+        assert_eq!(staged.reverify(&mut v, 200), Err(Error::Expired));
+        assert!(!v.receipt().artifact_verified);
+        drop(retained);
+        drop(staged);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn windows_artifact_staging_busy_source_and_hardlink_do_not_publish() {
+        let (mut v, source) = fixture(131073);
+        let root = source.parent().unwrap().to_path_buf();
+        let writer = OpenOptions::new().write(true).open(&source).unwrap();
+        assert!(stage(&mut v, &source, &root, 150).is_err());
+        assert!(!v.receipt().artifact_verified);
+        drop(writer);
+        fs::hard_link(&source, root.join("alias.tar")).unwrap();
+        assert!(stage(&mut v, &source, &root, 150).is_err());
+        assert!(!v.receipt().artifact_verified);
+        assert_eq!(fs::read(&source).unwrap(), vec![13u8; 131073]);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn windows_artifact_staging_hash_failure_retains_candidate_and_bounds_clear_proof() {
+        let (mut v, source) = fixture(131073);
+        let root = source.parent().unwrap().to_path_buf();
+        fs::write(&source, vec![14u8; 131073]).unwrap();
+        assert!(matches!(
+            stage(&mut v, &source, &root, 150),
+            Err(Error::ArtifactMismatch)
+        ));
+        assert!(!v.receipt().artifact_verified);
+        let directories: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .map(|p| p.unwrap().path())
+            .filter(|p| p.is_dir())
+            .collect();
+        assert_eq!(directories.len(), 1);
+        assert_eq!(
+            fs::read(directories[0].join("runtime.tar")).unwrap(),
+            vec![14u8; 131073]
+        );
+        assert_eq!(fs::read(&source).unwrap(), vec![14u8; 131073]);
+        v.artifact_verified = true;
+        v.release.artifact.bytes = 2 * 1024 * 1024 * 1024 + 1;
+        assert!(stage(&mut v, &source, &root, 150).is_err());
+        assert!(!v.receipt().artifact_verified);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        assert!(matches!(
+            stage(&mut v, &source, &root, 200),
+            Err(Error::Expired)
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn windows_artifact_staging_acl_change_refuses_without_repair_or_source_mutation() {
+        let (mut v, source) = fixture(131073);
+        let root = source.parent().unwrap().to_path_buf();
+        let mut staged = stage(&mut v, &source, &root, 150).unwrap();
+        let status = crate::process_window::background_command("icacls.exe")
+            .arg(staged.path())
+            .args(["/grant", "*S-1-1-0:R"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(staged.reverify(&mut v, 151).is_err());
+        assert!(!v.receipt().artifact_verified);
+        assert!(staged.retained_input().is_err());
+        assert!(
+            PrivateDirectory::inspect(staged.path().parent().unwrap())
+                .unwrap()
+                .retained_read_file("runtime.tar")
+                .is_err()
+        );
+        assert_eq!(fs::read(staged.path()).unwrap(), vec![13u8; 131073]);
+        assert_eq!(fs::read(&source).unwrap(), vec![13u8; 131073]);
+        drop(staged);
+        // Only the new synthetic fixture is retired after preservation assertions.
+        fs::remove_dir_all(root).unwrap();
     }
 }

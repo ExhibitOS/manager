@@ -55,7 +55,7 @@ Windows `exhibitos-update`의 작은 정책/서명 문서 입력은 기존 NTFS 
 cargo test -p exhibitos-lifecycle --bin exhibitos-update windows_update_inputs --locked
 ```
 
-큰 artifact의 retained reader/staging, 외부 private key, host checkpoint/trust journal 및 full update/rollback은 아직 미완료다. 작은 입력 reader 구현으로 WIN-06 전체를 준비 완료 또는 통과 처리하지 않는다.
+큰 artifact reader·외부 private key reader·private staging API는 후속 절의 소스로 구현됐다. Native 검사는 미실행이고, host checkpoint/trust journal 및 full update/rollback은 아직 미완료다. 작은 입력 reader 구현으로 WIN-06 전체를 준비 완료 또는 통과 처리하지 않는다.
 
 
 ## WIN-06 큰 artifact 읽기 선행 구현
@@ -66,7 +66,7 @@ Windows `verify`의 artifact 입력을 실제 파일/조상 경로가 고정된 
 cargo test -p exhibitos-lifecycle --lib windows_artifact_inputs --locked
 ```
 
-새 합성 파일을 사용하는 4개 native 검사는 최종 배치에 포함하고 지금은 실행하지 않는다. 17MiB 초과 성공, busy writer/hardlink/size/hash/expiry/name/missing 실패와 원본 보존을 확인한다. synthetic verification fixture는 서명 검증 증거가 아니며, production CLI는 기존 실제 서명 검증 이후 이 reader를 호출한다. 파일 reader를 drop한 뒤에도 안전한 import/activation을 보장하는 retained staging, 외부 private key, host/trust checkpoint와 full rollback은 아직 미완료다.
+새 합성 파일을 사용하는 4개 native 검사는 최종 배치에 포함하고 지금은 실행하지 않는다. 17MiB 초과 성공, busy writer/hardlink/size/hash/expiry/name/missing 실패와 원본 보존을 확인한다. synthetic verification fixture는 서명 검증 증거가 아니며, production CLI는 기존 실제 서명 검증 이후 이 reader를 호출한다. retained private staging과 외부 key reader의 후속 구현은 아래 절에 기록한다. Host/trust checkpoint, 실행자 연결과 full rollback은 아직 미완료다. Reader 검사만으로 import/activation 완료를 주장하지 않는다.
 
 
 ## WIN-06 외부 checkpoint key 선행 구현
@@ -78,3 +78,14 @@ cargo test -p exhibitos-lifecycle --lib windows_external_key --locked
 ```
 
 새 합성 fixture4검사는 최종 단일 배치에 포함하며 지금 개별 실행을 요청하지 않는다. 정확한32bytes·existing/missing namespace, inside/nested/case alias, busy writer/hardlink/length, Everyone read grant refusal와 원본 보존을 확인한다. ACL grant 변경은 새 합성 key에만 적용한다. 이 reader만으로 Windows host/trust/staging/full restore/update를 실행 가능 또는 PASS로 처리하지 않는다.
+
+
+## WIN-06 Windows private staging 선행 구현
+
+`artifact::stage`는 기존 보호된 NTFS 부모를 검사하고 새 owner-only 후보 폴더·파일을 만든다. 원본 public read guard를 복사/검증 종료까지 유지한다. signed exact byte 수·SHA256을 다시 확인하고, 쓰기 핸들을 닫은 뒤 READ 전용·FILE_SHARE_READ 핸들과 private directory/ancestor guards를 반환 객체의 수명 동안 보관한다. 반환 객체가 보관된 동안 새 writer/delete/rename을 거부하고 재검사와 실행자 입력 clone 전에 ACL/native identity/length/mtime를 확인한다. 원본이나 기존 ACL을 채택·수정하지 않는다. 실패 후보는 진단용으로 남긴다. 기존2GiB artifact cap과 artifact+2GiB 여유 기준을 유지한다.
+
+```powershell
+cargo test -p exhibitos-lifecycle --lib windows_artifact_staging --locked
+```
+
+4개 합성 native 검사: exact/read-only retained copy 및 원본 보존, writer/hardlink refusal, hash 실패 후보 보존·quota/expiry, 새 후보에 대한 Everyone read grant 거부. 현재 MSVC 교차 컴파일만 확인했으며 Windows 실제 실행은 최종 단일 배치까지 미실행이다. 정상 검사 종료 후 새 전용 fixture만 정리하고 실패 시 자료를 보존한다. Native byte sharing/ACL은 power-loss durability 증거가 아니다. Store/host/trust/OCI 실행 연결 및 fresh full recovery/update/rollback은 별도 선행 작업이며 이 API 구현만으로 실행하지 않는다.

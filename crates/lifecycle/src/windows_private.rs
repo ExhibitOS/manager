@@ -915,8 +915,9 @@ impl PrivateDirectory {
         record.check()?;
         Ok(record)
     }
-    /// Open only under this already-held directory fence; no unsafe namespace adoption.
-    pub fn read_record<'a>(&'a self, name: &str) -> Result<BoundRecord<'a>> {
+    /// Retain a read-only native handle while the caller owns this directory fence.
+    /// FILE_SHARE_READ denies writer/delete handles; no mutable handle escapes.
+    pub(crate) fn retained_read_file(&self, name: &str) -> Result<File> {
         valid_name(name)?;
         self.check()?;
         let path = wide(&self.path.join(name))?;
@@ -936,6 +937,11 @@ impl PrivateDirectory {
         }
         let file = unsafe { File::from_raw_handle(handle.cast()) };
         self.check_record(&file, name)?;
+        Ok(file)
+    }
+    /// Open only under this already-held directory fence; no unsafe namespace adoption.
+    pub fn read_record<'a>(&'a self, name: &str) -> Result<BoundRecord<'a>> {
+        let file = self.retained_read_file(name)?;
         fs2::FileExt::try_lock_shared(&file).map_err(|_| err("WINDOWS_PROFILE_BUSY"))?;
         let record = BoundRecord {
             directory: self,
