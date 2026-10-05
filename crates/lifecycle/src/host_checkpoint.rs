@@ -436,7 +436,7 @@ pub(crate) fn checkpoint_host_anchored<T>(
     key: &Path,
     archive: &Path,
     writers_stopped: bool,
-    anchor: File,
+    anchor: ProfileAnchor,
     after: impl FnOnce() -> Result<T>,
 ) -> Result<(HostReceipt, T)> {
     checkpoint_host_guarded(
@@ -479,7 +479,7 @@ fn checkpoint_host_guarded<B, T>(
     archive: &Path,
     apps_closed: bool,
     writers_stopped: bool,
-    anchor: Option<File>,
+    anchor: Option<ProfileAnchor>,
     borrowed: Option<&ProfileSession>,
     before: impl FnOnce() -> Result<B>,
     after: impl FnOnce() -> Result<T>,

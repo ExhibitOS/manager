@@ -315,6 +315,113 @@ fn open(path: &Path, directory: bool) -> Result<File> {
     }
     Ok(unsafe { File::from_raw_handle(handle.cast()) })
 }
+/// Pins a current-user-owned, nonprivileged-writer-safe existing parent.
+/// This type only creates protected anchor locks, never private state directories.
+pub(crate) struct ParentDirectory {
+    path: PathBuf,
+    ancestors: Vec<(PathBuf, File, Identity)>,
+    id: Identity,
+    sid: Sid,
+}
+impl ParentDirectory {
+    pub(crate) fn inspect(path: &Path) -> Result<Self> {
+        let ancestors = pin_ancestors(path)?;
+        let file = &ancestors
+            .last()
+            .ok_or_else(|| err("PROFILE_PATH_INVALID"))?
+            .1;
+        let sid = Sid::current()?;
+        acl(file, &sid, false)?;
+        let id = identity(file, true)?;
+        let path = path
+            .canonicalize()
+            .map_err(|_| err("PROFILE_PATH_INVALID"))?;
+        let value = Self {
+            path,
+            ancestors,
+            id,
+            sid,
+        };
+        value.check()?;
+        Ok(value)
+    }
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+    pub(crate) fn check(&self) -> Result<()> {
+        for (path, file, id) in &self.ancestors {
+            if identity(file, true)? != *id || identity(&open(path, true)?, true)? != *id {
+                return Err(err("WINDOWS_PROFILE_IDENTITY_INVALID"));
+            }
+        }
+        let file = &self
+            .ancestors
+            .last()
+            .ok_or_else(|| err("PROFILE_PATH_INVALID"))?
+            .1;
+        acl(file, &self.sid, false)?;
+        if identity(&open(&self.path, true)?, true)? != self.id {
+            return Err(err("WINDOWS_PROFILE_IDENTITY_INVALID"));
+        }
+        Ok(())
+    }
+    pub(crate) fn logical_child_key(&self, name: &str) -> Result<String> {
+        valid_name(name)?;
+        self.check()?;
+        // Parent object identity is independent of drive/path spelling. ASCII
+        // private leaf names are folded for Windows namespace case aliases.
+        Ok(crate::digest(
+            format!(
+                "{}:{}:{}:{}",
+                self.id.volume,
+                self.id.index_high,
+                self.id.index_low,
+                name.to_ascii_lowercase()
+            )
+            .as_bytes(),
+        ))
+    }
+    pub(crate) fn check_record(&self, file: &File, name: &str) -> Result<()> {
+        valid_name(name)?;
+        self.check()?;
+        acl(file, &self.sid, true)?;
+        if identity(file, false)? != identity(&open(&self.path.join(name), false)?, false)? {
+            return Err(err("WINDOWS_PROFILE_IDENTITY_INVALID"));
+        }
+        Ok(())
+    }
+    pub(crate) fn lock_record(&self, name: &str) -> Result<File> {
+        valid_name(name)?;
+        self.check()?;
+        let file = native_lock_file(&self.path.join(name), &self.sid)?;
+        self.check_record(&file, name)?;
+        Ok(file)
+    }
+}
+fn native_lock_file(path: &Path, sid: &Sid) -> Result<File> {
+    let path = wide(path)?;
+    let sd = descriptor(sid, false)?;
+    let attributes = sec::SECURITY_ATTRIBUTES {
+        nLength: mem::size_of::<sec::SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: sd.0,
+        bInheritHandle: 0,
+    };
+    let handle = unsafe {
+        fsapi::CreateFileW(
+            path.as_ptr(),
+            0x80000000 | 0x40000000 | fsapi::READ_CONTROL,
+            fsapi::FILE_SHARE_READ | fsapi::FILE_SHARE_WRITE,
+            &attributes,
+            fsapi::OPEN_ALWAYS,
+            fsapi::FILE_ATTRIBUTE_NORMAL | fsapi::FILE_FLAG_OPEN_REPARSE_POINT,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(err("WINDOWS_PROFILE_RECORD_OPEN_REFUSED"));
+    }
+    Ok(unsafe { File::from_raw_handle(handle.cast()) })
+}
 /// Pins parent and new private directory without FILE_SHARE_DELETE. No existing ACL edits.
 pub struct PrivateDirectory {
     path: PathBuf,
@@ -427,28 +534,7 @@ impl PrivateDirectory {
     pub(crate) fn lock_record(&self, name: &str) -> Result<File> {
         self.check()?;
         valid_name(name)?;
-        let path = wide(&self.path.join(name))?;
-        let sd = descriptor(&self.sid, false)?;
-        let attributes = sec::SECURITY_ATTRIBUTES {
-            nLength: mem::size_of::<sec::SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: sd.0,
-            bInheritHandle: 0,
-        };
-        let handle = unsafe {
-            fsapi::CreateFileW(
-                path.as_ptr(),
-                0x80000000 | 0x40000000 | fsapi::READ_CONTROL,
-                fsapi::FILE_SHARE_READ | fsapi::FILE_SHARE_WRITE,
-                &attributes,
-                fsapi::OPEN_ALWAYS,
-                fsapi::FILE_ATTRIBUTE_NORMAL | fsapi::FILE_FLAG_OPEN_REPARSE_POINT,
-                ptr::null_mut(),
-            )
-        };
-        if handle == INVALID_HANDLE_VALUE {
-            return Err(err("WINDOWS_PROFILE_RECORD_OPEN_REFUSED"));
-        }
-        let file = unsafe { File::from_raw_handle(handle.cast()) };
+        let file = native_lock_file(&self.path.join(name), &self.sid)?;
         self.check_record(&file, name)?;
         Ok(file)
     }
@@ -932,6 +1018,114 @@ mod tests {
         let path = root.path().to_path_buf();
         drop(root);
         std::fs::remove_dir(path).unwrap();
+    }
+    fn remove_owned_anchor_fixture(parent: PathBuf, profile: &Path) {
+        if profile.exists() {
+            std::fs::remove_file(profile.join("profile-session.lock")).unwrap();
+            std::fs::remove_dir(profile).unwrap();
+        }
+        for entry in std::fs::read_dir(&parent).unwrap() {
+            let entry = entry.unwrap();
+            assert!(
+                entry
+                    .file_name()
+                    .to_str()
+                    .unwrap()
+                    .starts_with(".exhibitos-profile-session-")
+            );
+            assert!(std::fs::symlink_metadata(entry.path()).unwrap().is_file());
+            std::fs::remove_file(entry.path()).unwrap();
+        }
+        std::fs::remove_dir(parent).unwrap();
+    }
+    #[test]
+    fn profile_anchor_precedes_creation_and_case_aliases_share_one_lock() {
+        let parent = fresh();
+        let parent_path = parent.path().to_path_buf();
+        let profile = parent_path.join("managed-profile");
+        let (target, anchor) = crate::profile_backup::anchor_lock(&profile, true).unwrap();
+        assert!(!profile.exists());
+        let alias = parent_path.join("MANAGED-PROFILE");
+        assert_eq!(
+            crate::profile_backup::anchor_lock(&alias, false)
+                .err()
+                .unwrap()
+                .code,
+            "PROFILE_BUSY"
+        );
+        let clone = anchor.try_clone().unwrap();
+        drop(anchor);
+        assert_eq!(
+            crate::profile_backup::anchor_lock(&profile, false)
+                .err()
+                .unwrap()
+                .code,
+            "PROFILE_BUSY"
+        );
+        drop(parent);
+        assert!(std::fs::rename(&parent_path, parent_path.with_extension("moved")).is_err());
+        let root = PrivateDirectory::create(&target).unwrap();
+        let profile = root.path().to_path_buf();
+        let session = crate::profile_backup::anchored_session(&profile, clone, true).unwrap();
+        drop(root);
+        session.check_exclusive(&profile).unwrap();
+        assert!(std::fs::rename(&profile, profile.with_extension("moved")).is_err());
+        assert_eq!(
+            crate::profile_backup::anchor_lock(&alias, false)
+                .err()
+                .unwrap()
+                .code,
+            "PROFILE_BUSY"
+        );
+        drop(session);
+        drop(crate::profile_backup::session_lock(&profile, true).unwrap());
+        remove_owned_anchor_fixture(parent_path, &profile);
+    }
+    #[test]
+    fn shared_profile_sessions_block_exclusive_and_refuse_hardlinked_legacy_lock() {
+        let parent = fresh();
+        let parent_path = parent.path().to_path_buf();
+        let root = PrivateDirectory::create(&parent_path.join("profile")).unwrap();
+        let profile = root.path().to_path_buf();
+        let one = crate::profile_backup::session_lock(&profile, false).unwrap();
+        let two = crate::profile_backup::session_lock(&profile, false).unwrap();
+        assert_eq!(
+            one.check_exclusive(&profile).unwrap_err().code,
+            "PROFILE_LOCK_INVALID"
+        );
+        assert_eq!(
+            crate::profile_backup::session_lock(&profile, true)
+                .err()
+                .unwrap()
+                .code,
+            "PROFILE_BUSY"
+        );
+        drop(one);
+        drop(two);
+        let original = profile.join("profile-session.lock");
+        let alias = profile.join("legacy-alias");
+        std::fs::hard_link(&original, &alias).unwrap();
+        assert!(crate::profile_backup::session_lock(&profile, false).is_err());
+        assert_eq!(std::fs::read(&original).unwrap(), b"");
+        assert_eq!(std::fs::read(&alias).unwrap(), b"");
+        std::fs::remove_file(alias).unwrap();
+        drop(crate::profile_backup::session_lock(&profile, true).unwrap());
+        let archive = parent_path.join("unqualified-profile-backup");
+        assert_eq!(
+            crate::profile_backup::backup(
+                &profile,
+                &parent_path.join("unused-key"),
+                &archive,
+                true
+            )
+            .unwrap_err()
+            .code,
+            "PROFILE_PLATFORM_UNVERIFIED"
+        );
+        assert!(!archive.exists());
+        drop(root);
+        drop(parent);
+        remove_owned_anchor_fixture(parent_path, &profile);
     }
     #[test]
     fn private_records_refuse_existing_names_aliases_and_rename() {

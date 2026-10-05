@@ -79,59 +79,139 @@ fn canonical_private(path: &Path) -> Result<PathBuf> {
     Ok(path.into())
 }
 fn lock_file(root: &Path, name: &str, exclusive: bool) -> Result<File> {
-    let path = root.join(name);
-    let file = match private_options().open(&path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            let mut o = OpenOptions::new();
-            o.read(true).write(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-            }
-            o.open(&path).map_err(|_| err("PROFILE_LOCK_INVALID"))?
-        }
-        Err(_) => return Err(err("STATE_UNAVAILABLE")),
-    };
-    let m = file.metadata().map_err(|_| err("PROFILE_LOCK_INVALID"))?;
-    if !m.is_file() {
-        return Err(err("PROFILE_LOCK_INVALID"));
-    }
-    #[cfg(unix)]
+    #[cfg(windows)]
     {
-        use std::os::unix::fs::MetadataExt;
-        let current = fs::symlink_metadata(&path).map_err(|_| err("PROFILE_LOCK_INVALID"))?;
-        if m.uid() != unsafe { libc::geteuid() }
-            || m.nlink() != 1
-            || m.mode() & 0o7777 != 0o600
-            || current.is_symlink()
-            || (m.dev(), m.ino()) != (current.dev(), current.ino())
+        let directory = super::windows_private::PrivateDirectory::inspect(root)?;
+        let file = directory.lock_record(name)?;
+        if exclusive {
+            file.try_lock_exclusive()
+        } else {
+            FileExt::try_lock_shared(&file)
+        }
+        .map_err(|_| err("PROFILE_BUSY"))?;
+        directory.check_record(&file, name)?;
+        Ok(file)
+    }
+    #[cfg(not(windows))]
+    {
+        let path = root.join(name);
+        let file = match private_options().open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let mut o = OpenOptions::new();
+                o.read(true).write(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+                }
+                o.open(&path).map_err(|_| err("PROFILE_LOCK_INVALID"))?
+            }
+            Err(_) => return Err(err("STATE_UNAVAILABLE")),
+        };
+        let m = file.metadata().map_err(|_| err("PROFILE_LOCK_INVALID"))?;
+        if !m.is_file() {
+            return Err(err("PROFILE_LOCK_INVALID"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let current = fs::symlink_metadata(&path).map_err(|_| err("PROFILE_LOCK_INVALID"))?;
+            if m.uid() != unsafe { libc::geteuid() }
+                || m.nlink() != 1
+                || m.mode() & 0o7777 != 0o600
+                || current.is_symlink()
+                || (m.dev(), m.ino()) != (current.dev(), current.ino())
+            {
+                return Err(err("PROFILE_LOCK_INVALID"));
+            }
+        }
+        if exclusive {
+            file.try_lock_exclusive()
+        } else {
+            FileExt::try_lock_shared(&file)
+        }
+        .map_err(|_| err("PROFILE_BUSY"))?;
+        Ok(file)
+    }
+}
+/// Owns the exact locked handle and parent fence. A borrowed Windows clone
+/// shares this owner through Arc and never duplicates/closes the native handle.
+pub(crate) struct ProfileAnchor {
+    #[cfg(not(windows))]
+    file: File,
+    #[cfg(windows)]
+    native: std::sync::Arc<WindowsAnchor>,
+}
+#[cfg(windows)]
+struct WindowsAnchor {
+    file: File,
+    parent: super::windows_private::ParentDirectory,
+    profile_name: String,
+    lock_name: String,
+    exclusive: bool,
+}
+impl ProfileAnchor {
+    pub(crate) fn try_clone(&self) -> std::io::Result<Self> {
+        #[cfg(windows)]
+        {
+            Ok(Self {
+                native: std::sync::Arc::clone(&self.native),
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(Self {
+                file: self.file.try_clone()?,
+            })
+        }
+    }
+    #[cfg(windows)]
+    fn check(&self, profile: &Path, exclusive: bool) -> Result<()> {
+        self.native
+            .parent
+            .check_record(&self.native.file, &self.native.lock_name)?;
+        let name = profile
+            .file_name()
+            .and_then(|v| v.to_str())
+            .ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
+        if self.native.exclusive != exclusive
+            || !self.native.profile_name.eq_ignore_ascii_case(name)
+            || profile
+                .parent()
+                .and_then(|p| p.canonicalize().ok())
+                .as_deref()
+                != Some(self.native.parent.path())
         {
             return Err(err("PROFILE_LOCK_INVALID"));
         }
+        Ok(())
     }
-    if exclusive {
-        file.try_lock_exclusive()
-    } else {
-        FileExt::try_lock_shared(&file)
-    }
-    .map_err(|_| err("PROFILE_BUSY"))?;
-    Ok(file)
 }
 /// Hold the pathname fence as well as the legacy inode fence. The anchor is
 /// outside the replaceable profile and must never be unlinked by maintenance.
 pub(crate) struct ProfileSession {
     profile: PathBuf,
+    #[cfg(not(windows))]
     identity: fs::Metadata,
+    #[cfg(windows)]
+    root_guard: super::windows_private::PrivateDirectory,
     exclusive: bool,
-    _anchor: File,
+    _anchor: ProfileAnchor,
     _legacy: File,
 }
 impl ProfileSession {
     pub(crate) fn check_exclusive(&self, profile: &Path) -> Result<()> {
         canonical_private(profile)?;
+        #[cfg(unix)]
         let current = fs::symlink_metadata(profile).map_err(|_| err("PROFILE_PATH_INVALID"))?;
+        #[cfg(windows)]
+        {
+            self.root_guard.check()?;
+            self._anchor.check(profile, self.exclusive)?;
+            self.root_guard
+                .check_record(&self._legacy, "profile-session.lock")?;
+        }
         if !self.exclusive || self.profile != profile {
             return Err(err("PROFILE_LOCK_INVALID"));
         }
@@ -147,70 +227,118 @@ impl ProfileSession {
 }
 /// Resolve a stable logical profile path without creating that profile. A
 /// controller must acquire this guard before creating/opening a replacement.
-pub(crate) fn anchor_lock(profile: &Path, exclusive: bool) -> Result<(PathBuf, File)> {
-    let parent = fs::canonicalize(
-        profile
-            .parent()
-            .ok_or_else(|| err("PROFILE_PATH_INVALID"))?,
-    )
-    .map_err(|_| err("PROFILE_PATH_INVALID"))?;
-    let name = profile
-        .file_name()
-        .ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
-    let target = parent.join(name);
-    let text = target.to_str().ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
-    let metadata = fs::symlink_metadata(&parent).map_err(|_| err("PROFILE_PATH_INVALID"))?;
-    if !metadata.is_dir() || metadata.is_symlink() {
-        return Err(err("PROFILE_PATH_INVALID"));
-    }
-    #[cfg(unix)]
+pub(crate) fn anchor_lock(profile: &Path, exclusive: bool) -> Result<(PathBuf, ProfileAnchor)> {
+    #[cfg(windows)]
     {
-        use std::os::unix::fs::MetadataExt;
-        // Private/owner-writable parent, or sticky shared temp parent. Sticky
-        // protects this uid-owned anchor against other users' unlink/rename.
-        let private_parent =
-            metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o022 == 0;
-        let sticky_parent = metadata.mode() & 0o1000 != 0
-            && (metadata.uid() == 0 || metadata.uid() == unsafe { libc::geteuid() });
-        if !private_parent && !sticky_parent {
+        let parent = super::windows_private::ParentDirectory::inspect(
+            profile
+                .parent()
+                .ok_or_else(|| err("PROFILE_PATH_INVALID"))?,
+        )?;
+        let profile_name = profile
+            .file_name()
+            .and_then(|v| v.to_str())
+            .ok_or_else(|| err("PROFILE_PATH_INVALID"))?
+            .to_owned();
+        let target = parent.path().join(&profile_name);
+        let lock_name = format!(
+            ".exhibitos-profile-session-{}.lock",
+            parent.logical_child_key(&profile_name)?
+        );
+        let file = parent.lock_record(&lock_name)?;
+        if exclusive {
+            file.try_lock_exclusive()
+        } else {
+            FileExt::try_lock_shared(&file)
+        }
+        .map_err(|_| err("PROFILE_BUSY"))?;
+        parent.check_record(&file, &lock_name)?;
+        Ok((
+            target,
+            ProfileAnchor {
+                native: std::sync::Arc::new(WindowsAnchor {
+                    file,
+                    parent,
+                    profile_name,
+                    lock_name,
+                    exclusive,
+                }),
+            },
+        ))
+    }
+    #[cfg(not(windows))]
+    {
+        let parent = fs::canonicalize(
+            profile
+                .parent()
+                .ok_or_else(|| err("PROFILE_PATH_INVALID"))?,
+        )
+        .map_err(|_| err("PROFILE_PATH_INVALID"))?;
+        let name = profile
+            .file_name()
+            .ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
+        let target = parent.join(name);
+        let text = target.to_str().ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
+        let metadata = fs::symlink_metadata(&parent).map_err(|_| err("PROFILE_PATH_INVALID"))?;
+        if !metadata.is_dir() || metadata.is_symlink() {
             return Err(err("PROFILE_PATH_INVALID"));
         }
-    }
-    if !cfg!(unix) {
-        return Err(err("PROFILE_PLATFORM_UNVERIFIED"));
-    }
-    let filename = format!(
-        ".exhibitos-profile-session-{}.lock",
-        digest(text.as_bytes())
-    );
-    let anchor = lock_file(&parent, &filename, exclusive)?;
-    // lock_file checks file identity, private ownership/mode and no hardlinks.
-    // Recheck the parent mapping after obtaining the guard; unsupported external
-    // rename/edit of the parent is never silently treated as the same profile.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let current_parent =
-            fs::symlink_metadata(&parent).map_err(|_| err("PROFILE_PATH_INVALID"))?;
-        if (metadata.dev(), metadata.ino()) != (current_parent.dev(), current_parent.ino())
-            || current_parent.is_symlink()
+        #[cfg(unix)]
         {
+            use std::os::unix::fs::MetadataExt;
+            // Private/owner-writable parent, or sticky shared temp parent. Sticky
+            // protects this uid-owned anchor against other users' unlink/rename.
+            let private_parent =
+                metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o022 == 0;
+            let sticky_parent = metadata.mode() & 0o1000 != 0
+                && (metadata.uid() == 0 || metadata.uid() == unsafe { libc::geteuid() });
+            if !private_parent && !sticky_parent {
+                return Err(err("PROFILE_PATH_INVALID"));
+            }
+        }
+        if !cfg!(unix) {
+            return Err(err("PROFILE_PLATFORM_UNVERIFIED"));
+        }
+        let filename = format!(
+            ".exhibitos-profile-session-{}.lock",
+            digest(text.as_bytes())
+        );
+        let anchor = lock_file(&parent, &filename, exclusive)?;
+        // lock_file checks file identity, private ownership/mode and no hardlinks.
+        // Recheck the parent mapping after obtaining the guard; unsupported external
+        // rename/edit of the parent is never silently treated as the same profile.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let current_parent =
+                fs::symlink_metadata(&parent).map_err(|_| err("PROFILE_PATH_INVALID"))?;
+            if (metadata.dev(), metadata.ino()) != (current_parent.dev(), current_parent.ino())
+                || current_parent.is_symlink()
+            {
+                return Err(err("PROFILE_PATH_INVALID"));
+            }
+        }
+        if fs::canonicalize(profile.parent().unwrap()).ok().as_ref() != Some(&parent) {
             return Err(err("PROFILE_PATH_INVALID"));
         }
+        Ok((target, ProfileAnchor { file: anchor }))
     }
-    if fs::canonicalize(profile.parent().unwrap()).ok().as_ref() != Some(&parent) {
-        return Err(err("PROFILE_PATH_INVALID"));
-    }
-    Ok((target, anchor))
 }
 pub(crate) fn anchored_session(
     profile: &Path,
-    anchor: File,
+    anchor: ProfileAnchor,
     exclusive: bool,
 ) -> Result<ProfileSession> {
     canonical_private(profile)?;
+    #[cfg(windows)]
+    let root_guard = super::windows_private::PrivateDirectory::inspect(profile)?;
+    #[cfg(windows)]
+    anchor.check(profile, exclusive)?;
     Ok(ProfileSession {
         profile: profile.into(),
+        #[cfg(windows)]
+        root_guard,
+        #[cfg(not(windows))]
         identity: fs::symlink_metadata(profile).map_err(|_| err("PROFILE_PATH_INVALID"))?,
         exclusive,
         _anchor: anchor,
