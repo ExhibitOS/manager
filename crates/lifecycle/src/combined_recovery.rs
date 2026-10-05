@@ -103,15 +103,13 @@ impl ExecutionSession<'_> {
             acknowledged,
             |ctx| {
                 self.validate_candidate_export_parent(export_parent)?;
-                // Three full image observations up to2GiB each +2GiB headroom+6GiB floor.
-                for parent in [&self.source.root, ctx.root, export_parent] {
-                    if fs2::available_space(parent)
-                        .map_err(|_| crate::err("STORAGE_UNAVAILABLE"))?
-                        < 14 * 1024 * 1024 * 1024
-                    {
-                        return Err(crate::err("RESTORE_SPACE_REQUIRED"));
-                    }
-                }
+                // Reserve all three exact authenticated exports before Engine work.
+                recovery_space::check(
+                    &self.source,
+                    ctx,
+                    &[&self.source.root, ctx.root, export_parent],
+                    3,
+                )?;
                 let proof = self.store.verify_checkpoint_pair(
                     inputs.binding,
                     inputs.host,

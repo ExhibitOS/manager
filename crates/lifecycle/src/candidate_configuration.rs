@@ -78,11 +78,7 @@ impl ExecutionSession<'_> {
         export_parent: &Path,
     ) -> crate::Result<CandidateConfigurationReceipt> {
         self.validate_candidate_export_parent(export_parent)?;
-        if fs2::available_space(export_parent).map_err(|_| crate::err("STORAGE_UNAVAILABLE"))?
-            < 10 * 1024 * 1024 * 1024
-        {
-            return Err(crate::err("RESTORE_SPACE_REQUIRED"));
-        }
+        recovery_space::check(&self.source, ctx, &[export_parent], 1)?;
         let authenticated = source_full_configuration::scope(ctx.raw)?;
         // Every original host configuration file is checked against authenticated backup.
         let source_files = source_deployment::compare(&self.source.root, &authenticated)?;

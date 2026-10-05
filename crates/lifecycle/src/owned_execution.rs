@@ -47,6 +47,8 @@ pub use ephemeral_source_recovery::EphemeralSourceRecoveryReceipt;
 mod source_inventory;
 pub use ephemeral_inventory::EphemeralCandidateInventoryReceipt;
 pub use source_inventory::SourceInventoryReceipt;
+#[path = "recovery_space.rs"]
+mod recovery_space;
 #[path = "source_full_configuration.rs"]
 mod source_full_configuration;
 #[path = "source_image_bytes.rs"]
