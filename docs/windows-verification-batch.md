@@ -1,0 +1,37 @@
+# Windows 한 번에 검증하기
+
+이 문서는 T08-01(수명주기), T08-02(백업·업데이트), T08-03(설치 프로그램)의 Windows 검사를 하나의 순서로 모은다. **현재 전체 배치는 준비 중이며 사용자에게 실행을 요청하지 않는다.** Windows 전용 구현과 안전한 합성 fixture가 준비되면 최종 소스 commit과 명령을 한 번만 제공한다. 소스 변경으로 영향을 받는 검사만 다시 수행한다.
+
+## 이미 확인한 항목
+
+Windows11 x64 / Docker Linux engine29.8.1 / Compose5.5.1, Node24.21.0/npm11.19.0, Rust1.99 MSVC 및 Build Tools가 준비됐다. Managera42be3c 전체 코어·통합·데스크톱121검사0실패4ignored, 관리 공간 생성·전환·자동 재열기 선택 유지, Platforme6df4bc 라이선스 해시·Git2검사·실제amd64 bundle 생성이 확인됐다. 실제 GUI 설치·시작 readiness·브라우저·API 연결·정지 notready·재시작 ready와 Manager9ba2100 시작/정지/재시작의 즉시 진행→완료 표시도 사용자 관찰로 확인했다. 같은 결과를 무조건 반복 요청하지 않는다. 최신 GUI binary hash/build log는 별도로 수집되지 않았으므로 아래 읽기 전용 기록 수집으로 보완한다. 과거4ignored Engine 검사는 통과로 세지 않는다.
+
+## 최종 한 번의 실행 순서
+
+|순서/ID|담당 task|검사·완료 기준|현재 준비 상태|
+|---|---|---|---|
+|0/WIN-00|T08-01|최종 commit과 build log, 앱·manifest·Runtime archive SHA256/크기 기록. 기존 generated 변경 보존|읽기 전용 도구 준비; 최종 통합 commit 고정 대기|
+|1/WIN-01|T08-01|앱 종료→같은 공간 재열기→선택·설치 기록 유지. 정지 상태에서 HTTP 접속 중단을 별도 확인|기존 fixture 사용 가능; 배치 실행 보류|
+|2/WIN-02|T08-01|새 합성 공간의 port 충돌·실행 도구 부재/정지·권한 거부·명시적 retry에서 안전한 코드와 원본 보존 확인|전용 자동 fixture/정확한 명령을 에이전트가 먼저 준비|
+|3/WIN-03|T08-01|Podman 또는 Docker Desktop 외 지원 adapter의 동일 설치·실행 경로 확인|대체 engine qualification 준비 필요; 지금 추가 설치 요청 없음|
+|4/WIN-04|T08-02|새 synthetic corpus DB/blob/config/image/profile 백업, 별도 공간 복원 후 로그인·작품·전시·서명 설정·해시 일치|Windows 성공 경로의 platform gates/host integration 미완료; 실행 금지|
+|5/WIN-05|T08-02|백업·복원 interruption/cancel/retry/helper 진단에서 원본·후보·키 보존, 성공 오표시 없음|WIN-04 prerequisite 구현 및 실제 fixture 준비 필요|
+|6/WIN-06|T08-02|서명된 개발 update, 호환성·disk·pre-update backup, migration/health 실패의 전체 data rollback, trust floors/revocations 유지|Windows key/policy/host/update gate 미완료; 실행 금지|
+|7/WIN-07|T08-03|깨끗한 별도 사용자/VM 설치·제거·업데이트, checksum/signature/offline local start, 설정/데이터 보존|installer/signing/release artifact와 복원점 준비 필요|
+|8/WIN-08|T08-01/02/03|작업 중 앱 종료·OS/Engine 재시작·저장 durability/재열기 시 불확실한 작업을 완료로 오인하지 않음|VM snapshot과 복원 검증, failure corpus 준비 필요; 실제 사용자 PC 전원 중단 금지|
+
+전체 배치는 로컬 빌드/네트워크 속도·데이터 크기에 따라 소요 시간이 달라진다. 최종 안내 때 자동 명령 구간·사용자 클릭 구간·다운로드와 재부팅 구간의 예상 시간을 따로 산정한다. 현 단계에서 전체 예상 시간을 확정하지 않는다. 요청을 보류해도 완료 기준은 축소하지 않는다.
+
+## 읽기 전용 기록 도구
+
+현재 저장소에서 다음 예시를 실행하면 stdout에 JSON을 출력한다. 새 설치·서비스 시작·파일 삭제·ACL 변경·Git checkout·환경변수 변경은 수행하지 않는다. 공유 출력에는 키/credential/config 내용과 절대 경로를 넣지 않는다. Windows 실행은 최종 배치에 포함하며 지금 추가 실행을 요청하지 않는다.
+
+```powershell
+node scripts/verification-receipt.mjs --binary .\target\release\exhibitos-manager-desktop.exe --bundle "<선택한 새 검사 공간>\bundle"
+```
+
+Git source commit/기존 tracked 변경 여부, binary/manifest/hash-bound tar 크기·SHA256을 기록한다. manifest의 경로탈출·archive byte/hash 불일치는 거부한다. **앱 binary가 해당 소스로 빌드됐다는 증명·서명 검증·설치 권한·readiness 판정 도구가 아니다.** 실제 build log, 실행 결과와 사용자 관찰을 함께 연결해야 한다. 기존 API 연결 확인과 단위 검사만으로 전체 복원·업데이트·durability를 통과 처리하지 않는다.
+
+## 결과 전달과 안전한 중단
+
+최종 batch ID/sourceCommit과 각 WIN-ID의 `passed/failed/not_run/blocked`, 실행 시각·명령 종료 코드·safe code·GUI 관찰을 함께 기록한다. 오류가 나면 그 단계에서 멈추고 실패 후보를 보존하며 에이전트가 다음 조치를 준비한다. 암호·token·키·runtime.env·raw container 환경·실제 작품을 채팅이나 Git에 보낼 필요는 없다. 설치 재실행/reset/prune/volume 삭제로 검사를 성공처럼 만들지 않는다. 모든 파괴 시나리오는 새 synthetic 환경 및 검증한 복원점에서만 실행한다.
