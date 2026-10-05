@@ -24,7 +24,7 @@ UTF-8 상대 경로, 소유한 일반 파일·폴더와 POSIX 권한만 지원�
 
 백업은 파일별 SHA256·크기·inode·변경 시각·권한을 검사하고 마지막 inventory와 전체 암호문 인증을 재검사한 뒤 사본을 공개합니다. 추출은 각 인증된 chunk를 새 private staging의 파일에 직접 기록합니다. 전체 암호문을 풀어 놓는 `payload.pending` 중간 사본은 만들지 않습니다. manifest·파일별 hash·길이·선택 목록, 마지막 인증 frame와 EOF, 파일 권한·receipt 기록, 원래 encrypted archive와 external key 재검사를 모두 통과한 뒤 새 container를 원자적인 no-replace rename으로 공개합니다. 추출 결과 `profile/`, `manifest.json`, `verified.json`을 보존합니다. 검증 중 실패한 staging은 비공개 상태로 보존하며 완료 receipt를 만들지 않습니다. publish/sync 실패 시에도 복원 파일·manifest·원본 archive/key는 유지합니다. 예상 공간은 암호문 크기로 제한된 복원 파일 한 벌과 기존 256 MiB 여유 조건을 사용합니다. 외부 복구 실행의 더 큰 디스크 여유 조건은 별도로 유지합니다. 형식·namespace 결합·64 GiB 데이터 및 8 MiB manifest 한도는 변경하지 않습니다. 키·원본·사본·실패 후보를 자동 삭제하지 않습니다.
 
-사전 disk 여유 검사는 백업 예상 암호문, 추출 약2배 archive와 256MiB 여유를 요구합니다. 동시 disk 사용·filesystem overhead까지 예약하지는 않습니다. 중간 쓰기·동기화 실패는 성공으로 표시하지 않습니다. `HOST_WRITE_UNCERTAIN`에서는 pending/target의 실제 상태를 확인하고 기존 파일을 보존한 채 새 이름으로 재시도합니다. Mac/Linux atomic no-replace primitive를 사용하며 실제 Linux·Windows·전원 차단 검증은 별도입니다.
+사전 disk 여유 검사는 백업 예상 암호문, 추출 파일 한 벌과 256MiB 여유를 요구합니다. 동시 disk 사용·filesystem overhead까지 예약하지는 않습니다. 중간 쓰기·동기화 실패는 성공으로 표시하지 않습니다. `HOST_WRITE_UNCERTAIN`에서는 pending/target의 실제 상태를 확인하고 기존 파일을 보존한 채 새 이름으로 재시도합니다. Mac/Linux atomic no-replace primitive를 사용하며 실제 Linux·Windows·전원 차단 검증은 별도입니다.
 
 ## 복원 범위와 남은 작업
 
@@ -43,3 +43,23 @@ python3 scripts/test-host-checkpoint.py --profile-cli '<built exhibitos-profile>
 새 비공개 합성 fixture만 사용합니다. source·키·archive·실패 staging·추출 파일을 보존하고 byte hash를 비교합니다. 실제 engine/GUI·Windows 검사와 구분해 결과를 기록합니다.
 
 현재 복구 자료와 서비스/runtime을 같은 잠금 범위에서 검사하는 개발 경로는 인증된 `manager-image-inventory.json`과 원본 bundle/백업 manifest에서 정확한 image export 크기를 얻습니다. 한 관측의 총 2 GiB 한도, 2 GiB 추가 여유, 6 GiB 디스크 floor를 유지하고, 함께 남아 있는 세 관측은 정확한 총량의 세 배를 예약합니다. 최댓값에서는 이전 10/14 GiB 요구량과 같습니다. 잘못된·비인증 크기, overflow, quota 초과는 거부하며 실제 export writer도 이미지별 정확한 byte/hash 한도를 계속 적용합니다. tmpfs DB 검사는 기존 메모리 한도를 유지합니다. 새 사본을 생성하는 persistent DB 경로의 16 GiB 조건은 바꾸지 않습니다.
+
+
+## 호스트 암호문을 재사용하는 신뢰 기록 갱신
+
+`refresh-checkpoint-trust`는 기존 전체 host archive를 재사용하면서 작은 최신 trust archive와 `pair-binding.bin`만 새 목적지에 만듭니다. 기존 catalog와 두 암호문의 인증된 identity, 독립적으로 보존된 현재 Store의 전체 이력과 과거 head를 검사합니다. 과거 head부터 현재까지 동일한 plan의 Prepared 상태만 허용합니다. Applying 또는 복구 상태를 이 명령으로 갱신할 수 없습니다.
+
+```sh
+./target/release/exhibitos-update refresh-checkpoint-trust \
+  --profile /absolute/profile --installation default \
+  --key-file /absolute/private/key.bin \
+  --host-archive /absolute/previous/host.bin \
+  --trust-archive /absolute/previous/trust.bin \
+  --pair-binding /absolute/previous/pair-binding.bin \
+  --destination /absolute/private/new-current-point \
+  --host-writers-stopped --apps-closed
+```
+
+호스트 anchor·session과 Store fence를 유지한 채 전체 암호문을 인증하고 모든 현재 host 파일의 내용·권한·inventory를 세 번 재검사합니다. 최신 trust archive 생성과 새 catalog 작성 사이에도 key·이력·입력 암호문을 재검사합니다. whole plaintext, host archive 복사, external volume 사본은 만들지 않습니다. 기존 host archive는 새 catalog의 필수 외부 입력이므로 계속 보존해야 합니다. 목적지는 기존 파일을 덮어쓰지 않으며 실패 후보는 자동 삭제하지 않습니다.
+
+이 receipt는 현재 암호문의 identity만 증명합니다. 과거 source/candidate 관측은 상속하지 않으므로 `sourcePlanBound`는 false입니다. 실제 관측으로 새 binding을 만들고 runtime, preflight, apply, rollback 검증을 별도로 수행해야 합니다. 이 명령은 만료된 release를 갱신하거나 실행을 허가하지 않습니다. Unix 개발 경로이며 Windows의 실제 파일 내구성·권한·GUI 검증을 대신하지 않습니다.
