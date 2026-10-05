@@ -111,7 +111,7 @@ pub struct Store {
     root: PathBuf,
     scope: String,
     root_identity: Metadata,
-    _anchor: File,
+    _anchor: profile_backup::ProfileAnchor,
     _lock: File,
     current: Record,
     current_sha256: String,
@@ -204,7 +204,10 @@ fn read_record(path: &Path) -> Result<Vec<u8>, Error> {
     }
     Ok(b)
 }
-fn scope(profile: &Path, installation: &str) -> Result<(PathBuf, String, PathBuf, File), Error> {
+fn scope(
+    profile: &Path,
+    installation: &str,
+) -> Result<(PathBuf, String, PathBuf, profile_backup::ProfileAnchor), Error> {
     if !profile.is_absolute() {
         return Err(invalid());
     }
