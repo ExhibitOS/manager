@@ -82,3 +82,21 @@ Actual Windows execution at `44245d01bb0f271610c20779e85150ea5fa8d574` returned 
 The common directory opener now requests `FILE_LIST_DIRECTORY` in addition to metadata/security access while continuing to omit `FILE_SHARE_DELETE`. The former metadata-only access is insufficient evidence of a namespace sharing fence; Microsoft documents that attribute access is outside the sharing options ([CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)). Directory enumeration is an access request only: no contents are logged, no write/delete permission is requested, and no existing ACL is changed. All ancestor/root/candidate directory handles use the same opener, so inaccessible directories fail closed. Record attribute-only inspection stays unchanged to avoid requesting data access under live exclusive record locks.
 
 The existing regression now also checks rename and deletion refusal **before creating any child file**, and checks successful rename only after dropping the stage guard. The original failing assertion and all existing tests remain. The corrective hypothesis requires a fresh actual Windows22 run; cross-target compilation cannot establish its resolution. Managed Windows backup/update gates remain closed.
+
+## Backup workspaces and immutable retry generations
+
+The actual full Windows core run at `e780915439064d6ce5753d1a1a37ad6604184ef6` returned **76 passed, 16 failed, 4 ignored** (0.84s compile, 3.27s tests, six warnings). The earlier22 native component cases still passed in that run. Four failures involved private backup/retry records, eight arose while initializing Unix-only host archive fixtures, three compared a Windows unsupported gate against Unix ACK/image errors, and one expected a second service constructor to succeed while its operation lock remained held. This whole-core failure is retained as evidence; the22 component pass does not qualify the full product.
+
+Backup creation now uses the same StageDirectory factory as restoration and retains the workspace and image-directory guards throughout journal/helper use. Windows creates explicit protected new directories and never adopts existing folders. Retry preparation/reservation generations now use the bounded native CREATE_NEW immutable writer with explicit protected file ACLs, rather than an inherited raw file ACL. Existing names/aliases and the128KiB quota are refused without rewriting prior bytes. Unix creation, file/directory sync and existing byte bounds remain. Windows directory/power-loss durability and restart provenance are still unqualified.
+
+Two additional native regressions exercise the actual backup workspace namespace/private journal and retry generation writer/reopen/duplicate/ADS/quota boundaries. Existing backup interrupted-job and retry record tests remain in the native suite. Platform-specific ACK/image tests now assert the existing Windows BACKUP_PLATFORM_UNVERIFIED gate, preserving their original Unix expectations and all source/data checks. The busy constructor test expects Windows BUSY while the lock is held and proves reopening succeeds only after release. No product lock/platform gate is relaxed.
+
+The eight failed host checkpoint fixtures exercise functionality explicitly unavailable on Windows. They remain fully enabled on Unix; they are no longer counted as Windows feature success. Three separate native Windows tests require PROFILE_PLATFORM_UNVERIFIED for host checkpoint, inactive extraction and borrowed checkpoint, verify source/key bytes and destinations stay unchanged, and verify neither borrowed writer callback runs. The underlying unsupported guard is unchanged. This changes native suite counts; counts cannot be compared as if the same features were enabled. Actual Windows host archive/restore/managed controller/Engine/GUI acceptance remains mandatory unfinished work.
+
+Run the full corrected native core suite rather than only windows_private:
+
+```powershell
+cargo test -p exhibitos-lifecycle --lib --locked
+```
+
+No app rebuild is needed for these unit tests. Existing generated Tauri permission file changes must be preserved. A successful core suite still does not qualify real install/start/stop/restart/backup/update/installer or replace the remaining physical/GUI tests.

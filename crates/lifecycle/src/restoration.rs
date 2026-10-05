@@ -1100,7 +1100,11 @@ mod tests {
                 .restore_backup("tag", &service.root, &service.root, 13200, false)
                 .unwrap_err()
                 .code,
-            "BACKUP_OPERATOR_ACK_REQUIRED"
+            if cfg!(windows) {
+                "BACKUP_PLATFORM_UNVERIFIED"
+            } else {
+                "BACKUP_OPERATOR_ACK_REQUIRED"
+            }
         );
         private_bytes(&service.root.join("retained"), b"keep").unwrap();
         assert_eq!(
