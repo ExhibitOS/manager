@@ -12,7 +12,7 @@ Windows11 x64 / Docker Linux engine29.8.1 / Compose5.5.1, Node24.21.0/npm11.19.0
 |---|---|---|---|
 |0/WIN-00|T08-01|최종 commit과 build log, 앱·manifest·Runtime archive SHA256/크기 기록. 기존 generated 변경 보존|읽기 전용 도구 준비; 최종 통합 commit 고정 대기|
 |1/WIN-01|T08-01|앱 종료→같은 공간 재열기→선택·설치 기록 유지. 정지 상태에서 HTTP 접속 중단을 별도 확인|기존 fixture 사용 가능; 배치 실행 보류|
-|2/WIN-02|T08-01|새 합성 공간의 port 충돌·실행 도구 부재/정지·권한 거부·명시적 retry에서 안전한 코드와 원본 보존 확인|전용 자동 fixture/정확한 명령을 에이전트가 먼저 준비|
+|2/WIN-02|T08-01|새 합성 공간의 port 충돌·실행 도구 부재/정지·권한 거부·명시적 retry에서 안전한 코드와 원본 보존 확인|native 자식 프로세스 오류 fixture 준비; 실제 Engine 장애·retry integration은 준비 중|
 |3/WIN-03|T08-01|Podman 또는 Docker Desktop 외 지원 adapter의 동일 설치·실행 경로 확인|대체 engine qualification 준비 필요; 지금 추가 설치 요청 없음|
 |4/WIN-04|T08-02|새 synthetic corpus DB/blob/config/image/profile 백업, 별도 공간 복원 후 로그인·작품·전시·서명 설정·해시 일치|Windows 성공 경로의 platform gates/host integration 미완료; 실행 금지|
 |5/WIN-05|T08-02|백업·복원 interruption/cancel/retry/helper 진단에서 원본·후보·키 보존, 성공 오표시 없음|WIN-04 prerequisite 구현 및 실제 fixture 준비 필요|
@@ -35,3 +35,11 @@ Git source commit/기존 tracked 변경 여부, binary/manifest/hash-bound tar �
 ## 결과 전달과 안전한 중단
 
 최종 batch ID/sourceCommit과 각 WIN-ID의 `passed/failed/not_run/blocked`, 실행 시각·명령 종료 코드·safe code·GUI 관찰을 함께 기록한다. 오류가 나면 그 단계에서 멈추고 실패 후보를 보존하며 에이전트가 다음 조치를 준비한다. 암호·token·키·runtime.env·raw container 환경·실제 작품을 채팅이나 Git에 보낼 필요는 없다. 설치 재실행/reset/prune/volume 삭제로 검사를 성공처럼 만들지 않는다. 모든 파괴 시나리오는 새 synthetic 환경 및 검증한 복원점에서만 실행한다.
+
+## WIN-02 native 오류 부분 검사
+
+최종 배치에서 다음 명령을 포함한다. 현재 사용자의 개별 실행은 요청하지 않는다. 테스트는 새 임시 경로에서 작은 Rust 합성 실행 파일 하나를 컴파일해 실제 자식 프로세스로 실행한다. 권한/포트/일반 실패의 safe code, stderr 미노출, 성공 stdout 분리, timeout과 도구 부재 구분을 검사한다. Docker/Podman을 정지하거나 기존 데이터·ACL·환경 설정을 바꾸지 않는다. 합성 child 결과는 실제 Docker/Podman 장애나 전체 retry 성공 증거가 아니다. fixture 파일은 후속 확인을 위해 보존하며 자동 삭제하지 않는다.
+
+```powershell
+cargo test -p exhibitos-lifecycle --lib engine_failure_native --locked
+```

@@ -2045,3 +2045,6 @@ mod detection_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod engine_failure_tests;
