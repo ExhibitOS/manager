@@ -1,6 +1,6 @@
 # Windows private profile foundation
 
-This development component is part of T08-01/T08-02; it does not enable managed Windows profiles, backup/update, or installer acceptance. Current Windows GUI uses the existing pinned profile path independently.
+This development component is part of T08-01/T08-02. Guarded managed Windows profiles and selection persistence are now connected and natively tested on a42be3c. Basic Docker GUI lifecycle is user-qualified; backup/update/installer and durability acceptance remain incomplete. Earlier sections below describe foundation checkpoints and must not be read as current integration status.
 
 `windows_private::PrivateDirectory::create` creates only a new directory under an existing current-user-owned parent. It never changes existing ACLs or adopts a directory. The new root and records receive a protected, current-token-user-only full-control DACL at creation. Parent DACLs may retain SYSTEM/Administrators grants; other effective write/delete/owner/ACL grants are refused. Unknown allow ACE forms are refused conservatively. Security descriptors/SID buffers are checked using native APIs with bounded parsing.
 
