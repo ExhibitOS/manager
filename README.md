@@ -109,3 +109,5 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 [만료 개발 계획 갱신](docs/development-plan-renewal.md)은 비활성 새 후보를 등록하고 기존 floor·키 폐기·ID 예약을 보존하는 명시적 개발 절차입니다. 새 후보의 실제 서비스 복원과 업데이트 검증은 이후 수행합니다.
 
 [Windows private-profile foundation](docs/windows-private-profile.md) is an unqualified native security component; managed Windows profiles and full lifecycle acceptance remain incomplete.
+
+설치·시작·정지·재시작을 요청하면 설치와 실행 패널에서 즉시 진행 상태와 해당 버튼의 `… 중` 표시를 제공합니다. 코어 응답을 기다리는 동안에는 완료율을 추측하지 않는 진행 막대를 표시하며, 완료·실패 결과를 같은 위치에 남깁니다. 응답 시간과 실제 네이티브 동작은 실행 환경에 따라 다르므로 브라우저 합성 지연 검사는 Engine 작업 성공의 증거가 아닙니다.
