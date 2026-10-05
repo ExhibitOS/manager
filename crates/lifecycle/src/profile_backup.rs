@@ -9,9 +9,10 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, OsRng, Payload, rand_core::RngCore},
 };
-pub use host_checkpoint::{HostReceipt, checkpoint_host, extract_host};
+pub use host_checkpoint::{HostCurrentReceipt, HostReceipt, checkpoint_host, extract_host};
 pub(crate) use host_checkpoint::{
     activate_missing_host, checkpoint_host_anchored, checkpoint_host_borrowed,
+    verify_host_current_borrowed,
 };
 use std::collections::BTreeMap;
 const MAGIC: &[u8] = b"ExhibitOS-profile-v1\0";
