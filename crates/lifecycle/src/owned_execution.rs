@@ -491,13 +491,22 @@ impl ExecutionSession<'_> {
     ) -> crate::Result<ConfigurationInventoryReceipt> {
         self.verify_configuration_inventory_scoped(image, acknowledged, false)
     }
+    /// Fresh full verification with an explicit successful-export retirement policy.
+    /// Failure candidates and small verified image receipts remain private.
+    pub fn verify_configuration_inventory_transient(
+        &self,
+        image: &str,
+        acknowledged: bool,
+    ) -> crate::Result<ConfigurationInventoryReceipt> {
+        self.verify_configuration_inventory_at(image, acknowledged, false, None, false)
+    }
     fn verify_configuration_inventory_scoped(
         &self,
         image: &str,
         acknowledged: bool,
         roots_held: bool,
     ) -> crate::Result<ConfigurationInventoryReceipt> {
-        self.verify_configuration_inventory_at(image, acknowledged, roots_held, None)
+        self.verify_configuration_inventory_at(image, acknowledged, roots_held, None, true)
     }
     fn verify_configuration_inventory_at(
         &self,
@@ -505,6 +514,7 @@ impl ExecutionSession<'_> {
         acknowledged: bool,
         roots_held: bool,
         export_parent: Option<&Path>,
+        retain_images: bool,
     ) -> crate::Result<ConfigurationInventoryReceipt> {
         self.check()?;
         if !acknowledged {
@@ -630,6 +640,7 @@ impl ExecutionSession<'_> {
                 files: full_files,
                 images,
                 export_workspace: exported.to_string_lossy().into_owned(),
+                image_archives_retained: true,
                 observed_at: crate::now(),
             })
         })();
@@ -641,7 +652,15 @@ impl ExecutionSession<'_> {
         ) {
             return Err(crate::err("UPDATE_TARGET_CHANGED"));
         }
-        result
+        let mut receipt = result?;
+        if !retain_images {
+            source_image_bytes::retire_verified(
+                Path::new(&receipt.export_workspace),
+                &receipt.images,
+            )?;
+            receipt.image_archives_retained = false;
+        }
+        Ok(receipt)
     }
     /// DB/blob before and after full configuration/image bytes under the same
     /// source+registered-target locks. Does not authorize Applying or prove recovery.
@@ -828,6 +847,7 @@ impl ExecutionSession<'_> {
                             true,
                             true,
                             Some(&stage),
+                            true,
                         )?;
                         let before_configuration = &source.configuration;
                         if before_configuration.configuration_volume

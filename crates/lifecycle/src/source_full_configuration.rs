@@ -16,6 +16,7 @@ pub struct ConfigurationInventoryReceipt {
     pub files: Vec<NativeConfigurationProof>,
     pub images: Vec<ImageArchiveProof>,
     pub export_workspace: String,
+    pub image_archives_retained: bool,
     pub observed_at: u64,
 }
 pub(super) fn scope(raw: &[u8]) -> Result<Value> {

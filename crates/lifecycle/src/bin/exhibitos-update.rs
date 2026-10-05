@@ -597,6 +597,21 @@ fn run() -> Result<(), String> {
             );
             return Ok(());
         }
+        "verify-update-configuration-transient"
+            if a.len() == 10 && a[6] == "--image" && a[8] == "--external-writers-quiesced" =>
+        {
+            let mut store = Store::open(profile, installation).map_err(code)?;
+            let observation = store
+                .execution()
+                .map_err(|e| e.code)?
+                .verify_configuration_inventory_transient(&a[7], true)
+                .map_err(|e| e.code)?;
+            println!(
+                "{}",
+                serde_json::json!({"observation":observation,"configurationInventoryVerified":true,"imageBytesVerified":true,"preflightVerified":false,"updateExecuted":false,"intent":store.intent()})
+            );
+            return Ok(());
+        }
         "verify-update-configuration-inventory"
             if a.len() == 10 && a[6] == "--image" && a[8] == "--external-writers-quiesced" =>
         {
