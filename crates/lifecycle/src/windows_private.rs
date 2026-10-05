@@ -291,7 +291,12 @@ fn open(path: &Path, directory: bool) -> Result<File> {
     let handle = unsafe {
         fsapi::CreateFileW(
             path.as_ptr(),
-            fsapi::READ_CONTROL | fsapi::FILE_READ_ATTRIBUTES,
+            fsapi::READ_CONTROL
+                | fsapi::FILE_READ_ATTRIBUTES
+                // Metadata-only handles do not participate in the data/delete
+                // sharing fence. Request directory enumeration so omitting
+                // FILE_SHARE_DELETE also protects an empty candidate namespace.
+                | if directory { fsapi::FILE_LIST_DIRECTORY } else { 0 },
             fsapi::FILE_SHARE_READ
                 | fsapi::FILE_SHARE_WRITE
                 | if directory {
@@ -1112,6 +1117,10 @@ mod tests {
         let stage_path = root.path().join("restore-candidate");
         let stage = crate::restoration::directory(&stage_path).unwrap();
         let stage_path = stage_path.canonicalize().unwrap();
+        let renamed = root.path().join("retained-candidate");
+        // No child record lock should be needed to retain the namespace.
+        assert!(std::fs::rename(&stage_path, &renamed).is_err());
+        assert!(std::fs::remove_dir(&stage_path).is_err());
         let input = stage_path.join("runtime.env");
         crate::restoration::private_bytes(&input, b"SYNTHETIC=retained\n").unwrap();
         assert_eq!(
@@ -1121,7 +1130,6 @@ mod tests {
         );
         assert!(crate::restoration::private_bytes(&input, b"replacement").is_err());
         assert!(crate::restoration::directory(&stage_path).is_err());
-        let renamed = root.path().join("retained-candidate");
         assert!(std::fs::rename(&stage_path, &renamed).is_err());
         assert_eq!(std::fs::read(&input).unwrap(), b"SYNTHETIC=retained\n");
         drop(stage);
