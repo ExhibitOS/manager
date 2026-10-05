@@ -22,7 +22,7 @@ cargo build --release --locked -p exhibitos-lifecycle --bin exhibitos-profile
 
 UTF-8 상대 경로, 소유한 일반 파일·폴더와 POSIX 권한만 지원합니다. symlink·hardlink·special 파일, 외부 쓰기 권한·setid·읽기 불가 파일, 경로 escape·과도한 깊이·한도를 거부하며 조용히 건너뛰지 않습니다. 원래 profile과 알려진 등록 공간의 operation/session lock은 데이터가 아닌 잠금 인프라이므로 제외합니다. 부모의 경로 anchor도 사본 밖에 둡니다. 최대 데이터 64GiB(8MiB manifest 여유 제외), manifest 8MiB, 항목 100,000개, 경로 2,048 bytes·깊이32를 적용합니다. 전체 파일을 메모리에 올리지 않고 1MiB 인증 record와 제한된 manifest를 사용합니다.
 
-백업은 파일별 SHA256·크기·inode·변경 시각·권한을 검사하고 마지막 inventory와 전체 암호문 인증을 재검사한 뒤 사본을 공개합니다. 추출은 전체 암호문 인증 후 private staging에서 manifest·파일별 hash·길이·선택 목록을 검사하고 새 container를 원자적인 no-replace rename으로 공개합니다. 추출 결과 `profile/`, `manifest.json`, `verified.json`과 인증된 plaintext `payload.pending`가 container 안에 남습니다. 실패 staging도 비공개 상태로 보존합니다. 키·원본·사본·실패 후보를 자동 삭제하지 않습니다.
+백업은 파일별 SHA256·크기·inode·변경 시각·권한을 검사하고 마지막 inventory와 전체 암호문 인증을 재검사한 뒤 사본을 공개합니다. 추출은 전체 암호문 인증 후 private staging에서 manifest·파일별 hash·길이·선택 목록을 검사하고 새 container를 원자적인 no-replace rename으로 공개합니다. 추출 결과 `profile/`, `manifest.json`, `verified.json`을 보존합니다. 전체 복원 파일 hash/권한과 receipt 기록 완료 뒤 원래 encrypted archive·external key 및 새 plaintext 식별자를 재검사하고, 재생성 가능한 `payload.pending`만 제거한 뒤 directory를 sync하고 결과를 공개합니다. 검증 중 실패한 staging은 비공개 상태로 보존합니다. 모든 검증 후 publish/sync 실패 시에는 plaintext 제거가 끝났을 수 있지만, 검증된 복원 파일·manifest·원본 archive/key는 유지됩니다. 키·원본·사본·실패 후보를 자동 삭제하지 않습니다.
 
 사전 disk 여유 검사는 백업 예상 암호문, 추출 약2배 archive와 256MiB 여유를 요구합니다. 동시 disk 사용·filesystem overhead까지 예약하지는 않습니다. 중간 쓰기·동기화 실패는 성공으로 표시하지 않습니다. `HOST_WRITE_UNCERTAIN`에서는 pending/target의 실제 상태를 확인하고 기존 파일을 보존한 채 새 이름으로 재시도합니다. Mac/Linux atomic no-replace primitive를 사용하며 실제 Linux·Windows·전원 차단 검증은 별도입니다.
 
