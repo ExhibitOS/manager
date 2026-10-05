@@ -118,6 +118,104 @@ pub(super) struct CandidateContext<'a> {
     pub source_before: &'a SourceStoppedReceipt,
     pub candidate_before: &'a SourceStoppedReceipt,
 }
+/// Owns the exact operation locks used by the observations. This is private and
+/// cannot be reconstructed from a saved receipt, paths or caller success flags.
+pub(super) struct RetainedCandidateLease {
+    target: LifecycleService,
+    source_lock: crate::OperationGuard,
+    target_lock: crate::OperationGuard,
+    root_identity: Metadata,
+    workspace: PathBuf,
+    receipt_bytes: Vec<u8>,
+    raw: Vec<u8>,
+    manifest_path: PathBuf,
+    receipt_path: PathBuf,
+    manifest: crate::BundleManifest,
+    plan: crate::update::Plan,
+    job_id: String,
+    source_before: SourceStoppedReceipt,
+    candidate_before: SourceStoppedReceipt,
+}
+fn check_operation_guard(
+    service: &LifecycleService,
+    guard: &crate::OperationGuard,
+) -> crate::Result<()> {
+    let path = service.root.join("operation.lock");
+    let current =
+        fs::symlink_metadata(&path).map_err(|_| crate::err("UPDATE_FENCE_UNAVAILABLE"))?;
+    if !current.is_file()
+        || current.file_type().is_symlink()
+        || !identity(
+            &current,
+            &guard
+                .metadata()
+                .map_err(|_| crate::err("UPDATE_FENCE_UNAVAILABLE"))?,
+        )
+    {
+        return Err(crate::err("UPDATE_FENCE_UNAVAILABLE"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if current.nlink() != 1 || current.mode() & 0o777 != 0o600 {
+            return Err(crate::err("UPDATE_FENCE_UNAVAILABLE"));
+        }
+    }
+    #[cfg(windows)]
+    service.root_guard.check_record(guard, "operation.lock")?;
+    Ok(())
+}
+impl RetainedCandidateLease {
+    pub(super) fn check(&self, source: &LifecycleService) -> crate::Result<()> {
+        check_operation_guard(source, &self.source_lock)?;
+        check_operation_guard(&self.target, &self.target_lock)?;
+        installations::private_directory(&self.target.root)?;
+        let mut candidate_plan = self.plan.clone();
+        candidate_plan.source_instance = self.plan.target_instance.clone();
+        let source_after = source_stopped::observe(source, &self.plan)?;
+        let candidate_after = source_stopped::observe(&self.target, &candidate_plan)?;
+        if !same_stopped(&self.source_before, &source_after)
+            || !same_stopped(&self.candidate_before, &candidate_after)
+            || !isolated(&source_after, &candidate_after)
+            || !identity(
+                &self.root_identity,
+                &fs::symlink_metadata(&self.target.root)
+                    .map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?,
+            )
+            || self
+                .target
+                .restoration_status()?
+                .is_none_or(|job| job.id != self.job_id || job.state != "completed")
+            || crate::installation_backup::source_bytes(
+                &self.workspace,
+                "receipt.json",
+                1024 * 1024,
+                true,
+            )? != self.receipt_bytes
+            || crate::installation_backup::source_bytes(
+                &self.workspace.join("authenticated"),
+                "manifest.json",
+                16 * 1024 * 1024,
+                true,
+            )? != self.raw
+            || crate::checked_path(&self.workspace, "receipt.json")? != self.receipt_path
+            || crate::checked_path(&self.workspace.join("authenticated"), "manifest.json")?
+                != self.manifest_path
+            || serde_json::to_vec(&self.target.manifest()?)
+                .map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?
+                != serde_json::to_vec(&self.manifest)
+                    .map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?
+        {
+            return Err(crate::err("UPDATE_TARGET_CHANGED"));
+        }
+        check_operation_guard(source, &self.source_lock)?;
+        check_operation_guard(&self.target, &self.target_lock)
+    }
+    #[cfg(unix)]
+    pub(super) fn root(&self) -> &Path {
+        &self.target.root
+    }
+}
 impl ExecutionSession<'_> {
     pub(super) fn inspect_restored_candidate<T>(
         &self,
@@ -134,6 +232,17 @@ impl ExecutionSession<'_> {
         work: impl FnOnce(&CandidateContext<'_>) -> crate::Result<T>,
         finalize: impl FnOnce(&CandidateContext<'_>, &mut T) -> crate::Result<()>,
     ) -> crate::Result<T> {
+        self.inspect_restored_candidate_retained(acknowledged, work, finalize)
+            .map(|(result, _lease)| result)
+    }
+    /// Transfer the original guards without an unlock/relock gap. The caller
+    /// must keep this opaque lease until its final admission or abandonment.
+    pub(super) fn inspect_restored_candidate_retained<T>(
+        &self,
+        acknowledged: bool,
+        work: impl FnOnce(&CandidateContext<'_>) -> crate::Result<T>,
+        finalize: impl FnOnce(&CandidateContext<'_>, &mut T) -> crate::Result<()>,
+    ) -> crate::Result<(T, RetainedCandidateLease)> {
         self.check()?;
         if !acknowledged {
             return Err(crate::err("BACKUP_OPERATOR_ACK_REQUIRED"));
@@ -158,8 +267,10 @@ impl ExecutionSession<'_> {
         installations::private_directory(&self.store.profile.join("installations"))?;
         installations::private_directory(&root)?;
         let target = LifecycleService::open_retry_diagnostics(root.clone())?;
-        let _source = self.source.lock()?;
-        let _target = target.lock()?;
+        let source_lock = self.source.lock()?;
+        let target_lock = target.lock()?;
+        check_operation_guard(&self.source, &source_lock)?;
+        check_operation_guard(&target, &target_lock)?;
         let root_before =
             fs::symlink_metadata(&root).map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?;
         let job = target
@@ -242,7 +353,24 @@ impl ExecutionSession<'_> {
         }
         finalize(&context, &mut result)?;
         self.check()?;
-        Ok(result)
+        let lease = RetainedCandidateLease {
+            target,
+            source_lock,
+            target_lock,
+            root_identity: root_before,
+            workspace,
+            receipt_bytes,
+            raw,
+            manifest_path,
+            receipt_path,
+            manifest,
+            plan: plan.clone(),
+            job_id: job.id,
+            source_before,
+            candidate_before,
+        };
+        lease.check(&self.source)?;
+        Ok((result, lease))
     }
     /// Does not start/activate a candidate or trust a caller-supplied success flag.
     /// Both source and candidate must be stopped. Fresh copied DB volumes remain
@@ -343,6 +471,57 @@ mod tests {
             }),
         };
         (manifest, plan, receipt)
+    }
+    #[cfg(unix)]
+    #[test]
+    fn owned_preflight_transfers_existing_operation_lock_without_releasing_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "exhibitos-owned-operation-{}",
+                uuid::Uuid::new_v4()
+            ));
+        installations::new_directory(&root).unwrap();
+        let service = LifecycleService::open_retry_diagnostics(root.clone()).unwrap();
+        let guard = service.lock().unwrap();
+        check_operation_guard(&service, &guard).unwrap();
+        assert!(matches!(service.lock(),Err(e) if e.code=="BUSY"));
+        let transferred = (guard, root.clone());
+        assert!(matches!(service.lock(),Err(e) if e.code=="BUSY"));
+        check_operation_guard(&service, &transferred.0).unwrap();
+        // Replacing the pathname must not turn a retained old fd into a new fence.
+        fs::rename(
+            root.join("operation.lock"),
+            root.join("retained-original.lock"),
+        )
+        .unwrap();
+        fs::write(root.join("operation.lock"), b"").unwrap();
+        fs::set_permissions(
+            root.join("operation.lock"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        assert_eq!(
+            check_operation_guard(&service, &transferred.0)
+                .unwrap_err()
+                .code,
+            "UPDATE_FENCE_UNAVAILABLE"
+        );
+        fs::remove_file(root.join("operation.lock")).unwrap();
+        fs::rename(
+            root.join("retained-original.lock"),
+            root.join("operation.lock"),
+        )
+        .unwrap();
+        check_operation_guard(&service, &transferred.0).unwrap();
+        assert!(matches!(service.lock(),Err(e) if e.code=="BUSY"));
+        drop(transferred);
+        let released = service.lock().unwrap();
+        check_operation_guard(&service, &released).unwrap();
+        drop(released);
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn cached_restore_receipt_cannot_replace_exact_candidate_and_backup_provenance() {

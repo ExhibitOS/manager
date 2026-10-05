@@ -2,6 +2,11 @@
 //! Current full host/trust, source/candidate services and actual runtime in one fence.
 use super::*;
 use crate::{Result, Value, err};
+#[cfg(unix)]
+#[path = "owned_preflight.rs"]
+mod owned_preflight;
+#[cfg(unix)]
+pub use owned_preflight::{OwnedPreflight, StartedUpdate};
 
 pub struct RecoveryRuntimeInputs<'a> {
     pub checkpoint: CheckpointInputs<'a>,
@@ -61,6 +66,7 @@ impl ExecutionSession<'_> {
         work: impl FnOnce(&CurrentRecoveryRuntime) -> Result<T>,
     ) -> Result<(T, Value)> {
         self.with_recovery_runtime_impl(artifact, inputs, None, work)
+            .map(|(result, receipt, _lease, _host)| (result, receipt))
     }
     fn with_recovery_runtime_impl<T>(
         &self,
@@ -68,7 +74,12 @@ impl ExecutionSession<'_> {
         inputs: &RecoveryRuntimeInputs<'_>,
         extraction: Option<(&Path, &Path)>,
         work: impl FnOnce(&CurrentRecoveryRuntime) -> Result<T>,
-    ) -> Result<(T, Value)> {
+    ) -> Result<(
+        T,
+        Value,
+        candidate_inventory::RetainedCandidateLease,
+        Option<crate::profile_backup::HostReceipt>,
+    )> {
         self.check()?;
         if !inputs.external_writers_quiesced {
             return Err(err("BACKUP_OPERATOR_ACK_REQUIRED"));
@@ -117,7 +128,7 @@ impl ExecutionSession<'_> {
         let oci = self.qualify_runtime_artifact(artifact, inputs.python, inputs.source_commit)?;
         let held_artifact = std::cell::RefCell::new(&mut *artifact);
         let mut outcome = None;
-        let (mut before, mut candidate, mut after, mut receipt, _) = self.inspect_restored_candidate_finalized(true, |ctx| {
+        let ((mut before, mut candidate, mut after, mut receipt, full_recovery), lease) = self.inspect_restored_candidate_retained(true, |ctx| {
             let full_recovery = if let Some((destination, key_file)) = extraction {
                 let parent = destination.parent().ok_or_else(||err("HOST_CHECKPOINT_INVALID"))?;
                 recovery_space::check_with_host(&self.source, ctx, &[&self.source.root, ctx.root, inputs.export_parent, parent], 3, checkpoint.receipt().host_archive_bytes)?;
@@ -213,6 +224,8 @@ impl ExecutionSession<'_> {
         Ok((
             outcome.ok_or_else(|| err("UPDATE_RECOVERY_RUNTIME_MISMATCH"))?,
             receipt,
+            lease,
+            full_recovery.map(|(_, _, host, _)| host),
         ))
     }
     /// Actual inactive full host/trust extraction in the same fence as service/runtime checks.
@@ -225,7 +238,7 @@ impl ExecutionSession<'_> {
         key_file: &Path,
     ) -> Result<Value> {
         self.with_recovery_runtime_impl(artifact, inputs, Some((destination, key_file)), |_| Ok(()))
-            .map(|(_, receipt)| receipt)
+            .map(|(_, receipt, _lease, _host)| receipt)
     }
     pub fn qualify_current_recovery_runtime(
         &self,
