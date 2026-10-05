@@ -346,6 +346,55 @@ mod tests {
         (profile, store, key, pair)
     }
     #[test]
+    fn observed_binding_writes_only_new_catalog_and_preserves_original_pair_and_authority() {
+        let (profile, store, _key, pair) = recovery_fixture();
+        let host = pair.join("host.bin");
+        let trust = pair.join("trust.bin");
+        let original = pair.join("pair-binding.bin");
+        let output = pair.join("observed-binding.bin");
+        let proof = store
+            .verify_checkpoint_pair(&original, &host, &trust, &[4; 32])
+            .unwrap();
+        assert!(!proof.receipt().source_plan_bound);
+        let before = (
+            fs::read(&host).unwrap(),
+            fs::read(&trust).unwrap(),
+            fs::read(&original).unwrap(),
+            store.current_sha256.clone(),
+        );
+        let bound = store
+            .bind_observed_checkpoint(&proof, &output, &[4; 32])
+            .unwrap();
+        assert!(bound.receipt().source_plan_bound);
+        store
+            .recheck_checkpoint_pair(&bound, &output, &host, &trust, &[4; 32])
+            .unwrap();
+        let bytes = fs::read(&output).unwrap();
+        assert!(
+            store
+                .bind_observed_checkpoint(&proof, &output, &[4; 32])
+                .is_err()
+        );
+        assert_eq!(fs::read(&output).unwrap(), bytes);
+        assert!(
+            store
+                .verify_checkpoint_pair(&output, &host, &trust, &[5; 32])
+                .is_err()
+        );
+        assert_eq!(
+            (
+                fs::read(&host).unwrap(),
+                fs::read(&trust).unwrap(),
+                fs::read(&original).unwrap(),
+                store.current_sha256.clone()
+            ),
+            before
+        );
+        assert_eq!(fs::read_dir(&pair).unwrap().count(), 5); // host,trust,binding,receipt,newcatalog
+        drop(store);
+        fs::remove_dir_all(profile.parent().unwrap()).unwrap();
+    }
+    #[test]
     fn checkpoint_reader_does_not_transition_inflight_intent_and_normal_open_still_recovers() {
         let (profile, mut store, verified) = super::super::super::tests::prepared_fixture();
         store

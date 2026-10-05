@@ -124,6 +124,16 @@ impl ExecutionSession<'_> {
         acknowledged: bool,
         work: impl FnOnce(&CandidateContext<'_>) -> crate::Result<T>,
     ) -> crate::Result<T> {
+        self.inspect_restored_candidate_finalized(acknowledged, work, |_, _| Ok(()))
+    }
+    /// The finalizer runs only after all common checks, while both operation
+    /// locks and the parent exclusive profile/trust session are still held.
+    pub(super) fn inspect_restored_candidate_finalized<T>(
+        &self,
+        acknowledged: bool,
+        work: impl FnOnce(&CandidateContext<'_>) -> crate::Result<T>,
+        finalize: impl FnOnce(&CandidateContext<'_>, &mut T) -> crate::Result<()>,
+    ) -> crate::Result<T> {
         self.check()?;
         if !acknowledged {
             return Err(crate::err("BACKUP_OPERATOR_ACK_REQUIRED"));
@@ -189,7 +199,7 @@ impl ExecutionSession<'_> {
         if !isolated(&source_before, &candidate_before) {
             return Err(crate::err("UPDATE_TARGET_CHANGED"));
         }
-        let result = work(&CandidateContext {
+        let context = CandidateContext {
             target: &target,
             root: &root,
             workspace: &workspace,
@@ -200,7 +210,8 @@ impl ExecutionSession<'_> {
             plan,
             source_before: &source_before,
             candidate_before: &candidate_before,
-        })?;
+        };
+        let mut result = work(&context)?;
         let source_after = source_stopped::observe(&self.source, plan)?;
         let candidate_after = source_stopped::observe(&target, &candidate_plan)?;
         self.check()?;
@@ -229,6 +240,8 @@ impl ExecutionSession<'_> {
         {
             return Err(crate::err("UPDATE_TARGET_CHANGED"));
         }
+        finalize(&context, &mut result)?;
+        self.check()?;
         Ok(result)
     }
     /// Does not start/activate a candidate or trust a caller-supplied success flag.

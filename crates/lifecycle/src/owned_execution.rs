@@ -1951,6 +1951,47 @@ mod tests {
                 }
             );
         }
+        let external = p.with_extension("binding-output");
+        installations::new_directory(&external).unwrap();
+        let output = external.join("binding.bin");
+        let key = [0u8; 32];
+        let inputs = CheckpointInputs {
+            binding: Path::new("/untrusted"),
+            host: Path::new("/untrusted"),
+            trust: Path::new("/untrusted"),
+            key: &key,
+        };
+        for acknowledged in [false, true] {
+            assert_eq!(
+                session
+                    .bind_combined_recovery_ephemeral(
+                        "untrusted",
+                        &external,
+                        &inputs,
+                        &output,
+                        acknowledged
+                    )
+                    .unwrap_err()
+                    .code,
+                if acknowledged {
+                    "UPDATE_TARGET_UNREGISTERED"
+                } else {
+                    "BACKUP_OPERATOR_ACK_REQUIRED"
+                }
+            );
+            assert!(!output.exists());
+        }
+        fs::write(&output, b"preserve existing catalog").unwrap();
+        assert_eq!(
+            session
+                .bind_combined_recovery_ephemeral("untrusted", &external, &inputs, &output, true)
+                .unwrap_err()
+                .code,
+            "RECOVERY_PAIR_INVALID"
+        );
+        assert_eq!(fs::read(&output).unwrap(), b"preserve existing catalog");
+        fs::remove_file(&output).unwrap();
+        fs::remove_dir(&external).unwrap();
         for acknowledged in [false, true] {
             assert_eq!(
                 session

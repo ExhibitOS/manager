@@ -31,13 +31,13 @@ impl SourceBinding {
         }
     }
 }
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ArchiveIdentity {
     bytes: u64,
     sha256: String,
 }
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PairBinding {
     format: u8,
@@ -237,33 +237,33 @@ impl Store {
             host_manifest_sha256: host.manifest_sha256.clone(),
             source,
         };
-        let mut plain = serde_json::to_vec(&binding).map_err(|_| failure())?;
-        if plain.len() > LIMIT {
-            plain.fill(0);
-            return Err(failure());
-        }
-        let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| failure())?;
-        let mut nonce = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce);
-        let sealed = cipher.encrypt(
-            Nonce::from_slice(&nonce),
-            Payload {
-                msg: &plain,
-                aad: DOMAIN,
-            },
-        );
-        plain.fill(0);
-        let sealed = sealed.map_err(|_| failure())?;
-        let mut file =
-            private_file(&stage.join("pair-binding.bin"), true).map_err(|_| failure())?;
-        file.write_all(DOMAIN)
-            .and_then(|_| file.write_all(&nonce))
-            .and_then(|_| file.write_all(&sealed))
-            .and_then(|_| file.sync_all())
-            .map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?;
-        sync_dir(stage).map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?;
+        write_binding(&binding, &stage.join("pair-binding.bin"), key)?;
         self.check_root().map_err(|_| failure())?;
         Ok(())
+    }
+    /// Internal finalizer only. The caller has just performed current host and
+    /// complete source/candidate observations plus all common final guards.
+    /// Saved JSON receipts cannot invoke this private publication boundary.
+    pub(crate) fn bind_observed_checkpoint(
+        &self,
+        proof: &VerifiedCheckpointPair,
+        catalog: &Path,
+        key: &[u8; 32],
+    ) -> crate::Result<VerifiedCheckpointPair> {
+        self.check_root().map_err(|_| failure())?;
+        if proof.binding.scope != self.scope
+            || proof.binding.generation != self.current.generation
+            || proof.binding.head_sha256 != self.current_sha256
+        {
+            return Err(failure());
+        }
+        let mut binding = proof.binding.clone();
+        binding.source = Some(SourceBinding::from_plan(
+            self.intent().ok_or_else(failure)?.update.plan(),
+        ));
+        write_binding(&binding, catalog, key)?;
+        self.check_root().map_err(|_| failure())?;
+        Ok(VerifiedCheckpointPair { binding })
     }
     pub(crate) fn verify_recovery_pair(
         &self,
@@ -313,4 +313,37 @@ impl Store {
         }
         Ok(b)
     }
+}
+
+fn write_binding(binding: &PairBinding, catalog: &Path, key: &[u8; 32]) -> crate::Result<()> {
+    let parent = catalog.parent().ok_or_else(failure)?;
+    if !catalog.is_absolute() || fs::canonicalize(parent).ok().as_deref() != Some(parent) {
+        return Err(failure());
+    }
+    installations::private_directory(parent)?;
+    let mut plain = serde_json::to_vec(binding).map_err(|_| failure())?;
+    if plain.len() > LIMIT {
+        plain.fill(0);
+        return Err(failure());
+    }
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| failure())?;
+    let mut nonce = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce);
+    let sealed = cipher.encrypt(
+        Nonce::from_slice(&nonce),
+        Payload {
+            msg: &plain,
+            aad: DOMAIN,
+        },
+    );
+    plain.fill(0);
+    let sealed = sealed.map_err(|_| failure())?;
+    let mut file = private_file(catalog, true).map_err(|_| failure())?;
+    file.write_all(DOMAIN)
+        .and_then(|_| file.write_all(&nonce))
+        .and_then(|_| file.write_all(&sealed))
+        .and_then(|_| file.sync_all())
+        .map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?;
+    sync_dir(parent).map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?;
+    Ok(())
 }

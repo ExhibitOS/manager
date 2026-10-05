@@ -300,15 +300,20 @@ fn run() -> Result<(), String> {
     }
     let profile = Path::new(&a[3]);
     let installation = &a[5];
-    if a[1] == "verify-combined-recovery-ephemeral" {
-        if a.len() != 20
+    if matches!(
+        a[1].as_str(),
+        "verify-combined-recovery-ephemeral" | "bind-observed-recovery-pair"
+    ) {
+        let bind = a[1] == "bind-observed-recovery-pair";
+        if a.len() != if bind { 22 } else { 20 }
             || a[6] != "--image"
             || a[8] != "--export-parent"
             || a[10] != "--host-archive"
             || a[12] != "--trust-archive"
             || a[14] != "--key"
             || a[16] != "--pair-binding"
-            || a[18] != "--external-writers-quiesced"
+            || a[if bind { 20 } else { 18 }] != "--external-writers-quiesced"
+            || bind && a[18] != "--bound-pair"
         {
             return Err(usage());
         }
@@ -321,11 +326,20 @@ fn run() -> Result<(), String> {
                 trust: Path::new(&a[13]),
                 key: &key,
             };
-            let observation = store
-                .execution()
-                .map_err(|e| e.code)?
-                .verify_combined_recovery_ephemeral(&a[7], Path::new(&a[9]), &inputs, true)
-                .map_err(|e| e.code)?;
+            let session = store.execution().map_err(|e| e.code)?;
+            let observation = if bind {
+                session.bind_combined_recovery_ephemeral(
+                    &a[7],
+                    Path::new(&a[9]),
+                    &inputs,
+                    Path::new(&a[19]),
+                    true,
+                )
+            } else {
+                session.verify_combined_recovery_ephemeral(&a[7], Path::new(&a[9]), &inputs, true)
+            }
+            .map_err(|e| e.code)?;
+            drop(session);
             Ok::<_, String>(
                 serde_json::json!({"observation":observation,"sameLifetimeSourceCandidateVerified":true,"currentCheckpointPairAuthenticated":true,"preflightVerified":false,"updateExecuted":false,"intent":store.intent()}),
             )
