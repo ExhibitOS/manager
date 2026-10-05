@@ -6,6 +6,8 @@ use std::collections::BTreeSet;
 use std::io::Cursor;
 #[path = "host_current_inventory.rs"]
 mod current_inventory;
+#[path = "host_stream_extraction.rs"]
+mod stream_extraction;
 pub use current_inventory::HostCurrentReceipt;
 pub(crate) use current_inventory::verify_host_current_borrowed;
 const CONTEXT: &[u8] = b"ExhibitOS-host-checkpoint-v1\0";
@@ -610,6 +612,7 @@ fn publish_directory(source: &Path, target: &Path) -> Result<()> {
 }
 // Delete only this fresh, fully authenticated intermediate, after the archive
 // and external key were rechecked. Replaced/changed candidates are preserved.
+#[cfg(all(test, unix))]
 fn retire_plaintext(path: &Path, plain: File, expected: &fs::Metadata) -> Result<()> {
     let held = plain.metadata().map_err(|_| fail())?;
     let current = fs::symlink_metadata(path).map_err(|_| fail())?;
@@ -658,60 +661,17 @@ pub fn extract_host(
     if mode(&meta) != 0o600 || meta.len() > DATA_LIMIT + 16 * 1024 * 1024 {
         return Err(fail());
     }
-    space(&parent, meta.len().checked_mul(2).ok_or_else(fail)?)?;
+    // Ciphertext bounds the complete plaintext. Stream each authenticated chunk
+    // directly into the unpublished private tree, avoiding a second full copy.
+    space(&parent, meta.len())?;
     let stage = parent.join(format!(".host-extract-{}.pending", Uuid::new_v4()));
     installations::new_directory(&stage)?;
-    let payload = stage.join("payload.pending");
-    let mut plain = private_new(&payload)?;
-    super::super::maintenance_stream::open(&mut source, &mut plain, &key, CONTEXT, DATA_LIMIT)
-        .map_err(|_| fail())?;
-    plain.sync_all().map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
-    // Reopen a read-only handle: writer was deliberately created without read access.
-    drop(plain);
-    let mut plain = file(&payload)?;
-    let plain_identity = plain.metadata().map_err(|_| fail())?;
-    let mut size = [0u8; 8];
-    plain.read_exact(&mut size).map_err(|_| fail())?;
-    let len = u64::from_be_bytes(size);
-    if len == 0 || len > MANIFEST_LIMIT {
-        return Err(fail());
-    }
-    let mut encoded = vec![0u8; len as usize];
-    plain.read_exact(&mut encoded).map_err(|_| fail())?;
-    let m: Inventory = serde_json::from_slice(&encoded).map_err(|_| fail())?;
-    validate_inventory(&m, profile)?;
     let recovered = stage.join("profile");
-    installations::new_directory(&recovered)?;
-    for e in &m.items {
-        let path = recovered.join(&e.path);
-        if e.kind == "directory" {
-            installations::new_directory(&path)?;
-        } else {
-            let mut out = private_new(&path)?;
-            let mut limited = Read::by_ref(&mut plain).take(e.bytes);
-            let mut h = Sha256::new();
-            let mut n = 0u64;
-            let mut b = [0u8; 65536];
-            loop {
-                let got = limited.read(&mut b).map_err(|_| fail())?;
-                if got == 0 {
-                    break;
-                }
-                out.write_all(&b[..got])
-                    .map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
-                h.update(&b[..got]);
-                n += got as u64;
-            }
-            if n != e.bytes || Some(format!("{:x}", h.finalize())) != e.sha256 {
-                return Err(fail());
-            }
-            out.sync_all().map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
-        }
-    }
-    let mut extra = [0u8; 1];
-    if plain.read(&mut extra).map_err(|_| fail())? != 0 {
-        return Err(fail());
-    }
+    let mut sink = stream_extraction::Extraction::new(profile, &recovered);
+    super::super::maintenance_stream::open(&mut source, &mut sink, &key, CONTEXT, DATA_LIMIT)
+        .map_err(|_| fail())?;
+    // Final-frame authentication AND ciphertext EOF precede this completion.
+    let (m, encoded) = sink.finish()?;
     let r = capture(&recovered)?;
     if digest(&r.registry) != m.registry_sha256 {
         return Err(fail());
@@ -740,8 +700,8 @@ pub fn extract_host(
     sync(&recovered)?;
     sync(&stage)?;
     // Every reconstructed file/hash/mode and receipt is complete. Preserve the
-    // original encrypted archive/key and refuse changed input before removing
-    // only the fresh redundant plaintext. Failure staging/profile roots remain.
+    // original encrypted archive/key and refuse changed input before publication.
+    // Failed staging/profile roots remain private; no whole plaintext intermediate exists.
     if !unchanged(&meta, &source.metadata().map_err(|_| fail())?)
         || !unchanged(
             &meta,
@@ -751,7 +711,6 @@ pub fn extract_host(
     {
         return Err(fail());
     }
-    retire_plaintext(&payload, plain, &plain_identity)?;
     sync(&stage)?;
     // Nothing here registers, activates or overwrites profile roots.
     publish_directory(&stage, destination)?;
@@ -1148,6 +1107,20 @@ mod tests {
         let target = k.with_file_name("bad-extract");
         assert!(extract_host(&p, &k, &bad, &target, true).is_err());
         assert!(!target.exists());
+        let stages: Vec<_> = fs::read_dir(k.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(".host-extract-")
+            })
+            .collect();
+        assert_eq!(stages.len(), 1);
+        assert!(stages[0].join("profile").is_dir());
+        assert!(!stages[0].join("payload.pending").exists());
+        assert!(!stages[0].join("verified.json").exists());
         let other = p.with_file_name("wrong-source");
         assert!(extract_host(&other, &k, &a, &target, true).is_err());
         assert!(!target.exists());
@@ -1173,6 +1146,61 @@ mod tests {
             fs::read(&retained).unwrap(),
             b"authenticated synthetic bytes"
         );
+    }
+
+    #[test]
+    fn streaming_extraction_handles_fragmented_manifest_empty_files_and_rejects_bad_body() {
+        let (_root, p, k, _) = fixture();
+        installations::new_directory(&p.join("empty-directory")).unwrap();
+        write_new(&p.join("empty-file"), b"").unwrap();
+        write_new(&p.join("data-file"), b"authenticated synthetic content").unwrap();
+        let m = inventory(&p, &BTreeSet::new(), &Uuid::new_v4().to_string()).unwrap();
+        let encoded = serde_json::to_vec(&m).unwrap();
+        let mut body = (encoded.len() as u64).to_be_bytes().to_vec();
+        body.extend_from_slice(&encoded);
+        for item in &m.items {
+            if item.kind == "file" {
+                body.extend_from_slice(&fs::read(p.join(&item.path)).unwrap());
+            }
+        }
+        for chunk in [1, 7, 65536] {
+            let recovered = k.with_file_name(format!("fragmented-{chunk}"));
+            let mut sink = stream_extraction::Extraction::new(&p, &recovered);
+            for part in body.chunks(chunk) {
+                sink.write_all(part).unwrap();
+            }
+            let (actual, bytes) = sink.finish().unwrap();
+            assert_eq!(
+                serde_json::to_value(actual).unwrap(),
+                serde_json::to_value(&m).unwrap()
+            );
+            assert_eq!(bytes, encoded);
+            for item in &m.items {
+                if item.kind == "file" {
+                    assert_eq!(
+                        fs::read(recovered.join(&item.path)).unwrap(),
+                        fs::read(p.join(&item.path)).unwrap()
+                    );
+                }
+            }
+            assert!(!recovered.parent().unwrap().join("payload.pending").exists());
+        }
+        for kind in ["truncated", "corrupt", "trailer"] {
+            let recovered = k.with_file_name(kind);
+            let mut invalid = body.clone();
+            match kind {
+                "truncated" => {
+                    invalid.pop();
+                }
+                "corrupt" => {
+                    *invalid.last_mut().unwrap() ^= 1;
+                }
+                _ => invalid.push(0),
+            }
+            let mut sink = stream_extraction::Extraction::new(&p, &recovered);
+            let written = sink.write_all(&invalid);
+            assert!(written.is_err() || sink.finish().is_err());
+        }
     }
 
     #[test]
