@@ -300,6 +300,40 @@ fn run() -> Result<(), String> {
     }
     let profile = Path::new(&a[3]);
     let installation = &a[5];
+    if a[1] == "verify-current-checkpoint-pair" {
+        if a.len() != 15
+            || a[6] != "--host-archive"
+            || a[8] != "--trust-archive"
+            || a[10] != "--key"
+            || a[12] != "--pair-binding"
+        {
+            return Err(usage());
+        }
+        let mut key = checkpoint_key(Path::new(&a[11]), profile)?;
+        let result = (|| {
+            let store = signed_release::trust::CheckpointVerifier::open(profile, installation)
+                .map_err(code)?;
+            let proof = store
+                .verify(Path::new(&a[13]), Path::new(&a[7]), Path::new(&a[9]), &key)
+                .map_err(|e| e.code)?;
+            store
+                .recheck(
+                    &proof,
+                    Path::new(&a[13]),
+                    Path::new(&a[7]),
+                    Path::new(&a[9]),
+                    &key,
+                )
+                .map_err(|e| e.code)?;
+            Ok::<_, String>(proof.receipt())
+        })();
+        key.fill(0);
+        println!(
+            "{}",
+            serde_json::to_string(&result?).map_err(|_| "UPDATE_RESULT_INVALID")?
+        );
+        return Ok(());
+    }
     if a[1] == "restore-bound-missing-host" {
         if a.len() != 16
             || a[6] != "--host-archive"

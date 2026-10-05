@@ -49,6 +49,75 @@ pub(crate) struct PairBinding {
     pub(crate) host_manifest_sha256: String,
     source: Option<SourceBinding>,
 }
+/// Opaque current pair identity. Cannot be deserialized from a saved receipt.
+/// Recheck the ciphertexts and current Store before using it in an executor.
+#[derive(Debug)]
+pub struct VerifiedCheckpointPair {
+    binding: PairBinding,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointPairReceipt {
+    pub generation: u64,
+    pub head_sha256: String,
+    pub host_manifest_sha256: String,
+    pub host_archive_sha256: String,
+    pub host_archive_bytes: u64,
+    pub trust_archive_sha256: String,
+    pub trust_archive_bytes: u64,
+    pub source_plan_bound: bool,
+}
+impl VerifiedCheckpointPair {
+    /// Authentication/identity only: not extraction, authority recovery or preflight.
+    pub fn receipt(&self) -> CheckpointPairReceipt {
+        let b = &self.binding;
+        CheckpointPairReceipt {
+            generation: b.generation,
+            head_sha256: b.head_sha256.clone(),
+            host_manifest_sha256: b.host_manifest_sha256.clone(),
+            host_archive_sha256: b.host.sha256.clone(),
+            host_archive_bytes: b.host.bytes,
+            trust_archive_sha256: b.trust.sha256.clone(),
+            trust_archive_bytes: b.trust.bytes,
+            source_plan_bound: b.source.is_some(),
+        }
+    }
+}
+/// Read-only current authority for checkpoint verification. No mutable Store,
+/// activation or journal transition is exposed; normal Store opens still recover crashes.
+pub struct CheckpointVerifier {
+    store: Store,
+}
+impl CheckpointVerifier {
+    pub fn open(profile: &Path, installation: &str) -> Result<Self, Error> {
+        Ok(Self {
+            store: Store::open_mode(profile, installation, false)?,
+        })
+    }
+    pub fn authority_receipt(&self) -> TrustReceipt {
+        self.store.receipt()
+    }
+    pub fn verify(
+        &self,
+        catalog: &Path,
+        host: &Path,
+        trust: &Path,
+        key: &[u8; 32],
+    ) -> crate::Result<VerifiedCheckpointPair> {
+        self.store.verify_checkpoint_pair(catalog, host, trust, key)
+    }
+    pub fn recheck(
+        &self,
+        proof: &VerifiedCheckpointPair,
+        catalog: &Path,
+        host: &Path,
+        trust: &Path,
+        key: &[u8; 32],
+    ) -> crate::Result<()> {
+        self.store
+            .recheck_checkpoint_pair(proof, catalog, host, trust, key)
+    }
+}
 fn failure() -> crate::LifecycleError {
     crate::err("RECOVERY_PAIR_INVALID")
 }
@@ -112,6 +181,38 @@ fn archive(_path: &Path) -> crate::Result<ArchiveIdentity> {
     Err(crate::err("BACKUP_PLATFORM_UNVERIFIED"))
 }
 impl Store {
+    /// Produces an opaque proof under this Store's retained current authority.
+    /// No filesystem output, extraction or journal transition is performed.
+    pub fn verify_checkpoint_pair(
+        &self,
+        catalog: &Path,
+        host: &Path,
+        trust: &Path,
+        key: &[u8; 32],
+    ) -> crate::Result<VerifiedCheckpointPair> {
+        let binding = self.verify_recovery_pair(catalog, host, trust, key)?;
+        self.check_root().map_err(|_| failure())?;
+        Ok(VerifiedCheckpointPair { binding })
+    }
+    /// Saved diagnostic receipts cannot supply this proof. Rechecks current
+    /// authority/provenance and every ciphertext byte, not just recorded hashes.
+    pub fn recheck_checkpoint_pair(
+        &self,
+        proof: &VerifiedCheckpointPair,
+        catalog: &Path,
+        host: &Path,
+        trust: &Path,
+        key: &[u8; 32],
+    ) -> crate::Result<()> {
+        if self
+            .verify_checkpoint_pair(catalog, host, trust, key)?
+            .binding
+            != proof.binding
+        {
+            return Err(failure());
+        }
+        Ok(())
+    }
     pub(crate) fn seal_recovery_pair(
         &self,
         stage: &Path,

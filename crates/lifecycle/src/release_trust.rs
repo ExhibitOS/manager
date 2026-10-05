@@ -44,6 +44,9 @@ struct Record {
 }
 #[path = "trust_checkpoint.rs"]
 mod trust_checkpoint;
+pub use trust_checkpoint::binding::{
+    CheckpointPairReceipt, CheckpointVerifier, VerifiedCheckpointPair,
+};
 pub use trust_checkpoint::{HostTrustReceipt, MissingHostRecoveryReceipt, TrustCheckpointReceipt};
 #[path = "owned_execution.rs"]
 mod owned_execution;
@@ -562,6 +565,15 @@ impl Store {
         })
     }
     pub fn open(profile: &Path, installation: &str) -> Result<Self, Error> {
+        Self::open_mode(profile, installation, true)
+    }
+    // Only the checkpoint verifier can use the nonrecovering path. It never exposes
+    // mutable Store operations; normal application opens retain crash recovery.
+    fn open_mode(
+        profile: &Path,
+        installation: &str,
+        recover_interruption: bool,
+    ) -> Result<Self, Error> {
         let (root, scope, profile, anchor) = scope(profile, installation)?;
         if !root.exists() {
             return Err(Error::TrustMissing);
@@ -668,7 +680,7 @@ impl Store {
             used_instances,
         };
         s.check_root()?;
-        if s.intent().is_some_and(|i| in_flight(i.update.stage())) {
+        if recover_interruption && s.intent().is_some_and(|i| in_flight(i.update.stage())) {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|_| invalid())?
