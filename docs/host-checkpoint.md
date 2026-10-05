@@ -63,3 +63,12 @@ python3 scripts/test-host-checkpoint.py --profile-cli '<built exhibitos-profile>
 호스트 anchor·session과 Store fence를 유지한 채 전체 암호문을 인증하고 모든 현재 host 파일의 내용·권한·inventory를 세 번 재검사합니다. 최신 trust archive 생성과 새 catalog 작성 사이에도 key·이력·입력 암호문을 재검사합니다. whole plaintext, host archive 복사, external volume 사본은 만들지 않습니다. 기존 host archive는 새 catalog의 필수 외부 입력이므로 계속 보존해야 합니다. 목적지는 기존 파일을 덮어쓰지 않으며 실패 후보는 자동 삭제하지 않습니다.
 
 이 receipt는 현재 암호문의 identity만 증명합니다. 과거 source/candidate 관측은 상속하지 않으므로 `sourcePlanBound`는 false입니다. 실제 관측으로 새 binding을 만들고 runtime, preflight, apply, rollback 검증을 별도로 수행해야 합니다. 이 명령은 만료된 release를 갱신하거나 실행을 허가하지 않습니다. Unix 개발 경로이며 Windows의 실제 파일 내구성·권한·GUI 검증을 대신하지 않습니다.
+
+
+## 서버 검사와 같은 잠금 구간의 전체 비활성 복원
+
+`qualify-full-recovery-runtime`은 `qualify-current-recovery-runtime`과 같은 인수를 사용하고 마지막 `--external-writers-quiesced --apps-closed` 앞에 `--host-extraction /absolute/private/new-extraction`을 추가합니다. 현재 세대에 실제 source/candidate 관측으로 결합한 checkpoint만 허용하며, 서명·artifact·시간 재검사와 Store/profile/source/candidate 작업 잠금을 유지합니다.
+
+추출할 호스트 암호문 크기를 기존 인증된 image-export 성장·2GiB headroom·6GiB floor에 추가합니다. 새 목적지의 `host/`에는 전체 파일·manifest·권한을 실제로 복원하고 `trust/`에는 독립적으로 남아 있는 현재 authority와 바이트가 일치하는 전체 신뢰 기록을 추출합니다. 서버·runtime 관측 전후 및 최종 경계에서 모든 추출 파일의 hash·길이·권한·inventory와 최신 trust를 재검사합니다. 평문 중간 전체 사본은 만들지 않으며, 새 성공 추출물은 별도 영수증과 검사 후에만 정리할 수 있습니다. 실패 후보와 원본은 자동 삭제하지 않습니다.
+
+`hostExtractionVerified`는 실제로 이 경로에서 추출했을 때만 true입니다. `inactiveFullRecovery`의 hostActivated와 liveAuthorityRestored는 false이며 이 검사는 원래 host 활성화, 잃어버린 최신 authority 복구, 서비스 데이터 활성화, owned preflight/apply 또는 rollback을 대신하지 않습니다. 기존 읽기 전용 명령은 추가 전체 추출 없이 이전 동작을 유지합니다.

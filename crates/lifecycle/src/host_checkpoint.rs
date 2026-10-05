@@ -722,6 +722,46 @@ pub fn extract_host(
     ))
 }
 
+/// Recheck a freshly extracted, inactive tree against the receipt produced by decryption.
+/// This never publishes into the original namespace or restores trust authority.
+pub(crate) fn verify_extracted_host(
+    profile: &Path,
+    extracted: &Path,
+    expected: &HostReceipt,
+) -> Result<()> {
+    canonical_private(extracted)?;
+    let encoded_path = extracted.join("manifest.json");
+    let mut f = file(&encoded_path)?;
+    if f.metadata().map_err(|_| fail())?.len() > MANIFEST_LIMIT {
+        return Err(fail());
+    }
+    let mut encoded = Vec::new();
+    f.read_to_end(&mut encoded).map_err(|_| fail())?;
+    if digest(&encoded) != expected.manifest_sha256 {
+        return Err(fail());
+    }
+    let manifest: Inventory = serde_json::from_slice(&encoded).map_err(|_| fail())?;
+    validate_inventory(&manifest, profile)?;
+    let candidate = extracted.join("profile");
+    canonical_private(&candidate)?;
+    let before = fs::symlink_metadata(&candidate).map_err(|_| fail())?;
+    let actual = inventory(&candidate, &BTreeSet::new(), &manifest.id)?;
+    if actual.items != manifest.items
+        || actual.total_bytes != manifest.total_bytes
+        || actual.registry_sha256 != manifest.registry_sha256
+        || expected.id != manifest.id
+        || expected.bytes != manifest.total_bytes
+        || expected.files != manifest.items.iter().filter(|i| i.kind == "file").count()
+        || digest(&capture(&candidate)?.registry) != manifest.registry_sha256
+        || !unchanged(
+            &before,
+            &fs::symlink_metadata(&candidate).map_err(|_| fail())?,
+        )
+    {
+        return Err(fail());
+    }
+    Ok(())
+}
 fn publication_identity(a: &fs::Metadata, b: &fs::Metadata) -> bool {
     #[cfg(unix)]
     {
@@ -858,6 +898,27 @@ mod tests {
         write_new(&k, &[17; 32]).unwrap();
         let a = root.path.join("archive.exb");
         (root, p, k, a)
+    }
+    #[test]
+    fn inactive_host_recheck_refuses_changed_bytes_modes_and_extra_files() {
+        let (root, profile, key, archive) = fixture();
+        write_new(&profile.join("witness"), b"original").unwrap();
+        checkpoint_host(&profile, &key, &archive, true, true).unwrap();
+        let destination = root.path.join("inactive");
+        let receipt = extract_host(&profile, &key, &archive, &destination, true).unwrap();
+        verify_extracted_host(&profile, &destination, &receipt).unwrap();
+        let witness = destination.join("profile/witness");
+        fs::write(&witness, b"modified").unwrap();
+        assert!(verify_extracted_host(&profile, &destination, &receipt).is_err());
+        fs::write(&witness, b"original").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&witness, fs::Permissions::from_mode(0o400)).unwrap();
+        assert!(verify_extracted_host(&profile, &destination, &receipt).is_err());
+        fs::set_permissions(&witness, fs::Permissions::from_mode(0o600)).unwrap();
+        verify_extracted_host(&profile, &destination, &receipt).unwrap();
+        write_new(&destination.join("profile/extra"), b"unexpected").unwrap();
+        assert!(verify_extracted_host(&profile, &destination, &receipt).is_err());
+        assert_eq!(fs::read(profile.join("witness")).unwrap(), b"original");
     }
     #[test]
     fn successful_fixture_cleanup_never_follows_external_symlink() {
