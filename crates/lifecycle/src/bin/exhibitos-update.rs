@@ -289,7 +289,7 @@ fn run() -> Result<(), String> {
     }
     let code = |e: signed_release::Error| e.code().to_string();
     let usage = || {
-        "UPDATE_USAGE: trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|register-update-target|discard-update-intent|execution-status|verify-update-backup|verify-update-source-stopped|verify-update-source-deployment|verify-update-source-configuration|verify-update-source-images|snapshot-update-source-database|verify-update-source-inventory|verify-update-configuration-inventory|prepare-update-candidate require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
+        "UPDATE_USAGE: restore-rollback-missing-host|restore-bound-missing-host|trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|register-update-target|discard-update-intent|execution-status|verify-update-backup|verify-update-source-stopped|verify-update-source-deployment|verify-update-source-configuration|verify-update-source-images|snapshot-update-source-database|verify-update-source-inventory|verify-update-configuration-inventory|prepare-update-candidate require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
     };
     if a.len() < 7
         || a[2] != "--profile"
@@ -382,7 +382,7 @@ fn run() -> Result<(), String> {
         );
         return Ok(());
     }
-    if a[1] == "restore-bound-missing-host" {
+    if a[1] == "restore-bound-missing-host" || a[1] == "restore-rollback-missing-host" {
         if a.len() != 16
             || a[6] != "--host-archive"
             || a[8] != "--trust-archive"
@@ -393,15 +393,24 @@ fn run() -> Result<(), String> {
             return Err(usage());
         }
         let store = Store::open(profile, installation).map_err(code)?;
-        let receipt = store
-            .restore_bound_missing_host(
+        let receipt = if a[1] == "restore-rollback-missing-host" {
+            store.restore_rollback_missing_host(
                 Path::new(&a[7]),
                 Path::new(&a[9]),
                 Path::new(&a[11]),
                 Path::new(&a[13]),
                 true,
             )
-            .map_err(|e| e.code)?;
+        } else {
+            store.restore_bound_missing_host(
+                Path::new(&a[7]),
+                Path::new(&a[9]),
+                Path::new(&a[11]),
+                Path::new(&a[13]),
+                true,
+            )
+        }
+        .map_err(|e| e.code)?;
         println!(
             "{}",
             serde_json::to_string(&receipt).map_err(|_| "UPDATE_RESULT_INVALID")?

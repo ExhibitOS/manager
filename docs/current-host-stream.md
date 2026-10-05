@@ -41,3 +41,35 @@ Rust의 `Store::verify_rollback_checkpoint_pair`와 읽기 전용 `CheckpointVer
 결과에는 이전 checkpoint와 최신 retained generation/head를 구분합니다. 실행 직전 `recheck_rollback_checkpoint_pair` 또는 `recheck_rollback`이 필요하며, 그 사이 최신 정책·revocation·journal이 변하면 기존 proof는 거부됩니다. 최신 sequence floor·폐기된 키·예약된 ID·전체 신뢰 이력은 변경하지 않습니다.
 
 이 API는 이전 host/trust 파일의 provenance 확인만 제공합니다. 과거 trust를 live authority로 활성화하거나 host·DB/blob를 복원하지 않습니다. 전체 복원·cold recovery·authority 분실·실제 apply/health/rollback·Windows native 검증은 별도로 필요합니다. 작은 합성 파일 검사 결과를 기존 전체 corpus 완료로 계산하지 않습니다.
+
+## 과거 Prepared 사본에서 사라진 호스트 복원
+
+```sh
+exhibitos-update restore-rollback-missing-host \
+  --profile /absolute/private/original-profile --installation default \
+  --host-archive /absolute/private/prepared-pair/host.bin \
+  --trust-archive /absolute/private/prepared-pair/trust.bin \
+  --key /absolute/private/key.bin \
+  --pair-binding /absolute/private/prepared-source-binding.bin \
+  --absent-original-profile --apps-closed
+```
+
+앱을 닫고 원래 호스트 namespace가 실제로 없을 때만 실행합니다. 기존 폴더·파일·symlink는 덮어쓰지 않습니다. 독립 보관된 최신 trust와 동일 복구 계획의 source-bound Prepared 사본이 필요합니다. 새 릴리스/다른 계획, 누락된 authority, unbound catalog나 변조된 archive로는 복원할 수 없습니다. 원래 namespace·키·복구 사본을 보존하며, 진단 실패 후보를 자동 삭제하거나 재사용하지 않습니다.
+
+같은 Store fence에서 과거 proof를 확인한 뒤 작은 `latest-trust.bin`을 현재 독립 이력에서 생성하고 모든 최신 record를 inactive 추출해 실제 비교합니다. 이전 호스트 사본을 완전히 인증·추출하고 manifest와 proof·현재 이력·키를 재확인한 뒤 no-replace publication을 수행합니다. publication intent와 완료 영수증을 private recovery workspace에 sync합니다. 과거 trust archive는 provenance 입력이며 live authority로 복원하지 않습니다.
+
+결과의 `historicalCheckpoint`는 이전 checkpoint와 최신 retained head를 구분하고 `retainedTrust`는 현재 전체 이력을 나타냅니다. `hostProfileRestored/currentTrustPreserved/pairBindingVerified`가 true여도 `trustAuthorityRestored/runtimeDataRestored/runtimeStarted`는 false입니다. 호스트 사본에 서비스 경로·기록이 있어도 외부 DB/blob가 복원됐거나 실행 가능하다고 추정하지 않습니다. 별도 서비스 inventory/복원/health를 확인해야 합니다. 기존 `restore-bound-missing-host`는 정확한 현재 pair만 허용합니다.
+
+실제 CLI 검사는 새 합성65MiB namespace에서 Prepared→Applying→실패의 durable journal 및 더 높은 policy/폐기된 키를 만들어 실행합니다. 이 journal의 preflight 관측은 합성 storage adapter이므로 실제 Engine apply/복구를 입증하지 않습니다. 전체 기존 corpus·lost-authority·cold restart·crash·native Windows는 별도 완료 조건입니다.
+
+개발 재현은 최소4×65MiB 추가 공간과6GiB 여유 공간을 확인한 뒤 실행합니다. 먼저 release를 빌드하고 이 명시된 검사만 실행합니다. 다른 `--ignored` Engine 검사를 한꺼번에 실행하지 않습니다.
+
+```sh
+cargo build -p exhibitos-lifecycle --bins --release --locked
+EXHIBITOS_ROLLBACK_TEST_CLI="$PWD/target/release/exhibitos-update" \
+  cargo test -p exhibitos-lifecycle --lib --locked \
+  rollback_missing_host_cli65_preserves_revocation_floor_and_original_bytes \
+  -- --ignored
+```
+
+검사는 자신이 만든 새 synthetic root에서만 original namespace를 비워 CLI로 복원합니다. 실패는 보존하고, 정상 파일·권한·registry·입력 hash·최신 history를 확인한 성공 root만 종료 뒤 정리합니다. 현재 프로젝트 profile을 재현 입력으로 받지 않습니다.
