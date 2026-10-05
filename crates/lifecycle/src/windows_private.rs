@@ -677,6 +677,70 @@ pub fn read_public_input(path: &Path, limit: usize) -> Result<Vec<u8>> {
     PublicRecord::open(path)?.read_bounded(limit)
 }
 
+/// Read an existing external owner-only 32-byte checkpoint key without adopting
+/// ACLs. Existing/missing profile namespaces are pinned and rechecked; native
+/// directory identities exclude keys inside a profile despite case aliases.
+pub fn read_external_private_key(path: &Path, profile: &Path) -> Result<[u8; 32]> {
+    let invalid = || err("WINDOWS_EXTERNAL_KEY_INVALID");
+    if !path.is_absolute() || !profile.is_absolute() {
+        return Err(invalid());
+    }
+    valid_name(
+        profile
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(invalid)?,
+    )?;
+    let profile_parent = ParentDirectory::inspect(profile.parent().ok_or_else(invalid)?)?;
+    let profile_guard = match std::fs::symlink_metadata(profile) {
+        Ok(_) => Some(PrivateDirectory::inspect(profile)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err(invalid()),
+    };
+    let external = PrivateDirectory::inspect(path.parent().ok_or_else(invalid)?)?;
+    if let Some(guard) = &profile_guard {
+        if external.id == guard.id || external.ancestors.iter().any(|(_, _, id)| *id == guard.id) {
+            return Err(invalid());
+        }
+    }
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(invalid)?;
+    let mut record = external.read_record(name)?;
+    let before = record.file.metadata().map_err(|_| invalid())?;
+    if before.len() != 32 {
+        return Err(invalid());
+    }
+    let mut key = [0u8; 32];
+    let result = (|| {
+        record.file.read_exact(&mut key).map_err(|_| invalid())?;
+        record.check()?;
+        external.check()?;
+        profile_parent.check()?;
+        match &profile_guard {
+            Some(guard) => guard.check()?,
+            None => match std::fs::symlink_metadata(profile) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                _ => return Err(invalid()),
+            },
+        }
+        let after = record.file.metadata().map_err(|_| invalid())?;
+        if after.len() != 32
+            || before.modified().map_err(|_| invalid())?
+                != after.modified().map_err(|_| invalid())?
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        key.fill(0);
+        return Err(error);
+    }
+    Ok(key)
+}
+
 /// Existing public input, held without write/delete sharing or ACL changes.
 /// This reader accepts only regular single-link files under pinned ancestors.
 /// Public ownership may be this token's default owner; unrelated writers are refused.
@@ -1022,6 +1086,73 @@ mod tests {
         )
         .unwrap()
     }
+    #[test]
+    fn windows_external_key_reopens_exact_private_bytes_for_existing_and_missing_profile() {
+        let root = fresh();
+        let profile = PrivateDirectory::create(&root.path().join("profile")).unwrap();
+        let external = PrivateDirectory::create(&root.path().join("external")).unwrap();
+        let key = external.path().join("key.bin");
+        drop(external.write_new_record("key.bin", &[23; 32], 32).unwrap());
+        assert_eq!(
+            read_external_private_key(&key, profile.path()).unwrap(),
+            [23; 32]
+        );
+        let missing = root.path().join("missing-profile");
+        assert_eq!(read_external_private_key(&key, &missing).unwrap(), [23; 32]);
+        assert!(!missing.exists());
+        assert_eq!(std::fs::read(key).unwrap(), [23; 32]);
+    }
+    #[test]
+    fn windows_external_key_native_identity_refuses_inside_case_alias_and_nested_profile() {
+        let root = fresh();
+        let profile = PrivateDirectory::create(&root.path().join("profile")).unwrap();
+        drop(profile.write_new_record("key.bin", &[24; 32], 32).unwrap());
+        let alias = profile.path().with_file_name("PROFILE");
+        assert!(read_external_private_key(&profile.path().join("key.bin"), &alias).is_err());
+        let nested = PrivateDirectory::create(&profile.path().join("keys")).unwrap();
+        drop(nested.write_new_record("key.bin", &[25; 32], 32).unwrap());
+        assert!(read_external_private_key(&nested.path().join("key.bin"), &alias).is_err());
+        assert_eq!(
+            std::fs::read(nested.path().join("key.bin")).unwrap(),
+            [25; 32]
+        );
+    }
+    #[test]
+    fn windows_external_key_writer_hardlink_and_wrong_length_preserve_input() {
+        let root = fresh();
+        let external = PrivateDirectory::create(&root.path().join("external")).unwrap();
+        let profile = root.path().join("missing-profile");
+        let key = external.path().join("key.bin");
+        drop(external.write_new_record("key.bin", &[26; 32], 32).unwrap());
+        let writer = std::fs::OpenOptions::new().write(true).open(&key).unwrap();
+        assert!(read_external_private_key(&key, &profile).is_err());
+        drop(writer);
+        drop(
+            external
+                .write_new_record("long.bin", &[27; 33], 33)
+                .unwrap(),
+        );
+        assert!(read_external_private_key(&external.path().join("long.bin"), &profile).is_err());
+        std::fs::hard_link(&key, external.path().join("alias.bin")).unwrap();
+        assert!(read_external_private_key(&key, &profile).is_err());
+        assert_eq!(std::fs::read(key).unwrap(), [26; 32]);
+    }
+    #[test]
+    fn windows_external_key_shared_read_grant_is_refused_without_acl_repair() {
+        let root = fresh();
+        let external = PrivateDirectory::create(&root.path().join("external")).unwrap();
+        let key = external.path().join("key.bin");
+        drop(external.write_new_record("key.bin", &[28; 32], 32).unwrap());
+        let changed = crate::process_window::background_command("icacls")
+            .arg(&key)
+            .args(["/grant", "*S-1-1-0:R"])
+            .output()
+            .unwrap();
+        assert!(changed.status.success());
+        assert!(read_external_private_key(&key, &root.path().join("missing-profile")).is_err());
+        assert_eq!(std::fs::read(key).unwrap(), [28; 32]);
+    }
+
     #[test]
     fn public_reader_pins_input_and_parent_without_adopting_private_acl() {
         let root = fresh();
