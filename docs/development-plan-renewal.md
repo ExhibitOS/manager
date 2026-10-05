@@ -36,3 +36,21 @@ node scripts/test-development-renewal.mjs \
 이 스크립트는 만료된 development Prepared fixture만 대상으로 한다. Ed25519 private key는 실행 프로세스 안에서만 사용하며 파일로 내보내지 않는다. 공개 policy/envelope와 단계별 current 관측을 새 private 경로에 보존한다. 메모리 전체의 안전한 zeroization을 보장한다는 뜻은 아니다. 실제 만료 거부, 낮은 floor 정책 거부, 원본 active/기존 registry 보존, 키 revocation, old ID 재사용 거부, 실제 artifact로 새 higher-floor Prepared를 검사한다. 동일 invocation의 자동 재실행/production signing/새 서비스 복원/실제 업데이트 완료 기능이 아니다. 마지막 report의 candidateRestored/preflightVerified/updateExecuted는 false다.
 
 지원 OS/권한과 정책 보존 한계는 [trust 기록](release-trust.md), 실제 적용 조건은 [update intent](update-intent.md)를 따른다.
+
+## 새 계획에 묶인 실제 후보 복원
+
+갱신 report와 실제 등록된 비어 있는 새 target을 다음 검사에 사용한다. 다른 target의 이전 receipt를 복사하지 않는다.
+
+```sh
+python3 scripts/test-renewed-candidate.py \
+  --cli /absolute/exhibitos-update --manager /absolute/exhibitos-manager \
+  --renewal-report /absolute/private/renewal/report.json \
+  --archive /absolute/private/authenticated-service-archive \
+  --key /absolute/external/key.bin \
+  --maintenance-image sha256:<qualified-maintenance-image> \
+  --local-development-fixture
+```
+
+실제 artifact hash/크기·개발 release 유효시간·현재 Prepared·비어 있는 등록 target을 먼저 검사한다. 기존 profile 파일의 bytes/권한, archive/key hash 및 기존 container 상태를 보존 관측하고 CLI로 실제 암호화 archive를 새 target에 복원한다. Backup/schema/image/inventory binding과 실행 상태를 검사한 뒤 **새 후보만 명시적으로 정지**한다. 기존 원본·profile intent/floors·이전 후보는 유지한다. 실패하면 새 private 검사 공간과 실패 후보를 보존하며 자동 삭제·재시도·정지를 하지 않는다. 같은 target에서 재실행하면 비어 있는 target 조건에서 거부한다.
+
+결과는 새 source-version 후보 복원이다. Target-version image 적용·migration·full-data rollback·통합 사전 검증은 포함하지 않으며 `preflightVerified`와 `updateExecuted`는 false다. Container 상태 비교만으로 기존 모든 volume bytes 보존을 증명하지 않는다. 유지관리 image는 별도로 검증된 immutable digest여야 하며 이 검사 도구가 production release나 운영 권한을 제공하지 않는다.
