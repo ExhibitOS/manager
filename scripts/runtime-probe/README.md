@@ -19,3 +19,9 @@ node --test scripts/runtime-probe/copy.test.mjs
 ```
 
 The tests use fresh synthetic filesystem scopes and cover exact bytes/modes/original identity, existing destination preservation, symlink/hardlink/set-ID refusal, byte/entry/depth bounds and parent aliases. Windows filesystem execution is not qualified by these Unix owner tests.
+
+## Borrowed execution integration
+
+`ExecutionSession::with_runtime_compatibility` now keeps the existing exclusive Store/profile authority and both source/candidate operation locks across original/candidate physical observations, actual target runtime execution and final physical/configuration/receipt checks. It requalifies the current retained signed OCI artifact, checks the actual Engine image ID/OS/architecture/RootFS, and confirms the probe DB copy matches the just-observed candidate physical proof. Current signature/authority are rechecked before exposing a borrowed opaque observation to the callback and again after it returns. The typed proof cannot escape that callback. The diagnostic CLI exports JSON only, never a reusable preflight permit.
+
+The CLI shape is `qualify-runtime-compatibility --profile <private absolute path> --installation default --artifact <verified archive> --staging-parent <fresh private parent outside profile> --python <canonical Python path> --source-commit <expected development label> --maintenance-image sha256:<qualified maintenance ID> --apps-closed`. It stages a new retained artifact; use only an already prepared, signature-valid development linux/arm64 unchanged-schema plan with stopped independently restored candidate and quiesced external writers. The API refuses changed-schema releases instead of assuming compatibility. Existing current coherent recovery, owned preflight/apply, changed-schema migration, image-only rollback, full recovery activation and native Windows qualification remain required.
