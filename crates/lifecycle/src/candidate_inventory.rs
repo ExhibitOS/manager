@@ -147,7 +147,7 @@ impl ExecutionSession<'_> {
             return Err(crate::err("UPDATE_TARGET_CHANGED"));
         }
         if fs2::available_space(&root).map_err(|_| crate::err("STORAGE_UNAVAILABLE"))?
-            < 6 * 1024 * 1024 * 1024
+            < 12 * 1024 * 1024 * 1024
         {
             return Err(crate::err("RESTORE_SPACE_REQUIRED"));
         }
