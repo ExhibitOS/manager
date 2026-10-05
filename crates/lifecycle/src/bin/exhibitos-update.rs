@@ -436,6 +436,63 @@ fn run() -> Result<(), String> {
         );
         return Ok(());
     }
+    if a[1] == "qualify-current-recovery-runtime" {
+        if a.len() != 28
+            || a[6] != "--artifact"
+            || a[8] != "--staging-parent"
+            || a[10] != "--python"
+            || a[12] != "--source-commit"
+            || a[14] != "--maintenance-image"
+            || a[16] != "--export-parent"
+            || a[18] != "--host-archive"
+            || a[20] != "--trust-archive"
+            || a[22] != "--key"
+            || a[24] != "--pair-binding"
+            || a[26] != "--external-writers-quiesced"
+        {
+            return Err(usage());
+        }
+        let mut key = checkpoint_key(Path::new(&a[23]), profile)?;
+        let result = (|| {
+            let mut store = Store::open(profile, installation).map_err(code)?;
+            // Authenticate current checkpoint before staging any artifact bytes.
+            let checkpoint = signed_release::trust::CheckpointInputs {
+                binding: Path::new(&a[25]),
+                host: Path::new(&a[19]),
+                trust: Path::new(&a[21]),
+                key: &key,
+            };
+            let proof = store
+                .verify_checkpoint_pair(
+                    checkpoint.binding,
+                    checkpoint.host,
+                    checkpoint.trust,
+                    checkpoint.key,
+                )
+                .map_err(|e| e.code.to_string())?;
+            if !proof.receipt().source_plan_bound {
+                return Err("UPDATE_RECOVERY_CHECKPOINT_UNBOUND".into());
+            }
+            let session = store.execution().map_err(|e| e.code.to_string())?;
+            let mut artifact = session
+                .stage_prepared_artifact(Path::new(&a[7]), Path::new(&a[9]))
+                .map_err(|e| e.code.to_string())?;
+            let inputs = signed_release::trust::RecoveryRuntimeInputs {
+                checkpoint,
+                export_parent: Path::new(&a[17]),
+                python: Path::new(&a[11]),
+                source_commit: &a[13],
+                maintenance_image: &a[15],
+                external_writers_quiesced: true,
+            };
+            session
+                .qualify_current_recovery_runtime(&mut artifact, &inputs)
+                .map_err(|e| e.code.to_string())
+        })();
+        key.fill(0);
+        println!("{}", result?);
+        return Ok(());
+    }
     if a[1] == "qualify-runtime-compatibility" {
         if a.len() != 17
             || a[6] != "--artifact"

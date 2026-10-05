@@ -25,3 +25,36 @@ The tests use fresh synthetic filesystem scopes and cover exact bytes/modes/orig
 `ExecutionSession::with_runtime_compatibility` now keeps the existing exclusive Store/profile authority and both source/candidate operation locks across original/candidate physical observations, actual target runtime execution and final physical/configuration/receipt checks. It requalifies the current retained signed OCI artifact, checks the actual Engine image ID/OS/architecture/RootFS, and confirms the probe DB copy matches the just-observed candidate physical proof. Current signature/authority are rechecked before exposing a borrowed opaque observation to the callback and again after it returns. The typed proof cannot escape that callback. The diagnostic CLI exports JSON only, never a reusable preflight permit.
 
 The CLI shape is `qualify-runtime-compatibility --profile <private absolute path> --installation default --artifact <verified archive> --staging-parent <fresh private parent outside profile> --python <canonical Python path> --source-commit <expected development label> --maintenance-image sha256:<qualified maintenance ID> --apps-closed`. It stages a new retained artifact; use only an already prepared, signature-valid development linux/arm64 unchanged-schema plan with stopped independently restored candidate and quiesced external writers. The API refuses changed-schema releases instead of assuming compatibility. Existing current coherent recovery, owned preflight/apply, changed-schema migration, image-only rollback, full recovery activation and native Windows qualification remain required.
+
+### Same-fence current recovery and runtime observation
+
+`ExecutionSession::with_current_recovery_runtime` combines the full current
+host/trust ciphertext comparison, source and restored candidate database/blob/
+configuration/image observations, and the actual target-runtime probe under the
+same retained exclusive Store/profile and source/candidate operation guards.
+It rejects historical or unbound checkpoint catalogs before Engine work. The
+runtime's physical database observations must match the surrounding full recovery
+observations; matching logical inventories alone is insufficient.
+
+The callback borrows an opaque `CurrentRecoveryRuntime` only after common final
+checks. Saved JSON cannot recreate it. Archive authentication/current-byte
+comparison is not host extraction or lost-authority recovery, and this method
+neither produces an update `Preflight` nor writes Applying. Those executor and
+coherent recovery gates remain required. Larger datasets and changed-schema
+migration require the complete original acceptance rather than this bounded
+unchanged-schema development observer.
+
+The diagnostic CLI is:
+
+```text
+exhibitos-update qualify-current-recovery-runtime --profile <private-profile> --installation default --artifact <immutable-signed-artifact> --staging-parent <fresh-private-outside-profile> --python <canonical-python> --source-commit <image-source-label> --maintenance-image sha256:<qualified-image-id> --export-parent <private-outside-profile> --host-archive <current-host.bin> --trust-archive <current-trust.bin> --key <external-private-32-byte-key> --pair-binding <current-source-bound-catalog> --external-writers-quiesced --apps-closed
+```
+
+All input archives must belong to the exact currently retained authority/plan;
+renewing a development release does not make an older checkpoint current. No
+caller success flags, raw plan or image overrides authorize execution. The
+current signed release is reverified before and after the callback. The three
+fresh image export scopes are retired only after all observations and final
+checks succeed; failures retain their metadata/materials. No persistent database
+probe volume is created or removed. The existing 14GiB pre-observation budget and
+plan-required space plus 6GiB final floor remain enforced.

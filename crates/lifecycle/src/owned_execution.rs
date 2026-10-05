@@ -17,6 +17,9 @@ mod runtime_compatibility;
 use crate::{LifecycleService, Status, maintenance::VerificationReceipt};
 pub use prepared_oci::PreparedOciReceipt;
 pub use runtime_compatibility::RuntimeCompatibility;
+#[path = "current_recovery_runtime.rs"]
+mod current_recovery_runtime;
+pub use current_recovery_runtime::{CurrentRecoveryRuntime, RecoveryRuntimeInputs};
 #[path = "source_stopped.rs"]
 mod source_stopped;
 pub use source_stopped::SourceStoppedReceipt;
@@ -2044,6 +2047,74 @@ mod tests {
         }
         drop(session);
         assert_eq!(store.receipt().generation, 2);
+    }
+    #[test]
+    fn actual_unbound_checkpoint_refuses_runtime_before_engine_and_preserves_inputs() {
+        let (profile, mut store) = prepared("default");
+        registered(&profile, SOURCE, "default");
+        let parent = profile.parent().unwrap().to_owned();
+        let key_file = parent.join("key.bin");
+        fs::write(&key_file, [4u8; 32]).unwrap();
+        fs::set_permissions(&key_file, fs::Permissions::from_mode(0o600)).unwrap();
+        let pair = parent.join("pair");
+        store.checkpoint_host_trust(&key_file, &pair, true).unwrap();
+        let original = store.current_sha256.clone();
+        let saved = fs::read(pair.join("host.bin")).unwrap();
+        let artifact_file = parent.join("runtime.tar");
+        fs::write(&artifact_file, b"fixture").unwrap();
+        fs::set_permissions(&artifact_file, fs::Permissions::from_mode(0o600)).unwrap();
+        let session = store.execution().unwrap();
+        let mut artifact = session
+            .stage_prepared_artifact_at(&artifact_file, &parent, 21)
+            .unwrap();
+        let key = [4u8; 32];
+        let binding = pair.join("pair-binding.bin");
+        let host = pair.join("host.bin");
+        let trust = pair.join("trust.bin");
+        let mut inputs = RecoveryRuntimeInputs {
+            checkpoint: CheckpointInputs {
+                binding: &binding,
+                host: &host,
+                trust: &trust,
+                key: &key,
+            },
+            export_parent: &parent,
+            python: Path::new("/untrusted-python"),
+            source_commit: "invalid",
+            maintenance_image: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            external_writers_quiesced: false,
+        };
+        assert_eq!(
+            session
+                .qualify_current_recovery_runtime(&mut artifact, &inputs)
+                .unwrap_err()
+                .code,
+            "BACKUP_OPERATOR_ACK_REQUIRED"
+        );
+        inputs.external_writers_quiesced = true;
+        assert_eq!(
+            session
+                .qualify_current_recovery_runtime(&mut artifact, &inputs)
+                .unwrap_err()
+                .code,
+            "UPDATE_RECOVERY_CHECKPOINT_UNBOUND"
+        );
+        assert_eq!(fs::read(&host).unwrap(), saved);
+        assert_eq!(fs::read(&artifact_file).unwrap(), b"fixture");
+        assert_eq!(fs::read(&key_file).unwrap(), key);
+        drop(artifact);
+        drop(session);
+        assert_eq!(store.current_sha256, original);
+        drop(store);
+        // Only this wholly new successful synthetic fixture; no existing roots.
+        assert!(
+            parent
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("exhibitos-release-trust-")
+        );
+        fs::remove_dir_all(parent).unwrap();
     }
 }
 

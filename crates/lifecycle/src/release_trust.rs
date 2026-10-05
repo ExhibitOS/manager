@@ -57,10 +57,11 @@ mod target_registration;
 mod update_journal;
 pub use owned_execution::{
     CandidateConfigurationReceipt, CandidateInventoryReceipt, CandidateRecoveryReceipt,
-    CheckpointInputs, CombinedRecoveryReceipt, EphemeralCandidateInventoryReceipt,
-    EphemeralCandidateRecoveryReceipt, EphemeralSourceRecoveryReceipt, ExecutionSession,
-    PreparedArtifact, PreparedArtifactReceipt, PreparedOciReceipt, RuntimeCompatibility,
-    SourceHostTrustReceipt, SourceRecoveryReceipt,
+    CheckpointInputs, CombinedRecoveryReceipt, CurrentRecoveryRuntime,
+    EphemeralCandidateInventoryReceipt, EphemeralCandidateRecoveryReceipt,
+    EphemeralSourceRecoveryReceipt, ExecutionSession, PreparedArtifact, PreparedArtifactReceipt,
+    PreparedOciReceipt, RecoveryRuntimeInputs, RuntimeCompatibility, SourceHostTrustReceipt,
+    SourceRecoveryReceipt,
 };
 pub use target_registration::RegisteredUpdateTarget;
 use update_journal::{UpdateEvent, evolve, in_flight, remember_ids, validate_new_ids};
