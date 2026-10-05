@@ -41,7 +41,14 @@ struct Record {
     intent: Option<UpdateIntent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     update_event: Option<UpdateEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovery_binding: Option<String>,
 }
+#[cfg(unix)]
+#[path = "authority_recovery_vault.rs"]
+mod authority_recovery_vault;
+#[cfg(unix)]
+pub use authority_recovery_vault::AuthorityRecoveryReceipt;
 #[path = "trust_checkpoint.rs"]
 mod trust_checkpoint;
 pub use trust_checkpoint::binding::{
@@ -132,6 +139,8 @@ pub struct Store {
     uncertain: bool,
     used_operations: BTreeSet<String>,
     used_instances: BTreeSet<String>,
+    #[cfg(unix)]
+    recovery: Option<authority_recovery_vault::Vault>,
 }
 impl Drop for Store {
     fn drop(&mut self) {
@@ -275,6 +284,13 @@ fn keys(p: &Policy) -> Result<Vec<String>, Error> {
 }
 fn valid_record(r: &Record, scope: &str) -> Result<(), Error> {
     let ids = keys(&r.policy)?;
+    if r.recovery_binding
+        .as_ref()
+        .is_some_and(|h| hex::<32>(h).is_none())
+        || r.generation == 1 && r.recovery_binding.is_some()
+    {
+        return Err(invalid());
+    }
     if let Some(i) = &r.intent {
         i.validate()?;
         let e: Envelope = serde_json::from_str(&i.envelope).map_err(|_| invalid())?;
@@ -329,6 +345,25 @@ fn transition(old: &Record, next: &Record) -> Result<(), Error> {
             .any(|id| !next.revoked_keys.contains(id))
     {
         return Err(Error::TrustRollback);
+    }
+    if old.recovery_binding != next.recovery_binding {
+        if old.recovery_binding.is_some() || next.recovery_binding.is_none() {
+            return Err(Error::TrustRollback);
+        }
+        // Enrollment may only bind recovery; it cannot change policy, acceptance,
+        // intent, floors, revocations or the historical operation/instance sets.
+        let mut expected = old.clone();
+        expected.generation = next.generation;
+        expected.previous_sha256 = next.previous_sha256.clone();
+        expected.observed_at = next.observed_at;
+        expected.recovery_binding = next.recovery_binding.clone();
+        expected.update_event = None;
+        if serde_json::to_vec(&expected).map_err(|_| invalid())?
+            != serde_json::to_vec(next).map_err(|_| invalid())?
+        {
+            return Err(invalid());
+        }
+        return Ok(());
     }
     if let Some(UpdateEvent::RenewPrepared(renewed)) = &next.update_event {
         let original = old.intent.as_ref().ok_or_else(invalid)?;
@@ -542,6 +577,10 @@ impl Store {
     ) -> Result<Self, Error> {
         keys(&policy)?;
         let (root, scope, profile, anchor) = scope(profile, installation)?;
+        #[cfg(unix)]
+        if !authority_recovery_vault::absent(&authority_recovery_vault::locator(&root, &scope)?)? {
+            return Err(Error::TrustExists);
+        }
         #[cfg(windows)]
         let native_root = windows_root::NativeRoot::create(&root)?;
         #[cfg(not(windows))]
@@ -573,6 +612,7 @@ impl Store {
             acceptance: None,
             intent: None,
             update_event: None,
+            recovery_binding: None,
         };
         valid_record(&r, &scope)?;
         let h = write(&root, &r)?;
@@ -595,6 +635,8 @@ impl Store {
             uncertain: false,
             used_operations: BTreeSet::new(),
             used_instances: BTreeSet::new(),
+            #[cfg(unix)]
+            recovery: None,
         })
     }
     pub fn open(profile: &Path, installation: &str) -> Result<Self, Error> {
@@ -711,7 +753,13 @@ impl Store {
             uncertain: false,
             used_operations,
             used_instances,
+            #[cfg(unix)]
+            recovery: None,
         };
+        #[cfg(unix)]
+        {
+            s.recovery = authority_recovery_vault::Vault::open_for(&s)?;
+        }
         s.check_root()?;
         if recover_interruption && s.intent().is_some_and(|i| in_flight(i.update.stage())) {
             let now = std::time::SystemTime::now()
@@ -765,7 +813,25 @@ impl Store {
         if self.uncertain {
             return Err(Error::TrustWriteUncertain);
         }
-        self.check_root_identity()
+        self.check_root_identity()?;
+        #[cfg(unix)]
+        {
+            if let Some(vault) = &self.recovery {
+                if self.current.recovery_binding.is_some() {
+                    vault.check(&self.root, &self.current_sha256)?;
+                } else {
+                    vault.check_enrollment(&self.root, &self.current_sha256)?;
+                }
+            } else if self.current.recovery_binding.is_some() {
+                return Err(invalid());
+            } else if !authority_recovery_vault::absent(&authority_recovery_vault::locator(
+                &self.root,
+                &self.scope,
+            )?)? {
+                return Err(Error::TrustWriteUncertain);
+            }
+        }
+        Ok(())
     }
     fn commit(&mut self, mut next: Record, now: u64) -> Result<TrustReceipt, Error> {
         if now < self.current.observed_at {
@@ -787,9 +853,17 @@ impl Store {
             &self.used_instances,
         )?;
         self.uncertain = true;
+        #[cfg(unix)]
+        if let Some(vault) = &self.recovery {
+            vault.prepare(&next)?;
+        }
         let h = write(&self.root, &next)?;
         self.check_root_identity()
             .map_err(|_| Error::TrustWriteUncertain)?;
+        #[cfg(unix)]
+        if let Some(vault) = &self.recovery {
+            vault.finish(&self.root, &next, &h)?;
+        }
         remember_ids(
             Some(&self.current),
             &next,
@@ -1497,8 +1571,7 @@ mod tests {
             let mut forged = store.current.clone();
             match change {
                 0 => {
-                    let UpdateEvent::RenewPrepared(renewal) =
-                        forged.update_event.as_mut().unwrap()
+                    let UpdateEvent::RenewPrepared(renewal) = forged.update_event.as_mut().unwrap()
                     else {
                         panic!("renewal expected")
                     };

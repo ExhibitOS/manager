@@ -289,7 +289,7 @@ fn run() -> Result<(), String> {
     }
     let code = |e: signed_release::Error| e.code().to_string();
     let usage = || {
-        "UPDATE_USAGE: restore-rollback-missing-host|restore-bound-missing-host|trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|register-update-target|discard-update-intent|execution-status|verify-update-backup|verify-update-source-stopped|verify-update-source-deployment|verify-update-source-configuration|verify-update-source-images|snapshot-update-source-database|verify-update-source-inventory|verify-update-configuration-inventory|prepare-update-candidate require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
+        "UPDATE_USAGE: enroll-authority-recovery|restore-missing-authority|restore-rollback-missing-host|restore-bound-missing-host|trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|register-update-target|discard-update-intent|execution-status|verify-update-backup|verify-update-source-stopped|verify-update-source-deployment|verify-update-source-configuration|verify-update-source-images|snapshot-update-source-database|verify-update-source-inventory|verify-update-configuration-inventory|prepare-update-candidate require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
     };
     if a.len() < 7
         || a[2] != "--profile"
@@ -300,6 +300,30 @@ fn run() -> Result<(), String> {
     }
     let profile = Path::new(&a[3]);
     let installation = &a[5];
+    if a[1] == "enroll-authority-recovery" || a[1] == "restore-missing-authority" {
+        let enroll = a[1] == "enroll-authority-recovery";
+        if enroll && (a.len() != 9 || a[6] != "--vault") || !enroll && a.len() != 7 {
+            return Err(usage());
+        }
+        #[cfg(unix)]
+        {
+            let receipt = if enroll {
+                let mut store = Store::open(profile, installation).map_err(code)?;
+                store
+                    .enroll_authority_recovery(Path::new(&a[7]), now()?)
+                    .map_err(code)?
+            } else {
+                Store::restore_missing_authority(profile, installation, true).map_err(code)?
+            };
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).map_err(|_| "UPDATE_RESULT_INVALID")?
+            );
+            return Ok(());
+        }
+        #[cfg(not(unix))]
+        return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
+    }
     if matches!(
         a[1].as_str(),
         "verify-combined-recovery-ephemeral" | "bind-observed-recovery-pair"
