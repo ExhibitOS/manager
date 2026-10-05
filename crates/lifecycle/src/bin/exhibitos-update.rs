@@ -300,6 +300,40 @@ fn run() -> Result<(), String> {
     }
     let profile = Path::new(&a[3]);
     let installation = &a[5];
+    if a[1] == "verify-combined-recovery-ephemeral" {
+        if a.len() != 20
+            || a[6] != "--image"
+            || a[8] != "--export-parent"
+            || a[10] != "--host-archive"
+            || a[12] != "--trust-archive"
+            || a[14] != "--key"
+            || a[16] != "--pair-binding"
+            || a[18] != "--external-writers-quiesced"
+        {
+            return Err(usage());
+        }
+        let mut key = checkpoint_key(Path::new(&a[15]), profile)?;
+        let result = (|| {
+            let mut store = Store::open(profile, installation).map_err(code)?;
+            let inputs = signed_release::trust::CheckpointInputs {
+                binding: Path::new(&a[17]),
+                host: Path::new(&a[11]),
+                trust: Path::new(&a[13]),
+                key: &key,
+            };
+            let observation = store
+                .execution()
+                .map_err(|e| e.code)?
+                .verify_combined_recovery_ephemeral(&a[7], Path::new(&a[9]), &inputs, true)
+                .map_err(|e| e.code)?;
+            Ok::<_, String>(
+                serde_json::json!({"observation":observation,"sameLifetimeSourceCandidateVerified":true,"currentCheckpointPairAuthenticated":true,"preflightVerified":false,"updateExecuted":false,"intent":store.intent()}),
+            )
+        })();
+        key.fill(0);
+        println!("{}", result?);
+        return Ok(());
+    }
     if a[1] == "verify-current-checkpoint-pair" {
         if a.len() != 15
             || a[6] != "--host-archive"

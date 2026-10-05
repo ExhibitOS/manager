@@ -29,10 +29,13 @@ pub use source_images::SourceImageReceipt;
 #[path = "source_database.rs"]
 mod source_database;
 pub use source_database::DatabaseSnapshotReceipt;
+#[path = "combined_recovery.rs"]
+mod combined_recovery;
 #[path = "ephemeral_inventory.rs"]
 mod ephemeral_inventory;
 #[path = "ephemeral_source_recovery.rs"]
 mod ephemeral_source_recovery;
+pub use combined_recovery::{CheckpointInputs, CombinedRecoveryReceipt};
 pub use ephemeral_source_recovery::EphemeralSourceRecoveryReceipt;
 #[path = "source_inventory.rs"]
 mod source_inventory;
@@ -1923,6 +1926,31 @@ mod tests {
                 .code,
             "UPDATE_TARGET_UNREGISTERED"
         );
+        for acknowledged in [false, true] {
+            let key = [0u8; 32];
+            let inputs = CheckpointInputs {
+                binding: Path::new("/untrusted"),
+                host: Path::new("/untrusted"),
+                trust: Path::new("/untrusted"),
+                key: &key,
+            };
+            assert_eq!(
+                session
+                    .verify_combined_recovery_ephemeral(
+                        "untrusted",
+                        Path::new("/untrusted"),
+                        &inputs,
+                        acknowledged
+                    )
+                    .unwrap_err()
+                    .code,
+                if acknowledged {
+                    "UPDATE_TARGET_UNREGISTERED"
+                } else {
+                    "BACKUP_OPERATOR_ACK_REQUIRED"
+                }
+            );
+        }
         for acknowledged in [false, true] {
             assert_eq!(
                 session
