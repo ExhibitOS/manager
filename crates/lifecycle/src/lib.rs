@@ -1781,8 +1781,14 @@ mod tests {
         let s = LifecycleService::new(p.clone()).unwrap();
         let _lock = s.lock().unwrap();
         assert_eq!(s.execute(Action::Start).unwrap_err().code, "BUSY");
-        let _second = LifecycleService::new(p).unwrap();
+        #[cfg(windows)]
+        assert_eq!(LifecycleService::new(p.clone()).err().unwrap().code, "BUSY");
+        #[cfg(not(windows))]
+        let _second = LifecycleService::new(p.clone()).unwrap();
         assert!(s.jobs().unwrap().is_empty());
+        drop(_lock);
+        let reopened = LifecycleService::new(p).unwrap();
+        assert!(reopened.jobs().unwrap().is_empty());
     }
     #[test]
     fn relative_paths_and_symlink_manifest_are_rejected() {

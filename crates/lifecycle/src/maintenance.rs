@@ -277,7 +277,11 @@ mod tests {
                 .verify_backup("image:latest", &root, &root)
                 .unwrap_err()
                 .code,
-            "BACKUP_IMAGE_INVALID"
+            if cfg!(windows) {
+                "BACKUP_PLATFORM_UNVERIFIED"
+            } else {
+                "BACKUP_IMAGE_INVALID"
+            }
         );
         assert!(input_path(Path::new("relative"), true).is_err());
         #[cfg(unix)]

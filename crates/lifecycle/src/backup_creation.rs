@@ -63,15 +63,9 @@ for(const name of ['complete.json','writing.json','manifest.gcm',...(await readd
 }
 console.log(JSON.stringify({operation:'created-and-authenticated',backupId:made.backupId,files:verified.files,authenticatedManifestSha256:createHash('sha256').update(manifest).digest('hex'),archiveInventory}));
 "#;
-fn private_directory(path: &Path) -> Result<()> {
-    fs::create_dir(path).map_err(|_| err("STATE_UNAVAILABLE"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-            .map_err(|_| err("STATE_UNAVAILABLE"))?;
-    }
-    Ok(())
+fn private_directory(path: &Path) -> Result<restoration::StageDirectory> {
+    // The caller retains the protected namespace guard through journal/helper use.
+    restoration::directory(path)
 }
 pub(crate) fn hash_file(path: &Path) -> Result<FileHash> {
     let mut options = OpenOptions::new();
@@ -649,7 +643,7 @@ impl LifecycleService {
             link.reserved(&id)?;
         }
         let workspace = self.root.join(format!("backup-creation-{id}"));
-        private_directory(&workspace)?;
+        let _workspace_guard = private_directory(&workspace)?;
         let mut job = BackupCreationJob {
             id: id.clone(),
             operation: "create".into(),
@@ -680,7 +674,7 @@ impl LifecycleService {
             }
             stage(&mut job, "saving-images")?;
             let deployment = workspace.join("images");
-            private_directory(&deployment)?;
+            let _deployment_guard = private_directory(&deployment)?;
             let mut artifacts = BTreeMap::new();
             let mut image_inventory = Vec::new();
             let mut image_bytes = 0;
@@ -1016,14 +1010,22 @@ mod tests {
                 .create_backup("image:latest", Path::new("relative"), false)
                 .unwrap_err()
                 .code,
-            "BACKUP_OPERATOR_ACK_REQUIRED"
+            if cfg!(windows) {
+                "BACKUP_PLATFORM_UNVERIFIED"
+            } else {
+                "BACKUP_OPERATOR_ACK_REQUIRED"
+            }
         );
         assert_eq!(
             service
                 .create_backup("image:latest", Path::new("relative"), true)
                 .unwrap_err()
                 .code,
-            "BACKUP_IMAGE_INVALID"
+            if cfg!(windows) {
+                "BACKUP_PLATFORM_UNVERIFIED"
+            } else {
+                "BACKUP_IMAGE_INVALID"
+            }
         );
         assert_eq!(
             service
@@ -1034,7 +1036,11 @@ mod tests {
                 )
                 .unwrap_err()
                 .code,
-            "BACKUP_PATH_INVALID"
+            if cfg!(windows) {
+                "BACKUP_PLATFORM_UNVERIFIED"
+            } else {
+                "BACKUP_PATH_INVALID"
+            }
         );
         assert!(service.backup_jobs().unwrap().is_empty());
     }
@@ -1046,7 +1052,7 @@ mod tests {
         let service = LifecycleService::new(root.clone()).unwrap();
         let id = Uuid::new_v4().to_string();
         let workspace = root.join(format!("backup-creation-{id}"));
-        private_directory(&workspace).unwrap();
+        let _workspace_guard = private_directory(&workspace).unwrap();
         let job = BackupCreationJob {
             id,
             operation: "create".into(),
@@ -1067,11 +1073,35 @@ mod tests {
         assert_eq!(job.error_code.as_deref(), Some("INTERRUPTED"));
         assert!(!workspace.join("receipt.json").exists());
     }
+    #[cfg(windows)]
+    #[test]
+    fn windows_backup_workspace_retains_namespace_and_private_journal() {
+        let service = LifecycleService::new(
+            std::env::temp_dir().join(format!("backup-workspace-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let path = service.root.join("backup-candidate");
+        let guard = private_directory(&path).unwrap();
+        let renamed = service.root.join("moved-candidate");
+        assert!(fs::rename(&path, &renamed).is_err());
+        write_json(
+            &path,
+            "job.json",
+            &serde_json::json!({"synthetic":"retained"}),
+        )
+        .unwrap();
+        let before =
+            super::super::installation_backup::source_bytes(&path, "job.json", 1024, true).unwrap();
+        assert!(private_directory(&path).is_err());
+        assert_eq!(fs::read(path.join("job.json")).unwrap(), before);
+        drop(guard);
+        fs::rename(&path, &renamed).unwrap();
+    }
     #[test]
     fn copied_cipher_inventory_must_match_exact_private_bytes() {
         let root = std::env::temp_dir().join(format!("backup-copy-test-{}", Uuid::new_v4()));
-        private_directory(&root).unwrap();
-        private_directory(&root.join("files")).unwrap();
+        let _root_guard = private_directory(&root).unwrap();
+        let _files_guard = private_directory(&root.join("files")).unwrap();
         let mut inventory = BTreeMap::new();
         for name in [
             "complete.json",

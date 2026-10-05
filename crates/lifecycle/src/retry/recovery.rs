@@ -46,18 +46,28 @@ fn immutable(root: &Path, name: &str, bytes: &[u8]) -> Result<()> {
     if bytes.len() > 128 * 1024 {
         return Err(err("JOB_HISTORY_FULL"));
     }
-    let mut file = private_options()
-        .open(root.join(name))
-        .map_err(|_| err("STATE_UNAVAILABLE"))?;
-    file.write_all(bytes)
-        .and_then(|_| file.sync_all())
-        .map_err(|_| err("STATE_UNAVAILABLE"))?;
-    #[cfg(unix)]
-    File::open(root)
-        .and_then(|f| f.sync_all())
-        .map_err(|_| err("STATE_UNAVAILABLE"))?;
-    Ok(())
+    #[cfg(windows)]
+    {
+        // Immutable generations need an explicit protected file DACL, not an
+        // inherited directory grant. CREATE_NEW refuses old names and aliases.
+        write_private_new(root, name, bytes, 128 * 1024)
+    }
+    #[cfg(not(windows))]
+    {
+        let mut file = private_options()
+            .open(root.join(name))
+            .map_err(|_| err("STATE_UNAVAILABLE"))?;
+        file.write_all(bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|_| err("STATE_UNAVAILABLE"))?;
+        #[cfg(unix)]
+        File::open(root)
+            .and_then(|f| f.sync_all())
+            .map_err(|_| err("STATE_UNAVAILABLE"))?;
+        Ok(())
+    }
 }
+
 fn optional(root: &Path, name: &str, limit: u64) -> Result<Option<Vec<u8>>> {
     match fs::symlink_metadata(root.join(name)) {
         Ok(_) => source_bytes(root, name, limit, true).map(Some),
@@ -1135,5 +1145,30 @@ mod tests {
                 audit
             );
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_immutable_tests {
+    use super::*;
+    #[test]
+    fn immutable_retry_generations_reopen_private_and_refuse_rewrite_and_quota() {
+        let service = LifecycleService::new(
+            std::env::temp_dir().join(format!("retry-record-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        immutable(&service.root, "retry-proof.json", b"synthetic-preserved").unwrap();
+        assert_eq!(
+            source_bytes(&service.root, "retry-proof.json", 1024, true).unwrap(),
+            b"synthetic-preserved"
+        );
+        assert!(immutable(&service.root, "retry-proof.json", b"replacement").is_err());
+        assert_eq!(
+            fs::read(service.root.join("retry-proof.json")).unwrap(),
+            b"synthetic-preserved"
+        );
+        assert!(immutable(&service.root, "oversized.json", &vec![0; 128 * 1024 + 1]).is_err());
+        assert!(!service.root.join("oversized.json").exists());
+        assert!(immutable(&service.root, "retry-proof.json:alias", b"alias").is_err());
     }
 }

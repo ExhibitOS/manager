@@ -732,7 +732,9 @@ pub fn extract_host(
     ))
 }
 
-#[cfg(test)]
+// These fixtures exercise the supported Unix host archive/activation boundary.
+// Native Windows is tested separately for explicit unsupported refusal below.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::installations::InstallationController;
@@ -995,5 +997,105 @@ mod tests {
         assert!(publish_directory(&stage, &target).is_err());
         assert!(stage.exists());
         assert_eq!(fs::read(target.join("witness")).unwrap(), b"preserve");
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    fn fixture() -> (crate::windows_private::PrivateDirectory, PathBuf, PathBuf) {
+        let parent = fs::canonicalize(std::env::var_os("LOCALAPPDATA").unwrap()).unwrap();
+        let root = crate::windows_private::PrivateDirectory::create(
+            &parent.join(format!("exhibitos-host-gate-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        write_private_new(root.path(), "witness", b"synthetic-host-preserved", 1024).unwrap();
+        write_private_new(root.path(), "key.bin", &[17; 32], 32).unwrap();
+        let key = root.path().join("key.bin");
+        let archive = root.path().join("archive.bin");
+        (root, key, archive)
+    }
+    fn preserved(root: crate::windows_private::PrivateDirectory, archive: &Path) {
+        assert!(!archive.exists());
+        assert_eq!(
+            fs::read(root.path().join("witness")).unwrap(),
+            b"synthetic-host-preserved"
+        );
+        assert_eq!(fs::read(root.path().join("key.bin")).unwrap(), [17; 32]);
+        let path = root.path().to_owned();
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn unsupported_host_checkpoint_never_creates_archive_or_reads_missing_source() {
+        let (root, key, archive) = fixture();
+        for (apps, writers) in [(false, false), (true, false), (true, true)] {
+            assert_eq!(
+                checkpoint_host(
+                    &root.path().join("missing-profile"),
+                    &key,
+                    &archive,
+                    apps,
+                    writers
+                )
+                .unwrap_err()
+                .code,
+                "PROFILE_PLATFORM_UNVERIFIED"
+            );
+        }
+        assert!(!root.path().join("missing-profile").exists());
+        preserved(root, &archive);
+    }
+    #[test]
+    fn unsupported_host_extraction_never_creates_destination_or_rewrites_input() {
+        let (root, key, archive) = fixture();
+        let destination = root.path().join("recovered");
+        for ack in [false, true] {
+            assert_eq!(
+                extract_host(
+                    &root.path().join("missing-profile"),
+                    &key,
+                    &archive,
+                    &destination,
+                    ack
+                )
+                .unwrap_err()
+                .code,
+                "PROFILE_PLATFORM_UNVERIFIED"
+            );
+        }
+        assert!(!destination.exists());
+        preserved(root, &archive);
+    }
+    #[test]
+    fn unsupported_borrowed_host_checkpoint_never_calls_writer_callbacks() {
+        let (root, key, archive) = fixture();
+        let profile =
+            crate::windows_private::PrivateDirectory::create(&root.path().join("profile")).unwrap();
+        let session = session_lock(profile.path(), true).unwrap();
+        let calls = std::cell::Cell::new(0);
+        assert_eq!(
+            checkpoint_host_borrowed(
+                profile.path(),
+                &key,
+                &archive,
+                &session,
+                || {
+                    calls.set(calls.get() + 1);
+                    Ok(())
+                },
+                || {
+                    calls.set(calls.get() + 1);
+                    Ok(())
+                }
+            )
+            .unwrap_err()
+            .code,
+            "PROFILE_PLATFORM_UNVERIFIED"
+        );
+        assert_eq!(calls.get(), 0);
+        drop(session);
+        drop(profile);
+        preserved(root, &archive);
     }
 }
