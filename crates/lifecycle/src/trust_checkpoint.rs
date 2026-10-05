@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Exact complete history under the existing fences; never activates/rewinds trust.
 use super::*;
+#[path = "recovery_pair_binding.rs"]
+pub(super) mod binding;
 #[path = "trust_checkpoint_encrypted.rs"]
 mod encrypted;
 #[path = "paired_host_trust.rs"]

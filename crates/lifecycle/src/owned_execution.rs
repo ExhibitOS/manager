@@ -893,6 +893,23 @@ impl ExecutionSession<'_> {
                 .map_err(|_| crate::err("UPDATE_SOURCE_CHANGED"))?;
             after_archive_configuration.export_workspace =
                 target.join(export_relative).to_string_lossy().into_owned();
+            self.store.seal_recovery_pair(
+                &stage,
+                key.as_slice()
+                    .try_into()
+                    .map_err(|_| crate::err("PROFILE_KEY_INVALID"))?,
+                &host,
+                Some(super::trust_checkpoint::binding::SourceBinding::from_plan(
+                    self.store
+                        .intent()
+                        .ok_or_else(|| crate::err("UPDATE_INTENT_MISSING"))?
+                        .update
+                        .plan(),
+                )),
+            )?;
+            if read_record(key_file).map_err(|_| crate::err("PROFILE_KEY_INVALID"))? != key {
+                return Err(crate::err("PROFILE_KEY_INVALID"));
+            }
             let receipt = SourceHostTrustReceipt {
                 host,
                 trust,

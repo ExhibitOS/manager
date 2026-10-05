@@ -16,6 +16,7 @@ pub struct MissingHostRecoveryReceipt {
     pub retained_trust: TrustCheckpointReceipt,
     pub host_profile_restored: bool,
     pub current_trust_preserved: bool,
+    pub pair_binding_verified: bool,
     pub trust_authority_restored: bool,
     pub runtime_data_restored: bool,
     pub runtime_started: bool,
@@ -29,6 +30,33 @@ impl Store {
         host_archive: &Path,
         trust_archive: &Path,
         key_file: &Path,
+        apps_closed: bool,
+    ) -> crate::Result<MissingHostRecoveryReceipt> {
+        self.restore_host_pair(host_archive, trust_archive, key_file, None, apps_closed)
+    }
+    /// Also authenticate that host and retained-current trust belong to one pair.
+    pub fn restore_bound_missing_host(
+        &self,
+        host_archive: &Path,
+        trust_archive: &Path,
+        key_file: &Path,
+        pair_binding: &Path,
+        apps_closed: bool,
+    ) -> crate::Result<MissingHostRecoveryReceipt> {
+        self.restore_host_pair(
+            host_archive,
+            trust_archive,
+            key_file,
+            Some(pair_binding),
+            apps_closed,
+        )
+    }
+    fn restore_host_pair(
+        &self,
+        host_archive: &Path,
+        trust_archive: &Path,
+        key_file: &Path,
+        pair_binding: Option<&Path>,
         apps_closed: bool,
     ) -> crate::Result<MissingHostRecoveryReceipt> {
         self.check_root().map_err(|e| crate::err(e.code()))?;
@@ -52,6 +80,18 @@ impl Store {
             return Err(crate::err("PROFILE_KEY_INVALID"));
         }
         let result = (|| {
+            let binding = pair_binding
+                .map(|catalog| {
+                    self.verify_recovery_pair(
+                        catalog,
+                        host_archive,
+                        trust_archive,
+                        key.as_slice()
+                            .try_into()
+                            .map_err(|_| crate::err("PROFILE_KEY_INVALID"))?,
+                    )
+                })
+                .transpose()?;
             let original = self
                 .checkpoint_records()
                 .map_err(|e| crate::err(e.code()))?;
@@ -88,6 +128,22 @@ impl Store {
                 &stage.join("host"),
                 true,
             )?;
+            if let Some(bound) = &binding {
+                if host.manifest_sha256 != bound.host_manifest_sha256 {
+                    return Err(crate::err("RECOVERY_PAIR_INVALID"));
+                }
+                let repeated = self.verify_recovery_pair(
+                    pair_binding.ok_or_else(|| crate::err("RECOVERY_PAIR_INVALID"))?,
+                    host_archive,
+                    trust_archive,
+                    key.as_slice()
+                        .try_into()
+                        .map_err(|_| crate::err("PROFILE_KEY_INVALID"))?,
+                )?;
+                if &repeated != bound {
+                    return Err(crate::err("RECOVERY_PAIR_INVALID"));
+                }
+            }
             self.verify_trust_checkpoint(&stage.join("trust"))
                 .map_err(|e| crate::err(e.code()))?;
             if read_record(key_file).map_err(|_| crate::err("PROFILE_KEY_INVALID"))? != key
@@ -103,6 +159,7 @@ impl Store {
                 retained_trust: trust,
                 host_profile_restored: true,
                 current_trust_preserved: true,
+                pair_binding_verified: binding.is_some(),
                 trust_authority_restored: false,
                 runtime_data_restored: false,
                 runtime_started: false,
@@ -221,6 +278,17 @@ impl Store {
                     )
                     .map_err(|e| crate::err(e.code()))
                 },
+            )?;
+            if read_record(key_file).map_err(|_| crate::err("PROFILE_KEY_INVALID"))? != key {
+                return Err(crate::err("PROFILE_KEY_INVALID"));
+            }
+            self.seal_recovery_pair(
+                &stage,
+                key.as_slice()
+                    .try_into()
+                    .map_err(|_| crate::err("PROFILE_KEY_INVALID"))?,
+                &host,
+                None,
             )?;
             if read_record(key_file).map_err(|_| crate::err("PROFILE_KEY_INVALID"))? != key {
                 return Err(crate::err("PROFILE_KEY_INVALID"));
@@ -381,6 +449,224 @@ mod tests {
             b"original host witness"
         );
         let parent = profile.parent().unwrap().to_path_buf();
+        drop(store);
+        fs::remove_dir_all(parent).unwrap();
+    }
+    #[test]
+    fn bound_pair_refuses_mixed_ciphertexts_tamper_missing_binding_and_new_trust_before_publication()
+     {
+        let (profile, mut store, key, pair) = recovery_fixture();
+        let second = pair.with_extension("second");
+        fs::write(profile.join("witness.bin"), b"later host snapshot").unwrap();
+        store.checkpoint_host_trust(&key, &second, true).unwrap();
+        let original = fs::read(profile.join("witness.bin")).unwrap();
+        let old = profile.with_extension("quarantined");
+        fs::rename(&profile, &old).unwrap();
+        let binding = pair.join("pair-binding.bin");
+        let call = |host: &Path, trust: &Path, catalog: &Path| {
+            store.restore_bound_missing_host(host, trust, &key, catalog, true)
+        };
+        for (host, trust) in [
+            (second.join("host.bin"), pair.join("trust.bin")),
+            (pair.join("host.bin"), second.join("trust.bin")),
+        ] {
+            assert_eq!(
+                call(&host, &trust, &binding).unwrap_err().code,
+                "RECOVERY_PAIR_INVALID"
+            );
+            assert!(!profile.exists());
+        }
+        let raw = fs::read(&binding).unwrap();
+        // Correctly authenticated but unsupported schema is still rejected.
+        use aes_gcm::{
+            Aes256Gcm, Nonce,
+            aead::{Aead, KeyInit, Payload},
+        };
+        let domain = b"ExhibitOS-recovery-pair-v1\0";
+        let cipher = Aes256Gcm::new_from_slice(&[4u8; 32]).unwrap();
+        let plain = cipher
+            .decrypt(
+                Nonce::from_slice(&raw[domain.len()..domain.len() + 12]),
+                Payload {
+                    msg: &raw[domain.len() + 12..],
+                    aad: domain,
+                },
+            )
+            .unwrap();
+        let mut unsupported: serde_json::Value = serde_json::from_slice(&plain).unwrap();
+        unsupported["unrecognizedField"] = serde_json::json!(true);
+        let encoded = serde_json::to_vec(&unsupported).unwrap();
+        let nonce = [1u8; 12]; // unique within this fresh synthetic key fixture
+        let sealed = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: &encoded,
+                    aad: domain,
+                },
+            )
+            .unwrap();
+        let bad_schema = pair.join("unknown-schema");
+        let mut file = private_file(&bad_schema, true).unwrap();
+        file.write_all(domain).unwrap();
+        file.write_all(&nonce).unwrap();
+        file.write_all(&sealed).unwrap();
+        drop(file);
+        assert_eq!(
+            call(&pair.join("host.bin"), &pair.join("trust.bin"), &bad_schema)
+                .unwrap_err()
+                .code,
+            "RECOVERY_PAIR_INVALID"
+        );
+        assert!(!profile.exists());
+        for kind in ["tamper", "truncate", "extra", "domain"] {
+            let bad = pair.join(format!("binding-{kind}"));
+            let mut bytes = raw.clone();
+            match kind {
+                "tamper" => *bytes.last_mut().unwrap() ^= 1,
+                "truncate" => {
+                    bytes.pop();
+                }
+                "extra" => bytes.push(0),
+                _ => bytes[0] ^= 1,
+            }
+            private_file(&bad, true).unwrap().write_all(&bytes).unwrap();
+            assert_eq!(
+                call(&pair.join("host.bin"), &pair.join("trust.bin"), &bad)
+                    .unwrap_err()
+                    .code,
+                "RECOVERY_PAIR_INVALID"
+            );
+            assert!(!profile.exists());
+        }
+        assert_eq!(
+            call(
+                &pair.join("host.bin"),
+                &pair.join("trust.bin"),
+                &pair.join("missing")
+            )
+            .unwrap_err()
+            .code,
+            "RECOVERY_PAIR_INVALID"
+        );
+        assert!(
+            store
+                .verify_recovery_pair(
+                    &binding,
+                    &pair.join("host.bin"),
+                    &pair.join("trust.bin"),
+                    &[9u8; 32]
+                )
+                .is_err()
+        );
+        let alias = pair.join("linked-binding");
+        fs::hard_link(&binding, &alias).unwrap();
+        assert!(
+            store
+                .verify_recovery_pair(
+                    &alias,
+                    &pair.join("host.bin"),
+                    &pair.join("trust.bin"),
+                    &[4u8; 32]
+                )
+                .is_err()
+        );
+        fs::remove_file(alias).unwrap();
+        let parent = profile.parent().unwrap().to_owned();
+        assert_eq!(fs::read(old.join("witness.bin")).unwrap(), original);
+        store
+            .replace_policy(
+                store.current.policy.clone(),
+                store.current.policy_generation,
+                22,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .restore_bound_missing_host(
+                    &pair.join("host.bin"),
+                    &pair.join("trust.bin"),
+                    &key,
+                    &binding,
+                    true
+                )
+                .unwrap_err()
+                .code,
+            "RECOVERY_PAIR_INVALID"
+        );
+        assert!(!profile.exists());
+        drop(store);
+        fs::remove_dir_all(parent).unwrap();
+    }
+    #[test]
+    fn bound_pair_restores_exact_host_and_refuses_wrong_source_provenance() {
+        let (profile, store, key, pair) = recovery_fixture();
+        let original = store.current_sha256.clone();
+        let bound = store
+            .verify_recovery_pair(
+                &pair.join("pair-binding.bin"),
+                &pair.join("host.bin"),
+                &pair.join("trust.bin"),
+                &[4u8; 32],
+            )
+            .unwrap();
+        let bad = pair.with_extension("wrong-source");
+        installations::new_directory(&bad).unwrap();
+        fs::copy(pair.join("host.bin"), bad.join("host.bin")).unwrap();
+        fs::copy(pair.join("trust.bin"), bad.join("trust.bin")).unwrap();
+        let mut plan = store.intent().unwrap().update.plan().clone();
+        plan.source_inventory = "0".repeat(64);
+        let host = profile_backup::HostReceipt {
+            id: "test".into(),
+            operation: "host-profile-checkpoint".into(),
+            files: 2,
+            bytes: 1,
+            manifest_sha256: bound.host_manifest_sha256,
+            external_volumes_saved: false,
+            host_writer_quiescence: "operator-acknowledged".into(),
+        };
+        store
+            .seal_recovery_pair(
+                &bad,
+                &[4u8; 32],
+                &host,
+                Some(super::super::binding::SourceBinding::from_plan(&plan)),
+            )
+            .unwrap();
+        let old = profile.with_extension("quarantined");
+        fs::rename(&profile, &old).unwrap();
+        assert_eq!(
+            store
+                .restore_bound_missing_host(
+                    &bad.join("host.bin"),
+                    &bad.join("trust.bin"),
+                    &key,
+                    &bad.join("pair-binding.bin"),
+                    true
+                )
+                .unwrap_err()
+                .code,
+            "RECOVERY_PAIR_INVALID"
+        );
+        assert!(!profile.exists());
+        let receipt = store
+            .restore_bound_missing_host(
+                &pair.join("host.bin"),
+                &pair.join("trust.bin"),
+                &key,
+                &pair.join("pair-binding.bin"),
+                true,
+            )
+            .unwrap();
+        assert!(receipt.pair_binding_verified);
+        assert!(receipt.host_profile_restored);
+        assert!(!receipt.runtime_data_restored);
+        assert_eq!(store.current_sha256, original);
+        assert_eq!(
+            fs::read(profile.join("witness.bin")).unwrap(),
+            fs::read(old.join("witness.bin")).unwrap()
+        );
+        let parent = profile.parent().unwrap().to_owned();
         drop(store);
         fs::remove_dir_all(parent).unwrap();
     }
