@@ -24,11 +24,25 @@ fn required(bytes: impl IntoIterator<Item = u64>, observations: u64) -> crate::R
         .and_then(|growth| growth.checked_add(HEADROOM + FLOOR))
         .ok_or_else(|| crate::err("STORAGE_QUOTA"))
 }
+fn with_host_reserve(export_budget: u64, host_bytes: u64) -> crate::Result<u64> {
+    export_budget
+        .checked_add(host_bytes)
+        .ok_or_else(|| crate::err("STORAGE_QUOTA"))
+}
 pub(super) fn check(
     source: &LifecycleService,
     ctx: &candidate_inventory::CandidateContext<'_>,
     paths: &[&Path],
     observations: u64,
+) -> crate::Result<u64> {
+    check_with_host(source, ctx, paths, observations, 0)
+}
+pub(super) fn check_with_host(
+    source: &LifecycleService,
+    ctx: &candidate_inventory::CandidateContext<'_>,
+    paths: &[&Path],
+    observations: u64,
+    host_bytes: u64,
 ) -> crate::Result<u64> {
     // CandidateContext's complete raw manifest is authenticated against the retained plan.
     // Do not accept caller sizes, image metadata estimates, or unauthenticated inventory.
@@ -41,7 +55,10 @@ pub(super) fn check(
         true,
     )?;
     let images = source_images::bound_inventory(&bytes, &manifest, &original)?;
-    let needed = required(images.iter().map(|i| i.bytes), observations)?;
+    let needed = with_host_reserve(
+        required(images.iter().map(|i| i.bytes), observations)?,
+        host_bytes,
+    )?;
     if paths.is_empty() {
         return Err(crate::err("STORAGE_UNAVAILABLE"));
     }
@@ -57,6 +74,16 @@ pub(super) fn check(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn whole_host_growth_never_consumes_export_headroom_or_floor() {
+        let exports = required([100, 200], 3).unwrap();
+        assert_eq!(with_host_reserve(exports, 5 * GIB).unwrap(), 13 * GIB + 900);
+        assert_eq!(with_host_reserve(exports, 0).unwrap(), exports);
+        assert_eq!(
+            with_host_reserve(exports, u64::MAX).unwrap_err().code,
+            "STORAGE_QUOTA"
+        );
+    }
     #[test]
     fn authenticated_growth_keeps_cap_headroom_floor_and_all_observations() {
         assert_eq!(required([100, 200], 1).unwrap(), 8 * GIB + 300);

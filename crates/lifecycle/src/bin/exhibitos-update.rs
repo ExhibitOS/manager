@@ -436,8 +436,12 @@ fn run() -> Result<(), String> {
         );
         return Ok(());
     }
-    if a[1] == "qualify-current-recovery-runtime" {
-        if a.len() != 28
+    if matches!(
+        a[1].as_str(),
+        "qualify-current-recovery-runtime" | "qualify-full-recovery-runtime"
+    ) {
+        let full = a[1] == "qualify-full-recovery-runtime";
+        if a.len() != if full { 30 } else { 28 }
             || a[6] != "--artifact"
             || a[8] != "--staging-parent"
             || a[10] != "--python"
@@ -448,7 +452,8 @@ fn run() -> Result<(), String> {
             || a[20] != "--trust-archive"
             || a[22] != "--key"
             || a[24] != "--pair-binding"
-            || a[26] != "--external-writers-quiesced"
+            || full && a[26] != "--host-extraction"
+            || a[if full { 28 } else { 26 }] != "--external-writers-quiesced"
         {
             return Err(usage());
         }
@@ -485,9 +490,17 @@ fn run() -> Result<(), String> {
                 maintenance_image: &a[15],
                 external_writers_quiesced: true,
             };
-            session
-                .qualify_current_recovery_runtime(&mut artifact, &inputs)
-                .map_err(|e| e.code.to_string())
+            if full {
+                session.qualify_full_recovery_runtime(
+                    &mut artifact,
+                    &inputs,
+                    Path::new(&a[27]),
+                    Path::new(&a[23]),
+                )
+            } else {
+                session.qualify_current_recovery_runtime(&mut artifact, &inputs)
+            }
+            .map_err(|e| e.code.to_string())
         })();
         key.fill(0);
         println!("{}", result?);

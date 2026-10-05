@@ -60,6 +60,15 @@ impl ExecutionSession<'_> {
         inputs: &RecoveryRuntimeInputs<'_>,
         work: impl FnOnce(&CurrentRecoveryRuntime) -> Result<T>,
     ) -> Result<(T, Value)> {
+        self.with_recovery_runtime_impl(artifact, inputs, None, work)
+    }
+    fn with_recovery_runtime_impl<T>(
+        &self,
+        artifact: &mut PreparedArtifact,
+        inputs: &RecoveryRuntimeInputs<'_>,
+        extraction: Option<(&Path, &Path)>,
+        work: impl FnOnce(&CurrentRecoveryRuntime) -> Result<T>,
+    ) -> Result<(T, Value)> {
         self.check()?;
         if !inputs.external_writers_quiesced {
             return Err(err("BACKUP_OPERATOR_ACK_REQUIRED"));
@@ -69,6 +78,23 @@ impl ExecutionSession<'_> {
             return Err(err("BACKUP_IMAGE_INVALID"));
         }
         let cp = &inputs.checkpoint;
+        if let Some((destination, key_file)) = extraction {
+            let parent = destination
+                .parent()
+                .ok_or_else(|| err("HOST_CHECKPOINT_INVALID"))?;
+            crate::installations::private_directory(parent)?;
+            if !destination.is_absolute()
+                || destination.exists()
+                || fs::canonicalize(parent).ok().as_deref() != Some(parent)
+                || destination.starts_with(&self.store.profile)
+                || destination.starts_with(&self.store.root)
+                || key_file.starts_with(destination)
+                || inputs.checkpoint.host.starts_with(destination)
+                || inputs.checkpoint.trust.starts_with(destination)
+            {
+                return Err(err("HOST_CHECKPOINT_INVALID"));
+            }
+        }
         // Reject stale, mixed or unbound recovery inputs before OCI/Engine work.
         let checkpoint = self
             .store
@@ -78,15 +104,36 @@ impl ExecutionSession<'_> {
         // Preserve2GiB headroom and6GiB floor before OCI preparation.
         // Exact authenticated three-export growth is reserved inside CandidateContext.
         if fs2::available_space(inputs.export_parent).map_err(|_| err("STORAGE_UNAVAILABLE"))?
-            < 8 * 1024 * 1024 * 1024
+            < (8u64 * 1024 * 1024 * 1024)
+                .checked_add(if extraction.is_some() {
+                    checkpoint.receipt().host_archive_bytes
+                } else {
+                    0
+                })
+                .ok_or_else(|| err("STORAGE_QUOTA"))?
         {
             return Err(err("RESTORE_SPACE_REQUIRED"));
         }
         let oci = self.qualify_runtime_artifact(artifact, inputs.python, inputs.source_commit)?;
         let held_artifact = std::cell::RefCell::new(&mut *artifact);
         let mut outcome = None;
-        let (mut before, mut candidate, mut after, mut receipt) = self.inspect_restored_candidate_finalized(true, |ctx| {
-            recovery_space::check(&self.source, ctx, &[&self.source.root, ctx.root, inputs.export_parent], 3)?;
+        let (mut before, mut candidate, mut after, mut receipt, _) = self.inspect_restored_candidate_finalized(true, |ctx| {
+            let full_recovery = if let Some((destination, key_file)) = extraction {
+                let parent = destination.parent().ok_or_else(||err("HOST_CHECKPOINT_INVALID"))?;
+                recovery_space::check_with_host(&self.source, ctx, &[&self.source.root, ctx.root, inputs.export_parent, parent], 3, checkpoint.receipt().host_archive_bytes)?;
+                if super::read_record(key_file).map_err(|_|err("PROFILE_KEY_INVALID"))?.as_slice()!=cp.key {
+                    return Err(err("PROFILE_KEY_INVALID"));
+                }
+                crate::installations::new_directory(destination)?;
+                let host = crate::profile_backup::extract_host(&self.store.profile, key_file, cp.host, &destination.join("host"), true)?;
+                if host.manifest_sha256!=checkpoint.receipt().host_manifest_sha256 {return Err(err("RECOVERY_PAIR_INVALID"));}
+                let trust = self.store.extract_trust_checkpoint(cp.trust, &destination.join("trust"), cp.key).map_err(|e|err(e.code()))?;
+                crate::profile_backup::verify_extracted_host(&self.store.profile, &destination.join("host"), &host)?;
+                Some((destination, key_file, host, trust))
+            } else {
+                recovery_space::check(&self.source, ctx, &[&self.source.root, ctx.root, inputs.export_parent], 3)?;
+                None
+            };
             self.reverify_prepared_artifact(&mut held_artifact.borrow_mut())?;
             self.store.recheck_checkpoint_pair(&checkpoint, cp.binding, cp.host, cp.trust, cp.key)?;
             let host = crate::profile_backup::verify_host_current_borrowed(
@@ -113,9 +160,18 @@ impl ExecutionSession<'_> {
             if available < ctx.plan.required_free_bytes.checked_add(6*1024*1024*1024).ok_or_else(||err("RESTORE_SPACE_REQUIRED"))? {
                 return Err(err("RESTORE_SPACE_REQUIRED"));
             }
-            let receipt = serde_json::json!({"operationId":ctx.plan.operation_id,"trustGeneration":checkpoint.receipt().generation,"checkpoint":checkpoint.receipt(),"host":host,"sourceBefore":before,"candidate":candidate,"runtime":runtime,"sourceAfter":after,"availableFreeBytes":available,"sameLifetimeRecoveryRuntimeVerified":true,"hostExtractionVerified":false,"lostAuthorityRecoveryVerified":false,"preflightVerified":false,"updateExecuted":false,"imageOnlyRollbackVerified":false});
-            Ok((before,candidate,after,receipt))
-        },|ctx,(_,_,_,receipt)| {
+            if let Some((destination,key_file,host,_))=&full_recovery {
+                crate::profile_backup::verify_extracted_host(&self.store.profile, &destination.join("host"), host)?;
+                self.store.verify_trust_checkpoint(&destination.join("trust")).map_err(|e|err(e.code()))?;
+                if super::read_record(key_file).map_err(|_|err("PROFILE_KEY_INVALID"))?.as_slice()!=cp.key {return Err(err("PROFILE_KEY_INVALID"));}
+            }
+            let mut receipt = serde_json::json!({"operationId":ctx.plan.operation_id,"trustGeneration":checkpoint.receipt().generation,"checkpoint":checkpoint.receipt(),"host":host,"sourceBefore":before,"candidate":candidate,"runtime":runtime,"sourceAfter":after,"availableFreeBytes":available,"sameLifetimeRecoveryRuntimeVerified":true,"hostExtractionVerified":false,"lostAuthorityRecoveryVerified":false,"preflightVerified":false,"updateExecuted":false,"imageOnlyRollbackVerified":false});
+            if let Some((destination,_,host,trust))=&full_recovery {
+                receipt["hostExtractionVerified"]=serde_json::json!(true);
+                receipt["inactiveFullRecovery"]=serde_json::json!({"destination":destination,"host":host,"trust":trust,"hostActivated":false,"liveAuthorityRestored":false});
+            }
+            Ok((before,candidate,after,receipt,full_recovery))
+        },|ctx,(_,_,_,receipt,full_recovery)| {
             self.reverify_prepared_artifact(&mut held_artifact.borrow_mut())?;
             self.store.recheck_checkpoint_pair(&checkpoint, cp.binding, cp.host, cp.trust, cp.key)?;
             let held = held_artifact.borrow();
@@ -125,6 +181,11 @@ impl ExecutionSession<'_> {
             outcome=Some(work(&proof)?);
             self.reverify_prepared_artifact(&mut held_artifact.borrow_mut())?;
             self.store.recheck_checkpoint_pair(&checkpoint, cp.binding, cp.host, cp.trust, cp.key)?;
+            if let Some((destination,key_file,host,_))=full_recovery {
+                crate::profile_backup::verify_extracted_host(&self.store.profile, &destination.join("host"), host)?;
+                self.store.verify_trust_checkpoint(&destination.join("trust")).map_err(|e|err(e.code()))?;
+                if super::read_record(key_file).map_err(|_|err("PROFILE_KEY_INVALID"))?.as_slice()!=cp.key {return Err(err("PROFILE_KEY_INVALID"));}
+            }
             // A callback must not alter any protected host bytes.
             crate::profile_backup::verify_host_current_borrowed(&self.store.profile, cp.host, cp.key, &self._session, &checkpoint.receipt().host_manifest_sha256)?;
             Ok(())
@@ -153,6 +214,18 @@ impl ExecutionSession<'_> {
             outcome.ok_or_else(|| err("UPDATE_RECOVERY_RUNTIME_MISMATCH"))?,
             receipt,
         ))
+    }
+    /// Actual inactive full host/trust extraction in the same fence as service/runtime checks.
+    /// Retains fresh private output for independent inspection; no original activation.
+    pub fn qualify_full_recovery_runtime(
+        &self,
+        artifact: &mut PreparedArtifact,
+        inputs: &RecoveryRuntimeInputs<'_>,
+        destination: &Path,
+        key_file: &Path,
+    ) -> Result<Value> {
+        self.with_recovery_runtime_impl(artifact, inputs, Some((destination, key_file)), |_| Ok(()))
+            .map(|(_, receipt)| receipt)
     }
     pub fn qualify_current_recovery_runtime(
         &self,
