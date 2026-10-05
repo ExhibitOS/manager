@@ -30,3 +30,13 @@ exhibitos-update checkpoint-source-host-trust \
 `externalVolumesSaved`, `liveAuthorityRestored`, `preflightVerified`, `updateExecuted`는 false다. 현재 서비스 데이터 일치는 기존 백업에 대한 관측이며 DB/blob/config live volume을 새 archive에 저장했다는 뜻이 아니다. 원래 인증 서비스 archive를 별도로 보존하고 전체 일관된 복원, authority-loss, 등록된 실제 업데이트·migration·health·rollback, cold engine/OS/corpus 검사를 완료해야 한다. cooperative lock과 operator acknowledgement는 privileged external writer를 배제하지 않는다.
 
 개발 서명 envelope가 만료됐어도 이 관측으로 Applying을 허용하지 않는다. 실제 업데이트 전에 서명·시간·floor/revocation/history·source/recovery/resource를 새로 검사해야 한다.
+
+## 누적 공간 사전 검사
+
+단계별 여유가 있어도 앞 단계의 새 image export·host archive가 남으면 뒤쪽 반복 DB inventory에서 공간이 부족해질 수 있다. 같은 profile/모든 등록 root 잠금을 확보한 첫 callback에서 bulk 작업 전에 지원 host inventory를 실제 hash/byte 검사하고, 현재 계획에 바인딩한 인증 backup의 두 image archive 크기 및 검증된 전체 trust history의 ciphertext 예산을 계산한다. 잘못된 manifest·history·owner/path·quota는 성공 예산으로 처리하지 않는다.
+
+`H`는 기존 host profile bytes, `I`는 두 인증 image archive 합계, `T`는 trust ciphertext 예산이다. 원본과 목적지가 같은 Unix filesystem이면 `H + 3I + T + 268MiB + 6GiB` 이상을 요구한다. 첫 export `I`는 원본에 남고 host archive에도 포함되며, 두 번째 export `I`는 외부 목적지에 남는다. 서로 다른 filesystem이면 원본에는 `I + 6GiB`, 목적지에는 `H + 2I + T + 268MiB`를 각각 요구한다. Host archive64GiB/manifest8MiB quota도 기존 profile에 첫 export를 더한 크기로 먼저 검사한다. `CHECKPOINT_STORAGE_INSUFFICIENT`는 새 DB snapshot·image export·암호화 archive 전에 거부하며 빈 private 진단 stage만 남을 수 있다.
+
+성공 receipt의 `storage`는 측정 bytes·required/available·filesystem 공유 여부를 기록한다. 기존 receipt의 추가 필드이며 archive/wire 포맷은 바꾸지 않는다. 이는 **알려진 host/export 쓰기의 누적 예산**이다. Docker VM/Engine volume의 DB 복사 용량을 예약하거나 계산하지 않고, unrelated writer·filesystem overhead·sparse/compression/allocation 변화도 통제하지 않는다. `engineVolumeSpaceReserved`와 `diskSpaceReserved`는 false다. 기존 반복 DB snapshot6GiB 검사, 실제 host archive 공간 검사, image export 및 snapshot의 개별 byte quota는 그대로 유지한다. 초기 예산 통과도 이후 실패 가능성을 제거하거나 Applying 권한을 만들지 않는다.
+
+현재 실제 검증 범위는 낮은 공간에서의 사전 거부, 같은 borrowed fence의 host 측정/암호화 archive 일치 및 arithmetic 경계 검사다. 충분한 공간에서 전체 새 source-host-trust checkpoint와 비활성 추출·coherent recovery·실제 업데이트 검사는 별도로 필요하다. Windows filesystem/host checkpoint qualification은 그대로 남아 있다.
