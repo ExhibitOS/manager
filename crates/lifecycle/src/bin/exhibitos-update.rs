@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Local trust administration and fenced source diagnostics/archive authentication.
 use exhibitos_lifecycle::signed_release::{self, Policy};
+use std::path::Path;
+#[cfg(not(windows))]
 use std::{
     fs::{File, OpenOptions},
     io::Read,
-    path::Path,
 };
+#[cfg(not(windows))]
 fn open(path: &Path) -> Result<File, String> {
     let mut options = OpenOptions::new();
     options.read(true);
@@ -82,6 +84,7 @@ fn bounded(path: &Path, limit: u64, policy: bool) -> Result<Vec<u8>, String> {
     })
 }
 
+#[cfg(not(windows))]
 fn same(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
     #[cfg(unix)]
     {
@@ -231,6 +234,12 @@ fn artifact(verified: &mut signed_release::VerifiedRelease, path: &Path) -> Resu
     }
     Ok(())
 }
+#[cfg(windows)]
+fn checkpoint_key(path: &Path, profile: &Path) -> Result<[u8; 32], String> {
+    exhibitos_lifecycle::windows_private::read_external_private_key(path, profile)
+        .map_err(|_| "UPDATE_KEY_INVALID".to_owned())
+}
+#[cfg(not(windows))]
 fn checkpoint_key(path: &Path, profile: &Path) -> Result<[u8; 32], String> {
     if !path.is_absolute()
         || std::fs::canonicalize(path).map_err(|_| "UPDATE_KEY_INVALID")? != path
@@ -680,6 +689,7 @@ fn run() -> Result<(), String> {
 mod windows_update_inputs {
     use super::*;
     use exhibitos_lifecycle::windows_private::PrivateDirectory;
+    use std::fs::OpenOptions;
     fn fixture() -> (PrivateDirectory, std::path::PathBuf) {
         let parent = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap());
         let root = PrivateDirectory::create(

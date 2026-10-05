@@ -67,3 +67,14 @@ cargo test -p exhibitos-lifecycle --lib windows_artifact_inputs --locked
 ```
 
 새 합성 파일을 사용하는 4개 native 검사는 최종 배치에 포함하고 지금은 실행하지 않는다. 17MiB 초과 성공, busy writer/hardlink/size/hash/expiry/name/missing 실패와 원본 보존을 확인한다. synthetic verification fixture는 서명 검증 증거가 아니며, production CLI는 기존 실제 서명 검증 이후 이 reader를 호출한다. 파일 reader를 drop한 뒤에도 안전한 import/activation을 보장하는 retained staging, 외부 private key, host/trust checkpoint와 full rollback은 아직 미완료다.
+
+
+## WIN-06 외부 checkpoint key 선행 구현
+
+Windows update CLI는 기존 owner-only32byte key를 NTFS guarded reader로 읽는다. 원본 profile의 native directory ID와 key 부모/조상 ID를 비교해 내부 key 및 대소문자 alias를 거부한다. source profile이 없는 복구 namespace도 안전한 부모 경로를 고정하고 부재를 읽기 전후 확인한다. 키·부모 ACL을 수정하거나 새로운 key/profile을 만들지 않는다. 원본 read handle과 parent guards는 검사 종료까지 유지하고 실패 시 반환 후보 key array를 지운다.
+
+```powershell
+cargo test -p exhibitos-lifecycle --lib windows_external_key --locked
+```
+
+새 합성 fixture4검사는 최종 단일 배치에 포함하며 지금 개별 실행을 요청하지 않는다. 정확한32bytes·existing/missing namespace, inside/nested/case alias, busy writer/hardlink/length, Everyone read grant refusal와 원본 보존을 확인한다. ACL grant 변경은 새 합성 key에만 적용한다. 이 reader만으로 Windows host/trust/staging/full restore/update를 실행 가능 또는 PASS로 처리하지 않는다.
