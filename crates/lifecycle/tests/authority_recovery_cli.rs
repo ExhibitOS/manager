@@ -119,6 +119,23 @@ fn native_cli_recovers_latest_authority_and_refuses_existing_or_stale_primary() 
     fs::rename(&last, &stale_retained).unwrap();
     assert!(!cli(&profile, "trust-status", &[]).status.success());
     fs::rename(&stale_retained, &last).unwrap();
+    // Replay an exact interrupted publication boundary from real CLI policy bytes:
+    // the candidate is durable in the vault; primary and completion are retained
+    // separately as crash evidence. Reconciliation selects no caller head.
+    let completion = vault.join("completed/00000000000000000003.json");
+    fs::rename(&completion, parent.join("retained-completion.json")).unwrap();
+    fs::rename(&last, &stale_retained).unwrap();
+    assert!(!cli(&profile, "trust-status", &[]).status.success());
+    let reconciled = success(cli(&profile, "reconcile-authority", &[]));
+    assert_eq!(reconciled["generation"], 3);
+    assert_eq!(reconciled["primaryRecordPublished"], true);
+    assert_eq!(reconciled["completionMarkerPublished"], true);
+    assert_eq!(reconciled["updateExecuted"], false);
+    assert_eq!(fs::read(&last).unwrap(), fs::read(&stale_retained).unwrap());
+    assert_eq!(records(&root), exact);
+    let no_op = success(cli(&profile, "reconcile-authority", &[]));
+    assert_eq!(no_op["primaryRecordPublished"], false);
+    assert_eq!(no_op["completionMarkerPublished"], false);
     let retained = parent.join("retained-original");
     fs::rename(&root, &retained).unwrap();
     assert!(

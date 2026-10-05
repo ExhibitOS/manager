@@ -30,6 +30,51 @@ pub struct AuthorityRecoveryReceipt {
     pub services_restored: bool,
     pub update_executed: bool,
 }
+/// Explicit authority journal repair; never an execution or data activation permit.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthorityReconciliationReceipt {
+    pub generation: u64,
+    pub records: usize,
+    pub head_sha256: String,
+    pub primary_record_published: bool,
+    pub completion_marker_published: bool,
+    pub enrollment_completed: bool,
+    pub in_flight_intent_requires_restart_recovery: bool,
+    pub host_restored: bool,
+    pub services_restored: bool,
+    pub update_executed: bool,
+}
+struct PrimaryFence {
+    root: PathBuf,
+    identity: Metadata,
+    lock: File,
+    operations: (File, Vec<File>),
+}
+impl Drop for PrimaryFence {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.lock);
+        let _ = FileExt::unlock(&self.operations.0);
+        for lock in &self.operations.1 {
+            let _ = FileExt::unlock(lock);
+        }
+    }
+}
+impl PrimaryFence {
+    fn check(&self) -> Result<(), Error> {
+        if !identity(&self.identity, &private_dir(&self.root)?)
+            || !identity(
+                &self.lock.metadata().map_err(|_| invalid())?,
+                &private_file(&self.root.join("trust.lock"), false)?
+                    .metadata()
+                    .map_err(|_| invalid())?,
+            )
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+}
 pub(super) struct Vault {
     locator: PathBuf,
     locator_identity: Metadata,
@@ -243,39 +288,46 @@ impl Vault {
         }
         Ok(())
     }
+    // After enrollment every committed generation has exactly one marker. A single
+    // unmarked final record is a write-ahead candidate, never accepted authority.
+    fn completed_prefix(&self, records: &[(String, Vec<u8>, Record)]) -> Result<u64, Error> {
+        self.check_identity()?;
+        let head = records.last().ok_or_else(invalid)?.2.generation;
+        if head + 1 < self.binding.enrolled_generation {
+            return Err(invalid());
+        }
+        let mut last = self.binding.enrolled_generation - 1;
+        for name in exact_names(&self.root.join("completed"))? {
+            let generation = last.checked_add(1).ok_or_else(invalid)?;
+            if generation > head || name != format!("{generation:020}.json") {
+                return Err(invalid());
+            }
+            let c: Completion =
+                serde_json::from_slice(&read_record(&self.root.join("completed").join(&name))?)
+                    .map_err(|_| invalid())?;
+            if c != self.completion(
+                &records[generation as usize - 1].2,
+                &hash(&records[generation as usize - 1].1),
+            ) {
+                return Err(invalid());
+            }
+            last = generation;
+        }
+        if last > head || head - last > 1 {
+            return Err(Error::TrustWriteUncertain);
+        }
+        self.check_identity()?;
+        Ok(last)
+    }
     fn latest(&self) -> Result<Vec<(String, Vec<u8>, Record)>, Error> {
         self.check_identity()?;
         let records = history(&self.root.join("records"), &self.binding.scope)?;
-        let (_, bytes, r) = records.last().ok_or_else(invalid)?;
+        let r = &records.last().ok_or_else(invalid)?.2;
         if r.generation < self.binding.enrolled_generation
             || r.recovery_binding.as_deref() != Some(&self.binding_sha256)
+            || self.completed_prefix(&records)? != r.generation
         {
             return Err(Error::TrustWriteUncertain);
-        }
-        let done = self.root.join("completed");
-        for name in exact_names(&done)? {
-            if !numbered(&name) {
-                return Err(Error::TrustWriteUncertain);
-            }
-            let c: Completion =
-                serde_json::from_slice(&read_record(&done.join(&name))?).map_err(|_| invalid())?;
-            if c.format != 1
-                || c.scope != self.binding.scope
-                || c.generation == 0
-                || c.generation > r.generation
-                || name != format!("{:020}.json", c.generation)
-                || hash(&records[c.generation as usize - 1].1) != c.sha256
-            {
-                return Err(invalid());
-            }
-        }
-        let c: Completion = serde_json::from_slice(
-            &read_record(&done.join(format!("{:020}.json", r.generation)))
-                .map_err(|_| Error::TrustWriteUncertain)?,
-        )
-        .map_err(|_| invalid())?;
-        if c != self.completion(r, &hash(bytes)) {
-            return Err(invalid());
         }
         self.check_identity()?;
         Ok(records)
@@ -407,6 +459,146 @@ impl Store {
             records: self.current.generation as usize,
             head_sha256: self.current_sha256.clone(),
             live_authority_restored: false,
+            host_restored: false,
+            services_restored: false,
+            update_executed: false,
+        })
+    }
+    /// Explicitly finish at most one retained write-ahead journal candidate, or
+    /// resume a fully copied/bound enrollment. Both original and vault must exist.
+    /// No caller-selected head, rollback, record rewrite, runtime replay or reset.
+    pub fn reconcile_authority(
+        profile: &Path,
+        installation: &str,
+        apps_closed: bool,
+        now: u64,
+    ) -> Result<AuthorityReconciliationReceipt, Error> {
+        if !apps_closed {
+            return Err(invalid());
+        }
+        let (root, id, profile, anchor) = scope(profile, installation)?;
+        let session =
+            profile_backup::anchored_session(&profile, anchor, true).map_err(|_| invalid())?;
+        let operations =
+            profile_backup::current_host_locks(&profile, &session).map_err(|_| invalid())?;
+        let fence = PrimaryFence {
+            identity: private_dir(&root)?,
+            lock: lock(&root)?,
+            root: root.clone(),
+            operations,
+        };
+        let vault = Vault::open(&root, &id, None)?;
+        if vault.root.starts_with(&profile)
+            || root.starts_with(&vault.root)
+            || vault.locator.starts_with(&vault.root)
+        {
+            return Err(invalid());
+        }
+        let mirrored = history(&vault.root.join("records"), &id)?;
+        let primary = history(&root, &id)?;
+        let completed = vault.completed_prefix(&mirrored)?;
+        let (_, bytes, current) = mirrored.last().ok_or_else(invalid)?;
+        let head = current.generation;
+        let equal_prefix = |a: &[(String, Vec<u8>, Record)], b: &[(String, Vec<u8>, Record)]| {
+            a.iter()
+                .map(|(n, b, _)| (n, b))
+                .eq(b.iter().map(|(n, b, _)| (n, b)))
+        };
+        let mut primary_published = false;
+        let mut marker_published = false;
+        let mut enrollment_completed = false;
+        let (final_generation, final_hash, final_in_flight);
+        fence.check()?;
+        session.check_exclusive(&profile).map_err(|_| invalid())?;
+        if current.recovery_binding.is_none() {
+            // Locator publication interrupted registration before its candidate.
+            // Copy must be complete and exactly equal; no arbitrary history selection.
+            if head + 1 != vault.binding.enrolled_generation
+                || !equal_prefix(&mirrored, &primary)
+                || !exact_names(&vault.root.join("completed"))?.is_empty()
+                || head >= MAX_RECORDS as u64
+            {
+                return Err(Error::TrustWriteUncertain);
+            }
+            if now < current.observed_at {
+                return Err(Error::TrustClockRollback);
+            }
+            vault.check_enrollment(&root, &hash(bytes))?;
+            let mut next = current.clone();
+            next.generation += 1;
+            next.previous_sha256 = hash(bytes);
+            next.observed_at = now;
+            next.recovery_binding = Some(vault.binding_sha256.clone());
+            next.update_event = None;
+            valid_record(&next, &id)?;
+            transition(current, &next)?;
+            vault.prepare(&next)?;
+            fence.check()?;
+            final_hash = write(&root, &next)?;
+            primary_published = true;
+            fence.check()?;
+            vault.finish(&root, &next, &final_hash)?;
+            marker_published = true;
+            enrollment_completed = true;
+            final_generation = next.generation;
+            final_in_flight = next
+                .intent
+                .as_ref()
+                .is_some_and(|i| in_flight(i.update.stage()));
+        } else {
+            if head < vault.binding.enrolled_generation
+                || current.recovery_binding.as_deref() != Some(&vault.binding_sha256)
+                || primary.len() > mirrored.len()
+                || mirrored.len() - primary.len() > 1
+                || !equal_prefix(&primary, &mirrored[..primary.len()])
+            {
+                return Err(invalid());
+            }
+            if completed == head {
+                // A stale primary cannot use reconciliation to bypass current vault checks.
+                if primary.len() != mirrored.len() {
+                    return Err(Error::TrustRollback);
+                }
+                vault.check(&root, &hash(bytes))?;
+            } else {
+                if completed + 1 != head {
+                    return Err(Error::TrustWriteUncertain);
+                }
+                // Validate both unchanged snapshots again immediately before publication.
+                if !equal_prefix(&primary, &history(&root, &id)?)
+                    || !equal_prefix(&mirrored, &history(&vault.root.join("records"), &id)?)
+                {
+                    return Err(invalid());
+                }
+                vault.check_identity()?;
+                fence.check()?;
+                if primary.len() != mirrored.len() {
+                    publish_bytes(&root, &format!("{head:020}.json"), bytes)?;
+                    primary_published = true;
+                }
+                fence.check()?;
+                vault.finish(&root, current, &hash(bytes))?;
+                marker_published = true;
+                enrollment_completed = head == vault.binding.enrolled_generation;
+            }
+            final_generation = head;
+            final_hash = hash(bytes);
+            final_in_flight = current
+                .intent
+                .as_ref()
+                .is_some_and(|i| in_flight(i.update.stage()));
+        }
+        fence.check()?;
+        session.check_exclusive(&profile).map_err(|_| invalid())?;
+        vault.check(&root, &final_hash)?;
+        Ok(AuthorityReconciliationReceipt {
+            generation: final_generation,
+            records: final_generation as usize,
+            head_sha256: final_hash,
+            primary_record_published: primary_published,
+            completion_marker_published: marker_published,
+            enrollment_completed,
+            in_flight_intent_requires_restart_recovery: final_in_flight,
             host_restored: false,
             services_restored: false,
             update_executed: false,
@@ -713,6 +905,287 @@ mod tests {
         assert_eq!(bytes(&root), before);
         drop(s);
         assert!(Store::open(&p, "default").is_err());
+        retire(&p);
+    }
+    fn candidate(s: &Store) -> Record {
+        let mut next = s.current.clone();
+        next.generation += 1;
+        next.previous_sha256 = s.current_sha256.clone();
+        next.observed_at = 22;
+        next.update_event = None;
+        next.policy_generation += 1;
+        next.acceptance = None;
+        next
+    }
+    #[test]
+    fn authority_reconcile_crash_worker() {
+        let Ok(profile) = std::env::var("EXHIBITOS_SYNTHETIC_AUTHORITY_CRASH_PROFILE") else {
+            return;
+        };
+        let profile = PathBuf::from(profile);
+        assert!(
+            profile
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("exhibitos-release-trust-")
+        );
+        let s = Store::open(&profile, "default").unwrap();
+        let next = candidate(&s);
+        s.recovery.as_ref().unwrap().prepare(&next).unwrap();
+        if std::env::var("EXHIBITOS_SYNTHETIC_PRIMARY_WRITTEN").unwrap() == "true" {
+            write(&s.root, &next).unwrap();
+        }
+        // Qualified test-only process exit: no destructors, real durable writes
+        // and kernel lock release. No product environment flag or unsafe endpoint.
+        unsafe {
+            libc::_exit(77);
+        }
+    }
+    #[test]
+    fn authority_reconcile_abrupt_exit_preserves_candidate_and_ids_without_replay() {
+        for primary_written in [false, true] {
+            let (p, s, vault_path) = setup();
+            let root = s.root.clone();
+            let previous = bytes(&root);
+            let ids = (s.used_operations.clone(), s.used_instances.clone());
+            let expected = serde_json::to_vec(&candidate(&s)).unwrap();
+            drop(s);
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "signed_release::trust::authority_recovery_vault::tests::authority_reconcile_crash_worker", "--nocapture"])
+                .env("EXHIBITOS_SYNTHETIC_AUTHORITY_CRASH_PROFILE", &p)
+                .env("EXHIBITOS_SYNTHETIC_PRIMARY_WRITTEN", primary_written.to_string())
+                .output().unwrap();
+            assert_eq!(
+                child.status.code(),
+                Some(77),
+                "{}",
+                String::from_utf8_lossy(&child.stderr)
+            );
+            assert!(Store::open(&p, "default").is_err());
+            let mirrored_before = bytes(&vault_path.join("records"));
+            let repaired = Store::reconcile_authority(&p, "default", true, 23).unwrap();
+            assert_eq!(repaired.generation, 4);
+            assert_eq!(repaired.primary_record_published, !primary_written);
+            assert!(repaired.completion_marker_published);
+            assert!(
+                !repaired.host_restored && !repaired.services_restored && !repaired.update_executed
+            );
+            assert_eq!(
+                fs::read(root.join("00000000000000000004.json")).unwrap(),
+                expected
+            );
+            assert_eq!(bytes(&vault_path.join("records")), mirrored_before);
+            for (name, content) in &previous {
+                assert_eq!(fs::read(root.join(name)).unwrap(), *content);
+            }
+            let reopened = Store::open(&p, "default").unwrap();
+            assert_eq!(
+                (
+                    reopened.used_operations.clone(),
+                    reopened.used_instances.clone()
+                ),
+                ids
+            );
+            assert_eq!(reopened.current_sha256, hash(&expected));
+            drop(reopened);
+            let repeated = Store::reconcile_authority(&p, "default", true, 24).unwrap();
+            assert!(!repeated.primary_record_published && !repeated.completion_marker_published);
+            assert_eq!(bytes(&root), mirrored_before);
+            retire(&p);
+        }
+    }
+    #[test]
+    fn authority_reconcile_resumes_exact_enrollment_without_changing_intent_or_policy() {
+        for stage in ["bound", "candidate", "primary"] {
+            let (p, s, vault_path) = setup();
+            let root = s.root.clone();
+            let old_intent = serde_json::to_vec(&s.current.intent).unwrap();
+            let old_policy = serde_json::to_vec(&s.current.policy).unwrap();
+            let enrollment = read_record(&root.join("00000000000000000003.json")).unwrap();
+            drop(s);
+            let held = p.parent().unwrap().join("interrupted-enrollment-retained");
+            new_dir(&held).unwrap();
+            fs::rename(
+                vault_path.join("completed/00000000000000000003.json"),
+                held.join("completion.json"),
+            )
+            .unwrap();
+            if stage != "primary" {
+                fs::rename(
+                    root.join("00000000000000000003.json"),
+                    held.join("primary.json"),
+                )
+                .unwrap();
+            }
+            if stage == "bound" {
+                fs::rename(
+                    vault_path.join("records/00000000000000000003.json"),
+                    held.join("vault.json"),
+                )
+                .unwrap();
+            }
+            assert!(Store::open(&p, "default").is_err());
+            let receipt = Store::reconcile_authority(&p, "default", true, 23).unwrap();
+            assert!(receipt.enrollment_completed && receipt.completion_marker_published);
+            assert_eq!(receipt.primary_record_published, stage != "primary");
+            let opened = Store::open(&p, "default").unwrap();
+            assert_eq!(
+                serde_json::to_vec(&opened.current.intent).unwrap(),
+                old_intent
+            );
+            assert_eq!(
+                serde_json::to_vec(&opened.current.policy).unwrap(),
+                old_policy
+            );
+            if stage != "bound" {
+                assert_eq!(
+                    read_record(&root.join("00000000000000000003.json")).unwrap(),
+                    enrollment
+                );
+            }
+            assert_eq!(bytes(&root), bytes(&vault_path.join("records")));
+            drop(opened);
+            retire(&p);
+        }
+    }
+    #[test]
+    fn authority_reconcile_refuses_stale_primary_absence_unknown_pending_and_missing_markers() {
+        for mutation in ["stale", "absent", "partial", "marker_gap", "multiple"] {
+            let (p, mut s, vault_path) = setup();
+            let root = s.root.clone();
+            let mut policy = s.policy().clone();
+            policy.minimum_sequence += 1;
+            s.replace_policy(policy, s.current.policy_generation, 22)
+                .unwrap();
+            drop(s);
+            let held = p.parent().unwrap().join("retained-input");
+            new_dir(&held).unwrap();
+            match mutation {
+                "stale" => fs::rename(
+                    root.join("00000000000000000004.json"),
+                    held.join("stale.json"),
+                )
+                .unwrap(),
+                "absent" => fs::rename(&root, held.join("root")).unwrap(),
+                "partial" => {
+                    let pending = vault_path
+                        .join("records")
+                        .join(format!("pending-{}.json", uuid::Uuid::new_v4()));
+                    let mut f = private_file(&pending, true).unwrap();
+                    f.write_all(b"{incomplete").unwrap();
+                    f.sync_all().unwrap();
+                }
+                "marker_gap" => fs::rename(
+                    vault_path.join("completed/00000000000000000003.json"),
+                    held.join("marker.json"),
+                )
+                .unwrap(),
+                "multiple" => {
+                    fs::rename(
+                        vault_path.join("completed/00000000000000000003.json"),
+                        held.join("marker3.json"),
+                    )
+                    .unwrap();
+                    fs::rename(
+                        vault_path.join("completed/00000000000000000004.json"),
+                        held.join("marker4.json"),
+                    )
+                    .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let retained = bytes(&vault_path.join("records"));
+            let completed = bytes(&vault_path.join("completed"));
+            let source = if root.exists() {
+                Some(bytes(&root))
+            } else {
+                None
+            };
+            assert!(Store::reconcile_authority(&p, "default", true, 23).is_err());
+            assert_eq!(bytes(&vault_path.join("records")), retained);
+            assert_eq!(bytes(&vault_path.join("completed")), completed);
+            assert_eq!(
+                if root.exists() {
+                    Some(bytes(&root))
+                } else {
+                    None
+                },
+                source
+            );
+            retire(&p);
+        }
+    }
+    #[test]
+    fn authority_reconcile_refuses_live_owner_and_missing_ack_without_mutation() {
+        let (p, s, vault_path) = setup();
+        let root = s.root.clone();
+        let before = bytes(&root);
+        let mirrored = bytes(&vault_path.join("records"));
+        assert_eq!(
+            Store::reconcile_authority(&p, "default", false, 23).unwrap_err(),
+            Error::TrustInvalid
+        );
+        assert_eq!(
+            Store::reconcile_authority(&p, "default", true, 23).unwrap_err(),
+            Error::TrustBusy
+        );
+        assert_eq!(bytes(&root), before);
+        assert_eq!(bytes(&vault_path.join("records")), mirrored);
+        drop(s);
+        retire(&p);
+    }
+    #[test]
+    fn authority_reconcile_inflight_reopens_interrupted_without_runtime_reexecution() {
+        let (p, s, _) = setup();
+        let root = s.root.clone();
+        // Synthetic state-machine evidence; does not qualify the real owned executor.
+        let event = UpdateEvent::Begin(Box::new(crate::update::Preflight {
+            plan: s.intent().unwrap().update.plan().clone(),
+            signature_verified: true,
+            artifact_verified: true,
+            compatibility_verified: true,
+            backup_restore_verified: true,
+            current_source_matches_backup: true,
+            available_free_bytes: u64::MAX,
+            image_only_rollback_verified: false,
+        }));
+        let mut next = s.current.clone();
+        next.generation += 1;
+        next.previous_sha256 = s.current_sha256.clone();
+        next.observed_at = 22;
+        next.intent = evolve(s.intent().unwrap(), &event).unwrap();
+        next.update_event = Some(event);
+        valid_record(&next, &s.scope).unwrap();
+        transition(&s.current, &next).unwrap();
+        s.recovery.as_ref().unwrap().prepare(&next).unwrap();
+        let pending = serde_json::to_vec(&next).unwrap();
+        drop(s);
+        let receipt = Store::reconcile_authority(&p, "default", true, 23).unwrap();
+        assert!(receipt.in_flight_intent_requires_restart_recovery);
+        assert!(!receipt.update_executed);
+        assert_eq!(
+            read_record(&root.join("00000000000000000004.json")).unwrap(),
+            pending
+        );
+        let opened = Store::open(&p, "default").unwrap();
+        assert_eq!(opened.receipt().generation, 5);
+        assert_eq!(
+            opened.intent().unwrap().update.stage(),
+            crate::update::Stage::RecoveryRequired
+        );
+        assert!(opened.used_operations.contains("update-1"));
+        assert!(opened.used_instances.contains("target-1"));
+        drop(opened);
+        let repeated = Store::reconcile_authority(&p, "default", true, 24).unwrap();
+        assert_eq!(repeated.generation, 5);
+        assert!(
+            !repeated.primary_record_published
+                && !repeated.in_flight_intent_requires_restart_recovery
+        );
         retire(&p);
     }
 }
