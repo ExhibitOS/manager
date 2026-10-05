@@ -28,6 +28,7 @@ fn open(path: &Path) -> Result<File, String> {
     }
     Ok(f)
 }
+#[cfg(not(windows))]
 fn bounded(path: &Path, limit: u64, policy: bool) -> Result<Vec<u8>, String> {
     let mut f = open(path)?;
     let m = f.metadata().map_err(|_| "UPDATE_INPUT_INVALID")?;
@@ -64,6 +65,23 @@ fn bounded(path: &Path, limit: u64, policy: bool) -> Result<Vec<u8>, String> {
     }
     Ok(b)
 }
+#[cfg(windows)]
+fn bounded(path: &Path, limit: u64, policy: bool) -> Result<Vec<u8>, String> {
+    let limit = usize::try_from(limit).map_err(|_| "UPDATE_INPUT_LIMIT")?;
+    exhibitos_lifecycle::windows_private::read_public_input(path, limit).map_err(|error| {
+        match error.code.as_str() {
+            "WINDOWS_PROFILE_RECORD_QUOTA" => "UPDATE_INPUT_LIMIT",
+            "WINDOWS_PROFILE_RECORD_CHANGED" | "WINDOWS_PROFILE_IDENTITY_INVALID" => {
+                "UPDATE_INPUT_CHANGED"
+            }
+            "WINDOWS_PROFILE_ACL_INVALID" if policy => "UPDATE_POLICY_UNTRUSTED",
+            "WINDOWS_PROFILE_ACL_INVALID" => "UPDATE_INPUT_UNTRUSTED",
+            _ => "UPDATE_INPUT_UNAVAILABLE",
+        }
+        .to_owned()
+    })
+}
+
 fn same(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
     #[cfg(unix)]
     {
@@ -640,4 +658,61 @@ fn run() -> Result<(), String> {
         serde_json::to_string(&result).map_err(|_| "UPDATE_RECEIPT_INVALID")?
     );
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod windows_update_inputs {
+    use super::*;
+    use exhibitos_lifecycle::windows_private::PrivateDirectory;
+    fn fixture() -> (PrivateDirectory, std::path::PathBuf) {
+        let parent = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap());
+        let root = PrivateDirectory::create(
+            &parent.join(format!("exhibitos-update-input-{}", uuid::Uuid::new_v4())),
+        )
+        .unwrap();
+        let bundle = root.path().join("bundle");
+        std::fs::create_dir(&bundle).unwrap();
+        (root, bundle)
+    }
+    #[test]
+    fn windows_update_inputs_read_policy_and_envelope_without_acl_adoption() {
+        let (_root, bundle) = fixture();
+        for policy in [false, true] {
+            let path = bundle.join(if policy {
+                "policy.json"
+            } else {
+                "envelope.json"
+            });
+            std::fs::write(&path, b"{\"synthetic\":true}").unwrap();
+            let before = std::fs::read(&path).unwrap();
+            assert_eq!(bounded(&path, 1024, policy).unwrap(), before);
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+    }
+    #[test]
+    fn windows_update_inputs_refuse_busy_hardlinked_and_oversized_documents() {
+        let (_root, bundle) = fixture();
+        let path = bundle.join("policy.json");
+        std::fs::write(&path, b"synthetic").unwrap();
+        let writer = OpenOptions::new().write(true).open(&path).unwrap();
+        assert_eq!(
+            bounded(&path, 1024, true).unwrap_err(),
+            "UPDATE_INPUT_UNAVAILABLE"
+        );
+        drop(writer);
+        assert_eq!(bounded(&path, 1, true).unwrap_err(), "UPDATE_INPUT_LIMIT");
+        std::fs::hard_link(&path, bundle.join("alias.json")).unwrap();
+        assert!(bounded(&path, 1024, true).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"synthetic");
+    }
+    #[test]
+    fn windows_update_inputs_refuse_unbounded_and_non_file_sources() {
+        let (_root, bundle) = fixture();
+        assert_eq!(
+            bounded(&bundle, u64::MAX, false).unwrap_err(),
+            "UPDATE_INPUT_LIMIT"
+        );
+        assert!(bounded(&bundle, 1024, false).is_err());
+        assert!(bounded(&bundle.join("missing.json"), 1024, true).is_err());
+    }
 }
