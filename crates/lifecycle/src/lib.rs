@@ -211,6 +211,9 @@ fn err(code: &str) -> LifecycleError {
         "PROFILE_AUTHENTICATION_FAILED" => {
             "설정 사본 인증에 실패했습니다. 외부 키와 원래 사본을 확인하세요. 기존 목록은 교체하지 않았습니다."
         }
+        "UPDATE_SOURCE_IMAGES_RETIRE_UNCERTAIN" | "UPDATE_SOURCE_IMAGES_RETIRE_UNVERIFIED" => {
+            "이미지 검사 사본 정리 완료를 확인할 수 없습니다. 원본·복원점과 남은 검사 폴더·목록을 보존하고 진단하세요."
+        }
         "PROFILE_WRITE_UNCERTAIN" => {
             "설정 기록 완료를 확인할 수 없습니다. 앱을 닫아 둔 채 보존한 이전 목록·후보·사본을 검사하세요."
         }
