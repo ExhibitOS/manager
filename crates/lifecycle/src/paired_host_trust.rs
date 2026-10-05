@@ -346,6 +346,105 @@ mod tests {
         (profile, store, key, pair)
     }
     #[test]
+    fn checkpoint_reader_does_not_transition_inflight_intent_and_normal_open_still_recovers() {
+        let (profile, mut store, verified) = super::super::super::tests::prepared_fixture();
+        store
+            .begin_update(super::super::super::tests::observations(), &verified, 21)
+            .unwrap();
+        let root = store.root.clone();
+        let generation = store.current.generation;
+        let record = fs::read(root.join("00000000000000000003.json")).unwrap();
+        drop(store);
+        let reader = super::binding::CheckpointVerifier::open(&profile, "default").unwrap();
+        assert_eq!(reader.authority_receipt().generation, generation);
+        assert!(!root.join("00000000000000000004.json").exists());
+        assert_eq!(
+            fs::read(root.join("00000000000000000003.json")).unwrap(),
+            record
+        );
+        assert!(matches!(
+            Store::open(&profile, "default"),
+            Err(Error::TrustBusy)
+        ));
+        drop(reader);
+        let normal = Store::open(&profile, "default").unwrap();
+        assert_eq!(normal.receipt().generation, generation + 1);
+        assert_eq!(
+            normal.intent().unwrap().update().stage(),
+            crate::update::Stage::RecoveryRequired
+        );
+        let parent = profile.parent().unwrap().to_path_buf();
+        drop(normal);
+        fs::remove_dir_all(parent).unwrap();
+    }
+    #[test]
+    fn opaque_current_pair_recheck_refuses_changed_ciphertext_pair_key_and_authority() {
+        let (profile, mut store, key_file, pair) = recovery_fixture();
+        let key = [4u8; 32];
+        let catalog = pair.join("pair-binding.bin");
+        let host = pair.join("host.bin");
+        let trust = pair.join("trust.bin");
+        let head = store.current_sha256.clone();
+        let original = fs::read(profile.join("witness.bin")).unwrap();
+        let proof = store
+            .verify_checkpoint_pair(&catalog, &host, &trust, &key)
+            .unwrap();
+        assert_eq!(proof.receipt().generation, store.current.generation);
+        assert!(!proof.receipt().source_plan_bound);
+        store
+            .recheck_checkpoint_pair(&proof, &catalog, &host, &trust, &key)
+            .unwrap();
+        assert!(
+            store
+                .verify_checkpoint_pair(&catalog, &host, &trust, &[5u8; 32])
+                .is_err()
+        );
+        let second = pair.with_extension("proof-second");
+        fs::write(profile.join("witness.bin"), b"changed host snapshot").unwrap();
+        store
+            .checkpoint_host_trust(&key_file, &second, true)
+            .unwrap();
+        assert!(
+            store
+                .recheck_checkpoint_pair(
+                    &proof,
+                    &second.join("pair-binding.bin"),
+                    &second.join("host.bin"),
+                    &second.join("trust.bin"),
+                    &key
+                )
+                .is_err()
+        );
+        let mut tampered = fs::read(&host).unwrap();
+        let last = tampered.last_mut().unwrap();
+        *last ^= 1;
+        let bad = pair.join("tampered-host.bin");
+        private_file(&bad, true)
+            .unwrap()
+            .write_all(&tampered)
+            .unwrap();
+        assert!(
+            store
+                .recheck_checkpoint_pair(&proof, &catalog, &bad, &trust, &key)
+                .is_err()
+        );
+        assert_eq!(store.current_sha256, head);
+        fs::write(profile.join("witness.bin"), &original).unwrap();
+        let policy = store.policy().clone();
+        store
+            .replace_policy(policy, store.current.policy_generation, 22)
+            .unwrap();
+        assert!(
+            store
+                .recheck_checkpoint_pair(&proof, &catalog, &host, &trust, &key)
+                .is_err()
+        );
+        assert_eq!(fs::read(profile.join("witness.bin")).unwrap(), original);
+        let parent = profile.parent().unwrap().to_path_buf();
+        drop(store);
+        fs::remove_dir_all(parent).unwrap();
+    }
+    #[test]
     fn absent_host_recovers_original_namespace_and_keeps_current_authority() {
         let (profile, store, key, pair) = recovery_fixture();
         let old = profile.with_extension("quarantined");
