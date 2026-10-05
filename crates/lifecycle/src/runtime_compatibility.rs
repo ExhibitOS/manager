@@ -490,7 +490,6 @@ impl ExecutionSession<'_> {
             self.reverify_prepared_artifact(&mut artifact_cell.borrow_mut())?;
             Ok(())
         })?;
-        drop(artifact_cell);
         outcome.ok_or_else(|| err("UPDATE_RUNTIME_PROBE_FAILED"))
     }
     /// Diagnostic receipt only; the typed proof is never exported after locks release.
