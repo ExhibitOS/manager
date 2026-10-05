@@ -72,6 +72,40 @@ fn isolated(a: &SourceStoppedReceipt, b: &SourceStoppedReceipt) -> bool {
         && a.database_container != b.database_container
         && !candidate.iter().any(|name| original.contains(name))
 }
+pub(super) fn copies_match(
+    a: &source_database::DatabaseCopyProof,
+    b: &source_database::DatabaseCopyProof,
+) -> bool {
+    a.system_identifier == b.system_identifier
+        && a.content_sha256 == b.content_sha256
+        && a.bytes == b.bytes
+        && a.files == b.files
+        && a.entries == b.entries
+        && a.postgres_major == b.postgres_major
+        && a.pgdata == b.pgdata
+        && a.clean_shutdown
+        && b.clean_shutdown
+}
+pub(super) fn observe_copy(
+    ctx: &CandidateContext<'_>,
+    image: &str,
+) -> crate::Result<(
+    String,
+    source_database::DatabaseCopyProof,
+    source_inventory::InventoryProof,
+)> {
+    let (volume, physical) = source_database::copy(image, &ctx.candidate_before.database_volume)?;
+    let logical = source_inventory::compare_candidate(
+        image,
+        &volume,
+        &ctx.candidate_before.blob_volume,
+        ctx.manifest_path,
+        &ctx.receipt.authenticated_manifest_sha256,
+        &physical.system_identifier,
+    )?;
+    source_inventory::matched_candidate(&logical, ctx.plan)?;
+    Ok((volume, physical, logical))
+}
 pub(super) struct CandidateContext<'a> {
     pub target: &'a LifecycleService,
     pub root: &'a Path,
@@ -233,12 +267,7 @@ impl ExecutionSession<'_> {
             source_inventory::matched_candidate(&inventory, plan)?;
             let (repeated_snapshot_volume, repeated) =
                 source_database::copy(image, &candidate_before.database_volume)?;
-            if first.system_identifier != repeated.system_identifier
-                || first.content_sha256 != repeated.content_sha256
-                || first.bytes != repeated.bytes
-                || first.files != repeated.files
-                || first.entries != repeated.entries
-            {
+            if !copies_match(&first, &repeated) {
                 return Err(crate::err("UPDATE_TARGET_CHANGED"));
             }
             Ok(CandidateInventoryReceipt {

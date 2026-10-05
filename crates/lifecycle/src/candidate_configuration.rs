@@ -65,159 +65,218 @@ impl ExecutionSession<'_> {
         acknowledged: bool,
     ) -> crate::Result<CandidateConfigurationReceipt> {
         let mut result = self.inspect_restored_candidate(acknowledged, |ctx| {
-            if export_parent.starts_with(&self.store.profile)
-                || export_parent.starts_with(&self.store.root)
-            {
-                return Err(crate::err("UPDATE_ARTIFACT_UNAVAILABLE"));
-            }
-            installations::private_directory(export_parent)?;
-            if fs::canonicalize(export_parent).ok().as_deref() != Some(export_parent) {
-                return Err(crate::err("UPDATE_ARTIFACT_UNAVAILABLE"));
-            }
-            if fs2::available_space(export_parent).map_err(|_| crate::err("STORAGE_UNAVAILABLE"))?
-                < 10 * 1024 * 1024 * 1024
-            {
-                return Err(crate::err("RESTORE_SPACE_REQUIRED"));
-            }
-            let authenticated = source_full_configuration::scope(ctx.raw)?;
-            // Every original host configuration file is checked against authenticated backup.
-            let source_files = source_deployment::compare(&self.source.root, &authenticated)?;
-            let original = self.source.manifest()?;
-            let inventory = crate::installation_backup::source_bytes(
-                &ctx.workspace.join("configuration"),
-                "manager-image-inventory.json",
-                1048576,
-                true,
-            )?;
-            let images = source_images::bound_inventory(&inventory, &authenticated, &original)?;
-            let source_mappings = source_images::observe(&self.source, ctx.workspace, ctx.raw)?;
-            let config: crate::Value = serde_json::from_slice(&crate::run(
-                "docker",
-                &crate::compose_args(&original, &["config", "--format", "json"]),
-                Some(&self.source.root.join("bundle")),
-                30,
-            )?)
-            .map_err(|_| crate::err("ENGINE_OUTPUT_INVALID"))?;
-            let image_for = |service: &str| -> crate::Result<String> {
-                let reference = config["services"][service]["image"]
-                    .as_str()
-                    .ok_or_else(|| crate::err("UPDATE_SOURCE_IMAGES_INVALID"))?;
-                let selected: Vec<_> = images
-                    .iter()
-                    .filter(|i| {
-                        i.reference == reference
-                            || crate::same_registry_pin(&i.reference, reference)
-                    })
-                    .collect();
-                if selected.len() != 1 {
-                    return Err(crate::err("UPDATE_SOURCE_IMAGES_INVALID"));
-                }
-                Ok(selected[0].content_id.clone())
-            };
-            let database = image_for("database")?;
-            let platform = image_for("platform")?;
-            if platform.strip_prefix("sha256:") != Some(ctx.plan.source_image.as_str())
-                || ctx.manifest.ports.len() != 1
-            {
-                return Err(crate::err("UPDATE_TARGET_CHANGED"));
-            }
-            let (expected, compose) = crate::restoration::remapped_bundle(
-                &original,
-                &images,
-                &ctx.manifest.bundle_id,
-                ctx.manifest.ports[0],
-                &database,
-                &platform,
-            )?;
-            let original_environment = PrivateBytes(crate::installation_backup::source_bytes(
-                &self.source.root,
-                "runtime.env",
-                8192,
-                true,
-            )?);
-            let derived = crate::restoration::remapped_environment(
-                &original_environment,
-                &original,
-                expected.ports[0],
-            );
-            drop(original_environment);
-            let environment = PrivateBytes(derived?);
-            let initial = candidate_files(ctx.root, &expected, &compose, &environment);
-            let files = initial?;
-            let key_expected = source_configuration::expected(ctx.raw)?;
-            let observed_key = source_configuration::observe(
-                image,
-                &ctx.candidate_before.configuration_volume,
-                &key_expected,
-            )?;
-            // The exact generated Compose binds both candidate service containers to image IDs.
-            for (service, expected_id) in [("database", &database), ("platform", &platform)] {
-                if crate::backup_creation::local_image("docker", expected_id)? != *expected_id {
-                    return Err(crate::err("UPDATE_SOURCE_IMAGES_MISMATCH"));
-                }
-                let (_, actual) = crate::backup_creation::one_container(
-                    ctx.target, &expected, "docker", service,
-                )?;
-                if actual["Image"] != *expected_id {
-                    return Err(crate::err("UPDATE_SOURCE_IMAGES_MISMATCH"));
-                }
-            }
-            let exported = export_parent.join(format!(
-                "candidate-image-observation-{}",
-                uuid::Uuid::new_v4()
-            ));
-            fs::create_dir(&exported).map_err(|_| crate::err("STATE_UNAVAILABLE"))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&exported, fs::Permissions::from_mode(0o700))
-                    .map_err(|_| crate::err("STATE_UNAVAILABLE"))?;
-            }
-            installations::private_directory(&exported)?;
-            let fresh_images = source_image_bytes::export(&exported, &images)?;
-            let repeated = candidate_files(ctx.root, &expected, &compose, &environment);
-            drop(environment);
-            if repeated? != files
-                || source_deployment::compare(&self.source.root, &authenticated)? != source_files
-                || source_configuration::observe(
-                    image,
-                    &ctx.candidate_before.configuration_volume,
-                    &key_expected,
-                )? != observed_key
-                || source_images::observe(&self.source, ctx.workspace, ctx.raw)? != source_mappings
-                || ctx.source_before.runtime_image_sha256
-                    != ctx.candidate_before.runtime_image_sha256
-            {
-                return Err(crate::err("UPDATE_TARGET_CHANGED"));
-            }
-            for (service, expected_id) in [("database", &database), ("platform", &platform)] {
-                let (_, actual) = crate::backup_creation::one_container(
-                    ctx.target, &expected, "docker", service,
-                )?;
-                if actual["Image"] != *expected_id {
-                    return Err(crate::err("UPDATE_SOURCE_IMAGES_MISMATCH"));
-                }
-            }
-            Ok(CandidateConfigurationReceipt {
-                source_instance: ctx.plan.source_instance.clone(),
-                candidate_instance: ctx.plan.target_instance.clone(),
-                candidate_bundle_id: expected.bundle_id,
-                authenticated_manifest_sha256: ctx.receipt.authenticated_manifest_sha256.clone(),
-                configuration_volume: ctx.candidate_before.configuration_volume.clone(),
-                files,
-                freeze_key: observed_key,
-                images: fresh_images,
-                export_workspace: exported.to_string_lossy().into_owned(),
-                image_archives_retained: true,
-                observed_at: crate::now(),
-                candidate_data_inventory_verified: false,
-                preflight_verified: false,
-                update_executed: false,
-            })
+            self.observe_candidate_configuration_at(ctx, image, export_parent)
         })?;
         source_image_bytes::retire_verified(Path::new(&result.export_workspace), &result.images)?;
         result.image_archives_retained = false;
         Ok(result)
+    }
+    pub(super) fn observe_candidate_configuration_at(
+        &self,
+        ctx: &candidate_inventory::CandidateContext<'_>,
+        image: &str,
+        export_parent: &Path,
+    ) -> crate::Result<CandidateConfigurationReceipt> {
+        self.validate_candidate_export_parent(export_parent)?;
+        if fs2::available_space(export_parent).map_err(|_| crate::err("STORAGE_UNAVAILABLE"))?
+            < 10 * 1024 * 1024 * 1024
+        {
+            return Err(crate::err("RESTORE_SPACE_REQUIRED"));
+        }
+        let authenticated = source_full_configuration::scope(ctx.raw)?;
+        // Every original host configuration file is checked against authenticated backup.
+        let source_files = source_deployment::compare(&self.source.root, &authenticated)?;
+        let original = self.source.manifest()?;
+        let inventory = crate::installation_backup::source_bytes(
+            &ctx.workspace.join("configuration"),
+            "manager-image-inventory.json",
+            1048576,
+            true,
+        )?;
+        let images = source_images::bound_inventory(&inventory, &authenticated, &original)?;
+        let source_mappings = source_images::observe(&self.source, ctx.workspace, ctx.raw)?;
+        let config: crate::Value = serde_json::from_slice(&crate::run(
+            "docker",
+            &crate::compose_args(&original, &["config", "--format", "json"]),
+            Some(&self.source.root.join("bundle")),
+            30,
+        )?)
+        .map_err(|_| crate::err("ENGINE_OUTPUT_INVALID"))?;
+        let image_for = |service: &str| -> crate::Result<String> {
+            let reference = config["services"][service]["image"]
+                .as_str()
+                .ok_or_else(|| crate::err("UPDATE_SOURCE_IMAGES_INVALID"))?;
+            let selected: Vec<_> = images
+                .iter()
+                .filter(|i| {
+                    i.reference == reference || crate::same_registry_pin(&i.reference, reference)
+                })
+                .collect();
+            if selected.len() != 1 {
+                return Err(crate::err("UPDATE_SOURCE_IMAGES_INVALID"));
+            }
+            Ok(selected[0].content_id.clone())
+        };
+        let database = image_for("database")?;
+        let platform = image_for("platform")?;
+        if platform.strip_prefix("sha256:") != Some(ctx.plan.source_image.as_str())
+            || ctx.manifest.ports.len() != 1
+        {
+            return Err(crate::err("UPDATE_TARGET_CHANGED"));
+        }
+        let (expected, compose) = crate::restoration::remapped_bundle(
+            &original,
+            &images,
+            &ctx.manifest.bundle_id,
+            ctx.manifest.ports[0],
+            &database,
+            &platform,
+        )?;
+        let original_environment = PrivateBytes(crate::installation_backup::source_bytes(
+            &self.source.root,
+            "runtime.env",
+            8192,
+            true,
+        )?);
+        let derived = crate::restoration::remapped_environment(
+            &original_environment,
+            &original,
+            expected.ports[0],
+        );
+        drop(original_environment);
+        let environment = PrivateBytes(derived?);
+        let initial = candidate_files(ctx.root, &expected, &compose, &environment);
+        let files = initial?;
+        let key_expected = source_configuration::expected(ctx.raw)?;
+        let observed_key = source_configuration::observe(
+            image,
+            &ctx.candidate_before.configuration_volume,
+            &key_expected,
+        )?;
+        // The exact generated Compose binds both candidate service containers to image IDs.
+        for (service, expected_id) in [("database", &database), ("platform", &platform)] {
+            if crate::backup_creation::local_image("docker", expected_id)? != *expected_id {
+                return Err(crate::err("UPDATE_SOURCE_IMAGES_MISMATCH"));
+            }
+            let (_, actual) =
+                crate::backup_creation::one_container(ctx.target, &expected, "docker", service)?;
+            if actual["Image"] != *expected_id {
+                return Err(crate::err("UPDATE_SOURCE_IMAGES_MISMATCH"));
+            }
+        }
+        let exported = export_parent.join(format!(
+            "candidate-image-observation-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir(&exported).map_err(|_| crate::err("STATE_UNAVAILABLE"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&exported, fs::Permissions::from_mode(0o700))
+                .map_err(|_| crate::err("STATE_UNAVAILABLE"))?;
+        }
+        installations::private_directory(&exported)?;
+        let fresh_images = source_image_bytes::export(&exported, &images)?;
+        let repeated = candidate_files(ctx.root, &expected, &compose, &environment);
+        drop(environment);
+        if repeated? != files
+            || source_deployment::compare(&self.source.root, &authenticated)? != source_files
+            || source_configuration::observe(
+                image,
+                &ctx.candidate_before.configuration_volume,
+                &key_expected,
+            )? != observed_key
+            || source_images::observe(&self.source, ctx.workspace, ctx.raw)? != source_mappings
+            || ctx.source_before.runtime_image_sha256 != ctx.candidate_before.runtime_image_sha256
+        {
+            return Err(crate::err("UPDATE_TARGET_CHANGED"));
+        }
+        for (service, expected_id) in [("database", &database), ("platform", &platform)] {
+            let (_, actual) =
+                crate::backup_creation::one_container(ctx.target, &expected, "docker", service)?;
+            if actual["Image"] != *expected_id {
+                return Err(crate::err("UPDATE_SOURCE_IMAGES_MISMATCH"));
+            }
+        }
+        Ok(CandidateConfigurationReceipt {
+            source_instance: ctx.plan.source_instance.clone(),
+            candidate_instance: ctx.plan.target_instance.clone(),
+            candidate_bundle_id: expected.bundle_id,
+            authenticated_manifest_sha256: ctx.receipt.authenticated_manifest_sha256.clone(),
+            configuration_volume: ctx.candidate_before.configuration_volume.clone(),
+            files,
+            freeze_key: observed_key,
+            images: fresh_images,
+            export_workspace: exported.to_string_lossy().into_owned(),
+            image_archives_retained: true,
+            observed_at: crate::now(),
+            candidate_data_inventory_verified: false,
+            preflight_verified: false,
+            update_executed: false,
+        })
+    }
+
+    pub(super) fn validate_candidate_export_parent(
+        &self,
+        export_parent: &Path,
+    ) -> crate::Result<()> {
+        if export_parent.starts_with(&self.store.profile)
+            || export_parent.starts_with(&self.store.root)
+        {
+            return Err(crate::err("UPDATE_ARTIFACT_UNAVAILABLE"));
+        }
+        installations::private_directory(export_parent)?;
+        if fs::canonicalize(export_parent).ok().as_deref() != Some(export_parent) {
+            return Err(crate::err("UPDATE_ARTIFACT_UNAVAILABLE"));
+        }
+        Ok(())
+    }
+    pub(super) fn recheck_candidate_configuration_at(
+        &self,
+        ctx: &candidate_inventory::CandidateContext<'_>,
+        image: &str,
+        receipt: &CandidateConfigurationReceipt,
+    ) -> crate::Result<()> {
+        if receipt.files.len() != source_deployment::FILES.len()
+            || receipt.source_instance != ctx.plan.source_instance
+            || receipt.candidate_instance != ctx.plan.target_instance
+            || receipt.candidate_bundle_id != ctx.manifest.bundle_id
+            || receipt.authenticated_manifest_sha256 != ctx.plan.backup_manifest
+            || receipt.configuration_volume != ctx.candidate_before.configuration_volume
+            || receipt.preflight_verified
+            || receipt.update_executed
+        {
+            return Err(crate::err("UPDATE_TARGET_CHANGED"));
+        }
+        for ((_, path, limit), file) in source_deployment::FILES.iter().zip(&receipt.files) {
+            let mut current =
+                crate::installation_backup::source_bytes(ctx.root, path, *limit, true)?;
+            let matched = file.path == *path
+                && current.len() as u64 == file.bytes
+                && crate::digest(&current) == file.sha256;
+            current.fill(0);
+            if !matched {
+                return Err(crate::err("UPDATE_TARGET_CHANGED"));
+            }
+        }
+        let authenticated = source_full_configuration::scope(ctx.raw)?;
+        source_deployment::compare(&self.source.root, &authenticated)?;
+        source_images::observe(&self.source, ctx.workspace, ctx.raw)?;
+        if source_configuration::observe(
+            image,
+            &ctx.candidate_before.configuration_volume,
+            &source_configuration::expected(ctx.raw)?,
+        )? != receipt.freeze_key
+        {
+            return Err(crate::err("UPDATE_TARGET_CHANGED"));
+        }
+        for proof in &receipt.images {
+            if crate::backup_creation::local_image("docker", &proof.reference)? != proof.content_id
+            {
+                return Err(crate::err("UPDATE_SOURCE_IMAGES_MISMATCH"));
+            }
+        }
+        Ok(())
     }
 }
 

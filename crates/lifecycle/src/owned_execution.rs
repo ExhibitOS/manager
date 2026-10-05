@@ -3,6 +3,9 @@
 use super::*;
 #[path = "candidate_configuration.rs"]
 mod candidate_configuration;
+#[path = "candidate_recovery.rs"]
+mod candidate_recovery;
+pub use candidate_recovery::CandidateRecoveryReceipt;
 #[path = "candidate_inventory.rs"]
 mod candidate_inventory;
 pub use candidate_configuration::CandidateConfigurationReceipt;
@@ -1852,6 +1855,28 @@ mod tests {
         assert_eq!(
             session
                 .verify_source_recovery_transient(&format!("sha256:{}", "a".repeat(64)), true)
+                .unwrap_err()
+                .code,
+            "UPDATE_TARGET_UNREGISTERED"
+        );
+        assert_eq!(
+            session
+                .verify_restored_candidate_recovery(
+                    "untrusted-image",
+                    Path::new("/untrusted-parent"),
+                    false
+                )
+                .unwrap_err()
+                .code,
+            "BACKUP_OPERATOR_ACK_REQUIRED"
+        );
+        assert_eq!(
+            session
+                .verify_restored_candidate_recovery(
+                    "untrusted-image",
+                    Path::new("/untrusted-parent"),
+                    true
+                )
                 .unwrap_err()
                 .code,
             "UPDATE_TARGET_UNREGISTERED"
