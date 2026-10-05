@@ -43,7 +43,15 @@ pub(crate) fn source_bytes(
 ) -> Result<Vec<u8>> {
     let path = checked_path(root, relative)?;
     #[cfg(windows)]
-    if private {
+    {
+        let limit = usize::try_from(limit).map_err(|_| err("BACKUP_SOURCE_INVALID"))?;
+        if !private {
+            let bytes = super::windows_private::PublicRecord::open(&path)?.read_bounded(limit)?;
+            if bytes.is_empty() {
+                return Err(err("BACKUP_SOURCE_INVALID"));
+            }
+            return Ok(bytes);
+        }
         let _root_fence = super::windows_private::PrivateDirectory::inspect(root)?;
         let parent = path.parent().ok_or_else(|| err("BACKUP_SOURCE_INVALID"))?;
         let directory = super::windows_private::PrivateDirectory::inspect(parent)?;
@@ -51,7 +59,6 @@ pub(crate) fn source_bytes(
             .file_name()
             .and_then(|v| v.to_str())
             .ok_or_else(|| err("BACKUP_SOURCE_INVALID"))?;
-        let limit = usize::try_from(limit).map_err(|_| err("BACKUP_SOURCE_INVALID"))?;
         let bytes = directory.read_record(name)?.read_bounded(limit)?;
         if bytes.is_empty() {
             return Err(err("BACKUP_SOURCE_INVALID"));
@@ -59,72 +66,78 @@ pub(crate) fn source_bytes(
         _root_fence.check()?;
         return Ok(bytes);
     }
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    let mut file = options
-        .open(&path)
-        .map_err(|_| err("BACKUP_SOURCE_INVALID"))?;
-    let before = file.metadata().map_err(|_| err("BACKUP_SOURCE_INVALID"))?;
-    if !before.is_file() || before.len() == 0 || before.len() > limit {
-        return Err(err("BACKUP_SOURCE_INVALID"));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        if before.nlink() != 1
-            || before.uid()
-                != fs::metadata(root)
-                    .map_err(|_| err("BACKUP_SOURCE_INVALID"))?
-                    .uid()
-            || before.permissions().mode() & 0o022 != 0
-            || private && before.permissions().mode() & 0o7777 != 0o600
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
         {
-            return Err(err("BACKUP_PRIVATE_PERMISSIONS"));
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
         }
-    }
-    let mut bytes = Vec::new();
-    std::io::Read::by_ref(&mut file)
-        .take(limit + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| err("BACKUP_SOURCE_INVALID"))?;
-    let after = file.metadata().map_err(|_| err("BACKUP_SOURCE_INVALID"))?;
-    let path_after = fs::symlink_metadata(checked_path(root, relative)?)
-        .map_err(|_| err("BACKUP_SOURCE_CHANGED"))?;
-    if bytes.len() as u64 != before.len() || after.len() != before.len() || !path_after.is_file() {
-        return Err(err("BACKUP_SOURCE_CHANGED"));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if (
-            before.dev(),
-            before.ino(),
-            before.mtime(),
-            before.mtime_nsec(),
-            before.ctime(),
-            before.ctime_nsec(),
-            before.mode(),
-            before.nlink(),
-        ) != (
-            after.dev(),
-            after.ino(),
-            after.mtime(),
-            after.mtime_nsec(),
-            after.ctime(),
-            after.ctime_nsec(),
-            after.mode(),
-            after.nlink(),
-        ) || (after.dev(), after.ino()) != (path_after.dev(), path_after.ino())
+        let mut file = options
+            .open(&path)
+            .map_err(|_| err("BACKUP_SOURCE_INVALID"))?;
+        let before = file.metadata().map_err(|_| err("BACKUP_SOURCE_INVALID"))?;
+        if !before.is_file() || before.len() == 0 || before.len() > limit {
+            return Err(err("BACKUP_SOURCE_INVALID"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            if before.nlink() != 1
+                || before.uid()
+                    != fs::metadata(root)
+                        .map_err(|_| err("BACKUP_SOURCE_INVALID"))?
+                        .uid()
+                || before.permissions().mode() & 0o022 != 0
+                || private && before.permissions().mode() & 0o7777 != 0o600
+            {
+                return Err(err("BACKUP_PRIVATE_PERMISSIONS"));
+            }
+        }
+        let mut bytes = Vec::new();
+        std::io::Read::by_ref(&mut file)
+            .take(limit + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| err("BACKUP_SOURCE_INVALID"))?;
+        let after = file.metadata().map_err(|_| err("BACKUP_SOURCE_INVALID"))?;
+        let path_after = fs::symlink_metadata(checked_path(root, relative)?)
+            .map_err(|_| err("BACKUP_SOURCE_CHANGED"))?;
+        if bytes.len() as u64 != before.len()
+            || after.len() != before.len()
+            || !path_after.is_file()
         {
             return Err(err("BACKUP_SOURCE_CHANGED"));
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if (
+                before.dev(),
+                before.ino(),
+                before.mtime(),
+                before.mtime_nsec(),
+                before.ctime(),
+                before.ctime_nsec(),
+                before.mode(),
+                before.nlink(),
+            ) != (
+                after.dev(),
+                after.ino(),
+                after.mtime(),
+                after.mtime_nsec(),
+                after.ctime(),
+                after.ctime_nsec(),
+                after.mode(),
+                after.nlink(),
+            ) || (after.dev(), after.ino()) != (path_after.dev(), path_after.ino())
+            {
+                return Err(err("BACKUP_SOURCE_CHANGED"));
+            }
+        }
+        Ok(bytes)
     }
-    Ok(bytes)
 }
 pub(crate) fn environment_valid(bytes: &[u8], manifest: &BundleManifest) -> Result<()> {
     let port = manifest

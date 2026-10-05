@@ -41,52 +41,6 @@ fn publication_lock(root: &PrivateDirectory) -> Result<PublicationLock> {
     root.check_record(&file, PUBLICATION_LOCK)?;
     Ok(PublicationLock(file))
 }
-fn read_public(path: &Path) -> Result<Vec<u8>> {
-    let parent = path.parent().ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
-    let _ancestors = pin_ancestors(parent)?;
-    let sid = Sid::current()?;
-    let path_wide = wide(path)?;
-    let handle = unsafe {
-        fsapi::CreateFileW(
-            path_wide.as_ptr(),
-            0x80000000 | fsapi::READ_CONTROL,
-            fsapi::FILE_SHARE_READ,
-            ptr::null(),
-            fsapi::OPEN_EXISTING,
-            fsapi::FILE_FLAG_OPEN_REPARSE_POINT,
-            ptr::null_mut(),
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        return Err(err("WINDOWS_PROFILE_RECORD_OPEN_REFUSED"));
-    }
-    let mut file = unsafe { File::from_raw_handle(handle.cast()) };
-    public_acl(&file, &sid)?;
-    let before = identity(&file, false)?;
-    if identity(&open(path, false)?, false)? != before {
-        return Err(err("WINDOWS_PROFILE_IDENTITY_INVALID"));
-    }
-    let len = file
-        .metadata()
-        .map_err(|_| err("WINDOWS_PROFILE_RECORD_IO"))?
-        .len();
-    if len > JSON_LIMIT as u64 {
-        return Err(err("WINDOWS_PROFILE_RECORD_QUOTA"));
-    }
-    let mut bytes = Vec::new();
-    (&mut file)
-        .take(JSON_LIMIT as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| err("WINDOWS_PROFILE_RECORD_IO"))?;
-    public_acl(&file, &sid)?;
-    if bytes.len() as u64 != len
-        || identity(&file, false)? != before
-        || identity(&open(path, false)?, false)? != before
-    {
-        return Err(err("WINDOWS_PROFILE_RECORD_CHANGED"));
-    }
-    Ok(bytes)
-}
 pub(crate) fn read_json_path(path: &Path) -> Result<Vec<u8>> {
     let parent = path.parent().ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
     let name = path
@@ -95,7 +49,7 @@ pub(crate) fn read_json_path(path: &Path) -> Result<Vec<u8>> {
         .ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
     // Bundle manifest is redistributable input; private journals/installed state are not.
     if name == "manifest.json" && parent.file_name().is_some_and(|v| v == "bundle") {
-        return read_public(path);
+        return PublicRecord::open(path)?.read_bounded(JSON_LIMIT);
     }
     let root = PrivateDirectory::inspect(parent)?;
     root.read_record(name)?.read_bounded(JSON_LIMIT)
