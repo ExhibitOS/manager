@@ -58,13 +58,23 @@ def run(cli):
     before = call('trust-provision', ['--policy', policy])
     pair = root / 'pair'
     call('checkpoint-host-trust', ['--key-file', key, '--destination', pair, '--host-writers-stopped'])
-    hashes = {str(p.relative_to(root)): sha(p) for p in (key, pair / 'host.bin', pair / 'trust.bin')}
-    flags = ['--host-archive', pair / 'host.bin', '--trust-archive', pair / 'trust.bin', '--key', key, '--absent-original-profile']
-    call('restore-missing-host', flags, 'HOST_RESTORE_TARGET_EXISTS')
+    hashes = {str(p.relative_to(root)): sha(p) for p in (key, pair / 'host.bin', pair / 'trust.bin', pair / 'pair-binding.bin')}
+    flags = ['--host-archive', pair / 'host.bin', '--trust-archive', pair / 'trust.bin', '--key', key, '--pair-binding', pair / 'pair-binding.bin', '--absent-original-profile']
+    call('restore-bound-missing-host', flags, 'HOST_RESTORE_TARGET_EXISTS')
     checks.append('existing original profile refuses before any overwrite')
     old = root / 'original-retained'
     profile.rename(old)
-    receipt = call('restore-missing-host', flags)
+    bad_binding = root / 'tampered-binding.bin'
+    bad_bytes = bytearray((pair / 'pair-binding.bin').read_bytes())
+    bad_bytes[-1] ^= 1
+    write(bad_binding, bad_bytes)
+    bad_flags = list(flags)
+    bad_flags[bad_flags.index('--pair-binding') + 1] = bad_binding
+    call('restore-bound-missing-host', bad_flags, 'RECOVERY_PAIR_INVALID')
+    assert not profile.exists()
+    checks.append('tampered authenticated pair binding refuses before host publication')
+    receipt = call('restore-bound-missing-host', flags)
+    assert receipt['pairBindingVerified']
     assert receipt['hostProfileRestored'] and receipt['currentTrustPreserved']
     assert not any(receipt[k] for k in ('trustAuthorityRestored', 'runtimeDataRestored', 'runtimeStarted'))
     assert sha(profile / 'witness.bin') == sha(old / 'witness.bin') == witness
@@ -79,7 +89,7 @@ def run(cli):
     trust = next(p for p in root.iterdir() if p.name.startswith('.exhibitos-release-trust-'))
     moved = root / 'authority-retained'
     trust.rename(moved)
-    call('restore-missing-host', flags, 'UPDATE_TRUST_MISSING')
+    call('restore-bound-missing-host', flags, 'UPDATE_TRUST_MISSING')
     assert not profile.exists()
     moved.rename(trust)
     restored.rename(profile)
