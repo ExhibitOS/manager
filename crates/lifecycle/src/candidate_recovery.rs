@@ -12,7 +12,68 @@ pub struct CandidateRecoveryReceipt {
     pub preflight_verified: bool,
     pub update_executed: bool,
 }
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EphemeralCandidateRecoveryReceipt {
+    pub inventory: EphemeralCandidateInventoryReceipt,
+    pub configuration: CandidateConfigurationReceipt,
+    pub observed_at: u64,
+    pub current_trust_unchanged: bool,
+    pub preflight_verified: bool,
+    pub update_executed: bool,
+}
 impl ExecutionSession<'_> {
+    /// Full candidate data/configuration/images in one retained fence, with no persistent DB copies.
+    pub fn verify_restored_candidate_recovery_ephemeral(
+        &self,
+        image: &str,
+        export_parent: &Path,
+        acknowledged: bool,
+    ) -> crate::Result<EphemeralCandidateRecoveryReceipt> {
+        let mut observation = self.inspect_restored_candidate(acknowledged, |ctx| {
+            self.validate_candidate_export_parent(export_parent)?;
+            // Images2GiB + growth/headroom2GiB + retained disk floor6GiB.
+            // Database copies live in bounded tmpfs, not on the host filesystem.
+            for parent in [ctx.root, export_parent] {
+                if fs2::available_space(parent).map_err(|_| crate::err("STORAGE_UNAVAILABLE"))?
+                    < 10 * 1024 * 1024 * 1024
+                {
+                    return Err(crate::err("RESTORE_SPACE_REQUIRED"));
+                }
+            }
+            let first = ephemeral_inventory::observe(ctx, image)?;
+            let configuration =
+                self.observe_candidate_configuration_at(ctx, image, export_parent)?;
+            let repeated = ephemeral_inventory::observe(ctx, image)?;
+            if !candidate_inventory::copies_match(&first.physical, &repeated.physical) {
+                return Err(crate::err("UPDATE_TARGET_CHANGED"));
+            }
+            self.recheck_candidate_configuration_at(ctx, image, &configuration)?;
+            Ok(EphemeralCandidateRecoveryReceipt {
+                inventory: EphemeralCandidateInventoryReceipt {
+                    source_instance: ctx.plan.source_instance.clone(),
+                    candidate_instance: ctx.plan.target_instance.clone(),
+                    observation: first,
+                    repeated_observation: repeated,
+                    storage: "bounded-tmpfs-no-persistent-snapshot",
+                    preflight_verified: false,
+                    update_executed: false,
+                },
+                configuration,
+                observed_at: crate::now(),
+                current_trust_unchanged: true,
+                preflight_verified: false,
+                update_executed: false,
+            })
+        })?;
+        // Retire only fresh image exports after the common wrapper rechecks all identities.
+        source_image_bytes::retire_verified(
+            Path::new(&observation.configuration.export_workspace),
+            &observation.configuration.images,
+        )?;
+        observation.configuration.image_archives_retained = false;
+        Ok(observation)
+    }
     /// Exactly two fresh physical copies, not two standalone verifications/four copies.
     /// No permit is issued; current release expiry/authority/recovery/execution remain gates.
     pub fn verify_restored_candidate_recovery(
