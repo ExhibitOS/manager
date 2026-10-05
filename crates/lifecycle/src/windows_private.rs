@@ -635,6 +635,11 @@ impl PrivateDirectory {
         self.check_record(&file, name)?;
         Ok(file)
     }
+    /// Validate an existing lock under this fence without reading or requesting write access.
+    pub(crate) fn check_existing_record(&self, name: &str) -> Result<()> {
+        valid_name(name)?;
+        self.check_record(&open(&self.path.join(name), false)?, name)
+    }
     pub fn check_record(&self, file: &File, name: &str) -> Result<()> {
         valid_name(name)?;
         self.check()?;
@@ -1097,6 +1102,60 @@ mod tests {
         std::fs::remove_file(empty).unwrap();
         std::fs::remove_file(path).unwrap();
         std::fs::remove_dir(bundle).unwrap();
+        let path = root.path().to_owned();
+        drop(root);
+        std::fs::remove_dir(path).unwrap();
+    }
+    #[test]
+    fn restore_stage_pins_new_private_candidates_and_never_overwrites_records() {
+        let root = fresh();
+        let stage_path = root.path().join("restore-candidate");
+        let stage = crate::restoration::directory(&stage_path).unwrap();
+        let stage_path = stage_path.canonicalize().unwrap();
+        let input = stage_path.join("runtime.env");
+        crate::restoration::private_bytes(&input, b"SYNTHETIC=retained\n").unwrap();
+        assert_eq!(
+            crate::installation_backup::source_bytes(&stage_path, "runtime.env", 1024, true)
+                .unwrap(),
+            b"SYNTHETIC=retained\n"
+        );
+        assert!(crate::restoration::private_bytes(&input, b"replacement").is_err());
+        assert!(crate::restoration::directory(&stage_path).is_err());
+        let renamed = root.path().join("retained-candidate");
+        assert!(std::fs::rename(&stage_path, &renamed).is_err());
+        assert_eq!(std::fs::read(&input).unwrap(), b"SYNTHETIC=retained\n");
+        drop(stage);
+        std::fs::rename(&stage_path, &renamed).unwrap();
+        std::fs::remove_file(renamed.join("runtime.env")).unwrap();
+        std::fs::remove_dir(renamed).unwrap();
+        let path = root.path().to_owned();
+        drop(root);
+        std::fs::remove_dir(path).unwrap();
+    }
+    #[test]
+    fn restore_stage_refuses_unprotected_existing_parent_and_unsafe_fresh_lock() {
+        let root = fresh();
+        let public = root.path().join("public");
+        std::fs::create_dir(&public).unwrap();
+        let candidate = public.join("restore-candidate");
+        // The private new-file factory must not adopt an unprotected directory.
+        assert!(
+            crate::restoration::private_bytes(&public.join("runtime.env"), b"synthetic").is_err()
+        );
+        assert!(!public.join("runtime.env").exists());
+        assert!(crate::restoration::directory(&public).is_err());
+        assert!(!candidate.exists());
+        std::fs::remove_dir(public).unwrap();
+        let lock = root.path().join("operation.lock");
+        std::fs::write(&lock, b"retained-unsafe-lock").unwrap();
+        assert!(crate::restoration::fresh_root(root.path()).is_err());
+        assert_eq!(std::fs::read(&lock).unwrap(), b"retained-unsafe-lock");
+        std::fs::remove_file(lock).unwrap();
+        let guard = root.lock_record("operation.lock").unwrap();
+        fs2::FileExt::try_lock_exclusive(&guard).unwrap();
+        crate::restoration::fresh_root(root.path()).unwrap();
+        drop(guard);
+        std::fs::remove_file(root.path().join("operation.lock")).unwrap();
         let path = root.path().to_owned();
         drop(root);
         std::fs::remove_dir(path).unwrap();

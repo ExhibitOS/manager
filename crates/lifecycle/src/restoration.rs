@@ -104,31 +104,63 @@ async function own(path){const s=await lstat(path);if(s.isSymbolicLink()||!s.isD
 await own('/data/blobs');await own('/data/config');
 console.log(JSON.stringify({operation:'restored-and-verified',manifestSha256,backupId}));
 "#;
-fn directory(path: &Path) -> Result<()> {
-    fs::create_dir(path).map_err(|_| err("STATE_UNAVAILABLE"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-            .map_err(|_| err("STATE_UNAVAILABLE"))?;
-    }
-    Ok(())
+/// Keeps the newly created candidate namespace pinned throughout its enclosing stage.
+pub(crate) struct StageDirectory {
+    #[cfg(windows)]
+    _native: super::windows_private::PrivateDirectory,
 }
-fn private_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
-    let mut file = private_options()
-        .open(path)
-        .map_err(|_| err("STATE_UNAVAILABLE"))?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|_| err("STATE_UNAVAILABLE"))
+pub(crate) fn directory(path: &Path) -> Result<StageDirectory> {
+    #[cfg(windows)]
+    {
+        Ok(StageDirectory {
+            _native: super::windows_private::PrivateDirectory::create(path)?,
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        fs::create_dir(path).map_err(|_| err("STATE_UNAVAILABLE"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+                .map_err(|_| err("STATE_UNAVAILABLE"))?;
+        }
+        Ok(StageDirectory {})
+    }
+}
+pub(crate) fn private_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
+    #[cfg(windows)]
+    {
+        let parent = path.parent().ok_or_else(|| err("RESTORE_PATH_INVALID"))?;
+        let name = path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .ok_or_else(|| err("RESTORE_PATH_INVALID"))?;
+        write_private_new(parent, name, bytes, 16 * 1024 * 1024)
+    }
+    #[cfg(not(windows))]
+    {
+        let mut file = private_options()
+            .open(path)
+            .map_err(|_| err("STATE_UNAVAILABLE"))?;
+        file.write_all(bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|_| err("STATE_UNAVAILABLE"))
+    }
 }
 pub(crate) fn fresh_root(root: &Path) -> Result<()> {
+    #[cfg(windows)]
+    let directory = super::windows_private::PrivateDirectory::inspect(root)?;
     for item in fs::read_dir(root).map_err(|_| err("STATE_UNAVAILABLE"))? {
         let item = item.map_err(|_| err("STATE_UNAVAILABLE"))?;
         if item.file_name() != "operation.lock" {
             return Err(err("RESTORE_FRESH_ROOT_REQUIRED"));
         }
+        #[cfg(windows)]
+        directory.check_existing_record("operation.lock")?;
     }
+    #[cfg(windows)]
+    directory.check()?;
     Ok(())
 }
 pub(crate) fn preserved_images(
@@ -562,7 +594,7 @@ impl LifecycleService {
             link.reserved(&id)?;
         }
         let workspace = self.root.join(format!("restore-{id}"));
-        directory(&workspace)?;
+        let _workspace_guard = directory(&workspace)?;
         let mut job = RestorationJob {
             id: id.clone(),
             state: "running".into(),
@@ -669,8 +701,8 @@ impl LifecycleService {
             )?;
             source_bytes(&configuration, "freeze-signing-key.json", 1024 * 1024, true)?;
             let source_stage = workspace.join("source-installation");
-            directory(&source_stage)?;
-            directory(&source_stage.join("bundle"))?;
+            let _source_stage_guard = directory(&source_stage)?;
+            let _source_bundle_guard = directory(&source_stage.join("bundle"))?;
             private_bytes(&source_stage.join("bundle/manifest.json"), &original_bytes)?;
             private_bytes(
                 &source_stage.join("bundle/compose.yaml"),
@@ -721,7 +753,7 @@ impl LifecycleService {
             manifest.preferred_engine = Some("docker".into());
             manifest.images.clear();
             let bundle = self.root.join("bundle");
-            directory(&bundle)?;
+            let _destination_bundle_guard = directory(&bundle)?;
             for (index, preserved) in images.iter().enumerate() {
                 self.maintenance_checkpoint("restoration", &id)?;
                 let path = checked_path(&workspace.join("deployment"), &preserved.archive)?;
