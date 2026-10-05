@@ -44,7 +44,7 @@ struct Record {
 }
 #[path = "trust_checkpoint.rs"]
 mod trust_checkpoint;
-pub use trust_checkpoint::{HostTrustReceipt, TrustCheckpointReceipt};
+pub use trust_checkpoint::{HostTrustReceipt, MissingHostRecoveryReceipt, TrustCheckpointReceipt};
 #[path = "owned_execution.rs"]
 mod owned_execution;
 #[path = "update_target_registration.rs"]
