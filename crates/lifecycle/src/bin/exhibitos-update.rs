@@ -660,6 +660,27 @@ fn run() -> Result<(), String> {
         "trust-status" if a.len() == 7 => {
             Store::open(profile, installation).map_err(code)?.receipt()
         }
+        "renew-prepared-update"
+            if a.len() == 15
+                && a[6] == "--release"
+                && a[8] == "--artifact"
+                && a[10] == "--operation-id"
+                && a[12] == "--expected-generation" =>
+        {
+            let mut store = Store::open(profile, installation).map_err(code)?;
+            let envelope = bounded(Path::new(&a[7]), signed_release::MAX_ENVELOPE as u64, false)?;
+            let mut v = store.verify(&envelope, now()?).map_err(code)?;
+            artifact(&mut v, Path::new(&a[9]))?;
+            let expected = a[13].parse::<u64>().map_err(|_| usage())?;
+            let trust = store
+                .renew_prepared_update(&a[11], expected, &envelope, &v, now()?)
+                .map_err(code)?;
+            println!(
+                "{}",
+                serde_json::json!({"trust":trust,"intent":store.intent(),"executed":false,"candidateReusedWithoutMutation":true})
+            );
+            return Ok(());
+        }
         "prepare-update"
             if a.len() == 13
                 && a[6] == "--release"
