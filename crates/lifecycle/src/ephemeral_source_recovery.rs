@@ -21,13 +21,7 @@ impl ExecutionSession<'_> {
         export_parent: &Path,
     ) -> crate::Result<EphemeralSourceRecoveryReceipt> {
         self.validate_candidate_export_parent(export_parent)?;
-        for parent in [&self.source.root, export_parent] {
-            if fs2::available_space(parent).map_err(|_| crate::err("STORAGE_UNAVAILABLE"))?
-                < 10 * 1024 * 1024 * 1024
-            {
-                return Err(crate::err("RESTORE_SPACE_REQUIRED"));
-            }
-        }
+        recovery_space::check(&self.source, ctx, &[&self.source.root, export_parent], 1)?;
         let original_files = source_deployment::authenticated_files(
             &self.source.root,
             ctx.workspace,

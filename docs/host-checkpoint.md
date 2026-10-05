@@ -41,3 +41,5 @@ python3 scripts/test-host-checkpoint.py --profile-cli '<built exhibitos-profile>
 ```
 
 새 비공개 합성 fixture만 사용합니다. source·키·archive·실패 staging·추출 파일을 보존하고 byte hash를 비교합니다. 실제 engine/GUI·Windows 검사와 구분해 결과를 기록합니다.
+
+현재 복구 자료와 서비스/runtime을 같은 잠금 범위에서 검사하는 개발 경로는 인증된 `manager-image-inventory.json`과 원본 bundle/백업 manifest에서 정확한 image export 크기를 얻습니다. 한 관측의 총 2 GiB 한도, 2 GiB 추가 여유, 6 GiB 디스크 floor를 유지하고, 함께 남아 있는 세 관측은 정확한 총량의 세 배를 예약합니다. 최댓값에서는 이전 10/14 GiB 요구량과 같습니다. 잘못된·비인증 크기, overflow, quota 초과는 거부하며 실제 export writer도 이미지별 정확한 byte/hash 한도를 계속 적용합니다. tmpfs DB 검사는 기존 메모리 한도를 유지합니다. 새 사본을 생성하는 persistent DB 경로의 16 GiB 조건은 바꾸지 않습니다.

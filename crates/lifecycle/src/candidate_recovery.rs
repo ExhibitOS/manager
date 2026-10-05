@@ -30,15 +30,8 @@ impl ExecutionSession<'_> {
         export_parent: &Path,
     ) -> crate::Result<EphemeralCandidateRecoveryReceipt> {
         self.validate_candidate_export_parent(export_parent)?;
-        // Images2GiB + growth/headroom2GiB + retained disk floor6GiB.
-        // Database copies live in bounded tmpfs, not on the host filesystem.
-        for parent in [ctx.root, export_parent] {
-            if fs2::available_space(parent).map_err(|_| crate::err("STORAGE_UNAVAILABLE"))?
-                < 10 * 1024 * 1024 * 1024
-            {
-                return Err(crate::err("RESTORE_SPACE_REQUIRED"));
-            }
-        }
+        // Exact bounded exports; DB copies remain bounded tmpfs, not host files.
+        recovery_space::check(&self.source, ctx, &[ctx.root, export_parent], 1)?;
         let first = ephemeral_inventory::observe(ctx, image)?;
         let configuration = self.observe_candidate_configuration_at(ctx, image, export_parent)?;
         let repeated = ephemeral_inventory::observe(ctx, image)?;

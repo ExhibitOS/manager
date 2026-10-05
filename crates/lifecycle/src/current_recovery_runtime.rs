@@ -75,9 +75,10 @@ impl ExecutionSession<'_> {
             .verify_checkpoint_pair(cp.binding, cp.host, cp.trust, cp.key)?;
         current_bound_checkpoint(&checkpoint.receipt(), artifact.generation)?;
         self.validate_candidate_export_parent(inputs.export_parent)?;
-        // Three image observations up to2GiB each,2GiB headroom and6GiB floor.
+        // Preserve2GiB headroom and6GiB floor before OCI preparation.
+        // Exact authenticated three-export growth is reserved inside CandidateContext.
         if fs2::available_space(inputs.export_parent).map_err(|_| err("STORAGE_UNAVAILABLE"))?
-            < 14 * 1024 * 1024 * 1024
+            < 8 * 1024 * 1024 * 1024
         {
             return Err(err("RESTORE_SPACE_REQUIRED"));
         }
@@ -85,6 +86,7 @@ impl ExecutionSession<'_> {
         let held_artifact = std::cell::RefCell::new(&mut *artifact);
         let mut outcome = None;
         let (mut before, mut candidate, mut after, mut receipt) = self.inspect_restored_candidate_finalized(true, |ctx| {
+            recovery_space::check(&self.source, ctx, &[&self.source.root, ctx.root, inputs.export_parent], 3)?;
             self.reverify_prepared_artifact(&mut held_artifact.borrow_mut())?;
             self.store.recheck_checkpoint_pair(&checkpoint, cp.binding, cp.host, cp.trust, cp.key)?;
             let host = crate::profile_backup::verify_host_current_borrowed(
