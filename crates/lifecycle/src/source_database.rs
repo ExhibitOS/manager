@@ -12,6 +12,7 @@ pub struct DatabaseCopyProof {
     pub content_sha256: String,
     pub postgres_major: u8,
     pub pgdata: String,
+    pub system_identifier: String,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -148,6 +149,11 @@ pub(super) fn copy(image: &str, source: &str) -> Result<(String, DatabaseCopyPro
     validate(&proof)?;
     Ok((volume, proof))
 }
+pub(super) fn valid_system_identifier(value: &str) -> bool {
+    !value.starts_with('0')
+        && value.bytes().all(|b| b.is_ascii_digit())
+        && value.parse::<u64>().is_ok_and(|n| n > 0)
+}
 fn validate(proof: &DatabaseCopyProof) -> Result<()> {
     if !proof.clean_shutdown
         || proof.files == 0
@@ -157,6 +163,7 @@ fn validate(proof: &DatabaseCopyProof) -> Result<()> {
         || !hash_valid(&proof.content_sha256)
         || proof.postgres_major != 18
         || proof.pgdata != "18/docker"
+        || !valid_system_identifier(&proof.system_identifier)
     {
         return Err(err("UPDATE_SOURCE_DATABASE_COPY_INVALID"));
     }
@@ -175,8 +182,13 @@ mod tests {
             content_sha256: "a".repeat(64),
             postgres_major: 18,
             pgdata: "18/docker".into(),
+            system_identifier: "123".into(),
         };
         assert!(validate(&p).is_ok());
+        for id in ["", "0", "01", "-1", "18446744073709551616", "123,foreign"] {
+            assert!(!valid_system_identifier(id));
+        }
+        assert!(valid_system_identifier("18446744073709551615"));
         p.bytes = 2 * 1024 * 1024 * 1024 + 1;
         assert!(validate(&p).is_err());
         assert!(!valid_volume("volume,/host"));

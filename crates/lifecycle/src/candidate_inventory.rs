@@ -153,17 +153,19 @@ impl ExecutionSession<'_> {
         }
         let (snapshot_volume, first) =
             source_database::copy(image, &candidate_before.database_volume)?;
-        let inventory = source_inventory::compare(
+        let inventory = source_inventory::compare_candidate(
             image,
             &snapshot_volume,
             &candidate_before.blob_volume,
             &manifest_path,
             &receipt.authenticated_manifest_sha256,
+            &first.system_identifier,
         )?;
-        source_inventory::matched(&inventory, plan)?;
+        source_inventory::matched_candidate(&inventory, plan)?;
         let (repeated_snapshot_volume, repeated) =
             source_database::copy(image, &candidate_before.database_volume)?;
-        if first.content_sha256 != repeated.content_sha256
+        if first.system_identifier != repeated.system_identifier
+            || first.content_sha256 != repeated.content_sha256
             || first.bytes != repeated.bytes
             || first.files != repeated.files
             || first.entries != repeated.entries

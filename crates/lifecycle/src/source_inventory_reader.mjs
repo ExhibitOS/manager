@@ -16,7 +16,9 @@ try{
   if(r.status===0){ready=true;break;}await delay(100);
  }
  if(!ready)throw Error('SOURCE_SNAPSHOT_DATABASE_START_FAILED');
- result=await main(['check-source-inventory','--manifest-file','/manifest.json','--manifest-sha256',process.env.EXHIBITOS_MANIFEST_SHA256,'--quiesced'],{DATABASE_URL:'postgresql://exhibitos@localhost/exhibitos?host='+encodeURIComponent(socket),BLOB_BACKEND:'file',BLOB_ROOT:'/blobs'});
+ const candidateId=process.env.EXHIBITOS_CANDIDATE_SYSTEM_IDENTIFIER;
+ if(candidateId!==undefined&&(!/^[1-9][0-9]{0,19}$/.test(candidateId)||BigInt(candidateId)>18446744073709551615n))throw Error('CANDIDATE_DATABASE_ID_INVALID');
+ result=await main([candidateId===undefined?'check-source-inventory':'check-restored-inventory' ,'--manifest-file','/manifest.json','--manifest-sha256',process.env.EXHIBITOS_MANIFEST_SHA256,'--quiesced',...(candidateId===undefined?[]:['--snapshot-system-identifier',candidateId])],{DATABASE_URL:'postgresql://exhibitos@localhost/exhibitos?host='+encodeURIComponent(socket),BLOB_BACKEND:'file',BLOB_ROOT:'/blobs'});
  if(!result.currentInventoryVerified||result.preflightVerified||result.updateExecuted)throw Error('SOURCE_SNAPSHOT_DATABASE_PROOF_INVALID');
 }catch(e){error=/^[A-Z][A-Z0-9_]{0,79}$/.test(e?.message??'')?e.message:'SOURCE_SNAPSHOT_DATABASE_FAILED';}
 finally{
