@@ -586,15 +586,18 @@ fn run() -> Result<(), String> {
             );
             return Ok(());
         }
-        "verify-update-source-recovery-bundle"
+        "verify-update-source-recovery-bundle" | "verify-update-source-recovery-transient"
             if a.len() == 10 && a[6] == "--image" && a[8] == "--external-writers-quiesced" =>
         {
             let mut store = Store::open(profile, installation).map_err(code)?;
-            let observation = store
-                .execution()
-                .map_err(|e| e.code)?
-                .verify_source_recovery_bundle(&a[7], true)
-                .map_err(|e| e.code)?;
+            let session = store.execution().map_err(|e| e.code)?;
+            let observation = if a[1] == "verify-update-source-recovery-transient" {
+                session.verify_source_recovery_transient(&a[7], true)
+            } else {
+                session.verify_source_recovery_bundle(&a[7], true)
+            }
+            .map_err(|e| e.code)?;
+            drop(session);
             println!(
                 "{}",
                 serde_json::json!({"observation":observation,"dataInventoryVerified":true,"configurationInventoryVerified":true,"imageBytesVerified":true,"preflightVerified":false,"updateExecuted":false,"intent":store.intent()})

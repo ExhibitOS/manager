@@ -669,13 +669,23 @@ impl ExecutionSession<'_> {
         image: &str,
         acknowledged: bool,
     ) -> crate::Result<SourceRecoveryReceipt> {
-        self.verify_source_recovery_scoped(image, acknowledged, false)
+        self.verify_source_recovery_scoped(image, acknowledged, false, true)
+    }
+    /// Full DB/blob/configuration observation; successful fresh image exports are
+    /// retired only after the repeated data inventory and all root checks pass.
+    pub fn verify_source_recovery_transient(
+        &self,
+        image: &str,
+        acknowledged: bool,
+    ) -> crate::Result<SourceRecoveryReceipt> {
+        self.verify_source_recovery_scoped(image, acknowledged, false, false)
     }
     fn verify_source_recovery_scoped(
         &self,
         image: &str,
         acknowledged: bool,
         roots_held: bool,
+        retain_images: bool,
     ) -> crate::Result<SourceRecoveryReceipt> {
         self.check()?;
         if !acknowledged {
@@ -710,7 +720,7 @@ impl ExecutionSession<'_> {
             Some(target.lock()?)
         };
         let inventory = self.verify_source_inventory_scoped(image, true, true)?;
-        let configuration = self.verify_configuration_inventory_scoped(image, true, true)?;
+        let mut configuration = self.verify_configuration_inventory_scoped(image, true, true)?;
         let repeated_inventory = self.verify_source_inventory_scoped(image, true, true)?;
         if inventory.source_content_sha256 != repeated_inventory.source_content_sha256
             || inventory.inventory.inventory_sha256 != repeated_inventory.inventory.inventory_sha256
@@ -732,6 +742,13 @@ impl ExecutionSession<'_> {
         ) {
             return Err(crate::err("UPDATE_TARGET_CHANGED"));
         }
+        if !retain_images {
+            source_image_bytes::retire_verified(
+                Path::new(&configuration.export_workspace),
+                &configuration.images,
+            )?;
+            configuration.image_archives_retained = false;
+        }
         Ok(SourceRecoveryReceipt {
             inventory,
             configuration,
@@ -743,6 +760,8 @@ impl ExecutionSession<'_> {
     /// Cooperative host/root fences span fresh source observations, host+trust
     /// archives and a final read-only source comparison. External volumes are
     /// observed against the existing backup, not newly archived by this method.
+    /// The completed pre-archive observation retires its fresh image exports;
+    /// final recovery exports remain retained outside the host profile.
     pub fn checkpoint_source_host_trust(
         &self,
         image: &str,
@@ -805,7 +824,7 @@ impl ExecutionSession<'_> {
                     &self._session,
                     || {
                         *source.borrow_mut() =
-                            Some(self.verify_source_recovery_scoped(image, true, true)?);
+                            Some(self.verify_source_recovery_scoped(image, true, true, false)?);
                         Ok(())
                     },
                     || {
@@ -1796,6 +1815,20 @@ mod tests {
         assert_eq!(
             session
                 .verify_source_recovery_bundle(&format!("sha256:{}", "a".repeat(64)), true)
+                .unwrap_err()
+                .code,
+            "UPDATE_TARGET_UNREGISTERED"
+        );
+        assert_eq!(
+            session
+                .verify_source_recovery_transient(&format!("sha256:{}", "a".repeat(64)), false)
+                .unwrap_err()
+                .code,
+            "BACKUP_OPERATOR_ACK_REQUIRED"
+        );
+        assert_eq!(
+            session
+                .verify_source_recovery_transient(&format!("sha256:{}", "a".repeat(64)), true)
                 .unwrap_err()
                 .code,
             "UPDATE_TARGET_UNREGISTERED"
