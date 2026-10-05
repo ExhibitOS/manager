@@ -88,3 +88,21 @@ exhibitos-update verify-source-recovery-ephemeral \
 ```
 
 The order is exact authenticated source deployment files → fresh tmpfs source physical/DB/blob inventory → complete seven-record configuration/key/image-byte inventory → second fresh tmpfs source observation → late exact deployment/configuration/key/image mapping checks → common final original/candidate/receipt/manifest/authority guards. Both physical proofs must agree. Existing full configuration checks, original source identifier rules, consent and path rejection remain mandatory. Successful new image exports are retired after final checks; small hash metadata remains. The original source and candidate volumes and prior recovery material are untouched. The existing bounded memory/copy limits, no-extra-container-swap eligibility and10GiB host/export budget apply. This observation grants no preflight or update-execution permission; coherent highest-authority/host/external-data recovery and release/compatibility/apply/rollback gates still need to be satisfied.
+
+### One lifetime for source, candidate and the current checkpoint pair
+
+`verify-combined-recovery-ephemeral` performs full source recovery observation, full candidate observation, then full source observation again inside one common retained source/candidate/profile/trust fence. Each full observation uses two independent tmpfs PostgreSQL copies, so six fresh physical/logical observations are made. Late source physical/key/image equality and a late candidate configuration recheck precede the final common guards. The current checkpoint pair is authenticated before and after the observations against the current authority and complete ciphertext, using the existing opaque proof API. No saved JSON success substitutes for any step.
+
+```sh
+exhibitos-update verify-combined-recovery-ephemeral \
+  --profile /absolute/private/profile --installation default \
+  --image sha256:QUALIFIED_LOCAL_MAINTENANCE_IMAGE_ID \
+  --export-parent /absolute/private/external-export-parent \
+  --host-archive /absolute/private/checkpoint/host.bin \
+  --trust-archive /absolute/private/checkpoint/trust.bin \
+  --key /absolute/private/external-key.bin \
+  --pair-binding /absolute/private/checkpoint/pair-binding.bin \
+  --external-writers-quiesced --apps-closed
+```
+
+Host/source/candidate/export filesystems must have14GiB available: three potentially retained2GiB image sets,2GiB headroom and6GiB floor. All three new image scopes remain until final guards pass, then only those exact verified files are retired, leaving three small hash markers. Tmpfs memory/copy limits and resource eligibility remain unchanged; no persistent snapshot is created or deleted. A failure preserves original resources and remaining temporary diagnostics. A checkpoint with `sourcePlanBound=false` is still explicitly reported as such: current ciphertext/authority authentication alone does not prove coherent service-data or lost-authority recovery. This command does not verify a fresh signed release, actual upgrade compatibility, activation/health or full rollback and grants no preflight/update execution permit.
