@@ -72,7 +72,7 @@ pub(crate) fn private_directory(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-pub(crate) fn profile_lock(profile: &LifecycleService) -> Result<File> {
+pub(crate) fn profile_lock(profile: &LifecycleService) -> Result<OperationGuard> {
     let file = profile.lock()?;
     let metadata = file
         .metadata()
