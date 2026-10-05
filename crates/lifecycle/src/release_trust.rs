@@ -56,8 +56,8 @@ mod target_registration;
 mod update_journal;
 pub use owned_execution::{
     CandidateConfigurationReceipt, CandidateInventoryReceipt, CandidateRecoveryReceipt,
-    ExecutionSession, PreparedArtifact, PreparedArtifactReceipt, PreparedOciReceipt,
-    SourceHostTrustReceipt, SourceRecoveryReceipt,
+    EphemeralCandidateInventoryReceipt, ExecutionSession, PreparedArtifact,
+    PreparedArtifactReceipt, PreparedOciReceipt, SourceHostTrustReceipt, SourceRecoveryReceipt,
 };
 pub use target_registration::RegisteredUpdateTarget;
 use update_journal::{UpdateEvent, evolve, in_flight, remember_ids, validate_new_ids};

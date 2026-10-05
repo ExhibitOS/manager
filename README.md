@@ -113,3 +113,5 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 설치·시작·정지·재시작을 요청하면 설치와 실행 패널에서 즉시 진행 상태와 해당 버튼의 `… 중` 표시를 제공합니다. 코어 응답을 기다리는 동안에는 완료율을 추측하지 않는 진행 막대를 표시하며, 완료·실패 결과를 같은 위치에 남깁니다. 응답 시간과 실제 네이티브 동작은 실행 환경에 따라 다르므로 브라우저 합성 지연 검사는 Engine 작업 성공의 증거가 아닙니다.
 
 남은 Windows 검사는 [한 번의 검증 배치](docs/windows-verification-batch.md)로 모아 준비하며, 이미 받은 성공 결과는 같은 소스에서 반복 요청하지 않습니다. `npm run test:receipt`는 읽기 전용 provenance 수집의 변조·경로탈출 회귀를 확인합니다.
+
+Stopped candidate data can also be checked with bounded tmpfs instead of accumulating persistent database snapshots: see [candidate inventory without persistent snapshots](docs/genuine-update-plan.md#candidate-inventory-without-persistent-snapshots). This opt-in diagnostic preserves full physical and logical checks; it does not authorize an update or complete platform qualification.

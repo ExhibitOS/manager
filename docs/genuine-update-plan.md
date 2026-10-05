@@ -45,3 +45,18 @@ Legacy synthetic mode and observation-only resume mode remain distinct. The
 previous1024-byte plan is never mutated into a deployable one. Resume of a genuine
 fixture is not supported by this option; preserve any interrupted candidate and
 inspect its actual state before an explicit subsequent recovery operation.
+
+### Candidate inventory without persistent snapshots
+
+`verify-restored-candidate-inventory-ephemeral` uses the same registered recovery candidate, retained source/candidate locks, current authority, immutable restoration receipt and authenticated manifest checks as the persistent inventory command. It performs two fresh physical copies and two native PostgreSQL18 full database/blob inventory observations. Both physical proofs must match, each logical proof must match the exact plan, and final source/candidate/receipt/manifest guards must still hold. It supplies no preflight or update execution permit.
+
+```sh
+exhibitos-update verify-restored-candidate-inventory-ephemeral \
+  --profile /absolute/private/profile --installation default \
+  --image sha256:QUALIFIED_LOCAL_MAINTENANCE_IMAGE_ID \
+  --external-writers-quiesced --apps-closed
+```
+
+Each helper has no network, a readonly root, readonly original database/blob/manifest mounts, restricted capabilities, a64-process limit, 3GiB memory and equal memory+swap limit. The snapshot is a4GiB tmpfs capacity with a3GiB total process/memory ceiling; the existing physical2GiB copy limit and2GiB free-space headroom remain. The Engine must report at least3.5GiB RAM. This is an eligibility check, not a reservation: other workloads or large copies may still cause OOM, which refuses verification. Host/VM paging is outside this helper's guarantee. Base-image declared volumes are masked by tmpfs; unexpected declared volumes are refused before create to prevent accidental anonymous volumes. macOS Docker Desktop's exact `/host_mnt` bind representation is accepted; unrelated paths and writable original mounts are refused. Windows runtime qualification remains pending.
+
+Tmpfs disappears when the helper stops, including failures; no persistent failure DB copy is retained by this opt-in path. Original volumes and host records remain untouched. Failed helper metadata and small private command reports are retained for diagnosis. Only exact owned, stopped helpers whose physical/logical proof validated are removed automatically; this path contains no volume deletion. Persistent snapshot commands remain available when a durable diagnostic copy is required. Existing snapshots and previous recovery baselines are not retired by this command.

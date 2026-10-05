@@ -154,7 +154,7 @@ pub(super) fn valid_system_identifier(value: &str) -> bool {
         && value.bytes().all(|b| b.is_ascii_digit())
         && value.parse::<u64>().is_ok_and(|n| n > 0)
 }
-fn validate(proof: &DatabaseCopyProof) -> Result<()> {
+pub(super) fn validate(proof: &DatabaseCopyProof) -> Result<()> {
     if !proof.clean_shutdown
         || proof.files == 0
         || proof.entries < proof.files

@@ -29,8 +29,11 @@ pub use source_images::SourceImageReceipt;
 #[path = "source_database.rs"]
 mod source_database;
 pub use source_database::DatabaseSnapshotReceipt;
+#[path = "ephemeral_inventory.rs"]
+mod ephemeral_inventory;
 #[path = "source_inventory.rs"]
 mod source_inventory;
+pub use ephemeral_inventory::EphemeralCandidateInventoryReceipt;
 pub use source_inventory::SourceInventoryReceipt;
 #[path = "source_full_configuration.rs"]
 mod source_full_configuration;
@@ -1917,6 +1920,19 @@ mod tests {
                 .code,
             "UPDATE_TARGET_UNREGISTERED"
         );
+        for acknowledged in [false, true] {
+            assert_eq!(
+                session
+                    .verify_restored_candidate_inventory_ephemeral("untrusted", acknowledged)
+                    .unwrap_err()
+                    .code,
+                if acknowledged {
+                    "UPDATE_TARGET_UNREGISTERED"
+                } else {
+                    "BACKUP_OPERATOR_ACK_REQUIRED"
+                }
+            );
+        }
         drop(session);
         assert_eq!(store.receipt().generation, 2);
     }

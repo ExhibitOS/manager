@@ -700,6 +700,21 @@ fn run() -> Result<(), String> {
             );
             return Ok(());
         }
+        "verify-restored-candidate-inventory-ephemeral"
+            if a.len() == 10 && a[6] == "--image" && a[8] == "--external-writers-quiesced" =>
+        {
+            let mut store = Store::open(profile, installation).map_err(code)?;
+            let observation = store
+                .execution()
+                .map_err(|e| e.code)?
+                .verify_restored_candidate_inventory_ephemeral(&a[7], true)
+                .map_err(|e| e.code)?;
+            println!(
+                "{}",
+                serde_json::json!({"observation":observation,"candidateDataInventoryVerified":true,"configurationVerified":false,"imageBytesVerified":false,"preflightVerified":false,"updateExecuted":false,"intent":store.intent()})
+            );
+            return Ok(());
+        }
         "verify-restored-candidate-inventory"
             if a.len() == 10 && a[6] == "--image" && a[8] == "--external-writers-quiesced" =>
         {
