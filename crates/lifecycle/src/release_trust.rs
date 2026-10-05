@@ -48,7 +48,7 @@ struct Record {
 #[path = "authority_recovery_vault.rs"]
 mod authority_recovery_vault;
 #[cfg(unix)]
-pub use authority_recovery_vault::AuthorityRecoveryReceipt;
+pub use authority_recovery_vault::{AuthorityReconciliationReceipt, AuthorityRecoveryReceipt};
 #[path = "trust_checkpoint.rs"]
 mod trust_checkpoint;
 pub use trust_checkpoint::binding::{
