@@ -3,6 +3,8 @@
 //! Existing user directories/ACLs are inspected, never rewritten or adopted.
 #[path = "windows_json_storage.rs"]
 mod json_storage;
+#[path = "windows_record_publication.rs"]
+mod record_publication;
 use crate::{Result, err};
 pub(crate) use json_storage::{read_json_path, write_json_root};
 use std::{
