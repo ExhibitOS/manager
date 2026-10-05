@@ -646,6 +646,128 @@ impl PrivateDirectory {
     }
 }
 
+/// Existing public input, held without write/delete sharing or ACL changes.
+/// This reader accepts only regular single-link files under pinned ancestors.
+/// Public ownership may be this token's default owner; unrelated writers are refused.
+pub(crate) struct PublicRecord {
+    path: PathBuf,
+    file: File,
+    ancestors: Vec<(PathBuf, File, Identity)>,
+    sid: Sid,
+    id: Identity,
+}
+impl PublicRecord {
+    pub(crate) fn open(path: &Path) -> Result<Self> {
+        let parent = path.parent().ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
+        let name = path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
+        valid_name(name)?;
+        let ancestors = pin_ancestors(parent)?;
+        let sid = Sid::current()?;
+        let parent_file = &ancestors
+            .last()
+            .ok_or_else(|| err("PROFILE_PATH_INVALID"))?
+            .1;
+        public_acl(parent_file, &sid)?;
+        let handle = unsafe {
+            fsapi::CreateFileW(
+                wide(path)?.as_ptr(),
+                0x80000000 | fsapi::READ_CONTROL,
+                fsapi::FILE_SHARE_READ,
+                ptr::null(),
+                fsapi::OPEN_EXISTING,
+                fsapi::FILE_FLAG_OPEN_REPARSE_POINT,
+                ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(err("WINDOWS_PROFILE_RECORD_OPEN_REFUSED"));
+        }
+        let file = unsafe { File::from_raw_handle(handle.cast()) };
+        public_acl(&file, &sid)?;
+        let id = identity(&file, false)?;
+        fs2::FileExt::try_lock_shared(&file).map_err(|_| err("WINDOWS_PROFILE_BUSY"))?;
+        let value = Self {
+            path: path.into(),
+            file,
+            ancestors,
+            sid,
+            id,
+        };
+        value.check()?;
+        Ok(value)
+    }
+    fn check(&self) -> Result<()> {
+        for (path, held, expected) in &self.ancestors {
+            if identity(held, true)? != *expected
+                || identity(&open(path, true)?, true)? != *expected
+            {
+                return Err(err("WINDOWS_PROFILE_IDENTITY_INVALID"));
+            }
+        }
+        public_acl(
+            &self
+                .ancestors
+                .last()
+                .ok_or_else(|| err("PROFILE_PATH_INVALID"))?
+                .1,
+            &self.sid,
+        )?;
+        public_acl(&self.file, &self.sid)?;
+        if identity(&self.file, false)? != self.id
+            || identity(&open(&self.path, false)?, false)? != self.id
+        {
+            return Err(err("WINDOWS_PROFILE_IDENTITY_INVALID"));
+        }
+        Ok(())
+    }
+    pub(crate) fn read_bounded(&mut self, limit: usize) -> Result<Vec<u8>> {
+        if limit > 16 * 1024 * 1024 {
+            return Err(err("WINDOWS_PROFILE_RECORD_QUOTA"));
+        }
+        self.check()?;
+        let before = self
+            .file
+            .metadata()
+            .map_err(|_| err("WINDOWS_PROFILE_RECORD_IO"))?;
+        if before.len() > limit as u64 {
+            return Err(err("WINDOWS_PROFILE_RECORD_QUOTA"));
+        }
+        self.file
+            .seek(SeekFrom::Start(0))
+            .map_err(|_| err("WINDOWS_PROFILE_RECORD_IO"))?;
+        let mut bytes = Vec::new();
+        (&mut self.file)
+            .take(limit as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| err("WINDOWS_PROFILE_RECORD_IO"))?;
+        self.check()?;
+        let after = self
+            .file
+            .metadata()
+            .map_err(|_| err("WINDOWS_PROFILE_RECORD_IO"))?;
+        if bytes.len() as u64 != before.len()
+            || after.len() != before.len()
+            || after
+                .modified()
+                .map_err(|_| err("WINDOWS_PROFILE_RECORD_IO"))?
+                != before
+                    .modified()
+                    .map_err(|_| err("WINDOWS_PROFILE_RECORD_IO"))?
+        {
+            return Err(err("WINDOWS_PROFILE_RECORD_CHANGED"));
+        }
+        Ok(bytes)
+    }
+}
+impl Drop for PublicRecord {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
+}
+
 /// A private immutable-generation record with its directory fence alive for every access.
 /// No raw handle escapes; holding it denies new write/delete handles on Windows.
 pub struct BoundRecord<'a> {
@@ -854,6 +976,130 @@ mod tests {
             &parent.join(format!("exhibitos-acl-test-{}", uuid::Uuid::new_v4())),
         )
         .unwrap()
+    }
+    #[test]
+    fn public_reader_pins_input_and_parent_without_adopting_private_acl() {
+        let root = fresh();
+        let bundle = root.path().join("bundle");
+        std::fs::create_dir(&bundle).unwrap();
+        let path = bundle.join("compose.yaml");
+        std::fs::write(&path, b"synthetic: true\n").unwrap();
+        assert!(PrivateDirectory::inspect(&bundle).is_err());
+        let mut held = PublicRecord::open(&path).unwrap();
+        assert_eq!(held.read_bounded(1024).unwrap(), b"synthetic: true\n");
+        assert!(std::fs::OpenOptions::new().write(true).open(&path).is_err());
+        assert!(std::fs::rename(&path, bundle.join("moved.yaml")).is_err());
+        assert!(std::fs::remove_file(&path).is_err());
+        assert!(std::fs::rename(&bundle, root.path().join("moved")).is_err());
+        assert_eq!(
+            crate::installation_backup::source_bytes(
+                root.path(),
+                "bundle/compose.yaml",
+                1024,
+                false
+            )
+            .unwrap(),
+            b"synthetic: true\n"
+        );
+        drop(held);
+        assert!(PrivateDirectory::inspect(&bundle).is_err());
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(bundle).unwrap();
+        let path = root.path().to_owned();
+        drop(root);
+        std::fs::remove_dir(path).unwrap();
+    }
+    #[test]
+    fn public_reader_refuses_existing_writer_hardlink_and_unrelated_parent_writer() {
+        let root = fresh();
+        let bundle = root.path().join("bundle");
+        std::fs::create_dir(&bundle).unwrap();
+        let path = bundle.join("compose.yaml");
+        std::fs::write(&path, b"synthetic-only").unwrap();
+        let writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        assert!(PublicRecord::open(&path).is_err());
+        drop(writer);
+        let alias = bundle.join("alias.yaml");
+        std::fs::hard_link(&path, &alias).unwrap();
+        assert!(
+            crate::installation_backup::source_bytes(
+                root.path(),
+                "bundle/compose.yaml",
+                1024,
+                false
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&alias).unwrap(), b"synthetic-only");
+        std::fs::remove_file(alias).unwrap();
+        let status = crate::process_window::background_command("icacls.exe")
+            .arg(&bundle)
+            .args(["/grant", "*S-1-1-0:W"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(PublicRecord::open(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"synthetic-only");
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(bundle).unwrap();
+        let path = root.path().to_owned();
+        drop(root);
+        std::fs::remove_dir(path).unwrap();
+    }
+    #[test]
+    fn public_source_limits_and_junctions_refuse_without_changing_input() {
+        let root = fresh();
+        let bundle = root.path().join("bundle");
+        std::fs::create_dir(&bundle).unwrap();
+        let path = bundle.join("compose.yaml");
+        std::fs::write(&path, b"synthetic-only").unwrap();
+        assert!(
+            crate::installation_backup::source_bytes(root.path(), "bundle/compose.yaml", 4, false)
+                .is_err()
+        );
+        assert!(
+            PublicRecord::open(&path)
+                .unwrap()
+                .read_bounded(16 * 1024 * 1024 + 1)
+                .is_err()
+        );
+        assert!(PublicRecord::open(&bundle.join("compose.yaml:stream")).is_err());
+        let empty = bundle.join("empty");
+        std::fs::write(&empty, b"").unwrap();
+        assert!(
+            crate::installation_backup::source_bytes(root.path(), "bundle/empty", 1024, false)
+                .is_err()
+        );
+        let junction = root.path().join("junction");
+        let status = crate::process_window::background_command("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&bundle)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(PublicRecord::open(&junction.join("compose.yaml")).is_err());
+        assert!(
+            crate::installation_backup::source_bytes(
+                root.path(),
+                "junction/compose.yaml",
+                1024,
+                false
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"synthetic-only");
+        std::fs::remove_dir(junction).unwrap();
+        std::fs::remove_file(empty).unwrap();
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(bundle).unwrap();
+        let path = root.path().to_owned();
+        drop(root);
+        std::fs::remove_dir(path).unwrap();
     }
     #[test]
     fn canonical_verbatim_ancestors_reopen_the_same_private_directory() {
