@@ -90,9 +90,24 @@ def main():
             'configurationInventoryVerified', 'imageBytesVerified')), 'missing complete checks')
     require(proof['preflightVerified'] is False and proof['updateExecuted'] is False,
             'unverified execution scope')
+    # Keep the returned proof even if an assertion below fails; only synthetic
+    # metadata/hashes are recorded, never process stderr, credentials or payload.
+    candidate = args.report.with_name(args.report.name + '.candidate.json')
+    with os.fdopen(os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as stream:
+        json.dump(proof, stream, indent=2)
+        stream.write('\n')
+        stream.flush()
+        os.fsync(stream.fileno())
     first, last = observation['inventory'], observation['repeatedInventory']
-    require(first['sourceContentSha256'] == last['sourceContentSha256'] and
-            first['inventory'] == last['inventory'], 'repeated data inventory mismatch')
+    require(all(first[field] == last[field] for field in
+                ('sourceContentSha256', 'sourceInstance', 'targetInstance',
+                 'sourceDatabaseVolume', 'sourceBlobVolume')),
+            'repeated source identity/content mismatch')
+    # Fresh observations have distinct timestamps. Compare every authenticated
+    # inventory identity/hash/verification flag, not the observation instant.
+    require({k: v for k, v in first['inventory'].items() if k != 'observedAt'} ==
+            {k: v for k, v in last['inventory'].items() if k != 'observedAt'},
+            'repeated authenticated data inventory mismatch')
     config = observation['configuration']
     require(len(config['files']) == 7 and len(config['images']) == 2,
             'full supported configuration/image scope missing')
