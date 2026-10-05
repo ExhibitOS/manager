@@ -10,7 +10,9 @@ use aes_gcm::{
     aead::{Aead, KeyInit, OsRng, Payload, rand_core::RngCore},
 };
 pub use host_checkpoint::{HostReceipt, checkpoint_host, extract_host};
-pub(crate) use host_checkpoint::{checkpoint_host_anchored, checkpoint_host_borrowed};
+pub(crate) use host_checkpoint::{
+    checkpoint_host_anchored, checkpoint_host_borrowed, checkpoint_host_size,
+};
 use std::collections::BTreeMap;
 const MAGIC: &[u8] = b"ExhibitOS-profile-v1\0";
 const LIMIT: u64 = 64 * 1024 * 1024;
