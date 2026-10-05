@@ -759,6 +759,80 @@ pub fn extract_host(
     ))
 }
 
+fn publication_identity(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        (a.dev(), a.ino(), a.uid()) == (b.dev(), b.ino(), b.uid())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (a, b);
+        false
+    }
+}
+/// Activate only a freshly authenticated extraction into an absent original
+/// namespace. Caller holds the external profile anchor and retained trust fence.
+pub(crate) fn activate_missing_host(
+    profile: &Path,
+    extracted: &Path,
+    expected: &HostReceipt,
+) -> Result<()> {
+    no_destination(profile)?;
+    let parent = canonical_private(profile.parent().ok_or_else(fail)?)?;
+    let parent_before = fs::symlink_metadata(&parent).map_err(|_| fail())?;
+    canonical_private(extracted)?;
+    let encoded_path = extracted.join("manifest.json");
+    let mut f = file(&encoded_path)?;
+    if f.metadata().map_err(|_| fail())?.len() > MANIFEST_LIMIT {
+        return Err(fail());
+    }
+    let mut encoded = Vec::new();
+    f.read_to_end(&mut encoded).map_err(|_| fail())?;
+    if digest(&encoded) != expected.manifest_sha256 {
+        return Err(fail());
+    }
+    let manifest: Inventory = serde_json::from_slice(&encoded).map_err(|_| fail())?;
+    validate_inventory(&manifest, profile)?;
+    let candidate = extracted.join("profile");
+    canonical_private(&candidate)?;
+    let candidate_before = fs::symlink_metadata(&candidate).map_err(|_| fail())?;
+    let inventory = inventory(&candidate, &BTreeSet::new(), &manifest.id)?;
+    if inventory.items != manifest.items
+        || inventory.total_bytes != manifest.total_bytes
+        || inventory.registry_sha256 != manifest.registry_sha256
+        || expected.id != manifest.id
+        || expected.bytes != manifest.total_bytes
+        || expected.files != manifest.items.iter().filter(|i| i.kind == "file").count()
+        || digest(&capture(&candidate)?.registry) != manifest.registry_sha256
+    {
+        return Err(fail());
+    }
+    if !unchanged(
+        &candidate_before,
+        &fs::symlink_metadata(&candidate).map_err(|_| fail())?,
+    ) || !unchanged(
+        &parent_before,
+        &fs::symlink_metadata(&parent).map_err(|_| fail())?,
+    ) {
+        return Err(fail());
+    }
+    no_destination(profile)?;
+    publish_directory(&candidate, profile)?;
+    // Publication can have happened if a later durability/identity check fails.
+    // Preserve the restored tree and the external receipt; never retry overwrite.
+    sync(&parent).map_err(|_| err("HOST_RESTORE_UNCERTAIN"))?;
+    let after = fs::symlink_metadata(profile).map_err(|_| err("HOST_RESTORE_UNCERTAIN"))?;
+    if !after.is_dir()
+        || after.is_symlink()
+        || mode(&after) != mode(&candidate_before)
+        || !publication_identity(&candidate_before, &after)
+    {
+        return Err(err("HOST_RESTORE_UNCERTAIN"));
+    }
+    Ok(())
+}
+
 // These fixtures exercise the supported Unix host archive/activation boundary.
 // Native Windows is tested separately for explicit unsupported refusal below.
 #[cfg(all(test, unix))]

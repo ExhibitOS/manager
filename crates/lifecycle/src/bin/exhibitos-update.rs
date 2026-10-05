@@ -300,6 +300,25 @@ fn run() -> Result<(), String> {
     }
     let profile = Path::new(&a[3]);
     let installation = &a[5];
+    if a[1] == "restore-missing-host" {
+        if a.len() != 14
+            || a[6] != "--host-archive"
+            || a[8] != "--trust-archive"
+            || a[10] != "--key"
+            || a[12] != "--absent-original-profile"
+        {
+            return Err(usage());
+        }
+        let store = Store::open(profile, installation).map_err(code)?;
+        let receipt = store
+            .restore_missing_host(Path::new(&a[7]), Path::new(&a[9]), Path::new(&a[11]), true)
+            .map_err(|e| e.code)?;
+        println!(
+            "{}",
+            serde_json::to_string(&receipt).map_err(|_| "UPDATE_RESULT_INVALID")?
+        );
+        return Ok(());
+    }
     if a[1] == "qualify-prepared-oci" {
         if a.len() != 16
             || a[6] != "--artifact"

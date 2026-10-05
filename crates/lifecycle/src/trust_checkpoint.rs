@@ -5,7 +5,7 @@ use super::*;
 mod encrypted;
 #[path = "paired_host_trust.rs"]
 mod paired;
-pub use paired::HostTrustReceipt;
+pub use paired::{HostTrustReceipt, MissingHostRecoveryReceipt};
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrustCheckpointReceipt {

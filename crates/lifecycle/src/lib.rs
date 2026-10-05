@@ -214,6 +214,12 @@ fn err(code: &str) -> LifecycleError {
         "UPDATE_SOURCE_IMAGES_RETIRE_UNCERTAIN" | "UPDATE_SOURCE_IMAGES_RETIRE_UNVERIFIED" => {
             "이미지 검사 사본 정리 완료를 확인할 수 없습니다. 원본·복원점과 남은 검사 폴더·목록을 보존하고 진단하세요."
         }
+        "HOST_RESTORE_TARGET_EXISTS" => {
+            "원래 관리 폴더가 이미 있습니다. 기존 폴더를 보존하고 덮어쓰지 마세요."
+        }
+        "HOST_RESTORE_UNCERTAIN" => {
+            "복구 폴더 게시 완료를 확인할 수 없습니다. 현재 폴더·복구 후보·외부 신뢰 기록을 보존하고 진단하세요."
+        }
         "PROFILE_WRITE_UNCERTAIN" => {
             "설정 기록 완료를 확인할 수 없습니다. 앱을 닫아 둔 채 보존한 이전 목록·후보·사본을 검사하세요."
         }
