@@ -45,7 +45,8 @@ struct Record {
 #[path = "trust_checkpoint.rs"]
 mod trust_checkpoint;
 pub use trust_checkpoint::binding::{
-    CheckpointPairReceipt, CheckpointVerifier, VerifiedCheckpointPair,
+    CheckpointPairReceipt, CheckpointVerifier, RollbackCheckpointReceipt, VerifiedCheckpointPair,
+    VerifiedRollbackCheckpointPair,
 };
 pub use trust_checkpoint::{HostTrustReceipt, MissingHostRecoveryReceipt, TrustCheckpointReceipt};
 #[path = "owned_execution.rs"]
