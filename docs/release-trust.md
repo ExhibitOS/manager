@@ -117,3 +117,35 @@ of this journal must not be used for release acceptance.
 
 The [persisted update preparation](update-intent.md) binds actual signed bytes and
 plan to the same atomic acceptance record; it does not execute an update.
+
+## Renewing an unchanged Prepared release
+
+`renew-prepared-update` accepts a new signed envelope only for the exact current
+`Prepared` operation and expected trust generation. It verifies actual artifact
+bytes and a fresh signature under the currently pinned policy. The full update
+plan, candidate identity, artifact name/size/hash/image/schema, version,
+channel/target/protocol and ordered source-schema list must remain unchanged.
+Only a strictly higher sequence, nondecreasing issue time, later expiry and
+trusted signing signature/key may change. Expired original metadata is not used
+to authorize execution; the new envelope must independently pass current policy,
+clock, expiry, signature and artifact validation.
+
+The immutable `renew_prepared` journal event retains the existing operation and
+candidate rather than discarding and creating another copied installation. Replay
+reverifies the new signature at the committed time and the exact permitted
+transition. All previous records, reserved IDs, revocations and monotonic floors
+remain. Applying, recovery and completed operations cannot be renewed. Current
+checkpoint and opaque artifact/runtime proofs become stale at the new generation
+and must be requalified; this operation supplies no compatibility or preflight
+permit. No Docker/container/volume/data mutation occurs.
+
+```text
+exhibitos-update renew-prepared-update --profile <absolute-private-profile> --installation default --release <new-signed-envelope> --artifact <unchanged-immutable-artifact> --operation-id <current-prepared-operation> --expected-generation <current-trust-generation> --apps-closed
+```
+
+Journal compatibility: this is an additive event in the closed version1 local
+journal schema; signed release protocol1 is unchanged. A prior Manager that does
+not recognize `renew_prepared` rejects this history and cannot open or execute it.
+Use the updated Manager before publishing this event; do not erase records or
+lower floors to downgrade. Native Windows journal publication remains a separate
+qualification gate. Keys are never read from feed payloads or stored by this CLI.

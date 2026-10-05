@@ -330,6 +330,35 @@ fn transition(old: &Record, next: &Record) -> Result<(), Error> {
     {
         return Err(Error::TrustRollback);
     }
+    if let Some(UpdateEvent::RenewPrepared(renewed)) = &next.update_event {
+        let original = old.intent.as_ref().ok_or_else(invalid)?;
+        update_journal::validate_prepared_renewal(original, renewed)?;
+        let fresh = super::verify(renewed.envelope.as_bytes(), &old.policy, next.observed_at)?;
+        let mut policy = old.policy.clone();
+        policy.minimum_sequence = fresh.release.sequence;
+        policy.minimum_issued_at = policy.minimum_issued_at.max(fresh.release.issued_at);
+        let acceptance = Accepted {
+            sequence: fresh.release.sequence,
+            issued_at: fresh.release.issued_at,
+            key_id: fresh.key_id.clone(),
+            payload_sha256: fresh.payload_sha256.clone(),
+            artifact_sha256: fresh.release.artifact.sha256.clone(),
+        };
+        if next.policy_generation != old.policy_generation
+            || next.revoked_keys != old.revoked_keys
+            || next.acceptance.as_ref() != Some(&acceptance)
+            || !fresh.binds(original.update.plan())
+            || fresh.payload_sha256 != renewed.payload_sha256
+            || fresh.key_id != renewed.key_id
+            || serde_json::to_vec(&next.policy).map_err(|_| invalid())?
+                != serde_json::to_vec(&policy).map_err(|_| invalid())?
+            || serde_json::to_vec(&next.intent).map_err(|_| invalid())?
+                != serde_json::to_vec(&Some((**renewed).clone())).map_err(|_| invalid())?
+        {
+            return Err(invalid());
+        }
+        return Ok(());
+    }
     if let Some(event) = &next.update_event {
         if next.policy_generation != old.policy_generation
             || next.acceptance != old.acceptance
@@ -892,6 +921,59 @@ impl Store {
         });
         self.commit(next, now)
     }
+    /// Fresh trusted signature for exactly the existing Prepared plan/artifact.
+    /// Keeps candidate identity and all historical floors/records; never renews
+    /// Applying/recovery work or caller-supplied execution evidence.
+    pub fn renew_prepared_update(
+        &mut self,
+        operation: &str,
+        expected_generation: u64,
+        envelope: &[u8],
+        verified: &VerifiedRelease,
+        now: u64,
+    ) -> Result<TrustReceipt, Error> {
+        self.check_root()?;
+        if expected_generation != self.current.generation {
+            return Err(Error::TrustStaleOperation);
+        }
+        let old = self.intent().ok_or(Error::PlanMismatch)?;
+        if old.update.stage() != crate::update::Stage::Prepared {
+            return Err(Error::TrustOperationBusy);
+        }
+        if operation != old.update.plan().operation_id {
+            return Err(Error::PlanMismatch);
+        }
+        let fresh = self.verify(envelope, now)?;
+        if !verified.artifact_verified
+            || verified.payload_sha256 != fresh.payload_sha256
+            || verified.key_id != fresh.key_id
+            || verified.source_schema_sha256 != fresh.source_schema_sha256
+            || !fresh.binds(old.update.plan())
+        {
+            return Err(Error::PlanMismatch);
+        }
+        let mut renewed = old.clone();
+        renewed.envelope = std::str::from_utf8(envelope)
+            .map_err(|_| Error::InvalidEnvelope)?
+            .into();
+        renewed.key_id = fresh.key_id.clone();
+        renewed.payload_sha256 = fresh.payload_sha256.clone();
+        renewed.artifact_sha256 = fresh.release.artifact.sha256.clone();
+        update_journal::validate_prepared_renewal(old, &renewed)?;
+        let mut next = self.current.clone();
+        next.intent = Some(renewed.clone());
+        next.update_event = Some(UpdateEvent::RenewPrepared(Box::new(renewed)));
+        next.policy.minimum_sequence = fresh.release.sequence;
+        next.policy.minimum_issued_at = next.policy.minimum_issued_at.max(fresh.release.issued_at);
+        next.acceptance = Some(Accepted {
+            sequence: fresh.release.sequence,
+            issued_at: fresh.release.issued_at,
+            key_id: fresh.key_id,
+            payload_sha256: fresh.payload_sha256,
+            artifact_sha256: fresh.release.artifact.sha256,
+        });
+        self.commit(next, now)
+    }
     /// Persist Applying before the trusted executor performs any runtime mutation.
     /// Holds both filesystem fences until Store is dropped. The executor must supply
     /// actual plan-bound compatibility, backup restoration, source and space evidence.
@@ -1374,6 +1456,175 @@ mod tests {
             crate::update::Error::CompatibilityUnverified
         );
         assert_eq!(s.receipt().generation, 2);
+    }
+    fn renewal_records(store: &Store) -> Vec<(String, Vec<u8>)> {
+        let mut names: Vec<_> = fs::read_dir(&store.root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".json"))
+            .collect();
+        names.sort();
+        names
+            .into_iter()
+            .map(|n| {
+                let bytes = fs::read(store.root.join(&n)).unwrap();
+                (n, bytes)
+            })
+            .collect()
+    }
+    #[test]
+    fn expired_prepared_renewal_reopens_same_plan_and_preserves_reserved_history() {
+        let (p, k, policy, r) = fixture();
+        let e = seal(&k, &r);
+        let mut store = Store::provision(&p, "default", policy, 10).unwrap();
+        let mut v = store.verify(&e, 20).unwrap();
+        v.verify_artifact(&mut b"fixture".as_slice()).unwrap();
+        store.prepare_update(&e, &v, plan(), 20).unwrap();
+        let original = renewal_records(&store);
+        let mut fresh = r.clone();
+        fresh.sequence += 1;
+        fresh.issued_at = r.expires_at + 1;
+        fresh.expires_at = fresh.issued_at + 60;
+        let envelope = seal(&k, &fresh);
+        let mut proof = store.verify(&envelope, fresh.issued_at).unwrap();
+        proof.verify_artifact(&mut b"fixture".as_slice()).unwrap();
+        assert!(store.verify_for_preparation(&e, fresh.issued_at).is_err());
+        store
+            .renew_prepared_update("update-1", 2, &envelope, &proof, fresh.issued_at)
+            .unwrap();
+        let previous: Record = serde_json::from_slice(&original.last().unwrap().1).unwrap();
+        for change in 0..3 {
+            let mut forged = store.current.clone();
+            match change {
+                0 => {
+                    let UpdateEvent::RenewPrepared(ref mut renewal) =
+                        forged.update_event.as_mut().unwrap()
+                    else {
+                        panic!("renewal expected")
+                    };
+                    let mut e: Envelope = serde_json::from_str(&renewal.envelope).unwrap();
+                    e.signature = "00".repeat(64);
+                    renewal.envelope = serde_json::to_string(&e).unwrap();
+                    forged.intent = Some((**renewal).clone());
+                }
+                1 => forged.policy.minimum_sequence -= 1,
+                _ => forged.revoked_keys.push("f".repeat(64)),
+            }
+            assert!(transition(&previous, &forged).is_err());
+        }
+        assert_eq!(store.receipt().generation, 3);
+        assert_eq!(store.receipt().minimum_sequence, 3);
+        assert_eq!(store.intent().unwrap().update.plan(), &plan());
+        assert_eq!(
+            store.intent().unwrap().update.stage(),
+            crate::update::Stage::Prepared
+        );
+        assert_eq!(
+            &renewal_records(&store)[..original.len()],
+            original.as_slice()
+        );
+        drop(store);
+        let mut store = Store::open(&p, "default").unwrap();
+        assert_eq!(store.receipt().minimum_sequence, 3);
+        assert_eq!(
+            store
+                .verify_for_preparation(&envelope, fresh.issued_at + 1)
+                .unwrap()
+                .release
+                .sequence,
+            3
+        );
+        assert_eq!(
+            store.intent().unwrap().envelope,
+            std::str::from_utf8(&envelope).unwrap()
+        );
+        assert!(
+            store
+                .verify_for_preparation(&e, fresh.issued_at + 1)
+                .is_err()
+        );
+        store
+            .discard_prepared("update-1", 3, fresh.issued_at + 1)
+            .unwrap();
+        assert_eq!(
+            store
+                .prepare_update(&envelope, &proof, plan(), fresh.issued_at + 2)
+                .unwrap_err(),
+            Error::TrustIdentityReused
+        );
+        drop(store);
+        fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+    #[test]
+    fn prepared_renewal_refuses_changed_release_stale_owner_and_missing_artifact_proof() {
+        let (p, k, policy, r) = fixture();
+        let e = seal(&k, &r);
+        let mut store = Store::provision(&p, "default", policy, 10).unwrap();
+        let mut v = store.verify(&e, 20).unwrap();
+        v.verify_artifact(&mut b"fixture".as_slice()).unwrap();
+        store.prepare_update(&e, &v, plan(), 20).unwrap();
+        let head = store.current_sha256.clone();
+        for change in 0..5 {
+            let mut fresh = r.clone();
+            fresh.sequence += 1;
+            fresh.issued_at += 1;
+            fresh.expires_at += 60;
+            match change {
+                0 => fresh.version.push_str("-different"),
+                1 => fresh.artifact.name.push_str("-different"),
+                2 => fresh.source_schemas.push("f".repeat(64)),
+                _ => (),
+            };
+            let envelope = seal(&k, &fresh);
+            let mut proof = store.verify(&envelope, 21).unwrap();
+            if change != 3 {
+                proof.verify_artifact(&mut b"fixture".as_slice()).unwrap();
+            }
+            let expected = if change == 4 { 1 } else { 2 };
+            assert!(
+                store
+                    .renew_prepared_update("update-1", expected, &envelope, &proof, 21)
+                    .is_err()
+            );
+            assert_eq!(store.current_sha256, head);
+            assert_eq!(renewal_records(&store).len(), 2);
+        }
+        drop(store);
+        fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+    #[test]
+    fn renewal_cannot_change_applying_or_recovery_intent() {
+        let (p, k, policy, r) = fixture();
+        let e = seal(&k, &r);
+        let mut store = Store::provision(&p, "default", policy, 10).unwrap();
+        let mut v = store.verify(&e, 20).unwrap();
+        v.verify_artifact(&mut b"fixture".as_slice()).unwrap();
+        store.prepare_update(&e, &v, plan(), 20).unwrap();
+        store.begin_update(observations(), &v, 21).unwrap();
+        let mut fresh = r.clone();
+        fresh.sequence += 1;
+        fresh.issued_at += 2;
+        fresh.expires_at += 60;
+        let envelope = seal(&k, &fresh);
+        let mut proof = store.verify(&envelope, 22).unwrap();
+        proof.verify_artifact(&mut b"fixture".as_slice()).unwrap();
+        assert_eq!(
+            store
+                .renew_prepared_update("update-1", 3, &envelope, &proof, 22)
+                .unwrap_err(),
+            Error::TrustOperationBusy
+        );
+        store.update_failed("update-1", 3, 22).unwrap();
+        let head = store.current_sha256.clone();
+        assert_eq!(
+            store
+                .renew_prepared_update("update-1", 4, &envelope, &proof, 23)
+                .unwrap_err(),
+            Error::TrustOperationBusy
+        );
+        assert_eq!(store.current_sha256, head);
+        drop(store);
+        fs::remove_dir_all(p.parent().unwrap()).unwrap();
     }
     #[test]
     fn exact_already_accepted_release_can_prepare_without_lowering_or_reaccepting() {

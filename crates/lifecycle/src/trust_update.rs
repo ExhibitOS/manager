@@ -12,6 +12,7 @@ use crate::update::{HealthReceipt, RestoreReceipt, Stage};
 )]
 pub(super) enum UpdateEvent {
     Begin(Box<crate::update::Preflight>),
+    RenewPrepared(Box<UpdateIntent>),
     ApplicationFinished,
     Health(Box<HealthReceipt>),
     UpdateFailed,
@@ -40,6 +41,10 @@ pub(super) fn evolve(
     let mut next = intent.clone();
     let core = &mut next.update;
     let result = match event {
+        UpdateEvent::RenewPrepared(renewed) => {
+            validate_prepared_renewal(intent, renewed)?;
+            return Ok(Some((**renewed).clone()));
+        }
         UpdateEvent::Begin(e) => core.begin_update((**e).clone()),
         UpdateEvent::ApplicationFinished => core.application_finished(),
         UpdateEvent::Health(e) => core.observe_health((**e).clone()),
@@ -70,6 +75,44 @@ pub(super) fn evolve(
     };
     result.map_err(|_| Error::PlanMismatch)?;
     Ok(Some(next))
+}
+
+pub(super) fn validate_prepared_renewal(
+    old: &UpdateIntent,
+    next: &UpdateIntent,
+) -> Result<(), Error> {
+    if old.update.stage() != Stage::Prepared
+        || next.update.stage() != Stage::Prepared
+        || serde_json::to_vec(&old.update).map_err(|_| invalid())?
+            != serde_json::to_vec(&next.update).map_err(|_| invalid())?
+    {
+        return Err(Error::PlanMismatch);
+    }
+    old.validate()?;
+    next.validate()?;
+    let release = |i: &UpdateIntent| -> Result<Release, Error> {
+        let e: Envelope = serde_json::from_str(&i.envelope).map_err(|_| invalid())?;
+        serde_json::from_str(&e.payload).map_err(|_| invalid())
+    };
+    let old_release = release(old)?;
+    let mut new_release = release(next)?;
+    if new_release.sequence <= old_release.sequence
+        || new_release.issued_at < old_release.issued_at
+        || new_release.expires_at <= old_release.expires_at
+    {
+        return Err(Error::Replay);
+    }
+    // Everything except sequence/time/signature must remain byte-equivalent in
+    // the closed release schema, including exact artifact and source schemas.
+    new_release.sequence = old_release.sequence;
+    new_release.issued_at = old_release.issued_at;
+    new_release.expires_at = old_release.expires_at;
+    if serde_json::to_vec(&new_release).map_err(|_| invalid())?
+        != serde_json::to_vec(&old_release).map_err(|_| invalid())?
+    {
+        return Err(Error::PlanMismatch);
+    }
+    Ok(())
 }
 
 fn new_intent<'a>(old: Option<&Record>, next: &'a Record) -> Option<&'a UpdateIntent> {
