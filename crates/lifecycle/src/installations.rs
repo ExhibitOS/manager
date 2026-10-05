@@ -161,23 +161,84 @@ pub(crate) fn save(profile: &Path, registry: &Registry, previous: Option<&[u8]>)
     if fs2::available_space(profile).map_err(|_| err("STORAGE_UNAVAILABLE"))? < 256 * 1024 {
         return Err(err("STORAGE_QUOTA"));
     }
-    if let Some(bytes) = previous {
-        let history = profile.join("selection-history");
-        match fs::symlink_metadata(&history) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => new_directory(&history)?,
-            Ok(_) => private_directory(&history)?,
-            Err(_) => return Err(err("STATE_UNAVAILABLE")),
-        }
-        let name = format!("{}-{}-{}.json", now(), Uuid::new_v4(), digest(bytes));
-        write_private_new(&history, &name, bytes, 64 * 1024)?;
-        File::open(&history)
-            .and_then(|f| f.sync_all())
-            .map_err(|_| err("STATE_UNAVAILABLE"))?;
+    #[cfg(windows)]
+    {
+        save_windows(profile, registry, previous)
     }
-    write_json(profile, "installation-selection.json", registry)?;
-    File::open(profile)
-        .and_then(|f| f.sync_all())
-        .map_err(|_| err("INSTALLATION_SELECTION_UNCERTAIN"))
+    #[cfg(not(windows))]
+    {
+        if let Some(bytes) = previous {
+            let history = profile.join("selection-history");
+            match fs::symlink_metadata(&history) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => new_directory(&history)?,
+                Ok(_) => private_directory(&history)?,
+                Err(_) => return Err(err("STATE_UNAVAILABLE")),
+            }
+            let name = format!("{}-{}-{}.json", now(), Uuid::new_v4(), digest(bytes));
+            write_private_new(&history, &name, bytes, 64 * 1024)?;
+            File::open(&history)
+                .and_then(|f| f.sync_all())
+                .map_err(|_| err("STATE_UNAVAILABLE"))?;
+        }
+        write_json(profile, "installation-selection.json", registry)?;
+        File::open(profile)
+            .and_then(|f| f.sync_all())
+            .map_err(|_| err("INSTALLATION_SELECTION_UNCERTAIN"))
+    }
+}
+/// Native private publication plus exact bounded readback. This is not a
+/// directory/power-loss durability attestation; Windows GUI enablement is separate.
+#[cfg(windows)]
+fn save_windows(profile: &Path, registry: &Registry, previous: Option<&[u8]>) -> Result<()> {
+    use super::windows_private::PrivateDirectory;
+    let directory = PrivateDirectory::inspect(profile)?;
+    let payload = serde_json::to_vec(registry).map_err(|_| err("STATE_INVALID"))?;
+    if payload.len() > 64 * 1024 {
+        return Err(err("INSTALLATION_SELECTION_LIMIT"));
+    }
+    let destination = directory.path().join("installation-selection.json");
+    let existing = match fs::symlink_metadata(&destination) {
+        Ok(_) => Some(source_bytes(
+            directory.path(),
+            "installation-selection.json",
+            64 * 1024,
+            true,
+        )?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err(err("INSTALLATION_SELECTION_INVALID")),
+    };
+    if existing.as_deref() != previous {
+        return Err(err("INSTALLATION_SELECTION_CHANGED"));
+    }
+    if let Some(bytes) = previous {
+        let history_path = directory.path().join("selection-history");
+        let history = match fs::symlink_metadata(&history_path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                PrivateDirectory::create(&history_path)?
+            }
+            Ok(_) => PrivateDirectory::inspect(&history_path)?,
+            Err(_) => return Err(err("STATE_UNAVAILABLE")),
+        };
+        let name = format!("{}-{}-{}.json", now(), Uuid::new_v4(), digest(bytes));
+        let record = history.write_new_record(&name, bytes, 64 * 1024)?;
+        record.check()?;
+        history.check()?;
+    }
+    directory.check()?;
+    write_json(directory.path(), "installation-selection.json", registry)?;
+    // After publication, read failure or different bytes are uncertain; preserve
+    // candidates/history/current selection and never retry publication blindly.
+    let readback = source_bytes(
+        directory.path(),
+        "installation-selection.json",
+        64 * 1024,
+        true,
+    )
+    .map_err(|_| err("INSTALLATION_SELECTION_UNCERTAIN"))?;
+    if readback != payload || directory.check().is_err() {
+        return Err(err("INSTALLATION_SELECTION_UNCERTAIN"));
+    }
+    Ok(())
 }
 fn selected(profile: &Path, entry: Entry) -> Selected {
     let path = root(profile, &entry);
@@ -222,6 +283,11 @@ impl InstallationController {
         if cfg!(windows) {
             return Self::pinned(profile.join("local-runtime"), "platform-unverified");
         }
+        Self::managed(profile)
+    }
+    // Qualified directly by native fixtures before switching the Windows GUI
+    // default away from its existing pinned mode.
+    fn managed(profile: PathBuf) -> Result<Self> {
         let parent = profile
             .parent()
             .ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
@@ -234,10 +300,16 @@ impl InstallationController {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return Err(err("STATE_UNAVAILABLE")),
         }
+        #[cfg(windows)]
+        let _parent = super::windows_private::PrivateDirectory::ensure_tree(parent)?;
+        #[cfg(not(windows))]
         fs::create_dir_all(parent).map_err(|_| err("STATE_UNAVAILABLE"))?;
         let (profile, anchor) = super::profile_backup::anchor_lock(&profile, false)?;
         match fs::symlink_metadata(&profile) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                #[cfg(windows)]
+                new_directory(&profile)?;
+                #[cfg(not(windows))]
                 fs::create_dir_all(&profile).map_err(|_| err("STATE_UNAVAILABLE"))?;
                 #[cfg(unix)]
                 {
@@ -1423,5 +1495,214 @@ mod tests {
             .unwrap();
         assert_eq!(restored.active_id, first.active_id);
         assert!(profile.join("installations").join(new.active_id).is_dir());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_managed_tests {
+    use super::*;
+    use crate::windows_private::PrivateDirectory;
+
+    fn fresh() -> PrivateDirectory {
+        let parent = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap());
+        PrivateDirectory::create(
+            &parent.join(format!("exhibitos-managed-native-test-{}", Uuid::new_v4())),
+        )
+        .unwrap()
+    }
+    // Only successful synthetic fixtures are removed; failures retain their
+    // records/candidates. Drop every native namespace fence before removal.
+    fn cleanup(parent: PrivateDirectory) {
+        parent.check().unwrap();
+        let path = parent.path().to_owned();
+        assert!(
+            path.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("exhibitos-managed-native-test-")
+        );
+        drop(parent);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn windows_managed_registry_reopens_private_selection_and_preserves_history() {
+        let parent = fresh();
+        let path = parent.path().join("profile");
+        let controller = InstallationController::managed(path.clone()).unwrap();
+        let first = controller.context().unwrap();
+        assert_eq!(first.mode, "managed");
+        assert_eq!(first.installations.len(), 1);
+        assert!(first.installations[0].available);
+        let original_root = PathBuf::from(&first.installations[0].path);
+        write_private_new(&original_root, "operator-witness", b"synthetic-only", 1024).unwrap();
+        let profile = controller.profile.as_ref().unwrap();
+        let prior = source_bytes(
+            &profile.root,
+            "installation-selection.json",
+            64 * 1024,
+            true,
+        )
+        .unwrap();
+        let created = controller.create(&first.selection_token, true).unwrap();
+        assert_ne!(created.active_id, first.active_id);
+        assert_ne!(created.selection_token, first.selection_token);
+        assert_eq!(created.installations.len(), 2);
+        assert_eq!(
+            source_bytes(&original_root, "operator-witness", 1024, true).unwrap(),
+            b"synthetic-only"
+        );
+        let history = PrivateDirectory::inspect(&profile.root.join("selection-history")).unwrap();
+        let names: Vec<_> = fs::read_dir(history.path())
+            .unwrap()
+            .map(|v| v.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 1);
+        assert_eq!(
+            history
+                .read_record(names[0].to_str().unwrap())
+                .unwrap()
+                .read_bounded(64 * 1024)
+                .unwrap(),
+            prior
+        );
+        drop(history);
+        assert_eq!(
+            controller
+                .with_current(&first.selection_token, |_| Ok(()))
+                .unwrap_err()
+                .code,
+            "INSTALLATION_SELECTION_CHANGED"
+        );
+        drop(controller);
+        let reopened = InstallationController::managed(path).unwrap();
+        let context = reopened.context().unwrap();
+        assert_eq!(context.active_id, created.active_id);
+        assert_eq!(context.installations.len(), 2);
+        assert!(context.installations.iter().all(|v| v.available));
+        let selected = reopened
+            .select(&context.selection_token, &first.active_id, true)
+            .unwrap();
+        assert_eq!(selected.active_id, first.active_id);
+        assert_eq!(
+            source_bytes(&original_root, "operator-witness", 1024, true).unwrap(),
+            b"synthetic-only"
+        );
+        drop(reopened);
+        cleanup(parent);
+    }
+    #[test]
+    fn windows_managed_two_controllers_share_anchor_and_merge_without_silent_switch() {
+        let parent = fresh();
+        let path = parent.path().join("profile");
+        let one = InstallationController::managed(path.clone()).unwrap();
+        let two = InstallationController::managed(path.clone()).unwrap();
+        let first = one.context().unwrap();
+        let other = two.context().unwrap();
+        assert_eq!(first.active_id, other.active_id);
+        assert_eq!(
+            crate::profile_backup::session_lock(&path.canonicalize().unwrap(), true)
+                .err()
+                .unwrap()
+                .code,
+            "PROFILE_BUSY"
+        );
+        let added_one = one.create(&first.selection_token, true).unwrap();
+        let same_two = two.context().unwrap();
+        assert_eq!(same_two.active_id, other.active_id);
+        assert_eq!(same_two.selection_token, other.selection_token);
+        assert_eq!(same_two.installations.len(), 2);
+        let added_two = two.create(&other.selection_token, true).unwrap();
+        assert_ne!(added_one.active_id, added_two.active_id);
+        let still_one = one.context().unwrap();
+        assert_eq!(still_one.active_id, added_one.active_id);
+        assert_eq!(still_one.installations.len(), 3);
+        drop(one);
+        assert_eq!(
+            crate::profile_backup::session_lock(&path.canonicalize().unwrap(), true)
+                .err()
+                .unwrap()
+                .code,
+            "PROFILE_BUSY"
+        );
+        drop(two);
+        drop(crate::profile_backup::session_lock(&path.canonicalize().unwrap(), true).unwrap());
+        let reopened = InstallationController::managed(path).unwrap();
+        assert_eq!(reopened.context().unwrap().active_id, added_two.active_id);
+        drop(reopened);
+        cleanup(parent);
+    }
+    #[test]
+    fn windows_managed_publication_refusal_keeps_pointer_current_binding_and_candidates() {
+        let parent = fresh();
+        let path = parent.path().join("profile");
+        let controller = InstallationController::managed(path.clone()).unwrap();
+        let first = controller.context().unwrap();
+        let directory = PrivateDirectory::inspect(&path.canonicalize().unwrap()).unwrap();
+        let mut held = directory
+            .read_record("installation-selection.json")
+            .unwrap();
+        let before = held.read_bounded(64 * 1024).unwrap();
+        assert_eq!(
+            controller
+                .create(&first.selection_token, true)
+                .err()
+                .unwrap()
+                .code,
+            "WINDOWS_PROFILE_PUBLICATION_REFUSED"
+        );
+        assert_eq!(
+            fs::read(directory.path().join("installation-selection.json")).unwrap(),
+            before
+        );
+        drop(held);
+        let unchanged = controller.context().unwrap();
+        assert_eq!(unchanged.active_id, first.active_id);
+        assert_eq!(unchanged.selection_token, first.selection_token);
+        assert_eq!(unchanged.installations.len(), 1);
+        // Failed publication keeps the distinct unregistered candidate and
+        // immutable old-pointer history; no adoption, retry or deletion.
+        assert_eq!(
+            fs::read_dir(directory.path().join("installations"))
+                .unwrap()
+                .count(),
+            1
+        );
+        let (registry, prior) = load(directory.path()).unwrap().unwrap();
+        assert_eq!(
+            save(directory.path(), &registry, Some(b"wrong previous bytes"))
+                .unwrap_err()
+                .code,
+            "INSTALLATION_SELECTION_CHANGED"
+        );
+        assert_eq!(
+            source_bytes(
+                directory.path(),
+                "installation-selection.json",
+                64 * 1024,
+                true
+            )
+            .unwrap(),
+            prior
+        );
+        drop(directory);
+        drop(controller);
+        cleanup(parent);
+    }
+    #[test]
+    fn windows_managed_refuses_unprotected_existing_profile_without_acl_adoption() {
+        let parent = fresh();
+        let path = parent.path().join("unprotected-profile");
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("operator-witness"), b"synthetic-existing").unwrap();
+        assert!(PrivateDirectory::inspect(&path).is_err());
+        assert!(InstallationController::managed(path.clone()).is_err());
+        assert!(PrivateDirectory::inspect(&path).is_err());
+        assert_eq!(
+            fs::read(path.join("operator-witness")).unwrap(),
+            b"synthetic-existing"
+        );
+        assert!(!path.join("installation-selection.json").exists());
+        cleanup(parent);
     }
 }
