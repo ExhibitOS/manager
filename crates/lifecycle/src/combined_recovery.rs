@@ -14,6 +14,7 @@ pub struct CombinedRecoveryReceipt {
     pub candidate: EphemeralCandidateRecoveryReceipt,
     pub source_after: EphemeralSourceRecoveryReceipt,
     pub checkpoint: crate::signed_release::trust::CheckpointPairReceipt,
+    pub host: crate::profile_backup::HostCurrentReceipt,
     pub preflight_verified: bool,
     pub update_executed: bool,
 }
@@ -64,6 +65,13 @@ impl ExecutionSession<'_> {
                 inputs.trust,
                 inputs.key,
             )?;
+            let host = crate::profile_backup::verify_host_current_borrowed(
+                &self.store.profile,
+                inputs.host,
+                inputs.key,
+                &self._session,
+                &proof.receipt().host_manifest_sha256,
+            )?;
             let source_before = self.observe_source_recovery_at(ctx, image, export_parent)?;
             let candidate =
                 self.observe_ephemeral_candidate_recovery_at(ctx, image, export_parent)?;
@@ -72,6 +80,16 @@ impl ExecutionSession<'_> {
                 return Err(crate::err("UPDATE_SOURCE_CHANGED"));
             }
             self.recheck_candidate_configuration_at(ctx, image, &candidate.configuration)?;
+            let host_after = crate::profile_backup::verify_host_current_borrowed(
+                &self.store.profile,
+                inputs.host,
+                inputs.key,
+                &self._session,
+                &proof.receipt().host_manifest_sha256,
+            )?;
+            if host != host_after {
+                return Err(crate::err("HOST_SOURCE_CHANGED"));
+            }
             self.store.recheck_checkpoint_pair(
                 &proof,
                 inputs.binding,
@@ -84,6 +102,7 @@ impl ExecutionSession<'_> {
                 candidate,
                 source_after,
                 checkpoint: proof.receipt(),
+                host,
                 preflight_verified: false,
                 update_executed: false,
             })

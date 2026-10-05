@@ -4,6 +4,10 @@
 use super::*;
 use std::collections::BTreeSet;
 use std::io::Cursor;
+#[path = "host_current_inventory.rs"]
+mod current_inventory;
+pub use current_inventory::HostCurrentReceipt;
+pub(crate) use current_inventory::verify_host_current_borrowed;
 const CONTEXT: &[u8] = b"ExhibitOS-host-checkpoint-v1\0";
 const DATA_LIMIT: u64 = 64 * 1024 * 1024 * 1024;
 const MANIFEST_LIMIT: u64 = 8 * 1024 * 1024;
@@ -841,8 +845,8 @@ mod tests {
     use crate::installations::InstallationController;
     // Own only the fresh synthetic root. Successful tests retire it; a panic or
     // changed root preserves the fixture for diagnosis. Never scan old temp data.
-    struct FixtureRoot {
-        path: PathBuf,
+    pub(super) struct FixtureRoot {
+        pub(super) path: PathBuf,
         held: File,
     }
     impl FixtureRoot {
@@ -886,7 +890,7 @@ mod tests {
             }
         }
     }
-    fn fixture() -> (FixtureRoot, PathBuf, PathBuf, PathBuf) {
+    pub(super) fn fixture() -> (FixtureRoot, PathBuf, PathBuf, PathBuf) {
         let root = FixtureRoot::new();
         let p = root.path.join("source");
         let c = InstallationController::new(p.clone(), None).unwrap();
