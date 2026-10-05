@@ -121,13 +121,30 @@ def main():
     after = census(args.profile)
     require(all(after.get(name) == value for name, value in files.items()),
             'old source bytes/modes changed')
-    require(containers() == old_containers and
-            sorted(engine('volume', 'ls', '-q').split()) == old_volumes,
-            'Engine containers/volume inventory changed')
+    require(containers() == old_containers, 'old container states changed')
+    current_volumes = set(engine('volume', 'ls', '-q').split())
+    # The current source inventory adapter retains both copied DB snapshots per
+    # observation. They are explicit evidence, not missing cleanup or originals.
+    snapshots = {item[field] for item in (first, last)
+                 for field in ('snapshotVolume', 'repeatedSnapshotVolume')}
+    require(len(snapshots) == 4 and not snapshots.intersection(old_volumes),
+            'snapshot identities not fresh and distinct')
+    require(current_volumes == set(old_volumes) | snapshots,
+            'old volume removed or unexpected new volume')
+    for name in snapshots:
+        require(name.startswith('exhibitos-source-db-copy-'), 'invalid snapshot namespace')
+        value = json.loads(engine('volume', 'inspect', name))[0]
+        require(value['Name'] == name and value['Driver'] == 'local' and
+                value['Options'] is None and
+                value['Labels']['com.exhibitos.source.database'] ==
+                name.removeprefix('exhibitos-source-db-copy-'),
+                'snapshot Engine identity mismatch')
     report = {'format': 1, 'passed': True, 'cliSha256': digest(args.cli),
               'requiredBeforeBytes': budget, 'availableBeforeBytes': available,
               'originalFilesPreserved': len(files), 'oldBytesModesPreserved': True,
-              'intentTrustPreserved': True, 'containerStatesVolumeNamesPreserved': True,
+              'intentTrustPreserved': True, 'oldContainerStatesVolumeNamesPreserved': True,
+              'retainedFreshDatabaseSnapshotVolumes': sorted(snapshots),
+              'databaseSnapshotRetirementImplemented': False,
               'freshImageBytesRetired': sum(i['bytes'] for i in config['images']),
               'retainedMarkerBytes': (workspace / 'verified-images.json').stat().st_size,
               'observation': observation, 'fullCheckpointRoundTripExecuted': False,
