@@ -19,7 +19,10 @@ pub struct CombinedRecoveryReceipt {
     pub preflight_verified: bool,
     pub update_executed: bool,
 }
-fn same_source(a: &EphemeralSourceRecoveryReceipt, b: &EphemeralSourceRecoveryReceipt) -> bool {
+pub(super) fn same_source(
+    a: &EphemeralSourceRecoveryReceipt,
+    b: &EphemeralSourceRecoveryReceipt,
+) -> bool {
     candidate_inventory::copies_match(&a.observation.physical, &b.observation.physical)
         && candidate_inventory::copies_match(
             &a.repeated_observation.physical,

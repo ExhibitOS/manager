@@ -424,23 +424,12 @@ fn validate_proof(v: &Value, p: &crate::update::Plan) -> Result<()> {
     source_inventory::matched_candidate(&inventory, p)
 }
 impl ExecutionSession<'_> {
-    /// No caller-supplied success flags, plan, image override, journal transition or activation.
-    pub fn with_runtime_compatibility<T>(
+    pub(super) fn qualify_runtime_artifact(
         &self,
         artifact: &mut PreparedArtifact,
         python: &Path,
         source_commit: &str,
-        maintenance: &str,
-        acknowledged: bool,
-        work: impl FnOnce(&RuntimeCompatibility) -> Result<T>,
-    ) -> Result<T> {
-        if !acknowledged {
-            return Err(err("BACKUP_OPERATOR_ACK_REQUIRED"));
-        }
-        if !maintenance.strip_prefix("sha256:").is_some_and(hash_valid) {
-            return Err(err("BACKUP_IMAGE_INVALID"));
-        }
-        // This bounded initial development observer supports unchanged-schema releases only.
+    ) -> Result<PreparedOciReceipt> {
         self.reverify_prepared_artifact(artifact)?;
         if artifact.plan.source_schema != artifact.plan.target_schema {
             return Err(err("UPDATE_RUNTIME_MIGRATION_UNQUALIFIED"));
@@ -458,38 +447,107 @@ impl ExecutionSession<'_> {
         {
             return Err(err("IMAGE_INTEGRITY"));
         }
+        Ok(oci)
+    }
+    pub(super) fn observe_runtime_at(
+        &self,
+        artifact: &mut PreparedArtifact,
+        ctx: &candidate_inventory::CandidateContext<'_>,
+        maintenance: &str,
+        oci: &PreparedOciReceipt,
+    ) -> Result<Value> {
+        self.reverify_prepared_artifact(artifact)?;
+        if crate::backup_creation::local_image("docker", maintenance)? != maintenance {
+            return Err(err("IMAGE_INTEGRITY"));
+        }
+        let files = source_deployment::authenticated_files(
+            &self.source.root,
+            ctx.workspace,
+            ctx.receipt,
+            ctx.plan,
+        )?;
+        let env = crate::installation_backup::source_bytes(ctx.root, "runtime.env", 8192, true)?;
+        let expected = source_configuration::expected(ctx.raw)?;
+        let key = source_configuration::observe(
+            maintenance,
+            &ctx.candidate_before.configuration_volume,
+            &expected,
+        )?;
+        let source = ephemeral_inventory::observe_source(ctx, maintenance)?;
+        let candidate = ephemeral_inventory::observe(ctx, maintenance)?;
+        let proof = run_probe(ctx, maintenance, &candidate.physical)?;
+        let candidate_after = ephemeral_inventory::observe(ctx, maintenance)?;
+        let source_after = ephemeral_inventory::observe_source(ctx, maintenance)?;
+        if !candidate_inventory::copies_match(&source.physical, &source_after.physical)
+            || !candidate_inventory::copies_match(&candidate.physical, &candidate_after.physical)
+            || files
+                != source_deployment::authenticated_files(
+                    &self.source.root,
+                    ctx.workspace,
+                    ctx.receipt,
+                    ctx.plan,
+                )?
+            || env != crate::installation_backup::source_bytes(ctx.root, "runtime.env", 8192, true)?
+            || key
+                != source_configuration::observe(
+                    maintenance,
+                    &ctx.candidate_before.configuration_volume,
+                    &expected,
+                )?
+        {
+            return Err(err("UPDATE_SOURCE_CHANGED"));
+        }
+        Ok(
+            serde_json::json!({"sourceBefore":source,"candidateBefore":candidate,"runtime":proof,"candidateAfter":candidate_after,"sourceAfter":source_after,"oci":oci,"preflightVerified":false,"updateExecuted":false,"imageOnlyRollbackVerified":false}),
+        )
+    }
+    /// No caller-supplied success flags, plan, image override, journal transition or activation.
+    pub fn with_runtime_compatibility<T>(
+        &self,
+        artifact: &mut PreparedArtifact,
+        python: &Path,
+        source_commit: &str,
+        maintenance: &str,
+        acknowledged: bool,
+        work: impl FnOnce(&RuntimeCompatibility) -> Result<T>,
+    ) -> Result<T> {
+        if !acknowledged {
+            return Err(err("BACKUP_OPERATOR_ACK_REQUIRED"));
+        }
+        if !maintenance.strip_prefix("sha256:").is_some_and(hash_valid) {
+            return Err(err("BACKUP_IMAGE_INVALID"));
+        }
+        // This bounded initial development observer supports unchanged-schema releases only.
+        let oci = self.qualify_runtime_artifact(artifact, python, source_commit)?;
         let artifact_cell = std::cell::RefCell::new(&mut *artifact);
         let mut outcome = None;
-        self.inspect_restored_candidate_finalized(true,|ctx| {
-            self.reverify_prepared_artifact(&mut artifact_cell.borrow_mut())?;
-            if crate::backup_creation::local_image("docker",maintenance)?!=maintenance {return Err(err("IMAGE_INTEGRITY"));}
-            let files=source_deployment::authenticated_files(&self.source.root,ctx.workspace,ctx.receipt,ctx.plan)?;
-            let env=crate::installation_backup::source_bytes(ctx.root,"runtime.env",8192,true)?;
-            let expected=source_configuration::expected(ctx.raw)?;
-            let key=source_configuration::observe(maintenance,&ctx.candidate_before.configuration_volume,&expected)?;
-            let source=ephemeral_inventory::observe_source(ctx,maintenance)?;
-            let candidate=ephemeral_inventory::observe(ctx,maintenance)?;
-            let proof=run_probe(ctx,maintenance,&candidate.physical)?;
-            let candidate_after=ephemeral_inventory::observe(ctx,maintenance)?;
-            let source_after=ephemeral_inventory::observe_source(ctx,maintenance)?;
-            if !candidate_inventory::copies_match(&source.physical,&source_after.physical) || !candidate_inventory::copies_match(&candidate.physical,&candidate_after.physical)
-                || files!=source_deployment::authenticated_files(&self.source.root,ctx.workspace,ctx.receipt,ctx.plan)?
-                || env!=crate::installation_backup::source_bytes(ctx.root,"runtime.env",8192,true)?
-                || key!=source_configuration::observe(maintenance,&ctx.candidate_before.configuration_volume,&expected)? {return Err(err("UPDATE_SOURCE_CHANGED"));}
-            Ok(serde_json::json!({"sourceBefore":source,"candidateBefore":candidate,"runtime":proof,"candidateAfter":candidate_after,"sourceAfter":source_after,"oci":oci,"preflightVerified":false,"updateExecuted":false,"imageOnlyRollbackVerified":false}))
-        },|ctx,receipt|{
-            self.reverify_prepared_artifact(&mut artifact_cell.borrow_mut())?;
-            let held=artifact_cell.borrow();
-            receipt["operationId"]=serde_json::json!(held.plan.operation_id);
-            receipt["trustGeneration"]=serde_json::json!(held.generation);
-            let proof=RuntimeCompatibility{plan:held.plan.clone(),generation:held.generation,envelope:held.envelope.clone(),receipt:receipt.clone()};
-            if proof.plan != *ctx.plan || proof.generation != held.generation || proof.envelope != held.envelope {return Err(err("UPDATE_RUNTIME_PROOF_STALE"));}
-            drop(held);
-            // Borrowed opaque proof cannot outlive this callback or either operation lock.
-            outcome=Some(work(&proof)?);
-            self.reverify_prepared_artifact(&mut artifact_cell.borrow_mut())?;
-            Ok(())
-        })?;
+        self.inspect_restored_candidate_finalized(
+            true,
+            |ctx| self.observe_runtime_at(&mut artifact_cell.borrow_mut(), ctx, maintenance, &oci),
+            |ctx, receipt| {
+                self.reverify_prepared_artifact(&mut artifact_cell.borrow_mut())?;
+                let held = artifact_cell.borrow();
+                receipt["operationId"] = serde_json::json!(held.plan.operation_id);
+                receipt["trustGeneration"] = serde_json::json!(held.generation);
+                let proof = RuntimeCompatibility {
+                    plan: held.plan.clone(),
+                    generation: held.generation,
+                    envelope: held.envelope.clone(),
+                    receipt: receipt.clone(),
+                };
+                if proof.plan != *ctx.plan
+                    || proof.generation != held.generation
+                    || proof.envelope != held.envelope
+                {
+                    return Err(err("UPDATE_RUNTIME_PROOF_STALE"));
+                }
+                drop(held);
+                // Borrowed opaque proof cannot outlive this callback or either operation lock.
+                outcome = Some(work(&proof)?);
+                self.reverify_prepared_artifact(&mut artifact_cell.borrow_mut())?;
+                Ok(())
+            },
+        )?;
         outcome.ok_or_else(|| err("UPDATE_RUNTIME_PROBE_FAILED"))
     }
     /// Diagnostic receipt only; the typed proof is never exported after locks release.
