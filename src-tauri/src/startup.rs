@@ -10,6 +10,14 @@ pub struct Failure {
 impl Failure {
     pub fn from_code(code: &str) -> Self {
         let (code, guidance) = match code {
+            "MANAGER_PROFILE_INVALID" => (
+                "MANAGER_PROFILE_INVALID",
+                "관리 공간 검사 경로가 올바르지 않습니다. 새 검사 공간의 절대 경로를 지정하세요.",
+            ),
+            "MANAGER_PROFILE_OVERRIDE_CONFLICT" => (
+                "MANAGER_PROFILE_OVERRIDE_CONFLICT",
+                "관리 공간 검사와 고정 실행 공간을 동시에 지정했습니다. 검사할 공간 설정 하나만 선택하세요.",
+            ),
             "MANAGER_ROOT_INVALID" => (
                 "MANAGER_ROOT_INVALID",
                 "검사 공간 경로가 올바르지 않습니다. 절대 경로를 지정한 뒤 다시 실행하세요.",
@@ -131,9 +139,50 @@ pub fn override_root(root: Option<OsString>) -> Result<Option<PathBuf>, Failure>
     }
 }
 
+/// Opt-in managed-profile qualification uses the public default constructor,
+/// without opening the user's normal profile or changing the pinned override.
+pub fn managed_profile(
+    profile: Option<OsString>,
+    pinned: bool,
+) -> Result<Option<PathBuf>, Failure> {
+    let Some(profile) = profile else {
+        return Ok(None);
+    };
+    if pinned {
+        return Err(Failure::from_code("MANAGER_PROFILE_OVERRIDE_CONFLICT"));
+    }
+    let path = PathBuf::from(profile);
+    if !path.is_absolute() {
+        return Err(Failure::from_code("MANAGER_PROFILE_INVALID"));
+    }
+    Ok(Some(path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn managed_profile_override_uses_absolute_path_and_refuses_pinned_conflict() {
+        assert!(managed_profile(None, false).unwrap().is_none());
+        assert!(managed_profile(None, true).unwrap().is_none());
+        let path = std::env::temp_dir().join("synthetic-managed-profile");
+        assert_eq!(
+            managed_profile(Some(path.clone().into_os_string()), false).unwrap(),
+            Some(path.clone())
+        );
+        assert_eq!(
+            managed_profile(Some(path.into_os_string()), true)
+                .unwrap_err()
+                .code,
+            "MANAGER_PROFILE_OVERRIDE_CONFLICT"
+        );
+        for path in ["relative", ""] {
+            let failure = managed_profile(Some(path.into()), false).unwrap_err();
+            assert_eq!(failure.code, "MANAGER_PROFILE_INVALID");
+            assert!(!failure.message().contains("relative"));
+        }
+    }
+
     #[test]
     fn raw_errors_paths_and_secrets_never_enter_diagnostics() {
         for raw in [

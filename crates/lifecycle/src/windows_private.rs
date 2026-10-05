@@ -171,6 +171,17 @@ fn acl(file: &File, sid: &Sid, private: bool) -> Result<()> {
     acl_owner(file, sid, private, None)
 }
 /// Public input may use this token's default group owner, unlike private state.
+/// Ordinary OS-created parents may use this token's privileged default owner.
+/// Accept only SYSTEM/Administrators, never an arbitrary shared owner group.
+/// The current user's full grant and all nonprivileged-writer exclusions remain.
+fn parent_acl(file: &File, sid: &Sid) -> Result<()> {
+    let default_owner = Sid::default_owner()?;
+    let trusted_default = matches!(
+        Sid::text_ptr(default_owner.ptr())?.as_str(),
+        "S-1-5-18" | "S-1-5-32-544"
+    );
+    acl_owner(file, sid, false, trusted_default.then_some(&default_owner))
+}
 fn public_acl(file: &File, sid: &Sid) -> Result<()> {
     let default_owner = Sid::default_owner()?;
     acl_owner(file, sid, false, Some(&default_owner))
@@ -336,7 +347,7 @@ impl ParentDirectory {
             .ok_or_else(|| err("PROFILE_PATH_INVALID"))?
             .1;
         let sid = Sid::current()?;
-        acl(file, &sid, false)?;
+        parent_acl(file, &sid)?;
         let id = identity(file, true)?;
         let path = path
             .canonicalize()
@@ -364,7 +375,7 @@ impl ParentDirectory {
             .last()
             .ok_or_else(|| err("PROFILE_PATH_INVALID"))?
             .1;
-        acl(file, &self.sid, false)?;
+        parent_acl(file, &self.sid)?;
         if identity(&open(&self.path, true)?, true)? != self.id {
             return Err(err("WINDOWS_PROFILE_IDENTITY_INVALID"));
         }
@@ -458,7 +469,7 @@ impl PrivateDirectory {
         let path = parent_path.join(leaf);
         let parent = open(&parent_path, true)?;
         let sid = Sid::current()?;
-        acl(&parent, &sid, false)?;
+        parent_acl(&parent, &sid)?;
         let parent_id = identity(&parent, true)?;
         let sd = descriptor(&sid, true)?;
         let attributes = sec::SECURITY_ATTRIBUTES {
@@ -562,7 +573,7 @@ impl PrivateDirectory {
         let path = parent_path.join(leaf);
         let parent = open(&parent_path, true)?;
         let sid = Sid::current()?;
-        acl(&parent, &sid, false)?;
+        parent_acl(&parent, &sid)?;
         let parent_id = identity(&parent, true)?;
         // Open lexical leaf before canonicalizing: junctions cannot be silently resolved.
         let file = open(&path, true)?;
@@ -595,7 +606,7 @@ impl PrivateDirectory {
                 return Err(err("WINDOWS_PROFILE_IDENTITY_INVALID"));
             }
         }
-        acl(&self.parent, &self.sid, false)?;
+        parent_acl(&self.parent, &self.sid)?;
         acl(&self.file, &self.sid, true)?;
         if identity(&self.parent, true)? != self.parent_id
             || identity(&self.file, true)? != self.id

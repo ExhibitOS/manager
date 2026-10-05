@@ -614,10 +614,16 @@ pub fn run() {
     let result = tauri::Builder::default()
         .setup(|app| {
             let override_root = startup::override_root(std::env::var_os("EXHIBITOS_MANAGER_ROOT"))?;
-            let profile = app
-                .path()
-                .app_data_dir()
-                .map_err(|_| startup::Failure::from_code("MANAGER_DATA_PATH_UNAVAILABLE"))?;
+            let profile = match startup::managed_profile(
+                std::env::var_os("EXHIBITOS_MANAGER_PROFILE"),
+                override_root.is_some(),
+            )? {
+                Some(path) => path,
+                None => app
+                    .path()
+                    .app_data_dir()
+                    .map_err(|_| startup::Failure::from_code("MANAGER_DATA_PATH_UNAVAILABLE"))?,
+            };
             let controller = exhibitos_lifecycle::installations::InstallationController::new(
                 profile,
                 override_root,

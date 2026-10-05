@@ -280,13 +280,10 @@ impl InstallationController {
         if let Some(path) = override_root {
             return Self::pinned(path, "override");
         }
-        if cfg!(windows) {
-            return Self::pinned(profile.join("local-runtime"), "platform-unverified");
-        }
         Self::managed(profile)
     }
-    // Qualified directly by native fixtures before switching the Windows GUI
-    // default away from its existing pinned mode.
+    // Default profiles use the same guarded registry on Windows and Unix.
+    // Explicit root overrides retain their separate pinned mode.
     fn managed(profile: PathBuf) -> Result<Self> {
         let parent = profile
             .parent()
@@ -301,7 +298,14 @@ impl InstallationController {
             Err(_) => return Err(err("STATE_UNAVAILABLE")),
         }
         #[cfg(windows)]
-        let _parent = super::windows_private::PrivateDirectory::ensure_tree(parent)?;
+        let _parent = match fs::symlink_metadata(parent) {
+            Ok(_) => super::windows_private::ParentDirectory::inspect(parent)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let created = super::windows_private::PrivateDirectory::ensure_tree(parent)?;
+                super::windows_private::ParentDirectory::inspect(created.path())?
+            }
+            Err(_) => return Err(err("STATE_UNAVAILABLE")),
+        };
         #[cfg(not(windows))]
         fs::create_dir_all(parent).map_err(|_| err("STATE_UNAVAILABLE"))?;
         let (profile, anchor) = super::profile_backup::anchor_lock(&profile, false)?;
@@ -1526,10 +1530,40 @@ mod windows_managed_tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
+    fn windows_managed_public_default_uses_normal_parent_without_acl_adoption() {
+        let path = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
+            .join(format!("exhibitos-managed-native-test-{}", Uuid::new_v4()));
+        // Inherited ordinary AppData permissions: this parent is intentionally
+        // not an app-private root. Its namespace is validated, never repaired.
+        fs::create_dir(&path).unwrap();
+        assert!(PrivateDirectory::inspect(&path).is_err());
+        let parent = crate::windows_private::ParentDirectory::inspect(&path).unwrap();
+        let profile = path.join("manager-profile");
+        let controller = InstallationController::new(profile.clone(), None).unwrap();
+        let context = controller.context().unwrap();
+        assert_eq!(context.mode, "managed");
+        assert_eq!(context.installations.len(), 1);
+        assert!(
+            controller
+                .with_current(&context.selection_token, |service| service.status())
+                .is_ok()
+        );
+        let private = PrivateDirectory::inspect(&profile).unwrap();
+        private.check().unwrap();
+        // Opening the profile must not silently adopt its existing parent's ACL.
+        assert!(PrivateDirectory::inspect(&path).is_err());
+        drop(private);
+        drop(controller);
+        parent.check().unwrap();
+        drop(parent);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn windows_managed_registry_reopens_private_selection_and_preserves_history() {
         let parent = fresh();
         let path = parent.path().join("profile");
-        let controller = InstallationController::managed(path.clone()).unwrap();
+        let controller = InstallationController::new(path.clone(), None).unwrap();
         let first = controller.context().unwrap();
         assert_eq!(first.mode, "managed");
         assert_eq!(first.installations.len(), 1);
@@ -1575,7 +1609,7 @@ mod windows_managed_tests {
             "INSTALLATION_SELECTION_CHANGED"
         );
         drop(controller);
-        let reopened = InstallationController::managed(path).unwrap();
+        let reopened = InstallationController::new(path, None).unwrap();
         let context = reopened.context().unwrap();
         assert_eq!(context.active_id, created.active_id);
         assert_eq!(context.installations.len(), 2);
@@ -1595,8 +1629,8 @@ mod windows_managed_tests {
     fn windows_managed_two_controllers_share_anchor_and_merge_without_silent_switch() {
         let parent = fresh();
         let path = parent.path().join("profile");
-        let one = InstallationController::managed(path.clone()).unwrap();
-        let two = InstallationController::managed(path.clone()).unwrap();
+        let one = InstallationController::new(path.clone(), None).unwrap();
+        let two = InstallationController::new(path.clone(), None).unwrap();
         let first = one.context().unwrap();
         let other = two.context().unwrap();
         assert_eq!(first.active_id, other.active_id);
@@ -1627,7 +1661,7 @@ mod windows_managed_tests {
         );
         drop(two);
         drop(crate::profile_backup::session_lock(&path.canonicalize().unwrap(), true).unwrap());
-        let reopened = InstallationController::managed(path).unwrap();
+        let reopened = InstallationController::new(path, None).unwrap();
         assert_eq!(reopened.context().unwrap().active_id, added_two.active_id);
         drop(reopened);
         cleanup(parent);
@@ -1636,7 +1670,7 @@ mod windows_managed_tests {
     fn windows_managed_publication_refusal_keeps_pointer_current_binding_and_candidates() {
         let parent = fresh();
         let path = parent.path().join("profile");
-        let controller = InstallationController::managed(path.clone()).unwrap();
+        let controller = InstallationController::new(path.clone(), None).unwrap();
         let first = controller.context().unwrap();
         let directory = PrivateDirectory::inspect(&path.canonicalize().unwrap()).unwrap();
         let mut held = directory
@@ -1696,7 +1730,7 @@ mod windows_managed_tests {
         fs::create_dir(&path).unwrap();
         fs::write(path.join("operator-witness"), b"synthetic-existing").unwrap();
         assert!(PrivateDirectory::inspect(&path).is_err());
-        assert!(InstallationController::managed(path.clone()).is_err());
+        assert!(InstallationController::new(path.clone(), None).is_err());
         assert!(PrivateDirectory::inspect(&path).is_err());
         assert_eq!(
             fs::read(path.join("operator-witness")).unwrap(),
