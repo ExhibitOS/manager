@@ -28,6 +28,9 @@ mod source_full_configuration;
 #[path = "source_image_bytes.rs"]
 mod source_image_bytes;
 pub use source_full_configuration::ConfigurationInventoryReceipt;
+#[path = "source_checkpoint_space.rs"]
+mod source_checkpoint_space;
+pub use source_checkpoint_space::SourceCheckpointSpaceReceipt;
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceRecoveryReceipt {
@@ -41,6 +44,7 @@ pub struct SourceRecoveryReceipt {
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceHostTrustReceipt {
+    pub storage: SourceCheckpointSpaceReceipt,
     pub host: profile_backup::HostReceipt,
     pub trust: TrustCheckpointReceipt,
     pub source: SourceRecoveryReceipt,
@@ -778,6 +782,7 @@ impl ExecutionSession<'_> {
                 .create(&stage)
                 .map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?;
             let source = std::cell::RefCell::new(None);
+            let storage = std::cell::RefCell::new(None);
             let (host, (), (trust, source, after_archive_inventory, after_archive_configuration)) =
                 profile_backup::checkpoint_host_borrowed(
                     &self.store.profile,
@@ -785,6 +790,9 @@ impl ExecutionSession<'_> {
                     &stage.join("host.bin"),
                     &self._session,
                     || {
+                        // Check the cumulative known writes before the first
+                        // snapshot/image export, while all root fences are held.
+                        *storage.borrow_mut() = Some(self.checkpoint_storage(&stage)?);
                         *source.borrow_mut() =
                             Some(self.verify_source_recovery_scoped(image, true, true)?);
                         Ok(())
@@ -855,6 +863,9 @@ impl ExecutionSession<'_> {
             after_archive_configuration.export_workspace =
                 target.join(export_relative).to_string_lossy().into_owned();
             let receipt = SourceHostTrustReceipt {
+                storage: storage
+                    .into_inner()
+                    .ok_or_else(|| crate::err("UPDATE_SOURCE_PROOF_MISSING"))?,
                 host,
                 trust,
                 source,

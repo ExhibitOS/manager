@@ -273,6 +273,23 @@ fn inventory(profile: &Path, excluded: &BTreeSet<String>, id: &str) -> Result<In
         items,
     })
 }
+/// Read/hash the supported profile inventory under an already-held exclusive
+/// session and caller-owned profile/root operation locks. No archive/helper writes.
+pub(crate) fn checkpoint_host_size(profile: &Path, session: &ProfileSession) -> Result<u64> {
+    session.check_exclusive(profile)?;
+    let spaces = capture(profile)?;
+    let mut excluded = BTreeSet::from(["operation.lock".into(), "profile-session.lock".into()]);
+    for root in spaces.spaces {
+        if root.available {
+            excluded.insert(format!("{}/operation.lock", root.relative));
+        }
+    }
+    let measured = inventory(profile, &excluded, &Uuid::new_v4().to_string())?;
+    validate_inventory(&measured, profile)?;
+    session.check_exclusive(profile)?;
+    Ok(measured.total_bytes)
+}
+
 fn validate_inventory(m: &Inventory, profile: &Path) -> Result<()> {
     if m.format != 1
         || !installations::uuid(&m.id)
@@ -782,6 +799,34 @@ mod tests {
             fs::read(target.join("profile/local-runtime/prepared-witness")).unwrap(),
             b"prepared-under-fence"
         );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn measured_host_budget_matches_archive_under_borrowed_fences() {
+        let (profile, key, archive) = fixture();
+        let shared = session_lock(&profile, false).unwrap();
+        assert!(checkpoint_host_size(&profile, &shared).is_err());
+        drop(shared);
+        let session = session_lock(&profile, true).unwrap();
+        let (other, _, _) = fixture();
+        assert!(checkpoint_host_size(&other, &session).is_err());
+        let measured = std::cell::Cell::new(0);
+        let (receipt, (), ()) = checkpoint_host_borrowed(
+            &profile,
+            &key,
+            &archive,
+            &session,
+            || {
+                measured.set(checkpoint_host_size(&profile, &session)?);
+                assert!(!archive.exists());
+                assert!(lock_file(&profile, "operation.lock", true).is_err());
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .unwrap();
+        assert_eq!(receipt.bytes, measured.get());
+        assert!(measured.get() > 0);
     }
     #[test]
     fn borrowed_fence_rejects_wrong_scope_shared_guard_and_post_archive_changes() {

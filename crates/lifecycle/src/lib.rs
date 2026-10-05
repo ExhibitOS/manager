@@ -272,6 +272,9 @@ fn err(code: &str) -> LifecycleError {
         "PORT_IN_USE" => {
             "전시에 사용할 포트를 다른 앱이 사용하고 있습니다. 해당 앱을 종료한 후 다시 시도하세요."
         }
+        "CHECKPOINT_STORAGE_INSUFFICIENT" => {
+            "복구 사본과 후속 검증에 필요한 여유 공간이 부족합니다. 기존 데이터와 사본을 보존하고 저장 공간을 확보한 뒤 새 작업으로 다시 검사하세요."
+        }
         "STORAGE_QUOTA" => "저장 공간이 부족합니다. 공간을 확보한 후 다시 시도하세요.",
         "BUSY" => "진행 중인 작업이 끝날 때까지 기다려 주세요.",
         "BACKUP_IMAGE_INVALID" | "IMAGE_INTEGRITY" => {
