@@ -162,15 +162,25 @@ fn verify() -> Result<(), String> {
         );
         return Ok(());
     }
-    let mut artifact = open(path)?;
-    let before = artifact.metadata().map_err(|_| "UPDATE_INPUT_INVALID")?;
-    verified
-        .verify_artifact(&mut artifact)
-        .map_err(|e| e.code().to_string())?;
-    let after = artifact.metadata().map_err(|_| "UPDATE_INPUT_INVALID")?;
-    let current = std::fs::symlink_metadata(path).map_err(|_| "UPDATE_INPUT_INVALID")?;
-    if current.is_symlink() || !same(&before, &after) || !same(&after, &current) {
-        return Err("UPDATE_ARTIFACT_CHANGED".into());
+    #[cfg(windows)]
+    artifact(&mut verified, path)?;
+    #[cfg(not(windows))]
+    let mut artifact_input = open(path)?;
+    #[cfg(not(windows))]
+    {
+        let before = artifact_input
+            .metadata()
+            .map_err(|_| "UPDATE_INPUT_INVALID")?;
+        verified
+            .verify_artifact(&mut artifact_input)
+            .map_err(|e| e.code().to_string())?;
+        let after = artifact_input
+            .metadata()
+            .map_err(|_| "UPDATE_INPUT_INVALID")?;
+        let current = std::fs::symlink_metadata(path).map_err(|_| "UPDATE_INPUT_INVALID")?;
+        if current.is_symlink() || !same(&before, &after) || !same(&after, &current) {
+            return Err("UPDATE_ARTIFACT_CHANGED".into());
+        }
     }
     let finished = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -198,6 +208,12 @@ fn policy(path: &str) -> Result<Policy, String> {
     )?)
     .map_err(|_| "UPDATE_POLICY_INVALID".into())
 }
+#[cfg(windows)]
+fn artifact(verified: &mut signed_release::VerifiedRelease, path: &Path) -> Result<(), String> {
+    signed_release::artifact::verify_public_input(verified, path, now()?)
+        .map_err(|error| error.code().to_string())
+}
+#[cfg(not(windows))]
 fn artifact(verified: &mut signed_release::VerifiedRelease, path: &Path) -> Result<(), String> {
     if path.file_name().and_then(|n| n.to_str()) != Some(verified.release().artifact.name.as_str())
     {

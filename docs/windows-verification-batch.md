@@ -56,3 +56,14 @@ cargo test -p exhibitos-lifecycle --bin exhibitos-update windows_update_inputs -
 ```
 
 큰 artifact의 retained reader/staging, 외부 private key, host checkpoint/trust journal 및 full update/rollback은 아직 미완료다. 작은 입력 reader 구현으로 WIN-06 전체를 준비 완료 또는 통과 처리하지 않는다.
+
+
+## WIN-06 큰 artifact 읽기 선행 구현
+
+Windows `verify`의 artifact 입력을 실제 파일/조상 경로가 고정된 NTFS streaming reader에 연결한다. 16MiB 문서 제한과 달리 signed manifest의 정확한 byte 수와 SHA256을 streaming으로 확인한다. 열린 writer, hardlink/reparse, 파일 교체·이름 변경을 허용하지 않고 매 read 및 마지막 검사에서 ACL/식별자/크기·수정 시각을 확인한다. 실패한 재검사는 이전 artifact proof를 지운다. 원본 파일/ACL은 변경하지 않는다.
+
+```powershell
+cargo test -p exhibitos-lifecycle --lib windows_artifact_inputs --locked
+```
+
+새 합성 파일을 사용하는 4개 native 검사는 최종 배치에 포함하고 지금은 실행하지 않는다. 17MiB 초과 성공, busy writer/hardlink/size/hash/expiry/name/missing 실패와 원본 보존을 확인한다. synthetic verification fixture는 서명 검증 증거가 아니며, production CLI는 기존 실제 서명 검증 이후 이 reader를 호출한다. 파일 reader를 drop한 뒤에도 안전한 import/activation을 보장하는 retained staging, 외부 private key, host/trust checkpoint와 full rollback은 아직 미완료다.

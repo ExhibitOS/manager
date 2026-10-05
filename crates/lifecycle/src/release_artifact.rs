@@ -2,9 +2,51 @@
 //! Private bounded staging for later OCI validation/import. Never executes bytes.
 use super::{Error, VerifiedRelease};
 use std::{
-    fs::{self, File, Metadata, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
+    fs::{self, File, Metadata},
+    io::{Seek, SeekFrom},
     path::{Path, PathBuf},
+};
+
+/// Verify an existing Windows artifact through one retained NTFS read guard.
+/// This is diagnostic input verification only: no staging, import or activation.
+#[cfg(windows)]
+pub fn verify_public_input(v: &mut VerifiedRelease, source: &Path, now: u64) -> Result<(), Error> {
+    v.artifact_verified = false;
+    valid_time(v, now)?;
+    if source.file_name().and_then(|name| name.to_str()) != Some(v.release.artifact.name.as_str()) {
+        return Err(Error::ArtifactMismatch);
+    }
+    let mut input = crate::windows_private::PublicRecord::open(source)
+        .map_err(|_| Error::ArtifactUnavailable)?;
+    let before = input
+        .checked_metadata()
+        .map_err(|_| Error::ArtifactUnavailable)?;
+    if before.len() != v.release.artifact.bytes {
+        return Err(Error::ArtifactMismatch);
+    }
+    let modified = before.modified().map_err(|_| Error::ArtifactUnavailable)?;
+    v.verify_artifact(&mut input)?;
+    let final_check = (|| {
+        let after = input
+            .checked_metadata()
+            .map_err(|_| Error::ArtifactUnavailable)?;
+        if after.len() != before.len()
+            || after.modified().map_err(|_| Error::ArtifactUnavailable)? != modified
+        {
+            return Err(Error::ArtifactMismatch);
+        }
+        Ok(())
+    })();
+    if final_check.is_err() {
+        v.artifact_verified = false;
+    }
+    final_check
+}
+
+#[cfg(unix)]
+use std::{
+    fs::OpenOptions,
+    io::{Read, Write},
 };
 
 #[derive(Debug)]
@@ -362,5 +404,115 @@ mod tests {
         fs::write(next.path(), vec![0; 131073]).unwrap();
         assert!(next.reverify(&mut v, 151).is_err());
         assert!(!v.receipt().artifact_verified);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_artifact_inputs {
+    use super::*;
+    use crate::{
+        signed_release::{Artifact, Release},
+        windows_private::PrivateDirectory,
+    };
+    use sha2::{Digest, Sha256};
+    use std::fs::OpenOptions;
+    fn fixture(size: usize) -> (VerifiedRelease, PathBuf) {
+        let parent = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap());
+        let root = PrivateDirectory::create(
+            &parent.join(format!("exhibitos-artifact-input-{}", uuid::Uuid::new_v4())),
+        )
+        .unwrap();
+        let source = root.path().join("runtime.tar");
+        let bytes = vec![13u8; size];
+        fs::write(&source, &bytes).unwrap();
+        // Synthetic verification state isolates native reader semantics; this
+        // fixture does not claim cryptographic signature or OCI verification.
+        let release = Release {
+            format: 1,
+            product: "ExhibitOS/runtime".into(),
+            channel: "development".into(),
+            target: "linux-amd64".into(),
+            version: "0.1.1-dev.1".into(),
+            sequence: 41,
+            issued_at: 100,
+            expires_at: 200,
+            protocol_version: 1,
+            source_schemas: vec!["a".repeat(64)],
+            artifact: Artifact {
+                name: "runtime.tar".into(),
+                bytes: size as u64,
+                sha256: format!("{:x}", Sha256::digest(&bytes)),
+                runtime_image_sha256: "b".repeat(64),
+                schema_sha256: "c".repeat(64),
+            },
+        };
+        (
+            VerifiedRelease {
+                release,
+                key_id: "d".repeat(64),
+                payload_sha256: "e".repeat(64),
+                source_schema_sha256: "a".repeat(64),
+                artifact_verified: true,
+            },
+            source,
+        )
+    }
+    #[test]
+    fn windows_artifact_inputs_stream_above_small_document_limit_without_activation() {
+        let (mut v, source) = fixture(17 * 1024 * 1024 + 1);
+        verify_public_input(&mut v, &source, 150).unwrap();
+        assert!(v.receipt().artifact_verified);
+        assert!(!v.receipt().activated);
+        assert_eq!(fs::metadata(source).unwrap().len(), 17 * 1024 * 1024 + 1);
+    }
+    #[test]
+    fn windows_artifact_inputs_busy_writer_and_hardlink_clear_old_proof() {
+        let (mut v, source) = fixture(131073);
+        let writer = OpenOptions::new().write(true).open(&source).unwrap();
+        assert!(verify_public_input(&mut v, &source, 150).is_err());
+        assert!(!v.receipt().artifact_verified);
+        drop(writer);
+        verify_public_input(&mut v, &source, 150).unwrap();
+        fs::hard_link(&source, source.with_file_name("alias.tar")).unwrap();
+        assert!(verify_public_input(&mut v, &source, 150).is_err());
+        assert!(!v.receipt().artifact_verified);
+        assert_eq!(fs::read(source).unwrap(), vec![13u8; 131073]);
+    }
+    #[test]
+    fn windows_artifact_inputs_changed_size_hash_and_expiry_clear_old_proof() {
+        let (mut v, source) = fixture(131073);
+        verify_public_input(&mut v, &source, 150).unwrap();
+        fs::write(&source, vec![14u8; 131073]).unwrap();
+        assert_eq!(
+            verify_public_input(&mut v, &source, 150),
+            Err(Error::ArtifactMismatch)
+        );
+        assert!(!v.receipt().artifact_verified);
+        fs::write(&source, b"short").unwrap();
+        assert_eq!(
+            verify_public_input(&mut v, &source, 150),
+            Err(Error::ArtifactMismatch)
+        );
+        v.artifact_verified = true;
+        assert_eq!(
+            verify_public_input(&mut v, &source, 200),
+            Err(Error::Expired)
+        );
+        assert!(!v.receipt().artifact_verified);
+    }
+    #[test]
+    fn windows_artifact_inputs_wrong_name_and_missing_input_clear_old_proof() {
+        let (mut v, source) = fixture(7);
+        let other = source.with_file_name("other.tar");
+        assert_eq!(
+            verify_public_input(&mut v, &other, 150),
+            Err(Error::ArtifactMismatch)
+        );
+        assert!(!v.receipt().artifact_verified);
+        let moved = source.with_file_name("preserved.tar");
+        fs::rename(&source, &moved).unwrap();
+        assert!(verify_public_input(&mut v, &source, 150).is_err());
+        assert!(!v.receipt().artifact_verified);
+        assert_eq!(fs::read(moved).unwrap(), vec![13u8; 7]);
     }
 }
