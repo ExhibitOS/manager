@@ -61,7 +61,9 @@ impl Store {
                 .ok_or_else(|| crate::err("PROFILE_PATH_INVALID"))?;
             installations::private_directory(parent)?;
             let stage = parent.join(format!(".missing-host-recovery-{}", uuid::Uuid::new_v4()));
-            let mut builder = fs::DirBuilder::new();
+            let builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            let mut builder = builder;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::DirBuilderExt;
