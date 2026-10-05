@@ -433,6 +433,7 @@ fn publish(from: &Path, to: &Path) -> Result<(), Error> {
         Err(Error::TrustPlatformUnverified)
     }
 }
+#[cfg(not(windows))]
 fn write(root: &Path, r: &Record) -> Result<String, Error> {
     let bytes = serde_json::to_vec(r).map_err(|_| invalid())?;
     if bytes.len() as u64 > MAX_RECORD {
@@ -445,6 +446,24 @@ fn write(root: &Path, r: &Record) -> Result<String, Error> {
         .map_err(|_| Error::TrustWriteUncertain)?;
     drop(f);
     publish(&p, &root.join(format!("{:020}.json", r.generation)))?;
+    sync_dir(root)?;
+    Ok(hash(&bytes))
+}
+#[cfg(windows)]
+fn write(root: &Path, r: &Record) -> Result<String, Error> {
+    let bytes = serde_json::to_vec(r).map_err(|_| invalid())?;
+    if bytes.is_empty() || bytes.len() as u64 > MAX_RECORD {
+        return Err(Error::TrustLimit);
+    }
+    let guard = crate::windows_private::PrivateDirectory::inspect(root).map_err(|_| invalid())?;
+    let name = format!("{:020}.json", r.generation);
+    let record = guard
+        .publish_new_record(&name, &bytes, MAX_RECORD as usize)
+        .map_err(|_| Error::TrustWriteUncertain)?;
+    record.check().map_err(|_| Error::TrustWriteUncertain)?;
+    drop(record);
+    // Windows Store remains gated until retained root/read/namespace and complete
+    // journal/durability adapters are qualified; file sync alone is insufficient.
     sync_dir(root)?;
     Ok(hash(&bytes))
 }

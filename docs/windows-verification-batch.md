@@ -89,3 +89,15 @@ cargo test -p exhibitos-lifecycle --lib windows_artifact_staging --locked
 ```
 
 4개 합성 native 검사: exact/read-only retained copy 및 원본 보존, writer/hardlink refusal, hash 실패 후보 보존·quota/expiry, 새 후보에 대한 Everyone read grant 거부. 현재 MSVC 교차 컴파일만 확인했으며 Windows 실제 실행은 최종 단일 배치까지 미실행이다. 정상 검사 종료 후 새 전용 fixture만 정리하고 실패 시 자료를 보존한다. Native byte sharing/ACL은 power-loss durability 증거가 아니다. Store/host/trust/OCI 실행 연결 및 fresh full recovery/update/rollback은 별도 선행 작업이며 이 API 구현만으로 실행하지 않는다.
+
+## WIN-06 Windows 불변 trust 기록 발행 선행 구현
+
+NTFS private 폴더에서 새 `pending-UUID.json`에 기록하고 sync한 뒤, 보관된 DELETE 권한 핸들을 사용해 `ReplaceIfExists=false`로 새 세대 이름을 발행한다. 원본 파일 식별자와 ACL을 전후 확인하고, 쓰기 핸들을 닫은 뒤 읽기 전용 shared-lock guard로 정확한 bytes를 다시 읽는다. 기존 이름·대소문자 alias 충돌은 덮어쓰지 않으며 실패 후보를 보존한다. 발행 후 검사 실패는 완료가 아닌 uncertain으로 보고한다. Trust writer는96KiB 기록 한도를 유지하며 이 helper에 연결한다.
+
+```powershell
+cargo test -p exhibitos-lifecycle --lib windows_generation_publication --locked
+```
+
+4개 합성 검사는 정확한 bytes 재열기·read handle의 writer/rename 거부, 기존 이름·case alias 보존 및 pending 유지, 잘못된 이름/한도 거부, 동시 발행2개 중 정확히1개 성공을 확인한다. Native 실행은 최종 단일 배치까지 미실행이다. 생성된 작은 전용 fixture만 정상 검사 후 정리하고 실패 시 보존한다.
+
+이 helper의 file sync는 directory/power-loss durability 증거가 아니다. Windows `Store::provision/open`은 전체 root identity·case-safe scope·읽기·lock·directory publication/durability 연결이 아직 없어 platform gate를 유지한다. 따라서 실제 Windows trust 업데이트·checkpoint·전체 백업/복원은 이 변경만으로 실행 가능하거나 통과한 상태가 아니다.
