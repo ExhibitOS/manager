@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Existing registered source adapters under the borrowed exclusive trust fence.
 use super::*;
+#[path = "candidate_inventory.rs"]
+mod candidate_inventory;
+pub use candidate_inventory::CandidateInventoryReceipt;
 #[path = "prepared_oci.rs"]
 mod prepared_oci;
 use crate::{LifecycleService, Status, maintenance::VerificationReceipt};
@@ -1846,6 +1849,20 @@ mod tests {
         assert_eq!(
             session
                 .verify_source_recovery_transient(&format!("sha256:{}", "a".repeat(64)), true)
+                .unwrap_err()
+                .code,
+            "UPDATE_TARGET_UNREGISTERED"
+        );
+        assert_eq!(
+            session
+                .verify_restored_candidate_inventory(&format!("sha256:{}", "a".repeat(64)), false)
+                .unwrap_err()
+                .code,
+            "BACKUP_OPERATOR_ACK_REQUIRED"
+        );
+        assert_eq!(
+            session
+                .verify_restored_candidate_inventory(&format!("sha256:{}", "a".repeat(64)), true)
                 .unwrap_err()
                 .code,
             "UPDATE_TARGET_UNREGISTERED"
