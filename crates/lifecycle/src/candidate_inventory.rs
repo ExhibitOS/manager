@@ -72,15 +72,24 @@ fn isolated(a: &SourceStoppedReceipt, b: &SourceStoppedReceipt) -> bool {
         && a.database_container != b.database_container
         && !candidate.iter().any(|name| original.contains(name))
 }
+pub(super) struct CandidateContext<'a> {
+    pub target: &'a LifecycleService,
+    pub root: &'a Path,
+    pub workspace: &'a Path,
+    pub raw: &'a [u8],
+    pub manifest_path: &'a Path,
+    pub manifest: &'a crate::BundleManifest,
+    pub receipt: &'a crate::restoration::RestorationReceipt,
+    pub plan: &'a crate::update::Plan,
+    pub source_before: &'a SourceStoppedReceipt,
+    pub candidate_before: &'a SourceStoppedReceipt,
+}
 impl ExecutionSession<'_> {
-    /// Does not start/activate a candidate or trust a caller-supplied success flag.
-    /// Both source and candidate must be stopped. Fresh copied DB volumes remain
-    /// private evidence under the existing snapshot policy; originals are readonly.
-    pub fn verify_restored_candidate_inventory(
+    pub(super) fn inspect_restored_candidate<T>(
         &self,
-        image: &str,
         acknowledged: bool,
-    ) -> crate::Result<CandidateInventoryReceipt> {
+        work: impl FnOnce(&CandidateContext<'_>) -> crate::Result<T>,
+    ) -> crate::Result<T> {
         self.check()?;
         if !acknowledged {
             return Err(crate::err("BACKUP_OPERATOR_ACK_REQUIRED"));
@@ -146,32 +155,18 @@ impl ExecutionSession<'_> {
         if !isolated(&source_before, &candidate_before) {
             return Err(crate::err("UPDATE_TARGET_CHANGED"));
         }
-        if fs2::available_space(&root).map_err(|_| crate::err("STORAGE_UNAVAILABLE"))?
-            < 12 * 1024 * 1024 * 1024
-        {
-            return Err(crate::err("RESTORE_SPACE_REQUIRED"));
-        }
-        let (snapshot_volume, first) =
-            source_database::copy(image, &candidate_before.database_volume)?;
-        let inventory = source_inventory::compare_candidate(
-            image,
-            &snapshot_volume,
-            &candidate_before.blob_volume,
-            &manifest_path,
-            &receipt.authenticated_manifest_sha256,
-            &first.system_identifier,
-        )?;
-        source_inventory::matched_candidate(&inventory, plan)?;
-        let (repeated_snapshot_volume, repeated) =
-            source_database::copy(image, &candidate_before.database_volume)?;
-        if first.system_identifier != repeated.system_identifier
-            || first.content_sha256 != repeated.content_sha256
-            || first.bytes != repeated.bytes
-            || first.files != repeated.files
-            || first.entries != repeated.entries
-        {
-            return Err(crate::err("UPDATE_TARGET_CHANGED"));
-        }
+        let result = work(&CandidateContext {
+            target: &target,
+            root: &root,
+            workspace: &workspace,
+            raw: &raw,
+            manifest_path: &manifest_path,
+            manifest: &manifest,
+            receipt: &receipt,
+            plan,
+            source_before: &source_before,
+            candidate_before: &candidate_before,
+        })?;
         let source_after = source_stopped::observe(&self.source, plan)?;
         let candidate_after = source_stopped::observe(&target, &candidate_plan)?;
         self.check()?;
@@ -200,21 +195,68 @@ impl ExecutionSession<'_> {
         {
             return Err(crate::err("UPDATE_TARGET_CHANGED"));
         }
-        Ok(CandidateInventoryReceipt {
-            source_instance: plan.source_instance.clone(),
-            candidate_instance: plan.target_instance.clone(),
-            candidate_bundle_id: manifest.bundle_id,
-            candidate_database_volume: candidate_before.database_volume,
-            candidate_blob_volume: candidate_before.blob_volume,
-            snapshot_volume,
-            repeated_snapshot_volume,
-            candidate_content_sha256: first.content_sha256,
-            inventory,
-            observed_at: crate::now(),
-            configuration_verified: false,
-            image_bytes_verified: false,
-            preflight_verified: false,
-            update_executed: false,
+        Ok(result)
+    }
+    /// Does not start/activate a candidate or trust a caller-supplied success flag.
+    /// Both source and candidate must be stopped. Fresh copied DB volumes remain
+    /// private evidence under the existing snapshot policy; originals are readonly.
+    pub fn verify_restored_candidate_inventory(
+        &self,
+        image: &str,
+        acknowledged: bool,
+    ) -> crate::Result<CandidateInventoryReceipt> {
+        self.inspect_restored_candidate(acknowledged, |ctx| {
+            let CandidateContext {
+                root,
+                manifest_path,
+                receipt,
+                plan,
+                candidate_before,
+                manifest,
+                ..
+            } = ctx;
+            if fs2::available_space(root).map_err(|_| crate::err("STORAGE_UNAVAILABLE"))?
+                < 12 * 1024 * 1024 * 1024
+            {
+                return Err(crate::err("RESTORE_SPACE_REQUIRED"));
+            }
+            let (snapshot_volume, first) =
+                source_database::copy(image, &candidate_before.database_volume)?;
+            let inventory = source_inventory::compare_candidate(
+                image,
+                &snapshot_volume,
+                &candidate_before.blob_volume,
+                manifest_path,
+                &receipt.authenticated_manifest_sha256,
+                &first.system_identifier,
+            )?;
+            source_inventory::matched_candidate(&inventory, plan)?;
+            let (repeated_snapshot_volume, repeated) =
+                source_database::copy(image, &candidate_before.database_volume)?;
+            if first.system_identifier != repeated.system_identifier
+                || first.content_sha256 != repeated.content_sha256
+                || first.bytes != repeated.bytes
+                || first.files != repeated.files
+                || first.entries != repeated.entries
+            {
+                return Err(crate::err("UPDATE_TARGET_CHANGED"));
+            }
+            Ok(CandidateInventoryReceipt {
+                source_instance: plan.source_instance.clone(),
+                candidate_instance: plan.target_instance.clone(),
+                candidate_bundle_id: manifest.bundle_id.clone(),
+                candidate_database_volume: candidate_before.database_volume.clone(),
+                candidate_blob_volume: candidate_before.blob_volume.clone(),
+                snapshot_volume,
+                repeated_snapshot_volume,
+                candidate_content_sha256: first.content_sha256,
+                inventory,
+                observed_at: crate::now(),
+                configuration_verified: false,
+                image_bytes_verified: false,
+                preflight_verified: false,
+                update_executed: false,
+            })
         })
     }
 }

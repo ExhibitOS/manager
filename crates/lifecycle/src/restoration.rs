@@ -192,7 +192,11 @@ pub(crate) fn preserved_images(
     }
     Ok(images)
 }
-fn remapped_environment(bytes: &[u8], original: &BundleManifest, port: u16) -> Result<Vec<u8>> {
+pub(crate) fn remapped_environment(
+    bytes: &[u8],
+    original: &BundleManifest,
+    port: u16,
+) -> Result<Vec<u8>> {
     environment_valid(bytes, original)?;
     if port < 1024 {
         return Err(err("BACKUP_PATH_INVALID"));
@@ -306,6 +310,49 @@ fn compose(m: &BundleManifest, database: &str, platform: &str) -> Value {
         "database":{"image":database,"pull_policy":"never","environment":{"POSTGRES_PASSWORD":"${POSTGRES_PASSWORD:?required}","POSTGRES_DB":"exhibitos","POSTGRES_USER":"exhibitos"},"volumes":["database:/var/lib/postgresql"],"labels":labels,"healthcheck":{"test":["CMD-SHELL","pg_isready -U exhibitos -d exhibitos"],"interval":"2s","timeout":"3s","retries":30},"restart":"unless-stopped"},
         "platform":{"image":platform,"pull_policy":"never","user":"1000:1000","env_file":["../runtime.env"],"environment":{"NODE_ENV":"production","EXHIBITOS_PORT":"${EXHIBITOS_PORT}","AUTH_ORIGIN":"http://127.0.0.1:${EXHIBITOS_PORT}","BLOB_ROOT":"/data/blobs","CONFIG_ROOT":"/data/config"},"ports":["127.0.0.1:${EXHIBITOS_PORT}:8080"],"volumes":["objects:/data/blobs","configuration:/data/config"],"labels":labels,"depends_on":{"database":{"condition":"service_healthy"}},"read_only":true,"tmpfs":["/tmp:rw,nosuid,nodev,size=256m,mode=1777"],"cap_drop":["ALL"],"security_opt":["no-new-privileges:true"],"restart":"unless-stopped","stop_grace_period":"30s"}},
         "volumes":{"database":{"labels":labels},"objects":{"labels":labels},"configuration":{"labels":labels}},"networks":{"default":{"labels":labels}}})
+}
+/// Exact supported restoration remapping, shared by writer and fresh verifier.
+pub(crate) fn remapped_bundle(
+    original: &BundleManifest,
+    images: &[PreservedImage],
+    bundle_id: &str,
+    port: u16,
+    database: &str,
+    platform: &str,
+) -> Result<(BundleManifest, Vec<u8>)> {
+    if Uuid::parse_str(bundle_id).is_err()
+        || port < 1024
+        || images.len() != 2
+        || database == platform
+        || [database, platform]
+            .iter()
+            .any(|id| images.iter().filter(|i| i.content_id == **id).count() != 1)
+    {
+        return Err(err("RESTORE_LAYOUT_UNSUPPORTED"));
+    }
+    let mut manifest = original.clone();
+    manifest.bundle_id = bundle_id.into();
+    manifest.project_name = format!("exhibitos-{bundle_id}");
+    manifest.ports = vec![port];
+    manifest.open_url = format!("http://127.0.0.1:{port}");
+    manifest.readiness_url = format!("{}/api/v1/readiness", manifest.open_url);
+    manifest.preferred_engine = Some("docker".into());
+    manifest.images = images
+        .iter()
+        .enumerate()
+        .map(|(i, image)| Image {
+            reference: image.content_id.clone(),
+            archive: Some(Archive {
+                path: format!("image-{i}.tar"),
+                bytes: image.bytes,
+                sha256: image.sha256.clone(),
+            }),
+        })
+        .collect();
+    let encoded = serde_json::to_vec(&compose(&manifest, database, platform))
+        .map_err(|_| err("STATE_INVALID"))?;
+    manifest.compose_sha256 = digest(&encoded);
+    Ok((manifest, encoded))
 }
 impl LifecycleService {
     pub(crate) fn recover_restoration(&self) -> Result<()> {
@@ -744,14 +791,14 @@ impl LifecycleService {
             if let Some(binding) = binding {
                 binding.runtime_image(&platform)?;
             }
-            let mut manifest = original;
-            manifest.bundle_id = Uuid::new_v4().to_string();
-            manifest.project_name = format!("exhibitos-{}", manifest.bundle_id);
-            manifest.ports = vec![port];
-            manifest.open_url = format!("http://127.0.0.1:{port}");
-            manifest.readiness_url = format!("{}/api/v1/readiness", manifest.open_url);
-            manifest.preferred_engine = Some("docker".into());
-            manifest.images.clear();
+            let (manifest, encoded) = remapped_bundle(
+                &original,
+                &images,
+                &Uuid::new_v4().to_string(),
+                port,
+                &database,
+                &platform,
+            )?;
             let bundle = self.root.join("bundle");
             let _destination_bundle_guard = directory(&bundle)?;
             for (index, preserved) in images.iter().enumerate() {
@@ -763,18 +810,7 @@ impl LifecycleService {
                 }
                 let filename = format!("image-{index}.tar");
                 fs::rename(&path, bundle.join(&filename)).map_err(|_| err("STATE_UNAVAILABLE"))?;
-                manifest.images.push(Image {
-                    reference: preserved.content_id.clone(),
-                    archive: Some(Archive {
-                        path: filename,
-                        bytes: preserved.bytes,
-                        sha256: preserved.sha256.clone(),
-                    }),
-                });
             }
-            let encoded = serde_json::to_vec(&compose(&manifest, &database, &platform))
-                .map_err(|_| err("STATE_INVALID"))?;
-            manifest.compose_sha256 = digest(&encoded);
             private_bytes(&bundle.join("compose.yaml"), &encoded)?;
             write_json(&bundle, "manifest.json", &manifest)?;
             private_bytes(&self.root.join("runtime.env"), &environment)?;
