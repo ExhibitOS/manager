@@ -128,7 +128,8 @@ for name, (h, mode) in source.items():
     assert sha(retained / name) == h
 for name in ['operation.lock', 'profile-session.lock', 'local-runtime/operation.lock']:
     assert not (restored / name).exists()
-assert not profile.exists() and (target / 'payload.pending').exists()
+assert not profile.exists() and not (target / 'payload.pending').exists()
+assert sha(archive) == archive_hash and sha(key) == key_hash
 assert json.loads((target / 'verified.json').read_text()) == opened
 call('extract-host', target=target, error='PROFILE_DESTINATION_EXISTS')
 step('original profile absent: exact host bytes and POSIX modes extracted privately without activation')

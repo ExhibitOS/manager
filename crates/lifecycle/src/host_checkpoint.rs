@@ -604,6 +604,19 @@ fn publish_directory(source: &Path, target: &Path) -> Result<()> {
         Err(err("HOST_PLATFORM_UNVERIFIED"))
     }
 }
+// Delete only this fresh, fully authenticated intermediate, after the archive
+// and external key were rechecked. Replaced/changed candidates are preserved.
+fn retire_plaintext(path: &Path, plain: File, expected: &fs::Metadata) -> Result<()> {
+    let held = plain.metadata().map_err(|_| fail())?;
+    let current = fs::symlink_metadata(path).map_err(|_| fail())?;
+    if !current.is_file() || !unchanged(expected, &held) || !unchanged(expected, &current) {
+        return Err(fail());
+    }
+    fs::remove_file(path).map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
+    drop(plain);
+    Ok(())
+}
+
 pub fn extract_host(
     profile: &Path,
     key: &Path,
@@ -652,6 +665,7 @@ pub fn extract_host(
     // Reopen a read-only handle: writer was deliberately created without read access.
     drop(plain);
     let mut plain = file(&payload)?;
+    let plain_identity = plain.metadata().map_err(|_| fail())?;
     let mut size = [0u8; 8];
     plain.read_exact(&mut size).map_err(|_| fail())?;
     let len = u64::from_be_bytes(size);
@@ -721,8 +735,21 @@ pub fn extract_host(
     )?;
     sync(&recovered)?;
     sync(&stage)?;
-    // The authenticated plaintext staging is retained in the published private
-    // container. Nothing here registers, activates, overwrites or deletes roots.
+    // Every reconstructed file/hash/mode and receipt is complete. Preserve the
+    // original encrypted archive/key and refuse changed input before removing
+    // only the fresh redundant plaintext. Failure staging/profile roots remain.
+    if !unchanged(&meta, &source.metadata().map_err(|_| fail())?)
+        || !unchanged(
+            &meta,
+            &fs::symlink_metadata(&canonical_archive).map_err(|_| fail())?,
+        )
+        || external_key(profile, &key_path)? != key
+    {
+        return Err(fail());
+    }
+    retire_plaintext(&payload, plain, &plain_identity)?;
+    sync(&stage)?;
+    // Nothing here registers, activates or overwrites profile roots.
     publish_directory(&stage, destination)?;
     sync(&parent)?;
     Ok(receipt(
@@ -868,6 +895,8 @@ mod tests {
         assert!(saved.bytes > 64 * 1024 * 1024);
         assert!(!saved.external_volumes_saved);
         assert_eq!(saved.host_writer_quiescence, "operator-acknowledged");
+        let archive_before = hash(&a).unwrap();
+        let key_before = hash(&k).unwrap();
         let target = k.with_file_name("recovered");
         let opened = extract_host(&p, &k, &a, &target, true).unwrap();
         assert_eq!(saved.id, opened.id);
@@ -881,6 +910,9 @@ mod tests {
                 .join("profile/local-runtime/restore-candidate/empty-witness")
                 .exists()
         );
+        assert!(!target.join("payload.pending").exists());
+        assert_eq!(hash(&a).unwrap(), archive_before);
+        assert_eq!(hash(&k).unwrap(), key_before);
         assert!(!target.join("profile/operation.lock").exists());
         assert!(!target.join("profile/local-runtime/operation.lock").exists());
         assert_eq!(
@@ -955,6 +987,24 @@ mod tests {
         assert!(!target.exists());
         assert_eq!(fs::read(&a).unwrap(), bytes);
     }
+    #[test]
+    fn replaced_plaintext_is_preserved_without_removing_either_file() {
+        let (_, key, _) = fixture();
+        let path = key.with_file_name("payload.pending");
+        write_new(&path, b"authenticated synthetic bytes").unwrap();
+        let held = file(&path).unwrap();
+        let before = held.metadata().unwrap();
+        let retained = key.with_file_name("retained-plaintext");
+        fs::rename(&path, &retained).unwrap();
+        write_new(&path, b"changed synthetic bytes").unwrap();
+        assert!(retire_plaintext(&path, held, &before).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"changed synthetic bytes");
+        assert_eq!(
+            fs::read(&retained).unwrap(),
+            b"authenticated synthetic bytes"
+        );
+    }
+
     #[test]
     fn duplicate_or_unparented_manifest_entries_refuse() {
         let (p, _, _) = fixture();
