@@ -703,7 +703,7 @@ mod tests {
     }
     #[test]
     fn retry_wire_rejects_paths_commands_stale_shapes_and_missing_acknowledgments() {
-        let valid = serde_json::json!({"targetId":"12345678-1234-1234-1234-123456789012","destinationId":"23456789-1234-1234-1234-123456789012","preserveCandidates":true,"image":format!("sha256:{}","a".repeat(64)),"keyPath":"/private/tmp/key","sourcePath":"/private/tmp/archive","port":4500,"freshInstallationAccepted":true});
+        let valid = serde_json::json!({"targetId":"12345678-1234-1234-1234-123456789012","destinationId":"23456789-1234-1234-1234-123456789012","preserveCandidates":true,"image":format!("sha256:{}","a".repeat(64)),"keyPath":std::env::temp_dir().join("synthetic-key").to_string_lossy(),"sourcePath":std::env::temp_dir().join("synthetic-archive").to_string_lossy(),"port":4500,"freshInstallationAccepted":true});
         assert!(
             serde_json::from_value::<RestorationRetryRequest>(valid.clone())
                 .unwrap()
@@ -736,7 +736,7 @@ mod tests {
                     .is_err()
             );
         }
-        let backup = serde_json::json!({"targetId":"12345678-1234-1234-1234-123456789012","preserveCandidates":true,"image":format!("sha256:{}","a".repeat(64)),"keyPath":"/private/tmp/key","externalWritersQuiesced":true,"downtimeAccepted":true});
+        let backup = serde_json::json!({"targetId":"12345678-1234-1234-1234-123456789012","preserveCandidates":true,"image":format!("sha256:{}","a".repeat(64)),"keyPath":std::env::temp_dir().join("synthetic-key").to_string_lossy(),"externalWritersQuiesced":true,"downtimeAccepted":true});
         assert!(
             serde_json::from_value::<BackupRetryInput>(backup.clone())
                 .unwrap()
@@ -754,7 +754,7 @@ mod tests {
     }
     #[test]
     fn restoration_wire_requires_explicit_fresh_acknowledgement_and_bounded_port() {
-        let valid = serde_json::json!({"image":format!("sha256:{}", "a".repeat(64)),"keyPath":"/private/tmp/key","sourcePath":"/private/tmp/archive","port":4500,"freshInstallationAccepted":true});
+        let valid = serde_json::json!({"image":format!("sha256:{}", "a".repeat(64)),"keyPath":std::env::temp_dir().join("synthetic-key").to_string_lossy(),"sourcePath":std::env::temp_dir().join("synthetic-archive").to_string_lossy(),"port":4500,"freshInstallationAccepted":true});
         assert!(
             serde_json::from_value::<RestorationInput>(valid.clone())
                 .unwrap()
