@@ -1497,7 +1497,7 @@ mod tests {
             let mut forged = store.current.clone();
             match change {
                 0 => {
-                    let UpdateEvent::RenewPrepared(ref mut renewal) =
+                    let UpdateEvent::RenewPrepared(renewal) =
                         forged.update_event.as_mut().unwrap()
                     else {
                         panic!("renewal expected")
