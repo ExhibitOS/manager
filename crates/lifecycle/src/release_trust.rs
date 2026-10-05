@@ -119,6 +119,14 @@ pub struct Store {
     used_operations: BTreeSet<String>,
     used_instances: BTreeSet<String>,
 }
+impl Drop for Store {
+    fn drop(&mut self) {
+        // No Store method may run after drop begins. Explicit release prevents an
+        // unrelated pre-exec fork from extending this owner's trust lock lifetime.
+        // The profile anchor has independent shared ownership for borrowed fences.
+        let _ = FileExt::unlock(&self._lock);
+    }
+}
 fn invalid() -> Error {
     Error::TrustInvalid
 }
@@ -933,6 +941,80 @@ mod tests {
         })
         .unwrap()
     }
+    #[test]
+    fn final_owner_releases_fences_while_unrelated_fork_keeps_descriptors() {
+        let (p, _, policy, _) = fixture();
+        let s = Store::provision(&p, "default", policy, 10).unwrap();
+        let service = crate::LifecycleService::new(p.parent().unwrap().join("operations")).unwrap();
+        let operation = service.lock().unwrap();
+        let (session_profile, _, _, _) = fixture();
+        let session = profile_backup::session_lock(&session_profile, true).unwrap();
+        let mut pipe = [-1; 2];
+        assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
+        let pid = unsafe { libc::fork() };
+        if pid == 0 {
+            // Only async-signal-safe operations after fork in the threaded harness.
+            // Deliberately keep inherited lock descriptors until the parent asks
+            // this unrelated child to exit; never use Store or run Rust drops.
+            unsafe {
+                libc::close(pipe[1]);
+                let mut byte = 0u8;
+                libc::read(pipe[0], (&mut byte as *mut u8).cast(), 1);
+                libc::_exit(0);
+            }
+        }
+        unsafe {
+            libc::close(pipe[0]);
+        }
+        if pid < 0 {
+            unsafe {
+                libc::close(pipe[1]);
+            }
+            panic!("fork failed");
+        }
+        let was_busy = matches!(Store::open(&p, "default"), Err(Error::TrustBusy));
+        drop(s);
+        drop(operation);
+        drop(session);
+        let reopened = Store::open(&p, "default");
+        let operation_reopened = service.lock();
+        let session_reopened = profile_backup::session_lock(&session_profile, true);
+        // Always release and reap the child before asserting the regression.
+        unsafe {
+            libc::close(pipe[1]);
+            let mut status = 0;
+            assert_eq!(libc::waitpid(pid, &mut status, 0), pid);
+            assert_eq!(status, 0);
+        }
+        assert!(was_busy, "live original owner must keep the fence");
+        assert!(
+            operation_reopened.is_ok(),
+            "operation fence must release before child exit"
+        );
+        assert!(
+            session_reopened.is_ok(),
+            "session fences must release before child exit"
+        );
+        assert!(
+            reopened.is_ok(),
+            "final owner release must not depend on unrelated fork exit"
+        );
+    }
+
+    #[test]
+    fn borrowed_anchor_outlives_store_and_only_final_owner_releases_it() {
+        let (p, _, policy, _) = fixture();
+        let s = Store::provision(&p, "default", policy, 10).unwrap();
+        let borrowed = s._anchor.try_clone().unwrap();
+        let second = borrowed.try_clone().unwrap();
+        drop(s);
+        assert!(matches!(Store::open(&p, "default"), Err(Error::TrustBusy)));
+        drop(borrowed);
+        assert!(matches!(Store::open(&p, "default"), Err(Error::TrustBusy)));
+        drop(second);
+        assert!(Store::open(&p, "default").is_ok());
+    }
+
     #[test]
     fn durable_acceptance_reopens_and_refuses_replay_without_activation() {
         let (p, k, policy, r) = fixture();

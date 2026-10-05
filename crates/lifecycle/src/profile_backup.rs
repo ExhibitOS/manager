@@ -135,13 +135,25 @@ fn lock_file(root: &Path, name: &str, exclusive: bool) -> Result<File> {
         Ok(file)
     }
 }
-/// Owns the exact locked handle and parent fence. A borrowed Windows clone
-/// shares this owner through Arc and never duplicates/closes the native handle.
+/// Owns the exact locked handle and parent fence. Borrowed clones share the
+/// owner through Arc; only the final in-process owner releases the Unix flock.
 pub(crate) struct ProfileAnchor {
     #[cfg(not(windows))]
-    file: File,
+    unix: std::sync::Arc<UnixAnchor>,
     #[cfg(windows)]
     native: std::sync::Arc<WindowsAnchor>,
+}
+#[cfg(not(windows))]
+struct UnixAnchor {
+    file: File,
+}
+#[cfg(not(windows))]
+impl Drop for UnixAnchor {
+    fn drop(&mut self) {
+        // Closing alone can leave flock active in an unrelated fork's duplicate
+        // descriptor until exec/exit. Do not release any borrowed owner early.
+        let _ = FileExt::unlock(&self.file);
+    }
 }
 #[cfg(windows)]
 struct WindowsAnchor {
@@ -162,7 +174,7 @@ impl ProfileAnchor {
         #[cfg(not(windows))]
         {
             Ok(Self {
-                file: self.file.try_clone()?,
+                unix: std::sync::Arc::clone(&self.unix),
             })
         }
     }
@@ -199,6 +211,14 @@ pub(crate) struct ProfileSession {
     exclusive: bool,
     _anchor: ProfileAnchor,
     _legacy: File,
+}
+#[cfg(unix)]
+impl Drop for ProfileSession {
+    fn drop(&mut self) {
+        // The session is not cloned. Release its legacy fence before its final
+        // shared anchor is dropped; neither fence relies on a child's exit.
+        let _ = FileExt::unlock(&self._legacy);
+    }
 }
 impl ProfileSession {
     pub(crate) fn check_exclusive(&self, profile: &Path) -> Result<()> {
@@ -321,7 +341,12 @@ pub(crate) fn anchor_lock(profile: &Path, exclusive: bool) -> Result<(PathBuf, P
         if fs::canonicalize(profile.parent().unwrap()).ok().as_ref() != Some(&parent) {
             return Err(err("PROFILE_PATH_INVALID"));
         }
-        Ok((target, ProfileAnchor { file: anchor }))
+        Ok((
+            target,
+            ProfileAnchor {
+                unix: std::sync::Arc::new(UnixAnchor { file: anchor }),
+            },
+        ))
     }
 }
 pub(crate) fn anchored_session(

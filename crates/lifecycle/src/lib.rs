@@ -33,6 +33,24 @@ use std::{
 };
 use uuid::Uuid;
 
+#[cfg(windows)]
+pub(crate) type OperationGuard = File;
+#[cfg(not(windows))]
+pub(crate) struct OperationGuard(File);
+#[cfg(not(windows))]
+impl std::ops::Deref for OperationGuard {
+    type Target = File;
+    fn deref(&self) -> &File {
+        &self.0
+    }
+}
+#[cfg(not(windows))]
+impl Drop for OperationGuard {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
@@ -981,7 +999,7 @@ impl LifecycleService {
             Ok(Self { root })
         }
     }
-    fn lock(&self) -> Result<File> {
+    fn lock(&self) -> Result<OperationGuard> {
         #[cfg(windows)]
         {
             let file = self.root_guard.lock_record("operation.lock")?;
@@ -1010,7 +1028,7 @@ impl LifecycleService {
                 Err(_) => return Err(err("STATE_UNAVAILABLE")),
             };
             file.try_lock_exclusive().map_err(|_| err("BUSY"))?;
-            Ok(file)
+            Ok(OperationGuard(file))
         }
     }
     fn manifest(&self) -> Result<BundleManifest> {
