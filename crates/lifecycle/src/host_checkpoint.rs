@@ -765,22 +765,114 @@ pub fn extract_host(
 mod tests {
     use super::*;
     use crate::installations::InstallationController;
-    fn fixture() -> (PathBuf, PathBuf, PathBuf) {
-        let base = fs::canonicalize(std::env::temp_dir())
-            .unwrap()
-            .join(format!("host-checkpoint-{}", Uuid::new_v4()));
-        installations::new_directory(&base).unwrap();
-        let p = base.join("source");
+    // Own only the fresh synthetic root. Successful tests retire it; a panic or
+    // changed root preserves the fixture for diagnosis. Never scan old temp data.
+    struct FixtureRoot {
+        path: PathBuf,
+        held: File,
+    }
+    impl FixtureRoot {
+        fn new() -> Self {
+            let path = fs::canonicalize(std::env::temp_dir())
+                .unwrap()
+                .join(format!("host-checkpoint-{}", Uuid::new_v4()));
+            installations::new_directory(&path).unwrap();
+            use std::os::unix::fs::OpenOptionsExt;
+            let held = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+                .open(&path)
+                .unwrap();
+            Self { path, held }
+        }
+    }
+    impl Drop for FixtureRoot {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                return;
+            }
+            use std::os::unix::fs::MetadataExt;
+            let Ok(original) = self.held.metadata() else {
+                return;
+            };
+            let Ok(current) = fs::symlink_metadata(&self.path) else {
+                return;
+            };
+            if current.is_dir()
+                && current.dev() == original.dev()
+                && current.ino() == original.ino()
+                && current.uid() == original.uid()
+                && current.mode() & 0o077 == 0
+            {
+                // std's removal does not follow child symlinks. A failure leaves
+                // remaining synthetic bytes; it never expands cleanup scope.
+                if fs::remove_dir_all(&self.path).is_err() {
+                    eprintln!("synthetic host fixture cleanup incomplete");
+                }
+            }
+        }
+    }
+    fn fixture() -> (FixtureRoot, PathBuf, PathBuf, PathBuf) {
+        let root = FixtureRoot::new();
+        let p = root.path.join("source");
         let c = InstallationController::new(p.clone(), None).unwrap();
         drop(c);
-        let k = base.join("key.bin");
+        let k = root.path.join("key.bin");
         write_new(&k, &[17; 32]).unwrap();
-        let a = base.join("archive.exb");
-        (p, k, a)
+        let a = root.path.join("archive.exb");
+        (root, p, k, a)
+    }
+    #[test]
+    fn successful_fixture_cleanup_never_follows_external_symlink() {
+        let outside = FixtureRoot::new();
+        let witness = outside.path.join("witness");
+        write_new(&witness, b"preserve outside bytes").unwrap();
+        let root = FixtureRoot::new();
+        let path = root.path.clone();
+        std::os::unix::fs::symlink(&outside.path, path.join("alias")).unwrap();
+        drop(root);
+        assert!(!path.exists());
+        assert_eq!(fs::read(witness).unwrap(), b"preserve outside bytes");
+    }
+    #[test]
+    fn failed_fixture_cleanup_preserves_diagnostic_bytes() {
+        let path = std::cell::RefCell::new(None);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let root = FixtureRoot::new();
+            *path.borrow_mut() = Some(root.path.clone());
+            write_new(&root.path.join("failure"), b"synthetic failure bytes").unwrap();
+            panic!("synthetic failure for retention check");
+        }));
+        assert!(result.is_err());
+        let path = path.into_inner().unwrap();
+        assert_eq!(
+            fs::read(path.join("failure")).unwrap(),
+            b"synthetic failure bytes"
+        );
+        // Only this deliberately induced and verified test failure is retired.
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn replaced_fixture_root_is_preserved_without_touching_either_directory() {
+        let root = FixtureRoot::new();
+        let path = root.path.clone();
+        let moved = path.with_extension("retained");
+        fs::rename(&path, &moved).unwrap();
+        installations::new_directory(&path).unwrap();
+        write_new(&path.join("replacement"), b"preserve replacement").unwrap();
+        drop(root);
+        assert!(moved.exists());
+        assert_eq!(
+            fs::read(path.join("replacement")).unwrap(),
+            b"preserve replacement"
+        );
+        // Both names were created by this test; assertions completed first.
+        fs::remove_dir_all(path).unwrap();
+        fs::remove_dir_all(moved).unwrap();
     }
     #[test]
     fn borrowed_fence_spans_callbacks_and_captures_prepared_bytes() {
-        let (p, k, a) = fixture();
+        let (_root, p, k, a) = fixture();
         let session = session_lock(&p, true).unwrap();
         let witness = p.join("local-runtime/prepared-witness");
         let (receipt, (), ()) = checkpoint_host_borrowed(
@@ -812,8 +904,8 @@ mod tests {
     }
     #[test]
     fn borrowed_fence_rejects_wrong_scope_shared_guard_and_post_archive_changes() {
-        let (p, k, a) = fixture();
-        let (other, _, _) = fixture();
+        let (_root, p, k, a) = fixture();
+        let (_other_root, other, _, _) = fixture();
         let wrong = session_lock(&other, true).unwrap();
         assert_eq!(
             checkpoint_host_borrowed(&p, &k, &a, &wrong, || Ok(()), || Ok(()))
@@ -847,7 +939,7 @@ mod tests {
     }
     #[test]
     fn callback_failure_never_publishes_borrowed_archive() {
-        let (p, k, a) = fixture();
+        let (_root, p, k, a) = fixture();
         let held = session_lock(&p, true).unwrap();
         assert_eq!(
             checkpoint_host_borrowed(
@@ -880,7 +972,7 @@ mod tests {
     }
     #[test]
     fn host_bytes_above_profile_envelope_limit_extract_exact_without_activation() {
-        let (p, k, a) = fixture();
+        let (_root, p, k, a) = fixture();
         let dir = p.join("local-runtime/restore-candidate");
         installations::new_directory(&dir).unwrap();
         let data = dir.join("candidate.bin");
@@ -931,7 +1023,7 @@ mod tests {
     }
     #[test]
     fn closed_profile_and_writer_ack_precede_copy() {
-        let (p, k, a) = fixture();
+        let (_root, p, k, a) = fixture();
         assert_eq!(
             checkpoint_host(&p, &k, &a, true, false).unwrap_err().code,
             "HOST_WRITER_ACK_REQUIRED"
@@ -947,18 +1039,18 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn links_unsafe_paths_and_permissions_never_publish() {
-        let (p, k, a) = fixture();
+        let (_root, p, k, a) = fixture();
         std::os::unix::fs::symlink(&k, p.join("alias")).unwrap();
         assert!(checkpoint_host(&p, &k, &a, true, true).is_err());
         assert!(!a.exists());
-        let (p, k, a) = fixture();
+        let (_root, p, k, a) = fixture();
         let bad = p.join("unsafe-mode");
         write_new(&bad, b"synthetic").unwrap();
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&bad, fs::Permissions::from_mode(0o622)).unwrap();
         assert!(checkpoint_host(&p, &k, &a, true, true).is_err());
         assert!(!a.exists());
-        let (p, k, a) = fixture();
+        let (_root, p, k, a) = fixture();
         let first = p.join("hardlink-source");
         write_new(&first, b"synthetic").unwrap();
         fs::hard_link(&first, p.join("hardlink-alias")).unwrap();
@@ -970,7 +1062,7 @@ mod tests {
     }
     #[test]
     fn tamper_wrong_domain_and_wrong_source_namespace_leave_target_unpublished() {
-        let (p, k, a) = fixture();
+        let (_root, p, k, a) = fixture();
         checkpoint_host(&p, &k, &a, true, true).unwrap();
         let bytes = fs::read(&a).unwrap();
         let bad = k.with_file_name("truncated.exb");
@@ -989,7 +1081,7 @@ mod tests {
     }
     #[test]
     fn replaced_plaintext_is_preserved_without_removing_either_file() {
-        let (_, key, _) = fixture();
+        let (_root, _, key, _) = fixture();
         let path = key.with_file_name("payload.pending");
         write_new(&path, b"authenticated synthetic bytes").unwrap();
         let held = file(&path).unwrap();
@@ -1007,7 +1099,7 @@ mod tests {
 
     #[test]
     fn duplicate_or_unparented_manifest_entries_refuse() {
-        let (p, _, _) = fixture();
+        let (_root, p, _, _) = fixture();
         let id = Uuid::new_v4().to_string();
         let mut m = inventory(&p, &BTreeSet::new(), &id).unwrap();
         validate_inventory(&m, &p).unwrap();
@@ -1026,7 +1118,7 @@ mod tests {
     }
     #[test]
     fn changing_source_and_publication_collision_refuse() {
-        let (p, k, _) = fixture();
+        let (_root, p, k, _) = fixture();
         let data = p.join("changing-source");
         write_new(&data, b"initial").unwrap();
         let m = inventory(&p, &BTreeSet::new(), &Uuid::new_v4().to_string()).unwrap();
