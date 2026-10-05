@@ -74,3 +74,17 @@ exhibitos-update verify-restored-candidate-recovery-ephemeral \
 ```
 
 The export parent must pass the existing private canonical path checks and be outside the source/candidate profile. Both host and export filesystem need10GiB available: 2GiB image bytes, 2GiB growth/headroom, and6GiB retained floor. The existing configuration verifier's10GiB budget and full file/image checks are unchanged; no persistent DB copy is budgeted because both database observations use bounded tmpfs. The memory/resource/OOM eligibility and limitations above also apply. Only the fresh verified image exports are retired after all final checks, leaving their small hash marker; failed exports remain for diagnosis. Original volumes, keys, old image archives and recovery baselines remain unchanged. The receipt still explicitly records `preflightVerified=false` and `updateExecuted=false`: fresh release policy, compatibility, coherent authority/host recovery and actual execution/rollback acceptance remain separate gates.
+
+### Full source recovery observation without persistent database copies
+
+`verify-source-recovery-ephemeral` requires the Prepared plan and its completed registered recovery candidate, and borrows the same stopped source/candidate, profile and trust fences. It reads the original source database/blob volumes, not the candidate volumes. The native inventory reader uses the original source namespace and database-system-identifier contract; candidate-mode success cannot substitute for a source inventory result.
+
+```sh
+exhibitos-update verify-source-recovery-ephemeral \
+  --profile /absolute/private/profile --installation default \
+  --image sha256:QUALIFIED_LOCAL_MAINTENANCE_IMAGE_ID \
+  --export-parent /absolute/private/external-export-parent \
+  --external-writers-quiesced --apps-closed
+```
+
+The order is exact authenticated source deployment files → fresh tmpfs source physical/DB/blob inventory → complete seven-record configuration/key/image-byte inventory → second fresh tmpfs source observation → late exact deployment/configuration/key/image mapping checks → common final original/candidate/receipt/manifest/authority guards. Both physical proofs must agree. Existing full configuration checks, original source identifier rules, consent and path rejection remain mandatory. Successful new image exports are retired after final checks; small hash metadata remains. The original source and candidate volumes and prior recovery material are untouched. The existing bounded memory/copy limits, no-extra-container-swap eligibility and10GiB host/export budget apply. This observation grants no preflight or update-execution permission; coherent highest-authority/host/external-data recovery and release/compatibility/apply/rollback gates still need to be satisfied.

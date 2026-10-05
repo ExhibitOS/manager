@@ -48,11 +48,11 @@ fn validate_inputs(
     }
     Ok(())
 }
-fn script() -> String {
+fn script(candidate: bool) -> String {
     // Children receive compiled-in scripts, never caller-provided JavaScript.
     format!(
         r#"import {{spawnSync}} from 'node:child_process';
-const copy={copy}, reader={reader};
+const copy={copy}, reader={reader}, candidate={candidate};
 function child(script,env){{
  const r=spawnSync(process.execPath,['--input-type=module','-e',script],{{env,encoding:'utf8',timeout:270000,maxBuffer:65536}});
  if(r.error||r.status!==0)throw Error('EPHEMERAL_CHILD_FAILED');
@@ -60,10 +60,13 @@ function child(script,env){{
 }}
 try{{
  const physical=child(copy,process.env);
- const inventory=child(reader,{{...process.env,EXHIBITOS_CANDIDATE_SYSTEM_IDENTIFIER:physical.systemIdentifier}});
+ const env={{...process.env}};delete env.EXHIBITOS_CANDIDATE_SYSTEM_IDENTIFIER;
+ if(candidate)env.EXHIBITOS_CANDIDATE_SYSTEM_IDENTIFIER=physical.systemIdentifier;
+ const inventory=child(reader,env);
  console.log(JSON.stringify({{physical,inventory}}));
 }}catch{{console.error('EPHEMERAL_INVENTORY_REFUSED');process.exitCode=1;}}
 "#,
+        candidate = candidate,
         copy = serde_json::to_string(include_str!("source_database_copy.mjs")).unwrap(),
         reader = serde_json::to_string(include_str!("source_inventory_reader.mjs")).unwrap()
     )
@@ -133,8 +136,26 @@ pub(super) fn observe(
     ctx: &candidate_inventory::CandidateContext<'_>,
     image: &str,
 ) -> Result<EphemeralObservation> {
-    let database = &ctx.candidate_before.database_volume;
-    let blobs = &ctx.candidate_before.blob_volume;
+    observe_scope(ctx, image, true)
+}
+pub(super) fn observe_source(
+    ctx: &candidate_inventory::CandidateContext<'_>,
+    image: &str,
+) -> Result<EphemeralObservation> {
+    observe_scope(ctx, image, false)
+}
+fn observe_scope(
+    ctx: &candidate_inventory::CandidateContext<'_>,
+    image: &str,
+    candidate: bool,
+) -> Result<EphemeralObservation> {
+    let resource = if candidate {
+        ctx.candidate_before
+    } else {
+        ctx.source_before
+    };
+    let database = &resource.database_volume;
+    let blobs = &resource.blob_volume;
     validate_inputs(
         image,
         database,
@@ -232,7 +253,7 @@ pub(super) fn observe(
         image.into(),
         "--input-type=module".into(),
         "-e".into(),
-        script(),
+        script(candidate),
     ];
     let output = run("docker", &args, None, 30)?;
     let id = std::str::from_utf8(&output)
@@ -291,7 +312,11 @@ pub(super) fn observe(
         return Err(err("UPDATE_SOURCE_INVENTORY_INVALID"));
     }
     source_database::validate(&observation.physical)?;
-    source_inventory::matched_candidate(&observation.inventory, ctx.plan)?;
+    if candidate {
+        source_inventory::matched_candidate(&observation.inventory, ctx.plan)?;
+    } else {
+        source_inventory::matched(&observation.inventory, ctx.plan)?;
+    }
     // Remove only this stopped, owned successful helper. No volume deletion operation.
     run("docker", &["rm".into(), id.into()], None, 15)?;
     Ok(observation)

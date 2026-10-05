@@ -31,6 +31,9 @@ mod source_database;
 pub use source_database::DatabaseSnapshotReceipt;
 #[path = "ephemeral_inventory.rs"]
 mod ephemeral_inventory;
+#[path = "ephemeral_source_recovery.rs"]
+mod ephemeral_source_recovery;
+pub use ephemeral_source_recovery::EphemeralSourceRecoveryReceipt;
 #[path = "source_inventory.rs"]
 mod source_inventory;
 pub use ephemeral_inventory::EphemeralCandidateInventoryReceipt;
@@ -1920,6 +1923,23 @@ mod tests {
                 .code,
             "UPDATE_TARGET_UNREGISTERED"
         );
+        for acknowledged in [false, true] {
+            assert_eq!(
+                session
+                    .verify_source_recovery_ephemeral(
+                        "untrusted",
+                        Path::new("/untrusted-parent"),
+                        acknowledged
+                    )
+                    .unwrap_err()
+                    .code,
+                if acknowledged {
+                    "UPDATE_TARGET_UNREGISTERED"
+                } else {
+                    "BACKUP_OPERATOR_ACK_REQUIRED"
+                }
+            );
+        }
         for acknowledged in [false, true] {
             assert_eq!(
                 session
