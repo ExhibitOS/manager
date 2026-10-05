@@ -667,6 +667,16 @@ impl PrivateDirectory {
     }
 }
 
+/// Read an existing public document with pinned NTFS ancestors and native identity.
+/// Denies concurrent writers/deletion and unrelated ACL writers; never adopts ACLs.
+/// The bytes are stable input only, not proof of a trusted release or activation.
+pub fn read_public_input(path: &Path, limit: usize) -> Result<Vec<u8>> {
+    if limit > 16 * 1024 * 1024 {
+        return Err(err("WINDOWS_PROFILE_RECORD_QUOTA"));
+    }
+    PublicRecord::open(path)?.read_bounded(limit)
+}
+
 /// Existing public input, held without write/delete sharing or ACL changes.
 /// This reader accepts only regular single-link files under pinned ancestors.
 /// Public ownership may be this token's default owner; unrelated writers are refused.

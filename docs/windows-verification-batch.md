@@ -43,3 +43,16 @@ Git source commit/기존 tracked 변경 여부, binary/manifest/hash-bound tar �
 ```powershell
 cargo test -p exhibitos-lifecycle --lib engine_failure_native --locked
 ```
+
+
+## WIN-06 정책·서명 문서 읽기 선행 구현
+
+Windows `exhibitos-update`의 작은 정책/서명 문서 입력은 기존 NTFS public reader에 연결한다. 모든 조상 경로/파일 식별자와 ACL을 검사하고 읽는 동안 native handle을 유지해 writer/delete 공유를 거부한다. 기존 ACL을 수정하거나 파일을 private로 채택하지 않는다. byte quota와 읽기 전후 변경 검사를 유지한다. 반환된 bytes는 입력일 뿐이며 기존 Ed25519·policy·expiry·replay 검증이 별도로 필요하다.
+
+최종 일괄 검사에 다음 세 검사를 포함한다. 새 합성 폴더만 생성하며 실패 후보와 파일은 남긴다. 정상 문서 정확 읽기, 열린 writer/hardlink/초과 크기 거부, 비파일·누락·무제한 입력 거부를 확인한다. 아직 Windows에서 실행하지 않았다.
+
+```powershell
+cargo test -p exhibitos-lifecycle --bin exhibitos-update windows_update_inputs --locked
+```
+
+큰 artifact의 retained reader/staging, 외부 private key, host checkpoint/trust journal 및 full update/rollback은 아직 미완료다. 작은 입력 reader 구현으로 WIN-06 전체를 준비 완료 또는 통과 처리하지 않는다.
