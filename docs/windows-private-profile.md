@@ -100,3 +100,15 @@ cargo test -p exhibitos-lifecycle --lib --locked
 ```
 
 No app rebuild is needed for these unit tests. Existing generated Tauri permission file changes must be preserved. A successful core suite still does not qualify real install/start/stop/restart/backup/update/installer or replace the remaining physical/GUI tests.
+
+## Canonical path UI and startup diagnostics
+
+Windows private roots are canonicalized before IPC. The frontend now accepts extended-length local drive paths (`\\?\C:\...`) and compares managed profile/recovery bindings using normalized Windows separators while preserving the exact returned path for display. Ordinary drive and Unix paths remain accepted. Device, GLOBALROOT, UNC and relative namespaces remain rejected; this change does not enable network storage or bypass backend ACL/identity/selection-token checks.
+
+A rejected response now reports the dedicated safe `MANAGER_PROTOCOL` code. Raw exceptions are still hidden. Startup root, data-path, lifecycle and WebView failures are mapped to an allowlist and reported on stderr; Windows additionally uses an ownerless native error dialog before exiting with status1. No raw path, secret, backend exception text or automatic permission repair enters the diagnostic.
+
+Native evidence at88a65c2: Windows release build succeeded in1m28s. The initial nested `LOCALAPPDATA\ExhibitOS\gui-check-*` attempt opened no GUI; an independent direct `LOCALAPPDATA\ExhibitOS-GuiCheck-*` attempt opened the window without stderr. That window then showed MANAGER_CONNECTION. The UI rejection of the canonical extended-length path is reproduced by a source-level regression; the exact initial nested-directory failure has not been captured and remains unclassified. Existing directories/ACLs are preserved.
+
+The corrected frontend and startup dialog need exact-source Windows GUI verification. Browser tests use synthetic native-shaped responses and are not Windows native execution, actual Docker detection or lifecycle proof. Successful Windows host checkpoint, managed-controller enablement and directory/power-loss durability remain unqualified. A staged managed-registry implementation is separately preserved; its Windows support gate has not been enabled.
+
+Win32 API reference: [MessageBoxW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-messageboxw). The diagnostic uses MB_OK, MB_ICONERROR and MB_SETFOREGROUND; no service notification, privileged desktop switch or remote URL is involved.
