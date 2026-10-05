@@ -397,6 +397,85 @@ impl Vault {
         self.check(primary, h)
     }
 }
+/// Fresh inactive restoration of the entire current independent authority chain.
+/// This proof is internal; it cannot be manufactured from a receipt or head hash.
+pub(super) struct InactiveAuthorityProof {
+    root: PathBuf,
+    identity: Metadata,
+    generation: u64,
+    head_sha256: String,
+}
+impl Store {
+    pub(super) fn require_authority_recovery(&self) -> Result<(), Error> {
+        self.check_root()?;
+        self.recovery
+            .as_ref()
+            .ok_or_else(invalid)?
+            .check(&self.root, &self.current_sha256)
+    }
+    pub(super) fn restore_inactive_authority(
+        &self,
+        destination: &Path,
+    ) -> Result<InactiveAuthorityProof, Error> {
+        self.require_authority_recovery()?;
+        let vault = self.recovery.as_ref().ok_or_else(invalid)?;
+        let parent = destination.parent().ok_or_else(invalid)?;
+        private_dir(parent)?;
+        if !destination.is_absolute()
+            || !absent(destination)?
+            || [&self.profile, &self.root, &vault.root, &vault.locator]
+                .into_iter()
+                .any(|p| destination.starts_with(p) || p.starts_with(destination))
+        {
+            return Err(invalid());
+        }
+        let records = vault.latest()?;
+        let bytes = records.iter().try_fold(0u64, |total, (_, b, _)| {
+            total.checked_add(b.len() as u64).ok_or_else(invalid)
+        })?;
+        if fs2::available_space(parent).map_err(|_| invalid())?
+            < bytes
+                .checked_add(6 * 1024 * 1024 * 1024)
+                .ok_or_else(invalid)?
+        {
+            return Err(Error::TrustLimit);
+        }
+        new_dir(destination)?;
+        for (name, bytes, _) in &records {
+            publish_bytes(destination, name, bytes)?;
+        }
+        let proof = InactiveAuthorityProof {
+            root: destination.to_owned(),
+            identity: private_dir(destination)?,
+            generation: self.current.generation,
+            head_sha256: self.current_sha256.clone(),
+        };
+        self.recheck_inactive_authority(&proof)?;
+        Ok(proof)
+    }
+    pub(super) fn recheck_inactive_authority(
+        &self,
+        proof: &InactiveAuthorityProof,
+    ) -> Result<(), Error> {
+        self.require_authority_recovery()?;
+        if proof.generation != self.current.generation
+            || proof.head_sha256 != self.current_sha256
+            || !identity(&proof.identity, &private_dir(&proof.root)?)
+        {
+            return Err(invalid());
+        }
+        let records = self.recovery.as_ref().ok_or_else(invalid)?.latest()?;
+        let restored = history(&proof.root, &self.scope)?;
+        if records
+            .iter()
+            .map(|(n, b, _)| (n, b))
+            .ne(restored.iter().map(|(n, b, _)| (n, b)))
+        {
+            return Err(invalid());
+        }
+        self.require_authority_recovery()
+    }
+}
 impl Store {
     /// Trusted administrator enrollment while the original complete Store exists.
     /// Every later commit writes an independent candidate BEFORE primary mutation,
@@ -685,6 +764,61 @@ mod tests {
     }
     fn retire(p: &Path) {
         fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+    #[test]
+    fn owned_preflight_authority_restore_uses_exact_current_chain_and_refuses_stale_proof() {
+        let (p, mut s, vault) = setup();
+        let destination = p.parent().unwrap().join("inactive-authority");
+        let original = bytes(&s.root);
+        let intent = serde_json::to_vec(&s.current.intent).unwrap();
+        let proof = s.restore_inactive_authority(&destination).unwrap();
+        assert_eq!(bytes(&destination), original);
+        assert_eq!(bytes(&s.root), original);
+        assert_eq!(bytes(&vault.join("records")), original);
+        assert_eq!(serde_json::to_vec(&s.current.intent).unwrap(), intent);
+        s.recheck_inactive_authority(&proof).unwrap();
+        assert!(s.restore_inactive_authority(&destination).is_err());
+        assert_eq!(bytes(&destination), original);
+        s.discard_prepared("update-1", 3, 22).unwrap();
+        let latest = bytes(&s.root);
+        assert!(s.recheck_inactive_authority(&proof).is_err());
+        assert_eq!(bytes(&destination), original);
+        assert_eq!(bytes(&s.root), latest);
+        assert_eq!(bytes(&vault.join("records")), latest);
+        drop(s);
+        retire(&p);
+    }
+    #[test]
+    fn owned_preflight_authority_restore_refuses_alias_tamper_permissions_and_shared_inputs() {
+        for kind in 0..4 {
+            let (p, s, vault) = setup();
+            let destination = p.parent().unwrap().join("inactive-authority");
+            let original = bytes(&s.root);
+            let proof = s.restore_inactive_authority(&destination).unwrap();
+            let record = destination.join("00000000000000000003.json");
+            match kind {
+                0 => fs::write(&record, b"{}").unwrap(),
+                1 => fs::hard_link(&record, p.parent().unwrap().join("alias.json")).unwrap(),
+                2 => fs::set_permissions(&record, fs::Permissions::from_mode(0o644)).unwrap(),
+                _ => {
+                    let retained = p.parent().unwrap().join("retained-inactive");
+                    fs::rename(&destination, &retained).unwrap();
+                    symlink(&retained, &destination).unwrap();
+                }
+            }
+            let changed = bytes(&destination);
+            assert!(s.recheck_inactive_authority(&proof).is_err());
+            assert_eq!(bytes(&destination), changed);
+            assert_eq!(bytes(&s.root), original);
+            assert_eq!(bytes(&vault.join("records")), original);
+            assert!(
+                s.restore_inactive_authority(&s.profile.join("forbidden"))
+                    .is_err()
+            );
+            assert!(!s.profile.join("forbidden").exists());
+            drop(s);
+            retire(&p);
+        }
     }
     #[test]
     fn authority_vault_recovers_exact_latest_floors_revocations_and_reserved_ids() {

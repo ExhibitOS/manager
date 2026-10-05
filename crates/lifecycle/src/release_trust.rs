@@ -70,6 +70,8 @@ pub use owned_execution::{
     PreparedOciReceipt, RecoveryRuntimeInputs, RuntimeCompatibility, SourceHostTrustReceipt,
     SourceRecoveryReceipt,
 };
+#[cfg(unix)]
+pub use owned_execution::{OwnedPreflight, StartedUpdate};
 pub use target_registration::RegisteredUpdateTarget;
 use update_journal::{UpdateEvent, evolve, in_flight, remember_ids, validate_new_ids};
 #[derive(Debug, Clone, Serialize, Deserialize)]

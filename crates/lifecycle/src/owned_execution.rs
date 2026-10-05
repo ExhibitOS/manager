@@ -20,6 +20,8 @@ pub use runtime_compatibility::RuntimeCompatibility;
 #[path = "current_recovery_runtime.rs"]
 mod current_recovery_runtime;
 pub use current_recovery_runtime::{CurrentRecoveryRuntime, RecoveryRuntimeInputs};
+#[cfg(unix)]
+pub use current_recovery_runtime::{OwnedPreflight, StartedUpdate};
 #[path = "source_stopped.rs"]
 mod source_stopped;
 pub use source_stopped::SourceStoppedReceipt;
@@ -1465,6 +1467,57 @@ mod tests {
         };
         installations::new_directory(&root).unwrap();
         root
+    }
+    #[test]
+    fn owned_preflight_without_independent_authority_never_extracts_or_transitions() {
+        let (p, mut store) = prepared("default");
+        registered(&p, SOURCE, "default");
+        let parent = p.parent().unwrap().to_owned();
+        let file = parent.join("runtime.tar");
+        fs::write(&file, b"fixture").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        let head = store.current_sha256.clone();
+        let intent = serde_json::to_vec(&store.current.intent).unwrap();
+        let mut session = store.execution().unwrap();
+        let mut artifact = session
+            .stage_prepared_artifact_at(&file, &parent, 21)
+            .unwrap();
+        let destination = parent.join("never-created");
+        let inputs = RecoveryRuntimeInputs {
+            checkpoint: CheckpointInputs {
+                binding: Path::new("/missing-binding"),
+                host: Path::new("/missing-host"),
+                trust: Path::new("/missing-trust"),
+                key: &[4; 32],
+            },
+            export_parent: &parent,
+            python: Path::new("/missing-python"),
+            source_commit: "invalid",
+            maintenance_image: "untrusted",
+            external_writers_quiesced: true,
+        };
+        assert!(
+            session
+                .prepare_owned_update(
+                    &mut artifact,
+                    &inputs,
+                    &destination,
+                    Path::new("/missing-key")
+                )
+                .is_err()
+        );
+        assert!(!destination.exists());
+        assert_eq!(fs::read(&file).unwrap(), b"fixture");
+        drop(artifact);
+        drop(session);
+        assert_eq!(store.current_sha256, head);
+        assert_eq!(serde_json::to_vec(&store.current.intent).unwrap(), intent);
+        assert_eq!(
+            store.intent().unwrap().update.stage(),
+            crate::update::Stage::Prepared
+        );
+        drop(store);
+        fs::remove_dir_all(parent).unwrap();
     }
     #[test]
     fn owned_artifact_rechecks_expiry_and_retained_path_without_transition() {
