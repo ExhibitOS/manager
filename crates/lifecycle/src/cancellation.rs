@@ -47,7 +47,7 @@ fn valid(v: &MaintenanceContext) -> Result<()> {
     Ok(())
 }
 impl LifecycleService {
-    fn cancellation_lock(&self) -> Result<File> {
+    fn cancellation_lock(&self) -> Result<OperationGuard> {
         let path = self.root.join("maintenance-cancel.lock");
         let file = match private_options().open(&path) {
             Ok(f) => f,
@@ -81,7 +81,14 @@ impl LifecycleService {
             }
         }
         file.try_lock_exclusive().map_err(|_| err("BUSY"))?;
-        Ok(file)
+        #[cfg(windows)]
+        {
+            Ok(file)
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(OperationGuard(file))
+        }
     }
     fn read_maintenance(&self) -> Result<Option<MaintenanceContext>> {
         match fs::symlink_metadata(self.root.join("maintenance-active.json")) {
@@ -401,7 +408,7 @@ impl LifecycleService {
         result
     }
     /// Hold this guard through original job/receipt and cancellation terminal writes.
-    pub(crate) fn maintenance_finish_guard(&self, kind: &str, id: &str) -> Result<File> {
+    pub(crate) fn maintenance_finish_guard(&self, kind: &str, id: &str) -> Result<OperationGuard> {
         let guard = self.cancellation_lock()?;
         let v = self
             .read_maintenance()?
@@ -447,6 +454,23 @@ mod tests {
             },
         )
         .unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_scope_unlocks_even_when_duplicate_descriptor_survives() {
+        let (s, _) = fixture();
+        let guard = s.cancellation_lock().unwrap();
+        // A duplicated descriptor retains the same open file description, as a
+        // forked child does until exec. Closing just the parent is insufficient.
+        let duplicate = guard.try_clone().unwrap();
+        assert!(matches!(s.cancellation_lock(), Err(e) if e.code == "BUSY"));
+        drop(guard);
+        let next = s.cancellation_lock().unwrap();
+        assert!(matches!(s.cancellation_lock(), Err(e) if e.code == "BUSY"));
+        drop(duplicate);
+        assert!(matches!(s.cancellation_lock(), Err(e) if e.code == "BUSY"));
+        drop(next);
+        assert!(s.cancellation_lock().is_ok());
     }
     #[test]
     fn empty_context_does_not_occupy_fresh_destination() {
