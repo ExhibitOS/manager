@@ -52,8 +52,8 @@ mod target_registration;
 #[path = "trust_update.rs"]
 mod update_journal;
 pub use owned_execution::{
-    CandidateInventoryReceipt, ExecutionSession, PreparedArtifact, PreparedArtifactReceipt,
-    PreparedOciReceipt, SourceHostTrustReceipt, SourceRecoveryReceipt,
+    CandidateConfigurationReceipt, CandidateInventoryReceipt, ExecutionSession, PreparedArtifact,
+    PreparedArtifactReceipt, PreparedOciReceipt, SourceHostTrustReceipt, SourceRecoveryReceipt,
 };
 pub use target_registration::RegisteredUpdateTarget;
 use update_journal::{UpdateEvent, evolve, in_flight, remember_ids, validate_new_ids};
