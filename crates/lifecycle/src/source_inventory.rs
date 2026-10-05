@@ -29,7 +29,17 @@ pub struct SourceInventoryReceipt {
     pub observed_at: u64,
 }
 pub(super) fn matched(proof: &InventoryProof, plan: &crate::update::Plan) -> Result<()> {
-    if proof.operation != "source-inventory-matched"
+    matched_operation(proof, plan, "source-inventory-matched")
+}
+pub(super) fn matched_candidate(proof: &InventoryProof, plan: &crate::update::Plan) -> Result<()> {
+    matched_operation(proof, plan, "restored-inventory-matched")
+}
+fn matched_operation(
+    proof: &InventoryProof,
+    plan: &crate::update::Plan,
+    operation: &str,
+) -> Result<()> {
+    if proof.operation != operation
         || proof.backup_id != plan.backup_id
         || proof.authenticated_manifest_sha256 != plan.backup_manifest
         || proof.inventory_sha256 != plan.source_inventory
@@ -49,6 +59,36 @@ pub(super) fn compare(
     blobs: &str,
     manifest: &Path,
     manifest_hash: &str,
+) -> Result<InventoryProof> {
+    compare_at(image, snapshot, blobs, manifest, manifest_hash, None)
+}
+pub(super) fn compare_candidate(
+    image: &str,
+    snapshot: &str,
+    blobs: &str,
+    manifest: &Path,
+    manifest_hash: &str,
+    system_identifier: &str,
+) -> Result<InventoryProof> {
+    if !super::source_database::valid_system_identifier(system_identifier) {
+        return Err(err("UPDATE_SOURCE_INVENTORY_INVALID"));
+    }
+    compare_at(
+        image,
+        snapshot,
+        blobs,
+        manifest,
+        manifest_hash,
+        Some(system_identifier),
+    )
+}
+fn compare_at(
+    image: &str,
+    snapshot: &str,
+    blobs: &str,
+    manifest: &Path,
+    manifest_hash: &str,
+    candidate_system_identifier: Option<&str>,
 ) -> Result<InventoryProof> {
     if !image.strip_prefix("sha256:").is_some_and(hash_valid)
         || !hash_valid(manifest_hash)
@@ -88,6 +128,12 @@ pub(super) fn compare(
     ];
     for cap in ["DAC_OVERRIDE", "CHOWN", "SETUID", "SETGID", "KILL"] {
         args.extend(["--cap-add".into(), cap.into()]);
+    }
+    if let Some(id) = candidate_system_identifier {
+        args.extend([
+            "--env".into(),
+            format!("EXHIBITOS_CANDIDATE_SYSTEM_IDENTIFIER={id}"),
+        ]);
     }
     args.extend([
         "--security-opt".into(),
@@ -175,6 +221,11 @@ mod tests {
         let base = serde_json::json!({"operation":"source-inventory-matched","backupId":plan.backup_id,"authenticatedManifestSha256":plan.backup_manifest,"inventorySha256":plan.source_inventory,"schemaSha256":plan.source_schema,"observedAt":"2026-10-04T00:00:00Z","currentInventoryVerified":true,"configurationVerified":false,"preflightVerified":false,"updateExecuted":false});
         let proof = |v| serde_json::from_value::<InventoryProof>(v).unwrap();
         assert!(matched(&proof(base.clone()), &plan).is_ok());
+        assert!(matched_candidate(&proof(base.clone()), &plan).is_err());
+        let mut candidate = base.clone();
+        candidate["operation"] = Value::from("restored-inventory-matched");
+        assert!(matched_candidate(&proof(candidate.clone()), &plan).is_ok());
+        assert!(matched(&proof(candidate), &plan).is_err());
         for field in [
             "operation",
             "backupId",

@@ -214,6 +214,9 @@ fn err(code: &str) -> LifecycleError {
         "UPDATE_SOURCE_IMAGES_RETIRE_UNCERTAIN" | "UPDATE_SOURCE_IMAGES_RETIRE_UNVERIFIED" => {
             "이미지 검사 사본 정리 완료를 확인할 수 없습니다. 원본·복원점과 남은 검사 폴더·목록을 보존하고 진단하세요."
         }
+        "UPDATE_CANDIDATE_PROOF_MISSING" => {
+            "현재 계획에 맞는 복구 후보의 완료 기록을 확인할 수 없습니다. 원본과 후보 데이터를 보존하고 복원 기록·검증 출처를 확인하세요."
+        }
         "RECOVERY_PAIR_INVALID" => {
             "호스트와 신뢰 백업의 결합 기록을 확인할 수 없습니다. 원래 백업·키·신뢰 기록을 보존하고 같은 체크포인트의 파일을 선택하세요."
         }

@@ -62,5 +62,7 @@ try{
  assert.deepEqual(after,before);assert.deepEqual(content(copied),content(before));
  phase='control';const control=execFileSync('pg_controldata',[target+'/18/docker'],{encoding:'utf8',env:{...process.env,LC_ALL:'C'},timeout:10000,maxBuffer:16384});
  assert.ok(/^Database cluster state:\s+shut down\s*$/m.test(control));
- console.log(JSON.stringify({cleanShutdown:true,files:before.rows.filter(r=>r.kind==='file').length,entries:before.rows.length,bytes:before.bytes,contentSha256:digest(JSON.stringify(content(before))),postgresMajor:18,pgdata:'18/docker'}));
+ const systemIdentifier=/^Database system identifier:\s+([1-9][0-9]{0,19})\s*$/m.exec(control)?.[1];
+ assert.ok(systemIdentifier&&BigInt(systemIdentifier)<=18446744073709551615n);
+ console.log(JSON.stringify({systemIdentifier,cleanShutdown:true,files:before.rows.filter(r=>r.kind==='file').length,entries:before.rows.length,bytes:before.bytes,contentSha256:digest(JSON.stringify(content(before))),postgresMajor:18,pgdata:'18/docker'}));
 }catch{console.error('SOURCE_DATABASE_COPY_REFUSED:'+phase);process.exitCode=1;}
