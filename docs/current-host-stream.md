@@ -21,3 +21,13 @@ exhibitos-update verify-combined-recovery-ephemeral \
 DB/blob 검사는 tmpfs 임시 사본에서 native PostgreSQL을 사용하고 디스크 volume을 새로 만들지 않습니다. 세 image 관측은 성공한 전체 fence 검증 뒤 새 고유 export만 정리하고 작은 hash marker를 남깁니다. 디스크14GiB eligibility와 기존 copy/image/memory 제한은 유지합니다. 실패 자료는 보존하며 기존 archive/key/data/volume/image를 삭제하지 않습니다.
 
 이 읽기 검사는 실제 추출·authority 복원·복구 후 실행을 대체하지 않습니다. `sourcePlanBound=false` 복구점은 해당 한계를 그대로 표시합니다. 결과는 `preflightVerified=false`, `updateExecuted=false`이며 Applying 허가나 전체 coherent 복원 완료를 뜻하지 않습니다. Windows host archive 경계는 아직 지원 검증이 끝나지 않았습니다.
+
+## 관측된 원본·계획에 연결하기
+
+위 검사의 명령 이름을 `bind-observed-recovery-pair`로 바꾸고, `--external-writers-quiesced` 앞에 `--bound-pair /absolute/private/new-source-binding.bin`을 추가하면 새 인증 연결 파일을 만듭니다. 부모는 기존 private 디렉터리여야 하고 출력은 원본 profile 밖의 새 경로여야 합니다. 기존 파일·symlink·동일 이름은 거부하며 원래 binding을 덮어쓰지 않습니다.
+
+전체 호스트 전후 대조·원본/후보 DB/blob·설정/키/이미지·마지막 공통 상태 확인에 성공한 뒤, 원본·후보 operation 잠금과 profile/trust fence를 계속 보유한 채 출력합니다. 현재 authority generation/head 및 정확한 operation/source/target/backup/manifest/inventory/schema를 AES-GCM 연결 파일에 인증하며, 기존 host/trust ciphertext 바이트를 복제하지 않습니다. 새 파일을 읽어 인증·전체 ciphertext/current authority를 다시 확인한 뒤 성공 결과를 제공합니다. 실패 자료는 보존하고 자동 재실행이나 덮어쓰기를 하지 않습니다.
+
+결과의 `boundPair`는 새 파일 경로이고 `checkpoint.sourcePlanBound=true`는 관측한 현재 계획에 대한 provenance 연결입니다. 원래 catalog는 그대로 유지합니다. `verify-current-checkpoint-pair`에 새 파일을 지정하면 동일한 ciphertext와 현재 authority를 기준으로 읽기 재검사를 수행할 수 있습니다. 키나 operation/source/backup/current authority가 다르면 거부합니다.
+
+이 연결은 새 릴리스 서명·만료·호환성 검사나 실제 복원 실행을 대신하지 않습니다. 기존 Prepared 계획의 provenance를 연결해도 만료된 릴리스를 적용할 수 없습니다. coherent authority/host/외부 서비스 복원, 복원 후 health, owned preflight/executor와 apply/rollback 검증은 계속 별도로 필요합니다. `preflightVerified`와 `updateExecuted`는 여전히 false입니다.

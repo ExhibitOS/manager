@@ -15,6 +15,7 @@ pub struct CombinedRecoveryReceipt {
     pub source_after: EphemeralSourceRecoveryReceipt,
     pub checkpoint: crate::signed_release::trust::CheckpointPairReceipt,
     pub host: crate::profile_backup::HostCurrentReceipt,
+    pub bound_pair: Option<String>,
     pub preflight_verified: bool,
     pub update_executed: bool,
 }
@@ -49,64 +50,136 @@ impl ExecutionSession<'_> {
         inputs: &CheckpointInputs<'_>,
         acknowledged: bool,
     ) -> crate::Result<CombinedRecoveryReceipt> {
-        let mut result = self.inspect_restored_candidate(acknowledged, |ctx| {
-            self.validate_candidate_export_parent(export_parent)?;
-            // Three full image observations up to2GiB each +2GiB headroom+6GiB floor.
-            for parent in [&self.source.root, ctx.root, export_parent] {
-                if fs2::available_space(parent).map_err(|_| crate::err("STORAGE_UNAVAILABLE"))?
-                    < 14 * 1024 * 1024 * 1024
-                {
-                    return Err(crate::err("RESTORE_SPACE_REQUIRED"));
+        self.combined_recovery_at(image, export_parent, inputs, None, acknowledged)
+    }
+    /// Publishes only a fresh small authenticated provenance catalog. Existing
+    /// archive/key bytes and update authority are not copied or transitioned.
+    pub fn bind_combined_recovery_ephemeral(
+        &self,
+        image: &str,
+        export_parent: &Path,
+        inputs: &CheckpointInputs<'_>,
+        bound_pair: &Path,
+        acknowledged: bool,
+    ) -> crate::Result<CombinedRecoveryReceipt> {
+        self.combined_recovery_at(image, export_parent, inputs, Some(bound_pair), acknowledged)
+    }
+    fn validate_bound_pair_destination(&self, path: &Path) -> crate::Result<()> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| crate::err("RECOVERY_PAIR_INVALID"))?;
+        if !path.is_absolute()
+            || fs::canonicalize(parent).ok().as_deref() != Some(parent)
+            || path.starts_with(&self.store.profile)
+            || path.starts_with(&self.store.root)
+            || parent.starts_with(&self.store.profile)
+            || parent.starts_with(&self.store.root)
+            || !matches!(fs::symlink_metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+        {
+            return Err(crate::err("RECOVERY_PAIR_INVALID"));
+        }
+        installations::private_directory(parent)?;
+        Ok(())
+    }
+    fn combined_recovery_at(
+        &self,
+        image: &str,
+        export_parent: &Path,
+        inputs: &CheckpointInputs<'_>,
+        bound_pair: Option<&Path>,
+        acknowledged: bool,
+    ) -> crate::Result<CombinedRecoveryReceipt> {
+        self.check()?;
+        if !acknowledged {
+            return Err(crate::err("BACKUP_OPERATOR_ACK_REQUIRED"));
+        }
+        if let Some(path) = bound_pair {
+            self.validate_bound_pair_destination(path)?;
+        }
+        let (mut result, _) = self.inspect_restored_candidate_finalized(
+            acknowledged,
+            |ctx| {
+                self.validate_candidate_export_parent(export_parent)?;
+                // Three full image observations up to2GiB each +2GiB headroom+6GiB floor.
+                for parent in [&self.source.root, ctx.root, export_parent] {
+                    if fs2::available_space(parent)
+                        .map_err(|_| crate::err("STORAGE_UNAVAILABLE"))?
+                        < 14 * 1024 * 1024 * 1024
+                    {
+                        return Err(crate::err("RESTORE_SPACE_REQUIRED"));
+                    }
                 }
-            }
-            let proof = self.store.verify_checkpoint_pair(
-                inputs.binding,
-                inputs.host,
-                inputs.trust,
-                inputs.key,
-            )?;
-            let host = crate::profile_backup::verify_host_current_borrowed(
-                &self.store.profile,
-                inputs.host,
-                inputs.key,
-                &self._session,
-                &proof.receipt().host_manifest_sha256,
-            )?;
-            let source_before = self.observe_source_recovery_at(ctx, image, export_parent)?;
-            let candidate =
-                self.observe_ephemeral_candidate_recovery_at(ctx, image, export_parent)?;
-            let source_after = self.observe_source_recovery_at(ctx, image, export_parent)?;
-            if !same_source(&source_before, &source_after) {
-                return Err(crate::err("UPDATE_SOURCE_CHANGED"));
-            }
-            self.recheck_candidate_configuration_at(ctx, image, &candidate.configuration)?;
-            let host_after = crate::profile_backup::verify_host_current_borrowed(
-                &self.store.profile,
-                inputs.host,
-                inputs.key,
-                &self._session,
-                &proof.receipt().host_manifest_sha256,
-            )?;
-            if host != host_after {
-                return Err(crate::err("HOST_SOURCE_CHANGED"));
-            }
-            self.store.recheck_checkpoint_pair(
-                &proof,
-                inputs.binding,
-                inputs.host,
-                inputs.trust,
-                inputs.key,
-            )?;
-            Ok(CombinedRecoveryReceipt {
-                source_before,
-                candidate,
-                source_after,
-                checkpoint: proof.receipt(),
-                host,
-                preflight_verified: false,
-                update_executed: false,
-            })
-        })?;
+                let proof = self.store.verify_checkpoint_pair(
+                    inputs.binding,
+                    inputs.host,
+                    inputs.trust,
+                    inputs.key,
+                )?;
+                let host = crate::profile_backup::verify_host_current_borrowed(
+                    &self.store.profile,
+                    inputs.host,
+                    inputs.key,
+                    &self._session,
+                    &proof.receipt().host_manifest_sha256,
+                )?;
+                let source_before = self.observe_source_recovery_at(ctx, image, export_parent)?;
+                let candidate =
+                    self.observe_ephemeral_candidate_recovery_at(ctx, image, export_parent)?;
+                let source_after = self.observe_source_recovery_at(ctx, image, export_parent)?;
+                if !same_source(&source_before, &source_after) {
+                    return Err(crate::err("UPDATE_SOURCE_CHANGED"));
+                }
+                self.recheck_candidate_configuration_at(ctx, image, &candidate.configuration)?;
+                let host_after = crate::profile_backup::verify_host_current_borrowed(
+                    &self.store.profile,
+                    inputs.host,
+                    inputs.key,
+                    &self._session,
+                    &proof.receipt().host_manifest_sha256,
+                )?;
+                if host != host_after {
+                    return Err(crate::err("HOST_SOURCE_CHANGED"));
+                }
+                self.store.recheck_checkpoint_pair(
+                    &proof,
+                    inputs.binding,
+                    inputs.host,
+                    inputs.trust,
+                    inputs.key,
+                )?;
+                let receipt = CombinedRecoveryReceipt {
+                    source_before,
+                    candidate,
+                    source_after,
+                    checkpoint: proof.receipt(),
+                    host,
+                    bound_pair: None,
+                    preflight_verified: false,
+                    update_executed: false,
+                };
+                Ok((receipt, proof))
+            },
+            |_, (receipt, proof)| {
+                if let Some(path) = bound_pair {
+                    // All common guards have passed; source/candidate operation
+                    // handles remain held through sealing and exact readback.
+                    self.validate_bound_pair_destination(path)?;
+                    let bound = self
+                        .store
+                        .bind_observed_checkpoint(proof, path, inputs.key)?;
+                    self.store.recheck_checkpoint_pair(
+                        &bound,
+                        path,
+                        inputs.host,
+                        inputs.trust,
+                        inputs.key,
+                    )?;
+                    receipt.checkpoint = bound.receipt();
+                    receipt.bound_pair = Some(path.to_string_lossy().into_owned());
+                }
+                Ok(())
+            },
+        )?;
         // All common final guards have now passed; retire only these three fresh export scopes.
         for configuration in [
             &mut result.source_before.configuration,
