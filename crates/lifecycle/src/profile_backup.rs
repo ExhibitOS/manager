@@ -352,6 +352,18 @@ pub(crate) fn anchor_lock(profile: &Path, exclusive: bool) -> Result<(PathBuf, P
         ))
     }
 }
+/// Retain legacy profile and all registered-root operation locks during read-only reuse.
+#[cfg(unix)]
+pub(crate) fn current_host_locks(
+    profile: &Path,
+    session: &ProfileSession,
+) -> Result<(File, Vec<File>)> {
+    session.check_exclusive(profile)?;
+    let profile_lock = lock_file(profile, "operation.lock", true)?;
+    let snapshot = capture(profile)?;
+    let roots = root_locks(profile, &snapshot.spaces)?;
+    Ok((profile_lock, roots))
+}
 pub(crate) fn anchored_session(
     profile: &Path,
     anchor: ProfileAnchor,

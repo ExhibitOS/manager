@@ -266,6 +266,134 @@ impl Store {
         }
         Ok(())
     }
+    /// Refresh only the small trust archive/catalog after full read-only host verification.
+    /// `previous` is [catalog, host archive, trust archive]. The host remains externally
+    /// retained; no source binding is inherited. Only unchanged Prepared history is accepted.
+    #[cfg(unix)]
+    pub fn refresh_checkpoint_trust(
+        &self,
+        previous: [&Path; 3],
+        key_file: &Path,
+        destination: &Path,
+        writers_stopped: bool,
+    ) -> crate::Result<CheckpointPairReceipt> {
+        use crate::update::Stage;
+        let [previous_catalog, host, previous_trust] = previous;
+        self.check_root().map_err(|_| failure())?;
+        if !writers_stopped {
+            return Err(crate::err("HOST_WRITER_ACK_REQUIRED"));
+        }
+        let parent = destination.parent().ok_or_else(failure)?;
+        if !destination.is_absolute()
+            || destination.exists()
+            || fs::canonicalize(parent).ok().as_deref() != Some(parent)
+            || destination.starts_with(&self.profile)
+            || destination.starts_with(&self.root)
+            || !key_file.is_absolute()
+            || fs::canonicalize(key_file).ok().as_deref() != Some(key_file)
+            || key_file.starts_with(&self.profile)
+            || key_file.starts_with(&self.root)
+        {
+            return Err(failure());
+        }
+        installations::private_directory(parent)?;
+        let mut key = read_record(key_file).map_err(|_| failure())?;
+        let result = (|| {
+            let key_array: &[u8; 32] = key.as_slice().try_into().map_err(|_| failure())?;
+            let previous = read_binding(previous_catalog, key_array)?;
+            let records = self.checkpoint_records().map_err(|_| failure())?;
+            let index = usize::try_from(previous.generation.checked_sub(1).ok_or_else(failure)?)
+                .map_err(|_| failure())?;
+            let (_, old_bytes) = records.get(index).ok_or_else(failure)?;
+            let old: Record = serde_json::from_slice(old_bytes).map_err(|_| failure())?;
+            let intent = self.intent().ok_or_else(failure)?;
+            if previous.format != 1
+                || previous.scope != self.scope
+                || previous.head_sha256 != hash(old_bytes)
+                || previous.host != archive(host)?
+                || previous.trust != archive(previous_trust)?
+                || !crate::hash_valid(&previous.host_manifest_sha256)
+                || old.intent.as_ref().is_none_or(|i| {
+                    i.update.stage() != Stage::Prepared || i.update.plan() != intent.update.plan()
+                })
+                || records.iter().skip(index).any(|(_, bytes)| {
+                    serde_json::from_slice::<Record>(bytes)
+                        .ok()
+                        .is_none_or(|r| {
+                            r.intent.as_ref().is_none_or(|i| {
+                                i.update.stage() != Stage::Prepared
+                                    || i.update.plan() != intent.update.plan()
+                            })
+                        })
+                })
+            {
+                return Err(failure());
+            }
+            let session = profile_backup::anchored_session(
+                &self.profile,
+                self._anchor.try_clone().map_err(|_| failure())?,
+                true,
+            )?;
+            let _legacy_locks = profile_backup::current_host_locks(&self.profile, &session)?;
+            let observe = || {
+                profile_backup::verify_host_current_borrowed(
+                    &self.profile,
+                    host,
+                    key_array,
+                    &session,
+                    &previous.host_manifest_sha256,
+                )
+            };
+            observe()?;
+            let stage = parent.join(format!("pending-trust-refresh-{}", uuid::Uuid::new_v4()));
+            installations::new_directory(&stage)?;
+            self.archive_trust_checkpoint(&stage.join("trust.bin"), key_array)
+                .map_err(|_| failure())?;
+            observe()?;
+            if read_record(key_file).map_err(|_| failure())? != key
+                || self.checkpoint_records().map_err(|_| failure())? != records
+                || read_binding(previous_catalog, key_array)? != previous
+                || archive(host)? != previous.host
+                || archive(previous_trust)? != previous.trust
+            {
+                return Err(failure());
+            }
+            let binding = PairBinding {
+                format: 1,
+                scope: self.scope.clone(),
+                generation: self.current.generation,
+                head_sha256: self.current_sha256.clone(),
+                host: previous.host.clone(),
+                trust: archive(&stage.join("trust.bin"))?,
+                host_manifest_sha256: previous.host_manifest_sha256.clone(),
+                source: None,
+            };
+            write_binding(&binding, &stage.join("pair-binding.bin"), key_array)?;
+            observe()?;
+            if read_record(key_file).map_err(|_| failure())? != key
+                || self.checkpoint_records().map_err(|_| failure())? != records
+                || read_binding(previous_catalog, key_array)? != previous
+                || archive(host)? != previous.host
+                || archive(previous_trust)? != previous.trust
+            {
+                return Err(failure());
+            }
+            self.check_root().map_err(|_| failure())?;
+            session.check_exclusive(&self.profile)?;
+            sync_dir(&stage).map_err(|_| failure())?;
+            publish(&stage, destination).map_err(|_| failure())?;
+            sync_dir(parent).map_err(|_| failure())?;
+            self.verify_checkpoint_pair(
+                &destination.join("pair-binding.bin"),
+                host,
+                &destination.join("trust.bin"),
+                key_array,
+            )
+            .map(|proof| proof.receipt())
+        })();
+        key.fill(0);
+        result
+    }
     /// Authenticate an older Prepared checkpoint for the SAME currently recovering
     /// plan. Its head must be an exact prefix of the independently retained chain.
     /// Never substitute this proof for an exact-current checkpoint or preflight.
@@ -515,6 +643,168 @@ mod tests {
             .bind_observed_checkpoint(&proof, &pair.join("bound.bin"), &[4; 32])
             .unwrap();
         (profile, store, release, pair)
+    }
+    #[test]
+    fn refreshed_trust_reuses_exact_host_and_drops_source_observation() {
+        let (profile, mut store, _, pair) = fixture();
+        let parent = profile.parent().unwrap();
+        let original = archive(&pair.join("host.bin")).unwrap();
+        let policy = store.current.policy.clone();
+        store
+            .replace_policy(policy, store.current.policy_generation, 23)
+            .unwrap();
+        let records = store.checkpoint_records().unwrap();
+        let output = parent.join("refreshed");
+        let receipt = store
+            .refresh_checkpoint_trust(
+                [
+                    &pair.join("bound.bin"),
+                    &pair.join("host.bin"),
+                    &pair.join("trust.bin"),
+                ],
+                &parent.join("pair-key"),
+                &output,
+                true,
+            )
+            .unwrap();
+        assert_eq!(receipt.generation, store.current.generation);
+        assert_eq!(receipt.host_archive_sha256, original.sha256);
+        assert!(!receipt.source_plan_bound);
+        assert!(!output.join("host.bin").exists());
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 2);
+        assert_eq!(store.checkpoint_records().unwrap(), records);
+        assert_eq!(archive(&pair.join("host.bin")).unwrap(), original);
+        assert!(
+            store
+                .refresh_checkpoint_trust(
+                    [
+                        &pair.join("bound.bin"),
+                        &pair.join("host.bin"),
+                        &pair.join("trust.bin")
+                    ],
+                    &parent.join("pair-key"),
+                    &output,
+                    true
+                )
+                .is_err()
+        );
+    }
+    #[test]
+    fn refreshed_trust_refuses_changed_host_and_missing_ack_without_publication() {
+        let (profile, store, _, pair) = fixture();
+        let parent = profile.parent().unwrap();
+        let output = parent.join("refused");
+        let run = |ack| {
+            store.refresh_checkpoint_trust(
+                [
+                    &pair.join("bound.bin"),
+                    &pair.join("host.bin"),
+                    &pair.join("trust.bin"),
+                ],
+                &parent.join("pair-key"),
+                &output,
+                ack,
+            )
+        };
+        assert_eq!(run(false).unwrap_err().code, "HOST_WRITER_ACK_REQUIRED");
+        let witness = profile.join("new-witness");
+        private_file(&witness, true)
+            .unwrap()
+            .write_all(b"changed")
+            .unwrap();
+        assert!(run(true).is_err());
+        assert!(!output.exists());
+        assert_eq!(fs::read(witness).unwrap(), b"changed");
+    }
+    #[test]
+    fn refreshed_trust_refuses_applying_history_and_preserves_archives() {
+        let (profile, mut store, release, pair) = fixture();
+        let before = archive(&pair.join("host.bin")).unwrap();
+        store
+            .begin_update(super::super::super::tests::observations(), &release, 21)
+            .unwrap();
+        let output = profile.parent().unwrap().join("applying-refused");
+        assert!(
+            store
+                .refresh_checkpoint_trust(
+                    [
+                        &pair.join("bound.bin"),
+                        &pair.join("host.bin"),
+                        &pair.join("trust.bin")
+                    ],
+                    &profile.parent().unwrap().join("pair-key"),
+                    &output,
+                    true
+                )
+                .is_err()
+        );
+        assert!(!output.exists());
+        assert_eq!(archive(&pair.join("host.bin")).unwrap(), before);
+    }
+    #[test]
+    fn refreshed_trust_refuses_cipher_tamper_wrong_key_and_catalog() {
+        let (profile, store, _, pair) = fixture();
+        let parent = profile.parent().unwrap();
+        let output = parent.join("tamper-refused");
+        let key = parent.join("pair-key");
+        let original_key = fs::read(&key).unwrap();
+        fs::write(&key, [9; 32]).unwrap();
+        let run = || {
+            store.refresh_checkpoint_trust(
+                [
+                    &pair.join("bound.bin"),
+                    &pair.join("host.bin"),
+                    &pair.join("trust.bin"),
+                ],
+                &key,
+                &output,
+                true,
+            )
+        };
+        assert!(run().is_err());
+        fs::write(&key, original_key).unwrap();
+        let catalog = pair.join("bound.bin");
+        let old = fs::read(&catalog).unwrap();
+        let mut changed = old.clone();
+        let last = changed.len() - 1;
+        changed[last] ^= 1;
+        fs::write(&catalog, changed).unwrap();
+        assert!(run().is_err());
+        fs::write(&catalog, old).unwrap();
+        let host = pair.join("host.bin");
+        let mut changed = fs::read(&host).unwrap();
+        let last = changed.len() - 1;
+        changed[last] ^= 1;
+        fs::write(&host, changed).unwrap();
+        assert!(run().is_err());
+        assert!(!output.exists());
+    }
+    #[test]
+    fn refreshed_trust_refuses_active_legacy_operation_lock() {
+        let (profile, store, _, pair) = fixture();
+        let guard = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(profile.join("operation.lock"))
+            .unwrap();
+        fs2::FileExt::try_lock_exclusive(&guard).unwrap();
+        let output = profile.parent().unwrap().join("busy-refused");
+        assert!(
+            store
+                .refresh_checkpoint_trust(
+                    [
+                        &pair.join("bound.bin"),
+                        &pair.join("host.bin"),
+                        &pair.join("trust.bin")
+                    ],
+                    &profile.parent().unwrap().join("pair-key"),
+                    &output,
+                    true
+                )
+                .is_err()
+        );
+        assert!(!output.exists());
+        drop(guard);
     }
     fn recover(store: &mut Store, release: &VerifiedRelease) {
         store

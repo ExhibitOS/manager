@@ -625,6 +625,33 @@ fn run() -> Result<(), String> {
         );
         return Ok(());
     }
+    #[cfg(unix)]
+    if a[1] == "refresh-checkpoint-trust" {
+        if a.len() != 18
+            || a[6] != "--key-file"
+            || a[8] != "--host-archive"
+            || a[10] != "--trust-archive"
+            || a[12] != "--pair-binding"
+            || a[14] != "--destination"
+            || a[16] != "--host-writers-stopped"
+        {
+            return Err(usage());
+        }
+        let store = Store::open(profile, installation).map_err(code)?;
+        let receipt = store
+            .refresh_checkpoint_trust(
+                [Path::new(&a[13]), Path::new(&a[9]), Path::new(&a[11])],
+                Path::new(&a[7]),
+                Path::new(&a[15]),
+                true,
+            )
+            .map_err(|e| e.code)?;
+        println!(
+            "{}",
+            serde_json::to_string(&receipt).map_err(|_| "UPDATE_RECEIPT_INVALID")?
+        );
+        return Ok(());
+    }
     if a[1] == "checkpoint-host-trust" {
         if a.len() != 12
             || a[6] != "--key-file"
