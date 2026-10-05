@@ -73,6 +73,17 @@ impl Store {
         self.check_root()?;
         Ok(records)
     }
+    /// Validated current-history ciphertext budget; no new archive or state write.
+    pub(super) fn trust_archive_budget(&self) -> Result<u64, Error> {
+        self.checkpoint_records()?
+            .iter()
+            .try_fold(4096u64, |n, (name, bytes)| {
+                n.checked_add(name.len() as u64)
+                    .and_then(|n| n.checked_add(bytes.len() as u64))
+                    .and_then(|n| n.checked_add(128))
+                    .ok_or(Error::TrustLimit)
+            })
+    }
     /// Copy all validated committed records into a new private inactive directory.
     /// Pending writes refuse; exact byte verification requires this same current Store.
     pub fn checkpoint_trust(&self, destination: &Path) -> Result<TrustCheckpointReceipt, Error> {
