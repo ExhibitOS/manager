@@ -677,7 +677,7 @@ impl LifecycleService {
                 &source_bytes(&configuration, "manager-compose.yaml", 256 * 1024, true)?,
             )?;
             private_bytes(&source_stage.join("runtime.env"), &original_env)?;
-            let source_service = LifecycleService { root: source_stage };
+            let source_service = LifecycleService::bound_existing(source_stage)?;
             let validated = source_service.manifest()?;
             source_service.validate_compose(&validated, "docker")?;
             let old_config: Value = serde_json::from_slice(&run(

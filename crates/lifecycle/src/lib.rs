@@ -927,12 +927,17 @@ fn readiness(m: &BundleManifest) -> Readiness {
 
 pub struct LifecycleService {
     root: PathBuf,
+    #[cfg(windows)]
+    root_guard: windows_private::PrivateDirectory,
 }
 impl LifecycleService {
     pub fn new(root: PathBuf) -> Result<Self> {
         if !root.is_absolute() {
             return Err(err("STATE_INVALID"));
         }
+        #[cfg(windows)]
+        let root_guard = windows_private::PrivateDirectory::ensure_tree(&root)?;
+        #[cfg(not(windows))]
         fs::create_dir_all(&root).map_err(|_| err("STATE_UNAVAILABLE"))?;
         let m = fs::symlink_metadata(&root).map_err(|_| err("STATE_UNAVAILABLE"))?;
         if !m.is_dir() || m.file_type().is_symlink() {
@@ -944,7 +949,15 @@ impl LifecycleService {
             fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
                 .map_err(|_| err("STATE_UNAVAILABLE"))?;
         }
+        #[cfg(windows)]
+        let service = Self {
+            root: root_guard.path().to_path_buf(),
+            root_guard,
+        };
+        #[cfg(not(windows))]
         let service = Self { root };
+        #[cfg(windows)]
+        drop(service.lock()?);
         service.recover_jobs()?;
         service.recover_backup_jobs()?;
         service.recover_restoration()?;
@@ -953,27 +966,52 @@ impl LifecycleService {
         service.recover_maintenance_retries()?;
         Ok(service)
     }
-    fn lock(&self) -> Result<File> {
-        let path = self.root.join("operation.lock");
-        if path.exists()
-            && fs::symlink_metadata(&path)
-                .map_err(|_| err("STATE_INVALID"))?
-                .file_type()
-                .is_symlink()
+    /// Bind an already-existing checked destination without initiating recovery.
+    fn bound_existing(root: PathBuf) -> Result<Self> {
+        #[cfg(windows)]
         {
-            return Err(err("STATE_INVALID"));
+            let root_guard = windows_private::PrivateDirectory::inspect(&root)?;
+            Ok(Self {
+                root: root_guard.path().to_path_buf(),
+                root_guard,
+            })
         }
-        let file = match private_options().open(&path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(path)
-                .map_err(|_| err("STATE_UNAVAILABLE"))?,
-            Err(_) => return Err(err("STATE_UNAVAILABLE")),
-        };
-        file.try_lock_exclusive().map_err(|_| err("BUSY"))?;
-        Ok(file)
+        #[cfg(not(windows))]
+        {
+            Ok(Self { root })
+        }
+    }
+    fn lock(&self) -> Result<File> {
+        #[cfg(windows)]
+        {
+            let file = self.root_guard.lock_record("operation.lock")?;
+            file.try_lock_exclusive().map_err(|_| err("BUSY"))?;
+            self.root_guard.check_record(&file, "operation.lock")?;
+            Ok(file)
+        }
+        #[cfg(not(windows))]
+        {
+            let path = self.root.join("operation.lock");
+            if path.exists()
+                && fs::symlink_metadata(&path)
+                    .map_err(|_| err("STATE_INVALID"))?
+                    .file_type()
+                    .is_symlink()
+            {
+                return Err(err("STATE_INVALID"));
+            }
+            let file = match private_options().open(&path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(path)
+                    .map_err(|_| err("STATE_UNAVAILABLE"))?,
+                Err(_) => return Err(err("STATE_UNAVAILABLE")),
+            };
+            file.try_lock_exclusive().map_err(|_| err("BUSY"))?;
+            Ok(file)
+        }
     }
     fn manifest(&self) -> Result<BundleManifest> {
         let path = checked_path(&self.root, "bundle/manifest.json")?;

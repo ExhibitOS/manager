@@ -376,6 +376,82 @@ impl PrivateDirectory {
         result.check()?;
         Ok(result)
     }
+    /// Create only missing private descendants, retaining each ancestor fence.
+    /// Existing destination directories must already satisfy the private policy.
+    pub(crate) fn ensure_tree(path: &Path) -> Result<Self> {
+        if !path.is_absolute()
+            || path
+                .components()
+                .any(|part| matches!(part, Component::CurDir | Component::ParentDir))
+        {
+            return Err(err("PROFILE_PATH_INVALID"));
+        }
+        let mut missing = Vec::new();
+        let mut existing = path.to_path_buf();
+        loop {
+            match std::fs::symlink_metadata(&existing) {
+                Ok(_) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let name = existing
+                        .file_name()
+                        .and_then(|v| v.to_str())
+                        .ok_or_else(|| err("PROFILE_PATH_INVALID"))?
+                        .to_owned();
+                    valid_name(&name)?;
+                    missing.push(name);
+                    if missing.len() > 32 {
+                        return Err(err("PROFILE_PATH_INVALID"));
+                    }
+                    existing = existing
+                        .parent()
+                        .ok_or_else(|| err("PROFILE_PATH_INVALID"))?
+                        .to_path_buf();
+                }
+                Err(_) => return Err(err("WINDOWS_PROFILE_HANDLE_UNAVAILABLE")),
+            }
+        }
+        if missing.is_empty() {
+            return Self::inspect(path);
+        }
+        // The first create pins and validates the existing parent's namespace/ACL;
+        // every successor retains its predecessor in its own ancestor fence.
+        let mut guard = None;
+        for name in missing.into_iter().rev() {
+            let next = Self::create(&existing.join(name))?;
+            existing = next.path().to_path_buf();
+            guard = Some(next);
+        }
+        guard.ok_or_else(|| err("PROFILE_PATH_INVALID"))
+    }
+    /// Never truncates or rewrites existing locks; validates both old and new ACLs.
+    pub(crate) fn lock_record(&self, name: &str) -> Result<File> {
+        self.check()?;
+        valid_name(name)?;
+        let path = wide(&self.path.join(name))?;
+        let sd = descriptor(&self.sid, false)?;
+        let attributes = sec::SECURITY_ATTRIBUTES {
+            nLength: mem::size_of::<sec::SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd.0,
+            bInheritHandle: 0,
+        };
+        let handle = unsafe {
+            fsapi::CreateFileW(
+                path.as_ptr(),
+                0x80000000 | 0x40000000 | fsapi::READ_CONTROL,
+                fsapi::FILE_SHARE_READ | fsapi::FILE_SHARE_WRITE,
+                &attributes,
+                fsapi::OPEN_ALWAYS,
+                fsapi::FILE_ATTRIBUTE_NORMAL | fsapi::FILE_FLAG_OPEN_REPARSE_POINT,
+                ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(err("WINDOWS_PROFILE_RECORD_OPEN_REFUSED"));
+        }
+        let file = unsafe { File::from_raw_handle(handle.cast()) };
+        self.check_record(&file, name)?;
+        Ok(file)
+    }
     /// Inspect an existing protected owner-only directory without changing permissions.
     /// This is not an identity witness across backup restore or namespace replacement.
     pub(crate) fn inspect(path: &Path) -> Result<Self> {
@@ -779,6 +855,80 @@ mod tests {
         std::fs::remove_file(path.join("generation.json")).unwrap();
         std::fs::remove_file(path.join("empty")).unwrap();
         std::fs::remove_dir(path).unwrap();
+        let path = root.path().to_path_buf();
+        drop(root);
+        std::fs::remove_dir(path).unwrap();
+    }
+    #[test]
+    fn service_lifetime_pins_new_nested_roots_and_guarded_operation_locks() {
+        let parent = fresh();
+        let path = parent.path().join("service-parent").join("service-root");
+        let service = crate::LifecycleService::new(path.clone()).unwrap();
+        let other = crate::LifecycleService::bound_existing(service.root.clone()).unwrap();
+        let lock = service.lock().unwrap();
+        assert_eq!(other.lock().unwrap_err().code, "BUSY");
+        assert!(std::fs::rename(&path, path.with_extension("moved")).is_err());
+        assert!(std::fs::remove_file(path.join("operation.lock")).is_err());
+        drop(lock);
+        drop(other.lock().unwrap());
+        let manifest = crate::tests::manifest_for_detection();
+        service.runtime_env(&manifest).unwrap();
+        let original =
+            crate::installation_backup::source_bytes(&path, "runtime.env", 8192, true).unwrap();
+        service.runtime_env(&manifest).unwrap();
+        assert_eq!(
+            crate::installation_backup::source_bytes(&path, "runtime.env", 8192, true).unwrap(),
+            original
+        );
+        drop(other);
+        drop(service);
+        let reopened = crate::LifecycleService::new(path.clone()).unwrap();
+        assert_eq!(
+            crate::installation_backup::source_bytes(&path, "runtime.env", 8192, true).unwrap(),
+            original
+        );
+        drop(reopened);
+        std::fs::remove_file(path.join("operation.lock")).unwrap();
+        std::fs::remove_file(path.join("runtime.env")).unwrap();
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::remove_dir(path.parent().unwrap()).unwrap();
+        let path = parent.path().to_path_buf();
+        drop(parent);
+        std::fs::remove_dir(path).unwrap();
+    }
+    #[test]
+    fn service_refuses_unprotected_roots_and_unsafe_locks_without_repair() {
+        let root = fresh();
+        let public = root.path().join("unprotected");
+        std::fs::create_dir(&public).unwrap();
+        std::fs::write(public.join("runtime.env"), b"synthetic-preserve").unwrap();
+        assert!(crate::LifecycleService::new(public.clone()).is_err());
+        assert_eq!(
+            std::fs::read(public.join("runtime.env")).unwrap(),
+            b"synthetic-preserve"
+        );
+        assert!(!public.join("operation.lock").exists());
+        let service = crate::LifecycleService::new(root.path().to_path_buf()).unwrap();
+        let lock = root.path().join("operation.lock");
+        std::fs::write(&lock, b"synthetic-lock-preserve").unwrap();
+        let status = crate::process_window::background_command("icacls.exe")
+            .arg(&lock)
+            .args(["/grant", "*S-1-1-0:R"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(
+            service.lock().unwrap_err().code,
+            "WINDOWS_PROFILE_ACL_INVALID"
+        );
+        assert!(crate::LifecycleService::new(root.path().to_path_buf()).is_err());
+        assert_eq!(std::fs::read(&lock).unwrap(), b"synthetic-lock-preserve");
+        drop(service);
+        std::fs::remove_file(lock).unwrap();
+        std::fs::remove_file(public.join("runtime.env")).unwrap();
+        std::fs::remove_dir(public).unwrap();
         let path = root.path().to_path_buf();
         drop(root);
         std::fs::remove_dir(path).unwrap();
