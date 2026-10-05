@@ -12,8 +12,11 @@ pub use candidate_configuration::CandidateConfigurationReceipt;
 pub use candidate_inventory::CandidateInventoryReceipt;
 #[path = "prepared_oci.rs"]
 mod prepared_oci;
+#[path = "runtime_compatibility.rs"]
+mod runtime_compatibility;
 use crate::{LifecycleService, Status, maintenance::VerificationReceipt};
 pub use prepared_oci::PreparedOciReceipt;
+pub use runtime_compatibility::RuntimeCompatibility;
 #[path = "source_stopped.rs"]
 mod source_stopped;
 pub use source_stopped::SourceStoppedReceipt;
