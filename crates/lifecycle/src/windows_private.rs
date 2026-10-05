@@ -754,6 +754,12 @@ impl PublicRecord {
         }
         Ok(())
     }
+    pub(crate) fn checked_metadata(&self) -> Result<std::fs::Metadata> {
+        self.check()?;
+        self.file
+            .metadata()
+            .map_err(|_| err("WINDOWS_PROFILE_RECORD_IO"))
+    }
     pub(crate) fn read_bounded(&mut self, limit: usize) -> Result<Vec<u8>> {
         if limit > 16 * 1024 * 1024 {
             return Err(err("WINDOWS_PROFILE_RECORD_QUOTA"));
@@ -791,6 +797,14 @@ impl PublicRecord {
             return Err(err("WINDOWS_PROFILE_RECORD_CHANGED"));
         }
         Ok(bytes)
+    }
+}
+// Retain the native guard for the whole streaming consumer; no bare File escapes.
+impl Read for PublicRecord {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.check()
+            .map_err(|_| std::io::Error::other("WINDOWS_PUBLIC_INPUT_INVALID"))?;
+        self.file.read(bytes)
     }
 }
 impl Drop for PublicRecord {
