@@ -176,8 +176,55 @@ bytes, OCI layers, signatures and current trust are rechecked by the native path
 The scratch Runtime may write its bounded isolated copy; originals stay read-only.
 Both acknowledgements are required, and do not prove global writer exclusion.
 
-Full positive public-session execution remains a separate acceptance gate until
-an actual signed prepared profile with authenticated original and distinct recovery
-candidate is exercised. The earlier unsigned helper component result does not
-prove this CLI, update admission/application, or full failed-host restoration.
+Public-session execution is qualified separately with an actual signed Prepared
+profile, authenticated original backup and distinct recovery candidate. The earlier
+unsigned helper component result alone does not prove this CLI. The signed-session
+qualification still does not prove update admission/application or full failed-host
+restoration; retain the exact source and actual result for each execution.
 Windows/amd64 qualification remains deferred.
+
+
+## Complete signed-session qualification fixture
+
+The ignored `actual_public_signed_migrated_session_preserves_original_and_prepared_intent`
+regression creates a fresh private profile and an independently registered native
+recovery candidate. It signs the actual whole Runtime archive with a separate
+synthetic development test policy, verifies those bytes, and prepares the exact
+plan before invoking the public restoration and migrated Runtime callback.
+The original source's authenticated five host files are copied; the complete
+workspace and unrelated verification material are never copied. Original data
+volumes and the encrypted archive/key stay unchanged. The actual restoration
+creates distinct candidate volumes and containers; it does not activate selection.
+
+Provide explicit private absolute input paths in `EXHIBITOS_SIGNED_BACKUP_FIXTURE`
+(existing native backup fixture with backup-creation-report.json/key.bin and
+retained-source-manager), `EXHIBITOS_SIGNED_PLAN_REPORT` (report with original
+plan), `EXHIBITOS_SIGNED_ARTIFACT`, `EXHIBITOS_SIGNED_PYTHON` and original
+40-hex Platform artifact revision in `EXHIBITOS_SIGNED_REVISION`. The existing
+`EXHIBITOS_MIGRATED_IMAGE`, `EXHIBITOS_MIGRATED_SCHEMA`,
+`EXHIBITOS_MIGRATED_MAINTENANCE`, `EXHIBITOS_MIGRATED_CATALOG` and
+`EXHIBITOS_MIGRATED_CATALOG_PIN` supply immutable target/helper/catalog identity.
+No caller-supplied success receipt or preflight flags are accepted.
+
+```sh
+cargo test -p exhibitos-lifecycle --lib actual_public_signed_migrated_session \
+  --locked -- --ignored --nocapture
+```
+
+Keep the printed private qualification root, report, candidate and its input
+provenance for subsequent independent CLI/failed-update verification. Inspect
+failed runs before retrying; do not discard their authority or Engine state.
+The fixture checks unchanged Prepared intent/generation/source selection and
+original host files after the borrowed native callback returns. It does not
+prove changed-schema admission/application, complete failed-host restoration,
+cold/crash recovery or native GUI/Windows. A default ignored-test count is not
+evidence this manual qualification passed.
+
+The compiled-in OCI qualifier requires Python3.11+ (`hashlib.file_digest`);
+use the canonical installed interpreter path, rather than macOS system Python3.9.
+When restoration succeeded but a later observer failed, reuse that complete
+Prepared fixture with `EXHIBITOS_SIGNED_SESSION_ROOT` and the ignored
+`actual_public_signed_migrated_session_reopens_prepared_fixture` test. It
+rechecks source/authority/selection before returning proof; it does not replay
+a saved receipt. A new artifact staging directory is created under that root
+while the original encrypted archive, key and candidate volumes are reused.

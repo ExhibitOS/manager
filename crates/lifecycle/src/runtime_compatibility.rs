@@ -861,6 +861,231 @@ mod tests {
         file.sync_all().unwrap();
     }
     #[test]
+    #[ignore = "explicit signed genuine artifact, local Docker and retained encrypted backup; creates one fresh complete profile/candidate"]
+    fn actual_public_signed_migrated_session_preserves_original_and_prepared_intent() {
+        let input = |name| std::env::var(name).expect("explicit qualification input");
+        let backup = fs::canonicalize(input("EXHIBITOS_SIGNED_BACKUP_FIXTURE")).unwrap();
+        let original = backup.join("retained-source-manager");
+        let creation: Value =
+            serde_json::from_slice(&fs::read(backup.join("backup-creation-report.json")).unwrap())
+                .unwrap();
+        let archive = original.join(format!(
+            "backup-creation-{}/archive",
+            creation["receipt"]["id"].as_str().unwrap()
+        ));
+        let key = backup.join("key.bin");
+        let template: Value =
+            serde_json::from_slice(&fs::read(input("EXHIBITOS_SIGNED_PLAN_REPORT")).unwrap())
+                .unwrap();
+        let mut plan: crate::update::Plan =
+            serde_json::from_value(template["plan"].clone()).unwrap();
+        plan.operation_id = uuid::Uuid::new_v4().to_string();
+        plan.source_instance = uuid::Uuid::new_v4().to_string();
+        plan.target_instance = uuid::Uuid::new_v4().to_string();
+        plan.target_image = input("EXHIBITOS_MIGRATED_IMAGE");
+        plan.target_schema = input("EXHIBITOS_MIGRATED_SCHEMA");
+        let artifact_path = fs::canonicalize(input("EXHIBITOS_SIGNED_ARTIFACT")).unwrap();
+        let (profile, signing, mut policy, mut release) = super::super::super::tests::fixture();
+        let root = profile.parent().unwrap();
+        println!("PRIVATE_SIGNED_SESSION_ROOT={}", root.display());
+        let source = profile.join("local-runtime");
+        installations::new_directory(&source).unwrap();
+        installations::new_directory(&source.join("bundle")).unwrap();
+        let names = [
+            "installed.json",
+            "engine.json",
+            "runtime.env",
+            "bundle/manifest.json",
+            "bundle/compose.yaml",
+        ];
+        let before = names
+            .iter()
+            .map(|n| (n, fs::read(original.join(n)).unwrap()))
+            .collect::<Vec<_>>();
+        for (n, raw) in &before {
+            crate::restoration::private_bytes(&source.join(n), raw).unwrap();
+        }
+        installations::save(
+            &profile,
+            &installations::Registry {
+                format: 1,
+                active_id: plan.source_instance.clone(),
+                installations: vec![installations::Entry {
+                    id: plan.source_instance.clone(),
+                    kind: "default".into(),
+                    created_at: 1,
+                }],
+            },
+            None,
+        )
+        .unwrap();
+        let now = release_now().unwrap();
+        policy.source_schema_sha256 = plan.source_schema.clone();
+        policy.minimum_issued_at = now - 10;
+        release.source_schemas = vec![plan.source_schema.clone()];
+        release.version = "0.1.2-dev.1".into();
+        release.issued_at = now - 1;
+        release.expires_at = now + 3600;
+        release.artifact.runtime_image_sha256 = plan.target_image.clone();
+        release.artifact.schema_sha256 = plan.target_schema.clone();
+        let artifact_raw = fs::read(&artifact_path).unwrap();
+        release.artifact.bytes = artifact_raw.len() as u64;
+        release.artifact.sha256 = crate::digest(&artifact_raw);
+        drop(artifact_raw);
+        let envelope = super::super::super::tests::seal(&signing, &release);
+        let mut store =
+            super::super::super::Store::provision(&profile, "default", policy, now).unwrap();
+        // Registration creates its own fresh identity; bind the plan before preparation.
+        let registered = store.register_update_target(true).unwrap();
+        plan.target_instance = registered.target_instance;
+        let mut verified = store.verify_for_preparation(&envelope, now).unwrap();
+        verified
+            .verify_artifact(&mut File::open(&artifact_path).unwrap())
+            .unwrap();
+        store
+            .prepare_update(&envelope, &verified, plan.clone(), now)
+            .unwrap();
+        let port = {
+            let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let maintenance = input("EXHIBITOS_MIGRATED_MAINTENANCE");
+        let restored = store
+            .execution()
+            .unwrap()
+            .prepare_target_candidate(&maintenance, &key, &archive, port, true)
+            .unwrap();
+        let target_root = profile.join("installations").join(&plan.target_instance);
+        let target = LifecycleService::open_retry_diagnostics(target_root.clone()).unwrap();
+        target.execute(crate::Action::Stop).unwrap();
+        let generation = store.current.generation;
+        let staging = root.join("staging");
+        installations::new_directory(&staging).unwrap();
+        let session = store.execution().unwrap();
+        let mut artifact = session
+            .stage_prepared_artifact(&artifact_path, &staging)
+            .unwrap();
+        let catalog = PathBuf::from(input("EXHIBITOS_MIGRATED_CATALOG"));
+        let pin = input("EXHIBITOS_MIGRATED_CATALOG_PIN");
+        let python = PathBuf::from(input("EXHIBITOS_SIGNED_PYTHON"));
+        let revision = input("EXHIBITOS_SIGNED_REVISION");
+        assert_eq!(
+            session
+                .with_migrated_runtime_compatibility(
+                    &mut artifact,
+                    &python,
+                    &revision,
+                    &maintenance,
+                    &catalog,
+                    &pin,
+                    false,
+                    |_| Ok(())
+                )
+                .unwrap_err()
+                .code,
+            "BACKUP_OPERATOR_ACK_REQUIRED"
+        );
+        let receipt = session
+            .with_migrated_runtime_compatibility(
+                &mut artifact,
+                &python,
+                &revision,
+                &maintenance,
+                &catalog,
+                &pin,
+                true,
+                |proof| Ok(proof.receipt().clone()),
+            )
+            .unwrap();
+        assert_eq!(receipt["trustGeneration"], generation);
+        assert_eq!(receipt["operationId"], plan.operation_id);
+        drop(session);
+        assert_eq!(store.current.generation, generation);
+        assert_eq!(
+            store.intent().unwrap().update.stage(),
+            crate::update::Stage::Prepared
+        );
+        assert_eq!(
+            installations::load(&profile).unwrap().unwrap().0.active_id,
+            plan.source_instance
+        );
+        for (name, bytes) in before {
+            assert_eq!(fs::read(original.join(name)).unwrap(), bytes);
+            assert_eq!(fs::read(source.join(name)).unwrap(), bytes);
+        }
+        let result = serde_json::json!({"status":"PASS","scope":"actual public signed Prepared ExecutionSession and distinct native encrypted restored candidate; not update admission/application or failed recovery","profile":profile,"source":source,"candidate":target_root,"plan":plan,"restoration":restored,"receipt":receipt,"authorityGenerationUnchanged":generation,"preparedIntentUnchanged":true,"originalSelectionPreserved":true,"originalFiveFilesPreserved":true,"preflightVerified":false,"updateExecuted":false});
+        crate::restoration::private_bytes(
+            &root.join("report.json"),
+            &serde_json::to_vec_pretty(&result).unwrap(),
+        )
+        .unwrap();
+        println!("PASS_PUBLIC_SIGNED_MIGRATED_SESSION");
+    }
+    #[test]
+    #[ignore = "explicit already-created complete signed Prepared fixture; reuse candidate without restoration or host copies"]
+    fn actual_public_signed_migrated_session_reopens_prepared_fixture() {
+        let input = |name| std::env::var(name).expect("explicit qualification input");
+        let root = fs::canonicalize(input("EXHIBITOS_SIGNED_SESSION_ROOT")).unwrap();
+        let profile = root.join("profile");
+        let mut store = super::super::super::Store::open(&profile, "default").unwrap();
+        let plan = store.intent().unwrap().update.plan().clone();
+        assert_eq!(
+            store.intent().unwrap().update.stage(),
+            crate::update::Stage::Prepared
+        );
+        let generation = store.current.generation;
+        let original = fs::canonicalize(input("EXHIBITOS_SIGNED_BACKUP_FIXTURE"))
+            .unwrap()
+            .join("retained-source-manager");
+        let source = profile.join("local-runtime");
+        let names = [
+            "installed.json",
+            "engine.json",
+            "runtime.env",
+            "bundle/manifest.json",
+            "bundle/compose.yaml",
+        ];
+        let before = names
+            .iter()
+            .map(|n| (*n, fs::read(original.join(n)).unwrap()))
+            .collect::<Vec<_>>();
+        let staging = root.join(format!("session-staging-{}", uuid::Uuid::new_v4()));
+        installations::new_directory(&staging).unwrap();
+        let session = store.execution().unwrap();
+        let mut artifact = session
+            .stage_prepared_artifact(&PathBuf::from(input("EXHIBITOS_SIGNED_ARTIFACT")), &staging)
+            .unwrap();
+        let receipt = session
+            .with_migrated_runtime_compatibility(
+                &mut artifact,
+                &PathBuf::from(input("EXHIBITOS_SIGNED_PYTHON")),
+                &input("EXHIBITOS_SIGNED_REVISION"),
+                &input("EXHIBITOS_MIGRATED_MAINTENANCE"),
+                &PathBuf::from(input("EXHIBITOS_MIGRATED_CATALOG")),
+                &input("EXHIBITOS_MIGRATED_CATALOG_PIN"),
+                true,
+                |proof| Ok(proof.receipt().clone()),
+            )
+            .unwrap();
+        drop(session);
+        assert_eq!(receipt["trustGeneration"], generation);
+        assert_eq!(store.current.generation, generation);
+        assert_eq!(store.intent().unwrap().update.plan(), &plan);
+        assert_eq!(
+            store.intent().unwrap().update.stage(),
+            crate::update::Stage::Prepared
+        );
+        assert_eq!(
+            installations::load(&profile).unwrap().unwrap().0.active_id,
+            plan.source_instance
+        );
+        for (name, raw) in before {
+            assert_eq!(fs::read(original.join(name)).unwrap(), raw);
+            assert_eq!(fs::read(source.join(name)).unwrap(), raw);
+        }
+        crate::restoration::private_bytes(&root.join("reopened-session-report.json"),&serde_json::to_vec_pretty(&serde_json::json!({"status":"PASS","scope":"actual reopened public signed Prepared ExecutionSession; no admission/application/activation","receipt":receipt,"plan":plan,"authorityGenerationUnchanged":generation,"preparedIntentUnchanged":true,"originalSelectionPreserved":true,"originalFiveFilesPreserved":true,"preflightVerified":false,"updateExecuted":false})).unwrap()).unwrap();
+    }
+    #[test]
     fn inspected_helper_refuses_writable_sources_and_privilege_network_or_budget_changes() {
         let h = Helper {
             id: "a".repeat(64),
