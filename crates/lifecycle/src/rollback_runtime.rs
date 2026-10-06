@@ -2,7 +2,6 @@
 //! Native reobservation and same-fence coherent rollback completion, no health endpoint.
 use super::*;
 use crate::{Result as LifecycleResult, err};
-const READER: &str = include_str!("rollback_runtime_reader.mjs");
 fn ready_row(
     row: &serde_json::Value,
     m: &crate::BundleManifest,
@@ -301,82 +300,6 @@ impl Store {
             }
             let before = pair(target, &m, &plan)?;
             owned_execution::check_rollback_configuration(maintenance_image, &before.3[1], &raw)?;
-            if crate::backup_creation::local_image("docker", maintenance_image)?
-                != maintenance_image
-            {
-                return Err(err("IMAGE_INTEGRITY"));
-            }
-            let networks = before.1["NetworkSettings"]["Networks"]
-                .as_object()
-                .ok_or_else(|| err("UPDATE_ROLLBACK_NETWORK_INVALID"))?;
-            let network = format!("{}_default", m.project_name);
-            if networks.len() != 1 || !networks.contains_key(&network) {
-                return Err(err("UPDATE_ROLLBACK_NETWORK_INVALID"));
-            }
-            let n = crate::backup_creation::inspected(
-                "docker",
-                &["network".into(), "inspect".into(), network.clone()],
-            )?;
-            if n["Id"] != before.1["NetworkSettings"]["Networks"][&network]["NetworkID"]
-                || n["Labels"]["com.exhibitos.bundle"] != m.bundle_id
-                || n["Labels"]["com.exhibitos.project"] != m.project_name
-                || n["Labels"]["com.exhibitos.schema"] != m.schema_version
-            {
-                return Err(err("UPDATE_ROLLBACK_NETWORK_INVALID"));
-            }
-            let name = format!("exhibitos-rollback-reader-{}", uuid::Uuid::new_v4());
-            let args = vec![
-                "create".into(),
-                "--pull".into(),
-                "never".into(),
-                "--name".into(),
-                name,
-                "--label".into(),
-                format!("com.exhibitos.rollback.reader={}", plan.operation_id),
-                "--network".into(),
-                network,
-                "--env-file".into(),
-                root.join("runtime.env").to_string_lossy().into_owned(),
-                "--env".into(),
-                "BLOB_ROOT=/data/blobs".into(),
-                "--user".into(),
-                "1000:1000".into(),
-                "--read-only".into(),
-                "--cap-drop".into(),
-                "ALL".into(),
-                "--security-opt".into(),
-                "no-new-privileges:true".into(),
-                "--pids-limit".into(),
-                "32".into(),
-                "--memory".into(),
-                "256m".into(),
-                "--mount".into(),
-                format!(
-                    "type=volume,source={},target=/data/blobs,readonly",
-                    before.3[0]
-                ),
-                "--entrypoint".into(),
-                "node".into(),
-                "--interactive".into(),
-                maintenance_image.into(),
-                "--input-type=module".into(),
-                "-e".into(),
-                READER.into(),
-                plan.backup_manifest.clone(),
-            ];
-            let created = crate::run("docker", &args, None, 30)?;
-            let helper = std::str::from_utf8(&created)
-                .map_err(|_| err("ENGINE_OUTPUT_INVALID"))?
-                .trim();
-            if !crate::hash_valid(helper) {
-                return Err(err("ENGINE_OUTPUT_INVALID"));
-            }
-            let args = vec![
-                "start".into(),
-                "--attach".into(),
-                "--interactive".into(),
-                helper.into(),
-            ];
             let manifest_path = workspace.join("authenticated/manifest.json");
             let mut input = private_file(&manifest_path, false).map_err(|e| err(e.code()))?;
             let mut supplied = Vec::new();
@@ -388,20 +311,20 @@ impl Store {
                 return Err(err("UPDATE_ROLLBACK_CHANGED"));
             }
             std::io::Seek::rewind(&mut input).map_err(|_| err("UPDATE_INPUT_INVALID"))?;
-            let inventory =
-                crate::run_observed_input("docker", &args, None, 180, Some(input), || {
-                    check(store, selection)
-                })?;
-            let stopped =
-                crate::backup_creation::inspected("docker", &["inspect".into(), helper.into()])?;
-            if stopped["State"]["Running"] != false
-                || stopped["State"]["ExitCode"] != 0
-                || stopped["Config"]["Labels"]["com.exhibitos.rollback.reader"] != plan.operation_id
-            {
-                return Err(err("UPDATE_ROLLBACK_HEALTH_FAILED"));
-            }
-            owned_execution::check_rollback_inventory(&inventory, &plan)?;
-            crate::run("docker", &["rm".into(), helper.into()], None, 30)?;
+            let proof = owned_execution::native_inventory::observe(
+                &owned_execution::native_inventory::Inputs {
+                    image: maintenance_image,
+                    root: &root,
+                    manifest: &m,
+                    app: &before.1,
+                    blob_volume: &before.3[0],
+                    expected_manifest: &plan.backup_manifest,
+                    expected_system: None,
+                },
+                input,
+                || check(store, selection),
+            )?;
+            owned_execution::check_rollback_inventory(&proof, &plan)?;
             let after = pair(target, &m, &plan)?;
             if before.1["Id"] != after.1["Id"]
                 || before.2["Id"] != after.2["Id"]
