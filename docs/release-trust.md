@@ -149,3 +149,31 @@ not recognize `renew_prepared` rejects this history and cannot open or execute i
 Use the updated Manager before publishing this event; do not erase records or
 lower floors to downgrade. Native Windows journal publication remains a separate
 qualification gate. Keys are never read from feed payloads or stored by this CLI.
+
+
+## Release a completed operation before preparing the next update
+
+An `Updated` or `RolledBack` operation keeps its terminal intent until an explicit
+administrative release. Inspect `update-intent`, reconcile owned runtime/helpers
+and preserve recovery candidates first. Then close all profile controllers:
+
+```sh
+exhibitos-update release-completed-update --profile /absolute/private/profile \
+  --installation default --operation-id <current-operation-id> \
+  --expected-generation <current-trust-generation> \
+  --runtime-reconciled --preserve-data --apps-closed
+```
+
+This appends a trust record and clears only the active terminal pointer. It keeps
+history, used operation/instance IDs, replay floors, host files, candidates, keys
+and engine resources. Prepared, inflight or recovery-required operations, stale
+generations, wrong operation IDs and missing acknowledgements are refused.
+`--runtime-reconciled` is an operator acknowledgement, not evidence that this
+command checked Docker or runtime health. The output explicitly reports
+`runtimeReconciliationAttested: false`, `executed: false` and `runtimeChanged: false`.
+
+After release, create a genuinely new operation/target identity and verify the
+current source and a coherent current host/authority/service recovery checkpoint.
+Do not replay the released intent or treat its historical checkpoint as proof
+of the newer authority generation. Public changed-schema execution remains
+closed until its full native recovery qualification is complete.

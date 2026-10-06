@@ -648,6 +648,104 @@ mod tests {
         assert_eq!(s.receipt().minimum_sequence, 2);
     }
     #[test]
+    #[ignore = "explicit local release CLI binary; synthetic terminal lifecycle and actual command rejection/success"]
+    fn actual_release_completed_cli_retains_records_ids_and_floors() {
+        let cli = std::env::var("EXHIBITOS_TEST_UPDATE_CLI").unwrap();
+        assert!(std::path::Path::new(&cli).is_absolute());
+        let (profile, mut store, verified) = prepared_fixture();
+        let operation = store.intent().unwrap().update.plan().operation_id.clone();
+        let root = store.root.clone();
+        let prepared_generation = generation(&store);
+        drop(store);
+        let invoke = |op: &str, g: u64, acknowledge: bool| {
+            let mut command = std::process::Command::new(&cli);
+            command.args([
+                "release-completed-update",
+                "--profile",
+                profile.to_str().unwrap(),
+                "--installation",
+                "default",
+                "--operation-id",
+                op,
+                "--expected-generation",
+                &g.to_string(),
+            ]);
+            if acknowledge {
+                command.args(["--runtime-reconciled", "--preserve-data"]);
+            }
+            command.arg("--apps-closed").output().unwrap()
+        };
+        // Prepared/inflight operations cannot be cleared by the terminal command.
+        assert!(
+            !invoke(&operation, prepared_generation, true)
+                .status
+                .success()
+        );
+        store = Store::open(&profile, "default").unwrap();
+        assert_eq!(generation(&store), prepared_generation);
+        begin(&mut store, &verified);
+        updated(&mut store);
+        assert_eq!(store.intent().unwrap().update.stage(), Stage::Updated);
+        let g = generation(&store);
+        let floor = store.receipt().minimum_sequence;
+        let ids = (store.used_operations.clone(), store.used_instances.clone());
+        let originals: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|e| e == "json"))
+            .map(|p| {
+                let bytes = fs::read(&p).unwrap();
+                (p, bytes)
+            })
+            .collect();
+        drop(store);
+        for (op, generation, ack) in [
+            (&operation[..], g - 1, true),
+            ("wrong-operation", g, true),
+            (&operation[..], g, false),
+        ] {
+            assert!(!invoke(op, generation, ack).status.success());
+            assert_eq!(
+                Store::open(&profile, "default")
+                    .unwrap()
+                    .receipt()
+                    .generation,
+                g
+            );
+        }
+        let output = invoke(&operation, g, true);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(receipt["intent"].is_null());
+        assert_eq!(receipt["terminalPointerReleased"], true);
+        for flag in [
+            "executed",
+            "runtimeChanged",
+            "runtimeReconciliationAttested",
+        ] {
+            assert_eq!(receipt[flag], false);
+        }
+        assert_eq!(receipt["dataPreserved"], true);
+        let cold = Store::open(&profile, "default").unwrap();
+        assert_eq!(cold.receipt().generation, g + 1);
+        assert_eq!(cold.receipt().minimum_sequence, floor);
+        assert_eq!(
+            (cold.used_operations.clone(), cold.used_instances.clone()),
+            ids
+        );
+        for (path, bytes) in originals {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+        assert!(cold.intent().is_none());
+        drop(cold);
+        assert!(!invoke(&operation, g + 1, true).status.success());
+        fs::remove_dir_all(profile.parent().unwrap()).unwrap();
+    }
+    #[test]
     fn equal_schema_image_only_rollback_still_requires_explicit_compatibility() {
         for attested in [false, true] {
             let (p, k, policy, mut release) = fixture();
