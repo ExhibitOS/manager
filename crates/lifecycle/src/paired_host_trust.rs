@@ -863,6 +863,143 @@ mod tests {
         fs::remove_dir_all(parent).unwrap();
     }
     #[test]
+    fn published_host_process_crash_worker() {
+        let Ok(profile) = std::env::var("EXHIBITOS_SYNTHETIC_PUBLISHED_HOST_PROFILE") else {
+            return;
+        };
+        let profile = PathBuf::from(profile);
+        let parent = profile.parent().unwrap();
+        assert!(
+            parent
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("exhibitos-release-trust-")
+        );
+        assert!(!profile.exists());
+        let store = Store::open(&profile, "default").unwrap();
+        let pair = parent.join("recovery-pair");
+        let receipt = store
+            .restore_bound_missing_host(
+                &pair.join("host.bin"),
+                &pair.join("trust.bin"),
+                &parent.join("recovery-key"),
+                &pair.join("pair-binding.bin"),
+                true,
+            )
+            .unwrap();
+        assert!(
+            receipt.host_profile_restored
+                && receipt.current_trust_preserved
+                && receipt.pair_binding_verified
+                && !receipt.runtime_data_restored
+                && !receipt.runtime_started
+                && !receipt.trust_authority_restored
+        );
+        let pending = parent.join("published-host-ready.pending");
+        let mut ready = private_file(&pending, true).unwrap();
+        ready
+            .write_all(&serde_json::to_vec(&receipt).unwrap())
+            .unwrap();
+        ready.sync_all().unwrap();
+        publish(&pending, &parent.join("published-host-ready.json")).unwrap();
+        // Real SIGKILL from parent while the Store still owns kernel fences.
+        // This uses production publication, not an injected product crash hook.
+        loop {
+            std::thread::park();
+        }
+    }
+    #[test]
+    fn published_host_sigkill_preserves_exact_tree_and_cold_authority_and_refuses_overwrite() {
+        use std::os::unix::{fs::PermissionsExt, process::ExitStatusExt};
+        let (profile, store, key, pair) = recovery_fixture();
+        let head = store.current_sha256.clone();
+        let current = serde_json::to_vec(&store.current).unwrap();
+        let records = store.checkpoint_records().unwrap();
+        let ids = (store.used_operations.clone(), store.used_instances.clone());
+        drop(store);
+        let parent = profile.parent().unwrap();
+        let held = parent.join("original-held");
+        fs::rename(&profile, &held).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "signed_release::trust::trust_checkpoint::paired::tests::published_host_process_crash_worker", "--nocapture"])
+            .env("EXHIBITOS_SYNTHETIC_PUBLISHED_HOST_PROFILE", &profile)
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+            .spawn().unwrap();
+        let ready = parent.join("published-host-ready.json");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !ready.exists() && std::time::Instant::now() < deadline {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // The marker is created only after the production method has synced
+        // publication and returned its authenticated completion receipt.
+        let marker_ready = ready.exists();
+        let kill_result = child.kill();
+        let status = child.wait().unwrap();
+        assert!(
+            marker_ready,
+            "publication worker did not complete: {status}"
+        );
+        kill_result.unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+        let receipt: serde_json::Value = serde_json::from_slice(&fs::read(ready).unwrap()).unwrap();
+        let workspace = PathBuf::from(receipt["recoveryWorkspace"].as_str().unwrap());
+        assert!(workspace.join("completed.json").is_file());
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(workspace.join("host/manifest.json")).unwrap())
+                .unwrap();
+        for entry in manifest["items"].as_array().unwrap() {
+            let relative = entry["path"].as_str().unwrap();
+            let original = held.join(relative);
+            let restored = profile.join(relative);
+            assert_eq!(
+                fs::symlink_metadata(&restored)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                entry["mode"].as_u64().unwrap() as u32
+            );
+            if entry["kind"] == "file" {
+                let original_bytes = fs::read(original).unwrap();
+                assert_eq!(fs::read(restored).unwrap(), original_bytes);
+                assert_eq!(hash(&original_bytes), entry["sha256"].as_str().unwrap());
+            } else {
+                assert!(restored.is_dir());
+            }
+        }
+        let cold = Store::open(&profile, "default").unwrap();
+        assert_eq!(cold.current_sha256, head);
+        assert_eq!(serde_json::to_vec(&cold.current).unwrap(), current);
+        assert_eq!(cold.checkpoint_records().unwrap(), records);
+        assert_eq!(
+            (cold.used_operations.clone(), cold.used_instances.clone()),
+            ids
+        );
+        assert_eq!(
+            cold.restore_bound_missing_host(
+                &pair.join("host.bin"),
+                &pair.join("trust.bin"),
+                &key,
+                &pair.join("pair-binding.bin"),
+                true
+            )
+            .unwrap_err()
+            .code,
+            "HOST_RESTORE_TARGET_EXISTS"
+        );
+        assert_eq!(
+            fs::read(profile.join("witness.bin")).unwrap(),
+            b"original host witness"
+        );
+        drop(cold);
+        fs::remove_dir_all(parent).unwrap();
+    }
+    #[test]
     fn absent_host_recovers_original_namespace_and_keeps_current_authority() {
         let (profile, store, key, pair) = recovery_fixture();
         let old = profile.with_extension("quarantined");
