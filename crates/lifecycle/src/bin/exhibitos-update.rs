@@ -298,6 +298,40 @@ fn restored_rollback_options(args: &[String]) -> Result<&str, &'static str> {
     Ok(&args[7])
 }
 
+fn migrated_runtime_options(args: &[String]) -> Result<(), &'static str> {
+    let flags = [
+        (1, "qualify-migrated-runtime-compatibility"),
+        (2, "--profile"),
+        (4, "--installation"),
+        (6, "--artifact"),
+        (8, "--staging-parent"),
+        (10, "--python"),
+        (12, "--source-commit"),
+        (14, "--maintenance-image"),
+        (16, "--target-catalog"),
+        (18, "--target-catalog-sha256"),
+        (20, "--external-writers-quiesced"),
+        (21, "--apps-closed"),
+    ];
+    let hex = |s: &str, n| {
+        s.len() == n
+            && s.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    };
+    if args.len() != 22
+        || flags.iter().any(|(i, flag)| args[*i] != *flag)
+        || !hex(&args[13], 40)
+        || !hex(&args[19], 64)
+        || !args[15].strip_prefix("sha256:").is_some_and(|s| hex(s, 64))
+        || [3, 7, 9, 11, 17]
+            .iter()
+            .any(|i| !Path::new(&args[*i]).is_absolute())
+    {
+        return Err("UPDATE_USAGE");
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     use signed_release::trust::Store;
     let a: Vec<String> = std::env::args().collect();
@@ -630,6 +664,31 @@ fn run() -> Result<(), String> {
         })();
         key.fill(0);
         println!("{}", result?);
+        return Ok(());
+    }
+    if a[1] == "qualify-migrated-runtime-compatibility" {
+        migrated_runtime_options(&a).map_err(str::to_owned)?;
+        let mut store = Store::open(profile, installation).map_err(code)?;
+        let session = store.execution().map_err(|e| e.code.to_string())?;
+        let mut artifact = session
+            .stage_prepared_artifact(Path::new(&a[7]), Path::new(&a[9]))
+            .map_err(|e| e.code.to_string())?;
+        let proof = session
+            .with_migrated_runtime_compatibility(
+                &mut artifact,
+                Path::new(&a[11]),
+                &a[13],
+                &a[15],
+                Path::new(&a[17]),
+                &a[19],
+                true,
+                |proof| Ok(proof.receipt().clone()),
+            )
+            .map_err(|e| e.code.to_string())?;
+        println!(
+            "{}",
+            serde_json::to_string(&proof).map_err(|_| "UPDATE_RESULT_INVALID")?
+        );
         return Ok(());
     }
     if a[1] == "qualify-runtime-compatibility" {
@@ -1351,6 +1410,77 @@ mod restored_rollback_cli_tests {
             let mut changed = args.clone();
             changed.extend([flag.into(), "untrusted".into()]);
             assert!(restored_rollback_options(&changed).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod migrated_runtime_cli_tests {
+    use super::*;
+    fn valid() -> Vec<String> {
+        let path = std::env::temp_dir().join("isolated-migrated-runtime-input");
+        vec![
+            "exhibitos-update".into(),
+            "qualify-migrated-runtime-compatibility".into(),
+            "--profile".into(),
+            path.to_string_lossy().into_owned(),
+            "--installation".into(),
+            "default".into(),
+            "--artifact".into(),
+            path.to_string_lossy().into_owned(),
+            "--staging-parent".into(),
+            path.to_string_lossy().into_owned(),
+            "--python".into(),
+            path.to_string_lossy().into_owned(),
+            "--source-commit".into(),
+            "a".repeat(40),
+            "--maintenance-image".into(),
+            format!("sha256:{}", "b".repeat(64)),
+            "--target-catalog".into(),
+            path.to_string_lossy().into_owned(),
+            "--target-catalog-sha256".into(),
+            "c".repeat(64),
+            "--external-writers-quiesced".into(),
+            "--apps-closed".into(),
+        ]
+    }
+    #[test]
+    fn migrated_runtime_requires_exact_pins_and_both_acknowledgements() {
+        let args = valid();
+        assert!(migrated_runtime_options(&args).is_ok());
+        for i in [1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 21] {
+            let mut changed = args.clone();
+            changed[i] = "--preflight-verified".into();
+            assert!(migrated_runtime_options(&changed).is_err());
+        }
+        for i in [13, 15, 19] {
+            for value in ["latest", "", "A", "g"] {
+                let mut changed = args.clone();
+                changed[i] = value.into();
+                assert!(migrated_runtime_options(&changed).is_err());
+            }
+        }
+    }
+    #[test]
+    fn migrated_runtime_refuses_relative_paths_missing_or_injected_success_options() {
+        let args = valid();
+        for n in 0..args.len() {
+            assert!(migrated_runtime_options(&args[..n]).is_err());
+        }
+        for i in [3, 7, 9, 11, 17] {
+            let mut changed = args.clone();
+            changed[i] = "relative".into();
+            assert!(migrated_runtime_options(&changed).is_err());
+        }
+        for flag in [
+            "--candidate-id",
+            "--health-receipt",
+            "--update-executed",
+            "--command",
+        ] {
+            let mut changed = args.clone();
+            changed.extend([flag.into(), "untrusted".into()]);
+            assert!(migrated_runtime_options(&changed).is_err());
         }
     }
 }

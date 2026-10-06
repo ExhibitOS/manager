@@ -152,3 +152,32 @@ Actual changed-schema compatibility observation does not itself grant admission,
 application, selected-host activation or image-only rollback. Existing full host/
 trust recovery and failure restoration gates remain required; the current executor
 still refuses changed-schema application until that full integration is qualified.
+
+
+## Native migrated Runtime diagnostic CLI
+
+```sh
+exhibitos-update qualify-migrated-runtime-compatibility \
+  --profile '<existing private prepared profile>' --installation '<bound source UUID>' \
+  --artifact '<absolute signed runtime.tar>' --staging-parent '<private external directory>' \
+  --python '<absolute qualified Python>' --source-commit '<40 lowercase hex Platform revision>' \
+  --maintenance-image 'sha256:<64 lowercase hex immutable helper>' \
+  --target-catalog '<absolute private observed catalog.json>' \
+  --target-catalog-sha256 '<64 lowercase hex catalog bytes hash>' \
+  --external-writers-quiesced --apps-closed
+```
+
+This command stages the current prepared intent's signed artifact, retains the
+Store/profile and source/candidate operation fences, and invokes the public
+migrated Runtime callback. It returns only its diagnostic receipt; the opaque
+proof ends with the callback. It cannot supply a plan, success flag, candidate
+override, Applying transition, or activation. Source/candidate data, exact catalog
+bytes, OCI layers, signatures and current trust are rechecked by the native path.
+The scratch Runtime may write its bounded isolated copy; originals stay read-only.
+Both acknowledgements are required, and do not prove global writer exclusion.
+
+Full positive public-session execution remains a separate acceptance gate until
+an actual signed prepared profile with authenticated original and distinct recovery
+candidate is exercised. The earlier unsigned helper component result does not
+prove this CLI, update admission/application, or full failed-host restoration.
+Windows/amd64 qualification remains deferred.
