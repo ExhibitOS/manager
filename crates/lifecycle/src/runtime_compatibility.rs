@@ -226,7 +226,11 @@ fn run_probe(
     maintenance: &str,
     expected: &source_database::DatabaseCopyProof,
     migration: Option<&Value>,
+    interruption: bool,
 ) -> Result<Value> {
+    if interruption && migration.is_none() {
+        return Err(err("UPDATE_RUNTIME_MIGRATION_UNQUALIFIED"));
+    }
     let info: Value = serde_json::from_slice(&command(&["info", "--format", "{{json .}}"])?)
         .map_err(|_| err("ENGINE_OUTPUT_INVALID"))?;
     if info["MemTotal"]
@@ -320,7 +324,7 @@ fn run_probe(
         }
         let env = crate::checked_path(ctx.root, "runtime.env")?;
         let script = format!(
-            "{}\n{}\n{}\n{}",
+            "const INTERRUPTION_PROBE={interruption};\n{}\n{}\n{}\n{}",
             migration
                 .map(|m| format!("const MIGRATION_INPUT={m};"))
                 .unwrap_or_default(),
@@ -361,7 +365,21 @@ fn run_probe(
         let target = runtime
             .as_ref()
             .ok_or_else(|| err("UPDATE_RUNTIME_PROBE_FAILED"))?;
-        let raw = engine(&["start".into(), "--attach".into(), target.id.clone()], 360)?;
+        let raw = if interruption {
+            command(&["start", &target.id])?;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(360);
+            loop {
+                if target.check()?["State"]["Running"] == false {
+                    break command(&["logs", &target.id])?;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(err("UPDATE_RUNTIME_PROBE_FAILED"));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+        } else {
+            engine(&["start".into(), "--attach".into(), target.id.clone()], 360)?
+        };
         let mut proof: Value =
             serde_json::from_slice(&raw).map_err(|_| err("UPDATE_RUNTIME_PROBE_FAILED"))?;
         validate_proof(&proof, ctx.plan, migration)?;
@@ -384,7 +402,17 @@ fn run_probe(
             return Err(err("UPDATE_RUNTIME_PROBE_FAILED"));
         }
         trusted_terminal_observation(&mut proof, &done, ctx.plan, migration)?;
-        target.retire()?;
+        if interruption {
+            let state = target.check()?;
+            validate_interruption(&proof, &state)?;
+            proof["interruptedHelper"] = serde_json::json!({"id":target.id,"image":target.image,"exitCode":137,"running":false,"retained":true});
+            proof["scope"] = serde_json::json!(
+                "controlled migrated Runtime interruption only; not full failed-update recovery"
+            );
+            proof["recoveryVerified"] = serde_json::json!(false);
+        } else {
+            target.retire()?;
+        }
         db.retire()?;
         Ok(proof)
     })();
@@ -396,6 +424,20 @@ fn run_probe(
         db.stop()?;
     }
     attempt
+}
+fn validate_interruption(proof: &Value, inspected: &Value) -> Result<()> {
+    if proof["interruptionRequested"] != true
+        || proof["runtimeClosedNormally"] != false
+        || proof["preflightVerified"] != false
+        || proof["updateExecuted"] != false
+        || inspected["State"]["Running"] != false
+        || inspected["State"]["Restarting"] != false
+        || inspected["State"]["ExitCode"] != 137
+        || inspected["State"]["OOMKilled"] != false
+    {
+        return Err(err("UPDATE_RUNTIME_PROBE_FAILED"));
+    }
+    Ok(())
 }
 // Runtime health claims cannot replace independently observed migrated DB bytes.
 fn trusted_terminal_observation(
@@ -532,6 +574,18 @@ impl ExecutionSession<'_> {
         oci: &PreparedOciReceipt,
         migration: Option<&Value>,
     ) -> Result<Value> {
+        self.observe_runtime_at_mode(artifact, ctx, maintenance, oci, migration, false)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn observe_runtime_at_mode(
+        &self,
+        artifact: &mut PreparedArtifact,
+        ctx: &candidate_inventory::CandidateContext<'_>,
+        maintenance: &str,
+        oci: &PreparedOciReceipt,
+        migration: Option<&Value>,
+        interruption: bool,
+    ) -> Result<Value> {
         self.reverify_prepared_artifact(artifact)?;
         if crate::backup_creation::local_image("docker", maintenance)? != maintenance {
             return Err(err("IMAGE_INTEGRITY"));
@@ -551,7 +605,13 @@ impl ExecutionSession<'_> {
         )?;
         let source = ephemeral_inventory::observe_source(ctx, maintenance)?;
         let candidate = ephemeral_inventory::observe(ctx, maintenance)?;
-        let proof = run_probe(ctx, maintenance, &candidate.physical, migration)?;
+        let proof = run_probe(
+            ctx,
+            maintenance,
+            &candidate.physical,
+            migration,
+            interruption,
+        )?;
         let candidate_after = ephemeral_inventory::observe(ctx, maintenance)?;
         let source_after = ephemeral_inventory::observe_source(ctx, maintenance)?;
         if !candidate_inventory::copies_match(&source.physical, &source_after.physical)
@@ -628,6 +688,58 @@ impl ExecutionSession<'_> {
             self.with_runtime_compatibility_inner(artifact, maintenance, oci, Some(input), work);
         held.recheck()?;
         result
+    }
+    /// Controlled genuine Runtime SIGKILL after observed migration. A diagnostic
+    /// Value only: cannot be consumed as compatibility, admission or recovery proof.
+    #[allow(clippy::too_many_arguments)]
+    pub fn qualify_migrated_runtime_interruption(
+        &self,
+        artifact: &mut PreparedArtifact,
+        python: &Path,
+        source_commit: &str,
+        maintenance: &str,
+        catalog: &Path,
+        catalog_sha256: &str,
+        acknowledged: bool,
+    ) -> Result<Value> {
+        if !acknowledged {
+            return Err(err("BACKUP_OPERATOR_ACK_REQUIRED"));
+        }
+        if !maintenance.strip_prefix("sha256:").is_some_and(hash_valid) {
+            return Err(err("BACKUP_IMAGE_INVALID"));
+        }
+        let (oci, mut catalog_input, input) = self.qualify_migrated_runtime_artifact(
+            artifact,
+            python,
+            source_commit,
+            catalog,
+            catalog_sha256,
+        )?;
+        let held = std::cell::RefCell::new(&mut *artifact);
+        let mut result = None;
+        self.inspect_restored_candidate_finalized(
+            true,
+            |ctx| {
+                self.observe_runtime_at_mode(
+                    &mut held.borrow_mut(),
+                    ctx,
+                    maintenance,
+                    &oci,
+                    Some(&input),
+                    true,
+                )
+            },
+            |_, receipt| {
+                self.reverify_prepared_artifact(&mut held.borrow_mut())?;
+                receipt["operationId"] = serde_json::json!(held.borrow().plan.operation_id);
+                receipt["trustGeneration"] = serde_json::json!(held.borrow().generation);
+                catalog_input.recheck()?;
+                result = Some(receipt.clone());
+                Ok(())
+            },
+        )?;
+        catalog_input.recheck()?;
+        result.ok_or_else(|| err("UPDATE_RUNTIME_PROBE_FAILED"))
     }
     pub(super) fn qualify_migrated_runtime_artifact(
         &self,
@@ -898,7 +1010,14 @@ mod tests {
         let catalog_json: Value = serde_json::from_str(&catalog.text().unwrap()).unwrap();
         let payload = serde_json::json!({"catalog":catalog_json,"manifestSha256":plan.backup_manifest,"sourceSchemaSha256":plan.source_schema,"targetSchemaSha256":plan.target_schema,"targetMigrationsSha256":input("EXHIBITOS_MIGRATED_SQL_PIN")});
         let physical = ephemeral_inventory::observe(&ctx, &maintenance).unwrap();
-        let proof = run_probe(&ctx, &maintenance, &physical.physical, Some(&payload)).unwrap();
+        let proof = run_probe(
+            &ctx,
+            &maintenance,
+            &physical.physical,
+            Some(&payload),
+            false,
+        )
+        .unwrap();
         let after = ephemeral_inventory::observe(&ctx, &maintenance).unwrap();
         assert!(candidate_inventory::copies_match(
             &physical.physical,
@@ -919,7 +1038,8 @@ mod tests {
             plan: &unchanged_plan,
             ..ctx
         };
-        let unchanged = run_probe(&unchanged_ctx, &maintenance, &after.physical, None).unwrap();
+        let unchanged =
+            run_probe(&unchanged_ctx, &maintenance, &after.physical, None, false).unwrap();
         let final_physical = ephemeral_inventory::observe(&unchanged_ctx, &maintenance).unwrap();
         assert!(candidate_inventory::copies_match(
             &after.physical,
@@ -1208,6 +1328,76 @@ mod tests {
             assert_eq!(fs::read(source.join(name)).unwrap(), raw);
         }
         crate::restoration::private_bytes(&root.join(format!("reopened-session-report-{}.json", uuid::Uuid::new_v4())),&serde_json::to_vec_pretty(&serde_json::json!({"status":"PASS","scope":"actual reopened public signed Prepared ExecutionSession; no admission/application/activation","receipt":receipt,"plan":plan,"authorityGenerationUnchanged":generation,"preparedIntentUnchanged":true,"originalSelectionPreserved":true,"originalFiveFilesPreserved":true,"preflightVerified":false,"updateExecuted":false})).unwrap()).unwrap();
+    }
+    #[test]
+    fn interruption_requires_observed_sigkill_not_claimed_failure_or_oom() {
+        let proof = serde_json::json!({"interruptionRequested":true,"runtimeClosedNormally":false,"preflightVerified":false,"updateExecuted":false});
+        let state = serde_json::json!({"State":{"Running":false,"Restarting":false,"ExitCode":137,"OOMKilled":false}});
+        validate_interruption(&proof, &state).unwrap();
+        for (pointer, value) in [
+            ("/State/Running", serde_json::json!(true)),
+            ("/State/Restarting", serde_json::json!(true)),
+            ("/State/ExitCode", serde_json::json!(0)),
+            ("/State/ExitCode", serde_json::json!(1)),
+            ("/State/OOMKilled", serde_json::json!(true)),
+        ] {
+            let mut changed = state.clone();
+            *changed.pointer_mut(pointer).unwrap() = value;
+            assert!(validate_interruption(&proof, &changed).is_err());
+        }
+        for field in [
+            "interruptionRequested",
+            "runtimeClosedNormally",
+            "preflightVerified",
+            "updateExecuted",
+        ] {
+            let mut changed = proof.clone();
+            changed[field] = serde_json::Value::Null;
+            assert!(validate_interruption(&changed, &state).is_err());
+        }
+    }
+    #[test]
+    #[ignore = "explicit retained signed synthetic session; genuine migrated Runtime termination in tmpfs only"]
+    fn actual_public_signed_migrated_interruption_preserves_prepared_fixture() {
+        let input = |name| std::env::var(name).expect("explicit qualification input");
+        let root = fs::canonicalize(input("EXHIBITOS_SIGNED_SESSION_ROOT")).unwrap();
+        let profile = root.join("profile");
+        let mut store = super::super::super::Store::open(&profile, "default").unwrap();
+        let plan = store.intent().unwrap().update.plan().clone();
+        assert_eq!(
+            store.intent().unwrap().update.stage(),
+            crate::update::Stage::Prepared
+        );
+        let generation = store.current.generation;
+        let registry = installations::load(&profile).unwrap().unwrap().1;
+        let stage = root.join(format!("interruption-staging-{}", uuid::Uuid::new_v4()));
+        installations::new_directory(&stage).unwrap();
+        let session = store.execution().unwrap();
+        let mut artifact = session
+            .stage_prepared_artifact(&PathBuf::from(input("EXHIBITOS_SIGNED_ARTIFACT")), &stage)
+            .unwrap();
+        let receipt = session
+            .qualify_migrated_runtime_interruption(
+                &mut artifact,
+                &PathBuf::from(input("EXHIBITOS_SIGNED_PYTHON")),
+                &input("EXHIBITOS_SIGNED_REVISION"),
+                &input("EXHIBITOS_MIGRATED_MAINTENANCE"),
+                &PathBuf::from(input("EXHIBITOS_MIGRATED_CATALOG")),
+                &input("EXHIBITOS_MIGRATED_CATALOG_PIN"),
+                true,
+            )
+            .unwrap();
+        drop(session);
+        assert_eq!(store.current.generation, generation);
+        assert_eq!(store.intent().unwrap().update.plan(), &plan);
+        assert_eq!(
+            store.intent().unwrap().update.stage(),
+            crate::update::Stage::Prepared
+        );
+        assert_eq!(installations::load(&profile).unwrap().unwrap().1, registry);
+        assert_eq!(receipt["runtime"]["interruptedHelper"]["exitCode"], 137);
+        assert_eq!(receipt["runtime"]["recoveryVerified"], false);
+        crate::restoration::private_bytes(&root.join(format!("interruption-report-{}.json",uuid::Uuid::new_v4())),&serde_json::to_vec_pretty(&serde_json::json!({"status":"PASS","receipt":receipt,"generation":generation,"preparedIntentUnchanged":true,"selectionPreserved":true,"fullFailedUpdateRecoveryVerified":false,"preflightVerified":false,"updateExecuted":false})).unwrap()).unwrap();
     }
     #[test]
     fn inspected_helper_refuses_writable_sources_and_privilege_network_or_budget_changes() {
