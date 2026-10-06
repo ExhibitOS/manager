@@ -237,12 +237,12 @@ mod tests {
             let output=crate::process_window::background_command(crate::engine_executable("docker").ok_or_else(||err("RUNTIME_MISSING"))?).args(["logs",failed]).output().map_err(|_|err("ENGINE_OPERATION_FAILED"))?;
             if !output.status.success() || output.stdout.len()+output.stderr.len()>4096 {return Err(err("UPDATE_INVENTORY_HELPER_INVALID"));}
             let log=[output.stdout,output.stderr].concat();
-            if metadata["State"]["Running"]!=false || metadata["State"]["ExitCode"]!=1 || metadata["Image"]!=i.image || metadata["HostConfig"]["ReadonlyRootfs"]!=true || !String::from_utf8_lossy(&log).contains("MIGRATION_SCHEMA_MISMATCH") {
+            if metadata["State"]["Running"]!=false || metadata["State"]["ExitCode"]!=1 || metadata["Image"]!=i.image || metadata["HostConfig"]["ReadonlyRootfs"]!=true || !String::from_utf8_lossy(&log).contains("BACKUP_INVENTORY_INVALID") {
                 return Err(err("UPDATE_INVENTORY_HELPER_INVALID"));
             }
             let after=observe(&pinned,super::super::super::private_file(&input,false).map_err(|e|err(e.code()))?,||service.check_restoration_guard(&guard))?;
             super::super::source_inventory::matched_candidate(&after,&plan)?;
-            Ok(serde_json::json!({"state":"PASS","readerRefusedOriginalSchema":true,"errorCode":error.code,"retainedFailedHelper":failed,"exactRefusal":"MIGRATION_SCHEMA_MISMATCH","originalInventoryBefore":before,"originalInventoryAfter":after,"hostActivated":false,"preflightVerified":false,"updateExecuted":false}))
+            Ok(serde_json::json!({"state":"PASS","readerRefusedOriginalSchema":true,"errorCode":error.code,"retainedFailedHelper":failed,"exactRefusal":"BACKUP_INVENTORY_INVALID","originalInventoryBefore":before,"originalInventoryAfter":after,"hostActivated":false,"preflightVerified":false,"updateExecuted":false}))
         })();
         service.validate_ownership(&manifest,"docker").unwrap();service.validate_volumes(&manifest,"docker").unwrap();
         service.operation(&Action::Stop).unwrap();service.check_restoration_guard(&guard).unwrap();
