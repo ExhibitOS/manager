@@ -7,9 +7,27 @@ const READER: &str = include_str!("candidate_execution_reader.mjs");
 
 /// Actual candidate application/health observation, not selected-host activation.
 /// Keeps every admission/recovery fence. No caller health receipt can construct it.
+/// ```compile_fail
+/// use exhibitos_lifecycle::signed_release::trust::ReadyCandidate;
+/// let replay = serde_json::from_str::<ReadyCandidate<'_, '_, '_>>("{}");
+/// ```
+/// ```compile_fail
+/// use exhibitos_lifecycle::signed_release::trust::ReadyCandidate;
+/// fn replay(ready: ReadyCandidate<'_, '_, '_>) {
+///     let first = ready.activate();
+///     let second = ready.activate();
+/// }
+/// ```
 pub struct ReadyCandidate<'session, 'store, 'inputs> {
     started: StartedUpdate<'session, 'store, 'inputs>,
     health: crate::update::HealthReceipt,
+    execution: CandidateState,
+}
+struct CandidateState {
+    deployment: Deployment,
+    database_image: String,
+    containers: [String; 2],
+    frozen: Vec<(String, String)>,
 }
 impl ReadyCandidate<'_, '_, '_> {
     pub fn receipt(&self) -> &Value {
@@ -278,6 +296,9 @@ impl<'session, 'store, 'inputs> StartedUpdate<'session, 'store, 'inputs> {
             .check_fences(&self.admission.session.source)
     }
     fn check_applying(&mut self) -> Result<()> {
+        self.check_stage(crate::update::Stage::Applying, 1)
+    }
+    fn check_stage(&mut self, stage: crate::update::Stage, offset: u64) -> Result<()> {
         self.quick_check()?;
         let a = &mut self.admission;
         let intent = a
@@ -285,13 +306,13 @@ impl<'session, 'store, 'inputs> StartedUpdate<'session, 'store, 'inputs> {
             .store
             .intent()
             .ok_or_else(|| err("UPDATE_INTENT_MISSING"))?;
-        if intent.update.stage() != crate::update::Stage::Applying
+        if intent.update.stage() != stage
             || intent.update.plan() != &a.artifact.plan
             || intent.envelope != a.artifact.envelope
             || a.session.store.receipt().generation
                 != a.artifact
                     .generation
-                    .checked_add(1)
+                    .checked_add(offset)
                     .ok_or_else(|| err("UPDATE_OPERATION_STALE"))?
         {
             return Err(err("UPDATE_OPERATION_STALE"));
@@ -364,7 +385,7 @@ impl<'session, 'store, 'inputs> StartedUpdate<'session, 'store, 'inputs> {
         target_writer_census(&app_row, &db_row, before)?;
         Ok((app_row, db_row))
     }
-    fn apply_inner(&mut self) -> Result<crate::update::HealthReceipt> {
+    fn apply_inner(&mut self) -> Result<(crate::update::HealthReceipt, CandidateState)> {
         self.check_applying()?;
         self.admission.lease.check(&self.admission.session.source)?;
         let plan = self.admission.artifact.plan.clone();
@@ -568,16 +589,34 @@ impl<'session, 'store, 'inputs> StartedUpdate<'session, 'store, 'inputs> {
         // Do NOT journal Updated before coherent selection/authority activation.
         self.admission.receipt["hostActivated"] = serde_json::json!(false);
         self.admission.receipt["updateExecuted"] = serde_json::json!(false);
-        Ok(health)
+        Ok((
+            health,
+            CandidateState {
+                deployment: staged,
+                database_image: db_image,
+                containers: [
+                    final_pair.0["Id"]
+                        .as_str()
+                        .ok_or_else(|| err("ENGINE_OUTPUT_INVALID"))?
+                        .to_owned(),
+                    final_pair.1["Id"]
+                        .as_str()
+                        .ok_or_else(|| err("ENGINE_OUTPUT_INVALID"))?
+                        .to_owned(),
+                ],
+                frozen,
+            },
+        ))
     }
     /// Consuming runtime execution. No raw command, path, image or health flag.
     /// Failure durably requires recovery; original source and all recovery inputs
     /// remain retained. Engine uncertainty is never retried or relabeled success.
     pub fn apply_candidate(mut self) -> Result<ReadyCandidate<'session, 'store, 'inputs>> {
         match self.apply_inner() {
-            Ok(health) => Ok(ReadyCandidate {
+            Ok((health, execution)) => Ok(ReadyCandidate {
                 started: self,
                 health,
+                execution,
             }),
             Err(error) => {
                 let store = &mut self.admission.session.store;
@@ -592,6 +631,134 @@ impl<'session, 'store, 'inputs> StartedUpdate<'session, 'store, 'inputs> {
                         .update_failed(
                             &self.admission.artifact.plan.operation_id,
                             generation,
+                            super::super::super::release_now()?,
+                        )
+                        .map_err(|_| err("UPDATE_EXECUTION_UNCERTAIN"))?;
+                }
+                Err(error)
+            }
+        }
+    }
+}
+
+impl ReadyCandidate<'_, '_, '_> {
+    fn check_ready(&mut self) -> Result<()> {
+        self.started
+            .check_stage(crate::update::Stage::AwaitingHealth, 2)?;
+        self.execution.deployment.check_published()?;
+        self.started.source_unchanged()?;
+        for (path, sha) in &self.execution.frozen {
+            if crate::digest(&crate::installation_backup::source_bytes(
+                &self.execution.deployment.root,
+                path,
+                8192,
+                true,
+            )?) != *sha
+            {
+                return Err(err("UPDATE_TARGET_CHANGED"));
+            }
+        }
+        let pair = self.started.observed_pair(
+            &self.execution.deployment.manifest,
+            &self.execution.database_image,
+        )?;
+        if pair.0["Id"] != self.execution.containers[0]
+            || pair.1["Id"] != self.execution.containers[1]
+            || !crate::readiness(&self.execution.deployment.manifest).ready
+        {
+            return Err(err("UPDATE_CANDIDATE_HEALTH_FAILED"));
+        }
+        Ok(())
+    }
+    fn refresh_health(&mut self) -> Result<()> {
+        self.started.admission.session.require_selected_source()?;
+        self.check_ready()?;
+        let plan = self.started.admission.artifact.plan.clone();
+        let system=self.started.admission.receipt["candidate"]["inventory"]["observation"]["physical"]["systemIdentifier"]
+            .as_str().filter(|s|source_database::valid_system_identifier(s))
+            .ok_or_else(||err("UPDATE_CANDIDATE_PROOF_MISSING"))?.to_owned();
+        let input = self.started.admission.lease.manifest_input()?;
+        let args = vec![
+            "exec".into(),
+            "--interactive".into(),
+            self.execution.containers[0].clone(),
+            "node".into(),
+            "--input-type=module".into(),
+            "-e".into(),
+            READER.into(),
+            plan.backup_manifest.clone(),
+            system,
+        ];
+        let raw = run_observed_input("docker", &args, None, 180, Some(input), || {
+            self.started.quick_check()?;
+            self.execution.deployment.check_published()
+        })?;
+        let inventory: source_inventory::InventoryProof =
+            serde_json::from_slice(&raw).map_err(|_| err("UPDATE_CANDIDATE_HEALTH_FAILED"))?;
+        source_inventory::matched_candidate(&inventory, &plan)?;
+        if inventory.schema_sha256 != plan.target_schema {
+            return Err(err("UPDATE_CANDIDATE_HEALTH_FAILED"));
+        }
+        let (_, before) = self.started.admission.lease.stopped();
+        let expected =
+            source_configuration::expected(self.started.admission.lease.authenticated_raw()?)?;
+        source_configuration::observe(
+            self.started.admission.inputs.maintenance_image,
+            &before.configuration_volume,
+            &expected,
+        )?;
+        self.check_ready()?;
+        if self.health.operation_id != plan.operation_id
+            || self.health.instance_id != plan.target_instance
+            || self.health.image != plan.target_image
+            || self.health.schema != inventory.schema_sha256
+            || !self.health.ready
+        {
+            return Err(err("UPDATE_CANDIDATE_HEALTH_FAILED"));
+        }
+        Ok(())
+    }
+    fn activate_inner(
+        &mut self,
+    ) -> Result<crate::signed_release::trust::SelectionActivationReceipt> {
+        self.refresh_health()?;
+        let activation = crate::signed_release::trust::selection_activation::Activation::prepare(
+            self.started.admission.session.store,
+            &self.started.admission.session.registry,
+            &self.health,
+        )?;
+        // The original profile/authority and both operation locks are still held.
+        let next = activation.publish_selection(self.started.admission.session.store)?;
+        self.started.admission.session.registry = next;
+        self.check_ready()?;
+        let plan = &self.started.admission.artifact.plan;
+        let store = &mut self.started.admission.session.store;
+        store
+            .observe_health(
+                &plan.operation_id,
+                store.receipt().generation,
+                self.health.clone(),
+                super::super::super::release_now()?,
+            )
+            .map_err(|e| err(e.code()))?;
+        activation.complete(store)
+    }
+    /// Consume actual candidate observations; reobserve before selected-host and
+    /// authority completion. No frontend health flag, target, command or route.
+    /// Failure preserves both selections and journal for explicit reconciliation.
+    pub fn activate(mut self) -> Result<crate::signed_release::trust::SelectionActivationReceipt> {
+        match self.activate_inner() {
+            Ok(receipt) => Ok(receipt),
+            Err(error) => {
+                let store = &mut self.started.admission.session.store;
+                if store
+                    .intent()
+                    .is_some_and(|i| i.update.stage() == crate::update::Stage::AwaitingHealth)
+                {
+                    store
+                        .update_failed(
+                            &self.started.admission.artifact.plan.operation_id,
+                            store.receipt().generation,
                             super::super::super::release_now()?,
                         )
                         .map_err(|_| err("UPDATE_EXECUTION_UNCERTAIN"))?;
