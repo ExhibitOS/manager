@@ -231,8 +231,15 @@ impl<'session, 'store, 'inputs> OwnedPreflight<'session, 'store, 'inputs> {
     /// Consume the non-replayable permit. No runtime mutation precedes the durable
     /// Applying record; the same Store, staged artifact and source/target locks
     /// transfer into the future executor without an unlock/relock interval.
-    pub fn begin(mut self) -> Result<StartedUpdate<'session, 'store, 'inputs>> {
+    pub fn begin(self) -> Result<StartedUpdate<'session, 'store, 'inputs>> {
         require_executable_schema(&self.artifact.plan)?;
+        self.begin_journaled()
+    }
+    // Shared implementation for production admission and the explicit native
+    // qualification test. Public changed-schema admission stays CLOSED until
+    // the full real apply/failure/recovery matrix is qualified. No feature flag,
+    // CLI switch, serialized permit or caller-supplied verification can open it.
+    fn begin_journaled(mut self) -> Result<StartedUpdate<'session, 'store, 'inputs>> {
         self.recheck()?;
         // Time is observed after all potentially slow full-corpus rechecks.
         self.session.reverify_prepared_artifact(self.artifact)?;
@@ -292,5 +299,95 @@ mod tests {
   assert_eq!(installations::load(&profile).unwrap().unwrap().0.active_id,plan.source_instance);assert!(!destination.join("host").exists());
   let report=serde_json::json!({"state":"PASS","scope":"actual owned migrated permit with retained complete host; begin refused; not whole Applying/activation/recovery","receipt":receipt,"destination":destination,"staging":staging,"retainedHost":retained_host,"originalAuthorityGeneration":generation,"plan":plan,"preparedIntentUnchanged":true,"selectionUnchanged":true,"newWholeHostCopy":false,"newServiceVolume":false,"executionStarted":false,"updateExecuted":false,"beginRefusal":error.code});
   crate::restoration::private_bytes(&root.join(format!("permit-report-{}.json",uuid::Uuid::new_v4())),&serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+ }
+
+ #[test]
+ #[ignore="explicit small synthetic signed fixture; real changed Applying/runtime/failed activation/fresh encrypted original service restoration; public changed execution remains closed"]
+ fn actual_changed_application_failure_and_fresh_original_restoration() {
+  use std::os::unix::fs::PermissionsExt;
+  let input:Value=serde_json::from_slice(&fs::read(std::env::var("EXHIBITOS_MIGRATED_PERMIT_INPUT").unwrap()).unwrap()).unwrap();
+  let path=|n:&str|PathBuf::from(input[n].as_str().unwrap());
+  let root=fs::canonicalize(path("root")).unwrap();
+  // This exact previously qualified development fixture is separate from the
+  // rejected original current16 execution. Refuse other roots/policies/stages.
+  assert_eq!(root.file_name().unwrap(),"exhibitos-release-trust-817e82d0-bfe4-413e-bb1c-d8c252401d8a");
+  let profile=root.join("profile");let mut store=crate::signed_release::trust::Store::open(&profile,"default").unwrap();
+  let signing=ed25519_dalek::SigningKey::from_bytes(&[31;32]);
+  let public=signing.verifying_key().to_bytes().iter().map(|b|format!("{b:02x}")).collect::<String>();
+  assert_eq!(store.current.policy.public_keys,vec![public]);
+  let intent=store.intent().unwrap();assert_eq!(intent.update.stage(),crate::update::Stage::Prepared);
+  let envelope:crate::signed_release::Envelope=serde_json::from_str(&intent.envelope).unwrap();
+  let release:crate::signed_release::Release=serde_json::from_str(&envelope.payload).unwrap();
+  assert_eq!(release.channel,"development");assert_eq!(release.target,"linux-arm64");
+  let plan=intent.update.plan().clone();assert_ne!(plan.source_schema,plan.target_schema);
+  assert_eq!(require_executable_schema(&plan).unwrap_err().code,"UPDATE_RUNTIME_MIGRATION_UNQUALIFIED");
+  let original_generation=store.current.generation;let authority=store.root.clone();
+  let old_records=(0..=original_generation).filter_map(|g|{let p=authority.join(format!("{g:020}.json"));fs::read(&p).ok().map(|bytes|(p,bytes))}).collect::<Vec<_>>();
+  let source=profile.join("local-runtime");
+  let names=["installed.json","engine.json","runtime.env","bundle/manifest.json","bundle/compose.yaml"];
+  let before=names.iter().map(|n|{let p=source.join(n);(*n,fs::read(&p).unwrap(),fs::metadata(&p).unwrap().permissions().mode())}).collect::<Vec<_>>();
+  let key_file=path("key");let key:[u8;32]=super::super::super::super::read_record(&key_file).unwrap().try_into().unwrap();
+  let binding=path("binding");let host=path("hostArchive");let trust=path("trustArchive");let python=path("python");let catalog=path("catalog");let retained_host=path("retainedHost");
+  let archive=fs::canonicalize(path("serviceArchive")).unwrap();
+  let qualification=root.join(format!("changed-full-recovery-{}",uuid::Uuid::new_v4()));installations::new_directory(&qualification).unwrap();
+  let export=qualification.join("exports");installations::new_directory(&export).unwrap();
+  let staging=qualification.join("staging");installations::new_directory(&staging).unwrap();
+  let destination=qualification.join("preflight");
+  let inputs=RecoveryRuntimeInputs{checkpoint:CheckpointInputs{binding:&binding,host:&host,trust:&trust,key:&key},export_parent:&export,python:&python,source_commit:input["sourceCommit"].as_str().unwrap(),maintenance_image:input["maintenance"].as_str().unwrap(),external_writers_quiesced:true};
+  let migration=MigrationRuntimeInputs{catalog:&catalog,catalog_sha256:input["catalogSha256"].as_str().unwrap()};
+  let outcome=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||->Result<Value>{
+   let mut session=store.execution()?;let mut artifact=session.stage_prepared_artifact(&path("artifact"),&staging)?;
+   let permit=session.prepare_owned_migrated_update_reusing_host(&mut artifact,&inputs,&migration,&retained_host,&destination,&key_file)?;
+   assert!(permit.migration.is_some());let admitted=permit.receipt().clone();
+   // Real production body: current signed/artifact/checkpoint/authority/fence
+   // rechecks and durable Applying. Only the public rollout gate is held closed.
+   let started=permit.begin_journaled()?;
+   let ready=started.apply_candidate()?;
+   let applying_receipt=ready.started_receipt_for_qualification();
+   let target=crate::LifecycleService::open_retry_diagnostics(profile.join("installations").join(&plan.target_instance))?;
+   let manifest=target.manifest()?;
+   target.validate_ownership(&manifest,"docker")?;target.validate_volumes(&manifest,"docker")?;
+   let (app,row)=crate::backup_creation::one_container(&target,&manifest,"docker","platform")?;
+   if row["Image"]!=format!("sha256:{}",plan.target_image)||row["State"]["Running"]!=true {return Err(err("UPDATE_TARGET_CHANGED"));}
+   // Exact owned migrated target, never source/PG/personal containers.
+   crate::run("docker",&["kill".into(),"--signal".into(),"KILL".into(),app.clone()],None,30)?;
+   let killed=crate::backup_creation::inspected("docker",&["inspect".into(),app])?;
+   assert_eq!(killed["State"]["ExitCode"],137);assert_eq!(killed["State"]["OOMKilled"],false);
+   let error=match ready.activate(){Ok(_)=>return Err(err("UPDATE_QUALIFICATION_EXPECTED_FAILURE")),Err(e)=>e};
+   drop(artifact);drop(session);
+   assert_eq!(store.intent().unwrap().update.stage(),crate::update::Stage::RecoveryRequired);
+   crate::run("docker",&crate::compose_args(&manifest,&["stop","--timeout","30"]),Some(&target.root.join("bundle")),180)?;
+   let reserved=store.register_rollback_candidate(true)?;
+   let port=input["recoveryPort"].as_u64().filter(|n|*n>=1024&&*n<=65535).ok_or_else(||err("PORT_INVALID"))? as u16;
+   let restored=store.restore_registered_rollback_candidate(inputs.maintenance_image,&key_file,&archive,port,true)?;
+   assert_eq!(restored.candidate_id,reserved.candidate_id);assert!(!restored.rollback_completed);
+   let completion=store.activate_restored_rollback(inputs.maintenance_image,true)?;
+   assert!(completion.selection_completed);assert_eq!(store.intent().unwrap().update.stage(),crate::update::Stage::RolledBack);
+   let restored_service=crate::LifecycleService::open_retry_diagnostics(reserved.candidate_path.clone())?;
+   let restored_manifest=restored_service.manifest()?;
+   restored_service.validate_ownership(&restored_manifest,"docker")?;
+   crate::run("docker",&crate::compose_args(&restored_manifest,&["stop","--timeout","30"]),Some(&restored_service.root.join("bundle")),180)?;
+   Ok(serde_json::json!({"admission":admitted,"actualApplication":applying_receipt,"actualFailureCode":error.code,"targetExit":137,"originalServiceRestoration":restored,"completion":completion,"freshOriginalCandidate":reserved.candidate_id}))
+  })).unwrap_or_else(|_|Err(err("UPDATE_QUALIFICATION_ASSERTION_FAILED")));
+  // Stop only this plan's two owned candidate namespaces, also on failure.
+  let mut stop_results=Vec::new();
+  if let Ok(Some((registry,_)))=installations::load(&profile){
+   for entry in registry.installations.iter().filter(|e|e.id==plan.target_instance || store.intent().is_some_and(|i|i.update.restore_candidate()==Some(e.id.as_str()))){
+    let service=crate::LifecycleService::open_retry_diagnostics(installations::root(&profile,entry)).unwrap();
+    if let Ok(m)=service.manifest()
+     && service.validate_ownership(&m,"docker").is_ok()&&service.validate_volumes(&m,"docker").is_ok(){
+      let result=crate::run("docker",&crate::compose_args(&m,&["stop","--timeout","30"]),Some(&service.root.join("bundle")),180);
+      stop_results.push(serde_json::json!({"candidate":entry.id,"stopped":result.is_ok()}));
+    }
+   }
+  }
+  for (name,bytes,mode) in before{let p=source.join(name);assert_eq!(fs::read(&p).unwrap(),bytes);assert_eq!(fs::metadata(&p).unwrap().permissions().mode(),mode);}
+  for (p,bytes) in old_records{assert_eq!(fs::read(p).unwrap(),bytes);}
+  let report=serde_json::json!({"state":if outcome.is_ok(){"PASS"}else{"FAIL"},"errorCode":outcome.as_ref().err().map(|e|e.code.as_str()),"result":outcome.as_ref().ok(),"stopResults":stop_results,"profile":profile,"scope":"Actual changed durable Applying/application, SIGKILL failed activation, fresh full original encrypted service restoration/native health/selection; public rollout gate remains closed. Missing-host and process-crash/GUI matrix separate.","newWholeHostArchive":false,"originalSourcePreserved":true,"originalAuthorityHistoryPreserved":true});
+  crate::restoration::private_bytes(&qualification.join("report.json"),&serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+  println!("QUALIFICATION_REPORT={}",qualification.join("report.json").display());
+  outcome.unwrap();let id=store.intent().unwrap().update.restore_candidate().unwrap().to_owned();drop(store);
+  let cold=crate::signed_release::trust::Store::open(&profile,"default").unwrap();assert_eq!(cold.root,authority);assert_eq!(cold.intent().unwrap().update.stage(),crate::update::Stage::RolledBack);
+  assert_eq!(installations::load(&profile).unwrap().unwrap().0.active_id,id);
  }
 }
