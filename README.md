@@ -122,4 +122,4 @@ Stopped candidate data can also be checked with bounded tmpfs instead of accumul
 
 [예약된 롤백 후보의 실제 암호화 복원 코어](docs/rollback-restoration.md)는 원래 계획의 백업·스키마·이미지·인벤토리를 새 공간에 복원합니다. 건강 재관측·선택/authority 완료와 전체 migration 롤백 검증은 남아 있습니다.
 
-[롤백 선택과 authority journal](docs/rollback-selection.md)은 합성 종료 경계에서 정확한 이전 선택 복구와 완료 기록을 검증합니다. 실제 원래 Runtime 건강을 다시 관측하는 native 실행기 연결은 남아 있습니다.
+[롤백 선택과 authority journal](docs/rollback-selection.md)은 합성 종료 경계에서 정확한 이전 선택 복구와 완료 기록을 검증합니다. [보존한 복원 후보의 native 건강 재관측](docs/rollback-runtime.md)이 Unix 코어에 연결됐습니다. 실제 migration 실패·전체 복구·GUI·Windows 인수 검증은 남아 있습니다.

@@ -79,6 +79,24 @@ pub struct SourceHostTrustReceipt {
     pub preflight_verified: bool,
     pub update_executed: bool,
 }
+#[cfg(unix)]
+pub(super) fn check_rollback_configuration(
+    image: &str,
+    volume: &str,
+    manifest: &[u8],
+) -> crate::Result<()> {
+    let expected = source_configuration::expected(manifest)?;
+    source_configuration::observe(image, volume, &expected).map(|_| ())
+}
+#[cfg(unix)]
+pub(super) fn check_rollback_inventory(
+    raw: &[u8],
+    plan: &crate::update::Plan,
+) -> crate::Result<()> {
+    let proof: source_inventory::InventoryProof =
+        serde_json::from_slice(raw).map_err(|_| crate::err("UPDATE_ROLLBACK_HEALTH_INVALID"))?;
+    source_inventory::matched_candidate(&proof, plan)
+}
 /// Holds the Store borrow and both profile fences. No arbitrary root, controller
 /// bootstrap, activation, journal transition, or externally supplied success flag.
 pub struct ExecutionSession<'a> {
