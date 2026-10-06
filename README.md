@@ -117,3 +117,5 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 Stopped candidate data can also be checked with bounded tmpfs instead of accumulating persistent database snapshots: see [candidate inventory without persistent snapshots](docs/genuine-update-plan.md#candidate-inventory-without-persistent-snapshots). This opt-in diagnostic preserves full physical and logical checks; it does not authorize an update or complete platform qualification.
 
 [암호화 호스트 사본의 현재 내용 대조](docs/current-host-stream.md)는 원본·후보 통합 관측의 앞뒤에 전체 호스트 파일·권한을 암호화 스트림과 대조하며 새 plaintext 추출 파일을 만들지 않습니다. 실제 추출·authority 복원·업데이트 실행 인수 조건은 계속 별도로 검증합니다.
+
+[Rollback 후보 공간 준비](docs/rollback-registration.md)는 실패 계획의 복원 후보 ID를 먼저 예약하고 새 비활성 공간을 등록합니다. 실제 데이터 복원·원래 Runtime health·선택 활성화는 후속 연결 조건입니다.
