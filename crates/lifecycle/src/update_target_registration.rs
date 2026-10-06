@@ -56,16 +56,11 @@ impl Store {
         let _profile = installations::profile_lock(&profile)?;
         let (mut registry, previous) = installations::load(&self.profile)?
             .ok_or_else(|| crate::err("UPDATE_SOURCE_UNREGISTERED"))?;
+        let bound_source = self.bound_source_id(&registry)?;
         let entry = registry
             .installations
             .iter()
-            .find(|e| {
-                if self.installation == "default" {
-                    e.kind == "default"
-                } else {
-                    e.id == self.installation
-                }
-            })
+            .find(|e| e.id == bound_source)
             .ok_or_else(|| crate::err("UPDATE_SOURCE_UNREGISTERED"))?;
         let source_id = entry.id.clone();
         if self

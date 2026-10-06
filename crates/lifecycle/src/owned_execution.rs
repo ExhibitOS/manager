@@ -1595,6 +1595,12 @@ mod tests {
         );
         let head = store.current_sha256.clone();
         let generation = store.current.generation;
+        // A later target registration follows authenticated completed selection,
+        // not the original default-kind entry or an unverified active pointer.
+        let next = store.register_update_target(true).unwrap();
+        assert_eq!(next.source_instance, target);
+        assert_eq!(next.active_instance, target);
+        assert_eq!(store.current_sha256, head);
         drop(store);
         let reopened = Store::open(&p, "default").unwrap();
         assert_eq!(reopened.root, root);
