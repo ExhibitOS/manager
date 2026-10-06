@@ -48,3 +48,43 @@ integration evidence. The prior synthetic placeholder release cannot be upgraded
 into a deployable plan merely by this receipt; a new real-artifact plan must be
 verified and bound to fresh source/candidate observations before mutation.
 Windows/amd64, production signing authority and native GUI remain separate gates.
+
+
+## Migration identity extension
+
+The default inspector continues to require exact original embedded SQL equality.
+For a strictly extended list, all three optional inputs are required together:
+
+```sh
+python3 scripts/verify-runtime-oci.py --archive '<private absolute runtime.tar>' \
+  --image 'sha256:<OCI content ID>' --source-manifest '<authenticated original manifest.json>' \
+  --source-commit '<observed Platform revision>' \
+  --target-inventory '<private independently observed target inventory.json>' \
+  --target-inventory-sha256 '<trusted exact target inventory bytes hash>' \
+  --target-schema-sha256 '<signed expected target schema hash>' \
+  --output '<new private proof.json>'
+```
+
+Both JSON inputs must be canonical private regular files, owned by the reader,
+without aliases or hardlinks, at most16MiB, with duplicate JSON keys refused.
+The target inventory pin binds its exact bytes; the target schema hash must match
+its catalog digest, schema version and migration list. Every original SQL name
+and checksum must remain the exact sorted prefix. The complete final-layer
+embedded SQL list must equal the target list. Migration symlinks, hardlinks,
+special files, non-SQL entries, whiteouts and duplicate protected paths within a
+layer refuse, including a later symlink replacing an earlier regular SQL file.
+
+The report separates `sourceSchemaSha256` and `targetSchemaSha256` and includes
+`migrationMode`, `sourceManifestSha256`, `targetInventorySha256`, and
+`targetMigrationsSha256`. Existing fields remain compatible. This is an optional
+operator artifact-identity prerequisite; Rust import/application behavior is
+unchanged and still refuses unqualified changed schemas. A caller-selected hash
+is not catalog observation, artifact signing, migration compatibility, data
+preservation or recoverability. Obtain the target catalog from actual independent
+native qualification and bind it to the release and plan before any application.
+Arbitrary data transformations require their own compatibility and full recovery
+proof. The inspector never loads, starts, extracts or migrates an image.
+
+Run `python3 -m unittest discover -s scripts -p test_runtime_oci.py -v` for small
+real OCI tar graph and input-refusal regression tests. Temporary synthetic archives
+are removed by the test fixture; original archives and data are untouched.
