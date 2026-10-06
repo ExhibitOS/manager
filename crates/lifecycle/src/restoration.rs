@@ -257,10 +257,16 @@ fn validate_source_layout(config: &Value, bytes: &[u8], m: &BundleManifest) -> R
         ("platform", vec!["/data/blobs", "/data/config"]),
     ] {
         let value = &config["services"][service];
+        // Our restoration writer emits this exact non-root application identity.
+        // Accept it on repeated restoration without admitting arbitrary users.
+        if value.get("user").is_some_and(|user| {
+            !user.is_null() && !(service == "platform" && user == "1000:1000")
+        }) {
+            return Err(err("RESTORE_LAYOUT_UNSUPPORTED"));
+        }
         for field in [
             "command",
             "entrypoint",
-            "user",
             "extra_hosts",
             "dns",
             "devices",
@@ -1245,16 +1251,23 @@ mod tests {
         config["services"]["platform"]["environment"] = serde_json::to_value(env).unwrap();
         config["services"]["database"]["environment"]["POSTGRES_PASSWORD"] =
             "synthetic-password".into();
-        config["services"]["platform"]
-            .as_object_mut()
-            .unwrap()
-            .remove("user");
+
         // Compose normalization converts mount strings into typed mount descriptions.
         config["services"]["database"]["volumes"] =
             serde_json::json!([{"type":"volume","target":"/var/lib/postgresql"}]);
         config["services"]["platform"]["volumes"] = serde_json::json!([{"type":"volume","target":"/data/blobs"},{"type":"volume","target":"/data/config"}]);
         config["services"]["database"]["command"] = Value::Null;
         config["services"]["platform"]["entrypoint"] = Value::Null;
+        assert!(validate_source_layout(&config, text.as_bytes(), &m).is_ok());
+        for user in ["0", "0:0", "1000", "1001:1000", "1000:1001", "${APP_USER}"] {
+            config["services"]["platform"]["user"] = user.into();
+            assert!(validate_source_layout(&config, text.as_bytes(), &m).is_err());
+        }
+        config["services"]["platform"]["user"] = "1000:1000".into();
+        config["services"]["database"]["user"] = "1000:1000".into();
+        assert!(validate_source_layout(&config, text.as_bytes(), &m).is_err());
+        config["services"]["database"].as_object_mut().unwrap().remove("user");
+        config["services"]["platform"].as_object_mut().unwrap().remove("user");
         assert!(validate_source_layout(&config, text.as_bytes(), &m).is_ok());
         config["services"]["platform"]["entrypoint"] = serde_json::json!(["unexpected-command"]);
         assert!(validate_source_layout(&config, text.as_bytes(), &m).is_err());
