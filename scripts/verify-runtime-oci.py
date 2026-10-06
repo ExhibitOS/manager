@@ -10,8 +10,55 @@ def unique(pairs):
  for k,v in pairs:
   assert k not in d;d[k]=v
  return d
-def qualify(a,f):
+def private_json(path,expected_sha=None):
+ # No extraction and no alias/hardlink adoption. Bind metadata before/after the
+ # read; hashes are caller trust inputs, not authentication by this inspector.
+ assert path.is_absolute() and path.resolve()==path
+ fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+ with os.fdopen(fd,'rb') as f:
+  before=os.fstat(f.fileno())
+  assert stat.S_ISREG(before.st_mode) and before.st_nlink==1 and before.st_uid==os.getuid() and stat.S_IMODE(before.st_mode) in (0o400,0o600) and 0<before.st_size<=16*1024**2
+  raw=f.read(16*1024**2+1);assert len(raw)==before.st_size
+  digest=hashlib.sha256(raw).hexdigest()
+  if expected_sha is not None:assert re.fullmatch(r'[a-f0-9]{64}',expected_sha) and digest==expected_sha
+  assert identity(before)==identity(os.fstat(f.fileno()))==identity(path.stat())
+ return json.loads(raw,object_pairs_hook=unique),digest
+
+def migration_binding(source,current,target=None,target_schema=None):
+ canonical=lambda v:json.dumps(v,sort_keys=True,separators=(',',':'),ensure_ascii=False)
+ sha=lambda v:hashlib.sha256(canonical(v).encode()).hexdigest()
+ def valid(inventory):
+  assert inventory['schemaVersion']=='1.0.0-draft.1' and re.fullmatch(r'[a-f0-9]{64}',inventory['schemaDigest'])
+  rows=inventory['migrations'];assert isinstance(rows,list) and 0<len(rows)<=10000
+  for i,m in enumerate(rows):
+   assert set(m)=={'name','sha256'} and isinstance(m['name'],str) and len(m['name'])<=1024 and re.fullmatch(r'[0-9][a-zA-Z0-9_.-]*\.sql',m['name']) and re.fullmatch(r'[a-f0-9]{64}',m['sha256'])
+   assert i==0 or rows[i-1]['name']<m['name']
+ def schema(v):return sha({k:v[k] for k in ('schemaDigest','schemaVersion','migrations')})
+ valid(source);source_hash=schema(source)
+ if target is None:
+  assert target_schema is None and current==source['migrations']
+  return source_hash,source_hash,'unchanged',None
+ valid(target)
+ assert isinstance(target_schema,str) and re.fullmatch(r'[a-f0-9]{64}',target_schema) and schema(target)==target_schema and target_schema!=source_hash
+ assert len(current)>len(source['migrations']) and current[:len(source['migrations'])]==source['migrations'] and current==target['migrations']
+ # This binding proves embedded SQL identities only, not actual target catalog,
+ # arbitrary data transformations, migration execution, health or recovery.
+ return source_hash,target_schema,'strict-migration-extension',sha(target['migrations'])
+
+def qualify(a,f,source_manifest_bytes=None):
  assert re.fullmatch(r'sha256:[a-f0-9]{64}',a.image) and re.fullmatch(r'[a-f0-9]{40}',a.source_commit)
+ if source_manifest_bytes is None:
+  source,source_manifest_hash=private_json(a.source_manifest)
+ else:
+  # Internal Rust adapter already owns the private retained descriptor and checks
+  # its bytes against the authenticated plan pin. Do not reopen a pathname here.
+  assert isinstance(source_manifest_bytes,bytes) and 0<len(source_manifest_bytes)<=16*1024**2
+  source=json.loads(source_manifest_bytes,object_pairs_hook=unique)
+  source_manifest_hash=hashlib.sha256(source_manifest_bytes).hexdigest()
+ assert source.get('kind')=='service-backup' and source.get('schemaVersion') in ('1.0.0-draft.1','1.0.0-draft.2')
+ target_path=getattr(a,'target_inventory',None);target_pin=getattr(a,'target_inventory_sha256',None);target_schema=getattr(a,'target_schema_sha256',None)
+ assert (target_path is None and target_pin is None and target_schema is None) or (target_path is not None and target_pin is not None and target_schema is not None)
+ target,target_inventory_hash=private_json(target_path,target_pin) if target_path is not None else (None,None)
  assert a.archive.is_absolute() and a.archive.resolve()==a.archive
  before=a.archive.stat();assert stat.S_ISREG(before.st_mode) and before.st_nlink==1 and stat.S_IMODE(before.st_mode) in (0o400,0o600) and before.st_uid==os.getuid() and 0<before.st_size<=2*1024**3
  sha=lambda b:hashlib.sha256(b).hexdigest()
@@ -92,6 +139,7 @@ def qualify(a,f):
     assert 'sha256:'+h.hexdigest()==diff
     import io
     with tarfile.open(fileobj=io.BytesIO(b''.join(parts)),mode='r:') as tar:
+     seen=set()
      for entry in tar:
       name=str(PurePosixPath(entry.name));prefix='opt/exhibitos/database/migrations/'
       path=PurePosixPath(name);assert not path.is_absolute() and '..' not in path.parts
@@ -99,23 +147,24 @@ def qualify(a,f):
       # Do not silently reconstruct migrations across replacement or opaque layers.
       assert not (path.parent.as_posix() in {'.',*protected} and path.name.startswith('.wh.'))
       if name in protected:assert entry.isdir()
+      if name in protected or name.startswith(prefix):assert name not in seen;seen.add(name)
       if name.startswith(prefix):
        relative=name[len(prefix):];assert relative and '/' not in relative and not relative.startswith('.wh.')
-       if entry.isfile():assert relative.endswith('.sql');migrations[relative]=hashlib.file_digest(tar.extractfile(entry),'sha256').hexdigest()
+       assert entry.isfile() and re.fullmatch(r'[0-9][a-zA-Z0-9_.-]*\.sql',relative)
+       migrations[relative]=hashlib.file_digest(tar.extractfile(entry),'sha256').hexdigest()
     del parts
    compatibility=read('manifest.json');assert len(compatibility)==1 and compatibility[0].get('RepoTags') in (None,[])
    assert compatibility[0]['Config']==cfgname
    assert compatibility[0]['Layers']==['blobs/sha256/'+layer['digest'][7:] for layer in layers]
    assert set(compatibility[0])=={'Config','RepoTags','Layers'}
-   expected=json.loads(a.source_manifest.read_text())['inventory'];current=[{'name':k,'sha256':v} for k,v in sorted(migrations.items())];assert current==expected['migrations']
-   canonical=lambda v:json.dumps(v,sort_keys=True,separators=(',',':'),ensure_ascii=False)
-   schema=sha(canonical({'schemaDigest':expected['schemaDigest'],'schemaVersion':expected['schemaVersion'],'migrations':expected['migrations']}).encode())
+   current=[{'name':k,'sha256':v} for k,v in sorted(migrations.items())]
+   source_schema,target_schema,mode,migration_hash=migration_binding(source['inventory'],current,target,target_schema)
   after=a.archive.stat();assert (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)==(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns)
-  report={'format':1,'artifactBytes':before.st_size,'artifactSha256':artifact,'runtimeImageSha256':a.image[7:],'target':'linux-arm64','version':labels['org.opencontainers.image.version'],'sourceCommit':a.source_commit,'sourceSchemaSha256':schema,'targetSchemaSha256':schema,'embeddedMigrations':current,'ociBlobs':len(reached),'runtimeConfigSha256':cfgname.split('/')[-1],'layerDiffIds':cfg['rootfs']['diff_ids'],'limits':['read-only genuine artifact qualification, no load/start/migration/health/rollback','unchanged embedded migrations are not actual runtime compatibility or image-only rollback proof','BuildKit attestation metadata has empty subjects; no authenticated source provenance claim','development source labels, not production signing authority or Windows/amd64 qualification']}
+  report={'format':1,'artifactBytes':before.st_size,'artifactSha256':artifact,'runtimeImageSha256':a.image[7:],'target':'linux-arm64','version':labels['org.opencontainers.image.version'],'sourceCommit':a.source_commit,'sourceSchemaSha256':source_schema,'targetSchemaSha256':target_schema,'migrationMode':mode,'sourceManifestSha256':source_manifest_hash,'targetInventorySha256':target_inventory_hash,'targetMigrationsSha256':migration_hash,'embeddedMigrations':current,'ociBlobs':len(reached),'runtimeConfigSha256':cfgname.split('/')[-1],'layerDiffIds':cfg['rootfs']['diff_ids'],'limits':['read-only genuine artifact qualification, no load/start/migration/health/rollback','embedded migration binding is not actual catalog observation, migration compatibility, data preservation or rollback proof','target inventory/schema hash must originate from trusted independent catalog qualification and signed release; caller-selected hashes are not authentication','BuildKit attestation metadata has empty subjects; no authenticated source provenance claim','development source labels, not production signing authority or Windows/amd64 qualification']}
   return report
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('--archive',type=Path,required=True);p.add_argument('--image',required=True);p.add_argument('--source-manifest',type=Path,required=True);p.add_argument('--source-commit',required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
+ p=argparse.ArgumentParser();p.add_argument('--archive',type=Path,required=True);p.add_argument('--image',required=True);p.add_argument('--source-manifest',type=Path,required=True);p.add_argument('--source-commit',required=True);p.add_argument('--target-inventory',type=Path);p.add_argument('--target-inventory-sha256');p.add_argument('--target-schema-sha256');p.add_argument('--output',type=Path,required=True);a=p.parse_args()
  with a.archive.open('rb') as f:report=qualify(a,f)
  with a.output.open('x') as out:out.write(json.dumps(report,indent=2)+'\n')
  a.output.chmod(0o600);print('PASS bounded tagless OCI graph/blob/layer/config/migration identity; no artifact execution')

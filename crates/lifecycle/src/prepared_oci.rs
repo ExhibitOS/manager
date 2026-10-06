@@ -10,10 +10,9 @@ from types import SimpleNamespace
 with os.fdopen(int(sys.argv[3]),'rb',closefd=False) as manifest_fd:
     raw_manifest=manifest_fd.read(16*1024*1024+1)
     assert len(raw_manifest)<=16*1024*1024 and hashlib.sha256(raw_manifest).hexdigest()==sys.argv[5]
-source=SimpleNamespace(read_text=lambda:raw_manifest.decode('utf-8'))
-args = SimpleNamespace(archive=Path(sys.argv[1]),image=sys.argv[2],source_manifest=source,source_commit=sys.argv[4])
+args = SimpleNamespace(archive=Path(sys.argv[1]),image=sys.argv[2],source_manifest=None,source_commit=sys.argv[4])
 with os.fdopen(0,'rb',closefd=False) as retained:
-    proof=qualify(args,retained)
+    proof=qualify(args,retained,source_manifest_bytes=raw_manifest)
 print(json.dumps(proof,separators=(',',':')))
 "#;
 #[derive(Debug, serde::Serialize)]
