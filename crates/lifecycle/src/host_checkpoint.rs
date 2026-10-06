@@ -419,6 +419,7 @@ fn receipt(m: &Inventory, operation: &str, encoded: &[u8]) -> HostReceipt {
 }
 /// Authenticate the complete host stream against the current profile without
 /// extracting plaintext or claiming trust/runtime restoration.
+#[cfg(unix)]
 pub fn verify_host_current(
     profile: &Path,
     key_file: &Path,
@@ -452,6 +453,20 @@ pub fn verify_host_current(
     })();
     key.fill(0);
     result
+}
+#[cfg(not(unix))]
+pub fn verify_host_current(
+    _profile: &Path,
+    _key_file: &Path,
+    _archive: &Path,
+    _expected_manifest: &str,
+    apps_closed: bool,
+    writers_stopped: bool,
+) -> Result<HostCurrentReceipt> {
+    if !apps_closed || !writers_stopped {
+        return Err(err("HOST_WRITER_ACK_REQUIRED"));
+    }
+    Err(err("HOST_PLATFORM_UNVERIFIED"))
 }
 pub fn checkpoint_host(
     profile: &Path,
@@ -1502,5 +1517,27 @@ mod windows_tests {
         drop(session);
         drop(profile);
         preserved(root, &archive);
+    }
+}
+
+#[cfg(all(test, not(unix)))]
+mod current_platform_tests {
+    use super::*;
+    #[test]
+    fn current_host_nonunix_refuses_before_reading_or_creating_any_path() {
+        let missing = Path::new("missing-current-host-qualification");
+        assert_eq!(
+            verify_host_current(missing, missing, missing, "invalid", true, true)
+                .unwrap_err()
+                .code,
+            "HOST_PLATFORM_UNVERIFIED"
+        );
+        assert_eq!(
+            verify_host_current(missing, missing, missing, "invalid", false, true)
+                .unwrap_err()
+                .code,
+            "HOST_WRITER_ACK_REQUIRED"
+        );
+        assert!(!missing.exists());
     }
 }

@@ -1086,6 +1086,7 @@ mod tests {
     }
     #[test]
     #[ignore = "explicit signed genuine artifact, local Docker and retained encrypted backup; creates one fresh complete profile/candidate"]
+    #[cfg(unix)]
     fn actual_public_signed_migrated_session_preserves_original_and_prepared_intent() {
         let input = |name| std::env::var(name).expect("explicit qualification input");
         let backup = fs::canonicalize(input("EXHIBITOS_SIGNED_BACKUP_FIXTURE")).unwrap();
@@ -1247,6 +1248,7 @@ mod tests {
     }
     #[test]
     #[ignore = "explicit retained synthetic development signing fixture; public renewal adds one authority generation, no runtime/data changes"]
+    #[cfg(unix)]
     fn renew_retained_synthetic_prepared_session_without_data_copy() {
         let root =
             fs::canonicalize(std::env::var("EXHIBITOS_SIGNED_SESSION_ROOT").unwrap()).unwrap();

@@ -196,3 +196,7 @@ It creates zero plaintext extraction files, rejects changed source, wrong key,
 wrong manifest or missing acknowledgements, and preserves the archive and source.
 It does not restore host/trust/runtime, verify external service volumes, qualify
 a new signed update or replace the separate actual restoration acceptance gate.
+
+`verify-host-current` currently qualifies Unix host locking only. Windows and
+other non-Unix hosts refuse with `HOST_PLATFORM_UNVERIFIED` before reading or
+creating host paths; native qualification remains a separate gate.
