@@ -243,11 +243,12 @@ fn run_probe(
     let copy = include_str!("source_database_copy.mjs")
         .replace("limit=2n*1024n*1024n*1024n", "limit=256n*1024n*1024n");
     let script = format!(
-        "const DATABASE_COPY={};\n{}\n{}",
+        "const DATABASE_COPY={};\n{}\n{}\n{}",
         serde_json::to_string(&copy).map_err(|_| err("UPDATE_RUNTIME_INPUT_INVALID"))?,
         migration
             .map(|m| format!("const MIGRATION_INPUT={m};"))
             .unwrap_or_default(),
+        include_str!("native_migrated_inventory_observation.mjs"),
         include_str!("../../../scripts/runtime-probe/database.mjs")
     );
     let db = create(

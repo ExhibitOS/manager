@@ -29,16 +29,16 @@ try {
           // code. Runtime cannot supply its own preservation success receipt.
           const { createRequire } = await import('node:module');
           const { Pool } = createRequire('/opt/exhibitos/package.json')('pg');
-          const { verifyMigratedInventory, collectServiceInventory, FileBlobStore } = await import('/opt/exhibitos/packages/storage/dist/index.js');
           const pool = new Pool({ connectionString: 'postgresql://exhibitos@localhost/exhibitos?host=' + encodeURIComponent(socket), max: 2, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
           try {
-            migratedObservation = await verifyMigratedInventory({
+            migratedObservation = await observeNativeMigratedInventory({
               pool, manifestBytes: await readFile('/manifest.json'),
-              expectedManifestSha256: process.env.EXHIBITOS_MANIFEST_SHA256,
-              snapshotSystemIdentifier: physical.systemIdentifier,
-              targetSchemaSha256: MIGRATION_INPUT.targetSchemaSha256,
-              targetMigrations: MIGRATION_INPUT.catalog.migrations,
-              snapshot: c => collectServiceInventory(c, new FileBlobStore('/blobs'), { migrationCatalog: MIGRATION_INPUT.catalog.migrations }),
+              manifestSha256: process.env.EXHIBITOS_MANIFEST_SHA256,
+              expectedSystem: physical.systemIdentifier,
+              sourceSchema: MIGRATION_INPUT.sourceSchemaSha256,
+              targetSchema: MIGRATION_INPUT.targetSchemaSha256,
+              migrationsPin: MIGRATION_INPUT.targetMigrationsSha256,
+              catalog: MIGRATION_INPUT.catalog, blobRoot: '/blobs',
             });
           } finally { await pool.end(); }
           if (migratedObservation.originalDataPreserved !== true || migratedObservation.preflightVerified !== false || migratedObservation.updateExecuted !== false) throw Error('RUNTIME_PROBE_INVENTORY_INVALID');

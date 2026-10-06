@@ -176,7 +176,8 @@ pub(super) fn observe_for_plan(
     catalog.recheck_for_schema(&plan.target_schema)?;
     let migrations = catalog.migrations_sha256()?;
     let extra = vec![catalog.text()?, catalog.pin().to_owned(), plan.source_schema.clone(), plan.target_schema.clone(), migrations.clone()];
-    let raw = observe_raw(inputs, input, include_str!("native_migrated_inventory_reader.mjs"), &extra, || { catalog.recheck_for_schema(&plan.target_schema)?; check() }, |raw| {
+    let reader = format!("{}\n{}", include_str!("native_migrated_inventory_observation.mjs"), include_str!("native_migrated_inventory_reader.mjs"));
+    let raw = observe_raw(inputs, input, &reader, &extra, || { catalog.recheck_for_schema(&plan.target_schema)?; check() }, |raw| {
         let proof: super::source_inventory::MigratedInventoryProof = serde_json::from_slice(raw).map_err(|_|err("UPDATE_INVENTORY_RESULT_INVALID"))?;
         super::source_inventory::matched_migrated(&proof, plan, &migrations)
     })?;
