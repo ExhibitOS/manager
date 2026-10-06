@@ -497,7 +497,7 @@ impl<'session, 'store, 'inputs> StartedUpdate<'session, 'store, 'inputs> {
         phase(&workspace, "health-started", &plan, generation)?;
         let system=self.admission.receipt["candidate"]["inventory"]["observation"]["physical"]["systemIdentifier"].as_str().filter(|s|source_database::valid_system_identifier(s)).ok_or_else(||err("UPDATE_CANDIDATE_PROOF_MISSING"))?.to_owned();
         let input = self.admission.lease.manifest_input()?;
-        let inventory = super::super::super::native_inventory::observe(
+        let inventory = super::super::super::native_inventory::observe_for_plan(
             &super::super::super::native_inventory::Inputs {
                 image: self.admission.inputs.maintenance_image,
                 root: &staged.root,
@@ -508,13 +508,14 @@ impl<'session, 'store, 'inputs> StartedUpdate<'session, 'store, 'inputs> {
                 expected_system: Some(&system),
             },
             input,
+            self.admission.migration.as_ref().map(|c| c.borrow_mut()).as_deref_mut(),
+            &plan,
             || {
                 self.quick_check()?;
                 staged.check_published()
             },
         )?;
-        source_inventory::matched_candidate(&inventory, &plan)?;
-        if inventory.schema_sha256 != plan.target_schema {
+        if inventory.schema() != plan.target_schema {
             return Err(err("UPDATE_CANDIDATE_HEALTH_FAILED"));
         }
         let after = self.observed_pair(&staged.manifest, &db_image)?;
@@ -562,7 +563,7 @@ impl<'session, 'store, 'inputs> StartedUpdate<'session, 'store, 'inputs> {
             operation_id: plan.operation_id.clone(),
             instance_id: plan.target_instance.clone(),
             image: plan.target_image.clone(),
-            schema: inventory.schema_sha256,
+            schema: inventory.schema().to_owned(),
             ready: true,
         };
         let finished = self
@@ -676,7 +677,7 @@ impl ReadyCandidate<'_, '_, '_> {
             &self.execution.deployment.manifest,
             &self.execution.database_image,
         )?;
-        let inventory = super::super::super::native_inventory::observe(
+        let inventory = super::super::super::native_inventory::observe_for_plan(
             &super::super::super::native_inventory::Inputs {
                 image: self.started.admission.inputs.maintenance_image,
                 root: &self.execution.deployment.root,
@@ -687,13 +688,14 @@ impl ReadyCandidate<'_, '_, '_> {
                 expected_system: Some(&system),
             },
             input,
+            self.started.admission.migration.as_ref().map(|c| c.borrow_mut()).as_deref_mut(),
+            &plan,
             || {
                 self.started.quick_check()?;
                 self.execution.deployment.check_published()
             },
         )?;
-        source_inventory::matched_candidate(&inventory, &plan)?;
-        if inventory.schema_sha256 != plan.target_schema {
+        if inventory.schema() != plan.target_schema {
             return Err(err("UPDATE_CANDIDATE_HEALTH_FAILED"));
         }
         let (_, before) = self.started.admission.lease.stopped();
@@ -708,7 +710,7 @@ impl ReadyCandidate<'_, '_, '_> {
         if self.health.operation_id != plan.operation_id
             || self.health.instance_id != plan.target_instance
             || self.health.image != plan.target_image
-            || self.health.schema != inventory.schema_sha256
+            || self.health.schema != inventory.schema()
             || !self.health.ready
         {
             return Err(err("UPDATE_CANDIDATE_HEALTH_FAILED"));

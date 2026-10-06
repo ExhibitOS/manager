@@ -31,6 +31,12 @@ pub(in super::super) fn observe(
     input: File,
     mut check: impl FnMut() -> Result<()>,
 ) -> Result<super::source_inventory::InventoryProof> {
+    let raw = observe_raw(inputs, input, READER, &[], &mut check, |raw| {
+        serde_json::from_slice::<super::source_inventory::InventoryProof>(raw).map(|_|()).map_err(|_|err("UPDATE_INVENTORY_RESULT_INVALID"))
+    })?;
+    serde_json::from_slice(&raw).map_err(|_| err("UPDATE_INVENTORY_RESULT_INVALID"))
+}
+fn observe_raw(inputs: &Inputs<'_>, input: File, reader: &str, extra: &[String], mut check: impl FnMut() -> Result<()>, validate: impl FnOnce(&[u8]) -> Result<()>) -> Result<Vec<u8>> {
     let i = inputs;
     if !i.image.strip_prefix("sha256:").is_some_and(hash_valid)
         || !hash_valid(i.expected_manifest)
@@ -99,12 +105,13 @@ pub(in super::super) fn observe(
         i.image.into(),
         "--input-type=module".into(),
         "-e".into(),
-        READER.into(),
+        reader.into(),
         i.expected_manifest.into(),
     ];
     if let Some(system) = i.expected_system {
         args.push(system.into());
     }
+    args.extend_from_slice(extra);
     let created = run_observed("docker", &args, None, 30, &mut check)?;
     let helper = std::str::from_utf8(&created)
         .map_err(|_| err("ENGINE_OUTPUT_INVALID"))?
@@ -135,16 +142,111 @@ pub(in super::super) fn observe(
     {
         return Err(err("UPDATE_INVENTORY_HELPER_INVALID"));
     }
-    let proof: super::source_inventory::InventoryProof =
-        serde_json::from_slice(&raw).map_err(|_| err("UPDATE_INVENTORY_RESULT_INVALID"))?;
+    validate(&raw)?;
     check()?;
     run("docker", &["rm".into(), helper.into()], None, 30)?;
-    Ok(proof)
+    Ok(raw)
 }
 
+pub(in super::super) enum Observation {
+    Original(super::source_inventory::InventoryProof),
+    Migrated(super::source_inventory::MigratedInventoryProof),
+}
+impl Observation {
+    pub(in super::super) fn schema(&self) -> &str {
+        match self { Self::Original(p) => &p.schema_sha256, Self::Migrated(p) => &p.target_schema_sha256 }
+    }
+}
+/// Runs only qualified native maintenance code. The catalog is a retained file
+/// bound to the signed plan, not JSON supplied as a health/success receipt.
+pub(super) fn observe_for_plan(
+    inputs: &Inputs<'_>, input: File,
+    catalog: Option<&mut super::migration_catalog::CatalogInput>,
+    plan: &crate::update::Plan, mut check: impl FnMut() -> Result<()>,
+) -> Result<Observation> {
+    if inputs.expected_manifest != plan.backup_manifest { return Err(err("UPDATE_INVENTORY_INPUT_INVALID")); }
+    if plan.source_schema == plan.target_schema {
+        if catalog.is_some() { return Err(err("UPDATE_RUNTIME_MIGRATION_UNQUALIFIED")); }
+        let proof = observe(inputs, input, &mut check)?;
+        super::source_inventory::matched_candidate(&proof, plan)?;
+        return Ok(Observation::Original(proof));
+    }
+    let catalog = catalog.ok_or_else(||err("UPDATE_RUNTIME_MIGRATION_UNQUALIFIED"))?;
+    if inputs.expected_system.is_none() { return Err(err("UPDATE_INVENTORY_INPUT_INVALID")); }
+    catalog.recheck_for_schema(&plan.target_schema)?;
+    let migrations = catalog.migrations_sha256()?;
+    let extra = vec![catalog.text()?, catalog.pin().to_owned(), plan.source_schema.clone(), plan.target_schema.clone(), migrations.clone()];
+    let raw = observe_raw(inputs, input, include_str!("native_migrated_inventory_reader.mjs"), &extra, || { catalog.recheck_for_schema(&plan.target_schema)?; check() }, |raw| {
+        let proof: super::source_inventory::MigratedInventoryProof = serde_json::from_slice(raw).map_err(|_|err("UPDATE_INVENTORY_RESULT_INVALID"))?;
+        super::source_inventory::matched_migrated(&proof, plan, &migrations)
+    })?;
+    let proof: super::source_inventory::MigratedInventoryProof = serde_json::from_slice(&raw).map_err(|_|err("UPDATE_INVENTORY_RESULT_INVALID"))?;
+    catalog.recheck_for_schema(&plan.target_schema)?;
+    super::source_inventory::matched_migrated(&proof, plan, &migrations)?;
+    check()?;
+    Ok(Observation::Migrated(proof))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "explicit isolated complete original-restored candidate; readonly mismatched migrated inventory refusal"]
+    fn actual_native_migrated_reader_refuses_original_schema_and_preserves_original_inventory() {
+        let document:Value=serde_json::from_slice(&fs::read(std::env::var("EXHIBITOS_MIGRATED_NATIVE_CHECK_INPUT").unwrap()).unwrap()).unwrap();
+        let root=PathBuf::from(document["root"].as_str().unwrap());
+        let plan:crate::update::Plan=serde_json::from_value(document["plan"].clone()).unwrap();
+        let service=LifecycleService::open_retry_diagnostics(root.clone()).unwrap();
+        let guard=service.lock().unwrap();let manifest=service.manifest().unwrap();
+        service.validate_ownership(&manifest,"docker").unwrap();service.validate_volumes(&manifest,"docker").unwrap();
+        let input=PathBuf::from(document["manifest"].as_str().unwrap());
+        let binding=crate::restoration::RestorationBinding::from_plan(&plan).unwrap();
+        let job:crate::restoration::RestorationJob=crate::read_json(&root.join("restoration.json")).unwrap();
+        assert_eq!(job.state,"completed");
+        let saved:crate::restoration::RestorationReceipt=crate::read_json(&root.join(format!("restore-{}/receipt.json",job.id))).unwrap();
+        binding.check_receipt(&saved).unwrap();
+        let raw=crate::installation_backup::source_bytes(input.parent().unwrap(),"manifest.json",16*1024*1024,true).unwrap();
+        binding.authenticated(&saved.backup_id,&saved.authenticated_manifest_sha256,&raw).unwrap();
+        let mut catalog=super::super::migration_catalog::CatalogInput::read(Path::new(document["catalog"].as_str().unwrap()),document["catalogSha256"].as_str().unwrap(),&plan.target_schema).unwrap();
+        let result=(|| -> Result<Value> {
+            service.operation(&Action::Start)?;
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(90);
+            let pair=loop {
+                service.check_restoration_guard(&guard)?;
+                match super::super::super::rollback_runtime::pair(&service,&manifest,&plan) {
+                    Ok(pair)=>break pair,
+                    Err(e) if e.code=="UPDATE_ROLLBACK_HEALTH_FAILED" && std::time::Instant::now()<deadline=>std::thread::sleep(std::time::Duration::from_millis(250)),
+                    Err(e)=>return Err(e),
+                }
+            };
+            let i=Inputs { image:document["maintenanceImage"].as_str().unwrap(),root:&root,manifest:&manifest,app:&pair.1,blob_volume:&pair.3[0],expected_manifest:&plan.backup_manifest,expected_system:None };
+            let before=observe(&i,super::super::super::private_file(&input,false).map_err(|e|err(e.code()))?,||service.check_restoration_guard(&guard))?;
+            super::super::source_inventory::matched_candidate(&before,&plan)?;
+            let physical=crate::run("docker",&["exec".into(),pair.2["Id"].as_str().ok_or_else(||err("ENGINE_OUTPUT_INVALID"))?.into(),"psql".into(),"-U".into(),"exhibitos".into(),"-d".into(),"exhibitos".into(),"-Atc".into(),"SELECT system_identifier::text FROM pg_control_system()".into()],None,30)?;
+            let system=std::str::from_utf8(&physical).map_err(|_|err("ENGINE_OUTPUT_INVALID"))?.trim().to_owned();
+            if !super::super::source_database::valid_system_identifier(&system) {return Err(err("UPDATE_DATABASE_ID_INVALID"));}
+            let pinned=Inputs{expected_system:Some(&system),..i};
+            let reader_ids=|| -> Result<std::collections::BTreeSet<String>> {
+                let raw=crate::run("docker",&["ps".into(),"--all".into(),"--no-trunc".into(),"--filter".into(),"label=com.exhibitos.inventory.reader".into(),"--format".into(),"{{.ID}}".into()],None,30)?;
+                Ok(std::str::from_utf8(&raw).map_err(|_|err("ENGINE_OUTPUT_INVALID"))?.lines().map(str::to_owned).collect())
+            };
+            let existing=reader_ids()?;
+            let error=observe_for_plan(&pinned,super::super::super::private_file(&input,false).map_err(|e|err(e.code()))?,Some(&mut catalog),&plan,||service.check_restoration_guard(&guard)).err().ok_or_else(||err("UPDATE_MIGRATED_INVENTORY_MISMATCH"))?;
+            let new:Vec<_>=reader_ids()?.difference(&existing).cloned().collect();
+            if new.len()!=1 {return Err(err("UPDATE_INVENTORY_HELPER_INVALID"));}
+            let failed=&new[0];let metadata=crate::backup_creation::inspected("docker",&["inspect".into(),failed.clone()])?;
+            let log=crate::run("docker",&["logs".into(),failed.clone()],None,30)?;
+            if metadata["State"]["Running"]!=false || metadata["State"]["ExitCode"]!=1 || metadata["Image"]!=i.image || metadata["HostConfig"]["ReadonlyRootfs"]!=true || !String::from_utf8_lossy(&log).contains("MIGRATION_SCHEMA_MISMATCH") {
+                return Err(err("UPDATE_INVENTORY_HELPER_INVALID"));
+            }
+            let after=observe(&pinned,super::super::super::private_file(&input,false).map_err(|e|err(e.code()))?,||service.check_restoration_guard(&guard))?;
+            super::super::source_inventory::matched_candidate(&after,&plan)?;
+            Ok(serde_json::json!({"state":"PASS","readerRefusedOriginalSchema":true,"errorCode":error.code,"retainedFailedHelper":failed,"exactRefusal":"MIGRATION_SCHEMA_MISMATCH","originalInventoryBefore":before,"originalInventoryAfter":after,"hostActivated":false,"preflightVerified":false,"updateExecuted":false}))
+        })();
+        service.validate_ownership(&manifest,"docker").unwrap();service.validate_volumes(&manifest,"docker").unwrap();
+        service.operation(&Action::Stop).unwrap();service.check_restoration_guard(&guard).unwrap();
+        let proof=result.unwrap();
+        crate::restoration::private_bytes(&root.parent().unwrap().join(format!("native-migrated-reader-refusal-{}.json",uuid::Uuid::new_v4())),&serde_json::to_vec_pretty(&proof).unwrap()).unwrap();
+    }
     #[test]
     fn network_scope_refuses_extra_aliases_unknown_ids_and_missing_network() {
         let m:BundleManifest=serde_json::from_value(serde_json::json!({"schemaVersion":"1","bundleId":"fixture","version":"1","protocolVersion":"1","composeSha256":"a".repeat(64),"projectName":"exhibitos-fixture","services":[],"images":[],"ports":[],"openUrl":"http://127.0.0.1:1234","readinessUrl":"http://127.0.0.1:1234","minimumFreeBytes":1})).unwrap();

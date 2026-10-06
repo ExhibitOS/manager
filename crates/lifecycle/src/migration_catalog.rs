@@ -216,6 +216,22 @@ impl CatalogInput {
             Ok(())
         }
     }
+    pub(super) fn recheck_for_schema(&mut self, schema: &str) -> Result<()> {
+        self.recheck()?;
+        #[cfg(unix)]
+        { validate(&self.raw, &self.pin, schema) }
+        #[cfg(not(unix))]
+        { let _ = schema; Err(err("UPDATE_CATALOG_PLATFORM_UNVERIFIED")) }
+    }
+    pub(super) fn migrations_sha256(&self) -> Result<String> {
+        #[cfg(unix)]
+        {
+            let catalog: Catalog = serde_json::from_slice(&self.raw).map_err(|_|err("UPDATE_CATALOG_INVALID"))?;
+            Ok(crate::digest(&serde_json::to_vec(&catalog.migrations).map_err(|_|err("UPDATE_CATALOG_INVALID"))?))
+        }
+        #[cfg(not(unix))]
+        { Err(err("UPDATE_CATALOG_PLATFORM_UNVERIFIED")) }
+    }
     pub(super) fn text(&self) -> Result<String> {
         String::from_utf8(self.raw.clone()).map_err(|_| err("UPDATE_CATALOG_INVALID"))
     }
@@ -246,6 +262,18 @@ mod tests {
         fs::write(&file, raw()).unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
         (root, file)
+    }
+    #[test]
+    fn retained_catalog_rechecks_plan_schema_and_migration_identity() {
+        let (root,path)=fixture();let pin=crate::digest(&raw());
+        let mut held=CatalogInput::read(&path,&pin,&pin).unwrap();
+        held.recheck_for_schema(&pin).unwrap();
+        let expected=crate::digest(&serde_json::to_vec(&value()["migrations"]).unwrap());
+        assert_eq!(held.migrations_sha256().unwrap(),expected);
+        assert!(held.recheck_for_schema(&"d".repeat(64)).is_err());
+        fs::write(&path,raw()).unwrap();
+        assert!(held.recheck_for_schema(&pin).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn exact_catalog_schema_pin_and_private_input_reopen() {

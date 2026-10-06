@@ -15,6 +15,47 @@ pub struct InventoryProof {
     pub preflight_verified: bool,
     pub update_executed: bool,
 }
+/// Independent maintenance observation of the signed target schema and unchanged
+/// original data. Deserializing this value alone never grants an execution permit.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MigratedInventoryProof {
+    pub operation: String,
+    pub backup_id: String,
+    pub authenticated_manifest_sha256: String,
+    pub source_inventory_sha256: String,
+    pub source_schema_sha256: String,
+    pub target_schema_sha256: String,
+    pub target_migrations_sha256: String,
+    pub observed_at: String,
+    pub original_data_preserved: bool,
+    pub current_inventory_verified: bool,
+    pub configuration_verified: bool,
+    pub preflight_verified: bool,
+    pub update_executed: bool,
+}
+pub(super) fn matched_migrated(
+    proof: &MigratedInventoryProof,
+    plan: &crate::update::Plan,
+    migrations_sha256: &str,
+) -> Result<()> {
+    if plan.source_schema == plan.target_schema
+        || !crate::hash_valid(migrations_sha256)
+        || proof.operation != "migrated-inventory-preserved"
+        || proof.backup_id != plan.backup_id
+        || proof.authenticated_manifest_sha256 != plan.backup_manifest
+        || proof.source_inventory_sha256 != plan.source_inventory
+        || proof.source_schema_sha256 != plan.source_schema
+        || proof.target_schema_sha256 != plan.target_schema
+        || proof.target_migrations_sha256 != migrations_sha256
+        || !proof.original_data_preserved
+        || proof.current_inventory_verified
+        || proof.configuration_verified
+        || proof.preflight_verified
+        || proof.update_executed
+    { return Err(err("UPDATE_MIGRATED_INVENTORY_MISMATCH")); }
+    Ok(())
+}
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceInventoryReceipt {
@@ -203,6 +244,39 @@ fn compare_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn migrated_receipt_requires_exact_original_data_target_catalog_and_no_admission_claim() {
+        let plan = crate::update::Plan { operation_id:"operation".into(), source_instance:"source".into(),target_instance:"target".into(),source_image:"a".repeat(64),target_image:"b".repeat(64),source_schema:"c".repeat(64),target_schema:"d".repeat(64),backup_id:"backup".into(),backup_manifest:"e".repeat(64),source_inventory:"f".repeat(64),required_free_bytes:1 };
+        let migration_pin="1".repeat(64);
+        let base=serde_json::json!({"operation":"migrated-inventory-preserved","backupId":plan.backup_id,"authenticatedManifestSha256":plan.backup_manifest,"sourceInventorySha256":plan.source_inventory,"sourceSchemaSha256":plan.source_schema,"targetSchemaSha256":plan.target_schema,"targetMigrationsSha256":migration_pin,"observedAt":"2026-10-06T00:00:00Z","originalDataPreserved":true,"currentInventoryVerified":false,"configurationVerified":false,"preflightVerified":false,"updateExecuted":false});
+        let decode=|v|serde_json::from_value::<MigratedInventoryProof>(v).unwrap();
+        assert!(matched_migrated(&decode(base.clone()),&plan,&migration_pin).is_ok());
+        for name in ["backupId","authenticatedManifestSha256","sourceInventorySha256","sourceSchemaSha256","targetSchemaSha256","targetMigrationsSha256","operation"] {
+            let mut wrong=base.clone(); wrong[name]=Value::from("2".repeat(64));
+            assert!(matched_migrated(&decode(wrong),&plan,&migration_pin).is_err());
+        }
+        for name in ["currentInventoryVerified","configurationVerified","preflightVerified","updateExecuted"] {
+            let mut wrong=base.clone();wrong[name]=Value::from(true);
+            assert!(matched_migrated(&decode(wrong),&plan,&migration_pin).is_err());
+        }
+        let mut wrong=base.clone();wrong["originalDataPreserved"]=Value::from(false);
+        assert!(matched_migrated(&decode(wrong),&plan,&migration_pin).is_err());
+        let mut extra=base.clone();extra["ownedPermit"]=Value::from(true);
+        assert!(serde_json::from_value::<MigratedInventoryProof>(extra).is_err());
+        let mut unchanged=plan.clone();unchanged.target_schema=plan.source_schema.clone();
+        assert!(matched_migrated(&decode(base),&unchanged,&migration_pin).is_err());
+    }
+    #[test]
+    #[ignore = "explicit retained real migrated Runtime observation; no engine mutation"]
+    fn actual_retained_migrated_observation_binds_to_signed_plan_catalog_without_admission() {
+        let input:Value=serde_json::from_slice(&fs::read(std::env::var("EXHIBITOS_RETAINED_MIGRATED_OBSERVATION").unwrap()).unwrap()).unwrap();
+        let plan:crate::update::Plan=serde_json::from_value(input["plan"].clone()).unwrap();
+        let mut catalog=super::super::migration_catalog::CatalogInput::read(Path::new(input["catalog"].as_str().unwrap()),input["catalogSha256"].as_str().unwrap(),&plan.target_schema).unwrap();
+        catalog.recheck_for_schema(&plan.target_schema).unwrap();
+        let proof:MigratedInventoryProof=serde_json::from_value(input["proof"].clone()).unwrap();
+        matched_migrated(&proof,&plan,&catalog.migrations_sha256().unwrap()).unwrap();
+        assert!(!proof.preflight_verified && !proof.update_executed);
+    }
     #[test]
     fn logical_receipt_must_match_exact_plan_and_never_claim_full_preflight() {
         let plan = crate::update::Plan {
