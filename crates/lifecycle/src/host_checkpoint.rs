@@ -417,6 +417,42 @@ fn receipt(m: &Inventory, operation: &str, encoded: &[u8]) -> HostReceipt {
         host_writer_quiescence: m.host_writer_quiescence.clone(),
     }
 }
+/// Authenticate the complete host stream against the current profile without
+/// extracting plaintext or claiming trust/runtime restoration.
+pub fn verify_host_current(
+    profile: &Path,
+    key_file: &Path,
+    archive: &Path,
+    expected_manifest: &str,
+    apps_closed: bool,
+    writers_stopped: bool,
+) -> Result<HostCurrentReceipt> {
+    if !apps_closed || !writers_stopped {
+        return Err(err("HOST_WRITER_ACK_REQUIRED"));
+    }
+    canonical_private(profile)?;
+    if !archive.is_absolute() || fs::canonicalize(archive).ok().as_deref() != Some(archive) {
+        return Err(fail());
+    }
+    let mut key = external_key(profile, key_file)?;
+    let result = (|| {
+        let session = session_lock(profile, true)?;
+        let _locks = current_host_locks(profile, &session)?;
+        let receipt = verify_host_current_borrowed(
+            profile,
+            archive,
+            key.as_slice().try_into().map_err(|_| fail())?,
+            &session,
+            expected_manifest,
+        )?;
+        if external_key(profile, key_file)? != key {
+            return Err(err("PROFILE_KEY_INVALID"));
+        }
+        Ok(receipt)
+    })();
+    key.fill(0);
+    result
+}
 pub fn checkpoint_host(
     profile: &Path,
     key: &Path,
@@ -932,7 +968,14 @@ mod tests {
         let destination = root.path.join("inactive");
         extract_host(&profile, &key, &archive, &destination, true).unwrap();
         let session = session_lock(&profile, true).unwrap();
-        let mut current = verify_host_current_borrowed(&profile, &archive, &[17; 32], &session, &saved.manifest_sha256).unwrap();
+        let mut current = verify_host_current_borrowed(
+            &profile,
+            &archive,
+            &[17; 32],
+            &session,
+            &saved.manifest_sha256,
+        )
+        .unwrap();
         let receipt = recheck_extracted_host_current(&profile, &destination, &current).unwrap();
         assert_eq!(receipt.manifest_sha256, saved.manifest_sha256);
         current.current_profile_matched = false;
@@ -945,7 +988,11 @@ mod tests {
         assert!(recheck_extracted_host_current(&profile, &destination, &current).is_err());
         fs::write(destination.join("profile/witness"), b"original").unwrap();
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(destination.join("profile/witness"), fs::Permissions::from_mode(0o400)).unwrap();
+        fs::set_permissions(
+            destination.join("profile/witness"),
+            fs::Permissions::from_mode(0o400),
+        )
+        .unwrap();
         assert!(recheck_extracted_host_current(&profile, &destination, &current).is_err());
     }
     #[test]

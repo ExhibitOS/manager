@@ -15,6 +15,17 @@ fn main() {
             ));
             return;
         }
+        if a[3] == "verify-host-current" && a.len() == 9 {
+            emit(profile_backup::verify_host_current(
+                Path::new(&a[2]),
+                Path::new(&a[4]),
+                Path::new(&a[5]),
+                &a[6],
+                a[7] == "--apps-closed",
+                a[8] == "--host-writers-stopped",
+            ));
+            return;
+        }
         if a[3] == "extract-host" && a.len() == 8 {
             emit(profile_backup::extract_host(
                 Path::new(&a[2]),

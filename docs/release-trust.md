@@ -177,3 +177,22 @@ current source and a coherent current host/authority/service recovery checkpoint
 Do not replay the released intent or treat its historical checkpoint as proof
 of the newer authority generation. Public changed-schema execution remains
 closed until its full native recovery qualification is complete.
+
+
+## Compare a complete host archive without a plaintext copy
+
+After closing controllers and stopping host writers, use the manifest hash from
+the retained checkpoint receipt:
+
+```sh
+exhibitos-profile --profile /absolute/private/profile verify-host-current \
+  /absolute/private/key /absolute/private/host.bin <host-manifest-sha256> \
+  --apps-closed --host-writers-stopped
+```
+
+This authenticates every archive frame through EOF and compares the complete
+current file/directory inventory, bytes and modes under profile/runtime locks.
+It creates zero plaintext extraction files, rejects changed source, wrong key,
+wrong manifest or missing acknowledgements, and preserves the archive and source.
+It does not restore host/trust/runtime, verify external service volumes, qualify
+a new signed update or replace the separate actual restoration acceptance gate.

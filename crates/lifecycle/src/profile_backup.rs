@@ -9,7 +9,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, OsRng, Payload, rand_core::RngCore},
 };
-pub use host_checkpoint::{HostCurrentReceipt, HostReceipt, checkpoint_host, extract_host};
+pub use host_checkpoint::{HostCurrentReceipt, HostReceipt, checkpoint_host, extract_host, verify_host_current};
 pub(crate) use host_checkpoint::{
     activate_missing_host, checkpoint_host_anchored, checkpoint_host_borrowed,
     recheck_extracted_host_current, verify_extracted_host, verify_host_current_borrowed,

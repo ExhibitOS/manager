@@ -240,6 +240,42 @@ mod tests {
         (root, profile, archive, r.manifest_sha256, plain)
     }
     #[test]
+    fn current_host_public_boundary_refuses_missing_ack_key_and_changed_source_without_copy() {
+        let (root, profile, archive, expected, _) = prepared();
+        let key = root.path.join("key.bin");
+        let bytes = fs::read(&archive).unwrap();
+        for (apps, writers) in [(false, true), (true, false)] {
+            assert_eq!(
+                super::verify_host_current(&profile, &key, &archive, &expected, apps, writers)
+                    .unwrap_err()
+                    .code,
+                "HOST_WRITER_ACK_REQUIRED"
+            );
+        }
+        let count = fs::read_dir(&root.path).unwrap().count();
+        let receipt =
+            super::verify_host_current(&profile, &key, &archive, &expected, true, true).unwrap();
+        assert!(receipt.current_profile_matched);
+        assert_eq!(receipt.plaintext_files_created, 0);
+        assert!(!receipt.external_volumes_saved);
+        let wrong = root.path.join("wrong-key.bin");
+        write_new(&wrong, &[18; 32]).unwrap();
+        assert!(
+            super::verify_host_current(&profile, &wrong, &archive, &expected, true, true).is_err()
+        );
+        fs::remove_file(wrong).unwrap();
+        assert_eq!(fs::read_dir(&root.path).unwrap().count(), count);
+        write_new(&profile.join("synthetic/late"), b"late addition").unwrap();
+        assert!(
+            super::verify_host_current(&profile, &key, &archive, &expected, true, true).is_err()
+        );
+        assert_eq!(fs::read(&archive).unwrap(), bytes);
+        assert_eq!(
+            fs::read(profile.join("synthetic/late")).unwrap(),
+            b"late addition"
+        );
+    }
+    #[test]
     fn current_host_stream_checks_every_byte_mode_empty_file_and_fragment_without_extraction() {
         let (_root, profile, archive, expected, plain) = prepared();
         let session = session_lock(&profile, true).unwrap();
