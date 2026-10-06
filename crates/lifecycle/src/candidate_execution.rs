@@ -53,9 +53,14 @@ fn replacement(
     manifest: &BundleManifest,
     config: &Value,
     plan: &crate::update::Plan,
+    migration: Option<&mut super::super::super::migration_catalog::CatalogInput>,
 ) -> Result<(BundleManifest, Value)> {
+    // This is configuration staging, never admission or migration success.
+    // Only the catalog retained by the native owned permit can bind a changed plan.
     if plan.source_schema != plan.target_schema {
-        return Err(err("UPDATE_RUNTIME_MIGRATION_UNQUALIFIED"));
+        migration
+            .ok_or_else(|| err("UPDATE_RUNTIME_MIGRATION_UNQUALIFIED"))?
+            .recheck_for_schema(&plan.target_schema)?;
     }
     let services = config["services"]
         .as_object()
@@ -114,11 +119,12 @@ impl Deployment {
         manifest: &BundleManifest,
         config: &Value,
         plan: &crate::update::Plan,
+        migration: Option<&mut super::super::super::migration_catalog::CatalogInput>,
     ) -> Result<Self> {
         installations::private_directory(root)?;
         let bundle = root.join("bundle");
         installations::private_directory(&bundle)?;
-        let (next, compose) = replacement(manifest, config, plan)?;
+        let (next, compose) = replacement(manifest, config, plan, migration)?;
         let mut originals = Vec::new();
         for (path, name) in [
             ("bundle/manifest.json", "original-manifest.json"),
@@ -294,11 +300,18 @@ impl<'session, 'store, 'inputs> StartedUpdate<'session, 'store, 'inputs> {
             .lease
             .check_fences(&self.admission.session.source)
     }
+    fn check_catalog(&self) -> Result<()> {
+        if let Some(catalog) = &self.admission.migration {
+            catalog.borrow_mut().recheck_for_schema(&self.admission.artifact.plan.target_schema)?;
+        }
+        Ok(())
+    }
     fn check_applying(&mut self) -> Result<()> {
         self.check_stage(crate::update::Stage::Applying, 1)
     }
     fn check_stage(&mut self, stage: crate::update::Stage, offset: u64) -> Result<()> {
         self.quick_check()?;
+        self.check_catalog()?;
         let a = &mut self.admission;
         let intent = a
             .session
@@ -453,7 +466,10 @@ impl<'session, 'store, 'inputs> StartedUpdate<'session, 'store, 'inputs> {
 
         let workspace = self.admission.destination.join("execution");
         installations::new_directory(&workspace)?;
-        let staged = Deployment::stage(&target.root, &workspace, &m, &config, &plan)?;
+        let staged = Deployment::stage(
+            &target.root, &workspace, &m, &config, &plan,
+            self.admission.migration.as_ref().map(|c| c.borrow_mut()).as_deref_mut(),
+        )?;
         let generation = self.admission.session.store.receipt().generation;
         phase(&workspace, "publication-started", &plan, generation)?;
         self.check_applying()?;
@@ -475,6 +491,7 @@ impl<'session, 'store, 'inputs> StartedUpdate<'session, 'store, 'inputs> {
             180,
             || {
                 self.quick_check()?;
+                self.check_catalog()?;
                 staged.check_published()
             },
         )?;
@@ -482,6 +499,7 @@ impl<'session, 'store, 'inputs> StartedUpdate<'session, 'store, 'inputs> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         let pair = loop {
             self.quick_check()?;
+            self.check_catalog()?;
             staged.check_published()?;
             if let Ok(pair) = self.observed_pair(&staged.manifest, &db_image)
                 && crate::readiness(&staged.manifest).ready
@@ -806,7 +824,7 @@ mod tests {
     #[test]
     fn candidate_execution_changes_only_qualified_platform_image_and_keeps_original_copies() {
         let (root, workspace, m, config, p) = fixture();
-        let staged = Deployment::stage(&root, &workspace, &m, &config, &p).unwrap();
+        let staged = Deployment::stage(&root, &workspace, &m, &config, &p, None).unwrap();
         let mut expected = config.clone();
         expected["services"]["platform"]["image"] =
             serde_json::json!(format!("sha256:{}", p.target_image));
@@ -837,7 +855,7 @@ mod tests {
     #[test]
     fn candidate_execution_refuses_changed_original_before_any_publication() {
         let (root, workspace, m, config, p) = fixture();
-        let staged = Deployment::stage(&root, &workspace, &m, &config, &p).unwrap();
+        let staged = Deployment::stage(&root, &workspace, &m, &config, &p, None).unwrap();
         let old = fs::read(root.join("installed.json")).unwrap();
         fs::write(root.join("bundle/compose.yaml"), b"preserve user change").unwrap();
         assert_eq!(staged.publish().unwrap_err().code, "UPDATE_TARGET_CHANGED");
@@ -855,7 +873,7 @@ mod tests {
     #[test]
     fn candidate_execution_rejects_replaced_bundle_parent_without_adopting_it() {
         let (root, workspace, m, config, p) = fixture();
-        let staged = Deployment::stage(&root, &workspace, &m, &config, &p).unwrap();
+        let staged = Deployment::stage(&root, &workspace, &m, &config, &p, None).unwrap();
         fs::rename(root.join("bundle"), root.join("retained-bundle")).unwrap();
         installations::new_directory(&root.join("bundle")).unwrap();
         assert_eq!(staged.publish().unwrap_err().code, "UPDATE_TARGET_CHANGED");
@@ -887,18 +905,67 @@ mod tests {
         let (root, _, m, c, p) = fixture();
         let mut changed = p.clone();
         changed.target_schema = "f".repeat(64);
-        assert!(replacement(&m, &c, &changed).is_err());
+        assert!(replacement(&m, &c, &changed, None).is_err());
         let mut unknown = c.clone();
         unknown["services"]["foreign"] = serde_json::json!({"image":"unknown"});
-        assert!(replacement(&m, &unknown, &p).is_err());
+        assert!(replacement(&m, &unknown, &p, None).is_err());
         let mut wrong = c.clone();
         wrong["services"]["platform"]["image"] = serde_json::json!("unknown");
-        assert!(replacement(&m, &wrong, &p).is_err());
+        assert!(replacement(&m, &wrong, &p, None).is_err());
         assert_eq!(
             fs::read(root.join("installed.json")).unwrap(),
             serde_json::to_vec(&m).unwrap()
         );
         retire(&root);
+    }
+    fn catalog(root: &Path) -> (PathBuf, String, String) {
+        let parent = root.parent().unwrap().join("catalog");
+        installations::new_directory(&parent).unwrap();
+        let raw = serde_json::to_vec(&serde_json::json!({
+            "migrations":[{"name":"001.sql","sha256":"d".repeat(64)}],
+            "schemaDigest":"e".repeat(64),"schemaVersion":"1.0.0-draft.1"
+        })).unwrap();
+        let path = parent.join("target.json");
+        fs::write(&path, &raw).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let pin = crate::digest(&raw);
+        (path, pin.clone(), pin)
+    }
+    #[test]
+    fn candidate_execution_changed_deployment_requires_retained_catalog_and_preserves_source_configuration() {
+        let (root, workspace, m, config, mut plan) = fixture();
+        let (path, pin, schema) = catalog(&root);
+        plan.target_schema = schema;
+        let before = fs::read(root.join("installed.json")).unwrap();
+        assert!(Deployment::stage(&root, &workspace, &m, &config, &plan, None).is_err());
+        assert!(fs::read_dir(&workspace).unwrap().next().is_none());
+        let mut held = super::super::super::super::migration_catalog::CatalogInput::read(&path, &pin, &plan.target_schema).unwrap();
+        let staged = Deployment::stage(&root, &workspace, &m, &config, &plan, Some(&mut held)).unwrap();
+        assert_eq!(fs::read(root.join("installed.json")).unwrap(), before);
+        assert_eq!(staged.compose["services"]["database"], config["services"]["database"]);
+        assert_eq!(staged.compose["volumes"], config["volumes"]);
+        assert_eq!(staged.manifest.schema_version, m.schema_version);
+        held.recheck_for_schema(&plan.target_schema).unwrap();
+        staged.publish().unwrap();
+        staged.check_published().unwrap();
+        assert_eq!(fs::read(workspace.join("original-installed.json")).unwrap(), before);
+        retire(&root);
+    }
+    #[test]
+    fn candidate_execution_changed_catalog_or_wrong_signed_schema_refuses_before_staging() {
+        for changed in [false, true] {
+            let (root, workspace, m, config, mut plan) = fixture();
+            let (path, pin, schema) = catalog(&root);
+            plan.target_schema = schema;
+            let mut held = super::super::super::super::migration_catalog::CatalogInput::read(&path, &pin, &plan.target_schema).unwrap();
+            if changed { fs::write(&path, b"preserve changed input").unwrap(); }
+            else { plan.target_schema = "f".repeat(64); }
+            let before = fs::read(root.join("installed.json")).unwrap();
+            assert!(Deployment::stage(&root, &workspace, &m, &config, &plan, Some(&mut held)).is_err());
+            assert!(fs::read_dir(&workspace).unwrap().next().is_none());
+            assert_eq!(fs::read(root.join("installed.json")).unwrap(), before);
+            retire(&root);
+        }
     }
     #[test]
     fn candidate_execution_running_flag_is_insufficient_without_exact_owned_healthy_mounts() {
