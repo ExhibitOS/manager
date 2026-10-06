@@ -42,6 +42,18 @@ try {
     });
     request.once('timeout', () => { request.destroy(); reject(Error('RUNTIME_PROBE_WEB_INVALID')); }); request.once('error', () => reject(Error('RUNTIME_PROBE_WEB_INVALID'))); request.end();
   });
+  if (typeof INTERRUPTION_PROBE !== 'undefined' && INTERRUPTION_PROBE === true) {
+    if (!migrated) safeError('RUNTIME_PROBE_MIGRATION_INVALID');
+    const logical = await migratedLogical();
+    // Host observes exit137 independently. No close(), successful completion,
+    // journal transition or writable original mount exists on this path.
+    const marker = { health, readiness, web: webResult, copiedBlobBytes: blobs.bytes, copiedConfigurationBytes: configuration.bytes, logical, uid: 1000, originalMountsReadOnly: true, interruptionRequested: true, runtimeClosedNormally: false, preflightVerified: false, updateExecuted: false };
+    await new Promise((resolve, reject) => process.stdout.write(JSON.stringify(marker) + '\n', error => error ? reject(error) : resolve()));
+    // Linux namespace PID1 cannot reliably signal itself. Keep the actual
+    // Runtime and PG live until the qualified native host kills this helper.
+    await new Promise(() => { setInterval(() => {}, 1000); });
+    safeError('RUNTIME_PROBE_INTERRUPTION_FAILED');
+  }
   await runtime.close(); runtime = null;
   for (const [path, original, limits] of [['/probe/blobs', blobs, blobLimits], ['/probe/config', configuration, configLimits]]) { const current = await inventory(path, limits); if (JSON.stringify(content(current)) !== JSON.stringify(content(original))) safeError('RUNTIME_PROBE_FILES_CHANGED'); }
   const logical = migrated ? await migratedLogical() : await boundedJson('http://127.0.0.1:5433/finish', { method: 'POST' });
