@@ -826,6 +826,115 @@ mod tests {
         retire(&profile);
     }
     #[test]
+    fn missing_authority_process_crash_worker() {
+        let Ok(profile) = std::env::var("EXHIBITOS_SYNTHETIC_MISSING_AUTHORITY_PROFILE") else {
+            return;
+        };
+        let profile = PathBuf::from(profile);
+        let parent = profile.parent().unwrap();
+        assert!(
+            parent
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("exhibitos-release-trust-")
+        );
+        assert!(!profile.exists());
+        if std::env::var("EXHIBITOS_SYNTHETIC_MISSING_AUTHORITY_STAGE").unwrap() == "fenced" {
+            let (root, id, canonical, anchor) = scope(&profile, "default").unwrap();
+            let fence = profile_backup::AuthorityHostFence::acquire(&canonical, anchor).unwrap();
+            let vault = Vault::open(&root, &id, None).unwrap();
+            assert!(!vault.latest().unwrap().is_empty());
+            fence.check(&canonical).unwrap();
+            publish_bytes(parent, "crash-ready.json", b"{}\n").unwrap();
+            // Real SIGKILL comes from the parent while kernel fences are held.
+            // No production crash switch or restoration bypass is introduced.
+            loop {
+                std::thread::park();
+            }
+        } else {
+            let receipt = Store::restore_missing_authority(&profile, "default", true).unwrap();
+            assert!(
+                receipt.live_authority_restored
+                    && !receipt.host_restored
+                    && !receipt.services_restored
+                    && !receipt.update_executed
+            );
+            publish_bytes(parent, "crash-ready.json", b"{}\n").unwrap();
+            loop {
+                std::thread::park();
+            }
+        }
+    }
+    #[test]
+    fn missing_authority_sigkill_releases_fences_and_preserves_published_history_without_replay() {
+        use std::os::unix::process::ExitStatusExt;
+        for stage in ["fenced", "published"] {
+            let (profile, store, vault) = setup();
+            let root = store.root.clone();
+            let expected = bytes(&root);
+            let head = store.current_sha256.clone();
+            let intent = serde_json::to_vec(&store.current.intent).unwrap();
+            let ids = (store.used_operations.clone(), store.used_instances.clone());
+            drop(store);
+            let parent = profile.parent().unwrap();
+            let held_host = parent.join("original-host-held");
+            let held_authority = parent.join("original-authority-held");
+            fs::rename(&profile, &held_host).unwrap();
+            fs::rename(&root, &held_authority).unwrap();
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "signed_release::trust::authority_recovery_vault::tests::missing_authority_process_crash_worker", "--nocapture"])
+                .env("EXHIBITOS_SYNTHETIC_MISSING_AUTHORITY_PROFILE", &profile)
+                .env("EXHIBITOS_SYNTHETIC_MISSING_AUTHORITY_STAGE", stage)
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+                .spawn().unwrap();
+            let ready = parent.join("crash-ready.json");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !ready.exists() && std::time::Instant::now() < deadline {
+                if child.try_wait().unwrap().is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let observed_ready = ready.exists();
+            let kill_result = child.kill();
+            let status = child.wait().unwrap();
+            assert!(
+                observed_ready,
+                "worker did not reach {stage}; status={status}"
+            );
+            kill_result.unwrap();
+            assert_eq!(status.signal(), Some(libc::SIGKILL));
+            assert!(!profile.exists());
+            if stage == "fenced" {
+                assert!(!root.exists());
+                // Both external host and vault fences must be reacquired by
+                // the real recovery path after abrupt kernel lock release.
+                Store::restore_missing_authority(&profile, "default", true).unwrap();
+            } else {
+                assert!(matches!(
+                    Store::restore_missing_authority(&profile, "default", true),
+                    Err(Error::TrustExists)
+                ));
+            }
+            assert_eq!(bytes(&root), expected);
+            assert_eq!(bytes(&held_authority), expected);
+            assert_eq!(bytes(&vault.join("records")), expected);
+            let cold = Store::open(&profile, "default").unwrap();
+            assert_eq!(cold.current_sha256, head);
+            assert_eq!(serde_json::to_vec(&cold.current.intent).unwrap(), intent);
+            assert_eq!(
+                (cold.used_operations.clone(), cold.used_instances.clone()),
+                ids
+            );
+            drop(cold);
+            assert!(!profile.exists());
+            fs::rename(held_host, &profile).unwrap();
+            retire(&profile);
+        }
+    }
+    #[test]
     fn public_inactive_authority_diagnostic_preserves_original_and_refuses_reuse() {
         let (p, s, vault) = setup();
         let destination = p.parent().unwrap().join("diagnostic-authority");
