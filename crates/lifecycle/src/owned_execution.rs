@@ -21,7 +21,7 @@ pub use runtime_compatibility::RuntimeCompatibility;
 mod current_recovery_runtime;
 pub use current_recovery_runtime::{CurrentRecoveryRuntime, RecoveryRuntimeInputs};
 #[cfg(unix)]
-pub use current_recovery_runtime::{OwnedPreflight, StartedUpdate};
+pub use current_recovery_runtime::{OwnedPreflight, ReadyCandidate, StartedUpdate};
 #[path = "source_stopped.rs"]
 mod source_stopped;
 pub use source_stopped::SourceStoppedReceipt;
