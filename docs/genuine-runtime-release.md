@@ -105,3 +105,31 @@ compatibility metadata is present, its exact config/layers and absence of tags
 remain mandatory. Only a valid bounded UTC creation timestamp is accepted on a
 standard executable descriptor; it is metadata, not publisher provenance. Ref-name
 annotations, malformed dates, tags and unrelated descriptor annotations refuse.
+
+## Fenced diagnostic catalog binding
+
+`qualify_prepared_oci_with_catalog` and the development CLI
+`qualify-prepared-oci-catalog` bind a private catalog input under the existing
+execution/profile/source/target fences. The input must have only schemaVersion,
+schemaDigest and strictly ordered name/sha256 migration rows, at most64KiB. Its
+canonical schema hash must equal the prepared artifact's signed plan target.
+Exact private input bytes, file identity/permissions/owner/link count, canonical
+path and private parent identity are checked before and after the child. The child
+receives retained bytes in memory and an explicit pin, never reopens the catalog.
+
+```sh
+exhibitos-update qualify-prepared-oci-catalog \
+  --profile <private-canonical-profile> --installation <UUID> \
+  --artifact <verified-runtime.tar> --staging-parent <private-parent> \
+  --python <canonical-Python3.11-or-later> --source-commit <Platform-revision> \
+  --target-catalog <private-canonical-catalog.json> \
+  --target-catalog-sha256 <exact-catalog-bytes-pin> --apps-closed
+```
+
+This command does not import an image or start a service. A staged artifact copy
+requires storage budget. Obtain the catalog from independently verified complete
+restored context; a caller-supplied pin alone is not observation. Receipts explicitly
+set targetCatalogObserved, runtimeCompatibilityQualified, preflightVerified and
+updateExecuted false. No RuntimeCompatibility/apply/rollback permit is created.
+The native changed-schema gate remains closed until a current opaque observation
+and full failed-update recovery prove the required original scope.

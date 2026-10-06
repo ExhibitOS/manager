@@ -656,6 +656,38 @@ fn run() -> Result<(), String> {
         );
         return Ok(());
     }
+    if a[1] == "qualify-prepared-oci-catalog" {
+        if a.len() != 19
+            || a[6] != "--artifact"
+            || a[8] != "--staging-parent"
+            || a[10] != "--python"
+            || a[12] != "--source-commit"
+            || a[14] != "--target-catalog"
+            || a[16] != "--target-catalog-sha256"
+        {
+            return Err(usage());
+        }
+        let mut store = Store::open(profile, installation).map_err(code)?;
+        let session = store.execution().map_err(|e| e.code.to_string())?;
+        let mut staged = session
+            .stage_prepared_artifact(Path::new(&a[7]), Path::new(&a[9]))
+            .map_err(|e| e.code.to_string())?;
+        let receipt = session
+            .qualify_prepared_oci_with_catalog(
+                &mut staged,
+                Path::new(&a[11]),
+                &a[13],
+                Path::new(&a[15]),
+                &a[17],
+                true,
+            )
+            .map_err(|e| e.code.to_string())?;
+        println!(
+            "{}",
+            serde_json::to_string(&receipt).map_err(|_| "UPDATE_RESULT_INVALID")?
+        );
+        return Ok(());
+    }
     if a[1] == "qualify-prepared-oci" {
         if a.len() != 16
             || a[6] != "--artifact"
