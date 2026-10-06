@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Admission derived from actual current recovery, with no returned-receipt replay.
 use super::*;
+#[path = "candidate_execution.rs"]
+mod candidate_execution;
 use crate::signed_release::trust::authority_recovery_vault::InactiveAuthorityProof;
+pub use candidate_execution::ReadyCandidate;
 
 /// A consuming permit borrowing the original Store/profile session and staged
 /// artifact, and owning the EXACT operation locks used by runtime qualification.
@@ -28,6 +31,7 @@ pub struct OwnedPreflight<'session, 'store, 'inputs> {
     key_file: &'inputs Path,
     checkpoint: VerifiedCheckpointPair,
     host: crate::profile_backup::HostReceipt,
+    oci: PreparedOciReceipt,
     authority: InactiveAuthorityProof,
     lease: candidate_inventory::RetainedCandidateLease,
     evidence: crate::update::Preflight,
@@ -63,7 +67,7 @@ impl<'store> ExecutionSession<'store> {
             .require_authority_recovery()
             .map_err(|e| err(e.code()))?;
         self.reverify_prepared_artifact(artifact)?;
-        let ((), mut receipt, lease, host) = self.with_recovery_runtime_impl(
+        let ((), mut receipt, lease, host, oci) = self.with_recovery_runtime_impl(
             artifact,
             inputs,
             Some((destination, key_file)),
@@ -101,6 +105,7 @@ impl<'store> ExecutionSession<'store> {
             key_file,
             checkpoint,
             host,
+            oci,
             authority,
             lease,
             evidence,

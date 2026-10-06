@@ -166,10 +166,55 @@ fn check_operation_guard(
     Ok(())
 }
 impl RetainedCandidateLease {
-    pub(super) fn check(&self, source: &LifecycleService) -> crate::Result<()> {
+    pub(super) fn check_fences(&self, source: &LifecycleService) -> crate::Result<()> {
         check_operation_guard(source, &self.source_lock)?;
         check_operation_guard(&self.target, &self.target_lock)?;
         installations::private_directory(&self.target.root)?;
+        if !identity(
+            &self.root_identity,
+            &fs::symlink_metadata(&self.target.root)
+                .map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?,
+        ) {
+            return Err(crate::err("UPDATE_TARGET_CHANGED"));
+        }
+        Ok(())
+    }
+    #[cfg(unix)]
+    pub(super) fn target(&self) -> &LifecycleService {
+        &self.target
+    }
+    #[cfg(unix)]
+    pub(super) fn stopped(&self) -> (&SourceStoppedReceipt, &SourceStoppedReceipt) {
+        (&self.source_before, &self.candidate_before)
+    }
+    #[cfg(unix)]
+    pub(super) fn authenticated_raw(&self) -> crate::Result<&[u8]> {
+        if crate::installation_backup::source_bytes(
+            &self.workspace.join("authenticated"),
+            "manifest.json",
+            16 * 1024 * 1024,
+            true,
+        )? != self.raw
+        {
+            return Err(crate::err("UPDATE_TARGET_CHANGED"));
+        }
+        Ok(&self.raw)
+    }
+    #[cfg(unix)]
+    pub(super) fn manifest_input(&self) -> crate::Result<File> {
+        if crate::installation_backup::source_bytes(
+            &self.workspace.join("authenticated"),
+            "manifest.json",
+            16 * 1024 * 1024,
+            true,
+        )? != self.raw
+        {
+            return Err(crate::err("UPDATE_TARGET_CHANGED"));
+        }
+        super::super::private_file(&self.manifest_path, false).map_err(|e| crate::err(e.code()))
+    }
+    pub(super) fn check(&self, source: &LifecycleService) -> crate::Result<()> {
+        self.check_fences(source)?;
         let mut candidate_plan = self.plan.clone();
         candidate_plan.source_instance = self.plan.target_instance.clone();
         let source_after = source_stopped::observe(source, &self.plan)?;

@@ -6,7 +6,7 @@ use crate::{Result, Value, err};
 #[path = "owned_preflight.rs"]
 mod owned_preflight;
 #[cfg(unix)]
-pub use owned_preflight::{OwnedPreflight, StartedUpdate};
+pub use owned_preflight::{OwnedPreflight, ReadyCandidate, StartedUpdate};
 
 pub struct RecoveryRuntimeInputs<'a> {
     pub checkpoint: CheckpointInputs<'a>,
@@ -66,7 +66,7 @@ impl ExecutionSession<'_> {
         work: impl FnOnce(&CurrentRecoveryRuntime) -> Result<T>,
     ) -> Result<(T, Value)> {
         self.with_recovery_runtime_impl(artifact, inputs, None, work)
-            .map(|(result, receipt, _lease, _host)| (result, receipt))
+            .map(|(result, receipt, _lease, _host, _oci)| (result, receipt))
     }
     fn with_recovery_runtime_impl<T>(
         &self,
@@ -79,6 +79,7 @@ impl ExecutionSession<'_> {
         Value,
         candidate_inventory::RetainedCandidateLease,
         Option<crate::profile_backup::HostReceipt>,
+        PreparedOciReceipt,
     )> {
         self.check()?;
         if !inputs.external_writers_quiesced {
@@ -226,6 +227,7 @@ impl ExecutionSession<'_> {
             receipt,
             lease,
             full_recovery.map(|(_, _, host, _)| host),
+            oci,
         ))
     }
     /// Actual inactive full host/trust extraction in the same fence as service/runtime checks.
@@ -238,7 +240,7 @@ impl ExecutionSession<'_> {
         key_file: &Path,
     ) -> Result<Value> {
         self.with_recovery_runtime_impl(artifact, inputs, Some((destination, key_file)), |_| Ok(()))
-            .map(|(_, receipt, _lease, _host)| receipt)
+            .map(|(_, receipt, _lease, _host, _oci)| receipt)
     }
     pub fn qualify_current_recovery_runtime(
         &self,
