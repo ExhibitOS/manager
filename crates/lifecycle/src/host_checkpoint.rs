@@ -3,7 +3,7 @@
 //! Failed encrypted/plaintext staging remains private and unpublished.
 use super::*;
 use std::collections::BTreeSet;
-use std::io::Cursor;
+use std::io::{Cursor, Seek};
 #[path = "host_current_inventory.rs"]
 mod current_inventory;
 #[path = "host_stream_extraction.rs"]
@@ -594,8 +594,14 @@ fn checkpoint_host_guarded<B, T>(
         next: 0,
         current: None,
     };
-    super::super::maintenance_stream::seal(&mut body, &mut output, &key, CONTEXT, DATA_LIMIT)
-        .map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
+    super::super::maintenance_stream::seal_compact(
+        &mut body,
+        &mut output,
+        &key,
+        CONTEXT,
+        DATA_LIMIT,
+    )
+    .map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
     output.sync_all().map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
     drop(output);
     let paired = after()?;
@@ -712,9 +718,23 @@ pub fn extract_host(
     if mode(&meta) != 0o600 || meta.len() > DATA_LIMIT + 16 * 1024 * 1024 {
         return Err(fail());
     }
-    // Ciphertext bounds the complete plaintext. Stream each authenticated chunk
-    // directly into the unpublished private tree, avoiding a second full copy.
-    space(&parent, meta.len())?;
+    // Authenticate the full logical size before reserving extraction space.
+    // Compact ciphertext is never a bound on expanded host bytes.
+    let logical_bytes = super::super::maintenance_stream::open(
+        &mut source,
+        &mut std::io::sink(),
+        &key,
+        CONTEXT,
+        DATA_LIMIT,
+    )
+    .map_err(|_| fail())?;
+    if !unchanged(&meta, &source.metadata().map_err(|_| fail())?) {
+        return Err(err("HOST_SOURCE_CHANGED"));
+    }
+    source
+        .seek(std::io::SeekFrom::Start(0))
+        .map_err(|_| fail())?;
+    space(&parent, logical_bytes)?;
     let stage = parent.join(format!(".host-extract-{}.pending", Uuid::new_v4()));
     installations::new_directory(&stage)?;
     let recovered = stage.join("profile");
@@ -1270,6 +1290,54 @@ mod tests {
         }
     }
     #[test]
+    fn compact_host_and_legacy_host_restore_all_files_without_changing_source() {
+        let (_root, p, k, a) = fixture();
+        write_new(
+            &p.join("compressible-synthetic"),
+            &vec![23; 2 * 1024 * 1024],
+        )
+        .unwrap();
+        let produced = checkpoint_host(&p, &k, &a, true, true).unwrap();
+        let bytes = fs::read(&a).unwrap();
+        assert!(bytes.starts_with(b"ExhibitOS-stream-v2\0"));
+        assert!(bytes.len() < 100_000);
+        let target = k.with_file_name("compact-extracted");
+        let restored = extract_host(&p, &k, &a, &target, true).unwrap();
+        verify_extracted_host(&p, &target, &restored).unwrap();
+        assert_eq!(produced.manifest_sha256, restored.manifest_sha256);
+        assert_eq!(
+            fs::read(target.join("profile/compressible-synthetic")).unwrap(),
+            fs::read(p.join("compressible-synthetic")).unwrap()
+        );
+        let mut plain = vec![];
+        let key = external_key(&p, &k).unwrap();
+        super::super::super::maintenance_stream::open(
+            &mut bytes.as_slice(),
+            &mut plain,
+            &key,
+            CONTEXT,
+            DATA_LIMIT,
+        )
+        .unwrap();
+        let legacy = k.with_file_name("legacy-host.exb");
+        let mut old = private_new(&legacy).unwrap();
+        super::super::super::maintenance_stream::seal(
+            &mut plain.as_slice(),
+            &mut old,
+            &key,
+            CONTEXT,
+            DATA_LIMIT,
+        )
+        .unwrap();
+        old.sync_all().unwrap();
+        drop(old);
+        let old_target = k.with_file_name("legacy-extracted");
+        let old_receipt = extract_host(&p, &k, &legacy, &old_target, true).unwrap();
+        verify_extracted_host(&p, &old_target, &old_receipt).unwrap();
+        assert_eq!(produced.manifest_sha256, old_receipt.manifest_sha256);
+        assert_eq!(fs::read(&a).unwrap(), bytes);
+    }
+    #[test]
     fn tamper_wrong_domain_and_wrong_source_namespace_leave_target_unpublished() {
         let (_root, p, k, a) = fixture();
         checkpoint_host(&p, &k, &a, true, true).unwrap();
@@ -1289,10 +1357,9 @@ mod tests {
                     .starts_with(".host-extract-")
             })
             .collect();
-        assert_eq!(stages.len(), 1);
-        assert!(stages[0].join("profile").is_dir());
-        assert!(!stages[0].join("payload.pending").exists());
-        assert!(!stages[0].join("verified.json").exists());
+        // Authentication now completes before any extraction staging is created.
+        assert!(stages.is_empty());
+        assert_eq!(fs::read(&bad).unwrap(), &bytes[..bytes.len() - 1]);
         let other = p.with_file_name("wrong-source");
         assert!(extract_host(&other, &k, &a, &target, true).is_err());
         assert!(!target.exists());

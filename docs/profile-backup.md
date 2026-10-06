@@ -68,3 +68,10 @@ python3 scripts/test-profile-backup.py --profile-cli '<built exhibitos-profile>'
 Anchor는 파일 이름이 아닌 내부 경로 기반 fence입니다. 0600·현재 UID·일반 파일·단일 hardlink·inode 일치를 검사하고 symlink/권한 오류를 거부합니다. 부모는 현재 UID 소유이며 다른 사용자가 쓰지 못하는 폴더 또는 현재 UID/root가 소유한 sticky 공유 임시 폴더여야 합니다. 기존 내부 잠금도 유지하므로 이전 앱의 열린 세션과 충돌하면 거부합니다. 단, 이전 binary는 외부 anchor를 이해하지 못하므로 향후 폴더 교체 작업 중 이전 앱을 새로 실행하면 안 됩니다. 모든 이전 앱/CLI/외부 writer 종료 동의는 그대로 필요합니다. Windows·관리자/비협조적 외부 namespace 변경을 검증한 보안 격리로 주장하지 않습니다.
 
 Anchor는 복원할 데이터가 아닌 잠금 인프라이므로 profile 사본에 포함하지 않으며 unlink·이동·덮어쓰기로 정리하지 않습니다. 검사 실패나 `PROFILE_BUSY`에서는 기존 폴더·잠금·기록을 유지하세요. 부모 폴더 자체를 이동한 경우는 다른 canonical 경로이며 자동 migration하지 않습니다. 전체 작업 기록·후보 사본과 가역적 root 교체는 아직 후속 구현입니다.
+
+
+## Compact full-host envelope (version2)
+
+New full-host checkpoints use `ExhibitOS-stream-v2`: each bounded1MiB logical record is independently zlib-compressed when smaller, then authenticated/encrypted. Incompressible records remain raw. AES-GCM binds version, archive identity, context, record order, type and encoded size; the final authenticated count and digest cover the complete expanded stream. Profile-only backup formats remain unchanged. Current readers accept retained version1 full-host archives; older binaries cannot read version2, so keep the matching verified CLI with the archive.
+
+Compression never excludes files or weakens byte/hash/mode validation, quiescence, source identity, publication or recovery gates. Decoding caps each expanded record at1MiB, checks exact decompressor input/output and stream termination, and enforces total logical quotas. Host extraction authenticates the entire stream before checking available space against expanded bytes; it then authenticates again into private unpublished staging. Ciphertext size cannot authorize a smaller extraction budget. Whole-runtime export headroom and the operations free-space floor are unchanged. Compression ratios depend on actual content; no retained legacy recovery baseline should be retired until a replacement is fully restored and verified.
