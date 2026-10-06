@@ -290,6 +290,7 @@ impl ExecutionSession<'_> {
         }
         Ok(())
     }
+    #[cfg(unix)]
     fn require_selected_source(&self) -> crate::Result<()> {
         self.check()?;
         let (registry, _) = installations::load(&self.store.profile)?
