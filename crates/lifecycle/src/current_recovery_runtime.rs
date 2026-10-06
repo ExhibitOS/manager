@@ -16,6 +16,11 @@ pub struct RecoveryRuntimeInputs<'a> {
     pub maintenance_image: &'a str,
     pub external_writers_quiesced: bool,
 }
+/// Exact private target catalog bound to the signed release. Not a success receipt.
+pub struct MigrationRuntimeInputs<'a> {
+    pub catalog: &'a Path,
+    pub catalog_sha256: &'a str,
+}
 /// Borrowed observation only. No Clone/Deserialize/public constructor, journal
 /// transition, host extraction, lost-authority restoration or execution permit.
 pub struct CurrentRecoveryRuntime {
@@ -68,11 +73,55 @@ impl ExecutionSession<'_> {
         self.with_recovery_runtime_impl(artifact, inputs, None, work)
             .map(|(result, receipt, _lease, _host, _oci)| (result, receipt))
     }
+    /// Full recovery and migrated Runtime observation; no OwnedPreflight or activation.
+    pub fn with_migrated_current_recovery_runtime<T>(
+        &self,
+        artifact: &mut PreparedArtifact,
+        inputs: &RecoveryRuntimeInputs<'_>,
+        migration: &MigrationRuntimeInputs<'_>,
+        work: impl FnOnce(&CurrentRecoveryRuntime) -> Result<T>,
+    ) -> Result<(T, Value)> {
+        self.with_recovery_runtime_mode(artifact, inputs, None, Some(migration), work)
+            .map(|(result, receipt, _lease, _host, _oci)| (result, receipt))
+    }
+    pub fn qualify_migrated_full_recovery_runtime(
+        &self,
+        artifact: &mut PreparedArtifact,
+        inputs: &RecoveryRuntimeInputs<'_>,
+        migration: &MigrationRuntimeInputs<'_>,
+        destination: &Path,
+        key_file: &Path,
+    ) -> Result<Value> {
+        self.with_recovery_runtime_mode(
+            artifact,
+            inputs,
+            Some((destination, key_file)),
+            Some(migration),
+            |_| Ok(()),
+        )
+        .map(|(_, receipt, _lease, _host, _oci)| receipt)
+    }
     fn with_recovery_runtime_impl<T>(
         &self,
         artifact: &mut PreparedArtifact,
         inputs: &RecoveryRuntimeInputs<'_>,
         extraction: Option<(&Path, &Path)>,
+        work: impl FnOnce(&CurrentRecoveryRuntime) -> Result<T>,
+    ) -> Result<(
+        T,
+        Value,
+        candidate_inventory::RetainedCandidateLease,
+        Option<crate::profile_backup::HostReceipt>,
+        PreparedOciReceipt,
+    )> {
+        self.with_recovery_runtime_mode(artifact, inputs, extraction, None, work)
+    }
+    fn with_recovery_runtime_mode<T>(
+        &self,
+        artifact: &mut PreparedArtifact,
+        inputs: &RecoveryRuntimeInputs<'_>,
+        extraction: Option<(&Path, &Path)>,
+        migration: Option<&MigrationRuntimeInputs<'_>>,
         work: impl FnOnce(&CurrentRecoveryRuntime) -> Result<T>,
     ) -> Result<(
         T,
@@ -126,7 +175,30 @@ impl ExecutionSession<'_> {
         {
             return Err(err("RESTORE_SPACE_REQUIRED"));
         }
-        let oci = self.qualify_runtime_artifact(artifact, inputs.python, inputs.source_commit)?;
+        let (oci, catalog, migration_input) = if let Some(migration) = migration {
+            let (oci, catalog, input) = self.qualify_migrated_runtime_artifact(
+                artifact,
+                inputs.python,
+                inputs.source_commit,
+                migration.catalog,
+                migration.catalog_sha256,
+            )?;
+            (oci, Some(catalog), Some(input))
+        } else {
+            (
+                self.qualify_runtime_artifact(artifact, inputs.python, inputs.source_commit)?,
+                None,
+                None,
+            )
+        };
+        let catalog_cell = std::cell::RefCell::new(catalog);
+        let check_catalog = || -> Result<()> {
+            if let Some(catalog) = catalog_cell.borrow_mut().as_mut() {
+                catalog.recheck()?;
+            }
+            Ok(())
+        };
+        check_catalog()?;
         let held_artifact = std::cell::RefCell::new(&mut *artifact);
         let mut outcome = None;
         let ((mut before, mut candidate, mut after, mut receipt, full_recovery), lease) = self.inspect_restored_candidate_retained(true, |ctx| {
@@ -152,7 +224,11 @@ impl ExecutionSession<'_> {
                 &self.store.profile, cp.host, cp.key, &self._session, &checkpoint.receipt().host_manifest_sha256)?;
             let before = self.observe_source_recovery_at(ctx, image, inputs.export_parent)?;
             let candidate = self.observe_ephemeral_candidate_recovery_at(ctx, image, inputs.export_parent)?;
-            let runtime = self.observe_runtime_at(&mut held_artifact.borrow_mut(), ctx, image, &oci)?;
+            check_catalog()?;
+            let runtime = if migration_input.is_some() {
+                self.observe_runtime_at_inner(&mut held_artifact.borrow_mut(), ctx, image, &oci, migration_input.as_ref())?
+            } else { self.observe_runtime_at(&mut held_artifact.borrow_mut(), ctx, image, &oci)? };
+            check_catalog()?;
             runtime_physical_matches(&runtime,"sourceBefore", &before.observation.physical)?;
             runtime_physical_matches(&runtime,"sourceAfter", &before.repeated_observation.physical)?;
             runtime_physical_matches(&runtime,"candidateBefore", &candidate.inventory.observation.physical)?;
@@ -184,6 +260,7 @@ impl ExecutionSession<'_> {
             }
             Ok((before,candidate,after,receipt,full_recovery))
         },|ctx,(_,_,_,receipt,full_recovery)| {
+            check_catalog()?;
             self.reverify_prepared_artifact(&mut held_artifact.borrow_mut())?;
             self.store.recheck_checkpoint_pair(&checkpoint, cp.binding, cp.host, cp.trust, cp.key)?;
             let held = held_artifact.borrow();
@@ -191,6 +268,7 @@ impl ExecutionSession<'_> {
             if !proof.matches(&held) {return Err(err("UPDATE_RECOVERY_RUNTIME_MISMATCH"));}
             drop(held);
             outcome=Some(work(&proof)?);
+            check_catalog()?;
             self.reverify_prepared_artifact(&mut held_artifact.borrow_mut())?;
             self.store.recheck_checkpoint_pair(&checkpoint, cp.binding, cp.host, cp.trust, cp.key)?;
             if let Some((destination,key_file,host,_))=full_recovery {
@@ -202,6 +280,7 @@ impl ExecutionSession<'_> {
             crate::profile_backup::verify_host_current_borrowed(&self.store.profile, cp.host, cp.key, &self._session, &checkpoint.receipt().host_manifest_sha256)?;
             Ok(())
         })?;
+        check_catalog()?;
         // Only after common final guards and callback: retire exactly new exports.
         for configuration in [&mut before.configuration, &mut after.configuration] {
             source_image_bytes::retire_verified(
@@ -222,6 +301,7 @@ impl ExecutionSession<'_> {
         receipt["sourceAfter"] =
             serde_json::to_value(after).map_err(|_| err("UPDATE_RESULT_INVALID"))?;
         receipt["freshImageArchivesRetired"] = serde_json::json!(true);
+        check_catalog()?;
         Ok((
             outcome.ok_or_else(|| err("UPDATE_RECOVERY_RUNTIME_MISMATCH"))?,
             receipt,

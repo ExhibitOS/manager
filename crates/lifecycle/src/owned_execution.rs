@@ -21,7 +21,9 @@ pub use prepared_oci::PreparedOciReceipt;
 pub use runtime_compatibility::RuntimeCompatibility;
 #[path = "current_recovery_runtime.rs"]
 mod current_recovery_runtime;
-pub use current_recovery_runtime::{CurrentRecoveryRuntime, RecoveryRuntimeInputs};
+pub use current_recovery_runtime::{
+    CurrentRecoveryRuntime, MigrationRuntimeInputs, RecoveryRuntimeInputs,
+};
 #[cfg(unix)]
 pub use current_recovery_runtime::{OwnedPreflight, ReadyCandidate, StartedUpdate};
 #[path = "source_stopped.rs"]

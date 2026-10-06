@@ -86,9 +86,9 @@ pub use owned_execution::{
     CandidateConfigurationReceipt, CandidateInventoryReceipt, CandidateRecoveryReceipt,
     CheckpointInputs, CombinedRecoveryReceipt, CurrentRecoveryRuntime,
     EphemeralCandidateInventoryReceipt, EphemeralCandidateRecoveryReceipt,
-    EphemeralSourceRecoveryReceipt, ExecutionSession, PreparedArtifact, PreparedArtifactReceipt,
-    PreparedOciReceipt, RecoveryRuntimeInputs, RuntimeCompatibility, SourceHostTrustReceipt,
-    SourceRecoveryReceipt,
+    EphemeralSourceRecoveryReceipt, ExecutionSession, MigrationRuntimeInputs, PreparedArtifact,
+    PreparedArtifactReceipt, PreparedOciReceipt, RecoveryRuntimeInputs, RuntimeCompatibility,
+    SourceHostTrustReceipt, SourceRecoveryReceipt,
 };
 #[cfg(unix)]
 pub use owned_execution::{OwnedPreflight, ReadyCandidate, StartedUpdate};

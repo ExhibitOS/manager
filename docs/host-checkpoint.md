@@ -72,3 +72,18 @@ python3 scripts/test-host-checkpoint.py --profile-cli '<built exhibitos-profile>
 추출할 호스트 암호문 크기를 기존 인증된 image-export 성장·2GiB headroom·6GiB floor에 추가합니다. 새 목적지의 `host/`에는 전체 파일·manifest·권한을 실제로 복원하고 `trust/`에는 독립적으로 남아 있는 현재 authority와 바이트가 일치하는 전체 신뢰 기록을 추출합니다. 서버·runtime 관측 전후 및 최종 경계에서 모든 추출 파일의 hash·길이·권한·inventory와 최신 trust를 재검사합니다. 평문 중간 전체 사본은 만들지 않으며, 새 성공 추출물은 별도 영수증과 검사 후에만 정리할 수 있습니다. 실패 후보와 원본은 자동 삭제하지 않습니다.
 
 `hostExtractionVerified`는 실제로 이 경로에서 추출했을 때만 true입니다. `inactiveFullRecovery`의 hostActivated와 liveAuthorityRestored는 false이며 이 검사는 원래 host 활성화, 잃어버린 최신 authority 복구, 서비스 데이터 활성화, owned preflight/apply 또는 rollback을 대신하지 않습니다. 기존 읽기 전용 명령은 추가 전체 추출 없이 이전 동작을 유지합니다.
+
+
+## 스키마 변경 Runtime과 전체 비활성 복원 관측
+
+`qualify-migrated-full-recovery-runtime`은 위 전체 복원 명령의 인수에
+`--target-catalog /absolute/private/catalog.json`과
+`--target-catalog-sha256 <64 lowercase hex>`를 마지막 두 동의 플래그 앞에 추가합니다.
+현재 서명된 artifact의 실제 OCI layers·SQL catalog·source/target schema를 결합한
+스키마 변경만 관측하며, catalog 파일과 부모 guard를 전체 callback 동안 유지하고 재검사합니다.
+실제 scratch Runtime 관측과 전체 host/trust 비활성 추출을 동일한 잠금 구간에서 수행합니다.
+
+이 명령도 admission, application, 선택 공간 활성화 또는 잃어버린 authority 복원을
+허가하지 않습니다. 기존 owned update 경로의 동일 schema 조건은 유지합니다.
+검사 결과는 해당 source commit과 실제 실행에 한해서 기록하며, 전체 실패 복원·cold/crash
+검사가 완료되기 전에는 changed-schema 업데이트를 완료로 처리하지 않습니다.

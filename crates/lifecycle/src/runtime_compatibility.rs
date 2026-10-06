@@ -510,7 +510,7 @@ impl ExecutionSession<'_> {
     ) -> Result<Value> {
         self.observe_runtime_at_inner(artifact, ctx, maintenance, oci, None)
     }
-    fn observe_runtime_at_inner(
+    pub(super) fn observe_runtime_at_inner(
         &self,
         artifact: &mut PreparedArtifact,
         ctx: &candidate_inventory::CandidateContext<'_>,
@@ -603,6 +603,30 @@ impl ExecutionSession<'_> {
         if !maintenance.strip_prefix("sha256:").is_some_and(hash_valid) {
             return Err(err("BACKUP_IMAGE_INVALID"));
         }
+        let (oci, mut held, input) = self.qualify_migrated_runtime_artifact(
+            artifact,
+            python,
+            source_commit,
+            catalog,
+            catalog_sha256,
+        )?;
+        let result =
+            self.with_runtime_compatibility_inner(artifact, maintenance, oci, Some(input), work);
+        held.recheck()?;
+        result
+    }
+    pub(super) fn qualify_migrated_runtime_artifact(
+        &self,
+        artifact: &mut PreparedArtifact,
+        python: &Path,
+        source_commit: &str,
+        catalog: &Path,
+        catalog_sha256: &str,
+    ) -> Result<(
+        PreparedOciReceipt,
+        super::migration_catalog::CatalogInput,
+        Value,
+    )> {
         if artifact.plan.source_schema == artifact.plan.target_schema {
             return Err(err("UPDATE_RUNTIME_MIGRATION_UNQUALIFIED"));
         }
@@ -642,10 +666,7 @@ impl ExecutionSession<'_> {
             "targetSchemaSha256": artifact.plan.target_schema,
             "targetMigrationsSha256": oci.proof["targetMigrationsSha256"],
         });
-        let result =
-            self.with_runtime_compatibility_inner(artifact, maintenance, oci, Some(input), work);
-        held.recheck()?;
-        result
+        Ok((oci, held, input))
     }
     fn with_runtime_compatibility_inner<T>(
         &self,
