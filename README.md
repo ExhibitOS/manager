@@ -119,3 +119,5 @@ Stopped candidate data can also be checked with bounded tmpfs instead of accumul
 [암호화 호스트 사본의 현재 내용 대조](docs/current-host-stream.md)는 원본·후보 통합 관측의 앞뒤에 전체 호스트 파일·권한을 암호화 스트림과 대조하며 새 plaintext 추출 파일을 만들지 않습니다. 실제 추출·authority 복원·업데이트 실행 인수 조건은 계속 별도로 검증합니다.
 
 [Rollback 후보 공간 준비](docs/rollback-registration.md)는 실패 계획의 복원 후보 ID를 먼저 예약하고 새 비활성 공간을 등록합니다. 실제 데이터 복원·원래 Runtime health·선택 활성화는 후속 연결 조건입니다.
+
+[예약된 롤백 후보의 실제 암호화 복원 코어](docs/rollback-restoration.md)는 원래 계획의 백업·스키마·이미지·인벤토리를 새 공간에 복원합니다. 건강 재관측·선택/authority 완료와 전체 migration 롤백 검증은 남아 있습니다.

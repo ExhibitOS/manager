@@ -33,19 +33,7 @@ pub(super) fn check_receipt(
     receipt: &crate::restoration::RestorationReceipt,
     plan: &crate::update::Plan,
 ) -> Result<()> {
-    let proof = receipt
-        .source_verification
-        .as_ref()
-        .ok_or_else(|| err("UPDATE_SOURCE_PROOF_MISSING"))?;
-    if receipt.backup_id != plan.backup_id
-        || receipt.authenticated_manifest_sha256 != plan.backup_manifest
-        || proof.inventory_sha256 != plan.source_inventory
-        || proof.schema_sha256 != plan.source_schema
-        || proof.runtime_image_sha256 != plan.source_image
-    {
-        return Err(err("UPDATE_RESTORE_BINDING_MISMATCH"));
-    }
-    Ok(())
+    crate::restoration::RestorationBinding::from_plan(plan)?.check_receipt(receipt)
 }
 pub(super) fn authenticated_files(
     source: &Path,
@@ -183,7 +171,8 @@ mod tests {
     }
     #[test]
     fn bound_completed_receipt_cannot_substitute_any_source_identity() {
-        let plan = super::super::super::tests::plan();
+        let mut plan = super::super::super::tests::plan();
+        plan.backup_id = Uuid::new_v4().to_string();
         let make = || crate::restoration::RestorationReceipt {
             id: Uuid::new_v4().to_string(),
             operation: "restored-and-running".into(),

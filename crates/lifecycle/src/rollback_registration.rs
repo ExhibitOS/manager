@@ -175,12 +175,12 @@ impl Store {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::super::tests::{fixture as trust_fixture, observations, plan, seal};
     use super::*;
     const SOURCE: &str = "ab6a178b-a401-48c1-b0aa-ddf87b059e31";
     const TARGET: &str = "cc414c3c-dd99-45e2-8307-131a49f72d68";
-    fn fixture() -> (PathBuf, Store) {
+    pub(in super::super) fn fixture() -> (PathBuf, Store) {
         let (p, key, policy, release) = trust_fixture();
         let mut s = Store::provision(&p, "default", policy, 10).unwrap();
         let raw = seal(&key, &release);
@@ -191,6 +191,7 @@ mod tests {
         let mut pl = plan();
         pl.source_instance = SOURCE.into();
         pl.target_instance = TARGET.into();
+        pl.backup_id = uuid::Uuid::new_v4().to_string();
         s.prepare_update(&raw, &verified, pl.clone(), 20).unwrap();
         s.enroll_authority_recovery(&p.parent().unwrap().join("vault"), 20)
             .unwrap();

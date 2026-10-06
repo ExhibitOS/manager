@@ -89,6 +89,15 @@ pub struct ExecutionSession<'a> {
     registry: Vec<u8>,
     _session: profile_backup::ProfileSession,
 }
+/// Internal rollback bridge to the existing authenticated five-file comparison.
+pub(super) fn check_restored_source_files(
+    source: &Path,
+    workspace: &Path,
+    receipt: &crate::restoration::RestorationReceipt,
+    plan: &crate::update::Plan,
+) -> crate::Result<()> {
+    source_deployment::authenticated_files(source, workspace, receipt, plan).map(|_| ())
+}
 impl Store {
     pub fn execution(&mut self) -> crate::Result<ExecutionSession<'_>> {
         self.check_root().map_err(|e| crate::err(e.code()))?;

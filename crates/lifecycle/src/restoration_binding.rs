@@ -47,6 +47,22 @@ impl RestorationBinding {
         }
         Ok(())
     }
+    pub(crate) fn check_receipt(&self, receipt: &RestorationReceipt) -> Result<()> {
+        self.validate()?;
+        let proof = receipt
+            .source_verification
+            .as_ref()
+            .ok_or_else(|| err("UPDATE_SOURCE_PROOF_MISSING"))?;
+        if receipt.backup_id != self.backup_id
+            || receipt.authenticated_manifest_sha256 != self.manifest_sha256
+            || proof.inventory_sha256 != self.proof.inventory_sha256
+            || proof.schema_sha256 != self.proof.schema_sha256
+            || proof.runtime_image_sha256 != self.proof.runtime_image_sha256
+        {
+            return Err(err("UPDATE_RESTORE_BINDING_MISMATCH"));
+        }
+        Ok(())
+    }
     pub(crate) fn required_free_bytes(&self) -> u64 {
         self.required_free_bytes
     }
