@@ -72,6 +72,11 @@ mod rollback_registration;
 mod target_registration;
 #[cfg(unix)]
 pub use rollback_registration::RegisteredRollbackCandidate;
+#[cfg(unix)]
+#[path = "rollback_restoration.rs"]
+mod rollback_restoration;
+#[cfg(unix)]
+pub use rollback_restoration::RollbackRestorationReceipt;
 #[path = "trust_update.rs"]
 mod update_journal;
 pub use owned_execution::{

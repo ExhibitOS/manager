@@ -169,6 +169,10 @@ impl Update {
     pub fn plan(&self) -> &Plan {
         &self.plan
     }
+    /// Read-only identity reserved by BeginRestore, never a restore proof.
+    pub fn restore_candidate(&self) -> Option<&str> {
+        self.restore_candidate.as_deref()
+    }
     pub fn failure(&self) -> Option<Failure> {
         self.failure
     }

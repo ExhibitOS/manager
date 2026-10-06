@@ -565,9 +565,23 @@ impl LifecycleService {
         port: u16,
         binding: &RestorationBinding,
     ) -> Result<RestorationReceipt> {
+        let lock = self.lock()?;
+        self.restore_update_candidate_locked(image, key, source, port, binding, &lock)
+    }
+    /// The caller retains this exact candidate operation guard through its final
+    /// profile/authority checks. This never adopts a caller verification receipt.
+    pub(crate) fn restore_update_candidate_locked(
+        &self,
+        image: &str,
+        key: &Path,
+        source: &Path,
+        port: u16,
+        binding: &RestorationBinding,
+        guard: &OperationGuard,
+    ) -> Result<RestorationReceipt> {
         binding.validate()?;
-        let _lock = self.lock()?;
-        self.restore_backup_routed(
+        self.check_restoration_guard(guard)?;
+        let result = self.restore_backup_routed(
             image,
             key,
             source,
@@ -577,7 +591,37 @@ impl LifecycleService {
                 retry: None,
                 binding: Some(binding),
             },
-        )
+        );
+        self.check_restoration_guard(guard)?;
+        result
+    }
+    pub(crate) fn check_restoration_guard(&self, guard: &OperationGuard) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let current = fs::symlink_metadata(self.root.join("operation.lock"))
+                .map_err(|_| err("UPDATE_FENCE_UNAVAILABLE"))?;
+            let held = guard
+                .metadata()
+                .map_err(|_| err("UPDATE_FENCE_UNAVAILABLE"))?;
+            if !current.is_file()
+                || current.file_type().is_symlink()
+                || current.uid() != unsafe { libc::geteuid() }
+                || current.nlink() != 1
+                || current.mode() & 0o777 != 0o600
+                || (current.dev(), current.ino()) != (held.dev(), held.ino())
+            {
+                return Err(err("UPDATE_FENCE_UNAVAILABLE"));
+            }
+        }
+        #[cfg(windows)]
+        self.root_guard.check_record(guard, "operation.lock")?;
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = guard;
+            return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
+        }
+        Ok(())
     }
     fn restore_backup_routed(
         &self,
