@@ -2067,5 +2067,4 @@ mod detection_tests {
 #[cfg(test)]
 mod engine_failure_tests;
 
-#[cfg(test)]
-mod network_allocation_qualification;
+mod restoration_network;

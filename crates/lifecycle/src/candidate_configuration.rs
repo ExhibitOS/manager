@@ -120,6 +120,8 @@ impl ExecutionSession<'_> {
         {
             return Err(crate::err("UPDATE_TARGET_CHANGED"));
         }
+        let candidate_compose=crate::installation_backup::source_bytes(ctx.root,"bundle/compose.yaml",1048576,true)?;
+        let subnet=crate::restoration_network::receipt_compose_subnet(&candidate_compose,ctx.receipt.network_subnet.as_deref())?;
         let (expected, compose) = crate::restoration::remapped_bundle(
             &original,
             &images,
@@ -127,7 +129,13 @@ impl ExecutionSession<'_> {
             ctx.manifest.ports[0],
             &database,
             &platform,
+            subnet.as_deref(),
         )?;
+        if let Some(subnet)=subnet.as_deref() {
+            let network=crate::backup_creation::inspected("docker",&["network".into(),"inspect".into(),format!("{}_default",expected.project_name)])?;
+            if network["Labels"]["com.exhibitos.bundle"]!=expected.bundle_id || network["Labels"]["com.exhibitos.project"]!=expected.project_name || network["Driver"]!="bridge" {return Err(crate::err("OWNERSHIP_CONFLICT"));}
+            crate::restoration_network::verify_observed(&network,subnet)?;
+        }
         let original_environment = PrivateBytes(crate::installation_backup::source_bytes(
             &self.source.root,
             "runtime.env",
@@ -349,6 +357,7 @@ mod tests {
             13201,
             &images[0].content_id,
             &images[1].content_id,
+            None,
         )
         .unwrap();
         assert_eq!(m.compose_sha256, crate::digest(&compose));
@@ -358,6 +367,13 @@ mod tests {
         assert_eq!(m.project_name, format!("exhibitos-{id}"));
         assert_eq!(m.open_url, "http://127.0.0.1:13201");
         assert_eq!(serde_json::to_vec(&original).unwrap(), before);
+        let (new_manifest,new_compose)=crate::restoration::remapped_bundle(&original,&images,&id,13201,&images[0].content_id,&images[1].content_id,Some("10.240.0.0/28")).unwrap();
+        assert_ne!(new_manifest.compose_sha256,m.compose_sha256);
+        assert_eq!(new_manifest.compose_sha256,crate::digest(&new_compose));
+        assert_eq!(crate::restoration_network::receipt_compose_subnet(&new_compose,Some("10.240.0.0/28")).unwrap().as_deref(),Some("10.240.0.0/28"));
+        assert!(crate::restoration_network::receipt_compose_subnet(&new_compose,None).is_err());
+        assert_eq!(crate::restoration_network::receipt_compose_subnet(&compose,None).unwrap(),None);
+        assert!(crate::restoration::remapped_bundle(&original,&images,&id,13201,&images[0].content_id,&images[1].content_id,Some("10.241.0.0/28")).is_err());
         for (port, db, runtime) in [
             (
                 80,
@@ -372,7 +388,7 @@ mod tests {
             (13201, "foreign", images[1].content_id.as_str()),
         ] {
             assert!(
-                crate::restoration::remapped_bundle(&original, &images, &id, port, db, runtime)
+                crate::restoration::remapped_bundle(&original, &images, &id, port, db, runtime, None)
                     .is_err()
             );
         }

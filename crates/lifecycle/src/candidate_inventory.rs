@@ -509,6 +509,7 @@ mod tests {
             project_name: manifest.project_name.clone(),
             open_url: manifest.open_url.clone(),
             at: 1,
+            network_subnet: None,
             source_verification: Some(crate::restoration::RestorationProof {
                 inventory_sha256: plan.source_inventory.clone(),
                 schema_sha256: plan.source_schema.clone(),

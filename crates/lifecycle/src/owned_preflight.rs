@@ -390,4 +390,59 @@ mod tests {
   let cold=crate::signed_release::trust::Store::open(&profile,"default").unwrap();assert_eq!(cold.root,authority);assert_eq!(cold.intent().unwrap().update.stage(),crate::update::Stage::RolledBack);
   assert_eq!(installations::load(&profile).unwrap().unwrap().0.active_id,id);
  }
+ #[test]
+ #[ignore="explicit retained small development fixture; resume generation12 failed original restore into NEW candidate, no changed update replay or whole-host copy"]
+ fn actual_resume_original_restore_after_network_exhaustion() {
+  use std::os::unix::fs::PermissionsExt;
+  let input:Value=serde_json::from_slice(&fs::read(std::env::var("EXHIBITOS_MIGRATED_PERMIT_INPUT").unwrap()).unwrap()).unwrap();
+  let path=|n:&str|PathBuf::from(input[n].as_str().unwrap());
+  let root=fs::canonicalize(path("root")).unwrap();
+  assert_eq!(root.file_name().unwrap(),"exhibitos-release-trust-817e82d0-bfe4-413e-bb1c-d8c252401d8a");
+  let profile=root.join("profile");let mut store=crate::signed_release::trust::Store::open(&profile,"default").unwrap();
+  let signing=ed25519_dalek::SigningKey::from_bytes(&[31;32]);
+  let public=signing.verifying_key().to_bytes().iter().map(|b|format!("{b:02x}")).collect::<String>();
+  assert_eq!(store.current.policy.public_keys,vec![public]);
+  assert_eq!(store.current.generation,12);assert_eq!(store.intent().unwrap().update.stage(),crate::update::Stage::RecoveryRequired);
+  let plan=store.intent().unwrap().update.plan().clone();
+  assert_ne!(plan.source_schema,plan.target_schema);
+  assert_eq!(require_executable_schema(&plan).unwrap_err().code,"UPDATE_RUNTIME_MIGRATION_UNQUALIFIED");
+  assert_eq!(installations::load(&profile).unwrap().unwrap().0.active_id,plan.source_instance);
+  let authority=store.root.clone();
+  let history=(0..=12).filter_map(|g|{let p=authority.join(format!("{g:020}.json"));fs::read(&p).ok().map(|b|(p,b))}).collect::<Vec<_>>();
+  let source=profile.join("local-runtime");
+  let names=["installed.json","engine.json","runtime.env","bundle/manifest.json","bundle/compose.yaml"];
+  let original=names.iter().map(|n|{let p=source.join(n);(*n,fs::read(&p).unwrap(),fs::metadata(&p).unwrap().permissions().mode())}).collect::<Vec<_>>();
+  let record=root.join(format!("network-resumed-original-recovery-{}",uuid::Uuid::new_v4()));fs::create_dir(&record).unwrap();fs::set_permissions(&record,fs::Permissions::from_mode(0o700)).unwrap();
+  println!("RESUMED_RECOVERY_RECORD={}",record.display());
+  let mut reserved_path:Option<PathBuf>=None;
+  let outcome=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ->Result<Value>{
+   let reserved=store.register_rollback_candidate(true)?;reserved_path=Some(reserved.candidate_path.clone());
+   crate::restoration::private_bytes(&record.join("reservation.json"),&serde_json::to_vec(&reserved).unwrap())?;
+   let port=input["recoveryPort"].as_u64().filter(|n|*n>=1024&&*n<=65535).ok_or_else(||err("PORT_INVALID"))? as u16;
+   let restored=store.restore_registered_rollback_candidate(input["maintenance"].as_str().unwrap(),&path("key"),&path("serviceArchive"),port,true)?;
+   assert_eq!(restored.candidate_id,reserved.candidate_id);assert!(!restored.rollback_completed);
+   assert!(restored.restoration.network_subnet.is_some());
+   crate::restoration::private_bytes(&record.join("restoration.json"),&serde_json::to_vec(&restored).unwrap())?;
+   let completion=store.activate_restored_rollback(input["maintenance"].as_str().unwrap(),true)?;
+   assert!(completion.selection_completed);assert_eq!(store.intent().unwrap().update.stage(),crate::update::Stage::RolledBack);
+   Ok(serde_json::json!({"reservation":reserved,"restoration":restored,"completion":completion}))
+  })).unwrap_or_else(|_|Err(err("UPDATE_QUALIFICATION_ASSERTION_FAILED")));
+  let mut stop_result=None;
+  if let Some(path)=reserved_path.as_ref()
+   && let Ok(service)=crate::LifecycleService::open_retry_diagnostics(path.clone())
+   && let Ok(m)=service.manifest()
+   && service.validate_ownership(&m,"docker").is_ok()&&service.validate_volumes(&m,"docker").is_ok(){
+    stop_result=Some(crate::run("docker",&crate::compose_args(&m,&["stop","--timeout","30"]),Some(&path.join("bundle")),180).is_ok());
+  }
+  for (name,bytes,mode) in original {let p=source.join(name);assert_eq!(fs::read(&p).unwrap(),bytes);assert_eq!(fs::metadata(&p).unwrap().permissions().mode(),mode);}
+  for (p,bytes) in history {assert_eq!(fs::read(p).unwrap(),bytes);}
+  let expected=store.intent().unwrap().update.restore_candidate().map(str::to_owned);
+  let generation=store.current.generation;drop(store);
+  let cold=crate::signed_release::trust::Store::open(&profile,"default").unwrap();
+  let cold_completed=cold.intent().unwrap().update.stage()==crate::update::Stage::RolledBack && Some(installations::load(&profile).unwrap().unwrap().0.active_id)==expected;
+  let report=serde_json::json!({"state":if outcome.is_ok()&&cold_completed&&stop_result==Some(true){"PASS"}else{"FAIL"},"errorCode":outcome.as_ref().err().map(|e|e.code.as_str()),"result":outcome.as_ref().ok(),"coldSelectionAndStageVerified":cold_completed,"ownedCandidateStopped":stop_result,"authorityGeneration":generation,"originalSourceAndHistoryPreserved":true,"newWholeHostCopy":false,"scope":"NEW original rollback candidate from genuine changed-update generation12 RecoveryRequired; actual encrypted original service restore/native activation/selection/cold; missing host/process crash/GUI still separate"});
+  crate::restoration::private_bytes(&record.join("report.json"),&serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+  outcome.unwrap();assert!(cold_completed);assert_eq!(stop_result,Some(true));
+ }
+
 }
