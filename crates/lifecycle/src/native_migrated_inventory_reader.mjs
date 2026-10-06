@@ -22,7 +22,7 @@ try{
  if(!/^[1-9][0-9]{0,19}$/.test(system??''))throw Error('UPDATE_DATABASE_ID_INVALID');
  if(expectedSystem===undefined||system!==expectedSystem)throw Error('UPDATE_DATABASE_ID_MISMATCH');
  const blobs=new FileBlobStore('/data/blobs');
- const proof=await verifyMigratedInventory({pool,manifestBytes:raw,expectedManifestSha256:sha,snapshotSystemIdentifier:system,targetSchemaSha256:targetSchema,targetMigrations:catalog.migrations,snapshot:c=>collectServiceInventory(c,blobs,{migrationCatalog:catalog})});
+ const proof=await verifyMigratedInventory({pool,manifestBytes:raw,expectedManifestSha256:sha,snapshotSystemIdentifier:system,targetSchemaSha256:targetSchema,targetMigrations:catalog.migrations,snapshot:c=>collectServiceInventory(c,blobs,{migrationCatalog:catalog.migrations})});
  if(proof.operation!=='migrated-inventory-preserved'||proof.sourceSchemaSha256!==sourceSchema||proof.targetSchemaSha256!==targetSchema||proof.targetMigrationsSha256!==migrationsPin||proof.originalDataPreserved!==true||proof.currentInventoryVerified!==false||proof.configurationVerified!==false||proof.preflightVerified!==false||proof.updateExecuted!==false)throw Error('UPDATE_INVENTORY_UNVERIFIED');
  console.log(JSON.stringify(proof));
 }catch(e){const code=/^[A-Z][A-Z0-9_]{0,79}$/.test(e?.message??'')?e.message:'UPDATE_ROLLBACK_HEALTH_FAILED';process.stderr.write(code+'\n');process.exitCode=1;}
