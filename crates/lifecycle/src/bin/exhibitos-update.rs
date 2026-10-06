@@ -573,11 +573,20 @@ fn run() -> Result<(), String> {
         a[1].as_str(),
         "qualify-current-recovery-runtime"
             | "qualify-full-recovery-runtime"
+            | "qualify-migrated-full-recovery-runtime"
             | "execute-full-update"
     ) {
         let execute = a[1] == "execute-full-update";
-        let full = a[1] == "qualify-full-recovery-runtime" || execute;
-        if a.len() != if full { 30 } else { 28 }
+        let migrated = a[1] == "qualify-migrated-full-recovery-runtime";
+        let full = a[1] == "qualify-full-recovery-runtime" || execute || migrated;
+        if a.len()
+            != if migrated {
+                34
+            } else if full {
+                30
+            } else {
+                28
+            }
             || a[6] != "--artifact"
             || a[8] != "--staging-parent"
             || a[10] != "--python"
@@ -589,7 +598,14 @@ fn run() -> Result<(), String> {
             || a[22] != "--key"
             || a[24] != "--pair-binding"
             || full && a[26] != "--host-extraction"
-            || a[if full { 28 } else { 26 }] != "--external-writers-quiesced"
+            || migrated && (a[28] != "--target-catalog" || a[30] != "--target-catalog-sha256")
+            || a[if migrated {
+                32
+            } else if full {
+                28
+            } else {
+                26
+            }] != "--external-writers-quiesced"
         {
             return Err(usage());
         }
@@ -650,7 +666,18 @@ fn run() -> Result<(), String> {
                 let completed = ready.activate().map_err(|e| e.code.to_string())?;
                 return Ok(serde_json::json!({"selection":completed,"updateExecuted":true}));
             }
-            if full {
+            if migrated {
+                session.qualify_migrated_full_recovery_runtime(
+                    &mut artifact,
+                    &inputs,
+                    &signed_release::trust::MigrationRuntimeInputs {
+                        catalog: Path::new(&a[29]),
+                        catalog_sha256: &a[31],
+                    },
+                    Path::new(&a[27]),
+                    Path::new(&a[23]),
+                )
+            } else if full {
                 session.qualify_full_recovery_runtime(
                     &mut artifact,
                     &inputs,
