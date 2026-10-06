@@ -409,6 +409,25 @@ fn run() -> Result<(), String> {
         #[cfg(not(unix))]
         return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
     }
+    if a[1] == "qualify-inactive-authority-recovery" {
+        if a.len() != 9 || a[6] != "--destination" {
+            return Err(usage());
+        }
+        #[cfg(unix)]
+        {
+            let store = Store::open(profile, installation).map_err(code)?;
+            let receipt = store
+                .qualify_inactive_authority_recovery(Path::new(&a[7]))
+                .map_err(code)?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).map_err(|_| "UPDATE_RESULT_INVALID")?
+            );
+            return Ok(());
+        }
+        #[cfg(not(unix))]
+        return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
+    }
     if a[1] == "enroll-authority-recovery" || a[1] == "restore-missing-authority" {
         let enroll = a[1] == "enroll-authority-recovery";
         if enroll && (a.len() != 9 || a[6] != "--vault") || !enroll && a.len() != 7 {
