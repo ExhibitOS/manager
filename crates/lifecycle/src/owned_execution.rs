@@ -10,6 +10,8 @@ pub use candidate_recovery::{CandidateRecoveryReceipt, EphemeralCandidateRecover
 mod candidate_inventory;
 pub use candidate_configuration::CandidateConfigurationReceipt;
 pub use candidate_inventory::CandidateInventoryReceipt;
+#[path = "migration_catalog.rs"]
+mod migration_catalog;
 #[path = "prepared_oci.rs"]
 mod prepared_oci;
 #[path = "runtime_compatibility.rs"]

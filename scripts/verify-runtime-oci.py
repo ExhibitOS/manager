@@ -45,7 +45,7 @@ def migration_binding(source,current,target=None,target_schema=None):
  # arbitrary data transformations, migration execution, health or recovery.
  return source_hash,target_schema,'strict-migration-extension',sha(target['migrations'])
 
-def qualify(a,f,source_manifest_bytes=None):
+def qualify(a,f,source_manifest_bytes=None,target_inventory_bytes=None):
  assert re.fullmatch(r'sha256:[a-f0-9]{64}',a.image) and re.fullmatch(r'[a-f0-9]{40}',a.source_commit)
  if source_manifest_bytes is None:
   source,source_manifest_hash=private_json(a.source_manifest)
@@ -57,8 +57,16 @@ def qualify(a,f,source_manifest_bytes=None):
   source_manifest_hash=hashlib.sha256(source_manifest_bytes).hexdigest()
  assert source.get('kind')=='service-backup' and source.get('schemaVersion') in ('1.0.0-draft.1','1.0.0-draft.2')
  target_path=getattr(a,'target_inventory',None);target_pin=getattr(a,'target_inventory_sha256',None);target_schema=getattr(a,'target_schema_sha256',None)
- assert (target_path is None and target_pin is None and target_schema is None) or (target_path is not None and target_pin is not None and target_schema is not None)
- target,target_inventory_hash=private_json(target_path,target_pin) if target_path is not None else (None,None)
+ if target_inventory_bytes is not None:
+  # Internal retained Rust catalog input, already read under strict file guards.
+  # Its signed expected schema remains mandatory; caller pins are not observation.
+  assert target_path is None and isinstance(target_inventory_bytes,bytes) and 0<len(target_inventory_bytes)<=65536
+  assert isinstance(target_pin,str) and re.fullmatch(r'[a-f0-9]{64}',target_pin) and isinstance(target_schema,str) and re.fullmatch(r'[a-f0-9]{64}',target_schema)
+  target_inventory_hash=hashlib.sha256(target_inventory_bytes).hexdigest();assert target_inventory_hash==target_pin
+  target=json.loads(target_inventory_bytes,object_pairs_hook=unique)
+ else:
+  assert (target_path is None and target_pin is None and target_schema is None) or (target_path is not None and target_pin is not None and target_schema is not None)
+  target,target_inventory_hash=private_json(target_path,target_pin) if target_path is not None else (None,None)
  assert a.archive.is_absolute() and a.archive.resolve()==a.archive
  before=a.archive.stat();assert stat.S_ISREG(before.st_mode) and before.st_nlink==1 and stat.S_IMODE(before.st_mode) in (0o400,0o600) and before.st_uid==os.getuid() and 0<before.st_size<=2*1024**3
  sha=lambda b:hashlib.sha256(b).hexdigest()

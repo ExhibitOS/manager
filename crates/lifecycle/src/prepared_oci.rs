@@ -10,9 +10,15 @@ from types import SimpleNamespace
 with os.fdopen(int(sys.argv[3]),'rb',closefd=False) as manifest_fd:
     raw_manifest=manifest_fd.read(16*1024*1024+1)
     assert len(raw_manifest)<=16*1024*1024 and hashlib.sha256(raw_manifest).hexdigest()==sys.argv[5]
+assert len(sys.argv) in (6,9)
 args = SimpleNamespace(archive=Path(sys.argv[1]),image=sys.argv[2],source_manifest=None,source_commit=sys.argv[4])
+target_bytes=None
+if len(sys.argv)==9:
+    target_bytes=sys.argv[6].encode('utf8')
+    args.target_inventory_sha256=sys.argv[7]
+    args.target_schema_sha256=sys.argv[8]
 with os.fdopen(0,'rb',closefd=False) as retained:
-    proof=qualify(args,retained,source_manifest_bytes=raw_manifest)
+    proof=qualify(args,retained,source_manifest_bytes=raw_manifest,target_inventory_bytes=target_bytes)
 print(json.dumps(proof,separators=(',',':')))
 "#;
 #[derive(Debug, serde::Serialize)]
@@ -25,6 +31,9 @@ pub struct PreparedOciReceipt {
     pub containers_volumes_tags_preserved: bool,
     pub preflight_verified: bool,
     pub update_executed: bool,
+    pub target_catalog_sha256: Option<String>,
+    pub target_catalog_observed: bool,
+    pub runtime_compatibility_qualified: bool,
 }
 fn docker(args: &[&str]) -> crate::Result<Vec<u8>> {
     run(
@@ -96,6 +105,46 @@ impl ExecutionSession<'_> {
         import_cache: bool,
         acknowledged: bool,
     ) -> crate::Result<PreparedOciReceipt> {
+        self.qualify_prepared_oci_inner(
+            artifact,
+            python,
+            source_commit,
+            import_cache,
+            acknowledged,
+            None,
+        )
+    }
+    /// Diagnostic binding only. Private exact catalog bytes must match the signed
+    /// target schema; this does not attest native observation or permit application.
+    #[allow(clippy::too_many_arguments)]
+    pub fn qualify_prepared_oci_with_catalog(
+        &self,
+        artifact: &mut PreparedArtifact,
+        python: &Path,
+        source_commit: &str,
+        catalog: &Path,
+        catalog_sha256: &str,
+        acknowledged: bool,
+    ) -> crate::Result<PreparedOciReceipt> {
+        self.qualify_prepared_oci_inner(
+            artifact,
+            python,
+            source_commit,
+            false,
+            acknowledged,
+            Some((catalog, catalog_sha256)),
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn qualify_prepared_oci_inner(
+        &self,
+        artifact: &mut PreparedArtifact,
+        python: &Path,
+        source_commit: &str,
+        import_cache: bool,
+        acknowledged: bool,
+        catalog_input: Option<(&Path, &str)>,
+    ) -> crate::Result<PreparedOciReceipt> {
         self.check()?;
         if !acknowledged {
             return Err(err("BACKUP_OPERATOR_ACK_REQUIRED"));
@@ -116,6 +165,15 @@ impl ExecutionSession<'_> {
         {
             return Err(err("UPDATE_OCI_PLATFORM_UNVERIFIED"));
         }
+        let mut catalog = catalog_input
+            .map(|(path, pin)| {
+                super::migration_catalog::CatalogInput::read(
+                    path,
+                    pin,
+                    &artifact.plan.target_schema,
+                )
+            })
+            .transpose()?;
         let plan = &artifact.plan;
         let (registry, _) = installations::load(&self.store.profile)?
             .ok_or_else(|| err("UPDATE_SOURCE_CHANGED"))?;
@@ -185,7 +243,7 @@ impl ExecutionSession<'_> {
         #[cfg(not(unix))]
         let manifest_descriptor = String::new();
         let script = format!("__name__='exhibitos_embedded_oci'\n{QUALIFIER}\n{ENTRY}");
-        let args = vec![
+        let mut args = vec![
             "-I".into(),
             "-c".into(),
             script,
@@ -195,6 +253,14 @@ impl ExecutionSession<'_> {
             source_commit.into(),
             crate::digest(&raw),
         ];
+        if let Some(input) = &mut catalog {
+            input.recheck()?;
+            args.extend([
+                input.text()?,
+                input.pin().to_owned(),
+                artifact.plan.target_schema.clone(),
+            ]);
+        }
         self.reverify_prepared_artifact(artifact)?;
         let input = artifact
             .staged
@@ -212,6 +278,9 @@ impl ExecutionSession<'_> {
             || self.check(),
         )
         .map_err(|_| err("UPDATE_OCI_INVALID"))?;
+        if let Some(input) = &mut catalog {
+            input.recheck()?;
+        }
         let proof: Value =
             serde_json::from_slice(&output).map_err(|_| err("UPDATE_OCI_INVALID"))?;
         if proof["artifactSha256"] != artifact.verified.release.artifact.sha256
@@ -219,6 +288,14 @@ impl ExecutionSession<'_> {
             || proof["runtimeImageSha256"] != artifact.plan.target_image
             || proof["targetSchemaSha256"] != artifact.plan.target_schema
             || proof["version"] != artifact.verified.release.version
+            || proof["sourceSchemaSha256"] != artifact.plan.source_schema
+            || proof["sourceManifestSha256"] != crate::digest(&raw)
+            || proof["sourceCommit"] != source_commit
+            || proof["targetInventorySha256"]
+                != catalog
+                    .as_ref()
+                    .map(|c| Value::from(c.pin()))
+                    .unwrap_or(Value::Null)
         {
             return Err(err("UPDATE_OCI_INVALID"));
         }
@@ -300,6 +377,9 @@ impl ExecutionSession<'_> {
             containers_volumes_tags_preserved: preserved,
             preflight_verified: false,
             update_executed: false,
+            target_catalog_sha256: catalog.as_ref().map(|c| c.pin().to_owned()),
+            target_catalog_observed: false,
+            runtime_compatibility_qualified: false,
         })
     }
 }
@@ -307,6 +387,62 @@ impl ExecutionSession<'_> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires exact retained genuine extended OCI and private target catalog"]
+    fn actual_compiled_extended_catalog_entry_and_pin_refusal() {
+        use std::os::fd::AsRawFd;
+        let input = |key| std::env::var(key).expect("explicit private qualification input");
+        let archive = PathBuf::from(input("EXHIBITOS_TEST_OCI_ARCHIVE"));
+        let manifest = PathBuf::from(input("EXHIBITOS_TEST_OCI_MANIFEST"));
+        let catalog = PathBuf::from(input("EXHIBITOS_TEST_OCI_CATALOG"));
+        let schema = input("EXHIBITOS_TEST_OCI_SCHEMA");
+        let pin = input("EXHIBITOS_TEST_OCI_CATALOG_PIN");
+        let python = input("EXHIBITOS_TEST_OCI_PYTHON");
+        let image = input("EXHIBITOS_TEST_OCI_IMAGE");
+        let revision = input("EXHIBITOS_TEST_OCI_REVISION");
+        let mut guarded =
+            super::super::migration_catalog::CatalogInput::read(&catalog, &pin, &schema).unwrap();
+        let manifest_bytes = crate::installation_backup::source_bytes(
+            manifest.parent().unwrap(),
+            manifest.file_name().unwrap().to_str().unwrap(),
+            16 * 1024 * 1024,
+            true,
+        )
+        .unwrap();
+        let script = format!("__name__='exhibitos_embedded_oci'\n{QUALIFIER}\n{ENTRY}");
+        for bad in [false, true] {
+            let source = fs::File::open(&archive).unwrap();
+            let extra = fs::File::open(&manifest).unwrap();
+            let descriptor = extra.as_raw_fd().to_string();
+            let args = vec![
+                "-I".into(),
+                "-c".into(),
+                script.clone(),
+                archive.to_string_lossy().into_owned(),
+                image.clone(),
+                descriptor,
+                revision.clone(),
+                crate::digest(&manifest_bytes),
+                guarded.text().unwrap(),
+                if bad { "f".repeat(64) } else { pin.clone() },
+                schema.clone(),
+            ];
+            let result =
+                run_observed_inputs(&python, &args, None, 300, Some(source), Some(extra), || {
+                    guarded.recheck()
+                });
+            if bad {
+                assert!(result.is_err());
+            } else {
+                let v: Value = serde_json::from_slice(&result.unwrap()).unwrap();
+                assert_eq!(v["targetInventorySha256"], pin);
+                assert_eq!(v["targetSchemaSha256"], schema);
+                assert_eq!(v["migrationMode"], "strict-migration-extension");
+                assert_eq!(v["artifactSha256"], input("EXHIBITOS_TEST_OCI_ARCHIVE_PIN"));
+            }
+            guarded.recheck().unwrap();
+        }
+    }
     #[test]
     fn extra_descriptor_survives_exec_without_changing_parent_close_on_exec() {
         use std::os::fd::AsRawFd;
