@@ -50,7 +50,7 @@ fn volumes(row: &serde_json::Value, expected: &[&str]) -> LifecycleResult<Vec<St
     }
     Ok(names)
 }
-fn pair(
+pub(super) fn pair(
     target: &crate::LifecycleService,
     m: &crate::BundleManifest,
     plan: &crate::update::Plan,

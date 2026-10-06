@@ -19,6 +19,11 @@ mod runtime_compatibility;
 use crate::{LifecycleService, Status, maintenance::VerificationReceipt};
 pub use prepared_oci::PreparedOciReceipt;
 pub use runtime_compatibility::RuntimeCompatibility;
+#[cfg(unix)]
+#[path = "interrupted_recovery.rs"]
+mod interrupted_recovery;
+#[cfg(unix)]
+pub use interrupted_recovery::InterruptedRecoveryInputs;
 #[path = "current_recovery_runtime.rs"]
 mod current_recovery_runtime;
 pub use current_recovery_runtime::{

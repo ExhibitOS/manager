@@ -1960,3 +1960,6 @@ mod tests {
         assert_eq!(s.receipt().generation, 4);
     }
 }
+
+#[cfg(unix)]
+pub use owned_execution::InterruptedRecoveryInputs;
