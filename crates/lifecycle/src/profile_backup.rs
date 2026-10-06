@@ -11,7 +11,7 @@ use aes_gcm::{
 };
 pub use host_checkpoint::{HostCurrentReceipt, HostReceipt, checkpoint_host, extract_host, verify_host_current};
 pub(crate) use host_checkpoint::{
-    activate_missing_host, checkpoint_host_anchored, checkpoint_host_borrowed,
+    activate_missing_host, authenticated_host_restore_bytes, checkpoint_host_anchored, checkpoint_host_borrowed,
     recheck_extracted_host_current, verify_extracted_host, verify_host_current_borrowed,
 };
 #[cfg(unix)]

@@ -198,15 +198,17 @@ impl ExecutionSession<'_> {
             .verify_checkpoint_pair(cp.binding, cp.host, cp.trust, cp.key)?;
         current_bound_checkpoint(&checkpoint.receipt(), artifact.generation)?;
         self.validate_candidate_export_parent(inputs.export_parent)?;
+        let host_restore_bytes = if extraction.is_some() && retained_host.is_none() {
+            crate::profile_backup::authenticated_host_restore_bytes(
+                &self.store.profile, cp.host, cp.key, &checkpoint.receipt().host_manifest_sha256,
+            )?
+        } else { 0 };
+
         // Preserve2GiB headroom and6GiB floor before OCI preparation.
         // Exact authenticated three-export growth is reserved inside CandidateContext.
         if fs2::available_space(inputs.export_parent).map_err(|_| err("STORAGE_UNAVAILABLE"))?
             < (8u64 * 1024 * 1024 * 1024)
-                .checked_add(if extraction.is_some() && retained_host.is_none() {
-                    checkpoint.receipt().host_archive_bytes
-                } else {
-                    0
-                })
+                .checked_add(host_restore_bytes)
                 .ok_or_else(|| err("STORAGE_QUOTA"))?
         {
             return Err(err("RESTORE_SPACE_REQUIRED"));
@@ -242,7 +244,7 @@ impl ExecutionSession<'_> {
         let ((mut before, mut candidate, mut after, mut receipt, full_recovery), lease) = self.inspect_restored_candidate_retained(true, |ctx| {
             let full_recovery = if let Some((destination, key_file)) = extraction {
                 let parent = destination.parent().ok_or_else(||err("HOST_CHECKPOINT_INVALID"))?;
-                recovery_space::check_with_host(&self.source, ctx, &[&self.source.root, ctx.root, inputs.export_parent, parent], 3, if retained_host.is_some() {0} else {checkpoint.receipt().host_archive_bytes})?;
+                recovery_space::check_with_host(&self.source, ctx, &[&self.source.root, ctx.root, inputs.export_parent, parent], 3, host_restore_bytes)?;
                 if super::read_record(key_file).map_err(|_|err("PROFILE_KEY_INVALID"))?.as_slice()!=cp.key {
                     return Err(err("PROFILE_KEY_INVALID"));
                 }

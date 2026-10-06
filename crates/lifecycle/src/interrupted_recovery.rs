@@ -131,7 +131,10 @@ impl ExecutionSession<'_> {
         let additional = if reopening {
             artifact.verified.release.artifact.bytes
         } else {
-            total.checked_mul(3).and_then(|n| n.checked_add(checkpoint.receipt().host_archive_bytes)).ok_or_else(|| err("STORAGE_QUOTA"))?
+            let host_restore_bytes = crate::profile_backup::authenticated_host_restore_bytes(
+                &self.store.profile, cp.host, cp.key, &checkpoint.receipt().host_manifest_sha256,
+            )?;
+            total.checked_mul(3).and_then(|n| n.checked_add(host_restore_bytes)).ok_or_else(|| err("STORAGE_QUOTA"))?
         };
         let peak = additional
             .checked_add(artifact.plan.required_free_bytes)

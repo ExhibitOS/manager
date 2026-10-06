@@ -771,6 +771,37 @@ impl HostManifestPrefix {
             .ok_or_else(fail)
     }
 }
+/// Authenticate restoration growth without extracting or requiring the source namespace.
+pub(crate) fn authenticated_host_restore_bytes(
+    profile: &Path,
+    archive: &Path,
+    key: &[u8],
+    expected_manifest: &str,
+) -> Result<u64> {
+    if !profile.is_absolute() {
+        return Err(fail());
+    }
+    let mut source = file(archive)?;
+    let before = source.metadata().map_err(|_| fail())?;
+    if mode(&before) != 0o600 || before.len() > DATA_LIMIT + 16 * 1024 * 1024 {
+        return Err(fail());
+    }
+    let mut prefix = HostManifestPrefix(Vec::new());
+    let decoded =
+        super::super::maintenance_stream::open(&mut source, &mut prefix, key, CONTEXT, DATA_LIMIT)
+            .map_err(|_| fail())?;
+    let expanded = prefix.expanded_bytes(profile, decoded)?;
+    let len = u64::from_be_bytes(prefix.0[..8].try_into().map_err(|_| fail())?) as usize;
+    if digest(&prefix.0[8..8 + len]) != expected_manifest {
+        return Err(fail());
+    }
+    if !unchanged(&before, &source.metadata().map_err(|_| fail())?)
+        || !unchanged(&before, &fs::symlink_metadata(archive).map_err(|_| fail())?)
+    {
+        return Err(err("HOST_SOURCE_CHANGED"));
+    }
+    Ok(expanded)
+}
 fn publish_directory(source: &Path, target: &Path) -> Result<()> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
@@ -1476,6 +1507,25 @@ mod tests {
         let prefix =
             HostManifestPrefix(encoded[..encoded.len().min(MANIFEST_LIMIT as usize + 8)].to_vec());
         assert!(prefix.expanded_bytes(&p, encoded.len() as u64).unwrap() >= 6 * 1024 * 1024);
+        let reserved =
+            authenticated_host_restore_bytes(&p, &a, &[17; 32], &receipt.manifest_sha256).unwrap();
+        assert_eq!(
+            reserved,
+            receipt.bytes + (manifest.items.len() as u64 + 4) * 4096
+        );
+        assert!(reserved > fs::metadata(&a).unwrap().len());
+        assert!(
+            authenticated_host_restore_bytes(&p, &a, &[18; 32], &receipt.manifest_sha256).is_err()
+        );
+        assert!(authenticated_host_restore_bytes(&p, &a, &[17; 32], &"0".repeat(64)).is_err());
+        let moved = p.with_file_name("temporarily-absent-profile");
+        fs::rename(&p, &moved).unwrap();
+        assert_eq!(
+            authenticated_host_restore_bytes(&p, &a, &[17; 32], &receipt.manifest_sha256).unwrap(),
+            reserved
+        );
+        assert!(!p.exists());
+        fs::rename(&moved, &p).unwrap();
     }
     #[test]
     fn changed_reference_source_is_not_silently_skipped_or_repaired() {
