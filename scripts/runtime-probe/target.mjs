@@ -27,6 +27,7 @@ try {
   await chown('/probe', 1000, 1000); await chmod('/probe', 0o700);
   process.setgid(1000); process.setuid(1000); if (process.getuid() !== 1000 || process.getgid() !== 1000) safeError('RUNTIME_PROBE_UID_INVALID');
   const { startLocalRuntime } = await import('/opt/exhibitos/scripts/local-runtime.mjs');
+  await originalMigrationState(environment, ready);
   runtime = await startLocalRuntime(environment);
   const health = await boundedJson('http://127.0.0.1:3000/api/v1/health');
   if (health.status !== 'ok' || health.service !== 'exhibitos-api' || health.version !== '0.1.0') safeError('RUNTIME_PROBE_HEALTH_INVALID');
@@ -43,8 +44,9 @@ try {
   });
   await runtime.close(); runtime = null;
   for (const [path, original, limits] of [['/probe/blobs', blobs, blobLimits], ['/probe/config', configuration, configLimits]]) { const current = await inventory(path, limits); if (JSON.stringify(content(current)) !== JSON.stringify(content(original))) safeError('RUNTIME_PROBE_FILES_CHANGED'); }
-  const logical = await boundedJson('http://127.0.0.1:5433/finish', { method: 'POST' });
-  if (logical.currentInventoryVerified !== true || logical.preflightVerified !== false || logical.updateExecuted !== false) safeError('RUNTIME_PROBE_INVENTORY_INVALID');
+  const logical = migrated ? await migratedLogical() : await boundedJson('http://127.0.0.1:5433/finish', { method: 'POST' });
+  if ((migrated ? logical.originalDataPreserved !== true : logical.currentInventoryVerified !== true) || logical.preflightVerified !== false || logical.updateExecuted !== false) safeError('RUNTIME_PROBE_INVENTORY_INVALID');
+  if (migrated) { const terminal = await boundedJson('http://127.0.0.1:5433/finish-migrated', { method: 'POST' }); if (terminal.completed !== true || terminal.manifestSha256 !== MIGRATION_INPUT.manifestSha256) safeError('RUNTIME_PROBE_INVENTORY_INVALID'); }
   result = { health, readiness, web: webResult, copiedBlobBytes: blobs.bytes, copiedConfigurationBytes: configuration.bytes, logical, uid: 1000, originalMountsReadOnly: true, preflightVerified: false, updateExecuted: false };
 } catch (error) { failure = /^[A-Z][A-Z0-9_]{0,79}$/.test(error?.message ?? '') ? error.message : 'RUNTIME_PROBE_TARGET_FAILED'; }
 finally { if (runtime) { try { await runtime.close(); } catch { failure = 'RUNTIME_PROBE_CLOSE_FAILED'; } } }

@@ -225,6 +225,7 @@ fn run_probe(
     ctx: &candidate_inventory::CandidateContext<'_>,
     maintenance: &str,
     expected: &source_database::DatabaseCopyProof,
+    migration: Option<&Value>,
 ) -> Result<Value> {
     let info: Value = serde_json::from_slice(&command(&["info", "--format", "{{json .}}"])?)
         .map_err(|_| err("ENGINE_OUTPUT_INVALID"))?;
@@ -238,8 +239,11 @@ fn run_probe(
     let copy = include_str!("source_database_copy.mjs")
         .replace("limit=2n*1024n*1024n*1024n", "limit=256n*1024n*1024n");
     let script = format!(
-        "const DATABASE_COPY={};\n{}",
+        "const DATABASE_COPY={};\n{}\n{}",
         serde_json::to_string(&copy).map_err(|_| err("UPDATE_RUNTIME_INPUT_INVALID"))?,
+        migration
+            .map(|m| format!("const MIGRATION_INPUT={m};"))
+            .unwrap_or_default(),
         include_str!("../../../scripts/runtime-probe/database.mjs")
     );
     let db = create(
@@ -316,8 +320,12 @@ fn run_probe(
         }
         let env = crate::checked_path(ctx.root, "runtime.env")?;
         let script = format!(
-            "{}\n{}",
+            "{}\n{}\n{}\n{}",
+            migration
+                .map(|m| format!("const MIGRATION_INPUT={m};"))
+                .unwrap_or_default(),
             include_str!("../../../scripts/runtime-probe/copy.mjs"),
+            include_str!("../../../scripts/runtime-probe/migration.mjs"),
             include_str!("../../../scripts/runtime-probe/target.mjs")
         );
         runtime = Some(create(
@@ -356,7 +364,7 @@ fn run_probe(
         let raw = engine(&["start".into(), "--attach".into(), target.id.clone()], 360)?;
         let proof: Value =
             serde_json::from_slice(&raw).map_err(|_| err("UPDATE_RUNTIME_PROBE_FAILED"))?;
-        validate_proof(&proof, ctx.plan)?;
+        validate_proof(&proof, ctx.plan, migration)?;
         for _ in 0..100 {
             if db.check()?["State"]["Running"] == false {
                 break;
@@ -388,7 +396,7 @@ fn run_probe(
     }
     attempt
 }
-fn validate_proof(v: &Value, p: &crate::update::Plan) -> Result<()> {
+fn validate_proof(v: &Value, p: &crate::update::Plan, migration: Option<&Value>) -> Result<()> {
     let valid = v["uid"] == 1000
         && v["originalMountsReadOnly"] == true
         && v["preflightVerified"] == false
@@ -419,9 +427,53 @@ fn validate_proof(v: &Value, p: &crate::update::Plan) -> Result<()> {
     if !valid {
         return Err(err("UPDATE_RUNTIME_PROBE_FAILED"));
     }
+    if let Some(input) = migration {
+        return validate_migrated_inventory(&v["logical"], p, input);
+    }
     let inventory: source_inventory::InventoryProof = serde_json::from_value(v["logical"].clone())
         .map_err(|_| err("UPDATE_RUNTIME_PROBE_FAILED"))?;
     source_inventory::matched_candidate(&inventory, p)
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MigratedInventory {
+    operation: String,
+    backup_id: String,
+    authenticated_manifest_sha256: String,
+    source_inventory_sha256: String,
+    source_schema_sha256: String,
+    target_schema_sha256: String,
+    target_migrations_sha256: String,
+    observed_at: String,
+    original_data_preserved: bool,
+    current_inventory_verified: bool,
+    configuration_verified: bool,
+    preflight_verified: bool,
+    update_executed: bool,
+}
+fn validate_migrated_inventory(v: &Value, p: &crate::update::Plan, input: &Value) -> Result<()> {
+    let proof: MigratedInventory = serde_json::from_value(v.clone())
+        .map_err(|_| err("UPDATE_RUNTIME_MIGRATION_UNQUALIFIED"))?;
+    if p.source_schema == p.target_schema
+        || proof.operation != "migrated-inventory-preserved"
+        || proof.backup_id != p.backup_id
+        || proof.authenticated_manifest_sha256 != p.backup_manifest
+        || proof.source_inventory_sha256 != p.source_inventory
+        || proof.source_schema_sha256 != p.source_schema
+        || proof.target_schema_sha256 != p.target_schema
+        || proof.target_migrations_sha256 != input["targetMigrationsSha256"]
+        || !hash_valid(&proof.target_migrations_sha256)
+        || proof.observed_at.is_empty()
+        || proof.observed_at.len() > 40
+        || !proof.original_data_preserved
+        || proof.current_inventory_verified
+        || proof.configuration_verified
+        || proof.preflight_verified
+        || proof.update_executed
+    {
+        return Err(err("UPDATE_RUNTIME_MIGRATION_UNQUALIFIED"));
+    }
+    Ok(())
 }
 impl ExecutionSession<'_> {
     pub(super) fn qualify_runtime_artifact(
@@ -456,6 +508,16 @@ impl ExecutionSession<'_> {
         maintenance: &str,
         oci: &PreparedOciReceipt,
     ) -> Result<Value> {
+        self.observe_runtime_at_inner(artifact, ctx, maintenance, oci, None)
+    }
+    fn observe_runtime_at_inner(
+        &self,
+        artifact: &mut PreparedArtifact,
+        ctx: &candidate_inventory::CandidateContext<'_>,
+        maintenance: &str,
+        oci: &PreparedOciReceipt,
+        migration: Option<&Value>,
+    ) -> Result<Value> {
         self.reverify_prepared_artifact(artifact)?;
         if crate::backup_creation::local_image("docker", maintenance)? != maintenance {
             return Err(err("IMAGE_INTEGRITY"));
@@ -475,7 +537,7 @@ impl ExecutionSession<'_> {
         )?;
         let source = ephemeral_inventory::observe_source(ctx, maintenance)?;
         let candidate = ephemeral_inventory::observe(ctx, maintenance)?;
-        let proof = run_probe(ctx, maintenance, &candidate.physical)?;
+        let proof = run_probe(ctx, maintenance, &candidate.physical, migration)?;
         let candidate_after = ephemeral_inventory::observe(ctx, maintenance)?;
         let source_after = ephemeral_inventory::observe_source(ctx, maintenance)?;
         if !candidate_inventory::copies_match(&source.physical, &source_after.physical)
@@ -519,11 +581,93 @@ impl ExecutionSession<'_> {
         }
         // This bounded initial development observer supports unchanged-schema releases only.
         let oci = self.qualify_runtime_artifact(artifact, python, source_commit)?;
+        self.with_runtime_compatibility_inner(artifact, maintenance, oci, None, work)
+    }
+    /// Native changed-schema observation only, never an admission/application permit.
+    /// Catalog input pins bytes; actual original/target SQL and data are observed afresh.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_migrated_runtime_compatibility<T>(
+        &self,
+        artifact: &mut PreparedArtifact,
+        python: &Path,
+        source_commit: &str,
+        maintenance: &str,
+        catalog: &Path,
+        catalog_sha256: &str,
+        acknowledged: bool,
+        work: impl FnOnce(&RuntimeCompatibility) -> Result<T>,
+    ) -> Result<T> {
+        if !acknowledged {
+            return Err(err("BACKUP_OPERATOR_ACK_REQUIRED"));
+        }
+        if !maintenance.strip_prefix("sha256:").is_some_and(hash_valid) {
+            return Err(err("BACKUP_IMAGE_INVALID"));
+        }
+        if artifact.plan.source_schema == artifact.plan.target_schema {
+            return Err(err("UPDATE_RUNTIME_MIGRATION_UNQUALIFIED"));
+        }
+        let mut held = super::migration_catalog::CatalogInput::read(
+            catalog,
+            catalog_sha256,
+            &artifact.plan.target_schema,
+        )?;
+        let oci = self.qualify_prepared_oci_with_catalog(
+            artifact,
+            python,
+            source_commit,
+            catalog,
+            catalog_sha256,
+            true,
+        )?;
+        let image = crate::backup_creation::inspected(
+            "docker",
+            &[
+                "image".into(),
+                "inspect".into(),
+                format!("sha256:{}", artifact.plan.target_image),
+            ],
+        )?;
+        if image["Id"] != format!("sha256:{}", artifact.plan.target_image)
+            || image["Os"] != "linux"
+            || image["Architecture"] != "arm64"
+            || image["RootFS"]["Layers"] != oci.proof["layerDiffIds"]
+        {
+            return Err(err("IMAGE_INTEGRITY"));
+        }
+        held.recheck()?;
+        let input = serde_json::json!({
+            "catalog": serde_json::from_str::<Value>(&held.text()?).map_err(|_|err("UPDATE_CATALOG_INVALID"))?,
+            "manifestSha256": artifact.plan.backup_manifest,
+            "sourceSchemaSha256": artifact.plan.source_schema,
+            "targetSchemaSha256": artifact.plan.target_schema,
+            "targetMigrationsSha256": oci.proof["targetMigrationsSha256"],
+        });
+        let result =
+            self.with_runtime_compatibility_inner(artifact, maintenance, oci, Some(input), work);
+        held.recheck()?;
+        result
+    }
+    fn with_runtime_compatibility_inner<T>(
+        &self,
+        artifact: &mut PreparedArtifact,
+        maintenance: &str,
+        oci: PreparedOciReceipt,
+        migration: Option<Value>,
+        work: impl FnOnce(&RuntimeCompatibility) -> Result<T>,
+    ) -> Result<T> {
         let artifact_cell = std::cell::RefCell::new(&mut *artifact);
         let mut outcome = None;
         self.inspect_restored_candidate_finalized(
             true,
-            |ctx| self.observe_runtime_at(&mut artifact_cell.borrow_mut(), ctx, maintenance, &oci),
+            |ctx| {
+                self.observe_runtime_at_inner(
+                    &mut artifact_cell.borrow_mut(),
+                    ctx,
+                    maintenance,
+                    &oci,
+                    migration.as_ref(),
+                )
+            },
             |ctx, receipt| {
                 self.reverify_prepared_artifact(&mut artifact_cell.borrow_mut())?;
                 let held = artifact_cell.borrow();
@@ -572,6 +716,150 @@ impl ExecutionSession<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn migrated_receipt_requires_original_data_and_exact_plan_catalog_identity() {
+        let p = crate::update::Plan {
+            operation_id: "operation".into(),
+            source_instance: "source".into(),
+            target_instance: "target".into(),
+            source_image: "a".repeat(64),
+            target_image: "b".repeat(64),
+            source_schema: "c".repeat(64),
+            target_schema: "d".repeat(64),
+            backup_id: "backup".into(),
+            backup_manifest: "e".repeat(64),
+            source_inventory: "f".repeat(64),
+            required_free_bytes: 1,
+        };
+        let input = serde_json::json!({"targetMigrationsSha256":"0".repeat(64)});
+        let valid = serde_json::json!({"operation":"migrated-inventory-preserved","backupId":p.backup_id,"authenticatedManifestSha256":p.backup_manifest,"sourceInventorySha256":p.source_inventory,"sourceSchemaSha256":p.source_schema,"targetSchemaSha256":p.target_schema,"targetMigrationsSha256":"0".repeat(64),"observedAt":"2026-10-06T00:00:00.000Z","originalDataPreserved":true,"currentInventoryVerified":false,"configurationVerified":false,"preflightVerified":false,"updateExecuted":false});
+        validate_migrated_inventory(&valid, &p, &input).unwrap();
+        for key in [
+            "backupId",
+            "authenticatedManifestSha256",
+            "sourceInventorySha256",
+            "sourceSchemaSha256",
+            "targetSchemaSha256",
+            "targetMigrationsSha256",
+            "operation",
+        ] {
+            let mut v = valid.clone();
+            v[key] = "foreign".into();
+            assert!(
+                validate_migrated_inventory(&v, &p, &input).is_err(),
+                "{key}"
+            );
+        }
+        for key in [
+            "originalDataPreserved",
+            "currentInventoryVerified",
+            "configurationVerified",
+            "preflightVerified",
+            "updateExecuted",
+        ] {
+            let mut v = valid.clone();
+            v[key] = (!v[key].as_bool().unwrap()).into();
+            assert!(
+                validate_migrated_inventory(&v, &p, &input).is_err(),
+                "{key}"
+            );
+        }
+        let mut foreign = valid.clone();
+        foreign["callerSuccess"] = true.into();
+        assert!(validate_migrated_inventory(&foreign, &p, &input).is_err());
+        let mut same = p.clone();
+        same.target_schema = same.source_schema.clone();
+        assert!(validate_migrated_inventory(&valid, &same, &input).is_err());
+    }
+    #[test]
+    #[ignore = "explicit retained stopped synthetic candidate and cached genuine migrated runtime; scratch tmpfs only"]
+    fn actual_native_migrated_probe_preserves_retained_candidate() {
+        let input =
+            |name| std::env::var(name).expect("explicit actual retained qualification input");
+        let fixture = fs::canonicalize(input("EXHIBITOS_MIGRATED_FIXTURE")).unwrap();
+        let profile = fixture.join("profile");
+        let store = super::super::super::Store::open(&profile, "default").unwrap();
+        assert_eq!(
+            store.intent().unwrap().update.stage(),
+            crate::update::Stage::RolledBack
+        );
+        let generation = store.current.generation;
+        let mut plan = store.intent().unwrap().update.plan().clone();
+        let id = store.intent().unwrap().update.restore_candidate().unwrap();
+        let root = profile.join("installations").join(id);
+        let target = LifecycleService::open_retry_diagnostics(root.clone()).unwrap();
+        let _lock = target.lock().unwrap();
+        plan.target_instance = id.to_owned();
+        plan.target_image = input("EXHIBITOS_MIGRATED_IMAGE");
+        plan.target_schema = input("EXHIBITOS_MIGRATED_SCHEMA");
+        let manifest_path = PathBuf::from(input("EXHIBITOS_MIGRATED_MANIFEST"));
+        let workspace = manifest_path.parent().unwrap().parent().unwrap();
+        let raw = fs::read(&manifest_path).unwrap();
+        assert_eq!(crate::digest(&raw), plan.backup_manifest);
+        let receipt: crate::restoration::RestorationReceipt =
+            crate::read_json(&workspace.join("receipt.json")).unwrap();
+        let manifest = target.manifest().unwrap();
+        let before = source_stopped::observe(&target, &plan).unwrap();
+        let ctx = candidate_inventory::CandidateContext {
+            target: &target,
+            root: &root,
+            workspace,
+            raw: &raw,
+            manifest_path: &manifest_path,
+            manifest: &manifest,
+            receipt: &receipt,
+            plan: &plan,
+            source_before: &before,
+            candidate_before: &before,
+        };
+        let maintenance = input("EXHIBITOS_MIGRATED_MAINTENANCE");
+        let catalog_path = PathBuf::from(input("EXHIBITOS_MIGRATED_CATALOG"));
+        let mut catalog = super::super::migration_catalog::CatalogInput::read(
+            &catalog_path,
+            &input("EXHIBITOS_MIGRATED_CATALOG_PIN"),
+            &plan.target_schema,
+        )
+        .unwrap();
+        let catalog_json: Value = serde_json::from_str(&catalog.text().unwrap()).unwrap();
+        let payload = serde_json::json!({"catalog":catalog_json,"manifestSha256":plan.backup_manifest,"sourceSchemaSha256":plan.source_schema,"targetSchemaSha256":plan.target_schema,"targetMigrationsSha256":input("EXHIBITOS_MIGRATED_SQL_PIN")});
+        let physical = ephemeral_inventory::observe(&ctx, &maintenance).unwrap();
+        let proof = run_probe(&ctx, &maintenance, &physical.physical, Some(&payload)).unwrap();
+        let after = ephemeral_inventory::observe(&ctx, &maintenance).unwrap();
+        assert!(candidate_inventory::copies_match(
+            &physical.physical,
+            &after.physical
+        ));
+        assert_eq!(
+            physical.inventory.inventory_sha256,
+            after.inventory.inventory_sha256
+        );
+        assert_eq!(fs::read(&manifest_path).unwrap(), raw);
+        catalog.recheck().unwrap();
+        assert_eq!(store.current.generation, generation);
+        source_stopped::observe(&target, &plan).unwrap();
+        let mut unchanged_plan = plan.clone();
+        unchanged_plan.target_schema = unchanged_plan.source_schema.clone();
+        unchanged_plan.target_image = before.runtime_image_sha256.clone();
+        let unchanged_ctx = candidate_inventory::CandidateContext {
+            plan: &unchanged_plan,
+            ..ctx
+        };
+        let unchanged = run_probe(&unchanged_ctx, &maintenance, &after.physical, None).unwrap();
+        let final_physical = ephemeral_inventory::observe(&unchanged_ctx, &maintenance).unwrap();
+        assert!(candidate_inventory::copies_match(
+            &after.physical,
+            &final_physical.physical
+        ));
+        assert_eq!(
+            after.inventory.inventory_sha256,
+            final_physical.inventory.inventory_sha256
+        );
+        source_stopped::observe(&target, &plan).unwrap();
+        let output = PathBuf::from(input("EXHIBITOS_MIGRATED_REPORT"));
+        let mut file = private_file(&output, true).unwrap();
+        file.write_all(&serde_json::to_vec_pretty(&serde_json::json!({"scope":"actual compiled native helper/copy/SQL/runtime/preservation component; not positive ExecutionSession/admission/activation","runtime":proof,"unchangedRuntimeRegression":unchanged,"before":physical,"after":after,"finalPhysical":final_physical,"originalManifestSha256":crate::digest(&raw),"authorityGenerationUnchanged":generation,"preflightVerified":false,"updateExecuted":false})).unwrap()).unwrap();
+        file.sync_all().unwrap();
+    }
     #[test]
     fn inspected_helper_refuses_writable_sources_and_privilege_network_or_budget_changes() {
         let h = Helper {
