@@ -2060,6 +2060,30 @@ mod tests {
         assert_eq!(registry.installations.len(), 3);
     }
     #[test]
+    fn planned_target_registration_materializes_only_reserved_id_and_refuses_reopen() {
+        let (p, store) = prepared("default");
+        registered(&p, SOURCE, "default");
+        let before = serde_json::to_vec(&store.intent()).unwrap();
+        let trust = serde_json::to_vec(&store.receipt()).unwrap();
+        assert_eq!(store.register_planned_update_target(false).unwrap_err().code,
+            "UPDATE_TARGET_ACK_REQUIRED");
+        let first = store.register_planned_update_target(true).unwrap();
+        assert_eq!(first.target_instance, store.intent().unwrap().update.plan().target_instance);
+        assert_eq!(first.active_instance, SOURCE);
+        assert!(!first.activated && !first.runtime_started);
+        let witness = Path::new(&first.target_path).join("retained-candidate");
+        fs::write(&witness, b"preserve").unwrap();
+        let registry = fs::read(p.join("installation-selection.json")).unwrap();
+        assert_eq!(store.register_planned_update_target(true).unwrap_err().code,
+            "UPDATE_IDENTITY_REUSED");
+        assert_eq!(fs::read(&witness).unwrap(), b"preserve");
+        assert_eq!(fs::read(p.join("installation-selection.json")).unwrap(), registry);
+        assert_eq!(serde_json::to_vec(&store.intent()).unwrap(), before);
+        assert_eq!(serde_json::to_vec(&store.receipt()).unwrap(), trust);
+        drop(store);
+        fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+    #[test]
     fn fresh_registration_refuses_source_mismatch_and_aliased_namespace() {
         let (p, store) = prepared("default");
         registered(&p, "e7980e6c-cbae-454f-906b-1f4924cc2a4e", "default");

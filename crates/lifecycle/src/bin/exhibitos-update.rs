@@ -867,12 +867,16 @@ fn run() -> Result<(), String> {
         );
         return Ok(());
     }
-    if a[1] == "register-update-target" {
+    if matches!(a[1].as_str(), "register-update-target" | "register-planned-update-target") {
         if a.len() != 8 || a[6] != "--preserve-active" {
             return Err(usage());
         }
         let store = Store::open(profile, installation).map_err(code)?;
-        let receipt = store.register_update_target(true).map_err(|e| e.code)?;
+        let receipt = if a[1] == "register-planned-update-target" {
+            store.register_planned_update_target(true)
+        } else {
+            store.register_update_target(true)
+        }.map_err(|e| e.code)?;
         println!(
             "{}",
             serde_json::to_string(&receipt).map_err(|_| "UPDATE_RECEIPT_INVALID")?

@@ -207,3 +207,8 @@ creating host paths; native qualification remains a separate gate.
 On Unix, `exhibitos-update checkpoint-existing-host --profile <absolute-profile> --installation default --key-file <external-key> --host-archive <retained-host.bin> --host-manifest <sha256> --destination <new-external-directory> --host-writers-stopped --apps-closed` authenticates the entire archive and matches current files, directories, bytes and modes under profile/root locks before and after creating a current trust archive. Only `trust.bin` and `pair-binding.bin` are published; the host remains at its retained path. Changed files, wrong key/manifest, unsafe paths or existing destination refuse publication.
 
 This creates current identity with `sourcePlanBound=false`; it does not inherit any historical source observation, restore host or authority, activate a runtime, or qualify preflight. Current native source/candidate observations and a source-bound finalization remain required before update execution. Do not substitute this receipt for those gates.
+
+
+### Register the current prepared target
+
+`exhibitos-update register-planned-update-target --profile <absolute-profile> --installation default --preserve-active --apps-closed` creates the exact recovery namespace reserved by the current Prepared plan. It takes no caller ID/path, preserves source selection/history, and starts no runtime. Missing intent, non-Prepared stage, source mismatch, an existing candidate/name or unsafe namespace refuse. Repeating it refuses without adopting or overwriting the earlier candidate. The older `register-update-target` continues to allocate a new random namespace for workflows that register before preparing a plan.
