@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Read-only qualification of a tagless Docker OCI export; never extracts/loads it."""
-import argparse,hashlib,json,re,tarfile,gzip,os,stat,sys
+import argparse,hashlib,json,re,tarfile,gzip,os,stat,sys,datetime
 from pathlib import Path,PurePosixPath
 if sys.flags.optimize:
  raise RuntimeError("qualification requires assertions enabled")
@@ -85,7 +85,13 @@ def qualify(a,f,source_manifest_bytes=None):
    reached=set();runnable=[];attestations=[]
    def visit(desc,depth=0):
     assert not desc.get('urls') and not desc.get('data')
-    assert set(desc.get('annotations',{})) <= {'vnd.docker.reference.digest','vnd.docker.reference.type'}
+    annotations=desc.get('annotations',{});assert set(annotations) <= {'vnd.docker.reference.digest','vnd.docker.reference.type','org.opencontainers.image.created'}
+    if 'org.opencontainers.image.created' in annotations:
+     # Standard OCI exporters add a descriptor timestamp. It is bounded format
+     # metadata only, never publisher provenance or image/tag authority.
+     created=annotations['org.opencontainers.image.created'];assert isinstance(created,str) and re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z',created)
+     datetime.datetime.fromisoformat(created)
+     assert desc.get('platform')=={'architecture':'arm64','os':'linux'} and set(annotations)=={'org.opencontainers.image.created'}
     assert depth<=8 and re.fullmatch(r'sha256:[a-f0-9]{64}',desc['digest'])
     name='blobs/sha256/'+desc['digest'][7:];assert records[name].size==desc['size'];reached.add(name)
     value=read(name);assert not value.get('annotations')
@@ -153,14 +159,17 @@ def qualify(a,f,source_manifest_bytes=None):
        assert entry.isfile() and re.fullmatch(r'[0-9][a-zA-Z0-9_.-]*\.sql',relative)
        migrations[relative]=hashlib.file_digest(tar.extractfile(entry),'sha256').hexdigest()
     del parts
-   compatibility=read('manifest.json');assert len(compatibility)==1 and compatibility[0].get('RepoTags') in (None,[])
-   assert compatibility[0]['Config']==cfgname
-   assert compatibility[0]['Layers']==['blobs/sha256/'+layer['digest'][7:] for layer in layers]
-   assert set(compatibility[0])=={'Config','RepoTags','Layers'}
+   # manifest.json is Docker compatibility metadata, absent from standard OCI
+   # exports. All executable OCI descriptors/blobs/diff IDs above remain required.
+   if 'manifest.json' in records:
+    compatibility=read('manifest.json');assert len(compatibility)==1 and compatibility[0].get('RepoTags') in (None,[])
+    assert compatibility[0]['Config']==cfgname
+    assert compatibility[0]['Layers']==['blobs/sha256/'+layer['digest'][7:] for layer in layers]
+    assert set(compatibility[0])=={'Config','RepoTags','Layers'}
    current=[{'name':k,'sha256':v} for k,v in sorted(migrations.items())]
    source_schema,target_schema,mode,migration_hash=migration_binding(source['inventory'],current,target,target_schema)
   after=a.archive.stat();assert (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)==(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns)
-  report={'format':1,'artifactBytes':before.st_size,'artifactSha256':artifact,'runtimeImageSha256':a.image[7:],'target':'linux-arm64','version':labels['org.opencontainers.image.version'],'sourceCommit':a.source_commit,'sourceSchemaSha256':source_schema,'targetSchemaSha256':target_schema,'migrationMode':mode,'sourceManifestSha256':source_manifest_hash,'targetInventorySha256':target_inventory_hash,'targetMigrationsSha256':migration_hash,'embeddedMigrations':current,'ociBlobs':len(reached),'runtimeConfigSha256':cfgname.split('/')[-1],'layerDiffIds':cfg['rootfs']['diff_ids'],'limits':['read-only genuine artifact qualification, no load/start/migration/health/rollback','embedded migration binding is not actual catalog observation, migration compatibility, data preservation or rollback proof','target inventory/schema hash must originate from trusted independent catalog qualification and signed release; caller-selected hashes are not authentication','BuildKit attestation metadata has empty subjects; no authenticated source provenance claim','development source labels, not production signing authority or Windows/amd64 qualification']}
+  report={'format':1,'artifactBytes':before.st_size,'exportLayout':'docker-compatible-oci' if 'manifest.json' in records else 'standard-oci','artifactSha256':artifact,'runtimeImageSha256':a.image[7:],'target':'linux-arm64','version':labels['org.opencontainers.image.version'],'sourceCommit':a.source_commit,'sourceSchemaSha256':source_schema,'targetSchemaSha256':target_schema,'migrationMode':mode,'sourceManifestSha256':source_manifest_hash,'targetInventorySha256':target_inventory_hash,'targetMigrationsSha256':migration_hash,'embeddedMigrations':current,'ociBlobs':len(reached),'runtimeConfigSha256':cfgname.split('/')[-1],'layerDiffIds':cfg['rootfs']['diff_ids'],'limits':['read-only genuine artifact qualification, no load/start/migration/health/rollback','embedded migration binding is not actual catalog observation, migration compatibility, data preservation or rollback proof','target inventory/schema hash must originate from trusted independent catalog qualification and signed release; caller-selected hashes are not authentication','BuildKit attestation metadata has empty subjects; no authenticated source provenance claim','development source labels, not production signing authority or Windows/amd64 qualification']}
   return report
 
 def main():

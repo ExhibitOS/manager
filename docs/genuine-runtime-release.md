@@ -95,3 +95,13 @@ compiled-in ENTRY text is exercised in an isolated Python child with both archiv
 and manifest descriptors retained, including refusal of a mismatched manifest
 pin. The outer Rust execution/session and changed-schema admission gates still
 require their own qualification.
+
+## Standard OCI exports
+
+Tagless standard OCI exports may omit Docker `manifest.json`. The inspector
+continues to verify the complete OCI descriptor graph, every blob, layer diff ID,
+configuration, architecture, source label, command and SQL identity. If Docker
+compatibility metadata is present, its exact config/layers and absence of tags
+remain mandatory. Only a valid bounded UTC creation timestamp is accepted on a
+standard executable descriptor; it is metadata, not publisher provenance. Ref-name
+annotations, malformed dates, tags and unrelated descriptor annotations refuse.
