@@ -102,16 +102,11 @@ impl Store {
         let session = profile_backup::anchored_session(&self.profile, anchor, true)?;
         let (registry, bytes) = installations::load(&self.profile)?
             .ok_or_else(|| crate::err("UPDATE_SOURCE_UNREGISTERED"))?;
+        let bound_source = self.bound_source_id(&registry)?;
         let entry = registry
             .installations
             .iter()
-            .find(|e| {
-                if self.installation == "default" {
-                    e.kind == "default"
-                } else {
-                    e.id == self.installation
-                }
-            })
+            .find(|e| e.id == bound_source)
             .ok_or_else(|| crate::err("UPDATE_SOURCE_UNREGISTERED"))?;
         let intent = self
             .intent()
@@ -292,6 +287,24 @@ impl ExecutionSession<'_> {
             || bytes != self.registry
         {
             return Err(crate::err("UPDATE_SOURCE_CHANGED"));
+        }
+        Ok(())
+    }
+    #[cfg(unix)]
+    fn require_selected_source(&self) -> crate::Result<()> {
+        self.check()?;
+        let (registry, _) = installations::load(&self.store.profile)?
+            .ok_or_else(|| crate::err("UPDATE_SOURCE_UNREGISTERED"))?;
+        let bound = self.store.bound_source_id(&registry)?;
+        let source = &self
+            .store
+            .intent()
+            .ok_or_else(|| crate::err("UPDATE_INTENT_MISSING"))?
+            .update
+            .plan()
+            .source_instance;
+        if registry.active_id != bound || source != &bound {
+            return Err(crate::err("UPDATE_SELECTION_AUTHORITY_MISMATCH"));
         }
         Ok(())
     }
@@ -1467,6 +1480,157 @@ mod tests {
         };
         installations::new_directory(&root).unwrap();
         root
+    }
+    fn completed_selection(store: &mut Store) -> crate::update::Plan {
+        let intent = store.intent().unwrap().clone();
+        let plan = intent.update.plan().clone();
+        let mut verified = store
+            .verify_for_preparation(intent.envelope.as_bytes(), 21)
+            .unwrap();
+        verified
+            .verify_artifact(&mut b"fixture".as_slice())
+            .unwrap();
+        store
+            .begin_update(
+                crate::update::Preflight {
+                    plan: plan.clone(),
+                    signature_verified: false,
+                    artifact_verified: false,
+                    compatibility_verified: true,
+                    backup_restore_verified: true,
+                    current_source_matches_backup: true,
+                    available_free_bytes: 4096,
+                    image_only_rollback_verified: false,
+                },
+                &verified,
+                21,
+            )
+            .unwrap();
+        store
+            .application_finished(&plan.operation_id, store.receipt().generation, 22)
+            .unwrap();
+        store
+            .observe_health(
+                &plan.operation_id,
+                store.receipt().generation,
+                crate::update::HealthReceipt {
+                    operation_id: plan.operation_id.clone(),
+                    instance_id: plan.target_instance.clone(),
+                    image: plan.target_image.clone(),
+                    schema: plan.target_schema.clone(),
+                    ready: true,
+                },
+                23,
+            )
+            .unwrap();
+        plan
+    }
+    #[test]
+    fn stable_authority_selection_survives_completion_release_and_reopen_without_new_policy() {
+        let (p, mut store) = prepared("default");
+        let target = store
+            .intent()
+            .unwrap()
+            .update
+            .plan()
+            .target_instance
+            .clone();
+        registered(&p, &target, "recovery");
+        let (mut registry, _) = installations::load(&p).unwrap().unwrap();
+        assert_eq!(store.bound_source_id(&registry).unwrap(), SOURCE);
+        let plan = completed_selection(&mut store);
+        assert_eq!(store.bound_source_id(&registry).unwrap(), target);
+        // Registry disagreement is never silently adopted as a new authority.
+        assert_eq!(
+            store.execution().err().unwrap().code,
+            "UPDATE_SOURCE_MISMATCH"
+        );
+        registry.active_id = target.clone();
+        installations::save(&p, &registry, None).unwrap();
+        let session = store.execution().err().unwrap();
+        assert_eq!(session.code, "UPDATE_SOURCE_MISMATCH"); // completed plan still names original
+        store
+            .release_completed(&plan.operation_id, store.receipt().generation, 24)
+            .unwrap();
+        let root = store.root.clone();
+        let floors = (
+            store.current.policy.minimum_sequence,
+            store.current.policy.minimum_issued_at,
+        );
+        let head = store.current_sha256.clone();
+        let generation = store.current.generation;
+        drop(store);
+        let reopened = Store::open(&p, "default").unwrap();
+        assert_eq!(reopened.root, root);
+        assert_eq!(reopened.current_sha256, head);
+        assert_eq!(reopened.current.generation, generation);
+        assert_eq!(
+            (
+                reopened.current.policy.minimum_sequence,
+                reopened.current.policy.minimum_issued_at
+            ),
+            floors
+        );
+        assert!(reopened.used_instances.contains(&target));
+        assert_eq!(reopened.bound_source_id(&registry).unwrap(), target);
+        let candidate_scope =
+            hash(format!("ExhibitOS-release-trust-v1\0{}\0{target}", p.display()).as_bytes());
+        assert!(
+            !p.parent()
+                .unwrap()
+                .join(format!(".exhibitos-release-trust-{candidate_scope}"))
+                .exists()
+        );
+        drop(reopened);
+        fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+    #[test]
+    fn stable_authority_selection_rejects_uncompleted_selected_candidate_without_mutation() {
+        let (p, mut store) = prepared("default");
+        let target = store
+            .intent()
+            .unwrap()
+            .update
+            .plan()
+            .target_instance
+            .clone();
+        registered(&p, &target, "recovery");
+        installations::new_directory(&p.join("local-runtime")).unwrap();
+        let (mut registry, _) = installations::load(&p).unwrap().unwrap();
+        registry.active_id = target.clone();
+        installations::save(&p, &registry, None).unwrap();
+        let head = store.current_sha256.clone();
+        assert_eq!(store.bound_source_id(&registry).unwrap(), SOURCE);
+        let diagnostic = store.execution().unwrap();
+        assert_eq!(
+            diagnostic.require_selected_source().unwrap_err().code,
+            "UPDATE_SELECTION_AUTHORITY_MISMATCH"
+        );
+        drop(diagnostic);
+        assert_eq!(store.current_sha256, head);
+        assert_eq!(
+            store.intent().unwrap().update.stage(),
+            crate::update::Stage::Prepared
+        );
+        drop(store);
+        fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+    #[test]
+    fn stable_authority_selection_rechecks_historical_record_bytes_of_an_open_store() {
+        let (p, store) = prepared("default");
+        registered(&p, SOURCE, "default");
+        let (registry, _) = installations::load(&p).unwrap().unwrap();
+        let path = store.root.join("00000000000000000001.json");
+        let original = fs::read(&path).unwrap();
+        let mut changed = original.clone();
+        changed.push(b' ');
+        fs::write(&path, &changed).unwrap();
+        assert!(store.bound_source_id(&registry).is_err());
+        assert_eq!(fs::read(&path).unwrap(), changed);
+        fs::write(&path, &original).unwrap();
+        assert_eq!(store.bound_source_id(&registry).unwrap(), SOURCE);
+        drop(store);
+        fs::remove_dir_all(p.parent().unwrap()).unwrap();
     }
     #[test]
     fn owned_preflight_without_independent_authority_never_extracts_or_transitions() {
