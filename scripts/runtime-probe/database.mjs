@@ -6,7 +6,7 @@ import { createServer } from 'node:http';
 import { main } from '/opt/exhibitos/scripts/service-backup.mjs';
 const MIGRATED = typeof MIGRATION_INPUT !== 'undefined';
 const delay = ms => new Promise(resolve => { const timer = setTimeout(resolve, ms); timer.unref(); });
-const socket = '/tmp/exhibitos-probe-pg'; let pg, server, pgExit, pgEnded = false, finished = false, failure;
+const socket = '/tmp/exhibitos-probe-pg'; let pg, server, pgExit, pgEnded = false, finished = false, failure, migratedObservation;
 const copyResult = spawnSync(process.execPath, ['--input-type=module', '-e', DATABASE_COPY], { encoding: 'utf8', timeout: 270000, maxBuffer: 65536 });
 if (copyResult.status !== 0 || copyResult.error) throw Error('RUNTIME_PROBE_COPY_FAILED');
 const physical = JSON.parse(copyResult.stdout);
@@ -22,8 +22,31 @@ try {
       request.resume(); reply.setHeader('content-type', 'application/json');
       if (request.method === 'GET' && request.url === '/ready') { reply.end(JSON.stringify({ready:true,physical})); return; }
       if (MIGRATED && request.method === 'GET' && request.url === '/manifest' && !finished) { reply.end(await readFile('/manifest.json')); return; }
-      if (MIGRATED && request.method === 'POST' && request.url === '/finish-migrated' && !finished) { finished=true;reply.end(JSON.stringify({completed:true,manifestSha256:process.env.EXHIBITOS_MANIFEST_SHA256}));resolve();return; }
-      if (request.method !== 'POST' || request.url !== '/finish' || finished) { reply.writeHead(403); reply.end('{"code":"RUNTIME_PROBE_REQUEST_DENIED"}'); return; }
+      if (MIGRATED && request.method === 'POST' && request.url === '/finish-migrated' && !finished) {
+        finished = true;
+        try {
+          // Read the post-migration DB through separately qualified maintenance
+          // code. Runtime cannot supply its own preservation success receipt.
+          const { createRequire } = await import('node:module');
+          const { Pool } = createRequire('/opt/exhibitos/package.json')('pg');
+          const { verifyMigratedInventory, collectServiceInventory, FileBlobStore } = await import('/opt/exhibitos/packages/storage/dist/index.js');
+          const pool = new Pool({ connectionString: 'postgresql://exhibitos@localhost/exhibitos?host=' + encodeURIComponent(socket), max: 2, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+          try {
+            migratedObservation = await verifyMigratedInventory({
+              pool, manifestBytes: await readFile('/manifest.json'),
+              expectedManifestSha256: process.env.EXHIBITOS_MANIFEST_SHA256,
+              snapshotSystemIdentifier: physical.systemIdentifier,
+              targetSchemaSha256: MIGRATION_INPUT.targetSchemaSha256,
+              targetMigrations: MIGRATION_INPUT.catalog.migrations,
+              snapshot: c => collectServiceInventory(c, new FileBlobStore('/blobs'), { migrationCatalog: MIGRATION_INPUT.catalog.migrations }),
+            });
+          } finally { await pool.end(); }
+          if (migratedObservation.originalDataPreserved !== true || migratedObservation.preflightVerified !== false || migratedObservation.updateExecuted !== false) throw Error('RUNTIME_PROBE_INVENTORY_INVALID');
+          reply.end(JSON.stringify({ completed: true, manifestSha256: process.env.EXHIBITOS_MANIFEST_SHA256, logical: migratedObservation })); resolve();
+        } catch { failure = 'RUNTIME_PROBE_INVENTORY_CHANGED'; reply.writeHead(409); reply.end(JSON.stringify({ code: failure })); resolve(); }
+        return;
+      }
+      if (MIGRATED || request.method !== 'POST' || request.url !== '/finish' || finished) { reply.writeHead(403); reply.end('{"code":"RUNTIME_PROBE_REQUEST_DENIED"}'); return; }
       finished = true;
       try {
         const result = await main(['check-restored-inventory', '--manifest-file', '/manifest.json', '--manifest-sha256', process.env.EXHIBITOS_MANIFEST_SHA256, '--quiesced', '--snapshot-system-identifier', physical.systemIdentifier], { DATABASE_URL: 'postgresql://exhibitos@localhost/exhibitos?host=' + encodeURIComponent(socket), BLOB_BACKEND: 'file', BLOB_ROOT: '/blobs' });
@@ -40,4 +63,4 @@ finally {
   server?.closeAllConnections(); if (server) await new Promise(resolve => server.close(resolve));
   if (pg && !pgEnded) { pg.kill('SIGINT'); const code = await Promise.race([pgExit, delay(20000).then(() => null)]); if (code !== 0) { failure = 'RUNTIME_PROBE_DATABASE_STOP_FAILED'; if (!pgEnded) { pg.kill('SIGKILL'); await pgExit; } } } else if (pg) failure ??= 'RUNTIME_PROBE_DATABASE_STOP_FAILED';
 }
-if (failure) { console.error(failure); process.exitCode = 1; } else console.log(JSON.stringify({ completed: true, physical, preflightVerified: false, updateExecuted: false }));
+if (failure) { console.error(failure); process.exitCode = 1; } else console.log(JSON.stringify({ completed: true, physical, ...(MIGRATED ? { logical: migratedObservation } : {}), preflightVerified: false, updateExecuted: false }));

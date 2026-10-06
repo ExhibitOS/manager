@@ -362,7 +362,7 @@ fn run_probe(
             .as_ref()
             .ok_or_else(|| err("UPDATE_RUNTIME_PROBE_FAILED"))?;
         let raw = engine(&["start".into(), "--attach".into(), target.id.clone()], 360)?;
-        let proof: Value =
+        let mut proof: Value =
             serde_json::from_slice(&raw).map_err(|_| err("UPDATE_RUNTIME_PROBE_FAILED"))?;
         validate_proof(&proof, ctx.plan, migration)?;
         for _ in 0..100 {
@@ -383,6 +383,7 @@ fn run_probe(
         {
             return Err(err("UPDATE_RUNTIME_PROBE_FAILED"));
         }
+        trusted_terminal_observation(&mut proof, &done, ctx.plan, migration)?;
         target.retire()?;
         db.retire()?;
         Ok(proof)
@@ -395,6 +396,19 @@ fn run_probe(
         db.stop()?;
     }
     attempt
+}
+// Runtime health claims cannot replace independently observed migrated DB bytes.
+fn trusted_terminal_observation(
+    proof: &mut Value,
+    done: &Value,
+    plan: &crate::update::Plan,
+    migration: Option<&Value>,
+) -> Result<()> {
+    if let Some(input) = migration {
+        validate_migrated_inventory(&done["logical"], plan, input)?;
+        proof["logical"] = done["logical"].clone();
+    }
+    Ok(())
 }
 fn validate_proof(v: &Value, p: &crate::update::Plan, migration: Option<&Value>) -> Result<()> {
     let valid = v["uid"] == 1000
@@ -755,6 +769,19 @@ mod tests {
         let input = serde_json::json!({"targetMigrationsSha256":"0".repeat(64)});
         let valid = serde_json::json!({"operation":"migrated-inventory-preserved","backupId":p.backup_id,"authenticatedManifestSha256":p.backup_manifest,"sourceInventorySha256":p.source_inventory,"sourceSchemaSha256":p.source_schema,"targetSchemaSha256":p.target_schema,"targetMigrationsSha256":"0".repeat(64),"observedAt":"2026-10-06T00:00:00.000Z","originalDataPreserved":true,"currentInventoryVerified":false,"configurationVerified":false,"preflightVerified":false,"updateExecuted":false});
         validate_migrated_inventory(&valid, &p, &input).unwrap();
+        // Even a plausible Runtime success cannot stand in for the separate
+        // maintenance reader's terminal observation or grant update authority.
+        let mut runtime = serde_json::json!({"logical": valid.clone()});
+        assert!(trusted_terminal_observation(&mut runtime, &serde_json::json!({"completed":true}), &p, Some(&input)).is_err());
+        for field in ["originalDataPreserved", "preflightVerified", "updateExecuted"] {
+            let mut forged = valid.clone();
+            forged[field] = Value::Bool(field != "originalDataPreserved");
+            assert!(trusted_terminal_observation(&mut runtime, &serde_json::json!({"logical":forged}), &p, Some(&input)).is_err());
+        }
+        let mut fresh = valid.clone(); fresh["observedAt"] = Value::String("2026-10-06T08:00:00.000Z".into());
+        trusted_terminal_observation(&mut runtime, &serde_json::json!({"logical":fresh}), &p, Some(&input)).unwrap();
+        assert_eq!(runtime["logical"], fresh);
+
         for key in [
             "backupId",
             "authenticatedManifestSha256",
@@ -1104,7 +1131,7 @@ mod tests {
             assert_eq!(fs::read(original.join(name)).unwrap(), raw);
             assert_eq!(fs::read(source.join(name)).unwrap(), raw);
         }
-        crate::restoration::private_bytes(&root.join("reopened-session-report.json"),&serde_json::to_vec_pretty(&serde_json::json!({"status":"PASS","scope":"actual reopened public signed Prepared ExecutionSession; no admission/application/activation","receipt":receipt,"plan":plan,"authorityGenerationUnchanged":generation,"preparedIntentUnchanged":true,"originalSelectionPreserved":true,"originalFiveFilesPreserved":true,"preflightVerified":false,"updateExecuted":false})).unwrap()).unwrap();
+        crate::restoration::private_bytes(&root.join(format!("reopened-session-report-{}.json", uuid::Uuid::new_v4())),&serde_json::to_vec_pretty(&serde_json::json!({"status":"PASS","scope":"actual reopened public signed Prepared ExecutionSession; no admission/application/activation","receipt":receipt,"plan":plan,"authorityGenerationUnchanged":generation,"preparedIntentUnchanged":true,"originalSelectionPreserved":true,"originalFiveFilesPreserved":true,"preflightVerified":false,"updateExecuted":false})).unwrap()).unwrap();
     }
     #[test]
     fn inspected_helper_refuses_writable_sources_and_privilege_network_or_budget_changes() {
