@@ -13,7 +13,6 @@ fn ready_row(
         || row["State"]["Running"] != true
         || row["State"]["Paused"] != false
         || row["State"]["Restarting"] != false
-        || row["State"]["Health"]["Status"] != "healthy"
         || l["com.docker.compose.service"] != service
         || l["com.docker.compose.project"] != m.project_name
         || l["com.exhibitos.bundle"] != m.bundle_id
@@ -22,7 +21,26 @@ fn ready_row(
     {
         return Err(err("UPDATE_ROLLBACK_HEALTH_FAILED"));
     }
-    Ok(())
+    match row["State"]["Health"]["Status"].as_str() {
+        Some("healthy")=>Ok(()),
+        Some("starting")=>Err(err("UPDATE_ROLLBACK_HEALTH_STARTING")),
+        _=>Err(err("UPDATE_ROLLBACK_HEALTH_FAILED")),
+    }
+}
+/// Wait only for native startup; every attempt keeps its caller's ownership fences.
+fn await_startup<T>(mut check: impl FnMut()->LifecycleResult<()>,mut observe: impl FnMut()->LifecycleResult<T>,budget:std::time::Duration)->LifecycleResult<T> {
+    let deadline=std::time::Instant::now()+budget;
+    loop {
+        check()?;
+        match observe() {
+            Ok(value)=>return Ok(value),
+            Err(error) if error.code=="UPDATE_ROLLBACK_HEALTH_STARTING"=>{
+                if std::time::Instant::now()>=deadline {return Err(err("UPDATE_ROLLBACK_HEALTH_FAILED"));}
+                std::thread::sleep(std::time::Duration::from_millis(250).min(deadline.saturating_duration_since(std::time::Instant::now())));
+            },
+            Err(error)=>return Err(error),
+        }
+    }
 }
 fn volumes(row: &serde_json::Value, expected: &[&str]) -> LifecycleResult<Vec<String>> {
     let mounts = row["Mounts"]
@@ -72,8 +90,8 @@ pub(super) fn pair(
     {
         return Err(err("UPDATE_ROLLBACK_HEALTH_FAILED"));
     }
-    ready_row(&a, m, "platform", &pin)?;
-    ready_row(&d, m, "database", &database[0].reference)?;
+    let states=[ready_row(&a,m,"platform",&pin),ready_row(&d,m,"database",&database[0].reference)];
+    if let Some(error)=states.iter().filter_map(|s|s.as_ref().err()).find(|e|e.code!="UPDATE_ROLLBACK_HEALTH_STARTING") {return Err(err(&error.code));}
     let mut names = volumes(&a, &["/data/blobs", "/data/config"])?;
     names.extend(volumes(&d, &["/var/lib/postgresql"])?);
     if names
@@ -119,6 +137,8 @@ pub(super) fn pair(
             }
         }
     }
+    // Starting may be waited for only after exact mounts and foreign-writer checks.
+    for state in states {state?;}
     if !crate::readiness(m).ready {
         return Err(err("UPDATE_ROLLBACK_HEALTH_FAILED"));
     }
@@ -298,7 +318,7 @@ impl Store {
                     return Err(err("UPDATE_TARGET_CHANGED"));
                 }
             }
-            let before = pair(target, &m, &plan)?;
+            let before = await_startup(||check(store,selection),||pair(target,&m,&plan),std::time::Duration::from_secs(90))?;
             owned_execution::check_rollback_configuration(maintenance_image, &before.3[1], &raw)?;
             let manifest_path = workspace.join("authenticated/manifest.json");
             let mut input = private_file(&manifest_path, false).map_err(|e| err(e.code()))?;
@@ -390,6 +410,30 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rollback_native_startup_never_waits_for_wrong_identity_or_unhealthy_state() {
+        let m=crate::tests::manifest_for_detection();
+        let row=serde_json::json!({"Image":"sha256:expected","State":{"Running":true,"Paused":false,"Restarting":false,"Health":{"Status":"starting"}},"Config":{"Labels":{"com.docker.compose.service":"platform","com.docker.compose.project":m.project_name,"com.exhibitos.bundle":m.bundle_id,"com.exhibitos.project":m.project_name,"com.exhibitos.schema":m.schema_version}}});
+        assert_eq!(ready_row(&row,&m,"platform","sha256:expected").unwrap_err().code,"UPDATE_ROLLBACK_HEALTH_STARTING");
+        let mut healthy=row.clone();healthy["State"]["Health"]["Status"]="healthy".into();ready_row(&healthy,&m,"platform","sha256:expected").unwrap();
+        for (path,value) in [("/Image",serde_json::json!("wrong")),("/State/Running",serde_json::json!(false)),("/State/Restarting",serde_json::json!(true)),("/Config/Labels/com.exhibitos.bundle",serde_json::json!("wrong")),("/State/Health/Status",serde_json::json!("unhealthy")),("/State/Health/Status",serde_json::Value::Null)] {
+            let mut changed=row.clone();*changed.pointer_mut(path).unwrap()=value;assert_eq!(ready_row(&changed,&m,"platform","sha256:expected").unwrap_err().code,"UPDATE_ROLLBACK_HEALTH_FAILED");
+        }
+    }
+    #[test]
+    fn rollback_startup_wait_preserves_fences_and_expires_without_completion() {
+        use std::cell::Cell;
+        let observed=Cell::new(0);
+        let failure=await_startup(||Err(err("UPDATE_ROLLBACK_CHANGED")),||{observed.set(observed.get()+1);Ok(())},std::time::Duration::from_secs(1));
+        assert_eq!(failure.unwrap_err().code,"UPDATE_ROLLBACK_CHANGED");assert_eq!(observed.get(),0);
+        let failed:LifecycleResult<()>=await_startup(||Ok(()),||{observed.set(observed.get()+1);Err(err("UPDATE_ROLLBACK_HEALTH_FAILED"))},std::time::Duration::from_secs(1));
+        assert_eq!(failed.unwrap_err().code,"UPDATE_ROLLBACK_HEALTH_FAILED");assert_eq!(observed.get(),1);
+        let expired:LifecycleResult<()>=await_startup(||Ok(()),||Err(err("UPDATE_ROLLBACK_HEALTH_STARTING")),std::time::Duration::ZERO);
+        assert_eq!(expired.unwrap_err().code,"UPDATE_ROLLBACK_HEALTH_FAILED");
+        let fences=Cell::new(0);let tries=Cell::new(0);
+        let ready=await_startup(||{fences.set(fences.get()+1);Ok(())},||{tries.set(tries.get()+1);if tries.get()==1 {Err(err("UPDATE_ROLLBACK_HEALTH_STARTING"))}else{Ok("native-ready")}},std::time::Duration::from_secs(1));
+        assert_eq!(ready.unwrap(),"native-ready");assert_eq!(fences.get(),2);
+    }
     #[test]
     fn runtime_mounts_refuse_aliases_binds_and_unexpected_writable_scope() {
         let row = serde_json::json!({"Mounts":[{"Destination":"/data/blobs","Type":"volume","RW":true,"Name":"owned"}]});

@@ -210,7 +210,7 @@ impl ExecutionSession<'_> {
                     service.check_restoration_guard(&guard)?;
                     match super::super::rollback_runtime::pair(&service,&m,ctx.plan) {
                         Ok(_)=>break,
-                        Err(e) if e.code=="UPDATE_ROLLBACK_HEALTH_FAILED" && std::time::Instant::now()<deadline=>std::thread::sleep(std::time::Duration::from_millis(250)),
+                        Err(e) if matches!(e.code.as_str(),"UPDATE_ROLLBACK_HEALTH_FAILED"|"UPDATE_ROLLBACK_HEALTH_STARTING") && std::time::Instant::now()<deadline=>std::thread::sleep(std::time::Duration::from_millis(250)),
                         Err(e)=>return Err(e),
                     }
                 }

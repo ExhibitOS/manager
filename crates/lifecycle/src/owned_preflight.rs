@@ -445,4 +445,46 @@ mod tests {
   outcome.unwrap();assert!(cold_completed);assert_eq!(stop_result,Some(true));
  }
 
+ #[test]
+ #[ignore="explicit same small development fixture; reuse completed original candidate at authority15, native startup wait/activation/selection/cold; no archive copy or update replay"]
+ fn actual_reused_original_candidate_waits_for_native_health_and_completes_rollback() {
+  use std::os::unix::fs::PermissionsExt;
+  let input:Value=serde_json::from_slice(&fs::read(std::env::var("EXHIBITOS_MIGRATED_PERMIT_INPUT").unwrap()).unwrap()).unwrap();
+  let root=fs::canonicalize(PathBuf::from(input["root"].as_str().unwrap())).unwrap();
+  assert_eq!(root.file_name().unwrap(),"exhibitos-release-trust-817e82d0-bfe4-413e-bb1c-d8c252401d8a");
+  let profile=root.join("profile");let mut store=crate::signed_release::trust::Store::open(&profile,"default").unwrap();
+  let signing=ed25519_dalek::SigningKey::from_bytes(&[31;32]);let public=signing.verifying_key().to_bytes().iter().map(|b|format!("{b:02x}")).collect::<String>();assert_eq!(store.current.policy.public_keys,vec![public]);
+  assert_eq!(store.current.generation,15);assert_eq!(store.intent().unwrap().update.stage(),crate::update::Stage::RecoveryRequired);
+  let plan=store.intent().unwrap().update.plan().clone();let candidate=store.intent().unwrap().update.interrupted_restoration().unwrap().candidate_id.clone();
+  assert_eq!(candidate,"c412e389-ae8e-4280-8341-b43e1f98f936");assert_eq!(require_executable_schema(&plan).unwrap_err().code,"UPDATE_RUNTIME_MIGRATION_UNQUALIFIED");
+  assert_eq!(installations::load(&profile).unwrap().unwrap().0.active_id,plan.source_instance);
+  let authority=store.root.clone();let history=(0..=15).filter_map(|g|{let p=authority.join(format!("{g:020}.json"));fs::read(&p).ok().map(|b|(p,b))}).collect::<Vec<_>>();
+  let source=profile.join("local-runtime");let names=["installed.json","engine.json","runtime.env","bundle/manifest.json","bundle/compose.yaml"];
+  let original=names.iter().map(|n|{let p=source.join(n);(*n,fs::read(&p).unwrap(),fs::metadata(&p).unwrap().permissions().mode())}).collect::<Vec<_>>();
+  let path=profile.join("installations").join(&candidate);let service=crate::LifecycleService::open_retry_diagnostics(path.clone()).unwrap();let manifest=service.manifest().unwrap();
+  assert_eq!(manifest.project_name,"exhibitos-28da56bf-ff97-49d9-a986-eaa5a8499e18");
+  let job=service.restoration_status().unwrap().unwrap();assert_eq!(job.state,"completed");
+  let compose=crate::installation_backup::source_bytes(&path,"bundle/compose.yaml",1048576,true).unwrap();
+  let receipt:crate::restoration::RestorationReceipt=crate::read_json(&path.join(format!("restore-{}/receipt.json",job.id))).unwrap();
+  assert_eq!(crate::restoration_network::receipt_compose_subnet(&compose,receipt.network_subnet.as_deref()).unwrap().as_deref(),Some("10.240.0.0/28"));
+  let record=root.join(format!("reused-original-native-health-{}",uuid::Uuid::new_v4()));fs::create_dir(&record).unwrap();fs::set_permissions(&record,fs::Permissions::from_mode(0o700)).unwrap();println!("REUSED_HEALTH_RECORD={}",record.display());
+  let outcome=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ->Result<Value>{
+   {
+    let guard=service.lock()?;service.validate_ownership(&manifest,"docker")?;service.validate_volumes(&manifest,"docker")?;
+    crate::run("docker",&crate::compose_args(&manifest,&["up","--detach","--no-build","--pull","never"]),Some(&path.join("bundle")),180)?;
+    service.check_restoration_guard(&guard)?;
+   }
+   let completion=store.activate_restored_rollback(input["maintenance"].as_str().unwrap(),true)?;
+   assert!(completion.selection_completed);assert_eq!(store.intent().unwrap().update.stage(),crate::update::Stage::RolledBack);
+   Ok(serde_json::to_value(completion).unwrap())
+  })).unwrap_or_else(|_|Err(err("UPDATE_QUALIFICATION_ASSERTION_FAILED")));
+  let stopped=if service.validate_ownership(&manifest,"docker").is_ok()&&service.validate_volumes(&manifest,"docker").is_ok(){crate::run("docker",&crate::compose_args(&manifest,&["stop","--timeout","30"]),Some(&path.join("bundle")),180).is_ok()}else{false};
+  for (name,bytes,mode) in original{let p=source.join(name);assert_eq!(fs::read(&p).unwrap(),bytes);assert_eq!(fs::metadata(&p).unwrap().permissions().mode(),mode);}
+  for (p,bytes) in history{assert_eq!(fs::read(p).unwrap(),bytes);}
+  drop(store);let cold=crate::signed_release::trust::Store::open(&profile,"default").unwrap();let cold_verified=cold.intent().unwrap().update.stage()==crate::update::Stage::RolledBack && installations::load(&profile).unwrap().unwrap().0.active_id==candidate;
+  let report=serde_json::json!({"state":if outcome.is_ok()&&cold_verified&&stopped{"PASS"}else{"FAIL"},"errorCode":outcome.as_ref().err().map(|e|e.code.as_str()),"completion":outcome.as_ref().ok(),"coldSelectionAndStageVerified":cold_verified,"authorityGeneration":cold.current.generation,"candidateId":candidate,"ownedCandidateStopped":stopped,"originalSourceAndHistoryPreserved":true,"newWholeHostCopy":false,"newOriginalServiceRestore":false,"scope":"Reused genuinely restored original candidate after changed update failure; actual native health/startup wait, selection/authority and cold reopen. Missing-host/process crash/public CLI/GUI still separate."});
+  crate::restoration::private_bytes(&record.join("report.json"),&serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+  outcome.unwrap();assert!(cold_verified);assert!(stopped);
+ }
+
 }
