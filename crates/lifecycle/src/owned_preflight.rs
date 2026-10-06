@@ -62,6 +62,7 @@ impl<'store> ExecutionSession<'store> {
         key_file: &'inputs Path,
     ) -> Result<OwnedPreflight<'session, 'store, 'inputs>> {
         self.check()?;
+        self.require_selected_source()?;
         // Missing independent recovery fails BEFORE extraction, OCI or Engine work.
         self.store
             .require_authority_recovery()
@@ -121,6 +122,7 @@ impl<'session, 'store, 'inputs> OwnedPreflight<'session, 'store, 'inputs> {
     }
     fn recheck(&mut self) -> Result<()> {
         self.session.check()?;
+        self.session.require_selected_source()?;
         self.session.reverify_prepared_artifact(self.artifact)?;
         self.lease.check(&self.session.source)?;
         let cp = &self.inputs.checkpoint;
