@@ -45,6 +45,23 @@ class QualificationTests(unittest.TestCase):
   v=inventory(migrations,'new catalog');a.target_inventory=self.private('target.json',v);a.target_inventory_sha256=digest(a.target_inventory.read_bytes());a.target_schema_sha256=schema(v)
  def qualify(self,a):
   with a.archive.open('rb') as f:return oci.qualify(a,f)
+ def rewrite_metadata(self,a,annotation=None,compatibility=None):
+  with tarfile.open(a.archive) as tar:files={m.name:tar.extractfile(m).read() for m in tar if m.isfile()}
+  index=json.loads(files['index.json'])
+  if annotation is not None:index['manifests'][0]['annotations']=annotation
+  files['index.json']=encoded(index)
+  if compatibility is None:files.pop('manifest.json')
+  else:files['manifest.json']=encoded(compatibility)
+  with tarfile.open(a.archive,mode='w') as tar:
+   for n,b in files.items():e=tarfile.TarInfo(n);e.size=len(b);tar.addfile(e,io.BytesIO(b))
+ def test_standard_tagless_oci_export_without_docker_compatibility_manifest(self):
+  a=self.args(self.old);self.rewrite_metadata(a,{'org.opencontainers.image.created':'2026-10-06T04:09:00Z'})
+  self.assertEqual(self.qualify(a)['exportLayout'],'standard-oci')
+ def test_standard_oci_bad_timestamp_tag_annotation_and_optional_docker_tags_refuse(self):
+  for annotation,compatibility in [({'org.opencontainers.image.created':'not-a-date'},None),({'org.opencontainers.image.created':'2026-02-31T00:00:00Z'},None),({'org.opencontainers.image.ref.name':'untrusted:tag'},None),(None,[{'Config':'unrelated','RepoTags':['untrusted:tag'],'Layers':[]}])]:
+   with self.subTest(annotation=annotation,compatibility=compatibility):
+    a=self.args(self.old);self.rewrite_metadata(a,annotation,compatibility)
+    with self.assertRaises((AssertionError,ValueError)):self.qualify(a)
  def test_unchanged_original_contract_and_bound_source_bytes(self):
   a=self.args(self.old);v=self.qualify(a);self.assertEqual(v['sourceSchemaSha256'],v['targetSchemaSha256']);self.assertEqual(v['migrationMode'],'unchanged');self.assertEqual(v['sourceManifestSha256'],digest(a.source_manifest.read_bytes()))
  def test_extended_sql_requires_explicit_target_catalog_pin(self):
