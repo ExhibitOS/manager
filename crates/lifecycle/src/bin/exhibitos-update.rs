@@ -279,6 +279,25 @@ fn checkpoint_key(path: &Path, profile: &Path) -> Result<[u8; 32], String> {
     Ok(key)
 }
 
+fn restored_rollback_options(args: &[String]) -> Result<&str, &'static str> {
+    if args.len() != 10
+        || args[1] != "complete-restored-rollback"
+        || args[2] != "--profile"
+        || args[4] != "--installation"
+        || args[6] != "--maintenance-image"
+        || args[8] != "--external-writers-quiesced"
+        || args[9] != "--apps-closed"
+        || !args[7].strip_prefix("sha256:").is_some_and(|h| {
+            h.len() == 64
+                && h.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+    {
+        return Err("UPDATE_USAGE");
+    }
+    Ok(&args[7])
+}
+
 fn run() -> Result<(), String> {
     use signed_release::trust::Store;
     let a: Vec<String> = std::env::args().collect();
@@ -289,7 +308,7 @@ fn run() -> Result<(), String> {
     }
     let code = |e: signed_release::Error| e.code().to_string();
     let usage = || {
-        "UPDATE_USAGE: execute-full-update|reconcile-selection-activation|reconcile-authority|enroll-authority-recovery|restore-missing-authority|restore-rollback-missing-host|restore-bound-missing-host|trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|register-update-target|discard-update-intent|execution-status|verify-update-backup|verify-update-source-stopped|verify-update-source-deployment|verify-update-source-configuration|verify-update-source-images|snapshot-update-source-database|verify-update-source-inventory|verify-update-configuration-inventory|prepare-update-candidate require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
+        "UPDATE_USAGE: complete-restored-rollback|execute-full-update|reconcile-selection-activation|reconcile-authority|enroll-authority-recovery|restore-missing-authority|restore-rollback-missing-host|restore-bound-missing-host|trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|register-update-target|discard-update-intent|execution-status|verify-update-backup|verify-update-source-stopped|verify-update-source-deployment|verify-update-source-configuration|verify-update-source-images|snapshot-update-source-database|verify-update-source-inventory|verify-update-configuration-inventory|prepare-update-candidate require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
     };
     if a.len() < 7
         || a[2] != "--profile"
@@ -300,6 +319,26 @@ fn run() -> Result<(), String> {
     }
     let profile = Path::new(&a[3]);
     let installation = &a[5];
+    if a[1] == "complete-restored-rollback" {
+        let image = restored_rollback_options(&a).map_err(str::to_owned)?;
+        #[cfg(unix)]
+        {
+            let mut store = Store::open(profile, installation).map_err(code)?;
+            let receipt = store
+                .activate_restored_rollback(image, true)
+                .map_err(|e| e.code)?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).map_err(|_| "UPDATE_RESULT_INVALID")?
+            );
+            return Ok(());
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = image;
+            return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
+        }
+    }
     if a[1] == "reconcile-selection-activation" {
         if a.len() != 9 || a[6] != "--operation-id" {
             return Err(usage());
@@ -1225,5 +1264,61 @@ mod windows_update_inputs {
         );
         assert!(bounded(&bundle, 1024, false).is_err());
         assert!(bounded(&bundle.join("missing.json"), 1024, true).is_err());
+    }
+}
+
+#[cfg(test)]
+mod restored_rollback_cli_tests {
+    use super::*;
+    fn valid() -> Vec<String> {
+        vec![
+            "exhibitos-update".into(),
+            "complete-restored-rollback".into(),
+            "--profile".into(),
+            "/isolated".into(),
+            "--installation".into(),
+            "default".into(),
+            "--maintenance-image".into(),
+            format!("sha256:{}", "a".repeat(64)),
+            "--external-writers-quiesced".into(),
+            "--apps-closed".into(),
+        ]
+    }
+    #[test]
+    fn exact_native_rollback_contract_requires_both_acknowledgements_and_pinned_image() {
+        let args = valid();
+        assert_eq!(restored_rollback_options(&args).unwrap(), args[7]);
+        for i in [1, 2, 4, 6, 8, 9] {
+            let mut changed = args.clone();
+            changed[i] = "--health-verified".into();
+            assert!(restored_rollback_options(&changed).is_err());
+        }
+        for image in [
+            "latest".to_owned(),
+            "sha256:abc".to_owned(),
+            format!("sha256:{}", "A".repeat(64)),
+            format!("sha256:{}", "g".repeat(64)),
+        ] {
+            let mut changed = args.clone();
+            changed[7] = image;
+            assert!(restored_rollback_options(&changed).is_err());
+        }
+    }
+    #[test]
+    fn candidate_paths_health_receipts_commands_and_extra_options_are_refused() {
+        let args = valid();
+        for n in 0..args.len() {
+            assert!(restored_rollback_options(&args[..n]).is_err());
+        }
+        for flag in [
+            "--candidate-id",
+            "--health-receipt",
+            "--command",
+            "--operation-id",
+        ] {
+            let mut changed = args.clone();
+            changed.extend([flag.into(), "untrusted".into()]);
+            assert!(restored_rollback_options(&changed).is_err());
+        }
     }
 }
