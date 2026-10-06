@@ -111,6 +111,8 @@ pub struct Update {
     preflight: Option<Preflight>,
     restore: Option<RestoreReceipt>,
     restore_candidate: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    interrupted_restoration: Option<RestoreReceipt>,
     health: Option<HealthReceipt>,
     failure: Option<Failure>,
 }
@@ -159,6 +161,7 @@ impl Update {
             preflight: None,
             restore: None,
             restore_candidate: None,
+            interrupted_restoration: None,
             health: None,
             failure: None,
         })
@@ -172,6 +175,34 @@ impl Update {
     /// Read-only identity reserved by BeginRestore, never a restore proof.
     pub fn restore_candidate(&self) -> Option<&str> {
         self.restore_candidate.as_deref()
+    }
+    /// Historical interrupted restore candidate; never active restore/health proof.
+    pub fn interrupted_restoration(&self) -> Option<&RestoreReceipt> {
+        self.interrupted_restoration.as_ref()
+    }
+    pub(crate) fn retain_interrupted_restoration(&mut self) -> Result<(), Error> {
+        self.validate()?;
+        if self.stage != Stage::AwaitingRollbackHealth {
+            return Err(Error::InvalidTransition);
+        }
+        let receipt = self.restore.clone().ok_or(Error::InvalidRecord)?;
+        self.recover_after_restart()?;
+        self.interrupted_restoration = Some(receipt);
+        self.validate()
+    }
+    pub(crate) fn resume_rollback_health(&mut self, receipt: RestoreReceipt) -> Result<(), Error> {
+        self.validate()?;
+        if self.stage != Stage::RecoveryRequired
+            || self.failure != Some(Failure::Interrupted)
+            || self.interrupted_restoration.as_ref() != Some(&receipt)
+        {
+            return Err(Error::InvalidTransition);
+        }
+        self.restore_candidate = Some(receipt.candidate_id.clone());
+        self.restore = Some(receipt);
+        self.interrupted_restoration = None;
+        self.stage = Stage::AwaitingRollbackHealth;
+        self.validate()
     }
     pub fn failure(&self) -> Option<Failure> {
         self.failure
@@ -325,6 +356,7 @@ impl Update {
             return Err(Error::EvidenceMismatch);
         }
         self.restore = None;
+        self.interrupted_restoration = None;
         self.restore_candidate = Some(candidate_id);
         self.stage = Stage::Restoring;
         Ok(())
@@ -423,6 +455,25 @@ impl Update {
         }
         if let Some(restore) = &self.restore {
             self.check_restore(restore)?;
+        }
+        if let Some(historical) = &self.interrupted_restoration {
+            if self.stage != Stage::RecoveryRequired
+                || self.failure != Some(Failure::Interrupted)
+                || self.restore.is_some()
+                || self.restore_candidate.is_some()
+                || self.health.is_some()
+            {
+                return Err(Error::InvalidRecord);
+            }
+            if !identifier(&historical.candidate_id)
+                || historical.candidate_id == self.plan.source_instance
+                || historical.candidate_id == self.plan.target_instance
+            {
+                return Err(Error::InvalidRecord);
+            }
+            let mut probe = self.clone();
+            probe.restore_candidate = Some(historical.candidate_id.clone());
+            probe.check_restore(historical)?;
         }
         let terminal = matches!(self.stage, Stage::Updated | Stage::RolledBack);
         if terminal != self.health.is_some() {

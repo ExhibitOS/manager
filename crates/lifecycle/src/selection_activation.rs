@@ -170,8 +170,6 @@ impl Activation {
     ) -> crate::Result<Self> {
         Self::prepare_mode(store, original, health, false)
     }
-    // Private seam for the native rollback health executor; not a receipt endpoint.
-    #[allow(dead_code)]
     pub(super) fn prepare_rollback(
         store: &Store,
         original: &[u8],
@@ -552,6 +550,7 @@ impl Store {
                 self.current.update_event,
                 Some(
                     UpdateEvent::Interrupted
+                        | UpdateEvent::InterruptedRestoration
                         | UpdateEvent::UpdateFailed
                         | UpdateEvent::RecoveryFailed
                 )

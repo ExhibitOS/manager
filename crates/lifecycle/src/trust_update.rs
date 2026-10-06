@@ -22,6 +22,8 @@ pub(super) enum UpdateEvent {
     ImageOnlyRollback,
     RecoveryFailed,
     Interrupted,
+    InterruptedRestoration,
+    ResumeRollbackHealth(Box<RestoreReceipt>),
     DiscardPrepared,
     ReleaseCompleted,
 }
@@ -52,6 +54,8 @@ pub(super) fn evolve(
         UpdateEvent::RequestRollback => core.request_rollback(),
         UpdateEvent::BeginRestore(id) => core.begin_restore(id.clone()),
         UpdateEvent::RestoreFinished(e) => core.restore_finished((**e).clone()),
+        UpdateEvent::InterruptedRestoration => core.retain_interrupted_restoration(),
+        UpdateEvent::ResumeRollbackHealth(e) => core.resume_rollback_health((**e).clone()),
         UpdateEvent::ImageOnlyRollback => core.image_only_rollback(),
         UpdateEvent::RecoveryFailed => core.recovery_failed(),
         UpdateEvent::Interrupted => {
@@ -188,6 +192,21 @@ impl Store {
         next.intent = evolve(intent, &event)?;
         next.update_event = Some(event);
         self.commit(next, now)
+    }
+    /// Internal native adapter only: historical restoration is not fresh health.
+    pub(super) fn resume_restored_runtime(
+        &mut self,
+        operation: &str,
+        generation: u64,
+        receipt: RestoreReceipt,
+        now: u64,
+    ) -> Result<TrustReceipt, Error> {
+        self.update_event(
+            operation,
+            generation,
+            UpdateEvent::ResumeRollbackHealth(Box::new(receipt)),
+            now,
+        )
     }
     /// Trusted executor completion is AwaitingHealth, never update success.
     pub fn application_finished(

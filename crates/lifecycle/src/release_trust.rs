@@ -77,6 +77,9 @@ pub use rollback_registration::RegisteredRollbackCandidate;
 mod rollback_restoration;
 #[cfg(unix)]
 pub use rollback_restoration::RollbackRestorationReceipt;
+#[cfg(unix)]
+#[path = "rollback_runtime.rs"]
+mod rollback_runtime;
 #[path = "trust_update.rs"]
 mod update_journal;
 pub use owned_execution::{
@@ -786,13 +789,17 @@ impl Store {
                 .map_err(|_| invalid())?
                 .as_secs();
             let mut next = s.current.clone();
-            next.intent
-                .as_mut()
-                .ok_or_else(invalid)?
-                .update
-                .recover_after_restart()
-                .map_err(|_| invalid())?;
-            next.update_event = Some(UpdateEvent::Interrupted);
+            let core = &mut next.intent.as_mut().ok_or_else(invalid)?.update;
+            if core.stage() == crate::update::Stage::AwaitingRollbackHealth
+                && core.restore_candidate().is_some()
+            {
+                core.retain_interrupted_restoration()
+                    .map_err(|_| invalid())?;
+                next.update_event = Some(UpdateEvent::InterruptedRestoration);
+            } else {
+                core.recover_after_restart().map_err(|_| invalid())?;
+                next.update_event = Some(UpdateEvent::Interrupted);
+            }
             s.commit(next, now)?;
         }
         Ok(s)
