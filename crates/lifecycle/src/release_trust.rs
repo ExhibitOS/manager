@@ -65,8 +65,13 @@ pub use trust_checkpoint::binding::{
 pub use trust_checkpoint::{HostTrustReceipt, MissingHostRecoveryReceipt, TrustCheckpointReceipt};
 #[path = "owned_execution.rs"]
 mod owned_execution;
+#[cfg(unix)]
+#[path = "rollback_registration.rs"]
+mod rollback_registration;
 #[path = "update_target_registration.rs"]
 mod target_registration;
+#[cfg(unix)]
+pub use rollback_registration::RegisteredRollbackCandidate;
 #[path = "trust_update.rs"]
 mod update_journal;
 pub use owned_execution::{
