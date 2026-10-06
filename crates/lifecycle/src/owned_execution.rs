@@ -1706,6 +1706,9 @@ mod tests {
                 )
                 .is_err()
         );
+        assert!(session.prepare_owned_migrated_update_reusing_host(
+            &mut artifact,&inputs,&MigrationRuntimeInputs{catalog:Path::new("/missing-catalog"),catalog_sha256:&"a".repeat(64)},
+            Path::new("/missing-retained-host"),&destination,Path::new("/missing-key")).is_err());
         assert!(!destination.exists());
         assert_eq!(fs::read(&file).unwrap(), b"fixture");
         drop(artifact);

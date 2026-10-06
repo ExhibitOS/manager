@@ -61,6 +61,24 @@ fn current_bound_checkpoint(
     }
     Ok(())
 }
+struct RetainedRecoveryOutcome<T> {
+    work: T,
+    receipt: Value,
+    lease: candidate_inventory::RetainedCandidateLease,
+    host: Option<crate::profile_backup::HostReceipt>,
+    oci: PreparedOciReceipt,
+    catalog: Option<super::migration_catalog::CatalogInput>,
+}
+fn retained_host_boundary(profile: &Path, authority: &Path, destination: &Path, host: &Path) -> Result<()> {
+    if !host.is_absolute() || fs::canonicalize(host).ok().as_deref()!=Some(host)
+        || host.starts_with(profile) || profile.starts_with(host)
+        || host.starts_with(authority) || authority.starts_with(host)
+        || host.starts_with(destination) || destination.starts_with(host) {
+        return Err(err("HOST_CHECKPOINT_INVALID"));
+    }
+    crate::installations::private_directory(host)?;
+    Ok(())
+}
 impl ExecutionSession<'_> {
     /// Observe under the retained exclusive Store/profile and source/candidate
     /// operation guards. Caller paths identify inputs, never verification results.
@@ -130,6 +148,19 @@ impl ExecutionSession<'_> {
         Option<crate::profile_backup::HostReceipt>,
         PreparedOciReceipt,
     )> {
+        self.with_recovery_runtime_retained(artifact, inputs, extraction, migration, None, work)
+            .map(|r| (r.work, r.receipt, r.lease, r.host, r.oci))
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn with_recovery_runtime_retained<T>(
+        &self,
+        artifact: &mut PreparedArtifact,
+        inputs: &RecoveryRuntimeInputs<'_>,
+        extraction: Option<(&Path, &Path)>,
+        migration: Option<&MigrationRuntimeInputs<'_>>,
+        retained_host: Option<&Path>,
+        work: impl FnOnce(&CurrentRecoveryRuntime) -> Result<T>,
+    ) -> Result<RetainedRecoveryOutcome<T>> {
         self.check()?;
         if !inputs.external_writers_quiesced {
             return Err(err("BACKUP_OPERATOR_ACK_REQUIRED"));
@@ -139,6 +170,11 @@ impl ExecutionSession<'_> {
             return Err(err("BACKUP_IMAGE_INVALID"));
         }
         let cp = &inputs.checkpoint;
+        if let Some(host) = retained_host {
+            let (destination, _) = extraction.ok_or_else(||err("HOST_CHECKPOINT_INVALID"))?;
+            retained_host_boundary(&self.store.profile, &self.store.root, destination, host)?;
+        }
+        let retained_identity=retained_host.map(fs::symlink_metadata).transpose().map_err(|_|err("HOST_CHECKPOINT_INVALID"))?;
         if let Some((destination, key_file)) = extraction {
             let parent = destination
                 .parent()
@@ -166,7 +202,7 @@ impl ExecutionSession<'_> {
         // Exact authenticated three-export growth is reserved inside CandidateContext.
         if fs2::available_space(inputs.export_parent).map_err(|_| err("STORAGE_UNAVAILABLE"))?
             < (8u64 * 1024 * 1024 * 1024)
-                .checked_add(if extraction.is_some() {
+                .checked_add(if extraction.is_some() && retained_host.is_none() {
                     checkpoint.receipt().host_archive_bytes
                 } else {
                     0
@@ -193,6 +229,8 @@ impl ExecutionSession<'_> {
         };
         let catalog_cell = std::cell::RefCell::new(catalog);
         let check_catalog = || -> Result<()> {
+            if let (Some(host),Some(expected))=(retained_host,retained_identity.as_ref())
+                && !super::super::identity(expected,&fs::symlink_metadata(host).map_err(|_|err("HOST_CHECKPOINT_INVALID"))?) {return Err(err("HOST_CHECKPOINT_INVALID"));}
             if let Some(catalog) = catalog_cell.borrow_mut().as_mut() {
                 catalog.recheck()?;
             }
@@ -204,16 +242,20 @@ impl ExecutionSession<'_> {
         let ((mut before, mut candidate, mut after, mut receipt, full_recovery), lease) = self.inspect_restored_candidate_retained(true, |ctx| {
             let full_recovery = if let Some((destination, key_file)) = extraction {
                 let parent = destination.parent().ok_or_else(||err("HOST_CHECKPOINT_INVALID"))?;
-                recovery_space::check_with_host(&self.source, ctx, &[&self.source.root, ctx.root, inputs.export_parent, parent], 3, checkpoint.receipt().host_archive_bytes)?;
+                recovery_space::check_with_host(&self.source, ctx, &[&self.source.root, ctx.root, inputs.export_parent, parent], 3, if retained_host.is_some() {0} else {checkpoint.receipt().host_archive_bytes})?;
                 if super::read_record(key_file).map_err(|_|err("PROFILE_KEY_INVALID"))?.as_slice()!=cp.key {
                     return Err(err("PROFILE_KEY_INVALID"));
                 }
-                crate::installations::new_directory(destination)?;
-                let host = crate::profile_backup::extract_host(&self.store.profile, key_file, cp.host, &destination.join("host"), true)?;
+                let host_path = retained_host.map(Path::to_path_buf).unwrap_or_else(||destination.join("host"));
+                let host = if retained_host.is_some() {
+                    let current=crate::profile_backup::verify_host_current_borrowed(&self.store.profile,cp.host,cp.key,&self._session,&checkpoint.receipt().host_manifest_sha256)?;
+                    crate::profile_backup::recheck_extracted_host_current(&self.store.profile,&host_path,&current)?
+                } else {crate::installations::new_directory(destination)?;crate::profile_backup::extract_host(&self.store.profile, key_file, cp.host, &host_path, true)?};
+                if retained_host.is_some() {crate::installations::new_directory(destination)?;}
                 if host.manifest_sha256!=checkpoint.receipt().host_manifest_sha256 {return Err(err("RECOVERY_PAIR_INVALID"));}
                 let trust = self.store.extract_trust_checkpoint(cp.trust, &destination.join("trust"), cp.key).map_err(|e|err(e.code()))?;
-                crate::profile_backup::verify_extracted_host(&self.store.profile, &destination.join("host"), &host)?;
-                Some((destination, key_file, host, trust))
+                crate::profile_backup::verify_extracted_host(&self.store.profile, &host_path, &host)?;
+                Some((destination, key_file, host, trust, host_path))
             } else {
                 recovery_space::check(&self.source, ctx, &[&self.source.root, ctx.root, inputs.export_parent], 3)?;
                 None
@@ -248,15 +290,15 @@ impl ExecutionSession<'_> {
             if available < ctx.plan.required_free_bytes.checked_add(6*1024*1024*1024).ok_or_else(||err("RESTORE_SPACE_REQUIRED"))? {
                 return Err(err("RESTORE_SPACE_REQUIRED"));
             }
-            if let Some((destination,key_file,host,_))=&full_recovery {
-                crate::profile_backup::verify_extracted_host(&self.store.profile, &destination.join("host"), host)?;
+            if let Some((destination,key_file,host,_,host_path))=&full_recovery {
+                crate::profile_backup::verify_extracted_host(&self.store.profile, host_path, host)?;
                 self.store.verify_trust_checkpoint(&destination.join("trust")).map_err(|e|err(e.code()))?;
                 if super::read_record(key_file).map_err(|_|err("PROFILE_KEY_INVALID"))?.as_slice()!=cp.key {return Err(err("PROFILE_KEY_INVALID"));}
             }
             let mut receipt = serde_json::json!({"operationId":ctx.plan.operation_id,"trustGeneration":checkpoint.receipt().generation,"checkpoint":checkpoint.receipt(),"host":host,"sourceBefore":before,"candidate":candidate,"runtime":runtime,"sourceAfter":after,"availableFreeBytes":available,"sameLifetimeRecoveryRuntimeVerified":true,"hostExtractionVerified":false,"lostAuthorityRecoveryVerified":false,"preflightVerified":false,"updateExecuted":false,"imageOnlyRollbackVerified":false});
-            if let Some((destination,_,host,trust))=&full_recovery {
+            if let Some((destination,_,host,trust,host_path))=&full_recovery {
                 receipt["hostExtractionVerified"]=serde_json::json!(true);
-                receipt["inactiveFullRecovery"]=serde_json::json!({"destination":destination,"host":host,"trust":trust,"hostActivated":false,"liveAuthorityRestored":false});
+                receipt["inactiveFullRecovery"]=serde_json::json!({"destination":destination,"hostPath":host_path,"retainedHostReused":retained_host.is_some(),"host":host,"trust":trust,"hostActivated":false,"liveAuthorityRestored":false});
             }
             Ok((before,candidate,after,receipt,full_recovery))
         },|ctx,(_,_,_,receipt,full_recovery)| {
@@ -271,8 +313,8 @@ impl ExecutionSession<'_> {
             check_catalog()?;
             self.reverify_prepared_artifact(&mut held_artifact.borrow_mut())?;
             self.store.recheck_checkpoint_pair(&checkpoint, cp.binding, cp.host, cp.trust, cp.key)?;
-            if let Some((destination,key_file,host,_))=full_recovery {
-                crate::profile_backup::verify_extracted_host(&self.store.profile, &destination.join("host"), host)?;
+            if let Some((destination,key_file,host,_,host_path))=full_recovery {
+                crate::profile_backup::verify_extracted_host(&self.store.profile, host_path, host)?;
                 self.store.verify_trust_checkpoint(&destination.join("trust")).map_err(|e|err(e.code()))?;
                 if super::read_record(key_file).map_err(|_|err("PROFILE_KEY_INVALID"))?.as_slice()!=cp.key {return Err(err("PROFILE_KEY_INVALID"));}
             }
@@ -302,13 +344,12 @@ impl ExecutionSession<'_> {
             serde_json::to_value(after).map_err(|_| err("UPDATE_RESULT_INVALID"))?;
         receipt["freshImageArchivesRetired"] = serde_json::json!(true);
         check_catalog()?;
-        Ok((
-            outcome.ok_or_else(|| err("UPDATE_RECOVERY_RUNTIME_MISMATCH"))?,
-            receipt,
-            lease,
-            full_recovery.map(|(_, _, host, _)| host),
-            oci,
-        ))
+        Ok(RetainedRecoveryOutcome {
+            work: outcome.ok_or_else(|| err("UPDATE_RECOVERY_RUNTIME_MISMATCH"))?,
+            receipt, lease,
+            host: full_recovery.map(|(_, _, host, _, _)| host),
+            oci, catalog: catalog_cell.into_inner(),
+        })
     }
     /// Actual inactive full host/trust extraction in the same fence as service/runtime checks.
     /// Retains fresh private output for independent inspection; no original activation.
@@ -336,6 +377,20 @@ mod tests {
     use super::*;
     fn physical() -> source_database::DatabaseCopyProof {
         serde_json::from_value(serde_json::json!({"cleanShutdown":true,"files":4,"entries":6,"bytes":200,"contentSha256":"a".repeat(64),"postgresMajor":18,"pgdata":"18/docker","systemIdentifier":"123"})).unwrap()
+    }
+    #[cfg(unix)]
+    #[test]
+    fn retained_host_scope_refuses_profile_authority_overlap_and_symlink() {
+        let root=fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("retained-recovery-scope-{}",uuid::Uuid::new_v4()));
+        crate::installations::new_directory(&root).unwrap();
+        let profile=root.join("profile");let authority=root.join("authority");let host=root.join("host");let destination=root.join("new-output");
+        for p in [&profile,&authority,&host] {crate::installations::new_directory(p).unwrap();}
+        retained_host_boundary(&profile,&authority,&destination,&host).unwrap();
+        for p in [&profile,&authority,&root] {assert!(retained_host_boundary(&profile,&authority,&destination,p).is_err());}
+        assert!(retained_host_boundary(&profile,&authority,&host.join("overlap"),&host).is_err());
+        let alias=root.join("alias");std::os::unix::fs::symlink(&host,&alias).unwrap();
+        assert!(retained_host_boundary(&profile,&authority,&destination,&alias).is_err());
+        assert!(!destination.exists());assert!(host.is_dir());fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn combined_runtime_rejects_physical_change_even_when_logical_inventory_matches() {
