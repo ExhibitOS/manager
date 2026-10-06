@@ -14,6 +14,11 @@ pub(crate) use host_checkpoint::{
     activate_missing_host, checkpoint_host_anchored, checkpoint_host_borrowed,
     recheck_extracted_host_current, verify_extracted_host, verify_host_current_borrowed,
 };
+#[cfg(unix)]
+#[path = "authority_host_fence.rs"]
+mod authority_host_fence;
+#[cfg(unix)]
+pub(crate) use authority_host_fence::AuthorityHostFence;
 use std::collections::BTreeMap;
 const MAGIC: &[u8] = b"ExhibitOS-profile-v1\0";
 const LIMIT: u64 = 64 * 1024 * 1024;

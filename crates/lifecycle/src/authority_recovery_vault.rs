@@ -733,10 +733,8 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             _ => return Err(Error::TrustExists),
         }
-        let session =
-            profile_backup::anchored_session(&profile, anchor, true).map_err(|_| invalid())?;
-        let locks =
-            profile_backup::current_host_locks(&profile, &session).map_err(|_| invalid())?;
+        let host_fence =
+            profile_backup::AuthorityHostFence::acquire(&profile, anchor).map_err(|_| invalid())?;
         let vault = Vault::open(&root, &id, None)?;
         let records = vault.latest()?;
         let (_, bytes, current) = records.last().ok_or_else(invalid)?;
@@ -747,12 +745,14 @@ impl Store {
             publish_bytes(&stage, name, bytes)?;
         }
         vault.check(&stage, &hash(bytes))?;
-        session.check_exclusive(&profile).map_err(|_| invalid())?;
+        host_fence.check(&profile).map_err(|_| invalid())?;
         publish(&stage, &root)?;
         sync_dir(parent)?;
         vault.check(&root, &hash(bytes))?;
-        session.check_exclusive(&profile).map_err(|_| invalid())?;
-        drop(locks);
+        host_fence
+            .check(&profile)
+            .map_err(|_| Error::TrustWriteUncertain)?;
+        drop(host_fence);
         Ok(AuthorityRecoveryReceipt {
             generation: current.generation,
             records: records.len(),
@@ -798,6 +798,32 @@ mod tests {
     }
     fn retire(p: &Path) {
         fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+    #[test]
+    fn missing_authority_restores_before_absent_host_without_creating_host_or_replaying() {
+        let (profile, store, vault) = setup();
+        let root = store.root.clone();
+        let expected = bytes(&root);
+        let head = store.current_sha256.clone();
+        let intent = serde_json::to_vec(&store.current.intent).unwrap();
+        drop(store);
+        let held_host = profile.parent().unwrap().join("original-host-held");
+        let held_authority = profile.parent().unwrap().join("original-authority-held");
+        fs::rename(&profile, &held_host).unwrap();
+        fs::rename(&root, &held_authority).unwrap();
+        let receipt = Store::restore_missing_authority(&profile, "default", true).unwrap();
+        assert!(receipt.live_authority_restored);
+        assert!(!receipt.host_restored && !receipt.services_restored && !receipt.update_executed);
+        assert!(!profile.exists());
+        assert_eq!(bytes(&root), expected);
+        assert_eq!(bytes(&held_authority), expected);
+        assert_eq!(bytes(&vault.join("records")), expected);
+        let cold = Store::open(&profile, "default").unwrap();
+        assert_eq!(cold.current_sha256, head);
+        assert_eq!(serde_json::to_vec(&cold.current.intent).unwrap(), intent);
+        drop(cold);
+        fs::rename(held_host, &profile).unwrap();
+        retire(&profile);
     }
     #[test]
     fn public_inactive_authority_diagnostic_preserves_original_and_refuses_reuse() {
