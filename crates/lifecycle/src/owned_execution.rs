@@ -45,6 +45,8 @@ mod ephemeral_inventory;
 mod ephemeral_source_recovery;
 pub use combined_recovery::{CheckpointInputs, CombinedRecoveryReceipt};
 pub use ephemeral_source_recovery::EphemeralSourceRecoveryReceipt;
+#[cfg(unix)]
+pub(super) mod native_inventory;
 #[path = "source_inventory.rs"]
 mod source_inventory;
 pub use ephemeral_inventory::EphemeralCandidateInventoryReceipt;
@@ -90,12 +92,10 @@ pub(super) fn check_rollback_configuration(
 }
 #[cfg(unix)]
 pub(super) fn check_rollback_inventory(
-    raw: &[u8],
+    proof: &source_inventory::InventoryProof,
     plan: &crate::update::Plan,
 ) -> crate::Result<()> {
-    let proof: source_inventory::InventoryProof =
-        serde_json::from_slice(raw).map_err(|_| crate::err("UPDATE_ROLLBACK_HEALTH_INVALID"))?;
-    source_inventory::matched_candidate(&proof, plan)
+    source_inventory::matched_candidate(proof, plan)
 }
 /// Holds the Store borrow and both profile fences. No arbitrary root, controller
 /// bootstrap, activation, journal transition, or externally supplied success flag.

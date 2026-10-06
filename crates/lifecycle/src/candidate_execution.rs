@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Owned candidate application and actual health. Activation remains a separate gate.
 use super::*;
-use crate::{BundleManifest, run, run_observed, run_observed_input};
+use crate::{BundleManifest, run, run_observed};
 const LIMIT: usize = 256 * 1024;
-const READER: &str = include_str!("candidate_execution_reader.mjs");
 
 /// Actual candidate application/health observation, not selected-host activation.
 /// Keeps every admission/recovery fence. No caller health receipt can construct it.
@@ -497,28 +496,23 @@ impl<'session, 'store, 'inputs> StartedUpdate<'session, 'store, 'inputs> {
         self.source_unchanged()?;
         phase(&workspace, "health-started", &plan, generation)?;
         let system=self.admission.receipt["candidate"]["inventory"]["observation"]["physical"]["systemIdentifier"].as_str().filter(|s|source_database::valid_system_identifier(s)).ok_or_else(||err("UPDATE_CANDIDATE_PROOF_MISSING"))?.to_owned();
-        let id = pair.0["Id"]
-            .as_str()
-            .ok_or_else(|| err("ENGINE_OUTPUT_INVALID"))?
-            .to_owned();
         let input = self.admission.lease.manifest_input()?;
-        let args = vec![
-            "exec".into(),
-            "--interactive".into(),
-            id.clone(),
-            "node".into(),
-            "--input-type=module".into(),
-            "-e".into(),
-            READER.into(),
-            plan.backup_manifest.clone(),
-            system,
-        ];
-        let raw = run_observed_input("docker", &args, None, 180, Some(input), || {
-            self.quick_check()?;
-            staged.check_published()
-        })?;
-        let inventory: source_inventory::InventoryProof =
-            serde_json::from_slice(&raw).map_err(|_| err("UPDATE_CANDIDATE_HEALTH_FAILED"))?;
+        let inventory = super::super::super::native_inventory::observe(
+            &super::super::super::native_inventory::Inputs {
+                image: self.admission.inputs.maintenance_image,
+                root: &staged.root,
+                manifest: &staged.manifest,
+                app: &pair.0,
+                blob_volume: &self.admission.lease.stopped().1.blob_volume,
+                expected_manifest: &plan.backup_manifest,
+                expected_system: Some(&system),
+            },
+            input,
+            || {
+                self.quick_check()?;
+                staged.check_published()
+            },
+        )?;
         source_inventory::matched_candidate(&inventory, &plan)?;
         if inventory.schema_sha256 != plan.target_schema {
             return Err(err("UPDATE_CANDIDATE_HEALTH_FAILED"));
@@ -678,23 +672,26 @@ impl ReadyCandidate<'_, '_, '_> {
             .as_str().filter(|s|source_database::valid_system_identifier(s))
             .ok_or_else(||err("UPDATE_CANDIDATE_PROOF_MISSING"))?.to_owned();
         let input = self.started.admission.lease.manifest_input()?;
-        let args = vec![
-            "exec".into(),
-            "--interactive".into(),
-            self.execution.containers[0].clone(),
-            "node".into(),
-            "--input-type=module".into(),
-            "-e".into(),
-            READER.into(),
-            plan.backup_manifest.clone(),
-            system,
-        ];
-        let raw = run_observed_input("docker", &args, None, 180, Some(input), || {
-            self.started.quick_check()?;
-            self.execution.deployment.check_published()
-        })?;
-        let inventory: source_inventory::InventoryProof =
-            serde_json::from_slice(&raw).map_err(|_| err("UPDATE_CANDIDATE_HEALTH_FAILED"))?;
+        let pair = self.started.observed_pair(
+            &self.execution.deployment.manifest,
+            &self.execution.database_image,
+        )?;
+        let inventory = super::super::super::native_inventory::observe(
+            &super::super::super::native_inventory::Inputs {
+                image: self.started.admission.inputs.maintenance_image,
+                root: &self.execution.deployment.root,
+                manifest: &self.execution.deployment.manifest,
+                app: &pair.0,
+                blob_volume: &self.started.admission.lease.stopped().1.blob_volume,
+                expected_manifest: &plan.backup_manifest,
+                expected_system: Some(&system),
+            },
+            input,
+            || {
+                self.started.quick_check()?;
+                self.execution.deployment.check_published()
+            },
+        )?;
         source_inventory::matched_candidate(&inventory, &plan)?;
         if inventory.schema_sha256 != plan.target_schema {
             return Err(err("UPDATE_CANDIDATE_HEALTH_FAILED"));
