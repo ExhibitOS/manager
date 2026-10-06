@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Host injects a compiled-in database-copy script before this body.
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdir, chmod, chown } from 'node:fs/promises';
+import { mkdir, chmod, chown, readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { main } from '/opt/exhibitos/scripts/service-backup.mjs';
+const MIGRATED = typeof MIGRATION_INPUT !== 'undefined';
 const delay = ms => new Promise(resolve => { const timer = setTimeout(resolve, ms); timer.unref(); });
 const socket = '/tmp/exhibitos-probe-pg'; let pg, server, pgExit, pgEnded = false, finished = false, failure;
 const copyResult = spawnSync(process.execPath, ['--input-type=module', '-e', DATABASE_COPY], { encoding: 'utf8', timeout: 270000, maxBuffer: 65536 });
@@ -19,7 +20,9 @@ try {
   await new Promise((resolve, reject) => {
     server = createServer(async (request, reply) => {
       request.resume(); reply.setHeader('content-type', 'application/json');
-      if (request.method === 'GET' && request.url === '/ready') { reply.end('{"ready":true}'); return; }
+      if (request.method === 'GET' && request.url === '/ready') { reply.end(JSON.stringify({ready:true,physical})); return; }
+      if (MIGRATED && request.method === 'GET' && request.url === '/manifest' && !finished) { reply.end(await readFile('/manifest.json')); return; }
+      if (MIGRATED && request.method === 'POST' && request.url === '/finish-migrated' && !finished) { finished=true;reply.end(JSON.stringify({completed:true,manifestSha256:process.env.EXHIBITOS_MANIFEST_SHA256}));resolve();return; }
       if (request.method !== 'POST' || request.url !== '/finish' || finished) { reply.writeHead(403); reply.end('{"code":"RUNTIME_PROBE_REQUEST_DENIED"}'); return; }
       finished = true;
       try {

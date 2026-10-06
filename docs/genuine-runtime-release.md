@@ -133,3 +133,22 @@ set targetCatalogObserved, runtimeCompatibilityQualified, preflightVerified and
 updateExecuted false. No RuntimeCompatibility/apply/rollback permit is created.
 The native changed-schema gate remains closed until a current opaque observation
 and full failed-update recovery prove the required original scope.
+
+## Native changed-schema runtime observation
+
+`with_migrated_runtime_compatibility` binds a retained private catalog to the signed
+prepared artifact and actual cached image layers. Under the existing exclusive
+profile/source/candidate operation fences it copies the complete candidate database
+into bounded tmpfs, reads original blobs/configuration readonly, verifies original
+inventory with the exact embedded original SQL prefix, starts/closes the actual new
+runtime, and verifies target SQL/catalog and all original rows/sequences/history and
+blobs. Configuration and both original physical source/candidate observations must
+remain exact. The database helper shares only its private loopback namespace with
+the immutable target helper; no published ports or writable original mounts exist.
+
+The returned opaque reference is borrowed only inside the fenced callback. Saved
+JSON cannot construct it. The catalog file is rechecked after the whole observation.
+Actual changed-schema compatibility observation does not itself grant admission,
+application, selected-host activation or image-only rollback. Existing full host/
+trust recovery and failure restoration gates remain required; the current executor
+still refuses changed-schema application until that full integration is qualified.
