@@ -41,6 +41,29 @@ impl Extraction {
                 self.next += 1;
                 continue;
             }
+            if let Some(original) = m.content_references.get(&e.path) {
+                let original = self.recovered.join(original);
+                let target = self.recovered.join(&e.path);
+                let mut input = file(&original)?;
+                let before = input.metadata().map_err(|_| fail())?;
+                let mut output = private_new(&target)?;
+                let copied = std::io::copy(&mut (&mut input).take(e.bytes + 1), &mut output)
+                    .map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
+                output.sync_all().map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
+                drop(output);
+                if copied != e.bytes
+                    || !unchanged(&before, &input.metadata().map_err(|_| fail())?)
+                    || !unchanged(
+                        &before,
+                        &fs::symlink_metadata(&original).map_err(|_| fail())?,
+                    )
+                    || hash(&target)? != (e.bytes, e.sha256.clone().ok_or_else(fail)?)
+                {
+                    return Err(fail());
+                }
+                self.next += 1;
+                continue;
+            }
             if self.output.is_none() {
                 self.output = Some(private_new(&self.recovered.join(&e.path))?);
                 self.remaining = e.bytes;

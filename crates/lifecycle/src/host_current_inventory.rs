@@ -40,29 +40,21 @@ impl Comparison {
     fn finish_item(&mut self) -> Result<()> {
         let m = self.inventory.as_ref().ok_or_else(fail)?;
         while let Some(e) = m.items.get(self.next) {
-            if e.kind == "directory" {
-                self.next += 1;
-                continue;
-            }
-            if self.remaining != 0 {
-                return Ok(());
-            }
-            if Some(format!("{:x}", self.hash.clone().finalize())) != e.sha256 {
-                return Err(fail());
+            if e.kind != "directory" && !m.content_references.contains_key(&e.path) {
+                if self.remaining != 0 {
+                    return Ok(());
+                }
+                if Some(format!("{:x}", self.hash.clone().finalize())) != e.sha256 {
+                    return Err(fail());
+                }
             }
             self.next += 1;
             self.hash = Sha256::new();
-            // Skip directories and initialize the following file (including empty files).
-            while m
+            self.remaining = m
                 .items
                 .get(self.next)
-                .is_some_and(|e| e.kind == "directory")
-            {
-                self.next += 1;
-            }
-            if let Some(e) = m.items.get(self.next) {
-                self.remaining = e.bytes;
-            }
+                .filter(|e| e.kind == "file" && !m.content_references.contains_key(&e.path))
+                .map_or(0, |e| e.bytes);
         }
         Ok(())
     }
