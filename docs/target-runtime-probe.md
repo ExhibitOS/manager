@@ -56,3 +56,12 @@ Maintenance image에는 `verifyMigratedInventory`와 explicit `migrationCatalog`
 이 결과는 Runtime 호환성 관측이다. Owned preflight/application/activation 및 실패한 변경 뒤 전체 host/config/image/data 복구·cold/crash 조건을 대신하지 않는다. 유지보수 이미지를 Runtime artifact 자체로 대체하지 않는다.
 
 Retained 합성 Prepared 검사의 서명이 만료되면 기존 unit fixture 키·개발 policy가 정확히 일치하는 경우에만 explicit ignored renewal 검사로 공개 `renew_prepared_update` API를 호출할 수 있다. 동일 계획과 artifact를 유지하고 trust sequence/generation을 올린다. DB·Runtime 사본을 새로 만들지 않지만, 갱신 전 generation에 결합된 checkpoint는 역사적 복원점이며 새 current recovery 검사에는 다시 qualification이 필요하다. 실제 개발/운영 키를 이 합성 테스트 키로 교체하지 않는다.
+
+
+## 서명된 작은 검사 공간의 변경 후 강제 종료
+
+Native `qualify_migrated_runtime_interruption`은 기존 signed Prepared 세션과 stopped 복원 후보를 재사용한다. 실제 target SQL migration·health·readiness·웹 응답을 관측한 뒤 Runtime을 종료하지 않은 상태로 기다리게 한다. Native host는 exact image/command/labels/read-only mounts/capabilities/tmpfs/network identity를 다시 검사하고 그 container ID에만 SIGKILL을 보낸다. 종료137·running false·restarting false·OOM false를 Docker에서 별도로 관측해야 한다. Runtime이 반환한 종료 요청이나 정상 종료 코드는 증거가 아니다.
+
+Runtime 종료 후에 유지된 임시 PostgreSQL에서 별도 maintenance 코드가 migrated inventory를 검증한다. PG를 먼저 닫으면 살아 있는 Runtime의 DB 연결 오류가 intended interruption을 가릴 수 있으므로 순서를 바꾸지 않는다. 원본 source/candidate DB와 host configuration은 전후 다시 관측하며 authority generation·Prepared 계획·선택 기록을 보존한다. 기존 volume은 읽기 전용이고 새 영구 DB volume이나 전체 host 백업을 만들지 않는다.
+
+이 API는 진단 JSON만 반환하며 `RuntimeCompatibility`·`OwnedPreflight`·복원 완료 proof를 생성하지 않는다. 강제 종료된 helper는 중단된 상태로 보존하고, 독립 maintenance 관측이 성공한 helper만 검증 후 정리한다. 실제 변경 실패 뒤 전체 원래 host/config/image/data의 복원·선택 전환·cold reopen은 별도로 입증해야 한다. 기존 업데이트 실행 gate를 이 진단으로 열지 않는다.
