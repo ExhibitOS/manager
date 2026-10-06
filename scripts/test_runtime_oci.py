@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Small real tar/OCI graph tests; no image execution, extraction or DB writes."""
-import hashlib,importlib.util,io,json,os,tarfile,tempfile,unittest
+import hashlib,importlib.util,io,json,os,re,subprocess,sys,tarfile,tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
 spec=importlib.util.spec_from_file_location('runtime_oci',Path(__file__).with_name('verify-runtime-oci.py'))
@@ -81,6 +81,20 @@ class QualificationTests(unittest.TestCase):
     with self.assertRaises(AssertionError):self.qualify(a)
     if (self.root/'alias.json').is_symlink():(self.root/'alias.json').unlink()
     if (self.root/'shared.json').exists():(self.root/'shared.json').unlink()
+ def test_actual_rust_embedded_entry_preserves_retained_manifest_contract(self):
+  a=self.args(self.old)
+  rust=Path(__file__).parents[1]/'crates/lifecycle/src/prepared_oci.rs'
+  entry=re.search(r'const ENTRY: &str = r#"(.*?)"#;',rust.read_text(),re.S).group(1)
+  compiled="__name__='exhibitos_embedded_oci'\n"+Path(__file__).with_name('verify-runtime-oci.py').read_text()+"\n"+entry
+  for pin in [digest(a.source_manifest.read_bytes()),'f'*64]:
+   with a.archive.open('rb') as archive,a.source_manifest.open('rb') as manifest:
+    r=subprocess.run([sys.executable,'-I','-c',compiled,str(a.archive),a.image,str(manifest.fileno()),a.source_commit,pin],stdin=archive,pass_fds=(manifest.fileno(),),capture_output=True)
+   if pin=='f'*64:self.assertNotEqual(r.returncode,0)
+   else:
+    self.assertEqual(r.returncode,0,r.stderr.decode());self.assertEqual(json.loads(r.stdout)['sourceManifestSha256'],pin)
+ def test_optimized_mode_cannot_disable_assertion_qualification(self):
+  r=subprocess.run([sys.executable,'-O',str(Path(__file__).with_name('verify-runtime-oci.py')),'--help'],capture_output=True)
+  self.assertNotEqual(r.returncode,0);self.assertIn(b'qualification requires assertions enabled',r.stderr)
  def test_migration_binding_strict_shape_order_names_and_schema(self):
   source=inventory(self.old);rows=inventory(self.old+[('002.sql',b'new')],'new')
   for fault in ['duplicate','unordered','path','unknown-field','empty','same-schema']:

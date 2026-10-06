@@ -45,9 +45,16 @@ def migration_binding(source,current,target=None,target_schema=None):
  # arbitrary data transformations, migration execution, health or recovery.
  return source_hash,target_schema,'strict-migration-extension',sha(target['migrations'])
 
-def qualify(a,f):
+def qualify(a,f,source_manifest_bytes=None):
  assert re.fullmatch(r'sha256:[a-f0-9]{64}',a.image) and re.fullmatch(r'[a-f0-9]{40}',a.source_commit)
- source,source_manifest_hash=private_json(a.source_manifest)
+ if source_manifest_bytes is None:
+  source,source_manifest_hash=private_json(a.source_manifest)
+ else:
+  # Internal Rust adapter already owns the private retained descriptor and checks
+  # its bytes against the authenticated plan pin. Do not reopen a pathname here.
+  assert isinstance(source_manifest_bytes,bytes) and 0<len(source_manifest_bytes)<=16*1024**2
+  source=json.loads(source_manifest_bytes,object_pairs_hook=unique)
+  source_manifest_hash=hashlib.sha256(source_manifest_bytes).hexdigest()
  assert source.get('kind')=='service-backup' and source.get('schemaVersion') in ('1.0.0-draft.1','1.0.0-draft.2')
  target_path=getattr(a,'target_inventory',None);target_pin=getattr(a,'target_inventory_sha256',None);target_schema=getattr(a,'target_schema_sha256',None)
  assert (target_path is None and target_pin is None and target_schema is None) or (target_path is not None and target_pin is not None and target_schema is not None)

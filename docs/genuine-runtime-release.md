@@ -88,3 +88,10 @@ proof. The inspector never loads, starts, extracts or migrates an image.
 Run `python3 -m unittest discover -s scripts -p test_runtime_oci.py -v` for small
 real OCI tar graph and input-refusal regression tests. Temporary synthetic archives
 are removed by the test fixture; original archives and data are untouched.
+
+The Rust embedded adapter passes its already authenticated retained manifest bytes
+directly to the inspector; it does not reopen a manifest pathname. Its exact
+compiled-in ENTRY text is exercised in an isolated Python child with both archive
+and manifest descriptors retained, including refusal of a mismatched manifest
+pin. The outer Rust execution/session and changed-schema admission gates still
+require their own qualification.
