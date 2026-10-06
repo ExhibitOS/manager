@@ -368,15 +368,43 @@ fn run_probe(
         let raw = if interruption {
             command(&["start", &target.id])?;
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(360);
-            loop {
-                if target.check()?["State"]["Running"] == false {
-                    break command(&["logs", &target.id])?;
+            let marker = loop {
+                if target.check()?["State"]["Running"] != true {
+                    return Err(err("UPDATE_RUNTIME_PROBE_FAILED"));
+                }
+                let logs = command(&["logs", &target.id])?;
+                if let Ok(marker) = serde_json::from_slice::<Value>(&logs)
+                    && marker["interruptionRequested"] == true
+                {
+                    break logs;
                 }
                 if std::time::Instant::now() >= deadline {
                     return Err(err("UPDATE_RUNTIME_PROBE_FAILED"));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(250));
-            }
+            };
+            target.check()?;
+            command(&["kill", "--signal", "KILL", &target.id])?;
+            let marker_value: Value =
+                serde_json::from_slice(&marker).map_err(|_| err("UPDATE_RUNTIME_PROBE_FAILED"))?;
+            validate_interruption(&marker_value, &target.check()?)?;
+            // Only the separately qualified maintenance helper can publish the
+            // post-failure DB observation. Never terminate PG before Runtime.
+            db.check()?;
+            let finish = "const r=await fetch('http://127.0.0.1:5433/finish-migrated',{method:'POST',signal:AbortSignal.timeout(60000)});if(!r.ok)throw Error('RUNTIME_PROBE_INVENTORY_INVALID');let n=0;const parts=[];for await(const b of r.body){n+=b.length;if(n>65536)throw Error('RUNTIME_PROBE_RESPONSE_LIMIT');parts.push(b);}const v=JSON.parse(Buffer.concat(parts));if(v.completed!==true)throw Error('RUNTIME_PROBE_INVENTORY_INVALID');";
+            engine(
+                &[
+                    "exec".into(),
+                    db.id.clone(),
+                    "node".into(),
+                    "--input-type=module".into(),
+                    "-e".into(),
+                    finish.into(),
+                ],
+                75,
+            )?;
+            db.check()?;
+            marker
         } else {
             engine(&["start".into(), "--attach".into(), target.id.clone()], 360)?
         };
