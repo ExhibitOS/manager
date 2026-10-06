@@ -362,7 +362,7 @@ fn run_probe(
             .as_ref()
             .ok_or_else(|| err("UPDATE_RUNTIME_PROBE_FAILED"))?;
         let raw = engine(&["start".into(), "--attach".into(), target.id.clone()], 360)?;
-        let proof: Value =
+        let mut proof: Value =
             serde_json::from_slice(&raw).map_err(|_| err("UPDATE_RUNTIME_PROBE_FAILED"))?;
         validate_proof(&proof, ctx.plan, migration)?;
         for _ in 0..100 {
@@ -383,6 +383,7 @@ fn run_probe(
         {
             return Err(err("UPDATE_RUNTIME_PROBE_FAILED"));
         }
+        trusted_terminal_observation(&mut proof, &done, ctx.plan, migration)?;
         target.retire()?;
         db.retire()?;
         Ok(proof)
@@ -395,6 +396,19 @@ fn run_probe(
         db.stop()?;
     }
     attempt
+}
+// Runtime health claims cannot replace independently observed migrated DB bytes.
+fn trusted_terminal_observation(
+    proof: &mut Value,
+    done: &Value,
+    plan: &crate::update::Plan,
+    migration: Option<&Value>,
+) -> Result<()> {
+    if let Some(input) = migration {
+        validate_migrated_inventory(&done["logical"], plan, input)?;
+        proof["logical"] = done["logical"].clone();
+    }
+    Ok(())
 }
 fn validate_proof(v: &Value, p: &crate::update::Plan, migration: Option<&Value>) -> Result<()> {
     let valid = v["uid"] == 1000
@@ -755,6 +769,46 @@ mod tests {
         let input = serde_json::json!({"targetMigrationsSha256":"0".repeat(64)});
         let valid = serde_json::json!({"operation":"migrated-inventory-preserved","backupId":p.backup_id,"authenticatedManifestSha256":p.backup_manifest,"sourceInventorySha256":p.source_inventory,"sourceSchemaSha256":p.source_schema,"targetSchemaSha256":p.target_schema,"targetMigrationsSha256":"0".repeat(64),"observedAt":"2026-10-06T00:00:00.000Z","originalDataPreserved":true,"currentInventoryVerified":false,"configurationVerified":false,"preflightVerified":false,"updateExecuted":false});
         validate_migrated_inventory(&valid, &p, &input).unwrap();
+        // Even a plausible Runtime success cannot stand in for the separate
+        // maintenance reader's terminal observation or grant update authority.
+        let mut runtime = serde_json::json!({"logical": valid.clone()});
+        assert!(
+            trusted_terminal_observation(
+                &mut runtime,
+                &serde_json::json!({"completed":true}),
+                &p,
+                Some(&input)
+            )
+            .is_err()
+        );
+        for field in [
+            "originalDataPreserved",
+            "preflightVerified",
+            "updateExecuted",
+        ] {
+            let mut forged = valid.clone();
+            forged[field] = Value::Bool(field != "originalDataPreserved");
+            assert!(
+                trusted_terminal_observation(
+                    &mut runtime,
+                    &serde_json::json!({"logical":forged}),
+                    &p,
+                    Some(&input)
+                )
+                .is_err()
+            );
+        }
+        let mut fresh = valid.clone();
+        fresh["observedAt"] = Value::String("2026-10-06T08:00:00.000Z".into());
+        trusted_terminal_observation(
+            &mut runtime,
+            &serde_json::json!({"logical":fresh}),
+            &p,
+            Some(&input),
+        )
+        .unwrap();
+        assert_eq!(runtime["logical"], fresh);
+
         for key in [
             "backupId",
             "authenticatedManifestSha256",
@@ -1043,6 +1097,55 @@ mod tests {
         println!("PASS_PUBLIC_SIGNED_MIGRATED_SESSION");
     }
     #[test]
+    #[ignore = "explicit retained synthetic development signing fixture; public renewal adds one authority generation, no runtime/data changes"]
+    fn renew_retained_synthetic_prepared_session_without_data_copy() {
+        let root =
+            fs::canonicalize(std::env::var("EXHIBITOS_SIGNED_SESSION_ROOT").unwrap()).unwrap();
+        let profile = root.join("profile");
+        let mut store = super::super::super::Store::open(&profile, "default").unwrap();
+        let intent = store.intent().unwrap().clone();
+        assert_eq!(intent.update.stage(), crate::update::Stage::Prepared);
+        let plan = intent.update.plan().clone();
+        let generation = store.current.generation;
+        let envelope: crate::signed_release::Envelope =
+            serde_json::from_str(&intent.envelope).unwrap();
+        let mut release: crate::signed_release::Release =
+            serde_json::from_str(&envelope.payload).unwrap();
+        // This constant is exclusively the existing unit fixture's public test
+        // key. Never renew a real profile or replace an unknown policy/key.
+        let signing = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
+        let public = signing
+            .verifying_key()
+            .to_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        assert_eq!(store.current.policy.public_keys, vec![public]);
+        assert_eq!(release.channel, "development");
+        assert_eq!(release.target, "linux-arm64");
+        let now = release_now().unwrap();
+        release.sequence = release.sequence.checked_add(1).unwrap();
+        release.issued_at = now - 1;
+        release.expires_at = now + 3600;
+        let renewed = super::super::super::tests::seal(&signing, &release);
+        let mut verified = store.verify(&renewed, now).unwrap();
+        verified
+            .verify_artifact(
+                &mut File::open(std::env::var("EXHIBITOS_SIGNED_ARTIFACT").unwrap()).unwrap(),
+            )
+            .unwrap();
+        store
+            .renew_prepared_update(&plan.operation_id, generation, &renewed, &verified, now)
+            .unwrap();
+        assert_eq!(store.current.generation, generation + 1);
+        assert_eq!(store.intent().unwrap().update.plan(), &plan);
+        assert_eq!(
+            store.intent().unwrap().update.stage(),
+            crate::update::Stage::Prepared
+        );
+        crate::restoration::private_bytes(&root.join(format!("prepared-renewal-{}.json", uuid::Uuid::new_v4())), &serde_json::to_vec_pretty(&serde_json::json!({"status":"PASS","originalGeneration":generation,"generation":store.current.generation,"operationId":plan.operation_id,"candidateReusedWithoutMutation":true,"newDataCopy":false,"executed":false,"oldCheckpointGenerationRequiresRequalification":true})).unwrap()).unwrap();
+    }
+    #[test]
     #[ignore = "explicit already-created complete signed Prepared fixture; reuse candidate without restoration or host copies"]
     fn actual_public_signed_migrated_session_reopens_prepared_fixture() {
         let input = |name| std::env::var(name).expect("explicit qualification input");
@@ -1104,7 +1207,7 @@ mod tests {
             assert_eq!(fs::read(original.join(name)).unwrap(), raw);
             assert_eq!(fs::read(source.join(name)).unwrap(), raw);
         }
-        crate::restoration::private_bytes(&root.join("reopened-session-report.json"),&serde_json::to_vec_pretty(&serde_json::json!({"status":"PASS","scope":"actual reopened public signed Prepared ExecutionSession; no admission/application/activation","receipt":receipt,"plan":plan,"authorityGenerationUnchanged":generation,"preparedIntentUnchanged":true,"originalSelectionPreserved":true,"originalFiveFilesPreserved":true,"preflightVerified":false,"updateExecuted":false})).unwrap()).unwrap();
+        crate::restoration::private_bytes(&root.join(format!("reopened-session-report-{}.json", uuid::Uuid::new_v4())),&serde_json::to_vec_pretty(&serde_json::json!({"status":"PASS","scope":"actual reopened public signed Prepared ExecutionSession; no admission/application/activation","receipt":receipt,"plan":plan,"authorityGenerationUnchanged":generation,"preparedIntentUnchanged":true,"originalSelectionPreserved":true,"originalFiveFilesPreserved":true,"preflightVerified":false,"updateExecuted":false})).unwrap()).unwrap();
     }
     #[test]
     fn inspected_helper_refuses_writable_sources_and_privilege_network_or_budget_changes() {

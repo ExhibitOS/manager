@@ -45,3 +45,14 @@ identity/bytes와 계획을 다시 확인하고 report에 plan·file SHA를 기�
 이 경로도 새로운 독립 synthetic 복사본의 Runtime/전체 inventory 관측이다.
 registered target에 target image를 적용하거나 활성 전시를 전환하는 명령이 아니며,
 전체 preflight·migration·health 실패·복원 실패·실제 rollback 인수 조건은 남는다.
+
+
+## 별도 유지보수 코드의 스키마 변경 관측
+
+Native `with_migrated_runtime_compatibility` 검사는 signed artifact/retained catalog를 확인한 뒤 기존 stopped 후보의 DB를 bounded tmpfs에 복사해 genuine target Runtime을 실행한다. Runtime 내부의 보존 검사에 더해, 별도로 지정·확인한 maintenance image가 같은 임시 DB에서 원본 manifest와 retained target migration catalog를 사용해 전체 inventory를 두 번 관측한다. 원본 blob mount는 읽기 전용이며 SQL 파일의 새 사본이나 추가 영구 DB volume을 만들지 않는다.
+
+Maintenance image에는 `verifyMigratedInventory`와 explicit `migrationCatalog` 수집 API가 있어야 한다. 해당 API가 없거나 관측이 실패하면 migrated 완료 endpoint는409로 거부하고 성공으로 표시하지 않는다. Native host는 Runtime 응답만으로 보존을 인정하지 않고, maintenance helper가 종료하며 기록한 exact plan/manifest/source inventory/target schema/migration digest와 false preflight/update 필드를 다시 확인한다. 별도 관측이 누락되거나 달라지면 거부한다.
+
+이 결과는 Runtime 호환성 관측이다. Owned preflight/application/activation 및 실패한 변경 뒤 전체 host/config/image/data 복구·cold/crash 조건을 대신하지 않는다. 유지보수 이미지를 Runtime artifact 자체로 대체하지 않는다.
+
+Retained 합성 Prepared 검사의 서명이 만료되면 기존 unit fixture 키·개발 policy가 정확히 일치하는 경우에만 explicit ignored renewal 검사로 공개 `renew_prepared_update` API를 호출할 수 있다. 동일 계획과 artifact를 유지하고 trust sequence/generation을 올린다. DB·Runtime 사본을 새로 만들지 않지만, 갱신 전 generation에 결합된 checkpoint는 역사적 복원점이며 새 current recovery 검사에는 다시 qualification이 필요하다. 실제 개발/운영 키를 이 합성 테스트 키로 교체하지 않는다.
