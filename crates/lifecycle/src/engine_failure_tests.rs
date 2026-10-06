@@ -88,3 +88,23 @@ fn engine_failure_native_timeout_waits_and_missing_tool_are_distinct() {
     let error = run(missing.to_str().unwrap(), &[], None, 1).unwrap_err();
     assert_eq!(error.code, "RUNTIME_MISSING");
 }
+
+#[test]
+#[ignore = "explicit local Docker exhausted address pool diagnosis; fresh empty probe only, no service or data volume changes"]
+fn engine_network_capacity_actual_docker_returns_safe_code() {
+    let name = format!("exhibitos-network-capacity-check-{}", Uuid::new_v4());
+    let result = run("docker", &["network".into(), "create".into(), "--label".into(), "com.exhibitos.probe=network-capacity".into(), name.clone()], None, 30);
+    if let Ok(output) = &result {
+        let id = std::str::from_utf8(output).unwrap().trim();
+        assert!(hash_valid(id));
+        let proof = backup_creation::inspected("docker", &["network".into(), "inspect".into(), id.into()]).unwrap();
+        assert_eq!(proof["Name"], name);
+        assert_eq!(proof["Labels"]["com.exhibitos.probe"], "network-capacity");
+        assert!(proof["Containers"].as_object().unwrap().is_empty());
+        run("docker", &["network".into(), "rm".into(), id.into()], None, 30).unwrap();
+    }
+    let error = result.expect_err("address pool is available; empty probe cleaned, exhaustion not reproduced");
+    assert_eq!(error.code, "ENGINE_NETWORK_CAPACITY");
+    assert!(!error.guidance.contains(&name));
+    println!("PASS_ACTUAL_DOCKER_NETWORK_CAPACITY_CODE_NO_SERVICE_MUTATION");
+}
