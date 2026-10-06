@@ -266,6 +266,90 @@ impl Store {
         }
         Ok(())
     }
+    /// Create current trust identity beside an existing fully authenticated host.
+    /// Every host byte must still match the current locked profile; no historical
+    /// source observation is inherited and no runtime/preflight is attested.
+    #[cfg(unix)]
+    pub fn checkpoint_existing_host(
+        &self,
+        host: &Path,
+        expected_manifest: &str,
+        key_file: &Path,
+        destination: &Path,
+        writers_stopped: bool,
+    ) -> crate::Result<CheckpointPairReceipt> {
+        self.check_root().map_err(|_| failure())?;
+        if !writers_stopped {
+            return Err(crate::err("HOST_WRITER_ACK_REQUIRED"));
+        }
+        let parent = destination.parent().ok_or_else(failure)?;
+        if !crate::hash_valid(expected_manifest)
+            || !destination.is_absolute()
+            || destination.exists()
+            || fs::canonicalize(parent).ok().as_deref() != Some(parent)
+            || destination.starts_with(&self.profile)
+            || destination.starts_with(&self.root)
+            || !key_file.is_absolute()
+            || fs::canonicalize(key_file).ok().as_deref() != Some(key_file)
+            || key_file.starts_with(&self.profile)
+            || key_file.starts_with(&self.root)
+            || host.starts_with(&self.profile)
+            || host.starts_with(&self.root)
+        {
+            return Err(failure());
+        }
+        installations::private_directory(parent)?;
+        let mut key = read_record(key_file).map_err(|_| failure())?;
+        let result = (|| {
+            let key_array: &[u8; 32] = key.as_slice().try_into().map_err(|_| failure())?;
+            let records = self.checkpoint_records().map_err(|_| failure())?;
+            let identity = archive(host)?;
+            let session = profile_backup::anchored_session(
+                &self.profile,
+                self._anchor.try_clone().map_err(|_| failure())?,
+                true,
+            )?;
+            let _legacy_locks = profile_backup::current_host_locks(&self.profile, &session)?;
+            let observe = || profile_backup::verify_host_current_borrowed(
+                &self.profile, host, key_array, &session, expected_manifest,
+            );
+            observe()?;
+            let stage = parent.join(format!("pending-existing-host-trust-{}", uuid::Uuid::new_v4()));
+            installations::new_directory(&stage)?;
+            self.archive_trust_checkpoint(&stage.join("trust.bin"), key_array)
+                .map_err(|_| failure())?;
+            observe()?;
+            let binding = PairBinding {
+                format: 1,
+                scope: self.scope.clone(),
+                generation: self.current.generation,
+                head_sha256: self.current_sha256.clone(),
+                host: identity.clone(),
+                trust: archive(&stage.join("trust.bin"))?,
+                host_manifest_sha256: expected_manifest.into(),
+                source: None,
+            };
+            write_binding(&binding, &stage.join("pair-binding.bin"), key_array)?;
+            observe()?;
+            if read_record(key_file).map_err(|_| failure())? != key
+                || self.checkpoint_records().map_err(|_| failure())? != records
+                || archive(host)? != identity
+            {
+                return Err(failure());
+            }
+            self.check_root().map_err(|_| failure())?;
+            session.check_exclusive(&self.profile)?;
+            sync_dir(&stage).map_err(|_| failure())?;
+            publish(&stage, destination).map_err(|_| failure())?;
+            sync_dir(parent).map_err(|_| failure())?;
+            self.verify_checkpoint_pair(
+                &destination.join("pair-binding.bin"), host,
+                &destination.join("trust.bin"), key_array,
+            ).map(|proof| proof.receipt())
+        })();
+        key.fill(0);
+        result
+    }
     /// Refresh only the small trust archive/catalog after full read-only host verification.
     /// `previous` is [catalog, host archive, trust archive]. The host remains externally
     /// retained; no source binding is inherited. Only unchanged Prepared history is accepted.
@@ -643,6 +727,53 @@ mod tests {
             .bind_observed_checkpoint(&proof, &pair.join("bound.bin"), &[4; 32])
             .unwrap();
         (profile, store, release, pair)
+    }
+    #[test]
+    fn existing_host_checkpoint_creates_only_current_trust_without_inherited_source() {
+        let (profile, mut store, _, pair) = fixture();
+        let key = profile.parent().unwrap().join("pair-key");
+        let host = pair.join("host.bin");
+        let prior = read_binding(&pair.join("bound.bin"), &[4; 32]).unwrap();
+        let policy = store.current.policy.clone();
+        store.replace_policy(policy, store.current.policy_generation, 23).unwrap();
+        let records = store.checkpoint_records().unwrap();
+        let output = profile.parent().unwrap().join("existing-host-current");
+        let result = store.checkpoint_existing_host(
+            &host, &prior.host_manifest_sha256, &key, &output, true,
+        ).unwrap();
+        assert_eq!(result.generation, store.current.generation);
+        assert!(!result.source_plan_bound);
+        assert_eq!(result.host_archive_sha256, prior.host.sha256);
+        assert!(!output.join("host.bin").exists());
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 2);
+        assert_eq!(store.checkpoint_records().unwrap(), records);
+        assert!(store.checkpoint_existing_host(
+            &host, &prior.host_manifest_sha256, &key, &output, true,
+        ).is_err());
+    }
+    #[test]
+    fn existing_host_checkpoint_refuses_wrong_key_changed_profile_and_missing_ack() {
+        let (profile, store, _, pair) = fixture();
+        let key = profile.parent().unwrap().join("pair-key");
+        let host = pair.join("host.bin");
+        let prior = read_binding(&pair.join("bound.bin"), &[4; 32]).unwrap();
+        let output = profile.parent().unwrap().join("existing-host-refused");
+        let records = store.checkpoint_records().unwrap();
+        assert_eq!(store.checkpoint_existing_host(
+            &host, &prior.host_manifest_sha256, &key, &output, false,
+        ).unwrap_err().code, "HOST_WRITER_ACK_REQUIRED");
+        assert!(store.checkpoint_existing_host(&host, &"f".repeat(64), &key, &output, true).is_err());
+        let wrong = profile.parent().unwrap().join("wrong-pair-key");
+        private_file(&wrong, true).unwrap().write_all(&[5; 32]).unwrap();
+        assert!(store.checkpoint_existing_host(
+            &host, &prior.host_manifest_sha256, &wrong, &output, true,
+        ).is_err());
+        private_file(&profile.join("new-witness"), true).unwrap().write_all(b"changed").unwrap();
+        assert!(store.checkpoint_existing_host(
+            &host, &prior.host_manifest_sha256, &key, &output, true,
+        ).is_err());
+        assert!(!output.exists());
+        assert_eq!(store.checkpoint_records().unwrap(), records);
     }
     #[test]
     fn refreshed_trust_reuses_exact_host_and_drops_source_observation() {

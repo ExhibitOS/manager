@@ -200,3 +200,10 @@ a new signed update or replace the separate actual restoration acceptance gate.
 `verify-host-current` currently qualifies Unix host locking only. Windows and
 other non-Unix hosts refuse with `HOST_PLATFORM_UNVERIFIED` before reading or
 creating host paths; native qualification remains a separate gate.
+
+
+### Reuse a completely current host archive
+
+On Unix, `exhibitos-update checkpoint-existing-host --profile <absolute-profile> --installation default --key-file <external-key> --host-archive <retained-host.bin> --host-manifest <sha256> --destination <new-external-directory> --host-writers-stopped --apps-closed` authenticates the entire archive and matches current files, directories, bytes and modes under profile/root locks before and after creating a current trust archive. Only `trust.bin` and `pair-binding.bin` are published; the host remains at its retained path. Changed files, wrong key/manifest, unsafe paths or existing destination refuse publication.
+
+This creates current identity with `sourcePlanBound=false`; it does not inherit any historical source observation, restore host or authority, activate a runtime, or qualify preflight. Current native source/candidate observations and a source-bound finalization remain required before update execution. Do not substitute this receipt for those gates.
