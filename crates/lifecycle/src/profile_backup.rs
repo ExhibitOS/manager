@@ -12,7 +12,7 @@ use aes_gcm::{
 pub use host_checkpoint::{HostCurrentReceipt, HostReceipt, checkpoint_host, extract_host};
 pub(crate) use host_checkpoint::{
     activate_missing_host, checkpoint_host_anchored, checkpoint_host_borrowed,
-    verify_extracted_host, verify_host_current_borrowed,
+    recheck_extracted_host_current, verify_extracted_host, verify_host_current_borrowed,
 };
 use std::collections::BTreeMap;
 const MAGIC: &[u8] = b"ExhibitOS-profile-v1\0";

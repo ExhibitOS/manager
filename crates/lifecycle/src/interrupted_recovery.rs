@@ -49,11 +49,42 @@ impl ExecutionSession<'_> {
         artifact: &mut PreparedArtifact,
         i: &InterruptedRecoveryInputs<'_>,
     ) -> Result<Value> {
+        self.qualify_interrupted_recovery_mode(artifact, i, false)
+    }
+    /// Reobserve an already restored private candidate without copying or
+    /// overwriting it. Native plan/host/trust/data/config/image checks all rerun.
+    pub fn recheck_interrupted_original_recovery(
+        &self,
+        artifact: &mut PreparedArtifact,
+        i: &InterruptedRecoveryInputs<'_>,
+    ) -> Result<Value> {
+        self.qualify_interrupted_recovery_mode(artifact, i, true)
+    }
+    fn qualify_interrupted_recovery_mode(
+        &self,
+        artifact: &mut PreparedArtifact,
+        i: &InterruptedRecoveryInputs<'_>,
+        reopening: bool,
+    ) -> Result<Value> {
         self.check()?;
         if !i.runtime.external_writers_quiesced {
             return Err(err("BACKUP_OPERATOR_ACK_REQUIRED"));
         }
-        output_boundary(&self.store.profile, &self.store.root, i)?;
+        if reopening {
+            installations::private_directory(i.destination)?;
+            if fs::canonicalize(i.destination).ok().as_deref() != Some(i.destination)
+                || i.destination.starts_with(&self.store.profile)
+                || i.destination.starts_with(&self.store.root)
+                || self.store.profile.starts_with(i.destination)
+                || self.store.root.starts_with(i.destination)
+                || i.port < 1024
+                || [i.host_key_file, i.service_key_file, i.service_archive, i.runtime.checkpoint.host, i.runtime.checkpoint.trust, i.runtime.checkpoint.binding].iter().any(|p| p.starts_with(i.destination))
+            {
+                return Err(err("HOST_CHECKPOINT_INVALID"));
+            }
+        } else {
+            output_boundary(&self.store.profile, &self.store.root, i)?;
+        }
         let cp = &i.runtime.checkpoint;
         let checkpoint = self
             .store
@@ -70,7 +101,8 @@ impl ExecutionSession<'_> {
         {
             return Err(err("PROFILE_KEY_INVALID"));
         }
-        // Reserve a complete host copy, authentication/deployment growth and floor.
+        // Fresh restoration reserves all copies; reobservation only stages the signed
+        // artifact. Keep the signed plan reserve and 6 GiB free floor in both modes.
         crate::maintenance::input_path(i.service_archive, true)?;
         let mut total = 0u64;
         let mut pending = vec![i.service_archive.to_owned()];
@@ -96,10 +128,13 @@ impl ExecutionSession<'_> {
                 return Err(err("BACKUP_PATH_INVALID"));
             }
         }
-        let peak = total
-            .checked_mul(3)
-            .and_then(|n| n.checked_add(checkpoint.receipt().host_archive_bytes))
-            .and_then(|n| n.checked_add(artifact.plan.required_free_bytes))
+        let additional = if reopening {
+            artifact.verified.release.artifact.bytes
+        } else {
+            total.checked_mul(3).and_then(|n| n.checked_add(checkpoint.receipt().host_archive_bytes)).ok_or_else(|| err("STORAGE_QUOTA"))?
+        };
+        let peak = additional
+            .checked_add(artifact.plan.required_free_bytes)
             .and_then(|n| n.checked_add(6 * 1024 * 1024 * 1024))
             .ok_or_else(|| err("STORAGE_QUOTA"))?;
         if fs2::available_space(i.destination.parent().unwrap())
@@ -124,23 +159,61 @@ impl ExecutionSession<'_> {
             self.store.recheck_checkpoint_pair(&checkpoint,cp.binding,cp.host,cp.trust,cp.key)?;
             let before=ephemeral_inventory::observe_source(ctx,i.runtime.maintenance_image)?;
             let old_candidate=ephemeral_inventory::observe(ctx,i.runtime.maintenance_image)?;
-            // All output is fresh; the live profile and failed helper remain intact.
-            output_boundary(&self.store.profile,&self.store.root,i)?;
-            installations::new_directory(i.destination)?;
-            let host=crate::profile_backup::extract_host(&self.store.profile,i.host_key_file,cp.host,&i.destination.join("host"),true)?;
-            if host.manifest_sha256!=checkpoint.receipt().host_manifest_sha256 {return Err(err("RECOVERY_PAIR_INVALID"));}
-            let trust=self.store.extract_trust_checkpoint(cp.trust,&i.destination.join("trust"),cp.key).map_err(|e|err(e.code()))?;
-            let service_root=i.destination.join("services");installations::new_directory(&service_root)?;
+            let (host,trust) = if reopening {
+                let current=crate::profile_backup::verify_host_current_borrowed(&self.store.profile,cp.host,cp.key,&self._session,&checkpoint.receipt().host_manifest_sha256)?;
+                let host=crate::profile_backup::recheck_extracted_host_current(&self.store.profile,&i.destination.join("host"),&current)?;
+                let trust=self.store.verify_trust_checkpoint(&i.destination.join("trust")).map_err(|e|err(e.code()))?;
+                (host,trust)
+            } else {
+                output_boundary(&self.store.profile,&self.store.root,i)?;
+                installations::new_directory(i.destination)?;
+                let host=crate::profile_backup::extract_host(&self.store.profile,i.host_key_file,cp.host,&i.destination.join("host"),true)?;
+                if host.manifest_sha256!=checkpoint.receipt().host_manifest_sha256 {return Err(err("RECOVERY_PAIR_INVALID"));}
+                let trust=self.store.extract_trust_checkpoint(cp.trust,&i.destination.join("trust"),cp.key).map_err(|e|err(e.code()))?;
+                (host,trust)
+            };
+            let service_root=i.destination.join("services");
+            if reopening { installations::private_directory(&service_root)?; }
+            else { installations::new_directory(&service_root)?; }
             let service=LifecycleService::open_retry_diagnostics(service_root.clone())?;
             let guard=service.lock()?;
             let binding=crate::restoration::RestorationBinding::from_plan(ctx.plan)?;
-            let restored=service.restore_update_candidate_locked(i.runtime.maintenance_image,i.service_key_file,i.service_archive,i.port,&binding,&guard)?;
+            let restored:crate::restoration::RestorationReceipt=if reopening {
+                let job:crate::restoration::RestorationJob=crate::read_json(&service_root.join("restoration.json"))?;
+                if job.state!="completed" || job.stage!="complete" || !installations::uuid(&job.id) {return Err(err("UPDATE_ROLLBACK_PROOF_MISSING"));}
+                let receipt:crate::restoration::RestorationReceipt=crate::read_json(&service_root.join(format!("restore-{}/receipt.json",job.id)))?;
+                binding.check_receipt(&receipt)?;
+                let m=service.manifest()?;
+                service.validate_ownership(&m,"docker")?;service.validate_volumes(&m,"docker")?;
+                let workspace=service_root.join(format!("restore-{}",receipt.id));
+                check_restored_source_files(&self.source.root,&workspace,&receipt,ctx.plan)?;
+                let raw=crate::installation_backup::source_bytes(&workspace.join("authenticated"),"manifest.json",16*1024*1024,true)?;
+                binding.authenticated(&receipt.backup_id,&receipt.authenticated_manifest_sha256,&raw)?;
+                if let Err(error)=service.operation(&crate::Action::Start) {
+                    service.validate_ownership(&m,"docker")?;service.validate_volumes(&m,"docker")?;
+                    crate::run("docker",&crate::compose_args(&m,&["stop","--timeout","30"]),Some(&service_root.join("bundle")),180)?;
+                    service.check_restoration_guard(&guard)?;
+                    return Err(error);
+                }
+                receipt
+            } else {service.restore_update_candidate_locked(i.runtime.maintenance_image,i.service_key_file,i.service_archive,i.port,&binding,&guard)?};
             let attempt=(|| -> Result<Value>{
                 binding.check_receipt(&restored)?;
                 let workspace=service_root.join(format!("restore-{}",restored.id));
                 check_restored_source_files(&self.source.root,&workspace,&restored,ctx.plan)?;
                 let m=service.manifest()?;
                 let raw=crate::installation_backup::source_bytes(&workspace.join("authenticated"),"manifest.json",16*1024*1024,true)?;
+                // HTTP readiness may precede Docker's first scheduled healthcheck.
+                // Retain all image/ownership/volume/readiness gates; only bounded waiting.
+                let deadline=std::time::Instant::now()+std::time::Duration::from_secs(90);
+                loop {
+                    service.check_restoration_guard(&guard)?;
+                    match super::super::rollback_runtime::pair(&service,&m,ctx.plan) {
+                        Ok(_)=>break,
+                        Err(e) if e.code=="UPDATE_ROLLBACK_HEALTH_FAILED" && std::time::Instant::now()<deadline=>std::thread::sleep(std::time::Duration::from_millis(250)),
+                        Err(e)=>return Err(e),
+                    }
+                }
                 let mut observations=Vec::new();
                 for _ in 0..2 {
                     service.check_restoration_guard(&guard)?;
@@ -275,7 +348,12 @@ mod tests {
         let parent = profile.parent().unwrap();
         let staging = parent.join(format!("failed-recovery-staging-{}", uuid::Uuid::new_v4()));
         installations::new_directory(&staging).unwrap();
-        let destination = parent.join(format!("failed-recovery-output-{}", uuid::Uuid::new_v4()));
+        let existing = std::env::var("EXHIBITOS_FAILED_RECOVERY_RECHECK_DESTINATION")
+            .ok()
+            .map(PathBuf::from);
+        let destination = existing.clone().unwrap_or_else(|| {
+            parent.join(format!("failed-recovery-output-{}", uuid::Uuid::new_v4()))
+        });
         let host = PathBuf::from(option("--host-archive"));
         let trust = PathBuf::from(option("--trust-archive"));
         let binding = PathBuf::from(option("--pair-binding"));
@@ -315,7 +393,11 @@ mod tests {
         let mut artifact = session
             .stage_prepared_artifact(&PathBuf::from(option("--artifact")), &staging)
             .unwrap();
-        let result = session.qualify_interrupted_migrated_recovery(&mut artifact, &inputs);
+        let result = if existing.is_some() {
+            session.recheck_interrupted_original_recovery(&mut artifact, &inputs)
+        } else {
+            session.qualify_interrupted_migrated_recovery(&mut artifact, &inputs)
+        };
         drop(session);
         let report = parent.join(format!(
             "failed-recovery-report-{}.json",
