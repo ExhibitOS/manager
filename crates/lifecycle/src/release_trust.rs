@@ -49,6 +49,11 @@ struct Record {
 mod authority_recovery_vault;
 #[cfg(unix)]
 pub use authority_recovery_vault::{AuthorityReconciliationReceipt, AuthorityRecoveryReceipt};
+#[cfg(unix)]
+#[path = "selection_activation.rs"]
+mod selection_activation;
+#[cfg(unix)]
+pub use selection_activation::SelectionActivationReceipt;
 #[path = "authority_selection.rs"]
 mod authority_selection;
 #[path = "trust_checkpoint.rs"]

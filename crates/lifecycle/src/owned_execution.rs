@@ -155,7 +155,7 @@ pub struct PreparedArtifactReceipt {
     pub update_executed: bool,
 }
 // Lifecycle log timestamps use milliseconds; signed release times are Unix seconds.
-fn release_now() -> crate::Result<u64> {
+pub(super) fn release_now() -> crate::Result<u64> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|v| v.as_secs())

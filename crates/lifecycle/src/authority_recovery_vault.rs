@@ -406,6 +406,11 @@ pub(super) struct InactiveAuthorityProof {
     head_sha256: String,
 }
 impl Store {
+    /// Read-only current complete independent authority verification. This grants
+    /// no execution permission and cannot replace an owned admission.
+    pub fn verify_authority_recovery(&self) -> Result<(), Error> {
+        self.require_authority_recovery()
+    }
     pub(super) fn require_authority_recovery(&self) -> Result<(), Error> {
         self.check_root()?;
         self.recovery

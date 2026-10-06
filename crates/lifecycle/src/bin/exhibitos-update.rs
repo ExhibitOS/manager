@@ -289,7 +289,7 @@ fn run() -> Result<(), String> {
     }
     let code = |e: signed_release::Error| e.code().to_string();
     let usage = || {
-        "UPDATE_USAGE: reconcile-authority|enroll-authority-recovery|restore-missing-authority|restore-rollback-missing-host|restore-bound-missing-host|trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|register-update-target|discard-update-intent|execution-status|verify-update-backup|verify-update-source-stopped|verify-update-source-deployment|verify-update-source-configuration|verify-update-source-images|snapshot-update-source-database|verify-update-source-inventory|verify-update-configuration-inventory|prepare-update-candidate require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
+        "UPDATE_USAGE: execute-full-update|reconcile-selection-activation|reconcile-authority|enroll-authority-recovery|restore-missing-authority|restore-rollback-missing-host|restore-bound-missing-host|trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|register-update-target|discard-update-intent|execution-status|verify-update-backup|verify-update-source-stopped|verify-update-source-deployment|verify-update-source-configuration|verify-update-source-images|snapshot-update-source-database|verify-update-source-inventory|verify-update-configuration-inventory|prepare-update-candidate require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
     };
     if a.len() < 7
         || a[2] != "--profile"
@@ -300,6 +300,25 @@ fn run() -> Result<(), String> {
     }
     let profile = Path::new(&a[3]);
     let installation = &a[5];
+    if a[1] == "reconcile-selection-activation" {
+        if a.len() != 9 || a[6] != "--operation-id" {
+            return Err(usage());
+        }
+        #[cfg(unix)]
+        {
+            let mut store = Store::open(profile, installation).map_err(code)?;
+            let receipt = store
+                .reconcile_selection_activation(&a[7])
+                .map_err(|e| e.code)?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).map_err(|_| "UPDATE_RESULT_INVALID")?
+            );
+            return Ok(());
+        }
+        #[cfg(not(unix))]
+        return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
+    }
     if a[1] == "reconcile-authority" {
         if a.len() != 7 {
             return Err(usage());
@@ -479,9 +498,12 @@ fn run() -> Result<(), String> {
     }
     if matches!(
         a[1].as_str(),
-        "qualify-current-recovery-runtime" | "qualify-full-recovery-runtime"
+        "qualify-current-recovery-runtime"
+            | "qualify-full-recovery-runtime"
+            | "execute-full-update"
     ) {
-        let full = a[1] == "qualify-full-recovery-runtime";
+        let execute = a[1] == "execute-full-update";
+        let full = a[1] == "qualify-full-recovery-runtime" || execute;
         if a.len() != if full { 30 } else { 28 }
             || a[6] != "--artifact"
             || a[8] != "--staging-parent"
@@ -498,9 +520,17 @@ fn run() -> Result<(), String> {
         {
             return Err(usage());
         }
+        #[cfg(not(unix))]
+        if execute {
+            return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
+        }
         let mut key = checkpoint_key(Path::new(&a[23]), profile)?;
         let result = (|| {
             let mut store = Store::open(profile, installation).map_err(code)?;
+            #[cfg(unix)]
+            if execute {
+                store.verify_authority_recovery().map_err(code)?;
+            }
             // Authenticate current checkpoint before staging any artifact bytes.
             let checkpoint = signed_release::trust::CheckpointInputs {
                 binding: Path::new(&a[25]),
@@ -519,7 +549,8 @@ fn run() -> Result<(), String> {
             if !proof.receipt().source_plan_bound {
                 return Err("UPDATE_RECOVERY_CHECKPOINT_UNBOUND".into());
             }
-            let session = store.execution().map_err(|e| e.code.to_string())?;
+            #[allow(unused_mut)]
+            let mut session = store.execution().map_err(|e| e.code.to_string())?;
             let mut artifact = session
                 .stage_prepared_artifact(Path::new(&a[7]), Path::new(&a[9]))
                 .map_err(|e| e.code.to_string())?;
@@ -531,6 +562,21 @@ fn run() -> Result<(), String> {
                 maintenance_image: &a[15],
                 external_writers_quiesced: true,
             };
+            #[cfg(unix)]
+            if execute {
+                let admitted = session
+                    .prepare_owned_update(
+                        &mut artifact,
+                        &inputs,
+                        Path::new(&a[27]),
+                        Path::new(&a[23]),
+                    )
+                    .map_err(|e| e.code.to_string())?;
+                let started = admitted.begin().map_err(|e| e.code.to_string())?;
+                let ready = started.apply_candidate().map_err(|e| e.code.to_string())?;
+                let completed = ready.activate().map_err(|e| e.code.to_string())?;
+                return Ok(serde_json::json!({"selection":completed,"updateExecuted":true}));
+            }
             if full {
                 session.qualify_full_recovery_runtime(
                     &mut artifact,
