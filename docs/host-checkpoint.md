@@ -87,3 +87,8 @@ python3 scripts/test-host-checkpoint.py --profile-cli '<built exhibitos-profile>
 허가하지 않습니다. 기존 owned update 경로의 동일 schema 조건은 유지합니다.
 검사 결과는 해당 source commit과 실제 실행에 한해서 기록하며, 전체 실패 복원·cold/crash
 검사가 완료되기 전에는 changed-schema 업데이트를 완료로 처리하지 않습니다.
+
+
+## 독립 신뢰 보관소의 비활성 복원 검사
+
+`exhibitos-update qualify-inactive-authority-recovery --profile /absolute/private/profile --installation default --destination /absolute/private/new-authority --apps-closed`는 현재 등록된 독립 보관소에서 전체 신뢰 기록을 새 공간으로 복원합니다. 프로필·호스트 잠금을 유지하며 원래 authority와 전체 기록이 일치하는지 재검사합니다. 목적지는 기존 파일을 덮어쓰지 않으며 profile/vault 안에 만들 수 없습니다. 결과는 실제 비활성 복원 관측만 증명하고 live authority/host/service 활성화와 preflight/update를 허가하지 않습니다. 기존 원래 authority가 없어졌을 때의 `restore-missing-authority` 검사는 별도로 수행해야 합니다.

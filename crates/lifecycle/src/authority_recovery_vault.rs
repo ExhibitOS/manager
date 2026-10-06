@@ -411,6 +411,35 @@ impl Store {
     pub fn verify_authority_recovery(&self) -> Result<(), Error> {
         self.require_authority_recovery()
     }
+    /// Diagnostic restoration of the complete current independent authority chain.
+    /// Retains the profile/host fences; never activates it or issues an update permit.
+    pub fn qualify_inactive_authority_recovery(
+        &self,
+        destination: &Path,
+    ) -> Result<serde_json::Value, Error> {
+        self.require_authority_recovery()?;
+        let anchor = self._anchor.try_clone().map_err(|_| invalid())?;
+        let session =
+            profile_backup::anchored_session(&self.profile, anchor, true).map_err(|_| invalid())?;
+        let _locks =
+            profile_backup::current_host_locks(&self.profile, &session).map_err(|_| invalid())?;
+        let proof = self.restore_inactive_authority(destination)?;
+        session
+            .check_exclusive(&self.profile)
+            .map_err(|_| invalid())?;
+        self.recheck_inactive_authority(&proof)?;
+        Ok(serde_json::json!({
+            "generation": proof.generation,
+            "records": self.recovery.as_ref().ok_or_else(invalid)?.latest()?.len(),
+            "headSha256": proof.head_sha256,
+            "currentAuthorityInactiveRestorationVerified": true,
+            "liveAuthorityRestored": false,
+            "hostRestored": false,
+            "servicesRestored": false,
+            "preflightVerified": false,
+            "updateExecuted": false
+        }))
+    }
     pub(super) fn require_authority_recovery(&self) -> Result<(), Error> {
         self.check_root()?;
         self.recovery
@@ -769,6 +798,39 @@ mod tests {
     }
     fn retire(p: &Path) {
         fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+    #[test]
+    fn public_inactive_authority_diagnostic_preserves_original_and_refuses_reuse() {
+        let (p, s, vault) = setup();
+        let destination = p.parent().unwrap().join("diagnostic-authority");
+        let original = bytes(&s.root);
+        let intent = serde_json::to_vec(&s.current.intent).unwrap();
+        let receipt = s.qualify_inactive_authority_recovery(&destination).unwrap();
+        assert_eq!(receipt["currentAuthorityInactiveRestorationVerified"], true);
+        for field in [
+            "liveAuthorityRestored",
+            "hostRestored",
+            "servicesRestored",
+            "preflightVerified",
+            "updateExecuted",
+        ] {
+            assert_eq!(receipt[field], false);
+        }
+        assert_eq!(bytes(&destination), original);
+        assert!(s.qualify_inactive_authority_recovery(&destination).is_err());
+        assert!(
+            s.qualify_inactive_authority_recovery(Path::new("relative"))
+                .is_err()
+        );
+        assert!(
+            s.qualify_inactive_authority_recovery(&p.join("forbidden"))
+                .is_err()
+        );
+        assert_eq!(bytes(&s.root), original);
+        assert_eq!(bytes(&vault.join("records")), original);
+        assert_eq!(serde_json::to_vec(&s.current.intent).unwrap(), intent);
+        drop(s);
+        retire(&p);
     }
     #[test]
     fn owned_preflight_authority_restore_uses_exact_current_chain_and_refuses_stale_proof() {
