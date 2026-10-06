@@ -1081,7 +1081,7 @@ impl LifecycleService {
                 };
                 self.finish_maintenance(state, Some(&error.code))?;
                 Err(err(
-                    if ["CANCELLED", "CANCEL_UNCERTAIN"].contains(&error.code.as_str()) {
+                    if ["CANCELLED", "CANCEL_UNCERTAIN", "ENGINE_NETWORK_CAPACITY"].contains(&error.code.as_str()) {
                         &error.code
                     } else {
                         "RESTORE_FAILED"

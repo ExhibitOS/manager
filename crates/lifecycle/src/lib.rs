@@ -189,6 +189,7 @@ fn same_local_image_id(actual: &str, reference: &str) -> bool {
 }
 fn err(code: &str) -> LifecycleError {
     let guidance = match code {
+        "ENGINE_NETWORK_CAPACITY" => "Docker의 기본 네트워크 주소 풀이 소진되었습니다. 기존 데이터와 실패 후보를 보존하고, 연결 중인 네트워크를 삭제하지 말고 전용 주소 범위를 검증한 뒤 새 복구 후보를 준비하세요.",
         "WINDOWS_PROFILE_PUBLICATION_UNCERTAIN" => {
             "기록 교체의 완료 여부를 확인할 수 없습니다. 앱을 닫고 현재 기록과 임시 후보를 보존한 뒤 상태를 진단하세요. 확인 없이 같은 작업을 다시 실행하지 마세요."
         }
@@ -853,6 +854,8 @@ fn run_observed_inputs(
         .to_lowercase();
         return Err(err(if text.contains("permission denied") {
             "ENGINE_PERMISSION"
+        } else if text.contains("all predefined address pools have been fully subnetted") {
+            "ENGINE_NETWORK_CAPACITY"
         } else if text.contains("address already in use")
             || text.contains("port is already allocated")
         {

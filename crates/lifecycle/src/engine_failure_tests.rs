@@ -20,6 +20,7 @@ fn main() {
         "permission" => eprintln!("permission denied SYNTHETIC_PRIVATE_OUTPUT"),
         "port" => eprintln!("port is already allocated SYNTHETIC_PRIVATE_OUTPUT"),
         "address" => eprintln!("address already in use SYNTHETIC_PRIVATE_OUTPUT"),
+        "network-capacity" => eprintln!("all predefined address pools have been fully subnetted SYNTHETIC_PRIVATE_OUTPUT"),
         "unknown" => eprintln!("SYNTHETIC_PRIVATE_OUTPUT"),
         "success" => { print!("exact-output"); eprintln!("SYNTHETIC_PRIVATE_OUTPUT"); return; },
         "timeout" => std::thread::sleep(std::time::Duration::from_secs(10)),
@@ -61,6 +62,7 @@ fn engine_failure_native_permission_and_port_codes_never_repeat_private_output()
         ("permission", "ENGINE_PERMISSION"),
         ("port", "PORT_IN_USE"),
         ("address", "PORT_IN_USE"),
+        ("network-capacity", "ENGINE_NETWORK_CAPACITY"),
         ("unknown", "ENGINE_OPERATION_FAILED"),
     ] {
         let error = run(fixture().to_str().unwrap(), &[mode.into()], None, 5).unwrap_err();
