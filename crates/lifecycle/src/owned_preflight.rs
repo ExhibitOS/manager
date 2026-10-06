@@ -126,6 +126,9 @@ impl<'session, 'store, 'inputs> OwnedPreflight<'session, 'store, 'inputs> {
         self.session.check()?;
         self.session.require_selected_source()?;
         self.session.reverify_prepared_artifact(self.artifact)?;
+        if let Some(catalog) = &self.migration {
+            catalog.borrow_mut().recheck_for_schema(&self.artifact.plan.target_schema)?;
+        }
         self.lease.check(&self.session.source)?;
         let cp = &self.inputs.checkpoint;
         self.session.store.recheck_checkpoint_pair(
