@@ -65,3 +65,12 @@ Native `qualify_migrated_runtime_interruption`은 기존 signed Prepared 세션�
 Runtime 종료 후에 유지된 임시 PostgreSQL에서 별도 maintenance 코드가 migrated inventory를 검증한다. PG를 먼저 닫으면 살아 있는 Runtime의 DB 연결 오류가 intended interruption을 가릴 수 있으므로 순서를 바꾸지 않는다. 원본 source/candidate DB와 host configuration은 전후 다시 관측하며 authority generation·Prepared 계획·선택 기록을 보존한다. 기존 volume은 읽기 전용이고 새 영구 DB volume이나 전체 host 백업을 만들지 않는다.
 
 이 API는 진단 JSON만 반환하며 `RuntimeCompatibility`·`OwnedPreflight`·복원 완료 proof를 생성하지 않는다. 강제 종료된 helper는 중단된 상태로 보존하고, 독립 maintenance 관측이 성공한 helper만 검증 후 정리한다. 실제 변경 실패 뒤 전체 원래 host/config/image/data의 복원·선택 전환·cold reopen은 별도로 입증해야 한다. 기존 업데이트 실행 gate를 이 진단으로 열지 않는다.
+
+
+## 중단 후 원래 서비스의 새 복원 후보
+
+Unix native `qualify_interrupted_migrated_recovery`은 현재 source-bound host/trust checkpoint와 서명된 Prepared 계획을 먼저 확인한다. 해당 세션에서 변경된 Runtime의 실제 강제 종료를 검사한 다음, 완전한 host/trust를 새 비활성 공간에 추출하고 원래 암호화 서비스 백업을 새 프로젝트·볼륨·설정·이미지로 복원한다. Service backup ID, manifest, inventory, 원래 schema와 Runtime image는 원래 계획에서 결합하며 호출자가 성공 receipt를 주입하지 않는다.
+
+실제 이전 Runtime의 image/ownership/volume/readiness를 확인하고 별도 maintenance 코드로 원래 configuration·전체 DB/blob inventory를 두 번 관측한다. 새 프로젝트만 ownership·volume identity를 다시 확인한 뒤 정지하며 데이터와 실패 자료를 보존한다. 기존 source/candidate 물리·논리 inventory와 profile 파일, generation·Prepared·선택 기록은 보존해야 한다. 새 대상이 이미 존재하거나 profile/authority/key/archive를 포함하거나 alias 경로이면 거부한다. 전체 host 사본과 인증·서비스 복원 성장 및 6GiB floor를 합산한 예산을 먼저 검사한다.
+
+이것은 통제된 중단 이후의 비활성 host/trust 및 새 원래 서비스 복원 진단이다. 기존 live host 손실, 현재 설치의 Applying journal, 실제 선택 전환·복원 실패·whole-update cold/crash 및 GUI/Windows 검증을 대신하지 않는다. `OwnedPreflight`나 전체 업데이트 완료 proof를 만들지 않는다.

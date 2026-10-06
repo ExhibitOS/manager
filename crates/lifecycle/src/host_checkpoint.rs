@@ -762,6 +762,31 @@ pub(crate) fn verify_extracted_host(
     }
     Ok(())
 }
+/// Derive the retained extraction receipt only after native authenticated
+/// archive/current-profile observation, never from a caller success document.
+pub(crate) fn recheck_extracted_host_current(
+    profile: &Path,
+    extracted: &Path,
+    current: &current_inventory::HostCurrentReceipt,
+) -> Result<HostReceipt> {
+    let mut f = file(&extracted.join("manifest.json"))?;
+    if f.metadata().map_err(|_| fail())?.len() > MANIFEST_LIMIT {
+        return Err(fail());
+    }
+    let mut encoded = Vec::new();
+    f.read_to_end(&mut encoded).map_err(|_| fail())?;
+    if !current.current_profile_matched || digest(&encoded) != current.manifest_sha256 {
+        return Err(fail());
+    }
+    let manifest: Inventory = serde_json::from_slice(&encoded).map_err(|_| fail())?;
+    validate_inventory(&manifest, profile)?;
+    let expected = receipt(&manifest, "host-profile-extracted-not-activated", &encoded);
+    if expected.bytes != current.bytes || expected.files != current.files {
+        return Err(fail());
+    }
+    verify_extracted_host(profile, extracted, &expected)?;
+    Ok(expected)
+}
 fn publication_identity(a: &fs::Metadata, b: &fs::Metadata) -> bool {
     #[cfg(unix)]
     {
@@ -898,6 +923,30 @@ mod tests {
         write_new(&k, &[17; 32]).unwrap();
         let a = root.path.join("archive.exb");
         (root, p, k, a)
+    }
+    #[test]
+    fn retained_host_recheck_requires_native_current_proof_and_unchanged_extraction() {
+        let (root, profile, key, archive) = fixture();
+        write_new(&profile.join("witness"), b"original").unwrap();
+        let saved = checkpoint_host(&profile, &key, &archive, true, true).unwrap();
+        let destination = root.path.join("inactive");
+        extract_host(&profile, &key, &archive, &destination, true).unwrap();
+        let session = session_lock(&profile, true).unwrap();
+        let mut current = verify_host_current_borrowed(&profile, &archive, &[17; 32], &session, &saved.manifest_sha256).unwrap();
+        let receipt = recheck_extracted_host_current(&profile, &destination, &current).unwrap();
+        assert_eq!(receipt.manifest_sha256, saved.manifest_sha256);
+        current.current_profile_matched = false;
+        assert!(recheck_extracted_host_current(&profile, &destination, &current).is_err());
+        current.current_profile_matched = true;
+        current.bytes += 1;
+        assert!(recheck_extracted_host_current(&profile, &destination, &current).is_err());
+        current.bytes -= 1;
+        fs::write(destination.join("profile/witness"), b"modified").unwrap();
+        assert!(recheck_extracted_host_current(&profile, &destination, &current).is_err());
+        fs::write(destination.join("profile/witness"), b"original").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(destination.join("profile/witness"), fs::Permissions::from_mode(0o400)).unwrap();
+        assert!(recheck_extracted_host_current(&profile, &destination, &current).is_err());
     }
     #[test]
     fn inactive_host_recheck_refuses_changed_bytes_modes_and_extra_files() {
