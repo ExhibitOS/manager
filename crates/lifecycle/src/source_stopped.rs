@@ -535,6 +535,8 @@ mod tests {
                 "--pull", "never",
                 "--network",
                 "none",
+                "--tmpfs",
+                "/var/lib/postgresql:rw,nosuid,nodev,size=1m",
                 "--mount",
                 &mount,
                 "--entrypoint",
