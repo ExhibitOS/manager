@@ -2,7 +2,7 @@
 // Trusted disposable CI qualification. Uses public Platform APIs/modules; never a release permit.
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {mkdtemp, realpath, readFile, writeFile, readdir, lstat} from 'node:fs/promises';
+import {mkdtemp, realpath, readFile, writeFile, readdir, lstat, cp} from 'node:fs/promises';
 import {createReadStream} from 'node:fs';
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
 import {join, resolve} from 'node:path';
@@ -67,7 +67,7 @@ try {
   stage='backup-create';const backup=call(source,'create-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,'--external-writers-quiesced');
   stage='backup-inventory';const archive=join(source,'backup-creation-'+backup.id,'archive'),archiveBefore=await inventory(archive),keyHash=await hashed(key);
   checks.push('actual encrypted service backup created, authenticated by producer and terminal job completed');
-  stage='backup-authenticate';call(join(scope,'verification'),'verify-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,archive);checks.push('independent root authenticates exact encrypted service archive');
+  stage='backup-authenticate';const verifierInput=join(scope,'verification-input');await cp(archive,verifierInput,{recursive:true,errorOnExist:true,force:false});assert.deepEqual(await inventory(verifierInput),archiveBefore);call(source,'verify-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,verifierInput);assert.deepEqual(await inventory(verifierInput),archiveBefore);checks.push('separate private input authenticates exact encrypted service archive; original source archive preserved');
   stage='fresh-restore';const restored=call(destination,'restore-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,archive,'13201','--fresh-installation');await ready(destination);
   const restoredApi=await client('http://127.0.0.1:13201',settings);const artists=await(await restoredApi('GET',prefix+'/cms/artists')).json();assert(JSON.stringify(artists).includes(artist.id));
   assert.equal(digest(Buffer.from(await(await restoredApi('GET',assetPath)).arrayBuffer())),expectedHash);assert.deepEqual((await(await restoredApi('GET','/api/v1/freeze/authority')).json()).authority,authority);
