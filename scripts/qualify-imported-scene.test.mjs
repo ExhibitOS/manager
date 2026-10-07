@@ -12,5 +12,5 @@ function fixture(){
 }
 test('whole comparison accepts independently observed remapped material keys before entity definitions',()=>{const {source,destination,receipt}=fixture();assert.equal(verifyImportedScene(source,destination,receipt,'tenant').completeSceneCompared,true);});
 test('whole comparison still rejects changed material properties and orphaned surface keys',()=>{
-  for(const kind of ['property','orphan']){const {source,destination,receipt}=fixture();const materials=destination.extensions['org.exhibitos.studio/materials'].surfaces;if(kind==='property')materials[fresh].roughness=.9;else{materials[old]=materials[fresh];delete materials[fresh];}assert.throws(()=>verifyImportedScene(source,destination,receipt,'tenant'),/IMPORTED_SCENE_CHANGED/);}
+  for(const kind of ['property','orphan']){const {source,destination,receipt}=fixture();const materials=destination.extensions['org.exhibitos.studio/materials'].surfaces;if(kind==='property')materials[fresh].roughness=.9;else{materials[old]=materials[fresh];delete materials[fresh];}assert.throws(()=>verifyImportedScene(source,destination,receipt,'tenant'),/IMPORTED_(SCENE_CHANGED|SOURCE_REFERENCE_REUSED)/);}
 });

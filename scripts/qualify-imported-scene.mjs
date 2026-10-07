@@ -31,10 +31,10 @@ export function verifyImportedScene(source,destination,receipt,tenantId) {
   observe(source,prepared);
   assert.deepEqual(Object.fromEntries(pairs),receipt.idMap,'IMPORTED_RECEIPT_MAPPING_INVALID');
   const normalize=(value,field='',scope=[])=> {
-    if(typeof value==='string')return references.has(field)?inverse.get(value.toLowerCase())??value:value;
+    if(typeof value==='string'){if(references.has(field)){assert(!pairs.has(value.toLowerCase()),'IMPORTED_SOURCE_REFERENCE_REUSED');return inverse.get(value.toLowerCase())??value;}return value;}
     if(Array.isArray(value))return value.map(v=>normalize(v,field,scope));
     if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([key,v])=>[
-      field==='surfaces'&&scope.includes('org.exhibitos.studio/materials')?inverse.get(key.toLowerCase())??key:key,
+      field==='surfaces'&&scope.includes('org.exhibitos.studio/materials')?normalize(key,'surfaceId'):key,
       normalize(v,key,[...scope,key])
     ]));
     return value;
