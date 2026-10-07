@@ -13,6 +13,9 @@ use std::{
 #[cfg(windows)]
 #[path = "windows_trust_root.rs"]
 mod windows_root;
+#[cfg(unix)]
+#[path = "lifecycle_writer.rs"]
+pub(crate) mod lifecycle_writer;
 const MAX_RECORD: u64 = 96 * 1024;
 const MAX_RECORDS: usize = 4096;
 const MAX_REVOKED: usize = 256;
@@ -271,6 +274,13 @@ fn scope(
     profile: &Path,
     installation: &str,
 ) -> Result<(PathBuf, String, PathBuf, profile_backup::ProfileAnchor), Error> {
+    scope_with_anchor(profile, installation, true)
+}
+fn scope_with_anchor(
+    profile: &Path,
+    installation: &str,
+    exclusive: bool,
+) -> Result<(PathBuf, String, PathBuf, profile_backup::ProfileAnchor), Error> {
     if !profile.is_absolute() {
         return Err(invalid());
     }
@@ -280,7 +290,7 @@ fn scope(
     if !cfg!(any(target_os = "macos", target_os = "linux")) {
         return Err(Error::TrustPlatformUnverified);
     }
-    let (profile, anchor) = profile_backup::anchor_lock(profile, true).map_err(|e| {
+    let (profile, anchor) = profile_backup::anchor_lock(profile, exclusive).map_err(|e| {
         if e.code == "PROFILE_BUSY" {
             Error::TrustBusy
         } else {
@@ -671,7 +681,17 @@ impl Store {
         installation: &str,
         recover_interruption: bool,
     ) -> Result<Self, Error> {
-        let (root, scope, profile, anchor) = scope(profile, installation)?;
+        Self::open_mode_with_anchor(profile, installation, recover_interruption, true)
+    }
+    // Shared, nonrecovering inspection is used only by ordinary writer admission.
+    // No mutable Store is exposed outside this module through that path.
+    fn open_mode_with_anchor(
+        profile: &Path,
+        installation: &str,
+        recover_interruption: bool,
+        exclusive: bool,
+    ) -> Result<Self, Error> {
+        let (root, scope, profile, anchor) = scope_with_anchor(profile, installation, exclusive)?;
         if !root.exists() {
             return Err(Error::TrustMissing);
         }
