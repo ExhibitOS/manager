@@ -66,7 +66,8 @@ try {
   stage='backup-key';const key=join(scope,'key.bin');await writeFile(key,randomBytes(32),{mode:0o600,flag:'wx'});
   stage='backup-create';const backup=call(source,'create-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,'--external-writers-quiesced');
   stage='backup-inventory';const archive=join(source,'backup-creation-'+backup.id,'archive'),archiveBefore=await inventory(archive),keyHash=await hashed(key);
-  stage='backup-authenticate';call(source,'verify-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,archive);checks.push('actual encrypted service backup created and authenticated');
+  checks.push('actual encrypted service backup created, authenticated by producer and terminal job completed');
+  stage='backup-authenticate';call(join(scope,'verification'),'verify-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,archive);checks.push('independent root authenticates exact encrypted service archive');
   stage='fresh-restore';const restored=call(destination,'restore-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,archive,'13201','--fresh-installation');await ready(destination);
   const restoredApi=await client('http://127.0.0.1:13201',settings);const artists=await(await restoredApi('GET',prefix+'/cms/artists')).json();assert(JSON.stringify(artists).includes(artist.id));
   assert.equal(digest(Buffer.from(await(await restoredApi('GET',assetPath)).arrayBuffer())),expectedHash);assert.deepEqual((await(await restoredApi('GET','/api/v1/freeze/authority')).json()).authority,authority);
