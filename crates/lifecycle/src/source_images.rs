@@ -204,10 +204,8 @@ mod tests {
     fn actual_engine_current_image_mappings() {
         let maintenance = super::super::native_test_image();
         let mut expected = Vec::new();
-        for id in [
-            "sha256:335f8f2c1437841266c41e79912b1160b03ce500511acc94afa338c4c8f6215b",
-            maintenance.as_str(),
-        ] {
+        let platform = super::super::native_test_platform_image();
+        for id in [platform.as_str(), maintenance.as_str()] {
             let mut row = image(id);
             row.content_id = id.into();
             expected.push(row);
