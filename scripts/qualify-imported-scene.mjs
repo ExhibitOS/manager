@@ -24,9 +24,9 @@ export function verifyImportedScene(source,destination,receipt,tenantId) {
     if(inverse.has(after.toLowerCase()))assert.equal(inverse.get(after.toLowerCase()),before.toLowerCase(),'IMPORTED_ID_COLLISION');
     pairs.set(before.toLowerCase(),after.toLowerCase());inverse.set(after.toLowerCase(),before.toLowerCase());
   };
-  const observe=(before,after)=> {
-    if(Array.isArray(before)){assert(Array.isArray(after),'IMPORTED_ARRAY_TYPE_CHANGED');assert.equal(after.length,before.length,'IMPORTED_ARRAY_COUNT_CHANGED');before.forEach((v,i)=>observe(v,after[i]));}
-    else if(before&&typeof before==='object'){assert(after&&typeof after==='object','IMPORTED_OBJECT_TYPE_CHANGED');for(const[key,value]of Object.entries(before)){if((key==='id'||key==='revisionId')&&typeof value==='string')bind(value,after[key]);else observe(value,after[key]);}}
+  const observe=(before,after,scope=[])=> {
+    if(Array.isArray(before)){assert(Array.isArray(after),'IMPORTED_ARRAY_TYPE_CHANGED');assert.equal(after.length,before.length,'IMPORTED_ARRAY_COUNT_CHANGED');before.forEach((v,i)=>observe(v,after[i],scope));}
+    else if(before&&typeof before==='object'){assert(after&&typeof after==='object','IMPORTED_OBJECT_TYPE_CHANGED');for(const[key,value]of Object.entries(before)){if((key==='id'||key==='revisionId')&&typeof value==='string')bind(value,after[key]);else if(key==='surfaces'&&!Array.isArray(value)&&scope.includes('org.exhibitos.studio/materials')){ /* UUID dictionary keys are compared after all entity pairs are observed. */ }else observe(value,after[key],[...scope,key]);}}
   };
   observe(source,prepared);
   assert.deepEqual(Object.fromEntries(pairs),receipt.idMap,'IMPORTED_RECEIPT_MAPPING_INVALID');
