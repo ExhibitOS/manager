@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createHash, randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
-import {join} from 'node:path';
+import {join,dirname} from 'node:path';
 import {pathToFileURL} from 'node:url';
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 export async function frozenCorpus({platform,api,prefix,artist,rights}) {
@@ -13,7 +13,7 @@ export async function frozenCorpus({platform,api,prefix,artist,rights}) {
   const {syntheticWav}=await load('scripts/experience-fixture.mjs');
   const {navigationFixture}=await load('scripts/navigation-fixture.mjs');
   const {oexFixture}=await load('scripts/oex-fixture.mjs');
-  const {fixtureURL,validateExhibition,validateOex}=await import(pathToFileURL(createRequire(join(platform,'package.json')).resolve('@exhibitos/spec')));
+  const {fixtureURL,validateExhibition,validateOex}=await import(pathToFileURL(join(dirname(createRequire(join(platform,'package.json')).resolve('@exhibitos/spec/package.json')),'index.mjs')));
   const {verifyFreezeBundle}=await load('packages/studio-contract/dist/index.js');
   const works=[],assets=[];
   for(const fixture of loadViewerFixtures()) {
