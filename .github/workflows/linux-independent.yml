@@ -1,0 +1,65 @@
+name: Manager Linux independent qualification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: manager-linux-independent
+  cancel-in-progress: false
+jobs:
+  qualified-source:
+    if: github.repository == 'ExhibitOS/manager' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: qualification
+        shell: bash
+    steps:
+      - name: Checkout reviewed immutable public source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: d441a88593ea11297fc2007454a143d0b2875b98
+          path: qualification
+          persist-credentials: false
+      - name: Verify source, non-root ownership and conservative free-space floor
+        run: |
+          test "$(git rev-parse HEAD)" = d441a88593ea11297fc2007454a143d0b2875b98
+          python3 - <<'PY'
+          import os, platform, json
+          available = os.statvfs('.').f_bavail * os.statvfs('.').f_frsize
+          additional = 8 * 1024**3
+          floor = 6 * 1024**3
+          print(json.dumps({'system': platform.system(), 'machine': platform.machine(),
+            'uid': os.getuid(), 'availableBytes': available,
+            'expectedAdditionalBytes': additional, 'retainedFloorBytes': floor}))
+          assert platform.system() == 'Linux' and os.getuid() != 0
+          assert available >= additional + floor, 'QUALIFICATION_CAPACITY_REFUSED'
+          PY
+      - name: Set up pinned Node without hosted cache
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.21.0
+      - name: Install free public development dependencies
+        run: |
+          npm install --global npm@11.19.0
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          node --version
+          npm --version
+          cargo --version
+          rustc --version
+      - name: Independently install locked public packages and verify frontend
+        run: |
+          npm ci
+          npm run check
+      - name: Execute complete native workspace tests and strict lint
+        run: |
+          cargo test --workspace --release --locked
+          cargo clippy --workspace --release --all-targets --locked -- -D warnings
+      - name: Build native executable without release upload
+        run: npm run tauri -- build --no-bundle -- --locked
+      - name: Run actual Chromium frontend checks
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:browser
