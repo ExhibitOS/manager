@@ -298,6 +298,39 @@ fn restored_rollback_options(args: &[String]) -> Result<&str, &'static str> {
     Ok(&args[7])
 }
 
+fn original_rollback_options(args: &[String]) -> Result<u16, &'static str> {
+    let flags = [
+        (1, "restore-original-rollback"),
+        (2, "--profile"),
+        (4, "--installation"),
+        (6, "--maintenance-image"),
+        (8, "--key"),
+        (10, "--archive"),
+        (12, "--port"),
+        (14, "--fresh-candidate"),
+        (15, "--external-writers-quiesced"),
+        (16, "--apps-closed"),
+    ];
+    if args.len() != 17
+        || flags.iter().any(|(i, flag)| args[*i] != *flag)
+        || !args[7].strip_prefix("sha256:").is_some_and(|h| {
+            h.len() == 64
+                && h.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+        || [3, 9, 11]
+            .iter()
+            .any(|i| !Path::new(&args[*i]).is_absolute())
+    {
+        return Err("UPDATE_USAGE");
+    }
+    let port = args[13].parse::<u16>().map_err(|_| "UPDATE_USAGE")?;
+    if port < 1024 {
+        return Err("UPDATE_USAGE");
+    }
+    Ok(port)
+}
+
 fn migrated_runtime_options(args: &[String]) -> Result<(), &'static str> {
     let flags = [
         (1, "qualify-migrated-runtime-compatibility"),
@@ -342,7 +375,7 @@ fn run() -> Result<(), String> {
     }
     let code = |e: signed_release::Error| e.code().to_string();
     let usage = || {
-        "UPDATE_USAGE: complete-restored-rollback|execute-full-update|reconcile-selection-activation|reconcile-authority|enroll-authority-recovery|restore-missing-authority|restore-rollback-missing-host|restore-bound-missing-host|trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|register-update-target|release-completed-update|discard-update-intent|execution-status|verify-update-backup|verify-update-source-stopped|verify-update-source-deployment|verify-update-source-configuration|verify-update-source-images|snapshot-update-source-database|verify-update-source-inventory|verify-update-configuration-inventory|prepare-update-candidate require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
+        "UPDATE_USAGE: restore-original-rollback|complete-restored-rollback|execute-full-update|reconcile-selection-activation|reconcile-authority|enroll-authority-recovery|restore-missing-authority|restore-rollback-missing-host|restore-bound-missing-host|trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|register-update-target|release-completed-update|discard-update-intent|execution-status|verify-update-backup|verify-update-source-stopped|verify-update-source-deployment|verify-update-source-configuration|verify-update-source-images|snapshot-update-source-database|verify-update-source-inventory|verify-update-configuration-inventory|prepare-update-candidate require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
     };
     if a.len() < 7
         || a[2] != "--profile"
@@ -353,6 +386,39 @@ fn run() -> Result<(), String> {
     }
     let profile = Path::new(&a[3]);
     let installation = &a[5];
+    if a[1] == "restore-original-rollback" {
+        // Validate the exact wire contract BEFORE opening or changing authority.
+        let port = original_rollback_options(&a).map_err(str::to_owned)?;
+        #[cfg(unix)]
+        {
+            let mut store = Store::open(profile, installation).map_err(code)?;
+            let registration = store
+                .register_rollback_candidate(true)
+                .map_err(|e| e.code)?;
+            let restoration = store
+                .restore_registered_rollback_candidate(
+                    &a[7],
+                    Path::new(&a[9]),
+                    Path::new(&a[11]),
+                    port,
+                    true,
+                )
+                .map_err(|e| e.code)?;
+            let selection = store
+                .activate_restored_rollback(&a[7], true)
+                .map_err(|e| e.code)?;
+            println!(
+                "{}",
+                serde_json::json!({"registration":registration,"restoration":restoration,"selection":selection,"originalRuntimeRestored":true,"updateExecuted":false,"intent":store.intent()})
+            );
+            return Ok(());
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = port;
+            return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
+        }
+    }
     if a[1] == "complete-restored-rollback" {
         let image = restored_rollback_options(&a).map_err(str::to_owned)?;
         #[cfg(unix)]
@@ -867,7 +933,10 @@ fn run() -> Result<(), String> {
         );
         return Ok(());
     }
-    if matches!(a[1].as_str(), "register-update-target" | "register-planned-update-target") {
+    if matches!(
+        a[1].as_str(),
+        "register-update-target" | "register-planned-update-target"
+    ) {
         if a.len() != 8 || a[6] != "--preserve-active" {
             return Err(usage());
         }
@@ -876,7 +945,8 @@ fn run() -> Result<(), String> {
             store.register_planned_update_target(true)
         } else {
             store.register_update_target(true)
-        }.map_err(|e| e.code)?;
+        }
+        .map_err(|e| e.code)?;
         println!(
             "{}",
             serde_json::to_string(&receipt).map_err(|_| "UPDATE_RECEIPT_INVALID")?
@@ -907,16 +977,29 @@ fn run() -> Result<(), String> {
     }
     #[cfg(unix)]
     if a[1] == "checkpoint-existing-host" {
-        if a.len() != 16 || a[6] != "--key-file" || a[8] != "--host-archive"
-            || a[10] != "--host-manifest" || a[12] != "--destination"
-            || a[14] != "--host-writers-stopped" {
+        if a.len() != 16
+            || a[6] != "--key-file"
+            || a[8] != "--host-archive"
+            || a[10] != "--host-manifest"
+            || a[12] != "--destination"
+            || a[14] != "--host-writers-stopped"
+        {
             return Err(usage());
         }
         let store = Store::open(profile, installation).map_err(code)?;
-        let receipt = store.checkpoint_existing_host(
-            Path::new(&a[9]), &a[11], Path::new(&a[7]), Path::new(&a[13]), true,
-        ).map_err(|e| e.code)?;
-        println!("{}", serde_json::to_string(&receipt).map_err(|_| "UPDATE_RECEIPT_INVALID")?);
+        let receipt = store
+            .checkpoint_existing_host(
+                Path::new(&a[9]),
+                &a[11],
+                Path::new(&a[7]),
+                Path::new(&a[13]),
+                true,
+            )
+            .map_err(|e| e.code)?;
+        println!(
+            "{}",
+            serde_json::to_string(&receipt).map_err(|_| "UPDATE_RECEIPT_INVALID")?
+        );
         return Ok(());
     }
     #[cfg(unix)]

@@ -212,3 +212,18 @@ This creates current identity with `sourcePlanBound=false`; it does not inherit 
 ### Register the current prepared target
 
 `exhibitos-update register-planned-update-target --profile <absolute-profile> --installation default --preserve-active --apps-closed` creates the exact recovery namespace reserved by the current Prepared plan. It takes no caller ID/path, preserves source selection/history, and starts no runtime. Missing intent, non-Prepared stage, source mismatch, an existing candidate/name or unsafe namespace refuse. Repeating it refuses without adopting or overwriting the earlier candidate. The older `register-update-target` continues to allocate a new random namespace for workflows that register before preparing a plan.
+
+
+## 실패한 업데이트에서 원래 서비스 전체 복원
+
+```sh
+exhibitos-update restore-original-rollback \
+  --profile /absolute/private/profile --installation default \
+  --maintenance-image sha256:qualified-maintenance-image \
+  --key /absolute/private/key.bin --archive /absolute/private/original-backup \
+  --port 50369 --fresh-candidate --external-writers-quiesced --apps-closed
+```
+
+앱과 외부 writer를 닫고 실제 검증된 이미지·키·원래 백업·미사용 포트를 지정합니다. 이 Unix 명령은 RecoveryRequired인 동일 계획에 새 비활성 복원 ID를 등록하고, 계획의 정확한 backup/image/schema/inventory를 인증해 원래 DB/blob/설정을 새 서비스로 복원합니다. 동일 Store 수명에서 실제 inventory·image·설정·health를 다시 관측한 뒤 원자적 선택과 RolledBack 이력을 완료합니다. caller가 candidate ID·경로·성공 receipt·health 플래그를 제공할 수 없습니다.
+
+기존 원본과 실패 후보·immutable 이력은 덮어쓰지 않습니다. 실패하면 새 후보와 진단을 보존하며 자동 재실행하지 않습니다. 최소 공간과 새 후보의 모든 원래 복원 조건을 유지합니다. 성공은 별도 새 복원 서비스의 실제 준비 상태를 의미하고, 원래 호스트·authority 분실 복원이나 다른 게시 crash 경계까지 완료됐다는 뜻은 아닙니다. Windows 경계는 지원 검증 전 거부합니다. 공개 changed-schema update admission은 계속 닫혀 있습니다.
