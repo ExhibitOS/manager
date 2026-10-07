@@ -131,6 +131,9 @@ impl ExecutionSession<'_> {
             &platform,
             subnet.as_deref(),
         )?;
+        let (expected, compose) = if crate::restoration_network::compose_gateway(&candidate_compose)?.is_some() {
+            crate::restoration::bind_explicit_gateway((expected, compose), subnet.as_deref().ok_or_else(|| crate::err("RESTORE_LAYOUT_UNSUPPORTED"))?)?
+        } else { (expected, compose) };
         if let Some(subnet)=subnet.as_deref() {
             let network=crate::backup_creation::inspected("docker",&["network".into(),"inspect".into(),format!("{}_default",expected.project_name)])?;
             if network["Labels"]["com.exhibitos.bundle"]!=expected.bundle_id || network["Labels"]["com.exhibitos.project"]!=expected.project_name || network["Driver"]!="bridge" {return Err(crate::err("OWNERSHIP_CONFLICT"));}
@@ -372,6 +375,13 @@ mod tests {
         assert_eq!(new_manifest.compose_sha256,crate::digest(&new_compose));
         assert_eq!(crate::restoration_network::receipt_compose_subnet(&new_compose,Some("10.240.0.0/28")).unwrap().as_deref(),Some("10.240.0.0/28"));
         assert!(crate::restoration_network::receipt_compose_subnet(&new_compose,None).is_err());
+        let (explicit, explicit_compose)=crate::restoration::bind_explicit_gateway((new_manifest.clone(),new_compose.clone()),"10.240.0.0/28").unwrap();
+        assert_eq!(explicit.compose_sha256,crate::digest(&explicit_compose));
+        assert_ne!(explicit.compose_sha256,new_manifest.compose_sha256);
+        assert_eq!(crate::restoration_network::compose_gateway(&new_compose).unwrap(),None);
+        assert_eq!(crate::restoration_network::compose_gateway(&explicit_compose).unwrap().as_deref(),Some("10.240.0.1"));
+        assert!(crate::restoration::bind_explicit_gateway((explicit,explicit_compose),"10.240.0.16/28").is_err());
+
         assert_eq!(crate::restoration_network::receipt_compose_subnet(&compose,None).unwrap(),None);
         assert!(crate::restoration::remapped_bundle(&original,&images,&id,13201,&images[0].content_id,&images[1].content_id,Some("10.241.0.0/28")).is_err());
         for (port, db, runtime) in [
