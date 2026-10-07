@@ -30,7 +30,7 @@ Windows11 x64 / Docker Linux engine29.8.1 / Compose5.5.1, Node24.21.0/npm11.19.0
 node scripts/verification-receipt.mjs --binary .\target\release\exhibitos-manager-desktop.exe --bundle "<선택한 새 검사 공간>\bundle"
 ```
 
-Git source commit/기존 tracked 변경 여부, binary/manifest/hash-bound tar 크기·SHA256을 기록한다. manifest의 경로탈출·archive byte/hash 불일치는 거부한다. **앱 binary가 해당 소스로 빌드됐다는 증명·서명 검증·설치 권한·readiness 판정 도구가 아니다.** 실제 build log, 실행 결과와 사용자 관찰을 함께 연결해야 한다. 기존 API 연결 확인과 단위 검사만으로 전체 복원·업데이트·durability를 통과 처리하지 않는다.
+Git source commit/기존 tracked 변경 여부, binary/manifest/hash-bound tar 크기·SHA256을 기록한다. manifest의 경로탈출·archive byte/hash 불일치·중복 또는 대소문자 별칭 archive 이름은 거부한다. manifest는1MiB 한도를 읽기 전에 확인하고, 같은 열린 파일에서 해시한 bytes만 파싱한다. binary·manifest·archive 핸들을 전체 관찰 종료까지 유지하며 파일 이름/식별자/크기/수정 시각·bundle 디렉터리 및 source commit/tracked 변경 여부가 관찰 중 달라지면 성공 기록을 반환하지 않는다. 이 Node 도구는 Windows의 native writer 공유 거부 또는 다중 파일의 원자적 snapshot을 증명하지 않는다. **앱 binary가 해당 소스로 빌드됐다는 증명·서명 검증·설치 권한·readiness 판정 도구가 아니다.** 실제 build log, 실행 결과와 사용자 관찰을 함께 연결해야 한다. 기존 API 연결 확인과 단위 검사만으로 전체 복원·업데이트·durability를 통과 처리하지 않는다.
 
 ## 결과 전달과 안전한 중단
 
