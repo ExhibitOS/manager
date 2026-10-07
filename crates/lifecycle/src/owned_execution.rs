@@ -1,6 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Existing registered source adapters under the borrowed exclusive trust fence.
 use super::*;
+
+#[cfg(test)]
+fn native_test_image() -> String {
+    let image = std::env::var("EXHIBITOS_NATIVE_TEST_IMAGE").unwrap_or_else(|_| {
+        "sha256:8f0e7b042ff0b93a646b919f5a8a5ee2f41cc22debcd5bd9ef49eacd06537e06".into()
+    });
+    assert!(
+        image.starts_with("sha256:")
+            && image.len() == 71
+            && image[7..]
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    );
+    let row = crate::backup_creation::inspected(
+        "docker",
+        &["image".into(), "inspect".into(), image.clone()],
+    )
+    .unwrap();
+    assert_eq!(row["Id"], image);
+    image
+}
+
 #[path = "candidate_configuration.rs"]
 mod candidate_configuration;
 #[path = "candidate_recovery.rs"]

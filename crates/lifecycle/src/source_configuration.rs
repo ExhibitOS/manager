@@ -187,7 +187,8 @@ mod tests {
     #[ignore = "requires the existing maintenance image and local Docker"]
     fn actual_native_configuration_content_and_metadata() {
         let volume = format!("exhibitos-native-config-test-{}", uuid::Uuid::new_v4());
-        let image = "sha256:8f0e7b042ff0b93a646b919f5a8a5ee2f41cc22debcd5bd9ef49eacd06537e06";
+        let image = super::super::native_test_image();
+        let image = image.as_str();
         let call = |args: &[String]| run("docker", args, None, 30).unwrap();
         call(&[
             "volume".into(),

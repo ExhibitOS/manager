@@ -389,8 +389,11 @@ mod tests {
             "projectName":project,"services":["platform","database"],"images":[],"ports":[],
             "openUrl":"http://127.0.0.1:1","readinessUrl":"http://127.0.0.1:1","minimumFreeBytes":0
         })).unwrap();
-        let image = "sha256:8f0e7b042ff0b93a646b919f5a8a5ee2f41cc22debcd5bd9ef49eacd06537e06";
+        let image = super::super::native_test_image();
+        let image = image.as_str();
         let call = |args: &[String]| run("docker", args, None, 30).unwrap();
+        let app = crate::backup_creation::inspected("docker", &["image".into(), "inspect".into(), "sha256:335f8f2c1437841266c41e79912b1160b03ce500511acc94afa338c4c8f6215b".into()]).unwrap();
+        assert_eq!(app["Id"], "sha256:335f8f2c1437841266c41e79912b1160b03ce500511acc94afa338c4c8f6215b");
         let names: Vec<_> = ["blobs", "config", "db"]
             .iter()
             .map(|suffix| format!("{project}_{suffix}"))
@@ -425,6 +428,7 @@ mod tests {
         {
             let mut args = vec![
                 "create".into(),
+                "--pull".into(), "never".into(),
                 "--network".into(),
                 "none".into(),
                 "--entrypoint".into(),
@@ -508,7 +512,8 @@ mod tests {
     #[ignore = "requires local Docker and the qualified existing maintenance image"]
     fn actual_engine_volume_writer_census() {
         let name = format!("exhibitos-writer-census-{}", uuid::Uuid::new_v4());
-        let image = "sha256:8f0e7b042ff0b93a646b919f5a8a5ee2f41cc22debcd5bd9ef49eacd06537e06";
+        let image = super::super::native_test_image();
+        let image = image.as_str();
         let call = |args: &[&str]| {
             run(
                 "docker",
@@ -527,6 +532,7 @@ mod tests {
             );
             let id = String::from_utf8(call(&[
                 "create",
+                "--pull", "never",
                 "--network",
                 "none",
                 "--mount",
