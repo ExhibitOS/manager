@@ -5,11 +5,21 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, Command, Stdio};
 
 fn input() -> Value {
-    serde_json::from_slice(
-        &fs::read(std::env::var("EXHIBITOS_WHOLE_CRASH_INPUT").unwrap()).unwrap(),
-    )
-    .unwrap()
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    fs::File::open(std::env::var("EXHIBITOS_WHOLE_CRASH_INPUT").unwrap())
+        .unwrap()
+        .take(65537)
+        .read_to_end(&mut bytes)
+        .unwrap();
+    assert!(bytes.len() <= 65536, "qualification input exceeds bound");
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    if value.get("freshAuthority").is_some() {
+        fresh_publication_authority::parse_input(&bytes).unwrap();
+    }
+    value
 }
+
 fn path(v: &Value, name: &str) -> PathBuf {
     PathBuf::from(v[name].as_str().unwrap())
 }
@@ -46,6 +56,286 @@ fn checked_store(v: &Value) -> crate::signed_release::trust::Store {
     assert_ne!(
         intent.update.plan().source_schema,
         intent.update.plan().target_schema
+    );
+    assert_eq!(
+        require_executable_schema(intent.update.plan())
+            .unwrap_err()
+            .code,
+        "UPDATE_RUNTIME_MIGRATION_UNQUALIFIED"
+    );
+    store
+}
+
+#[path = "fresh_publication_authority.rs"]
+mod fresh_publication_authority;
+use fresh_publication_authority::{FreshAuthority, Observation};
+
+fn private_digest(path: &Path, limit: u64) -> String {
+    private_digest_observed(path, limit, |_| {})
+}
+fn private_digest_observed(path: &Path, limit: u64, mut after_chunk: impl FnMut(u64)) -> String {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let before = fs::symlink_metadata(path).unwrap();
+    assert!(
+        before.is_file()
+            && before.nlink() == 1
+            && before.mode() & 0o077 == 0
+            && before.uid() == unsafe { libc::geteuid() }
+            && before.len() <= limit
+    );
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .unwrap();
+    let unchanged = |m: &fs::Metadata| {
+        before.dev() == m.dev()
+            && before.ino() == m.ino()
+            && before.len() == m.len()
+            && before.mtime() == m.mtime()
+            && before.mtime_nsec() == m.mtime_nsec()
+            && before.ctime() == m.ctime()
+            && before.ctime_nsec() == m.ctime_nsec()
+            && before.mode() == m.mode()
+            && before.nlink() == m.nlink()
+    };
+    assert!(unchanged(&file.metadata().unwrap()));
+    let mut digest = sha2::Sha256::new();
+    let mut buffer = [0u8; 65536];
+    let mut bytes = 0;
+    loop {
+        let n = file.read(&mut buffer).unwrap();
+        if n == 0 {
+            break;
+        }
+        bytes += n as u64;
+        assert!(bytes <= before.len());
+        digest.update(&buffer[..n]);
+        after_chunk(bytes);
+    }
+    assert_eq!(bytes, before.len());
+    assert!(
+        unchanged(&file.metadata().unwrap()) && unchanged(&fs::symlink_metadata(path).unwrap())
+    );
+    format!("{:x}", digest.finalize())
+}
+
+// Native qualification only, constrained to the already protected synthetic root.
+// Every parent and child checks fresh exact authority before creating anything.
+fn checked_fresh_publication_store(v: &Value, child: bool) -> crate::signed_release::trust::Store {
+    let expected: FreshAuthority = serde_json::from_value(v["freshAuthority"].clone()).unwrap();
+    let root = fs::canonicalize(path(v, "root")).unwrap();
+    assert_eq!(
+        root.file_name().unwrap(),
+        "exhibitos-release-trust-817e82d0-bfe4-413e-bb1c-d8c252401d8a"
+    );
+    let store =
+        crate::signed_release::trust::Store::open_mode(&root.join("profile"), "default", false)
+            .unwrap();
+    let intent = store.intent().unwrap();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&source)
+        .output()
+        .unwrap();
+    assert!(head.status.success());
+    let source_commit = String::from_utf8(head.stdout).unwrap();
+    let clean = Command::new("git")
+        .args(["diff", "--quiet", "HEAD", "--"])
+        .current_dir(&source)
+        .status()
+        .unwrap();
+    expected
+        .check(&Observation {
+            generation: store.current.generation,
+            head: &store.current_sha256,
+            scope: &store.scope,
+            plan: intent.update.plan(),
+            stage: intent.update.stage(),
+            public_keys: &store.current.policy.public_keys,
+            manager_source_commit: source_commit.trim(),
+            dirty_source: !clean.success(),
+        })
+        .unwrap();
+    assert_eq!(
+        v["publicationPhase"].as_str().unwrap(),
+        expected.publication_phase
+    );
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(intent.envelope.as_bytes())),
+        expected.envelope_sha256
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut verified = store
+        .verify_for_preparation(intent.envelope.as_bytes(), now)
+        .unwrap();
+    assert!(verified.binds(intent.update.plan()));
+    assert_eq!(verified.release().channel, "development");
+    assert_eq!(verified.release().target, "linux-arm64");
+    assert_eq!(verified.release().artifact.sha256, expected.artifact_sha256);
+    assert_eq!(
+        private_digest(&path(v, "artifact"), verified.release().artifact.bytes),
+        expected.artifact_sha256
+    );
+    // Independently retain the normal exact signed size/sha verification too.
+    verified
+        .verify_artifact(&mut fs::File::open(path(v, "artifact")).unwrap())
+        .unwrap();
+    assert_eq!(
+        private_digest(&path(v, "catalog"), 16 * 1024 * 1024),
+        expected.catalog_sha256
+    );
+    assert_eq!(
+        v["catalogSha256"].as_str().unwrap(),
+        expected.catalog_sha256
+    );
+    let (registry, original_selection) = installations::load(&store.profile).unwrap().unwrap();
+    assert_eq!(registry.active_id, expected.plan.source_instance);
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(&original_selection)),
+        expected.original_selection_sha256
+    );
+    let point = fs::canonicalize(path(v, "point")).unwrap();
+    assert_eq!(point.parent(), store.profile.parent());
+    assert_eq!(
+        point.file_name().unwrap().to_str().unwrap(),
+        format!(
+            "native-publication-{}-{}",
+            expected.publication_phase, expected.plan.operation_id
+        )
+    );
+    // One operation cannot be reused for another phase, even if authority files
+    // were manually put back. Old successful/failed points remain evidence.
+    let operation_suffix = format!("-{}", expected.plan.operation_id);
+    for entry in fs::read_dir(root.as_path()).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        let name = name.to_str().unwrap();
+        if name.ends_with(&operation_suffix)
+            && (name.starts_with("native-publication-") || name.starts_with("checkpoint-"))
+        {
+            let current_point = format!(
+                "native-publication-{}{}",
+                expected.publication_phase, operation_suffix
+            );
+            let current_checkpoint = format!(
+                "checkpoint-{}{}",
+                expected.publication_phase, operation_suffix
+            );
+            assert!(
+                name == current_point || name == current_checkpoint,
+                "operation already reserved for another publication phase"
+            );
+        }
+    }
+    let allowed = [
+        "storage-budget-before-native-publication.json",
+        "phase-budget-before-native-publication.json",
+        "child.out",
+        "child.err",
+    ];
+    for entry in fs::read_dir(&point).unwrap() {
+        let entry = entry.unwrap();
+        assert!(
+            child && allowed.contains(&entry.file_name().to_str().unwrap()),
+            "new native point must not reuse any previous outputs"
+        );
+    }
+    let checkpoint = fs::canonicalize(path(v, "binding").parent().unwrap()).unwrap();
+    assert_eq!(checkpoint.parent(), store.profile.parent());
+    assert_eq!(
+        checkpoint.file_name().unwrap().to_str().unwrap(),
+        format!(
+            "checkpoint-{}-{}",
+            expected.publication_phase, expected.plan.operation_id
+        )
+    );
+    for (name, digest) in [
+        ("binding", &expected.binding_sha256),
+        ("hostArchive", &expected.host_archive_sha256),
+        ("trustArchive", &expected.trust_archive_sha256),
+    ] {
+        let file = path(v, name);
+        assert_eq!(
+            fs::canonicalize(file.parent().unwrap()).unwrap(),
+            checkpoint
+        );
+        assert_eq!(&private_digest(&file, 64 * 1024 * 1024 * 1024), digest);
+    }
+    // Store retains the exclusive trust.lock (normal writers cannot advance it).
+    // Also reobserve actual disk bytes/head rather than trusting cached fields.
+    let latest = fs::read_dir(&store.root)
+        .unwrap()
+        .filter_map(|entry| {
+            let name = entry.unwrap().file_name();
+            let name = name.to_str().unwrap();
+            if name.len() == 25
+                && name.ends_with(".json")
+                && name[..20].bytes().all(|b| b.is_ascii_digit())
+            {
+                Some(name[..20].parse::<u64>().unwrap())
+            } else {
+                None
+            }
+        })
+        .max()
+        .unwrap();
+    assert_eq!(latest, expected.generation);
+    let disk_bytes =
+        crate::signed_release::trust::read_record(&store.root.join(format!("{:020}.json", latest)))
+            .unwrap();
+    let disk: crate::signed_release::trust::Record = serde_json::from_slice(&disk_bytes).unwrap();
+    crate::signed_release::trust::valid_record(&disk, &store.scope).unwrap();
+    let disk_head = format!("{:x}", sha2::Sha256::digest(&disk_bytes));
+    let disk_intent = disk.intent.as_ref().unwrap();
+    expected
+        .check(&Observation {
+            generation: disk.generation,
+            head: &disk_head,
+            scope: &disk.scope,
+            plan: disk_intent.update.plan(),
+            stage: disk_intent.update.stage(),
+            public_keys: &disk.policy.public_keys,
+            manager_source_commit: source_commit.trim(),
+            dirty_source: false,
+        })
+        .unwrap();
+    assert_eq!(disk_head, store.current_sha256);
+    // Time and selection may change during large read-only archive checks.
+    // Reobserve immediately before returning to either caller's first writes.
+    let late_now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    store
+        .verify_for_preparation(intent.envelope.as_bytes(), late_now)
+        .unwrap();
+    assert_eq!(
+        installations::load(&store.profile).unwrap().unwrap().1,
+        original_selection
+    );
+    let late_head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&source)
+        .output()
+        .unwrap();
+    assert!(late_head.status.success());
+    assert_eq!(
+        String::from_utf8(late_head.stdout).unwrap().trim(),
+        expected.manager_source_commit
+    );
+    assert!(
+        Command::new("git")
+            .args(["diff", "--quiet", "HEAD", "--"])
+            .current_dir(&source)
+            .status()
+            .unwrap()
+            .success()
     );
     assert_eq!(
         require_executable_schema(intent.update.plan())
@@ -104,13 +394,20 @@ fn checked_resuming_store(v: &Value) -> crate::signed_release::trust::Store {
 #[ignore = "child only: explicit signed allowlisted synthetic fixture, actual owned Applying/application; waits for parent SIGKILL"]
 fn actual_changed_executor_crash_child() {
     let v = input();
-    let mut store = checked_store(&v);
+    let publication = v.get("freshAuthority").is_some();
+    assert!(
+        publication
+            || (v.get("publicationPhase").is_none()
+                && std::env::var_os("EXHIBITOS_PUBLICATION_CRASH_PHASE").is_none()),
+        "publication child requires fresh exact authority"
+    );
+    let mut store = if publication {
+        checked_fresh_publication_store(&v, true)
+    } else {
+        checked_store(&v)
+    };
     let profile = store.profile.clone();
     let operation_id = store.intent().unwrap().update.plan().operation_id.clone();
-    let publication = store.current.generation == 37;
-    if publication {
-        checked_current37_plan(&store);
-    }
     let point = fs::canonicalize(path(&v, "point")).unwrap();
     assert_eq!(point.parent(), profile.parent());
     let marker = point.join("candidate-applied.json");
@@ -184,27 +481,6 @@ fn actual_changed_executor_crash_child() {
     }
 }
 
-fn checked_current37_plan(store: &crate::signed_release::trust::Store) {
-    assert_eq!(store.current.generation, 37);
-    let p = store.intent().unwrap().update.plan();
-    assert_eq!(p.operation_id, "a9ccf7b0-7e3f-4bae-bcf1-3f2c53e15c49");
-    assert_eq!(p.source_instance, "499db3cb-5c84-47e4-a0c7-881e26e37a02");
-    assert_eq!(p.target_instance, "b2d4782a-5d9c-46c5-b557-8035dba3f637");
-    assert_eq!(p.backup_id, "43e41dcb-d1e8-49eb-9041-dbbb0f7f218d");
-    assert_eq!(
-        p.source_schema,
-        "4ecab567864d0a0b4d59f4a934fedcd6c7f538c1b766afdd4bc2e7b45f633a2b"
-    );
-    assert_eq!(
-        p.target_schema,
-        "44b8f6aa05511d025019e7e73522375f43543a164d12de769b6765864e1953e4"
-    );
-    assert_eq!(
-        p.target_image,
-        "1ee149bf0ee63e595f84e6de863350ef6312ce2fea7773dddff4cd00e47fc624"
-    );
-}
-
 fn owned_engine_state(profile: &Path, id: &str) -> Vec<u8> {
     let (registry, _) = installations::load(profile).unwrap().unwrap();
     let entry = registry.installations.iter().find(|e| e.id == id).unwrap();
@@ -253,12 +529,11 @@ fn owned_engine_state(profile: &Path, id: &str) -> Vec<u8> {
 }
 
 #[test]
-#[ignore = "fresh allowlisted37 only: actual native candidate migration/health/publication, SIGKILL boundary and cold exact selection reconciliation; never enables public admission"]
+#[ignore = "fresh exact signed authority only: actual native candidate migration/health/publication, SIGKILL boundary and cold selection reconciliation; never enables public admission"]
 fn actual_native_publication_sigkill_and_cold_selection() {
     use std::os::unix::fs::PermissionsExt;
     let v = input();
-    let store = checked_store(&v);
-    checked_current37_plan(&store);
+    let store = checked_fresh_publication_store(&v, false);
     let profile = store.profile.clone();
     let plan = store.intent().unwrap().update.plan().clone();
     let point = fs::canonicalize(path(&v, "point")).unwrap();
@@ -1106,4 +1381,82 @@ fn held_namespaces_broken_symlink_collision_preserves_every_namespace() {
         b"source"
     );
     assert!(authority.is_dir());
+}
+
+#[test]
+fn fresh_publication_authority_private_hash_reads_exact_bytes_and_refuses_aliases_quota() {
+    use std::os::unix::fs::symlink;
+    let root = fs::canonicalize(std::env::temp_dir())
+        .unwrap()
+        .join(format!(
+            "exhibitos-fresh-authority-{}",
+            uuid::Uuid::new_v4()
+        ));
+    installations::new_directory(&root).unwrap();
+    let file = root.join("input.bin");
+    crate::restoration::private_bytes(&file, b"synthetic input").unwrap();
+    let before = fs::read(&file).unwrap();
+    assert_eq!(
+        private_digest(&file, 1024),
+        format!("{:x}", sha2::Sha256::digest(&before))
+    );
+    assert!(std::panic::catch_unwind(|| private_digest(&file, 1)).is_err());
+    let alias = root.join("alias.bin");
+    fs::hard_link(&file, &alias).unwrap();
+    assert!(std::panic::catch_unwind(|| private_digest(&file, 1024)).is_err());
+    fs::remove_file(&alias).unwrap();
+    let linked = root.join("symlink.bin");
+    symlink(&file, &linked).unwrap();
+    assert!(std::panic::catch_unwind(|| private_digest(&linked, 1024)).is_err());
+    assert_eq!(fs::read(&file).unwrap(), before);
+    // Only this tiny owned successful synthetic fixture is retired.
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn fresh_publication_authority_private_hash_refuses_nonprivate_and_special_files() {
+    use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
+    let root = fs::canonicalize(std::env::temp_dir())
+        .unwrap()
+        .join(format!("exhibitos-fresh-fd-{}", uuid::Uuid::new_v4()));
+    installations::new_directory(&root).unwrap();
+    let file = root.join("shared.bin");
+    crate::restoration::private_bytes(&file, b"preserved").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(std::panic::catch_unwind(|| private_digest(&file, 1024)).is_err());
+    assert_eq!(
+        fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+    assert_eq!(fs::read(&file).unwrap(), b"preserved");
+    let fifo = root.join("fifo");
+    let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    assert!(std::panic::catch_unwind(|| private_digest(&fifo, 1024)).is_err());
+    assert!(std::panic::catch_unwind(|| private_digest(&root, 1024)).is_err());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn fresh_publication_authority_private_hash_detects_open_fd_path_replacement() {
+    let root = fs::canonicalize(std::env::temp_dir())
+        .unwrap()
+        .join(format!("exhibitos-fresh-replace-{}", uuid::Uuid::new_v4()));
+    installations::new_directory(&root).unwrap();
+    let file = root.join("input.bin");
+    let retained = root.join("retained.bin");
+    let original = vec![7u8; 131072];
+    crate::restoration::private_bytes(&file, &original).unwrap();
+    let result = std::panic::catch_unwind(|| {
+        private_digest_observed(&file, 131072, |bytes| {
+            if bytes == 65536 {
+                fs::rename(&file, &retained).unwrap();
+                crate::restoration::private_bytes(&file, &vec![9u8; 131072]).unwrap();
+            }
+        })
+    });
+    assert!(result.is_err());
+    assert_eq!(fs::read(&retained).unwrap(), original);
+    assert_eq!(fs::read(&file).unwrap(), vec![9u8; 131072]);
+    fs::remove_dir_all(root).unwrap();
 }
