@@ -107,6 +107,21 @@ pub(crate) fn policy_subnet(value: &str) -> Result<()> {
     if range.start<first || range.end>=first+65536 || range.end-range.start!=15 || format!("{}/28",Ipv4Addr::from(range.start))!=value {return Err(err("RESTORE_LAYOUT_UNSUPPORTED"));}
     Ok(())
 }
+pub(crate) fn policy_gateway(subnet: &str) -> Result<String> {
+    policy_subnet(subnet)?;
+    let range = Range::cidr(subnet, false)?;
+    Ok(Ipv4Addr::from(range.start + 1).to_string())
+}
+/// Legacy receipts omit the gateway; new receipts bind the canonical gateway explicitly.
+pub(crate) fn compose_gateway(bytes: &[u8]) -> Result<Option<String>> {
+    let subnet = compose_subnet(bytes)?;
+    let value: Value = serde_json::from_slice(bytes).map_err(|_| err("RESTORE_LAYOUT_UNSUPPORTED"))?;
+    let Some(gateway) = value["networks"]["default"]["ipam"]["config"][0].get("gateway") else { return Ok(None); };
+    let subnet = subnet.ok_or_else(|| err("RESTORE_LAYOUT_UNSUPPORTED"))?;
+    let expected = policy_gateway(&subnet)?;
+    if gateway != &Value::String(expected.clone()) { return Err(err("RESTORE_LAYOUT_UNSUPPORTED")); }
+    Ok(Some(expected))
+}
 pub(crate) fn recheck(value: &str) -> Result<()> {
     policy_subnet(value)?;
     let range=Range::cidr(value,false)?;
@@ -129,22 +144,6 @@ pub(crate) fn receipt_compose_subnet(bytes: &[u8], recorded: Option<&str>) -> Re
     if observed.as_deref()!=recorded {return Err(err("UPDATE_SOURCE_CONFIGURATION_MISMATCH"));}
     Ok(observed)
 }
-/// A freshly created bridge may defer its gateway until its first endpoint joins.
-/// Accept that absence only while the exact network has no attached endpoints;
-/// the caller still requires full observed verification after database startup.
-pub(crate) fn verify_created(network: &Value, subnet: &str) -> Result<()> {
-    policy_subnet(subnet)?;
-    let configs = network["IPAM"]["Config"].as_array().ok_or_else(|| err("OWNERSHIP_CONFLICT"))?;
-    if configs.len() != 1 || configs[0]["Subnet"] != subnet || network["EnableIPv6"] != false
-        || network["Driver"] != "bridge"
-        || configs[0].get("IPRange").is_some_and(|v| v != "")
-    { return Err(err("OWNERSHIP_CONFLICT")); }
-    if configs[0].get("Gateway").is_some() { return verify_observed(network, subnet); }
-    if !network["Containers"].as_object().is_some_and(|v| v.is_empty()) {
-        return Err(err("OWNERSHIP_CONFLICT"));
-    }
-    Ok(())
-}
 pub(crate) fn verify_observed(network: &Value, subnet: &str) -> Result<()> {
     policy_subnet(subnet)?;
     let configs=network["IPAM"]["Config"].as_array().ok_or_else(||err("OWNERSHIP_CONFLICT"))?;
@@ -158,29 +157,21 @@ pub(crate) fn verify_observed(network: &Value, subnet: &str) -> Result<()> {
 mod tests {
 use super::*;
 #[test]
-fn created_gateway_absence_requires_empty_bridge_and_never_qualifies_running_network() {
-    let subnet = "10.240.0.0/28";
-    let created = serde_json::json!({"Driver":"bridge","EnableIPv6":false,
-        "IPAM":{"Config":[{"Subnet":subnet}]},"Containers":{}});
-    assert!(verify_created(&created,subnet).is_ok());
-    assert_eq!(verify_observed(&created,subnet).unwrap_err().code,"OWNERSHIP_CONFLICT");
-    for changed in [serde_json::json!({"endpoint":{}}), Value::Null] {
-        let mut value=created.clone();value["Containers"]=changed;
-        assert_eq!(verify_created(&value,subnet).unwrap_err().code,"OWNERSHIP_CONFLICT");
+fn explicit_gateway_is_policy_bound_while_legacy_and_observed_gates_remain_strict() {
+    assert_eq!(policy_gateway("10.240.0.0/28").unwrap(),"10.240.0.1");
+    assert_eq!(policy_gateway("10.240.255.240/28").unwrap(),"10.240.255.241");
+    assert!(policy_gateway("10.240.0.1/28").is_err());
+    let legacy=br#"{"networks":{"default":{"ipam":{"config":[{"subnet":"10.240.0.0/28"}]}}}}"#;
+    assert_eq!(compose_gateway(legacy).unwrap(),None);
+    let mut value:Value=serde_json::from_slice(legacy).unwrap();
+    value["networks"]["default"]["ipam"]["config"][0]["gateway"]=serde_json::json!("10.240.0.1");
+    assert_eq!(compose_gateway(&serde_json::to_vec(&value).unwrap()).unwrap().as_deref(),Some("10.240.0.1"));
+    for wrong in [Value::Null,serde_json::json!("10.240.0.0"),serde_json::json!("10.240.0.16"),serde_json::json!("10.240.0.2")] {
+        value["networks"]["default"]["ipam"]["config"][0]["gateway"]=wrong;
+        assert!(compose_gateway(&serde_json::to_vec(&value).unwrap()).is_err());
     }
-    for (field,value) in [("Gateway",serde_json::json!("10.240.0.16")),
-        ("Gateway",Value::Null),("IPRange",serde_json::json!("10.240.0.0/29"))] {
-        let mut changed=created.clone();changed["IPAM"]["Config"][0][field]=value;
-        assert_eq!(verify_created(&changed,subnet).unwrap_err().code,"OWNERSHIP_CONFLICT");
-    }
-    let mut wrong_driver=created.clone();wrong_driver["Driver"]=serde_json::json!("host");
-    assert!(verify_created(&wrong_driver,subnet).is_err());
-    let mut ipv6=created.clone();ipv6["EnableIPv6"]=serde_json::json!(true);
-    assert!(verify_created(&ipv6,subnet).is_err());
-    let mut connected=created;connected["IPAM"]["Config"][0]["Gateway"]=serde_json::json!("10.240.0.1");
-    connected["Containers"]=serde_json::json!({"endpoint":{}});
-    assert!(verify_created(&connected,subnet).is_ok());
-    assert!(verify_observed(&connected,subnet).is_ok());
+    let observed=serde_json::json!({"EnableIPv6":false,"IPAM":{"Config":[{"Subnet":"10.240.0.0/28"}]}});
+    assert_eq!(verify_observed(&observed,"10.240.0.0/28").unwrap_err().code,"OWNERSHIP_CONFLICT");
 }
 
 #[test]

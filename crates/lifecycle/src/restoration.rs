@@ -321,6 +321,21 @@ fn compose(m: &BundleManifest, database: &str, platform: &str, subnet: Option<&s
     if let Some(subnet)=subnet {value["networks"]["default"]["ipam"]=serde_json::json!({"config":[{"subnet":subnet}]});}
     value
 }
+/// Bind an explicit policy gateway without changing any legacy remapping bytes.
+pub(crate) fn bind_explicit_gateway(
+    mapped: (BundleManifest, Vec<u8>), subnet: &str,
+) -> Result<(BundleManifest, Vec<u8>)> {
+    let (mut manifest, encoded) = mapped;
+    if crate::restoration_network::compose_subnet(&encoded)?.as_deref() != Some(subnet) {
+        return Err(err("RESTORE_LAYOUT_UNSUPPORTED"));
+    }
+    let gateway = crate::restoration_network::policy_gateway(subnet)?;
+    let mut value: Value = serde_json::from_slice(&encoded).map_err(|_| err("STATE_INVALID"))?;
+    value["networks"]["default"]["ipam"]["config"][0]["gateway"] = Value::String(gateway);
+    let encoded = serde_json::to_vec(&value).map_err(|_| err("STATE_INVALID"))?;
+    manifest.compose_sha256 = digest(&encoded);
+    Ok((manifest, encoded))
+}
 /// Exact supported restoration remapping, shared by writer and fresh verifier.
 pub(crate) fn remapped_bundle(
     original: &BundleManifest,
@@ -857,6 +872,7 @@ impl LifecycleService {
                 &platform,
                 Some(&subnet),
             )?;
+            let (manifest, encoded) = bind_explicit_gateway((manifest, encoded), &subnet)?;
             let bundle = self.root.join("bundle");
             let _destination_bundle_guard = directory(&bundle)?;
             for (index, preserved) in images.iter().enumerate() {
@@ -945,7 +961,7 @@ impl LifecycleService {
             }
             let created_network=inspected("docker",&["network".into(),"inspect".into(),format!("{}_default",manifest.project_name)])?;
             if created_network["Labels"]["com.exhibitos.bundle"]!=manifest.bundle_id || created_network["Labels"]["com.exhibitos.project"]!=manifest.project_name || created_network["Driver"]!="bridge" {return Err(err("OWNERSHIP_CONFLICT"));}
-            crate::restoration_network::verify_created(&created_network,&subnet)?;
+            crate::restoration_network::verify_observed(&created_network,&subnet)?;
             run(
                 "docker",
                 &compose_args(
