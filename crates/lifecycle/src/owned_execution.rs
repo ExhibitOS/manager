@@ -1,6 +1,42 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Existing registered source adapters under the borrowed exclusive trust fence.
 use super::*;
+
+#[cfg(test)]
+fn native_test_image() -> String {
+    native_test_fixture_image(
+        "EXHIBITOS_NATIVE_TEST_IMAGE",
+        "sha256:8f0e7b042ff0b93a646b919f5a8a5ee2f41cc22debcd5bd9ef49eacd06537e06",
+    )
+}
+
+#[cfg(test)]
+fn native_test_platform_image() -> String {
+    native_test_fixture_image(
+        "EXHIBITOS_NATIVE_TEST_PLATFORM_IMAGE",
+        "sha256:335f8f2c1437841266c41e79912b1160b03ce500511acc94afa338c4c8f6215b",
+    )
+}
+
+#[cfg(test)]
+fn native_test_fixture_image(variable: &str, default: &str) -> String {
+    let image = std::env::var(variable).unwrap_or_else(|_| default.into());
+    assert!(
+        image.starts_with("sha256:")
+            && image.len() == 71
+            && image[7..]
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    );
+    let row = crate::backup_creation::inspected(
+        "docker",
+        &["image".into(), "inspect".into(), image.clone()],
+    )
+    .unwrap();
+    assert_eq!(row["Id"], image);
+    image
+}
+
 #[path = "candidate_configuration.rs"]
 mod candidate_configuration;
 #[path = "candidate_recovery.rs"]
@@ -1595,6 +1631,12 @@ mod tests {
         );
         let head = store.current_sha256.clone();
         let generation = store.current.generation;
+        // A later target registration follows authenticated completed selection,
+        // not the original default-kind entry or an unverified active pointer.
+        let next = store.register_update_target(true).unwrap();
+        assert_eq!(next.source_instance, target);
+        assert_eq!(next.active_instance, target);
+        assert_eq!(store.current_sha256, head);
         drop(store);
         let reopened = Store::open(&p, "default").unwrap();
         assert_eq!(reopened.root, root);
@@ -1706,6 +1748,9 @@ mod tests {
                 )
                 .is_err()
         );
+        assert!(session.prepare_owned_migrated_update_reusing_host(
+            &mut artifact,&inputs,&MigrationRuntimeInputs{catalog:Path::new("/missing-catalog"),catalog_sha256:&"a".repeat(64)},
+            Path::new("/missing-retained-host"),&destination,Path::new("/missing-key")).is_err());
         assert!(!destination.exists());
         assert_eq!(fs::read(&file).unwrap(), b"fixture");
         drop(artifact);
@@ -2055,6 +2100,30 @@ mod tests {
         let (registry, _) = installations::load(&p).unwrap().unwrap();
         assert_eq!(registry.active_id, SOURCE);
         assert_eq!(registry.installations.len(), 3);
+    }
+    #[test]
+    fn planned_target_registration_materializes_only_reserved_id_and_refuses_reopen() {
+        let (p, store) = prepared("default");
+        registered(&p, SOURCE, "default");
+        let before = serde_json::to_vec(&store.intent()).unwrap();
+        let trust = serde_json::to_vec(&store.receipt()).unwrap();
+        assert_eq!(store.register_planned_update_target(false).unwrap_err().code,
+            "UPDATE_TARGET_ACK_REQUIRED");
+        let first = store.register_planned_update_target(true).unwrap();
+        assert_eq!(first.target_instance, store.intent().unwrap().update.plan().target_instance);
+        assert_eq!(first.active_instance, SOURCE);
+        assert!(!first.activated && !first.runtime_started);
+        let witness = Path::new(&first.target_path).join("retained-candidate");
+        fs::write(&witness, b"preserve").unwrap();
+        let registry = fs::read(p.join("installation-selection.json")).unwrap();
+        assert_eq!(store.register_planned_update_target(true).unwrap_err().code,
+            "UPDATE_IDENTITY_REUSED");
+        assert_eq!(fs::read(&witness).unwrap(), b"preserve");
+        assert_eq!(fs::read(p.join("installation-selection.json")).unwrap(), registry);
+        assert_eq!(serde_json::to_vec(&store.intent()).unwrap(), before);
+        assert_eq!(serde_json::to_vec(&store.receipt()).unwrap(), trust);
+        drop(store);
+        fs::remove_dir_all(p.parent().unwrap()).unwrap();
     }
     #[test]
     fn fresh_registration_refuses_source_mismatch_and_aliased_namespace() {

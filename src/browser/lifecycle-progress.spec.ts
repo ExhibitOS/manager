@@ -29,7 +29,7 @@ for(const action of ['install','start','stop','restart','failure'] as const)test
  await controls.getByRole('button',{name:label,exact:true}).click();
  const feedback=controls.getByRole('status');await expect(feedback).toContainText('작업 진행 중');
  const progress=feedback.getByRole('progressbar');await expect(progress).toBeVisible();await expect(progress).not.toHaveAttribute('value');
- if(action==='start')await controls.screenshot({path:'/private/tmp/exhibitos-manager-progress-'+test.info().project.name+'.png'});
+ if(action==='start')await controls.screenshot({path:test.info().outputPath('exhibitos-manager-progress-'+test.info().project.name+'.png')});
  await expect(controls.getByRole('button',{name:action==='install'?'설치 중…':action==='stop'?'정지 중…':action==='restart'?'재시작 중…':'시작 중…',exact:true})).toBeDisabled();
  expect(await page.evaluate(()=>(window as unknown as {__operationCount:number}).__operationCount)).toBe(1);
  for(const width of [320,1120]){await page.setViewportSize({width,height:900});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);}

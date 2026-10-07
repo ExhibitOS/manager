@@ -123,3 +123,7 @@ Stopped candidate data can also be checked with bounded tmpfs instead of accumul
 [예약된 롤백 후보의 실제 암호화 복원 코어](docs/rollback-restoration.md)는 원래 계획의 백업·스키마·이미지·인벤토리를 새 공간에 복원합니다. 건강 재관측·선택/authority 완료와 전체 migration 롤백 검증은 남아 있습니다.
 
 [롤백 선택과 authority journal](docs/rollback-selection.md)은 합성 종료 경계에서 정확한 이전 선택 복구와 완료 기록을 검증합니다. [보존한 복원 후보의 native 건강 재관측](docs/rollback-runtime.md)이 Unix 코어에 연결됐습니다. 실제 migration 실패·전체 복구·GUI·Windows 인수 검증은 남아 있습니다.
+
+서명 업데이트 이력이 있는 Unix 관리 공간의 일반 설치·시작·재시작·재시도는 엔진과 작업 기록 변경 전에 전체 신뢰 이력을 검사합니다. 업데이트 중인 원본·후보와 rollback 뒤 남겨진 실패 후보는 `UPDATE_WRITER_BLOCKED`로 거부합니다. 검증된 복구 원본과 성공한 업데이트 대상은 실행할 수 있으며, 정지는 계속 허용합니다. 신뢰 기록 유실·변조·잠금 충돌은 `UPDATE_AUTHORITY_UNAVAILABLE`로 거부합니다. Windows 서명 업데이트 실행과 공개 changed-schema 실행의 기존 미검증 차단 조건은 유지합니다.
+
+[Linux 코어의 실제 검증과 최소 캐시 실행 방법](docs/linux-core-verification.md)을 제공한다. Linux 컨테이너 코어 검증을 데스크톱 GUI나 엔진 전체 인수 검증으로 확대하지 않는다.

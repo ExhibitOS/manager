@@ -19,6 +19,21 @@ impl Store {
         &self,
         preserve_active: bool,
     ) -> crate::Result<RegisteredUpdateTarget> {
+        self.register_update_target_impl(preserve_active, false)
+    }
+    /// Register only the exact target reserved by the current Prepared plan.
+    /// Existing names, candidates and aliases are never adopted or overwritten.
+    pub fn register_planned_update_target(
+        &self,
+        preserve_active: bool,
+    ) -> crate::Result<RegisteredUpdateTarget> {
+        self.register_update_target_impl(preserve_active, true)
+    }
+    fn register_update_target_impl(
+        &self,
+        preserve_active: bool,
+        planned: bool,
+    ) -> crate::Result<RegisteredUpdateTarget> {
         self.check_root().map_err(|e| crate::err(e.code()))?;
         if !preserve_active {
             return Err(crate::err("UPDATE_TARGET_ACK_REQUIRED"));
@@ -29,6 +44,9 @@ impl Store {
         {
             return Err(crate::err("UPDATE_CANDIDATE_STAGE_INVALID"));
         }
+        if planned && self.intent().is_none() {
+            return Err(crate::err("UPDATE_INTENT_MISSING"));
+        }
         let anchor = self
             ._anchor
             .try_clone()
@@ -38,16 +56,11 @@ impl Store {
         let _profile = installations::profile_lock(&profile)?;
         let (mut registry, previous) = installations::load(&self.profile)?
             .ok_or_else(|| crate::err("UPDATE_SOURCE_UNREGISTERED"))?;
+        let bound_source = self.bound_source_id(&registry)?;
         let entry = registry
             .installations
             .iter()
-            .find(|e| {
-                if self.installation == "default" {
-                    e.kind == "default"
-                } else {
-                    e.id == self.installation
-                }
-            })
+            .find(|e| e.id == bound_source)
             .ok_or_else(|| crate::err("UPDATE_SOURCE_UNREGISTERED"))?;
         let source_id = entry.id.clone();
         if self
@@ -72,11 +85,18 @@ impl Store {
             Err(_) => return Err(crate::err("STATE_UNAVAILABLE")),
         }
         let target = installations::Entry {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: if planned {
+                self.intent().ok_or_else(|| crate::err("UPDATE_INTENT_MISSING"))?
+                    .update.plan().target_instance.clone()
+            } else {
+                uuid::Uuid::new_v4().to_string()
+            },
             kind: "recovery".into(),
             created_at: crate::now(),
         };
-        if self.used_instances.contains(&target.id)
+        // Preparation already reserved this exact target after rejecting prior
+        // history reuse. Only that current reservation may be materialized.
+        if (!planned && self.used_instances.contains(&target.id))
             || registry.installations.iter().any(|e| e.id == target.id)
         {
             return Err(crate::err("UPDATE_IDENTITY_REUSED"));

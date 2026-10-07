@@ -2,8 +2,8 @@
 //! Full host-profile bytes, not engine-volume backup or live root activation.
 //! Failed encrypted/plaintext staging remains private and unpublished.
 use super::*;
-use std::collections::BTreeSet;
-use std::io::Cursor;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Cursor, Seek};
 #[path = "host_current_inventory.rs"]
 mod current_inventory;
 #[path = "host_stream_extraction.rs"]
@@ -46,6 +46,40 @@ struct Inventory {
     host_writer_quiescence: String,
     excluded_locks: Vec<String>,
     items: Vec<Item>,
+    #[serde(
+        default,
+        deserialize_with = "unique_references",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    content_references: BTreeMap<String, String>,
+}
+fn unique_references<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<BTreeMap<String, String>, D::Error> {
+    struct Visitor;
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+        type Value = BTreeMap<String, String>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("unique bounded content references")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut a: A,
+        ) -> std::result::Result<Self::Value, A::Error> {
+            let mut map = BTreeMap::new();
+            while let Some((key, value)) = a.next_entry::<String, String>()? {
+                if map.len() >= 100000
+                    || !safe_path(&key)
+                    || !safe_path(&value)
+                    || map.insert(key, value).is_some()
+                {
+                    return Err(serde::de::Error::custom("invalid content references"));
+                }
+            }
+            Ok(map)
+        }
+    }
+    d.deserialize_map(Visitor)
 }
 fn fail() -> LifecycleError {
     err("HOST_CHECKPOINT_INVALID")
@@ -277,10 +311,12 @@ fn inventory(profile: &Path, excluded: &BTreeSet<String>, id: &str) -> Result<In
         host_writer_quiescence: "operator-acknowledged".into(),
         excluded_locks: excluded.iter().cloned().collect(),
         items,
+        content_references: BTreeMap::new(),
     })
 }
 fn validate_inventory(m: &Inventory, profile: &Path) -> Result<()> {
-    if m.format != 1
+    if !(m.format == 1 && m.content_references.is_empty()
+        || m.format == 2 && !m.content_references.is_empty())
         || !installations::uuid(&m.id)
         || m.scope != "host-profile"
         || m.external_volumes_saved
@@ -325,6 +361,34 @@ fn validate_inventory(m: &Inventory, profile: &Path) -> Result<()> {
     {
         return Err(fail());
     }
+    for (destination, source) in &m.content_references {
+        if !safe_path(destination)
+            || !safe_path(source)
+            || source >= destination
+            || m.content_references.contains_key(source)
+        {
+            return Err(fail());
+        }
+        let target = m
+            .items
+            .binary_search_by(|e| e.path.as_str().cmp(destination))
+            .ok()
+            .map(|i| &m.items[i])
+            .ok_or_else(fail)?;
+        let original = m
+            .items
+            .binary_search_by(|e| e.path.as_str().cmp(source))
+            .ok()
+            .map(|i| &m.items[i])
+            .ok_or_else(fail)?;
+        if target.kind != "file"
+            || original.kind != "file"
+            || target.bytes != original.bytes
+            || target.sha256 != original.sha256
+        {
+            return Err(fail());
+        }
+    }
     for p in &m.excluded_locks {
         if !safe_path(p)
             || !(p == "profile-session.lock"
@@ -339,10 +403,27 @@ fn validate_inventory(m: &Inventory, profile: &Path) -> Result<()> {
     }
     Ok(())
 }
+fn deduplicate(m: &mut Inventory) {
+    let mut seen: BTreeMap<(u64, String), String> = BTreeMap::new();
+    for e in &m.items {
+        if e.kind == "file" && e.bytes >= 4096 {
+            let identity = (e.bytes, e.sha256.clone().unwrap_or_default());
+            if let Some(source) = seen.get(&identity) {
+                m.content_references.insert(e.path.clone(), source.clone());
+            } else {
+                seen.insert(identity, e.path.clone());
+            }
+        }
+    }
+    if !m.content_references.is_empty() {
+        m.format = 2;
+    }
+}
 struct Body {
     prefix: Cursor<Vec<u8>>,
     root: PathBuf,
     items: Vec<Item>,
+    references: BTreeMap<String, String>,
     next: usize,
     current: Option<(File, Item, fs::Metadata, u64, Sha256)>,
 }
@@ -384,6 +465,14 @@ impl Read for Body {
             if e.kind != "file" {
                 continue;
             }
+            if self.references.contains_key(&e.path) {
+                let (bytes, digest) = hash(&self.root.join(&e.path))
+                    .map_err(|_| std::io::Error::other("HOST_SOURCE_CHANGED"))?;
+                if bytes != e.bytes || Some(digest) != e.sha256 {
+                    return Err(std::io::Error::other("HOST_SOURCE_CHANGED"));
+                }
+                continue;
+            }
             let f = file(&self.root.join(&e.path))
                 .map_err(|_| std::io::Error::other("HOST_SOURCE_CHANGED"))?;
             let meta = f.metadata()?;
@@ -416,6 +505,57 @@ fn receipt(m: &Inventory, operation: &str, encoded: &[u8]) -> HostReceipt {
         external_volumes_saved: false,
         host_writer_quiescence: m.host_writer_quiescence.clone(),
     }
+}
+/// Authenticate the complete host stream against the current profile without
+/// extracting plaintext or claiming trust/runtime restoration.
+#[cfg(unix)]
+pub fn verify_host_current(
+    profile: &Path,
+    key_file: &Path,
+    archive: &Path,
+    expected_manifest: &str,
+    apps_closed: bool,
+    writers_stopped: bool,
+) -> Result<HostCurrentReceipt> {
+    if !apps_closed || !writers_stopped {
+        return Err(err("HOST_WRITER_ACK_REQUIRED"));
+    }
+    canonical_private(profile)?;
+    if !archive.is_absolute() || fs::canonicalize(archive).ok().as_deref() != Some(archive) {
+        return Err(fail());
+    }
+    let mut key = external_key(profile, key_file)?;
+    let result = (|| {
+        let session = session_lock(profile, true)?;
+        let _locks = current_host_locks(profile, &session)?;
+        let receipt = verify_host_current_borrowed(
+            profile,
+            archive,
+            key.as_slice().try_into().map_err(|_| fail())?,
+            &session,
+            expected_manifest,
+        )?;
+        if external_key(profile, key_file)? != key {
+            return Err(err("PROFILE_KEY_INVALID"));
+        }
+        Ok(receipt)
+    })();
+    key.fill(0);
+    result
+}
+#[cfg(not(unix))]
+pub fn verify_host_current(
+    _profile: &Path,
+    _key_file: &Path,
+    _archive: &Path,
+    _expected_manifest: &str,
+    apps_closed: bool,
+    writers_stopped: bool,
+) -> Result<HostCurrentReceipt> {
+    if !apps_closed || !writers_stopped {
+        return Err(err("HOST_WRITER_ACK_REQUIRED"));
+    }
+    Err(err("HOST_PLATFORM_UNVERIFIED"))
 }
 pub fn checkpoint_host(
     profile: &Path,
@@ -524,7 +664,8 @@ fn checkpoint_host_guarded<B, T>(
         session.check_exclusive(profile)?;
     }
     let id = Uuid::new_v4().to_string();
-    let m = inventory(profile, &excluded, &id)?;
+    let mut m = inventory(profile, &excluded, &id)?;
+    deduplicate(&mut m);
     validate_inventory(&m, profile)?;
     let encoded = serde_json::to_vec(&m).map_err(|_| fail())?;
     if encoded.len() as u64 > MANIFEST_LIMIT {
@@ -532,7 +673,15 @@ fn checkpoint_host_guarded<B, T>(
     }
     let mut prefix = (encoded.len() as u64).to_be_bytes().to_vec();
     prefix.extend(&encoded);
-    let needed = m.total_bytes + prefix.len() as u64 + 1024 * 1024;
+    // Only payload masters are serialized; reconstruction still budgets every path.
+    let payload_bytes: u64 = m
+        .items
+        .iter()
+        .filter(|e| !m.content_references.contains_key(&e.path))
+        .map(|e| e.bytes)
+        .sum();
+    let stream_bytes = payload_bytes + prefix.len() as u64;
+    let needed = stream_bytes + stream_bytes.div_ceil(1024 * 1024) * 33 + 128 + 1024 * 1024;
     space(&parent, needed)?;
     let pending = parent.join(format!(".host-checkpoint-{id}.pending"));
     let mut output = private_new(&pending)?;
@@ -540,11 +689,18 @@ fn checkpoint_host_guarded<B, T>(
         prefix: Cursor::new(prefix),
         root: profile.into(),
         items: m.items.clone(),
+        references: m.content_references.clone(),
         next: 0,
         current: None,
     };
-    super::super::maintenance_stream::seal(&mut body, &mut output, &key, CONTEXT, DATA_LIMIT)
-        .map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
+    super::super::maintenance_stream::seal_compact(
+        &mut body,
+        &mut output,
+        &key,
+        CONTEXT,
+        DATA_LIMIT,
+    )
+    .map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
     output.sync_all().map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
     drop(output);
     let paired = after()?;
@@ -573,6 +729,121 @@ fn checkpoint_host_guarded<B, T>(
         paired,
     ))
 }
+struct HostManifestPrefix(Vec<u8>);
+impl Write for HostManifestPrefix {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        let take = b
+            .len()
+            .min((MANIFEST_LIMIT as usize + 8).saturating_sub(self.0.len()));
+        self.0.extend_from_slice(&b[..take]);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl HostManifestPrefix {
+    fn payload_space_bytes(&self, profile: &Path, decoded: u64) -> Result<u64> {
+        self.expanded_bytes(profile, decoded)?;
+        let len = u64::from_be_bytes(self.0[..8].try_into().map_err(|_| fail())?) as usize;
+        let m: Inventory = serde_json::from_slice(&self.0[8..8 + len]).map_err(|_| fail())?;
+        decoded
+            .checked_add((m.items.len() as u64 + 4) * 4096)
+            .ok_or_else(fail)
+    }
+    fn expanded_bytes(&self, profile: &Path, decoded: u64) -> Result<u64> {
+        let prefix: [u8; 8] = self
+            .0
+            .get(..8)
+            .ok_or_else(fail)?
+            .try_into()
+            .map_err(|_| fail())?;
+        let len = u64::from_be_bytes(prefix);
+        if len == 0 || len > MANIFEST_LIMIT {
+            return Err(fail());
+        }
+        let encoded = self.0.get(8..8 + len as usize).ok_or_else(fail)?;
+        let m: Inventory = serde_json::from_slice(encoded).map_err(|_| fail())?;
+        validate_inventory(&m, profile)?;
+        let physical = m
+            .items
+            .iter()
+            .filter(|e| !m.content_references.contains_key(&e.path))
+            .try_fold(len + 8, |n, e| n.checked_add(e.bytes))
+            .ok_or_else(fail)?;
+        if physical != decoded {
+            return Err(fail());
+        }
+        m.total_bytes
+            .checked_add((m.items.len() as u64 + 4) * 4096)
+            .ok_or_else(fail)
+    }
+}
+/// Authenticate restoration growth without extracting or requiring the source namespace.
+pub(crate) fn authenticated_host_restore_bytes(
+    profile: &Path,
+    archive: &Path,
+    key: &[u8],
+    expected_manifest: &str,
+) -> Result<u64> {
+    if !profile.is_absolute() {
+        return Err(fail());
+    }
+    let mut source = file(archive)?;
+    let before = source.metadata().map_err(|_| fail())?;
+    if mode(&before) != 0o600 || before.len() > DATA_LIMIT + 16 * 1024 * 1024 {
+        return Err(fail());
+    }
+    let mut prefix = HostManifestPrefix(Vec::new());
+    let decoded =
+        super::super::maintenance_stream::open(&mut source, &mut prefix, key, CONTEXT, DATA_LIMIT)
+            .map_err(|_| fail())?;
+    let expanded = prefix.expanded_bytes(profile, decoded)?;
+    let len = u64::from_be_bytes(prefix.0[..8].try_into().map_err(|_| fail())?) as usize;
+    if digest(&prefix.0[8..8 + len]) != expected_manifest {
+        return Err(fail());
+    }
+    if !unchanged(&before, &source.metadata().map_err(|_| fail())?)
+        || !unchanged(&before, &fs::symlink_metadata(archive).map_err(|_| fail())?)
+    {
+        return Err(err("HOST_SOURCE_CHANGED"));
+    }
+    Ok(expanded)
+}
+/// Test-only retirement evidence: authenticate the actual complete archive first,
+/// then verify an unused extraction against its authenticated manifest. Current
+/// source bytes may have legitimately changed after the owning child applied.
+#[cfg(test)]
+pub(crate) fn verify_unused_extraction_archive(
+    profile: &Path,
+    archive: &Path,
+    key: &[u8],
+    extracted: &Path,
+    expected_manifest: &str,
+) -> Result<HostReceipt> {
+    let mut source = file(archive)?;
+    let before = source.metadata().map_err(|_| fail())?;
+    let mut prefix = HostManifestPrefix(Vec::new());
+    let decoded =
+        super::super::maintenance_stream::open(&mut source, &mut prefix, key, CONTEXT, DATA_LIMIT)
+            .map_err(|_| fail())?;
+    prefix.expanded_bytes(profile, decoded)?;
+    let len = u64::from_be_bytes(prefix.0[..8].try_into().map_err(|_| fail())?) as usize;
+    let encoded = &prefix.0[8..8 + len];
+    if digest(encoded) != expected_manifest {
+        return Err(fail());
+    }
+    let m: Inventory = serde_json::from_slice(encoded).map_err(|_| fail())?;
+    let proof = receipt(&m, "host-profile-extracted-not-activated", encoded);
+    verify_extracted_host(profile, extracted, &proof)?;
+    if !unchanged(&before, &source.metadata().map_err(|_| fail())?)
+        || !unchanged(&before, &fs::symlink_metadata(archive).map_err(|_| fail())?)
+    {
+        return Err(err("HOST_SOURCE_CHANGED"));
+    }
+    Ok(proof)
+}
+
 fn publish_directory(source: &Path, target: &Path) -> Result<()> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
@@ -631,6 +902,37 @@ pub fn extract_host(
     destination: &Path,
     ack: bool,
 ) -> Result<HostReceipt> {
+    extract_host_mode(profile, key, archive, destination, ack, false)
+}
+
+/// Full authenticated extraction with mandatory independent reference clones.
+/// Unsupported clone operations fail; this opt-in never falls back to dense copies.
+pub fn extract_host_clone_only(
+    profile: &Path,
+    key: &Path,
+    archive: &Path,
+    destination: &Path,
+    ack: bool,
+) -> Result<HostReceipt> {
+    #[cfg(target_os = "macos")]
+    {
+        extract_host_mode(profile, key, archive, destination, ack, true)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (profile, key, archive, destination, ack);
+        Err(err("HOST_CLONE_PLATFORM_UNVERIFIED"))
+    }
+}
+
+fn extract_host_mode(
+    profile: &Path,
+    key: &Path,
+    archive: &Path,
+    destination: &Path,
+    ack: bool,
+    require_reference_clones: bool,
+) -> Result<HostReceipt> {
     acknowledgement(ack)?;
     let expected_parent =
         fs::canonicalize(profile.parent().ok_or_else(fail)?).map_err(|_| fail())?;
@@ -661,13 +963,40 @@ pub fn extract_host(
     if mode(&meta) != 0o600 || meta.len() > DATA_LIMIT + 16 * 1024 * 1024 {
         return Err(fail());
     }
-    // Ciphertext bounds the complete plaintext. Stream each authenticated chunk
-    // directly into the unpublished private tree, avoiding a second full copy.
-    space(&parent, meta.len())?;
+    // Authenticate the full logical size before reserving extraction space.
+    // Compact ciphertext is never a bound on expanded host bytes.
+    let mut manifest_prefix = HostManifestPrefix(Vec::new());
+    let logical_bytes = super::super::maintenance_stream::open(
+        &mut source,
+        &mut manifest_prefix,
+        &key,
+        CONTEXT,
+        DATA_LIMIT,
+    )
+    .map_err(|_| fail())?;
+    let expanded_bytes = manifest_prefix.expanded_bytes(profile, logical_bytes)?;
+    if !unchanged(&meta, &source.metadata().map_err(|_| fail())?) {
+        return Err(err("HOST_SOURCE_CHANGED"));
+    }
+    source
+        .seek(std::io::SeekFrom::Start(0))
+        .map_err(|_| fail())?;
+    // Full expanded quota/graph validation above is identical in both modes.
+    // The strict mode writes only authenticated payload masters; every other
+    // file must be a clone or extraction fails before dense fallback.
+    let needed = if require_reference_clones {
+        manifest_prefix.payload_space_bytes(profile, logical_bytes)?
+    } else {
+        expanded_bytes
+    };
+    space(&parent, needed)?;
     let stage = parent.join(format!(".host-extract-{}.pending", Uuid::new_v4()));
     installations::new_directory(&stage)?;
     let recovered = stage.join("profile");
     let mut sink = stream_extraction::Extraction::new(profile, &recovered);
+    if require_reference_clones {
+        sink.require_reference_clones();
+    }
     super::super::maintenance_stream::open(&mut source, &mut sink, &key, CONTEXT, DATA_LIMIT)
         .map_err(|_| fail())?;
     // Final-frame authentication AND ciphertext EOF precede this completion.
@@ -865,6 +1194,34 @@ pub(crate) fn activate_missing_host(
 // Native Windows is tested separately for explicit unsupported refusal below.
 #[cfg(all(test, unix))]
 mod tests {
+    /// Read-only measurement of the same guarded full-file digest used in host inventory.
+    /// The external synthetic artifact is retained; no data or checkpoint is written.
+    #[test]
+    #[ignore = "requires the retained synthetic migration artifact; measures actual full hashing"]
+    fn actual_native_full_artifact_hash_throughput() {
+        let input = std::env::var_os("EXHIBITOS_HASH_BENCH_ARTIFACT")
+            .expect("provide the retained synthetic migration runtime.tar");
+        let path = std::path::Path::new(&input);
+        assert_eq!(
+            path.file_name().and_then(|v| v.to_str()),
+            Some("runtime.tar")
+        );
+        for run in 0..3 {
+            let start = std::time::Instant::now();
+            let result = super::hash(path).unwrap();
+            assert_eq!(result.0, 93_761_024);
+            assert_eq!(
+                result.1,
+                "fc167a43cdc8a71adc55eb5bf0a7aea3c791497bd41ec49c273f703775722ab4"
+            );
+            println!(
+                "FULL_HASH run={run} bytes={} seconds={:.6} sha256={}",
+                result.0,
+                start.elapsed().as_secs_f64(),
+                result.1
+            );
+        }
+    }
     use super::*;
     use crate::installations::InstallationController;
     // Own only the fresh synthetic root. Successful tests retire it; a panic or
@@ -924,6 +1281,54 @@ mod tests {
         let a = root.path.join("archive.exb");
         (root, p, k, a)
     }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn strict_clone_extraction_restores_every_file_and_tamper_never_publishes() {
+        use std::os::unix::fs::MetadataExt;
+        let (root, profile, key, archive) = fixture();
+        let bytes = vec![83; 4 * 1024 * 1024];
+        write_new(&profile.join("clone-a"), &bytes).unwrap();
+        write_new(&profile.join("clone-b"), &bytes).unwrap();
+        let saved = checkpoint_host(&profile, &key, &archive, true, true).unwrap();
+        let target = root.path.join("strict");
+        let opened = extract_host_clone_only(&profile, &key, &archive, &target, true).unwrap();
+        assert_eq!(opened.manifest_sha256, saved.manifest_sha256);
+        assert_eq!(opened.files, saved.files);
+        verify_extracted_host(&profile, &target, &opened).unwrap();
+        let a = target.join("profile/clone-a");
+        let b = target.join("profile/clone-b");
+        assert_ne!(
+            fs::metadata(&a).unwrap().ino(),
+            fs::metadata(&b).unwrap().ino()
+        );
+        assert_eq!(fs::read(&a).unwrap(), bytes);
+        fs::write(&b, b"candidate only").unwrap();
+        assert_eq!(fs::read(&a).unwrap(), bytes);
+        assert_eq!(fs::read(profile.join("clone-b")).unwrap(), bytes);
+        let mut damaged = fs::read(&archive).unwrap();
+        let last = damaged.len() - 1;
+        damaged[last] ^= 1;
+        fs::write(&archive, damaged).unwrap();
+        let refused = root.path.join("tampered-strict");
+        assert!(extract_host_clone_only(&profile, &key, &archive, &refused, true).is_err());
+        assert!(!refused.exists());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn strict_clone_platform_refusal_never_creates_destination() {
+        let (root, profile, key, archive) = fixture();
+        let target = root.path.join("unsupported-clone");
+        assert_eq!(
+            extract_host_clone_only(&profile, &key, &archive, &target, true)
+                .unwrap_err()
+                .code,
+            "HOST_CLONE_PLATFORM_UNVERIFIED"
+        );
+        assert!(!target.exists());
+        assert!(!archive.exists());
+    }
+
     #[test]
     fn retained_host_recheck_requires_native_current_proof_and_unchanged_extraction() {
         let (root, profile, key, archive) = fixture();
@@ -932,7 +1337,14 @@ mod tests {
         let destination = root.path.join("inactive");
         extract_host(&profile, &key, &archive, &destination, true).unwrap();
         let session = session_lock(&profile, true).unwrap();
-        let mut current = verify_host_current_borrowed(&profile, &archive, &[17; 32], &session, &saved.manifest_sha256).unwrap();
+        let mut current = verify_host_current_borrowed(
+            &profile,
+            &archive,
+            &[17; 32],
+            &session,
+            &saved.manifest_sha256,
+        )
+        .unwrap();
         let receipt = recheck_extracted_host_current(&profile, &destination, &current).unwrap();
         assert_eq!(receipt.manifest_sha256, saved.manifest_sha256);
         current.current_profile_matched = false;
@@ -945,7 +1357,11 @@ mod tests {
         assert!(recheck_extracted_host_current(&profile, &destination, &current).is_err());
         fs::write(destination.join("profile/witness"), b"original").unwrap();
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(destination.join("profile/witness"), fs::Permissions::from_mode(0o400)).unwrap();
+        fs::set_permissions(
+            destination.join("profile/witness"),
+            fs::Permissions::from_mode(0o400),
+        )
+        .unwrap();
         assert!(recheck_extracted_host_current(&profile, &destination, &current).is_err());
     }
     #[test]
@@ -1208,6 +1624,173 @@ mod tests {
         }
     }
     #[test]
+    fn repeated_content_restores_separate_files_modes_and_full_current_inventory() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let (_root, p, k, a) = fixture();
+        let mut data = vec![0u8; 2 * 1024 * 1024];
+        aes_gcm::aead::rand_core::RngCore::fill_bytes(&mut aes_gcm::aead::OsRng, &mut data);
+        for name in ["content-a", "content-b", "content-c"] {
+            write_new(&p.join(name), &data).unwrap();
+        }
+        fs::set_permissions(p.join("content-b"), fs::Permissions::from_mode(0o400)).unwrap();
+        let receipt = checkpoint_host(&p, &k, &a, true, true).unwrap();
+        assert!(fs::metadata(&a).unwrap().len() < 3 * 1024 * 1024);
+        let current =
+            verify_host_current(&p, &k, &a, &receipt.manifest_sha256, true, true).unwrap();
+        assert!(current.current_profile_matched);
+        assert!(current.bytes >= 6 * 1024 * 1024);
+        let target = k.with_file_name("deduplicated-extract");
+        let restored = extract_host(&p, &k, &a, &target, true).unwrap();
+        verify_extracted_host(&p, &target, &restored).unwrap();
+        for name in ["content-a", "content-b", "content-c"] {
+            assert_eq!(fs::read(target.join("profile").join(name)).unwrap(), data);
+        }
+        let first = fs::metadata(target.join("profile/content-a")).unwrap();
+        let second = fs::metadata(target.join("profile/content-b")).unwrap();
+        assert_ne!(first.ino(), second.ino());
+        assert_eq!(first.nlink(), 1);
+        assert_eq!(second.nlink(), 1);
+        assert_eq!(second.mode() & 0o777, 0o400);
+        let manifest: Inventory =
+            serde_json::from_slice(&fs::read(target.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest.format, 2);
+        assert_eq!(manifest.content_references["content-b"], "content-a");
+        let mut encoded = Vec::new();
+        super::super::super::maintenance_stream::open(
+            &mut file(&a).unwrap(),
+            &mut encoded,
+            &[17; 32],
+            CONTEXT,
+            DATA_LIMIT,
+        )
+        .unwrap();
+        let prefix =
+            HostManifestPrefix(encoded[..encoded.len().min(MANIFEST_LIMIT as usize + 8)].to_vec());
+        assert!(prefix.expanded_bytes(&p, encoded.len() as u64).unwrap() >= 6 * 1024 * 1024);
+        let reserved =
+            authenticated_host_restore_bytes(&p, &a, &[17; 32], &receipt.manifest_sha256).unwrap();
+        assert_eq!(
+            reserved,
+            receipt.bytes + (manifest.items.len() as u64 + 4) * 4096
+        );
+        assert!(reserved > fs::metadata(&a).unwrap().len());
+        assert!(
+            authenticated_host_restore_bytes(&p, &a, &[18; 32], &receipt.manifest_sha256).is_err()
+        );
+        assert!(authenticated_host_restore_bytes(&p, &a, &[17; 32], &"0".repeat(64)).is_err());
+        let moved = p.with_file_name("temporarily-absent-profile");
+        fs::rename(&p, &moved).unwrap();
+        assert_eq!(
+            authenticated_host_restore_bytes(&p, &a, &[17; 32], &receipt.manifest_sha256).unwrap(),
+            reserved
+        );
+        assert!(!p.exists());
+        fs::rename(&moved, &p).unwrap();
+    }
+    #[test]
+    fn changed_reference_source_is_not_silently_skipped_or_repaired() {
+        let (_root, p, _, _) = fixture();
+        write_new(&p.join("a"), &vec![17; 8192]).unwrap();
+        write_new(&p.join("b"), &vec![17; 8192]).unwrap();
+        let mut m = inventory(&p, &BTreeSet::new(), &Uuid::new_v4().to_string()).unwrap();
+        deduplicate(&mut m);
+        assert_eq!(m.content_references["b"], "a");
+        fs::write(p.join("b"), vec![18; 8192]).unwrap();
+        let mut body = Body {
+            prefix: Cursor::new(Vec::new()),
+            root: p.clone(),
+            items: m.items,
+            references: m.content_references,
+            next: 0,
+            current: None,
+        };
+        assert!(body.read_to_end(&mut Vec::new()).is_err());
+        assert_eq!(fs::read(p.join("a")).unwrap(), vec![17; 8192]);
+        assert_eq!(fs::read(p.join("b")).unwrap(), vec![18; 8192]);
+    }
+    #[test]
+    fn invalid_references_and_duplicate_reference_keys_refuse_before_extraction() {
+        let (_root, p, _, _) = fixture();
+        for name in ["a", "b", "c"] {
+            write_new(&p.join(name), &vec![51; 8192]).unwrap();
+        }
+        let mut m = inventory(&p, &BTreeSet::new(), &Uuid::new_v4().to_string()).unwrap();
+        deduplicate(&mut m);
+        validate_inventory(&m, &p).unwrap();
+        for refs in [
+            BTreeMap::from([("b".into(), "b".into())]),
+            BTreeMap::from([("a".into(), "c".into())]),
+            BTreeMap::from([("b".into(), "a".into()), ("c".into(), "b".into())]),
+            BTreeMap::from([("b".into(), "../a".into())]),
+            BTreeMap::from([("missing".into(), "a".into())]),
+            BTreeMap::from([("b".into(), "installation-selection.json".into())]),
+        ] {
+            let mut bad: Inventory =
+                serde_json::from_slice(&serde_json::to_vec(&m).unwrap()).unwrap();
+            bad.content_references = refs;
+            assert!(validate_inventory(&bad, &p).is_err());
+            let encoded = serde_json::to_vec(&bad).unwrap();
+            let mut prefix = (encoded.len() as u64).to_be_bytes().to_vec();
+            prefix.extend(&encoded);
+            assert!(HostManifestPrefix(prefix).expanded_bytes(&p, 0).is_err());
+        }
+        let mut bad: Inventory = serde_json::from_slice(&serde_json::to_vec(&m).unwrap()).unwrap();
+        bad.format = 1;
+        assert!(validate_inventory(&bad, &p).is_err());
+        let text = String::from_utf8(serde_json::to_vec(&m).unwrap())
+            .unwrap()
+            .replace("\"b\":\"a\"", "\"b\":\"a\",\"b\":\"c\"");
+        assert!(serde_json::from_str::<Inventory>(&text).is_err());
+    }
+    #[test]
+    fn compact_host_and_legacy_host_restore_all_files_without_changing_source() {
+        let (_root, p, k, a) = fixture();
+        write_new(
+            &p.join("compressible-synthetic"),
+            &vec![23; 2 * 1024 * 1024],
+        )
+        .unwrap();
+        let produced = checkpoint_host(&p, &k, &a, true, true).unwrap();
+        let bytes = fs::read(&a).unwrap();
+        assert!(bytes.starts_with(b"ExhibitOS-stream-v2\0"));
+        assert!(bytes.len() < 100_000);
+        let target = k.with_file_name("compact-extracted");
+        let restored = extract_host(&p, &k, &a, &target, true).unwrap();
+        verify_extracted_host(&p, &target, &restored).unwrap();
+        assert_eq!(produced.manifest_sha256, restored.manifest_sha256);
+        assert_eq!(
+            fs::read(target.join("profile/compressible-synthetic")).unwrap(),
+            fs::read(p.join("compressible-synthetic")).unwrap()
+        );
+        let mut plain = vec![];
+        let key = external_key(&p, &k).unwrap();
+        super::super::super::maintenance_stream::open(
+            &mut bytes.as_slice(),
+            &mut plain,
+            &key,
+            CONTEXT,
+            DATA_LIMIT,
+        )
+        .unwrap();
+        let legacy = k.with_file_name("legacy-host.exb");
+        let mut old = private_new(&legacy).unwrap();
+        super::super::super::maintenance_stream::seal(
+            &mut plain.as_slice(),
+            &mut old,
+            &key,
+            CONTEXT,
+            DATA_LIMIT,
+        )
+        .unwrap();
+        old.sync_all().unwrap();
+        drop(old);
+        let old_target = k.with_file_name("legacy-extracted");
+        let old_receipt = extract_host(&p, &k, &legacy, &old_target, true).unwrap();
+        verify_extracted_host(&p, &old_target, &old_receipt).unwrap();
+        assert_eq!(produced.manifest_sha256, old_receipt.manifest_sha256);
+        assert_eq!(fs::read(&a).unwrap(), bytes);
+    }
+    #[test]
     fn tamper_wrong_domain_and_wrong_source_namespace_leave_target_unpublished() {
         let (_root, p, k, a) = fixture();
         checkpoint_host(&p, &k, &a, true, true).unwrap();
@@ -1227,10 +1810,9 @@ mod tests {
                     .starts_with(".host-extract-")
             })
             .collect();
-        assert_eq!(stages.len(), 1);
-        assert!(stages[0].join("profile").is_dir());
-        assert!(!stages[0].join("payload.pending").exists());
-        assert!(!stages[0].join("verified.json").exists());
+        // Authentication now completes before any extraction staging is created.
+        assert!(stages.is_empty());
+        assert_eq!(fs::read(&bad).unwrap(), &bytes[..bytes.len() - 1]);
         let other = p.with_file_name("wrong-source");
         assert!(extract_host(&other, &k, &a, &target, true).is_err());
         assert!(!target.exists());
@@ -1314,6 +1896,72 @@ mod tests {
     }
 
     #[test]
+    fn unused_extraction_requires_authenticated_archive_and_exact_complete_files() {
+        let (_scope, profile, key, archive) = fixture();
+        write_new(&profile.join("data"), b"retained authenticated bytes").unwrap();
+        let checkpoint = checkpoint_host(&profile, &key, &archive, true, true).unwrap();
+        let target = key.with_file_name("unused-extraction");
+        extract_host(&profile, &key, &archive, &target, true).unwrap();
+        let before = hash(&archive).unwrap();
+        verify_unused_extraction_archive(
+            &profile,
+            &archive,
+            &[17; 32],
+            &target,
+            &checkpoint.manifest_sha256,
+        )
+        .unwrap();
+        assert!(
+            verify_unused_extraction_archive(
+                &profile,
+                &archive,
+                &[18; 32],
+                &target,
+                &checkpoint.manifest_sha256
+            )
+            .is_err()
+        );
+        assert!(
+            verify_unused_extraction_archive(
+                &profile,
+                &archive,
+                &[17; 32],
+                &target,
+                &"0".repeat(64)
+            )
+            .is_err()
+        );
+        write_new(&target.join("profile/unknown"), b"preserve unknown bytes").unwrap();
+        assert!(
+            verify_unused_extraction_archive(
+                &profile,
+                &archive,
+                &[17; 32],
+                &target,
+                &checkpoint.manifest_sha256
+            )
+            .is_err()
+        );
+        fs::remove_file(target.join("profile/unknown")).unwrap();
+        fs::write(target.join("profile/data"), b"preserve changed bytes").unwrap();
+        assert!(
+            verify_unused_extraction_archive(
+                &profile,
+                &archive,
+                &[17; 32],
+                &target,
+                &checkpoint.manifest_sha256
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read(target.join("profile/data")).unwrap(),
+            b"preserve changed bytes"
+        );
+        assert_eq!(hash(&archive).unwrap(), before);
+    }
+
+    #[test]
     fn duplicate_or_unparented_manifest_entries_refuse() {
         let (_root, p, _, _) = fixture();
         let id = Uuid::new_v4().to_string();
@@ -1342,6 +1990,7 @@ mod tests {
             prefix: Cursor::new(Vec::new()),
             root: p,
             items: m.items,
+            references: m.content_references,
             next: 0,
             current: None,
         };
@@ -1455,5 +2104,27 @@ mod windows_tests {
         drop(session);
         drop(profile);
         preserved(root, &archive);
+    }
+}
+
+#[cfg(all(test, not(unix)))]
+mod current_platform_tests {
+    use super::*;
+    #[test]
+    fn current_host_nonunix_refuses_before_reading_or_creating_any_path() {
+        let missing = Path::new("missing-current-host-qualification");
+        assert_eq!(
+            verify_host_current(missing, missing, missing, "invalid", true, true)
+                .unwrap_err()
+                .code,
+            "HOST_PLATFORM_UNVERIFIED"
+        );
+        assert_eq!(
+            verify_host_current(missing, missing, missing, "invalid", false, true)
+                .unwrap_err()
+                .code,
+            "HOST_WRITER_ACK_REQUIRED"
+        );
+        assert!(!missing.exists());
     }
 }

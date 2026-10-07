@@ -49,7 +49,7 @@ for(const scenario of ['success','failure','malformed'] as const)test(`backup ${
  for(const width of [320,640,1120]){
   await page.setViewportSize({width,height:900});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   expect(await section.locator('input').evaluateAll(es=>es.every(e=>e.getBoundingClientRect().height>=44))).toBe(true);
-  await page.screenshot({path:`/private/tmp/exhibitos-manager-backup-ui-${testInfo.project.name}-${scenario}-${width}.png`,fullPage:true});
+  await page.screenshot({path:test.info().outputPath(`exhibitos-manager-backup-ui-${testInfo.project.name}-${scenario}-${width}.png`),fullPage:true});
  }
  if(scenario==='success'){
   await section.getByLabel('암호화된 백업 폴더의 전체 경로').fill('/private/tmp/another-synthetic-archive');await expect(section.getByRole('heading',{name:'백업 무결성 인증을 통과했습니다.'})).toHaveCount(0);

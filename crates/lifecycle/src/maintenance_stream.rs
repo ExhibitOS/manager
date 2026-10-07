@@ -9,6 +9,9 @@ use aes_gcm::{
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 
+#[path = "maintenance_compact.rs"]
+mod compact;
+pub(crate) use compact::seal as seal_compact;
 pub(crate) const MAGIC: &[u8] = b"ExhibitOS-stream-v1\0";
 const CHUNK: usize = 1024 * 1024;
 const DATA: u8 = 1;
@@ -118,6 +121,9 @@ pub(crate) fn open<R: Read, W: Write>(
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| err("STREAM_KEY_INVALID"))?;
     let mut header = vec![0u8; MAGIC.len() + 16];
     r.read_exact(&mut header).map_err(|_| input_error())?;
+    if header.starts_with(compact::MAGIC) {
+        return compact::open_records(r, w, &cipher, &header, context, limit);
+    }
     if !header.starts_with(MAGIC) {
         return Err(input_error());
     }

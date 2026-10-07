@@ -128,6 +128,24 @@ fn registry(raw: &[u8]) -> crate::Result<installations::Registry> {
     installations::valid(&r)?;
     Ok(r)
 }
+#[cfg(test)]
+fn publication_crash_point(phase: &str) {
+    if std::env::var("EXHIBITOS_PUBLICATION_CRASH_PHASE").as_deref() != Ok(phase) {
+        return;
+    }
+    let marker = PathBuf::from(std::env::var_os("EXHIBITOS_PUBLICATION_CRASH_MARKER").unwrap());
+    immutable(
+        marker.parent().unwrap(),
+        marker.file_name().unwrap().to_str().unwrap(),
+        phase.as_bytes(),
+    )
+    .unwrap();
+    // Parent performs actual SIGKILL with profile/service handles still live.
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 // Exact raw restoration also preserves existing whitespace and encoded metadata.
 fn publish(
     profile: &Path,
@@ -153,10 +171,16 @@ fn publish(
     file.write_all(next)
         .and_then(|_| file.sync_all())
         .map_err(|_| crate::err("UPDATE_ACTIVATION_UNCERTAIN"))?;
+    #[cfg(test)]
+    publication_crash_point("pending-synced");
     check()?;
     fs::rename(&pending, profile.join("installation-selection.json"))
         .map_err(|_| crate::err("UPDATE_ACTIVATION_UNCERTAIN"))?;
+    #[cfg(test)]
+    publication_crash_point("selection-renamed");
     sync_dir(profile).map_err(|_| crate::err("UPDATE_ACTIVATION_UNCERTAIN"))?;
+    #[cfg(test)]
+    publication_crash_point("selection-dir-synced");
     if installations::load(profile)?.is_none_or(|(_, bytes)| bytes != next) {
         return Err(crate::err("UPDATE_ACTIVATION_UNCERTAIN"));
     }
@@ -1215,6 +1239,199 @@ mod tests {
             );
             drop(store);
             fs::remove_dir_all(p.parent().unwrap()).unwrap();
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "child only for actual publication SIGKILL matrix"]
+    fn publication_sigkill_worker() {
+        let report = PathBuf::from(std::env::var_os("EXHIBITOS_PUBLICATION_REPORT").unwrap());
+        let rollback = std::env::var("EXHIBITOS_PUBLICATION_ROLLBACK").unwrap() == "true";
+        let (p, store, health) = if rollback {
+            rollback_fixture()
+        } else {
+            fixture()
+        };
+        let controller = crate::LifecycleService::open_retry_diagnostics(p.clone()).unwrap();
+        let _profile = installations::profile_lock(&controller).unwrap();
+        let (registry, original) = installations::load(&p).unwrap().unwrap();
+        let plan = store.intent().unwrap().update.plan();
+        let mut ids = vec![
+            plan.source_instance.clone(),
+            plan.target_instance.clone(),
+            health.instance_id.clone(),
+        ];
+        ids.sort();
+        ids.dedup();
+        let services = ids
+            .iter()
+            .map(|id| {
+                let entry = registry.installations.iter().find(|e| &e.id == id).unwrap();
+                crate::LifecycleService::open_retry_diagnostics(installations::root(&p, entry))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let _guards = services
+            .iter()
+            .map(|s| s.lock().unwrap())
+            .collect::<Vec<_>>();
+        let activation = if rollback {
+            Activation::prepare_rollback(&store, &original, &health).unwrap()
+        } else {
+            Activation::prepare(&store, &original, &health).unwrap()
+        };
+        immutable(report.parent().unwrap(), report.file_name().unwrap().to_str().unwrap(),
+            &serde_json::to_vec(&serde_json::json!({"profile":p,"operation":health.operation_id,"journal":activation.root,"original":hash(&original),"generation":store.current.generation,"rollback":rollback})).unwrap()).unwrap();
+        activation.publish_selection(&store).unwrap();
+        panic!("selected publication boundary did not stop worker");
+    }
+
+    #[test]
+    fn publication_sigkill_matrix_restores_exact_selection_without_replay() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        struct Worker(std::process::Child);
+        impl Drop for Worker {
+            fn drop(&mut self) {
+                if self.0.try_wait().ok().flatten().is_none() {
+                    let _ = self.0.kill();
+                    let _ = self.0.wait();
+                }
+            }
+        }
+        let root = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "exhibitos-publication-sigkill-{}",
+                uuid::Uuid::new_v4()
+            ));
+        installations::new_directory(&root).unwrap();
+        let worker = format!(
+            "{}::publication_sigkill_worker",
+            module_path!().split_once("::").unwrap().1
+        );
+        for rollback in [false, true] {
+            for phase in [
+                "pending-synced",
+                "selection-renamed",
+                "selection-dir-synced",
+            ] {
+                let report = root.join(format!("{rollback}-{phase}.json"));
+                let marker = root.join(format!("{rollback}-{phase}.marker"));
+                let errors = root.join(format!("{rollback}-{phase}.err"));
+                let errfile = private_file(&errors, true).unwrap();
+                let mut child = Worker(
+                    Command::new(std::env::current_exe().unwrap())
+                        .args([
+                            "--exact",
+                            &worker,
+                            "--ignored",
+                            "--nocapture",
+                            "--test-threads=1",
+                        ])
+                        .env("EXHIBITOS_PUBLICATION_REPORT", &report)
+                        .env("EXHIBITOS_PUBLICATION_ROLLBACK", rollback.to_string())
+                        .env("EXHIBITOS_PUBLICATION_CRASH_PHASE", phase)
+                        .env("EXHIBITOS_PUBLICATION_CRASH_MARKER", &marker)
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::from(errfile))
+                        .spawn()
+                        .unwrap(),
+                );
+                let deadline = Instant::now() + Duration::from_secs(30);
+                // Creation is observable before the worker finishes writing its marker.
+                while !private_read(&marker).is_ok_and(|bytes| bytes == phase.as_bytes()) {
+                    assert!(
+                        child.0.try_wait().unwrap().is_none(),
+                        "worker failed: {}",
+                        String::from_utf8_lossy(&fs::read(&errors).unwrap())
+                    );
+                    assert!(Instant::now() < deadline, "publication worker timeout");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                assert_eq!(private_read(&marker).unwrap(), phase.as_bytes());
+                child.0.kill().unwrap();
+                assert_eq!(child.0.wait().unwrap().signal(), Some(9));
+                let info: serde_json::Value =
+                    serde_json::from_slice(&private_read(&report).unwrap()).unwrap();
+                let p = PathBuf::from(info["profile"].as_str().unwrap());
+                let journal = PathBuf::from(info["journal"].as_str().unwrap());
+                let original = private_read(&journal.join("original-selection.json")).unwrap();
+                let candidate = private_read(&journal.join("candidate-selection.json")).unwrap();
+                assert_eq!(hash(&original), info["original"]);
+                let before = installations::load(&p).unwrap().unwrap().1;
+                assert_eq!(
+                    before,
+                    if phase == "pending-synced" {
+                        original.clone()
+                    } else {
+                        candidate.clone()
+                    }
+                );
+                let pending = fs::read_dir(&p)
+                    .unwrap()
+                    .filter_map(|x| {
+                        let p = x.unwrap().path();
+                        (p.file_name()
+                            .unwrap()
+                            .to_str()
+                            .unwrap()
+                            .starts_with(".selection-")
+                            && p.extension().is_some_and(|e| e == "pending"))
+                        .then_some(p)
+                    })
+                    .collect::<Vec<_>>();
+                if phase == "pending-synced" {
+                    assert_eq!(pending.len(), 1);
+                    assert_eq!(private_read(&pending[0]).unwrap(), candidate);
+                } else {
+                    assert!(pending.is_empty());
+                }
+                let mut store = Store::open(&p, "default").unwrap();
+                let generation = store.current.generation;
+                let receipt = if rollback {
+                    store.reconcile_rollback_selection_activation(
+                        info["operation"].as_str().unwrap(),
+                    )
+                } else {
+                    store.reconcile_selection_activation(info["operation"].as_str().unwrap())
+                }
+                .unwrap();
+                assert!(
+                    receipt.original_selection_restored
+                        && !receipt.selection_completed
+                        && !receipt.runtime_replayed
+                        && !receipt.health_replayed
+                );
+                assert_eq!(store.current.generation, generation);
+                assert_eq!(
+                    store.intent().unwrap().update.stage(),
+                    Stage::RecoveryRequired
+                );
+                assert_eq!(installations::load(&p).unwrap().unwrap().1, original);
+                assert_eq!(
+                    private_read(&journal.join("candidate-selection.json")).unwrap(),
+                    candidate
+                );
+                if !pending.is_empty() {
+                    assert_eq!(private_read(&pending[0]).unwrap(), candidate);
+                }
+                drop(store);
+                let cold = Store::open(&p, "default").unwrap();
+                assert_eq!(
+                    cold.intent().unwrap().update.stage(),
+                    Stage::RecoveryRequired
+                );
+                assert_eq!(installations::load(&p).unwrap().unwrap().1, original);
+                println!(
+                    "publication SIGKILL9 rollback={rollback} phase={phase} exact_original=true pending_preserved={} runtime_replayed=false health_replayed=false cold=true",
+                    !pending.is_empty()
+                );
+                drop(cold);
+                fs::remove_dir_all(p.parent().unwrap()).unwrap();
+            }
         }
         fs::remove_dir_all(root).unwrap();
     }

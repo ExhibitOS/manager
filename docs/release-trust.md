@@ -149,3 +149,102 @@ not recognize `renew_prepared` rejects this history and cannot open or execute i
 Use the updated Manager before publishing this event; do not erase records or
 lower floors to downgrade. Native Windows journal publication remains a separate
 qualification gate. Keys are never read from feed payloads or stored by this CLI.
+
+
+## Release a completed operation before preparing the next update
+
+An `Updated` or `RolledBack` operation keeps its terminal intent until an explicit
+administrative release. Inspect `update-intent`, reconcile owned runtime/helpers
+and preserve recovery candidates first. Then close all profile controllers:
+
+```sh
+exhibitos-update release-completed-update --profile /absolute/private/profile \
+  --installation default --operation-id <current-operation-id> \
+  --expected-generation <current-trust-generation> \
+  --runtime-reconciled --preserve-data --apps-closed
+```
+
+This appends a trust record and clears only the active terminal pointer. It keeps
+history, used operation/instance IDs, replay floors, host files, candidates, keys
+and engine resources. Prepared, inflight or recovery-required operations, stale
+generations, wrong operation IDs and missing acknowledgements are refused.
+`--runtime-reconciled` is an operator acknowledgement, not evidence that this
+command checked Docker or runtime health. The output explicitly reports
+`runtimeReconciliationAttested: false`, `executed: false` and `runtimeChanged: false`.
+
+After release, create a genuinely new operation/target identity and verify the
+current source and a coherent current host/authority/service recovery checkpoint.
+Do not replay the released intent or treat its historical checkpoint as proof
+of the newer authority generation. Public changed-schema execution remains
+closed until its full native recovery qualification is complete.
+
+
+## Compare a complete host archive without a plaintext copy
+
+After closing controllers and stopping host writers, use the manifest hash from
+the retained checkpoint receipt:
+
+```sh
+exhibitos-profile --profile /absolute/private/profile verify-host-current \
+  /absolute/private/key /absolute/private/host.bin <host-manifest-sha256> \
+  --apps-closed --host-writers-stopped
+```
+
+This authenticates every archive frame through EOF and compares the complete
+current file/directory inventory, bytes and modes under profile/runtime locks.
+It creates zero plaintext extraction files, rejects changed source, wrong key,
+wrong manifest or missing acknowledgements, and preserves the archive and source.
+It does not restore host/trust/runtime, verify external service volumes, qualify
+a new signed update or replace the separate actual restoration acceptance gate.
+
+`verify-host-current` currently qualifies Unix host locking only. Windows and
+other non-Unix hosts refuse with `HOST_PLATFORM_UNVERIFIED` before reading or
+creating host paths; native qualification remains a separate gate.
+
+
+### Reuse a completely current host archive
+
+On Unix, `exhibitos-update checkpoint-existing-host --profile <absolute-profile> --installation default --key-file <external-key> --host-archive <retained-host.bin> --host-manifest <sha256> --destination <new-external-directory> --host-writers-stopped --apps-closed` authenticates the entire archive and matches current files, directories, bytes and modes under profile/root locks before and after creating a current trust archive. Only `trust.bin` and `pair-binding.bin` are published; the host remains at its retained path. Changed files, wrong key/manifest, unsafe paths or existing destination refuse publication.
+
+This creates current identity with `sourcePlanBound=false`; it does not inherit any historical source observation, restore host or authority, activate a runtime, or qualify preflight. Current native source/candidate observations and a source-bound finalization remain required before update execution. Do not substitute this receipt for those gates.
+
+
+### Register the current prepared target
+
+`exhibitos-update register-planned-update-target --profile <absolute-profile> --installation default --preserve-active --apps-closed` creates the exact recovery namespace reserved by the current Prepared plan. It takes no caller ID/path, preserves source selection/history, and starts no runtime. Missing intent, non-Prepared stage, source mismatch, an existing candidate/name or unsafe namespace refuse. Repeating it refuses without adopting or overwriting the earlier candidate. The older `register-update-target` continues to allocate a new random namespace for workflows that register before preparing a plan.
+
+
+## 실패한 업데이트에서 원래 서비스 전체 복원
+
+```sh
+exhibitos-update restore-original-rollback \
+  --profile /absolute/private/profile --installation default \
+  --maintenance-image sha256:qualified-maintenance-image \
+  --key /absolute/private/key.bin --archive /absolute/private/original-backup \
+  --port 50369 --fresh-candidate --external-writers-quiesced --apps-closed
+```
+
+앱과 외부 writer를 닫고 실제 검증된 이미지·키·원래 백업·미사용 포트를 지정합니다. 이 Unix 명령은 RecoveryRequired인 동일 계획에 새 비활성 복원 ID를 등록하고, 계획의 정확한 backup/image/schema/inventory를 인증해 원래 DB/blob/설정을 새 서비스로 복원합니다. 동일 Store 수명에서 실제 inventory·image·설정·health를 다시 관측한 뒤 원자적 선택과 RolledBack 이력을 완료합니다. caller가 candidate ID·경로·성공 receipt·health 플래그를 제공할 수 없습니다.
+
+기존 원본과 실패 후보·immutable 이력은 덮어쓰지 않습니다. 실패하면 새 후보와 진단을 보존하며 자동 재실행하지 않습니다. 최소 공간과 새 후보의 모든 원래 복원 조건을 유지합니다. 성공은 별도 새 복원 서비스의 실제 준비 상태를 의미하고, 원래 호스트·authority 분실 복원이나 다른 게시 crash 경계까지 완료됐다는 뜻은 아닙니다. Windows 경계는 지원 검증 전 거부합니다. 공개 changed-schema update admission은 계속 닫혀 있습니다.
+
+## ARM full-file digest performance
+
+The lifecycle crate enables `sha2` 0.10's `asm-aarch64` feature only on
+`aarch64` targets. The library checks SHA2 CPU support at runtime and retains
+its portable fallback. This changes digest throughput, not the archive format,
+signature policy, full-byte checks, limits, file identity checks or migration
+admission. x86 and x86_64 keep their previous feature selection. The locked
+`sha2-asm` dependency and its build dependency licenses are recorded in
+`licenses/arm-hash/inventory.json`.
+
+The ignored `actual_native_full_artifact_hash_throughput` test reads the whole
+retained synthetic migration `runtime.tar` through the production guarded
+host-inventory digest. It verifies all 93,761,024 bytes against its known digest
+three times and writes no fixture or archive. Provide that fixture explicitly
+through `EXHIBITOS_HASH_BENCH_ARTIFACT` when running the test with
+`cargo test -p exhibitos-lifecycle --release --lib actual_native_full_artifact_hash_throughput --locked -- --ignored --nocapture`.
+For comparison, adding `--features sha2/force-soft` before `--` selects the
+portable implementation. This is a digest benchmark, not evidence that an
+entire update or recovery operation has completed. Normal tests leave it
+ignored when the external fixture is unavailable.

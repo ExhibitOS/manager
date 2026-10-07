@@ -202,11 +202,10 @@ mod tests {
     #[test]
     #[ignore = "requires the qualified existing local images and Docker"]
     fn actual_engine_current_image_mappings() {
+        let maintenance = super::super::native_test_image();
         let mut expected = Vec::new();
-        for id in [
-            "sha256:335f8f2c1437841266c41e79912b1160b03ce500511acc94afa338c4c8f6215b",
-            "sha256:8f0e7b042ff0b93a646b919f5a8a5ee2f41cc22debcd5bd9ef49eacd06537e06",
-        ] {
+        let platform = super::super::native_test_platform_image();
+        for id in [platform.as_str(), maintenance.as_str()] {
             let mut row = image(id);
             row.content_id = id.into();
             expected.push(row);

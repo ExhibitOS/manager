@@ -182,6 +182,7 @@ mod tests {
             project_name: "exhibitos-synthetic".into(),
             open_url: "http://127.0.0.1:19000".into(),
             at: 0,
+            network_subnet: None,
             source_verification: Some(crate::restoration::RestorationProof {
                 inventory_sha256: plan.source_inventory.clone(),
                 schema_sha256: plan.source_schema.clone(),

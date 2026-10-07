@@ -13,7 +13,6 @@ fn ready_row(
         || row["State"]["Running"] != true
         || row["State"]["Paused"] != false
         || row["State"]["Restarting"] != false
-        || row["State"]["Health"]["Status"] != "healthy"
         || l["com.docker.compose.service"] != service
         || l["com.docker.compose.project"] != m.project_name
         || l["com.exhibitos.bundle"] != m.bundle_id
@@ -22,7 +21,26 @@ fn ready_row(
     {
         return Err(err("UPDATE_ROLLBACK_HEALTH_FAILED"));
     }
-    Ok(())
+    match row["State"]["Health"]["Status"].as_str() {
+        Some("healthy")=>Ok(()),
+        Some("starting")=>Err(err("UPDATE_ROLLBACK_HEALTH_STARTING")),
+        _=>Err(err("UPDATE_ROLLBACK_HEALTH_FAILED")),
+    }
+}
+/// Wait only for native startup; every attempt keeps its caller's ownership fences.
+fn await_startup<T>(mut check: impl FnMut()->LifecycleResult<()>,mut observe: impl FnMut()->LifecycleResult<T>,budget:std::time::Duration)->LifecycleResult<T> {
+    let deadline=std::time::Instant::now()+budget;
+    loop {
+        check()?;
+        match observe() {
+            Ok(value)=>return Ok(value),
+            Err(error) if error.code=="UPDATE_ROLLBACK_HEALTH_STARTING"=>{
+                if std::time::Instant::now()>=deadline {return Err(err("UPDATE_ROLLBACK_HEALTH_FAILED"));}
+                std::thread::sleep(std::time::Duration::from_millis(250).min(deadline.saturating_duration_since(std::time::Instant::now())));
+            },
+            Err(error)=>return Err(error),
+        }
+    }
 }
 fn volumes(row: &serde_json::Value, expected: &[&str]) -> LifecycleResult<Vec<String>> {
     let mounts = row["Mounts"]
@@ -72,8 +90,8 @@ pub(super) fn pair(
     {
         return Err(err("UPDATE_ROLLBACK_HEALTH_FAILED"));
     }
-    ready_row(&a, m, "platform", &pin)?;
-    ready_row(&d, m, "database", &database[0].reference)?;
+    let states=[ready_row(&a,m,"platform",&pin),ready_row(&d,m,"database",&database[0].reference)];
+    if let Some(error)=states.iter().filter_map(|s|s.as_ref().err()).find(|e|e.code!="UPDATE_ROLLBACK_HEALTH_STARTING") {return Err(err(&error.code));}
     let mut names = volumes(&a, &["/data/blobs", "/data/config"])?;
     names.extend(volumes(&d, &["/var/lib/postgresql"])?);
     if names
@@ -119,6 +137,8 @@ pub(super) fn pair(
             }
         }
     }
+    // Starting may be waited for only after exact mounts and foreign-writer checks.
+    for state in states {state?;}
     if !crate::readiness(m).ready {
         return Err(err("UPDATE_ROLLBACK_HEALTH_FAILED"));
     }
@@ -298,7 +318,7 @@ impl Store {
                     return Err(err("UPDATE_TARGET_CHANGED"));
                 }
             }
-            let before = pair(target, &m, &plan)?;
+            let before = await_startup(||check(store,selection),||pair(target,&m,&plan),std::time::Duration::from_secs(90))?;
             owned_execution::check_rollback_configuration(maintenance_image, &before.3[1], &raw)?;
             let manifest_path = workspace.join("authenticated/manifest.json");
             let mut input = private_file(&manifest_path, false).map_err(|e| err(e.code()))?;
@@ -390,6 +410,30 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rollback_native_startup_never_waits_for_wrong_identity_or_unhealthy_state() {
+        let m=crate::tests::manifest_for_detection();
+        let row=serde_json::json!({"Image":"sha256:expected","State":{"Running":true,"Paused":false,"Restarting":false,"Health":{"Status":"starting"}},"Config":{"Labels":{"com.docker.compose.service":"platform","com.docker.compose.project":m.project_name,"com.exhibitos.bundle":m.bundle_id,"com.exhibitos.project":m.project_name,"com.exhibitos.schema":m.schema_version}}});
+        assert_eq!(ready_row(&row,&m,"platform","sha256:expected").unwrap_err().code,"UPDATE_ROLLBACK_HEALTH_STARTING");
+        let mut healthy=row.clone();healthy["State"]["Health"]["Status"]="healthy".into();ready_row(&healthy,&m,"platform","sha256:expected").unwrap();
+        for (path,value) in [("/Image",serde_json::json!("wrong")),("/State/Running",serde_json::json!(false)),("/State/Restarting",serde_json::json!(true)),("/Config/Labels/com.exhibitos.bundle",serde_json::json!("wrong")),("/State/Health/Status",serde_json::json!("unhealthy")),("/State/Health/Status",serde_json::Value::Null)] {
+            let mut changed=row.clone();*changed.pointer_mut(path).unwrap()=value;assert_eq!(ready_row(&changed,&m,"platform","sha256:expected").unwrap_err().code,"UPDATE_ROLLBACK_HEALTH_FAILED");
+        }
+    }
+    #[test]
+    fn rollback_startup_wait_preserves_fences_and_expires_without_completion() {
+        use std::cell::Cell;
+        let observed=Cell::new(0);
+        let failure=await_startup(||Err(err("UPDATE_ROLLBACK_CHANGED")),||{observed.set(observed.get()+1);Ok(())},std::time::Duration::from_secs(1));
+        assert_eq!(failure.unwrap_err().code,"UPDATE_ROLLBACK_CHANGED");assert_eq!(observed.get(),0);
+        let failed:LifecycleResult<()>=await_startup(||Ok(()),||{observed.set(observed.get()+1);Err(err("UPDATE_ROLLBACK_HEALTH_FAILED"))},std::time::Duration::from_secs(1));
+        assert_eq!(failed.unwrap_err().code,"UPDATE_ROLLBACK_HEALTH_FAILED");assert_eq!(observed.get(),1);
+        let expired:LifecycleResult<()>=await_startup(||Ok(()),||Err(err("UPDATE_ROLLBACK_HEALTH_STARTING")),std::time::Duration::ZERO);
+        assert_eq!(expired.unwrap_err().code,"UPDATE_ROLLBACK_HEALTH_FAILED");
+        let fences=Cell::new(0);let tries=Cell::new(0);
+        let ready=await_startup(||{fences.set(fences.get()+1);Ok(())},||{tries.set(tries.get()+1);if tries.get()==1 {Err(err("UPDATE_ROLLBACK_HEALTH_STARTING"))}else{Ok("native-ready")}},std::time::Duration::from_secs(1));
+        assert_eq!(ready.unwrap(),"native-ready");assert_eq!(fences.get(),2);
+    }
     #[test]
     fn runtime_mounts_refuse_aliases_binds_and_unexpected_writable_scope() {
         let row = serde_json::json!({"Mounts":[{"Destination":"/data/blobs","Type":"volume","RW":true,"Name":"owned"}]});
@@ -604,4 +648,137 @@ mod tests {
         );
         println!("PASS_NATIVE_REUSED_ROLLBACK_RUNTIME");
     }
+    #[test]
+    #[ignore = "explicit retained synthetic restored services and built release CLI; no new database or image copy"]
+    fn rollback_cli_actual_reused_services_complete_and_cold_reopen_without_data_copy() {
+        let retained = fs::canonicalize(std::env::var("EXHIBITOS_ROLLBACK_RUNTIME_FIXTURE").unwrap()).unwrap();
+        let cli = fs::canonicalize(std::env::var("EXHIBITOS_ROLLBACK_TEST_CLI").unwrap()).unwrap();
+        let old = Store::open(&retained.join("profile"), "default").unwrap();
+        assert_eq!(old.intent().unwrap().update.stage(), crate::update::Stage::RolledBack);
+        let original_records: Vec<_> = (1..=old.current.generation).map(|g| (g, fs::read(old.root.join(format!("{g:020}.json"))).unwrap())).collect();
+        let old_selection = installations::load(&old.profile).unwrap().unwrap().1;
+        let report: serde_json::Value = serde_json::from_slice(&fs::read(retained.join("report.json")).unwrap()).unwrap();
+        let old_target = PathBuf::from(report["targetRoot"].as_str().unwrap());
+        assert!(old_target.starts_with(old.profile.join("installations")));
+        let service = crate::LifecycleService::open_retry_diagnostics(old_target.clone()).unwrap();
+        let guard = service.lock().unwrap();
+        let manifest = service.manifest().unwrap();
+        service.validate_ownership(&manifest, "docker").unwrap();
+        service.validate_volumes(&manifest, "docker").unwrap();
+        let (app, app_before) = crate::backup_creation::one_container(&service, &manifest, "docker", "platform").unwrap();
+        let (db, db_before) = crate::backup_creation::one_container(&service, &manifest, "docker", "database").unwrap();
+        assert_eq!(app_before["State"]["Running"], false);
+        assert_eq!(db_before["State"]["Running"], false);
+        let restoration: crate::restoration::RestorationReceipt = serde_json::from_value(report["restoration"]["restoration"].clone()).unwrap();
+        let mut plan = old.intent().unwrap().update.plan().clone();
+        crate::restoration::RestorationBinding::from_plan(&plan).unwrap().check_receipt(&restoration).unwrap();
+        plan.operation_id = uuid::Uuid::new_v4().to_string();
+        plan.source_instance = uuid::Uuid::new_v4().to_string();
+        plan.target_instance = uuid::Uuid::new_v4().to_string();
+        let root = fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("exhibitos-rollback-cli-{}", uuid::Uuid::new_v4()));
+        installations::new_directory(&root).unwrap();
+        let profile = root.join("profile");
+        installations::new_directory(&profile).unwrap();
+        let source = profile.join("local-runtime");
+        installations::new_directory(&source).unwrap();
+        installations::new_directory(&source.join("bundle")).unwrap();
+        let files = ["installed.json", "engine.json", "runtime.env", "bundle/manifest.json", "bundle/compose.yaml"];
+        let mut input_hashes = Vec::new();
+        let mut copied = 0u64;
+        for name in files {
+            let bytes = crate::installation_backup::source_bytes(&old.profile.join("local-runtime"), name, 256 * 1024, true).unwrap();
+            input_hashes.push((old.profile.join("local-runtime").join(name), hash(&bytes)));
+            copied += bytes.len() as u64;
+            crate::restoration::private_bytes(&source.join(name), &bytes).unwrap();
+        }
+        installations::new_directory(&profile.join("installations")).unwrap();
+        installations::new_directory(&profile.join("installations").join(&plan.target_instance)).unwrap();
+        installations::save(&profile, &installations::Registry {format:1, active_id:plan.source_instance.clone(), installations:vec![
+            installations::Entry {id:plan.source_instance.clone(),kind:"default".into(),created_at:1},
+            installations::Entry {id:plan.target_instance.clone(),kind:"recovery".into(),created_at:2}
+        ]}, None).unwrap();
+        // Controlled fixture authority only. The preceding forward failure is
+        // synthetic; this test attests actual CLI native recovery, not full update.
+        let (unused, signing, mut policy, mut release) = super::super::tests::fixture();
+        fs::remove_dir_all(unused.parent().unwrap()).unwrap();
+        let now = owned_execution::release_now().unwrap();
+        policy.source_schema_sha256 = plan.source_schema.clone(); policy.minimum_issued_at = now - 10;
+        release.source_schemas = vec![plan.source_schema.clone()];
+        release.artifact.runtime_image_sha256 = plan.target_image.clone(); release.artifact.schema_sha256 = plan.target_schema.clone();
+        release.issued_at = now - 1; release.expires_at = now + 3600;
+        let envelope = super::super::tests::seal(&signing, &release);
+        let mut store = Store::provision(&profile, "default", policy, now).unwrap();
+        let mut verified = store.verify_for_preparation(&envelope, now).unwrap();
+        verified.verify_artifact(&mut b"fixture".as_slice()).unwrap();
+        store.prepare_update(&envelope, &verified, plan.clone(), now).unwrap();
+        store.enroll_authority_recovery(&root.join("vault"), now).unwrap();
+        let mut evidence = super::super::tests::observations(); evidence.plan = plan.clone();
+        evidence.available_free_bytes = fs2::available_space(&root).unwrap();
+        store.begin_update(evidence, &verified, now).unwrap();
+        store.update_failed(&plan.operation_id, store.current.generation, now).unwrap();
+        let registered = store.register_rollback_candidate(true).unwrap();
+        let target = &registered.candidate_path;
+        installations::new_directory(&target.join("bundle")).unwrap();
+        let workspace_name = format!("restore-{}", restoration.id);
+        let workspace = target.join(&workspace_name);
+        installations::new_directory(&workspace).unwrap();
+        installations::new_directory(&workspace.join("authenticated")).unwrap();
+        for name in files.into_iter().map(str::to_owned).chain([
+            format!("{workspace_name}/receipt.json"), format!("{workspace_name}/authenticated/manifest.json")
+        ]) {
+            let bytes = crate::installation_backup::source_bytes(&old_target, &name, 16 * 1024 * 1024, true).unwrap();
+            input_hashes.push((old_target.join(&name), hash(&bytes)));
+            copied += bytes.len() as u64;
+            crate::restoration::private_bytes(&target.join(name), &bytes).unwrap();
+        }
+        assert!(copied < 32 * 1024 * 1024);
+        store.restore_finished(&plan.operation_id, store.current.generation, crate::update::RestoreReceipt {
+            operation_id:plan.operation_id.clone(), backup_id:plan.backup_id.clone(), backup_manifest:plan.backup_manifest.clone(),
+            inventory_digest:plan.source_inventory.clone(),candidate_id:registered.candidate_id.clone(),schema:plan.source_schema.clone(),inventory_verified:true,separate_candidate:true
+        }, now).unwrap();
+        let authority = store.root.clone();
+        let generation = store.current.generation;
+        drop(store); // CLI must reopen and reobserve; fixture health is never replayed.
+        crate::run("docker", &crate::compose_args(&manifest, &["up", "--detach", "--no-build", "--pull", "never"]), Some(&service.root.join("bundle")), 180).unwrap();
+        let ready = (|| -> LifecycleResult<()> {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+            loop {
+                service.check_restoration_guard(&guard)?;
+                if pair(&service, &manifest, &plan).is_ok() { return Ok(()); }
+                if std::time::Instant::now() >= deadline { return Err(err("UPDATE_ROLLBACK_HEALTH_FAILED")); }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+        })();
+        let output = ready.map(|()| std::process::Command::new(&cli)
+            .arg("complete-restored-rollback").arg("--profile").arg(&profile)
+            .args(["--installation","default","--maintenance-image","sha256:099b6b8288a6170c2189cc713b55629b7104823e3ad0dbbacf422dee800a9ada","--external-writers-quiesced","--apps-closed"])
+            .output().unwrap());
+        // Stop the exact retained owned project on every reported CLI result.
+        service.validate_ownership(&manifest,"docker").unwrap(); service.validate_volumes(&manifest,"docker").unwrap();
+        crate::run("docker", &crate::compose_args(&manifest, &["stop","--timeout","30"]), Some(&service.root.join("bundle")),180).unwrap();
+        service.check_restoration_guard(&guard).unwrap();
+        let output = output.unwrap();
+        let result_path = root.join("cli-result.json");
+        println!("PRIVATE_CLI_QUALIFICATION_ROOT={}", root.display());
+        crate::restoration::private_bytes(&result_path, &output.stdout).unwrap();
+        assert!(output.status.success(), "CLI result {}", String::from_utf8_lossy(&output.stdout));
+        assert!(output.stderr.is_empty());
+        let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(receipt["selectionCompleted"],true); assert_eq!(receipt["runtimeReplayed"],false); assert_eq!(receipt["healthReplayed"],false);
+        let reopened = Store::open(&profile,"default").unwrap();
+        assert_eq!(reopened.root,authority); assert!(reopened.current.generation > generation);
+        assert_eq!(reopened.intent().unwrap().update.stage(),crate::update::Stage::RolledBack);
+        assert_eq!(installations::load(&profile).unwrap().unwrap().0.active_id,registered.candidate_id);
+        for (path, sha) in input_hashes {assert_eq!(hash(&fs::read(path).unwrap()),sha);}
+        for (g, bytes) in original_records { assert_eq!(fs::read(old.root.join(format!("{g:020}.json"))).unwrap(), bytes); }
+        assert_eq!(installations::load(&old.profile).unwrap().unwrap().1,old_selection);
+        assert_eq!(crate::backup_creation::one_container(&service,&manifest,"docker","platform").unwrap().0,app);
+        assert_eq!(crate::backup_creation::one_container(&service,&manifest,"docker","database").unwrap().0,db);
+        crate::restoration::private_bytes(&root.join("report.json"),&serde_json::to_vec_pretty(&serde_json::json!({
+            "state":"PASS","scope":"Actual CLI native original restored service inventory/configuration/image/health, selected namespace and cold Store reopen; synthetic preceding failed-update journal",
+            "receipt":receipt,"copiedMetadataBytes":copied,"newDatabaseImageArchiveCopies":false,"newPersistentVolumes":false,"retainedOriginalFilesAndAuthorityUnchanged":true,
+            "candidateStopped":true,"wholeChangedUpdateRecoveryVerified":false,"profile":profile
+        })).unwrap()).unwrap();
+    }
+
 }

@@ -20,6 +20,7 @@ fn main() {
         "permission" => eprintln!("permission denied SYNTHETIC_PRIVATE_OUTPUT"),
         "port" => eprintln!("port is already allocated SYNTHETIC_PRIVATE_OUTPUT"),
         "address" => eprintln!("address already in use SYNTHETIC_PRIVATE_OUTPUT"),
+        "network-capacity" => eprintln!("all predefined address pools have been fully subnetted SYNTHETIC_PRIVATE_OUTPUT"),
         "unknown" => eprintln!("SYNTHETIC_PRIVATE_OUTPUT"),
         "success" => { print!("exact-output"); eprintln!("SYNTHETIC_PRIVATE_OUTPUT"); return; },
         "timeout" => std::thread::sleep(std::time::Duration::from_secs(10)),
@@ -61,6 +62,7 @@ fn engine_failure_native_permission_and_port_codes_never_repeat_private_output()
         ("permission", "ENGINE_PERMISSION"),
         ("port", "PORT_IN_USE"),
         ("address", "PORT_IN_USE"),
+        ("network-capacity", "ENGINE_NETWORK_CAPACITY"),
         ("unknown", "ENGINE_OPERATION_FAILED"),
     ] {
         let error = run(fixture().to_str().unwrap(), &[mode.into()], None, 5).unwrap_err();
@@ -85,4 +87,24 @@ fn engine_failure_native_timeout_waits_and_missing_tool_are_distinct() {
     let missing = fixture().with_file_name("nonexistent-owned-fixture-command");
     let error = run(missing.to_str().unwrap(), &[], None, 1).unwrap_err();
     assert_eq!(error.code, "RUNTIME_MISSING");
+}
+
+#[test]
+#[ignore = "explicit local Docker exhausted address pool diagnosis; fresh empty probe only, no service or data volume changes"]
+fn engine_network_capacity_actual_docker_returns_safe_code() {
+    let name = format!("exhibitos-network-capacity-check-{}", Uuid::new_v4());
+    let result = run("docker", &["network".into(), "create".into(), "--label".into(), "com.exhibitos.probe=network-capacity".into(), name.clone()], None, 30);
+    if let Ok(output) = &result {
+        let id = std::str::from_utf8(output).unwrap().trim();
+        assert!(hash_valid(id));
+        let proof = backup_creation::inspected("docker", &["network".into(), "inspect".into(), id.into()]).unwrap();
+        assert_eq!(proof["Name"], name);
+        assert_eq!(proof["Labels"]["com.exhibitos.probe"], "network-capacity");
+        assert!(proof["Containers"].as_object().unwrap().is_empty());
+        run("docker", &["network".into(), "rm".into(), id.into()], None, 30).unwrap();
+    }
+    let error = result.expect_err("address pool is available; empty probe cleaned, exhaustion not reproduced");
+    assert_eq!(error.code, "ENGINE_NETWORK_CAPACITY");
+    assert!(!error.guidance.contains(&name));
+    println!("PASS_ACTUAL_DOCKER_NETWORK_CAPACITY_CODE_NO_SERVICE_MUTATION");
 }

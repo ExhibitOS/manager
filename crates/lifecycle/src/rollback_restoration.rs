@@ -270,6 +270,7 @@ mod tests {
             project_name: "synthetic".into(),
             open_url: "http://127.0.0.1:48080".into(),
             at: 1,
+            network_subnet: None,
             source_verification: Some(crate::restoration::RestorationProof {
                 inventory_sha256: p.source_inventory.clone(),
                 schema_sha256: p.source_schema.clone(),

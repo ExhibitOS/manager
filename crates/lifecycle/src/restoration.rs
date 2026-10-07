@@ -28,6 +28,8 @@ pub struct RestorationReceipt {
     pub at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_verification: Option<RestorationProof>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_subnet: Option<String>,
 }
 #[path = "restoration_binding.rs"]
 mod binding;
@@ -255,10 +257,16 @@ fn validate_source_layout(config: &Value, bytes: &[u8], m: &BundleManifest) -> R
         ("platform", vec!["/data/blobs", "/data/config"]),
     ] {
         let value = &config["services"][service];
+        // Our restoration writer emits this exact non-root application identity.
+        // Accept it on repeated restoration without admitting arbitrary users.
+        if value.get("user").is_some_and(|user| {
+            !user.is_null() && !(service == "platform" && user == "1000:1000")
+        }) {
+            return Err(err("RESTORE_LAYOUT_UNSUPPORTED"));
+        }
         for field in [
             "command",
             "entrypoint",
-            "user",
             "extra_hosts",
             "dns",
             "devices",
@@ -304,12 +312,29 @@ fn validate_source_layout(config: &Value, bytes: &[u8], m: &BundleManifest) -> R
 fn labels(m: &BundleManifest) -> Value {
     serde_json::json!({"com.exhibitos.bundle":m.bundle_id,"com.exhibitos.project":m.project_name,"com.exhibitos.schema":m.schema_version})
 }
-fn compose(m: &BundleManifest, database: &str, platform: &str) -> Value {
+fn compose(m: &BundleManifest, database: &str, platform: &str, subnet: Option<&str>) -> Value {
     let labels = labels(m);
-    serde_json::json!({"services":{
+    let mut value=serde_json::json!({"services":{
         "database":{"image":database,"pull_policy":"never","environment":{"POSTGRES_PASSWORD":"${POSTGRES_PASSWORD:?required}","POSTGRES_DB":"exhibitos","POSTGRES_USER":"exhibitos"},"volumes":["database:/var/lib/postgresql"],"labels":labels,"healthcheck":{"test":["CMD-SHELL","pg_isready -U exhibitos -d exhibitos"],"interval":"2s","timeout":"3s","retries":30},"restart":"unless-stopped"},
         "platform":{"image":platform,"pull_policy":"never","user":"1000:1000","env_file":["../runtime.env"],"environment":{"NODE_ENV":"production","EXHIBITOS_PORT":"${EXHIBITOS_PORT}","AUTH_ORIGIN":"http://127.0.0.1:${EXHIBITOS_PORT}","BLOB_ROOT":"/data/blobs","CONFIG_ROOT":"/data/config"},"ports":["127.0.0.1:${EXHIBITOS_PORT}:8080"],"volumes":["objects:/data/blobs","configuration:/data/config"],"labels":labels,"depends_on":{"database":{"condition":"service_healthy"}},"read_only":true,"tmpfs":["/tmp:rw,nosuid,nodev,size=256m,mode=1777"],"cap_drop":["ALL"],"security_opt":["no-new-privileges:true"],"restart":"unless-stopped","stop_grace_period":"30s"}},
-        "volumes":{"database":{"labels":labels},"objects":{"labels":labels},"configuration":{"labels":labels}},"networks":{"default":{"labels":labels}}})
+        "volumes":{"database":{"labels":labels},"objects":{"labels":labels},"configuration":{"labels":labels}},"networks":{"default":{"labels":labels}}});
+    if let Some(subnet)=subnet {value["networks"]["default"]["ipam"]=serde_json::json!({"config":[{"subnet":subnet}]});}
+    value
+}
+/// Bind an explicit policy gateway without changing any legacy remapping bytes.
+pub(crate) fn bind_explicit_gateway(
+    mapped: (BundleManifest, Vec<u8>), subnet: &str,
+) -> Result<(BundleManifest, Vec<u8>)> {
+    let (mut manifest, encoded) = mapped;
+    if crate::restoration_network::compose_subnet(&encoded)?.as_deref() != Some(subnet) {
+        return Err(err("RESTORE_LAYOUT_UNSUPPORTED"));
+    }
+    let gateway = crate::restoration_network::policy_gateway(subnet)?;
+    let mut value: Value = serde_json::from_slice(&encoded).map_err(|_| err("STATE_INVALID"))?;
+    value["networks"]["default"]["ipam"]["config"][0]["gateway"] = Value::String(gateway);
+    let encoded = serde_json::to_vec(&value).map_err(|_| err("STATE_INVALID"))?;
+    manifest.compose_sha256 = digest(&encoded);
+    Ok((manifest, encoded))
 }
 /// Exact supported restoration remapping, shared by writer and fresh verifier.
 pub(crate) fn remapped_bundle(
@@ -319,6 +344,7 @@ pub(crate) fn remapped_bundle(
     port: u16,
     database: &str,
     platform: &str,
+    subnet: Option<&str>,
 ) -> Result<(BundleManifest, Vec<u8>)> {
     if Uuid::parse_str(bundle_id).is_err()
         || port < 1024
@@ -330,6 +356,7 @@ pub(crate) fn remapped_bundle(
     {
         return Err(err("RESTORE_LAYOUT_UNSUPPORTED"));
     }
+    if let Some(subnet)=subnet {crate::restoration_network::policy_subnet(subnet)?;}
     let mut manifest = original.clone();
     manifest.bundle_id = bundle_id.into();
     manifest.project_name = format!("exhibitos-{bundle_id}");
@@ -349,7 +376,7 @@ pub(crate) fn remapped_bundle(
             }),
         })
         .collect();
-    let encoded = serde_json::to_vec(&compose(&manifest, database, platform))
+    let encoded = serde_json::to_vec(&compose(&manifest, database, platform, subnet))
         .map_err(|_| err("STATE_INVALID"))?;
     manifest.compose_sha256 = digest(&encoded);
     Ok((manifest, encoded))
@@ -835,6 +862,7 @@ impl LifecycleService {
             if let Some(binding) = binding {
                 binding.runtime_image(&platform)?;
             }
+            let subnet=crate::restoration_network::choose()?;
             let (manifest, encoded) = remapped_bundle(
                 &original,
                 &images,
@@ -842,7 +870,9 @@ impl LifecycleService {
                 port,
                 &database,
                 &platform,
+                Some(&subnet),
             )?;
+            let (manifest, encoded) = bind_explicit_gateway((manifest, encoded), &subnet)?;
             let bundle = self.root.join("bundle");
             let _destination_bundle_guard = directory(&bundle)?;
             for (index, preserved) in images.iter().enumerate() {
@@ -897,6 +927,7 @@ impl LifecycleService {
             }
             self.validate_volumes(&manifest, "docker")?;
             self.validate_ownership(&manifest, "docker")?;
+            crate::restoration_network::recheck(&subnet)?;
             job.stage = "creating-fresh-target".into();
             job.updated_at = now();
             self.maintenance_stage("restoration", &id, &job.stage)?;
@@ -928,6 +959,9 @@ impl LifecycleService {
                     return Err(err("OWNERSHIP_CONFLICT"));
                 }
             }
+            let created_network=inspected("docker",&["network".into(),"inspect".into(),format!("{}_default",manifest.project_name)])?;
+            if created_network["Labels"]["com.exhibitos.bundle"]!=manifest.bundle_id || created_network["Labels"]["com.exhibitos.project"]!=manifest.project_name || created_network["Driver"]!="bridge" {return Err(err("OWNERSHIP_CONFLICT"));}
+            crate::restoration_network::verify_observed(&created_network,&subnet)?;
             run(
                 "docker",
                 &compose_args(
@@ -975,6 +1009,7 @@ impl LifecycleService {
             {
                 return Err(err("OWNERSHIP_CONFLICT"));
             }
+            crate::restoration_network::verify_observed(&net,&subnet)?;
             job.stage = "restoring-and-verifying".into();
             job.updated_at = now();
             self.maintenance_stage("restoration", &id, &job.stage)?;
@@ -1027,6 +1062,7 @@ impl LifecycleService {
                 open_url: manifest.open_url,
                 at: now(),
                 source_verification: binding.map(|b| b.proof().clone()),
+                network_subnet: Some(subnet.clone()),
             };
             Ok(receipt)
         })();
@@ -1081,7 +1117,7 @@ impl LifecycleService {
                 };
                 self.finish_maintenance(state, Some(&error.code))?;
                 Err(err(
-                    if ["CANCELLED", "CANCEL_UNCERTAIN"].contains(&error.code.as_str()) {
+                    if ["CANCELLED", "CANCEL_UNCERTAIN", "ENGINE_NETWORK_CAPACITY"].contains(&error.code.as_str()) {
                         &error.code
                     } else {
                         "RESTORE_FAILED"
@@ -1214,7 +1250,7 @@ mod tests {
         assert!(
             remapped_environment(format!("{text}UNKNOWN=keep\n").as_bytes(), &m, 13201).is_err()
         );
-        let mut config = compose(&m, "database-image", "platform-image");
+        let mut config = compose(&m, "database-image", "platform-image", None);
         let mut env = BTreeMap::<String, String>::new();
         for line in text.lines() {
             let (k, v) = line.split_once('=').unwrap();
@@ -1231,16 +1267,23 @@ mod tests {
         config["services"]["platform"]["environment"] = serde_json::to_value(env).unwrap();
         config["services"]["database"]["environment"]["POSTGRES_PASSWORD"] =
             "synthetic-password".into();
-        config["services"]["platform"]
-            .as_object_mut()
-            .unwrap()
-            .remove("user");
+
         // Compose normalization converts mount strings into typed mount descriptions.
         config["services"]["database"]["volumes"] =
             serde_json::json!([{"type":"volume","target":"/var/lib/postgresql"}]);
         config["services"]["platform"]["volumes"] = serde_json::json!([{"type":"volume","target":"/data/blobs"},{"type":"volume","target":"/data/config"}]);
         config["services"]["database"]["command"] = Value::Null;
         config["services"]["platform"]["entrypoint"] = Value::Null;
+        assert!(validate_source_layout(&config, text.as_bytes(), &m).is_ok());
+        for user in ["0", "0:0", "1000", "1001:1000", "1000:1001", "${APP_USER}"] {
+            config["services"]["platform"]["user"] = user.into();
+            assert!(validate_source_layout(&config, text.as_bytes(), &m).is_err());
+        }
+        config["services"]["platform"]["user"] = "1000:1000".into();
+        config["services"]["database"]["user"] = "1000:1000".into();
+        assert!(validate_source_layout(&config, text.as_bytes(), &m).is_err());
+        config["services"]["database"].as_object_mut().unwrap().remove("user");
+        config["services"]["platform"].as_object_mut().unwrap().remove("user");
         assert!(validate_source_layout(&config, text.as_bytes(), &m).is_ok());
         config["services"]["platform"]["entrypoint"] = serde_json::json!(["unexpected-command"]);
         assert!(validate_source_layout(&config, text.as_bytes(), &m).is_err());
