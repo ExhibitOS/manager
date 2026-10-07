@@ -35,7 +35,9 @@ fn checked_store(v: &Value) -> crate::signed_release::trust::Store {
             store.current.generation,
             intent.update.plan().operation_id.as_str()
         ),
-        (21, "c5b5becd-4f70-435f-909e-73031e5def37") | (29, "2a517fd1-e818-4f90-8e4f-73c9fe7b976b")
+        (21, "c5b5becd-4f70-435f-909e-73031e5def37")
+            | (29, "2a517fd1-e818-4f90-8e4f-73c9fe7b976b")
+            | (37, "a9ccf7b0-7e3f-4bae-bcf1-3f2c53e15c49")
     ));
     let envelope: crate::signed_release::Envelope = serde_json::from_str(&intent.envelope).unwrap();
     let release: crate::signed_release::Release = serde_json::from_str(&envelope.payload).unwrap();
@@ -105,6 +107,10 @@ fn actual_changed_executor_crash_child() {
     let mut store = checked_store(&v);
     let profile = store.profile.clone();
     let operation_id = store.intent().unwrap().update.plan().operation_id.clone();
+    let publication = store.current.generation == 37;
+    if publication {
+        checked_current37_plan(&store);
+    }
     let point = fs::canonicalize(path(&v, "point")).unwrap();
     assert_eq!(point.parent(), profile.parent());
     let marker = point.join("candidate-applied.json");
@@ -161,11 +167,265 @@ fn actual_changed_executor_crash_child() {
     let ready = started.apply_candidate().unwrap();
     let proof = serde_json::json!({"pid":std::process::id(),"operationId":operation_id,"candidateApplied":true,"receipt":ready.receipt(),"health":ready.observed_health()});
     crate::restoration::private_bytes(&marker, &serde_json::to_vec(&proof).unwrap()).unwrap();
+    if publication {
+        // Only this fresh allowlisted operation reaches actual native publication.
+        let phase = std::env::var("EXHIBITOS_PUBLICATION_CRASH_PHASE").unwrap();
+        assert!(matches!(
+            phase.as_str(),
+            "pending-synced" | "selection-renamed" | "selection-dir-synced"
+        ));
+        ready.activate().unwrap();
+        panic!("native publication hook did not stop this fresh worker");
+    }
     // Keep all actual fences/opaque permits alive until the parent kills this PID.
     loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
         std::hint::black_box(&ready);
     }
+}
+
+fn checked_current37_plan(store: &crate::signed_release::trust::Store) {
+    assert_eq!(store.current.generation, 37);
+    let p = store.intent().unwrap().update.plan();
+    assert_eq!(p.operation_id, "a9ccf7b0-7e3f-4bae-bcf1-3f2c53e15c49");
+    assert_eq!(p.source_instance, "499db3cb-5c84-47e4-a0c7-881e26e37a02");
+    assert_eq!(p.target_instance, "b2d4782a-5d9c-46c5-b557-8035dba3f637");
+    assert_eq!(p.backup_id, "43e41dcb-d1e8-49eb-9041-dbbb0f7f218d");
+    assert_eq!(
+        p.source_schema,
+        "4ecab567864d0a0b4d59f4a934fedcd6c7f538c1b766afdd4bc2e7b45f633a2b"
+    );
+    assert_eq!(
+        p.target_schema,
+        "44b8f6aa05511d025019e7e73522375f43543a164d12de769b6765864e1953e4"
+    );
+    assert_eq!(
+        p.target_image,
+        "1ee149bf0ee63e595f84e6de863350ef6312ce2fea7773dddff4cd00e47fc624"
+    );
+}
+
+fn owned_engine_state(profile: &Path, id: &str) -> Vec<u8> {
+    let (registry, _) = installations::load(profile).unwrap().unwrap();
+    let entry = registry.installations.iter().find(|e| e.id == id).unwrap();
+    let service =
+        crate::LifecycleService::open_retry_diagnostics(installations::root(profile, entry))
+            .unwrap();
+    let manifest = service.manifest().unwrap();
+    service.validate_ownership(&manifest, "docker").unwrap();
+    service.validate_volumes(&manifest, "docker").unwrap();
+    let ids = crate::run(
+        "docker",
+        &[
+            "ps".into(),
+            "-aq".into(),
+            "--filter".into(),
+            format!("label=com.docker.compose.project={}", manifest.project_name),
+        ],
+        None,
+        30,
+    )
+    .unwrap();
+    let mut ids = std::str::from_utf8(&ids)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    ids.sort();
+    assert_eq!(ids.len(), 2);
+    let mut state = Vec::new();
+    for id in ids {
+        let raw = crate::run(
+            "docker",
+            &[
+                "inspect".into(),
+                "--format".into(),
+                "{{.Id}} {{json .State}} {{json .Mounts}}".into(),
+                id,
+            ],
+            None,
+            30,
+        )
+        .unwrap();
+        state.extend_from_slice(&raw);
+    }
+    state
+}
+
+#[test]
+#[ignore = "fresh allowlisted37 only: actual native candidate migration/health/publication, SIGKILL boundary and cold exact selection reconciliation; never enables public admission"]
+fn actual_native_publication_sigkill_and_cold_selection() {
+    use std::os::unix::fs::PermissionsExt;
+    let v = input();
+    let store = checked_store(&v);
+    checked_current37_plan(&store);
+    let profile = store.profile.clone();
+    let plan = store.intent().unwrap().update.plan().clone();
+    let point = fs::canonicalize(path(&v, "point")).unwrap();
+    assert_eq!(point.parent(), profile.parent());
+    let phase = v["publicationPhase"].as_str().unwrap();
+    assert!(matches!(
+        phase,
+        "pending-synced" | "selection-renamed" | "selection-dir-synced"
+    ));
+    let marker = point.join("publication.marker");
+    assert!(absent(&marker) && absent(&point.join("candidate-applied.json")));
+    let original_selection = installations::load(&profile).unwrap().unwrap().1;
+    let source = installations::root(
+        &profile,
+        installations::load(&profile)
+            .unwrap()
+            .unwrap()
+            .0
+            .installations
+            .iter()
+            .find(|e| e.id == plan.source_instance)
+            .unwrap(),
+    );
+    let originals = [
+        "installed.json",
+        "engine.json",
+        "runtime.env",
+        "bundle/manifest.json",
+        "bundle/compose.yaml",
+    ]
+    .into_iter()
+    .map(|n| {
+        let p = source.join(n);
+        let bytes = fs::read(&p).unwrap();
+        let mode = fs::metadata(&p).unwrap().permissions().mode();
+        (p, bytes, mode)
+    })
+    .collect::<Vec<_>>();
+    let records = fs::read_dir(&store.root)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "json"))
+        .map(|p| {
+            let bytes = fs::read(&p).unwrap();
+            (p, bytes)
+        })
+        .collect::<Vec<_>>();
+    let key = fs::read(path(&v, "key")).unwrap();
+    // Three image exports, one512MiB native DB copy, artifact stage+OCI,
+    // metadata allowance, signed headroom and6GiB floor remain conservative.
+    require_phase_capacity(
+        &profile,
+        &point,
+        "before-native-publication",
+        781_992_960 + 536_870_912 + 187_522_048 + 67_108_864,
+        plan.required_free_bytes,
+    );
+    drop(store);
+    let out =
+        crate::restoration::private_bytes(&point.join("child.out"), b"native publication worker\n");
+    out.unwrap();
+    let errfile = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(point.join("child.err"))
+        .unwrap();
+    let worker = format!(
+        "{}::actual_changed_executor_crash_child",
+        module_path!().split_once("::").unwrap().1
+    );
+    let mut child = OwnedChild(
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &worker, "--ignored", "--nocapture"])
+            .env("EXHIBITOS_PUBLICATION_CRASH_PHASE", phase)
+            .env("EXHIBITOS_PUBLICATION_CRASH_MARKER", &marker)
+            .stdout(Stdio::from(
+                fs::OpenOptions::new()
+                    .append(true)
+                    .open(point.join("child.out"))
+                    .unwrap(),
+            ))
+            .stderr(Stdio::from(errfile))
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1800);
+    while !fs::read(&marker).is_ok_and(|bytes| bytes == phase.as_bytes()) {
+        assert!(
+            child.0.try_wait().unwrap().is_none(),
+            "native worker exited; preserve full logs and candidate"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "native publication timeout; preserve recovery inputs"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let applied: Value =
+        serde_json::from_slice(&fs::read(point.join("candidate-applied.json")).unwrap()).unwrap();
+    assert_eq!(applied["pid"].as_u64(), Some(u64::from(child.0.id())));
+    assert_eq!(applied["operationId"], plan.operation_id);
+    assert_eq!(applied["candidateApplied"], true);
+    let selected = installations::load(&profile).unwrap().unwrap().0.active_id;
+    assert_eq!(
+        selected,
+        if phase == "pending-synced" {
+            &plan.source_instance
+        } else {
+            &plan.target_instance
+        }
+        .as_str()
+    );
+    child.0.kill().unwrap();
+    assert_eq!(child.0.wait().unwrap().signal(), Some(9));
+    let mut cold = crate::signed_release::trust::Store::open(&profile, "default").unwrap();
+    assert_eq!(
+        cold.intent().unwrap().update.stage(),
+        crate::update::Stage::RecoveryRequired
+    );
+    assert_eq!(cold.intent().unwrap().update.plan(), &plan);
+    // Only stop the exact migrated candidate; no original writer is started.
+    stop_owned(&profile, &plan.target_instance).unwrap();
+    let original_engine = owned_engine_state(&profile, &plan.source_instance);
+    let candidate_engine = owned_engine_state(&profile, &plan.target_instance);
+    let generation = cold.current.generation;
+    let receipt = cold
+        .reconcile_selection_activation(&plan.operation_id)
+        .unwrap();
+    assert!(receipt.original_selection_restored && !receipt.selection_completed);
+    assert_eq!(
+        installations::load(&profile).unwrap().unwrap().1,
+        original_selection
+    );
+    assert_eq!(
+        owned_engine_state(&profile, &plan.source_instance),
+        original_engine
+    );
+    assert_eq!(
+        owned_engine_state(&profile, &plan.target_instance),
+        candidate_engine
+    );
+    assert_eq!(cold.current.generation, generation);
+    for (p, bytes, mode) in originals {
+        assert_eq!(fs::read(&p).unwrap(), bytes);
+        assert_eq!(fs::metadata(&p).unwrap().permissions().mode(), mode);
+    }
+    for (p, bytes) in records {
+        assert_eq!(fs::read(p).unwrap(), bytes);
+    }
+    assert_eq!(fs::read(path(&v, "key")).unwrap(), key);
+    drop(cold);
+    let reopened = crate::signed_release::trust::Store::open(&profile, "default").unwrap();
+    assert_eq!(reopened.current.generation, generation);
+    assert_eq!(
+        reopened.intent().unwrap().update.stage(),
+        crate::update::Stage::RecoveryRequired
+    );
+    assert_eq!(
+        installations::load(&profile).unwrap().unwrap().1,
+        original_selection
+    );
+    let report = serde_json::json!({"state":"PASS","publicationPhase":phase,"executorSignal":9,"actualCandidateApplicationAndHealth":applied,"selectionBeforeKill":selected,"coldRecoveryGeneration":generation,"selectionReconciliation":receipt,"exactOriginalSelectionRestored":true,"engineAndHealthReplayed":false,"originalSourceKeyHistoryPreserved":true,"candidateStopped":true,"wholeOriginalDataRestorationVerified":false,"publicChangedSchemaGate":"CLOSED","otherPublicationPhasesVerified":false});
+    crate::restoration::private_bytes(
+        &point.join("report.json"),
+        &serde_json::to_vec_pretty(&report).unwrap(),
+    )
+    .unwrap();
 }
 
 struct OwnedChild(Child);
