@@ -179,6 +179,22 @@ fn run_whole_recovery(lose_namespaces: bool) {
         assert_eq!(generation, 29);
         assert_eq!(plan.operation_id, "2a517fd1-e818-4f90-8e4f-73c9fe7b976b");
     }
+    let initial_key: [u8; 32] = fs::read(path(&v, "key")).unwrap().try_into().unwrap();
+    let initial_checkpoint = if lose_namespaces {
+        Some(
+            store
+                .verify_checkpoint_pair(
+                    &path(&v, "binding"),
+                    &path(&v, "hostArchive"),
+                    &path(&v, "trustArchive"),
+                    &initial_key,
+                )
+                .unwrap()
+                .receipt(),
+        )
+    } else {
+        None
+    };
     let records = fs::read_dir(&authority)
         .unwrap()
         .map(|e| e.unwrap().path())
@@ -216,6 +232,15 @@ fn run_whole_recovery(lose_namespaces: bool) {
     let point = fs::canonicalize(path(&v, "point")).unwrap();
     assert_eq!(point.parent(), profile.parent());
     assert!(!point.join("candidate-applied.json").exists());
+    if lose_namespaces {
+        require_phase_capacity(
+            &profile,
+            &point,
+            "before-child",
+            781_992_960 + 187_522_048 + 16_777_216,
+            plan.required_free_bytes,
+        );
+    }
     drop(store);
     let out = fs::OpenOptions::new()
         .write(true)
@@ -281,6 +306,63 @@ fn run_whole_recovery(lose_namespaces: bool) {
     // No held original is deleted, and neither vault nor key is moved.
     let _held = if lose_namespaces {
         drop(cold);
+        let checkpoint = initial_checkpoint.as_ref().unwrap();
+        let unused = path(&v, "retainedHost");
+        assert_eq!(
+            unused,
+            profile.parent().unwrap().join(
+                "current29-migrated-full-runtime-c0f2be0563314742b9a36ae661555245/recovery/host"
+            )
+        );
+        let unused_proof = crate::profile_backup::verify_unused_extraction_archive(
+            &profile,
+            &path(&v, "hostArchive"),
+            &initial_key,
+            &unused,
+            &checkpoint.host_manifest_sha256,
+        )
+        .unwrap();
+        assert_eq!(fs::read(&key_file).unwrap(), initial_key);
+        let script = path(&v, "retirementScript");
+        let script_bytes = fs::read(&script).unwrap();
+        assert_eq!(
+            format!("{:x}", sha2::Sha256::digest(&script_bytes)),
+            v["retirementScriptSha256"]
+        );
+        let retired = Command::new(path(&v, "python"))
+            .arg(script)
+            .arg(&unused)
+            .arg(path(&v, "hostManifest"))
+            .arg(&checkpoint.host_manifest_sha256)
+            .arg(path(&v, "retirementReceipt"))
+            .arg(path(&v, "hostArchive"))
+            .arg(&key_file)
+            .status()
+            .unwrap();
+        assert!(
+            retired.success(),
+            "unused host retirement refused; original namespaces preserved"
+        );
+        assert!(!unused.join("profile").exists());
+        crate::restoration::private_bytes(
+            &point.join("unused-host-retired.json"),
+            &serde_json::to_vec(&unused_proof).unwrap(),
+        )
+        .unwrap();
+        let growth = crate::profile_backup::authenticated_host_restore_bytes(
+            &profile,
+            &path(&v, "hostArchive"),
+            &initial_key,
+            &checkpoint.host_manifest_sha256,
+        )
+        .unwrap();
+        require_phase_capacity(
+            &profile,
+            &point,
+            "before-missing-host",
+            growth.checked_add(16_777_216).unwrap(),
+            plan.required_free_bytes,
+        );
         require_namespace_capacity(&profile, plan.required_free_bytes);
         let held = HeldNamespaces::preserve(&profile, &authority, &point);
         let authority_receipt = crate::signed_release::trust::Store::restore_missing_authority(
@@ -332,6 +414,15 @@ fn run_whole_recovery(lose_namespaces: bool) {
     } else {
         None
     };
+    if lose_namespaces {
+        require_phase_capacity(
+            &profile,
+            &point,
+            "before-original-service-restoration",
+            1_500_000_000 + 16_777_216,
+            plan.required_free_bytes,
+        );
+    }
     let reservation = cold.register_rollback_candidate(true).unwrap();
     let archive = path(&v, "serviceArchive");
     let port = v["recoveryPort"]
@@ -422,6 +513,63 @@ impl Drop for HeldNamespaces {
             }
         }
     }
+}
+
+/// Independent future stages are gated at their real boundary. Already allocated
+/// files are included in observed free space rather than added a second time.
+/// Dense extraction remains budgeted in full; COW savings are not assumed.
+fn require_phase_capacity(
+    profile: &Path,
+    point: &Path,
+    phase: &str,
+    additional: u64,
+    headroom: u64,
+) {
+    let v = input();
+    let tool = path(&v, "storageBudgetTool");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(fs::read(&tool).unwrap())),
+        v["storageBudgetToolSha256"]
+    );
+    let observed = Command::new(path(&v, "python"))
+        .arg(tool)
+        .args(["--root"])
+        .arg(path(&v, "projectRoot"))
+        .args([
+            "--component",
+            &format!("phase-growth={additional}"),
+            "--component",
+            &format!("signed-headroom={headroom}"),
+        ])
+        .output()
+        .unwrap();
+    crate::restoration::private_bytes(
+        &point.join(format!("storage-budget-{phase}.json")),
+        &observed.stdout,
+    )
+    .unwrap();
+    assert!(
+        observed.status.success(),
+        "storage tool refuses phase; no further allocation"
+    );
+    let external: Value = serde_json::from_slice(&observed.stdout).unwrap();
+    assert_eq!(external["budget_passed"], true);
+    let required = additional
+        .checked_add(headroom)
+        .unwrap()
+        .checked_add(6 * 1024 * 1024 * 1024)
+        .unwrap();
+    let available = fs2::available_space(profile).unwrap();
+    let proof = serde_json::json!({"phase":phase,"additionalPeakBytes":additional,"signedHeadroomBytes":headroom,"retainedFloorBytes":6u64*1024*1024*1024,"requiredAvailableBytes":required,"actualAvailableBytes":available,"passed":available>=required});
+    crate::restoration::private_bytes(
+        &point.join(format!("phase-budget-{phase}.json")),
+        &serde_json::to_vec(&proof).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        available >= required,
+        "phase capacity refused; preserve existing recovery data and floor"
+    );
 }
 
 fn require_namespace_capacity(profile: &Path, headroom: u64) {

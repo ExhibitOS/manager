@@ -802,6 +802,40 @@ pub(crate) fn authenticated_host_restore_bytes(
     }
     Ok(expanded)
 }
+/// Test-only retirement evidence: authenticate the actual complete archive first,
+/// then verify an unused extraction against its authenticated manifest. Current
+/// source bytes may have legitimately changed after the owning child applied.
+#[cfg(test)]
+pub(crate) fn verify_unused_extraction_archive(
+    profile: &Path,
+    archive: &Path,
+    key: &[u8],
+    extracted: &Path,
+    expected_manifest: &str,
+) -> Result<HostReceipt> {
+    let mut source = file(archive)?;
+    let before = source.metadata().map_err(|_| fail())?;
+    let mut prefix = HostManifestPrefix(Vec::new());
+    let decoded =
+        super::super::maintenance_stream::open(&mut source, &mut prefix, key, CONTEXT, DATA_LIMIT)
+            .map_err(|_| fail())?;
+    prefix.expanded_bytes(profile, decoded)?;
+    let len = u64::from_be_bytes(prefix.0[..8].try_into().map_err(|_| fail())?) as usize;
+    let encoded = &prefix.0[8..8 + len];
+    if digest(encoded) != expected_manifest {
+        return Err(fail());
+    }
+    let m: Inventory = serde_json::from_slice(encoded).map_err(|_| fail())?;
+    let proof = receipt(&m, "host-profile-extracted-not-activated", encoded);
+    verify_extracted_host(profile, extracted, &proof)?;
+    if !unchanged(&before, &source.metadata().map_err(|_| fail())?)
+        || !unchanged(&before, &fs::symlink_metadata(archive).map_err(|_| fail())?)
+    {
+        return Err(err("HOST_SOURCE_CHANGED"));
+    }
+    Ok(proof)
+}
+
 fn publish_directory(source: &Path, target: &Path) -> Result<()> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
@@ -1733,6 +1767,72 @@ mod tests {
             let written = sink.write_all(&invalid);
             assert!(written.is_err() || sink.finish().is_err());
         }
+    }
+
+    #[test]
+    fn unused_extraction_requires_authenticated_archive_and_exact_complete_files() {
+        let (_scope, profile, key, archive) = fixture();
+        write_new(&profile.join("data"), b"retained authenticated bytes").unwrap();
+        let checkpoint = checkpoint_host(&profile, &key, &archive, true, true).unwrap();
+        let target = key.with_file_name("unused-extraction");
+        extract_host(&profile, &key, &archive, &target, true).unwrap();
+        let before = hash(&archive).unwrap();
+        verify_unused_extraction_archive(
+            &profile,
+            &archive,
+            &[17; 32],
+            &target,
+            &checkpoint.manifest_sha256,
+        )
+        .unwrap();
+        assert!(
+            verify_unused_extraction_archive(
+                &profile,
+                &archive,
+                &[18; 32],
+                &target,
+                &checkpoint.manifest_sha256
+            )
+            .is_err()
+        );
+        assert!(
+            verify_unused_extraction_archive(
+                &profile,
+                &archive,
+                &[17; 32],
+                &target,
+                &"0".repeat(64)
+            )
+            .is_err()
+        );
+        write_new(&target.join("profile/unknown"), b"preserve unknown bytes").unwrap();
+        assert!(
+            verify_unused_extraction_archive(
+                &profile,
+                &archive,
+                &[17; 32],
+                &target,
+                &checkpoint.manifest_sha256
+            )
+            .is_err()
+        );
+        fs::remove_file(target.join("profile/unknown")).unwrap();
+        fs::write(target.join("profile/data"), b"preserve changed bytes").unwrap();
+        assert!(
+            verify_unused_extraction_archive(
+                &profile,
+                &archive,
+                &[17; 32],
+                &target,
+                &checkpoint.manifest_sha256
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read(target.join("profile/data")).unwrap(),
+            b"preserve changed bytes"
+        );
+        assert_eq!(hash(&archive).unwrap(), before);
     }
 
     #[test]
