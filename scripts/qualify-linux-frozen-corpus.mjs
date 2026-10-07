@@ -16,6 +16,7 @@ export async function frozenCorpus({platform,api,prefix,artist,rights,onStage=()
   const {oexFixture}=await load('scripts/oex-fixture.mjs');
   const {fixtureURL,validateExhibition,validateOex}=await import(pathToFileURL(join(dirname(createRequire(join(platform,'package.json')).resolve('@exhibitos/spec/package.json')),'index.mjs')));
   const {verifyFreezeBundle}=await load('packages/studio-contract/dist/index.js');
+  const trustedIdentity=await(await api('GET','/api/v1/freeze/authority')).json();
   const works=[],assets=[];
   for(const fixture of loadViewerFixtures()) {
     const artwork=await(await api('POST',prefix+'/cms/artworks',{artistId:artist.id,title:'Original OEX '+fixture.type,description:'Preserve original metadata and punctuation <script>literal</script>.',medium:'Original synthetic medium',creationYear:2024,dimensions:{width:1,height:1,depth:fixture.type==='image'?0.02:1,unit:'m'},rights,provenance:{source:'human-authored',sourceUnits:'m',scaleApplied:true,notes:'Synthetic preservation provenance'}},201)).json();
@@ -43,7 +44,9 @@ export async function frozenCorpus({platform,api,prefix,artist,rights,onStage=()
   const active=await create(),revoked=await create(),activePath=path+'/freezes/'+active.id,revokedPath=path+'/freezes/'+revoked.id;
   await api('POST',revokedPath+'/revoke',{});
   const bundle=await(await api('POST',activePath+'/offline',{seconds:28800})).json();
-  const trustedKeys=[bundle.manifest.authority.keyId];
+  assert.deepEqual(bundle.manifest.authority,trustedIdentity.authority,'CORPUS_UNEXPECTED_AUTHORITY');
+  const trustedKeys=[trustedIdentity.authority.keyId];
+  for(const field of ['tenantId','subjectId'])assert.equal(bundle.authorization.grant[field],trustedIdentity[field],'CORPUS_UNEXPECTED_IDENTITY');
   const verified=await verifyFreezeBundle(Buffer.from(JSON.stringify(bundle)),{trustedKeys});assert.equal(verified.bundle.manifest.id,active.id);
   assert.equal((await validateOex(Buffer.from(bundle.oex,'base64'))).valid,true,'CORPUS_OEX_INVALID');
   for(const asset of assets){if(asset.audio){await api('GET',prefix+'/assets/'+asset.id+'/bytes',undefined,403);const included=exportedEntries(Buffer.from(bundle.oex,'base64')).find(([name])=>name==='assets/'+approved.mediaAsset.path);assert(included,'CORPUS_AUDIO_MISSING');assert.equal(hash(included[1]),asset.sha256);}else{assert.equal(hash(Buffer.from(await(await api('GET',prefix+'/assets/'+asset.id+'/bytes')).arrayBuffer())),asset.sha256);}}
@@ -67,6 +70,7 @@ export async function frozenCorpus({platform,api,prefix,artist,rights,onStage=()
       assert.deepEqual(await(await restoredApi('GET',revokedPath)).json(),revokedHistory,'RESTORED_REVOCATION_CHANGED');
       assert.equal((await(await restoredApi('GET',revokedPath+'/check',undefined,403)).json()).code,'FREEZE_REVOKED');
       onStage('restored-offline-bytes');const fresh=await(await restoredApi('POST',activePath+'/offline',{seconds:28800})).json();
+      for(const field of ['tenantId','subjectId','origin','keyId','freezeId','manifestSha256'])assert.equal(fresh.authorization.grant[field],bundle.authorization.grant[field],'RESTORED_GRANT_IDENTITY_CHANGED');
       const pcm=exportedEntries(Buffer.from(fresh.oex,'base64')).find(([name])=>name==='assets/'+approved.mediaAsset.path);assert(pcm,'RESTORED_AUDIO_BYTES_MISSING');assert.equal(pcm[1].length,wave.length);assert.equal(hash(pcm[1]),hash(wave),'RESTORED_AUDIO_BYTES_CHANGED');
       for(const field of ['manifest','signature','oex','runtimeFiles'])assert.deepEqual(fresh[field],bundle[field],'RESTORED_FROZEN_BYTES_CHANGED');
       await verifyFreezeBundle(Buffer.from(JSON.stringify(bundle)),{trustedKeys});await verifyFreezeBundle(Buffer.from(JSON.stringify(fresh)),{trustedKeys});
