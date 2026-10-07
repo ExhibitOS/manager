@@ -19,8 +19,9 @@ async function inventory(root) {
 }
 function call(root, command, ...args) {
   const result=spawnSync(process.env.EXHIBITOS_MANAGER_CHECK_BINARY,['--root',root,command,...args],{encoding:'utf8',timeout:600000,maxBuffer:8*1024*1024});
-  assert.equal(result.status,0,'MANAGER_COMMAND_FAILED');
-  const value=JSON.parse(result.stdout);if(['install','start','stop','restart'].includes(command))assert.equal(value.state,'completed',value.errorCode??'MANAGER_JOB_NOT_COMPLETED');
+  let value;try{value=JSON.parse(result.stdout);}catch{throw Error('MANAGER_JSON_INVALID');}
+  if(result.status!==0){const code=value.code??value.errorCode;throw Error(/^[A-Z][A-Z0-9_]{0,79}$/.test(code??'')?code:'MANAGER_COMMAND_FAILED');}
+  if(['install','start','stop','restart'].includes(command))assert.equal(value.state,'completed',value.errorCode??'MANAGER_JOB_NOT_COMPLETED');
   if(command==='create-backup'){assert.equal(value.operation,'created-and-authenticated','BACKUP_RECEIPT_INVALID');assert.equal(value.writersPaused,true,'BACKUP_WRITERS_NOT_PAUSED');const jobs=call(root,'backup-jobs');assert.equal(jobs.find(j=>j.id===value.id)?.state,'completed','BACKUP_JOB_NOT_COMPLETED');}
   if(command==='restore-backup'){assert.equal(value.operation,'restored-and-running','RESTORE_RECEIPT_INVALID');assert.equal(call(root,'restoration-status').job?.state,'completed','RESTORE_JOB_NOT_COMPLETED');}return value;
 }
@@ -62,10 +63,10 @@ try {
   checks.push('actual authenticated CMS and asynchronous GLB approval; anonymous/CSRF denial; exact blob');
   stage='stop';call(source,'stop');assert.equal(call(source,'status').readiness.ready,false,'STOP_READINESS_INVALID');stage='start-again';call(source,'start');await ready(source);stage='restart';call(source,'restart');await ready(source);stage='restart-login';
   const restarted=await client(origin,settings);stage='restart-blob';assert.equal(digest(Buffer.from(await(await restarted('GET',assetPath)).arrayBuffer())),expectedHash,'RESTART_BLOB_CHANGED');stage='restart-authority';assert.deepEqual((await(await restarted('GET','/api/v1/freeze/authority')).json()).authority,authority);checks.push('actual stop/start/restart retains bytes and signing authority');
-  stage='backup';const key=join(scope,'key.bin');await writeFile(key,randomBytes(32),{mode:0o600,flag:'wx'});
-  const backup=call(source,'create-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,'--external-writers-quiesced');
-  const archive=join(source,'backup-creation-'+backup.id,'archive'),archiveBefore=await inventory(archive),keyHash=await hashed(key);
-  call(source,'verify-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,archive);checks.push('actual encrypted service backup created and authenticated');
+  stage='backup-key';const key=join(scope,'key.bin');await writeFile(key,randomBytes(32),{mode:0o600,flag:'wx'});
+  stage='backup-create';const backup=call(source,'create-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,'--external-writers-quiesced');
+  stage='backup-inventory';const archive=join(source,'backup-creation-'+backup.id,'archive'),archiveBefore=await inventory(archive),keyHash=await hashed(key);
+  stage='backup-authenticate';call(source,'verify-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,archive);checks.push('actual encrypted service backup created and authenticated');
   stage='fresh-restore';const restored=call(destination,'restore-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,archive,'13201','--fresh-installation');await ready(destination);
   const restoredApi=await client('http://127.0.0.1:13201',settings);const artists=await(await restoredApi('GET',prefix+'/cms/artists')).json();assert(JSON.stringify(artists).includes(artist.id));
   assert.equal(digest(Buffer.from(await(await restoredApi('GET',assetPath)).arrayBuffer())),expectedHash);assert.deepEqual((await(await restoredApi('GET','/api/v1/freeze/authority')).json()).authority,authority);
