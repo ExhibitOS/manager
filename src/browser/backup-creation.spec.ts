@@ -58,7 +58,7 @@ for(const scenario of ['success','failure','malformed','wrong-image'] as const)t
   await page.setViewportSize({width,height:900});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   expect(await section.locator('input:not([type="checkbox"])').evaluateAll(es=>es.every(e=>e.getBoundingClientRect().height>=44))).toBe(true);
   expect(await section.locator('.backup-ack').evaluateAll(es=>es.every(e=>e.getBoundingClientRect().height>=44))).toBe(true);
-  await section.screenshot({path:`/private/tmp/exhibitos-manager-creation-${testInfo.project.name}-${scenario}-${width}.png`});
+  await section.screenshot({path:test.info().outputPath(`exhibitos-manager-creation-${testInfo.project.name}-${scenario}-${width}.png`)});
  }
  if(scenario==='success'){
   await section.getByLabel('생성에 사용할 외부 키 파일의 전체 경로').fill('/private/tmp/another-synthetic-key');await expect(section.getByRole('heading',{name:'암호화 백업 생성과 인증을 완료했습니다.'})).toHaveCount(0);

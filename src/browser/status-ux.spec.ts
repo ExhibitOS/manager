@@ -29,7 +29,7 @@ for(const scenario of ['running','failed','ready'] as const)test(`synthetic ${sc
   await page.setViewportSize({width,height:900});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   expect(await page.locator('button:visible').evaluateAll(es=>es.every(e=>e.getBoundingClientRect().height>=44&&e.getBoundingClientRect().width>=24))).toBe(true);
   await page.getByRole('link',{name:'전시 관리로 건너뛰기'}).focus();await page.keyboard.press('Enter');await expect(page.getByRole('region',{name:'전시 설치와 실행'})).toBeFocused();await page.keyboard.press('Tab');expect(await page.evaluate(()=>{const e=document.activeElement as HTMLElement,s=getComputedStyle(e);return e.matches(':focus-visible')&&parseFloat(s.outlineWidth)>=2;})).toBe(true);
-  await page.screenshot({path:`/private/tmp/exhibitos-manager-ux-${scenario}-${width}.png`,fullPage:true});
+  await page.screenshot({path:test.info().outputPath(`exhibitos-manager-ux-${scenario}-${width}.png`),fullPage:true});
  }
  if(scenario==='failed'){await page.getByRole('button',{name:'실패한 작업 다시 시도'}).click();await expect(page.getByRole('button',{name:'실패한 작업 다시 시도'})).toBeDisabled();expect(await page.evaluate(()=>(window as unknown as {__uxCalls:string[]}).__uxCalls.filter(c=>c==='manager_action').length)).toBe(1);}
 });
