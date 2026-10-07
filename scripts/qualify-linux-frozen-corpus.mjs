@@ -46,7 +46,7 @@ export async function frozenCorpus({platform,api,prefix,artist,rights,onStage=()
   const trustedKeys=[bundle.manifest.authority.keyId];
   const verified=await verifyFreezeBundle(Buffer.from(JSON.stringify(bundle)),{trustedKeys});assert.equal(verified.bundle.manifest.id,active.id);
   assert.equal((await validateOex(Buffer.from(bundle.oex,'base64'))).valid,true,'CORPUS_OEX_INVALID');
-  for(const asset of assets){if(asset.audio){await api('GET',prefix+'/assets/'+asset.id+'/bytes',undefined,403);const included=exportedEntries(Buffer.from(bundle.oex,'base64')).find(([name])=>name===approved.mediaAsset.path);assert(included,'CORPUS_AUDIO_MISSING');assert.equal(hash(included[1]),asset.sha256);}else{assert.equal(hash(Buffer.from(await(await api('GET',prefix+'/assets/'+asset.id+'/bytes')).arrayBuffer())),asset.sha256);}}
+  for(const asset of assets){if(asset.audio){await api('GET',prefix+'/assets/'+asset.id+'/bytes',undefined,403);const included=exportedEntries(Buffer.from(bundle.oex,'base64')).find(([name])=>name==='assets/'+approved.mediaAsset.path);assert(included,'CORPUS_AUDIO_MISSING');assert.equal(hash(included[1]),asset.sha256);}else{assert.equal(hash(Buffer.from(await(await api('GET',prefix+'/assets/'+asset.id+'/bytes')).arrayBuffer())),asset.sha256);}}
   const exported=Buffer.from(await(await api('POST',path+'/oex/export',{},200,{'if-match':saved.etag})).arrayBuffer());
   assert.equal((await validateOex(exported)).valid,true,'EXPORTED_OEX_INVALID');
   const edited=structuredClone(draft);edited.editVersion++;edited.updatedAt=new Date().toISOString();edited.candidate.title='Synthetic next revision after immutable freeze';
@@ -67,7 +67,7 @@ export async function frozenCorpus({platform,api,prefix,artist,rights,onStage=()
       assert.deepEqual(await(await restoredApi('GET',revokedPath)).json(),revokedHistory,'RESTORED_REVOCATION_CHANGED');
       assert.equal((await(await restoredApi('GET',revokedPath+'/check',undefined,403)).json()).code,'FREEZE_REVOKED');
       onStage('restored-offline-bytes');const fresh=await(await restoredApi('POST',activePath+'/offline',{seconds:28800})).json();
-      const pcm=exportedEntries(Buffer.from(fresh.oex,'base64')).find(([name])=>name===approved.mediaAsset.path);assert(pcm,'RESTORED_AUDIO_BYTES_MISSING');assert.equal(pcm[1].length,wave.length);assert.equal(hash(pcm[1]),hash(wave),'RESTORED_AUDIO_BYTES_CHANGED');
+      const pcm=exportedEntries(Buffer.from(fresh.oex,'base64')).find(([name])=>name==='assets/'+approved.mediaAsset.path);assert(pcm,'RESTORED_AUDIO_BYTES_MISSING');assert.equal(pcm[1].length,wave.length);assert.equal(hash(pcm[1]),hash(wave),'RESTORED_AUDIO_BYTES_CHANGED');
       for(const field of ['manifest','signature','oex','runtimeFiles'])assert.deepEqual(fresh[field],bundle[field],'RESTORED_FROZEN_BYTES_CHANGED');
       await verifyFreezeBundle(Buffer.from(JSON.stringify(bundle)),{trustedKeys});await verifyFreezeBundle(Buffer.from(JSON.stringify(fresh)),{trustedKeys});
       const altered=structuredClone(fresh);altered.runtimeFiles[0].data=Buffer.from('tamper').toString('base64');await assert.rejects(verifyFreezeBundle(Buffer.from(JSON.stringify(altered)),{trustedKeys}),/FREEZE_RUNTIME_INTEGRITY/);
