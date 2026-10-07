@@ -945,7 +945,7 @@ impl LifecycleService {
             }
             let created_network=inspected("docker",&["network".into(),"inspect".into(),format!("{}_default",manifest.project_name)])?;
             if created_network["Labels"]["com.exhibitos.bundle"]!=manifest.bundle_id || created_network["Labels"]["com.exhibitos.project"]!=manifest.project_name || created_network["Driver"]!="bridge" {return Err(err("OWNERSHIP_CONFLICT"));}
-            crate::restoration_network::verify_observed(&created_network,&subnet)?;
+            crate::restoration_network::verify_created(&created_network,&subnet)?;
             run(
                 "docker",
                 &compose_args(
