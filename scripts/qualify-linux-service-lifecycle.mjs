@@ -11,6 +11,7 @@ import {pathToFileURL} from 'node:url';
 let stage = 'preflight';
 const checks = [];
 let nativeJobFailure=null;
+let lastHttpFailure=null;
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 async function hashed(path) {const h=createHash('sha256');for await(const b of createReadStream(path))h.update(b);return h.digest('hex');}
 async function inventory(root) {
@@ -31,7 +32,7 @@ async function client(origin, settings) {
   let cookie,csrf;
   const api=async(method,path,body,expected=200,extra={})=> {
     const response=await fetch(origin+path,{method,headers:{origin,connection:'close',...(cookie?{cookie,'x-csrf-token':csrf}:{}),...(body===undefined?{}:{'content-type':Buffer.isBuffer(body)?'application/octet-stream':'application/json'}),...extra},...(body===undefined?{}:{body:Buffer.isBuffer(body)?body:JSON.stringify(body)})});
-    assert.equal(response.status,expected,'RUNTIME_HTTP_STATUS');return response;
+    if(response.status!==expected){lastHttpFailure={method,status:response.status,expected,route:path.endsWith('/auth/login')?'auth-login':path.endsWith('/auth/session')?'auth-session':path.endsWith('/cms/artists')?'cms-artists':path.endsWith('/bytes')?'asset-bytes':path.endsWith('/freeze/authority')?'freeze-authority':'other-synthetic-api'};throw Error('RUNTIME_HTTP_STATUS');}return response;
   };
   const login=await api('POST','/api/v1/auth/login',{subject:settings.ADMIN_SUBJECT,password:settings.ADMIN_PASSWORD,tenantId:settings.TENANT_ID});cookie=login.headers.get('set-cookie').split(';')[0];csrf=(await(await api('GET','/api/v1/auth/session')).json()).csrfToken;
   return api;
@@ -69,12 +70,12 @@ try {
   stage='backup-inventory';const archive=join(source,'backup-creation-'+backup.id,'archive'),archiveBefore=await inventory(archive),keyHash=await hashed(key);
   checks.push('actual encrypted service backup created, authenticated by producer and terminal job completed');
   stage='backup-authenticate';const verifierInput=join(scope,'verification-input');await cp(archive,verifierInput,{recursive:true,errorOnExist:true,force:false});assert.deepEqual(await inventory(verifierInput),archiveBefore);call(source,'verify-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,verifierInput);assert.deepEqual(await inventory(verifierInput),archiveBefore);checks.push('separate private input authenticates exact encrypted service archive; original source archive preserved');
-  stage='fresh-restore';const restored=call(destination,'restore-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,archive,'13201','--fresh-installation');await ready(destination);
-  const restoredApi=await client('http://127.0.0.1:13201',settings);const artists=await(await restoredApi('GET',prefix+'/cms/artists')).json();assert(JSON.stringify(artists).includes(artist.id));
-  assert.equal(digest(Buffer.from(await(await restoredApi('GET',assetPath)).arrayBuffer())),expectedHash);assert.deepEqual((await(await restoredApi('GET','/api/v1/freeze/authority')).json()).authority,authority);
-  assert.equal((await fetch('http://127.0.0.1:13201'+assetPath)).status,401);checks.push('fresh root/port restore runs; credentials, metadata, blob digest, authority and private denial retained');
+  stage='fresh-restore-command';const restored=call(destination,'restore-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,archive,'13201','--fresh-installation');checks.push('actual fresh restoration receipt and persisted completed job');stage='fresh-restore-readiness';await ready(destination);
+  stage='fresh-restore-login';const restoredApi=await client('http://127.0.0.1:13201',settings);stage='fresh-restore-artists';const artists=await(await restoredApi('GET',prefix+'/cms/artists')).json();assert(JSON.stringify(artists).includes(artist.id),'RESTORED_ARTIST_MISSING');stage='fresh-restore-blob';
+  assert.equal(digest(Buffer.from(await(await restoredApi('GET',assetPath)).arrayBuffer())),expectedHash,'RESTORED_BLOB_CHANGED');stage='fresh-restore-authority';assert.deepEqual((await(await restoredApi('GET','/api/v1/freeze/authority')).json()).authority,authority,'RESTORED_AUTHORITY_CHANGED');
+  stage='fresh-restore-anonymous';assert.equal((await fetch('http://127.0.0.1:13201'+assetPath)).status,401);checks.push('fresh root/port restore runs; credentials, metadata, blob digest, authority and private denial retained');
   stage='preservation';assert.deepEqual(await inventory(archive),archiveBefore);assert.equal(await hashed(key),keyHash);assert.equal(digest(await readFile(join(source,'runtime.env'))),digest(envBytes));
   call(destination,'stop');call(source,'stop');checks.push('source credentials, external key and every archive byte/mode retained; both exact installations stopped');
   const report={format:1,state:'PASS',scope:'actual Linux Manager install/runtime/encrypted service backup/fresh namespace restore and private user-flow; not changed migration/crash/GUI/device/release',checks,sourceBundle:manifest.bundleId,backupJob:backup.id,restorationJob:restored.id,blobBytes:bytes.length,blobSha256:expectedHash,archiveFiles:archiveBefore.length,archiveBytes:archiveBefore.reduce((n,r)=>n+r.bytes,0),secretsLogged:false};
   await writeFile(join(scope,'qualification.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600,flag:'wx'});console.log(JSON.stringify(report));
-} catch(error) {console.error(JSON.stringify({state:'FAIL',stage,code:/^[A-Z][A-Z0-9_]{0,79}$/.test(error.message??'')?error.message:'LINUX_RUNTIME_QUALIFICATION_FAILED',nativeCause:/^[A-Z][A-Z0-9_]{0,79}$/.test(error.cause?.code??'')?error.cause.code:null,nativeJobFailure,completedChecks:checks}));process.exitCode=1;}
+} catch(error) {console.error(JSON.stringify({state:'FAIL',stage,code:/^[A-Z][A-Z0-9_]{0,79}$/.test((error.message??'').split('\n')[0])?error.message.split('\n')[0]:'LINUX_RUNTIME_QUALIFICATION_FAILED',nativeCause:/^[A-Z][A-Z0-9_]{0,79}$/.test(error.cause?.code??'')?error.cause.code:null,nativeJobFailure,lastHttpFailure,completedChecks:checks}));process.exitCode=1;}
