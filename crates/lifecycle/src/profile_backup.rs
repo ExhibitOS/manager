@@ -12,7 +12,8 @@ use aes_gcm::{
 #[cfg(test)]
 pub(crate) use host_checkpoint::verify_unused_extraction_archive;
 pub use host_checkpoint::{
-    HostCurrentReceipt, HostReceipt, checkpoint_host, extract_host, verify_host_current,
+    HostCurrentReceipt, HostReceipt, checkpoint_host, extract_host, extract_host_clone_only,
+    verify_host_current,
 };
 pub(crate) use host_checkpoint::{
     activate_missing_host, authenticated_host_restore_bytes, checkpoint_host_anchored,

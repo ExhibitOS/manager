@@ -14,6 +14,7 @@ pub(super) struct Extraction {
     output: Option<File>,
     remaining: u64,
     hash: Sha256,
+    require_reference_clones: bool,
 }
 impl Extraction {
     pub(super) fn new(profile: &Path, recovered: &Path) -> Self {
@@ -28,7 +29,11 @@ impl Extraction {
             output: None,
             remaining: 0,
             hash: Sha256::new(),
+            require_reference_clones: false,
         }
+    }
+    pub(super) fn require_reference_clones(&mut self) {
+        self.require_reference_clones = true;
     }
     fn advance(&mut self) -> Result<()> {
         let m = self.inventory.as_ref().ok_or_else(fail)?;
@@ -46,7 +51,8 @@ impl Extraction {
                 let target = self.recovered.join(&e.path);
                 let mut input = file(&original)?;
                 let before = input.metadata().map_err(|_| fail())?;
-                let copied = copy_reference(&mut input, &target, e.bytes)?;
+                let copied =
+                    copy_reference(&mut input, &target, e.bytes, self.require_reference_clones)?;
                 if copied != e.bytes
                     || !unchanged(&before, &input.metadata().map_err(|_| fail())?)
                     || !unchanged(
@@ -149,10 +155,22 @@ impl Write for Extraction {
 /// A reference is still independently hash-checked by the authenticated sink.
 /// macOS may share immutable extents, never an inode or a mutable file handle.
 /// Unsupported filesystems retain the bounded dense path and expanded budget.
-fn copy_reference(input: &mut File, target: &Path, bytes: u64) -> Result<u64> {
+fn copy_reference(input: &mut File, target: &Path, bytes: u64, require_clone: bool) -> Result<u64> {
     #[cfg(target_os = "macos")]
     if clone_reference(input, target)? {
         return input.metadata().map(|m| m.len()).map_err(|_| fail());
+    }
+    dense_reference(input, target, bytes, require_clone)
+}
+
+fn dense_reference(
+    input: &mut File,
+    target: &Path,
+    bytes: u64,
+    require_clone: bool,
+) -> Result<u64> {
+    if require_clone {
+        return Err(err("HOST_REFERENCE_CLONE_REQUIRED"));
     }
     let mut output = private_new(target)?;
     let copied = std::io::copy(&mut input.take(bytes + 1), &mut output)
@@ -250,5 +268,30 @@ mod native_clone_tests {
         assert!(clone_reference(&input, &alias.join("new-file")).is_err());
         assert!(!profile.join("new-file").exists());
         assert_eq!(fs::read(&source).unwrap(), b"original private bytes");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod required_clone_tests {
+    use super::*;
+    #[test]
+    fn unsupported_clone_never_creates_dense_destination_or_consumes_input() {
+        let (_scope, profile, _, _) = super::super::tests::fixture();
+        let source = profile.join("refusal-source");
+        let target = profile.join("refusal-target");
+        write_new(&source, b"preserved authenticated source").unwrap();
+        let mut input = file(&source).unwrap();
+        assert_eq!(
+            dense_reference(&mut input, &target, 29, true)
+                .unwrap_err()
+                .code,
+            "HOST_REFERENCE_CLONE_REQUIRED"
+        );
+        assert!(!target.exists());
+        assert_eq!(input.stream_position().unwrap(), 0);
+        assert_eq!(
+            fs::read(&source).unwrap(),
+            b"preserved authenticated source"
+        );
     }
 }

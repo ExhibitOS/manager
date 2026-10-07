@@ -743,6 +743,14 @@ impl Write for HostManifestPrefix {
     }
 }
 impl HostManifestPrefix {
+    fn payload_space_bytes(&self, profile: &Path, decoded: u64) -> Result<u64> {
+        self.expanded_bytes(profile, decoded)?;
+        let len = u64::from_be_bytes(self.0[..8].try_into().map_err(|_| fail())?) as usize;
+        let m: Inventory = serde_json::from_slice(&self.0[8..8 + len]).map_err(|_| fail())?;
+        decoded
+            .checked_add((m.items.len() as u64 + 4) * 4096)
+            .ok_or_else(fail)
+    }
     fn expanded_bytes(&self, profile: &Path, decoded: u64) -> Result<u64> {
         let prefix: [u8; 8] = self
             .0
@@ -894,6 +902,37 @@ pub fn extract_host(
     destination: &Path,
     ack: bool,
 ) -> Result<HostReceipt> {
+    extract_host_mode(profile, key, archive, destination, ack, false)
+}
+
+/// Full authenticated extraction with mandatory independent reference clones.
+/// Unsupported clone operations fail; this opt-in never falls back to dense copies.
+pub fn extract_host_clone_only(
+    profile: &Path,
+    key: &Path,
+    archive: &Path,
+    destination: &Path,
+    ack: bool,
+) -> Result<HostReceipt> {
+    #[cfg(target_os = "macos")]
+    {
+        extract_host_mode(profile, key, archive, destination, ack, true)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (profile, key, archive, destination, ack);
+        Err(err("HOST_CLONE_PLATFORM_UNVERIFIED"))
+    }
+}
+
+fn extract_host_mode(
+    profile: &Path,
+    key: &Path,
+    archive: &Path,
+    destination: &Path,
+    ack: bool,
+    require_reference_clones: bool,
+) -> Result<HostReceipt> {
     acknowledgement(ack)?;
     let expected_parent =
         fs::canonicalize(profile.parent().ok_or_else(fail)?).map_err(|_| fail())?;
@@ -942,11 +981,22 @@ pub fn extract_host(
     source
         .seek(std::io::SeekFrom::Start(0))
         .map_err(|_| fail())?;
-    space(&parent, expanded_bytes)?;
+    // Full expanded quota/graph validation above is identical in both modes.
+    // The strict mode writes only authenticated payload masters; every other
+    // file must be a clone or extraction fails before dense fallback.
+    let needed = if require_reference_clones {
+        manifest_prefix.payload_space_bytes(profile, logical_bytes)?
+    } else {
+        expanded_bytes
+    };
+    space(&parent, needed)?;
     let stage = parent.join(format!(".host-extract-{}.pending", Uuid::new_v4()));
     installations::new_directory(&stage)?;
     let recovered = stage.join("profile");
     let mut sink = stream_extraction::Extraction::new(profile, &recovered);
+    if require_reference_clones {
+        sink.require_reference_clones();
+    }
     super::super::maintenance_stream::open(&mut source, &mut sink, &key, CONTEXT, DATA_LIMIT)
         .map_err(|_| fail())?;
     // Final-frame authentication AND ciphertext EOF precede this completion.
@@ -1203,6 +1253,54 @@ mod tests {
         let a = root.path.join("archive.exb");
         (root, p, k, a)
     }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn strict_clone_extraction_restores_every_file_and_tamper_never_publishes() {
+        use std::os::unix::fs::MetadataExt;
+        let (root, profile, key, archive) = fixture();
+        let bytes = vec![83; 4 * 1024 * 1024];
+        write_new(&profile.join("clone-a"), &bytes).unwrap();
+        write_new(&profile.join("clone-b"), &bytes).unwrap();
+        let saved = checkpoint_host(&profile, &key, &archive, true, true).unwrap();
+        let target = root.path.join("strict");
+        let opened = extract_host_clone_only(&profile, &key, &archive, &target, true).unwrap();
+        assert_eq!(opened.manifest_sha256, saved.manifest_sha256);
+        assert_eq!(opened.files, saved.files);
+        verify_extracted_host(&profile, &target, &opened).unwrap();
+        let a = target.join("profile/clone-a");
+        let b = target.join("profile/clone-b");
+        assert_ne!(
+            fs::metadata(&a).unwrap().ino(),
+            fs::metadata(&b).unwrap().ino()
+        );
+        assert_eq!(fs::read(&a).unwrap(), bytes);
+        fs::write(&b, b"candidate only").unwrap();
+        assert_eq!(fs::read(&a).unwrap(), bytes);
+        assert_eq!(fs::read(profile.join("clone-b")).unwrap(), bytes);
+        let mut damaged = fs::read(&archive).unwrap();
+        let last = damaged.len() - 1;
+        damaged[last] ^= 1;
+        fs::write(&archive, damaged).unwrap();
+        let refused = root.path.join("tampered-strict");
+        assert!(extract_host_clone_only(&profile, &key, &archive, &refused, true).is_err());
+        assert!(!refused.exists());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn strict_clone_platform_refusal_never_creates_destination() {
+        let (root, profile, key, archive) = fixture();
+        let target = root.path.join("unsupported-clone");
+        assert_eq!(
+            extract_host_clone_only(&profile, &key, &archive, &target, true)
+                .unwrap_err()
+                .code,
+            "HOST_CLONE_PLATFORM_UNVERIFIED"
+        );
+        assert!(!target.exists());
+        assert!(!archive.exists());
+    }
+
     #[test]
     fn retained_host_recheck_requires_native_current_proof_and_unchanged_extraction() {
         let (root, profile, key, archive) = fixture();

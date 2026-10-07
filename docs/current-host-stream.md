@@ -73,3 +73,10 @@ EXHIBITOS_ROLLBACK_TEST_CLI="$PWD/target/release/exhibitos-update" \
 ```
 
 검사는 자신이 만든 새 synthetic root에서만 original namespace를 비워 CLI로 복원합니다. 실패는 보존하고, 정상 파일·권한·registry·입력 hash·최신 history를 확인한 성공 root만 종료 뒤 정리합니다. 현재 프로젝트 profile을 재현 입력으로 받지 않습니다.
+
+
+## 중복 참조의 복제를 강제하는 전체 추출
+
+macOS에서 `exhibitos-profile --profile /absolute/private/profile extract-host-clone-only /absolute/private/key.bin /absolute/private/host.bin /absolute/private/new-extraction --extract-only`를 사용하면 인증된 전체 호스트 사본을 새 비활성 공간으로 추출합니다. 모든 원본 payload를 복원하고 중복 참조는 독립 inode의 파일시스템 clone으로만 만듭니다. clone을 지원하지 않거나 실패하면 일반 복사로 전환하지 않습니다. 다른 운영체제는 입력을 읽거나 후보를 만들기 전에 거부합니다.
+
+전체 파일 수·논리 용량·참조 관계·hash·권한·최종 인증 검사는 그대로 유지됩니다. 공간 계산은 인증된 고유 payload와 manifest 항목 metadata를 사용하며, 실행 전 별도 여유 공간을 확보해야 합니다. 기존 `extract-host`의 일반 복사 fallback과 전체 확장 용량 계산은 유지됩니다. 실패 후보는 보존하고 재사용하지 않습니다. 이 명령은 실제 데이터/신뢰 이력 활성화, 서비스 복원, health 또는 업데이트 완료를 뜻하지 않습니다.

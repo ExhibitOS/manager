@@ -26,8 +26,13 @@ fn main() {
             ));
             return;
         }
-        if a[3] == "extract-host" && a.len() == 8 {
-            emit(profile_backup::extract_host(
+        if matches!(a[3].as_str(), "extract-host" | "extract-host-clone-only") && a.len() == 8 {
+            let extract = if a[3] == "extract-host-clone-only" {
+                profile_backup::extract_host_clone_only
+            } else {
+                profile_backup::extract_host
+            };
+            emit(extract(
                 Path::new(&a[2]),
                 Path::new(&a[4]),
                 Path::new(&a[5]),
