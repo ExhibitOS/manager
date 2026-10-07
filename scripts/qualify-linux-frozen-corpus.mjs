@@ -7,9 +7,10 @@ import {createRequire} from 'node:module';
 import {join,dirname} from 'node:path';
 import {pathToFileURL} from 'node:url';
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
-export async function frozenCorpus({platform,api,prefix,artist,rights}) {
+export async function frozenCorpus({platform,api,prefix,artist,rights,onStage=()=>{}}) {
   const load=path=>import(pathToFileURL(join(platform,path)));
   const {loadViewerFixtures}=await load('scripts/viewer-fixtures.mjs');
+  const {exportedEntries}=await load('scripts/oex-test-zip.mjs');
   const {syntheticWav}=await load('scripts/experience-fixture.mjs');
   const {navigationFixture}=await load('scripts/navigation-fixture.mjs');
   const {oexFixture}=await load('scripts/oex-fixture.mjs');
@@ -34,7 +35,7 @@ export async function frozenCorpus({platform,api,prefix,artist,rights}) {
   const audio=await(await api('POST',audioPath,{requestId:randomUUID(),mime:'audio/wav',bytes:wave.length,sha256:hash(wave),rights},201)).json();
   await api('PUT',audioPath+'/'+audio.id+'/bytes',wave);
   const approved=await(await api('POST',audioPath+'/'+audio.id+'/approve',{revision:1})).json();
-  assets.push({id:audio.id,sha256:hash(wave),bytes:wave.length});
+  assets.push({id:audio.id,sha256:hash(wave),bytes:wave.length,audio:true});
   const draft=oexFixture(template,works,approved.mediaAsset);draft.id=baseDraft.id;draft.exhibitionId=base.id;draft.candidate.id=base.id;draft.editVersion=2;
   assert.equal(validateExhibition(draft.candidate).valid,true,'CORPUS_SCENE_INVALID');
   const saved=await(await api('PUT',path,{draft,requestId:randomUUID()},200,{'if-match':first.etag})).json();
@@ -45,6 +46,7 @@ export async function frozenCorpus({platform,api,prefix,artist,rights}) {
   const trustedKeys=[bundle.manifest.authority.keyId];
   const verified=await verifyFreezeBundle(Buffer.from(JSON.stringify(bundle)),{trustedKeys});assert.equal(verified.bundle.manifest.id,active.id);
   assert.equal((await validateOex(Buffer.from(bundle.oex,'base64'))).valid,true,'CORPUS_OEX_INVALID');
+  for(const asset of assets){if(asset.audio){await api('GET',prefix+'/assets/'+asset.id+'/bytes',undefined,403);const included=exportedEntries(Buffer.from(bundle.oex,'base64')).find(([name])=>name===approved.mediaAsset.path);assert(included,'CORPUS_AUDIO_MISSING');assert.equal(hash(included[1]),asset.sha256);}else{assert.equal(hash(Buffer.from(await(await api('GET',prefix+'/assets/'+asset.id+'/bytes')).arrayBuffer())),asset.sha256);}}
   const exported=Buffer.from(await(await api('POST',path+'/oex/export',{},200,{'if-match':saved.etag})).arrayBuffer());
   assert.equal((await validateOex(exported)).valid,true,'EXPORTED_OEX_INVALID');
   const edited=structuredClone(draft);edited.editVersion++;edited.updatedAt=new Date().toISOString();edited.candidate.title='Synthetic next revision after immutable freeze';
@@ -59,16 +61,18 @@ export async function frozenCorpus({platform,api,prefix,artist,rights}) {
     async sameOrigin(restoredApi) {
       assert.deepEqual((await(await restoredApi('GET',path)).json()),latest,'RESTORED_DRAFT_CHANGED');
       for(const work of works)assert.deepEqual((await(await restoredApi('GET',prefix+'/studio/artworks/'+work.id)).json()).artwork,work,'RESTORED_ARTWORK_CHANGED');
-      for(const asset of assets){const bytes=Buffer.from(await(await restoredApi('GET',prefix+'/assets/'+asset.id+'/bytes')).arrayBuffer());assert.equal(bytes.length,asset.bytes);assert.equal(hash(bytes),asset.sha256);}
+      for(const asset of assets){onStage(asset.audio?'restored-audio-access':'restored-artwork-bytes');if(asset.audio){assert.deepEqual(await(await restoredApi('GET',audioPath+'/'+asset.id)).json(),approved,'RESTORED_AUDIO_METADATA_CHANGED');await restoredApi('GET',prefix+'/assets/'+asset.id+'/bytes',undefined,403);}else{const bytes=Buffer.from(await(await restoredApi('GET',prefix+'/assets/'+asset.id+'/bytes')).arrayBuffer());assert.equal(bytes.length,asset.bytes);assert.equal(hash(bytes),asset.sha256);}}
+      onStage('restored-freeze-history');
       assert.deepEqual(await(await restoredApi('GET',activePath)).json(),originalHistory,'RESTORED_FREEZE_HISTORY_CHANGED');
       assert.deepEqual(await(await restoredApi('GET',revokedPath)).json(),revokedHistory,'RESTORED_REVOCATION_CHANGED');
       assert.equal((await(await restoredApi('GET',revokedPath+'/check',undefined,403)).json()).code,'FREEZE_REVOKED');
-      const fresh=await(await restoredApi('POST',activePath+'/offline',{seconds:28800})).json();
+      onStage('restored-offline-bytes');const fresh=await(await restoredApi('POST',activePath+'/offline',{seconds:28800})).json();
+      const pcm=exportedEntries(Buffer.from(fresh.oex,'base64')).find(([name])=>name===approved.mediaAsset.path);assert(pcm,'RESTORED_AUDIO_BYTES_MISSING');assert.equal(pcm[1].length,wave.length);assert.equal(hash(pcm[1]),hash(wave),'RESTORED_AUDIO_BYTES_CHANGED');
       for(const field of ['manifest','signature','oex','runtimeFiles'])assert.deepEqual(fresh[field],bundle[field],'RESTORED_FROZEN_BYTES_CHANGED');
       await verifyFreezeBundle(Buffer.from(JSON.stringify(bundle)),{trustedKeys});await verifyFreezeBundle(Buffer.from(JSON.stringify(fresh)),{trustedKeys});
       const altered=structuredClone(fresh);altered.runtimeFiles[0].data=Buffer.from('tamper').toString('base64');await assert.rejects(verifyFreezeBundle(Buffer.from(JSON.stringify(altered)),{trustedKeys}),/FREEZE_RUNTIME_INTEGRITY/);
       await assert.rejects(verifyFreezeBundle(Buffer.from(JSON.stringify(fresh)),{trustedKeys:[]}),/FREEZE_AUTHORITY_UNTRUSTED/);
-      const imported=await(await restoredApi('POST',prefix+'/oex/imports',{requestId:randomUUID(),bytes:exported.length,sha256:hash(exported)},201)).json();
+      onStage('restored-oex-import');const imported=await(await restoredApi('POST',prefix+'/oex/imports',{requestId:randomUUID(),bytes:exported.length,sha256:hash(exported)},201)).json();
       await restoredApi('PUT',prefix+'/oex/imports/'+imported.id+'/bytes',exported);await restoredApi('POST',prefix+'/oex/imports/'+imported.id+'/complete',{});
       let result;for(let i=0;i<240;i++){const job=await(await restoredApi('GET',prefix+'/oex/imports/'+imported.id)).json();assert.notEqual(job.state,'failed','RESTORED_OEX_IMPORT_FAILED');if(job.state==='complete'){result=job.result;break;}await new Promise(r=>setTimeout(r,250));}assert(result,'RESTORED_OEX_IMPORT_NOT_COMPLETED');
       const importedDraft=await(await restoredApi('GET',prefix+'/studio/exhibitions/'+result.exhibitionId)).json();assert.equal(importedDraft.draft.candidate.title,draft.candidate.title);assert.notEqual(result.exhibitionId,base.id);
