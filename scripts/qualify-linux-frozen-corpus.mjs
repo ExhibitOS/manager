@@ -6,6 +6,7 @@ import {createHash, randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {join,dirname} from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {verifyImportedScene} from './qualify-imported-scene.mjs';
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 export async function frozenCorpus({platform,api,prefix,artist,rights,onStage=()=>{}}) {
   const load=path=>import(pathToFileURL(join(platform,path)));
@@ -52,6 +53,7 @@ export async function frozenCorpus({platform,api,prefix,artist,rights,onStage=()
   for(const asset of assets){if(asset.audio){await api('GET',prefix+'/assets/'+asset.id+'/bytes',undefined,403);const included=exportedEntries(Buffer.from(bundle.oex,'base64')).find(([name])=>name==='assets/'+approved.mediaAsset.path);assert(included,'CORPUS_AUDIO_MISSING');assert.equal(hash(included[1]),asset.sha256);}else{assert.equal(hash(Buffer.from(await(await api('GET',prefix+'/assets/'+asset.id+'/bytes')).arrayBuffer())),asset.sha256);}}
   const exported=Buffer.from(await(await api('POST',path+'/oex/export',{},200,{'if-match':saved.etag})).arrayBuffer());
   assert.equal((await validateOex(exported)).valid,true,'EXPORTED_OEX_INVALID');
+  const originalScene=JSON.parse(exportedEntries(exported).find(([name])=>name==='exhibition.json')[1]);
   const edited=structuredClone(draft);edited.editVersion++;edited.updatedAt=new Date().toISOString();edited.candidate.title='Synthetic next revision after immutable freeze';
   const latest=await(await api('PUT',path,{draft:edited,requestId:randomUUID()},200,{'if-match':saved.etag})).json();
   const originalHistory=await(await api('GET',activePath)).json(),revokedHistory=await(await api('GET',revokedPath)).json();
@@ -80,9 +82,15 @@ export async function frozenCorpus({platform,api,prefix,artist,rights,onStage=()
       await restoredApi('PUT',prefix+'/oex/imports/'+imported.id+'/bytes',exported);await restoredApi('POST',prefix+'/oex/imports/'+imported.id+'/complete',{});
       let result;for(let i=0;i<240;i++){const job=await(await restoredApi('GET',prefix+'/oex/imports/'+imported.id)).json();assert.notEqual(job.state,'failed','RESTORED_OEX_IMPORT_FAILED');if(job.state==='complete'){result=job.result;break;}await new Promise(r=>setTimeout(r,250));}assert(result,'RESTORED_OEX_IMPORT_NOT_COMPLETED');
       const importedDraft=await(await restoredApi('GET',prefix+'/studio/exhibitions/'+result.exhibitionId)).json();assert.equal(importedDraft.draft.candidate.title,draft.candidate.title);assert.notEqual(result.exhibitionId,base.id);
+      onStage('restored-imported-scene-comparison');const sceneProof=verifyImportedScene(originalScene,importedDraft.draft.candidate,result,trustedIdentity.tenantId);
+      assert.equal(validateExhibition(importedDraft.draft.candidate).valid,true,'IMPORTED_SCENE_INVALID');
+      const reexport=Buffer.from(await(await restoredApi('POST',prefix+'/studio/exhibitions/'+result.exhibitionId+'/oex/export',{},200,{'if-match':importedDraft.etag})).arrayBuffer());assert.equal((await validateOex(reexport)).valid,true,'IMPORTED_REEXPORT_INVALID');
+      assert.deepEqual(exportedEntries(reexport).filter(([name])=>name.startsWith('assets/')).map(([,bytes])=>hash(bytes)).sort(),assets.map(a=>a.sha256).sort(),'IMPORTED_REEXPORT_BYTES_CHANGED');
+      assert.deepEqual((await(await restoredApi('GET',prefix+'/studio/exhibitions/'+result.exhibitionId+'/publications')).json()).items,[],'IMPORT_PUBLISHED_WITHOUT_CONSENT');
       assert.deepEqual((await(await restoredApi('GET',path)).json()),latest,'OEX_IMPORT_CHANGED_ORIGINAL_DRAFT');
       assert.deepEqual((await(await restoredApi('GET',activePath)).json()).manifest,active.manifest,'OEX_IMPORT_CHANGED_ORIGINAL_FREEZE');
-      return {...this.report,importedExhibitionId:result.exhibitionId,oldAndNewGrantsVerified:true,offlineRuntimeInventoryPreserved:true,portableBrowser:'NOT_RUN'};
+      let portableBrowser='NOT_RUN',portableChecks=[];if(process.env.EXHIBITOS_FROZEN_BROWSER_CHECK==='1'){onStage('restored-portable-browser');const {runPortableFreeze}=await load('scripts/freeze-portable.mjs');const proof=await runPortableFreeze({bundle:fresh,shortBundle:async()=>{const short=await(await restoredApi('POST',activePath+'/offline',{seconds:15})).json();await verifyFreezeBundle(Buffer.from(JSON.stringify(short)),{trustedKeys});return short;}});portableChecks=proof.checks;portableBrowser='PASS';}
+      return {...this.report,sceneProof,importedExhibitionId:result.exhibitionId,oldAndNewGrantsVerified:true,offlineRuntimeInventoryPreserved:true,portableBrowser,portableChecks};
     }
   };
 }
