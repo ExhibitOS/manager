@@ -1,0 +1,90 @@
+name: Manager restored portable browser and full imported scene qualification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: manager-linux-independent
+  cancel-in-progress: false
+jobs:
+  service-lifecycle:
+    if: github.repository == 'ExhibitOS/manager' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: qualification
+        shell: bash
+    steps:
+      - name: Checkout exact public Manager lifecycle harness
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: fbc9e8c8267d7cc6ee81d4a6e851b22a7870d089
+          path: qualification
+          persist-credentials: false
+      - name: Checkout exact public Platform producer
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ExhibitOS/platform
+          ref: f2124f64243c8c80c439fde8c568c762261a1c28
+          path: public-platform
+          persist-credentials: false
+      - name: Setup pinned public Node runtime without cache
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.21.0
+      - name: Verify sources and conservative simultaneous capacity
+        run: |
+          test "$(git rev-parse HEAD)" = fbc9e8c8267d7cc6ee81d4a6e851b22a7870d089
+          test "$(git -C ../public-platform rev-parse HEAD)" = f2124f64243c8c80c439fde8c568c762261a1c28
+          python3 - <<'PY'
+          import os, platform, json
+          available = os.statvfs('.').f_bavail * os.statvfs('.').f_frsize
+          additional = 16 * 1024**3
+          floor = 6 * 1024**3
+          print(json.dumps({'system': platform.system(), 'machine': platform.machine(),
+            'uid': os.getuid(), 'availableBytes': available,
+            'expectedAdditionalBytes': additional, 'retainedFloorBytes': floor}))
+          assert platform.system() == 'Linux' and os.getuid() != 0
+          assert available >= additional + floor, 'QUALIFICATION_CAPACITY_REFUSED'
+          PY
+          test "$(docker info --format '{{.OSType}}')" = linux
+          npm install --global npm@11.19.0
+          test "$(node --version)" = v24.21.0
+          test "$(npm --version)" = 11.19.0
+      - name: Build independent Manager CLI and tracked public maintenance image
+        run: |
+          cargo test -p exhibitos-lifecycle --release --lib --locked
+          cargo clippy -p exhibitos-lifecycle --release --all-targets --locked -- -D warnings
+          cargo build -p exhibitos-lifecycle --release --bin exhibitos-manager --locked
+          git -C ../public-platform archive HEAD | docker build -f Dockerfile.maintenance -t exhibitos-ci-maintenance:qualified -
+          python3 - <<'PY'
+          import subprocess, json, os, re
+          rows = json.loads(subprocess.check_output(['docker', 'image', 'inspect', 'exhibitos-ci-maintenance:qualified']))
+          assert len(rows) == 1 and re.fullmatch(r'sha256:[0-9a-f]{64}', rows[0]['Id'])
+          with open(os.environ['GITHUB_ENV'], 'a') as out:
+            out.write('EXHIBITOS_NATIVE_TEST_IMAGE=' + rows[0]['Id'] + '\n')
+          print(json.dumps({'observedMaintenanceImage': rows[0]['Id']}))
+          PY
+      - name: Export only tracked Platform sources and check harness syntax
+        run: |
+          mkdir "$RUNNER_TEMP/exhibitos-public-platform"
+          git -C ../public-platform archive HEAD | tar -xf - -C "$RUNNER_TEMP/exhibitos-public-platform"
+          test ! -e "$RUNNER_TEMP/exhibitos-public-platform/.git"
+          node --check scripts/qualify-linux-service-lifecycle.mjs
+          node --check scripts/qualify-linux-frozen-corpus.mjs
+          node --check scripts/qualify-imported-scene.mjs
+          cd "$RUNNER_TEMP/exhibitos-public-platform"
+          npm ci --ignore-scripts
+          npm run build --workspace @exhibitos/studio-contract
+          npm run build --workspace @exhibitos/storage
+          npx --no-install playwright install --with-deps chromium
+      - name: Actual install runtime encrypted backup and fresh namespace restore
+        env:
+          EXHIBITOS_DISPOSABLE_LINUX_RUNTIME_CHECK: '1'
+          EXHIBITOS_FROZEN_SERVICE_CHECK: '1'
+          EXHIBITOS_FROZEN_BROWSER_CHECK: '1'
+        run: |
+          export EXHIBITOS_MANAGER_CHECK_BINARY="$PWD/target/release/exhibitos-manager"
+          export EXHIBITOS_PUBLIC_PLATFORM_ROOT="$RUNNER_TEMP/exhibitos-public-platform"
+          node scripts/qualify-linux-service-lifecycle.mjs
