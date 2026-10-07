@@ -72,7 +72,7 @@ jobs:
           sudo python3 - <<'PYTHON'
           from pathlib import Path
           import re
-          paths = [Path('/etc/apt/sources.list'), *Path('/etc/apt/sources.list.d').glob('*.list'), *Path('/etc/apt/sources.list.d').glob('*.sources')]
+          paths = [Path('/etc/apt/sources.list'), *Path('/etc/apt/sources.list.d').glob('*.list'), *Path('/etc/apt/sources.list.d').glob('*.sources'), *Path('/etc/apt').glob('*mirrors*.txt')]
           for path in paths:
             if not path.exists():
               continue
