@@ -1,0 +1,89 @@
+name: Manager Linux actual engine qualification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: manager-linux-independent
+  cancel-in-progress: false
+jobs:
+  native-engine:
+    if: github.repository == 'ExhibitOS/manager' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: qualification
+        shell: bash
+    steps:
+      - name: Checkout exact public Manager native fixture source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 730230cd1f34a9ec054431505b9fe9a14ce01e54
+          path: qualification
+          persist-credentials: false
+      - name: Checkout exact public Platform image producer
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ExhibitOS/platform
+          ref: f2124f64243c8c80c439fde8c568c762261a1c28
+          path: public-platform
+          persist-credentials: false
+      - name: Verify immutable sources, Docker and conservative capacity
+        run: |
+          test "$(git rev-parse HEAD)" = 730230cd1f34a9ec054431505b9fe9a14ce01e54
+          test "$(git -C ../public-platform rev-parse HEAD)" = f2124f64243c8c80c439fde8c568c762261a1c28
+          python3 - <<'PY'
+          import os, platform, json
+          available = os.statvfs('.').f_bavail * os.statvfs('.').f_frsize
+          additional = 8 * 1024**3
+          floor = 6 * 1024**3
+          print(json.dumps({'system': platform.system(), 'machine': platform.machine(),
+            'uid': os.getuid(), 'availableBytes': available,
+            'expectedAdditionalBytes': additional, 'retainedFloorBytes': floor}))
+          assert platform.system() == 'Linux' and os.getuid() != 0
+          assert available >= additional + floor, 'QUALIFICATION_CAPACITY_REFUSED'
+          PY
+          test "$(docker info --format '{{.OSType}}')" = linux
+          docker version
+      - name: Build actual images from tracked public source only
+        run: |
+          git -C ../public-platform archive HEAD | docker build -f Dockerfile.local -t exhibitos-ci-platform:qualified -
+          git -C ../public-platform archive HEAD | docker build -f Dockerfile.maintenance -t exhibitos-ci-maintenance:qualified -
+          python3 - <<'PY'
+          import subprocess, json, os, re
+          ids = {}
+          for key, tag in [('EXHIBITOS_NATIVE_TEST_PLATFORM_IMAGE', 'exhibitos-ci-platform:qualified'),
+                           ('EXHIBITOS_NATIVE_TEST_IMAGE', 'exhibitos-ci-maintenance:qualified')]:
+            rows = json.loads(subprocess.check_output(['docker', 'image', 'inspect', tag]))
+            assert len(rows) == 1 and re.fullmatch(r'sha256:[0-9a-f]{64}', rows[0]['Id'])
+            ids[key] = rows[0]['Id']
+          assert len(set(ids.values())) == 2
+          with open(os.environ['GITHUB_ENV'], 'a') as out:
+            for key, value in ids.items(): out.write(key + '=' + value + '\n')
+          print(json.dumps({'observedImageIds': ids,
+            'platformSource': 'f2124f64243c8c80c439fde8c568c762261a1c28'}))
+          PY
+      - name: Compile full lifecycle core and strict native lint
+        run: |
+          cargo test -p exhibitos-lifecycle --release --lib --locked
+          cargo clippy -p exhibitos-lifecycle --release --all-targets --locked -- -D warnings
+      - name: Execute four actual Docker observers, each requiring one real test
+        run: |
+          python3 - <<'PY'
+          import subprocess, re
+          prefix = 'signed_release::trust::owned_execution::'
+          cases = ['source_configuration::tests::actual_native_configuration_content_and_metadata',
+                   'source_images::tests::actual_engine_current_image_mappings',
+                   'source_stopped::tests::actual_engine_source_volume_identity',
+                   'source_stopped::tests::actual_engine_volume_writer_census']
+          for suffix in cases:
+            case = prefix + suffix
+            print('ACTUAL_NATIVE_CASE ' + case, flush=True)
+            result = subprocess.run(['cargo', 'test', '-p', 'exhibitos-lifecycle', '--release',
+              '--lib', '--locked', case, '--', '--ignored', '--exact'],
+              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            print(result.stdout, flush=True)
+            assert result.returncode == 0, 'ACTUAL_NATIVE_CASE_FAILED'
+            assert re.search(r'test result: ok\. 1 passed; 0 failed; 0 ignored;', result.stdout), 'ACTUAL_NATIVE_CASE_NOT_EXECUTED'
+          PY
