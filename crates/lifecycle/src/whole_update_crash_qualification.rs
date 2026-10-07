@@ -30,11 +30,13 @@ fn checked_store(v: &Value) -> crate::signed_release::trust::Store {
     assert_eq!(store.current.policy.public_keys, vec![public]);
     let intent = store.intent().unwrap();
     assert_eq!(intent.update.stage(), crate::update::Stage::Prepared);
-    assert_eq!(store.current.generation, 21);
-    assert_eq!(
-        intent.update.plan().operation_id,
-        "c5b5becd-4f70-435f-909e-73031e5def37"
-    );
+    assert!(matches!(
+        (
+            store.current.generation,
+            intent.update.plan().operation_id.as_str()
+        ),
+        (21, "c5b5becd-4f70-435f-909e-73031e5def37") | (29, "2a517fd1-e818-4f90-8e4f-73c9fe7b976b")
+    ));
     let envelope: crate::signed_release::Envelope = serde_json::from_str(&intent.envelope).unwrap();
     let release: crate::signed_release::Release = serde_json::from_str(&envelope.payload).unwrap();
     assert_eq!(release.channel, "development");
@@ -53,11 +55,12 @@ fn checked_store(v: &Value) -> crate::signed_release::trust::Store {
 }
 
 #[test]
-#[ignore = "child only: explicit signed current21 synthetic fixture, actual owned Applying/application; waits for parent SIGKILL"]
+#[ignore = "child only: explicit signed allowlisted synthetic fixture, actual owned Applying/application; waits for parent SIGKILL"]
 fn actual_changed_executor_crash_child() {
     let v = input();
     let mut store = checked_store(&v);
     let profile = store.profile.clone();
+    let operation_id = store.intent().unwrap().update.plan().operation_id.clone();
     let point = fs::canonicalize(path(&v, "point")).unwrap();
     assert_eq!(point.parent(), profile.parent());
     let marker = point.join("candidate-applied.json");
@@ -112,7 +115,7 @@ fn actual_changed_executor_crash_child() {
     // The exact private production body is qualified; public begin remains closed.
     let started = permit.begin_journaled().unwrap();
     let ready = started.apply_candidate().unwrap();
-    let proof = serde_json::json!({"pid":std::process::id(),"operationId":"c5b5becd-4f70-435f-909e-73031e5def37","candidateApplied":true,"receipt":ready.receipt(),"health":ready.observed_health()});
+    let proof = serde_json::json!({"pid":std::process::id(),"operationId":operation_id,"candidateApplied":true,"receipt":ready.receipt(),"health":ready.observed_health()});
     crate::restoration::private_bytes(&marker, &serde_json::to_vec(&proof).unwrap()).unwrap();
     // Keep all actual fences/opaque permits alive until the parent kills this PID.
     loop {
@@ -155,6 +158,16 @@ fn stop_owned(profile: &Path, id: &str) -> crate::Result<()> {
 #[test]
 #[ignore = "explicit current21 synthetic fixture: SIGKILL whole executor after actual candidate apply, cold interruption, fresh original restore/native health/selection"]
 fn actual_whole_executor_sigkill_and_original_recovery() {
+    run_whole_recovery(false);
+}
+
+#[test]
+#[ignore = "explicit current29 synthetic fixture: actual executor SIGKILL, both primary namespaces absent, independent authority then historical host then fresh original service recovery"]
+fn actual_whole_executor_sigkill_missing_host_authority_and_original_recovery() {
+    run_whole_recovery(true);
+}
+
+fn run_whole_recovery(lose_namespaces: bool) {
     use std::os::unix::fs::PermissionsExt;
     let v = input();
     let store = checked_store(&v);
@@ -162,6 +175,10 @@ fn actual_whole_executor_sigkill_and_original_recovery() {
     let authority = store.root.clone();
     let plan = store.intent().unwrap().update.plan().clone();
     let generation = store.current.generation;
+    if lose_namespaces {
+        assert_eq!(generation, 29);
+        assert_eq!(plan.operation_id, "2a517fd1-e818-4f90-8e4f-73c9fe7b976b");
+    }
     let records = fs::read_dir(&authority)
         .unwrap()
         .map(|e| e.unwrap().path())
@@ -259,6 +276,62 @@ fn actual_whole_executor_sigkill_and_original_recovery() {
     let interrupted_generation = cold.current.generation;
     // Stop exact migrated candidate; preserve its failed data/history for diagnosis.
     stop_owned(&profile, &plan.target_instance).unwrap();
+    let mut namespace_loss = Value::Null;
+    // Drop every Store/operation fence before making both primary namespaces absent.
+    // No held original is deleted, and neither vault nor key is moved.
+    let _held = if lose_namespaces {
+        drop(cold);
+        require_namespace_capacity(&profile, plan.required_free_bytes);
+        let held = HeldNamespaces::preserve(&profile, &authority, &point);
+        let authority_receipt = crate::signed_release::trust::Store::restore_missing_authority(
+            &profile, "default", true,
+        )
+        .unwrap();
+        assert!(!profile.exists());
+        assert_eq!(authority_receipt.generation, interrupted_generation);
+        cold = crate::signed_release::trust::Store::open(&profile, "default").unwrap();
+        assert_eq!(cold.current.generation, interrupted_generation);
+        assert_eq!(
+            cold.intent().unwrap().update.stage(),
+            crate::update::Stage::RecoveryRequired
+        );
+        assert_eq!(cold.intent().unwrap().update.plan(), &plan);
+        let host_receipt = cold
+            .restore_rollback_missing_host(
+                &path(&v, "hostArchive"),
+                &path(&v, "trustArchive"),
+                &key_file,
+                &path(&v, "binding"),
+                true,
+            )
+            .unwrap();
+        assert!(host_receipt.host_profile_restored && host_receipt.current_trust_preserved);
+        assert!(!host_receipt.runtime_data_restored && !host_receipt.runtime_started);
+        assert_eq!(
+            host_receipt
+                .historical_checkpoint
+                .as_ref()
+                .unwrap()
+                .checkpoint
+                .generation,
+            generation
+        );
+        drop(cold);
+        cold = crate::signed_release::trust::Store::open(&profile, "default").unwrap();
+        assert_eq!(cold.current.generation, interrupted_generation);
+        assert_eq!(
+            cold.intent().unwrap().update.stage(),
+            crate::update::Stage::RecoveryRequired
+        );
+        assert_eq!(
+            installations::load(&profile).unwrap().unwrap().0.active_id,
+            plan.source_instance
+        );
+        namespace_loss = serde_json::json!({"bothPrimaryNamespacesAbsent":true,"authorityRecoveredBeforeHostCreation":true,"authority":authority_receipt,"historicalHost":host_receipt,"heldProfile":held.held_profile,"heldAuthority":held.held_authority,"newerAuthorityPreserved":true});
+        Some(held)
+    } else {
+        None
+    };
     let reservation = cold.register_rollback_candidate(true).unwrap();
     let archive = path(&v, "serviceArchive");
     let port = v["recoveryPort"]
@@ -303,10 +376,224 @@ fn actual_whole_executor_sigkill_and_original_recovery() {
         installations::load(&profile).unwrap().unwrap().0.active_id,
         reservation.candidate_id
     );
-    let report = serde_json::json!({"state":"PASS","wholeExecutorSigkillVerified":true,"executorSignal":9,"marker":marker,"interruptedGeneration":interrupted_generation,"freshOriginalRestoration":restored,"originalActivation":completion,"coldSelectionVerified":true,"originalSourceKeyHistoryPreserved":true,"recoveryCandidateStopped":true,"newWholeHostCopy":false,"publicChangedSchemaGate":"CLOSED","lostHostRecoveryVerified":false,"nativeLinuxWindowsGuiVerified":false});
+    let report = serde_json::json!({"state":"PASS","wholeExecutorSigkillVerified":true,"executorSignal":9,"marker":marker,"interruptedGeneration":interrupted_generation,"freshOriginalRestoration":restored,"originalActivation":completion,"coldSelectionVerified":true,"originalSourceKeyHistoryPreserved":true,"recoveryCandidateStopped":true,"newWholeHostCopy":false,"publicChangedSchemaGate":"CLOSED","lostHostRecoveryVerified":lose_namespaces,"bothNamespaceLoss":namespace_loss,"nativeLinuxWindowsGuiVerified":false});
     crate::restoration::private_bytes(
         &point.join("report.json"),
         &serde_json::to_vec_pretty(&report).unwrap(),
     )
     .unwrap();
+}
+
+/// Preserves exact originals. On failure, only absent names are returned; a
+/// published recovery namespace is never overwritten or rewound by this guard.
+struct HeldNamespaces {
+    profile: PathBuf,
+    authority: PathBuf,
+    held_profile: PathBuf,
+    held_authority: PathBuf,
+}
+impl HeldNamespaces {
+    fn preserve(profile: &Path, authority: &Path, point: &Path) -> Self {
+        let held_profile = point.join("held-original-profile");
+        let held_authority = point.join("held-original-authority");
+        assert!(absent(&held_profile) && absent(&held_authority));
+        let guard = Self {
+            profile: profile.to_owned(),
+            authority: authority.to_owned(),
+            held_profile,
+            held_authority,
+        };
+        move_absent(profile, &guard.held_profile).unwrap();
+        move_absent(authority, &guard.held_authority).unwrap();
+        assert!(absent(profile) && absent(authority));
+        crate::restoration::private_bytes(&point.join("both-namespaces-absent.json"),
+            &serde_json::to_vec(&serde_json::json!({"profileAbsent":true,"authorityAbsent":true,"heldProfile":guard.held_profile,"heldAuthority":guard.held_authority})).unwrap()).unwrap();
+        guard
+    }
+}
+impl Drop for HeldNamespaces {
+    fn drop(&mut self) {
+        for (held, original) in [
+            (&self.held_profile, &self.profile),
+            (&self.held_authority, &self.authority),
+        ] {
+            if absent(original) && held.exists() {
+                let _ = move_absent(held, original);
+            }
+        }
+    }
+}
+
+fn require_namespace_capacity(profile: &Path, headroom: u64) {
+    fn logical_bytes(dir: &Path) -> u64 {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|e| {
+                let p = e.unwrap().path();
+                let m = fs::symlink_metadata(&p).unwrap();
+                assert!(!m.file_type().is_symlink());
+                if m.is_dir() {
+                    logical_bytes(&p)
+                } else {
+                    assert!(m.is_file());
+                    m.len()
+                }
+            })
+            .try_fold(0u64, |a, n| a.checked_add(n))
+            .unwrap()
+    }
+    let required = logical_bytes(profile)
+        .checked_add(headroom)
+        .unwrap()
+        .checked_add(6 * 1024 * 1024 * 1024)
+        .unwrap();
+    assert!(
+        fs2::available_space(profile).unwrap() >= required,
+        "namespace restoration exceeds expanded host/headroom/6GiB floor; preserve primary namespaces"
+    );
+}
+
+#[test]
+fn held_namespaces_failure_returns_only_absent_original_names() {
+    let temp = SyntheticScope::new();
+    let profile = temp.path().join("profile");
+    let authority = temp.path().join("authority");
+    fs::create_dir(&profile).unwrap();
+    fs::create_dir(&authority).unwrap();
+    fs::write(profile.join("original"), b"source").unwrap();
+    fs::write(authority.join("original"), b"newest-authority").unwrap();
+    let held = HeldNamespaces::preserve(&profile, &authority, temp.path());
+    assert!(!profile.exists() && !authority.exists());
+    drop(held);
+    assert_eq!(fs::read(profile.join("original")).unwrap(), b"source");
+    assert_eq!(
+        fs::read(authority.join("original")).unwrap(),
+        b"newest-authority"
+    );
+}
+
+#[test]
+fn held_namespaces_failure_never_overwrites_published_recovery() {
+    let temp = SyntheticScope::new();
+    let profile = temp.path().join("profile");
+    let authority = temp.path().join("authority");
+    fs::create_dir(&profile).unwrap();
+    fs::create_dir(&authority).unwrap();
+    fs::write(profile.join("original"), b"source").unwrap();
+    fs::write(authority.join("original"), b"old-authority").unwrap();
+    let held = HeldNamespaces::preserve(&profile, &authority, temp.path());
+    fs::create_dir(&profile).unwrap();
+    fs::create_dir(&authority).unwrap();
+    fs::write(profile.join("new"), b"recovered").unwrap();
+    fs::write(authority.join("new"), b"newer-authority").unwrap();
+    drop(held);
+    assert_eq!(fs::read(profile.join("new")).unwrap(), b"recovered");
+    assert_eq!(fs::read(authority.join("new")).unwrap(), b"newer-authority");
+    assert_eq!(
+        fs::read(temp.path().join("held-original-profile/original")).unwrap(),
+        b"source"
+    );
+    assert_eq!(
+        fs::read(temp.path().join("held-original-authority/original")).unwrap(),
+        b"old-authority"
+    );
+}
+
+#[test]
+fn held_namespaces_second_move_failure_returns_original_profile() {
+    let temp = SyntheticScope::new();
+    let profile = temp.path().join("profile");
+    fs::create_dir(&profile).unwrap();
+    fs::write(profile.join("original"), b"source").unwrap();
+    let result = std::panic::catch_unwind(|| {
+        HeldNamespaces::preserve(&profile, &temp.path().join("absent-authority"), temp.path())
+    });
+    assert!(result.is_err());
+    assert_eq!(fs::read(profile.join("original")).unwrap(), b"source");
+}
+
+struct SyntheticScope(PathBuf);
+impl SyntheticScope {
+    fn new() -> Self {
+        let p = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("exhibitos-held-namespace-{}", uuid::Uuid::new_v4()));
+        let scope = Self(p);
+        installations::new_directory(&scope.0).unwrap();
+        scope
+    }
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+impl Drop for SyntheticScope {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn absent(path: &Path) -> bool {
+    matches!(fs::symlink_metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+}
+fn move_absent(source: &Path, target: &Path) -> std::io::Result<()> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let a = std::ffi::CString::new(source.as_os_str().as_bytes())?;
+        let b = std::ffi::CString::new(target.as_os_str().as_bytes())?;
+        #[cfg(target_os = "macos")]
+        let n = unsafe {
+            libc::renameatx_np(
+                libc::AT_FDCWD,
+                a.as_ptr(),
+                libc::AT_FDCWD,
+                b.as_ptr(),
+                libc::RENAME_EXCL,
+            )
+        };
+        #[cfg(target_os = "linux")]
+        let n = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                a.as_ptr(),
+                libc::AT_FDCWD,
+                b.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if n != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        fs::File::open(source.parent().unwrap())?.sync_all()?;
+        fs::File::open(target.parent().unwrap())?.sync_all()?;
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = (source, target);
+        Err(std::io::Error::other("native no-replace unavailable"))
+    }
+}
+#[test]
+fn held_namespaces_broken_symlink_collision_preserves_every_namespace() {
+    let temp = SyntheticScope::new();
+    let profile = temp.path().join("profile");
+    let authority = temp.path().join("authority");
+    fs::create_dir(&profile).unwrap();
+    fs::create_dir(&authority).unwrap();
+    fs::write(profile.join("original"), b"source").unwrap();
+    let held = HeldNamespaces::preserve(&profile, &authority, temp.path());
+    std::os::unix::fs::symlink(temp.path().join("absent"), &profile).unwrap();
+    drop(held);
+    assert!(
+        fs::symlink_metadata(&profile)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        fs::read(temp.path().join("held-original-profile/original")).unwrap(),
+        b"source"
+    );
+    assert!(authority.is_dir());
 }
