@@ -52,7 +52,7 @@ for(const scenario of ['success','failure','malformed','wrong-port'] as const)te
  await expect(submit).toBeDisabled();
  expect(await page.evaluate(()=>(window as unknown as {__restoreCalls:string[]}).__restoreCalls.filter(c=>c==='manager_action'||c==='manager_install'))).toEqual([]);
  expect(await page.evaluate(()=>Object.keys(localStorage).concat(Object.keys(sessionStorage)))).toEqual([]);
- for(const width of [320,640,1120]){await page.setViewportSize({width,height:900});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await region.screenshot({path:`/private/tmp/exhibitos-manager-restoration-${testInfo.project.name}-${scenario}-${width}.png`});}
+ for(const width of [320,640,1120]){await page.setViewportSize({width,height:900});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await region.screenshot({path:test.info().outputPath(`exhibitos-manager-restoration-${testInfo.project.name}-${scenario}-${width}.png`)});}
  expect(faults).toEqual([]);
 });
 

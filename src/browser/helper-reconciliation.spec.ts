@@ -35,5 +35,5 @@ for(const scenario of ['backup-stopped','restoration-absent','ownership-failure'
  if(scenario==='backup-stopped'||scenario==='restoration-absent'){await expect(region.getByRole('heading',{name:scenario==='backup-stopped'?'helper 정지 확인':'helper 부재 확인'})).toBeVisible();await expect(region).toContainText('원래 백업·복원은 완료로 바꾸지 않으며');}
  else{await expect(region.getByRole('alert')).toBeFocused();await expect(region.getByRole('heading',{name:/helper (정지|부재) 확인/})).toHaveCount(0);}
  expect(await page.evaluate(()=>(window as unknown as {__originalHelperJob:{state:string}}).__originalHelperJob.state)).toBe('failed');expect(errors).toEqual([]);
- for(const width of [320,640,1120]){await page.setViewportSize({width,height:900});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await region.screenshot({path:`/private/tmp/exhibitos-manager-helper-${scenario}-${width}.png`});}
+ for(const width of [320,640,1120]){await page.setViewportSize({width,height:900});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await region.screenshot({path:test.info().outputPath(`exhibitos-manager-helper-${scenario}-${width}.png`)});}
 });
