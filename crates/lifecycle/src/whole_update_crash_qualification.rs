@@ -54,6 +54,50 @@ fn checked_store(v: &Value) -> crate::signed_release::trust::Store {
     store
 }
 
+fn checked_resuming_store(v: &Value) -> crate::signed_release::trust::Store {
+    let root = fs::canonicalize(path(v, "root")).unwrap();
+    assert_eq!(
+        root.file_name().unwrap(),
+        "exhibitos-release-trust-817e82d0-bfe4-413e-bb1c-d8c252401d8a"
+    );
+    let store =
+        crate::signed_release::trust::Store::open(&root.join("profile"), "default").unwrap();
+    let public = ed25519_dalek::SigningKey::from_bytes(&[31; 32])
+        .verifying_key()
+        .to_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    assert_eq!(store.current.policy.public_keys, vec![public]);
+    let intent = store.intent().unwrap();
+    assert_eq!(
+        intent.update.stage(),
+        crate::update::Stage::RecoveryRequired
+    );
+    assert!(matches!(
+        (
+            store.current.generation,
+            intent.update.plan().operation_id.as_str()
+        ),
+        (32, "2a517fd1-e818-4f90-8e4f-73c9fe7b976b")
+    ));
+    let envelope: crate::signed_release::Envelope = serde_json::from_str(&intent.envelope).unwrap();
+    let release: crate::signed_release::Release = serde_json::from_str(&envelope.payload).unwrap();
+    assert_eq!(release.channel, "development");
+    assert_eq!(release.target, "linux-arm64");
+    assert_ne!(
+        intent.update.plan().source_schema,
+        intent.update.plan().target_schema
+    );
+    assert_eq!(
+        require_executable_schema(intent.update.plan())
+            .unwrap_err()
+            .code,
+        "UPDATE_RUNTIME_MIGRATION_UNQUALIFIED"
+    );
+    store
+}
+
 #[test]
 #[ignore = "child only: explicit signed allowlisted synthetic fixture, actual owned Applying/application; waits for parent SIGKILL"]
 fn actual_changed_executor_crash_child() {
@@ -158,30 +202,51 @@ fn stop_owned(profile: &Path, id: &str) -> crate::Result<()> {
 #[test]
 #[ignore = "explicit current21 synthetic fixture: SIGKILL whole executor after actual candidate apply, cold interruption, fresh original restore/native health/selection"]
 fn actual_whole_executor_sigkill_and_original_recovery() {
-    run_whole_recovery(false);
+    run_whole_recovery(false, false);
 }
 
 #[test]
 #[ignore = "explicit current29 synthetic fixture: actual executor SIGKILL, both primary namespaces absent, independent authority then historical host then fresh original service recovery"]
 fn actual_whole_executor_sigkill_missing_host_authority_and_original_recovery() {
-    run_whole_recovery(true);
+    run_whole_recovery(true, false);
 }
 
-fn run_whole_recovery(lose_namespaces: bool) {
+#[test]
+#[ignore = "explicit same32/operation fixture only: resume actual verified SIGKILL after unused extraction retirement failure; never begin or reapply"]
+fn actual_combined_loss_resume_after_verified_sigkill() {
+    run_whole_recovery(true, true);
+}
+
+fn run_whole_recovery(lose_namespaces: bool, resume: bool) {
     use std::os::unix::fs::PermissionsExt;
     let v = input();
-    let store = checked_store(&v);
+    let store = if resume {
+        checked_resuming_store(&v)
+    } else {
+        checked_store(&v)
+    };
     let profile = store.profile.clone();
     let authority = store.root.clone();
     let plan = store.intent().unwrap().update.plan().clone();
-    let generation = store.current.generation;
+    let generation = if resume { 29 } else { store.current.generation };
     if lose_namespaces {
         assert_eq!(generation, 29);
         assert_eq!(plan.operation_id, "2a517fd1-e818-4f90-8e4f-73c9fe7b976b");
     }
     let initial_key: [u8; 32] = fs::read(path(&v, "key")).unwrap().try_into().unwrap();
     let initial_checkpoint = if lose_namespaces {
-        Some(
+        Some(if resume {
+            store
+                .verify_rollback_checkpoint_pair(
+                    &path(&v, "binding"),
+                    &path(&v, "hostArchive"),
+                    &path(&v, "trustArchive"),
+                    &initial_key,
+                )
+                .unwrap()
+                .receipt()
+                .checkpoint
+        } else {
             store
                 .verify_checkpoint_pair(
                     &path(&v, "binding"),
@@ -190,8 +255,8 @@ fn run_whole_recovery(lose_namespaces: bool) {
                     &initial_key,
                 )
                 .unwrap()
-                .receipt(),
-        )
+                .receipt()
+        })
     } else {
         None
     };
@@ -231,62 +296,97 @@ fn run_whole_recovery(lose_namespaces: bool) {
     let original_key = fs::read(&key_file).unwrap();
     let point = fs::canonicalize(path(&v, "point")).unwrap();
     assert_eq!(point.parent(), profile.parent());
-    assert!(!point.join("candidate-applied.json").exists());
-    if lose_namespaces {
-        require_phase_capacity(
-            &profile,
-            &point,
-            "before-child",
-            781_992_960 + 187_522_048 + 16_777_216,
-            plan.required_free_bytes,
+    let marker = if resume {
+        let previous: Value =
+            serde_json::from_slice(&fs::read(point.join("runner-report.json")).unwrap()).unwrap();
+        assert_eq!(previous["state"], "FAIL");
+        assert_eq!(
+            previous["source"],
+            "af3fa840f0c8a374f698c995e14b2e024c867d98"
         );
-    }
-    drop(store);
-    let out = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(point.join("child.out"))
+        assert_eq!(previous["exitCode"], 101);
+        assert!(!point.join("both-namespaces-absent.json").exists());
+        // That exact prior binary reached this unique guard only after asserting
+        // real candidate application, child SIGKILL9 and cold RecoveryRequired.
+        let failure = fs::read_to_string(point.join("parent.err")).unwrap();
+        assert!(failure.contains("unused host retirement refused; original namespaces preserved"));
+        let marker: Value =
+            serde_json::from_slice(&fs::read(point.join("candidate-applied.json")).unwrap())
+                .unwrap();
+        assert_eq!(marker["operationId"], plan.operation_id);
+        assert_eq!(marker["candidateApplied"], true);
+        let retirement: Value = serde_json::from_slice(
+            &fs::read(path(&v, "retirementReceipt").join("receipt.json")).unwrap(),
+        )
         .unwrap();
-    let errout = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(point.join("child.err"))
-        .unwrap();
-    let child_test = format!(
-        "{}::actual_changed_executor_crash_child",
-        module_path!().split_once("::").unwrap().1
-    );
-    let mut child = OwnedChild(
-        Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", &child_test, "--ignored", "--nocapture"])
-            .stdout(Stdio::from(out))
-            .stderr(Stdio::from(errout))
-            .spawn()
-            .unwrap(),
-    );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1200);
-    let marker = loop {
-        assert!(
-            child.0.try_wait().unwrap().is_none(),
-            "qualification child exited before durable application marker; retain child logs"
+        assert_eq!(retirement["state"], "PASS");
+        assert_eq!(retirement["retired"], true);
+        assert_eq!(
+            retirement["manifest_sha256"],
+            initial_checkpoint.as_ref().unwrap().host_manifest_sha256
         );
-        if let Ok(bytes) = fs::read(point.join("candidate-applied.json"))
-            && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
-        {
-            break value;
+        assert!(!path(&v, "retainedHost").join("profile").exists());
+        drop(store);
+        marker
+    } else {
+        assert!(!point.join("candidate-applied.json").exists());
+        if lose_namespaces {
+            require_phase_capacity(
+                &profile,
+                &point,
+                "before-child",
+                781_992_960 + 187_522_048 + 16_777_216,
+                plan.required_free_bytes,
+            );
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "application marker timed out; own child is stopped by guard and all recovery data retained"
+        drop(store);
+        let out = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(point.join("child.out"))
+            .unwrap();
+        let errout = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(point.join("child.err"))
+            .unwrap();
+        let child_test = format!(
+            "{}::actual_changed_executor_crash_child",
+            module_path!().split_once("::").unwrap().1
         );
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        let mut child = OwnedChild(
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &child_test, "--ignored", "--nocapture"])
+                .stdout(Stdio::from(out))
+                .stderr(Stdio::from(errout))
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1200);
+        let marker = loop {
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "qualification child exited before durable application marker; retain child logs"
+            );
+            if let Ok(bytes) = fs::read(point.join("candidate-applied.json"))
+                && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+            {
+                break value;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "application marker timed out; own child is stopped by guard and all recovery data retained"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        };
+        assert_eq!(marker["pid"].as_u64().unwrap(), u64::from(child.0.id()));
+        assert_eq!(marker["operationId"], plan.operation_id);
+        assert_eq!(marker["candidateApplied"], true);
+        child.0.kill().unwrap();
+        let status = child.0.wait().unwrap();
+        assert_eq!(status.signal(), Some(9));
+        marker
     };
-    assert_eq!(marker["pid"].as_u64().unwrap(), u64::from(child.0.id()));
-    assert_eq!(marker["operationId"], plan.operation_id);
-    assert_eq!(marker["candidateApplied"], true);
-    child.0.kill().unwrap();
-    let status = child.0.wait().unwrap();
-    assert_eq!(status.signal(), Some(9));
     let mut cold = crate::signed_release::trust::Store::open(&profile, "default").unwrap();
     assert!(cold.current.generation > generation);
     assert_eq!(
@@ -314,41 +414,43 @@ fn run_whole_recovery(lose_namespaces: bool) {
                 "current29-migrated-full-runtime-c0f2be0563314742b9a36ae661555245/recovery/host"
             )
         );
-        let unused_proof = crate::profile_backup::verify_unused_extraction_archive(
-            &profile,
-            &path(&v, "hostArchive"),
-            &initial_key,
-            &unused,
-            &checkpoint.host_manifest_sha256,
-        )
-        .unwrap();
-        assert_eq!(fs::read(&key_file).unwrap(), initial_key);
-        let script = path(&v, "retirementScript");
-        let script_bytes = fs::read(&script).unwrap();
-        assert_eq!(
-            format!("{:x}", sha2::Sha256::digest(&script_bytes)),
-            v["retirementScriptSha256"]
-        );
-        let retired = Command::new(path(&v, "python"))
-            .arg(script)
-            .arg(&unused)
-            .arg(path(&v, "hostManifest"))
-            .arg(&checkpoint.host_manifest_sha256)
-            .arg(path(&v, "retirementReceipt"))
-            .arg(path(&v, "hostArchive"))
-            .arg(&key_file)
-            .status()
+        if !resume {
+            let unused_proof = crate::profile_backup::verify_unused_extraction_archive(
+                &profile,
+                &path(&v, "hostArchive"),
+                &initial_key,
+                &unused,
+                &checkpoint.host_manifest_sha256,
+            )
             .unwrap();
-        assert!(
-            retired.success(),
-            "unused host retirement refused; original namespaces preserved"
-        );
-        assert!(!unused.join("profile").exists());
-        crate::restoration::private_bytes(
-            &point.join("unused-host-retired.json"),
-            &serde_json::to_vec(&unused_proof).unwrap(),
-        )
-        .unwrap();
+            assert_eq!(fs::read(&key_file).unwrap(), initial_key);
+            let script = path(&v, "retirementScript");
+            let script_bytes = fs::read(&script).unwrap();
+            assert_eq!(
+                format!("{:x}", sha2::Sha256::digest(&script_bytes)),
+                v["retirementScriptSha256"]
+            );
+            let retired = Command::new(path(&v, "python"))
+                .arg(script)
+                .arg(&unused)
+                .arg(path(&v, "hostManifest"))
+                .arg(&checkpoint.host_manifest_sha256)
+                .arg(path(&v, "retirementReceipt"))
+                .arg(path(&v, "hostArchive"))
+                .arg(&key_file)
+                .status()
+                .unwrap();
+            assert!(
+                retired.success(),
+                "unused host retirement refused; original namespaces preserved"
+            );
+            assert!(!unused.join("profile").exists());
+            crate::restoration::private_bytes(
+                &point.join("unused-host-retired.json"),
+                &serde_json::to_vec(&unused_proof).unwrap(),
+            )
+            .unwrap();
+        }
         let growth = crate::profile_backup::authenticated_host_restore_bytes(
             &profile,
             &path(&v, "hostArchive"),
@@ -467,7 +569,7 @@ fn run_whole_recovery(lose_namespaces: bool) {
         installations::load(&profile).unwrap().unwrap().0.active_id,
         reservation.candidate_id
     );
-    let report = serde_json::json!({"state":"PASS","wholeExecutorSigkillVerified":true,"executorSignal":9,"marker":marker,"interruptedGeneration":interrupted_generation,"freshOriginalRestoration":restored,"originalActivation":completion,"coldSelectionVerified":true,"originalSourceKeyHistoryPreserved":true,"recoveryCandidateStopped":true,"newWholeHostCopy":false,"publicChangedSchemaGate":"CLOSED","lostHostRecoveryVerified":lose_namespaces,"bothNamespaceLoss":namespace_loss,"nativeLinuxWindowsGuiVerified":false});
+    let report = serde_json::json!({"state":"PASS","wholeExecutorSigkillVerified":true,"executorSignal":9,"marker":marker,"interruptedGeneration":interrupted_generation,"freshOriginalRestoration":restored,"originalActivation":completion,"coldSelectionVerified":true,"originalSourceKeyHistoryPreserved":true,"recoveryCandidateStopped":true,"newWholeHostCopy":lose_namespaces,"newArchivedCheckpointCopy":false,"resumedAfterRetirementRefusal":resume,"publicChangedSchemaGate":"CLOSED","lostHostRecoveryVerified":lose_namespaces,"bothNamespaceLoss":namespace_loss,"nativeLinuxWindowsGuiVerified":false});
     crate::restoration::private_bytes(
         &point.join("report.json"),
         &serde_json::to_vec_pretty(&report).unwrap(),
