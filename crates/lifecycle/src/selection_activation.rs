@@ -1353,7 +1353,8 @@ mod tests {
                 assert_eq!(private_read(&marker).unwrap(), phase.as_bytes());
                 child.0.kill().unwrap();
                 assert_eq!(child.0.wait().unwrap().signal(), Some(9));
-                let info: serde_json::Value = serde_json::from_slice(&private_read(&report).unwrap()).unwrap();
+                let info: serde_json::Value =
+                    serde_json::from_slice(&private_read(&report).unwrap()).unwrap();
                 let p = PathBuf::from(info["profile"].as_str().unwrap());
                 let journal = PathBuf::from(info["journal"].as_str().unwrap());
                 let original = private_read(&journal.join("original-selection.json")).unwrap();
