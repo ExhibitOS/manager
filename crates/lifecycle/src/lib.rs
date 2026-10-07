@@ -667,7 +667,7 @@ fn write_json<T: Serialize>(root: &Path, name: &str, value: &T) -> Result<()> {
     }
 }
 fn engine_executable(kind: &str) -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> =
+    let candidates: Vec<PathBuf> =
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
             .filter(|p| p.is_absolute())
             .map(|p| {
@@ -678,6 +678,8 @@ fn engine_executable(kind: &str) -> Option<PathBuf> {
                 })
             })
             .collect();
+    #[cfg(any(target_os = "macos", windows))]
+    let mut candidates = candidates;
     #[cfg(target_os = "macos")]
     {
         for dir in [
