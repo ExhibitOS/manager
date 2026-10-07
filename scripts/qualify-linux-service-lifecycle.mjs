@@ -3,13 +3,14 @@
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {mkdtemp, realpath, readFile, writeFile, readdir, lstat, cp} from 'node:fs/promises';
-import {createReadStream} from 'node:fs';
+import {createReadStream, readFileSync} from 'node:fs';
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
 import {join, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 
 let stage = 'preflight';
 const checks = [];
+let nativeJobFailure=null;
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 async function hashed(path) {const h=createHash('sha256');for await(const b of createReadStream(path))h.update(b);return h.digest('hex');}
 async function inventory(root) {
@@ -20,7 +21,7 @@ async function inventory(root) {
 function call(root, command, ...args) {
   const result=spawnSync(process.env.EXHIBITOS_MANAGER_CHECK_BINARY,['--root',root,command,...args],{encoding:'utf8',timeout:600000,maxBuffer:8*1024*1024});
   let value;try{value=JSON.parse(result.stdout);}catch{throw Error('MANAGER_JSON_INVALID');}
-  if(result.status!==0){const code=value.code??value.errorCode;throw Error(/^[A-Z][A-Z0-9_]{0,79}$/.test(code??'')?code:'MANAGER_COMMAND_FAILED');}
+  if(result.status!==0){const code=value.code??value.errorCode;if(command==='restore-backup'){try{const job=JSON.parse(readFileSync(join(root,'restoration.json'),'utf8'));nativeJobFailure={state:/^(failed|interrupted)$/.test(job.state)?job.state:null,stage:/^[a-z][a-z-]{0,63}$/.test(job.stage)?job.stage:null,code:/^[A-Z][A-Z0-9_]{0,79}$/.test(job.errorCode??'')?job.errorCode:null};}catch{nativeJobFailure={code:'DIAGNOSTIC_NOT_AVAILABLE'};}}throw Error(/^[A-Z][A-Z0-9_]{0,79}$/.test(code??'')?code:'MANAGER_COMMAND_FAILED');}
   if(['install','start','stop','restart'].includes(command))assert.equal(value.state,'completed',value.errorCode??'MANAGER_JOB_NOT_COMPLETED');
   if(command==='create-backup'){assert.equal(value.operation,'created-and-authenticated','BACKUP_RECEIPT_INVALID');assert.equal(value.writersPaused,true,'BACKUP_WRITERS_NOT_PAUSED');const jobs=call(root,'backup-jobs');assert.equal(jobs.find(j=>j.id===value.id)?.state,'completed','BACKUP_JOB_NOT_COMPLETED');}
   if(command==='restore-backup'){assert.equal(value.operation,'restored-and-running','RESTORE_RECEIPT_INVALID');assert.equal(call(root,'restoration-status').job?.state,'completed','RESTORE_JOB_NOT_COMPLETED');}return value;
@@ -76,4 +77,4 @@ try {
   call(destination,'stop');call(source,'stop');checks.push('source credentials, external key and every archive byte/mode retained; both exact installations stopped');
   const report={format:1,state:'PASS',scope:'actual Linux Manager install/runtime/encrypted service backup/fresh namespace restore and private user-flow; not changed migration/crash/GUI/device/release',checks,sourceBundle:manifest.bundleId,backupJob:backup.id,restorationJob:restored.id,blobBytes:bytes.length,blobSha256:expectedHash,archiveFiles:archiveBefore.length,archiveBytes:archiveBefore.reduce((n,r)=>n+r.bytes,0),secretsLogged:false};
   await writeFile(join(scope,'qualification.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600,flag:'wx'});console.log(JSON.stringify(report));
-} catch(error) {console.error(JSON.stringify({state:'FAIL',stage,code:/^[A-Z][A-Z0-9_]{0,79}$/.test(error.message??'')?error.message:'LINUX_RUNTIME_QUALIFICATION_FAILED',nativeCause:/^[A-Z][A-Z0-9_]{0,79}$/.test(error.cause?.code??'')?error.cause.code:null,completedChecks:checks}));process.exitCode=1;}
+} catch(error) {console.error(JSON.stringify({state:'FAIL',stage,code:/^[A-Z][A-Z0-9_]{0,79}$/.test(error.message??'')?error.message:'LINUX_RUNTIME_QUALIFICATION_FAILED',nativeCause:/^[A-Z][A-Z0-9_]{0,79}$/.test(error.cause?.code??'')?error.cause.code:null,nativeJobFailure,completedChecks:checks}));process.exitCode=1;}
