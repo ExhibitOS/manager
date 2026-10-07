@@ -19,7 +19,7 @@ jobs:
       - name: Checkout exact public Manager lifecycle harness
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: f7638f8111b735ef87d2990f96813d0061e7f1c3
+          ref: 86ffada43678902d525fc2bc305bf8a8ea222993
           path: qualification
           persist-credentials: false
       - name: Checkout exact public Platform producer
@@ -35,7 +35,7 @@ jobs:
           node-version: 24.21.0
       - name: Verify sources and conservative simultaneous capacity
         run: |
-          test "$(git rev-parse HEAD)" = f7638f8111b735ef87d2990f96813d0061e7f1c3
+          test "$(git rev-parse HEAD)" = 86ffada43678902d525fc2bc305bf8a8ea222993
           test "$(git -C ../public-platform rev-parse HEAD)" = f2124f64243c8c80c439fde8c568c762261a1c28
           python3 - <<'PY'
           import os, platform, json
@@ -54,6 +54,8 @@ jobs:
           test "$(npm --version)" = 11.19.0
       - name: Build independent Manager CLI and tracked public maintenance image
         run: |
+          cargo test -p exhibitos-lifecycle --release --lib --locked
+          cargo clippy -p exhibitos-lifecycle --release --all-targets --locked -- -D warnings
           cargo build -p exhibitos-lifecycle --release --bin exhibitos-manager --locked
           git -C ../public-platform archive HEAD | docker build -f Dockerfile.maintenance -t exhibitos-ci-maintenance:qualified -
           python3 - <<'PY'
