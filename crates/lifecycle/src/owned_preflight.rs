@@ -488,3 +488,7 @@ mod tests {
  }
 
 }
+
+#[cfg(all(test, unix))]
+#[path = "whole_update_crash_qualification.rs"]
+mod whole_update_crash_qualification;
