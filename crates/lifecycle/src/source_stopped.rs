@@ -392,8 +392,13 @@ mod tests {
         let image = super::super::native_test_image();
         let image = image.as_str();
         let call = |args: &[String]| run("docker", args, None, 30).unwrap();
-        let app = crate::backup_creation::inspected("docker", &["image".into(), "inspect".into(), "sha256:335f8f2c1437841266c41e79912b1160b03ce500511acc94afa338c4c8f6215b".into()]).unwrap();
-        assert_eq!(app["Id"], "sha256:335f8f2c1437841266c41e79912b1160b03ce500511acc94afa338c4c8f6215b");
+        let platform = super::super::native_test_platform_image();
+        let app = crate::backup_creation::inspected(
+            "docker",
+            &["image".into(), "inspect".into(), platform.clone()],
+        )
+        .unwrap();
+        assert_eq!(app["Id"], platform);
         let names: Vec<_> = ["blobs", "config", "db"]
             .iter()
             .map(|suffix| format!("{project}_{suffix}"))
@@ -438,7 +443,7 @@ mod tests {
                 args.extend(["--mount".into(), mount]);
             }
             let selected_image = if index == 0 {
-                "sha256:335f8f2c1437841266c41e79912b1160b03ce500511acc94afa338c4c8f6215b"
+                platform.as_str()
             } else {
                 image
             };

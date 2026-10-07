@@ -4,9 +4,23 @@ use super::*;
 
 #[cfg(test)]
 fn native_test_image() -> String {
-    let image = std::env::var("EXHIBITOS_NATIVE_TEST_IMAGE").unwrap_or_else(|_| {
-        "sha256:8f0e7b042ff0b93a646b919f5a8a5ee2f41cc22debcd5bd9ef49eacd06537e06".into()
-    });
+    native_test_fixture_image(
+        "EXHIBITOS_NATIVE_TEST_IMAGE",
+        "sha256:8f0e7b042ff0b93a646b919f5a8a5ee2f41cc22debcd5bd9ef49eacd06537e06",
+    )
+}
+
+#[cfg(test)]
+fn native_test_platform_image() -> String {
+    native_test_fixture_image(
+        "EXHIBITOS_NATIVE_TEST_PLATFORM_IMAGE",
+        "sha256:335f8f2c1437841266c41e79912b1160b03ce500511acc94afa338c4c8f6215b",
+    )
+}
+
+#[cfg(test)]
+fn native_test_fixture_image(variable: &str, default: &str) -> String {
+    let image = std::env::var(variable).unwrap_or_else(|_| default.into());
     assert!(
         image.starts_with("sha256:")
             && image.len() == 71
