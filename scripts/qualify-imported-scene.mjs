@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import assert from 'node:assert/strict';
+import { isDeepStrictEqual } from 'node:util';
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 // Public entity/reference field contract. Authored text is never rewritten.
 const references=new Set(['id','revisionId','primaryAssetId','sourceAssetIds','appliedToAssetIds','roomId','surfaceId','connectsToOpeningId','artworkRevisionId','assetId','targetPlacementId','viaOpeningId','routeIds','placementId','targetId','annotationId','zoneId','routeId']);
@@ -8,14 +9,14 @@ const references=new Set(['id','revisionId','primaryAssetId','sourceAssetIds','a
 export function verifyImportedScene(source,destination,receipt,tenantId) {
   assert.equal(destination.revision,1,'IMPORTED_REVISION_INVALID');
   const prepared=structuredClone(destination),pairs=new Map(),inverse=new Map();
-  assert.equal(prepared.artworks.length,source.artworks.length);
+  assert.equal(prepared.artworks.length,source.artworks.length,'IMPORTED_ARTWORK_COUNT_CHANGED');
   for(const [i,artwork]of prepared.artworks.entries()) {
-    assert.equal(artwork.revision,1);assert.deepEqual(artwork.extensions?.['org.exhibitos.studio/cms'],{tenantId,artworkId:artwork.id,revision:1});
+    assert.equal(artwork.revision,1,'IMPORTED_ARTWORK_REVISION_INVALID');assert.deepEqual(artwork.extensions?.['org.exhibitos.studio/cms'],{tenantId,artworkId:artwork.id,revision:1},'IMPORTED_CMS_BINDING_INVALID');
     delete artwork.extensions['org.exhibitos.studio/cms'];if(Object.keys(artwork.extensions).length===0)delete artwork.extensions;
     artwork.revision=source.artworks[i].revision;
   }
-  assert.equal(prepared.mediaAssets.length,source.mediaAssets.length);
-  for(const [i,media]of prepared.mediaAssets.entries()){assert.equal(media.path,'media/'+media.id+'/audio.wav');media.path=source.mediaAssets[i].path;}
+  assert.equal(prepared.mediaAssets.length,source.mediaAssets.length,'IMPORTED_MEDIA_COUNT_CHANGED');
+  for(const [i,media]of prepared.mediaAssets.entries()){assert.equal(media.path,'media/'+media.id+'/audio.wav','IMPORTED_MEDIA_PATH_INVALID');media.path=source.mediaAssets[i].path;}
   prepared.revision=source.revision;
   const bind=(before,after)=> {
     assert(uuid.test(before)&&uuid.test(after),'IMPORTED_ID_INVALID');assert.notEqual(before.toLowerCase(),after.toLowerCase(),'IMPORTED_ID_NOT_FRESH');
@@ -24,8 +25,8 @@ export function verifyImportedScene(source,destination,receipt,tenantId) {
     pairs.set(before.toLowerCase(),after.toLowerCase());inverse.set(after.toLowerCase(),before.toLowerCase());
   };
   const observe=(before,after)=> {
-    if(Array.isArray(before)){assert(Array.isArray(after));assert.equal(after.length,before.length);before.forEach((v,i)=>observe(v,after[i]));}
-    else if(before&&typeof before==='object'){assert(after&&typeof after==='object');for(const[key,value]of Object.entries(before)){if((key==='id'||key==='revisionId')&&typeof value==='string')bind(value,after[key]);else observe(value,after[key]);}}
+    if(Array.isArray(before)){assert(Array.isArray(after),'IMPORTED_ARRAY_TYPE_CHANGED');assert.equal(after.length,before.length,'IMPORTED_ARRAY_COUNT_CHANGED');before.forEach((v,i)=>observe(v,after[i]));}
+    else if(before&&typeof before==='object'){assert(after&&typeof after==='object','IMPORTED_OBJECT_TYPE_CHANGED');for(const[key,value]of Object.entries(before)){if((key==='id'||key==='revisionId')&&typeof value==='string')bind(value,after[key]);else observe(value,after[key]);}}
   };
   observe(source,prepared);
   assert.deepEqual(Object.fromEntries(pairs),receipt.idMap,'IMPORTED_RECEIPT_MAPPING_INVALID');
@@ -38,7 +39,18 @@ export function verifyImportedScene(source,destination,receipt,tenantId) {
     ]));
     return value;
   };
-  assert.deepEqual(normalize(prepared),source,'IMPORTED_COMPLETE_SCENE_CHANGED');
+  const normalized=normalize(prepared);
+  // Emit only contract field names/array indices, never values, UUIDs or raw diffs.
+  const fieldMismatch=(expected,actual,path=[])=> {
+    if(isDeepStrictEqual(expected,actual))return null;
+    if(expected&&actual&&typeof expected==='object'&&typeof actual==='object'){
+      const keys=new Set([...Object.keys(expected),...Object.keys(actual)]);
+      for(const key of keys){const found=fieldMismatch(expected[key],actual[key],[...path,/^[a-zA-Z0-9_]+$/.test(key)?key:'KEY']);if(found)return found;}
+    }
+    return path.join('_').toUpperCase();
+  };
+  const mismatch=fieldMismatch(source,normalized);
+  assert.deepEqual(normalized,source,('IMPORTED_SCENE_CHANGED_'+(mismatch??'ROOT')).slice(0,79));
   const original=new Set(pairs.keys());assert([...inverse.keys()].every(id=>!original.has(id)),'IMPORTED_SOURCE_ID_REUSED');
   return {completeSceneCompared:true,independentlyObservedIdentityPairs:pairs.size,opaqueProsePreserved:true};
 }
