@@ -25,3 +25,20 @@ docker run --name "$check_name" --platform linux/arm64 \
 ```
 
 작업 종료 시 tmpfs 캐시는 사라지며 소스는 수정되지 않는다. Container writable layer의 작은 합성 자료는 별도다. Container를 자동 삭제하는 명령은 위 예제에 포함하지 않는다. 새 작업 전 실제 디스크·메모리 조건을 확인하고, stopped container 정리는 프로젝트의 복원점/기록 정책을 따른다.
+
+
+## 실제 이미지 매핑 검사
+
+코어 검사는 실제 Docker API 검사를 자동으로 실행하지 않는다. 다음 항목은 명시적으로 준비된 합성 fixture 이미지가 이미 로컬 엔진에 있을 때만 실행한다. `EXHIBITOS_NATIVE_TEST_IMAGE`에는 tag가 아닌 `sha256:` 형식의 정확한 이미지 ID를 넣는다. 검사 도우미가 기존 로컬 이미지의 실제 ID를 먼저 확인하며 이미지를 다운로드하지 않는다. 이 검사에서 사용하는 원본 합성 Runtime ID는 `source_images.rs`에 명시돼 있다. 다른 운영 이미지나 사용자 데이터로 대체하지 않는다.
+
+```sh
+EXHIBITOS_NATIVE_TEST_IMAGE="sha256:<qualified-local-helper-image-id>" \
+  cargo test --release -p exhibitos-lifecycle --lib --locked \
+  actual_engine_current_image_mappings -- --ignored --nocapture
+```
+
+Linux 컨테이너에서 실행하려면 Linux용 Docker CLI와 해당 로컬 개발 엔진의 socket이 필요하다. 위 코어 검사 예제에 socket을 무조건 추가하지 않는다. Socket을 연결한 검사는 실제 엔진 접근 권한을 갖는다. 이미지 매핑 항목 자체는 image inspect만 사용하며 container/volume 생성·삭제나 앱 시작을 하지 않는다.
+
+2026-10-07 소스3a70cbd의 Linux ARM64 실제 이미지 매핑 검사1PASS/0FAIL(0.65s), 전체 준비·컴파일·실행44.32s. 읽기 전용 runner와 메모리 registry/build 캐시를 사용했고, 실행 전후 새 container/volume0을 확인했다. 최종 검사 실행 파일과 명령·로그·소스 SHA만 남겼다. 전체 migration/activation이나 Linux GUI 검증으로 확대하지 않는다.
+
+다른 실제 엔진 fixture의 writer-census는 사용하지 않는 PostgreSQL 이미지의 기본 data 경로를1MiB tmpfs로 덮어 익명 볼륨 누적을 막는다. 외부 writer 여부·볼륨 소유권·설정 내용/권한 검사는 실제 engine과 새로운 합성 namespace를 사용하는 별도 검사다. 종료 후 원본과 미확인 볼륨은 보존하고, 정확한 fixture 생성 근거와 복원 증거가 있는 자료만 정리한다.
