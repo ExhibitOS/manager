@@ -20,13 +20,15 @@ async function inventory(root) {
 function call(root, command, ...args) {
   const result=spawnSync(process.env.EXHIBITOS_MANAGER_CHECK_BINARY,['--root',root,command,...args],{encoding:'utf8',timeout:600000,maxBuffer:8*1024*1024});
   assert.equal(result.status,0,'MANAGER_COMMAND_FAILED');
-  const value=JSON.parse(result.stdout);if(['install','start','stop','restart','create-backup','restore-backup'].includes(command))assert.equal(value.state,'completed',value.errorCode??'MANAGER_JOB_NOT_COMPLETED');return value;
+  const value=JSON.parse(result.stdout);if(['install','start','stop','restart'].includes(command))assert.equal(value.state,'completed',value.errorCode??'MANAGER_JOB_NOT_COMPLETED');
+  if(command==='create-backup'){assert.equal(value.operation,'created-and-authenticated','BACKUP_RECEIPT_INVALID');assert.equal(value.writersPaused,true,'BACKUP_WRITERS_NOT_PAUSED');const jobs=call(root,'backup-jobs');assert.equal(jobs.find(j=>j.id===value.id)?.state,'completed','BACKUP_JOB_NOT_COMPLETED');}
+  if(command==='restore-backup'){assert.equal(value.operation,'restored-and-running','RESTORE_RECEIPT_INVALID');assert.equal(call(root,'restoration-status').job?.state,'completed','RESTORE_JOB_NOT_COMPLETED');}return value;
 }
 async function ready(root) {const status=call(root,'status');assert.equal(status.readiness.ready,true);assert.equal(status.readiness.protocolVersion,'1');return status;}
 async function client(origin, settings) {
   let cookie,csrf;
   const api=async(method,path,body,expected=200,extra={})=> {
-    const response=await fetch(origin+path,{method,headers:{origin,...(cookie?{cookie,'x-csrf-token':csrf}:{}),...(body===undefined?{}:{'content-type':Buffer.isBuffer(body)?'application/octet-stream':'application/json'}),...extra},...(body===undefined?{}:{body:Buffer.isBuffer(body)?body:JSON.stringify(body)})});
+    const response=await fetch(origin+path,{method,headers:{origin,connection:'close',...(cookie?{cookie,'x-csrf-token':csrf}:{}),...(body===undefined?{}:{'content-type':Buffer.isBuffer(body)?'application/octet-stream':'application/json'}),...extra},...(body===undefined?{}:{body:Buffer.isBuffer(body)?body:JSON.stringify(body)})});
     assert.equal(response.status,expected,'RUNTIME_HTTP_STATUS');return response;
   };
   const login=await api('POST','/api/v1/auth/login',{subject:settings.ADMIN_SUBJECT,password:settings.ADMIN_PASSWORD,tenantId:settings.TENANT_ID});cookie=login.headers.get('set-cookie').split(';')[0];csrf=(await(await api('GET','/api/v1/auth/session')).json()).csrfToken;
@@ -58,9 +60,9 @@ try {
   const assetPath=prefix+'/assets/'+asset+'/bytes';assert.equal(digest(Buffer.from(await(await api('GET',assetPath)).arrayBuffer())),expectedHash);
   const authority=(await(await api('GET','/api/v1/freeze/authority')).json()).authority;
   checks.push('actual authenticated CMS and asynchronous GLB approval; anonymous/CSRF denial; exact blob');
-  stage='stop-restart';call(source,'stop');assert.equal(call(source,'status').readiness.ready,false);call(source,'start');await ready(source);call(source,'restart');await ready(source);
-  const restarted=await client(origin,settings);assert.equal(digest(Buffer.from(await(await restarted('GET',assetPath)).arrayBuffer())),expectedHash);assert.deepEqual((await(await restarted('GET','/api/v1/freeze/authority')).json()).authority,authority);checks.push('actual stop/start/restart retains bytes and signing authority');
-  stage='backup';call(source,'stop');const key=join(scope,'key.bin');await writeFile(key,randomBytes(32),{mode:0o600,flag:'wx'});
+  stage='stop';call(source,'stop');assert.equal(call(source,'status').readiness.ready,false,'STOP_READINESS_INVALID');stage='start-again';call(source,'start');await ready(source);stage='restart';call(source,'restart');await ready(source);stage='restart-login';
+  const restarted=await client(origin,settings);stage='restart-blob';assert.equal(digest(Buffer.from(await(await restarted('GET',assetPath)).arrayBuffer())),expectedHash,'RESTART_BLOB_CHANGED');stage='restart-authority';assert.deepEqual((await(await restarted('GET','/api/v1/freeze/authority')).json()).authority,authority);checks.push('actual stop/start/restart retains bytes and signing authority');
+  stage='backup';const key=join(scope,'key.bin');await writeFile(key,randomBytes(32),{mode:0o600,flag:'wx'});
   const backup=call(source,'create-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,'--external-writers-quiesced');
   const archive=join(source,'backup-creation-'+backup.id,'archive'),archiveBefore=await inventory(archive),keyHash=await hashed(key);
   call(source,'verify-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,archive);checks.push('actual encrypted service backup created and authenticated');
@@ -72,4 +74,4 @@ try {
   call(destination,'stop');call(source,'stop');checks.push('source credentials, external key and every archive byte/mode retained; both exact installations stopped');
   const report={format:1,state:'PASS',scope:'actual Linux Manager install/runtime/encrypted service backup/fresh namespace restore and private user-flow; not changed migration/crash/GUI/device/release',checks,sourceBundle:manifest.bundleId,backupJob:backup.id,restorationJob:restored.id,blobBytes:bytes.length,blobSha256:expectedHash,archiveFiles:archiveBefore.length,archiveBytes:archiveBefore.reduce((n,r)=>n+r.bytes,0),secretsLogged:false};
   await writeFile(join(scope,'qualification.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600,flag:'wx'});console.log(JSON.stringify(report));
-} catch(error) {console.error(JSON.stringify({state:'FAIL',stage,code:/^[A-Z][A-Z0-9_]{0,79}$/.test(error.message??'')?error.message:'LINUX_RUNTIME_QUALIFICATION_FAILED',completedChecks:checks}));process.exitCode=1;}
+} catch(error) {console.error(JSON.stringify({state:'FAIL',stage,code:/^[A-Z][A-Z0-9_]{0,79}$/.test(error.message??'')?error.message:'LINUX_RUNTIME_QUALIFICATION_FAILED',nativeCause:/^[A-Z][A-Z0-9_]{0,79}$/.test(error.cause?.code??'')?error.cause.code:null,completedChecks:checks}));process.exitCode=1;}
