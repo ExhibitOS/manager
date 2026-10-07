@@ -1194,6 +1194,34 @@ pub(crate) fn activate_missing_host(
 // Native Windows is tested separately for explicit unsupported refusal below.
 #[cfg(all(test, unix))]
 mod tests {
+    /// Read-only measurement of the same guarded full-file digest used in host inventory.
+    /// The external synthetic artifact is retained; no data or checkpoint is written.
+    #[test]
+    #[ignore = "requires the retained synthetic migration artifact; measures actual full hashing"]
+    fn actual_native_full_artifact_hash_throughput() {
+        let input = std::env::var_os("EXHIBITOS_HASH_BENCH_ARTIFACT")
+            .expect("provide the retained synthetic migration runtime.tar");
+        let path = std::path::Path::new(&input);
+        assert_eq!(
+            path.file_name().and_then(|v| v.to_str()),
+            Some("runtime.tar")
+        );
+        for run in 0..3 {
+            let start = std::time::Instant::now();
+            let result = super::hash(path).unwrap();
+            assert_eq!(result.0, 93_761_024);
+            assert_eq!(
+                result.1,
+                "fc167a43cdc8a71adc55eb5bf0a7aea3c791497bd41ec49c273f703775722ab4"
+            );
+            println!(
+                "FULL_HASH run={run} bytes={} seconds={:.6} sha256={}",
+                result.0,
+                start.elapsed().as_secs_f64(),
+                result.1
+            );
+        }
+    }
     use super::*;
     use crate::installations::InstallationController;
     // Own only the fresh synthetic root. Successful tests retire it; a panic or

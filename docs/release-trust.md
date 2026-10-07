@@ -227,3 +227,24 @@ exhibitos-update restore-original-rollback \
 앱과 외부 writer를 닫고 실제 검증된 이미지·키·원래 백업·미사용 포트를 지정합니다. 이 Unix 명령은 RecoveryRequired인 동일 계획에 새 비활성 복원 ID를 등록하고, 계획의 정확한 backup/image/schema/inventory를 인증해 원래 DB/blob/설정을 새 서비스로 복원합니다. 동일 Store 수명에서 실제 inventory·image·설정·health를 다시 관측한 뒤 원자적 선택과 RolledBack 이력을 완료합니다. caller가 candidate ID·경로·성공 receipt·health 플래그를 제공할 수 없습니다.
 
 기존 원본과 실패 후보·immutable 이력은 덮어쓰지 않습니다. 실패하면 새 후보와 진단을 보존하며 자동 재실행하지 않습니다. 최소 공간과 새 후보의 모든 원래 복원 조건을 유지합니다. 성공은 별도 새 복원 서비스의 실제 준비 상태를 의미하고, 원래 호스트·authority 분실 복원이나 다른 게시 crash 경계까지 완료됐다는 뜻은 아닙니다. Windows 경계는 지원 검증 전 거부합니다. 공개 changed-schema update admission은 계속 닫혀 있습니다.
+
+## ARM full-file digest performance
+
+The lifecycle crate enables `sha2` 0.10's `asm-aarch64` feature only on
+`aarch64` targets. The library checks SHA2 CPU support at runtime and retains
+its portable fallback. This changes digest throughput, not the archive format,
+signature policy, full-byte checks, limits, file identity checks or migration
+admission. x86 and x86_64 keep their previous feature selection. The locked
+`sha2-asm` dependency and its build dependency licenses are recorded in
+`licenses/arm-hash/inventory.json`.
+
+The ignored `actual_native_full_artifact_hash_throughput` test reads the whole
+retained synthetic migration `runtime.tar` through the production guarded
+host-inventory digest. It verifies all 93,761,024 bytes against its known digest
+three times and writes no fixture or archive. Provide that fixture explicitly
+through `EXHIBITOS_HASH_BENCH_ARTIFACT` when running the test with
+`cargo test -p exhibitos-lifecycle --release --lib actual_native_full_artifact_hash_throughput --locked -- --ignored --nocapture`.
+For comparison, adding `--features sha2/force-soft` before `--` selects the
+portable implementation. This is a digest benchmark, not evidence that an
+entire update or recovery operation has completed. Normal tests leave it
+ignored when the external fixture is unavailable.
