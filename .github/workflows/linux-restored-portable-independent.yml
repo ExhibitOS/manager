@@ -66,7 +66,27 @@ jobs:
             out.write('EXHIBITOS_NATIVE_TEST_IMAGE=' + rows[0]['Id'] + '\n')
           print(json.dumps({'observedMaintenanceImage': rows[0]['Id']}))
           PY
+      - name: Bound Ubuntu browser dependency downloads using official HTTPS mirrors
+        timeout-minutes: 3
+        run: |
+          sudo python3 - <<'PYTHON'
+          from pathlib import Path
+          import re
+          paths = [Path('/etc/apt/sources.list'), *Path('/etc/apt/sources.list.d').glob('*.list'), *Path('/etc/apt/sources.list.d').glob('*.sources')]
+          for path in paths:
+            if not path.exists():
+              continue
+            original = path.read_text()
+            updated = re.sub(r'https?://azure\.archive\.ubuntu\.com/ubuntu', 'https://archive.ubuntu.com/ubuntu', original)
+            updated = updated.replace('http://archive.ubuntu.com/ubuntu', 'https://archive.ubuntu.com/ubuntu').replace('http://security.ubuntu.com/ubuntu', 'https://security.ubuntu.com/ubuntu')
+            if updated != original:
+              path.write_text(updated)
+            assert 'azure.archive.ubuntu.com' not in updated, 'UNBOUNDED_MIRROR_REMAINS'
+          Path('/etc/apt/apt.conf.d/99-exhibitos-bounded-downloads').write_text('Acquire::Retries "0";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nAcquire::ForceIPv4 "true";\n')
+          print('Official HTTPS Ubuntu mirrors and bounded apt acquisition configured; package signature checks retained')
+          PYTHON
       - name: Export only tracked Platform sources and check harness syntax
+        timeout-minutes: 15
         run: |
           mkdir "$RUNNER_TEMP/exhibitos-public-platform"
           git -C ../public-platform archive HEAD | tar -xf - -C "$RUNNER_TEMP/exhibitos-public-platform"
@@ -79,7 +99,7 @@ jobs:
           npm ci --ignore-scripts
           npm run build --workspace @exhibitos/studio-contract
           npm run build --workspace @exhibitos/storage
-          npx --no-install playwright install --with-deps chromium
+          timeout --signal=TERM --kill-after=10s 8m npx --no-install playwright install --with-deps chromium
       - name: Actual install runtime encrypted backup and fresh namespace restore
         env:
           EXHIBITOS_DISPOSABLE_LINUX_RUNTIME_CHECK: '1'
