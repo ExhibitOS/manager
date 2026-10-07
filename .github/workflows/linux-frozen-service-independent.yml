@@ -19,7 +19,7 @@ jobs:
       - name: Checkout exact public Manager lifecycle harness
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: 7c6d70bb03c60dff7c1e03c3c5c6cb1d095fa652
+          ref: cd6906dc0594b4a345ae67ef67beb507dcd6c51c
           path: qualification
           persist-credentials: false
       - name: Checkout exact public Platform producer
@@ -35,7 +35,7 @@ jobs:
           node-version: 24.21.0
       - name: Verify sources and conservative simultaneous capacity
         run: |
-          test "$(git rev-parse HEAD)" = 7c6d70bb03c60dff7c1e03c3c5c6cb1d095fa652
+          test "$(git rev-parse HEAD)" = cd6906dc0594b4a345ae67ef67beb507dcd6c51c
           test "$(git -C ../public-platform rev-parse HEAD)" = f2124f64243c8c80c439fde8c568c762261a1c28
           python3 - <<'PY'
           import os, platform, json
