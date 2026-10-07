@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: Apache-2.0
+// Trusted disposable CI qualification. Uses public Platform APIs/modules; never a release permit.
+import assert from 'node:assert/strict';
+import {spawnSync} from 'node:child_process';
+import {mkdtemp, realpath, readFile, writeFile, readdir, lstat} from 'node:fs/promises';
+import {createReadStream} from 'node:fs';
+import {createHash, randomBytes, randomUUID} from 'node:crypto';
+import {join, resolve} from 'node:path';
+import {pathToFileURL} from 'node:url';
+
+let stage = 'preflight';
+const checks = [];
+const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+async function hashed(path) {const h=createHash('sha256');for await(const b of createReadStream(path))h.update(b);return h.digest('hex');}
+async function inventory(root) {
+  const rows=[];
+  async function walk(path, prefix='') {for(const n of (await readdir(path)).sort()) {const p=join(path,n),s=await lstat(p),name=prefix+n;assert(!s.isSymbolicLink());if(s.isDirectory())await walk(p,name+'/');else {assert(s.isFile()&&s.nlink===1);rows.push({name,bytes:s.size,mode:s.mode&0o777,sha256:await hashed(p)});}}}
+  await walk(root);return rows;
+}
+function call(root, command, ...args) {
+  const result=spawnSync(process.env.EXHIBITOS_MANAGER_CHECK_BINARY,['--root',root,command,...args],{encoding:'utf8',timeout:600000,maxBuffer:8*1024*1024});
+  assert.equal(result.status,0,'MANAGER_COMMAND_FAILED');
+  const value=JSON.parse(result.stdout);if(['install','start','stop','restart','create-backup','restore-backup'].includes(command))assert.equal(value.state,'completed',value.errorCode??'MANAGER_JOB_NOT_COMPLETED');return value;
+}
+async function ready(root) {const status=call(root,'status');assert.equal(status.readiness.ready,true);assert.equal(status.readiness.protocolVersion,'1');return status;}
+async function client(origin, settings) {
+  let cookie,csrf;
+  const api=async(method,path,body,expected=200,extra={})=> {
+    const response=await fetch(origin+path,{method,headers:{origin,...(cookie?{cookie,'x-csrf-token':csrf}:{}),...(body===undefined?{}:{'content-type':Buffer.isBuffer(body)?'application/octet-stream':'application/json'}),...extra},...(body===undefined?{}:{body:Buffer.isBuffer(body)?body:JSON.stringify(body)})});
+    assert.equal(response.status,expected,'RUNTIME_HTTP_STATUS');return response;
+  };
+  const login=await api('POST','/api/v1/auth/login',{subject:settings.ADMIN_SUBJECT,password:settings.ADMIN_PASSWORD,tenantId:settings.TENANT_ID});cookie=login.headers.get('set-cookie').split(';')[0];csrf=(await(await api('GET','/api/v1/auth/session')).json()).csrfToken;
+  return api;
+}
+try {
+  assert.equal(process.env.EXHIBITOS_DISPOSABLE_LINUX_RUNTIME_CHECK,'1');assert.equal(process.platform,'linux');assert.notEqual(process.getuid(),0);
+  const temp=await realpath(process.env.RUNNER_TEMP),platform=await realpath(process.env.EXHIBITOS_PUBLIC_PLATFORM_ROOT);
+  assert.equal(temp,resolve(temp));assert.match(process.env.EXHIBITOS_NATIVE_TEST_IMAGE,/^sha256:[0-9a-f]{64}$/);
+  const scope=await mkdtemp(join(temp,'exhibitos-linux-service-'));const source=join(scope,'source'),destination=join(scope,'restored');
+  const {packageLocalRuntime}=await import(pathToFileURL(join(platform,'scripts/package-local-runtime.mjs')));
+  const {loadViewerFixtures}=await import(pathToFileURL(join(platform,'scripts/viewer-fixtures.mjs')));
+  stage='package-install';const {manifest}=await packageLocalRuntime(source,{engine:'docker',targetPlatform:'linux/amd64'});
+  call(source,'install');checks.push('actual Manager install completed');
+  stage='start';call(source,'start');await ready(source);checks.push('actual start readiness and protocol');
+  const envBytes=await readFile(join(source,'runtime.env'));const settings=Object.fromEntries(envBytes.toString().trim().split('\n').map(l=>{const p=l.indexOf('=');assert(p>0);return[l.slice(0,p),l.slice(p+1)];}));
+  assert.deepEqual(Object.keys(settings).sort(),['ADMIN_PASSWORD','ADMIN_SUBJECT','DATABASE_URL','EXHIBITOS_PORT','POSTGRES_PASSWORD','TENANT_ID']);
+  const origin=manifest.openUrl,api=await client(origin,settings),prefix='/api/v1/tenants/'+settings.TENANT_ID;
+  stage='private-api-import';assert.equal((await fetch(origin+prefix+'/cms/artists')).status,401);
+  await api('POST',prefix+'/cms/artists',{name:'denied synthetic',bio:'synthetic'},403,{'x-csrf-token':'invalid'});
+  const artist=await(await api('POST',prefix+'/cms/artists',{name:'Synthetic Linux restore artist',bio:'Public source fixture'},201)).json();
+  const rights={holder:'Synthetic fixture owner',ownership:'owner',licenseId:'CC0-1.0',permissions:{display:true,download:true,export:true,commercial:false},creditLine:'Synthetic Linux qualification'};
+  const artwork=await(await api('POST',prefix+'/cms/artworks',{artistId:artist.id,title:'Synthetic restored GLB',description:'Actual import and fresh restore',medium:'Synthetic GLB',creationYear:2026,dimensions:{width:1,height:1,depth:1,unit:'m'},rights,provenance:{source:'human-authored',sourceUnits:'m',scaleApplied:true,notes:'Public deterministic synthetic geometry'}},201)).json();
+  const bytes=loadViewerFixtures().find(f=>f.type==='sculpture').bytes,expectedHash=digest(bytes);
+  const job=await(await api('POST',prefix+'/imports',{artworkId:artwork.id,idempotencyKey:randomUUID(),mime:'model/gltf-binary',sha256:expectedHash,bytes:bytes.length,scaleMeters:1,rights},201)).json();
+  await api('PUT',prefix+'/imports/'+job.id+'/bytes',bytes);await api('POST',prefix+'/imports/'+job.id+'/complete');
+  let asset;
+  for(let i=0;i<120;i++){const j=await(await api('GET',prefix+'/imports/'+job.id)).json();assert.notEqual(j.state,'failed');if(j.state==='approved'){asset=j.assetId;break;}await new Promise(r=>setTimeout(r,250));}assert(asset);
+  const assetPath=prefix+'/assets/'+asset+'/bytes';assert.equal(digest(Buffer.from(await(await api('GET',assetPath)).arrayBuffer())),expectedHash);
+  const authority=(await(await api('GET','/api/v1/freeze/authority')).json()).authority;
+  checks.push('actual authenticated CMS and asynchronous GLB approval; anonymous/CSRF denial; exact blob');
+  stage='stop-restart';call(source,'stop');assert.equal(call(source,'status').readiness.ready,false);call(source,'start');await ready(source);call(source,'restart');await ready(source);
+  const restarted=await client(origin,settings);assert.equal(digest(Buffer.from(await(await restarted('GET',assetPath)).arrayBuffer())),expectedHash);assert.deepEqual((await(await restarted('GET','/api/v1/freeze/authority')).json()).authority,authority);checks.push('actual stop/start/restart retains bytes and signing authority');
+  stage='backup';call(source,'stop');const key=join(scope,'key.bin');await writeFile(key,randomBytes(32),{mode:0o600,flag:'wx'});
+  const backup=call(source,'create-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,'--external-writers-quiesced');
+  const archive=join(source,'backup-creation-'+backup.id,'archive'),archiveBefore=await inventory(archive),keyHash=await hashed(key);
+  call(source,'verify-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,archive);checks.push('actual encrypted service backup created and authenticated');
+  stage='fresh-restore';const restored=call(destination,'restore-backup',process.env.EXHIBITOS_NATIVE_TEST_IMAGE,key,archive,'13201','--fresh-installation');await ready(destination);
+  const restoredApi=await client('http://127.0.0.1:13201',settings);const artists=await(await restoredApi('GET',prefix+'/cms/artists')).json();assert(JSON.stringify(artists).includes(artist.id));
+  assert.equal(digest(Buffer.from(await(await restoredApi('GET',assetPath)).arrayBuffer())),expectedHash);assert.deepEqual((await(await restoredApi('GET','/api/v1/freeze/authority')).json()).authority,authority);
+  assert.equal((await fetch('http://127.0.0.1:13201'+assetPath)).status,401);checks.push('fresh root/port restore runs; credentials, metadata, blob digest, authority and private denial retained');
+  stage='preservation';assert.deepEqual(await inventory(archive),archiveBefore);assert.equal(await hashed(key),keyHash);assert.equal(digest(await readFile(join(source,'runtime.env'))),digest(envBytes));
+  call(destination,'stop');call(source,'stop');checks.push('source credentials, external key and every archive byte/mode retained; both exact installations stopped');
+  const report={format:1,state:'PASS',scope:'actual Linux Manager install/runtime/encrypted service backup/fresh namespace restore and private user-flow; not changed migration/crash/GUI/device/release',checks,sourceBundle:manifest.bundleId,backupJob:backup.id,restorationJob:restored.id,blobBytes:bytes.length,blobSha256:expectedHash,archiveFiles:archiveBefore.length,archiveBytes:archiveBefore.reduce((n,r)=>n+r.bytes,0),secretsLogged:false};
+  await writeFile(join(scope,'qualification.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600,flag:'wx'});console.log(JSON.stringify(report));
+} catch(error) {console.error(JSON.stringify({state:'FAIL',stage,code:/^[A-Z][A-Z0-9_]{0,79}$/.test(error.message??'')?error.message:'LINUX_RUNTIME_QUALIFICATION_FAILED',completedChecks:checks}));process.exitCode=1;}
