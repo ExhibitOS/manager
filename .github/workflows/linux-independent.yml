@@ -19,12 +19,12 @@ jobs:
       - name: Checkout reviewed immutable public source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: d441a88593ea11297fc2007454a143d0b2875b98
+          ref: 6c69f9d3fd697a59b4cd8166b8e47f69b67f918e
           path: qualification
           persist-credentials: false
       - name: Verify source, non-root ownership and conservative free-space floor
         run: |
-          test "$(git rev-parse HEAD)" = d441a88593ea11297fc2007454a143d0b2875b98
+          test "$(git rev-parse HEAD)" = 6c69f9d3fd697a59b4cd8166b8e47f69b67f918e
           python3 - <<'PY'
           import os, platform, json
           available = os.statvfs('.').f_bavail * os.statvfs('.').f_frsize

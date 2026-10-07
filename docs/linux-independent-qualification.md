@@ -1,6 +1,6 @@
 # Linux independent qualification
 
-This manual workflow checks the exact reviewed public Manager source d441a88593ea11297fc2007454a143d0b2875b98 on a standard ubuntu-24.04 runner. The workflow exists separately from the pending implementation PR so it can run without merging unqualified product changes. Checkout and Node setup actions are fixed to official immutable source commits; token persistence is disabled.
+This manual workflow checks the exact reviewed public Manager source 6c69f9d3fd697a59b4cd8166b8e47f69b67f918e on a standard ubuntu-24.04 runner. The workflow exists separately from the pending implementation PR so it can run without merging unqualified product changes. Checkout and Node setup actions are fixed to official immutable source commits; token persistence is disabled.
 
 The job is allowed only for the public ExhibitOS/manager repository, has contents-read permissions, one concurrency group and a45-minute timeout. It uses no larger runner, hosted cache, artifact upload, package publication, deployment or paid external service. GitHub's official billing policy permits free standard-runner compute for public repositories; logs are the evidence, not uploaded build artifacts. Repo visibility must be checked before manual dispatch. If it becomes private, the job condition prevents execution.
 
