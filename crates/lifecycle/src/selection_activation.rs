@@ -1341,7 +1341,8 @@ mod tests {
                         .unwrap(),
                 );
                 let deadline = Instant::now() + Duration::from_secs(30);
-                while !marker.exists() {
+                // Creation is observable before the worker finishes writing its marker.
+                while !private_read(&marker).is_ok_and(|bytes| bytes == phase.as_bytes()) {
                     assert!(
                         child.0.try_wait().unwrap().is_none(),
                         "worker failed: {}",
