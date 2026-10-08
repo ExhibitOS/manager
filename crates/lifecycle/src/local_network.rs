@@ -54,6 +54,42 @@ pub fn choose_explicit_local_network() -> Result<ExplicitLocalNetwork> {
         subnet,
     })
 }
+#[derive(Deserialize)]
+struct ComposeNetworkBinding {
+    networks: ClosedNetworks,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClosedNetworks {
+    default: ClosedNetwork,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClosedNetwork {
+    labels: ClosedLabels,
+    ipam: ClosedIPAM,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClosedLabels {
+    #[serde(rename = "com.exhibitos.bundle")]
+    bundle: String,
+    #[serde(rename = "com.exhibitos.project")]
+    project: String,
+    #[serde(rename = "com.exhibitos.schema")]
+    schema: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClosedIPAM {
+    config: Vec<ClosedConfig>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClosedConfig {
+    subnet: String,
+    gateway: String,
+}
 pub(crate) fn bind_compose(m: &BundleManifest, bytes: &[u8]) -> Result<()> {
     let Some(p) = &m.explicit_local_network else {
         return Ok(());
@@ -62,10 +98,16 @@ pub(crate) fn bind_compose(m: &BundleManifest, bytes: &[u8]) -> Result<()> {
     if m.preferred_engine.as_deref() != Some("docker") {
         return Err(err("BUNDLE_INVALID"));
     }
-    let v: Value = serde_json::from_slice(bytes).map_err(|_| err("BUNDLE_INVALID"))?;
-    let n = &v["networks"]["default"];
-    let expected = serde_json::json!({"labels":{"com.exhibitos.bundle":m.bundle_id,"com.exhibitos.project":m.project_name,"com.exhibitos.schema":m.schema_version},"ipam":{"config":[{"subnet":p.subnet,"gateway":p.gateway}]}});
-    if v["networks"].as_object().is_none_or(|o| o.len() != 1) || n != &expected {
+    let value: ComposeNetworkBinding =
+        serde_json::from_slice(bytes).map_err(|_| err("BUNDLE_INVALID"))?;
+    let n = value.networks.default;
+    if n.labels.bundle != m.bundle_id
+        || n.labels.project != m.project_name
+        || n.labels.schema != m.schema_version
+        || n.ipam.config.len() != 1
+        || n.ipam.config[0].subnet != p.subnet
+        || n.ipam.config[0].gateway != p.gateway
+    {
         return Err(err("BUNDLE_INVALID"));
     }
     Ok(())
@@ -125,6 +167,12 @@ mod tests {
         m.explicit_local_network = Some(p.clone());
         let v = serde_json::json!({"networks":{"default":{"labels":{"com.exhibitos.bundle":m.bundle_id,"com.exhibitos.project":m.project_name,"com.exhibitos.schema":m.schema_version},"ipam":{"config":[{"subnet":p.subnet,"gateway":p.gateway}]}}}});
         assert!(bind_compose(&m, &serde_json::to_vec(&v).unwrap()).is_ok());
+        let bytes = serde_json::to_string(&v).unwrap();
+        let duplicate = bytes.replace(
+            "\"subnet\":\"10.240.0.0/28\"",
+            "\"subnet\":\"10.240.0.16/28\",\"subnet\":\"10.240.0.0/28\"",
+        );
+        assert!(bind_compose(&m, duplicate.as_bytes()).is_err());
         let mut bad = v.clone();
         bad["networks"]["default"]["external"] = Value::Bool(true);
         assert!(bind_compose(&m, &serde_json::to_vec(&bad).unwrap()).is_err());
