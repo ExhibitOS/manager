@@ -367,11 +367,22 @@ mod owned_policy_tests {
 
 #[cfg(any(target_os="linux",test))]
 fn linux_owned_routes(bytes:&[u8],subnet:&str,own_id:Option<&str>)->Result<Vec<Range>> {
+ policy_subnet(subnet)?;
  let value:Value=serde_json::from_slice(bytes).map_err(|_|err("ENGINE_OUTPUT_INVALID"))?;let routes=value.as_array().ok_or_else(||err("ENGINE_OUTPUT_INVALID"))?;
  if routes.is_empty()||routes.len()>16384{return Err(err("ENGINE_OUTPUT_INVALID"));}
- let dev=own_id.filter(|id|hash_valid(id)).map(|id|format!("br-{}",&id[..12]));let mut out=Vec::new();
- for route in routes {let dst=route["dst"].as_str().ok_or_else(||err("ENGINE_OUTPUT_INVALID"))?;if dst=="default"{continue;}
-  if dst==subnet && dev.as_ref().is_some_and(|d|route["dev"]==*d) && route["protocol"]=="kernel" && route["scope"]=="link" {continue;}
+ let dev=own_id.filter(|id|hash_valid(id)).map(|id|format!("br-{}",&id[..12]));let mut out=Vec::new();let range=Range::cidr(subnet,false)?;
+ let network=Ipv4Addr::from(range.start).to_string();let broadcast=Ipv4Addr::from(range.end).to_string();let gateway=policy_gateway(subnet)?;
+ let address_is=|dst:&str,expected:&str|dst==expected||dst==format!("{expected}/32");
+ for route in routes {
+  let dst=route["dst"].as_str().ok_or_else(||err("ENGINE_OUTPUT_INVALID"))?;if dst=="default"{continue;}
+  let own_kernel=dev.as_ref().is_some_and(|d|route["dev"]==*d)&&route["protocol"]=="kernel";
+  let main=route.get("table").is_none()||route["table"]=="main"||route["table"]==254;
+  let local=route["table"]=="local"||route["table"]==255;
+  let unicast=route.get("type").is_none()||route["type"]=="unicast";
+  let subnet_route=dst==subnet&&main&&unicast&&route["scope"]=="link";
+  let gateway_route=address_is(dst,&gateway)&&local&&route["type"]=="local"&&route["scope"]=="host";
+  let broadcast_route=(address_is(dst,&network)||address_is(dst,&broadcast))&&local&&route["type"]=="broadcast"&&route["scope"]=="link";
+  if own_kernel&&(subnet_route||gateway_route||broadcast_route){continue;}
   out.push(Range::cidr(dst,false)?);
  }Ok(out)
 }
@@ -388,5 +399,19 @@ fn host_routes_for_owned(m:&BundleManifest,subnet:&str,inventory:&Value)->Result
   let id="a".repeat(64);let v=serde_json::json!([{ "dst":"10.240.0.0/28","dev":"br-aaaaaaaaaaaa","protocol":"kernel","scope":"link"}]);let bytes=serde_json::to_vec(&v).unwrap();assert!(linux_owned_routes(&bytes,"10.240.0.0/28",Some(&id)).unwrap().is_empty());
   assert_eq!(linux_owned_routes(&bytes,"10.240.0.0/28",None).unwrap().len(),1);
   for (key,val) in [("dev","vpn0"),("protocol","static"),("scope","global")]{let mut b=v.clone();b[0][key]=serde_json::json!(val);assert_eq!(linux_owned_routes(&serde_json::to_vec(&b).unwrap(),"10.240.0.0/28",Some(&id)).unwrap().len(),1);}
+ }
+}
+
+#[cfg(test)]mod local_table_route_tests {
+ use super::*;
+ #[test]fn owned_kernel_local_and_broadcast_are_exact_bounded_exemptions(){
+  let id="a".repeat(64);let routes=serde_json::json!([
+   {"dst":"10.240.0.0/28","dev":"br-aaaaaaaaaaaa","protocol":"kernel","scope":"link"},
+   {"dst":"10.240.0.1","dev":"br-aaaaaaaaaaaa","protocol":"kernel","scope":"host","type":"local","table":"local"},
+   {"dst":"10.240.0.0","dev":"br-aaaaaaaaaaaa","protocol":"kernel","scope":"link","type":"broadcast","table":"local"},
+   {"dst":"10.240.0.15/32","dev":"br-aaaaaaaaaaaa","protocol":"kernel","scope":"link","type":"broadcast","table":255}]);
+  assert!(linux_owned_routes(&serde_json::to_vec(&routes).unwrap(),"10.240.0.0/28",Some(&id)).unwrap().is_empty());
+  for (index,key,value) in [(1,"dst",serde_json::json!("10.240.0.2")),(1,"table",serde_json::json!("main")),(1,"scope",serde_json::json!("link")),(1,"type",serde_json::json!("unicast")),(2,"dev",serde_json::json!("vpn0")),(3,"protocol",serde_json::json!("static")),(3,"dst",serde_json::json!("10.240.0.14"))] {let mut v=routes.clone();v[index][key]=value;assert_eq!(linux_owned_routes(&serde_json::to_vec(&v).unwrap(),"10.240.0.0/28",Some(&id)).unwrap().len(),1);}
+  assert_eq!(linux_owned_routes(&serde_json::to_vec(&routes).unwrap(),"10.240.0.0/28",None).unwrap().len(),4);
  }
 }
