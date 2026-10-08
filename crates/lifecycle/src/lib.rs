@@ -1346,7 +1346,7 @@ impl LifecycleService {
         self.event(&job, "STARTED", "작업을 시작했습니다.")?;
         let result = self
             .ensure_restoration_complete(&job.action)
-            .and_then(|()| self.operation(&job.action, job.cached_images_only));
+            .and_then(|()| self.operation_with_image_policy(&job.action, job.cached_images_only));
         job.updated_at = now();
         match result {
             Ok(()) => {
@@ -1365,7 +1365,10 @@ impl LifecycleService {
         write_json(&self.root, "jobs.json", &jobs)?;
         Ok(job)
     }
-    fn operation(&self, action: &Action, cached_images_only: bool) -> Result<()> {
+    fn operation(&self, action: &Action) -> Result<()> {
+        self.operation_with_image_policy(action, false)
+    }
+    fn operation_with_image_policy(&self, action: &Action, cached_images_only: bool) -> Result<()> {
         let m = self.manifest()?;
         let engine = self.engine(&m, *action == Action::Install)?;
         let probe = self
