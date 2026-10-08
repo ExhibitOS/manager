@@ -219,6 +219,57 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn guarded_retry_refuses_normal_install_and_changed_targets_before_history_or_engine() {
+        let root = std::env::temp_dir().join(format!("exhibitos-cached-retry-{}", Uuid::new_v4()));
+        let service = LifecycleService::new(root.clone()).unwrap();
+        let mut job = Job {
+            id: Uuid::new_v4().to_string(),
+            cached_images_only: false,
+            action: Action::Install,
+            state: JobState::Failed,
+            attempt: 1,
+            progress: 0,
+            created_at: now(),
+            updated_at: now(),
+            error_code: Some("BUNDLE_INVALID".into()),
+            guidance: None,
+        };
+        write_json(&root, "jobs.json", &vec![job.clone()]).unwrap();
+        let before = fs::read(root.join("jobs.json")).unwrap();
+        assert_eq!(
+            service
+                .retry_existing_images(&job.id, 1, true)
+                .unwrap_err()
+                .code,
+            "RETRY_IMAGE_POLICY_MISMATCH"
+        );
+        assert_eq!(fs::read(root.join("jobs.json")).unwrap(), before);
+        job.cached_images_only = true;
+        write_json(&root, "jobs.json", &vec![job.clone()]).unwrap();
+        let before = fs::read(root.join("jobs.json")).unwrap();
+        assert_eq!(
+            service
+                .retry_existing_images(&Uuid::new_v4().to_string(), 1, true)
+                .unwrap_err()
+                .code,
+            "RETRY_TARGET_CHANGED"
+        );
+        assert_eq!(
+            service
+                .retry_existing_images(&job.id, 2, true)
+                .unwrap_err()
+                .code,
+            "RETRY_TARGET_CHANGED"
+        );
+        assert_eq!(fs::read(root.join("jobs.json")).unwrap(), before);
+        let retry = service.retry_existing_images(&job.id, 1, true).unwrap();
+        assert_eq!(retry.id, job.id);
+        assert_eq!(retry.attempt, 2);
+        assert!(retry.cached_images_only);
+        assert_eq!(retry.error_code.as_deref(), Some("BUNDLE_INVALID"));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn cached_policy_is_legacy_compatible_and_retry_retains_same_job_policy() {
         let root = std::env::temp_dir().join(format!("exhibitos-cached-policy-{}", Uuid::new_v4()));
         let service = LifecycleService::new(root.clone()).unwrap();

@@ -1278,16 +1278,51 @@ impl LifecycleService {
         if !preserve_volumes {
             return Err(err("INSTALL_ACK_REQUIRED"));
         }
-        self.execute_with_image_policy(Action::Install, true)
+        self.execute_with_image_policy(Action::Install, true, None)
     }
     pub fn execute(&self, action: Action) -> Result<Job> {
-        self.execute_with_image_policy(action, false)
+        self.execute_with_image_policy(action, false, None)
     }
-    fn execute_with_image_policy(&self, action: Action, cached_images_only: bool) -> Result<Job> {
+    /// Pins a previously observed retry target under the same operation lock before any job or engine mutation.
+    pub fn retry_existing_images(
+        &self,
+        expected_id: &str,
+        expected_attempt: u32,
+        preserve_volumes: bool,
+    ) -> Result<Job> {
+        if !preserve_volumes
+            || expected_attempt == 0
+            || Uuid::parse_str(expected_id)
+                .ok()
+                .is_none_or(|id| id.to_string() != expected_id)
+        {
+            return Err(err("RETRY_ACK_REQUIRED"));
+        }
+        self.execute_with_image_policy(Action::Retry, false, Some((expected_id, expected_attempt)))
+    }
+    fn execute_with_image_policy(
+        &self,
+        action: Action,
+        cached_images_only: bool,
+        expected_retry: Option<(&str, u32)>,
+    ) -> Result<Job> {
         let _lock = self.lock()?;
         #[cfg(unix)]
         signed_release::trust::lifecycle_writer::admit(&self.root, &action)?;
         let mut jobs = self.job_history()?;
+        if let Some((expected_id, expected_attempt)) = expected_retry {
+            let previous = jobs.last().ok_or_else(|| err("RETRY_TARGET_CHANGED"))?;
+            if action != Action::Retry
+                || previous.id != expected_id
+                || previous.attempt != expected_attempt
+                || !matches!(previous.state, JobState::Failed | JobState::Interrupted)
+            {
+                return Err(err("RETRY_TARGET_CHANGED"));
+            }
+            if previous.action == Action::Install && !previous.cached_images_only {
+                return Err(err("RETRY_IMAGE_POLICY_MISMATCH"));
+            }
+        }
         for j in &mut jobs {
             if j.state == JobState::Running {
                 j.state = JobState::Interrupted;
