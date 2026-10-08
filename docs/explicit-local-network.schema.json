@@ -1,0 +1,11 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "title":"Manager explicitLocalNetwork v1 optional manifest field",
+  "type":"object","additionalProperties":false,
+  "required":["mode","subnet","gateway"],
+  "properties":{
+    "mode":{"const":"explicit-rfc1918-v1"},
+    "subnet":{"type":"string","maxLength":20,"pattern":"^10\\.240\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|16|32|48|64|80|96|112|128|144|160|176|192|208|224|240)/28$"},
+    "gateway":{"type":"string","maxLength":15,"description":"Must equal the subnet network address plus one; enforced by the implementation."}
+  }
+}

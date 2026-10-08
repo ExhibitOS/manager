@@ -376,8 +376,19 @@ pub(crate) fn remapped_bundle(
             }),
         })
         .collect();
-    let encoded = serde_json::to_vec(&compose(&manifest, database, platform, subnet))
-        .map_err(|_| err("STATE_INVALID"))?;
+    let mut mapped_compose = compose(&manifest, database, platform, subnet);
+    if original.explicit_local_network.is_some() {
+        let subnet = subnet.ok_or_else(|| err("RESTORE_LAYOUT_UNSUPPORTED"))?;
+        let gateway = crate::restoration_network::policy_gateway(subnet)?;
+        manifest.explicit_local_network = Some(crate::ExplicitLocalNetwork {
+            mode: "explicit-rfc1918-v1".into(),
+            subnet: subnet.into(),
+            gateway: gateway.clone(),
+        });
+        mapped_compose["networks"]["default"]["ipam"]["config"][0]["gateway"] =
+            Value::String(gateway);
+    }
+    let encoded = serde_json::to_vec(&mapped_compose).map_err(|_| err("STATE_INVALID"))?;
     manifest.compose_sha256 = digest(&encoded);
     Ok((manifest, encoded))
 }

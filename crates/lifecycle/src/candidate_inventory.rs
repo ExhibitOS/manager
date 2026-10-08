@@ -486,6 +486,7 @@ mod tests {
     ) {
         let plan = super::super::super::tests::plan();
         let manifest = crate::BundleManifest {
+            explicit_local_network: None,
             schema_version: "1".into(),
             bundle_id: "66b55f61-83fa-47dd-a591-8b70eeef3ab4".into(),
             version: "0.1.0".into(),

@@ -158,6 +158,8 @@ pub struct Image {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BundleManifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_local_network: Option<ExplicitLocalNetwork>,
     pub schema_version: String,
     pub bundle_id: String,
     pub version: String,
@@ -1114,6 +1116,7 @@ impl LifecycleService {
         if compose.len() > 256 * 1024 || digest(&compose) != m.compose_sha256 {
             return Err(err("BUNDLE_CHANGED"));
         }
+        local_network::bind_compose(&m, &compose)?;
         Ok(m)
     }
     fn engine(&self, m: &BundleManifest, install: bool) -> Result<String> {
@@ -1429,6 +1432,9 @@ impl LifecycleService {
         let bundle = self.root.join("bundle");
         self.runtime_env(&m)?;
         self.validate_compose(&m, &engine)?;
+        if *action != Action::Stop {
+            local_network::admit(&m, &engine)?;
+        }
         if *action == Action::Install {
             cached_install::admit_images(&m, &bundle, cached_images_only, |args, timeout| {
                 run(&engine, args, None, timeout)
@@ -1450,6 +1456,9 @@ impl LifecycleService {
             _ => return Err(err("INVALID_ACTION")),
         };
         run(&engine, &compose_args(&m, &tail), Some(&bundle), 180)?;
+        if *action != Action::Stop {
+            local_network::admit(&m, &engine)?;
+        }
         if *action != Action::Stop {
             let deadline = Instant::now() + Duration::from_secs(60);
             while Instant::now() < deadline {
@@ -1742,6 +1751,7 @@ mod tests {
     }
     fn manifest() -> BundleManifest {
         BundleManifest {
+            explicit_local_network: None,
             schema_version: "1.0.0-draft.1".into(),
             bundle_id: Uuid::new_v4().to_string(),
             version: "0.1.0".into(),
@@ -2081,4 +2091,6 @@ mod detection_tests {
 #[cfg(test)]
 mod engine_failure_tests;
 
+mod local_network;
 mod restoration_network;
+pub use local_network::{ExplicitLocalNetwork, choose_explicit_local_network};

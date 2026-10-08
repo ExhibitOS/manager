@@ -251,3 +251,142 @@ fn subnet_receipt_binding_preserves_legacy_and_refuses_changed_configuration() {
 }
 
 }
+
+/// Exclude only a strictly bound owned network; retain every other route/network exclusion.
+pub(crate) fn recheck_owned(m: &BundleManifest, subnet: &str, gateway: &str) -> Result<()> {
+    let inventory = engine_inventory()?;
+    admit_owned_inventory(m, subnet, gateway, &inventory, &host_routes_for_owned(m,subnet,&inventory)?)
+}
+fn admit_owned_inventory(
+    m: &BundleManifest,
+    subnet: &str,
+    gateway: &str,
+    inventory: &Value,
+    routes: &[Range],
+) -> Result<()> {
+    policy_subnet(subnet)?;
+    if policy_gateway(subnet)? != gateway {
+        return Err(err("BUNDLE_INVALID"));
+    }
+    let networks = inventory
+        .as_array()
+        .ok_or_else(|| err("ENGINE_OUTPUT_INVALID"))?;
+    if networks.is_empty() || networks.len() > 4096 {
+        return Err(err("ENGINE_OUTPUT_INVALID"));
+    }
+    let expected = format!("{}_default", m.project_name);
+    let mut others = Vec::new();
+    let mut own = 0;
+    for network in networks {
+        if network["Name"] == expected {
+            own += 1;
+            if own > 1
+                || network["Labels"]["com.exhibitos.bundle"] != m.bundle_id
+                || network["Labels"]["com.exhibitos.project"] != m.project_name
+                || network["Labels"]["com.exhibitos.schema"] != m.schema_version
+                || network["Driver"] != "bridge"
+                || network["IPAM"]["Driver"] != "default"
+                || !(network["IPAM"]["Options"].is_null() || network["IPAM"]["Options"].as_object().is_some_and(|o|o.is_empty()))
+                || network["Internal"] != false
+                || network["Scope"] != "local"
+                || network["Options"].as_object().is_none_or(|o|!o.is_empty())
+                || !network["Id"].as_str().is_some_and(hash_valid)
+            {
+                return Err(err("OWNERSHIP_CONFLICT"));
+            }
+            verify_observed(network, subnet)?;
+            if network["IPAM"]["Config"][0]["Gateway"] != gateway {
+                return Err(err("OWNERSHIP_CONFLICT"));
+            }
+        } else {
+            others.push(network.clone());
+        }
+    }
+    let mut blocked = if others.is_empty() {
+        Vec::new()
+    } else {
+        engine_ranges(&Value::Array(others))?
+    };
+    blocked.extend_from_slice(routes);
+    let candidate = Range::cidr(subnet, false)?;
+    if blocked.iter().any(|r| candidate.overlaps(*r)) {
+        return Err(err("ENGINE_NETWORK_CAPACITY"));
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod owned_policy_tests {
+    use super::*;
+    #[test]
+    fn explicit_network_excludes_only_exact_owned_identity_and_preserves_host_routes() {
+        let m = super::super::tests::manifest_for_detection();
+        let subnet = "10.240.0.0/28";
+        let gateway = "10.240.0.1";
+        let own = serde_json::json!({"Id":"a".repeat(64),"Name":format!("{}_default",m.project_name),"Driver":"bridge","Internal":false,"Scope":"local","Options":{},"EnableIPv6":false,"Labels":{"com.exhibitos.bundle":m.bundle_id,"com.exhibitos.project":m.project_name,"com.exhibitos.schema":m.schema_version},"IPAM":{"Driver":"default","Options":null,"Config":[{"Subnet":subnet,"Gateway":gateway}]}});
+        assert!(
+            admit_owned_inventory(&m, subnet, gateway, &serde_json::json!([own.clone()]), &[])
+                .is_ok()
+        );
+        assert_eq!(
+            admit_owned_inventory(
+                &m,
+                subnet,
+                gateway,
+                &serde_json::json!([own.clone()]),
+                &[Range::cidr("10/8", true).unwrap()]
+            )
+            .unwrap_err()
+            .code,
+            "ENGINE_NETWORK_CAPACITY"
+        );
+        for field in ["Id", "Driver", "Internal"] {
+            let mut v = own.clone();
+            v[field] = Value::Null;
+            assert!(
+                admit_owned_inventory(&m, subnet, gateway, &serde_json::json!([v]), &[]).is_err()
+            );
+        }
+        let mut v = own.clone();
+        v["Labels"]["com.exhibitos.bundle"] = serde_json::json!("foreign");
+        assert_eq!(
+            admit_owned_inventory(&m, subnet, gateway, &serde_json::json!([v]), &[])
+                .unwrap_err()
+                .code,
+            "OWNERSHIP_CONFLICT"
+        );
+        let mut v = own.clone();
+        v["Name"] = serde_json::json!("foreign");
+        assert_eq!(
+            admit_owned_inventory(&m, subnet, gateway, &serde_json::json!([own, v]), &[])
+                .unwrap_err()
+                .code,
+            "ENGINE_NETWORK_CAPACITY"
+        );
+    }
+}
+
+#[cfg(any(target_os="linux",test))]
+fn linux_owned_routes(bytes:&[u8],subnet:&str,own_id:Option<&str>)->Result<Vec<Range>> {
+ let value:Value=serde_json::from_slice(bytes).map_err(|_|err("ENGINE_OUTPUT_INVALID"))?;let routes=value.as_array().ok_or_else(||err("ENGINE_OUTPUT_INVALID"))?;
+ if routes.is_empty()||routes.len()>16384{return Err(err("ENGINE_OUTPUT_INVALID"));}
+ let dev=own_id.filter(|id|hash_valid(id)).map(|id|format!("br-{}",&id[..12]));let mut out=Vec::new();
+ for route in routes {let dst=route["dst"].as_str().ok_or_else(||err("ENGINE_OUTPUT_INVALID"))?;if dst=="default"{continue;}
+  if dst==subnet && dev.as_ref().is_some_and(|d|route["dev"]==*d) && route["protocol"]=="kernel" && route["scope"]=="link" {continue;}
+  out.push(Range::cidr(dst,false)?);
+ }Ok(out)
+}
+fn host_routes_for_owned(m:&BundleManifest,subnet:&str,inventory:&Value)->Result<Vec<Range>> {
+ #[cfg(target_os="linux")] {
+  let name=format!("{}_default",m.project_name);let own=inventory.as_array().and_then(|v|v.iter().find(|n|n["Name"]==name)).and_then(|n|n["Id"].as_str());
+  let bytes=run("ip",&["-j".into(),"-4".into(),"route".into(),"show".into(),"table".into(),"all".into()],None,30)?;return linux_owned_routes(&bytes,subnet,own);
+ }
+ #[cfg(not(target_os="linux"))] {let _=(m,subnet,inventory);host_routes()}
+}
+#[cfg(test)]mod own_host_routes_tests {
+ use super::*;
+ #[test]fn exact_kernel_own_bridge_route_only_is_excluded(){
+  let id="a".repeat(64);let v=serde_json::json!([{ "dst":"10.240.0.0/28","dev":"br-aaaaaaaaaaaa","protocol":"kernel","scope":"link"}]);let bytes=serde_json::to_vec(&v).unwrap();assert!(linux_owned_routes(&bytes,"10.240.0.0/28",Some(&id)).unwrap().is_empty());
+  assert_eq!(linux_owned_routes(&bytes,"10.240.0.0/28",None).unwrap().len(),1);
+  for (key,val) in [("dev","vpn0"),("protocol","static"),("scope","global")]{let mut b=v.clone();b[0][key]=serde_json::json!(val);assert_eq!(linux_owned_routes(&serde_json::to_vec(&b).unwrap(),"10.240.0.0/28",Some(&id)).unwrap().len(),1);}
+ }
+}
