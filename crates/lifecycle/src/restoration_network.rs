@@ -257,6 +257,16 @@ pub(crate) fn recheck_owned(m: &BundleManifest, subnet: &str, gateway: &str) -> 
     let inventory = engine_inventory()?;
     admit_owned_inventory(m, subnet, gateway, &inventory, &host_routes_for_owned(m,subnet,&inventory)?)
 }
+// Compose may materialize only these two redundant bridge family flags.
+// Never admit arbitrary driver options or coerce scalar types.
+fn default_bridge_options(options: &Value) -> bool {
+    options.as_object().is_some_and(|o| {
+        o.is_empty()
+            || (o.len() == 2
+                && o.get("com.docker.network.enable_ipv4") == Some(&Value::String("true".into()))
+                && o.get("com.docker.network.enable_ipv6") == Some(&Value::String("false".into())))
+    })
+}
 fn admit_owned_inventory(
     m: &BundleManifest,
     subnet: &str,
@@ -289,7 +299,7 @@ fn admit_owned_inventory(
                 || !(network["IPAM"]["Options"].is_null() || network["IPAM"]["Options"].as_object().is_some_and(|o|o.is_empty()))
                 || network["Internal"] != false
                 || network["Scope"] != "local"
-                || network["Options"].as_object().is_none_or(|o|!o.is_empty())
+                || !default_bridge_options(&network["Options"])
                 || !network["Id"].as_str().is_some_and(hash_valid)
             {
                 return Err(err("OWNERSHIP_CONFLICT"));
@@ -327,6 +337,26 @@ mod owned_policy_tests {
             admit_owned_inventory(&m, subnet, gateway, &serde_json::json!([own.clone()]), &[])
                 .is_ok()
         );
+        let mut canonical = own.clone();
+        canonical["Options"] = serde_json::json!({
+            "com.docker.network.enable_ipv4":"true",
+            "com.docker.network.enable_ipv6":"false"
+        });
+        assert!(admit_owned_inventory(&m, subnet, gateway, &serde_json::json!([canonical.clone()]), &[]).is_ok());
+        for options in [
+            serde_json::json!({"com.docker.network.enable_ipv4":"true"}),
+            serde_json::json!({"com.docker.network.enable_ipv4":"false","com.docker.network.enable_ipv6":"false"}),
+            serde_json::json!({"com.docker.network.enable_ipv4":"true","com.docker.network.enable_ipv6":"true"}),
+            serde_json::json!({"com.docker.network.enable_ipv4":true,"com.docker.network.enable_ipv6":false}),
+            serde_json::json!({"com.docker.network.enable_ipv4":"true","com.docker.network.enable_ipv6":"false","com.docker.network.bridge.name":"custom"}),
+            Value::Null,
+        ] {
+            let mut altered = own.clone();
+            altered["Options"] = options;
+            assert_eq!(admit_owned_inventory(&m, subnet, gateway, &serde_json::json!([altered]), &[]).unwrap_err().code, "OWNERSHIP_CONFLICT");
+        }
+        canonical["EnableIPv6"] = Value::Bool(true);
+        assert!(admit_owned_inventory(&m, subnet, gateway, &serde_json::json!([canonical]), &[]).is_err());
         assert_eq!(
             admit_owned_inventory(
                 &m,
