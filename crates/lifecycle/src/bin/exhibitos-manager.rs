@@ -5,7 +5,11 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if !matches!(args.len(), 4 | 6 | 7 | 9 | 12)
         || args[1] != "--root"
-        || (args.len() == 6 && args[3] != "diagnose-retry")
+        || (args.len() == 6
+            && !matches!(
+                args[3].as_str(),
+                "diagnose-retry" | "install-existing-images"
+            ))
         || (args.len() == 7
             && !matches!(
                 args[3].as_str(),
@@ -19,11 +23,21 @@ fn main() {
         || (args.len() == 12 && args[3] != "retry-restoration")
     {
         eprintln!(
-            "usage: exhibitos-manager --root <private absolute directory> detect|install|start|stop|restart|retry|status|jobs|logs|open-url|prepare-installation-backup|backup-jobs|restoration-status|helper-reconciliations|maintenance-context|maintenance-retries|retry-diagnostic-history; diagnose-retry <retry UUID> <destination root or --same-root>; reconcile-retry <retry UUID> <destination root or --same-root> --preserve-candidates; retry-backup <failed UUID> <trusted image ID> <external key> --preserve-candidates --external-writers-quiesced; retry-restoration <failed UUID> <new private root> <trusted image ID> <external key> <archive> <new port> --preserve-candidates --fresh-installation; cancel-maintenance <backup|restoration> <active UUID> --preserve-candidates; reconcile-helper <backup|restoration> <failed job UUID> --preserve-candidates; create-backup <trusted image ID> <private key file> --external-writers-quiesced; verify-backup <trusted image ID> <private key file> <archive directory>; restore-backup <trusted image ID> <private key file> <archive directory> <new loopback port> --fresh-installation"
+            "usage: exhibitos-manager --root <private absolute directory> detect|install|start|stop|restart|retry|status|jobs|logs|open-url|prepare-installation-backup|backup-jobs|restoration-status|helper-reconciliations|maintenance-context|maintenance-retries|retry-diagnostic-history; install-existing-images --preserve-volumes --existing-images-only; diagnose-retry <retry UUID> <destination root or --same-root>; reconcile-retry <retry UUID> <destination root or --same-root> --preserve-candidates; retry-backup <failed UUID> <trusted image ID> <external key> --preserve-candidates --external-writers-quiesced; retry-restoration <failed UUID> <new private root> <trusted image ID> <external key> <archive> <new port> --preserve-candidates --fresh-installation; cancel-maintenance <backup|restoration> <active UUID> --preserve-candidates; reconcile-helper <backup|restoration> <failed job UUID> --preserve-candidates; create-backup <trusted image ID> <private key file> --external-writers-quiesced; verify-backup <trusted image ID> <private key file> <archive directory>; restore-backup <trusted image ID> <private key file> <archive directory> <new loopback port> --fresh-installation"
         );
         std::process::exit(2);
     }
     let result = (|| -> Result<serde_json::Value, exhibitos_lifecycle::LifecycleError> {
+        if args[3] == "install-existing-images"
+            && (args.len() != 6
+                || args[4] != "--preserve-volumes"
+                || args[5] != "--existing-images-only")
+        {
+            return Err(exhibitos_lifecycle::LifecycleError {
+                code: "INSTALL_ACK_REQUIRED".into(),
+                guidance: "기존 이미지 사용과 데이터 보존을 확인하세요.".into(),
+            });
+        }
         let s = if matches!(
             args[3].as_str(),
             "diagnose-retry" | "reconcile-retry" | "retry-diagnostic-history"
@@ -123,6 +137,9 @@ fn main() {
             )?),
             "prepare-installation-backup" => serde_json::to_value(s.prepare_installation_backup()?),
             "detect" => serde_json::to_value(s.detect()?),
+            "install-existing-images" if args.len() == 6 => {
+                serde_json::to_value(s.install_existing_images(true)?)
+            }
             "install" => serde_json::to_value(s.install()?),
             "start" => serde_json::to_value(s.execute(Action::Start)?),
             "stop" => serde_json::to_value(s.execute(Action::Stop)?),

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Trusted-bundle desktop lifecycle. No shell, arbitrary compose paths or destructive volume removal.
 pub mod backup_creation;
+mod cached_install;
 pub mod cancellation;
 pub mod helper_reconciliation;
 pub mod installation_backup;
@@ -72,6 +73,8 @@ pub enum JobState {
 #[serde(rename_all = "camelCase")]
 pub struct Job {
     pub id: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cached_images_only: bool,
     pub action: Action,
     pub state: JobState,
     pub attempt: u32,
@@ -81,6 +84,10 @@ pub struct Job {
     pub error_code: Option<String>,
     pub guidance: Option<String>,
 }
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineProbe {
@@ -189,9 +196,15 @@ fn same_local_image_id(actual: &str, reference: &str) -> bool {
 }
 fn err(code: &str) -> LifecycleError {
     let guidance = match code {
-        "UPDATE_WRITER_BLOCKED" => "업데이트 또는 복구 중인 공간과 실패한 후보는 일반 실행할 수 없습니다. 원본과 실패 후보를 보존하고 검증된 복구 절차를 사용하세요.",
-        "UPDATE_AUTHORITY_UNAVAILABLE" => "업데이트 이력의 무결성 또는 잠금을 확인할 수 없습니다. 기존 공간과 신뢰 기록을 보존하고 다른 작업을 종료한 뒤 복구 상태를 확인하세요.",
-        "ENGINE_NETWORK_CAPACITY" => "Docker의 기본 네트워크 주소 풀이 소진되었습니다. 기존 데이터와 실패 후보를 보존하고, 연결 중인 네트워크를 삭제하지 말고 전용 주소 범위를 검증한 뒤 새 복구 후보를 준비하세요.",
+        "UPDATE_WRITER_BLOCKED" => {
+            "업데이트 또는 복구 중인 공간과 실패한 후보는 일반 실행할 수 없습니다. 원본과 실패 후보를 보존하고 검증된 복구 절차를 사용하세요."
+        }
+        "UPDATE_AUTHORITY_UNAVAILABLE" => {
+            "업데이트 이력의 무결성 또는 잠금을 확인할 수 없습니다. 기존 공간과 신뢰 기록을 보존하고 다른 작업을 종료한 뒤 복구 상태를 확인하세요."
+        }
+        "ENGINE_NETWORK_CAPACITY" => {
+            "Docker의 기본 네트워크 주소 풀이 소진되었습니다. 기존 데이터와 실패 후보를 보존하고, 연결 중인 네트워크를 삭제하지 말고 전용 주소 범위를 검증한 뒤 새 복구 후보를 준비하세요."
+        }
         "WINDOWS_PROFILE_PUBLICATION_UNCERTAIN" => {
             "기록 교체의 완료 여부를 확인할 수 없습니다. 앱을 닫고 현재 기록과 임시 후보를 보존한 뒤 상태를 진단하세요. 확인 없이 같은 작업을 다시 실행하지 마세요."
         }
@@ -1205,7 +1218,14 @@ impl LifecycleService {
     fn job_history(&self) -> Result<Vec<Job>> {
         let p = self.root.join("jobs.json");
         if p.exists() {
-            read_json(&p)
+            let jobs: Vec<Job> = read_json(&p)?;
+            if jobs
+                .iter()
+                .any(|job| job.cached_images_only && job.action != Action::Install)
+            {
+                return Err(err("STATE_INVALID"));
+            }
+            Ok(jobs)
         } else {
             Ok(Vec::new())
         }
@@ -1253,7 +1273,17 @@ impl LifecycleService {
     pub fn install(&self) -> Result<Job> {
         self.execute(Action::Install)
     }
+    /// Existing cached bytes do not attest release authenticity. Uses the same Install job and writer admission.
+    pub fn install_existing_images(&self, preserve_volumes: bool) -> Result<Job> {
+        if !preserve_volumes {
+            return Err(err("INSTALL_ACK_REQUIRED"));
+        }
+        self.execute_with_image_policy(Action::Install, true)
+    }
     pub fn execute(&self, action: Action) -> Result<Job> {
+        self.execute_with_image_policy(action, false)
+    }
+    fn execute_with_image_policy(&self, action: Action, cached_images_only: bool) -> Result<Job> {
         let _lock = self.lock()?;
         #[cfg(unix)]
         signed_release::trust::lifecycle_writer::admit(&self.root, &action)?;
@@ -1283,6 +1313,7 @@ impl LifecycleService {
                 attempt: previous.attempt + 1,
                 id: previous.id.clone(),
                 action: previous.action.clone(),
+                cached_images_only: previous.cached_images_only,
                 state: JobState::Running,
                 progress: 0,
                 created_at: previous.created_at,
@@ -1294,6 +1325,7 @@ impl LifecycleService {
             Job {
                 id: Uuid::new_v4().to_string(),
                 action,
+                cached_images_only,
                 state: JobState::Running,
                 attempt: 1,
                 progress: 0,
@@ -1303,13 +1335,18 @@ impl LifecycleService {
                 guidance: None,
             }
         };
+        if job.cached_images_only
+            && (job.action != Action::Install || self.root.join("installed.json").exists())
+        {
+            return Err(err("CACHED_INSTALL_RECONCILIATION_REQUIRED"));
+        }
         let index = jobs.len();
         jobs.push(job.clone());
         write_json(&self.root, "jobs.json", &jobs)?;
         self.event(&job, "STARTED", "작업을 시작했습니다.")?;
         let result = self
             .ensure_restoration_complete(&job.action)
-            .and_then(|()| self.operation(&job.action));
+            .and_then(|()| self.operation(&job.action, job.cached_images_only));
         job.updated_at = now();
         match result {
             Ok(()) => {
@@ -1328,7 +1365,7 @@ impl LifecycleService {
         write_json(&self.root, "jobs.json", &jobs)?;
         Ok(job)
     }
-    fn operation(&self, action: &Action) -> Result<()> {
+    fn operation(&self, action: &Action, cached_images_only: bool) -> Result<()> {
         let m = self.manifest()?;
         let engine = self.engine(&m, *action == Action::Install)?;
         let probe = self
@@ -1355,78 +1392,9 @@ impl LifecycleService {
         self.runtime_env(&m)?;
         self.validate_compose(&m, &engine)?;
         if *action == Action::Install {
-            for image in &m.images {
-                if let Some(a) = &image.archive {
-                    let p = checked_path(&bundle, &a.path)?;
-                    let metadata = fs::metadata(&p).map_err(|_| err("BUNDLE_INVALID"))?;
-                    if !metadata.is_file()
-                        || a.bytes == 0
-                        || metadata.len() != a.bytes
-                        || a.bytes > 8 * 1024 * 1024 * 1024
-                        || !hash_valid(&a.sha256)
-                    {
-                        return Err(err("BUNDLE_INVALID"));
-                    }
-                    let mut f = File::open(&p).map_err(|_| err("BUNDLE_INVALID"))?;
-                    let mut h = Sha256::new();
-                    let mut b = [0; 65536];
-                    loop {
-                        let n = f.read(&mut b).map_err(|_| err("BUNDLE_INVALID"))?;
-                        if n == 0 {
-                            break;
-                        }
-                        h.update(&b[..n]);
-                    }
-                    if format!("{:x}", h.finalize()) != a.sha256 {
-                        return Err(err("BUNDLE_CHANGED"));
-                    }
-                    run(
-                        &engine,
-                        &[
-                            "load".into(),
-                            "--input".into(),
-                            p.to_string_lossy().into_owned(),
-                        ],
-                        None,
-                        180,
-                    )?;
-                }
-                if image.archive.is_none() {
-                    if image.reference.starts_with("sha256:") {
-                        return Err(err("BUNDLE_INVALID"));
-                    }
-                    run(
-                        &engine,
-                        &["pull".into(), image.reference.clone()],
-                        None,
-                        180,
-                    )?;
-                }
-                let inspected: Value = serde_json::from_slice(&run(
-                    &engine,
-                    &["image".into(), "inspect".into(), image.reference.clone()],
-                    None,
-                    15,
-                )?)
-                .map_err(|_| err("IMAGE_INTEGRITY"))?;
-                if image.reference.starts_with("sha256:")
-                    && !inspected[0]["Id"]
-                        .as_str()
-                        .is_some_and(|id| same_local_image_id(id, &image.reference))
-                {
-                    return Err(err("IMAGE_INTEGRITY"));
-                }
-                if image.reference.contains("@sha256:")
-                    && !inspected[0]["RepoDigests"].as_array().is_some_and(|v| {
-                        v.iter().any(|d| {
-                            d.as_str()
-                                .is_some_and(|value| same_registry_pin(value, &image.reference))
-                        })
-                    })
-                {
-                    return Err(err("IMAGE_INTEGRITY"));
-                }
-            }
+            cached_install::admit_images(&m, &bundle, cached_images_only, |args, timeout| {
+                run(&engine, args, None, timeout)
+            })?;
             write_json(&self.root, "engine.json", &engine)?;
             write_json(&self.root, "installed.json", &m)?;
             return Ok(());
@@ -1797,6 +1765,7 @@ mod tests {
         let p = root();
         let s = LifecycleService::new(p.clone()).unwrap();
         let job = Job {
+            cached_images_only: false,
             id: Uuid::new_v4().to_string(),
             action: Action::Install,
             state: JobState::Running,
@@ -1879,6 +1848,7 @@ mod tests {
         let s = LifecycleService::new(root()).unwrap();
         let jobs: Vec<Job> = (0..240)
             .map(|i| Job {
+                cached_images_only: false,
                 id: Uuid::new_v4().to_string(),
                 action: Action::Install,
                 state: JobState::Completed,

@@ -1,0 +1,7 @@
+# Cached image install admission
+
+`exhibitos-manager --root <private absolute installation> install-existing-images --preserve-volumes --existing-images-only` delegates to the existing Install job, operation lock, lifecycle writer authority admission, manifest/Compose/config/space and exact image checks. It does not pull, load or build images. Missing/mismatched cached images refuse without fallback. Existing archive declarations are still checked if supplied. Presence in a cache does not prove release authenticity or approval. Deployment must independently admit its exact approved OED/bundle and public CLI.
+
+The same durable Job optionally records `cachedImagesOnly:true`; false is omitted and old jobs default to false. Retry preserves this policy on the same job ID, and refuses a cached Install whose installed marker is already present rather than replaying uncertain installation. Policy on a non-Install job refuses as invalid history. Normal installation keeps existing archive load/registry pull semantics.
+
+This first integration supplies no second lifecycle journal, no deployment update/rollback permit and no data deletion. A failed fresh candidate may be explicitly stopped by the existing owned-resource path; that is not schema/data rollback. T10-01 full fresh-server/production proxy/realtime/metrics/backup and T08 full native/update/recovery gates remain separate. New focused Rust tests are source-only until explicit compilation/resource admission.
