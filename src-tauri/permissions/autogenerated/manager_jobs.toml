@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-jobs"
+description = "Enables the manager_jobs command without any pre-configured scope."
+commands.allow = ["manager_jobs"]
+
+[[permission]]
+identifier = "deny-manager-jobs"
+description = "Denies the manager_jobs command without any pre-configured scope."
+commands.deny = ["manager_jobs"]

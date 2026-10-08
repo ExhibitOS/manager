@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-detect"
+description = "Enables the manager_detect command without any pre-configured scope."
+commands.allow = ["manager_detect"]
+
+[[permission]]
+identifier = "deny-manager-detect"
+description = "Denies the manager_detect command without any pre-configured scope."
+commands.deny = ["manager_detect"]

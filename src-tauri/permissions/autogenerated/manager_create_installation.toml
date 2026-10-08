@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-create-installation"
+description = "Enables the manager_create_installation command without any pre-configured scope."
+commands.allow = ["manager_create_installation"]
+
+[[permission]]
+identifier = "deny-manager-create-installation"
+description = "Denies the manager_create_installation command without any pre-configured scope."
+commands.deny = ["manager_create_installation"]

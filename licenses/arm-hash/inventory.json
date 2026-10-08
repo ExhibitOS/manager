@@ -1,0 +1,70 @@
+[
+  {
+    "name": "sha2-asm",
+    "version": "0.6.4",
+    "license": "MIT",
+    "checksum": "b845214d6175804686b2bd482bcffe96651bb2d1200742b712003504a2dac1ab",
+    "files": [
+      {
+        "name": "sha2-asm-0.6.4-LICENSE",
+        "sha256": "85010e75aef5bdcd10b9ce39e8865dfab508f620f9ddb6ca6e54833fe97f36fa"
+      }
+    ],
+    "source": "https://crates.io/crates/sha2-asm/0.6.4",
+    "scope": "aarch64-only SHA2 feature; cc/shlex/find-msvc-tools are build dependencies"
+  },
+  {
+    "name": "cc",
+    "version": "1.5.1",
+    "license": "MIT OR Apache-2.0",
+    "checksum": "f360145194ee8e21db5ee7f3fcd4fe52210864c75c985dae33218202c8bbe040",
+    "files": [
+      {
+        "name": "cc-1.5.1-LICENSE-APACHE",
+        "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+      },
+      {
+        "name": "cc-1.5.1-LICENSE-MIT",
+        "sha256": "378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397"
+      }
+    ],
+    "source": "https://crates.io/crates/cc/1.5.1",
+    "scope": "aarch64-only SHA2 feature; cc/shlex/find-msvc-tools are build dependencies"
+  },
+  {
+    "name": "shlex",
+    "version": "2.0.1",
+    "license": "MIT OR Apache-2.0",
+    "checksum": "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba",
+    "files": [
+      {
+        "name": "shlex-2.0.1-LICENSE-APACHE",
+        "sha256": "553fffcd9b1cb158bc3e9edc35da85ca5c3b3d7d2e61c883ebcfa8a65814b583"
+      },
+      {
+        "name": "shlex-2.0.1-LICENSE-MIT",
+        "sha256": "4455bf75a91154108304cb283e0fea9948c14f13e20d60887cf2552449dea3b1"
+      }
+    ],
+    "source": "https://crates.io/crates/shlex/2.0.1",
+    "scope": "aarch64-only SHA2 feature; cc/shlex/find-msvc-tools are build dependencies"
+  },
+  {
+    "name": "find-msvc-tools",
+    "version": "0.1.14",
+    "license": "MIT OR Apache-2.0",
+    "checksum": "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484",
+    "files": [
+      {
+        "name": "find-msvc-tools-0.1.14-LICENSE-APACHE",
+        "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+      },
+      {
+        "name": "find-msvc-tools-0.1.14-LICENSE-MIT",
+        "sha256": "378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397"
+      }
+    ],
+    "source": "https://crates.io/crates/find-msvc-tools/0.1.14",
+    "scope": "aarch64-only SHA2 feature; cc/shlex/find-msvc-tools are build dependencies"
+  }
+]

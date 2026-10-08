@@ -1,0 +1,60 @@
+# Experimental isolated runtime qualification components
+
+These modules exercise a real development runtime image against a disposable native PostgreSQL copy. They are internal qualification components, **not a CLI installation/update command, a preflight permit, or an image-only rollback proof**. They must not run against a live application database or writable original volume.
+
+The controlled native test uses the current signed OCI-qualified linux/arm64 runtime and an independently qualified PostgreSQL18 maintenance image. The database helper owns a network-none namespace and a bounded tmpfs physical copy. The runtime joins only that helper's namespace, with no published ports and no Internet route. It receives read-only original blob/configuration/environment mounts, copies them into a fresh tmpfs namespace, then permanently drops to UID/GID1000 before importing the actual image's `startLocalRuntime` implementation.
+
+The runtime executes its real migrations, Freeze configuration, API, local web proxy and background worker. Qualification requires API health, three readiness observations, a bounded web response using the existing Host contract, graceful runtime shutdown, exact blob/configuration content and mode preservation, and a post-runtime full logical database/blob inventory matched to the authenticated original backup. This is stronger than comparing embedded migrations alone. It still does not prove changed-schema migration, whole application feature compatibility, rollback execution, full recovery activation, or Windows support.
+
+The first development probe has explicit limits: database copy256MiB, blob copy128MiB, configuration8MiB/512entries. The helper uses1GiB RAM with swap disabled; the runtime uses768MiB RAM with swap disabled. At least2304MiB Engine memory is required. The snapshot tmpfs capacity is1GiB and runtime tmpfs256MiB; exceeding a budget refuses the probe, never falls back to a persistent volume. The original task's complete workload/migration/native acceptance remains required.
+
+`database.mjs` needs a host-injected `DATABASE_COPY` string containing the trusted bounded native copy implementation. `target.mjs` needs `copy.mjs` embedded before its body. These scripts are embedded into new controlled containers; do not load JavaScript from data volumes. The database helper mounts `/source`, `/blobs`, `/manifest.json` read-only and receives the authenticated manifest SHA. The runtime mounts `/source-blobs`, `/source-config`, `/runtime.env` read-only. Only `/snapshot`, `/tmp` and `/probe` are writable disposable memory locations. Authentication values remain inside the container and never enter result JSON.
+
+A passing test retains private source/hash/result receipts, compares original/candidate Engine and deployment state and current trust before/after, and repeats native source/candidate inventory observations. Successful stopped owned helpers can then be removed by exact ID; no Docker image or volume is deleted. Failed helpers are stopped and retained for diagnosis. Host observations alone do not replace a borrowed exclusive Store/source/target execution fence; integration into that session remains the next implementation step.
+
+Run the bounded copy safety tests from the Manager repository:
+
+```sh
+node --test scripts/runtime-probe/copy.test.mjs
+```
+
+The tests use fresh synthetic filesystem scopes and cover exact bytes/modes/original identity, existing destination preservation, symlink/hardlink/set-ID refusal, byte/entry/depth bounds and parent aliases. Windows filesystem execution is not qualified by these Unix owner tests.
+
+## Borrowed execution integration
+
+`ExecutionSession::with_runtime_compatibility` now keeps the existing exclusive Store/profile authority and both source/candidate operation locks across original/candidate physical observations, actual target runtime execution and final physical/configuration/receipt checks. It requalifies the current retained signed OCI artifact, checks the actual Engine image ID/OS/architecture/RootFS, and confirms the probe DB copy matches the just-observed candidate physical proof. Current signature/authority are rechecked before exposing a borrowed opaque observation to the callback and again after it returns. The typed proof cannot escape that callback. The diagnostic CLI exports JSON only, never a reusable preflight permit.
+
+The CLI shape is `qualify-runtime-compatibility --profile <private absolute path> --installation default --artifact <verified archive> --staging-parent <fresh private parent outside profile> --python <canonical Python path> --source-commit <expected development label> --maintenance-image sha256:<qualified maintenance ID> --apps-closed`. It stages a new retained artifact; use only an already prepared, signature-valid development linux/arm64 unchanged-schema plan with stopped independently restored candidate and quiesced external writers. The API refuses changed-schema releases instead of assuming compatibility. Existing current coherent recovery, owned preflight/apply, changed-schema migration, image-only rollback, full recovery activation and native Windows qualification remain required.
+
+### Same-fence current recovery and runtime observation
+
+`ExecutionSession::with_current_recovery_runtime` combines the full current
+host/trust ciphertext comparison, source and restored candidate database/blob/
+configuration/image observations, and the actual target-runtime probe under the
+same retained exclusive Store/profile and source/candidate operation guards.
+It rejects historical or unbound checkpoint catalogs before Engine work. The
+runtime's physical database observations must match the surrounding full recovery
+observations; matching logical inventories alone is insufficient.
+
+The callback borrows an opaque `CurrentRecoveryRuntime` only after common final
+checks. Saved JSON cannot recreate it. Archive authentication/current-byte
+comparison is not host extraction or lost-authority recovery, and this method
+neither produces an update `Preflight` nor writes Applying. Those executor and
+coherent recovery gates remain required. Larger datasets and changed-schema
+migration require the complete original acceptance rather than this bounded
+unchanged-schema development observer.
+
+The diagnostic CLI is:
+
+```text
+exhibitos-update qualify-current-recovery-runtime --profile <private-profile> --installation default --artifact <immutable-signed-artifact> --staging-parent <fresh-private-outside-profile> --python <canonical-python> --source-commit <image-source-label> --maintenance-image sha256:<qualified-image-id> --export-parent <private-outside-profile> --host-archive <current-host.bin> --trust-archive <current-trust.bin> --key <external-private-32-byte-key> --pair-binding <current-source-bound-catalog> --external-writers-quiesced --apps-closed
+```
+
+All input archives must belong to the exact currently retained authority/plan;
+renewing a development release does not make an older checkpoint current. No
+caller success flags, raw plan or image overrides authorize execution. The
+current signed release is reverified before and after the callback. The three
+fresh image export scopes are retired only after all observations and final
+checks succeed; failures retain their metadata/materials. No persistent database
+probe volume is created or removed. The existing 14GiB pre-observation budget and
+plan-required space plus 6GiB final floor remain enforced.

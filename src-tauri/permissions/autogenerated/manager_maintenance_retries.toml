@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-maintenance-retries"
+description = "Enables the manager_maintenance_retries command without any pre-configured scope."
+commands.allow = ["manager_maintenance_retries"]
+
+[[permission]]
+identifier = "deny-manager-maintenance-retries"
+description = "Denies the manager_maintenance_retries command without any pre-configured scope."
+commands.deny = ["manager_maintenance_retries"]

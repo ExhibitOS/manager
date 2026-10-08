@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-maintenance-context"
+description = "Enables the manager_maintenance_context command without any pre-configured scope."
+commands.allow = ["manager_maintenance_context"]
+
+[[permission]]
+identifier = "deny-manager-maintenance-context"
+description = "Denies the manager_maintenance_context command without any pre-configured scope."
+commands.deny = ["manager_maintenance_context"]
