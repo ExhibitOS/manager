@@ -3,6 +3,23 @@ use exhibitos_lifecycle::{Action, LifecycleService};
 use std::path::PathBuf;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.len() == 2 && args[1] == "--local-network-capabilities" {
+        println!(
+            "{}",
+            serde_json::json!({"version":1,"mode":"explicit-rfc1918-v1","readOnlySelector":true})
+        );
+        return;
+    }
+    if args.len() == 2 && args[1] == "--choose-explicit-local-network" {
+        match exhibitos_lifecycle::choose_explicit_local_network() {
+            Ok(p) => println!("{}", serde_json::to_string(&p).unwrap()),
+            Err(e) => {
+                println!("{}", serde_json::to_string(&e).unwrap());
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if !matches!(args.len(), 4 | 6 | 7 | 8 | 9 | 12)
         || args[1] != "--root"
         || (args.len() == 6

@@ -81,6 +81,7 @@ mod tests {
     use super::*;
     fn manifest(reference: String) -> BundleManifest {
         BundleManifest {
+            explicit_local_network: None,
             schema_version: "1.0.0-draft.1".into(),
             bundle_id: "cached-fixture".into(),
             version: "0.1.0".into(),
