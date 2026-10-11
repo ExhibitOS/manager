@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-remote"
+description = "Enables the manager_remote command without any pre-configured scope."
+commands.allow = ["manager_remote"]
+
+[[permission]]
+identifier = "deny-manager-remote"
+description = "Denies the manager_remote command without any pre-configured scope."
+commands.deny = ["manager_remote"]
