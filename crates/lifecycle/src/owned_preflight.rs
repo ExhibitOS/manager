@@ -151,9 +151,91 @@ impl<'store> ExecutionSession<'store> {
         Ok(permit)
     }
 }
+/// Native references saved by a live full recovery permit are not an admission
+/// permit. Future execution must freshly repeat the original qualification.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegisteredExecutionReference<'a> {
+    format: u32,
+    id: &'a str,
+    installation_id: &'a str,
+    scope: &'a str,
+    operation_id: &'a str,
+    generation: u64,
+    registry_sha256: String,
+    artifact: &'a Path,
+    artifact_sha256: &'a str,
+    artifact_bytes: u64,
+    python: &'a Path,
+    source_commit: &'a str,
+    maintenance_image: &'a str,
+    export_parent: &'a Path,
+    host_archive: &'a Path,
+    trust_archive: &'a Path,
+    pair_binding: &'a Path,
+    key_file: &'a Path,
+    qualification_destination: &'a Path,
+    qualification_sha256: String,
+    created_at: u64,
+}
 impl<'session, 'store, 'inputs> OwnedPreflight<'session, 'store, 'inputs> {
     pub fn receipt(&self) -> &Value {
         &self.receipt
+    }
+    /// Native-only registration from this live permit; never accepts arbitrary
+    /// paths or saved success flags and never begins or executes an update.
+    pub fn register_execution_reference(&mut self) -> Result<Value> {
+        self.recheck()?;
+        let root = self.session.store.profile.join("update-execution-references");
+        match fs::symlink_metadata(&root) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                installations::new_directory(&root)?;
+            }
+            Ok(_) => installations::private_directory(&root)?,
+            Err(_) => return Err(err("UPDATE_REFERENCE_INVALID")),
+        }
+        if fs::read_dir(&root).map_err(|_| err("UPDATE_REFERENCE_INVALID"))?
+            .take(128).count() >= 128 {
+            return Err(err("UPDATE_REFERENCE_QUOTA"));
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let created_at = release_now()?;
+        let record = RegisteredExecutionReference {
+            format: 1,
+            id: &id,
+            installation_id: &self.artifact.plan.source_instance,
+            scope: &self.session.store.installation,
+            operation_id: &self.artifact.plan.operation_id,
+            generation: self.artifact.generation,
+            registry_sha256: crate::digest(&self.session.registry),
+            artifact: self.artifact.staged.path(),
+            artifact_sha256: &self.artifact.verified.release.artifact.sha256,
+            artifact_bytes: self.artifact.verified.release.artifact.bytes,
+            python: self.inputs.python,
+            source_commit: self.inputs.source_commit,
+            maintenance_image: self.inputs.maintenance_image,
+            export_parent: self.inputs.export_parent,
+            host_archive: self.inputs.checkpoint.host,
+            trust_archive: self.inputs.checkpoint.trust,
+            pair_binding: self.inputs.checkpoint.binding,
+            key_file: self.key_file,
+            qualification_destination: self.destination,
+            qualification_sha256: crate::digest(&serde_json::to_vec(&self.receipt)
+                .map_err(|_| err("UPDATE_REFERENCE_INVALID"))?),
+            created_at,
+        };
+        let bytes = serde_json::to_vec(&record)
+            .map_err(|_| err("UPDATE_REFERENCE_INVALID"))?;
+        // Secret bytes are absent; re-observe original evidence before publication.
+        self.recheck()?;
+        crate::write_private_new(&root, &format!("{id}.json"), &bytes, 16 * 1024)?;
+        File::open(&root).and_then(|file| file.sync_all())
+            .map_err(|_| err("UPDATE_REFERENCE_UNCERTAIN"))?;
+        Ok(serde_json::json!({"referenceId":id,
+            "installationId":self.artifact.plan.source_instance,
+            "operationId":self.artifact.plan.operation_id,
+            "generation":self.artifact.generation,"registered":true,
+            "executionStarted":false,"createdAt":created_at}))
     }
     fn recheck(&mut self) -> Result<()> {
         self.session.check()?;
