@@ -642,6 +642,26 @@ async fn manager_open_exhibition(
     })
     .await
 }
+// The current selection/readiness guard supplies the origin. IPC accepts no URL.
+fn oex_studio_url(origin: &str) -> Result<String, LifecycleError> {
+    if !allowed_exhibition_url(origin) { return Err(error("MANAGER_OPEN_URL")); }
+    let mut url = Url::parse(origin).map_err(|_| error("MANAGER_OPEN_URL"))?;
+    url.set_path("/studio");
+    Ok(url.into())
+}
+#[tauri::command]
+async fn manager_open_oex(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    selection_token: String,
+) -> Result<(), LifecycleError> {
+    caller(&window)?;
+    blocking(state.0.clone(), selection_token, |service| {
+        // open_url requires fresh native running/readiness and the installed port.
+        let url = oex_studio_url(&service.open_url()?)?;
+        open::that_detached(url).map_err(|_| error("MANAGER_OPEN_FAILED"))
+    }).await
+}
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let arguments: Vec<std::ffi::OsString> = std::env::args_os().collect();
@@ -691,6 +711,7 @@ pub fn run() {
             manager_jobs,
             manager_logs,
             manager_open_exhibition,
+            manager_open_oex,
             manager_verify_backup,
             manager_create_backup,
             manager_backup_jobs,
@@ -989,7 +1010,10 @@ mod tests {
             "file:///tmp/exhibition",
         ] {
             assert!(!allowed_exhibition_url(target));
+            assert!(oex_studio_url(target).is_err());
         }
         assert!(allowed_exhibition_url("http://127.0.0.1:3000/"));
+        assert_eq!(oex_studio_url("http://127.0.0.1:3000/").unwrap(), "http://127.0.0.1:3000/studio");
+        assert_eq!(oex_studio_url("http://127.0.0.1:3001/studio").unwrap(), "http://127.0.0.1:3001/studio");
     }
 }
