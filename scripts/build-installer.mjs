@@ -72,10 +72,12 @@ export async function planInstaller({repo,platform=process.platform,architecture
 async function inventory(plan){
   await parents(plan.output);const directory=await named(plan.output,'directory'),names=(await readdir(plan.output)).sort();
   if(!names.length||names.length>8)fail('INSTALLER_ARTIFACT_COUNT_INVALID');
-  const handles=[],artifacts=[];let total=0;
+  const handles=[],artifacts=[],packagingAuxiliaries=[];let total=0;
+  const allowedAuxiliaries=plan.profile.bundle==='dmg'?new Set(['bundle_dmg.sh','icon.icns']):new Set();
   try{
     for(const name of names){
-      if(!/^[a-zA-Z0-9][a-zA-Z0-9._ -]{0,180}$/.test(name)||!name.endsWith(plan.profile.suffix)||!new RegExp('(?:^|[_ -])'+plan.version.replaceAll('.','\\.')+'(?:[_ -]|\\.)').test(name))fail('INSTALLER_ARTIFACT_INVALID');
+      const auxiliary=allowedAuxiliaries.has(name);
+      if(!auxiliary && (!/^[a-zA-Z0-9][a-zA-Z0-9._ -]{0,180}$/.test(name)||!name.endsWith(plan.profile.suffix)||!new RegExp('(?:^|[_ -])'+plan.version.replaceAll('.','\\.')+'(?:[_ -]|\\.)').test(name)))fail('INSTALLER_ARTIFACT_INVALID');
       const path=join(plan.output,name),before=await named(path,'file');
       if(before.size<=0n||before.size>BigInt(maximumArtifactBytes))fail('INSTALLER_FILE_TOO_LARGE');
       total+=Number(before.size);if(total>4*1024**3)fail('INSTALLER_FILE_TOO_LARGE');
@@ -84,13 +86,14 @@ async function inventory(plan){
       const digest=createHash('sha256'),buffer=Buffer.alloc(65536);let count=0;
       for(;;){const r=await handle.read(buffer,0,buffer.length,count);if(!r.bytesRead)break;count+=r.bytesRead;if(BigInt(count)>before.size)fail('INSTALLER_FILE_CHANGED');digest.update(buffer.subarray(0,r.bytesRead));}
       if(BigInt(count)!==before.size)fail('INSTALLER_FILE_CHANGED');
-      artifacts.push({name,bytes:count,sha256:digest.digest('hex')});
+      (auxiliary?packagingAuxiliaries:artifacts).push({name,bytes:count,sha256:digest.digest('hex')});
     }
     for(const {path,handle,before} of handles)if(!same(before,await handle.stat({bigint:true}))||!same(before,await named(path,'file')))fail('INSTALLER_FILE_CHANGED');
     if(!same(directory,await named(plan.output,'directory'))||JSON.stringify(names)!==JSON.stringify((await readdir(plan.output)).sort()))fail('INSTALLER_OUTPUT_CHANGED');
     unchangedSource(plan.repo,plan.source);
     for(const input of plan.inputHashes)if(hash(await bytes(join(plan.repo,input.name),16*1024**2))!==input.sha256)fail('INSTALLER_SOURCE_CHANGED');
-    return artifacts;
+    if(!artifacts.length)fail('INSTALLER_ARTIFACT_COUNT_INVALID');
+    return {artifacts,packagingAuxiliaries};
   }finally{await Promise.allSettled(handles.map(({handle})=>handle.close()));}
 }
 export async function buildInstaller(options,{runBuild}={}){
@@ -102,7 +105,8 @@ export async function buildInstaller(options,{runBuild}={}){
     catch{fail('INSTALLER_BUILD_FAILED');}
   }
   if(hash(await bytes(plan.command.args[0],1024*1024))!==plan.cliSha256)fail('INSTALLER_TOOL_CHANGED');
-  return{format:1,observedAt:new Date().toISOString(),platform:plan.platform,architecture:plan.architecture,version:plan.version,source:plan.source,inputHashes:plan.inputHashes,bundle:plan.profile.bundle,packagingToolSha256:plan.cliSha256,artifacts:await inventory(plan),distribution:'unsigned-prototype',signingRequested:false,signatureVerification:'not_run',productionSigned:false,scope:'Source-fenced local packaging and byte checksums only; not signing, installation, uninstall, update, offline Runtime or recovery qualification.'};
+  const result=await inventory(plan);
+  return{format:1,observedAt:new Date().toISOString(),platform:plan.platform,architecture:plan.architecture,version:plan.version,source:plan.source,inputHashes:plan.inputHashes,bundle:plan.profile.bundle,packagingToolSha256:plan.cliSha256,artifacts:result.artifacts,packagingAuxiliaries:result.packagingAuxiliaries,distribution:'unsigned-prototype',signingRequested:false,signatureVerification:'not_run',productionSigned:false,scope:'Source-fenced local packaging and byte checksums only; not signing, installation, uninstall, update, offline Runtime or recovery qualification.'};
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){
   try{

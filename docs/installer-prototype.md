@@ -34,7 +34,7 @@ if ($LASTEXITCODE -ne 0) { throw "Installer build failed; preserve the receipt a
 
 ## 결과와 보존
 
-산출물은 Windows `target/release/bundle/nsis`, macOS `target/release/bundle/dmg`에 생성한다. 영수증은 실제 각 설치 파일의 이름·크기·SHA256과 source commit/tree, version 및 입력 파일 hash를 기록한다. 일반 경로·비밀번호·키 내용은 영수증에 넣지 않는다. source와 도구·파일 바이트가 제작 도중 바뀌면 성공 영수증을 내지 않는다. symlink/hardlink 설치 파일과 기존 출력도 거부한다.
+산출물은 Windows `target/release/bundle/nsis`, macOS `target/release/bundle/dmg`에 생성한다. macOS Tauri가 남기는 정확한 보조 파일 `bundle_dmg.sh`, `icon.icns`는 `packagingAuxiliaries`에 별도로 이름·크기·SHA256을 기록하며 설치 파일로 세지 않는다. 그 외 예상하지 않은 파일과 symlink/hardlink는 계속 거부한다. 영수증은 실제 각 설치 파일의 이름·크기·SHA256과 source commit/tree, version 및 입력 파일 hash를 기록한다. 일반 경로·비밀번호·키 내용은 영수증에 넣지 않는다. source와 도구·파일 바이트가 제작 도중 바뀌면 성공 영수증을 내지 않는다. symlink/hardlink 설치 파일과 기존 출력도 거부한다.
 
 깨끗한 source에만 실행한다. Windows의 기존 자동 생성 permission 파일에 `M` 표시가 있으면 보존하고 별도 checkout을 사용한다. 기존 사용자 변경을 reset하거나 현재 앱·복구 자료를 삭제해 실행 조건을 맞추지 않는다. 실패 시 부분 출력과 로그를 보존하고 다음 시도는 별도 검토한 깨끗한 checkout에서 수행한다.
 

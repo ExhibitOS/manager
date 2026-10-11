@@ -32,6 +32,15 @@ test('Windows fixed Node/Tauri command and genuine file checksum, signing inputs
  const prior=process.env.TAURI_SIGNING_PRIVATE_KEY;process.env.TAURI_SIGNING_PRIVATE_KEY='synthetic-unused';t.after(()=>{if(prior===undefined)delete process.env.TAURI_SIGNING_PRIVATE_KEY;else process.env.TAURI_SIGNING_PRIVATE_KEY=prior;});
  const result=await buildInstaller(options(repo),{runBuild:async(cmd,ctx)=>{calls++;assert.equal(cmd.executable,process.execPath);assert.deepEqual(cmd.args.slice(1),['build','--ci','--bundles','nsis','--','--locked']);assert.equal(ctx.env.TAURI_SIGNING_PRIVATE_KEY,undefined);await artifact(repo);}});
  assert.equal(calls,1);assert.equal(result.productionSigned,false);assert.equal(result.distribution,'unsigned-prototype');assert.equal(result.artifacts[0].bytes,19);assert.equal(result.artifacts[0].sha256,createHash('sha256').update('synthetic installer').digest('hex'));assert.equal(JSON.stringify(result).includes(repo),false);
+ const macRepo=await fixture(t);
+ const mac=await buildInstaller({repo:macRepo,platform:'darwin',architecture:'arm64'},{runBuild:async()=>{
+  const root=join(macRepo,'target/release/bundle/dmg');await mkdir(root,{recursive:true});
+  await writeFile(join(root,'ExhibitOS Manager_0.1.0_aarch64.dmg'),'synthetic dmg');
+  await writeFile(join(root,'bundle_dmg.sh'),'synthetic packaging script');
+  await writeFile(join(root,'icon.icns'),'synthetic icon');
+ }});
+ assert.equal(mac.artifacts.length,1);assert.deepEqual(mac.packagingAuxiliaries.map(x=>x.name),['bundle_dmg.sh','icon.icns']);
+ assert.equal(mac.packagingAuxiliaries[0].sha256,createHash('sha256').update('synthetic packaging script').digest('hex'));
 });
 test('stale outputs and dirty sources refuse before builder; preserve bytes',async t=>{
  const repo=await fixture(t),path=await artifact(repo);let calls=0;
@@ -45,13 +54,23 @@ test('build failure retains partial outputs without receipt',async t=>{
  const repo=await fixture(t);await assert.rejects(()=>buildInstaller(options(repo),{runBuild:async()=>{await artifact(repo);throw Error('synthetic failure');}}),/synthetic failure/);assert.equal(await readFile(join(repo,'target/release/bundle/nsis/ExhibitOS Manager_0.1.0_x64-setup.exe'),'utf8'),'synthetic installer');
 });
 test('wrong version/path/hardlink and post-build source/tool drift refuse positive receipt',async t=>{
- for(const kind of ['version','version-prefix','name','hardlink','source','tool']){
+ for(const kind of ['version','version-prefix','name','hardlink','source','tool','unexpected']){
   const repo=await fixture(t);
   await assert.rejects(()=>buildInstaller(options(repo),{runBuild:async()=>{
    const path=await artifact(repo,kind==='version'?'Manager_0.2.0.exe':kind==='version-prefix'?'Manager_0.1.00.exe':kind==='name'?'bad;0.1.0.exe':undefined);
+   if(kind==='unexpected')await artifact(repo,'icon.icns');
    if(kind==='hardlink')await link(path,join(repo,'alias'));
    if(kind==='source')await writeFile(join(repo,'Cargo.lock'),'changed');
    if(kind==='tool')await writeFile(join(repo,'node_modules/@tauri-apps/cli/tauri.js'),'changed');
-  }}),new RegExp(({version:'INSTALLER_ARTIFACT_INVALID','version-prefix':'INSTALLER_ARTIFACT_INVALID',name:'INSTALLER_ARTIFACT_INVALID',hardlink:'INSTALLER_PATH_UNSAFE',source:'INSTALLER_SOURCE_CHANGED',tool:'INSTALLER_TOOL_CHANGED'})[kind]));
+  }}),new RegExp(({version:'INSTALLER_ARTIFACT_INVALID','version-prefix':'INSTALLER_ARTIFACT_INVALID',name:'INSTALLER_ARTIFACT_INVALID',hardlink:'INSTALLER_PATH_UNSAFE',source:'INSTALLER_SOURCE_CHANGED',tool:'INSTALLER_TOOL_CHANGED',unexpected:'INSTALLER_ARTIFACT_INVALID'})[kind]));
+ }
+ for(const kind of ['auxiliary-symlink','unexpected']){
+  const repo=await fixture(t);
+  await assert.rejects(()=>buildInstaller({repo,platform:'darwin',architecture:'arm64'},{runBuild:async()=>{
+   const root=join(repo,'target/release/bundle/dmg');await mkdir(root,{recursive:true});
+   const dmg=join(root,'Manager_0.1.0_arm64.dmg');await writeFile(dmg,'synthetic dmg');
+   if(kind==='auxiliary-symlink')await symlink(dmg,join(root,'bundle_dmg.sh'));
+   else await writeFile(join(root,'unrelated.txt'),'unexpected');
+  }}),kind==='auxiliary-symlink'?/INSTALLER_PATH_UNSAFE/:/INSTALLER_ARTIFACT_INVALID/);
  }
 });
