@@ -151,3 +151,5 @@ The OEX action opens `/studio` on the freshly checked selected installation's re
 Source integration does not establish actual native GUI/Studio import/export qualification or complete T08-02. Signed update execution remains unconnected and the existing full native recovery qualification remains pending.
 
 OEX connection validation at source `9b52e367044082ecfce5233844af3f0e5b46f023`: TypeScript and the existing ESLint scope passed; three focused IPC tests passed (selection token only, native readiness refusal, malformed selection refusal). The existing release desktop URL regression passed (1 passed, 13 filtered), including the fixed Studio route and remote URL refusals; it compiled the native command with locked offline dependencies. These checks do not launch the native app/browser or run an OEX upload, export or server job. Actual native GUI/Studio job qualification remains NOT_RUN.
+
+[배포 준비 마법사](docs/deployment-wizard.md)는 로컬·보유 서버 OED와 기존 AWS 설정을 비밀값 없이 생성합니다. 실제 원격 배포·도메인·백업·업데이트 작업은 아직 연결되지 않았으며 클라우드 지출은 허용하지 않습니다.
