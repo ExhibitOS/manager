@@ -199,9 +199,12 @@ fn publish_bytes(root: &Path, name: &str, bytes: &[u8]) -> Result<(), Error> {
 }
 impl Vault {
     fn open(root: &Path, scope: &str, expected: Option<&str>) -> Result<Self, Error> {
+        Self::open_mode(root, scope, expected, false)
+    }
+    fn open_mode(root: &Path, scope: &str, expected: Option<&str>, inspection: bool) -> Result<Self, Error> {
         let loc = locator(root, scope)?;
         let li = private_dir(&loc)?;
-        let ll = lock(&loc)?;
+        let ll = if inspection { existing_lock(&loc)? } else { lock(&loc)? };
         if exact_names(&loc)? != vec!["binding.json", "trust.lock"] {
             return Err(invalid());
         }
@@ -221,7 +224,7 @@ impl Vault {
             return Err(invalid());
         }
         let ri = private_dir(&binding.vault)?;
-        let vl = lock(&binding.vault)?;
+        let vl = if inspection { existing_lock(&binding.vault)? } else { lock(&binding.vault)? };
         let value = Self {
             locator: loc,
             locator_identity: li,
@@ -236,6 +239,13 @@ impl Vault {
         };
         value.check_identity()?;
         Ok(value)
+    }
+    pub(super) fn open_for_inspection(store: &Store) -> Result<Option<Self>, Error> {
+        let loc = locator(&store.root, &store.scope)?;
+        match &store.current.recovery_binding {
+            Some(expected) => Ok(Some(Self::open_mode(&store.root, &store.scope, Some(expected), true)?)),
+            None => { if !absent(&loc)? { return Err(Error::TrustWriteUncertain); } Ok(None) }
+        }
     }
     pub(super) fn open_for(store: &Store) -> Result<Option<Self>, Error> {
         let loc = locator(&store.root, &store.scope)?;
