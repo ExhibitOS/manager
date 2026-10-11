@@ -358,6 +358,46 @@ fn original_rollback_authority_matches(
     })
 }
 
+// Optional remote intent binding. Legacy local callers retain the original contract.
+fn full_update_authority_options(args: &[String]) -> Result<Option<(&str, u64)>, &'static str> {
+    if ![30, 34].contains(&args.len())
+        || args[1] != "execute-full-update"
+        || args.last().map(String::as_str) != Some("--apps-closed")
+    {
+        return Err("UPDATE_USAGE");
+    }
+    if args.len() == 30 {
+        return if args[28] == "--external-writers-quiesced" {
+            Ok(None)
+        } else {
+            Err("UPDATE_USAGE")
+        };
+    }
+    if args[28] != "--operation-id"
+        || args[30] != "--expected-generation"
+        || args[32] != "--external-writers-quiesced"
+    {
+        return Err("UPDATE_USAGE");
+    }
+    let operation = uuid::Uuid::parse_str(&args[29]).map_err(|_| "UPDATE_USAGE")?;
+    if operation.is_nil() || operation.hyphenated().to_string() != args[29] {
+        return Err("UPDATE_USAGE");
+    }
+    let generation = args[31].parse::<u64>().map_err(|_| "UPDATE_USAGE")?;
+    if generation == 0 || generation.to_string() != args[31] {
+        return Err("UPDATE_USAGE");
+    }
+    Ok(Some((args[29].as_str(), generation)))
+}
+fn full_update_authority_matches(
+    expected: Option<(&str, u64)>,
+    generation: u64,
+    operation: Option<&str>,
+    prepared: bool,
+) -> bool {
+    expected.is_none_or(|(id, wanted)| wanted == generation && operation == Some(id) && prepared)
+}
+
 fn migrated_runtime_options(args: &[String]) -> Result<(), &'static str> {
     let flags = [
         (1, "qualify-migrated-runtime-compatibility"),
@@ -706,8 +746,15 @@ fn run() -> Result<(), String> {
         let register = a[1] == "register-full-update-reference";
         let migrated = a[1] == "qualify-migrated-full-recovery-runtime";
         let full = a[1] == "qualify-full-recovery-runtime" || execute || register || migrated;
+        let expected_authority = if execute {
+            full_update_authority_options(&a).map_err(str::to_owned)?
+        } else {
+            None
+        };
         if a.len()
             != if migrated {
+                34
+            } else if execute && expected_authority.is_some() {
                 34
             } else if full {
                 30
@@ -726,7 +773,7 @@ fn run() -> Result<(), String> {
             || a[24] != "--pair-binding"
             || full && a[26] != "--host-extraction"
             || migrated && (a[28] != "--target-catalog" || a[30] != "--target-catalog-sha256")
-            || a[if migrated {
+            || a[if migrated || execute && expected_authority.is_some() {
                 32
             } else if full {
                 28
@@ -743,6 +790,22 @@ fn run() -> Result<(), String> {
         let mut key = checkpoint_key(Path::new(&a[23]), profile)?;
         let result = (|| {
             let mut store = Store::open(profile, installation).map_err(code)?;
+            // Same exclusive Store/profile owner is retained through execution.
+            // Bind remote review before checkpoint/staging/registration or begin.
+            if execute
+                && !full_update_authority_matches(
+                    expected_authority,
+                    store.receipt().generation,
+                    store
+                        .intent()
+                        .map(|i| i.update().plan().operation_id.as_str()),
+                    store.intent().is_some_and(|i| {
+                        i.update().stage() == exhibitos_lifecycle::update::Stage::Prepared
+                    }),
+                )
+            {
+                return Err("UPDATE_EXECUTION_AUTHORITY_CHANGED".into());
+            }
             #[cfg(unix)]
             if execute || register {
                 store.verify_authority_recovery().map_err(code)?;
@@ -789,7 +852,8 @@ fn run() -> Result<(), String> {
                     )
                     .map_err(|e| e.code.to_string())?;
                 if register {
-                    return admitted.register_execution_reference()
+                    return admitted
+                        .register_execution_reference()
                         .map_err(|e| e.code.to_string());
                 }
                 let started = admitted.begin().map_err(|e| e.code.to_string())?;
@@ -1771,5 +1835,65 @@ mod migrated_runtime_cli_tests {
             changed.extend([flag.into(), "untrusted".into()]);
             assert!(migrated_runtime_options(&changed).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod full_update_authority_cli_tests {
+    use super::*;
+    #[test]
+    fn remote_full_update_requires_canonical_pair_and_exact_prepared_authority() {
+        let mut args = vec![String::new(); 30];
+        args[1] = "execute-full-update".into();
+        args[28] = "--external-writers-quiesced".into();
+        args[29] = "--apps-closed".into();
+        assert_eq!(full_update_authority_options(&args).unwrap(), None);
+        args.truncate(28);
+        let id = "70000000-0000-4000-8000-000000000002";
+        args.extend(
+            [
+                "--operation-id",
+                id,
+                "--expected-generation",
+                "53",
+                "--external-writers-quiesced",
+                "--apps-closed",
+            ]
+            .map(str::to_owned),
+        );
+        let expected = full_update_authority_options(&args).unwrap();
+        assert_eq!(expected, Some((id, 53)));
+        assert!(full_update_authority_matches(expected, 53, Some(id), true));
+        assert!(!full_update_authority_matches(expected, 54, Some(id), true));
+        assert!(!full_update_authority_matches(
+            expected,
+            53,
+            Some("other"),
+            true
+        ));
+        assert!(!full_update_authority_matches(expected, 53, None, true));
+        assert!(!full_update_authority_matches(
+            expected,
+            53,
+            Some(id),
+            false
+        ));
+        for (index, value) in [
+            (29, "bad"),
+            (29, "00000000-0000-0000-0000-000000000000"),
+            (31, "0"),
+            (31, "053"),
+            (31, "18446744073709551616"),
+            (28, "--wrong"),
+            (30, "--wrong"),
+            (32, "--wrong"),
+            (33, "--wrong"),
+        ] {
+            let mut invalid = args.clone();
+            invalid[index] = value.into();
+            assert!(full_update_authority_options(&invalid).is_err());
+        }
+        args.pop();
+        assert!(full_update_authority_options(&args).is_err());
     }
 }

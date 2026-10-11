@@ -26,3 +26,6 @@ key.bin
 
 # Stable logical-profile lock infrastructure; never archive/unlink as data
 .exhibitos-profile-session-*.lock
+
+# Verified public runtime resources are regenerated, never committed binaries.
+/src-tauri/remote-runtime/generated/

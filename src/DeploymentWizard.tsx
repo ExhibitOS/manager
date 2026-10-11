@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import {useState} from 'react';
+import {RemoteDeployment} from './RemoteDeployment';
 import {cloudConfiguration,cloudSummary,deploymentDescriptor,descriptorText,type CredentialReference,type CloudInput} from './deployment-wizard';
 function download(name:string,text:string){const url=URL.createObjectURL(new Blob([text],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 export function DeploymentWizard(){
@@ -9,17 +10,17 @@ export function DeploymentWizard(){
  const [dbVariable,setDbVariable]=useState('EXHIBITOS_DATABASE_PASSWORD'),[sshVariable,setSshVariable]=useState('EXHIBITOS_SSH_KEY');
  const [service,setService]=useState('exhibitos.deployment'),[dbAccount,setDbAccount]=useState('database-password'),[sshAccount,setSshAccount]=useState('ssh-key');
  const [aws,setAws]=useState<CloudInput>({provider:'aws',account_id:'',region:'',project:'',ami_id:'',instance_type:'t3.small',subnet_id:'',security_group_ids:[],key_name:'',root_gib:20});
- const [review,setReview]=useState<{filename:string;text:string;summary:string}|null>(null),[error,setError]=useState('');
+ const [review,setReview]=useState<{filename:string;text:string;summary:string;oed?:ReturnType<typeof deploymentDescriptor>}|null>(null),[error,setError]=useState('');
  function changed(){setReview(null);setError('');}
  const db:CredentialReference=credential==='os-keychain'?{source:credential,service,account:dbAccount}:{source:'environment',variable:dbVariable};
  const ssh:CredentialReference=credential==='os-keychain'?{source:credential,service,account:sshAccount}:{source:'environment',variable:sshVariable};
  function prepare(event:React.FormEvent){event.preventDefault();setReview(null);setError('');try{
   if(mode==='cloud'){const config=cloudConfiguration(aws),summary=cloudSummary(config);setReview({filename:'exhibitos-aws-config.json',text:descriptorText(config),summary:`${summary.changes[0]!.instanceType} · ${summary.changes[0]!.rootGiB} GiB · 월 비용 미확인 · 새 지출 허용 0 KRW.`});}
-  else{const oed=deploymentDescriptor(mode==='local'?{mode,image,database:{source:'environment',variable:dbVariable}}:{mode,image,database:db,host,port:Number(port),user,ssh});setReview({filename:'exhibitos-deployment.oed.json',text:descriptorText(oed),summary:'실행 포트13200 · PostgreSQL · 작품 전용 파일 영역. 인증 정보의 참조만 포함합니다.'});}
+  else{const oed=deploymentDescriptor(mode==='local'?{mode,image,database:{source:'environment',variable:dbVariable}}:{mode,image,database:db,host,port:Number(port),user,ssh});setReview({filename:'exhibitos-deployment.oed.json',text:descriptorText(oed),oed,summary:'실행 포트13200 · PostgreSQL · 작품 전용 파일 영역. 인증 정보의 참조만 포함합니다.'});}
  }catch{setError('입력을 확인하세요. 고정된 이미지 식별자와 인증 정보의 참조가 필요합니다. 비밀번호나 키 내용은 입력하지 마세요.');}}
  function field(label:string,value:string,set:(v:string)=>void){return <label>{label}<input value={value} maxLength={512} onChange={e=>{changed();set(e.target.value);}} autoComplete="off"/></label>;}
  function awsField(key:'account_id'|'region'|'project'|'ami_id'|'subnet_id'|'key_name',label:string){return field(label,aws[key],v=>setAws({...aws,[key]:v}));}
- return <section aria-labelledby="deployment-wizard-title"><h2 id="deployment-wizard-title">배포 준비</h2><p>배포 장소를 선택하고 실행 전 확인할 파일을 만듭니다. 이 화면은 서버·DNS·데이터를 변경하거나 인증 정보를 읽지 않습니다.</p>
+ return <section aria-labelledby="deployment-wizard-title"><h2 id="deployment-wizard-title">배포 준비</h2><p>배포 장소를 선택하고 실행 전 확인할 파일을 만듭니다. 파일 준비는 서버를 변경하거나 인증 정보를 읽지 않습니다. 보유 서버 연결·실행은 아래에서 별도로 동의한 경우에만 수행합니다.</p>
  <form onSubmit={prepare} onReset={()=>{changed();}}>
  <label>안내 수준<select value={level} onChange={e=>setLevel(e.target.value)}><option value="beginner">처음 사용</option><option value="intermediate">서버 운영 경험 있음</option><option value="advanced">직접 배포 설정</option></select></label>
  <label>배포 장소<select value={mode} onChange={e=>{changed();setMode(e.target.value as typeof mode);}}><option value="local">내 컴퓨터</option><option value="server">보유한 Linux 서버</option><option value="cloud">클라우드 서버 준비 (AWS)</option></select></label>
@@ -34,8 +35,9 @@ export function DeploymentWizard(){
  <button type="submit">입력 확인·파일 준비</button></form>
  {error&&<p role="alert">{error}</p>}
  {review&&<div role="status"><strong>준비 파일 생성됨 · 배포 미실행</strong><p>{review.summary}</p><button onClick={()=>download(review.filename,review.text)}>준비 파일 저장</button><details><summary>파일 내용 확인 (비밀값 없음)</summary><pre>{review.text}</pre></details></div>}
+ {mode==='server'&&review?.oed&&<RemoteDeployment key={review.text} oed={review.oed}/>}
  <ol><li>{mode==='local'?'만든 OED는 준비 문서입니다. 아래 기존 전시 설치·시작에서 검증된 패키지를 사용하세요. 이 파일을 로컬 설치로 가져오는 연결은 아직 제공하지 않습니다.':mode==='server'?'Generic SSH 실행기에서 OED와 확인한 known_hosts를 사용해 plan을 검토하세요. 고정된 서버 키 확인 없이 연결하지 않습니다.': '기존 provider dry-run에서 저장한 JSON을 확인하세요. 실행 파일·모듈·계정 비용 통제 검증 뒤의 실제 plan/apply는 별도 절차입니다.'}</li><li>원격 설치 후 실제 readiness와 로그를 확인하세요. 공개 도메인·DNS·TLS·방화벽은 운영자가 별도로 확인해야 합니다.</li><li>업데이트 전에 원본 전체 백업의 독립 복원을 확인하세요. 실패하면 저장한 작업·데이터를 보존하고 기존 rollback 절차를 사용하세요. 네트워크 오류를 성공으로 처리하지 않습니다.</li></ol>
  {mode==='cloud'&&<button onClick={()=>{changed();setMode('server');}}>보유 서버로 직접 배포 준비</button>}
- <p>원격 실행·상태·백업·업데이트·rollback 작업의 앱 연결은 아직 제공하지 않습니다. 준비 파일 생성은 배포 성공이나 복구 완료를 의미하지 않습니다.</p>
+ <p>준비한 보유 서버는 연결·실행 영역에서 실제 상태·로그를 확인할 수 있습니다. 백업·업데이트·원래 전체 복원은 준비된 서버 참조와 별도 동의로 요청합니다. 준비 파일 생성은 배포 성공이나 복구 완료를 의미하지 않습니다.</p>
  </section>;
 }

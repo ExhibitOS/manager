@@ -38,7 +38,10 @@
     },
     "resources": {
       "../licenses/profile-crypto/": "licenses/profile-crypto/",
-      "../licenses/signed-release/": "licenses/signed-release/"
+      "../licenses/signed-release/": "licenses/signed-release/",
+      "../vendor/deployment/": "vendor/deployment/",
+      "../scripts/remote-runner.mjs": "scripts/remote-runner.mjs",
+      "remote-runtime/": "remote-runtime/"
     }
   }
 }
