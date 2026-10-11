@@ -145,6 +145,47 @@ pub struct TrustReceipt {
     pub activated: bool,
     pub write_uncertain: bool,
 }
+/// Safe persisted status projection: never includes envelopes, paths, keys or payloads.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStatus {
+    pub installation_id: String,
+    pub authority_present: bool,
+    pub generation: Option<u64>,
+    pub stage: Option<crate::update::Stage>,
+    pub operation_id: Option<String>,
+    pub failure: Option<crate::update::Failure>,
+    pub changed_schema: bool,
+    pub write_uncertain: bool,
+}
+impl UpdateStatus {
+    pub(crate) fn absent(installation: &str) -> Self {
+        Self { installation_id: installation.into(), authority_present: false,
+            generation: None, stage: None, operation_id: None, failure: None,
+            changed_schema: false, write_uncertain: false }
+    }
+}
+/// Inspect persisted authority without interruption recovery or creation of trust.
+/// Busy/corrupt authority remains an error; absence never provisions a policy.
+pub fn inspect_update_status(profile: &Path, installation: &str) -> Result<UpdateStatus, Error> {
+    #[cfg(windows)]
+    { let _ = (profile, installation); Err(Error::TrustPlatformUnverified) }
+    #[cfg(not(windows))]
+    {
+        let store = match Store::open_for_inspection(profile, installation) {
+            Ok(store) => store,
+            Err(Error::TrustMissing) => return Ok(UpdateStatus::absent(installation)),
+            Err(error) => return Err(error),
+        };
+        let intent = store.intent().map(UpdateIntent::update);
+        Ok(UpdateStatus { installation_id: installation.into(), authority_present: true,
+            generation: Some(store.receipt().generation), stage: intent.map(|u| u.stage()),
+            operation_id: intent.map(|u| u.plan().operation_id.clone()),
+            failure: intent.and_then(|u| u.failure()),
+            changed_schema: intent.is_some_and(|u| u.plan().source_schema != u.plan().target_schema),
+            write_uncertain: store.receipt().write_uncertain })
+    }
+}
 /// Holds the stable profile fence exclusively through verification/publication.
 /// Open never bootstraps missing/corrupt trust. The caller selects default or a
 /// registered installation UUID and must preserve that scope through recovery.
@@ -274,12 +315,13 @@ fn scope(
     profile: &Path,
     installation: &str,
 ) -> Result<(PathBuf, String, PathBuf, profile_backup::ProfileAnchor), Error> {
-    scope_with_anchor(profile, installation, true)
+    scope_with_anchor(profile, installation, true, false)
 }
 fn scope_with_anchor(
     profile: &Path,
     installation: &str,
     exclusive: bool,
+    inspection: bool,
 ) -> Result<(PathBuf, String, PathBuf, profile_backup::ProfileAnchor), Error> {
     if !profile.is_absolute() {
         return Err(invalid());
@@ -290,7 +332,9 @@ fn scope_with_anchor(
     if !cfg!(any(target_os = "macos", target_os = "linux")) {
         return Err(Error::TrustPlatformUnverified);
     }
-    let (profile, anchor) = profile_backup::anchor_lock(profile, exclusive).map_err(|e| {
+    let anchor = if inspection { profile_backup::inspect_anchor_lock(profile) }
+        else { profile_backup::anchor_lock(profile, exclusive) };
+    let (profile, anchor) = anchor.map_err(|e| {
         if e.code == "PROFILE_BUSY" {
             Error::TrustBusy
         } else {
@@ -518,6 +562,13 @@ fn lock(root: &Path) -> Result<File, Error> {
     f.try_lock_exclusive().map_err(|_| Error::TrustBusy)?;
     Ok(f)
 }
+#[cfg(unix)]
+fn existing_lock(root: &Path) -> Result<File, Error> {
+    installations::private_directory(root).map_err(|_| invalid())?;
+    let file = private_file(&root.join("trust.lock"), false)?;
+    file.try_lock_exclusive().map_err(|_| Error::TrustBusy)?;
+    Ok(file)
+}
 #[cfg(windows)]
 fn lock(root: &Path) -> Result<File, Error> {
     windows_root::NativeRoot::inspect(root)?.lock()
@@ -691,12 +742,31 @@ impl Store {
         recover_interruption: bool,
         exclusive: bool,
     ) -> Result<Self, Error> {
-        let (root, scope, profile, anchor) = scope_with_anchor(profile, installation, exclusive)?;
+        Self::open_mode_for_purpose(profile, installation, recover_interruption, exclusive, false)
+    }
+    fn open_for_inspection(profile: &Path, installation: &str) -> Result<Self, Error> {
+        Self::open_mode_for_purpose(profile, installation, false, false, true)
+    }
+    fn open_mode_for_purpose(
+        profile: &Path,
+        installation: &str,
+        recover_interruption: bool,
+        exclusive: bool,
+        inspection: bool,
+    ) -> Result<Self, Error> {
+        let (root, scope, profile, anchor) =
+            scope_with_anchor(profile, installation, exclusive, inspection)?;
         if !root.exists() {
             return Err(Error::TrustMissing);
         }
         #[cfg(windows)]
         let native_root = windows_root::NativeRoot::inspect(&root)?;
+        #[cfg(not(windows))]
+        let lock = if inspection {
+            // A status query must not bootstrap even a missing lock file.
+            existing_lock(&root)?
+        } else { lock(&root)? };
+        #[cfg(windows)]
         let lock = lock(&root)?;
         #[cfg(not(windows))]
         let root_identity = fs::symlink_metadata(&root).map_err(|_| invalid())?;
@@ -800,7 +870,9 @@ impl Store {
         };
         #[cfg(unix)]
         {
-            s.recovery = authority_recovery_vault::Vault::open_for(&s)?;
+            s.recovery = if inspection {
+                authority_recovery_vault::Vault::open_for_inspection(&s)?
+            } else { authority_recovery_vault::Vault::open_for(&s)? };
         }
         s.check_root()?;
         if recover_interruption && s.intent().is_some_and(|i| in_flight(i.update.stage())) {
@@ -1920,6 +1992,43 @@ mod tests {
                 crate::update::Stage::Prepared
             );
         }
+    }
+    #[test]
+    fn readonly_update_status_preserves_inflight_records_and_refuses_missing_lock() {
+        let (profile, mut store, verified) = prepared_fixture();
+        store.begin_update(observations(), &verified, 21).unwrap();
+        let root = store.root.clone();
+        let generation = store.receipt().generation;
+        let record = root.join(format!("{generation:020}.json"));
+        let original = fs::read(&record).unwrap();
+        assert!(matches!(inspect_update_status(&profile, "default"), Err(Error::TrustBusy)));
+        drop(store);
+        let status = inspect_update_status(&profile, "default").unwrap();
+        assert_eq!(status.stage, Some(crate::update::Stage::Applying));
+        assert_eq!(status.generation, Some(generation));
+        assert_eq!(fs::read(&record).unwrap(), original);
+        assert!(!root.join(format!("{:020}.json", generation + 1)).exists());
+        let json = serde_json::to_value(status).unwrap();
+        assert!(json.get("envelope").is_none());
+        assert!(json.get("keyId").is_none());
+        fs::rename(root.join("trust.lock"), root.join("retained-status-lock")).unwrap();
+        assert!(inspect_update_status(&profile, "default").is_err());
+        assert!(!root.join("trust.lock").exists());
+        assert_eq!(fs::read(&record).unwrap(), original);
+        fs::rename(root.join("retained-status-lock"), root.join("trust.lock")).unwrap();
+        use std::os::unix::fs::MetadataExt;
+        let parent = fs::canonicalize(profile.parent().unwrap()).unwrap();
+        let canonical = parent.join(profile.file_name().unwrap());
+        let name = format!(".exhibitos-profile-session-{}.lock", hash(canonical.to_str().unwrap().as_bytes()));
+        let anchor = parent.join(&name);
+        let retained = parent.join(format!("{name}.retained-status"));
+        let original_anchor = fs::metadata(&anchor).unwrap().ino();
+        fs::rename(&anchor, &retained).unwrap();
+        assert!(inspect_update_status(&profile, "default").is_err());
+        assert!(!anchor.exists());
+        fs::rename(retained, &anchor).unwrap();
+        assert_eq!(fs::metadata(&anchor).unwrap().ino(), original_anchor);
+        assert_eq!(fs::read(&record).unwrap(), original);
     }
     #[test]
     fn begin_rechecks_artifact_expiry_revocation_and_clock() {

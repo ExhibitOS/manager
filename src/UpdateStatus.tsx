@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: Apache-2.0
+import {useEffect,useRef,useState} from 'react';
+import {client,managerError,type UpdateStatus as Status,type ManagerError} from './lifecycle';
+const labels={prepared:'업데이트 준비 기록',applying:'업데이트 적용 단계 기록',awaiting_health:'새 전시 응답 확인 단계 기록',updated:'업데이트 완료 기록',recovery_required:'원래 전시 복원 필요',restoring:'원래 전시 복원 단계 기록',awaiting_rollback_health:'복원된 전시 응답 확인 단계 기록',rolled_back:'원래 전시 복원 완료 기록'};
+export function UpdateStatusPanel({native,selectionToken,active}:{native:boolean;selectionToken:string;active:boolean}){
+ const [status,setStatus]=useState<Status|null>(null),[error,setError]=useState<ManagerError|null>(null),[pending,setPending]=useState(false);
+ const live=useRef(true),working=useRef(false);
+ useEffect(()=>{live.current=true;return()=>{live.current=false;};},[]);
+ async function refresh(){if(!native||working.current)return;working.current=true;setPending(true);setStatus(null);setError(null);try{const result=await client.updateStatus();if(live.current)setStatus(result);}catch(e){if(live.current)setError(managerError(e));}finally{working.current=false;if(live.current)setPending(false);}}
+ useEffect(()=>{void refresh();},[native,selectionToken]);
+ const recovery=status?.stage==='recovery_required'||status?.stage==='restoring'||status?.stage==='awaiting_rollback_health';
+ return <section className="panel" aria-label="업데이트 상태"><h2>업데이트와 복원 상태</h2><p>선택한 관리 공간의 서명된 업데이트 기록을 읽습니다. 이 확인은 서버 실행이나 복원 작업을 시작하지 않습니다.</p><button disabled={!native||active||pending} onClick={()=>void refresh()}>{pending?'업데이트 기록 확인 중…':'업데이트 상태 확인'}</button><div role="status" aria-live="polite">{pending&&<p>저장된 업데이트 기록을 확인하고 있습니다.</p>}{status&&<><h3>{status.stage?labels[status.stage]:status.authorityPresent?'업데이트 작업 기록 없음':'서명된 업데이트 권한이 준비되지 않음'}</h3>{status.operationId&&<p>작업 ID: {status.operationId}</p>}{status.generation!==null&&<p>기록 번호: {status.generation}</p>}<p>저장된 완료 기록은 현재 서버의 정상 응답을 대신하지 않습니다. 상단의 서버 준비 상태를 함께 확인하세요.</p>{recovery&&<p>기존 전시·암호화 백업·외부 키·복원 후보를 보존하세요. 원래 전체 백업 복원과 응답 확인이 필요하며 이미지만 되돌려 완료 처리하지 않습니다.</p>}{status.failure&&<p>완료하지 못한 작업: {({update_failed:'업데이트 적용',health_failed:'전시 응답 확인',restore_failed:'원래 전시 복원',interrupted:'작업 중단'})[status.failure]}. 자동 재실행하지 말고 보존한 기록을 확인하세요.</p>}{status.changedSchema&&<p>데이터 구조가 바뀌는 업데이트의 앱 실행은 현재 검증 대기 중입니다.</p>}{status.writeUncertain&&<p>기록 완료 여부를 확인할 수 없습니다. 이전 기록과 후보를 보존하세요.</p>}</>}</div>{error&&<div role="alert"><p>업데이트 기록을 확인하지 못했습니다. 확인 코드: {error.code}</p><p>원래 데이터·권한·후보를 유지하고 다른 작업이 종료된 뒤 다시 확인하세요.</p></div>}<p className="note">앱의 서명 업데이트 적용·재시도·취소·원래 전시 복원 실행 연결은 아직 제공되지 않습니다. 현재 화면은 상태와 보존 안내를 제공합니다.</p></section>;
+}

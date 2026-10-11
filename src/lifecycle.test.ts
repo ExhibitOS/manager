@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import {describe,it,expect} from 'vitest';
-import {parseRetryDiagnosis,parseRetryRecoveryReceipt,validRetryDiagnosisInput,parseMaintenanceRetry,parseRetryReceipt,validBackupRetryInput,validRestorationRetryInput,parseMaintenanceContext,validReconciliationInput,parseReconciliationReceipt,parseReconciliationJob,parseInstallationContext,parseJob,parseStatus,managerError,formatBytes,statusLabel,validVerificationInput,parseVerificationReceipt,validCreationInput,parseCreationReceipt,parseBackupJob,validRestorationInput,parseRestorationContext,parseRestorationReceipt} from './lifecycle';
+import {parseUpdateStatus,parseRetryDiagnosis,parseRetryRecoveryReceipt,validRetryDiagnosisInput,parseMaintenanceRetry,parseRetryReceipt,validBackupRetryInput,validRestorationRetryInput,parseMaintenanceContext,validReconciliationInput,parseReconciliationReceipt,parseReconciliationJob,parseInstallationContext,parseJob,parseStatus,managerError,formatBytes,statusLabel,validVerificationInput,parseVerificationReceipt,validCreationInput,parseCreationReceipt,parseBackupJob,validRestorationInput,parseRestorationContext,parseRestorationReceipt} from './lifecycle';
 const status={installed:false,bundleId:null,version:null,state:'not_installed',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0,quotaBytes:5368709120},activeJob:null};
 describe('Manager lifecycle boundary',()=>{
  it('preserves unknown storage/readiness without claiming success',()=>{const value=parseStatus(status);expect(formatBytes(value.storage.usedBytes)).toBe('측정할 수 없음');expect(value.readiness.ready).toBe(false);expect(statusLabel(value.state)).toBe('설치 전');});
@@ -113,4 +113,14 @@ it('diagnosis rejects unsafe or contradictory proof and recovery only binds the 
  for(const v of [{...receipt,newJobId:child},{...receipt,outcome:'unproven'},{...receipt,diagnosisId:retryId},{...receipt,dataPreserved:false},{...receipt,path:'/private'}])expect(()=>parseRetryRecoveryReceipt(v)).toThrow('MANAGER_PROTOCOL');
  expect(validRetryDiagnosisInput({retryId,destinationId:null,preserveCandidates:false})).toBe(true);
  expect(validRetryDiagnosisInput({retryId,destinationId:'/private',preserveCandidates:true})).toBe(false);
+});
+
+describe('Persisted signed update status',()=>{
+ const absent={installationId:'12345678-1234-1234-1234-123456789012',authorityPresent:false,generation:null,stage:null,operationId:null,failure:null,changedSchema:false,writeUncertain:false};
+ it('refuses leaked envelopes and inconsistent untrusted or incomplete states',()=>{
+  expect(parseUpdateStatus(absent).authorityPresent).toBe(false);
+  const recovery={...absent,authorityPresent:true,generation:43,stage:'recovery_required',operationId:'update-1',failure:'restore_failed',changedSchema:true};
+  expect(parseUpdateStatus(recovery).stage).toBe('recovery_required');
+  for(const v of [{...recovery,envelope:'private'},{...recovery,operationId:'/private/key'},{...absent,generation:1},{...recovery,operationId:null},{...recovery,stage:'completed'},{...recovery,generation:Number.MAX_SAFE_INTEGER+1},{...absent,changedSchema:true}])expect(()=>parseUpdateStatus(v)).toThrow('MANAGER_PROTOCOL');
+ });
 });

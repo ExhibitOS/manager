@@ -93,8 +93,12 @@ fn canonical_private(path: &Path) -> Result<PathBuf> {
     Ok(path.into())
 }
 fn lock_file(root: &Path, name: &str, exclusive: bool) -> Result<File> {
+    lock_file_mode(root, name, exclusive, true)
+}
+fn lock_file_mode(root: &Path, name: &str, exclusive: bool, create: bool) -> Result<File> {
     #[cfg(windows)]
     {
+        if !create { return Err(err("PROFILE_PLATFORM_UNVERIFIED")); }
         let directory = super::windows_private::PrivateDirectory::inspect(root)?;
         let file = directory.lock_record(name)?;
         if exclusive {
@@ -109,7 +113,13 @@ fn lock_file(root: &Path, name: &str, exclusive: bool) -> Result<File> {
     #[cfg(not(windows))]
     {
         let path = root.join(name);
-        let file = match private_options().open(&path) {
+        let file = if !create {
+            let mut options = OpenOptions::new();
+            options.read(true);
+            #[cfg(unix)]
+            { use std::os::unix::fs::OpenOptionsExt; options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK); }
+            options.open(&path).map_err(|_| err("PROFILE_LOCK_INVALID"))?
+        } else { match private_options().open(&path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 let mut o = OpenOptions::new();
@@ -122,7 +132,7 @@ fn lock_file(root: &Path, name: &str, exclusive: bool) -> Result<File> {
                 o.open(&path).map_err(|_| err("PROFILE_LOCK_INVALID"))?
             }
             Err(_) => return Err(err("STATE_UNAVAILABLE")),
-        };
+        }};
         let m = file.metadata().map_err(|_| err("PROFILE_LOCK_INVALID"))?;
         if !m.is_file() {
             return Err(err("PROFILE_LOCK_INVALID"));
@@ -148,6 +158,10 @@ fn lock_file(root: &Path, name: &str, exclusive: bool) -> Result<File> {
         .map_err(|_| err("PROFILE_BUSY"))?;
         Ok(file)
     }
+}
+pub(crate) fn inspect_operation_lock(profile: &Path) -> Result<File> {
+    super::installations::private_directory(profile)?;
+    lock_file_mode(profile, "operation.lock", true, false)
 }
 /// Owns the exact locked handle and parent fence. Borrowed clones share the
 /// owner through Arc; only the final in-process owner releases the Unix flock.
@@ -262,8 +276,15 @@ impl ProfileSession {
 /// Resolve a stable logical profile path without creating that profile. A
 /// controller must acquire this guard before creating/opening a replacement.
 pub(crate) fn anchor_lock(profile: &Path, exclusive: bool) -> Result<(PathBuf, ProfileAnchor)> {
+    anchor_lock_mode(profile, exclusive, true)
+}
+pub(crate) fn inspect_anchor_lock(profile: &Path) -> Result<(PathBuf, ProfileAnchor)> {
+    anchor_lock_mode(profile, false, false)
+}
+fn anchor_lock_mode(profile: &Path, exclusive: bool, create: bool) -> Result<(PathBuf, ProfileAnchor)> {
     #[cfg(windows)]
     {
+        if !create { return Err(err("PROFILE_PLATFORM_UNVERIFIED")); }
         let parent = super::windows_private::ParentDirectory::inspect(
             profile
                 .parent()
@@ -337,7 +358,7 @@ pub(crate) fn anchor_lock(profile: &Path, exclusive: bool) -> Result<(PathBuf, P
             ".exhibitos-profile-session-{}.lock",
             digest(text.as_bytes())
         );
-        let anchor = lock_file(&parent, &filename, exclusive)?;
+        let anchor = lock_file_mode(&parent, &filename, exclusive, create)?;
         // lock_file checks file identity, private ownership/mode and no hardlinks.
         // Recheck the parent mapping after obtaining the guard; unsupported external
         // rename/edit of the parent is never silently treated as the same profile.

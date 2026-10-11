@@ -45,6 +45,15 @@ async fn blocking<T: Send + 'static>(
         .await
         .map_err(|_| error("MANAGER_OPERATION"))?
 }
+#[tauri::command]
+async fn manager_update_status(
+    window: WebviewWindow, state: State<'_, DesktopState>, selection_token: String,
+) -> Result<exhibitos_lifecycle::signed_release::trust::UpdateStatus, LifecycleError> {
+    caller(&window)?;
+    let controller = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || controller.update_status(&selection_token))
+        .await.map_err(|_| error("MANAGER_OPERATION"))?
+}
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CreationSelectionInput {
@@ -641,6 +650,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             manager_status,
+            manager_update_status,
             manager_detect,
             manager_install,
             manager_action,
