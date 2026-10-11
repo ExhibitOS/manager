@@ -68,9 +68,12 @@ for(const scenario of ['success','failure','malformed','wrong-image'] as const)t
 
 for(const state of ['running','interrupted','malformed'] as const)test(`persisted ${state} backup history never invents completion or repeats mutations`,async({page})=>{
  await page.addInitScript(({state})=>{
-  Object.assign(window,{isTauri:true,__historyFixed:false,__historyMutations:0,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
+  Object.assign(window,{isTauri:true,__historyFixed:false,__historyMutations:0,__TAURI_INTERNALS__:{invoke:async(cmd:string,args?:{input?:unknown})=>{
    if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};
    if(cmd==='manager_maintenance_context')return null;
+   // Existing read-only refresh: cancellation submission is still refused.
+   if(cmd==='manager_update_status')return {installationId:'56789012-1234-1234-1234-123456789012',authorityPresent:false,generation:null,stage:null,operationId:null,failure:null,changedSchema:false,writeUncertain:false};
+   if(cmd==='manager_update_cancel'&&args?.input===null)return null;
    if(cmd==='manager_maintenance_retries')return [];
    if(cmd==='manager_helper_reconciliations')return [];
    if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:'56789012-1234-1234-1234-123456789012',mode:'managed',installations:[{id:'56789012-1234-1234-1234-123456789012',kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true}],errorCode:null};
