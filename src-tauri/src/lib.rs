@@ -54,6 +54,30 @@ async fn manager_update_status(
     tauri::async_runtime::spawn_blocking(move || controller.update_status(&selection_token))
         .await.map_err(|_| error("MANAGER_OPERATION"))?
 }
+#[tauri::command]
+async fn manager_update_cancel(
+    window: WebviewWindow, app: tauri::AppHandle, state: State<'_, DesktopState>,
+    selection_token: String, input: Option<exhibitos_lifecycle::update_handoff::CancelInput>,
+) -> Result<Option<exhibitos_lifecycle::update_handoff::Receipt>, LifecycleError> {
+    caller(&window)?;
+    let prepare = input.is_some();
+    let controller = state.0.clone();
+    let (profile, receipt) = tauri::async_runtime::spawn_blocking(move || controller.update_cancel_handoff(&selection_token, input))
+        .await.map_err(|_| error("MANAGER_OPERATION"))??;
+    if prepare {
+        let request = receipt.as_ref().ok_or_else(|| error("UPDATE_HANDOFF_INVALID"))?;
+        let launched = std::env::current_exe().and_then(|executable|
+            std::process::Command::new(executable).arg("--manager-update-cancel-helper").arg(&profile).arg(&request.id)
+                .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn());
+        if launched.is_err() {
+            exhibitos_lifecycle::update_handoff::record_launch_failure(&profile, &request.id)?;
+            return Err(error("UPDATE_HELPER_START_FAILED"));
+        }
+        // All profile sessions are released by process exit, never by weakening the fence.
+        app.exit(0);
+    }
+    Ok(receipt)
+}
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CreationSelectionInput {
@@ -620,6 +644,15 @@ async fn manager_open_exhibition(
 }
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let arguments: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if arguments.get(1).is_some_and(|value| value == "--manager-update-cancel-helper") {
+        let result = if arguments.len() == 4 {
+            arguments[3].to_str().ok_or_else(|| error("UPDATE_HANDOFF_INVALID")).and_then(|id|
+                exhibitos_lifecycle::update_handoff::execute(std::path::Path::new(&arguments[2]), id))
+        } else { Err(error("UPDATE_HANDOFF_INVALID")) };
+        if result.is_err() { std::process::exit(1); }
+        return;
+    }
     let result = tauri::Builder::default()
         .setup(|app| {
             let override_root = startup::override_root(std::env::var_os("EXHIBITOS_MANAGER_ROOT"))?;
@@ -651,6 +684,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             manager_status,
             manager_update_status,
+            manager_update_cancel,
             manager_detect,
             manager_install,
             manager_action,

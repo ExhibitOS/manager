@@ -722,6 +722,9 @@ impl Store {
             recovery: None,
         })
     }
+    pub(crate) fn open_for_prepared_handoff(profile: &Path, installation: &str) -> Result<Self, Error> {
+        Self::open_mode(profile, installation, false)
+    }
     pub fn open(profile: &Path, installation: &str) -> Result<Self, Error> {
         Self::open_mode(profile, installation, true)
     }
@@ -2029,6 +2032,40 @@ mod tests {
         fs::rename(retained, &anchor).unwrap();
         assert_eq!(fs::metadata(&anchor).unwrap().ino(), original_anchor);
         assert_eq!(fs::read(&record).unwrap(), original);
+        // The same status boundary supplies the Prepared-only app-closed handoff.
+        let (profile, prepared, _) = prepared_fixture();
+        let generation = prepared.receipt().generation;
+        let prepared_root = prepared.root.clone();
+        let previous = fs::read(prepared_root.join(format!("{generation:020}.json"))).unwrap();
+        drop(prepared);
+        let installation = uuid::Uuid::new_v4().to_string();
+        let registry = crate::installations::Registry {format:1, active_id:installation.clone(), installations:vec![crate::installations::Entry{id:installation.clone(),kind:"default".into(),created_at:1}]};
+        crate::installations::save(&profile, &registry, None).unwrap();
+        let (_, bytes) = crate::installations::load(&profile).unwrap().unwrap();
+        if !profile.join("operation.lock").exists() { drop(crate::private_options().open(profile.join("operation.lock")).unwrap()); }
+        let input = crate::update_handoff::CancelInput {operation_id:"update-1".into(),generation,preserve_data:true,close_app_and_cancel:true};
+        let mut denied = input.clone(); denied.close_app_and_cancel = false;
+        assert!(crate::update_handoff::prepare(&profile,&installation,"default",&bytes,denied).is_err());
+        let stale = crate::update_handoff::prepare(&profile,&installation,"default",&bytes,input.clone()).unwrap();
+        let mut changed = registry; changed.installations[0].created_at = 2;
+        crate::installations::save(&profile,&changed,None).unwrap();
+        assert!(crate::update_handoff::execute(&profile,&stale.id).is_err());
+        assert_eq!(crate::update_handoff::latest(&profile,&installation).unwrap().unwrap().state,"failed");
+        assert_eq!(inspect_update_status(&profile,"default").unwrap().generation,Some(generation));
+        changed.installations[0].created_at=1;
+        crate::installations::save(&profile,&changed,None).unwrap();
+        let request = crate::update_handoff::prepare(&profile,&installation,"default",&bytes,input).unwrap();
+        let session = crate::profile_backup::session_lock(&profile,false).unwrap();
+        let helper_profile=profile.clone();let helper_id=request.id.clone();
+        let helper=std::thread::spawn(move||crate::update_handoff::execute(&helper_profile,&helper_id));
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert_eq!(crate::update_handoff::latest(&profile,&installation).unwrap().unwrap().state,"awaiting-app-close");
+        assert_eq!(fs::read(prepared_root.join(format!("{generation:020}.json"))).unwrap(),previous);
+        drop(session);helper.join().unwrap().unwrap();
+        assert_eq!(crate::update_handoff::latest(&profile,&installation).unwrap().unwrap().state,"cancelled");
+        assert!(inspect_update_status(&profile,"default").unwrap().stage.is_none());
+        assert!(crate::update_handoff::execute(&profile,&request.id).is_err());
+        assert_eq!(fs::read(prepared_root.join(format!("{generation:020}.json"))).unwrap(),previous);
     }
     #[test]
     fn begin_rechecks_artifact_expiry_revocation_and_clock() {
