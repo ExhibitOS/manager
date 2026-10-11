@@ -19,8 +19,11 @@
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build --bundles app",
-    "check": "npm run typecheck && npm run lint && npm test && npm run build && npm run test:receipt",
-    "test:receipt": "node --test scripts/verification-receipt.test.mjs"
+    "check": "npm run typecheck && npm run lint && npm test && npm run build && npm run test:receipt && npm run test:installer",
+    "test:receipt": "node --test scripts/verification-receipt.test.mjs",
+    "installer:plan": "node scripts/build-installer.mjs --plan",
+    "installer:prototype": "node scripts/build-installer.mjs --build",
+    "test:installer": "node --test scripts/build-installer.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.1",
