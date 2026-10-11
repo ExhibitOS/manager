@@ -298,7 +298,7 @@ fn restored_rollback_options(args: &[String]) -> Result<&str, &'static str> {
     Ok(&args[7])
 }
 
-fn original_rollback_options(args: &[String]) -> Result<u16, &'static str> {
+fn original_rollback_options(args: &[String]) -> Result<(u16, Option<(&str, u64)>), &'static str> {
     let flags = [
         (1, "restore-original-rollback"),
         (2, "--profile"),
@@ -309,9 +309,9 @@ fn original_rollback_options(args: &[String]) -> Result<u16, &'static str> {
         (12, "--port"),
         (14, "--fresh-candidate"),
         (15, "--external-writers-quiesced"),
-        (16, "--apps-closed"),
     ];
-    if args.len() != 17
+    if ![17, 21].contains(&args.len())
+        || args.last().map(String::as_str) != Some("--apps-closed")
         || flags.iter().any(|(i, flag)| args[*i] != *flag)
         || !args[7].strip_prefix("sha256:").is_some_and(|h| {
             h.len() == 64
@@ -328,7 +328,34 @@ fn original_rollback_options(args: &[String]) -> Result<u16, &'static str> {
     if port < 1024 {
         return Err("UPDATE_USAGE");
     }
-    Ok(port)
+    let authority = if args.len() == 21 {
+        if args[16] != "--operation-id" || args[18] != "--expected-generation" {
+            return Err("UPDATE_USAGE");
+        }
+        let operation = uuid::Uuid::parse_str(&args[17]).map_err(|_| "UPDATE_USAGE")?;
+        if operation.hyphenated().to_string() != args[17] || operation.is_nil() {
+            return Err("UPDATE_USAGE");
+        }
+        let generation = args[19].parse::<u64>().map_err(|_| "UPDATE_USAGE")?;
+        if generation == 0 || generation.to_string() != args[19] {
+            return Err("UPDATE_USAGE");
+        }
+        Some((args[17].as_str(), generation))
+    } else {
+        None
+    };
+    Ok((port, authority))
+}
+
+fn original_rollback_authority_matches(
+    expected: Option<(&str, u64)>,
+    generation: u64,
+    operation: Option<&str>,
+    recovery_required: bool,
+) -> bool {
+    expected.is_none_or(|(id, wanted)| {
+        wanted == generation && operation == Some(id) && recovery_required
+    })
 }
 
 fn migrated_runtime_options(args: &[String]) -> Result<(), &'static str> {
@@ -388,10 +415,23 @@ fn run() -> Result<(), String> {
     let installation = &a[5];
     if a[1] == "restore-original-rollback" {
         // Validate the exact wire contract BEFORE opening or changing authority.
-        let port = original_rollback_options(&a).map_err(str::to_owned)?;
+        let (port, expected_authority) = original_rollback_options(&a).map_err(str::to_owned)?;
         #[cfg(unix)]
         {
             let mut store = Store::open(profile, installation).map_err(code)?;
+            // Bind the SSH-observed operation inside the same Store lock that
+            // registers/restores/activates; a separate preflight process races.
+            let intent = store.intent();
+            if !original_rollback_authority_matches(
+                expected_authority,
+                store.receipt().generation,
+                intent.map(|i| i.update().plan().operation_id.as_str()),
+                intent.is_some_and(|i| {
+                    i.update().stage() == exhibitos_lifecycle::update::Stage::RecoveryRequired
+                }),
+            ) {
+                return Err("UPDATE_ROLLBACK_AUTHORITY_CHANGED".into());
+            }
             let registration = store
                 .register_rollback_candidate(true)
                 .map_err(|e| e.code)?;
@@ -1549,6 +1589,79 @@ mod restored_rollback_cli_tests {
     fn exact_native_rollback_contract_requires_both_acknowledgements_and_pinned_image() {
         let args = valid();
         assert_eq!(restored_rollback_options(&args).unwrap(), args[7]);
+        let original: Vec<String> = vec![
+            "exhibitos-update",
+            "restore-original-rollback",
+            "--profile",
+            "/isolated",
+            "--installation",
+            "default",
+            "--maintenance-image",
+            &args[7],
+            "--key",
+            "/isolated-key",
+            "--archive",
+            "/isolated-archive",
+            "--port",
+            "50369",
+            "--fresh-candidate",
+            "--external-writers-quiesced",
+            "--apps-closed",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        assert_eq!(original_rollback_options(&original).unwrap(), (50369, None));
+        let id = "70000000-0000-4000-8000-000000000002";
+        let mut pinned = original.clone();
+        pinned.pop();
+        pinned.extend([
+            "--operation-id".into(),
+            id.into(),
+            "--expected-generation".into(),
+            "43".into(),
+            "--apps-closed".into(),
+        ]);
+        let expected = original_rollback_options(&pinned).unwrap().1;
+        assert!(original_rollback_authority_matches(
+            expected,
+            43,
+            Some(id),
+            true
+        ));
+        assert!(!original_rollback_authority_matches(
+            expected,
+            44,
+            Some(id),
+            true
+        ));
+        assert!(!original_rollback_authority_matches(
+            expected,
+            43,
+            Some("other"),
+            true
+        ));
+        assert!(!original_rollback_authority_matches(
+            expected,
+            43,
+            Some(id),
+            false
+        ));
+        assert!(!original_rollback_authority_matches(
+            expected, 43, None, true
+        ));
+        for (index, value) in [
+            (17, "bad"),
+            (17, "00000000-0000-0000-0000-000000000000"),
+            (19, "0"),
+            (19, "043"),
+            (19, "18446744073709551616"),
+        ] {
+            let mut bad = pinned.clone();
+            bad[index] = value.into();
+            assert!(original_rollback_options(&bad).is_err());
+        }
+
         for i in [1, 2, 4, 6, 8, 9] {
             let mut changed = args.clone();
             changed[i] = "--health-verified".into();
