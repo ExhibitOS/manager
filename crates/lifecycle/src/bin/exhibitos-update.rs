@@ -700,10 +700,12 @@ fn run() -> Result<(), String> {
             | "qualify-full-recovery-runtime"
             | "qualify-migrated-full-recovery-runtime"
             | "execute-full-update"
+            | "register-full-update-reference"
     ) {
         let execute = a[1] == "execute-full-update";
+        let register = a[1] == "register-full-update-reference";
         let migrated = a[1] == "qualify-migrated-full-recovery-runtime";
-        let full = a[1] == "qualify-full-recovery-runtime" || execute || migrated;
+        let full = a[1] == "qualify-full-recovery-runtime" || execute || register || migrated;
         if a.len()
             != if migrated {
                 34
@@ -735,14 +737,14 @@ fn run() -> Result<(), String> {
             return Err(usage());
         }
         #[cfg(not(unix))]
-        if execute {
+        if execute || register {
             return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
         }
         let mut key = checkpoint_key(Path::new(&a[23]), profile)?;
         let result = (|| {
             let mut store = Store::open(profile, installation).map_err(code)?;
             #[cfg(unix)]
-            if execute {
+            if execute || register {
                 store.verify_authority_recovery().map_err(code)?;
             }
             // Authenticate current checkpoint before staging any artifact bytes.
@@ -777,8 +779,8 @@ fn run() -> Result<(), String> {
                 external_writers_quiesced: true,
             };
             #[cfg(unix)]
-            if execute {
-                let admitted = session
+            if execute || register {
+                let mut admitted = session
                     .prepare_owned_update(
                         &mut artifact,
                         &inputs,
@@ -786,6 +788,10 @@ fn run() -> Result<(), String> {
                         Path::new(&a[23]),
                     )
                     .map_err(|e| e.code.to_string())?;
+                if register {
+                    return admitted.register_execution_reference()
+                        .map_err(|e| e.code.to_string());
+                }
                 let started = admitted.begin().map_err(|e| e.code.to_string())?;
                 let ready = started.apply_candidate().map_err(|e| e.code.to_string())?;
                 let completed = ready.activate().map_err(|e| e.code.to_string())?;
