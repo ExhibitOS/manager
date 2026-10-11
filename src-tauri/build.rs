@@ -11,6 +11,7 @@ fn main() {
             "manager_jobs",
             "manager_logs",
             "manager_open_exhibition",
+            "manager_open_oex",
             "manager_verify_backup",
             "manager_create_backup",
             "manager_backup_jobs",
