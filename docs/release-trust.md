@@ -226,6 +226,8 @@ exhibitos-update restore-original-rollback \
 
 앱과 외부 writer를 닫고 실제 검증된 이미지·키·원래 백업·미사용 포트를 지정합니다. 이 Unix 명령은 RecoveryRequired인 동일 계획에 새 비활성 복원 ID를 등록하고, 계획의 정확한 backup/image/schema/inventory를 인증해 원래 DB/blob/설정을 새 서비스로 복원합니다. 동일 Store 수명에서 실제 inventory·image·설정·health를 다시 관측한 뒤 원자적 선택과 RolledBack 이력을 완료합니다. caller가 candidate ID·경로·성공 receipt·health 플래그를 제공할 수 없습니다.
 
+원격 어댑터는 마지막 `--apps-closed` 바로 앞에 `--operation-id <현재 UUID> --expected-generation <현재 generation>`을 함께 추가합니다. 기존 호출도 유지합니다. 이 선택적 쌍은 같은 Store 잠금 안에서 RecoveryRequired·operation·generation을 확인하며, 불일치하면 후보 등록 전에 `UPDATE_ROLLBACK_AUTHORITY_CHANGED`로 거부합니다. 별도 프로세스의 사전 확인만으로는 다른 controller의 계획 전환을 막을 수 없습니다.
+
 기존 원본과 실패 후보·immutable 이력은 덮어쓰지 않습니다. 실패하면 새 후보와 진단을 보존하며 자동 재실행하지 않습니다. 최소 공간과 새 후보의 모든 원래 복원 조건을 유지합니다. 성공은 별도 새 복원 서비스의 실제 준비 상태를 의미하고, 원래 호스트·authority 분실 복원이나 다른 게시 crash 경계까지 완료됐다는 뜻은 아닙니다. Windows 경계는 지원 검증 전 거부합니다. 공개 changed-schema update admission은 계속 닫혀 있습니다.
 
 ## ARM full-file digest performance
