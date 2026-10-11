@@ -4,6 +4,7 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "manager_status",
             "manager_update_status",
+            "manager_update_cancel",
             "manager_detect",
             "manager_install",
             "manager_action",

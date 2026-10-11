@@ -475,6 +475,20 @@ impl InstallationController {
         status.installation_id = entry.id.clone();
         Ok(status)
     }
+    pub fn update_cancel_handoff(&self, token: &str, input: Option<crate::update_handoff::CancelInput>) -> Result<(PathBuf, Option<crate::update_handoff::Receipt>)> {
+        let current = self.current.try_read().map_err(|_| err("BUSY"))?;
+        if !uuid(token) || current.token != token { return Err(err("INSTALLATION_SELECTION_CHANGED")); }
+        let profile = self.profile.as_ref().ok_or_else(|| err("UPDATE_PROFILE_UNAVAILABLE"))?;
+        let _lock = OperationGuard(super::profile_backup::inspect_operation_lock(&profile.root)?);
+        let (registry, bytes) = load(&profile.root)?.ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
+        let entry = registry.installations.iter().find(|entry| entry.id == current.entry.id).ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
+        if registry.active_id != entry.id || root(&profile.root, entry) != current.path { return Err(err("INSTALLATION_SELECTION_CHANGED")); }
+        let receipt = if let Some(input) = input {
+            let scope = if entry.kind == "default" { "default" } else { &entry.id };
+            Some(crate::update_handoff::prepare(&profile.root, &entry.id, scope, &bytes, input)?)
+        } else { crate::update_handoff::latest(&profile.root, &entry.id)? };
+        Ok((profile.root.clone(), receipt))
+    }
     /// The read guard spans the entire IPC task; selection cannot race any in-flight request.
     pub fn with_current<T>(
         &self,

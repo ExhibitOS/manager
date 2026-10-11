@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-update-cancel"
+description = "Enables the manager_update_cancel command without any pre-configured scope."
+commands.allow = ["manager_update_cancel"]
+
+[[permission]]
+identifier = "deny-manager-update-cancel"
+description = "Denies the manager_update_cancel command without any pre-configured scope."
+commands.deny = ["manager_update_cancel"]
