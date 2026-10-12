@@ -408,6 +408,16 @@ impl ParentDirectory {
         }
         Ok(())
     }
+    /// Opens an existing lock without creating, changing ACLs or requesting writes.
+    /// Shared readers and existing read/write lock owners remain compatible;
+    /// native byte-range locks enforce exclusivity and delete sharing stays denied.
+    pub(crate) fn inspect_lock_record(&self, name: &str) -> Result<File> {
+        valid_name(name)?;
+        self.check()?;
+        let file = native_existing_lock_file(&self.path.join(name))?;
+        self.check_record(&file, name)?;
+        Ok(file)
+    }
     pub(crate) fn lock_record(&self, name: &str) -> Result<File> {
         valid_name(name)?;
         self.check()?;
@@ -415,6 +425,24 @@ impl ParentDirectory {
         self.check_record(&file, name)?;
         Ok(file)
     }
+}
+fn native_existing_lock_file(path: &Path) -> Result<File> {
+    let path = wide(path)?;
+    let handle = unsafe {
+        fsapi::CreateFileW(
+            path.as_ptr(),
+            0x80000000 | fsapi::READ_CONTROL,
+            fsapi::FILE_SHARE_READ | fsapi::FILE_SHARE_WRITE,
+            ptr::null(),
+            fsapi::OPEN_EXISTING,
+            fsapi::FILE_ATTRIBUTE_NORMAL | fsapi::FILE_FLAG_OPEN_REPARSE_POINT,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(err("WINDOWS_PROFILE_RECORD_OPEN_REFUSED"));
+    }
+    Ok(unsafe { File::from_raw_handle(handle.cast()) })
 }
 fn native_lock_file(path: &Path, sid: &Sid) -> Result<File> {
     let path = wide(path)?;
@@ -549,6 +577,16 @@ impl PrivateDirectory {
         guard.ok_or_else(|| err("PROFILE_PATH_INVALID"))
     }
     /// Never truncates or rewrites existing locks; validates both old and new ACLs.
+    /// Opens an existing lock without creating, changing ACLs or requesting writes.
+    /// Shared readers and existing read/write lock owners remain compatible;
+    /// native byte-range locks enforce exclusivity and delete sharing stays denied.
+    pub(crate) fn inspect_lock_record(&self, name: &str) -> Result<File> {
+        valid_name(name)?;
+        self.check()?;
+        let file = native_existing_lock_file(&self.path.join(name))?;
+        self.check_record(&file, name)?;
+        Ok(file)
+    }
     pub(crate) fn lock_record(&self, name: &str) -> Result<File> {
         self.check()?;
         valid_name(name)?;

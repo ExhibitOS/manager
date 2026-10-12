@@ -229,7 +229,68 @@ fn archive(path: &Path) -> crate::Result<ArchiveIdentity> {
         sha256: format!("{:x}", h.finalize()),
     })
 }
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn archive(path: &Path) -> crate::Result<ArchiveIdentity> {
+    use std::os::windows::fs::MetadataExt;
+    if !path.is_absolute() || fs::canonicalize(path).ok().as_deref() != Some(path) {
+        return Err(failure());
+    }
+    let parent = path.parent().ok_or_else(failure)?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(failure)?;
+    // Private ciphertexts retain their owner-private ACL policy. The native parent
+    // fence and read-only handle deny namespace replacement and writer/delete handles;
+    // no public artifact ACL is adopted or repaired here.
+    let directory = crate::windows_private::PrivateDirectory::inspect(parent)
+        .map_err(|_| failure())?;
+    let mut file = directory.retained_read_file(name).map_err(|_| failure())?;
+    directory.check_record(&file, name).map_err(|_| failure())?;
+    let before = file.metadata().map_err(|_| failure())?;
+    if before.len() == 0 || before.len() > 66 * 1024 * 1024 * 1024 {
+        return Err(failure());
+    }
+    let state = |metadata: &Metadata| {
+        (
+            metadata.file_attributes(),
+            metadata.creation_time(),
+            metadata.last_write_time(),
+            metadata.file_size(),
+        )
+    };
+    let mut hasher = Sha256::new();
+    let mut count = 0u64;
+    let mut buffer = [0u8; 65536];
+    loop {
+        directory.check_record(&file, name).map_err(|_| failure())?;
+        let length = file.read(&mut buffer).map_err(|_| failure())?;
+        if length == 0 {
+            break;
+        }
+        count += length as u64;
+        if count > before.len() {
+            return Err(failure());
+        }
+        hasher.update(&buffer[..length]);
+    }
+    directory.check_record(&file, name).map_err(|_| failure())?;
+    let after = file.metadata().map_err(|_| failure())?;
+    let current = fs::symlink_metadata(path).map_err(|_| failure())?;
+    if count != before.len()
+        || fs::canonicalize(path).ok().as_deref() != Some(path)
+        || current.is_symlink()
+        || state(&before) != state(&after)
+        || state(&after) != state(&current)
+    {
+        return Err(failure());
+    }
+    Ok(ArchiveIdentity {
+        bytes: count,
+        sha256: format!("{:x}", hasher.finalize()),
+    })
+}
+#[cfg(not(any(unix, windows)))]
 fn archive(_path: &Path) -> crate::Result<ArchiveIdentity> {
     Err(crate::err("BACKUP_PLATFORM_UNVERIFIED"))
 }
@@ -1132,5 +1193,59 @@ mod tests {
         );
         drop(store);
         fs::remove_dir_all(profile.parent().unwrap()).unwrap();
+    }
+}
+
+
+#[cfg(all(test, windows))]
+mod windows_archive_tests {
+    use super::*;
+
+    #[test]
+    fn windows_archive_identity_tracks_exact_ciphertext_without_mutation() {
+        let path = std::env::temp_dir().join(format!("recovery-pair-{}", uuid::Uuid::new_v4()));
+        let directory = crate::windows_private::PrivateDirectory::create(&path).unwrap();
+        let path = directory.path().join("host.bin");
+        let bytes = vec![0x53; 65537];
+        let record = directory.write_new_record("host.bin", &bytes, 131072).unwrap();
+        drop(record);
+        let observed = archive(&path).unwrap();
+        assert_eq!(observed.bytes, bytes.len() as u64);
+        assert_eq!(observed.sha256, hash(&bytes));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::write(&path, b"changed synthetic ciphertext").unwrap();
+        assert_ne!(archive(&path).unwrap(), observed);
+        assert!(archive(&directory.path().join("missing.bin")).is_err());
+        drop(directory);
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn windows_archive_refuses_shared_acl_and_hardlink_without_adoption() {
+        let path = std::env::temp_dir().join(format!("recovery-pair-{}", uuid::Uuid::new_v4()));
+        let directory = crate::windows_private::PrivateDirectory::create(&path).unwrap();
+        let path = directory.path().join("host.bin");
+        let bytes = b"synthetic ciphertext only";
+        drop(directory.write_new_record("host.bin", bytes, 1024).unwrap());
+        let alias = directory.path().join("alias.bin");
+        fs::hard_link(&path, &alias).unwrap();
+        assert!(archive(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_file(&alias).unwrap();
+        let status = crate::process_window::background_command("icacls.exe")
+            .arg(&path)
+            .args(["/grant", "*S-1-1-0:R"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(archive(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(directory.check_existing_record("host.bin").is_err());
+        drop(directory);
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(path.parent().unwrap()).unwrap();
     }
 }

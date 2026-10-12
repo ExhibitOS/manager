@@ -98,9 +98,12 @@ fn lock_file(root: &Path, name: &str, exclusive: bool) -> Result<File> {
 fn lock_file_mode(root: &Path, name: &str, exclusive: bool, create: bool) -> Result<File> {
     #[cfg(windows)]
     {
-        if !create { return Err(err("PROFILE_PLATFORM_UNVERIFIED")); }
         let directory = super::windows_private::PrivateDirectory::inspect(root)?;
-        let file = directory.lock_record(name)?;
+        let file = if create {
+            directory.lock_record(name)?
+        } else {
+            directory.inspect_lock_record(name)?
+        };
         if exclusive {
             file.try_lock_exclusive()
         } else {
@@ -117,22 +120,29 @@ fn lock_file_mode(root: &Path, name: &str, exclusive: bool, create: bool) -> Res
             let mut options = OpenOptions::new();
             options.read(true);
             #[cfg(unix)]
-            { use std::os::unix::fs::OpenOptionsExt; options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK); }
-            options.open(&path).map_err(|_| err("PROFILE_LOCK_INVALID"))?
-        } else { match private_options().open(&path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let mut o = OpenOptions::new();
-                o.read(true).write(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-                }
-                o.open(&path).map_err(|_| err("PROFILE_LOCK_INVALID"))?
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
             }
-            Err(_) => return Err(err("STATE_UNAVAILABLE")),
-        }};
+            options
+                .open(&path)
+                .map_err(|_| err("PROFILE_LOCK_INVALID"))?
+        } else {
+            match private_options().open(&path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let mut o = OpenOptions::new();
+                    o.read(true).write(true);
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::OpenOptionsExt;
+                        o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+                    }
+                    o.open(&path).map_err(|_| err("PROFILE_LOCK_INVALID"))?
+                }
+                Err(_) => return Err(err("STATE_UNAVAILABLE")),
+            }
+        };
         let m = file.metadata().map_err(|_| err("PROFILE_LOCK_INVALID"))?;
         if !m.is_file() {
             return Err(err("PROFILE_LOCK_INVALID"));
@@ -281,10 +291,13 @@ pub(crate) fn anchor_lock(profile: &Path, exclusive: bool) -> Result<(PathBuf, P
 pub(crate) fn inspect_anchor_lock(profile: &Path) -> Result<(PathBuf, ProfileAnchor)> {
     anchor_lock_mode(profile, false, false)
 }
-fn anchor_lock_mode(profile: &Path, exclusive: bool, create: bool) -> Result<(PathBuf, ProfileAnchor)> {
+fn anchor_lock_mode(
+    profile: &Path,
+    exclusive: bool,
+    create: bool,
+) -> Result<(PathBuf, ProfileAnchor)> {
     #[cfg(windows)]
     {
-        if !create { return Err(err("PROFILE_PLATFORM_UNVERIFIED")); }
         let parent = super::windows_private::ParentDirectory::inspect(
             profile
                 .parent()
@@ -300,7 +313,11 @@ fn anchor_lock_mode(profile: &Path, exclusive: bool, create: bool) -> Result<(Pa
             ".exhibitos-profile-session-{}.lock",
             parent.logical_child_key(&profile_name)?
         );
-        let file = parent.lock_record(&lock_name)?;
+        let file = if create {
+            parent.lock_record(&lock_name)?
+        } else {
+            parent.inspect_lock_record(&lock_name)?
+        };
         if exclusive {
             file.try_lock_exclusive()
         } else {
@@ -1432,6 +1449,80 @@ mod tests {
                 .restoration_context()
                 .unwrap()
                 .fresh
+        );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_read_only_lock_tests {
+    use super::*;
+    fn fixture() -> PathBuf {
+        let parent =
+            std::env::temp_dir().join(format!("windows-readonly-profile-{}", Uuid::new_v4()));
+        installations::new_directory(&parent).unwrap();
+        let profile = parent.join("profile");
+        let _guard = super::super::windows_private::PrivateDirectory::create(&profile).unwrap();
+        fs::canonicalize(profile).unwrap()
+    }
+    fn names(path: &Path) -> Vec<String> {
+        let mut result = fs::read_dir(path)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        result.sort();
+        result
+    }
+    #[test]
+    fn windows_read_only_operation_lock_never_creates_or_changes_existing_record() {
+        let profile = fixture();
+        let before = names(&profile);
+        assert!(inspect_operation_lock(&profile).is_err());
+        assert_eq!(names(&profile), before);
+        let original = lock_file(&profile, "operation.lock", true).unwrap();
+        assert!(inspect_operation_lock(&profile).is_err());
+        drop(original);
+        let bytes = fs::read(profile.join("operation.lock")).unwrap();
+        let inspected = inspect_operation_lock(&profile).unwrap();
+        assert!(lock_file(&profile, "operation.lock", true).is_err());
+        assert_eq!(fs::read(profile.join("operation.lock")).unwrap(), bytes);
+        drop(inspected);
+        assert!(lock_file(&profile, "operation.lock", true).is_ok());
+    }
+    #[test]
+    fn windows_read_only_anchor_shares_existing_lock_and_refuses_exclusive_owner() {
+        let profile = fixture();
+        let parent = profile.parent().unwrap();
+        let before = names(parent);
+        assert!(inspect_anchor_lock(&profile).is_err());
+        assert_eq!(names(parent), before);
+        let (_, shared) = anchor_lock(&profile, false).unwrap();
+        let (_, inspected) = inspect_anchor_lock(&profile).unwrap();
+        assert!(anchor_lock(&profile, true).is_err());
+        assert!(anchor_lock(&profile, false).is_ok());
+        drop(shared);
+        assert!(anchor_lock(&profile, true).is_err());
+        drop(inspected);
+        let (_, exclusive) = anchor_lock(&profile, true).unwrap();
+        assert!(inspect_anchor_lock(&profile).is_err());
+        drop(exclusive);
+        assert!(inspect_anchor_lock(&profile).is_ok());
+    }
+    #[test]
+    fn windows_read_only_lock_refuses_hardlink_without_repair_or_new_files() {
+        let profile = fixture();
+        drop(lock_file(&profile, "operation.lock", true).unwrap());
+        fs::hard_link(
+            profile.join("operation.lock"),
+            profile.join("retained-alias.lock"),
+        )
+        .unwrap();
+        let before = names(&profile);
+        let bytes = fs::read(profile.join("operation.lock")).unwrap();
+        assert!(inspect_operation_lock(&profile).is_err());
+        assert_eq!(names(&profile), before);
+        assert_eq!(
+            fs::read(profile.join("retained-alias.lock")).unwrap(),
+            bytes
         );
     }
 }

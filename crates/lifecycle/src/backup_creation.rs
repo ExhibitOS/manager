@@ -67,6 +67,7 @@ fn private_directory(path: &Path) -> Result<restoration::StageDirectory> {
     // The caller retains the protected namespace guard through journal/helper use.
     restoration::directory(path)
 }
+#[cfg(not(windows))]
 pub(crate) fn hash_file(path: &Path) -> Result<FileHash> {
     let mut options = OpenOptions::new();
     options.read(true);
@@ -135,6 +136,64 @@ pub(crate) fn hash_file(path: &Path) -> Result<FileHash> {
         {
             return Err(err("BACKUP_SOURCE_CHANGED"));
         }
+    }
+    Ok(FileHash {
+        bytes: count,
+        sha256: format!("{:x}", hash.finalize()),
+    })
+}
+#[cfg(windows)]
+pub(crate) fn hash_file(path: &Path) -> Result<FileHash> {
+    use std::os::windows::fs::MetadataExt;
+    let parent = path.parent().ok_or_else(|| err("BACKUP_RESULT_INVALID"))?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| err("BACKUP_RESULT_INVALID"))?;
+    // Retain the private namespace and read-only native handle for the entire
+    // stream. The native guard refuses reparse points, aliases, hardlinks,
+    // unrelated ACL grants and existing writers without repairing the source.
+    let directory = super::windows_private::PrivateDirectory::inspect(parent)?;
+    let mut file = directory.retained_read_file(name)?;
+    directory.check_record(&file, name)?;
+    let before = file.metadata().map_err(|_| err("BACKUP_RESULT_INVALID"))?;
+    if !before.is_file() || before.len() == 0 || before.len() > 8 * 1024 * 1024 * 1024 {
+        return Err(err("BACKUP_RESULT_INVALID"));
+    }
+    let mut hash = Sha256::new();
+    let mut count = 0u64;
+    let mut buffer = [0; 65536];
+    loop {
+        let n = file
+            .read(&mut buffer)
+            .map_err(|_| err("BACKUP_RESULT_INVALID"))?;
+        if n == 0 {
+            break;
+        }
+        count += n as u64;
+        if count > before.len() {
+            return Err(err("BACKUP_SOURCE_CHANGED"));
+        }
+        hash.update(&buffer[..n]);
+    }
+    // Reopen the named identity under the retained parent fence and recheck its
+    // private ACL before accepting the complete byte hash.
+    directory.check_record(&file, name)?;
+    let after = file.metadata().map_err(|_| err("BACKUP_RESULT_INVALID"))?;
+    if count != before.len()
+        || (
+            before.len(),
+            before.creation_time(),
+            before.last_write_time(),
+            before.file_attributes(),
+        ) != (
+            after.len(),
+            after.creation_time(),
+            after.last_write_time(),
+            after.file_attributes(),
+        )
+    {
+        return Err(err("BACKUP_SOURCE_CHANGED"));
     }
     Ok(FileHash {
         bytes: count,
@@ -1097,6 +1156,82 @@ mod tests {
         drop(guard);
         fs::rename(&path, &renamed).unwrap();
     }
+    #[cfg(windows)]
+    fn windows_hash_fixture() -> super::super::windows_private::PrivateDirectory {
+        super::super::windows_private::PrivateDirectory::create(
+            &std::env::temp_dir().join(format!("backup-private-hash-{}", Uuid::new_v4())),
+        )
+        .unwrap()
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_backup_hash_reads_exact_private_bytes_and_rejects_live_writer() {
+        let directory = windows_hash_fixture();
+        let path = directory.path().join("cipher.bin");
+        let mut writer = directory.create_record("cipher.bin").unwrap();
+        writer.write_all(b"synthetic encrypted backup bytes").unwrap();
+        writer.sync_all().unwrap();
+        assert!(hash_file(&path).is_err());
+        drop(writer);
+        let value = hash_file(&path).unwrap();
+        assert_eq!(value.bytes, 32);
+        assert_eq!(
+            value.sha256,
+            format!(
+                "{:x}",
+                Sha256::digest(b"synthetic encrypted backup bytes")
+            )
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"synthetic encrypted backup bytes");
+        let root = directory.path().to_owned();
+        drop(directory);
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_backup_hash_refuses_hardlink_without_changing_bytes() {
+        let directory = windows_hash_fixture();
+        let root = directory.path().to_owned();
+        let path = root.join("cipher.bin");
+        let mut writer = directory.create_record("cipher.bin").unwrap();
+        writer.write_all(b"synthetic cipher").unwrap();
+        writer.sync_all().unwrap();
+        drop(writer);
+        let alias = root.join("alias.bin");
+        fs::hard_link(&path, &alias).unwrap();
+        assert!(hash_file(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"synthetic cipher");
+        drop(directory);
+        fs::remove_file(alias).unwrap();
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_backup_hash_refuses_shared_acl_without_repairing_it() {
+        let directory = windows_hash_fixture();
+        let root = directory.path().to_owned();
+        let path = root.join("cipher.bin");
+        let mut writer = directory.create_record("cipher.bin").unwrap();
+        writer.write_all(b"synthetic cipher").unwrap();
+        writer.sync_all().unwrap();
+        drop(writer);
+        let status = crate::process_window::background_command("icacls.exe")
+            .arg(&path)
+            .args(["/grant", "*S-1-1-0:R"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(hash_file(&path).is_err());
+        assert!(directory.retained_read_file("cipher.bin").is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"synthetic cipher");
+        drop(directory);
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
     #[test]
     fn copied_cipher_inventory_must_match_exact_private_bytes() {
         let root = std::env::temp_dir().join(format!("backup-copy-test-{}", Uuid::new_v4()));
@@ -1109,6 +1244,16 @@ mod tests {
             "manifest.gcm",
             "files/00000000.gcm",
         ] {
+            #[cfg(windows)]
+            let parent = super::super::windows_private::PrivateDirectory::inspect(
+                root.join(name).parent().unwrap(),
+            )
+            .unwrap();
+            #[cfg(windows)]
+            let mut file = parent
+                .create_record(root.join(name).file_name().unwrap().to_str().unwrap())
+                .unwrap();
+            #[cfg(not(windows))]
             let mut file = private_options().open(root.join(name)).unwrap();
             file.write_all(b"synthetic cipher").unwrap();
             drop(file);
