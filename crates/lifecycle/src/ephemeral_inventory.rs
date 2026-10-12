@@ -53,18 +53,20 @@ fn script(candidate: bool) -> String {
     format!(
         r#"import {{spawnSync}} from 'node:child_process';
 const copy={copy}, reader={reader}, candidate={candidate};
-function child(script,env){{
+const copyErrors=new Set(['source-census','space','copy','comparison','control'].map(phase=>'SOURCE_DATABASE_COPY_REFUSED:'+phase));
+const readerErrors=new Set(['SOURCE_SNAPSHOT_DATABASE_START_FAILED','SOURCE_SNAPSHOT_DATABASE_PROOF_INVALID','SOURCE_SNAPSHOT_DATABASE_FAILED','SOURCE_SNAPSHOT_DATABASE_STOP_FAILED','CANDIDATE_DATABASE_ID_INVALID','CANDIDATE_ORIGINAL_DATABASE','CANDIDATE_DATABASE_MISMATCH','SOURCE_MANIFEST_MISMATCH','SOURCE_INVENTORY_BUSY','SOURCE_DATABASE_MISMATCH','SOURCE_INVENTORY_MISMATCH','SOURCE_INVENTORY_CLEANUP_FAILED','BACKUP_INVENTORY_INVALID','BACKUP_MANIFEST_INVALID','BACKUP_SOURCE_IDENTITY','BACKUP_UNSUPPORTED_SCHEMA','BACKUP_USAGE','BACKUP_DATABASE_REQUIRED','BACKUP_FILE_PATH','BACKUP_FILE_MODE','BACKUP_BLOB_ROOT_REQUIRED','BACKUP_BLOB_ROOT_PATH']);
+function child(script,env,codes){{
  const r=spawnSync(process.execPath,['--input-type=module','-e',script],{{env,encoding:'utf8',timeout:270000,maxBuffer:65536}});
- if(r.error||r.status!==0)throw Error('EPHEMERAL_CHILD_FAILED');
+ if(r.error||r.status!==0){{const code=!r.error&&r.status===1&&typeof r.stderr==='string'?r.stderr.trim():'';throw Error(codes.has(code)?code:'EPHEMERAL_CHILD_FAILED');}}
  return JSON.parse(r.stdout);
 }}
 try{{
- const physical=child(copy,process.env);
+ const physical=child(copy,process.env,copyErrors);
  const env={{...process.env}};delete env.EXHIBITOS_CANDIDATE_SYSTEM_IDENTIFIER;
  if(candidate)env.EXHIBITOS_CANDIDATE_SYSTEM_IDENTIFIER=physical.systemIdentifier;
- const inventory=child(reader,env);
+ const inventory=child(reader,env,readerErrors);
  console.log(JSON.stringify({{physical,inventory}}));
-}}catch{{console.error('EPHEMERAL_INVENTORY_REFUSED');process.exitCode=1;}}
+}}catch(error){{const code=error?.message;console.error('EPHEMERAL_INVENTORY_REFUSED'+(copyErrors.has(code)||readerErrors.has(code)?':'+code:''));process.exitCode=1;}}
 "#,
         candidate = candidate,
         copy = serde_json::to_string(include_str!("source_database_copy.mjs")).unwrap(),
@@ -348,6 +350,55 @@ impl ExecutionSession<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const CHILD_DIAGNOSTICS_TEST: &str = r#"
+import assert from 'node:assert/strict';
+import {spawnSync} from 'node:child_process';
+const [program,encodedCopy,encodedReader]=process.argv.slice(1);
+const copyOk="console.log(JSON.stringify({systemIdentifier:'123'}))";
+const readerOk="console.log(JSON.stringify({candidateId:process.env.EXHIBITOS_CANDIDATE_SYSTEM_IDENTIFIER??null}))";
+const failed=text=>'process.stdout.write("private stdout token");process.stderr.write('+JSON.stringify(text)+');process.exitCode=1';
+function run(copy,reader){
+ const source=program.replace(encodedCopy,JSON.stringify(copy)).replace(encodedReader,JSON.stringify(reader));
+ assert.notEqual(source,program);
+ return spawnSync(process.execPath,['--input-type=module','-e',source],{encoding:'utf8',timeout:10000,maxBuffer:32768,env:{...process.env,EXHIBITOS_CANDIDATE_SYSTEM_IDENTIFIER:'untrusted-existing-value'}});
+}
+function refused(copy,reader,code=''){
+ const r=run(copy,reader);assert.equal(r.error,undefined);assert.equal(r.status,1);assert.equal(r.stdout,'');
+ assert.equal(r.stderr,'EPHEMERAL_INVENTORY_REFUSED'+(code?':'+code:'')+'\n');
+}
+for(const phase of ['source-census','space','copy','comparison','control']){
+ const code='SOURCE_DATABASE_COPY_REFUSED:'+phase;refused(failed(code+'\n'),readerOk,code);
+}
+for(const code of ['SOURCE_SNAPSHOT_DATABASE_START_FAILED','BACKUP_INVENTORY_INVALID','SOURCE_INVENTORY_MISMATCH'])refused(copyOk,failed(code+'\n'),code);
+for(const text of ['private password /private/credential.pem','SECRET_TOKEN_VALUE','SOURCE_DATABASE_COPY_REFUSED:/private/path','SOURCE_DATABASE_COPY_REFUSED:unknown','SOURCE_INVENTORY_MISMATCH\nsecret=value','BACKUP_INVENTORY_INVALID:secret=value']){
+ refused(failed(text),readerOk);refused(copyOk,failed(text));
+}
+refused(failed('SOURCE_INVENTORY_MISMATCH\n'),readerOk);
+refused(copyOk,failed('SOURCE_DATABASE_COPY_REFUSED:space\n'));
+refused('console.log("not-json")',readerOk);
+refused(failed('SOURCE_DATABASE_COPY_REFUSED:space\n'.repeat(4000)),readerOk);
+const success=run(copyOk,readerOk);assert.equal(success.status,0);assert.equal(success.stderr,'');
+const result=JSON.parse(success.stdout);assert.deepEqual(result.physical,{systemIdentifier:'123'});
+assert.deepEqual(result.inventory,{candidateId:program.includes('candidate=true;')?'123':null});
+console.log('PASS real child execution: allowlisted diagnostics, arbitrary output suppression, unchanged success and candidate binding');
+"#;
+    #[test]
+    fn real_child_diagnostics_never_echo_untrusted_output_or_change_success() {
+        for candidate in [false, true] {
+            let output = std::process::Command::new("node")
+                .args(["--input-type=module", "-e", CHILD_DIAGNOSTICS_TEST])
+                .arg(script(candidate))
+                .arg(serde_json::to_string(include_str!("source_database_copy.mjs")).unwrap())
+                .arg(serde_json::to_string(include_str!("source_inventory_reader.mjs")).unwrap())
+                .output()
+                .expect("Node is required for the compiled child diagnostic regression");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
     #[test]
     fn aliases_and_mount_injection_refuse_before_engine_access() {
         let image = format!("sha256:{}", "a".repeat(64));
