@@ -6,7 +6,7 @@ mod json_storage;
 #[path = "windows_record_publication.rs"]
 mod record_publication;
 use crate::{Result, err};
-pub(crate) use json_storage::{read_json_path, write_json_root};
+pub(crate) use json_storage::{read_json_path, replace_private_record, write_json_root};
 use std::{
     ffi::c_void,
     fs::File,

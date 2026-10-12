@@ -751,8 +751,27 @@ fn run_observed_inputs(
     seconds: u64,
     input: Option<File>,
     extra: Option<File>,
+    observe: impl FnMut() -> Result<()>,
+) -> Result<Vec<u8>> {
+    run_observed_stream(binary, args, cwd, seconds, input, extra, None, observe)
+}
+fn run_observed_stream(
+    binary: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    seconds: u64,
+    input: Option<File>,
+    extra: Option<File>,
+    streamed: Option<(Box<dyn Read + Send>, u64)>,
     mut observe: impl FnMut() -> Result<()>,
 ) -> Result<Vec<u8>> {
+    if streamed.is_some() && input.is_some() {
+        return Err(err("ENGINE_INPUT_INVALID"));
+    }
+    if streamed.as_ref().is_some_and(|(_, limit)| *limit == 0) {
+        return Err(err("ENGINE_INPUT_INVALID"));
+    }
+    let has_stream = streamed.is_some();
     let executable = if matches!(binary, "docker" | "podman") {
         engine_executable(binary).ok_or_else(|| err("RUNTIME_MISSING"))?
     } else {
@@ -775,7 +794,11 @@ fn run_observed_inputs(
     }
     command
         .args(args)
-        .stdin(input.map(Stdio::from).unwrap_or_else(Stdio::null))
+        .stdin(if has_stream {
+            Stdio::piped()
+        } else {
+            input.map(Stdio::from).unwrap_or_else(Stdio::null)
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(dir) = cwd {
@@ -807,6 +830,42 @@ fn run_observed_inputs(
             err("ENGINE_PERMISSION")
         }
     })?;
+    // The producer is a bounded, finite protected reader; it must verify its
+    // retained source identity on EOF. No payload enters argv or diagnostics.
+    let input_result = streamed.map(|(mut source, limit)| {
+        let mut sink = child.stdin.take().unwrap();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = (|| -> Result<()> {
+                let mut written = 0u64;
+                let mut buffer = [0u8; 65536];
+                loop {
+                    let wanted = (limit.saturating_sub(written).saturating_add(1))
+                        .min(buffer.len() as u64) as usize;
+                    let n = source
+                        .read(&mut buffer[..wanted])
+                        .map_err(|_| err("ENGINE_INPUT_FAILED"))?;
+                    if n == 0 {
+                        break;
+                    }
+                    written = written
+                        .checked_add(n as u64)
+                        .ok_or_else(|| err("ENGINE_INPUT_LIMIT"))?;
+                    if written > limit {
+                        return Err(err("ENGINE_INPUT_LIMIT"));
+                    }
+                    sink.write_all(&buffer[..n])
+                        .map_err(|_| err("ENGINE_INPUT_FAILED"))?;
+                }
+                sink.flush().map_err(|_| err("ENGINE_INPUT_FAILED"))?;
+                Ok(())
+            })();
+            drop(sink);
+            let _ = tx.send(result);
+        });
+        rx
+    });
+    let mut input_done = !has_stream;
     let (tx, rx) = mpsc::channel();
     for (index, mut stream) in [
         Box::new(child.stdout.take().unwrap()) as Box<dyn Read + Send>,
@@ -838,6 +897,22 @@ fn run_observed_inputs(
     drop(tx);
     let deadline = Instant::now() + Duration::from_secs(seconds);
     let status = loop {
+        if !input_done {
+            match input_result.as_ref().unwrap().try_recv() {
+                Ok(Ok(())) => input_done = true,
+                Ok(Err(error)) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(err("ENGINE_INPUT_FAILED"));
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
         match child.try_wait() {
             Ok(Some(s)) => break s,
             Ok(None) => {
@@ -856,6 +931,13 @@ fn run_observed_inputs(
             Err(_) => return Err(err("ENGINE_OPERATION_FAILED")),
         }
     };
+    if !input_done {
+        input_result
+            .as_ref()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_| err("ENGINE_INPUT_FAILED"))??;
+    }
     let a = rx
         .recv_timeout(Duration::from_secs(2))
         .map_err(|_| err("ENGINE_TIMEOUT"))?;
@@ -2095,3 +2177,113 @@ mod engine_failure_tests;
 mod local_network;
 mod restoration_network;
 pub use local_network::{ExplicitLocalNetwork, choose_explicit_local_network};
+
+#[cfg(all(test, unix))]
+mod bounded_input_transport_tests {
+    use super::*;
+    #[test]
+    fn protected_input_roundtrip_and_limit_never_claim_partial_success() {
+        let bytes = vec![0x5a; 65537];
+        let got = run_observed_stream(
+            "/bin/cat",
+            &[],
+            None,
+            5,
+            None,
+            None,
+            Some((
+                Box::new(std::io::Cursor::new(bytes.clone())),
+                bytes.len() as u64,
+            )),
+            || Ok(()),
+        )
+        .unwrap();
+        assert_eq!(got, bytes);
+        let error = run_observed_stream(
+            "/bin/cat",
+            &[],
+            None,
+            5,
+            None,
+            None,
+            Some((Box::new(std::io::Cursor::new(bytes)), 65536)),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "ENGINE_INPUT_LIMIT");
+    }
+    struct FailedFinalCheck(bool);
+    impl Read for FailedFinalCheck {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.0 {
+                return Err(std::io::Error::other("synthetic identity change"));
+            }
+            self.0 = true;
+            buf[0] = 7;
+            Ok(1)
+        }
+    }
+    #[test]
+    fn source_final_check_failure_and_early_exit_are_not_completion() {
+        let error = run_observed_stream(
+            "/bin/cat",
+            &[],
+            None,
+            5,
+            None,
+            None,
+            Some((Box::new(FailedFinalCheck(false)), 1024)),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "ENGINE_INPUT_FAILED");
+        let error = run_observed_stream(
+            "/usr/bin/true",
+            &[],
+            None,
+            5,
+            None,
+            None,
+            Some((
+                Box::new(std::io::Cursor::new(vec![1; 1024 * 1024])),
+                1024 * 1024,
+            )),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "ENGINE_INPUT_FAILED");
+    }
+    #[test]
+    fn blocked_stdin_obeys_original_timeout_and_observer() {
+        for cancel in [false, true] {
+            let error = run_observed_stream(
+                "/bin/sleep",
+                &["5".into()],
+                None,
+                0,
+                None,
+                None,
+                Some((
+                    Box::new(std::io::Cursor::new(vec![1; 1024 * 1024])),
+                    1024 * 1024,
+                )),
+                || {
+                    if cancel {
+                        Err(err("CANCELLED"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.code,
+                if cancel {
+                    "CANCELLED"
+                } else {
+                    "ENGINE_TIMEOUT"
+                }
+            );
+        }
+    }
+}
