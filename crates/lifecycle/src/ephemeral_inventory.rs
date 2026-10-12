@@ -376,7 +376,7 @@ for(const text of ['private password /private/credential.pem','SECRET_TOKEN_VALU
 refused(failed('SOURCE_INVENTORY_MISMATCH\n'),readerOk);
 refused(copyOk,failed('SOURCE_DATABASE_COPY_REFUSED:space\n'));
 refused('console.log("not-json")',readerOk);
-refused(failed('SOURCE_DATABASE_COPY_REFUSED:space\n'.repeat(4000)),readerOk);
+refused('process.stdout.write("private stdout token");process.stderr.write("SOURCE_DATABASE_COPY_REFUSED:space\\n".repeat(4000));process.exitCode=1',readerOk);
 const success=run(copyOk,readerOk);assert.equal(success.status,0);assert.equal(success.stderr,'');
 const result=JSON.parse(success.stdout);assert.deepEqual(result.physical,{systemIdentifier:'123'});
 assert.deepEqual(result.inventory,{candidateId:program.includes('candidate=true;')?'123':null});
