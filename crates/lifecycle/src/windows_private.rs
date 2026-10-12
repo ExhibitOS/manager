@@ -1778,3 +1778,560 @@ mod tests {
         std::fs::remove_dir(path).unwrap();
     }
 }
+
+// Full host checkpoints retain native permissions rather than synthesizing Unix modes.
+pub(crate) use crate::profile_backup::HostWindowsPermissions as HostPermissions;
+const HOST_ATTRIBUTES: u32 = fsapi::FILE_ATTRIBUTE_READONLY
+    | fsapi::FILE_ATTRIBUTE_HIDDEN
+    | fsapi::FILE_ATTRIBUTE_SYSTEM
+    | fsapi::FILE_ATTRIBUTE_ARCHIVE
+    | fsapi::FILE_ATTRIBUTE_NOT_CONTENT_INDEXED;
+fn host_permissions(file: &File, sid: &Sid, directory: bool) -> Result<HostPermissions> {
+    identity(file, directory)?;
+    let (mut owner, mut dacl, mut sd) = (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
+    if unsafe { GetSecurityInfo(file.as_raw_handle().cast(), SE_FILE_OBJECT,
+        sec::OWNER_SECURITY_INFORMATION | sec::DACL_SECURITY_INFORMATION,
+        &mut owner, ptr::null_mut(), &mut dacl, ptr::null_mut(), &mut sd) } != 0 {
+        return Err(err("WINDOWS_HOST_PERMISSIONS_INVALID"));
+    }
+    let _sd = Local(sd);
+    host_validate_descriptor(sd, sid)?;
+    let (mut text, mut length) = (ptr::null_mut(), 0);
+    if unsafe { sec::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW(
+        sd, SDDL_REVISION_1, sec::OWNER_SECURITY_INFORMATION | sec::DACL_SECURITY_INFORMATION,
+        &mut text, &mut length) } == 0 || text.is_null() || length > 65536 {
+        return Err(err("WINDOWS_HOST_PERMISSIONS_INVALID"));
+    }
+    let _text = Local(text.cast());
+    let encoded = unsafe { std::slice::from_raw_parts(text, length as usize) };
+    let encoded = encoded.strip_suffix(&[0]).unwrap_or(encoded);
+    use std::os::windows::fs::MetadataExt;
+    Ok(HostPermissions {
+        security_descriptor: String::from_utf16(encoded).map_err(|_| err("WINDOWS_HOST_PERMISSIONS_INVALID"))?,
+        attributes: file.metadata().map_err(|_| err("WINDOWS_HOST_IO"))?.file_attributes() & HOST_ATTRIBUTES,
+    })
+}
+fn host_validate_descriptor(sd: sec::PSECURITY_DESCRIPTOR, sid: &Sid) -> Result<()> {
+    let (mut owner, mut defaulted) = (ptr::null_mut(), 0);
+    let (mut dacl, mut present) = (ptr::null_mut(), 0);
+    if unsafe { sec::GetSecurityDescriptorOwner(sd, &mut owner, &mut defaulted) } == 0
+        || unsafe { sec::GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted) } == 0
+        || present == 0 { return Err(err("WINDOWS_HOST_PERMISSIONS_INVALID")); }
+    if owner.is_null() || dacl.is_null() || unsafe { sec::IsValidSid(owner) } == 0
+        || unsafe { sec::EqualSid(owner, sid.ptr()) } == 0
+        || unsafe { sec::IsValidAcl(dacl) } == 0 || unsafe { (*dacl).AceCount } > 1024 {
+        return Err(err("WINDOWS_HOST_PERMISSIONS_INVALID"));
+    }
+    let mut owner_read = false;
+    for index in 0..unsafe { (*dacl).AceCount } {
+        let mut raw = ptr::null_mut();
+        if unsafe { sec::GetAce(dacl, index.into(), &mut raw) } == 0 || raw.is_null() {
+            return Err(err("WINDOWS_HOST_PERMISSIONS_INVALID"));
+        }
+        let header = unsafe { &*raw.cast::<sec::ACE_HEADER>() };
+        if header.AceType == 1 { continue; }
+        if header.AceType != 0 || usize::from(header.AceSize) < mem::size_of::<sec::ACCESS_ALLOWED_ACE>() {
+            return Err(err("WINDOWS_HOST_PERMISSIONS_INVALID"));
+        }
+        let ace = unsafe { &*raw.cast::<sec::ACCESS_ALLOWED_ACE>() };
+        let grant: sec::PSID = ptr::addr_of!(ace.SidStart).cast_mut().cast();
+        let available = usize::from(header.AceSize).saturating_sub(mem::offset_of!(sec::ACCESS_ALLOWED_ACE, SidStart));
+        if available < 8 || 8 + 4 * usize::from(unsafe { *grant.cast::<u8>().add(1) }) > available
+            || unsafe { sec::IsValidSid(grant) } == 0 {
+            return Err(err("WINDOWS_HOST_PERMISSIONS_INVALID"));
+        }
+        if unsafe { sec::EqualSid(grant, sid.ptr()) } != 0 {
+            if header.AceFlags & sec::INHERIT_ONLY_ACE as u8 == 0 {
+                owner_read |= ace.Mask & (0x80000000 | 0x10000000 | fsapi::FILE_READ_DATA) != 0;
+            }
+        } else if !matches!(Sid::text_ptr(grant)?.as_str(), "S-1-5-18" | "S-1-5-32-544")
+            && ace.Mask & 0x500d0156 != 0 {
+            return Err(err("WINDOWS_HOST_PERMISSIONS_INVALID"));
+        }
+    }
+    if !owner_read { return Err(err("WINDOWS_HOST_PERMISSIONS_INVALID")); }
+    Ok(())
+}
+fn host_open(path: &Path, directory: bool, access: u32, share: u32) -> Result<File> {
+    let handle = unsafe { fsapi::CreateFileW(wide(path)?.as_ptr(), access | fsapi::READ_CONTROL,
+        share, ptr::null(), fsapi::OPEN_EXISTING,
+        fsapi::FILE_FLAG_OPEN_REPARSE_POINT | if directory { fsapi::FILE_FLAG_BACKUP_SEMANTICS } else { 0 }, ptr::null_mut()) };
+    if handle == INVALID_HANDLE_VALUE { return Err(err("WINDOWS_HOST_OPEN_REFUSED")); }
+    let file = unsafe { File::from_raw_handle(handle.cast()) };
+    identity(&file, directory)?;
+    Ok(file)
+}
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HostDirectorySync {
+    pub(crate) directory_flush: bool,
+    pub(crate) publication_namespace_checked: bool,
+}
+struct HostDirectoryInner {
+    file: File,
+    id: Identity,
+    sid: Sid,
+    ancestors: Vec<(PathBuf, File, Identity)>,
+    parents: std::sync::Mutex<Vec<HostDirectory>>,
+    children: std::sync::Mutex<std::collections::BTreeMap<String, std::sync::Weak<HostDirectoryInner>>>,
+    created: bool,
+    publishable: bool,
+}
+#[derive(Clone)]
+pub(crate) struct HostDirectory {
+    path: PathBuf,
+    inner: std::sync::Arc<HostDirectoryInner>,
+}
+impl HostDirectory {
+    pub(crate) fn inspect(path: &Path) -> Result<Self> {
+        if !path.is_absolute() || path.canonicalize().ok().as_deref() != Some(path) {
+            return Err(err("WINDOWS_HOST_PATH_INVALID"));
+        }
+        let ancestors = pin_ancestors(path.parent().ok_or_else(|| err("WINDOWS_HOST_PATH_INVALID"))?)?;
+        let file = open(path, true)?;
+        let sid = Sid::current()?;
+        host_permissions(&file, &sid, true)?;
+        let value = Self { path: path.into(), inner: std::sync::Arc::new(HostDirectoryInner {
+            id: identity(&file, true)?, file, sid, ancestors, parents: std::sync::Mutex::new(Vec::new()), children: std::sync::Mutex::new(std::collections::BTreeMap::new()), created: false, publishable: false,
+        }) };
+        value.check()?;
+        Ok(value)
+    }
+    /// The caller authenticates this inactive candidate before publication.
+    /// This grants no existing-object permission mutation or byte-writing access.
+    pub(crate) fn inspect_for_publication(path: &Path) -> Result<Self> {
+        if !path.is_absolute() || path.canonicalize().ok().as_deref() != Some(path) {
+            return Err(err("WINDOWS_HOST_PATH_INVALID"));
+        }
+        let ancestors = pin_ancestors(path.parent().ok_or_else(|| err("WINDOWS_HOST_PATH_INVALID"))?)?;
+        let file = host_open(path, true, fsapi::FILE_LIST_DIRECTORY | fsapi::DELETE,
+            fsapi::FILE_SHARE_READ | fsapi::FILE_SHARE_WRITE)?;
+        let sid = Sid::current()?;
+        host_permissions(&file, &sid, true)?;
+        let value = Self { path: path.into(), inner: std::sync::Arc::new(HostDirectoryInner {
+            id: identity(&file, true)?, file, sid, ancestors,
+            parents: std::sync::Mutex::new(Vec::new()),
+            children: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            created: false, publishable: true,
+        }) };
+        value.check()?; Ok(value)
+    }
+    fn contains_identity(&self, wanted: &Identity) -> Result<bool> {
+        if &self.inner.id == wanted { return Ok(true); }
+        for parent in self.inner.parents.lock().map_err(|_| err("WINDOWS_HOST_BUSY"))?.iter() {
+            if parent.contains_identity(wanted)? { return Ok(true); }
+        }
+        Ok(false)
+    }
+    pub(crate) fn path(&self) -> &Path { &self.path }
+    pub(crate) fn metadata(&self) -> Result<std::fs::Metadata> {
+        self.check()?;
+        self.inner.file.metadata().map_err(|_| err("WINDOWS_HOST_IO"))
+    }
+    pub(crate) fn check(&self) -> Result<()> {
+        for (path, file, expected) in &self.inner.ancestors {
+            if identity(file, true)? != *expected || identity(&open(path, true)?, true)? != *expected {
+                return Err(err("WINDOWS_HOST_IDENTITY_CHANGED"));
+            }
+        }
+        for parent in self.inner.parents.lock().map_err(|_| err("WINDOWS_HOST_BUSY"))?.iter() { parent.check()?; }
+        let named = host_open(&self.path, true, fsapi::FILE_READ_ATTRIBUTES,
+            fsapi::FILE_SHARE_READ | fsapi::FILE_SHARE_WRITE | fsapi::FILE_SHARE_DELETE)?;
+        if identity(&self.inner.file, true)? != self.inner.id || identity(&named, true)? != self.inner.id {
+            return Err(err("WINDOWS_HOST_IDENTITY_CHANGED"));
+        }
+        host_permissions(&self.inner.file, &self.inner.sid, true)?;
+        Ok(())
+    }
+    pub(crate) fn permissions(&self) -> Result<HostPermissions> {
+        self.check()?;
+        host_permissions(&self.inner.file, &self.inner.sid, true)
+    }
+    pub(crate) fn check_private(&self) -> Result<()> {
+        self.check()?;
+        acl(&self.inner.file, &self.inner.sid, true)
+    }
+
+    pub(crate) fn child_directory(&self, name: &str) -> Result<Self> {
+        host_name(name)?; self.check()?;
+        let path = self.path.join(name);
+        if let Some(inner) = self.inner.children.lock().map_err(|_| err("WINDOWS_HOST_BUSY"))?
+            .get(name).and_then(std::sync::Weak::upgrade) {
+            let value = Self { path, inner }; value.check()?; return Ok(value);
+        }
+        let file = host_open(&path, true, fsapi::FILE_LIST_DIRECTORY,
+            fsapi::FILE_SHARE_READ | fsapi::FILE_SHARE_WRITE)?;
+        let sid = Sid::current()?;
+        host_permissions(&file, &sid, true)?;
+        let value = Self { path, inner: std::sync::Arc::new(HostDirectoryInner {
+            id: identity(&file, true)?, file, sid, ancestors: Vec::new(), parents: std::sync::Mutex::new(vec![self.clone()]), children: std::sync::Mutex::new(std::collections::BTreeMap::new()), created: false, publishable: false,
+        }) };
+        value.check()?; Ok(value)
+    }
+    pub(crate) fn child_file(&self, name: &str) -> Result<HostFile> { HostFile::from_parent(self.clone(), name, false) }
+    pub(crate) fn create_file(&self, name: &str) -> Result<HostFile> { HostFile::from_parent(self.clone(), name, true) }
+    pub(crate) fn create_directory(&self, name: &str) -> Result<Self> {
+        host_name(name)?; self.check()?;
+        let path = self.path.join(name); let sid = Sid::current()?; let sd = descriptor(&sid, true)?;
+        let attributes = sec::SECURITY_ATTRIBUTES { nLength: mem::size_of::<sec::SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd.0, bInheritHandle: 0 };
+        if unsafe { fsapi::CreateDirectoryW(wide(&path)?.as_ptr(), &attributes) } == 0 {
+            return Err(err("WINDOWS_HOST_CREATE_REFUSED"));
+        }
+        let file = host_open(&path, true, fsapi::FILE_LIST_DIRECTORY | fsapi::DELETE
+            | fsapi::WRITE_DAC | fsapi::WRITE_OWNER | fsapi::FILE_WRITE_ATTRIBUTES,
+            fsapi::FILE_SHARE_READ | fsapi::FILE_SHARE_WRITE)?;
+        let value = Self { path, inner: std::sync::Arc::new(HostDirectoryInner {
+            id: identity(&file, true)?, file, sid, ancestors: Vec::new(), parents: std::sync::Mutex::new(vec![self.clone()]), children: std::sync::Mutex::new(std::collections::BTreeMap::new()), created: true, publishable: true,
+        }) };
+        value.check()?;
+        self.inner.children.lock().map_err(|_| err("WINDOWS_HOST_BUSY"))?
+            .insert(name.into(), std::sync::Arc::downgrade(&value.inner));
+        Ok(value)
+    }
+    pub(crate) fn apply_permissions(&self, permissions: &HostPermissions) -> Result<()> {
+        if !self.inner.created { return Err(err("WINDOWS_HOST_EXISTING_PERMISSIONS_IMMUTABLE")); }
+        self.check()?;
+        host_apply(&self.inner.file, &self.inner.sid, true, permissions)?;
+        self.check()
+    }
+    pub(crate) fn sync_all(&self) -> Result<HostDirectorySync> {
+        self.check()?;
+        // These retained directory handles have no GENERIC_WRITE grant; Windows
+        // does not provide Unix directory-fsync semantics through this handle.
+        // NEW files use write-through handles and actual file FlushFileBuffers.
+        // Callers retain this explicit evidence and perform final cold reopening.
+        Ok(HostDirectorySync {
+            directory_flush: false,
+            publication_namespace_checked: true,
+        })
+    }
+    pub(crate) fn publish_into(&mut self, parent: &HostDirectory, name: &str) -> Result<()> {
+        if !self.inner.publishable { return Err(err("WINDOWS_HOST_EXISTING_PUBLICATION_REFUSED")); }
+        self.check()?; parent.check()?; host_name(name)?;
+        if parent.contains_identity(&self.inner.id)? { return Err(err("WINDOWS_HOST_PUBLICATION_REFUSED")); }
+        let permissions = self.permissions()?;
+        let target = parent.path.join(name);
+        self.inner.parents.lock().map_err(|_| err("WINDOWS_HOST_BUSY"))?.push(parent.clone());
+        host_publish(&self.inner.file, &target)?;
+        self.path = target;
+        parent.inner.children.lock().map_err(|_| err("WINDOWS_HOST_BUSY"))?
+            .insert(name.into(), std::sync::Arc::downgrade(&self.inner));
+        self.check().map_err(|_| err("WINDOWS_HOST_PUBLICATION_UNCERTAIN"))?;
+        if self.permissions()? != permissions { return Err(err("WINDOWS_HOST_PUBLICATION_UNCERTAIN")); }
+        parent.check().map_err(|_| err("WINDOWS_HOST_PUBLICATION_UNCERTAIN"))
+    }
+}
+pub(crate) struct HostFile {
+    path: PathBuf,
+    file: File,
+    parent: HostDirectory,
+    id: Identity,
+    created: bool,
+    sealed: std::cell::Cell<bool>,
+}
+impl HostFile {
+    pub(crate) fn open(path: &Path) -> Result<Self> {
+        if !path.is_absolute() || path.canonicalize().ok().as_deref() != Some(path) {
+            return Err(err("WINDOWS_HOST_PATH_INVALID"));
+        }
+        let parent = HostDirectory::inspect(path.parent().ok_or_else(|| err("WINDOWS_HOST_PATH_INVALID"))?)?;
+        let name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| err("WINDOWS_HOST_PATH_INVALID"))?;
+        parent.child_file(name)
+    }
+    fn from_parent(parent: HostDirectory, name: &str, created: bool) -> Result<Self> {
+        host_name(name)?; parent.check()?; let path = parent.path.join(name);
+        let file = if created {
+            let sd = descriptor(&parent.inner.sid, false)?;
+            let attributes = sec::SECURITY_ATTRIBUTES { nLength: mem::size_of::<sec::SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: sd.0, bInheritHandle: 0 };
+            let handle = unsafe { fsapi::CreateFileW(wide(&path)?.as_ptr(), 0x80000000 | 0x40000000
+                | fsapi::READ_CONTROL | fsapi::WRITE_DAC | fsapi::WRITE_OWNER | fsapi::DELETE | fsapi::FILE_WRITE_ATTRIBUTES,
+                fsapi::FILE_SHARE_READ, &attributes, fsapi::CREATE_NEW,
+                fsapi::FILE_ATTRIBUTE_NORMAL | fsapi::FILE_FLAG_OPEN_REPARSE_POINT | fsapi::FILE_FLAG_WRITE_THROUGH, ptr::null_mut()) };
+            if handle == INVALID_HANDLE_VALUE { return Err(err("WINDOWS_HOST_CREATE_REFUSED")); }
+            unsafe { File::from_raw_handle(handle.cast()) }
+        } else { host_open(&path, false, 0x80000000, fsapi::FILE_SHARE_READ)? };
+        let value = Self { path, id: identity(&file, false)?, file, parent, created, sealed: std::cell::Cell::new(false) };
+        value.check()?; Ok(value)
+    }
+    pub(crate) fn check(&self) -> Result<()> {
+        self.parent.check()?;
+        let named = host_open(&self.path, false, fsapi::FILE_READ_ATTRIBUTES,
+            fsapi::FILE_SHARE_READ | fsapi::FILE_SHARE_WRITE | fsapi::FILE_SHARE_DELETE)?;
+        if identity(&self.file, false)? != self.id || identity(&named, false)? != self.id {
+            return Err(err("WINDOWS_HOST_IDENTITY_CHANGED"));
+        }
+        host_permissions(&self.file, &self.parent.inner.sid, false)?; Ok(())
+    }
+    pub(crate) fn metadata(&self) -> Result<std::fs::Metadata> {
+        self.check()?; self.file.metadata().map_err(|_| err("WINDOWS_HOST_IO"))
+    }
+    pub(crate) fn check_private(&self) -> Result<()> {
+        self.check()?;
+        acl(&self.file, &self.parent.inner.sid, true)
+    }
+    pub(crate) fn path(&self) -> &Path { &self.path }
+
+    pub(crate) fn permissions(&self) -> Result<HostPermissions> {
+        self.check()?; host_permissions(&self.file, &self.parent.inner.sid, false)
+    }
+    pub(crate) fn apply_permissions(&self, permissions: &HostPermissions) -> Result<()> {
+        if !self.created { return Err(err("WINDOWS_HOST_EXISTING_PERMISSIONS_IMMUTABLE")); }
+        self.check()?;
+        host_apply(&self.file, &self.parent.inner.sid, false, permissions)?;
+        self.sealed.set(true);
+        self.check()
+    }
+    pub(crate) fn sync_all(&self) -> Result<()> {
+        self.check()?; self.file.sync_all().map_err(|_| err("WINDOWS_HOST_IO"))?; self.check()
+    }
+    pub(crate) fn publish_into(&mut self, parent: &HostDirectory, name: &str) -> Result<()> {
+        if !self.created { return Err(err("WINDOWS_HOST_EXISTING_PUBLICATION_REFUSED")); }
+        self.check()?; parent.check()?; host_name(name)?;
+        let permissions = self.permissions()?;
+        self.sync_all()?;
+        let target = parent.path.join(name); host_publish(&self.file, &target)?;
+        self.path = target; self.parent = parent.clone();
+        self.sync_all().map_err(|_| err("WINDOWS_HOST_PUBLICATION_UNCERTAIN"))?;
+        self.check().map_err(|_| err("WINDOWS_HOST_PUBLICATION_UNCERTAIN"))?;
+        if self.permissions()? != permissions { return Err(err("WINDOWS_HOST_PUBLICATION_UNCERTAIN")); }
+        Ok(())
+    }
+}
+impl Read for HostFile {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.check().map_err(|_| std::io::Error::other("WINDOWS_HOST_SOURCE_CHANGED"))?;
+        self.file.read(bytes)
+    }
+}
+impl Seek for HostFile {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        self.check().map_err(|_| std::io::Error::other("WINDOWS_HOST_SOURCE_CHANGED"))?;
+        self.file.seek(position)
+    }
+}
+impl Write for HostFile {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if !self.created || self.sealed.get() { return Err(std::io::Error::other("WINDOWS_HOST_SOURCE_IMMUTABLE")); }
+        self.check().map_err(|_| std::io::Error::other("WINDOWS_HOST_SOURCE_CHANGED"))?;
+        self.file.write(bytes)
+    }
+    fn flush(&mut self) -> std::io::Result<()> { self.file.flush() }
+}
+fn host_apply(file: &File, sid: &Sid, directory: bool, permissions: &HostPermissions) -> Result<()> {
+    if permissions.security_descriptor.len() > 65536 || permissions.security_descriptor.contains('\0')
+        || permissions.attributes & !HOST_ATTRIBUTES != 0 { return Err(err("WINDOWS_HOST_PERMISSIONS_INVALID")); }
+    let text: Vec<_> = permissions.security_descriptor.encode_utf16().chain([0]).collect();
+    let mut sd = ptr::null_mut();
+    if unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(text.as_ptr(), SDDL_REVISION_1, &mut sd, ptr::null_mut()) } == 0 {
+        return Err(err("WINDOWS_HOST_PERMISSIONS_INVALID"));
+    }
+    let _sd = Local(sd); let (mut owner, mut defaulted) = (ptr::null_mut(), 0);
+    let (mut dacl, mut present) = (ptr::null_mut(), 0); let (mut control, mut revision) = (0, 0);
+    if unsafe { sec::GetSecurityDescriptorOwner(sd, &mut owner, &mut defaulted) } == 0
+        || unsafe { sec::GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted) } == 0
+        || unsafe { sec::GetSecurityDescriptorControl(sd, &mut control, &mut revision) } == 0
+        || owner.is_null() || dacl.is_null() || present == 0 || unsafe { sec::EqualSid(owner, sid.ptr()) } == 0 {
+        return Err(err("WINDOWS_HOST_PERMISSIONS_INVALID"));
+    }
+    host_validate_descriptor(sd, sid)?;
+    let information = sec::OWNER_SECURITY_INFORMATION | sec::DACL_SECURITY_INFORMATION
+        | if control & sec::SE_DACL_PROTECTED != 0 { sec::PROTECTED_DACL_SECURITY_INFORMATION } else { sec::UNPROTECTED_DACL_SECURITY_INFORMATION };
+    if unsafe { sec::Authorization::SetSecurityInfo(file.as_raw_handle().cast(), SE_FILE_OBJECT,
+        information, owner, ptr::null_mut(), dacl, ptr::null_mut()) } != 0 {
+        return Err(err("WINDOWS_HOST_PERMISSIONS_APPLY_UNCERTAIN"));
+    }
+    let mut basic: fsapi::FILE_BASIC_INFO = unsafe { mem::zeroed() };
+    basic.FileAttributes = if permissions.attributes == 0 { fsapi::FILE_ATTRIBUTE_NORMAL } else { permissions.attributes };
+    if unsafe { fsapi::SetFileInformationByHandle(file.as_raw_handle().cast(), fsapi::FileBasicInfo,
+        ptr::from_ref(&basic).cast(), mem::size_of::<fsapi::FILE_BASIC_INFO>() as u32) } == 0
+        || host_permissions(file, sid, directory)? != *permissions {
+        return Err(err("WINDOWS_HOST_PERMISSIONS_APPLY_UNCERTAIN"));
+    }
+    Ok(())
+}
+fn host_publish(file: &File, destination: &Path) -> Result<()> {
+    let filename = wide(destination)?;
+    if filename.len() > 32768 { return Err(err("WINDOWS_HOST_PATH_INVALID")); }
+    let size = (mem::offset_of!(fsapi::FILE_RENAME_INFO, FileName) + filename.len() * 2)
+        .max(mem::size_of::<fsapi::FILE_RENAME_INFO>());
+    let mut buffer = vec![0usize; size.div_ceil(mem::size_of::<usize>())];
+    let info = buffer.as_mut_ptr().cast::<fsapi::FILE_RENAME_INFO>();
+    unsafe {
+        (*info).Anonymous.ReplaceIfExists = false; (*info).RootDirectory = ptr::null_mut();
+        (*info).FileNameLength = ((filename.len() - 1) * 2) as u32;
+        ptr::copy_nonoverlapping(filename.as_ptr(), ptr::addr_of_mut!((*info).FileName).cast::<u16>(), filename.len());
+    }
+    if unsafe { fsapi::SetFileInformationByHandle(file.as_raw_handle().cast(), fsapi::FileRenameInfo,
+        buffer.as_ptr().cast(), size as u32) } == 0 { return Err(err("WINDOWS_HOST_PUBLICATION_REFUSED")); }
+    Ok(())
+}
+
+fn host_name(name: &str) -> Result<()> {
+    let stem = name.split('.').next().unwrap_or_default().to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'));
+    if name.is_empty() || name.encode_utf16().count() > 255 || name == "." || name == ".."
+        || name.ends_with(['.', ' ']) || reserved
+        || name.chars().any(|value| value.is_control() || "<>:\"/\\|?*".contains(value)) {
+        return Err(err("WINDOWS_HOST_PATH_INVALID"));
+    }
+    Ok(())
+}
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    #[link_name = "RtlUpcaseUnicodeChar"]
+    fn host_nt_upcase_unicode_char(source: u16) -> u16;
+}
+/// NT's one-code-unit ordinal upper-case mapping does not expand names or use locale rules.
+pub(crate) fn ordinal_case_key(relative: &str) -> Result<String> {
+    let mut units = Vec::new();
+    for (index, component) in relative.split('/').enumerate() {
+        host_name(component)?;
+        if index != 0 { units.push(u16::from(b'/')); }
+        units.extend(component.encode_utf16().map(|unit| unsafe { host_nt_upcase_unicode_char(unit) }));
+    }
+    String::from_utf16(&units).map_err(|_| err("WINDOWS_HOST_PATH_INVALID"))
+}
+
+#[cfg(test)]
+mod host_native_tests {
+    use super::*;
+    fn root() -> PrivateDirectory {
+        PrivateDirectory::create(&std::env::temp_dir().join(format!("host-native-{}", uuid::Uuid::new_v4()))).unwrap()
+    }
+    #[test]
+    fn host_restore_preserves_public_read_acl_attributes_and_exact_bytes() {
+        let root = root();
+        let path = root.path().to_owned();
+        let source = path.join("source.bin");
+        let mut writer = root.create_record("source.bin").unwrap();
+        writer.write_all(b"original synthetic host bytes").unwrap();
+        writer.sync_all().unwrap();
+        drop(writer);
+        let status = crate::process_window::background_command("icacls.exe")
+            .arg(&source).args(["/grant", "*S-1-1-0:R"])
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().unwrap();
+        assert!(status.success());
+        let mut attributes = std::fs::metadata(&source).unwrap().permissions();
+        attributes.set_readonly(true); std::fs::set_permissions(&source, attributes).unwrap();
+        let mut original = HostFile::open(&source).unwrap();
+        let permissions = original.permissions().unwrap();
+        assert!(original.check_private().is_err());
+        let parent = HostDirectory::inspect(&path).unwrap();
+        let stage = parent.create_directory("stage").unwrap();
+        let mut restored = stage.create_file("source.bin").unwrap();
+        std::io::copy(&mut original, &mut restored).unwrap();
+        restored.sync_all().unwrap(); restored.apply_permissions(&permissions).unwrap();
+        assert_eq!(restored.permissions().unwrap(), permissions);
+        assert!(restored.write_all(b"must refuse").is_err());
+        assert_eq!(original.permissions().unwrap(), permissions);
+        drop(restored);
+        let mut observed = stage.child_file("source.bin").unwrap();
+        let mut bytes = Vec::new(); observed.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"original synthetic host bytes");
+        assert_eq!(observed.permissions().unwrap(), permissions);
+        drop(observed); drop(original); drop(stage); drop(parent); drop(root);
+        for file in [&source, &path.join("stage/source.bin")] {
+            let mut attributes = std::fs::metadata(file).unwrap().permissions();
+            attributes.set_readonly(false); std::fs::set_permissions(file, attributes).unwrap();
+            std::fs::remove_file(file).unwrap();
+        }
+        std::fs::remove_dir(path.join("stage")).unwrap(); std::fs::remove_dir(path).unwrap();
+    }
+    #[test]
+    fn host_publication_retains_identity_and_never_overwrites_existing_destination() {
+        let root = root(); let path = root.path().to_owned();
+        let parent = HostDirectory::inspect(&path).unwrap();
+        let mut stage = parent.create_directory("stage").unwrap();
+        let occupied = parent.create_directory("occupied").unwrap();
+        let permissions = stage.permissions().unwrap();
+        assert!(stage.publish_into(&parent, "occupied").is_err());
+        stage.check().unwrap(); occupied.check().unwrap();
+        assert_eq!(stage.permissions().unwrap(), permissions);
+        stage.publish_into(&parent, "published").unwrap();
+        assert_eq!(stage.permissions().unwrap(), permissions);
+        assert!(!path.join("stage").exists());
+        let held = parent.child_directory("published").unwrap(); held.check().unwrap(); drop(held);
+        let evidence = stage.sync_all().unwrap();
+        assert!(!evidence.directory_flush && evidence.publication_namespace_checked);
+        drop(stage);
+        let mut cold = HostDirectory::inspect_for_publication(&path.join("published")).unwrap();
+        assert!(cold.apply_permissions(&permissions).is_err());
+        cold.publish_into(&parent, "activated").unwrap(); cold.check().unwrap();
+        drop(cold); drop(occupied); drop(parent); drop(root);
+        std::fs::remove_dir(path.join("occupied")).unwrap();
+        std::fs::remove_dir(path.join("activated")).unwrap(); std::fs::remove_dir(path).unwrap();
+    }
+    #[test]
+    fn host_source_refuses_writer_hardlink_and_untrusted_write_grants_without_repair() {
+        let root = root(); let path = root.path().to_owned(); let source = path.join("source.bin");
+        let mut writer = root.create_record("source.bin").unwrap();
+        writer.write_all(b"synthetic original").unwrap(); writer.sync_all().unwrap();
+        assert!(HostFile::open(&source).is_err()); drop(writer);
+        let alias = path.join("alias.bin"); std::fs::hard_link(&source, &alias).unwrap();
+        assert!(HostFile::open(&source).is_err()); std::fs::remove_file(alias).unwrap();
+        let status = crate::process_window::background_command("icacls.exe")
+            .arg(&source).args(["/grant", "*S-1-1-0:W"])
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().unwrap();
+        assert!(status.success()); assert!(HostFile::open(&source).is_err());
+        assert_eq!(std::fs::read(&source).unwrap(), b"synthetic original");
+        assert_eq!(ordinal_case_key("Ä.txt").unwrap(), ordinal_case_key("ä.txt").unwrap());
+        drop(root); std::fs::remove_file(source).unwrap(); std::fs::remove_dir(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod host_inherited_permissions_tests {
+    use super::*;
+    #[test]
+    fn host_restore_keeps_inherited_read_acl_and_new_file_publication_never_replaces() {
+        let root = PrivateDirectory::create(&std::env::temp_dir().join(format!("host-inherited-{}", uuid::Uuid::new_v4()))).unwrap();
+        let path = root.path().to_owned();
+        let source_dir = PrivateDirectory::create(&path.join("source")).unwrap();
+        let mut original = source_dir.create_record("original.bin").unwrap();
+        original.write_all(b"synthetic inherited permissions").unwrap(); original.sync_all().unwrap();
+        drop(original); drop(source_dir);
+        for (target, arguments) in [
+            (path.join("source"), vec!["/grant", "*S-1-1-0:(OI)(CI)R"]),
+            (path.join("source/original.bin"), vec!["/inheritance:e"]),
+        ] {
+            let status = crate::process_window::background_command("icacls.exe")
+                .arg(target).args(arguments).stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null()).status().unwrap();
+            assert!(status.success());
+        }
+        let parent = HostDirectory::inspect(&path).unwrap();
+        let source = parent.child_directory("source").unwrap();
+        let mut input = source.child_file("original.bin").unwrap();
+        let directory_permissions = source.permissions().unwrap();
+        let permissions = input.permissions().unwrap();
+        let stage = parent.create_directory("stage").unwrap();
+        stage.apply_permissions(&directory_permissions).unwrap();
+        let mut output = stage.create_file("original.bin").unwrap();
+        std::io::copy(&mut input, &mut output).unwrap(); output.sync_all().unwrap();
+        output.apply_permissions(&permissions).unwrap();
+        assert_eq!(output.permissions().unwrap(), permissions);
+        assert_eq!(input.permissions().unwrap(), permissions);
+        drop(output); drop(input); drop(source); drop(stage);
+        let mut existing = root.create_record("occupied.bin").unwrap();
+        existing.write_all(b"preserved occupied bytes").unwrap(); drop(existing);
+        let mut pending = parent.create_file("pending.bin").unwrap();
+        pending.write_all(b"new synthetic ciphertext").unwrap(); pending.sync_all().unwrap();
+        assert!(pending.publish_into(&parent, "occupied.bin").is_err());
+        assert_eq!(std::fs::read(path.join("occupied.bin")).unwrap(), b"preserved occupied bytes");
+        pending.check_private().unwrap();
+        pending.publish_into(&parent, "ciphertext.bin").unwrap(); pending.check_private().unwrap();
+        drop(pending);
+        let cold = parent.child_file("ciphertext.bin").unwrap(); cold.check_private().unwrap(); drop(cold);
+        assert!(!path.join("pending.bin").exists());
+        drop(parent); drop(root);
+        for file in ["source/original.bin", "stage/original.bin", "occupied.bin", "ciphertext.bin"] {
+            std::fs::remove_file(path.join(file)).unwrap();
+        }
+        std::fs::remove_dir(path.join("source")).unwrap(); std::fs::remove_dir(path.join("stage")).unwrap();
+        std::fs::remove_dir(path).unwrap();
+    }
+}

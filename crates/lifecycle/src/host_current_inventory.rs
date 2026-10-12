@@ -98,7 +98,10 @@ impl Comparison {
                 return Err(fail());
             }
             let current = inventory(&self.profile, &excluded, &m.id)?;
-            if current.items != m.items || current.registry_sha256 != m.registry_sha256 {
+            if current.items != m.items
+                || current.registry_sha256 != m.registry_sha256
+                || current.root_windows_permissions != m.root_windows_permissions
+            {
                 return Err(err("HOST_SOURCE_CHANGED"));
             }
             self.inventory = Some(m);
@@ -147,7 +150,10 @@ impl Comparison {
         }
         let excluded = m.excluded_locks.iter().cloned().collect();
         let current = inventory(&self.profile, &excluded, &m.id)?;
-        if current.items != m.items || current.registry_sha256 != m.registry_sha256 {
+        if current.items != m.items
+            || current.registry_sha256 != m.registry_sha256
+            || current.root_windows_permissions != m.root_windows_permissions
+        {
             return Err(err("HOST_SOURCE_CHANGED"));
         }
         Ok(HostCurrentReceipt {
@@ -183,7 +189,7 @@ pub(crate) fn verify_host_current_borrowed(
     }
     let mut source = file(archive)?;
     let before = source.metadata().map_err(|_| fail())?;
-    if mode(&before) != 0o600 || before.len() > DATA_LIMIT + 16 * 1024 * 1024 {
+    if !archive_permissions(&source, &before)? || before.len() > DATA_LIMIT + 16 * 1024 * 1024 {
         return Err(fail());
     }
     let mut sink = Comparison::new(profile, expected);
@@ -195,6 +201,7 @@ pub(crate) fn verify_host_current_borrowed(
     {
         return Err(fail());
     }
+    file_check(&source)?;
     let receipt = sink.finish()?;
     session.check_exclusive(profile)?;
     Ok(receipt)

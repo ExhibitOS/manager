@@ -1278,6 +1278,7 @@ mod tests {
             manifest_sha256: bound.host_manifest_sha256,
             external_volumes_saved: false,
             host_writer_quiescence: "operator-acknowledged".into(),
+            windows_directory_sync: None,
         };
         store
             .seal_recovery_pair(

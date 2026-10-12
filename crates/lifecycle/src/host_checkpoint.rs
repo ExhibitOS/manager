@@ -13,6 +13,21 @@ pub(crate) use current_inventory::verify_host_current_borrowed;
 const CONTEXT: &[u8] = b"ExhibitOS-host-checkpoint-v1\0";
 const DATA_LIMIT: u64 = 64 * 1024 * 1024 * 1024;
 const MANIFEST_LIMIT: u64 = 8 * 1024 * 1024;
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct WindowsDirectorySync {
+    pub(crate) directory_flush: bool,
+    pub(crate) publication_namespace_checked: bool,
+}
+#[cfg(windows)]
+impl From<crate::windows_private::HostDirectorySync> for WindowsDirectorySync {
+    fn from(value: crate::windows_private::HostDirectorySync) -> Self {
+        Self {
+            directory_flush: value.directory_flush,
+            publication_namespace_checked: value.publication_namespace_checked,
+        }
+    }
+}
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostReceipt {
@@ -23,7 +38,28 @@ pub struct HostReceipt {
     pub manifest_sha256: String,
     pub external_volumes_saved: bool,
     pub host_writer_quiescence: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) windows_directory_sync: Option<WindowsDirectorySync>,
 }
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct HostWindowsPermissions {
+    pub(crate) security_descriptor: String,
+    pub(crate) attributes: u32,
+}
+impl HostWindowsPermissions {
+    pub(crate) fn structurally_valid(&self) -> bool {
+        self.attributes & !0x2027 == 0
+            && !self.security_descriptor.is_empty()
+            && self.security_descriptor.len() <= 64 * 1024
+            && !self.security_descriptor.chars().any(char::is_control)
+    }
+}
+#[cfg(windows)]
+type HostSourceFile = crate::windows_private::HostFile;
+#[cfg(not(windows))]
+type HostSourceFile = File;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Item {
@@ -32,6 +68,8 @@ struct Item {
     mode: u32,
     bytes: u64,
     sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    windows_permissions: Option<HostWindowsPermissions>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -52,6 +90,8 @@ struct Inventory {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     content_references: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    root_windows_permissions: Option<HostWindowsPermissions>,
 }
 fn unique_references<'de, D: serde::Deserializer<'de>>(
     d: D,
@@ -119,24 +159,55 @@ fn trusted(m: &fs::Metadata) -> bool {
 fn safe_mode(m: u32) -> bool {
     m & 0o7000 == 0 && m & 0o022 == 0 && m & 0o400 != 0
 }
-fn file(path: &Path) -> Result<File> {
-    let mut o = OpenOptions::new();
-    o.read(true);
-    #[cfg(unix)]
+fn file(path: &Path) -> Result<HostSourceFile> {
+    #[cfg(windows)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        return crate::windows_private::HostFile::open(path);
     }
-    let f = o.open(path).map_err(|_| fail())?;
-    let m = f.metadata().map_err(|_| fail())?;
-    if !m.is_file()
-        || !trusted(&m)
-        || !safe_mode(mode(&m))
-        || fs::canonicalize(path).ok().as_deref() != Some(path)
+    #[cfg(not(windows))]
     {
-        return Err(fail());
+        let mut o = OpenOptions::new();
+        o.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let f = o.open(path).map_err(|_| fail())?;
+        let m = f.metadata().map_err(|_| fail())?;
+        if !m.is_file()
+            || !trusted(&m)
+            || !safe_mode(mode(&m))
+            || fs::canonicalize(path).ok().as_deref() != Some(path)
+        {
+            return Err(fail());
+        }
+        Ok(f)
     }
-    Ok(f)
+}
+fn file_check(file: &HostSourceFile) -> Result<()> {
+    #[cfg(windows)]
+    {
+        file.check()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = file;
+        Ok(())
+    }
+}
+fn archive_permissions(file: &HostSourceFile, metadata: &fs::Metadata) -> Result<bool> {
+    #[cfg(windows)]
+    {
+        let _ = metadata;
+        file.check_private()?;
+        Ok(true)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = file;
+        Ok(mode(metadata) == 0o600)
+    }
 }
 fn unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     #[cfg(unix)]
@@ -164,7 +235,15 @@ fn unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
             after.nlink(),
         )
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        before.file_attributes() == after.file_attributes()
+            && before.creation_time() == after.creation_time()
+            && before.last_write_time() == after.last_write_time()
+            && before.file_size() == after.file_size()
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (before, after);
         false
@@ -187,6 +266,7 @@ fn hash(path: &Path) -> Result<(u64, String)> {
             .ok_or_else(|| err("HOST_CHECKPOINT_QUOTA"))?;
         h.update(&b[..n]);
     }
+    file_check(&f)?;
     let after = f.metadata().map_err(|_| fail())?;
     let current = fs::symlink_metadata(path).map_err(|_| fail())?;
     if count != before.len() || !unchanged(&before, &after) || !unchanged(&after, &current) {
@@ -210,12 +290,21 @@ fn space(parent: &Path, needed: u64) -> Result<()> {
         }
         Ok(())
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let available = fs2::available_space(parent).map_err(|_| err("HOST_STORAGE_UNVERIFIED"))?;
+        if available < needed.checked_add(256 * 1024 * 1024).ok_or_else(fail)? {
+            return Err(err("HOST_STORAGE_INSUFFICIENT"));
+        }
+        Ok(())
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (parent, needed);
         Err(err("HOST_PLATFORM_UNVERIFIED"))
     }
 }
+#[cfg(not(windows))]
 fn walk(
     root: &Path,
     relative: &str,
@@ -269,6 +358,7 @@ fn walk(
                 mode: mode(&meta),
                 bytes: 0,
                 sha256: None,
+                windows_permissions: None,
             });
             walk(root, &p, excluded, items, budget)?;
         } else if meta.is_file() && !meta.is_symlink() {
@@ -279,6 +369,7 @@ fn walk(
                 mode: mode(&meta),
                 bytes,
                 sha256: Some(h),
+                windows_permissions: None,
             });
         } else {
             return Err(fail());
@@ -286,9 +377,151 @@ fn walk(
     }
     Ok(())
 }
+#[cfg(windows)]
+fn walk_windows(
+    directory: &crate::windows_private::HostDirectory,
+    relative: &str,
+    excluded: &BTreeSet<String>,
+    items: &mut Vec<Item>,
+    budget: &mut u64,
+    retained_files: &mut BTreeMap<String, crate::windows_private::HostFile>,
+) -> Result<()> {
+    directory.check()?;
+    let mut names = fs::read_dir(directory.path())
+        .map_err(|_| fail())?
+        .map(|e| e.map(|e| e.file_name()).map_err(|_| fail()))
+        .collect::<Result<Vec<_>>>()?;
+    names.sort();
+    for name in names {
+        let name = name.to_str().ok_or_else(fail)?;
+        let path = if relative.is_empty() {
+            name.into()
+        } else {
+            format!("{relative}/{name}")
+        };
+        if !safe_windows_path(&path) {
+            return Err(fail());
+        }
+        if excluded.contains(&path) {
+            continue;
+        }
+        if items.len() >= 100000 {
+            return Err(err("HOST_CHECKPOINT_QUOTA"));
+        }
+        let metadata = fs::symlink_metadata(directory.path().join(name)).map_err(|_| fail())?;
+        if metadata.is_dir() {
+            let child = directory.child_directory(name)?;
+            let permissions = child.permissions()?;
+            *budget = budget
+                .checked_add(
+                    (2 * path.len() + 2 * permissions.security_descriptor.len() + 512) as u64,
+                )
+                .filter(|n| *n <= MANIFEST_LIMIT - 4096)
+                .ok_or_else(|| err("HOST_CHECKPOINT_QUOTA"))?;
+            items.push(Item {
+                path: path.clone(),
+                kind: "directory".into(),
+                mode: 0,
+                bytes: 0,
+                sha256: None,
+                windows_permissions: Some(permissions),
+            });
+            walk_windows(&child, &path, excluded, items, budget, retained_files)?;
+            child.check()?;
+        } else if metadata.is_file() {
+            let mut opened;
+            let file = if let Some(owned) = retained_files.get_mut(&path) {
+                owned
+                    .seek(std::io::SeekFrom::Start(0))
+                    .map_err(|_| fail())?;
+                owned
+            } else {
+                opened = directory.child_file(name)?;
+                &mut opened
+            };
+            let permissions = file.permissions()?;
+            let before = file.metadata().map_err(|_| fail())?;
+            let mut digest = Sha256::new();
+            let mut bytes = 0u64;
+            let mut buffer = [0u8; 65536];
+            loop {
+                let n = file.read(&mut buffer).map_err(|_| fail())?;
+                if n == 0 {
+                    break;
+                }
+                bytes = bytes
+                    .checked_add(n as u64)
+                    .filter(|n| *n <= DATA_LIMIT)
+                    .ok_or_else(|| err("HOST_CHECKPOINT_QUOTA"))?;
+                digest.update(&buffer[..n]);
+            }
+            file.check()?;
+            if bytes != before.len()
+                || !unchanged(&before, &file.metadata().map_err(|_| fail())?)
+                || permissions != file.permissions()?
+            {
+                return Err(err("HOST_SOURCE_CHANGED"));
+            }
+            *budget = budget
+                .checked_add(
+                    (2 * path.len() + 2 * permissions.security_descriptor.len() + 512) as u64,
+                )
+                .filter(|n| *n <= MANIFEST_LIMIT - 4096)
+                .ok_or_else(|| err("HOST_CHECKPOINT_QUOTA"))?;
+            items.push(Item {
+                path,
+                kind: "file".into(),
+                mode: 0,
+                bytes,
+                sha256: Some(format!("{:x}", digest.finalize())),
+                windows_permissions: Some(permissions),
+            });
+        } else {
+            return Err(fail());
+        }
+    }
+    directory.check()?;
+    Ok(())
+}
+fn windows_case_key(path: &str) -> Result<String> {
+    #[cfg(windows)]
+    {
+        crate::windows_private::ordinal_case_key(path)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(path.to_ascii_lowercase())
+    }
+}
+fn safe_windows_path(path: &str) -> bool {
+    safe_path(path)
+        && !path.contains(['<', '>', '"', '|', '?', '*'])
+        && path.split('/').all(|part| {
+            if part.ends_with(['.', ' ']) {
+                return false;
+            }
+            let stem = part.split('.').next().unwrap_or("").to_ascii_uppercase();
+            !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+                && !(stem.len() == 4
+                    && (stem.starts_with("COM") || stem.starts_with("LPT"))
+                    && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+        })
+}
 fn inventory(profile: &Path, excluded: &BTreeSet<String>, id: &str) -> Result<Inventory> {
     let mut items = Vec::new();
+    #[cfg(not(windows))]
     walk(profile, "", excluded, &mut items, &mut 0)?;
+    #[cfg(windows)]
+    let root = crate::windows_private::HostDirectory::inspect(profile)?;
+    #[cfg(windows)]
+    walk_windows(
+        &root,
+        "",
+        excluded,
+        &mut items,
+        &mut 0,
+        &mut BTreeMap::new(),
+    )?;
     items.sort_by(|a, b| a.path.cmp(&b.path));
     let total = items
         .iter()
@@ -301,7 +534,7 @@ fn inventory(profile: &Path, excluded: &BTreeSet<String>, id: &str) -> Result<In
         .and_then(|e| e.sha256.clone())
         .ok_or_else(fail)?;
     Ok(Inventory {
-        format: 1,
+        format: if cfg!(windows) { 3 } else { 1 },
         id: id.into(),
         scope: "host-profile".into(),
         source_profile_sha256: digest(profile.to_string_lossy().as_bytes()),
@@ -312,11 +545,58 @@ fn inventory(profile: &Path, excluded: &BTreeSet<String>, id: &str) -> Result<In
         excluded_locks: excluded.iter().cloned().collect(),
         items,
         content_references: BTreeMap::new(),
+        #[cfg(windows)]
+        root_windows_permissions: Some(root.permissions()?),
+        #[cfg(not(windows))]
+        root_windows_permissions: None,
+    })
+}
+#[cfg(windows)]
+fn inventory_windows_retained(
+    profile: &Path,
+    root: &crate::windows_private::HostDirectory,
+    excluded: &BTreeSet<String>,
+    id: &str,
+    files: &mut BTreeMap<String, crate::windows_private::HostFile>,
+) -> Result<Inventory> {
+    let mut items = Vec::new();
+    walk_windows(root, "", excluded, &mut items, &mut 0, files)?;
+    items.sort_by(|a, b| a.path.cmp(&b.path));
+    let total = items
+        .iter()
+        .try_fold(0u64, |n, e| n.checked_add(e.bytes))
+        .filter(|n| *n <= DATA_LIMIT - MANIFEST_LIMIT)
+        .ok_or_else(|| err("HOST_CHECKPOINT_QUOTA"))?;
+    let registry = items
+        .iter()
+        .find(|e| e.path == "installation-selection.json")
+        .and_then(|e| e.sha256.clone())
+        .ok_or_else(fail)?;
+    Ok(Inventory {
+        format: 3,
+        id: id.into(),
+        scope: "host-profile".into(),
+        source_profile_sha256: digest(profile.to_string_lossy().as_bytes()),
+        registry_sha256: registry,
+        total_bytes: total,
+        external_volumes_saved: false,
+        host_writer_quiescence: "operator-acknowledged".into(),
+        excluded_locks: excluded.iter().cloned().collect(),
+        items,
+        content_references: BTreeMap::new(),
+        root_windows_permissions: Some(root.permissions()?),
     })
 }
 fn validate_inventory(m: &Inventory, profile: &Path) -> Result<()> {
-    if !(m.format == 1 && m.content_references.is_empty()
-        || m.format == 2 && !m.content_references.is_empty())
+    let windows = matches!(m.format, 3 | 4);
+    if !(matches!(m.format, 1 | 3) && m.content_references.is_empty()
+        || matches!(m.format, 2 | 4) && !m.content_references.is_empty())
+        || (windows
+            && !m
+                .root_windows_permissions
+                .as_ref()
+                .is_some_and(HostWindowsPermissions::structurally_valid))
+        || (!windows && m.root_windows_permissions.is_some())
         || !installations::uuid(&m.id)
         || m.scope != "host-profile"
         || m.external_volumes_saved
@@ -330,9 +610,23 @@ fn validate_inventory(m: &Inventory, profile: &Path) -> Result<()> {
         return Err(fail());
     }
     let mut dirs = BTreeSet::new();
+    let mut folded_paths = BTreeSet::new();
     let mut sum = 0u64;
     for e in &m.items {
-        if !safe_path(&e.path) || !safe_mode(e.mode) || m.excluded_locks.contains(&e.path) {
+        if !safe_path(&e.path)
+            || m.excluded_locks.contains(&e.path)
+            || if windows {
+                !safe_windows_path(&e.path)
+                    || e.mode != 0
+                    || !e
+                        .windows_permissions
+                        .as_ref()
+                        .is_some_and(HostWindowsPermissions::structurally_valid)
+                    || !folded_paths.insert(windows_case_key(&e.path)?)
+            } else {
+                !safe_mode(e.mode) || e.windows_permissions.is_some()
+            }
+        {
             return Err(fail());
         }
         if let Some((parent, _)) = e.path.rsplit_once('/')
@@ -416,7 +710,7 @@ fn deduplicate(m: &mut Inventory) {
         }
     }
     if !m.content_references.is_empty() {
-        m.format = 2;
+        m.format = if m.format == 3 { 4 } else { 2 };
     }
 }
 struct Body {
@@ -425,7 +719,7 @@ struct Body {
     items: Vec<Item>,
     references: BTreeMap<String, String>,
     next: usize,
-    current: Option<(File, Item, fs::Metadata, u64, Sha256)>,
+    current: Option<(HostSourceFile, Item, fs::Metadata, u64, Sha256)>,
 }
 impl Read for Body {
     fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
@@ -448,9 +742,22 @@ impl Read for Body {
                     *remaining -= n as u64;
                     return Ok(n);
                 }
+                file_check(f).map_err(|_| std::io::Error::other("HOST_SOURCE_CHANGED"))?;
+                #[cfg(windows)]
+                if Some(
+                    f.permissions()
+                        .map_err(|_| std::io::Error::other("HOST_SOURCE_CHANGED"))?,
+                ) != e.windows_permissions
+                {
+                    return Err(std::io::Error::other("HOST_SOURCE_CHANGED"));
+                }
                 let mut extra = [0u8; 1];
                 if f.read(&mut extra)? != 0
-                    || !unchanged(before, &f.metadata()?)
+                    || !unchanged(
+                        before,
+                        &f.metadata()
+                            .map_err(|_| std::io::Error::other("HOST_CHECKPOINT_INVALID"))?,
+                    )
                     || !unchanged(before, &fs::symlink_metadata(self.root.join(&e.path))?)
                     || format!("{:x}", h.clone().finalize()) != e.sha256.as_deref().unwrap_or("")
                 {
@@ -475,8 +782,17 @@ impl Read for Body {
             }
             let f = file(&self.root.join(&e.path))
                 .map_err(|_| std::io::Error::other("HOST_SOURCE_CHANGED"))?;
-            let meta = f.metadata()?;
-            if meta.len() != e.bytes || mode(&meta) != e.mode {
+            let meta = f
+                .metadata()
+                .map_err(|_| std::io::Error::other("HOST_CHECKPOINT_INVALID"))?;
+            #[cfg(windows)]
+            let permissions_match = Some(
+                f.permissions()
+                    .map_err(|_| std::io::Error::other("HOST_SOURCE_CHANGED"))?,
+            ) == e.windows_permissions;
+            #[cfg(not(windows))]
+            let permissions_match = mode(&meta) == e.mode;
+            if meta.len() != e.bytes || !permissions_match {
                 return Err(std::io::Error::other("HOST_SOURCE_CHANGED"));
             }
             self.current = Some((f, e.clone(), meta, e.bytes, Sha256::new()));
@@ -490,10 +806,19 @@ fn no_destination(p: &Path) -> Result<()> {
         Err(_) => Err(err("PROFILE_DESTINATION_UNAVAILABLE")),
     }
 }
-fn private_new(path: &Path) -> Result<File> {
-    private_options()
-        .open(path)
-        .map_err(|_| err("HOST_WRITE_UNCERTAIN"))
+fn private_new(path: &Path) -> Result<HostSourceFile> {
+    #[cfg(windows)]
+    {
+        let parent =
+            crate::windows_private::HostDirectory::inspect(path.parent().ok_or_else(fail)?)?;
+        parent.create_file(path.file_name().and_then(|p| p.to_str()).ok_or_else(fail)?)
+    }
+    #[cfg(not(windows))]
+    {
+        private_options()
+            .open(path)
+            .map_err(|_| err("HOST_WRITE_UNCERTAIN"))
+    }
 }
 fn receipt(m: &Inventory, operation: &str, encoded: &[u8]) -> HostReceipt {
     HostReceipt {
@@ -504,11 +829,12 @@ fn receipt(m: &Inventory, operation: &str, encoded: &[u8]) -> HostReceipt {
         manifest_sha256: digest(encoded),
         external_volumes_saved: false,
         host_writer_quiescence: m.host_writer_quiescence.clone(),
+        windows_directory_sync: None,
     }
 }
 /// Authenticate the complete host stream against the current profile without
 /// extracting plaintext or claiming trust/runtime restoration.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn verify_host_current(
     profile: &Path,
     key_file: &Path,
@@ -538,12 +864,19 @@ pub fn verify_host_current(
         if external_key(profile, key_file)? != key {
             return Err(err("PROFILE_KEY_INVALID"));
         }
+        #[cfg(windows)]
+        {
+            _locks.0.check()?;
+            for held in &_locks.1 {
+                held.check()?;
+            }
+        }
         Ok(receipt)
     })();
     key.fill(0);
     result
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn verify_host_current(
     _profile: &Path,
     _key_file: &Path,
@@ -618,6 +951,20 @@ pub(crate) fn checkpoint_host_borrowed<B, T>(
         after,
     )
 }
+fn host_acknowledgement(acknowledged: bool) -> Result<()> {
+    #[cfg(windows)]
+    {
+        if acknowledged {
+            Ok(())
+        } else {
+            Err(err("PROFILE_ACK_REQUIRED"))
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        acknowledgement(acknowledged)
+    }
+}
 #[allow(clippy::too_many_arguments)]
 fn checkpoint_host_guarded<B, T>(
     profile: &Path,
@@ -630,7 +977,7 @@ fn checkpoint_host_guarded<B, T>(
     before: impl FnOnce() -> Result<B>,
     after: impl FnOnce() -> Result<T>,
 ) -> Result<(HostReceipt, B, T)> {
-    acknowledgement(apps_closed)?;
+    host_acknowledgement(apps_closed)?;
     if !writers_stopped {
         return Err(err("HOST_WRITER_ACK_REQUIRED"));
     }
@@ -652,6 +999,30 @@ fn checkpoint_host_guarded<B, T>(
     };
     let _profile = lock_file(profile, "operation.lock", true)?;
     let s = capture(profile)?;
+    #[cfg(unix)]
+    let _roots = root_locks(profile, &s.spaces)?;
+    #[cfg(windows)]
+    let _roots = {
+        let mut paths = s
+            .spaces
+            .iter()
+            .map(|entry| entry.relative.clone())
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths.dedup();
+        let mut held = Vec::new();
+        for path in paths {
+            if space_available(profile, &path)? {
+                let directory =
+                    crate::windows_private::HostDirectory::inspect(&profile.join(&path))?;
+                let lock = lock_file(directory.path(), "operation.lock", true)?;
+                directory.check()?;
+                held.push((directory, lock));
+            }
+        }
+        held
+    };
+    #[cfg(not(any(unix, windows)))]
     let _roots = root_locks(profile, &s.spaces)?;
     let mut excluded = BTreeSet::from(["operation.lock".into(), "profile-session.lock".into()]);
     for r in &s.spaces {
@@ -702,32 +1073,66 @@ fn checkpoint_host_guarded<B, T>(
     )
     .map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
     output.sync_all().map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
+    #[cfg(not(windows))]
     drop(output);
     let paired = after()?;
     let second = inventory(profile, &excluded, &id)?;
-    if m.items != second.items || m.registry_sha256 != second.registry_sha256 {
+    if m.items != second.items
+        || m.registry_sha256 != second.registry_sha256
+        || m.root_windows_permissions != second.root_windows_permissions
+    {
         return Err(err("HOST_SOURCE_CHANGED"));
     }
-    let mut verify = file(&pending)?;
-    super::super::maintenance_stream::open(
-        &mut verify,
-        &mut std::io::sink(),
-        &key,
-        CONTEXT,
-        DATA_LIMIT,
-    )
-    .map_err(|_| fail())?;
-    publish(&pending, archive)?;
-    fs::remove_file(&pending).map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
-    sync(&parent)?;
+    #[cfg(not(windows))]
+    {
+        let mut verify = file(&pending)?;
+        super::super::maintenance_stream::open(
+            &mut verify,
+            &mut std::io::sink(),
+            &key,
+            CONTEXT,
+            DATA_LIMIT,
+        )
+        .map_err(|_| fail())?;
+        publish(&pending, archive)?;
+        fs::remove_file(&pending).map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
+        sync(&parent)?;
+    }
+    #[cfg(windows)]
+    let windows_directory_sync = {
+        output
+            .seek(std::io::SeekFrom::Start(0))
+            .map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
+        super::super::maintenance_stream::open(
+            &mut output,
+            &mut std::io::sink(),
+            &key,
+            CONTEXT,
+            DATA_LIMIT,
+        )
+        .map_err(|_| fail())?;
+        output.check_private()?;
+        let parent_guard = crate::windows_private::HostDirectory::inspect(&parent)?;
+        output.publish_into(
+            &parent_guard,
+            archive
+                .file_name()
+                .and_then(|p| p.to_str())
+                .ok_or_else(fail)?,
+        )?;
+        WindowsDirectorySync::from(parent_guard.sync_all()?)
+    };
     if let Some(session) = borrowed {
         session.check_exclusive(profile)?;
     }
-    Ok((
-        receipt(&m, "host-profile-checkpoint", &encoded),
-        prepared,
-        paired,
-    ))
+    let result = receipt(&m, "host-profile-checkpoint", &encoded);
+    #[cfg(windows)]
+    let result = {
+        let mut value = result;
+        value.windows_directory_sync = Some(windows_directory_sync);
+        value
+    };
+    Ok((result, prepared, paired))
 }
 struct HostManifestPrefix(Vec<u8>);
 impl Write for HostManifestPrefix {
@@ -791,7 +1196,7 @@ pub(crate) fn authenticated_host_restore_bytes(
     }
     let mut source = file(archive)?;
     let before = source.metadata().map_err(|_| fail())?;
-    if mode(&before) != 0o600 || before.len() > DATA_LIMIT + 16 * 1024 * 1024 {
+    if !archive_permissions(&source, &before)? || before.len() > DATA_LIMIT + 16 * 1024 * 1024 {
         return Err(fail());
     }
     let mut prefix = HostManifestPrefix(Vec::new());
@@ -933,7 +1338,7 @@ fn extract_host_mode(
     ack: bool,
     require_reference_clones: bool,
 ) -> Result<HostReceipt> {
-    acknowledgement(ack)?;
+    host_acknowledgement(ack)?;
     let expected_parent =
         fs::canonicalize(profile.parent().ok_or_else(fail)?).map_err(|_| fail())?;
     if !profile.is_absolute()
@@ -960,7 +1365,7 @@ fn extract_host_mode(
     let canonical_archive = archive_dir.join(archive_name);
     let mut source = file(&canonical_archive)?;
     let meta = source.metadata().map_err(|_| fail())?;
-    if mode(&meta) != 0o600 || meta.len() > DATA_LIMIT + 16 * 1024 * 1024 {
+    if !archive_permissions(&source, &meta)? || meta.len() > DATA_LIMIT + 16 * 1024 * 1024 {
         return Err(fail());
     }
     // Authenticate the full logical size before reserving extraction space.
@@ -990,65 +1395,130 @@ fn extract_host_mode(
         expanded_bytes
     };
     space(&parent, needed)?;
-    let stage = parent.join(format!(".host-extract-{}.pending", Uuid::new_v4()));
-    installations::new_directory(&stage)?;
-    let recovered = stage.join("profile");
-    let mut sink = stream_extraction::Extraction::new(profile, &recovered);
-    if require_reference_clones {
-        sink.require_reference_clones();
-    }
-    super::super::maintenance_stream::open(&mut source, &mut sink, &key, CONTEXT, DATA_LIMIT)
-        .map_err(|_| fail())?;
-    // Final-frame authentication AND ciphertext EOF precede this completion.
-    let (m, encoded) = sink.finish()?;
-    let r = capture(&recovered)?;
-    if digest(&r.registry) != m.registry_sha256 {
-        return Err(fail());
-    }
-    #[cfg(unix)]
+    #[cfg(windows)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        for e in m.items.iter().rev() {
-            let p = recovered.join(&e.path);
-            fs::set_permissions(&p, fs::Permissions::from_mode(e.mode)).map_err(|_| fail())?;
-            if e.kind == "directory" {
-                sync(&p)?;
+        if require_reference_clones {
+            return Err(err("HOST_CLONE_PLATFORM_UNVERIFIED"));
+        }
+        let parent_guard = crate::windows_private::HostDirectory::inspect(&parent)?;
+        let mut stage_guard =
+            parent_guard.create_directory(&format!(".host-extract-{}.pending", Uuid::new_v4()))?;
+        let recovered_guard = stage_guard.create_directory("profile")?;
+        let mut sink = stream_extraction::Extraction::new_windows(profile, recovered_guard);
+        super::super::maintenance_stream::open(&mut source, &mut sink, &key, CONTEXT, DATA_LIMIT)
+            .map_err(|_| fail())?;
+        let (m, encoded, guards, mut files) = sink.finish_windows()?;
+        let recovered = guards.get("").ok_or_else(fail)?;
+        let actual =
+            inventory_windows_retained(profile, recovered, &BTreeSet::new(), &m.id, &mut files)?;
+        if actual.items != m.items
+            || actual.total_bytes != m.total_bytes
+            || actual.registry_sha256 != m.registry_sha256
+            || actual.root_windows_permissions != m.root_windows_permissions
+        {
+            return Err(fail());
+        }
+        let mut result = receipt(&m, "host-profile-extracted-not-activated", &encoded);
+        result.windows_directory_sync = Some(WindowsDirectorySync::from(recovered.sync_all()?));
+        for (name, bytes) in [
+            ("manifest.json", encoded.clone()),
+            (
+                "verified.json",
+                serde_json::to_vec(&result).map_err(|_| fail())?,
+            ),
+        ] {
+            let mut file = stage_guard.create_file(name)?;
+            file.write_all(&bytes)
+                .map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
+            file.sync_all()?;
+            file.check_private()?;
+        }
+        if digest(&retained_registry_windows(recovered, &mut files)?) != m.registry_sha256 {
+            return Err(fail());
+        }
+        recovered.check()?;
+        recovered.sync_all()?;
+        stage_guard.check()?;
+        source.check_private()?;
+        if !unchanged(&meta, &source.metadata().map_err(|_| fail())?)
+            || external_key(profile, &key_path)? != key
+        {
+            return Err(fail());
+        }
+        drop(files);
+        drop(guards);
+        stage_guard.publish_into(
+            &parent_guard,
+            destination
+                .file_name()
+                .and_then(|p| p.to_str())
+                .ok_or_else(fail)?,
+        )?;
+        result.windows_directory_sync = Some(WindowsDirectorySync::from(parent_guard.sync_all()?));
+        return Ok(result);
+    }
+    #[cfg(not(windows))]
+    {
+        let stage = parent.join(format!(".host-extract-{}.pending", Uuid::new_v4()));
+        installations::new_directory(&stage)?;
+        let recovered = stage.join("profile");
+        let mut sink = stream_extraction::Extraction::new(profile, &recovered);
+        if require_reference_clones {
+            sink.require_reference_clones();
+        }
+        super::super::maintenance_stream::open(&mut source, &mut sink, &key, CONTEXT, DATA_LIMIT)
+            .map_err(|_| fail())?;
+        // Final-frame authentication AND ciphertext EOF precede this completion.
+        let (m, encoded) = sink.finish()?;
+        let r = capture(&recovered)?;
+        if digest(&r.registry) != m.registry_sha256 {
+            return Err(fail());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for e in m.items.iter().rev() {
+                let p = recovered.join(&e.path);
+                fs::set_permissions(&p, fs::Permissions::from_mode(e.mode)).map_err(|_| fail())?;
+                if e.kind == "directory" {
+                    sync(&p)?;
+                }
             }
         }
-    }
-    write_new(&stage.join("manifest.json"), &encoded)?;
-    write_new(
-        &stage.join("verified.json"),
-        &serde_json::to_vec(&receipt(
+        write_new(&stage.join("manifest.json"), &encoded)?;
+        write_new(
+            &stage.join("verified.json"),
+            &serde_json::to_vec(&receipt(
+                &m,
+                "host-profile-extracted-not-activated",
+                &encoded,
+            ))
+            .map_err(|_| fail())?,
+        )?;
+        sync(&recovered)?;
+        sync(&stage)?;
+        // Every reconstructed file/hash/mode and receipt is complete. Preserve the
+        // original encrypted archive/key and refuse changed input before publication.
+        // Failed staging/profile roots remain private; no whole plaintext intermediate exists.
+        if !unchanged(&meta, &source.metadata().map_err(|_| fail())?)
+            || !unchanged(
+                &meta,
+                &fs::symlink_metadata(&canonical_archive).map_err(|_| fail())?,
+            )
+            || external_key(profile, &key_path)? != key
+        {
+            return Err(fail());
+        }
+        sync(&stage)?;
+        // Nothing here registers, activates or overwrites profile roots.
+        publish_directory(&stage, destination)?;
+        sync(&parent)?;
+        Ok(receipt(
             &m,
             "host-profile-extracted-not-activated",
             &encoded,
         ))
-        .map_err(|_| fail())?,
-    )?;
-    sync(&recovered)?;
-    sync(&stage)?;
-    // Every reconstructed file/hash/mode and receipt is complete. Preserve the
-    // original encrypted archive/key and refuse changed input before publication.
-    // Failed staging/profile roots remain private; no whole plaintext intermediate exists.
-    if !unchanged(&meta, &source.metadata().map_err(|_| fail())?)
-        || !unchanged(
-            &meta,
-            &fs::symlink_metadata(&canonical_archive).map_err(|_| fail())?,
-        )
-        || external_key(profile, &key_path)? != key
-    {
-        return Err(fail());
     }
-    sync(&stage)?;
-    // Nothing here registers, activates or overwrites profile roots.
-    publish_directory(&stage, destination)?;
-    sync(&parent)?;
-    Ok(receipt(
-        &m,
-        "host-profile-extracted-not-activated",
-        &encoded,
-    ))
 }
 
 /// Recheck a freshly extracted, inactive tree against the receipt produced by decryption.
@@ -1076,6 +1546,7 @@ pub(crate) fn verify_extracted_host(
     let before = fs::symlink_metadata(&candidate).map_err(|_| fail())?;
     let actual = inventory(&candidate, &BTreeSet::new(), &manifest.id)?;
     if actual.items != manifest.items
+        || actual.root_windows_permissions != manifest.root_windows_permissions
         || actual.total_bytes != manifest.total_bytes
         || actual.registry_sha256 != manifest.registry_sha256
         || expected.id != manifest.id
@@ -1128,6 +1599,83 @@ fn publication_identity(a: &fs::Metadata, b: &fs::Metadata) -> bool {
         false
     }
 }
+#[cfg(windows)]
+fn retained_windows_record(
+    directory: &crate::windows_private::HostDirectory,
+    name: &str,
+    relative: &str,
+    files: &mut BTreeMap<String, crate::windows_private::HostFile>,
+) -> Result<Vec<u8>> {
+    let mut opened;
+    let file = if let Some(owned) = files.get_mut(relative) {
+        owned
+            .seek(std::io::SeekFrom::Start(0))
+            .map_err(|_| fail())?;
+        owned
+    } else {
+        opened = directory.child_file(name)?;
+        &mut opened
+    };
+    file.check_private()?;
+    let mut bytes = Vec::new();
+    std::io::Read::by_ref(file)
+        .take(64 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| fail())?;
+    file.check()?;
+    if bytes.is_empty() || bytes.len() > 64 * 1024 {
+        return Err(fail());
+    }
+    Ok(bytes)
+}
+#[cfg(windows)]
+fn retained_registry_windows(
+    root: &crate::windows_private::HostDirectory,
+    files: &mut BTreeMap<String, crate::windows_private::HostFile>,
+) -> Result<Vec<u8>> {
+    root.check_private()?;
+    let bytes = retained_windows_record(
+        root,
+        "installation-selection.json",
+        "installation-selection.json",
+        files,
+    )?;
+    let state = registry(&bytes)?;
+    if fs::symlink_metadata(root.path().join("selection-history")).is_ok() {
+        let history = root.child_directory("selection-history")?;
+        history.check_private()?;
+        let names = fs::read_dir(history.path())
+            .map_err(|_| fail())?
+            .map(|e| e.map(|e| e.file_name()).map_err(|_| fail()))
+            .collect::<Result<Vec<_>>>()?;
+        if names.len() > MAX_HISTORY {
+            return Err(err("PROFILE_QUOTA"));
+        }
+        for name in names {
+            let name = name.to_str().ok_or_else(fail)?;
+            let value = retained_windows_record(
+                &history,
+                name,
+                &format!("selection-history/{name}"),
+                files,
+            )?;
+            history_valid(name, &value)?;
+        }
+        history.check()?;
+    }
+    for entry in state.installations {
+        let relative = relative(&entry.id, &entry.kind);
+        if fs::symlink_metadata(root.path().join(&relative)).is_ok() {
+            let mut directory = root.clone();
+            for part in relative.split('/') {
+                directory = directory.child_directory(part)?;
+            }
+            directory.check_private()?;
+        }
+    }
+    root.check()?;
+    Ok(bytes)
+}
 /// Activate only a freshly authenticated extraction into an absent original
 /// namespace. Caller holds the external profile anchor and retained trust fence.
 pub(crate) fn activate_missing_host(
@@ -1135,59 +1683,134 @@ pub(crate) fn activate_missing_host(
     extracted: &Path,
     expected: &HostReceipt,
 ) -> Result<()> {
-    no_destination(profile)?;
-    let parent = canonical_private(profile.parent().ok_or_else(fail)?)?;
-    let parent_before = fs::symlink_metadata(&parent).map_err(|_| fail())?;
-    canonical_private(extracted)?;
-    let encoded_path = extracted.join("manifest.json");
-    let mut f = file(&encoded_path)?;
-    if f.metadata().map_err(|_| fail())?.len() > MANIFEST_LIMIT {
-        return Err(fail());
-    }
-    let mut encoded = Vec::new();
-    f.read_to_end(&mut encoded).map_err(|_| fail())?;
-    if digest(&encoded) != expected.manifest_sha256 {
-        return Err(fail());
-    }
-    let manifest: Inventory = serde_json::from_slice(&encoded).map_err(|_| fail())?;
-    validate_inventory(&manifest, profile)?;
-    let candidate = extracted.join("profile");
-    canonical_private(&candidate)?;
-    let candidate_before = fs::symlink_metadata(&candidate).map_err(|_| fail())?;
-    let inventory = inventory(&candidate, &BTreeSet::new(), &manifest.id)?;
-    if inventory.items != manifest.items
-        || inventory.total_bytes != manifest.total_bytes
-        || inventory.registry_sha256 != manifest.registry_sha256
-        || expected.id != manifest.id
-        || expected.bytes != manifest.total_bytes
-        || expected.files != manifest.items.iter().filter(|i| i.kind == "file").count()
-        || digest(&capture(&candidate)?.registry) != manifest.registry_sha256
+    #[cfg(windows)]
     {
-        return Err(fail());
+        no_destination(profile)?;
+        let parent = canonical_private(profile.parent().ok_or_else(fail)?)?;
+        let parent_guard = crate::windows_private::HostDirectory::inspect(&parent)?;
+        parent_guard.check_private()?;
+        let extraction = crate::windows_private::HostDirectory::inspect(extracted)?;
+        extraction.check_private()?;
+        let mut file = extraction.child_file("manifest.json")?;
+        file.check_private()?;
+        let mut encoded = Vec::new();
+        std::io::Read::by_ref(&mut file)
+            .take(MANIFEST_LIMIT + 1)
+            .read_to_end(&mut encoded)
+            .map_err(|_| fail())?;
+        file.check()?;
+        if encoded.len() as u64 > MANIFEST_LIMIT || digest(&encoded) != expected.manifest_sha256 {
+            return Err(fail());
+        }
+        let manifest: Inventory = serde_json::from_slice(&encoded).map_err(|_| fail())?;
+        validate_inventory(&manifest, profile)?;
+        let mut candidate = crate::windows_private::HostDirectory::inspect_for_publication(
+            &extracted.join("profile"),
+        )?;
+        let actual = inventory_windows_retained(
+            profile,
+            &candidate,
+            &BTreeSet::new(),
+            &manifest.id,
+            &mut BTreeMap::new(),
+        )?;
+        if actual.items != manifest.items
+            || actual.root_windows_permissions != manifest.root_windows_permissions
+            || actual.total_bytes != manifest.total_bytes
+            || actual.registry_sha256 != manifest.registry_sha256
+            || expected.id != manifest.id
+            || expected.bytes != manifest.total_bytes
+            || expected.files
+                != manifest
+                    .items
+                    .iter()
+                    .filter(|item| item.kind == "file")
+                    .count()
+            || digest(&retained_registry_windows(
+                &candidate,
+                &mut BTreeMap::new(),
+            )?) != manifest.registry_sha256
+        {
+            return Err(fail());
+        }
+        candidate.check()?;
+        parent_guard.check()?;
+        no_destination(profile)?;
+        candidate.publish_into(
+            &parent_guard,
+            profile
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(fail)?,
+        )?;
+        let _durability = parent_guard
+            .sync_all()
+            .map_err(|_| err("HOST_RESTORE_UNCERTAIN"))?;
+        candidate
+            .check()
+            .map_err(|_| err("HOST_RESTORE_UNCERTAIN"))?;
+        if candidate.permissions()? != manifest.root_windows_permissions.ok_or_else(fail)? {
+            return Err(err("HOST_RESTORE_UNCERTAIN"));
+        }
+        return Ok(());
     }
-    if !unchanged(
-        &candidate_before,
-        &fs::symlink_metadata(&candidate).map_err(|_| fail())?,
-    ) || !unchanged(
-        &parent_before,
-        &fs::symlink_metadata(&parent).map_err(|_| fail())?,
-    ) {
-        return Err(fail());
-    }
-    no_destination(profile)?;
-    publish_directory(&candidate, profile)?;
-    // Publication can have happened if a later durability/identity check fails.
-    // Preserve the restored tree and the external receipt; never retry overwrite.
-    sync(&parent).map_err(|_| err("HOST_RESTORE_UNCERTAIN"))?;
-    let after = fs::symlink_metadata(profile).map_err(|_| err("HOST_RESTORE_UNCERTAIN"))?;
-    if !after.is_dir()
-        || after.is_symlink()
-        || mode(&after) != mode(&candidate_before)
-        || !publication_identity(&candidate_before, &after)
+    #[cfg(not(windows))]
     {
-        return Err(err("HOST_RESTORE_UNCERTAIN"));
+        no_destination(profile)?;
+        let parent = canonical_private(profile.parent().ok_or_else(fail)?)?;
+        let parent_before = fs::symlink_metadata(&parent).map_err(|_| fail())?;
+        canonical_private(extracted)?;
+        let encoded_path = extracted.join("manifest.json");
+        let mut f = file(&encoded_path)?;
+        if f.metadata().map_err(|_| fail())?.len() > MANIFEST_LIMIT {
+            return Err(fail());
+        }
+        let mut encoded = Vec::new();
+        f.read_to_end(&mut encoded).map_err(|_| fail())?;
+        if digest(&encoded) != expected.manifest_sha256 {
+            return Err(fail());
+        }
+        let manifest: Inventory = serde_json::from_slice(&encoded).map_err(|_| fail())?;
+        validate_inventory(&manifest, profile)?;
+        let candidate = extracted.join("profile");
+        canonical_private(&candidate)?;
+        let candidate_before = fs::symlink_metadata(&candidate).map_err(|_| fail())?;
+        let inventory = inventory(&candidate, &BTreeSet::new(), &manifest.id)?;
+        if inventory.items != manifest.items
+            || inventory.root_windows_permissions != manifest.root_windows_permissions
+            || inventory.total_bytes != manifest.total_bytes
+            || inventory.registry_sha256 != manifest.registry_sha256
+            || expected.id != manifest.id
+            || expected.bytes != manifest.total_bytes
+            || expected.files != manifest.items.iter().filter(|i| i.kind == "file").count()
+            || digest(&capture(&candidate)?.registry) != manifest.registry_sha256
+        {
+            return Err(fail());
+        }
+        if !unchanged(
+            &candidate_before,
+            &fs::symlink_metadata(&candidate).map_err(|_| fail())?,
+        ) || !unchanged(
+            &parent_before,
+            &fs::symlink_metadata(&parent).map_err(|_| fail())?,
+        ) {
+            return Err(fail());
+        }
+        no_destination(profile)?;
+        publish_directory(&candidate, profile)?;
+        // Publication can have happened if a later durability/identity check fails.
+        // Preserve the restored tree and the external receipt; never retry overwrite.
+        sync(&parent).map_err(|_| err("HOST_RESTORE_UNCERTAIN"))?;
+        let after = fs::symlink_metadata(profile).map_err(|_| err("HOST_RESTORE_UNCERTAIN"))?;
+        if !after.is_dir()
+            || after.is_symlink()
+            || mode(&after) != mode(&candidate_before)
+            || !publication_identity(&candidate_before, &after)
+        {
+            return Err(err("HOST_RESTORE_UNCERTAIN"));
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 // These fixtures exercise the supported Unix host archive/activation boundary.
@@ -1976,6 +2599,7 @@ mod tests {
             mode: 0o600,
             bytes: 0,
             sha256: Some(digest(b"")),
+            windows_permissions: None,
         });
         m.items.sort_by(|a, b| a.path.cmp(&b.path));
         assert!(validate_inventory(&m, &p).is_err());
@@ -2034,7 +2658,81 @@ mod windows_tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
-    fn unsupported_host_checkpoint_never_creates_archive_or_reads_missing_source() {
+    fn windows_host_native_bytes_permissions_current_census_and_extraction_roundtrip() {
+        let (root, key, archive) = fixture();
+        let profile = root.path().join("profile");
+        let controller = installations::InstallationController::new(profile.clone(), None).unwrap();
+        let context = controller.context().unwrap();
+        controller.create(&context.selection_token, true).unwrap();
+        drop(controller);
+        let profile = fs::canonicalize(profile).unwrap();
+        let native = crate::windows_private::HostDirectory::inspect(&profile).unwrap();
+        let data = native.create_directory("synthetic").unwrap();
+        for (name, bytes) in [
+            ("data", vec![37; 65539]),
+            ("empty", Vec::new()),
+            ("equal", vec![37; 65539]),
+        ] {
+            let mut file = data.create_file(name).unwrap();
+            file.write_all(&bytes).unwrap();
+            file.sync_all().unwrap();
+        }
+        drop(data);
+        drop(native);
+        let before = inventory(&profile, &BTreeSet::new(), &Uuid::new_v4().to_string()).unwrap();
+        let saved = checkpoint_host(&profile, &key, &archive, true, true).unwrap();
+        assert_eq!(
+            saved
+                .windows_directory_sync
+                .as_ref()
+                .unwrap()
+                .directory_flush,
+            false
+        );
+        assert!(
+            saved
+                .windows_directory_sync
+                .as_ref()
+                .unwrap()
+                .publication_namespace_checked
+        );
+        let receipt =
+            verify_host_current(&profile, &key, &archive, &saved.manifest_sha256, true, true)
+                .unwrap();
+        assert!(receipt.current_profile_matched);
+        assert_eq!(receipt.plaintext_files_created, 0);
+        let destination = root.path().join("extracted");
+        let restored = extract_host(&profile, &key, &archive, &destination, true).unwrap();
+        assert_eq!(restored.manifest_sha256, saved.manifest_sha256);
+        verify_extracted_host(&profile, &destination, &restored).unwrap();
+        let actual = inventory(&destination.join("profile"), &BTreeSet::new(), &before.id).unwrap();
+        for item in before.items.iter().filter(|item| {
+            !item.path.ends_with("operation.lock") && item.path != "profile-session.lock"
+        }) {
+            assert!(actual.items.contains(item));
+        }
+        assert_eq!(
+            actual.root_windows_permissions,
+            before.root_windows_permissions
+        );
+        assert!(extract_host(&profile, &key, &archive, &destination, true).is_err());
+        let bytes = fs::read(&archive).unwrap();
+        fs::write(profile.join("synthetic/data"), b"changed").unwrap();
+        assert!(
+            verify_host_current(&profile, &key, &archive, &saved.manifest_sha256, true, true)
+                .is_err()
+        );
+        assert_eq!(fs::read(&archive).unwrap(), bytes);
+        assert_eq!(
+            fs::read(destination.join("profile/synthetic/data")).unwrap(),
+            vec![37; 65539]
+        );
+        assert_eq!(fs::read(&key).unwrap(), [17; 32]);
+        // Keep this new synthetic tree and receipt available for failure diagnosis.
+    }
+
+    #[test]
+    fn windows_host_checkpoint_refuses_missing_source_without_creating_archive() {
         let (root, key, archive) = fixture();
         for (apps, writers) in [(false, false), (true, false), (true, true)] {
             assert_eq!(
@@ -2047,59 +2745,64 @@ mod windows_tests {
                 )
                 .unwrap_err()
                 .code,
-                "PROFILE_PLATFORM_UNVERIFIED"
+                if !apps {
+                    "PROFILE_ACK_REQUIRED"
+                } else if !writers {
+                    "HOST_WRITER_ACK_REQUIRED"
+                } else {
+                    "PROFILE_PATH_INVALID"
+                }
             );
         }
         assert!(!root.path().join("missing-profile").exists());
         preserved(root, &archive);
     }
     #[test]
-    fn unsupported_host_extraction_never_creates_destination_or_rewrites_input() {
+    fn windows_host_extraction_refuses_missing_archive_without_creating_destination() {
         let (root, key, archive) = fixture();
         let destination = root.path().join("recovered");
         for ack in [false, true] {
-            assert_eq!(
-                extract_host(
-                    &root.path().join("missing-profile"),
-                    &key,
-                    &archive,
-                    &destination,
-                    ack
-                )
-                .unwrap_err()
-                .code,
-                "PROFILE_PLATFORM_UNVERIFIED"
-            );
+            let error = extract_host(
+                &root.path().join("missing-profile"),
+                &key,
+                &archive,
+                &destination,
+                ack,
+            )
+            .unwrap_err();
+            if !ack {
+                assert_eq!(error.code, "PROFILE_ACK_REQUIRED");
+            } else {
+                assert_ne!(error.code, "PROFILE_PLATFORM_UNVERIFIED");
+            }
         }
         assert!(!destination.exists());
         preserved(root, &archive);
     }
     #[test]
-    fn unsupported_borrowed_host_checkpoint_never_calls_writer_callbacks() {
+    fn windows_invalid_borrowed_host_checkpoint_never_calls_writer_callbacks() {
         let (root, key, archive) = fixture();
         let profile =
             crate::windows_private::PrivateDirectory::create(&root.path().join("profile")).unwrap();
         let session = session_lock(profile.path(), true).unwrap();
         let calls = std::cell::Cell::new(0);
-        assert_eq!(
-            checkpoint_host_borrowed(
-                profile.path(),
-                &key,
-                &archive,
-                &session,
-                || {
-                    calls.set(calls.get() + 1);
-                    Ok(())
-                },
-                || {
-                    calls.set(calls.get() + 1);
-                    Ok(())
-                }
-            )
-            .unwrap_err()
-            .code,
-            "PROFILE_PLATFORM_UNVERIFIED"
-        );
+        let error = checkpoint_host_borrowed(
+            profile.path(),
+            &key,
+            &archive,
+            &session,
+            || {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+            || {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap_err()
+        .code;
+        assert_ne!(error, "PROFILE_PLATFORM_UNVERIFIED");
         assert_eq!(calls.get(), 0);
         drop(session);
         drop(profile);
@@ -2107,7 +2810,7 @@ mod windows_tests {
     }
 }
 
-#[cfg(all(test, not(unix)))]
+#[cfg(all(test, not(any(unix, windows))))]
 mod current_platform_tests {
     use super::*;
     #[test]

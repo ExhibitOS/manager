@@ -11,6 +11,8 @@ use aes_gcm::{
 };
 #[cfg(test)]
 pub(crate) use host_checkpoint::verify_unused_extraction_archive;
+#[cfg(windows)]
+pub(crate) use host_checkpoint::HostWindowsPermissions;
 pub use host_checkpoint::{
     HostCurrentReceipt, HostReceipt, checkpoint_host, extract_host, extract_host_clone_only,
     verify_host_current,
@@ -411,6 +413,46 @@ pub(crate) fn current_host_locks(
     let profile_lock = lock_file(profile, "operation.lock", true)?;
     let snapshot = capture(profile)?;
     let roots = root_locks(profile, &snapshot.spaces)?;
+    Ok((profile_lock, roots))
+}
+#[cfg(windows)]
+pub(crate) struct NativeHostLock {
+    directory: super::windows_private::PrivateDirectory,
+    file: File,
+}
+#[cfg(windows)]
+impl NativeHostLock {
+    fn inspect(root: &Path) -> Result<Self> {
+        let directory = super::windows_private::PrivateDirectory::inspect(root)?;
+        let file = directory.inspect_lock_record("operation.lock")?;
+        file.try_lock_exclusive().map_err(|_| err("PROFILE_BUSY"))?;
+        directory.check_record(&file, "operation.lock")?;
+        Ok(Self { directory, file })
+    }
+    pub(crate) fn check(&self) -> Result<()> {
+        self.directory.check_record(&self.file, "operation.lock")
+    }
+}
+/// Retains every native parent fence together with its existing operation lock.
+#[cfg(windows)]
+pub(crate) fn current_host_locks(
+    profile: &Path,
+    session: &ProfileSession,
+) -> Result<(NativeHostLock, Vec<NativeHostLock>)> {
+    session.check_exclusive(profile)?;
+    let profile_lock = NativeHostLock::inspect(profile)?;
+    let snapshot = capture(profile)?;
+    let mut paths: Vec<_> = snapshot.spaces.iter().map(|s| s.relative.clone()).collect();
+    paths.sort();
+    paths.dedup();
+    let mut roots = Vec::new();
+    for path in paths {
+        if space_available(profile, &path)? {
+            roots.push(NativeHostLock::inspect(&profile.join(path))?);
+        }
+    }
+    profile_lock.check()?;
+    for root in &roots { root.check()?; }
     Ok((profile_lock, roots))
 }
 pub(crate) fn anchored_session(
