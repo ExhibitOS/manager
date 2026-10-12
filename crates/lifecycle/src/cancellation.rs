@@ -362,6 +362,7 @@ impl LifecycleService {
     }
     /// Stream bounded protected inputs without exposing their contents in argv.
     /// Reader implementations must be finite and validate retained inputs at EOF.
+    #[cfg(windows)]
     pub(crate) fn run_maintenance_helper_with_input(
         &self,
         kind: &str,
@@ -381,7 +382,7 @@ impl LifecycleService {
     ) -> Result<Vec<u8>> {
         self.maintenance_checkpoint(kind, id)?;
         let mut next = Instant::now();
-        let result = run_observed_stream("docker", args, None, 3600, None, None, input, || {
+        let result = run_observed_stream("docker", args, None, 3600, (None, None), input, || {
             if Instant::now() < next {
                 return Ok(());
             }

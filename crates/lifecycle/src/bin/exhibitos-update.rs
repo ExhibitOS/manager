@@ -298,7 +298,8 @@ fn restored_rollback_options(args: &[String]) -> Result<&str, &'static str> {
     Ok(&args[7])
 }
 
-fn original_rollback_options(args: &[String]) -> Result<(u16, Option<(&str, u64)>), &'static str> {
+type OriginalRollbackOptions<'a> = (u16, Option<(&'a str, u64)>);
+fn original_rollback_options(args: &[String]) -> Result<OriginalRollbackOptions<'_>, &'static str> {
     let flags = [
         (1, "restore-original-rollback"),
         (2, "--profile"),
@@ -456,7 +457,7 @@ fn run() -> Result<(), String> {
     if a[1] == "restore-original-rollback" {
         // Validate the exact wire contract BEFORE opening or changing authority.
         let (port, expected_authority) = original_rollback_options(&a).map_err(str::to_owned)?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let mut store = Store::open(profile, installation).map_err(code)?;
             // Bind the SSH-observed operation inside the same Store lock that
@@ -493,7 +494,7 @@ fn run() -> Result<(), String> {
             );
             return Ok(());
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = port;
             return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
@@ -501,7 +502,7 @@ fn run() -> Result<(), String> {
     }
     if a[1] == "complete-restored-rollback" {
         let image = restored_rollback_options(&a).map_err(str::to_owned)?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let mut store = Store::open(profile, installation).map_err(code)?;
             let receipt = store
@@ -513,7 +514,7 @@ fn run() -> Result<(), String> {
             );
             return Ok(());
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = image;
             return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
@@ -523,7 +524,7 @@ fn run() -> Result<(), String> {
         if a.len() != 9 || a[6] != "--operation-id" {
             return Err(usage());
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let mut store = Store::open(profile, installation).map_err(code)?;
             let receipt = store
@@ -535,14 +536,14 @@ fn run() -> Result<(), String> {
             );
             return Ok(());
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
     }
     if a[1] == "reconcile-authority" {
         if a.len() != 7 {
             return Err(usage());
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let receipt =
                 Store::reconcile_authority(profile, installation, true, now()?).map_err(code)?;
@@ -552,14 +553,14 @@ fn run() -> Result<(), String> {
             );
             return Ok(());
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
     }
     if a[1] == "qualify-inactive-authority-recovery" {
         if a.len() != 9 || a[6] != "--destination" {
             return Err(usage());
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let store = Store::open(profile, installation).map_err(code)?;
             let receipt = store
@@ -571,7 +572,7 @@ fn run() -> Result<(), String> {
             );
             return Ok(());
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
     }
     if a[1] == "enroll-authority-recovery" || a[1] == "restore-missing-authority" {
@@ -579,7 +580,7 @@ fn run() -> Result<(), String> {
         if enroll && (a.len() != 9 || a[6] != "--vault") || !enroll && a.len() != 7 {
             return Err(usage());
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let receipt = if enroll {
                 let mut store = Store::open(profile, installation).map_err(code)?;
@@ -595,7 +596,7 @@ fn run() -> Result<(), String> {
             );
             return Ok(());
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
     }
     if matches!(
@@ -752,9 +753,7 @@ fn run() -> Result<(), String> {
             None
         };
         if a.len()
-            != if migrated {
-                34
-            } else if execute && expected_authority.is_some() {
+            != if migrated || (execute && expected_authority.is_some()) {
                 34
             } else if full {
                 30
@@ -783,7 +782,7 @@ fn run() -> Result<(), String> {
         {
             return Err(usage());
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         if execute || register {
             return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
         }
@@ -806,7 +805,7 @@ fn run() -> Result<(), String> {
             {
                 return Err("UPDATE_EXECUTION_AUTHORITY_CHANGED".into());
             }
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             if execute || register {
                 store.verify_authority_recovery().map_err(code)?;
             }
@@ -841,7 +840,7 @@ fn run() -> Result<(), String> {
                 maintenance_image: &a[15],
                 external_writers_quiesced: true,
             };
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             if execute || register {
                 let mut admitted = session
                     .prepare_owned_update(
@@ -1085,7 +1084,7 @@ fn run() -> Result<(), String> {
         );
         return Ok(());
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     if a[1] == "checkpoint-existing-host" {
         if a.len() != 16
             || a[6] != "--key-file"
@@ -1112,7 +1111,7 @@ fn run() -> Result<(), String> {
         );
         return Ok(());
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     if a[1] == "refresh-checkpoint-trust" {
         if a.len() != 18
             || a[6] != "--key-file"

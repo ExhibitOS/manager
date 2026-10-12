@@ -2,10 +2,10 @@
 //! Current full host/trust, source/candidate services and actual runtime in one fence.
 use super::*;
 use crate::{Result, Value, err};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "owned_preflight.rs"]
 mod owned_preflight;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use owned_preflight::{OwnedPreflight, ReadyCandidate, StartedUpdate};
 
 pub struct RecoveryRuntimeInputs<'a> {
@@ -174,7 +174,7 @@ impl ExecutionSession<'_> {
             let (destination, _) = extraction.ok_or_else(||err("HOST_CHECKPOINT_INVALID"))?;
             retained_host_boundary(&self.store.profile, &self.store.root, destination, host)?;
         }
-        let retained_identity=retained_host.map(fs::symlink_metadata).transpose().map_err(|_|err("HOST_CHECKPOINT_INVALID"))?;
+        let retained_identity=retained_host.map(directory_identity).transpose().map_err(|_|err("HOST_CHECKPOINT_INVALID"))?;
         if let Some((destination, key_file)) = extraction {
             let parent = destination
                 .parent()
@@ -232,7 +232,7 @@ impl ExecutionSession<'_> {
         let catalog_cell = std::cell::RefCell::new(catalog);
         let check_catalog = || -> Result<()> {
             if let (Some(host),Some(expected))=(retained_host,retained_identity.as_ref())
-                && !super::super::identity(expected,&fs::symlink_metadata(host).map_err(|_|err("HOST_CHECKPOINT_INVALID"))?) {return Err(err("HOST_CHECKPOINT_INVALID"));}
+                && !directory_matches(expected,host).map_err(|_|err("HOST_CHECKPOINT_INVALID"))? {return Err(err("HOST_CHECKPOINT_INVALID"));}
             if let Some(catalog) = catalog_cell.borrow_mut().as_mut() {
                 catalog.recheck()?;
             }

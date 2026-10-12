@@ -330,7 +330,7 @@ impl Store {
     /// Create current trust identity beside an existing fully authenticated host.
     /// Every host byte must still match the current locked profile; no historical
     /// source observation is inherited and no runtime/preflight is attested.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub fn checkpoint_existing_host(
         &self,
         host: &Path,
@@ -414,7 +414,7 @@ impl Store {
     /// Refresh only the small trust archive/catalog after full read-only host verification.
     /// `previous` is [catalog, host archive, trust archive]. The host remains externally
     /// retained; no source binding is inherited. Only unchanged Prepared history is accepted.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub fn refresh_checkpoint_trust(
         &self,
         previous: [&Path; 3],
@@ -751,7 +751,7 @@ fn write_binding(binding: &PairBinding, catalog: &Path, key: &[u8; 32]) -> crate
     file.write_all(DOMAIN)
         .and_then(|_| file.write_all(&nonce))
         .and_then(|_| file.write_all(&sealed))
-        .and_then(|_| file.sync_all())
+        .and_then(|_| file.sync_all().map_err(|_| std::io::Error::other("private record sync failed")))
         .map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?;
     sync_dir(parent).map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?;
     Ok(())

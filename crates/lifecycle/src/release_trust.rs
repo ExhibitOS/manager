@@ -13,7 +13,7 @@ use std::{
 #[cfg(windows)]
 #[path = "windows_trust_root.rs"]
 mod windows_root;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "lifecycle_writer.rs"]
 pub(crate) mod lifecycle_writer;
 const MAX_RECORD: u64 = 96 * 1024;
@@ -47,15 +47,15 @@ struct Record {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     recovery_binding: Option<String>,
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "authority_recovery_vault.rs"]
 mod authority_recovery_vault;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use authority_recovery_vault::{AuthorityReconciliationReceipt, AuthorityRecoveryReceipt};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "selection_activation.rs"]
 mod selection_activation;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use selection_activation::SelectionActivationReceipt;
 #[path = "authority_selection.rs"]
 mod authority_selection;
@@ -68,19 +68,19 @@ pub use trust_checkpoint::binding::{
 pub use trust_checkpoint::{HostTrustReceipt, MissingHostRecoveryReceipt, TrustCheckpointReceipt};
 #[path = "owned_execution.rs"]
 mod owned_execution;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "rollback_registration.rs"]
 mod rollback_registration;
 #[path = "update_target_registration.rs"]
 mod target_registration;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use rollback_registration::RegisteredRollbackCandidate;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "rollback_restoration.rs"]
 mod rollback_restoration;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use rollback_restoration::RollbackRestorationReceipt;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "rollback_runtime.rs"]
 mod rollback_runtime;
 #[path = "trust_update.rs"]
@@ -93,7 +93,7 @@ pub use owned_execution::{
     PreparedArtifactReceipt, PreparedOciReceipt, RecoveryRuntimeInputs, RuntimeCompatibility,
     SourceHostTrustReceipt, SourceRecoveryReceipt,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use owned_execution::{OwnedPreflight, ReadyCandidate, StartedUpdate};
 pub use target_registration::RegisteredUpdateTarget;
 use update_journal::{UpdateEvent, evolve, in_flight, remember_ids, validate_new_ids};
@@ -205,7 +205,7 @@ pub struct Store {
     uncertain: bool,
     used_operations: BTreeSet<String>,
     used_instances: BTreeSet<String>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     recovery: Option<authority_recovery_vault::Vault>,
 }
 impl Drop for Store {
@@ -231,6 +231,7 @@ fn identity(a: &Metadata, b: &Metadata) -> bool {
         false
     }
 }
+#[cfg(not(windows))]
 fn private_file(path: &Path, create: bool) -> Result<File, Error> {
     let mut o = OpenOptions::new();
     o.read(true).write(create);
@@ -257,6 +258,16 @@ fn private_file(path: &Path, create: bool) -> Result<File, Error> {
         }
     }
     Ok(f)
+}
+#[cfg(windows)]
+fn private_file(path: &Path, create: bool) -> Result<crate::windows_private::HostFile, Error> {
+    let file = if create {
+        let parent = crate::windows_private::HostDirectory::inspect(path.parent().ok_or_else(invalid)?).map_err(|_|invalid())?;
+        parent.check_private().map_err(|_|invalid())?;
+        parent.create_file(path.file_name().and_then(|s|s.to_str()).ok_or_else(invalid)?).map_err(|_|invalid())?
+    } else { crate::windows_private::HostFile::open(path).map_err(|_|invalid())? };
+    file.check_private().map_err(|_|invalid())?;
+    Ok(file)
 }
 #[cfg(not(windows))]
 fn read_record(path: &Path) -> Result<Vec<u8>, Error> {
@@ -329,7 +340,7 @@ fn scope_with_anchor(
     if installation != "default" && !installations::uuid(installation) {
         return Err(invalid());
     }
-    if !cfg!(any(target_os = "macos", target_os = "linux")) {
+    if !cfg!(any(target_os = "macos", target_os = "linux", windows)) {
         return Err(Error::TrustPlatformUnverified);
     }
     let anchor = if inspection { profile_backup::inspect_anchor_lock(profile) }
@@ -570,13 +581,28 @@ fn existing_lock(root: &Path) -> Result<File, Error> {
     Ok(file)
 }
 #[cfg(windows)]
+fn existing_lock(root: &Path) -> Result<File,Error> {
+    let directory = crate::windows_private::PrivateDirectory::inspect(root).map_err(|_|invalid())?;
+    let file = directory.inspect_lock_record("trust.lock").map_err(|_|invalid())?;
+    file.try_lock_exclusive().map_err(|_|Error::TrustBusy)?;
+    directory.check_record(&file,"trust.lock").map_err(|_|invalid())?;
+    Ok(file)
+}
+#[cfg(windows)]
 fn lock(root: &Path) -> Result<File, Error> {
     windows_root::NativeRoot::inspect(root)?.lock()
 }
+#[cfg(not(windows))]
 fn sync_dir(root: &Path) -> Result<(), Error> {
     File::open(root)
         .and_then(|f| f.sync_all())
         .map_err(|_| Error::TrustWriteUncertain)
+}
+#[cfg(windows)]
+fn sync_dir(root: &Path) -> Result<(), Error> {
+    // Windows file writes flush actual handles; this is a retained namespace
+    // recheck, not Unix directory fsync or a power-loss durability promise.
+    crate::windows_private::ParentDirectory::inspect(root).and_then(|parent|parent.check()).map_err(|_|Error::TrustWriteUncertain)
 }
 fn publish(from: &Path, to: &Path) -> Result<(), Error> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -609,7 +635,15 @@ fn publish(from: &Path, to: &Path) -> Result<(), Error> {
         }
         Ok(())
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    {
+        let mut candidate = crate::windows_private::HostDirectory::inspect_for_publication(from).map_err(|_|invalid())?;
+        candidate.check_private().map_err(|_|invalid())?;
+        let parent = crate::windows_private::HostDirectory::inspect(to.parent().ok_or_else(invalid)?).map_err(|_|invalid())?;
+        candidate.publish_into(&parent,to.file_name().and_then(|s|s.to_str()).ok_or_else(invalid)?).map_err(|_|Error::TrustWriteUncertain)?;
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         let _ = (from, to);
         Err(Error::TrustPlatformUnverified)
@@ -660,7 +694,7 @@ impl Store {
     ) -> Result<Self, Error> {
         keys(&policy)?;
         let (root, scope, profile, anchor) = scope(profile, installation)?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if !authority_recovery_vault::absent(&authority_recovery_vault::locator(&root, &scope)?)? {
             return Err(Error::TrustExists);
         }
@@ -718,7 +752,7 @@ impl Store {
             uncertain: false,
             used_operations: BTreeSet::new(),
             used_instances: BTreeSet::new(),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             recovery: None,
         })
     }
@@ -770,7 +804,7 @@ impl Store {
             existing_lock(&root)?
         } else { lock(&root)? };
         #[cfg(windows)]
-        let lock = lock(&root)?;
+        let lock = if inspection { existing_lock(&root)? } else { lock(&root)? };
         #[cfg(not(windows))]
         let root_identity = fs::symlink_metadata(&root).map_err(|_| invalid())?;
         let mut paths = Vec::new();
@@ -868,10 +902,10 @@ impl Store {
             uncertain: false,
             used_operations,
             used_instances,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             recovery: None,
         };
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             s.recovery = if inspection {
                 authority_recovery_vault::Vault::open_for_inspection(&s)?
@@ -916,7 +950,8 @@ impl Store {
     fn check_root_identity(&self) -> Result<(), Error> {
         #[cfg(windows)]
         {
-            self.native_root.check()
+            self.native_root.check()?;
+            crate::windows_private::PrivateDirectory::inspect(&self.root).map_err(|_|invalid())?.check_record(&self._lock,"trust.lock").map_err(|_|invalid())
         }
         #[cfg(not(windows))]
         {
@@ -935,7 +970,7 @@ impl Store {
             return Err(Error::TrustWriteUncertain);
         }
         self.check_root_identity()?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             if let Some(vault) = &self.recovery {
                 if self.current.recovery_binding.is_some() {
@@ -974,14 +1009,14 @@ impl Store {
             &self.used_instances,
         )?;
         self.uncertain = true;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if let Some(vault) = &self.recovery {
             vault.prepare(&next)?;
         }
         let h = write(&self.root, &next)?;
         self.check_root_identity()
             .map_err(|_| Error::TrustWriteUncertain)?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if let Some(vault) = &self.recovery {
             vault.finish(&self.root, &next, &h)?;
         }
@@ -2127,5 +2162,5 @@ mod tests {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use owned_execution::InterruptedRecoveryInputs;

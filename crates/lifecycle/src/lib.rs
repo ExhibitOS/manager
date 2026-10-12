@@ -753,18 +753,18 @@ fn run_observed_inputs(
     extra: Option<File>,
     observe: impl FnMut() -> Result<()>,
 ) -> Result<Vec<u8>> {
-    run_observed_stream(binary, args, cwd, seconds, input, extra, None, observe)
+    run_observed_stream(binary, args, cwd, seconds, (input, extra), None, observe)
 }
 fn run_observed_stream(
     binary: &str,
     args: &[String],
     cwd: Option<&Path>,
     seconds: u64,
-    input: Option<File>,
-    extra: Option<File>,
+    files: (Option<File>, Option<File>),
     streamed: Option<(Box<dyn Read + Send>, u64)>,
     mut observe: impl FnMut() -> Result<()>,
 ) -> Result<Vec<u8>> {
+    let (input, extra) = files;
     if streamed.is_some() && input.is_some() {
         return Err(err("ENGINE_INPUT_INVALID"));
     }
@@ -1393,7 +1393,7 @@ impl LifecycleService {
         expected_retry: Option<(&str, u32)>,
     ) -> Result<Job> {
         let _lock = self.lock()?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         signed_release::trust::lifecycle_writer::admit(&self.root, &action)?;
         let mut jobs = self.job_history()?;
         if let Some((expected_id, expected_attempt)) = expected_retry {
@@ -2189,8 +2189,7 @@ mod bounded_input_transport_tests {
             &[],
             None,
             5,
-            None,
-            None,
+            (None, None),
             Some((
                 Box::new(std::io::Cursor::new(bytes.clone())),
                 bytes.len() as u64,
@@ -2204,8 +2203,7 @@ mod bounded_input_transport_tests {
             &[],
             None,
             5,
-            None,
-            None,
+            (None, None),
             Some((Box::new(std::io::Cursor::new(bytes)), 65536)),
             || Ok(()),
         )
@@ -2230,8 +2228,7 @@ mod bounded_input_transport_tests {
             &[],
             None,
             5,
-            None,
-            None,
+            (None, None),
             Some((Box::new(FailedFinalCheck(false)), 1024)),
             || Ok(()),
         )
@@ -2242,8 +2239,7 @@ mod bounded_input_transport_tests {
             &[],
             None,
             5,
-            None,
-            None,
+            (None, None),
             Some((
                 Box::new(std::io::Cursor::new(vec![1; 1024 * 1024])),
                 1024 * 1024,
@@ -2261,8 +2257,7 @@ mod bounded_input_transport_tests {
                 &["5".into()],
                 None,
                 0,
-                None,
-                None,
+                (None, None),
                 Some((
                     Box::new(std::io::Cursor::new(vec![1; 1024 * 1024])),
                     1024 * 1024,

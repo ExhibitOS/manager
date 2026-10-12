@@ -53,7 +53,8 @@ pub(crate) fn latest(profile:&Path,installation:&str)->Result<Option<Receipt>> {
   if index>=MAX_RECORDS {return Err(err("UPDATE_HANDOFF_QUOTA"));}
   let entry=entry.map_err(|_|err("UPDATE_HANDOFF_INVALID"))?; let name=entry.file_name();let name=name.to_str().ok_or_else(||err("UPDATE_HANDOFF_INVALID"))?;
   let Some(id)=name.strip_suffix(".request.json") else {continue;}; if !installations::uuid(id){return Err(err("UPDATE_HANDOFF_INVALID"));}
-  let request:Request=read(&root,name)?; if request.id!=id {return Err(err("UPDATE_HANDOFF_INVALID"));} if request.installation_id!=installation {continue;}
+  let request:Request=read(&root,name)?; if request.id!=id {return Err(err("UPDATE_HANDOFF_INVALID"));}
+  if request.installation_id!=installation {continue;}
   let bytes=installation_backup::source_bytes(&root,name,LIMIT as u64,true)?;
   let mut receipt=Receipt{id:id.into(),installation_id:installation.into(),state:if root.join(format!("{id}.claim.json")).exists(){"uncertain"}else{"awaiting-app-close"}.into(),code:None,created_at:request.created_at,request_sha256:digest(&bytes)};
   if root.join(format!("{id}.outcome.json")).exists(){ let outcome:Receipt=read(&root,&format!("{id}.outcome.json"))?; if outcome.id!=id||outcome.installation_id!=installation||outcome.request_sha256!=receipt.request_sha256||outcome.created_at!=request.created_at||!["cancelled","failed"].contains(&outcome.state.as_str())||outcome.code.as_ref().is_some_and(|v|v.len()>96||!v.bytes().all(|c|c.is_ascii_uppercase()||c.is_ascii_digit()||c==b'_')) {return Err(err("UPDATE_HANDOFF_INVALID"));} receipt=outcome; }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Small independent write-ahead selection journal. Never replays Engine work or health.
 use super::*;
+use super::owned_execution::{DirectoryIdentity, directory_identity, directory_matches};
 use crate::update::{HealthReceipt, Plan, Stage};
 const LIMIT: u64 = 256 * 1024;
 #[derive(Serialize, Deserialize)]
@@ -61,8 +62,8 @@ impl Intent {
 }
 pub(super) struct Activation {
     root: PathBuf,
-    identity: Metadata,
-    profile_identity: Metadata,
+    identity: DirectoryIdentity,
+    profile_identity: DirectoryIdentity,
     intent: Intent,
     original: Vec<u8>,
     candidate: Vec<u8>,
@@ -99,10 +100,13 @@ fn immutable(root: &Path, name: &str, bytes: &[u8]) -> crate::Result<()> {
     if bytes.len() as u64 > LIMIT {
         return Err(crate::err("UPDATE_ACTIVATION_INVALID"));
     }
-    let mut f = private_file(&root.join(name), true).map_err(|e| crate::err(e.code()))?;
-    f.write_all(bytes)
-        .and_then(|_| f.sync_all())
-        .map_err(|_| crate::err("UPDATE_ACTIVATION_UNCERTAIN"))?;
+    #[cfg(not(windows))]
+    {
+        let mut f = private_file(&root.join(name), true).map_err(|e| crate::err(e.code()))?;
+        f.write_all(bytes).and_then(|_| f.sync_all()).map_err(|_| crate::err("UPDATE_ACTIVATION_UNCERTAIN"))?;
+    }
+    #[cfg(windows)]
+    crate::write_private_new(root,name,bytes,LIMIT as usize)?;
     sync_dir(root).map_err(|e| crate::err(e.code()))
 }
 fn parent(store: &Store) -> crate::Result<PathBuf> {
@@ -151,21 +155,20 @@ fn publish(
     profile: &Path,
     expected: &[u8],
     next: &[u8],
-    profile_identity: &Metadata,
+    profile_identity: &DirectoryIdentity,
 ) -> crate::Result<()> {
     registry(next)?;
     let check = || -> crate::Result<()> {
         installations::private_directory(profile)?;
-        if !identity(
-            profile_identity,
-            &fs::symlink_metadata(profile).map_err(|_| crate::err("UPDATE_ACTIVATION_CHANGED"))?,
-        ) || installations::load(profile)?.is_none_or(|(_, bytes)| bytes != expected)
+        if !directory_matches(profile_identity,profile).map_err(|_|crate::err("UPDATE_ACTIVATION_CHANGED"))? || installations::load(profile)?.is_none_or(|(_, bytes)| bytes != expected)
         {
             return Err(crate::err("UPDATE_ACTIVATION_CHANGED"));
         }
         Ok(())
     };
     check()?;
+    #[cfg(not(windows))]
+    {
     let pending = profile.join(format!(".selection-{}.pending", uuid::Uuid::new_v4()));
     let mut file = private_file(&pending, true).map_err(|e| crate::err(e.code()))?;
     file.write_all(next)
@@ -181,6 +184,12 @@ fn publish(
     sync_dir(profile).map_err(|_| crate::err("UPDATE_ACTIVATION_UNCERTAIN"))?;
     #[cfg(test)]
     publication_crash_point("selection-dir-synced");
+    }
+    #[cfg(windows)]
+    {
+        crate::windows_private::replace_private_record(profile,"installation-selection.json",Some(expected),next)?;
+        sync_dir(profile).map_err(|_|crate::err("UPDATE_ACTIVATION_UNCERTAIN"))?;
+    }
     if installations::load(profile)?.is_none_or(|(_, bytes)| bytes != next) {
         return Err(crate::err("UPDATE_ACTIVATION_UNCERTAIN"));
     }
@@ -285,10 +294,8 @@ impl Activation {
         )?;
         sync_dir(&parent).map_err(|e| crate::err(e.code()))?;
         let activation = Self {
-            identity: fs::symlink_metadata(&root)
-                .map_err(|_| crate::err("UPDATE_ACTIVATION_INVALID"))?,
-            profile_identity: fs::symlink_metadata(&store.profile)
-                .map_err(|_| crate::err("UPDATE_ACTIVATION_INVALID"))?,
+            identity: directory_identity(&root).map_err(|_|crate::err("UPDATE_ACTIVATION_INVALID"))?,
+            profile_identity: directory_identity(&store.profile).map_err(|_|crate::err("UPDATE_ACTIVATION_INVALID"))?,
             root,
             intent,
             original: original.to_vec(),
@@ -307,16 +314,8 @@ impl Activation {
         )?;
         if self.root != root(store, &self.intent.plan.operation_id, self.intent.rollback)?
             || self.intent.scope != store.scope
-            || !identity(
-                &self.identity,
-                &fs::symlink_metadata(&self.root)
-                    .map_err(|_| crate::err("UPDATE_ACTIVATION_CHANGED"))?,
-            )
-            || !identity(
-                &self.profile_identity,
-                &fs::symlink_metadata(&store.profile)
-                    .map_err(|_| crate::err("UPDATE_ACTIVATION_CHANGED"))?,
-            )
+            || !directory_matches(&self.identity,&self.root).map_err(|_|crate::err("UPDATE_ACTIVATION_CHANGED"))?
+            || !directory_matches(&self.profile_identity,&store.profile).map_err(|_|crate::err("UPDATE_ACTIVATION_CHANGED"))?
             || private_read(&self.root.join("original-selection.json"))? != self.original
             || private_read(&self.root.join("candidate-selection.json"))? != self.candidate
             || private_read(&self.root.join("intent.json"))?
@@ -462,10 +461,8 @@ impl Activation {
             return Err(crate::err("UPDATE_ACTIVATION_INVALID"));
         }
         let activation = Self {
-            identity: fs::symlink_metadata(&root)
-                .map_err(|_| crate::err("UPDATE_ACTIVATION_INVALID"))?,
-            profile_identity: fs::symlink_metadata(&store.profile)
-                .map_err(|_| crate::err("UPDATE_ACTIVATION_INVALID"))?,
+            identity: directory_identity(&root).map_err(|_|crate::err("UPDATE_ACTIVATION_INVALID"))?,
+            profile_identity: directory_identity(&store.profile).map_err(|_|crate::err("UPDATE_ACTIVATION_INVALID"))?,
             root,
             intent,
             original,
@@ -606,7 +603,7 @@ impl Store {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::super::tests::{fixture as trust_fixture, plan, seal};
     use super::*;

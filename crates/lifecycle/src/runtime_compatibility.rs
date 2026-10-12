@@ -251,6 +251,37 @@ fn run_probe(
         include_str!("native_migrated_inventory_observation.mjs"),
         include_str!("../../../scripts/runtime-probe/database.mjs")
     );
+    #[cfg(windows)]
+    let mut native_manifest=crate::windows_private::HostFile::open(ctx.manifest_path)?;
+    #[cfg(windows)]
+    let manifest_bytes={
+        native_manifest.check_private()?;
+        let mut bytes=Vec::new();
+        (&mut native_manifest).take(16 * 1024 * 1024 + 1).read_to_end(&mut bytes).map_err(|_|err("UPDATE_RUNTIME_INPUT_INVALID"))?;
+        native_manifest.check_private()?;
+        if bytes != ctx.raw || crate::digest(&bytes) != ctx.receipt.authenticated_manifest_sha256 { return Err(err("UPDATE_TARGET_CHANGED")); }
+        bytes
+    };
+    #[cfg(windows)]
+    let env_path=crate::checked_path(ctx.root,"runtime.env")?;
+    #[cfg(windows)]
+    let mut native_env=crate::windows_private::HostFile::open(&env_path)?;
+    #[cfg(windows)]
+    let env_bytes={
+        native_env.check_private()?;
+        let mut bytes=Vec::new();
+        (&mut native_env).take(8193).read_to_end(&mut bytes).map_err(|_|err("UPDATE_RUNTIME_INPUT_INVALID"))?;
+        native_env.check_private()?;
+        if bytes.len()>8192 || bytes != crate::installation_backup::source_bytes(ctx.root,"runtime.env",8192,true)? { return Err(err("UPDATE_TARGET_CHANGED")); }
+        bytes
+    };
+    #[cfg(windows)]
+    let script = native_wait_entry(&script.replace("'/manifest.json'","'/input/manifest.json'").replace("from '/opt/exhibitos/scripts/service-backup.mjs'", "from 'file:///opt/exhibitos/scripts/service-backup.mjs'"))?;
+    #[cfg(windows)]
+    let db_mounts = vec![
+        ("/source".into(),"volume".into(),ctx.candidate_before.database_volume.clone()),
+        ("/blobs".into(),"volume".into(),ctx.candidate_before.blob_volume.clone()),
+    ];
     let db = create(
         vec![
             "--env".into(),
@@ -266,6 +297,7 @@ fn run_probe(
             image: maintenance.into(),
             network: "none".into(),
             memory: 1024 * 1024 * 1024,
+            #[cfg(not(windows))]
             mounts: vec![
                 (
                     "/source".into(),
@@ -283,13 +315,24 @@ fn run_probe(
                     ctx.manifest_path.to_string_lossy().into_owned(),
                 ),
             ],
+            #[cfg(windows)]
+            mounts: db_mounts,
             script,
-            tmpfs: serde_json::json!({"/snapshot":"rw,nosuid,nodev,noexec,size=1g","/tmp":"rw,nosuid,nodev,noexec,size=64m","/var/lib/postgresql":"rw,nosuid,nodev,noexec,size=1m"}),
+            tmpfs: {
+                let value=serde_json::json!({"/snapshot":"rw,nosuid,nodev,noexec,size=1g","/tmp":"rw,nosuid,nodev,noexec,size=64m","/var/lib/postgresql":"rw,nosuid,nodev,noexec,size=1m"});
+                #[cfg(windows)]
+                let mut value = value;
+                #[cfg(windows)]
+                { value["/input"]=Value::from("rw,nosuid,nodev,noexec,size=32m,mode=0700"); }
+                value
+            },
         },
     )?;
     let mut runtime: Option<Helper> = None;
     let attempt = (|| {
         command(&["start", &db.id])?;
+        #[cfg(windows)]
+        feed_native_input(&db,"/input/manifest.json",&ctx.receipt.authenticated_manifest_sha256,manifest_bytes,16 * 1024 * 1024,&native_manifest)?;
         let mut ready = false;
         for _ in 0..240 {
             let logs = command(&["logs", &db.id])?;
@@ -333,6 +376,8 @@ fn run_probe(
             include_str!("../../../scripts/runtime-probe/migration.mjs"),
             include_str!("../../../scripts/runtime-probe/target.mjs")
         );
+        #[cfg(windows)]
+        let script=native_wait_entry(&script.replace("'/runtime.env'","'/input/runtime.env'"))?;
         runtime = Some(create(
             vec![],
             Helper {
@@ -342,6 +387,7 @@ fn run_probe(
                 image: format!("sha256:{}", ctx.plan.target_image),
                 network: format!("container:{}", db.id),
                 memory: 768 * 1024 * 1024,
+                #[cfg(not(windows))]
                 mounts: vec![
                     (
                         "/source-blobs".into(),
@@ -359,14 +405,32 @@ fn run_probe(
                         env.to_string_lossy().into_owned(),
                     ),
                 ],
+                #[cfg(windows)]
+                mounts: vec![
+                    ("/source-blobs".into(),"volume".into(),ctx.candidate_before.blob_volume.clone()),
+                    ("/source-config".into(),"volume".into(),ctx.candidate_before.configuration_volume.clone()),
+                ],
                 script,
-                tmpfs: serde_json::json!({"/probe":"rw,nosuid,nodev,noexec,size=256m,mode=0700","/tmp":"rw,nosuid,nodev,noexec,size=64m"}),
+                tmpfs: {
+                    let value=serde_json::json!({"/probe":"rw,nosuid,nodev,noexec,size=256m,mode=0700","/tmp":"rw,nosuid,nodev,noexec,size=64m"});
+                    #[cfg(windows)]
+                    let mut value = value;
+                    #[cfg(windows)]
+                    { value["/input"]=Value::from("rw,nosuid,nodev,noexec,size=32m,mode=0700"); }
+                    value
+                },
             },
         )?);
         let target = runtime
             .as_ref()
             .ok_or_else(|| err("UPDATE_RUNTIME_PROBE_FAILED"))?;
+        #[cfg(windows)]
+        {
+            command(&["start",&target.id])?;
+            feed_native_input(target,"/input/runtime.env",&crate::digest(&env_bytes),env_bytes,8192,&native_env)?;
+        }
         let raw = if interruption {
+            #[cfg(not(windows))]
             command(&["start", &target.id])?;
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(360);
             let marker = loop {
@@ -407,8 +471,22 @@ fn run_probe(
             db.check()?;
             marker
         } else {
-            engine(&["start".into(), "--attach".into(), target.id.clone()], 360)?
+            #[cfg(not(windows))]
+            let raw=engine(&["start".into(),"--attach".into(),target.id.clone()],360)?;
+            #[cfg(windows)]
+            let raw={
+                let deadline=std::time::Instant::now()+std::time::Duration::from_secs(360);
+                while target.check()?["State"]["Running"]==true {
+                    if std::time::Instant::now()>=deadline { return Err(err("UPDATE_RUNTIME_PROBE_FAILED")); }
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+                if target.check()?["State"]["ExitCode"] != 0 { return Err(err("UPDATE_RUNTIME_PROBE_FAILED")); }
+                command(&["logs",&target.id])?
+            };
+            raw
         };
+        #[cfg(windows)]
+        { native_manifest.check_private()?; native_env.check_private()?; }
         let mut proof: Value =
             serde_json::from_slice(&raw).map_err(|_| err("UPDATE_RUNTIME_PROBE_FAILED"))?;
         validate_proof(&proof, ctx.plan, migration)?;
@@ -453,6 +531,37 @@ fn run_probe(
         db.stop()?;
     }
     attempt
+}
+#[cfg(windows)]
+fn native_wait_entry(script: &str) -> Result<String> {
+    // data: modules need URL module specifiers. Only import syntax prefixes
+    // change; readFile/open and createRequire filesystem paths stay exact.
+    let module=script
+        .replace("from '/opt/exhibitos/","from 'file:///opt/exhibitos/")
+        .replace("from \"/opt/exhibitos/","from \"file:///opt/exhibitos/")
+        .replace("import('/opt/exhibitos/","import('file:///opt/exhibitos/")
+        .replace("import(\"/opt/exhibitos/","import(\"file:///opt/exhibitos/");
+    let encoded=serde_json::to_string(&module).map_err(|_|err("UPDATE_RUNTIME_INPUT_INVALID"))?;
+    Ok(format!(r#"import {{access as nativeAccess}} from 'node:fs/promises';
+for(;;){{try{{await nativeAccess('/input/ready');break;}}catch{{await new Promise(resolve=>setTimeout(resolve,100));}}}}
+await import('data:text/javascript;charset=utf-8,'+encodeURIComponent({encoded}));"#))
+}
+#[cfg(windows)]
+fn feed_native_input(helper: &Helper, path: &str, pin: &str, bytes: Vec<u8>, limit: u64, source: &crate::windows_private::HostFile) -> Result<()> {
+    if !matches!(path,"/input/manifest.json"|"/input/runtime.env") || !hash_valid(pin) || bytes.is_empty() || bytes.len() as u64>limit || crate::digest(&bytes)!=pin { return Err(err("UPDATE_RUNTIME_INPUT_INVALID")); }
+    source.check_private()?; helper.check()?;
+    let script=format!(r#"import {{open}} from 'node:fs/promises';import {{constants}} from 'node:fs';import {{createHash}} from 'node:crypto';
+const input=await open('/dev/stdin',constants.O_RDONLY);const parts=[];let length=0;
+try{{const buffer=Buffer.alloc(65536);for(;;){{const {{bytesRead}}=await input.read(buffer,0,buffer.length,null);if(bytesRead===0)break;length+=bytesRead;if(length>{limit})throw Error('NATIVE_RUNTIME_INPUT_INVALID');parts.push(Buffer.from(buffer.subarray(0,bytesRead)));}}}}finally{{await input.close();}}
+const data=Buffer.concat(parts);if(data.length===0||createHash('sha256').update(data).digest('hex')!=='{pin}')throw Error('NATIVE_RUNTIME_INPUT_INVALID');
+const file=await open('{path}',constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);try{{await file.writeFile(data);await file.sync();}}finally{{await file.close();}}
+const ready=await open('/input/ready',constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);try{{await ready.writeFile('ready');await ready.sync();}}finally{{await ready.close();}}
+console.log(JSON.stringify({{nativeInputReady:true}}));"#);
+    let output=crate::run_observed_stream("docker", &["exec".into(),"--interactive".into(),helper.id.clone(),"node".into(),"--input-type=module".into(),"-e".into(),script],None,60,(None,None),Some((Box::new(std::io::Cursor::new(bytes)),limit)),|| { source.check_private()?; helper.check().map(|_|()) })?;
+    source.check_private()?; helper.check()?;
+    let receipt:Value=serde_json::from_slice(&output).map_err(|_|err("UPDATE_RUNTIME_INPUT_INVALID"))?;
+    if receipt!=serde_json::json!({"nativeInputReady":true}) { return Err(err("UPDATE_RUNTIME_INPUT_INVALID")); }
+    Ok(())
 }
 fn validate_interruption(proof: &Value, inspected: &Value) -> Result<()> {
     if proof["interruptionRequested"] != true
@@ -579,7 +688,7 @@ impl ExecutionSession<'_> {
         )?;
         if observed["Id"] != image
             || observed["Os"] != "linux"
-            || observed["Architecture"] != "arm64"
+            || observed["Architecture"] != super::prepared_oci::runtime_architecture(&artifact.verified.release.target)?
             || observed["RootFS"]["Layers"] != oci.proof["layerDiffIds"]
         {
             return Err(err("IMAGE_INTEGRITY"));
@@ -808,7 +917,7 @@ impl ExecutionSession<'_> {
         )?;
         if image["Id"] != format!("sha256:{}", artifact.plan.target_image)
             || image["Os"] != "linux"
-            || image["Architecture"] != "arm64"
+            || image["Architecture"] != super::prepared_oci::runtime_architecture(&artifact.verified.release.target)?
             || image["RootFS"]["Layers"] != oci.proof["layerDiffIds"]
         {
             return Err(err("IMAGE_INTEGRITY"));

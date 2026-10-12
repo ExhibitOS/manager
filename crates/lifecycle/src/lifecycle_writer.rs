@@ -15,13 +15,23 @@ fn present(path: &Path) -> crate::Result<bool> {
     }
 }
 fn namespaces(profile: &Path, installation: &str) -> crate::Result<(PathBuf, PathBuf)> {
+    #[cfg(windows)]
+    {
+        let (primary,id)=windows_root::namespace(profile,installation).map_err(|_|unavailable())?;
+        let recovery=authority_recovery_vault::locator(&primary,&id).map_err(|_|unavailable())?;
+        return Ok((primary,recovery));
+    }
+    #[cfg(not(windows))]
     let path = profile.to_str().ok_or_else(unavailable)?;
+    #[cfg(not(windows))]
+    {
     let id = hash(format!("ExhibitOS-release-trust-v1\0{path}\0{installation}").as_bytes());
     let parent = profile.parent().ok_or_else(unavailable)?;
     Ok((
         parent.join(format!(".exhibitos-release-trust-{id}")),
         parent.join(format!(".exhibitos-release-recovery-{id}")),
     ))
+    }
 }
 fn disposition(update: &crate::update::Update, instance: &str) -> Option<bool> {
     use crate::update::Stage;
@@ -111,8 +121,10 @@ pub(crate) fn admit(root: &Path, action: &Action) -> crate::Result<()> {
         .find(|e| installations::root(profile, e) == root)
         .ok_or_else(unavailable)?;
     for installation in enrolled {
-        let store = Store::open_mode_with_anchor(profile, &installation, false, false)
-            .map_err(|_| unavailable())?;
+        #[cfg(not(windows))]
+        let store = Store::open_mode_with_anchor(profile, &installation, false, false).map_err(|_|unavailable())?;
+        #[cfg(windows)]
+        let store = Store::open_for_inspection(profile,&installation).map_err(|_|unavailable())?;
         check_store(&store, &entry.id)?;
     }
     if installations::load(profile)
@@ -124,7 +136,7 @@ pub(crate) fn admit(root: &Path, action: &Action) -> crate::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]
