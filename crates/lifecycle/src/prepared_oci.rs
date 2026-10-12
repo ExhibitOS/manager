@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Development OCI preparation under current intent/profile/source/target fences.
 use super::*;
-use crate::{Value, err, run, run_observed_input, run_observed_inputs};
+use crate::{Value, err, run, run_observed_input};
+#[cfg(not(windows))]
+use crate::run_observed_inputs;
 use std::collections::BTreeSet;
 
 const QUALIFIER: &str = include_str!("../../../scripts/verify-runtime-oci.py");

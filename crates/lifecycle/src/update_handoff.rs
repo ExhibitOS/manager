@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! App-closed handoff for the existing Prepared-only cancellation operation.
 use super::*;
+#[cfg(any(unix, windows))]
 use crate::signed_release::trust::Store;
 const LIMIT: usize = 8192;
 const MAX_RECORDS: usize = 384;
@@ -16,8 +17,21 @@ pub struct Receipt { pub id:String, pub installation_id:String, pub state:String
 fn directory(profile:&Path)->PathBuf { profile.join("update-cancel-handoffs") }
 fn persist<T:Serialize>(root:&Path,name:&str,value:&T)->Result<()> {
  let bytes=serde_json::to_vec(value).map_err(|_|err("UPDATE_HANDOFF_INVALID"))?;
- write_private_new(root,name,&bytes,LIMIT)?;
- File::open(root).and_then(|f|f.sync_all()).map_err(|_|err("UPDATE_HANDOFF_UNCERTAIN"))
+ #[cfg(windows)] {
+  // CREATE_NEW and an actual file flush precede retained namespace checks.
+  // Windows directory synchronization reports namespace evidence, not fsync.
+  let directory=crate::windows_private::PrivateDirectory::inspect(root)?;
+  let namespace=crate::windows_private::HostDirectory::inspect(root)?;
+  namespace.check_private()?;
+  let record=directory.write_new_record(name,&bytes,LIMIT)?;
+  record.check().map_err(|_|err("UPDATE_HANDOFF_UNCERTAIN"))?;
+  namespace.sync_all().map_err(|_|err("UPDATE_HANDOFF_UNCERTAIN"))?;
+  directory.check().map_err(|_|err("UPDATE_HANDOFF_UNCERTAIN"))
+ }
+ #[cfg(not(windows))] {
+  write_private_new(root,name,&bytes,LIMIT)?;
+  File::open(root).and_then(|f|f.sync_all()).map_err(|_|err("UPDATE_HANDOFF_UNCERTAIN"))
+ }
 }
 fn read<T:for<'a>Deserialize<'a>>(root:&Path,name:&str)->Result<T> {
  serde_json::from_slice(&installation_backup::source_bytes(root,name,LIMIT as u64,true)?).map_err(|_|err("UPDATE_HANDOFF_INVALID"))
@@ -72,11 +86,18 @@ pub fn record_launch_failure(profile:&Path,id:&str)->Result<()> {
 /// Caller supplies only the native-derived profile and immutable request ID.
 /// The exclusive anchor proves all Manager profile sessions are closed.
 pub fn execute(profile:&Path,id:&str)->Result<()> {
- #[cfg(not(unix))] { let _=(profile,id);return Err(err("UPDATE_TRUST_PLATFORM_UNVERIFIED")); }
- #[cfg(unix)] {
+ #[cfg(not(any(unix, windows)))] { let _=(profile,id);Err(err("UPDATE_TRUST_PLATFORM_UNVERIFIED")) }
+ #[cfg(any(unix, windows))] {
  if !installations::uuid(id){return Err(err("UPDATE_HANDOFF_INVALID"));}
  installations::private_directory(profile)?; let root=directory(profile);installations::private_directory(&root)?;
- let name=format!("{id}.request.json");let request:Request=read(&root,&name)?;validate(&request.input)?;
+ #[cfg(windows)]
+ let profile_guard=crate::windows_private::PrivateDirectory::inspect(profile)?;
+ #[cfg(windows)]
+ let handoff_guard=crate::windows_private::PrivateDirectory::inspect(&root)?;
+ let name=format!("{id}.request.json");
+ #[cfg(windows)]
+ let request_guard=handoff_guard.read_record(&name)?;
+ let request:Request=read(&root,&name)?;validate(&request.input)?;
  if request.id!=id||!installations::uuid(&request.installation_id)|| !(request.scope=="default"||request.scope==request.installation_id){return Err(err("UPDATE_HANDOFF_INVALID"));}
  let bytes=installation_backup::source_bytes(&root,&name,LIMIT as u64,true)?;
  let mut receipt=Receipt{id:id.into(),installation_id:request.installation_id.clone(),state:"failed".into(),code:None,created_at:request.created_at,request_sha256:digest(&bytes)};
@@ -84,13 +105,25 @@ pub fn execute(profile:&Path,id:&str)->Result<()> {
  // Wait for the parent app to exit; never recover another in-flight update.
  let deadline=std::time::Instant::now()+Duration::from_secs(30);
  let mut store=loop {match Store::open_for_prepared_handoff(profile,&request.scope){Ok(store)=>break store,Err(e) if e.code()=="UPDATE_TRUST_BUSY"&&std::time::Instant::now()<deadline=>std::thread::sleep(Duration::from_millis(100)),Err(e)=>{receipt.code=Some(e.code().into());persist(&root,&format!("{id}.outcome.json"),&receipt)?;return Err(err(e.code()));}}};
- let operation=match profile_backup::inspect_operation_lock(profile) {Ok(lock)=>OperationGuard(lock),Err(e)=>{receipt.code=Some(e.code.clone());persist(&root,&format!("{id}.outcome.json"),&receipt)?;return Err(e);}};
+ let operation=match profile_backup::inspect_operation_lock(profile) {Ok(lock)=>lock,Err(e)=>{receipt.code=Some(e.code.clone());persist(&root,&format!("{id}.outcome.json"),&receipt)?;return Err(e);}};
+ #[cfg(not(windows))]
+ let operation=OperationGuard(operation);
+ #[cfg(windows)] {
+  request_guard.check()?;
+  profile_guard.check_record(&operation,"operation.lock")?;
+  handoff_guard.check()?;
+ }
  persist(&root,&format!("{id}.claim.json"),&receipt)?;
  let result=(||->Result<()> {
  let (registry,original)=installations::load(profile)?.ok_or_else(||err("UPDATE_HANDOFF_SELECTION_CHANGED"))?;
  let entry=registry.installations.iter().find(|e|e.id==request.installation_id).ok_or_else(||err("UPDATE_HANDOFF_SELECTION_CHANGED"))?;
  let scope=if entry.kind=="default"{"default"}else{&entry.id};
  if registry.active_id!=entry.id||scope!=request.scope||digest(&original)!=request.registry_sha256 {return Err(err("UPDATE_HANDOFF_SELECTION_CHANGED"));}
+ #[cfg(windows)] {
+  request_guard.check()?;
+  profile_guard.check_record(&operation,"operation.lock")?;
+  handoff_guard.check()?;
+ }
  store.discard_prepared(&request.input.operation_id,request.input.generation,now()).map_err(|e|err(e.code()))?;Ok(())
  })();
  drop(operation);

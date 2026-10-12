@@ -64,7 +64,7 @@ pub(crate) fn source_bytes(
             return Err(err("BACKUP_SOURCE_INVALID"));
         }
         _root_fence.check()?;
-        return Ok(bytes);
+        Ok(bytes)
     }
     #[cfg(not(windows))]
     {

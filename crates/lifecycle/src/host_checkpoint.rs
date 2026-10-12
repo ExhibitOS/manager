@@ -132,6 +132,7 @@ fn safe_path(s: &str) -> bool {
         && s.split('/').count() <= 32
         && s.split('/').all(|p| !p.is_empty() && p != "." && p != "..")
 }
+#[cfg(not(windows))]
 fn mode(m: &fs::Metadata) -> u32 {
     #[cfg(unix)]
     {
@@ -144,6 +145,7 @@ fn mode(m: &fs::Metadata) -> u32 {
         0
     }
 }
+#[cfg(not(windows))]
 fn trusted(m: &fs::Metadata) -> bool {
     #[cfg(unix)]
     {
@@ -162,7 +164,7 @@ fn safe_mode(m: u32) -> bool {
 fn file(path: &Path) -> Result<HostSourceFile> {
     #[cfg(windows)]
     {
-        return crate::windows_private::HostFile::open(path);
+        crate::windows_private::HostFile::open(path)
     }
     #[cfg(not(windows))]
     {
@@ -1218,7 +1220,7 @@ pub(crate) fn authenticated_host_restore_bytes(
 /// Test-only retirement evidence: authenticate the actual complete archive first,
 /// then verify an unused extraction against its authenticated manifest. Current
 /// source bytes may have legitimately changed after the owning child applied.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn verify_unused_extraction_archive(
     profile: &Path,
     archive: &Path,
@@ -1249,6 +1251,7 @@ pub(crate) fn verify_unused_extraction_archive(
     Ok(proof)
 }
 
+#[cfg(not(windows))]
 fn publish_directory(source: &Path, target: &Path) -> Result<()> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
@@ -1455,7 +1458,7 @@ fn extract_host_mode(
                 .ok_or_else(fail)?,
         )?;
         result.windows_directory_sync = Some(WindowsDirectorySync::from(parent_guard.sync_all()?));
-        return Ok(result);
+        Ok(result)
     }
     #[cfg(not(windows))]
     {
@@ -1587,6 +1590,7 @@ pub(crate) fn recheck_extracted_host_current(
     verify_extracted_host(profile, extracted, &expected)?;
     Ok(expected)
 }
+#[cfg(not(windows))]
 fn publication_identity(a: &fs::Metadata, b: &fs::Metadata) -> bool {
     #[cfg(unix)]
     {
@@ -1752,7 +1756,7 @@ pub(crate) fn activate_missing_host(
         if candidate.permissions()? != manifest.root_windows_permissions.ok_or_else(fail)? {
             return Err(err("HOST_RESTORE_UNCERTAIN"));
         }
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(windows))]
     {
@@ -2681,13 +2685,12 @@ mod windows_tests {
         drop(native);
         let before = inventory(&profile, &BTreeSet::new(), &Uuid::new_v4().to_string()).unwrap();
         let saved = checkpoint_host(&profile, &key, &archive, true, true).unwrap();
-        assert_eq!(
-            saved
+        assert!(
+            !saved
                 .windows_directory_sync
                 .as_ref()
                 .unwrap()
-                .directory_flush,
-            false
+                .directory_flush
         );
         assert!(
             saved

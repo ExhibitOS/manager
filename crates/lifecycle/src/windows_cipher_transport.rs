@@ -1018,17 +1018,21 @@ fn unpack_selected(mut input: impl Read, destination: &Path, expected: &FileHash
 }
 /// Inventory is supplied only after original service-backup authentication.
 /// Selected existing recovery paths are copied without admitting unrelated /work data.
+pub(crate) struct SelectedCopyOwner<'a> {
+    pub kind: &'a str,
+    pub id: &'a str,
+    pub container: &'a str,
+    pub label_key: &'a str,
+    pub volume: &'a str,
+    pub image: &'a str,
+}
 pub(crate) fn copy_selected(
     service: &LifecycleService,
-    kind: &str,
-    id: &str,
-    container: &str,
-    label_key: &str,
-    volume: &str,
-    image: &str,
+    owner: SelectedCopyOwner<'_>,
     workspace: &Path,
     inventory: &BTreeMap<String, FileHash>,
 ) -> Result<()> {
+    let SelectedCopyOwner { kind, id, container, label_key, volume, image } = owner;
     if inventory.is_empty()
         || inventory.len() > 10
         || !matches!(kind, "backup" | "restoration")

@@ -29,7 +29,7 @@ struct CandidateState {
     frozen: Vec<(String, String)>,
 }
 impl ReadyCandidate<'_, '_, '_> {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn started_receipt_for_qualification(&self) -> Value {
         self.started.admission.receipt.clone()
     }

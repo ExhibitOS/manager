@@ -211,7 +211,7 @@ fn host_routes() -> Result<Vec<Range>> {
         // Query the Windows active host/VPN route table, not a guessed Linux route
         // table. Docker's separately inspected networks remain additional fences.
         let script = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $routes=@(Get-NetRoute -AddressFamily IPv4 -PolicyStore ActiveStore | Select-Object DestinationPrefix,InterfaceIndex); ConvertTo-Json -InputObject $routes -Compress -Depth 3";
-        return windows_routes(&run(
+        windows_routes(&run(
             "powershell.exe",
             &[
                 "-NoLogo".into(),
@@ -222,7 +222,7 @@ fn host_routes() -> Result<Vec<Range>> {
             ],
             None,
             30,
-        )?);
+        )?)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     Err(err("BACKUP_PLATFORM_UNVERIFIED"))

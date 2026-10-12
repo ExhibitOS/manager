@@ -1222,8 +1222,8 @@ mod windows_work_tests {
             "Config":{"Labels":{"com.exhibitos.restoration":target}},"HostConfig":{"Privileged":false,"ReadonlyRootfs":true,"AutoRemove":false},
             "State":{"Running":false},"Mounts":[{"Type":"volume","Name":name,"Destination":"/work","Driver":"local","RW":true}]});
         let declared = BTreeSet::new();
-        assert_eq!(
-            validate_helper(
+        assert!(
+            !validate_helper(
                 &service,
                 "restoration",
                 &target,
@@ -1232,8 +1232,7 @@ mod windows_work_tests {
                 &declared,
                 true
             )
-            .unwrap(),
-            false
+            .unwrap()
         );
         assert!(
             validate_helper(

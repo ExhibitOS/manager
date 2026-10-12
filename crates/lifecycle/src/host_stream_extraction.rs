@@ -8,9 +8,12 @@ use std::io::Write;
 type ExtractionFile = File;
 #[cfg(windows)]
 type ExtractionFile = HostFile;
+#[cfg(windows)]
+type WindowsExtraction = (Inventory, Vec<u8>, BTreeMap<String, HostDirectory>, BTreeMap<String, HostFile>);
 
 pub(super) struct Extraction {
     profile: PathBuf,
+    #[cfg(not(windows))]
     recovered: PathBuf,
     prefix: Vec<u8>,
     manifest_len: Option<usize>,
@@ -28,8 +31,11 @@ pub(super) struct Extraction {
 }
 impl Extraction {
     pub(super) fn new(profile: &Path, recovered: &Path) -> Self {
+        #[cfg(windows)]
+        let _ = recovered;
         Self {
             profile: profile.into(),
+            #[cfg(not(windows))]
             recovered: recovered.into(),
             prefix: Vec::new(),
             manifest_len: None,
@@ -52,6 +58,7 @@ impl Extraction {
         sink.directories.insert(String::new(), recovered);
         sink
     }
+    #[cfg(any(not(windows), test))]
     pub(super) fn require_reference_clones(&mut self) {
         self.require_reference_clones = true;
     }
@@ -209,12 +216,7 @@ impl Extraction {
     #[cfg(windows)]
     pub(super) fn finish_windows(
         mut self,
-    ) -> Result<(
-        Inventory,
-        Vec<u8>,
-        BTreeMap<String, HostDirectory>,
-        BTreeMap<String, HostFile>,
-    )> {
+    ) -> Result<WindowsExtraction> {
         self.advance()?;
         let m = self.inventory.take().ok_or_else(fail)?;
         if self.next != m.items.len() || self.remaining != 0 || self.output.is_some() {

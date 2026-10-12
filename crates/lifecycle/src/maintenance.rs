@@ -102,8 +102,10 @@ impl LifecycleService {
         {
             let key = native_input_path(key, false)?;
             let source = native_input_path(source, true)?;
-            return self.verify_backup_windows(image, &key, &source);
+            self.verify_backup_windows(image, &key, &source)
         }
+        #[cfg(not(windows))]
+        {
         if !image.strip_prefix("sha256:").is_some_and(hash_valid) {
             return Err(err("BACKUP_IMAGE_INVALID"));
         }
@@ -254,84 +256,9 @@ impl LifecycleService {
                 Err(err("BACKUP_VERIFICATION_FAILED"))
             }
         }
-    }
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn receipt_accepts_only_exact_safe_success_and_never_repeats_raw_output() {
-        assert_eq!(
-            receipt(
-                br#"{"operation":"verified","files":4}"#,
-                "id",
-                "image",
-                &"a".repeat(64)
-            )
-            .unwrap()
-            .files,
-            4
-        );
-        for output in [
-            br#"{"operation":"created","files":4}"#.as_slice(),
-            br#"{"operation":"verified","files":0}"#,
-            br#"{"operation":"verified","files":1000001}"#,
-            br#"{"operation":"verified","files":4,"secret":"private"}"#,
-            b"private connection error",
-        ] {
-            let error = receipt(output, "id", "image", &"a".repeat(64)).unwrap_err();
-            assert_eq!(error.code, "BACKUP_RESULT_INVALID");
-            assert!(!serde_json::to_string(&error).unwrap().contains("private"));
-        }
-    }
-    #[test]
-    fn reject_untrusted_image_and_overlap_before_engine_operations() {
-        let root = std::env::temp_dir().join(format!("manager-verify-test-{}", Uuid::new_v4()));
-        let _created = LifecycleService::new(root.clone()).unwrap();
-        let root = fs::canonicalize(root).unwrap();
-        let service = LifecycleService::new(root.clone()).unwrap();
-        assert_eq!(
-            service
-                .verify_backup("image:latest", &root, &root)
-                .unwrap_err()
-                .code,
-            "BACKUP_IMAGE_INVALID"
-        );
-        assert!(input_path(Path::new("relative"), true).is_err());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{PermissionsExt, symlink};
-            let key = root.join("key");
-            fs::write(&key, [0u8; 32]).unwrap();
-            fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).unwrap();
-            assert_eq!(
-                input_path(&key, false).unwrap_err().code,
-                "BACKUP_PRIVATE_PERMISSIONS"
-            );
-            fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
-            assert!(input_path(&key, false).is_ok());
-            let alias = root.join("alias");
-            symlink(&key, &alias).unwrap();
-            assert!(input_path(&alias, false).is_err());
-            assert_eq!(
-                service
-                    .verify_backup(&format!("sha256:{}", "a".repeat(64)), &key, &root)
-                    .unwrap_err()
-                    .code,
-                "BACKUP_PATH_OVERLAP"
-            );
-            let _guard = service.lock().unwrap();
-            assert_eq!(
-                service
-                    .verify_backup("image:latest", &key, &root)
-                    .unwrap_err()
-                    .code,
-                "BUSY"
-            );
         }
     }
 }
-
 #[cfg(windows)]
 impl LifecycleService {
     fn verify_backup_windows(
@@ -481,11 +408,10 @@ console.log(JSON.stringify({operation:result.operation,files:result.files,manife
             Some((input, limit)),
             || Ok(()),
         );
-        if output.is_err() {
-            if let Ok(helper) =
+        if output.is_err()
+            && let Ok(helper) =
                 backup_creation::inspected(&engine, &["inspect".into(), container.clone()])
-            {
-                if helper["Name"] == format!("/{container}")
+            && helper["Name"] == format!("/{container}")
                     && helper["Config"]["Labels"]["com.exhibitos.verification"] == id
                     && helper["Image"] == image
                     && helper["Mounts"].as_array().is_some_and(|m| {
@@ -507,8 +433,6 @@ console.log(JSON.stringify({operation:result.operation,files:result.files,manife
                         None,
                         60,
                     );
-                }
-            }
         }
         let outcome = output.and_then(|bytes| {
             #[derive(Deserialize)]
@@ -592,5 +516,81 @@ pub(crate) fn native_input_path(path: &Path, directory: bool) -> Result<PathBuf>
         }
         parent.check()?;
         Ok(canonical)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn receipt_accepts_only_exact_safe_success_and_never_repeats_raw_output() {
+        assert_eq!(
+            receipt(
+                br#"{"operation":"verified","files":4}"#,
+                "id",
+                "image",
+                &"a".repeat(64)
+            )
+            .unwrap()
+            .files,
+            4
+        );
+        for output in [
+            br#"{"operation":"created","files":4}"#.as_slice(),
+            br#"{"operation":"verified","files":0}"#,
+            br#"{"operation":"verified","files":1000001}"#,
+            br#"{"operation":"verified","files":4,"secret":"private"}"#,
+            b"private connection error",
+        ] {
+            let error = receipt(output, "id", "image", &"a".repeat(64)).unwrap_err();
+            assert_eq!(error.code, "BACKUP_RESULT_INVALID");
+            assert!(!serde_json::to_string(&error).unwrap().contains("private"));
+        }
+    }
+    #[test]
+    fn reject_untrusted_image_and_overlap_before_engine_operations() {
+        let root = std::env::temp_dir().join(format!("manager-verify-test-{}", Uuid::new_v4()));
+        let _created = LifecycleService::new(root.clone()).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let service = LifecycleService::new(root.clone()).unwrap();
+        assert_eq!(
+            service
+                .verify_backup("image:latest", &root, &root)
+                .unwrap_err()
+                .code,
+            "BACKUP_IMAGE_INVALID"
+        );
+        assert!(input_path(Path::new("relative"), true).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{PermissionsExt, symlink};
+            let key = root.join("key");
+            fs::write(&key, [0u8; 32]).unwrap();
+            fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(
+                input_path(&key, false).unwrap_err().code,
+                "BACKUP_PRIVATE_PERMISSIONS"
+            );
+            fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(input_path(&key, false).is_ok());
+            let alias = root.join("alias");
+            symlink(&key, &alias).unwrap();
+            assert!(input_path(&alias, false).is_err());
+            assert_eq!(
+                service
+                    .verify_backup(&format!("sha256:{}", "a".repeat(64)), &key, &root)
+                    .unwrap_err()
+                    .code,
+                "BACKUP_PATH_OVERLAP"
+            );
+            let _guard = service.lock().unwrap();
+            assert_eq!(
+                service
+                    .verify_backup("image:latest", &key, &root)
+                    .unwrap_err()
+                    .code,
+                "BUSY"
+            );
+        }
     }
 }

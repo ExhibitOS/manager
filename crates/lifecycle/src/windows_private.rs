@@ -738,10 +738,10 @@ pub fn read_external_private_key(path: &Path, profile: &Path) -> Result<[u8; 32]
         Err(_) => return Err(invalid()),
     };
     let external = PrivateDirectory::inspect(path.parent().ok_or_else(invalid)?)?;
-    if let Some(guard) = &profile_guard {
-        if external.id == guard.id || external.ancestors.iter().any(|(_, _, id)| *id == guard.id) {
-            return Err(invalid());
-        }
+    if let Some(guard) = &profile_guard
+        && (external.id == guard.id || external.ancestors.iter().any(|(_, _, id)| *id == guard.id))
+    {
+        return Err(invalid());
     }
     let name = path
         .file_name()
@@ -1924,10 +1924,6 @@ impl HostDirectory {
         Ok(false)
     }
     pub(crate) fn path(&self) -> &Path { &self.path }
-    pub(crate) fn metadata(&self) -> Result<std::fs::Metadata> {
-        self.check()?;
-        self.inner.file.metadata().map_err(|_| err("WINDOWS_HOST_IO"))
-    }
     pub(crate) fn check(&self) -> Result<()> {
         for (path, file, expected) in &self.inner.ancestors {
             if identity(file, true)? != *expected || identity(&open(path, true)?, true)? != *expected {
@@ -2072,8 +2068,6 @@ impl HostFile {
         self.check()?;
         acl(&self.file, &self.parent.inner.sid, true)
     }
-    pub(crate) fn path(&self) -> &Path { &self.path }
-
     pub(crate) fn permissions(&self) -> Result<HostPermissions> {
         self.check()?; host_permissions(&self.file, &self.parent.inner.sid, false)
     }
@@ -2236,8 +2230,13 @@ mod host_native_tests {
         assert_eq!(observed.permissions().unwrap(), permissions);
         drop(observed); drop(original); drop(stage); drop(parent); drop(root);
         for file in [&source, &path.join("stage/source.bin")] {
-            let mut attributes = std::fs::metadata(file).unwrap().permissions();
-            attributes.set_readonly(false); std::fs::set_permissions(file, attributes).unwrap();
+            let path = wide(file).unwrap();
+            let attributes = unsafe { fsapi::GetFileAttributesW(path.as_ptr()) };
+            assert_ne!(attributes, fsapi::INVALID_FILE_ATTRIBUTES);
+            let attributes = attributes & !fsapi::FILE_ATTRIBUTE_READONLY;
+            let attributes = if attributes == 0 { fsapi::FILE_ATTRIBUTE_NORMAL } else { attributes };
+            // Clear the DOS read-only bit for cleanup without changing the DACL.
+            assert_ne!(unsafe { fsapi::SetFileAttributesW(path.as_ptr(), attributes) }, 0);
             std::fs::remove_file(file).unwrap();
         }
         std::fs::remove_dir(path.join("stage")).unwrap(); std::fs::remove_dir(path).unwrap();

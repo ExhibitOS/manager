@@ -132,7 +132,7 @@ fn registry(raw: &[u8]) -> crate::Result<installations::Registry> {
     installations::valid(&r)?;
     Ok(r)
 }
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn publication_crash_point(phase: &str) {
     if std::env::var("EXHIBITOS_PUBLICATION_CRASH_PHASE").as_deref() != Ok(phase) {
         return;
@@ -174,15 +174,15 @@ fn publish(
     file.write_all(next)
         .and_then(|_| file.sync_all())
         .map_err(|_| crate::err("UPDATE_ACTIVATION_UNCERTAIN"))?;
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     publication_crash_point("pending-synced");
     check()?;
     fs::rename(&pending, profile.join("installation-selection.json"))
         .map_err(|_| crate::err("UPDATE_ACTIVATION_UNCERTAIN"))?;
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     publication_crash_point("selection-renamed");
     sync_dir(profile).map_err(|_| crate::err("UPDATE_ACTIVATION_UNCERTAIN"))?;
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     publication_crash_point("selection-dir-synced");
     }
     #[cfg(windows)]

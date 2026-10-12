@@ -11,7 +11,7 @@ use aes_gcm::{
 };
 #[cfg(windows)]
 pub(crate) use host_checkpoint::HostWindowsPermissions;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) use host_checkpoint::verify_unused_extraction_archive;
 pub use host_checkpoint::{
     HostCurrentReceipt, HostReceipt, checkpoint_host, extract_host, extract_host_clone_only,

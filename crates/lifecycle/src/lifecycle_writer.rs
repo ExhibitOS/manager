@@ -19,7 +19,7 @@ fn namespaces(profile: &Path, installation: &str) -> crate::Result<(PathBuf, Pat
     {
         let (primary,id)=windows_root::namespace(profile,installation).map_err(|_|unavailable())?;
         let recovery=authority_recovery_vault::locator(&primary,&id).map_err(|_|unavailable())?;
-        return Ok((primary,recovery));
+        Ok((primary,recovery))
     }
     #[cfg(not(windows))]
     let path = profile.to_str().ok_or_else(unavailable)?;

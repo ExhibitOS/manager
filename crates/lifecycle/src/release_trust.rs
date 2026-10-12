@@ -2,11 +2,13 @@
 //! App-closed local trust journal, outside replaceable profile data. It does not
 //! resist the trusted OS account deleting/rolling back this entire journal.
 use super::*;
+#[cfg(not(windows))]
+use std::fs::OpenOptions;
 use crate::{installations, profile_backup};
 use fs2::FileExt;
 use std::{
     collections::BTreeSet,
-    fs::{self, File, Metadata, OpenOptions},
+    fs::{self, File, Metadata},
     io::{Read, Write},
     path::{Path, PathBuf},
 };
@@ -168,9 +170,6 @@ impl UpdateStatus {
 /// Inspect persisted authority without interruption recovery or creation of trust.
 /// Busy/corrupt authority remains an error; absence never provisions a policy.
 pub fn inspect_update_status(profile: &Path, installation: &str) -> Result<UpdateStatus, Error> {
-    #[cfg(windows)]
-    { let _ = (profile, installation); Err(Error::TrustPlatformUnverified) }
-    #[cfg(not(windows))]
     {
         let store = match Store::open_for_inspection(profile, installation) {
             Ok(store) => store,
@@ -219,6 +218,7 @@ impl Drop for Store {
 fn invalid() -> Error {
     Error::TrustInvalid
 }
+#[cfg(not(windows))]
 fn identity(a: &Metadata, b: &Metadata) -> bool {
     #[cfg(unix)]
     {
@@ -756,6 +756,7 @@ impl Store {
             recovery: None,
         })
     }
+    #[cfg(any(unix, windows))]
     pub(crate) fn open_for_prepared_handoff(profile: &Path, installation: &str) -> Result<Self, Error> {
         Self::open_mode(profile, installation, false)
     }
@@ -2164,3 +2165,172 @@ mod tests {
 
 #[cfg(any(unix, windows))]
 pub use owned_execution::InterruptedRecoveryInputs;
+
+#[cfg(all(test, windows))]
+mod windows_status_handoff_tests {
+    use super::*;
+    use crate::windows_private::PrivateDirectory;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    fn prepared() -> (PrivateDirectory, PathBuf, Store, VerifiedRelease) {
+        let parent = PrivateDirectory::create(
+            &PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
+                .join(format!("exhibitos-status-handoff-test-{}", uuid::Uuid::new_v4())),
+        ).unwrap();
+        let profile = parent.path().join("profile");
+        let controller = installations::InstallationController::new(profile.clone(), None).unwrap();
+        let context = controller.context().unwrap();
+        let status = controller.update_status(&context.selection_token).unwrap();
+        assert!(!status.authority_present);
+        assert!(status.generation.is_none());
+        assert!(!windows_root::namespace(&profile, "default").unwrap().0.exists());
+        drop(controller);
+        let key = SigningKey::from_bytes(&[31; 32]);
+        let policy = Policy {
+            format: 1, channel: "development".into(), target: "linux-amd64".into(),
+            protocol_version: 1, source_schema_sha256: "a".repeat(64),
+            minimum_sequence: 1, minimum_issued_at: 10,
+            public_keys: vec![key.verifying_key().to_bytes().iter().map(|b| format!("{b:02x}")).collect()],
+        };
+        let release = Release {
+            format: 1, product: "ExhibitOS/runtime".into(), channel: policy.channel.clone(),
+            target: policy.target.clone(), version: "0.2.0-dev.1".into(), sequence: 2,
+            issued_at: 10, expires_at: 100, protocol_version: 1,
+            source_schemas: vec![policy.source_schema_sha256.clone()],
+            artifact: Artifact {
+                name: "runtime.tar".into(), bytes: 7, sha256: hash(b"fixture"),
+                runtime_image_sha256: "b".repeat(64), schema_sha256: "c".repeat(64),
+            },
+        };
+        let payload = serde_json::to_string(&release).unwrap();
+        let envelope = serde_json::to_vec(&Envelope {
+            format: 1, algorithm: "ed25519".into(), key_id: hash(key.verifying_key().as_bytes()),
+            signature: key.sign(&message(&payload)).to_bytes().iter().map(|b| format!("{b:02x}")).collect(),
+            payload,
+        }).unwrap();
+        let mut store = Store::provision(&profile, "default", policy, 10).unwrap();
+        let mut verified = store.verify_for_preparation(&envelope, 20).unwrap();
+        verified.verify_artifact(&mut b"fixture".as_slice()).unwrap();
+        store.prepare_update(&envelope, &verified, plan(), 20).unwrap();
+        (parent, profile, store, verified)
+    }
+    fn plan() -> crate::update::Plan {
+        crate::update::Plan {
+            operation_id: "update-1".into(), source_instance: "source-1".into(), target_instance: "target-1".into(),
+            source_image: "d".repeat(64), target_image: "b".repeat(64), source_schema: "a".repeat(64),
+            target_schema: "c".repeat(64), backup_id: "backup-1".into(), backup_manifest: "e".repeat(64),
+            source_inventory: "f".repeat(64), required_free_bytes: 1024,
+        }
+    }
+    fn observations() -> crate::update::Preflight {
+        crate::update::Preflight {
+            plan: plan(), signature_verified: false, artifact_verified: false, compatibility_verified: true,
+            backup_restore_verified: true, current_source_matches_backup: true, available_free_bytes: 1024,
+            image_only_rollback_verified: false,
+        }
+    }
+    fn input(generation: u64) -> crate::update_handoff::CancelInput {
+        crate::update_handoff::CancelInput {
+            operation_id: "update-1".into(), generation, preserve_data: true, close_app_and_cancel: true,
+        }
+    }
+    fn cleanup(parent: PrivateDirectory) {
+        parent.check().unwrap();
+        let path = parent.path().to_owned();
+        assert!(path.file_name().unwrap().to_str().unwrap().starts_with("exhibitos-status-handoff-test-"));
+        drop(parent);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn windows_update_status_reads_inflight_with_shared_manager_anchor_without_recovery_or_lock_creation() {
+        let (parent, profile, mut store, verified) = prepared();
+        store.begin_update(observations(), &verified, 21).unwrap();
+        let root = store.root.clone();
+        let generation = store.receipt().generation;
+        let record = root.join(format!("{generation:020}.json"));
+        let original = fs::read(&record).unwrap();
+        assert!(matches!(inspect_update_status(&profile, "default"), Err(Error::TrustBusy)));
+        drop(store);
+        let controller = installations::InstallationController::new(profile.clone(), None).unwrap();
+        let context = controller.context().unwrap();
+        let status = controller.update_status(&context.selection_token).unwrap();
+        assert_eq!(status.stage, Some(crate::update::Stage::Applying));
+        assert_eq!(status.generation, Some(generation));
+        assert_eq!(fs::read(&record).unwrap(), original);
+        assert!(!root.join(format!("{:020}.json", generation + 1)).exists());
+        let json = serde_json::to_value(status).unwrap();
+        assert!(json.get("envelope").is_none());
+        assert!(json.get("keyId").is_none());
+        fs::rename(root.join("trust.lock"), root.join("retained-status-lock")).unwrap();
+        assert!(controller.update_status(&context.selection_token).is_err());
+        assert!(!root.join("trust.lock").exists());
+        assert_eq!(fs::read(&record).unwrap(), original);
+        fs::rename(root.join("retained-status-lock"), root.join("trust.lock")).unwrap();
+        drop(controller);
+        cleanup(parent);
+    }
+    #[test]
+    fn windows_prepared_cancel_waits_for_manager_exit_preserves_history_and_refuses_replay_or_overwrite() {
+        let (parent, profile, store, _) = prepared();
+        let root = store.root.clone();
+        let generation = store.receipt().generation;
+        let floor = store.receipt().minimum_sequence;
+        let original = fs::read(root.join(format!("{generation:020}.json"))).unwrap();
+        drop(store);
+        let controller = installations::InstallationController::new(profile.clone(), None).unwrap();
+        let context = controller.context().unwrap();
+        let witness = profile.join("operator-witness");
+        crate::write_private_new(&profile, "operator-witness", b"retained host data", 1024).unwrap();
+        assert!(controller.update_cancel_handoff(&context.selection_token, Some(input(generation + 1))).is_err());
+        assert!(!profile.join("update-cancel-handoffs").exists());
+        let (_, receipt) = controller.update_cancel_handoff(&context.selection_token, Some(input(generation))).unwrap();
+        let request = receipt.unwrap();
+        assert!(matches!(Store::open_for_prepared_handoff(&profile, "default"), Err(Error::TrustBusy)));
+        let helper_profile = profile.clone();
+        let helper_id = request.id.clone();
+        let helper = std::thread::spawn(move || crate::update_handoff::execute(&helper_profile, &helper_id));
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert_eq!(crate::update_handoff::latest(&profile, &context.active_id).unwrap().unwrap().state, "awaiting-app-close");
+        assert_eq!(fs::read(root.join(format!("{generation:020}.json"))).unwrap(), original);
+        drop(controller);
+        helper.join().unwrap().unwrap();
+        let status = inspect_update_status(&profile, "default").unwrap();
+        assert_eq!(status.generation, Some(generation + 1));
+        assert!(status.stage.is_none());
+        let reopened = Store::open_for_inspection(&profile, "default").unwrap();
+        assert_eq!(reopened.receipt().minimum_sequence, floor);
+        drop(reopened);
+        assert_eq!(crate::update_handoff::latest(&profile, &context.active_id).unwrap().unwrap().state, "cancelled");
+        assert!(crate::update_handoff::execute(&profile, &request.id).is_err());
+        assert!(crate::update_handoff::record_launch_failure(&profile, &request.id).is_err());
+        assert_eq!(crate::update_handoff::latest(&profile, &context.active_id).unwrap().unwrap().state, "cancelled");
+        assert_eq!(fs::read(root.join(format!("{generation:020}.json"))).unwrap(), original);
+        assert_eq!(fs::read(witness).unwrap(), b"retained host data");
+        cleanup(parent);
+    }
+    #[test]
+    fn windows_prepared_cancel_refuses_changed_generation_without_recovering_applying_intent() {
+        let (parent, profile, store, verified) = prepared();
+        let generation = store.receipt().generation;
+        let root = store.root.clone();
+        drop(store);
+        let controller = installations::InstallationController::new(profile.clone(), None).unwrap();
+        let context = controller.context().unwrap();
+        let (_, receipt) = controller.update_cancel_handoff(&context.selection_token, Some(input(generation))).unwrap();
+        let request = receipt.unwrap();
+        drop(controller);
+        let mut store = Store::open_for_prepared_handoff(&profile, "default").unwrap();
+        store.begin_update(observations(), &verified, 21).unwrap();
+        let applying_generation = store.receipt().generation;
+        let original = fs::read(root.join(format!("{applying_generation:020}.json"))).unwrap();
+        drop(store);
+        assert!(crate::update_handoff::execute(&profile, &request.id).is_err());
+        let status = inspect_update_status(&profile, "default").unwrap();
+        assert_eq!(status.stage, Some(crate::update::Stage::Applying));
+        assert_eq!(status.generation, Some(applying_generation));
+        assert_eq!(fs::read(root.join(format!("{applying_generation:020}.json"))).unwrap(), original);
+        assert!(!root.join(format!("{:020}.json", applying_generation + 1)).exists());
+        assert_eq!(crate::update_handoff::latest(&profile, &context.active_id).unwrap().unwrap().state, "failed");
+        cleanup(parent);
+    }
+}

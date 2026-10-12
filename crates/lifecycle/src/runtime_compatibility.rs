@@ -366,7 +366,10 @@ fn run_probe(
         if !ready {
             return Err(err("UPDATE_RUNTIME_PROBE_FAILED"));
         }
+        #[cfg(not(windows))]
         let env = crate::checked_path(ctx.root, "runtime.env")?;
+        #[cfg(windows)]
+        crate::checked_path(ctx.root, "runtime.env")?;
         let script = format!(
             "const INTERRUPTION_PROBE={interruption};\n{}\n{}\n{}\n{}",
             migration

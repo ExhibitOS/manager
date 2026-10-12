@@ -463,6 +463,7 @@ fn layout(
         configuration,
     })
 }
+#[cfg(any(not(windows), test))]
 fn validate_copy(root: &Path, result: &HelperResult) -> Result<()> {
     if result.operation != "created-and-authenticated"
         || Uuid::parse_str(&result.backup_id).is_err()

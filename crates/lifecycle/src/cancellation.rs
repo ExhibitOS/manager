@@ -352,6 +352,7 @@ impl LifecycleService {
     }
     /// Only interrupt attach after the owned daemon helper is observed running and stopped.
     /// Absence/created before launch completion cannot prove cancellation; keep waiting.
+    #[cfg(not(windows))]
     pub(crate) fn run_maintenance_helper(
         &self,
         kind: &str,

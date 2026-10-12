@@ -734,12 +734,14 @@ impl LifecycleService {
             let _images = directory(&workspace.join("deployment/images"))?;
             transport::copy_selected(
                 self,
-                "restoration",
-                id,
-                &container,
-                "com.exhibitos.restoration",
-                &volume,
-                image,
+                transport::SelectedCopyOwner {
+                    kind: "restoration",
+                    id,
+                    container: &container,
+                    label_key: "com.exhibitos.restoration",
+                    volume: &volume,
+                    image,
+                },
                 workspace,
                 &inventory,
             )?;
