@@ -2028,6 +2028,7 @@ pub(crate) struct HostFile {
     parent: HostDirectory,
     id: Identity,
     created: bool,
+    retirement: bool,
     sealed: std::cell::Cell<bool>,
 }
 impl HostFile {
@@ -2052,7 +2053,7 @@ impl HostFile {
             if handle == INVALID_HANDLE_VALUE { return Err(err("WINDOWS_HOST_CREATE_REFUSED")); }
             unsafe { File::from_raw_handle(handle.cast()) }
         } else { host_open(&path, false, 0x80000000, fsapi::FILE_SHARE_READ)? };
-        let value = Self { path, id: identity(&file, false)?, file, parent, created, sealed: std::cell::Cell::new(false) };
+        let value = Self { path, id: identity(&file, false)?, file, parent, created, retirement: false, sealed: std::cell::Cell::new(false) };
         value.check()?; Ok(value)
     }
     pub(crate) fn check(&self) -> Result<()> {
@@ -2333,5 +2334,93 @@ mod host_inherited_permissions_tests {
         }
         std::fs::remove_dir(path.join("source")).unwrap(); std::fs::remove_dir(path.join("stage")).unwrap();
         std::fs::remove_dir(path).unwrap();
+    }
+}
+
+impl HostFile {
+    /// Duplicate read-only rights for a trusted subprocess while the caller
+    /// retains this native file and its parent/ancestor fences through execution.
+    pub(crate) fn try_clone_read_handle(&self) -> Result<File> {
+        self.check_private()?;
+        if self.retirement { return Err(err("WINDOWS_HOST_IO")); }
+        let process = unsafe { GetCurrentProcess() };
+        let mut duplicate: HANDLE = ptr::null_mut();
+        if unsafe { windows_sys::Win32::Foundation::DuplicateHandle(process,
+            self.file.as_raw_handle().cast(), process, &mut duplicate,
+            fsapi::FILE_GENERIC_READ, 0, 0) } == 0 {
+            return Err(err("WINDOWS_HOST_IO"));
+        }
+        let file = unsafe { File::from_raw_handle(duplicate.cast()) };
+        if identity(&file, false)? != self.id { return Err(err("WINDOWS_HOST_IDENTITY_CHANGED")); }
+        self.check_private()?;
+        Ok(file)
+    }
+    /// Caller must authenticate the bounded inactive generated-export census
+    /// and full bytes before retirement. No existing source ACL is modified.
+    pub(crate) fn inspect_for_retirement(path: &Path) -> Result<Self> {
+        if !path.is_absolute() || path.canonicalize().ok().as_deref() != Some(path) {
+            return Err(err("WINDOWS_HOST_PATH_INVALID"));
+        }
+        let parent = HostDirectory::inspect(path.parent().ok_or_else(|| err("WINDOWS_HOST_PATH_INVALID"))?)?;
+        parent.check_private()?;
+        let name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| err("WINDOWS_HOST_PATH_INVALID"))?;
+        host_name(name)?;
+        let file = host_open(path, false, 0x80000000 | fsapi::DELETE, fsapi::FILE_SHARE_READ)?;
+        let value = Self { path: path.into(), id: identity(&file, false)?, file,
+            parent, created: false, retirement: true, sealed: std::cell::Cell::new(true) };
+        value.check_private()?;
+        Ok(value)
+    }
+    /// Remove the authenticated generated file by its retained native handle;
+    /// never substitute a same-named path or recursively remove its directory.
+    pub(crate) fn retire_verified(self) -> Result<()> {
+        if !self.retirement { return Err(err("WINDOWS_HOST_RETIREMENT_REFUSED")); }
+        self.check_private()?;
+        let parent = self.parent.clone();
+        let path = self.path.clone();
+        let info = fsapi::FILE_DISPOSITION_INFO { DeleteFile: true };
+        if unsafe { fsapi::SetFileInformationByHandle(self.file.as_raw_handle().cast(),
+            fsapi::FileDispositionInfo, ptr::from_ref(&info).cast(),
+            mem::size_of::<fsapi::FILE_DISPOSITION_INFO>() as u32) } == 0 {
+            return Err(err("WINDOWS_HOST_RETIREMENT_REFUSED"));
+        }
+        drop(self);
+        parent.check_private().map_err(|_| err("WINDOWS_HOST_RETIREMENT_UNCERTAIN"))?;
+        match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(err("WINDOWS_HOST_RETIREMENT_UNCERTAIN")),
+        }
+    }
+}
+
+#[cfg(test)]
+mod generated_handle_tests {
+    use super::*;
+    fn root() -> PrivateDirectory {
+        PrivateDirectory::create(&std::env::temp_dir().join(format!("generated-handle-{}",uuid::Uuid::new_v4()))).unwrap()
+    }
+    #[test]
+    fn subprocess_clone_is_read_only_and_retains_exact_source_writer_fence() {
+        let root=root();drop(root.write_new_record("input.bin",b"synthetic",1024).unwrap());
+        let source=HostFile::open(&root.path().join("input.bin")).unwrap();
+        let mut clone=source.try_clone_read_handle().unwrap();
+        let mut bytes=[0u8;9];clone.read_exact(&mut bytes).unwrap();assert_eq!(&bytes,b"synthetic");
+        assert!(clone.write_all(b"change").is_err());
+        assert!(std::fs::OpenOptions::new().write(true).open(root.path().join("input.bin")).is_err());
+        source.check_private().unwrap();
+    }
+    #[test]
+    fn authenticated_generated_image_retirement_keeps_marker_and_refuses_reader_or_link() {
+        let root=root();drop(root.write_new_record("image-0.tar",b"synthetic image",1024).unwrap());
+        drop(root.write_new_record("verified-images.json",b"synthetic retained marker",1024).unwrap());
+        let path=root.path().join("image-0.tar");
+        let reader=HostFile::open(&path).unwrap();assert!(HostFile::inspect_for_retirement(&path).is_err());drop(reader);
+        std::fs::hard_link(&path,root.path().join("retained-alias.tar")).unwrap();
+        assert!(HostFile::inspect_for_retirement(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(),b"synthetic image");
+        std::fs::remove_file(root.path().join("retained-alias.tar")).unwrap();
+        let mut generated=HostFile::inspect_for_retirement(&path).unwrap();let mut bytes=Vec::new();generated.read_to_end(&mut bytes).unwrap();assert_eq!(bytes,b"synthetic image");
+        generated.retire_verified().unwrap();assert!(!path.exists());
+        assert_eq!(std::fs::read(root.path().join("verified-images.json")).unwrap(),b"synthetic retained marker");
     }
 }
