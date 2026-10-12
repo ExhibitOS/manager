@@ -102,8 +102,10 @@ const manifestSha256=createHash('sha256').update(current).digest('hex');
 if(manifestSha256!==createHash('sha256').update(previous).digest('hex'))throw Error('RESTORE_SOURCE_CHANGED');
 const backupId=JSON.parse(current).id;
 await copyFile('/work/restored/configuration/freeze-signing-key.json','/data/config/freeze-signing-key.json',1);
-async function own(path){const s=await lstat(path);if(s.isSymbolicLink()||!s.isDirectory()&&!s.isFile())throw Error('RESTORE_PATH_INVALID');if(s.isDirectory())for(const name of await readdir(path))await own(path+'/'+name);const mode=s.isDirectory()?0o700:0o600;if((s.mode&0o7777)!==mode)await chmod(path,mode);if(s.uid!==1000||s.gid!==1000)await chown(path,1000,1000)}
+async function own(path,uid=1000,gid=1000){const s=await lstat(path);if(s.isSymbolicLink()||!s.isDirectory()&&!s.isFile())throw Error('RESTORE_PATH_INVALID');if(s.isDirectory())for(const name of await readdir(path))await own(path+'/'+name,uid,gid);const mode=s.isDirectory()?0o700:0o600;if((s.mode&0o7777)!==mode)await chmod(path,mode);if(s.uid!==uid||s.gid!==gid)await chown(path,uid,gid)}
 await own('/data/blobs');await own('/data/config');
+const workspace=await lstat('/work');if(workspace.isSymbolicLink()||!workspace.isDirectory())throw Error('RESTORE_PATH_INVALID');
+await own('/work/restored',workspace.uid,workspace.gid);
 console.log(JSON.stringify({operation:'restored-and-verified',manifestSha256,backupId}));
 "#;
 /// Keeps the newly created candidate namespace pinned throughout its enclosing stage.

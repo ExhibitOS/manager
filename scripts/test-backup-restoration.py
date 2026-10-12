@@ -3,7 +3,7 @@
 """Actual native fresh installation recovery using a retained synthetic encrypted fixture.
 No original data/backup/volume deletion. New candidate volumes and private journals retained.
 """
-import argparse,fcntl,hashlib,json,os,secrets,shutil,socket,subprocess,tempfile,uuid
+import argparse,fcntl,hashlib,json,os,secrets,shutil,socket,stat,subprocess,tempfile,uuid
 from pathlib import Path
 from urllib.request import Request,urlopen
 p=argparse.ArgumentParser()
@@ -87,6 +87,15 @@ try:
  step('actual authenticated ciphertext corruption rejects before target installation')
  original.rename(offline);assert not original.exists()
  receipt=restore(target,ok=True);assert receipt['operation']=='restored-and-running' and receipt['backupId']==report['receipt']['backupId'] and receipt['authenticatedManifestSha256']==report['receipt']['authenticatedManifestSha256']
+ restored_workspace=target/('restore-'+receipt['id'])/'restored';owner=restored_workspace.parent.stat()
+ assert (restored_workspace.lstat().st_uid,restored_workspace.lstat().st_gid)==(owner.st_uid,owner.st_gid)
+ for path in [restored_workspace,*restored_workspace.rglob('*')]:
+  metadata=path.lstat();assert (metadata.st_uid,metadata.st_gid)==(owner.st_uid,owner.st_gid)
+  assert stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)
+  assert stat.S_IMODE(metadata.st_mode)==(0o700 if stat.S_ISDIR(metadata.st_mode) else 0o600)
+  if stat.S_ISREG(metadata.st_mode):assert metadata.st_nlink==1
+ assert hashlib.sha256((restored_workspace/'manifest.json').read_bytes()).hexdigest()==receipt['authenticatedManifestSha256']
+ step('actual retained restored plaintext tree is private, single-linked and owned by the trusted native workspace owner; authenticated manifest bytes preserved')
  completed_auxiliary=json.loads((target/('restoration-aux-'+receipt['id']+'.json')).read_text());assert json.loads(docker('volume','inspect',completed_auxiliary['volume']))[0]['Labels']['com.exhibitos.restoration']==receipt['id']
  restored_manifest=json.loads((target/'bundle/manifest.json').read_text());assert restored_manifest['bundleId']!=manifest['bundleId'] and restored_manifest['projectName']!=manifest['projectName'] and restored_manifest['ports']==[port]
  new_env=dict(line.split('=',1) for line in (target/'runtime.env').read_text().splitlines());assert all(new_env[k]==v for k,v in private_env.items() if k!='EXHIBITOS_PORT')
