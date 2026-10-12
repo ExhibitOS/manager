@@ -48,7 +48,7 @@ pub(crate) struct PreservedImage {
     pub(crate) bytes: u64,
     pub(crate) sha256: String,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Authentication {
     operation: String,
@@ -745,6 +745,7 @@ impl LifecycleService {
                 workspace,
                 &inventory,
             )?;
+            return windows_authentication_receipt(result);
         }
         Ok(output)
     }
@@ -1450,6 +1451,18 @@ fn windows_output_inventory(
     }
     Ok(())
 }
+/// The native inventory has already been validated and its exact bytes copied.
+/// Return the original closed helper receipt consumed by the shared restorer.
+#[cfg(any(windows, test))]
+fn windows_authentication_receipt(mut result: Value) -> Result<Vec<u8>> {
+    result
+        .as_object_mut()
+        .and_then(|object| object.remove("outputInventory"))
+        .ok_or_else(|| err("RESTORE_RESULT_INVALID"))?;
+    let authentication: Authentication =
+        serde_json::from_value(result).map_err(|_| err("RESTORE_RESULT_INVALID"))?;
+    serde_json::to_vec(&authentication).map_err(|_| err("RESTORE_RESULT_INVALID"))
+}
 #[cfg(windows)]
 fn windows_authenticate_script() -> String {
     const PREFIX: &str = r#"
@@ -1750,6 +1763,43 @@ mod tests {
 #[cfg(test)]
 mod windows_restoration_protocol_tests {
     use super::*;
+    #[test]
+    fn windows_authenticated_inventory_projects_to_the_shared_closed_receipt() {
+        let id = Uuid::new_v4().to_string();
+        let sha = "b".repeat(64);
+        let inventory = WINDOWS_OUTPUT_NAMES
+            .into_iter()
+            .map(|name| {
+                (
+                    name.to_owned(),
+                    crate::backup_creation::FileHash {
+                        bytes: 1,
+                        sha256: sha.clone(),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let result = serde_json::json!({
+            "operation":"authenticated-installation", "files":10,
+            "backupId":id, "manifestSha256":sha, "outputInventory":inventory
+        });
+        // Reproduce the actual native helper output rejected by the old bridge.
+        assert!(serde_json::from_value::<Authentication>(result.clone()).is_err());
+        windows_output_inventory(&inventory, &result).unwrap();
+        let output = windows_authentication_receipt(result.clone()).unwrap();
+        let receipt: Authentication = serde_json::from_slice(&output).unwrap();
+        assert_eq!(receipt.operation, "authenticated-installation");
+        assert_eq!(receipt.files, 10);
+        assert_eq!(receipt.backup_id, id);
+        assert_eq!(receipt.manifest_sha256, sha);
+        let value: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 4);
+        assert!(value.get("outputInventory").is_none());
+        let mut unexpected = result;
+        unexpected["unexpected"] = true.into();
+        assert!(windows_authentication_receipt(unexpected).is_err());
+        assert!(windows_authentication_receipt(value).is_err());
+    }
     #[test]
     fn windows_work_and_stopped_helper_bind_exact_owned_namespace() {
         let id = Uuid::new_v4().to_string();

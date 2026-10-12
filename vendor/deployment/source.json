@@ -1,13 +1,13 @@
 {
   "repository": "https://github.com/ExhibitOS/deployment",
-  "commit": "5688ebb991bef88067737cd9ed45f55d18739b0f",
+  "commit": "edc5ca52a8af232b78b67e8d74a93ed1595549d3",
   "files": {
-    "generic-ssh.mjs": "f3e0a9ca1ab85d363a256e1b5ab77e0e169baef7efe4f431cce162ae1056b8f3",
+    "generic-ssh.mjs": "6ce1f61c9e8c92774ef2de726e09917deb890120610e88cdd7c5633fa6665c98",
     "ssh-maintenance.mjs": "d5ba48b14c796e8cf1b2010200978ae6cf12c9ce7fcfc21f1600db2d9f5ebb79",
     "application-readiness.mjs": "834fff4bc17d0d4032c3b77e24608c6814d1ca3a4a66b78109f74ae4290e0959",
     "bounded-json.mjs": "cbb57c42c41fa365fe81a4cb2976730d2356165dd4fdc1d67ed7e511c8ef0fff",
-    "local-selfhost-profile.mjs": "ede874f586f73d082238250b766c10976dd5ba5b781dd0f1318949922ea88f4e",
-    "diagnostics.mjs": "adf8f5534720e14fe3c94fd3ecd10ded90f383af94d37935731451ac2cf388bd",
+    "local-selfhost-profile.mjs": "c8898628c6f6fcfb0c4c4f9d10fb9d9a36bfe85cfcbe10567b057ba0dd58a2ca",
+    "diagnostics.mjs": "96c8bfefe5f3a8bf70b7eaac9992b12326556344b297f1404cb2d8d54a994a95",
     "engine-locality.mjs": "0708772cef4d701ddeb9c2f9343451191b934cb47439d330fac7d427b5b6f63f"
   }
 }
