@@ -407,14 +407,19 @@ fn version_major(value: &str) -> Option<u32> {
     if value.is_empty() || value.len() > 64 {
         return None;
     }
-    let valid_suffix = |s: &str| {
+    // Engine CLI distribution build metadata may contain Debian/Ubuntu tildes.
+    // Prerelease identifiers retain the existing strict grammar.
+    let valid_suffix = |s: &str, allow_tilde: bool| {
         !s.is_empty()
             && s.split('.').all(|part| {
-                !part.is_empty() && part.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+                !part.is_empty()
+                    && part.bytes().all(|c| {
+                        c.is_ascii_alphanumeric() || c == b'-' || allow_tilde && c == b'~'
+                    })
             })
     };
     let without_build = if let Some((core, build)) = value.split_once('+') {
-        if !valid_suffix(build) {
+        if !valid_suffix(build, true) {
             return None;
         }
         core
@@ -422,7 +427,7 @@ fn version_major(value: &str) -> Option<u32> {
         value
     };
     let core = if let Some((core, pre)) = without_build.split_once('-') {
-        if !valid_suffix(pre) {
+        if !valid_suffix(pre, false) {
             return None;
         }
         core
@@ -2038,6 +2043,50 @@ mod detection_tests {
             assert!(p.error_code.is_none());
             assert_eq!(p.compose_version.as_deref(), Some("5.5.1"));
         }
+    }
+    #[test]
+    fn ubuntu_packaged_compose_build_metadata_remains_available() {
+        // Actual Ubuntu 24.04 Docker/Compose CLI output from native qualification.
+        let compose = "2.40.3+ds1-0ubuntu1~24.04.1";
+        assert_eq!(version_major(compose), Some(2));
+        let p = probe_engine("docker", |args| {
+            Ok(match args[0].as_str() {
+                "version" => b"{\"Client\":{\"Version\":\"29.1.3\"}}".to_vec(),
+                "compose" => format!("{compose}\n").into_bytes(),
+                _ => b"{}".to_vec(),
+            })
+        });
+        assert!(p.installed);
+        assert!(p.available);
+        assert!(p.error_code.is_none());
+        assert_eq!(p.engine_version.as_deref(), Some("29.1.3"));
+        assert_eq!(p.compose_version.as_deref(), Some(compose));
+    }
+    #[test]
+    fn distribution_build_metadata_does_not_relax_core_prerelease_or_output_bounds() {
+        let too_long = format!("2.40.3+{}", "a".repeat(58));
+        for text in [
+            "2.40", "2.40.3.1", "2..3", "4294967296.40.3", "2.4294967296.3",
+            "2.40.4294967296", "2~1.40.3", "2.40.3-", "2.40.3-dev~1+build",
+            "2.40.3-dev..1+build", "2.40.3+", "2.40.3+ds1..ubuntu",
+            "2.40.3+ds1-0ubuntu1~24.04.1+extra", "2.40.3+ds1\0ubuntu",
+            "2.40.3+ds1\tubuntu", "2.40.3+ds1\rubuntu", "2.40.3+ds1\nubuntu",
+            too_long.as_str(),
+        ] {
+            assert!(version_major(text).is_none());
+            let p = probe_engine("docker", |args| {
+                Ok(match args[0].as_str() {
+                    "version" => b"{\"Client\":{\"Version\":\"29.1.3\"}}".to_vec(),
+                    "compose" => text.as_bytes().to_vec(),
+                    _ => b"{}".to_vec(),
+                })
+            });
+            assert!(p.installed);
+            assert!(!p.available);
+            assert_eq!(p.error_code.as_deref(), Some("ENGINE_OUTPUT_INVALID"));
+            assert!(p.compose_version.is_none());
+        }
+        assert_eq!(version_major("2.40.3-dev.1+ds1-0ubuntu1~24.04.1"), Some(2));
     }
     #[test]
     fn stopped_version_or_info_is_unavailable_not_upgrade() {
