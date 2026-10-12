@@ -1,6 +1,6 @@
 # Linux Debian package qualification
 
-This original T10-05 workflow builds one `.deb` from reviewed public Manager source `2c8c1a5f0e5287aaabd1bc10339a4fde54bb3a15` on the existing standard Ubuntu 24.04 x64 runner. It does not introduce another distribution, package format or support promise. The existing Windows/macOS unsigned prototype command remains unchanged.
+This original T10-05 workflow builds one `.deb` from reviewed public Manager source `78c32ee4d4fc95bb48dbfb78bb6f5292811f1905` on the existing standard Ubuntu 24.04 x64 runner. It does not introduce another distribution, package format or support promise. The existing Windows/macOS unsigned prototype command remains unchanged.
 
 The manual `.github/workflows/linux-package-independent.yml` fixes official checkout/setup-node actions to the same reviewed immutable versions as the existing Linux workflows, uses `contents: read`, disables persisted checkout credentials, shares the existing concurrency group and has a 45-minute timeout. Its public-repository condition must be confirmed before dispatch. It uses no hosted cache, artifact upload, encoded package output, release publication, deployment or paid external service. [GitHub documents free standard public runners](https://docs.github.com/en/billing/concepts/product-billing/github-actions); repository visibility and the reviewed free-CI policy remain execution prerequisites.
 

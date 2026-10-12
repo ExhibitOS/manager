@@ -19,12 +19,12 @@ jobs:
       - name: Checkout exact reviewed public source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: 2c8c1a5f0e5287aaabd1bc10339a4fde54bb3a15
+          ref: 78c32ee4d4fc95bb48dbfb78bb6f5292811f1905
           path: qualification
           persist-credentials: false
       - name: Check source ownership architecture and simultaneous capacity
         run: |
-          test "$(git rev-parse HEAD)" = 2c8c1a5f0e5287aaabd1bc10339a4fde54bb3a15
+          test "$(git rev-parse HEAD)" = 78c32ee4d4fc95bb48dbfb78bb6f5292811f1905
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
           python3 - <<'PY'
           import os, platform, json
@@ -63,7 +63,7 @@ jobs:
           npm ci
           npm run remote:prepare
           npm run tauri -- build --ci --bundles deb -- --locked
-          test "$(git rev-parse HEAD)" = 2c8c1a5f0e5287aaabd1bc10339a4fde54bb3a15
+          test "$(git rev-parse HEAD)" = 78c32ee4d4fc95bb48dbfb78bb6f5292811f1905
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
       - name: Inspect actual package metadata and public resource checksums
         run: |
@@ -114,7 +114,7 @@ jobs:
           assert shlex.split(entry['Exec']) == [cargo['package']['name']]
           binaries = list(extracted.glob('usr/bin/*'))
           assert len(binaries) == 1 and binaries[0].is_file() and binaries[0].name == cargo['package']['name']
-          report = {'sourceCommit': '2c8c1a5f0e5287aaabd1bc10339a4fde54bb3a15',
+          report = {'sourceCommit': '78c32ee4d4fc95bb48dbfb78bb6f5292811f1905',
               'sourceTree': subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip(),
               'format': 'deb', 'package': field('Package'), 'version': field('Version'),
               'architecture': field('Architecture'), 'bytes': deb.stat().st_size, 'sha256': sha(deb),
