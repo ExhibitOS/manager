@@ -289,13 +289,29 @@ mod tests {
     }
     #[test]
     fn retained_catalog_rechecks_plan_schema_and_migration_identity() {
-        let (root,path)=fixture();let pin=crate::digest(&raw());
-        let mut held=CatalogInput::read(&path,&pin,&pin).unwrap();
+        let (root, path) = fixture();
+        let pin = crate::digest(&raw());
+        let mut held = CatalogInput::read(&path, &pin, &pin).unwrap();
         held.recheck_for_schema(&pin).unwrap();
-        let expected=crate::digest(&serde_json::to_vec(&value()["migrations"]).unwrap());
-        assert_eq!(held.migrations_sha256().unwrap(),expected);
+        let expected = crate::digest(&serde_json::to_vec(&value()["migrations"]).unwrap());
+        assert_eq!(held.migrations_sha256().unwrap(), expected);
         assert!(held.recheck_for_schema(&"d".repeat(64)).is_err());
-        fs::write(&path,raw()).unwrap();
+        let previous_modified = held.identity.modified().unwrap();
+        fs::write(&path, raw()).unwrap();
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(
+                fs::FileTimes::new()
+                    .set_modified(previous_modified + std::time::Duration::from_secs(1)),
+            )
+            .unwrap();
+        assert_ne!(
+            fs::metadata(&path).unwrap().modified().unwrap(),
+            previous_modified
+        );
+        assert_eq!(crate::digest(&fs::read(&path).unwrap()), pin);
         assert!(held.recheck_for_schema(&pin).is_err());
         fs::remove_dir_all(root).unwrap();
     }
