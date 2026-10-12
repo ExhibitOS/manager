@@ -1,0 +1,166 @@
+name: Manager Linux Debian package qualification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: manager-linux-independent
+  cancel-in-progress: false
+jobs:
+  package:
+    if: github.repository == 'ExhibitOS/manager' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: qualification
+        shell: bash
+    steps:
+      - name: Checkout exact reviewed public source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 2c8c1a5f0e5287aaabd1bc10339a4fde54bb3a15
+          path: qualification
+          persist-credentials: false
+      - name: Check source ownership architecture and simultaneous capacity
+        run: |
+          test "$(git rev-parse HEAD)" = 2c8c1a5f0e5287aaabd1bc10339a4fde54bb3a15
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          python3 - <<'PY'
+          import os, platform, json
+          available = os.statvfs('.').f_bavail * os.statvfs('.').f_frsize
+          print(json.dumps({'availableBytes': available, 'additionalBytes': 8 * 1024**3, 'floorBytes': 6 * 1024**3}))
+          assert platform.system() == 'Linux' and platform.machine() == 'x86_64' and os.getuid() != 0
+          assert available >= 14 * 1024**3, 'PACKAGE_CAPACITY_REFUSED'
+          PY
+      - name: Setup pinned Node without hosted cache
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.21.0
+      - name: Install public native development dependencies
+        run: |
+          npm install --global npm@11.19.0
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential pkg-config libssl-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          test "$(node --version)" = v24.21.0
+          test "$(npm --version)" = 11.19.0
+          cargo --version
+          rustc --version
+      - name: Acquire exact official vendor Node archive with byte and hash limits
+        run: |
+          archive="$RUNNER_TEMP/node-v24.21.0-linux-x64.tar.xz"
+          test ! -e "$archive"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error --max-time 120 --max-filesize 31890184 \
+            https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz --output "$archive"
+          test "$(stat -c %s "$archive")" = 31890184
+          printf '%s  %s\n' fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 "$archive" | sha256sum --check --status
+          printf 'EXHIBITOS_NODE_ARCHIVE=%s\n' "$archive" >> "$GITHUB_ENV"
+      - name: Build exactly one locked Debian package
+        env:
+          CARGO_BUILD_JOBS: '2'
+          CARGO_INCREMENTAL: '0'
+        run: |
+          npm ci
+          npm run remote:prepare
+          npm run tauri -- build --ci --bundles deb -- --locked
+          test "$(git rev-parse HEAD)" = 2c8c1a5f0e5287aaabd1bc10339a4fde54bb3a15
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - name: Inspect actual package metadata and public resource checksums
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess, json, hashlib, os, configparser, shlex, tomllib
+          files = list(Path('target/release/bundle/deb').glob('*.deb'))
+          assert len(files) == 1 and files[0].is_file() and not files[0].is_symlink()
+          deb = files[0].resolve()
+          assert 0 < deb.stat().st_size <= 300 * 1024**2
+          def field(name):
+              return subprocess.check_output(['dpkg-deb', '-f', str(deb), name], text=True).strip()
+          config = json.loads(Path('src-tauri/tauri.conf.json').read_bytes())
+          cargo = tomllib.loads(Path('src-tauri/Cargo.toml').read_text())
+          package = json.loads(Path('package.json').read_bytes())
+          assert config['productName'] == 'ExhibitOS Manager' and cargo['package']['name'] == 'exhibitos-manager-desktop'
+          # Tauri CLI 2.12.1 Debian control uses heck::AsKebabCase(product_name), not the Cargo binary name.
+          assert field('Package') == 'exhibit-os-manager'
+          assert field('Version') == config['version'] == cargo['package']['version'] == package['version'] == '0.1.0'
+          assert field('Architecture') == 'amd64'
+          assert subprocess.run(['dpkg-query', '-W', '-f=${Status}', field('Package')], capture_output=True).returncode != 0, 'PACKAGE_ALREADY_REGISTERED'
+          extracted = Path(os.environ['RUNNER_TEMP']) / 'exhibitos-deb-inspection'
+          assert not extracted.exists()
+          subprocess.run(['dpkg-deb', '--extract', str(deb), str(extracted)], check=True)
+          manifests = list(extracted.glob('usr/lib/*/remote-runtime/generated/manifest.json'))
+          assert len(manifests) == 1
+          resources = manifests[0].parents[2]
+          manifest = json.loads(manifests[0].read_bytes())
+          assert manifest['platform'] == 'linux-x64' and manifest['nodeVersion'] == '24.21.0'
+          assert manifest['archiveSha256'] == 'fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6'
+          def sha(path):
+              result = hashlib.sha256()
+              with path.open('rb') as f:
+                  for block in iter(lambda: f.read(1024**2), b''):
+                      result.update(block)
+              return result.hexdigest()
+          node = resources / 'remote-runtime/generated/node'
+          assert sha(node) == manifest['nodeSha256']
+          for name, expected in manifest['files'].items():
+              assert sha(resources / name) == expected, 'PACKAGED_RESOURCE_CHANGED'
+          desktops = list(extracted.glob('usr/share/applications/*.desktop'))
+          assert len(desktops) == 1 and desktops[0].name == config['productName'] + '.desktop'
+          desktop = configparser.ConfigParser(interpolation=None)
+          desktop.optionxform = str
+          desktop.read(desktops[0])
+          entry = desktop['Desktop Entry']
+          assert entry['Name'] == config['productName'] and entry['Type'] == 'Application'
+          assert shlex.split(entry['Exec']) == [cargo['package']['name']]
+          binaries = list(extracted.glob('usr/bin/*'))
+          assert len(binaries) == 1 and binaries[0].is_file() and binaries[0].name == cargo['package']['name']
+          report = {'sourceCommit': '2c8c1a5f0e5287aaabd1bc10339a4fde54bb3a15',
+              'sourceTree': subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip(),
+              'format': 'deb', 'package': field('Package'), 'version': field('Version'),
+              'architecture': field('Architecture'), 'bytes': deb.stat().st_size, 'sha256': sha(deb),
+              'packagedNodeSha256': sha(node), 'resourceFilesVerified': len(manifest['files']),
+              'artifactUploaded': False, 'GUIExecuted': False, 'productionSigned': False}
+          print(json.dumps(report))
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('EXHIBITOS_DEB=' + str(deb) + '\n')
+              env.write('EXHIBITOS_DEB_PACKAGE=' + field('Package') + '\n')
+              env.write('EXHIBITOS_PACKAGE_RESOURCES=/' + str(resources.relative_to(extracted)) + '\n')
+              env.write('EXHIBITOS_PACKAGE_BINARY=/' + str(binaries[0].relative_to(extracted)) + '\n')
+          PY
+      - name: Install package and check normal-user vendor access
+        run: |
+          sudo apt-get install --no-install-recommends -y "$EXHIBITOS_DEB"
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, subprocess, json, hashlib
+          assert os.getuid() != 0
+          resources = Path(os.environ['EXHIBITOS_PACKAGE_RESOURCES'])
+          manifest_path = resources / 'remote-runtime/generated/manifest.json'
+          assert os.access(manifest_path, os.R_OK), 'INSTALLED_MANIFEST_NOT_USER_READABLE'
+          manifest = json.loads(manifest_path.read_bytes())
+          node = resources / 'remote-runtime/generated/node'
+          assert os.access(node, os.R_OK | os.X_OK), 'INSTALLED_NODE_NOT_USER_EXECUTABLE'
+          assert subprocess.check_output([str(node), '--version'], text=True, timeout=10).strip() == 'v24.21.0'
+          assert hashlib.sha256(node.read_bytes()).hexdigest() == manifest['nodeSha256']
+          for name, expected in manifest['files'].items():
+              assert hashlib.sha256((resources / name).read_bytes()).hexdigest() == expected
+          assert os.access(os.environ['EXHIBITOS_PACKAGE_BINARY'], os.X_OK)
+          assert subprocess.check_output(['dpkg-query', '-W', '-f=${Status}', os.environ['EXHIBITOS_DEB_PACKAGE']], text=True).strip() == 'install ok installed'
+          print(json.dumps({'packageInstalled': True, 'normalUserNodeVersion': '24.21.0', 'publicResourcesVerified': True, 'GUIExecuted': False, 'offlineRuntimeExecuted': False}))
+          PY
+      - name: Remove only this installed disposable package and verify absence
+        if: always()
+        run: |
+          if test -n "${EXHIBITOS_DEB_PACKAGE:-}"; then
+            if dpkg-query -W "$EXHIBITOS_DEB_PACKAGE" >/dev/null 2>&1; then
+              sudo dpkg --remove "$EXHIBITOS_DEB_PACKAGE"
+            fi
+            test ! -e "$EXHIBITOS_PACKAGE_BINARY"
+            test ! -e "$EXHIBITOS_PACKAGE_RESOURCES/remote-runtime/generated/node"
+            python3 - <<'PY'
+          import os, subprocess, json
+          status = subprocess.run(['dpkg-query', '-W', '-f=${Status}', os.environ['EXHIBITOS_DEB_PACKAGE']], capture_output=True, text=True)
+          assert status.stdout.strip() != 'install ok installed', 'PACKAGE_STILL_INSTALLED'
+          print(json.dumps({'packageRemoved': True, 'packageBytesRetainedOnlyUntilRunnerDisposal': True, 'artifactUploaded': False}))
+          PY
+          fi
