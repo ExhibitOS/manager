@@ -1,0 +1,92 @@
+# Manager release SBOM
+
+The original release deliverable requires a dependency SBOM tied to the actual
+artifact. A lockfile, a successful scanner exit, or an empty BOM does not establish
+that requirement. These development results do not qualify production signing,
+notarization, a vulnerability assessment or another build.
+
+## Observed development artifact
+
+On 2026-10-12, Trivy 0.75.0 scanned the reviewed Apple Development-signed macOS
+arm64 Manager App built from `e1581e5558b2dc8aee2e1fa93204fbf733009f49`.
+The scanner procedure ran from the documentation/tool-only pipeline commit
+`8283d444d09298f67369697facd7e3102bb8460a`. The App contained 115 files,
+166,005,082 bytes; its reviewed inventory SHA256 was
+`5ff4c524386464b7ccbf2a3c471591585fc36dd25f12c1dda87052244e746852`.
+The complete file inventory and all six source manifest inputs were unchanged
+after the two offline scans. No rebuild, download, app launch, sensor access or
+existing-data mutation occurred during the scans.
+
+| Observation | Actual result | Scope |
+| --- | --- | --- |
+| Delivered App scan | CycloneDX 1.7; scanner exit 0; **0 dependency components detected** | Artifact SBOM coverage is incomplete. This is not a complete-SBOM PASS. |
+| Separate source manifest scan | CycloneDX 1.7; scanner exit 0; 455 components: 448 Cargo packages, 4 npm packages, 3 file/root components | The source dependency graph, including target/build-related Cargo lock entries, is not proof that all packages are linked or delivered. |
+| Bundled Node observation | Actual embedded executable reports Node 24.21.0 and embedded component versions | Separate runtime evidence, not packages inferred from the source lock scan. |
+
+App BOM SHA256:
+`542094b7f6fc7ed86b329d36f757a60a5dc8be122506c78c36a5563792a6bf94`.
+Source dependency BOM SHA256:
+`97704e8a74a24b9f06c2d47a70fb7d5ddbfd39930ad69107f770e82bb69f2788`.
+The source npm components are `@tauri-apps/api` 2.12.1, `react` 19.3.0,
+`react-dom` 19.3.0 and `scheduler` 0.28.0. Minification and the Rust-linked
+frontend do not preserve installed npm manifests in this App. The native Rust
+binary was not built with embedded cargo-auditable dependency metadata.
+
+The packaged Node manifest and Node executable hash bind the existing official
+Node archive. The observed executable reports, among others, V8
+13.6.233.17-node.53, OpenSSL 3.5.8, libuv 1.52.1, ICU 78.3, SQLite 3.53.4,
+c-ares 1.34.8, undici 7.29.1, simdjson 4.6.7 and zstd 1.5.7.
+`modules` and `napi` are ABI versions; `cldr`, `tz` and `unicode` describe data
+versions. Empty `nghttp3`/`ngtcp2` fields do not assert installed packages.
+The delivered `NODE-LICENSE` also includes notices for source/test/build
+components, so every notice cannot be presented as an installed dependency.
+The bundled public Deployment source and its license remain separately pinned
+by `vendor/deployment/source.json` and the packaged remote manifest.
+
+## Reproduce without a product build
+
+Use the reviewed, checksum-verified Trivy executable and fresh private output
+and cache directories. `APP` must identify the actual artifact; do not substitute
+a checkout, `node_modules`, unrelated source or another App. Preserve the
+existing source-to-artifact build receipt, source commit and complete before/after
+file inventory. Confirm the tool version and checksum before execution.
+
+```sh
+"$TRIVY" filesystem \
+  --format cyclonedx --output "$OUTPUT/artifact.cdx.json" \
+  --offline-scan --skip-db-update --skip-java-db-update \
+  --skip-check-update --skip-vex-repo-update --skip-version-check \
+  --disable-telemetry --parallel 1 --timeout 90s \
+  --cache-dir "$FRESH_CACHE" "$APP"
+```
+
+Do not add `--scanners vuln` to this SBOM-only command: that requests a different
+operation requiring an actual vulnerability database. Use a clean `HOME` and
+`TMPDIR` to avoid inherited scanner configuration or credentials. Admit the
+combined workspace storage requirement before running; the observed execution
+reserved 256MiB for new outputs/staging, 192MiB for other work and a 6GiB free
+space floor, with a 120-second outer deadline for each serial scan.
+
+For separate source dependency evidence, stage only the reviewed build commit's
+`Cargo.lock`, root `Cargo.toml`, `crates/lifecycle/Cargo.toml`,
+`src-tauri/Cargo.toml`, `package.json` and `package-lock.json`, preserving their
+relative paths. Verify each staged file against that commit. Run the same
+command against this staging directory with a distinct output name. Keep its
+result separate from the artifact BOM; do not merge source-only packages into
+an artifact BOM while asserting installed membership.
+
+## Remaining release coverage
+
+The observed empty App BOM exposes a concrete original release requirement
+that remains incomplete: a build-bound delivered dependency graph for the
+linked Rust/frontend binary and bundled Node components. The separate source
+BOM and actual Node versions provide inputs for that graph, but do not prove
+its completeness. A later selected release must bind its generated dependency
+metadata to its actual build and include the vendored Node and public Deployment
+resources. This does not introduce an additional support environment or relax
+the original SBOM requirement.
+
+Authoritative tool coverage:
+[Trivy Rust package and auditable binary coverage](https://trivy.dev/docs/latest/coverage/language/rust/),
+[Trivy filesystem scanning](https://trivy.dev/docs/latest/target/filesystem/),
+[Trivy SBOM generation](https://trivy.dev/docs/latest/supply-chain/sbom/).
