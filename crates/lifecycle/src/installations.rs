@@ -462,7 +462,11 @@ impl InstallationController {
             return Err(err("INSTALLATION_SELECTION_CHANGED"));
         }
         let profile = self.profile.as_ref().ok_or_else(|| err("UPDATE_PROFILE_UNAVAILABLE"))?;
-        let _lock = OperationGuard(super::profile_backup::inspect_operation_lock(&profile.root)?);
+        let lock = super::profile_backup::inspect_operation_lock(&profile.root)?;
+        #[cfg(windows)]
+        let _lock = lock;
+        #[cfg(not(windows))]
+        let _lock = OperationGuard(lock);
         let (registry, _) = load(&profile.root)?.ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
         let entry = registry.installations.iter().find(|entry| entry.id == current.entry.id)
             .ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
@@ -479,7 +483,11 @@ impl InstallationController {
         let current = self.current.try_read().map_err(|_| err("BUSY"))?;
         if !uuid(token) || current.token != token { return Err(err("INSTALLATION_SELECTION_CHANGED")); }
         let profile = self.profile.as_ref().ok_or_else(|| err("UPDATE_PROFILE_UNAVAILABLE"))?;
-        let _lock = OperationGuard(super::profile_backup::inspect_operation_lock(&profile.root)?);
+        let lock = super::profile_backup::inspect_operation_lock(&profile.root)?;
+        #[cfg(windows)]
+        let _lock = lock;
+        #[cfg(not(windows))]
+        let _lock = OperationGuard(lock);
         let (registry, bytes) = load(&profile.root)?.ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
         let entry = registry.installations.iter().find(|entry| entry.id == current.entry.id).ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
         if registry.active_id != entry.id || root(&profile.root, entry) != current.path { return Err(err("INSTALLATION_SELECTION_CHANGED")); }
