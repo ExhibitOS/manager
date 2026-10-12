@@ -8,7 +8,7 @@ import {join,isAbsolute} from 'node:path';
 import {createHash} from 'node:crypto';
 import {lookup as dnsLookup} from 'node:dns/promises';
 import {get as httpsGet} from 'node:https';
-import {maintenanceOptions,projectMaintenance,executeRemoteMaintenance} from './ssh-maintenance.mjs';
+import {maintenanceOptions,projectMaintenance,executeRemoteMaintenance,resolveManagedSourceRoot} from './ssh-maintenance.mjs';
 import {parseReadiness} from './application-readiness.mjs';
 import {boundedJSON} from './bounded-json.mjs';
 import {validateLocalSelfhostProfile} from './local-selfhost-profile.mjs';
@@ -67,7 +67,8 @@ if(binding.managerSha256!==i.managerSha256)fail('SSH_MANAGER_MISMATCH');if(i.exp
 if(process.env.DOCKER_HOST&&!process.env.DOCKER_HOST.startsWith('unix://'))fail('SSH_ENGINE_REMOTE_REFUSED');const context=JSON.parse(execFileSync('docker',['context','inspect'],{timeout:8000,stdio:['ignore','pipe','ignore']}).toString());if(!Array.isArray(context)||context.length!==1||!context[0]?.Endpoints?.docker?.Host?.startsWith('unix://'))fail('SSH_ENGINE_REMOTE_REFUSED');
 execFileSync('docker',['info','--format','{{.OSType}}'],{timeout:8000,stdio:['ignore','pipe','ignore']}).toString().trim()==='linux'||fail('SSH_ENGINE_UNAVAILABLE');
 let firewallVerified=false;try{const firewall=execFileSync('/usr/bin/sudo',['-n','/usr/sbin/ufw','status','verbose'],{timeout:5000,stdio:['ignore','pipe','ignore'],env:{...process.env,LANG:'C',LC_ALL:'C'}}).toString();firewallVerified=/^Status: active$/m.test(firewall)&&firewall.includes('Default: deny (incoming)');}catch{}
-if(i.maintenanceAction){const execute=${executeRemoteMaintenance.toString()};console.log(JSON.stringify(execute(i,{fs,execFileSync,join,read,ancestors,sha,fail,boundedJSON,uuid,hash})));process.exit(0);}
+const resolveSourceRoot=${resolveManagedSourceRoot.toString()};
+if(i.maintenanceAction){const execute=${executeRemoteMaintenance.toString()};console.log(JSON.stringify(execute(i,{fs,execFileSync,join,read,ancestors,sha,fail,boundedJSON,uuid,hash,resolveSourceRoot})));process.exit(0);}
 if(i.action==='rollback'){
  const r=i.rollback;for(const p of [r.profilePath,r.updatePath,r.keyPath,r.archivePath]){ancestors(p);if(fs.realpathSync(p)!==p)fail('SSH_ROLLBACK_INPUT_UNSAFE');}
  for(const p of [r.profilePath,r.archivePath]){const a=fs.lstatSync(p);if(!a.isDirectory()||a.isSymbolicLink()||a.uid!==process.getuid()||(a.mode&511)!==448)fail('SSH_ROLLBACK_INPUT_UNSAFE');}
@@ -75,7 +76,8 @@ if(i.action==='rollback'){
  const updateCall=(action,args=[])=>{try{return boundedJSON(execFileSync(r.updatePath,[action,'--profile',r.profilePath,'--installation','default',...args,'--apps-closed'],{timeout:1800000,maxBuffer:262144,stdio:['ignore','pipe','ignore']}).toString(),262144);}catch{fail('SSH_ROLLBACK_UNCERTAIN');}};
  const before=updateCall('update-intent'),plan=before?.intent?.update?.plan;
  if(before?.trust?.generation!==r.expectedGeneration||before?.intent?.update?.stage!=='recovery_required'||plan?.operationId!==r.operationId)fail('SSH_ROLLBACK_AUTHORITY_CHANGED');
- const source=plan.sourceInstance==='default'?join(r.profilePath,'local-runtime'):join(r.profilePath,'installations',plan.sourceInstance);
+ const registry=boundedJSON(read(join(r.profilePath,'installation-selection.json'),65536).toString(),65536);
+ let source;try{source=resolveSourceRoot(r.profilePath,plan.sourceInstance,registry);}catch{fail('SSH_ROLLBACK_SOURCE_MISMATCH');}
  if(source!==i.remoteRoot)fail('SSH_ROLLBACK_SOURCE_MISMATCH');
  const result=updateCall('restore-original-rollback',['--maintenance-image',r.maintenanceImage,'--key',r.keyPath,'--archive',r.archivePath,'--port',String(r.port),'--fresh-candidate','--external-writers-quiesced','--operation-id',r.operationId,'--expected-generation',String(r.expectedGeneration)]);
  if(sha(read(r.updatePath,33554432,true))!==r.updateSha256||!read(r.keyPath,32).equals(key))fail('SSH_ROLLBACK_INPUT_CHANGED');
