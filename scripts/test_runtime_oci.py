@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Small real tar/OCI graph tests; no image execution, extraction or DB writes."""
-import hashlib,importlib.util,io,json,os,re,subprocess,sys,tarfile,tempfile,unittest
+import gzip,hashlib,importlib.util,io,json,os,re,subprocess,sys,tarfile,tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
 spec=importlib.util.spec_from_file_location('runtime_oci',Path(__file__).with_name('verify-runtime-oci.py'))
@@ -15,7 +15,7 @@ class QualificationTests(unittest.TestCase):
  def tearDown(self):self.temp.cleanup()
  def private(self,name,value):
   p=self.root/name;p.write_bytes(encoded(value));p.chmod(0o600);return p
- def artifact(self,migrations,later=None,duplicate=False,omit_platform=False,descriptor_platform=...,config_os='linux',config_architecture='arm64'):
+ def artifact(self,migrations,later=None,duplicate=False,omit_platform=False,descriptor_platform=...,config_os='linux',config_architecture='arm64',layer_media=None,gzip_fault=None):
   buffers=[]
   for entries in [migrations]+([later] if later is not None else []):
    out=io.BytesIO()
@@ -27,8 +27,11 @@ class QualificationTests(unittest.TestCase):
      if duplicate:tar.addfile(e,io.BytesIO(value))
    buffers.append(out.getvalue())
   blobs={};layers=[];diffs=[]
-  for b in buffers:
-   h=digest(b);blobs[h]=b;layers.append({'mediaType':'application/vnd.oci.image.layer.v1.tar','digest':'sha256:'+h,'size':len(b)});diffs.append('sha256:'+h)
+  for i,b in enumerate(buffers):
+   media=layer_media[i] if layer_media is not None else 'application/vnd.oci.image.layer.v1.tar'
+   raw=gzip.compress(b,mtime=0) if media in ('application/vnd.oci.image.layer.v1.tar+gzip','application/vnd.docker.image.rootfs.diff.tar.gzip') and gzip_fault!='uncompressed' else b
+   h=digest(raw);blobs[h]=raw;layers.append({'mediaType':media,'digest':'sha256:'+h,'size':len(raw)});diffs.append('sha256:'+('f'*64 if gzip_fault=='diff-id' else digest(b)))
+   if gzip_fault=='blob-tamper':blobs[h]=raw[:-1]+bytes([raw[-1]^1])
   cfg={'os':config_os,'architecture':config_architecture,'config':{'Labels':{'org.opencontainers.image.revision':'a'*40,'org.opencontainers.image.source':'https://github.com/ExhibitOS/platform','org.opencontainers.image.licenses':'AGPL-3.0-or-later','org.opencontainers.image.version':'synthetic'},'Cmd':['node','scripts/local-runtime.mjs']},'rootfs':{'diff_ids':diffs}}
   c=encoded(cfg);ch=digest(c);blobs[ch]=c
   m=encoded({'schemaVersion':2,'config':{'mediaType':'application/vnd.oci.image.config.v1+json','digest':'sha256:'+ch,'size':len(c)},'layers':layers});mh=digest(m);blobs[mh]=m
@@ -74,6 +77,18 @@ class QualificationTests(unittest.TestCase):
    with self.subTest(fault=fault):
     a=self.args(self.old,**fault)
     with self.assertRaises(AssertionError):self.qualify(a)
+ def test_mixed_oci_and_docker_gzip_preserve_decoded_hashes_and_migrations(self):
+  original=self.qualify(self.args(self.old,later=[]))
+  a=self.args(self.old,later=[],layer_media=['application/vnd.oci.image.layer.v1.tar+gzip','application/vnd.docker.image.rootfs.diff.tar.gzip'],omit_platform=True);mixed=self.qualify(a)
+  self.assertEqual(mixed['runtimeImageSha256'],a.image[7:])
+  for field in ['layerDiffIds','embeddedMigrations','sourceSchemaSha256','targetSchemaSha256','migrationMode']:self.assertEqual(mixed[field],original[field])
+ def test_docker_gzip_encoding_diff_hash_tamper_and_unknown_media_refuse(self):
+  faults=[{'gzip_fault':v,'layer_media':['application/vnd.docker.image.rootfs.diff.tar.gzip']} for v in ['uncompressed','diff-id','blob-tamper']]
+  faults += [{'layer_media':[v]} for v in ['application/vnd.docker.image.rootfs.diff.tar','application/vnd.docker.image.rootfs.foreign.diff.tar.gzip','application/vnd.oci.image.layer.v1.tar+zstd','application/unknown']]
+  for fault in faults:
+   with self.subTest(fault=fault):
+    a=self.args(self.old,**fault)
+    with self.assertRaises((AssertionError,OSError)):self.qualify(a)
  def test_extended_sql_requires_explicit_target_catalog_pin(self):
   new=self.old+[('002.sql',b'CREATE TABLE additional(id bigint);')];a=self.args(new)
   with self.assertRaises(AssertionError):self.qualify(a)

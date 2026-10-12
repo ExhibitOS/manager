@@ -152,8 +152,8 @@ def qualify(a,f,source_manifest_bytes=None,target_inventory_bytes=None):
    assert cfg['config']['Cmd']==['node','scripts/local-runtime.mjs']
    migrations={};expanded=0
    for layer,diff in zip(layers,cfg['rootfs']['diff_ids']):
-    path='blobs/sha256/'+layer['digest'][7:];raw=archive.extractfile(records[path]);media=layer['mediaType'];assert media in ('application/vnd.oci.image.layer.v1.tar','application/vnd.oci.image.layer.v1.tar+gzip')
-    if media.endswith('+gzip'):raw=gzip.GzipFile(fileobj=raw)
+    path='blobs/sha256/'+layer['digest'][7:];raw=archive.extractfile(records[path]);media=layer['mediaType'];assert media in ('application/vnd.oci.image.layer.v1.tar','application/vnd.oci.image.layer.v1.tar+gzip','application/vnd.docker.image.rootfs.diff.tar.gzip')
+    if media in ('application/vnd.oci.image.layer.v1.tar+gzip','application/vnd.docker.image.rootfs.diff.tar.gzip'):raw=gzip.GzipFile(fileobj=raw)
     # No layer is extracted to disk. Bounded decoded bytes and content digest.
     h=hashlib.sha256();parts=[];size=0
     while True:
