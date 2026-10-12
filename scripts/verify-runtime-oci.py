@@ -123,7 +123,9 @@ def qualify(a,f,source_manifest_bytes=None,target_inventory_bytes=None):
       assert re.fullmatch(r'sha256:[a-f0-9]{64}',layer['digest']);path='blobs/sha256/'+layer['digest'][7:];assert records[path].size==layer['size'];reached.add(path)
      if cfg.get('os')=='linux' and cfg.get('architecture')==architecture:
       assert config['mediaType']=='application/vnd.oci.image.config.v1+json' and not config.get('data')
-      assert desc.get('platform')=={'architecture':architecture,'os':'linux'}
+      # OCI descriptor platform is optional; the digest-bound config above
+      # must still match the target, and present metadata must agree exactly.
+      assert 'platform' not in desc or desc['platform']=={'architecture':architecture,'os':'linux'}
       runnable.append((cfg,layers,desc['digest'],cfgname))
      else:
       # Tagless BuildKit exports have an empty attestation config. Treat this as

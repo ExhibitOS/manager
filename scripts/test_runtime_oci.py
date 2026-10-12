@@ -15,7 +15,7 @@ class QualificationTests(unittest.TestCase):
  def tearDown(self):self.temp.cleanup()
  def private(self,name,value):
   p=self.root/name;p.write_bytes(encoded(value));p.chmod(0o600);return p
- def artifact(self,migrations,later=None,duplicate=False):
+ def artifact(self,migrations,later=None,duplicate=False,omit_platform=False,descriptor_platform=...,config_os='linux',config_architecture='arm64'):
   buffers=[]
   for entries in [migrations]+([later] if later is not None else []):
    out=io.BytesIO()
@@ -29,17 +29,19 @@ class QualificationTests(unittest.TestCase):
   blobs={};layers=[];diffs=[]
   for b in buffers:
    h=digest(b);blobs[h]=b;layers.append({'mediaType':'application/vnd.oci.image.layer.v1.tar','digest':'sha256:'+h,'size':len(b)});diffs.append('sha256:'+h)
-  cfg={'os':'linux','architecture':'arm64','config':{'Labels':{'org.opencontainers.image.revision':'a'*40,'org.opencontainers.image.source':'https://github.com/ExhibitOS/platform','org.opencontainers.image.licenses':'AGPL-3.0-or-later','org.opencontainers.image.version':'synthetic'},'Cmd':['node','scripts/local-runtime.mjs']},'rootfs':{'diff_ids':diffs}}
+  cfg={'os':config_os,'architecture':config_architecture,'config':{'Labels':{'org.opencontainers.image.revision':'a'*40,'org.opencontainers.image.source':'https://github.com/ExhibitOS/platform','org.opencontainers.image.licenses':'AGPL-3.0-or-later','org.opencontainers.image.version':'synthetic'},'Cmd':['node','scripts/local-runtime.mjs']},'rootfs':{'diff_ids':diffs}}
   c=encoded(cfg);ch=digest(c);blobs[ch]=c
   m=encoded({'schemaVersion':2,'config':{'mediaType':'application/vnd.oci.image.config.v1+json','digest':'sha256:'+ch,'size':len(c)},'layers':layers});mh=digest(m);blobs[mh]=m
-  files={'oci-layout':encoded({'imageLayoutVersion':'1.0.0'}),'index.json':encoded({'schemaVersion':2,'manifests':[{'digest':'sha256:'+mh,'size':len(m),'platform':{'os':'linux','architecture':'arm64'}}]}),'manifest.json':encoded([{'Config':'blobs/sha256/'+ch,'RepoTags':None,'Layers':['blobs/sha256/'+x['digest'][7:] for x in layers]}])}
+  desc={'digest':'sha256:'+mh,'size':len(m)}
+  if not omit_platform:desc['platform']={'os':'linux','architecture':'arm64'} if descriptor_platform is ... else descriptor_platform
+  files={'oci-layout':encoded({'imageLayoutVersion':'1.0.0'}),'index.json':encoded({'schemaVersion':2,'manifests':[desc]}),'manifest.json':encoded([{'Config':'blobs/sha256/'+ch,'RepoTags':None,'Layers':['blobs/sha256/'+x['digest'][7:] for x in layers]}])}
   files.update({'blobs/sha256/'+k:b for k,b in blobs.items()});p=self.root/'runtime.tar'
   with tarfile.open(p,mode='w') as tar:
    for n,b in files.items():e=tarfile.TarInfo(n);e.size=len(b);tar.addfile(e,io.BytesIO(b))
   p.chmod(0o600)
   return p,'sha256:'+mh
- def args(self,migrations,later=None,duplicate=False):
-  p,image=self.artifact(migrations,later,duplicate);source=self.private('source.json',{'kind':'service-backup','schemaVersion':'1.0.0-draft.1','inventory':inventory(self.old)})
+ def args(self,migrations,later=None,duplicate=False,**platform):
+  p,image=self.artifact(migrations,later,duplicate,**platform);source=self.private('source.json',{'kind':'service-backup','schemaVersion':'1.0.0-draft.1','inventory':inventory(self.old)})
   return SimpleNamespace(archive=p,image=image,source_commit='a'*40,source_manifest=source,target_inventory=None,target_inventory_sha256=None,target_schema_sha256=None)
  def target(self,a,migrations):
   v=inventory(migrations,'new catalog');a.target_inventory=self.private('target.json',v);a.target_inventory_sha256=digest(a.target_inventory.read_bytes());a.target_schema_sha256=schema(v)
@@ -64,6 +66,14 @@ class QualificationTests(unittest.TestCase):
     with self.assertRaises((AssertionError,ValueError)):self.qualify(a)
  def test_unchanged_original_contract_and_bound_source_bytes(self):
   a=self.args(self.old);v=self.qualify(a);self.assertEqual(v['sourceSchemaSha256'],v['targetSchemaSha256']);self.assertEqual(v['migrationMode'],'unchanged');self.assertEqual(v['sourceManifestSha256'],digest(a.source_manifest.read_bytes()))
+ def test_optional_descriptor_platform_uses_digest_bound_matching_config(self):
+  a=self.args(self.old,omit_platform=True);v=self.qualify(a)
+  self.assertEqual(v['runtimeImageSha256'],a.image[7:]);self.assertEqual(v['exportLayout'],'docker-compatible-oci');self.assertEqual(v['target'],'linux-arm64')
+ def test_optional_descriptor_platform_null_conflict_and_wrong_config_refuse(self):
+  for fault in [{'descriptor_platform':None},{'descriptor_platform':{}},{'descriptor_platform':{'os':'linux','architecture':'amd64'}},{'descriptor_platform':{'os':'windows','architecture':'arm64'}},{'descriptor_platform':{'os':'linux','architecture':'arm64','variant':'v8'}},{'omit_platform':True,'config_architecture':'amd64'},{'omit_platform':True,'config_os':'windows'}]:
+   with self.subTest(fault=fault):
+    a=self.args(self.old,**fault)
+    with self.assertRaises(AssertionError):self.qualify(a)
  def test_extended_sql_requires_explicit_target_catalog_pin(self):
   new=self.old+[('002.sql',b'CREATE TABLE additional(id bigint);')];a=self.args(new)
   with self.assertRaises(AssertionError):self.qualify(a)
@@ -102,7 +112,7 @@ class QualificationTests(unittest.TestCase):
   a=self.args(self.old)
   rust=Path(__file__).parents[1]/'crates/lifecycle/src/prepared_oci.rs'
   entry=re.search(r'const ENTRY: &str = r#"(.*?)"#;',rust.read_text(),re.S).group(1)
-  compiled="__name__='exhibitos_embedded_oci'\n"+Path(__file__).with_name('verify-runtime-oci.py').read_text()+"\n"+entry
+  compiled="__name__='exhibitos_embedded_oci'\nexhibitos_runtime_target='linux-arm64'\n"+Path(__file__).with_name('verify-runtime-oci.py').read_text()+"\n"+entry
   for pin in [digest(a.source_manifest.read_bytes()),'f'*64]:
    with a.archive.open('rb') as archive,a.source_manifest.open('rb') as manifest:
     r=subprocess.run([sys.executable,'-I','-c',compiled,str(a.archive),a.image,str(manifest.fileno()),a.source_commit,pin],stdin=archive,pass_fds=(manifest.fileno(),),capture_output=True)
