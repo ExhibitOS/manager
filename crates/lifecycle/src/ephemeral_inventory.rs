@@ -55,18 +55,21 @@ fn script(candidate: bool) -> String {
 const copy={copy}, reader={reader}, candidate={candidate};
 const copyErrors=new Set(['source-census','space','copy','comparison','control'].map(phase=>'SOURCE_DATABASE_COPY_REFUSED:'+phase));
 const readerErrors=new Set(['SOURCE_SNAPSHOT_DATABASE_START_FAILED','SOURCE_SNAPSHOT_DATABASE_PROOF_INVALID','SOURCE_SNAPSHOT_DATABASE_FAILED','SOURCE_SNAPSHOT_DATABASE_STOP_FAILED','CANDIDATE_DATABASE_ID_INVALID','CANDIDATE_ORIGINAL_DATABASE','CANDIDATE_DATABASE_MISMATCH','SOURCE_MANIFEST_MISMATCH','SOURCE_INVENTORY_BUSY','SOURCE_DATABASE_MISMATCH','SOURCE_INVENTORY_MISMATCH','SOURCE_INVENTORY_CLEANUP_FAILED','BACKUP_INVENTORY_INVALID','BACKUP_MANIFEST_INVALID','BACKUP_SOURCE_IDENTITY','BACKUP_UNSUPPORTED_SCHEMA','BACKUP_USAGE','BACKUP_DATABASE_REQUIRED','BACKUP_FILE_PATH','BACKUP_FILE_MODE','BACKUP_BLOB_ROOT_REQUIRED','BACKUP_BLOB_ROOT_PATH']);
-function child(script,env,codes){{
+const childErrors=new Set(['COPY','READER'].flatMap(phase=>['BUFFER_LIMIT','TIMED_OUT','SPAWN_FAILED','SIGNAL_EXIT','EXIT_FAILED','INVALID_JSON'].map(kind=>'EPHEMERAL_'+phase+'_'+kind)));
+function child(script,env,codes,phase){{
  const r=spawnSync(process.execPath,['--input-type=module','-e',script],{{env,encoding:'utf8',timeout:270000,maxBuffer:65536}});
- if(r.error||r.status!==0){{const code=!r.error&&r.status===1&&typeof r.stderr==='string'?r.stderr.trim():'';throw Error(codes.has(code)?code:'EPHEMERAL_CHILD_FAILED');}}
- return JSON.parse(r.stdout);
+ const refused=kind=>Error('EPHEMERAL_'+phase+'_'+kind);
+ if(r.error)throw refused(r.error.code==='ENOBUFS'?'BUFFER_LIMIT':r.error.code==='ETIMEDOUT'?'TIMED_OUT':'SPAWN_FAILED');
+ if(r.status!==0){{const code=r.status===1&&typeof r.stderr==='string'?r.stderr.trim():'';throw codes.has(code)?Error(code):refused(r.signal?'SIGNAL_EXIT':'EXIT_FAILED');}}
+ try{{return JSON.parse(r.stdout);}}catch{{throw refused('INVALID_JSON');}}
 }}
 try{{
- const physical=child(copy,process.env,copyErrors);
+ const physical=child(copy,process.env,copyErrors,'COPY');
  const env={{...process.env}};delete env.EXHIBITOS_CANDIDATE_SYSTEM_IDENTIFIER;
  if(candidate)env.EXHIBITOS_CANDIDATE_SYSTEM_IDENTIFIER=physical.systemIdentifier;
- const inventory=child(reader,env,readerErrors);
+ const inventory=child(reader,env,readerErrors,'READER');
  console.log(JSON.stringify({{physical,inventory}}));
-}}catch(error){{const code=error?.message;console.error('EPHEMERAL_INVENTORY_REFUSED'+(copyErrors.has(code)||readerErrors.has(code)?':'+code:''));process.exitCode=1;}}
+}}catch(error){{const code=error?.message;console.error('EPHEMERAL_INVENTORY_REFUSED'+(copyErrors.has(code)||readerErrors.has(code)||childErrors.has(code)?':'+code:''));process.exitCode=1;}}
 "#,
         candidate = candidate,
         copy = serde_json::to_string(include_str!("source_database_copy.mjs")).unwrap(),
@@ -371,12 +374,15 @@ for(const phase of ['source-census','space','copy','comparison','control']){
 }
 for(const code of ['SOURCE_SNAPSHOT_DATABASE_START_FAILED','BACKUP_INVENTORY_INVALID','SOURCE_INVENTORY_MISMATCH'])refused(copyOk,failed(code+'\n'),code);
 for(const text of ['private password /private/credential.pem','SECRET_TOKEN_VALUE','SOURCE_DATABASE_COPY_REFUSED:/private/path','SOURCE_DATABASE_COPY_REFUSED:unknown','SOURCE_INVENTORY_MISMATCH\nsecret=value','BACKUP_INVENTORY_INVALID:secret=value']){
- refused(failed(text),readerOk);refused(copyOk,failed(text));
+ refused(failed(text),readerOk,'EPHEMERAL_COPY_EXIT_FAILED');refused(copyOk,failed(text),'EPHEMERAL_READER_EXIT_FAILED');
 }
-refused(failed('SOURCE_INVENTORY_MISMATCH\n'),readerOk);
-refused(copyOk,failed('SOURCE_DATABASE_COPY_REFUSED:space\n'));
-refused('console.log("not-json")',readerOk);
-refused('process.stdout.write("private stdout token");process.stderr.write("SOURCE_DATABASE_COPY_REFUSED:space\\n".repeat(4000));process.exitCode=1',readerOk);
+refused(failed('SOURCE_INVENTORY_MISMATCH\n'),readerOk,'EPHEMERAL_COPY_EXIT_FAILED');
+refused(copyOk,failed('SOURCE_DATABASE_COPY_REFUSED:space\n'),'EPHEMERAL_READER_EXIT_FAILED');
+refused('console.log("not-json")',readerOk,'EPHEMERAL_COPY_INVALID_JSON');
+refused(copyOk,'console.log("private non-json token")','EPHEMERAL_READER_INVALID_JSON');
+refused('process.exitCode=23',readerOk,'EPHEMERAL_COPY_EXIT_FAILED');
+refused(copyOk,'process.exitCode=23','EPHEMERAL_READER_EXIT_FAILED');
+refused('process.stdout.write("private stdout token");process.stderr.write("SOURCE_DATABASE_COPY_REFUSED:space\\n".repeat(4000));process.exitCode=1',readerOk,'EPHEMERAL_COPY_BUFFER_LIMIT');
 const success=run(copyOk,readerOk);assert.equal(success.status,0);assert.equal(success.stderr,'');
 const result=JSON.parse(success.stdout);assert.deepEqual(result.physical,{systemIdentifier:'123'});
 assert.deepEqual(result.inventory,{candidateId:program.includes('candidate=true;')?'123':null});
