@@ -59,7 +59,7 @@ mod selection_activation;
 pub use selection_activation::SelectionActivationReceipt;
 #[path = "authority_selection.rs"]
 mod authority_selection;
-pub(crate) use authority_selection::resolve_selected_scope;
+pub(crate) use authority_selection::{resolve_selected_scope, inspect_rollback_context};
 #[path = "trust_checkpoint.rs"]
 mod trust_checkpoint;
 pub use trust_checkpoint::binding::{
@@ -891,12 +891,17 @@ impl Store {
             } else { authority_recovery_vault::Vault::open_for(&s)? };
         }
         s.check_root()?;
-        if recover_interruption && s.intent().is_some_and(|i| in_flight(i.update.stage())) {
+        if recover_interruption { s.recover_rollback_handoff_interruption()?; }
+        Ok(s)
+    }
+    /// Existing cold-open transition, invoked explicitly only after frozen handoff checks.
+    pub(crate) fn recover_rollback_handoff_interruption(&mut self) -> Result<(), Error> {
+        if self.intent().is_some_and(|i| in_flight(i.update.stage())) {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|_| invalid())?
                 .as_secs();
-            let mut next = s.current.clone();
+            let mut next = self.current.clone();
             let core = &mut next.intent.as_mut().ok_or_else(invalid)?.update;
             if core.stage() == crate::update::Stage::AwaitingRollbackHealth
                 && core.restore_candidate().is_some()
@@ -908,9 +913,9 @@ impl Store {
                 core.recover_after_restart().map_err(|_| invalid())?;
                 next.update_event = Some(UpdateEvent::Interrupted);
             }
-            s.commit(next, now)?;
+            self.commit(next, now)?;
         }
-        Ok(s)
+        Ok(())
     }
     pub fn policy(&self) -> &Policy {
         &self.current.policy
@@ -2146,3 +2151,7 @@ pub use owned_execution::InterruptedRecoveryInputs;
 #[cfg(all(test, unix))]
 #[path = "registered_update_tests.rs"]
 mod registered_update_tests;
+
+#[cfg(all(test, unix))]
+#[path = "rollback_handoff_tests.rs"]
+mod rollback_handoff_tests;

@@ -14,6 +14,8 @@ fn main() {
             "manager_update_cancel",
             "manager_update_references",
             "manager_update_apply",
+            "manager_update_rollback_context",
+            "manager_update_rollback",
             "manager_detect",
             "manager_install",
             "manager_action",

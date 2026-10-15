@@ -124,6 +124,38 @@ async fn manager_update_apply(
     }
     Ok(receipt)
 }
+#[tauri::command]
+async fn manager_update_rollback_context(
+    window: WebviewWindow, state: State<'_, DesktopState>, selection_token: String,
+) -> Result<Option<exhibitos_lifecycle::update_rollback_handoff::RollbackContext>, LifecycleError> {
+    caller(&window)?;
+    let controller = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || controller.update_rollback_context(&selection_token))
+        .await.map_err(|_| error("MANAGER_OPERATION"))?
+}
+#[tauri::command]
+async fn manager_update_rollback(
+    window: WebviewWindow, app: tauri::AppHandle, state: State<'_, DesktopState>,
+    selection_token: String, input: Option<exhibitos_lifecycle::update_rollback_handoff::RollbackInput>,
+) -> Result<Option<exhibitos_lifecycle::update_rollback_handoff::Receipt>, LifecycleError> {
+    caller(&window)?;
+    let prepare = input.is_some();
+    let controller = state.0.clone();
+    let (profile, receipt) = tauri::async_runtime::spawn_blocking(move || controller.update_rollback_handoff(&selection_token, input))
+        .await.map_err(|_| error("MANAGER_OPERATION"))??;
+    if prepare {
+        let request = receipt.as_ref().ok_or_else(|| error("UPDATE_HANDOFF_INVALID"))?;
+        let launched = std::env::current_exe().and_then(|executable|
+            std::process::Command::new(executable).arg("--manager-update-rollback-helper").arg(&profile).arg(&request.id)
+                .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn());
+        if launched.is_err() {
+            exhibitos_lifecycle::update_rollback_handoff::record_launch_failure(&profile, &request.id)?;
+            return Err(error("UPDATE_HELPER_START_FAILED"));
+        }
+        app.exit(0);
+    }
+    Ok(receipt)
+}
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CreationSelectionInput {
@@ -727,6 +759,14 @@ pub fn run() {
         if result.is_err() { std::process::exit(1); }
         return;
     }
+    if arguments.get(1).is_some_and(|value| value == "--manager-update-rollback-helper") {
+        let result = if arguments.len() == 4 {
+            arguments[3].to_str().ok_or_else(|| error("UPDATE_HANDOFF_INVALID")).and_then(|id|
+                exhibitos_lifecycle::update_rollback_handoff::execute(std::path::Path::new(&arguments[2]), id))
+        } else { Err(error("UPDATE_HANDOFF_INVALID")) };
+        if result.is_err() { std::process::exit(1); }
+        return;
+    }
     let result = tauri::Builder::default()
         .on_window_event(|_,event|{if let tauri::WindowEvent::CloseRequested{api,..}=event{if remote::busy(){api.prevent_close();}}})
         .setup(|app| {
@@ -765,6 +805,8 @@ pub fn run() {
             manager_update_cancel,
             manager_update_references,
             manager_update_apply,
+            manager_update_rollback_context,
+            manager_update_rollback,
             manager_detect,
             manager_install,
             manager_action,

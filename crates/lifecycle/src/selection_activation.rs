@@ -120,6 +120,10 @@ fn root(store: &Store, operation: &str, rollback: bool) -> crate::Result<PathBuf
         id
     }))
 }
+fn attempt_root(store: &Store, operation: &str, rollback: bool, generation: u64) -> crate::Result<PathBuf> {
+    if rollback { Ok(parent(store)?.join(format!("{}-rollback-{generation:020}", hash(operation.as_bytes())))) }
+    else { root(store, operation, false) }
+}
 fn registry(raw: &[u8]) -> crate::Result<installations::Registry> {
     if raw.len() > 64 * 1024 {
         return Err(crate::err("UPDATE_ACTIVATION_INVALID"));
@@ -263,7 +267,7 @@ impl Activation {
             Ok(_) => installations::private_directory(&parent)?,
             Err(_) => return Err(crate::err("UPDATE_ACTIVATION_INVALID")),
         }
-        let root = root(store, &plan.operation_id, rollback)?;
+        let root = attempt_root(store, &plan.operation_id, rollback, store.current.generation)?;
         installations::new_directory(&root)?;
         let intent = Intent {
             format: 1,
@@ -305,7 +309,8 @@ impl Activation {
                 .parent()
                 .ok_or_else(|| crate::err("UPDATE_ACTIVATION_INVALID"))?,
         )?;
-        if self.root != root(store, &self.intent.plan.operation_id, self.intent.rollback)?
+        if (self.root != root(store, &self.intent.plan.operation_id, self.intent.rollback)?
+            && self.root != attempt_root(store, &self.intent.plan.operation_id, self.intent.rollback, self.intent.generation)?)
             || self.intent.scope != store.scope
             || !identity(
                 &self.identity,
@@ -420,7 +425,20 @@ impl Activation {
         }
     }
     fn load(store: &Store, operation: &str, rollback: bool) -> crate::Result<Self> {
-        let root = root(store, operation, rollback)?;
+        let mut found = None;
+        for path in activation_roots(store, operation, rollback)? {
+            let intent_path = path.join("intent.json");
+            if !intent_path.exists() { continue; } // Preserve incomplete publication, never adopt it.
+            let intent: Intent = serde_json::from_slice(&private_read(&intent_path)?)
+                .map_err(|_| crate::err("UPDATE_ACTIVATION_INVALID"))?;
+            if current_activation(store, &intent) {
+                if found.replace(path).is_some() { return Err(crate::err("UPDATE_ACTIVATION_INVALID")); }
+            }
+        }
+        let root = found.ok_or_else(|| crate::err("UPDATE_ACTIVATION_INVALID"))?;
+        Self::load_root(store, operation, rollback, root)
+    }
+    fn load_root(store: &Store, operation: &str, rollback: bool, root: PathBuf) -> crate::Result<Self> {
         installations::private_directory(&root)?;
         for entry in fs::read_dir(&root).map_err(|_| crate::err("UPDATE_ACTIVATION_INVALID"))? {
             let entry = entry.map_err(|_| crate::err("UPDATE_ACTIVATION_INVALID"))?;
@@ -474,6 +492,70 @@ impl Activation {
         activation.check(store)?;
         Ok(activation)
     }
+}
+fn current_activation(store: &Store, intent: &Intent) -> bool {
+    store.intent().is_some_and(|i| i.update.plan() == &intent.plan)
+        && ((store.current.generation == intent.generation && store.current_sha256 == intent.head)
+            || (intent.generation.checked_add(1) == Some(store.current.generation)
+                && store.current.previous_sha256 == intent.head))
+}
+fn activation_roots(store: &Store, operation: &str, rollback: bool) -> crate::Result<Vec<PathBuf>> {
+    let parent = parent(store)?;
+    if !parent.exists() { return Ok(vec![]); }
+    installations::private_directory(&parent)?;
+    let legacy = root(store, operation, rollback)?;
+    let prefix = format!("{}-rollback-", hash(operation.as_bytes()));
+    let mut result = vec![];
+    for (n, entry) in fs::read_dir(&parent).map_err(|_| crate::err("UPDATE_ACTIVATION_INVALID"))?.enumerate() {
+        if n >= MAX_RECORDS { return Err(crate::err("UPDATE_ACTIVATION_INVALID")); }
+        let entry = entry.map_err(|_| crate::err("UPDATE_ACTIVATION_INVALID"))?;
+        let name = entry.file_name();
+        if entry.path() == legacy || (rollback && name.to_str().is_some_and(|s| s.strip_prefix(&prefix)
+            .is_some_and(|v| v.len()==20 && v.bytes().all(|b| b.is_ascii_digit())))) { result.push(entry.path()); }
+    }
+    Ok(result)
+}
+/// An unfinished write-ahead publication is routing evidence only when its exact
+/// immutable bytes and direct authority predecessor agree. It never authorizes health.
+pub(super) fn pending_activation(store: &Store, selected: &installations::Registry) -> crate::Result<Option<(String, bool)>> {
+    let Some(update) = store.intent() else { return Ok(None) };
+    let operation = &update.update.plan().operation_id;
+    let selection = installations::load(&store.profile)?.ok_or_else(|| crate::err("UPDATE_ACTIVATION_INVALID"))?;
+    if selection.0.active_id != selected.active_id || serde_json::to_vec(&selection.0).ok()!=serde_json::to_vec(selected).ok() {
+        return Err(crate::err("UPDATE_ACTIVATION_CHANGED"));
+    }
+    let mut found = None;
+    for rollback in [false, true] {
+        for path in activation_roots(store, operation, rollback)? {
+            if !path.join("intent.json").exists() { continue; }
+            let intent: Intent = serde_json::from_slice(&private_read(&path.join("intent.json"))?)
+                .map_err(|_| crate::err("UPDATE_ACTIVATION_INVALID"))?;
+            if !current_activation(store, &intent) { continue; }
+            let activation = Activation::load_root(store, operation, rollback, path)?;
+            if activation.root.join("selection-restored.json").exists() { continue; }
+            if activation.root.join("completed.json").exists() {
+                activation.complete(store)?;
+                continue;
+            }
+            if selection.1 != activation.original && selection.1 != activation.candidate {
+                return Err(crate::err("UPDATE_ACTIVATION_CHANGED"));
+            }
+            if selection.1 == activation.candidate
+                && private_read(&activation.root.join("selection-started.json"))? != activation.intent.head.as_bytes() {
+                return Err(crate::err("UPDATE_ACTIVATION_CHANGED"));
+            }
+            // The immediately following record must be the recorded health or existing failure recovery.
+            if store.current.generation != activation.intent.generation {
+                let completed = matches!(&store.current.update_event, Some(UpdateEvent::Health(h)) if **h==activation.intent.health)
+                    && update.update.stage()==activation.intent.completed();
+                let failed = matches!(store.current.update_event, Some(UpdateEvent::Interrupted|UpdateEvent::InterruptedRestoration|UpdateEvent::UpdateFailed|UpdateEvent::RecoveryFailed))
+                    && update.update.stage()==Stage::RecoveryRequired;
+                if !completed && !failed { return Err(crate::err("UPDATE_ACTIVATION_CHANGED")); }
+            }
+            if found.replace((operation.clone(), rollback)).is_some() { return Err(crate::err("UPDATE_ACTIVATION_INVALID")); }
+        }
+    }
+    Ok(found)
 }
 impl Store {
     /// Explicit metadata reconciliation only: never execute/replay runtime or health.
@@ -1125,6 +1207,68 @@ mod tests {
             ready: true,
         };
         (p, store, health)
+    }
+    #[test]
+    fn rollback_pending_routes_exact_candidate_and_retry_keeps_previous_attempt_immutable() {
+        let (p, store, health) = rollback_fixture();
+        let original = installations::load(&p).unwrap().unwrap().1;
+        let first = Activation::prepare_rollback(&store, &original, &health).unwrap();
+        let first_intent = private_read(&first.root.join("intent.json")).unwrap();
+        first.publish_selection(&store).unwrap();
+        let selected = installations::load(&p).unwrap().unwrap().0;
+        assert_ne!(store.bound_source_id(&selected).unwrap(), selected.active_id);
+        assert_eq!(pending_activation(&store, &selected).unwrap(), Some((health.operation_id.clone(), true)));
+        let context = store.rollback_handoff_context(&selected.active_id).unwrap().unwrap();
+        assert!(context.can_complete_restored && context.selection_reconciliation_required);
+        let initial_generation=store.current.generation;
+        drop(store);
+        // The normal controller can discover the original authority even before Health commits.
+        let controller=installations::InstallationController::new(p.clone(),None).unwrap();
+        let context=controller.context().unwrap();
+        let status=controller.update_status(&context.selection_token).unwrap();
+        assert_eq!(status.installation_id,health.instance_id);
+        assert_eq!(status.generation,Some(initial_generation));
+        drop(controller);
+        let mut store=Store::open_for_prepared_handoff(&p,"default").unwrap();
+        assert_eq!(store.current.generation,initial_generation);
+        store.recover_rollback_handoff_interruption().unwrap();
+        let retained=store.intent().unwrap().update.interrupted_restoration().unwrap().clone();
+        store.reconcile_rollback_selection_activation(&health.operation_id).unwrap();
+        assert_eq!(installations::load(&p).unwrap().unwrap().1,original);
+        store.resume_restored_runtime(&health.operation_id,store.current.generation,retained,super::super::owned_execution::release_now().unwrap()).unwrap();
+        let second=Activation::prepare_rollback(&store,&original,&health).unwrap();
+        assert_ne!(first.root,second.root);
+        assert_eq!(private_read(&first.root.join("intent.json")).unwrap(),first_intent);
+        assert!(first.root.join("selection-restored.json").exists());
+        second.publish_selection(&store).unwrap();
+        store.observe_health(&health.operation_id,store.current.generation,health.clone(),super::super::owned_execution::release_now().unwrap()).unwrap();
+        assert!(second.complete(&store).unwrap().selection_completed);
+        assert_eq!(Activation::load(&store,&health.operation_id,true).unwrap().root,second.root);
+        assert_eq!(private_read(&first.root.join("intent.json")).unwrap(),first_intent);
+        drop(store);
+        fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+    #[test]
+    fn legacy_rollback_activation_remains_readable_and_unrelated_selection_is_not_routing_proof() {
+        let (p,mut store,health)=rollback_fixture();
+        let original=installations::load(&p).unwrap().unwrap().1;
+        let mut activation=Activation::prepare_rollback(&store,&original,&health).unwrap();
+        let legacy=root(&store,&health.operation_id,true).unwrap();
+        fs::rename(&activation.root,&legacy).unwrap();
+        activation.root=legacy.clone();
+        activation.publish_selection(&store).unwrap();
+        let selected=installations::load(&p).unwrap().unwrap().0;
+        assert!(pending_activation(&store,&selected).unwrap().is_some());
+        let mut unknown: installations::Registry=serde_json::from_slice(&serde_json::to_vec(&selected).unwrap()).unwrap();unknown.installations[0].created_at+=1;
+        assert!(pending_activation(&store,&unknown).is_err());
+        store.observe_health(&health.operation_id,store.current.generation,health.clone(),super::super::owned_execution::release_now().unwrap()).unwrap();
+        assert_eq!(Activation::load(&store,&health.operation_id,true).unwrap().root,legacy);
+        let pending_context=store.rollback_handoff_context(&health.instance_id).unwrap().unwrap();
+        assert!(pending_context.can_complete_restored && pending_context.selection_reconciliation_required);
+        assert!(activation.complete(&store).unwrap().selection_completed);
+        assert!(store.rollback_handoff_context(&health.instance_id).unwrap().is_none());
+        drop(store);
+        fs::remove_dir_all(p.parent().unwrap()).unwrap();
     }
     #[test]
     fn activation_rollback_completion_preserves_original_selection_and_authority_scope() {
