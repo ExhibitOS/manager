@@ -186,6 +186,18 @@ pub fn inspect_update_status(profile: &Path, installation: &str) -> Result<Updat
             write_uncertain: store.receipt().write_uncertain })
     }
 }
+/// Read-only current intent projection for native reference selection; no saved receipt is an execution permit.
+pub(crate) fn inspect_prepared_apply(profile:&Path,scope:&str)->Result<Option<(crate::update::Plan,u64,String,String,u64)>,Error> {
+ #[cfg(windows)] {let _=(profile,scope);return Err(Error::TrustPlatformUnverified);}
+ #[cfg(not(windows))] {
+ let store=match Store::open_for_inspection(profile,scope){Ok(s)=>s,Err(Error::TrustMissing)=>return Ok(None),Err(e)=>return Err(e)};
+ let Some(intent)=store.intent() else{return Ok(None)};
+ if intent.update.stage()!=crate::update::Stage::Prepared||store.receipt().write_uncertain{return Ok(None)}
+ let envelope:Envelope=serde_json::from_str(&intent.envelope).map_err(|_|invalid())?;
+ let release:Release=serde_json::from_str(&envelope.payload).map_err(|_|invalid())?;
+ Ok(Some((intent.update.plan().clone(),store.receipt().generation,release.version,release.artifact.sha256,release.artifact.bytes)))
+ }
+}
 /// Holds the stable profile fence exclusively through verification/publication.
 /// Open never bootstraps missing/corrupt trust. The caller selects default or a
 /// registered installation UUID and must preserve that scope through recovery.
@@ -2129,3 +2141,7 @@ mod tests {
 
 #[cfg(unix)]
 pub use owned_execution::InterruptedRecoveryInputs;
+
+#[cfg(all(test, unix))]
+#[path = "registered_update_tests.rs"]
+mod registered_update_tests;

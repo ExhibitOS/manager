@@ -5,6 +5,8 @@ fn main() {
             "manager_status",
             "manager_update_status",
             "manager_update_cancel",
+            "manager_update_references",
+            "manager_update_apply",
             "manager_detect",
             "manager_install",
             "manager_action",
