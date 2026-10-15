@@ -61,6 +61,7 @@ mod selection_activation;
 pub use selection_activation::SelectionActivationReceipt;
 #[path = "authority_selection.rs"]
 mod authority_selection;
+pub(crate) use authority_selection::{resolve_selected_scope, inspect_rollback_context};
 #[path = "trust_checkpoint.rs"]
 mod trust_checkpoint;
 pub use trust_checkpoint::binding::{
@@ -184,6 +185,20 @@ pub fn inspect_update_status(profile: &Path, installation: &str) -> Result<Updat
             changed_schema: intent.is_some_and(|u| u.plan().source_schema != u.plan().target_schema),
             write_uncertain: store.receipt().write_uncertain })
     }
+}
+/// Read-only current intent projection for native reference selection; no saved receipt is an execution permit.
+type PreparedApplyInspection = (crate::update::Plan,u64,String,String,u64);
+pub(crate) fn inspect_prepared_apply(profile:&Path,scope:&str)->Result<Option<PreparedApplyInspection>,Error> {
+ // Unsupported execution is an empty capability projection, not a status-query failure.
+ #[cfg(windows)] {let _=(profile,scope);Ok(None)}
+ #[cfg(not(windows))] {
+ let store=match Store::open_for_inspection(profile,scope){Ok(s)=>s,Err(Error::TrustMissing)=>return Ok(None),Err(e)=>return Err(e)};
+ let Some(intent)=store.intent() else{return Ok(None)};
+ if intent.update.stage()!=crate::update::Stage::Prepared||store.receipt().write_uncertain{return Ok(None)}
+ let envelope:Envelope=serde_json::from_str(&intent.envelope).map_err(|_|invalid())?;
+ let release:Release=serde_json::from_str(&envelope.payload).map_err(|_|invalid())?;
+ Ok(Some((intent.update.plan().clone(),store.receipt().generation,release.version,release.artifact.sha256,release.artifact.bytes)))
+ }
 }
 /// Holds the stable profile fence exclusively through verification/publication.
 /// Open never bootstraps missing/corrupt trust. The caller selects default or a
@@ -913,12 +928,17 @@ impl Store {
             } else { authority_recovery_vault::Vault::open_for(&s)? };
         }
         s.check_root()?;
-        if recover_interruption && s.intent().is_some_and(|i| in_flight(i.update.stage())) {
+        if recover_interruption { s.recover_rollback_handoff_interruption()?; }
+        Ok(s)
+    }
+    /// Existing cold-open transition, invoked explicitly only after frozen handoff checks.
+    pub(crate) fn recover_rollback_handoff_interruption(&mut self) -> Result<(), Error> {
+        if self.intent().is_some_and(|i| in_flight(i.update.stage())) {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|_| invalid())?
                 .as_secs();
-            let mut next = s.current.clone();
+            let mut next = self.current.clone();
             let core = &mut next.intent.as_mut().ok_or_else(invalid)?.update;
             if core.stage() == crate::update::Stage::AwaitingRollbackHealth
                 && core.restore_candidate().is_some()
@@ -930,9 +950,9 @@ impl Store {
                 core.recover_after_restart().map_err(|_| invalid())?;
                 next.update_event = Some(UpdateEvent::Interrupted);
             }
-            s.commit(next, now)?;
+            self.commit(next, now)?;
         }
-        Ok(s)
+        Ok(())
     }
     pub fn policy(&self) -> &Policy {
         &self.current.policy
@@ -2270,6 +2290,37 @@ mod windows_status_handoff_tests {
         cleanup(parent);
     }
     #[test]
+    fn windows_scope_routing_inspects_inflight_history_and_keeps_unsupported_execution_closed() {
+        let (parent,profile,mut store,verified)=prepared();
+        store.begin_update(observations(),&verified,21).unwrap();
+        let root=store.root.clone();let generation=store.current.generation;
+        let record=fs::read(root.join(format!("{generation:020}.json"))).unwrap();
+        drop(store);
+        let controller=installations::InstallationController::new(profile.clone(),None).unwrap();
+        let context=controller.context().unwrap();
+        let registry=installations::load(&profile).unwrap().unwrap().0;
+        assert_eq!(resolve_selected_scope(&profile,&registry).unwrap(),"default");
+        let status=controller.update_status(&context.selection_token).unwrap();
+        assert_eq!(status.stage,Some(crate::update::Stage::Applying));
+        assert_eq!(status.generation,Some(generation));
+        assert!(controller.update_apply_references(&context.selection_token).unwrap().is_empty());
+        assert!(controller.update_rollback_context(&context.selection_token).unwrap().is_none());
+        assert_eq!(fs::read(root.join(format!("{generation:020}.json"))).unwrap(),record);
+        assert!(!root.join(format!("{:020}.json",generation+1)).exists());
+        assert_eq!(crate::update_execution_handoff::execute(&profile,"not-a-request").unwrap_err().code,"UPDATE_TRUST_PLATFORM_UNVERIFIED");
+        assert_eq!(crate::update_rollback_handoff::execute(&profile,"not-a-request").unwrap_err().code,"UPDATE_TRUST_PLATFORM_UNVERIFIED");
+        drop(controller);cleanup(parent);
+    }
+    #[test]
+    fn windows_scope_routing_rejects_two_verified_namespaces_for_same_selection() {
+        let (parent,profile,store,_)=prepared();
+        let policy=store.current.policy.clone();drop(store);
+        let registry=installations::load(&profile).unwrap().unwrap().0;
+        let extra=Store::provision(&profile,&registry.active_id,policy,30).unwrap();drop(extra);
+        assert_eq!(resolve_selected_scope(&profile,&registry).unwrap_err().code,"UPDATE_AUTHORITY_UNAVAILABLE");
+        cleanup(parent);
+    }
+    #[test]
     fn windows_prepared_cancel_waits_for_manager_exit_preserves_history_and_refuses_replay_or_overwrite() {
         let (parent, profile, store, _) = prepared();
         let root = store.root.clone();
@@ -2334,3 +2385,11 @@ mod windows_status_handoff_tests {
         cleanup(parent);
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "registered_update_tests.rs"]
+mod registered_update_tests;
+
+#[cfg(all(test, unix))]
+#[path = "rollback_handoff_tests.rs"]
+mod rollback_handoff_tests;

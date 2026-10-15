@@ -98,7 +98,7 @@ pub fn execute(profile:&Path,id:&str)->Result<()> {
  #[cfg(windows)]
  let request_guard=handoff_guard.read_record(&name)?;
  let request:Request=read(&root,&name)?;validate(&request.input)?;
- if request.id!=id||!installations::uuid(&request.installation_id)|| !(request.scope=="default"||request.scope==request.installation_id){return Err(err("UPDATE_HANDOFF_INVALID"));}
+ if request.id!=id||!installations::uuid(&request.installation_id)|| !(request.scope=="default"||installations::uuid(&request.scope)){return Err(err("UPDATE_HANDOFF_INVALID"));}
  let bytes=installation_backup::source_bytes(&root,&name,LIMIT as u64,true)?;
  let mut receipt=Receipt{id:id.into(),installation_id:request.installation_id.clone(),state:"failed".into(),code:None,created_at:request.created_at,request_sha256:digest(&bytes)};
  if root.join(format!("{id}.outcome.json")).exists()||root.join(format!("{id}.claim.json")).exists(){return Err(err("UPDATE_HANDOFF_ALREADY_CLAIMED"));}
@@ -117,13 +117,13 @@ pub fn execute(profile:&Path,id:&str)->Result<()> {
  let result=(||->Result<()> {
  let (registry,original)=installations::load(profile)?.ok_or_else(||err("UPDATE_HANDOFF_SELECTION_CHANGED"))?;
  let entry=registry.installations.iter().find(|e|e.id==request.installation_id).ok_or_else(||err("UPDATE_HANDOFF_SELECTION_CHANGED"))?;
- let scope=if entry.kind=="default"{"default"}else{&entry.id};
- if registry.active_id!=entry.id||scope!=request.scope||digest(&original)!=request.registry_sha256 {return Err(err("UPDATE_HANDOFF_SELECTION_CHANGED"));}
+ if registry.active_id!=entry.id||digest(&original)!=request.registry_sha256 {return Err(err("UPDATE_HANDOFF_SELECTION_CHANGED"));}
  #[cfg(windows)] {
   request_guard.check()?;
   profile_guard.check_record(&operation,"operation.lock")?;
   handoff_guard.check()?;
  }
+ store.verify_bound_selected(&registry)?;
  store.discard_prepared(&request.input.operation_id,request.input.generation,now()).map_err(|e|err(e.code()))?;Ok(())
  })();
  drop(operation);

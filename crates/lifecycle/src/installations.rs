@@ -473,8 +473,8 @@ impl InstallationController {
         if registry.active_id != entry.id || root(&profile.root, entry) != current.path {
             return Err(err("INSTALLATION_SELECTION_CHANGED"));
         }
-        let scope = if entry.kind == "default" { "default" } else { &entry.id };
-        let mut status = crate::signed_release::trust::inspect_update_status(&profile.root, scope)
+        let scope = crate::signed_release::trust::resolve_selected_scope(&profile.root, &registry)?;
+        let mut status = crate::signed_release::trust::inspect_update_status(&profile.root, &scope)
             .map_err(|error| err(error.code()))?;
         status.installation_id = entry.id.clone();
         Ok(status)
@@ -492,9 +492,72 @@ impl InstallationController {
         let entry = registry.installations.iter().find(|entry| entry.id == current.entry.id).ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
         if registry.active_id != entry.id || root(&profile.root, entry) != current.path { return Err(err("INSTALLATION_SELECTION_CHANGED")); }
         let receipt = if let Some(input) = input {
-            let scope = if entry.kind == "default" { "default" } else { &entry.id };
-            Some(crate::update_handoff::prepare(&profile.root, &entry.id, scope, &bytes, input)?)
+            let scope = crate::signed_release::trust::resolve_selected_scope(&profile.root, &registry)?;
+            Some(crate::update_handoff::prepare(&profile.root, &entry.id, &scope, &bytes, input)?)
         } else { crate::update_handoff::latest(&profile.root, &entry.id)? };
+        Ok((profile.root.clone(), receipt))
+    }
+    pub fn update_apply_references(&self,token:&str)->Result<Vec<crate::update_execution_handoff::ReferenceSummary>> {
+        let current=self.current.try_read().map_err(|_|err("BUSY"))?;
+        if !uuid(token)||current.token!=token{return Err(err("INSTALLATION_SELECTION_CHANGED"));}
+        let profile=self.profile.as_ref().ok_or_else(||err("UPDATE_PROFILE_UNAVAILABLE"))?;
+        let lock = super::profile_backup::inspect_operation_lock(&profile.root)?;
+        #[cfg(windows)]
+        let _lock = lock;
+        #[cfg(not(windows))]
+        let _lock = OperationGuard(lock);
+        let (registry,bytes)=load(&profile.root)?.ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
+        let entry=registry.installations.iter().find(|e|e.id==current.entry.id).ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
+        if registry.active_id!=entry.id||root(&profile.root,entry)!=current.path{return Err(err("INSTALLATION_SELECTION_CHANGED"));}
+        let scope=crate::signed_release::trust::resolve_selected_scope(&profile.root,&registry)?;
+        crate::execution_reference::list(&profile.root,&entry.id,&scope,&bytes)
+    }
+    pub fn update_apply_handoff(&self,token:&str,input:Option<crate::update_execution_handoff::ApplyInput>)->Result<(PathBuf,Option<crate::update_execution_handoff::Receipt>)> {
+        let current=self.current.try_read().map_err(|_|err("BUSY"))?;
+        if !uuid(token)||current.token!=token{return Err(err("INSTALLATION_SELECTION_CHANGED"));}
+        let profile=self.profile.as_ref().ok_or_else(||err("UPDATE_PROFILE_UNAVAILABLE"))?;
+        let lock = super::profile_backup::inspect_operation_lock(&profile.root)?;
+        #[cfg(windows)]
+        let _lock = lock;
+        #[cfg(not(windows))]
+        let _lock = OperationGuard(lock);
+        let(registry,bytes)=load(&profile.root)?.ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
+        let entry=registry.installations.iter().find(|e|e.id==current.entry.id).ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
+        if registry.active_id!=entry.id||root(&profile.root,entry)!=current.path{return Err(err("INSTALLATION_SELECTION_CHANGED"));}
+        let receipt=if let Some(input)=input{let scope=crate::signed_release::trust::resolve_selected_scope(&profile.root,&registry)?;Some(crate::update_execution_handoff::prepare(&profile.root,&entry.id,&scope,&bytes,input)?)}else{crate::update_execution_handoff::latest(&profile.root,&entry.id)?};
+        Ok((profile.root.clone(),receipt))
+    }
+    pub fn update_rollback_context(&self, token: &str) -> Result<Option<crate::update_rollback_handoff::RollbackContext>> {
+        let current = self.current.try_read().map_err(|_| err("BUSY"))?;
+        if !uuid(token) || current.token != token { return Err(err("INSTALLATION_SELECTION_CHANGED")); }
+        let profile = self.profile.as_ref().ok_or_else(|| err("UPDATE_PROFILE_UNAVAILABLE"))?;
+        let lock = super::profile_backup::inspect_operation_lock(&profile.root)?;
+        #[cfg(windows)]
+        let _lock = lock;
+        #[cfg(not(windows))]
+        let _lock = OperationGuard(lock);
+        let (registry, _) = load(&profile.root)?.ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
+        let entry = registry.installations.iter().find(|e| e.id == current.entry.id).ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
+        if registry.active_id != entry.id || root(&profile.root, entry) != current.path { return Err(err("INSTALLATION_SELECTION_CHANGED")); }
+        let scope = crate::signed_release::trust::resolve_selected_scope(&profile.root, &registry)?;
+        crate::signed_release::trust::inspect_rollback_context(&profile.root, &scope, &entry.id)
+    }
+    pub fn update_rollback_handoff(&self, token: &str, input: Option<crate::update_rollback_handoff::RollbackInput>) -> Result<(PathBuf, Option<crate::update_rollback_handoff::Receipt>)> {
+        let current = self.current.try_read().map_err(|_| err("BUSY"))?;
+        if !uuid(token) || current.token != token { return Err(err("INSTALLATION_SELECTION_CHANGED")); }
+        let profile = self.profile.as_ref().ok_or_else(|| err("UPDATE_PROFILE_UNAVAILABLE"))?;
+        let lock = super::profile_backup::inspect_operation_lock(&profile.root)?;
+        #[cfg(windows)]
+        let _lock = lock;
+        #[cfg(not(windows))]
+        let _lock = OperationGuard(lock);
+        let (registry, bytes) = load(&profile.root)?.ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
+        let entry = registry.installations.iter().find(|e| e.id == current.entry.id).ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
+        if registry.active_id != entry.id || root(&profile.root, entry) != current.path { return Err(err("INSTALLATION_SELECTION_CHANGED")); }
+        let receipt = if let Some(input) = input {
+            let scope = crate::signed_release::trust::resolve_selected_scope(&profile.root, &registry)?;
+            Some(crate::update_rollback_handoff::prepare(&profile.root, &entry.id, &scope, &bytes, input)?)
+        } else { crate::update_rollback_handoff::latest(&profile.root, &entry.id)? };
         Ok((profile.root.clone(), receipt))
     }
     /// The read guard spans the entire IPC task; selection cannot race any in-flight request.

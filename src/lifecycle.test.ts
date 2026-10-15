@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import {describe,it,expect} from 'vitest';
-import {parseUpdateCancelReceipt,validUpdateCancelInput,parseUpdateStatus,parseRetryDiagnosis,parseRetryRecoveryReceipt,validRetryDiagnosisInput,parseMaintenanceRetry,parseRetryReceipt,validBackupRetryInput,validRestorationRetryInput,parseMaintenanceContext,validReconciliationInput,parseReconciliationReceipt,parseReconciliationJob,parseInstallationContext,parseJob,parseStatus,managerError,formatBytes,statusLabel,validVerificationInput,parseVerificationReceipt,validCreationInput,parseCreationReceipt,parseBackupJob,validRestorationInput,parseRestorationContext,parseRestorationReceipt} from './lifecycle';
+import {parseUpdateRollbackContext,validUpdateRollbackInput,parseUpdateRollbackReceipt,parseUpdateReferences,validUpdateApplyInput,parseUpdateApplyReceipt,parseUpdateCancelReceipt,validUpdateCancelInput,parseUpdateStatus,parseRetryDiagnosis,parseRetryRecoveryReceipt,validRetryDiagnosisInput,parseMaintenanceRetry,parseRetryReceipt,validBackupRetryInput,validRestorationRetryInput,parseMaintenanceContext,validReconciliationInput,parseReconciliationReceipt,parseReconciliationJob,parseInstallationContext,parseJob,parseStatus,managerError,formatBytes,statusLabel,validVerificationInput,parseVerificationReceipt,validCreationInput,parseCreationReceipt,parseBackupJob,validRestorationInput,parseRestorationContext,parseRestorationReceipt} from './lifecycle';
 const status={installed:false,bundleId:null,version:null,state:'not_installed',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0,quotaBytes:5368709120},activeJob:null};
 describe('Manager lifecycle boundary',()=>{
  it('preserves unknown storage/readiness without claiming success',()=>{const value=parseStatus(status);expect(formatBytes(value.storage.usedBytes)).toBe('측정할 수 없음');expect(value.readiness.ready).toBe(false);expect(statusLabel(value.state)).toBe('설치 전');});
@@ -126,3 +126,41 @@ describe('Persisted signed update status',()=>{
 });
 
 it('binds prepared cancellation consent and preserves truthful helper results',()=>{const input={operationId:'update-1',generation:2,preserveData:true,closeAppAndCancel:true};expect(validUpdateCancelInput(input)).toBe(true);for(const bad of [{...input,preserveData:false},{...input,closeAppAndCancel:false},{...input,operationId:'/tmp/key'},{...input,generation:0}])expect(validUpdateCancelInput(bad)).toBe(false);const receipt={id:'12345678-1234-1234-1234-123456789012',installationId:'12345678-1234-1234-1234-123456789013',state:'uncertain',code:null,createdAt:1,requestSha256:'a'.repeat(64)};expect(parseUpdateCancelReceipt(receipt)?.state).toBe('uncertain');expect(parseUpdateCancelReceipt(null)).toBe(null);for(const bad of [{...receipt,state:'complete'},{...receipt,state:'failed'},{...receipt,state:'cancelled',code:'FAILED'},{...receipt,command:'rm -rf /'},{...receipt,code:'/tmp/key'}])expect(()=>parseUpdateCancelReceipt(bad)).toThrow();});
+
+
+describe('Registered update application boundary',()=>{
+ const reference={referenceId:'12345678-1234-1234-1234-123456789012',operationId:'update-1',generation:2,version:'1.2.3',sourceSchema:'a'.repeat(64),targetSchema:'a'.repeat(64),changedSchema:false,priorQualificationRecorded:true,executionRequalificationRequired:true};
+ it('treats stored qualification as a reference, never execution approval',()=>{
+  expect(parseUpdateReferences([reference])).toHaveLength(1);
+  for(const rows of [[reference,reference],[{...reference,keyFile:'/private/key'}],[{...reference,executionRequalificationRequired:false}],[{...reference,targetSchema:'b'.repeat(64)}],[{...reference,referenceId:'/private/ref'}],[{...reference,generation:Number.MAX_SAFE_INTEGER+1}]])expect(()=>parseUpdateReferences(rows)).toThrow('MANAGER_PROTOCOL');
+ });
+ it('requires bound operation and explicit close/preservation/writer consent',()=>{
+  const input={referenceId:reference.referenceId,operationId:reference.operationId,generation:2,preserveData:true,closeAppAndApply:true,externalWritersQuiesced:true};
+  expect(validUpdateApplyInput(input)).toBe(true);
+  for(const bad of [{...input,preserveData:false},{...input,closeAppAndApply:false},{...input,externalWritersQuiesced:false},{...input,generation:0},{...input,referenceId:'/private/key'}])expect(validUpdateApplyInput(bad)).toBe(false);
+ });
+ it('does not mistake pending or uncertain handoff for updated',()=>{
+  const receipt={id:reference.referenceId,installationId:'12345678-1234-1234-1234-123456789013',state:'uncertain',code:null,createdAt:1,requestSha256:'a'.repeat(64)};
+  expect(parseUpdateApplyReceipt(receipt)?.state).toBe('uncertain');expect(parseUpdateApplyReceipt(null)).toBeNull();
+  for(const bad of [{...receipt,state:'complete'},{...receipt,state:'updated',code:'ERROR'},{...receipt,state:'failed'},{...receipt,command:'run'},{...receipt,code:'/private/key'}])expect(()=>parseUpdateApplyReceipt(bad)).toThrow('MANAGER_PROTOCOL');
+ });
+});
+
+describe('Original full rollback boundary',()=>{
+ const context={installationId:'12345678-1234-1234-1234-123456789012',operationId:'update-1',generation:3,stage:'recovery_required',backupId:'backup-1',sourceImage:'a'.repeat(64),sourceSchema:'b'.repeat(64),backupManifest:'c'.repeat(64),sourceInventory:'d'.repeat(64),canRestoreOriginal:true,canCompleteRestored:false,selectionReconciliationRequired:false};
+ const input={action:'restoreOriginal' as const,operationId:'update-1',generation:3,maintenanceImage:image,keyFile:'/private/key',archive:'/private/archive',port:18080,preserveData:true,closeAppAndRollback:true,externalWritersQuiesced:true};
+ it('accepts source-bound context and rejects forged paths, stale shapes and no available action',()=>{
+  expect(parseUpdateRollbackContext(null)).toBeNull();expect(parseUpdateRollbackContext(context)?.backupId).toBe('backup-1');
+  for(const bad of [{...context,archive:'/private/archive'},{...context,sourceImage:'tag:latest'},{...context,generation:0},{...context,canRestoreOriginal:false},{...context,canCompleteRestored:'true'},{...context,operationId:'shell run'}])expect(()=>parseUpdateRollbackContext(bad)).toThrow('MANAGER_PROTOCOL');
+ });
+ it('requires explicit original-preservation and downtime consent and separates restored completion input',()=>{
+  expect(validUpdateRollbackInput(input)).toBe(true);
+  for(const bad of [{...input,preserveData:false},{...input,closeAppAndRollback:false},{...input,externalWritersQuiesced:false},{...input,port:80},{...input,keyFile:'key bytes'},{...input,maintenanceImage:'tag:latest'},{...input,generation:Number.MAX_SAFE_INTEGER+1}])expect(validUpdateRollbackInput(bad)).toBe(false);
+  const complete={...input,action:'completeRestored' as const,keyFile:null,archive:null,port:null};expect(validUpdateRollbackInput(complete)).toBe(true);expect(validUpdateRollbackInput({...complete,keyFile:'/private/key'})).toBe(false);
+ });
+ it('keeps pending and uncertainty distinct from completed rollback',()=>{
+  const receipt={id:context.installationId,installationId:context.installationId,state:'awaiting-app-close',code:null,createdAt:1,requestSha256:'e'.repeat(64)};
+  expect(parseUpdateRollbackReceipt(receipt)?.state).toBe('awaiting-app-close');expect(parseUpdateRollbackReceipt(null)).toBeNull();expect(parseUpdateRollbackReceipt({...receipt,state:'uncertain'})?.state).toBe('uncertain');
+  for(const bad of [{...receipt,state:'completed'},{...receipt,state:'failed'},{...receipt,state:'rolled-back',code:'FAILED'},{...receipt,archive:'/private/archive'}])expect(()=>parseUpdateRollbackReceipt(bad)).toThrow('MANAGER_PROTOCOL');
+ });
+});

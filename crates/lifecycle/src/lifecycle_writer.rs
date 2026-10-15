@@ -7,14 +7,14 @@ use std::collections::BTreeMap;
 fn unavailable() -> LifecycleError {
     crate::err("UPDATE_AUTHORITY_UNAVAILABLE")
 }
-fn present(path: &Path) -> crate::Result<bool> {
+pub(super) fn present(path: &Path) -> crate::Result<bool> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(_) => Err(unavailable()),
     }
 }
-fn namespaces(profile: &Path, installation: &str) -> crate::Result<(PathBuf, PathBuf)> {
+pub(super) fn namespaces(profile: &Path, installation: &str) -> crate::Result<(PathBuf, PathBuf)> {
     #[cfg(windows)]
     {
         let (primary,id)=windows_root::namespace(profile,installation).map_err(|_|unavailable())?;
