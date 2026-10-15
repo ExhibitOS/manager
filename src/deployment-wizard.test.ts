@@ -19,6 +19,18 @@ describe('Deployment preparation without execution authority',()=>{
   const keyed=deploymentDescriptor({...server,database:{source:'os-keychain',service:'exhibitos.deployment',account:'database'},ssh:{source:'os-keychain',service:'exhibitos.deployment',account:'ssh'}},id,date);
   expect(keyed.secretRefs).toHaveLength(2);expect(descriptorText(keyed)).not.toContain('passwordValue');
  });
+ it('preserves packager content IDs through the local and vendored server contracts',async()=>{
+  const contentId='sha256:'+'b'.repeat(64);
+  const local=deploymentDescriptor({mode:'local',image:contentId,database},id,date);
+  const remote=deploymentDescriptor({...server,image:contentId},id,date);
+  expect(local.runtime.image).toBe(contentId);expect(remote.runtime.image).toBe(contentId);
+  const {validateSshDescriptor}=await import(new URL('../vendor/deployment/src/generic-ssh.mjs',import.meta.url).href);
+  expect(validateSshDescriptor(remote).runtime.image).toBe(contentId);
+  for(const invalid of ['sha256:'+'0'.repeat(64),contentId+'\n',contentId+' ',contentId.toUpperCase(),'sha256:'+'b'.repeat(63)]){
+   expect(()=>deploymentDescriptor({...server,image:invalid},id,date)).toThrow('DEPLOYMENT_INPUT_INVALID');
+   expect(()=>validateSshDescriptor({...remote,runtime:{...remote.runtime,image:invalid}})).toThrow('SSH_RUNTIME_UNSUPPORTED');
+  }
+ });
  it('refuses unpinned/synthetic images, remote command fields, root user and invalid ports',()=>{
   for(const input of [{...server,image:'ghcr.io/exhibitos/platform:latest'},{...server,image:image.replace(/a{64}/,'0'.repeat(64))},{...server,user:'root'},{...server,host:'host; command'},{...server,port:0},{...server,port:65536},{...server,command:'echo synthetic'}])expect(()=>deploymentDescriptor(input,id,date)).toThrow('DEPLOYMENT_INPUT_INVALID');
   expect(()=>deploymentDescriptor(server,id,'2026-02-30T00:00:00Z')).toThrow();

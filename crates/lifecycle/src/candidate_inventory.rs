@@ -124,7 +124,7 @@ pub(super) struct RetainedCandidateLease {
     target: LifecycleService,
     source_lock: crate::OperationGuard,
     target_lock: crate::OperationGuard,
-    root_identity: Metadata,
+    root_identity: DirectoryIdentity,
     workspace: PathBuf,
     receipt_bytes: Vec<u8>,
     raw: Vec<u8>,
@@ -145,15 +145,12 @@ fn check_operation_guard(
         fs::symlink_metadata(&path).map_err(|_| crate::err("UPDATE_FENCE_UNAVAILABLE"))?;
     if !current.is_file()
         || current.file_type().is_symlink()
-        || !identity(
-            &current,
-            &guard
-                .metadata()
-                .map_err(|_| crate::err("UPDATE_FENCE_UNAVAILABLE"))?,
-        )
+
     {
         return Err(crate::err("UPDATE_FENCE_UNAVAILABLE"));
     }
+    #[cfg(not(windows))]
+    if !identity(&current,&guard.metadata().map_err(|_| crate::err("UPDATE_FENCE_UNAVAILABLE"))?) { return Err(crate::err("UPDATE_FENCE_UNAVAILABLE")); }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -170,24 +167,20 @@ impl RetainedCandidateLease {
         check_operation_guard(source, &self.source_lock)?;
         check_operation_guard(&self.target, &self.target_lock)?;
         installations::private_directory(&self.target.root)?;
-        if !identity(
-            &self.root_identity,
-            &fs::symlink_metadata(&self.target.root)
-                .map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?,
-        ) {
+        if !directory_matches(&self.root_identity,&self.target.root)? {
             return Err(crate::err("UPDATE_TARGET_CHANGED"));
         }
         Ok(())
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) fn target(&self) -> &LifecycleService {
         &self.target
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) fn stopped(&self) -> (&SourceStoppedReceipt, &SourceStoppedReceipt) {
         (&self.source_before, &self.candidate_before)
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) fn authenticated_raw(&self) -> crate::Result<&[u8]> {
         if crate::installation_backup::source_bytes(
             &self.workspace.join("authenticated"),
@@ -200,8 +193,8 @@ impl RetainedCandidateLease {
         }
         Ok(&self.raw)
     }
-    #[cfg(unix)]
-    pub(super) fn manifest_input(&self) -> crate::Result<File> {
+    #[cfg(any(unix, windows))]
+    pub(super) fn manifest_input(&self) -> crate::Result<super::native_inventory::InputFile> {
         if crate::installation_backup::source_bytes(
             &self.workspace.join("authenticated"),
             "manifest.json",
@@ -222,11 +215,7 @@ impl RetainedCandidateLease {
         if !same_stopped(&self.source_before, &source_after)
             || !same_stopped(&self.candidate_before, &candidate_after)
             || !isolated(&source_after, &candidate_after)
-            || !identity(
-                &self.root_identity,
-                &fs::symlink_metadata(&self.target.root)
-                    .map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?,
-            )
+            || !directory_matches(&self.root_identity,&self.target.root)?
             || self
                 .target
                 .restoration_status()?
@@ -256,7 +245,7 @@ impl RetainedCandidateLease {
         check_operation_guard(source, &self.source_lock)?;
         check_operation_guard(&self.target, &self.target_lock)
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) fn root(&self) -> &Path {
         &self.target.root
     }
@@ -317,7 +306,7 @@ impl ExecutionSession<'_> {
         check_operation_guard(&self.source, &source_lock)?;
         check_operation_guard(&target, &target_lock)?;
         let root_before =
-            fs::symlink_metadata(&root).map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?;
+            directory_identity(&root)?;
         let job = target
             .restoration_status()?
             .filter(|j| j.state == "completed")
@@ -373,10 +362,7 @@ impl ExecutionSession<'_> {
         self.check()?;
         if !same_stopped(&source_before, &source_after)
             || !same_stopped(&candidate_before, &candidate_after)
-            || !identity(
-                &root_before,
-                &fs::symlink_metadata(&root).map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?,
-            )
+            || !directory_matches(&root_before,&root)?
             || crate::installation_backup::source_bytes(
                 &workspace,
                 "receipt.json",

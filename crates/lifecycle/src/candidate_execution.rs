@@ -29,7 +29,7 @@ struct CandidateState {
     frozen: Vec<(String, String)>,
 }
 impl ReadyCandidate<'_, '_, '_> {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn started_receipt_for_qualification(&self) -> Value {
         self.started.admission.receipt.clone()
     }
@@ -45,10 +45,13 @@ fn immutable(root: &Path, name: &str, bytes: &[u8]) -> Result<()> {
     if bytes.is_empty() || bytes.len() > LIMIT {
         return Err(err("UPDATE_DEPLOYMENT_INVALID"));
     }
-    let mut file = private_file(&root.join(name), true).map_err(|e| err(e.code()))?;
-    file.write_all(bytes)
-        .and_then(|_| file.sync_all())
-        .map_err(|_| err("UPDATE_DEPLOYMENT_UNCERTAIN"))?;
+    #[cfg(not(windows))]
+    {
+        let mut file = private_file(&root.join(name), true).map_err(|e| err(e.code()))?;
+        file.write_all(bytes).and_then(|_| file.sync_all()).map_err(|_| err("UPDATE_DEPLOYMENT_UNCERTAIN"))?;
+    }
+    #[cfg(windows)]
+    crate::write_private_new(root, name, bytes, LIMIT)?;
     sync_dir(root).map_err(|e| err(e.code()))
 }
 fn phase(root: &Path, name: &str, plan: &crate::update::Plan, generation: u64) -> Result<()> {
@@ -112,7 +115,7 @@ fn replacement(
 }
 struct Deployment {
     root: PathBuf,
-    bundle_identity: Metadata,
+    bundle_identity: DirectoryIdentity,
     manifest: BundleManifest,
     compose: Value,
     originals: Vec<(String, Vec<u8>)>,
@@ -152,8 +155,7 @@ impl Deployment {
         )?;
         let staged = Self {
             root: root.to_owned(),
-            bundle_identity: fs::symlink_metadata(&bundle)
-                .map_err(|_| err("UPDATE_TARGET_CHANGED"))?,
+            bundle_identity: directory_identity(&bundle)?,
             manifest: next,
             compose,
             originals,
@@ -163,11 +165,7 @@ impl Deployment {
     }
     fn check_parent(&self) -> Result<()> {
         installations::private_directory(&self.root.join("bundle"))?;
-        if !identity(
-            &self.bundle_identity,
-            &fs::symlink_metadata(self.root.join("bundle"))
-                .map_err(|_| err("UPDATE_TARGET_CHANGED"))?,
-        ) {
+        if !directory_matches(&self.bundle_identity,self.root.join("bundle"))? {
             return Err(err("UPDATE_TARGET_CHANGED"));
         }
         Ok(())
@@ -418,7 +416,7 @@ impl<'session, 'store, 'inputs> StartedUpdate<'session, 'store, 'inputs> {
         )?;
         if loaded["Id"] != image
             || loaded["Os"] != "linux"
-            || loaded["Architecture"] != "arm64"
+            || loaded["Architecture"] != super::super::super::prepared_oci::runtime_architecture(&self.admission.artifact.verified.release.target)?
             || loaded["RootFS"]["Layers"] != self.admission.oci.proof["layerDiffIds"]
         {
             return Err(err("IMAGE_INTEGRITY"));
@@ -791,7 +789,7 @@ impl ReadyCandidate<'_, '_, '_> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;

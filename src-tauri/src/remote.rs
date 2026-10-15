@@ -73,7 +73,8 @@ pub fn execute(resources:PathBuf,request:Request)->Result<serde_json::Value,Life
  let input=serde_json::to_vec(&request).map_err(|_|refused("SSH_REQUEST_INVALID"))?;if input.len()>131072{return Err(refused("SSH_REQUEST_TOO_LARGE"));}
  let mut command=Command::new(node);command.args(["--disable-proto=throw","--no-warnings"]).arg(resources.join("scripts/remote-runner.mjs")).env_clear().env("PATH","/usr/bin:/bin:/usr/sbin:/sbin").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
  if let Some(home)=std::env::var_os("HOME"){command.env("HOME",home);}
- if let Some(refs)=request.oed["secretRefs"].as_array(){for value in refs{if value["source"]=="environment"{let variable=value["variable"].as_str().ok_or_else(||refused("SSH_SECRET_REFERENCE_INVALID"))?;if !variable.starts_with("EXHIBITOS_")||variable.len()>80||!variable.bytes().all(|b|b.is_ascii_uppercase()||b.is_ascii_digit()||b==b'_'){return Err(refused("SSH_SECRET_REFERENCE_INVALID"));}if let Some(secret)=std::env::var_os(variable){command.env(variable,secret);}}}}
+ if let Some(refs)=request.oed["secretRefs"].as_array(){for value in refs{if value["source"]=="environment"{let variable=value["variable"].as_str().ok_or_else(||refused("SSH_SECRET_REFERENCE_INVALID"))?;if !variable.starts_with("EXHIBITOS_")||variable.len()>80||!variable.bytes().all(|b|b.is_ascii_uppercase()||b.is_ascii_digit()||b==b'_'){return Err(refused("SSH_SECRET_REFERENCE_INVALID"));}
+if let Some(secret)=std::env::var_os(variable){command.env(variable,secret);}}}}
  #[cfg(unix)] { use std::os::unix::process::CommandExt;command.process_group(0); }
  for pin in &pins{pin.check()?;}if ABORT.load(Ordering::Acquire){return Err(refused("SSH_CANCELLED"));}
  let mut child=command.spawn().map_err(|_|refused("REMOTE_RUNTIME_UNAVAILABLE"))?;
@@ -83,7 +84,8 @@ pub fn execute(resources:PathBuf,request:Request)->Result<serde_json::Value,Life
  let(out_tx,out_rx)=mpsc::channel();let(err_tx,err_rx)=mpsc::channel();std::thread::spawn(move||{let _=out_tx.send(reader(stdout,262144));});std::thread::spawn(move||{let _=err_tx.send(reader(stderr,8192));});
  let start=Instant::now();let mut output=None;let mut errors=None;let mut status=None;let mut exited=None;
  loop{
-  if output.is_none(){if let Ok(v)=out_rx.try_recv(){output=Some(v);}}if errors.is_none(){if let Ok(v)=err_rx.try_recv(){errors=Some(v);}}
+  if output.is_none() && let Ok(v)=out_rx.try_recv(){output=Some(v);}
+  if errors.is_none() && let Ok(v)=err_rx.try_recv(){errors=Some(v);}
   if output.as_ref().is_some_and(Result::is_err)||errors.as_ref().is_some_and(Result::is_err)||ABORT.load(Ordering::Acquire)||start.elapsed()>Duration::from_millis(timeout){stop(&mut child);return Err(refused("SSH_OPERATION_UNCERTAIN"));}
   if status.is_none(){match child.try_wait(){Ok(Some(v))=>{status=Some(v);exited=Some(Instant::now());},Ok(None)=>{},Err(_)=>{stop(&mut child);return Err(refused("SSH_OPERATION_UNCERTAIN"));}}}
   if status.is_some()&&output.is_some()&&errors.is_some(){break;}

@@ -2,6 +2,7 @@
 //! Independent retained authority namespace. This does not resist a trusted OS
 //! owner rolling back/deleting BOTH namespaces or losing the entire storage device.
 use super::*;
+use super::owned_execution::{DirectoryIdentity, directory_identity, directory_matches};
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -47,41 +48,44 @@ pub struct AuthorityReconciliationReceipt {
 }
 struct PrimaryFence {
     root: PathBuf,
-    identity: Metadata,
+    identity: DirectoryIdentity,
     lock: File,
+    #[cfg(not(windows))]
     operations: (File, Vec<File>),
+    #[cfg(windows)]
+    operations: (profile_backup::NativeHostLock, Vec<profile_backup::NativeHostLock>),
 }
 impl Drop for PrimaryFence {
     fn drop(&mut self) {
         let _ = FileExt::unlock(&self.lock);
-        let _ = FileExt::unlock(&self.operations.0);
-        for lock in &self.operations.1 {
-            let _ = FileExt::unlock(lock);
+        #[cfg(not(windows))]
+        {
+            let _ = FileExt::unlock(&self.operations.0);
+            for lock in &self.operations.1 { let _ = FileExt::unlock(lock); }
         }
     }
 }
 impl PrimaryFence {
     fn check(&self) -> Result<(), Error> {
-        if !identity(&self.identity, &private_dir(&self.root)?)
-            || !identity(
-                &self.lock.metadata().map_err(|_| invalid())?,
-                &private_file(&self.root.join("trust.lock"), false)?
-                    .metadata()
-                    .map_err(|_| invalid())?,
-            )
+        if !directory_matches(&self.identity, &self.root).map_err(|_|invalid())? { return Err(invalid()); }
+        #[cfg(not(windows))]
+        if !identity(&self.lock.metadata().map_err(|_|invalid())?, &private_file(&self.root.join("trust.lock"),false)?.metadata().map_err(|_|invalid())?) { return Err(invalid()); }
+        #[cfg(windows)]
         {
-            return Err(invalid());
+            crate::windows_private::PrivateDirectory::inspect(&self.root).map_err(|_|invalid())?.check_record(&self.lock,"trust.lock").map_err(|_|invalid())?;
+            self.operations.0.check().map_err(|_|invalid())?;
+            for lock in &self.operations.1 { lock.check().map_err(|_|invalid())?; }
         }
         Ok(())
     }
 }
 pub(super) struct Vault {
     locator: PathBuf,
-    locator_identity: Metadata,
+    locator_identity: DirectoryIdentity,
     root: PathBuf,
-    root_identity: Metadata,
-    records_identity: Metadata,
-    completed_identity: Metadata,
+    root_identity: DirectoryIdentity,
+    records_identity: DirectoryIdentity,
+    completed_identity: DirectoryIdentity,
     binding: Binding,
     binding_sha256: String,
     _locator_lock: File,
@@ -106,6 +110,7 @@ pub(super) fn absent(path: &Path) -> Result<bool, Error> {
         Err(_) => Err(invalid()),
     }
 }
+#[cfg(not(windows))]
 fn new_dir(path: &Path) -> Result<(), Error> {
     use std::os::unix::fs::DirBuilderExt;
     fs::DirBuilder::new()
@@ -114,12 +119,17 @@ fn new_dir(path: &Path) -> Result<(), Error> {
         .map_err(|_| invalid())?;
     sync_dir(path.parent().ok_or_else(invalid)?)
 }
-fn private_dir(path: &Path) -> Result<Metadata, Error> {
+#[cfg(windows)]
+fn new_dir(path: &Path) -> Result<(), Error> {
+    installations::new_directory(path).map_err(|_|invalid())?;
+    sync_dir(path.parent().ok_or_else(invalid)?)
+}
+fn private_dir(path: &Path) -> Result<DirectoryIdentity, Error> {
     installations::private_directory(path).map_err(|_| invalid())?;
     if fs::canonicalize(path).map_err(|_| invalid())? != path {
         return Err(invalid());
     }
-    fs::symlink_metadata(path).map_err(|_| invalid())
+    directory_identity(path).map_err(|_| invalid())
 }
 fn exact_names(root: &Path) -> Result<Vec<String>, Error> {
     let mut names = Vec::new();
@@ -184,6 +194,7 @@ fn history(root: &Path, scope: &str) -> Result<Vec<(String, Vec<u8>, Record)>, E
     }
     Ok(result)
 }
+#[cfg(not(windows))]
 fn publish_bytes(root: &Path, name: &str, bytes: &[u8]) -> Result<(), Error> {
     if bytes.is_empty() || bytes.len() as u64 > MAX_RECORD {
         return Err(Error::TrustLimit);
@@ -195,6 +206,15 @@ fn publish_bytes(root: &Path, name: &str, bytes: &[u8]) -> Result<(), Error> {
         .map_err(|_| Error::TrustWriteUncertain)?;
     drop(file);
     publish(&pending, &root.join(name))?;
+    sync_dir(root)
+}
+#[cfg(windows)]
+fn publish_bytes(root: &Path, name: &str, bytes: &[u8]) -> Result<(), Error> {
+    if bytes.is_empty() || bytes.len() as u64 > MAX_RECORD { return Err(Error::TrustLimit); }
+    let guard = crate::windows_private::PrivateDirectory::inspect(root).map_err(|_|invalid())?;
+    let record = guard.publish_new_record(name, bytes, MAX_RECORD as usize).map_err(|_|Error::TrustWriteUncertain)?;
+    record.check().map_err(|_|Error::TrustWriteUncertain)?;
+    drop(record);
     sync_dir(root)
 }
 impl Vault {
@@ -260,21 +280,20 @@ impl Vault {
         }
     }
     fn check_identity(&self) -> Result<(), Error> {
-        if !identity(&self.locator_identity, &private_dir(&self.locator)?)
-            || !identity(&self.root_identity, &private_dir(&self.root)?)
+        if !directory_matches(&self.locator_identity, &self.locator).map_err(|_|invalid())?
+            || !directory_matches(&self.root_identity, &self.root).map_err(|_|invalid())?
             || exact_names(&self.locator)? != vec!["binding.json", "trust.lock"]
             || hash(&read_record(&self.locator.join("binding.json"))?) != self.binding_sha256
             || exact_names(&self.root)? != vec!["completed", "records", "trust.lock"]
         {
             return Err(invalid());
         }
+        if !directory_matches(&self.records_identity, self.root.join("records")).map_err(|_|invalid())?
+            || !directory_matches(&self.completed_identity, self.root.join("completed")).map_err(|_|invalid())? {
+            return Err(invalid());
+        }
+        #[cfg(not(windows))]
         if !identity(
-            &self.records_identity,
-            &private_dir(&self.root.join("records"))?,
-        ) || !identity(
-            &self.completed_identity,
-            &private_dir(&self.root.join("completed"))?,
-        ) || !identity(
             &self._locator_lock.metadata().map_err(|_| invalid())?,
             &private_file(&self.locator.join("trust.lock"), false)?
                 .metadata()
@@ -286,6 +305,11 @@ impl Vault {
                 .map_err(|_| invalid())?,
         ) {
             return Err(invalid());
+        }
+        #[cfg(windows)]
+        {
+            crate::windows_private::PrivateDirectory::inspect(&self.locator).map_err(|_|invalid())?.check_record(&self._locator_lock,"trust.lock").map_err(|_|invalid())?;
+            crate::windows_private::PrivateDirectory::inspect(&self.root).map_err(|_|invalid())?.check_record(&self._vault_lock,"trust.lock").map_err(|_|invalid())?;
         }
         if exact_names(&self.root.join("records"))?
             .iter()
@@ -411,7 +435,7 @@ impl Vault {
 /// This proof is internal; it cannot be manufactured from a receipt or head hash.
 pub(super) struct InactiveAuthorityProof {
     root: PathBuf,
-    identity: Metadata,
+    identity: DirectoryIdentity,
     generation: u64,
     head_sha256: String,
 }
@@ -504,7 +528,7 @@ impl Store {
         self.require_authority_recovery()?;
         if proof.generation != self.current.generation
             || proof.head_sha256 != self.current_sha256
-            || !identity(&proof.identity, &private_dir(&proof.root)?)
+            || !directory_matches(&proof.identity, &proof.root).map_err(|_|invalid())?
         {
             return Err(invalid());
         }
@@ -775,7 +799,7 @@ impl Store {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};

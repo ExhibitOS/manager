@@ -768,7 +768,7 @@ pub fn run() {
         return;
     }
     let result = tauri::Builder::default()
-        .on_window_event(|_,event|{if let tauri::WindowEvent::CloseRequested{api,..}=event{if remote::busy(){api.prevent_close();}}})
+        .on_window_event(|_,event|{if let tauri::WindowEvent::CloseRequested{api,..}=event && remote::busy(){api.prevent_close();}})
         .setup(|app| {
             let override_root = startup::override_root(std::env::var_os("EXHIBITOS_MANAGER_ROOT"))?;
             let profile = match startup::managed_profile(

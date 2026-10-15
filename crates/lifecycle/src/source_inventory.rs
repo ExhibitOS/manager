@@ -151,6 +151,17 @@ fn compare_at(
     }
     let nonce = uuid::Uuid::new_v4().to_string();
     let name = format!("exhibitos-source-inventory-{nonce}");
+    #[cfg(windows)]
+    let mut native_manifest = crate::windows_private::HostFile::open(manifest)?;
+    #[cfg(windows)]
+    let native_payload = {
+        native_manifest.check_private()?;
+        let mut bytes = Vec::new();
+        (&mut native_manifest).take(16 * 1024 * 1024 + 1).read_to_end(&mut bytes).map_err(|_|err("UPDATE_SOURCE_INVENTORY_INVALID"))?;
+        native_manifest.check_private()?;
+        if bytes.len() > 16 * 1024 * 1024 || crate::digest(&bytes) != manifest_hash { return Err(err("UPDATE_SOURCE_INVENTORY_INVALID")); }
+        bytes
+    };
     let mut args = vec![
         "create".into(),
         "--pull".into(),
@@ -191,11 +202,7 @@ fn compare_at(
         format!("type=volume,source={snapshot},target=/snapshot,volume-nocopy"),
         "--mount".into(),
         format!("type=volume,source={blobs},target=/blobs,readonly,volume-nocopy"),
-        "--mount".into(),
-        format!(
-            "type=bind,source={},target=/manifest.json,readonly",
-            manifest.display()
-        ),
+
         "--env".into(),
         format!("EXHIBITOS_MANIFEST_SHA256={manifest_hash}"),
         "--entrypoint".into(),
@@ -203,20 +210,41 @@ fn compare_at(
         image.into(),
         "--input-type=module".into(),
         "-e".into(),
-        include_str!("source_inventory_reader.mjs").into(),
+        {
+            #[cfg(not(windows))]
+            { include_str!("source_inventory_reader.mjs").into() }
+            #[cfg(windows)]
+            {
+                format!("{}\nawait import('data:text/javascript;charset=utf-8,'+encodeURIComponent({}));", native_manifest_bootstrap(manifest_hash), serde_json::to_string(&include_str!("source_inventory_reader.mjs").replace("'/manifest.json'","'/input/manifest.json'").replace("from '/opt/exhibitos/scripts/service-backup.mjs'", "from 'file:///opt/exhibitos/scripts/service-backup.mjs'")).map_err(|_|err("UPDATE_SOURCE_INVENTORY_INVALID"))?)
+            }
+        },
     ]);
+    let entry = args.iter().position(|value|value=="--entrypoint").ok_or_else(||err("UPDATE_SOURCE_INVENTORY_INVALID"))?;
+    #[cfg(not(windows))]
+    args.splice(entry..entry,["--mount".into(),format!("type=bind,source={},target=/manifest.json,readonly",manifest.display())]);
+    #[cfg(windows)]
+    args.splice(entry..entry,["--interactive".into(),"--tmpfs".into(),"/input:rw,nosuid,nodev,noexec,size=32m,mode=0700".into()]);
     let output = String::from_utf8(run("docker", &args, None, 30)?)
         .map_err(|_| err("ENGINE_OUTPUT_INVALID"))?;
     let id = output.trim();
     if !hash_valid(id) {
         return Err(err("ENGINE_OUTPUT_INVALID"));
     }
-    let result = run(
-        "docker",
-        &["start".into(), "--attach".into(), id.into()],
-        None,
-        600,
+    #[cfg(not(windows))]
+    let result = run("docker", &["start".into(),"--attach".into(),id.into()],None,600);
+    #[cfg(windows)]
+    let result = crate::run_observed_stream(
+        "docker", &["start".into(),"--attach".into(),"--interactive".into(),id.into()],None,600,(None,None),
+        Some((Box::new(std::io::Cursor::new(native_payload)),16 * 1024 * 1024)),
+        || {
+            native_manifest.check_private()?;
+            let helper=crate::backup_creation::inspected("docker", &["inspect".into(),id.into()])?;
+            if helper["Id"] != id || helper["Name"] != format!("/{name}") || helper["Config"]["Labels"]["com.exhibitos.source.inventory"] != nonce { return Err(err("OWNERSHIP_CONFLICT")); }
+            Ok(())
+        },
     );
+    #[cfg(windows)]
+    native_manifest.check_private()?;
     let helper = crate::backup_creation::inspected("docker", &["inspect".into(), id.into()])?;
     if helper["Id"] != id
         || helper["Name"] != format!("/{name}")
@@ -240,6 +268,20 @@ fn compare_at(
         run("docker", &["rm".into(), id.into()], None, 15)?;
     }
     serde_json::from_slice(&result?).map_err(|_| err("UPDATE_SOURCE_INVENTORY_INVALID"))
+}
+#[cfg(windows)]
+fn native_manifest_bootstrap(pin: &str) -> String {
+    // Exact bytes from the retained native private reader, never daemon NTFS binds.
+    format!(r#"import {{open as nativeOpen}} from 'node:fs/promises';
+import {{constants as nativeConstants}} from 'node:fs';
+import {{createHash as nativeHash}} from 'node:crypto';
+const nativeParts=[];let nativeLength=0;
+const nativeStdin=await nativeOpen('/dev/stdin',nativeConstants.O_RDONLY);
+try{{const nativeBuffer=Buffer.alloc(65536);for(;;){{const {{bytesRead}}=await nativeStdin.read(nativeBuffer,0,nativeBuffer.length,null);if(bytesRead===0)break;nativeLength+=bytesRead;if(nativeLength>16777216)throw Error('NATIVE_MANIFEST_INPUT_INVALID');nativeParts.push(Buffer.from(nativeBuffer.subarray(0,bytesRead)));}}}}finally{{await nativeStdin.close();}}
+const nativeBytes=Buffer.concat(nativeParts);if(nativeBytes.length===0||nativeHash('sha256').update(nativeBytes).digest('hex')!=='{pin}')throw Error('NATIVE_MANIFEST_INPUT_INVALID');
+const nativeFile=await nativeOpen('/input/manifest.json',nativeConstants.O_WRONLY|nativeConstants.O_CREAT|nativeConstants.O_EXCL|nativeConstants.O_NOFOLLOW,0o600);
+try{{await nativeFile.writeFile(nativeBytes);await nativeFile.sync();}}finally{{await nativeFile.close();}}
+"#)
 }
 #[cfg(test)]
 mod tests {

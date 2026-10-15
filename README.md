@@ -1,5 +1,7 @@
 # ExhibitOS Manager
 
+> 1차 출시 범위(2026-10-15 사용자 변경)는 Mac Manager의 설치·실행·백업·복원·업데이트·롤백입니다. 기존 Windows/Linux 구현과 결과는 보존하되 해당 native 배포는 후속이며 1차 필수 검사가 아닙니다. 서버 Ubuntu 단일 운영 profile과 사용자 앱 OS 지원을 구분합니다. Mac 실제 설치·복구 검증과 원본 보존 조건은 유지합니다.
+
 로컬 전시 서버의 설치·시작·정지·재시작·상태와 작업 기록을 관리하는
 Tauri2/Rust 데스크톱 앱의 개발 구현입니다. Windows Docker 기본 설치·시작·정지·재시작·API 연결과 진행 표시를 실제 사용자 환경에서 확인했습니다. 전체 Windows 복구·업데이트·설치 프로그램 검증,
 macOS 서명·공증과 배포용 설치 프로그램은 완료되지 않았습니다. 앱의 실제 복원 GUI 조작·취소/재개,
@@ -170,3 +172,9 @@ The selected installation's existing immutable plan supplies the original backup
 The fixed `--manager-update-rollback-helper` claims one immutable request before waiting for app closure. It checks the exact registry, operation, generation and context before reusing existing interruption recovery. Updated records enter the existing explicit rollback transition; interrupted restoration retains its previous candidate and reserves a fresh candidate for retry. Already restored candidates use the existing activation and health re-observation path. Original data, keys, backups, failed candidates and previous activation attempts are preserved. A pending exact selection publication is reconciled using its existing immutable proof; it cannot grant general write authority to an unfinished candidate. Generation-specific rollback activation records permit retry without overwriting legacy `-rollback` records, which remain readable.
 
 Only the existing committed RolledBack/health/selection result produces a completed receipt. A dispatched helper, missing outcome, failed restore or interrupted request never counts as completion. Source checks cover synthetic inputs and crash boundaries; real native GUI/full recovery, Windows qualification and the existing changed-schema publication gates remain unfinished. No operating installation or operating key was used for these source checks.
+
+### Windows app-closed update and full rollback source connection
+
+Prepared reference lookup, fresh apply qualification and full rollback handoffs also use the existing Windows native Store, service-recovery transport and guarded authority readers. Windows request/reference files stay pinned against writers and replacement throughout execution; claim-before-app-close ordering and exact registry/operation/generation checks are unchanged. Record publication uses private CREATE_NEW files with actual file flush, followed by namespace/identity checks. It does not claim Unix directory fsync semantics on Windows.
+
+The source includes five Windows synthetic regressions for request/reference preservation, app-close waiting, single ownership, stale generation and changed reference refusal. They were compiled by strict Windows-target Clippy, not executed on Windows. Mac core and desktop compilation are separate regression evidence. Actual Windows Docker/helper/native GUI/full recovery and changed-schema publication acceptance remain unverified; no operating key or runtime was used in these source checks.

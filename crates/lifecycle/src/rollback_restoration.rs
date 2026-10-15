@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Original-plan encrypted restoration into its durably reserved fresh candidate.
 use super::*;
+use super::owned_execution::{directory_identity, directory_matches};
 use crate::{Result as LifecycleResult, err};
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,6 +74,8 @@ fn reserve_space(root: &Path, archive: &Path, required: u64) -> LifecycleResult<
             return Err(err("BACKUP_PATH_INVALID"));
         }
         if m.is_dir() {
+            #[cfg(windows)]
+            crate::windows_private::HostDirectory::inspect(&path)?.check_private()?;
             for e in fs::read_dir(path).map_err(|_| err("BACKUP_PATH_INVALID"))? {
                 count += 1;
                 if count > 20000 {
@@ -81,10 +84,13 @@ fn reserve_space(root: &Path, archive: &Path, required: u64) -> LifecycleResult<
                 pending.push(e.map_err(|_| err("BACKUP_PATH_INVALID"))?.path());
             }
         } else if m.is_file() {
-            use std::os::unix::fs::MetadataExt;
-            if m.nlink() != 1 || m.uid() != unsafe { libc::geteuid() } {
-                return Err(err("BACKUP_PATH_INVALID"));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if m.nlink() != 1 || m.uid() != unsafe { libc::geteuid() } { return Err(err("BACKUP_PATH_INVALID")); }
             }
+            #[cfg(windows)]
+            crate::windows_private::HostFile::open(&path)?.check_private()?;
             bytes = bytes
                 .checked_add(m.len())
                 .ok_or_else(|| err("STORAGE_QUOTA"))?;
@@ -138,9 +144,8 @@ impl Store {
         let root = self.profile.join("installations").join(&id);
         installations::private_directory(&root)?;
         let root_identity =
-            fs::symlink_metadata(&root).map_err(|_| err("UPDATE_TARGET_CHANGED"))?;
-        let parent_identity = fs::symlink_metadata(self.profile.join("installations"))
-            .map_err(|_| err("UPDATE_TARGET_CHANGED"))?;
+            directory_identity(&root)?;
+        let parent_identity = directory_identity(self.profile.join("installations"))?;
         let mut protected = Vec::new();
         for source in [&plan.source_instance, &plan.target_instance] {
             let entry = registry
@@ -167,15 +172,8 @@ impl Store {
             if store.current.generation != generation
                 || candidate(store, &registry)? != id
                 || installations::load(&store.profile)?.map(|(_, b)| b) != Some(previous.clone())
-                || !identity(
-                    &root_identity,
-                    &fs::symlink_metadata(&root).map_err(|_| err("UPDATE_TARGET_CHANGED"))?,
-                )
-                || !identity(
-                    &parent_identity,
-                    &fs::symlink_metadata(store.profile.join("installations"))
-                        .map_err(|_| err("UPDATE_TARGET_CHANGED"))?,
-                )
+                || !directory_matches(&root_identity,&root).map_err(|_|crate::err("UPDATE_TARGET_CHANGED"))?
+                || !directory_matches(&parent_identity,store.profile.join("installations")).map_err(|_|crate::err("UPDATE_TARGET_CHANGED"))?
             {
                 return Err(err("UPDATE_ROLLBACK_CHANGED"));
             }
@@ -253,7 +251,7 @@ impl Store {
         }
     }
 }
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]

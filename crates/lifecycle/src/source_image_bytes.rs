@@ -11,9 +11,19 @@ pub struct ImageArchiveProof {
     pub bytes: u64,
     pub sha256: String,
 }
+trait ImageFileSync {
+    fn flush_image(&self) -> Result<()>;
+}
+impl ImageFileSync for File {
+    fn flush_image(&self) -> Result<()> { self.sync_all().map_err(|_| err("STORAGE_UNAVAILABLE")) }
+}
+#[cfg(windows)]
+impl ImageFileSync for crate::windows_private::HostFile {
+    fn flush_image(&self) -> Result<()> { self.sync_all() }
+}
 fn bounded(
     mut input: impl Read,
-    mut file: File,
+    mut file: impl Write + ImageFileSync,
     limit: u64,
 ) -> Result<crate::backup_creation::FileHash> {
     let mut buffer = [0u8; 65536];
@@ -37,16 +47,21 @@ fn bounded(
     if bytes == 0 {
         return Err(err("UPDATE_SOURCE_IMAGES_INVALID"));
     }
-    file.sync_all().map_err(|_| err("STORAGE_UNAVAILABLE"))?;
+    file.flush_image()?;
     Ok(crate::backup_creation::FileHash {
         bytes,
         sha256: format!("{:x}", sha.finalize()),
     })
 }
 fn save(image: &str, path: &Path, limit: u64) -> Result<crate::backup_creation::FileHash> {
-    let file = private_options()
-        .open(path)
-        .map_err(|_| err("STATE_UNAVAILABLE"))?;
+    #[cfg(not(windows))]
+    let file = private_options().open(path).map_err(|_| err("STATE_UNAVAILABLE"))?;
+    #[cfg(windows)]
+    let file = {
+        let root = crate::windows_private::HostDirectory::inspect(path.parent().ok_or_else(||err("STATE_UNAVAILABLE"))?)?;
+        root.check_private()?;
+        root.create_file(path.file_name().and_then(|s|s.to_str()).ok_or_else(||err("STATE_UNAVAILABLE"))?)?
+    };
     let binary = engine_executable("docker").ok_or_else(|| err("RUNTIME_MISSING"))?;
     let mut child = process_window::background_command(binary)
         .args(["image", "save", image])
@@ -285,7 +300,48 @@ pub(super) fn retire_verified(work: &Path, proofs: &[ImageArchiveProof]) -> Resu
     }
     Ok(())
 }
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub(super) fn retire_verified(work: &Path, proofs: &[ImageArchiveProof]) -> Result<()> {
+    let failure = || err("UPDATE_SOURCE_IMAGES_RETIRE_UNCERTAIN");
+    if proofs.is_empty() || proofs.len() > 16 || fs::canonicalize(work).ok().as_deref() != Some(work) { return Err(failure()); }
+    let directory = crate::windows_private::HostDirectory::inspect(work).map_err(|_|failure())?;
+    directory.check_private().map_err(|_|failure())?;
+    let names: std::collections::BTreeSet<_> = (0..proofs.len()).map(|i|format!("image-{i}.tar")).collect();
+    let census = || -> Result<std::collections::BTreeSet<String>> {
+        fs::read_dir(work).map_err(|_|failure())?.map(|entry| entry.map_err(|_|failure())?.file_name().into_string().map_err(|_|failure())).collect()
+    };
+    if census()? != names { return Err(failure()); }
+    let mut files = Vec::new();
+    for (i, proof) in proofs.iter().enumerate() {
+        let mut file = crate::windows_private::HostFile::inspect_for_retirement(&work.join(format!("image-{i}.tar"))).map_err(|_|failure())?;
+        file.check_private().map_err(|_|failure())?;
+        let before = file.metadata().map_err(|_|failure())?;
+        if before.len() != proof.bytes || proof.bytes > 2 * 1024 * 1024 * 1024 { return Err(failure()); }
+        let mut hash = Sha256::new(); let mut bytes = 0u64; let mut buffer = [0u8; 65536];
+        loop {
+            let count = file.read(&mut buffer).map_err(|_|failure())?;
+            if count == 0 { break; }
+            bytes += count as u64;
+            if bytes > proof.bytes { return Err(failure()); }
+            hash.update(&buffer[..count]);
+        }
+        file.check_private().map_err(|_|failure())?;
+        if bytes != proof.bytes || format!("{:x}",hash.finalize()) != proof.sha256 || file.metadata().map_err(|_|failure())?.len() != before.len() { return Err(failure()); }
+        files.push(file);
+    }
+    directory.check_private().map_err(|_|failure())?;
+    if census()? != names { return Err(failure()); }
+    let bytes = serde_json::to_vec(&serde_json::json!({"format":1,"images":proofs,"policy":"retire_successful_observation_only","recoveryArchive":false})).map_err(|_|failure())?;
+    let mut marker = directory.create_file("verified-images.json").map_err(|_|failure())?;
+    marker.write_all(&bytes).map_err(|_|failure())?; marker.sync_all().map_err(|_|failure())?;
+    directory.sync_all().map_err(|_|failure())?;
+    for file in &files { file.check_private().map_err(|_|failure())?; }
+    for file in files { file.retire_verified().map_err(|_|failure())?; }
+    directory.check_private().map_err(|_|failure())?;
+    directory.sync_all().map_err(|_|failure())?;
+    Ok(())
+}
+#[cfg(not(any(unix, windows)))]
 pub(super) fn retire_verified(_work: &Path, _proofs: &[ImageArchiveProof]) -> Result<()> {
     Err(err("UPDATE_SOURCE_IMAGES_RETIRE_UNVERIFIED"))
 }
