@@ -53,7 +53,7 @@ pub(crate) fn load(profile: &Path, id: &str) -> Result<(Reference, Vec<u8>)> {
     if value.format != 1
         || value.id != id
         || !installations::uuid(&value.installation_id)
-        || !(value.scope == "default" || value.scope == value.installation_id)
+        || !(value.scope == "default" || installations::uuid(&value.scope))
         || value.generation == 0
         || value.generation > 9_007_199_254_740_991
         || value.operation_id.is_empty()

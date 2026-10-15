@@ -613,9 +613,11 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     const SOURCE: &str = "ab6a178b-a401-48c1-b0aa-ddf87b059e31";
     const TARGET: &str = "cc414c3c-dd99-45e2-8307-131a49f72d68";
-    fn fixture() -> (PathBuf, Store, HealthReceipt) {
-        let (p, key, policy, release) = trust_fixture();
-        let mut store = Store::provision(&p, "default", policy, 10).unwrap();
+    fn fixture() -> (PathBuf, Store, HealthReceipt) { fixture_scope("default") }
+    fn fixture_scope(scope: &str) -> (PathBuf, Store, HealthReceipt) {
+        let (p, key, policy, mut release) = trust_fixture();
+        if scope != "default" { release.artifact.schema_sha256 = "a".repeat(64); }
+        let mut store = Store::provision(&p, scope, policy, 10).unwrap();
         let raw = seal(&key, &release);
         let mut verified = store.verify_for_preparation(&raw, 20).unwrap();
         verified
@@ -624,19 +626,20 @@ mod tests {
         let mut plan = plan();
         plan.source_instance = SOURCE.into();
         plan.target_instance = TARGET.into();
+        if scope != "default" { plan.target_schema = "a".repeat(64); }
         store
             .prepare_update(&raw, &verified, plan.clone(), 20)
             .unwrap();
         store
             .enroll_authority_recovery(&p.parent().unwrap().join("vault"), 20)
             .unwrap();
-        let registry = installations::Registry {
+        let mut registry = installations::Registry {
             format: 1,
             active_id: SOURCE.into(),
             installations: vec![
                 installations::Entry {
                     id: SOURCE.into(),
-                    kind: "default".into(),
+                    kind: if scope == "default" { "default" } else { "recovery" }.into(),
                     created_at: 0,
                 },
                 installations::Entry {
@@ -646,6 +649,11 @@ mod tests {
                 },
             ],
         };
+        if scope != "default" {
+            registry.installations.push(installations::Entry {
+                id: "2aecc55d-a02c-4891-8adf-a9242dfe3c3e".into(), kind: "default".into(), created_at: 0,
+            });
+        }
         installations::save(&p, &registry, None).unwrap();
         installations::new_directory(&p.join("local-runtime")).unwrap();
         installations::new_directory(&p.join("installations")).unwrap();
@@ -684,6 +692,122 @@ mod tests {
     }
     fn retire(p: &Path, store: Store) {
         drop(store);
+        fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn selected_authority_status_follows_verified_activation_without_new_policy() {
+        for scope in ["default", SOURCE] {
+            let (p, mut store, health) = fixture_scope(scope);
+            let activation = prepare(&store, &health);
+            activation.publish_selection(&store).unwrap();
+            store.observe_health(&health.operation_id, store.current.generation, health.clone(), 23).unwrap();
+            activation.complete(&store).unwrap();
+            let head = store.current_sha256.clone();
+            let generation = store.current.generation;
+            let authority = store.root.clone();
+            drop(store);
+            let controller = installations::InstallationController::new(p.clone(), None).unwrap();
+            let context = controller.context().unwrap();
+            let status = controller.update_status(&context.selection_token).unwrap();
+            assert_eq!(status.installation_id, TARGET);
+            assert!(status.authority_present);
+            assert_eq!(status.stage, Some(crate::update::Stage::Updated));
+            assert_eq!(status.generation, Some(generation));
+            assert_eq!(status.operation_id.as_deref(), Some("update-1"));
+            assert!(controller.update_apply_references(&context.selection_token).unwrap().is_empty());
+            let candidate = super::super::lifecycle_writer::namespaces(&p, TARGET).unwrap().0;
+            assert!(!candidate.exists());
+            assert_eq!(hash(&fs::read(authority.join(format!("{generation:020}.json"))).unwrap()), head);
+            drop(controller);
+            fs::remove_dir_all(p.parent().unwrap()).unwrap();
+        }
+    }
+    #[test]
+    fn selected_authority_nondefault_followup_prepared_routes_cancel_and_rejects_ambiguity() {
+        let (p, mut store, health) = fixture_scope(SOURCE);
+        let activation = prepare(&store, &health);
+        activation.publish_selection(&store).unwrap();
+        store.observe_health(&health.operation_id, store.current.generation, health.clone(), 23).unwrap();
+        activation.complete(&store).unwrap();
+        let envelope: Envelope = serde_json::from_str(&store.intent().unwrap().envelope).unwrap();
+        let mut release: Release = serde_json::from_str(&envelope.payload).unwrap();
+        store.release_completed(&health.operation_id, store.current.generation, 24).unwrap();
+        release.sequence += 1;
+        release.version = "0.3.0-dev.1".into();
+        release.artifact.runtime_image_sha256 = "e".repeat(64);
+        release.source_schemas = vec!["a".repeat(64)];
+        let raw = seal(&ed25519_dalek::SigningKey::from_bytes(&[31; 32]), &release);
+        let mut verified = store.verify_for_preparation(&raw, 25).unwrap();
+        verified.verify_artifact(&mut b"fixture".as_slice()).unwrap();
+        let mut next = plan();
+        next.operation_id = "update-2".into();
+        next.source_instance = TARGET.into();
+        next.target_instance = "6ecfe603-185e-482f-b509-46be553454df".into();
+        next.source_schema = "a".repeat(64);
+        next.target_schema = "a".repeat(64);
+        next.source_image = "b".repeat(64);
+        next.target_image = "e".repeat(64);
+        store.prepare_update(&raw, &verified, next, 25).unwrap();
+        let generation = store.current.generation;
+        drop(store);
+        let controller = installations::InstallationController::new(p.clone(), None).unwrap();
+        let context = controller.context().unwrap();
+        let status = controller.update_status(&context.selection_token).unwrap();
+        assert_eq!(status.installation_id, TARGET);
+        assert_eq!(status.stage, Some(crate::update::Stage::Prepared));
+        assert_eq!(status.operation_id.as_deref(), Some("update-2"));
+        let ref_id = uuid::Uuid::new_v4().to_string();
+        let ref_root = p.join("update-execution-references");
+        installations::new_directory(&ref_root).unwrap();
+        let registry_bytes = installations::load(&p).unwrap().unwrap().1;
+        let external = p.parent().unwrap();
+        let reference = crate::execution_reference::Reference {
+            format: 1, id: ref_id.clone(), installation_id: TARGET.into(), scope: SOURCE.into(),
+            operation_id: "update-2".into(), generation, registry_sha256: hash(&registry_bytes),
+            artifact: external.join("unused-runtime.tar"), artifact_sha256: hash(b"fixture"), artifact_bytes: 7,
+            python: external.join("unused-python"), source_commit: "a".repeat(40),
+            maintenance_image: format!("sha256:{}", "a".repeat(64)), export_parent: external.into(),
+            host_archive: external.join("unused-host"), trust_archive: external.join("unused-trust"),
+            pair_binding: external.join("unused-pair"), key_file: external.join("unused-key"),
+            qualification_destination: external.join("unused-qualification"), qualification_sha256: "b".repeat(64), created_at: 25,
+        };
+        let ref_path = ref_root.join(format!("{ref_id}.json"));
+        crate::write_private_new(&ref_root, &format!("{ref_id}.json"), &serde_json::to_vec(&reference).unwrap(), 16384).unwrap();
+        let refs = controller.update_apply_references(&context.selection_token).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].reference_id, ref_id);
+        let (_, apply) = controller.update_apply_handoff(&context.selection_token, Some(crate::update_execution_handoff::ApplyInput {
+            reference_id: ref_id, operation_id: "update-2".into(), generation, preserve_data: true,
+            close_app_and_apply: true, external_writers_quiesced: true,
+        })).unwrap();
+        let apply = apply.unwrap();
+        // Editing only the frozen reference must stop before any key/runtime access.
+        let mut changed = reference;
+        changed.created_at += 1;
+        fs::write(&ref_path, serde_json::to_vec(&changed).unwrap()).unwrap();
+        drop(controller);
+        assert_eq!(crate::update_execution_handoff::execute(&p, &apply.id).unwrap_err().code, "UPDATE_REFERENCE_STALE");
+        let controller = installations::InstallationController::new(p.clone(), None).unwrap();
+        let context = controller.context().unwrap();
+        let (_, receipt) = controller.update_cancel_handoff(&context.selection_token, Some(crate::update_handoff::CancelInput {
+            operation_id: "update-2".into(), generation, preserve_data: true, close_app_and_cancel: true,
+        })).unwrap();
+        let receipt = receipt.unwrap();
+        let request: serde_json::Value = serde_json::from_slice(&fs::read(p.join("update-cancel-handoffs").join(format!("{}.request.json", receipt.id))).unwrap()).unwrap();
+        assert_eq!(request["scope"], SOURCE);
+        drop(controller);
+        crate::update_handoff::execute(&p, &receipt.id).unwrap();
+        let reopened = Store::open_for_inspection(&p, SOURCE).unwrap();
+        assert!(reopened.intent().is_none());
+        let registry = installations::load(&p).unwrap().unwrap().0;
+        let policy = reopened.current.policy.clone();
+        drop(reopened);
+        assert_eq!(super::super::authority_selection::resolve_selected_scope(&p, &registry).unwrap(), SOURCE);
+        // A second enrolled authority for the current target is ambiguous, not preferred.
+        let extra = Store::provision(&p, TARGET, policy, 30).unwrap();
+        drop(extra);
+        assert!(super::super::authority_selection::resolve_selected_scope(&p, &registry).is_err());
         fs::remove_dir_all(p.parent().unwrap()).unwrap();
     }
     #[test]

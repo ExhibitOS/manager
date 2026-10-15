@@ -59,6 +59,7 @@ mod selection_activation;
 pub use selection_activation::SelectionActivationReceipt;
 #[path = "authority_selection.rs"]
 mod authority_selection;
+pub(crate) use authority_selection::resolve_selected_scope;
 #[path = "trust_checkpoint.rs"]
 mod trust_checkpoint;
 pub use trust_checkpoint::binding::{

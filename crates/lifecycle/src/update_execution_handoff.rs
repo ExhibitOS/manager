@@ -269,7 +269,7 @@ pub fn execute(profile: &Path, id: &str) -> Result<()> {
         validate(&request.input)?;
         if request.id != id
             || !installations::uuid(&request.installation_id)
-            || !(request.scope == "default" || request.scope == request.installation_id)
+            || !(request.scope == "default" || installations::uuid(&request.scope))
         {
             return Err(err("UPDATE_HANDOFF_INVALID"));
         }
@@ -324,17 +324,12 @@ pub fn execute(profile: &Path, id: &str) -> Result<()> {
                 .iter()
                 .find(|e| e.id == request.installation_id)
                 .ok_or_else(|| err("UPDATE_HANDOFF_SELECTION_CHANGED"))?;
-            let scope = if entry.kind == "default" {
-                "default"
-            } else {
-                &entry.id
-            };
             if registry.active_id != entry.id
-                || scope != request.scope
                 || digest(&original) != request.registry_sha256
             {
                 return Err(err("UPDATE_HANDOFF_SELECTION_CHANGED"));
             }
+            store.verify_bound_selected(&registry)?;
             let (reference, reference_bytes) =
                 crate::execution_reference::load(profile, &request.input.reference_id)?;
             if digest(&reference_bytes) != request.reference_sha256
