@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 mod startup;
+mod remote;
 use exhibitos_lifecycle::{
     Action, EngineProbe, Job, LifecycleError, LifecycleService, LogEvent, Status,
 };
@@ -44,6 +45,19 @@ async fn blocking<T: Send + 'static>(
     tauri::async_runtime::spawn_blocking(move || state.with_current(&selection_token, task))
         .await
         .map_err(|_| error("MANAGER_OPERATION"))?
+}
+#[tauri::command]
+async fn manager_remote_available(window:WebviewWindow,app:tauri::AppHandle)->Result<bool,LifecycleError>{
+ caller(&window)?;let resources=app.path().resource_dir().map_err(|_|error("REMOTE_RUNTIME_UNAVAILABLE"))?;
+ tauri::async_runtime::spawn_blocking(move||remote::available(&resources)).await.map_err(|_|error("REMOTE_RUNTIME_UNAVAILABLE"))
+}
+#[tauri::command]
+fn manager_remote_cancel(window:WebviewWindow,input:remote::CancelInput)->Result<bool,LifecycleError>{caller(&window)?;remote::cancel(input)}
+#[tauri::command]
+async fn manager_remote(window:WebviewWindow,app:tauri::AppHandle,input:remote::Request)->Result<serde_json::Value,LifecycleError>{
+ caller(&window)?;
+ let resources=app.path().resource_dir().map_err(|_|error("REMOTE_RUNTIME_UNAVAILABLE"))?;
+ tauri::async_runtime::spawn_blocking(move||remote::execute(resources,input)).await.map_err(|_|error("SSH_OPERATION_UNCERTAIN"))?
 }
 #[tauri::command]
 async fn manager_update_status(
@@ -714,6 +728,7 @@ pub fn run() {
         return;
     }
     let result = tauri::Builder::default()
+        .on_window_event(|_,event|{if let tauri::WindowEvent::CloseRequested{api,..}=event{if remote::busy(){api.prevent_close();}}})
         .setup(|app| {
             let override_root = startup::override_root(std::env::var_os("EXHIBITOS_MANAGER_ROOT"))?;
             let profile = match startup::managed_profile(
@@ -743,6 +758,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             manager_status,
+            manager_remote,
+            manager_remote_available,
+            manager_remote_cancel,
             manager_update_status,
             manager_update_cancel,
             manager_update_references,

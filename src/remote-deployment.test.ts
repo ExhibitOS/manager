@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+import {beforeEach,expect,it,vi} from 'vitest';
+const mocks=vi.hoisted(()=>({invoke:vi.fn(),isTauri:vi.fn()}));vi.mock('@tauri-apps/api/core',()=>mocks);
+import {cancelRemote,remoteAvailable,remoteOperation,type RemoteRequest} from './remote-deployment';
+beforeEach(()=>{vi.resetAllMocks();mocks.isTauri.mockReturnValue(true);});
+it('closed native receipt belongs to requested action and cancel ownership uses exact request ID',async()=>{const input={requestId:'12345678-1234-4234-8234-123456789abc',action:'status'}as RemoteRequest;mocks.invoke.mockResolvedValue({version:1,action:'status',state:'stopped'});expect((await remoteOperation(input)).state).toBe('stopped');expect(mocks.invoke).toHaveBeenCalledWith('manager_remote',{input});mocks.invoke.mockResolvedValue({version:1,action:'update'});await expect(remoteOperation(input)).rejects.toThrow('MANAGER_PROTOCOL');mocks.invoke.mockResolvedValue(true);expect(await cancelRemote(input.requestId)).toBe(true);expect(mocks.invoke).toHaveBeenLastCalledWith('manager_remote_cancel',{input:{requestId:input.requestId}});});
+it('browser fallback never invokes native or interprets credentials',async()=>{mocks.isTauri.mockReturnValue(false);expect(await remoteAvailable()).toBe(false);expect(await cancelRemote('owned')).toBe(false);await expect(remoteOperation({}as RemoteRequest)).rejects.toMatchObject({code:'REMOTE_DESKTOP_REQUIRED'});expect(mocks.invoke).not.toHaveBeenCalled();});

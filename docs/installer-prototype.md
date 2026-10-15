@@ -45,3 +45,7 @@ if ($LASTEXITCODE -ne 0) { throw "Installer build failed; preserve the receipt a
 현재 prototype 명령에는 운영 서명 키를 입력하지 않는다. 서명 계정이 준비되면 별도 승인된 배포 절차에서 검토한 동일 source version을 패키징하고 Windows Authenticode 검증 또는 macOS Developer ID 서명·notarization·stapling·Gatekeeper 검사를 수행한다. 계정·인증서·키는 OS/비밀 저장소에 보관하며 Git과 영수증에 넣지 않는다. 서명 완료 파일의 SHA256을 다시 계산하고 실제 검증 결과와 source version을 함께 연결한다.
 
 실제 signed 결과와 clean install/uninstall/update, offline Runtime 시작 증거가 갖춰지기 전에는 production 다운로드나 검증 완료 문구를 게시하지 않는다. 현 단계의 다운로드 안내는 검토된 개발 산출물에만 적용한다. 설치 후 전시 서버 준비 방법은 [데스크톱 사용법](desktop.md), Windows의 남은 실제 검사는 [검증 배치](windows-verification-batch.md)를 따른다. Hosted CI와 유료 서명 서비스를 이 명령으로 활성화하지 않는다.
+
+## 기존 App의 로컬 개발 서명
+
+이미 빌드하고 source·파일 목록을 검증한 macOS App은 별도의 [Apple Development 서명·DMG 경로](development-signing.md)를 사용할 수 있습니다. 원본과 vendor 자료를 보존하고 새 복사본에만 서명합니다. 기존 미서명 prototype 명령의 제한과 production 서명·공증 완료 조건은 유지합니다.

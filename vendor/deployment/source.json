@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/ExhibitOS/deployment",
+  "commit": "5688ebb991bef88067737cd9ed45f55d18739b0f",
+  "files": {
+    "generic-ssh.mjs": "f3e0a9ca1ab85d363a256e1b5ab77e0e169baef7efe4f431cce162ae1056b8f3",
+    "ssh-maintenance.mjs": "d5ba48b14c796e8cf1b2010200978ae6cf12c9ce7fcfc21f1600db2d9f5ebb79",
+    "application-readiness.mjs": "834fff4bc17d0d4032c3b77e24608c6814d1ca3a4a66b78109f74ae4290e0959",
+    "bounded-json.mjs": "cbb57c42c41fa365fe81a4cb2976730d2356165dd4fdc1d67ed7e511c8ef0fff",
+    "local-selfhost-profile.mjs": "ede874f586f73d082238250b766c10976dd5ba5b781dd0f1318949922ea88f4e",
+    "diagnostics.mjs": "adf8f5534720e14fe3c94fd3ecd10ded90f383af94d37935731451ac2cf388bd",
+    "engine-locality.mjs": "0708772cef4d701ddeb9c2f9343451191b934cb47439d330fac7d427b5b6f63f"
+  }
+}

@@ -2,6 +2,7 @@
 import {useCallback,useEffect,useRef,useState} from 'react';
 import {client,managerError,statusLabel,actionLabel,formatBytes,serviceStateLabel,healthLabel,nextStep,type Status,type EngineProbe,type Job,type LogEvent,type ManagerError,type Action} from './lifecycle';
 import './style.css';
+import {DeploymentWizard} from './DeploymentWizard';
 import {UpdateStatusPanel} from './UpdateStatus';
 import {BackupVerification} from './BackupVerification';
 import {BackupCreation} from './BackupCreation';
@@ -112,6 +113,7 @@ export function App(){
  {!client.native&&<div className="alert" role="status"><strong>데스크톱 앱에서 열어주세요.</strong><p>웹 브라우저에서는 컴퓨터의 실행 도구와 실제 전시 상태를 조회하거나 변경할 수 없습니다.</p></div>}
  {error&&<div className="alert" role="alert"><strong>{error.guidance}</strong><p className="code">확인 코드: {error.code}</p><button disabled={active||loading} onClick={()=>{setError(null);void refresh();}}>상태 다시 확인</button></div>}
  <aside className="next-step" aria-label="다음 할 일"><strong>다음 할 일</strong><p>{installationBlocked&&client.native&&!active?'현재 관리 공간을 확인하거나 아래에서 새 복원 공간을 선택하세요. 기존 데이터는 지우지 않습니다.':restorationBlocked&&client.native&&!active?'저장된 복원 상태를 확인하세요. 실패·중단 후보는 보존하며 덮어쓰거나 일반 다시 시도를 실행하지 않습니다.':backupHistoryError&&!active?'저장된 백업 기록을 확인할 수 없어 변경을 멈췄습니다. 실행 도구 다시 확인을 누르세요.':recoverable&&!active?'아래 작업 진행과 복구 안내를 확인한 뒤 실패한 작업 다시 시도를 누르세요.':nextStep(status,engineReady,active,client.native)}</p></aside>
+ <DeploymentWizard/>
  <InstallationSelection native={client.native} active={active} loading={loading} context={installation} historyError={installationError} change={changeInstallation}/>
  <section aria-labelledby="oex-title"><h2 id="oex-title">전시 파일 가져오기·내보내기</h2>
  <p>현재 선택한 관리 공간의 Studio에서 OEX 전시 파일을 옮깁니다. 서버가 관람 준비 완료 상태여야 열 수 있습니다.</p>
