@@ -85,7 +85,8 @@ pub(crate) fn resolve_selected_scope(profile: &Path, registry: &installations::R
             if !lifecycle_writer::present(&primary)? && !lifecycle_writer::present(&recovery)? { continue; }
             let store = Store::open_for_inspection(profile, &scope).map_err(|e| crate::err(e.code()))?;
             selected_used |= store.used_instances.contains(&registry.active_id);
-            if store.bound_source_id(registry)? == registry.active_id {
+            if store.bound_source_id(registry)? == registry.active_id
+                || selection_activation::pending_activation(&store, registry)?.is_some() {
                 if matched.replace(scope).is_some() { return Err(crate::err("UPDATE_AUTHORITY_UNAVAILABLE")); }
             }
         }
@@ -100,6 +101,91 @@ impl Store {
         if self.bound_source_id(registry)? != registry.active_id {
             return Err(crate::err("UPDATE_HANDOFF_SELECTION_CHANGED"));
         }
+        Ok(())
+    }
+}
+
+/// Existing-only projection. It cannot create an authority, recover a journal or replay health.
+pub(crate) fn inspect_rollback_context(profile: &Path, scope: &str, installation: &str)
+    -> crate::Result<Option<crate::update_rollback_handoff::RollbackContext>> {
+    #[cfg(not(unix))]
+    { let _=(profile,scope,installation); Err(crate::err("UPDATE_TRUST_PLATFORM_UNVERIFIED")) }
+    #[cfg(unix)]
+    {
+        let store=match Store::open_for_inspection(profile,scope) {
+            Ok(s)=>s, Err(Error::TrustMissing)=>return Ok(None), Err(e)=>return Err(crate::err(e.code())),
+        };
+        store.rollback_handoff_context(installation)
+    }
+}
+#[cfg(unix)]
+impl Store {
+    pub(crate) fn rollback_handoff_context(&self, installation: &str)
+        -> crate::Result<Option<crate::update_rollback_handoff::RollbackContext>> {
+        use crate::update::Stage;
+        self.check_root().map_err(|e|crate::err(e.code()))?;
+        if self.receipt().write_uncertain {return Err(crate::err("UPDATE_HANDOFF_AUTHORITY_CHANGED"));}
+        let (registry,_)=installations::load(&self.profile)?.ok_or_else(||crate::err("UPDATE_SOURCE_UNREGISTERED"))?;
+        if registry.active_id!=installation {return Err(crate::err("UPDATE_HANDOFF_SELECTION_CHANGED"));}
+        let pending=selection_activation::pending_activation(self,&registry)?;
+        if self.bound_source_id(&registry)?!=installation && pending.is_none() {return Err(crate::err("UPDATE_HANDOFF_SELECTION_CHANGED"));}
+        let Some(intent)=self.intent() else {return Ok(None)};
+        let u=&intent.update;
+        let stage=u.stage();
+        if stage==Stage::Prepared {return Ok(None);}
+        let p=u.plan();
+        let can_complete=stage==Stage::AwaitingRollbackHealth
+            || (stage==Stage::RecoveryRequired && u.interrupted_restoration().is_some())
+            || (stage==Stage::RolledBack && pending.is_some());
+        let can_restore=matches!(stage,Stage::Updated|Stage::Applying|Stage::AwaitingHealth|Stage::Restoring|Stage::RecoveryRequired);
+        if !can_restore && !can_complete {return Ok(None);}
+        Ok(Some(crate::update_rollback_handoff::RollbackContext {
+            installation_id:installation.into(),operation_id:p.operation_id.clone(),generation:self.current.generation,stage,
+            backup_id:p.backup_id.clone(),source_image:p.source_image.clone(),source_schema:p.source_schema.clone(),
+            backup_manifest:p.backup_manifest.clone(),source_inventory:p.source_inventory.clone(),
+            can_restore_original:can_restore,can_complete_restored:can_complete,selection_reconciliation_required:pending.is_some(),
+        }))
+    }
+    /// The caller first verifies its frozen context inside this same exclusive Store.
+    /// Existing methods retain their own namespace/operation guards throughout native work.
+    pub(crate) fn execute_rollback_handoff(&mut self, input:&crate::update_rollback_handoff::RollbackInput)->crate::Result<()> {
+        use crate::update::Stage;
+        use crate::update_rollback_handoff::RollbackAction;
+        crate::update_rollback_handoff::validate(input)?;
+        let (registry,_)=installations::load(&self.profile)?.ok_or_else(||crate::err("UPDATE_SOURCE_UNREGISTERED"))?;
+        let context=self.rollback_handoff_context(&registry.active_id)?.ok_or_else(||crate::err("UPDATE_INTENT_MISSING"))?;
+        if context.operation_id!=input.operation_id || context.generation!=input.generation {
+            return Err(crate::err("UPDATE_HANDOFF_AUTHORITY_CHANGED"));
+        }
+        if match input.action {RollbackAction::RestoreOriginal=>!context.can_restore_original,RollbackAction::CompleteRestored=>!context.can_complete_restored} {
+            return Err(crate::err("UPDATE_ROLLBACK_STAGE_INVALID"));
+        }
+        let pending=selection_activation::pending_activation(self,&registry)?;
+        self.recover_rollback_handoff_interruption().map_err(|e|crate::err(e.code()))?;
+        if let Some((operation,rollback))=pending {
+            if rollback {self.reconcile_rollback_selection_activation(&operation)?;}
+            else {self.reconcile_selection_activation(&operation)?;}
+        }
+        match input.action {
+            RollbackAction::RestoreOriginal=>{
+                if self.intent().is_some_and(|i|i.update.stage()==Stage::Updated) {
+                    self.request_rollback(&input.operation_id,self.current.generation,owned_execution::release_now()?)
+                        .map_err(|e|crate::err(e.code()))?;
+                }
+                self.register_rollback_candidate(input.preserve_data)?;
+                self.restore_registered_rollback_candidate(&input.maintenance_image,
+                    input.key_file.as_deref().ok_or_else(||crate::err("UPDATE_HANDOFF_INVALID"))?,
+                    input.archive.as_deref().ok_or_else(||crate::err("UPDATE_HANDOFF_INVALID"))?,
+                    input.port.ok_or_else(||crate::err("UPDATE_HANDOFF_INVALID"))?,input.external_writers_quiesced)?;
+                self.activate_restored_rollback(&input.maintenance_image,input.external_writers_quiesced)?;
+            },
+            RollbackAction::CompleteRestored=>{
+                if !self.intent().is_some_and(|i|i.update.stage()==Stage::RolledBack) {
+                    self.activate_restored_rollback(&input.maintenance_image,input.external_writers_quiesced)?;
+                }
+            },
+        }
+        if !self.intent().is_some_and(|i|i.update.stage()==Stage::RolledBack) {return Err(crate::err("UPDATE_ROLLBACK_UNCERTAIN"));}
         Ok(())
     }
 }
