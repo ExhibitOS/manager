@@ -109,12 +109,9 @@ impl Store {
 /// Existing-only projection. It cannot create an authority, recover a journal or replay health.
 pub(crate) fn inspect_rollback_context(profile: &Path, scope: &str, installation: &str)
     -> crate::Result<Option<crate::update_rollback_handoff::RollbackContext>> {
-    // Windows retains status/Prepared cancellation; native rollback execution is not admitted.
-    #[cfg(windows)]
-    { let _=(profile,scope,installation); Ok(None) }
     #[cfg(not(any(unix, windows)))]
     { let _=(profile,scope,installation); Err(crate::err("UPDATE_TRUST_PLATFORM_UNVERIFIED")) }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         let store=match Store::open_for_inspection(profile,scope) {
             Ok(s)=>s, Err(Error::TrustMissing)=>return Ok(None), Err(e)=>return Err(crate::err(e.code())),
@@ -122,7 +119,7 @@ pub(crate) fn inspect_rollback_context(profile: &Path, scope: &str, installation
         store.rollback_handoff_context(installation)
     }
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Store {
     pub(crate) fn rollback_handoff_context(&self, installation: &str)
         -> crate::Result<Option<crate::update_rollback_handoff::RollbackContext>> {
@@ -191,5 +188,151 @@ impl Store {
         }
         if !self.intent().is_some_and(|i|i.update.stage()==Stage::RolledBack) {return Err(crate::err("UPDATE_ROLLBACK_UNCERTAIN"));}
         Ok(())
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_rollback_handoff_tests {
+    use super::super::windows_status_handoff_tests::cleanup;
+    use super::*;
+    use crate::update_rollback_handoff as handoff;
+    use crate::windows_private::PrivateDirectory;
+
+    fn fixture() -> (PrivateDirectory, PathBuf, u64) {
+        let (parent, profile, mut store, verified) =
+            super::super::windows_status_handoff_tests::prepared();
+        store
+            .begin_update(
+                super::super::windows_status_handoff_tests::observations(),
+                &verified,
+                21,
+            )
+            .unwrap();
+        store
+            .update_failed("update-1", store.receipt().generation, 22)
+            .unwrap();
+        let generation = store.receipt().generation;
+        drop(store);
+        (parent, profile, generation)
+    }
+    fn input(profile: &Path, generation: u64) -> handoff::RollbackInput {
+        handoff::RollbackInput {
+            action: handoff::RollbackAction::RestoreOriginal,
+            operation_id: "update-1".into(),
+            generation,
+            maintenance_image: format!("sha256:{}", "a".repeat(64)),
+            key_file: Some(profile.parent().unwrap().join("unused-key.bin")),
+            archive: Some(profile.parent().unwrap().join("unused-backup")),
+            port: Some(50449),
+            preserve_data: true,
+            close_app_and_rollback: true,
+            external_writers_quiesced: true,
+        }
+    }
+    #[test]
+    fn windows_rollback_context_and_consent_preserve_native_authority_without_key_or_engine_access()
+    {
+        let (parent, profile, generation) = fixture();
+        let controller = installations::InstallationController::new(profile.clone(), None).unwrap();
+        let selected = controller.context().unwrap();
+        let context = controller
+            .update_rollback_context(&selected.selection_token)
+            .unwrap()
+            .unwrap();
+        assert_eq!(context.installation_id, selected.active_id);
+        assert_eq!(context.generation, generation);
+        assert_eq!(context.operation_id, "update-1");
+        assert!(context.can_restore_original && !context.can_complete_restored);
+        let json = serde_json::to_value(&context).unwrap();
+        assert_eq!(json.as_object().unwrap().len(), 12);
+        for forbidden in ["keyFile", "archive", "scope", "candidatePath", "health"] {
+            assert!(json.get(forbidden).is_none());
+        }
+        let store = Store::open_for_inspection(&profile, "default").unwrap();
+        let head = store.current_sha256.clone();
+        drop(store);
+        let mut denied = input(&profile, generation);
+        denied.external_writers_quiesced = false;
+        assert!(
+            controller
+                .update_rollback_handoff(&selected.selection_token, Some(denied))
+                .is_err()
+        );
+        assert!(!profile.join("update-rollback-handoffs").exists());
+        let store = Store::open_for_inspection(&profile, "default").unwrap();
+        assert_eq!(store.current_sha256, head);
+        assert_eq!(store.receipt().generation, generation);
+        drop(store);
+        drop(controller);
+        cleanup(parent);
+    }
+    #[test]
+    fn windows_rollback_claim_waits_for_app_close_and_stale_generation_cannot_recover_or_publish_success()
+     {
+        let (parent, profile, generation) = fixture();
+        let controller = installations::InstallationController::new(profile.clone(), None).unwrap();
+        let selected = controller.context().unwrap();
+        let (_, receipt) = controller
+            .update_rollback_handoff(&selected.selection_token, Some(input(&profile, generation)))
+            .unwrap();
+        let receipt = receipt.unwrap();
+        drop(controller);
+        let mut store = Store::open_for_prepared_handoff(&profile, "default").unwrap();
+        store
+            .begin_restore("update-1", generation, uuid::Uuid::new_v4().to_string(), 23)
+            .unwrap();
+        let changed_generation = store.receipt().generation;
+        let head = store.current_sha256.clone();
+        drop(store);
+        let (_, app) = profile_backup::anchor_lock(&profile, false).unwrap();
+        let worker_profile = profile.clone();
+        let worker_id = receipt.id.clone();
+        let worker = std::thread::spawn(move || handoff::execute(&worker_profile, &worker_id));
+        let mailbox = profile.join("update-rollback-handoffs");
+        let claim = mailbox.join(format!("{}.claim.json", receipt.id));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !claim.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(claim.exists());
+        assert_eq!(
+            handoff::latest(&profile, &selected.active_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            "uncertain"
+        );
+        assert_eq!(
+            handoff::execute(&profile, &receipt.id).unwrap_err().code,
+            "UPDATE_HANDOFF_ALREADY_CLAIMED"
+        );
+        assert!(
+            !mailbox
+                .join(format!("{}.outcome.json", receipt.id))
+                .exists()
+        );
+        drop(app);
+        assert_eq!(
+            worker.join().unwrap().unwrap_err().code,
+            "UPDATE_HANDOFF_AUTHORITY_CHANGED"
+        );
+        let store = Store::open_for_inspection(&profile, "default").unwrap();
+        assert_eq!(store.receipt().generation, changed_generation);
+        assert_eq!(store.current_sha256, head);
+        assert_eq!(
+            store.intent().unwrap().update.stage(),
+            crate::update::Stage::Restoring
+        );
+        drop(store);
+        let outcome = handoff::latest(&profile, &selected.active_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome.state, "failed");
+        assert_eq!(
+            outcome.code.as_deref(),
+            Some("UPDATE_HANDOFF_AUTHORITY_CHANGED")
+        );
+        assert!(handoff::execute(&profile, &receipt.id).is_err());
+        cleanup(parent);
     }
 }

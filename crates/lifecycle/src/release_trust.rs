@@ -189,16 +189,13 @@ pub fn inspect_update_status(profile: &Path, installation: &str) -> Result<Updat
 /// Read-only current intent projection for native reference selection; no saved receipt is an execution permit.
 type PreparedApplyInspection = (crate::update::Plan,u64,String,String,u64);
 pub(crate) fn inspect_prepared_apply(profile:&Path,scope:&str)->Result<Option<PreparedApplyInspection>,Error> {
- // Unsupported execution is an empty capability projection, not a status-query failure.
- #[cfg(windows)] {let _=(profile,scope);Ok(None)}
- #[cfg(not(windows))] {
+ // Existing-only native inspection never creates an execution permit.
  let store=match Store::open_for_inspection(profile,scope){Ok(s)=>s,Err(Error::TrustMissing)=>return Ok(None),Err(e)=>return Err(e)};
  let Some(intent)=store.intent() else{return Ok(None)};
  if intent.update.stage()!=crate::update::Stage::Prepared||store.receipt().write_uncertain{return Ok(None)}
  let envelope:Envelope=serde_json::from_str(&intent.envelope).map_err(|_|invalid())?;
  let release:Release=serde_json::from_str(&envelope.payload).map_err(|_|invalid())?;
  Ok(Some((intent.update.plan().clone(),store.receipt().generation,release.version,release.artifact.sha256,release.artifact.bytes)))
- }
 }
 /// Holds the stable profile fence exclusively through verification/publication.
 /// Open never bootstraps missing/corrupt trust. The caller selects default or a
@@ -2192,7 +2189,7 @@ mod windows_status_handoff_tests {
     use crate::windows_private::PrivateDirectory;
     use ed25519_dalek::{Signer, SigningKey};
 
-    fn prepared() -> (PrivateDirectory, PathBuf, Store, VerifiedRelease) {
+    pub(super) fn prepared() -> (PrivateDirectory, PathBuf, Store, VerifiedRelease) {
         let parent = PrivateDirectory::create(
             &PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
                 .join(format!("exhibitos-status-handoff-test-{}", uuid::Uuid::new_v4())),
@@ -2242,7 +2239,7 @@ mod windows_status_handoff_tests {
             source_inventory: "f".repeat(64), required_free_bytes: 1024,
         }
     }
-    fn observations() -> crate::update::Preflight {
+    pub(super) fn observations() -> crate::update::Preflight {
         crate::update::Preflight {
             plan: plan(), signature_verified: false, artifact_verified: false, compatibility_verified: true,
             backup_restore_verified: true, current_source_matches_backup: true, available_free_bytes: 1024,
@@ -2254,7 +2251,7 @@ mod windows_status_handoff_tests {
             operation_id: "update-1".into(), generation, preserve_data: true, close_app_and_cancel: true,
         }
     }
-    fn cleanup(parent: PrivateDirectory) {
+    pub(super) fn cleanup(parent: PrivateDirectory) {
         parent.check().unwrap();
         let path = parent.path().to_owned();
         assert!(path.file_name().unwrap().to_str().unwrap().starts_with("exhibitos-status-handoff-test-"));
@@ -2290,7 +2287,7 @@ mod windows_status_handoff_tests {
         cleanup(parent);
     }
     #[test]
-    fn windows_scope_routing_inspects_inflight_history_and_keeps_unsupported_execution_closed() {
+    fn windows_scope_routing_inspects_inflight_history_without_mutating_authority() {
         let (parent,profile,mut store,verified)=prepared();
         store.begin_update(observations(),&verified,21).unwrap();
         let root=store.root.clone();let generation=store.current.generation;
@@ -2304,11 +2301,14 @@ mod windows_status_handoff_tests {
         assert_eq!(status.stage,Some(crate::update::Stage::Applying));
         assert_eq!(status.generation,Some(generation));
         assert!(controller.update_apply_references(&context.selection_token).unwrap().is_empty());
-        assert!(controller.update_rollback_context(&context.selection_token).unwrap().is_none());
+        let rollback=controller.update_rollback_context(&context.selection_token).unwrap().unwrap();
+        assert_eq!(rollback.stage,crate::update::Stage::Applying);
+        assert_eq!(rollback.generation,generation);
+        assert!(rollback.can_restore_original);
         assert_eq!(fs::read(root.join(format!("{generation:020}.json"))).unwrap(),record);
         assert!(!root.join(format!("{:020}.json",generation+1)).exists());
-        assert_eq!(crate::update_execution_handoff::execute(&profile,"not-a-request").unwrap_err().code,"UPDATE_TRUST_PLATFORM_UNVERIFIED");
-        assert_eq!(crate::update_rollback_handoff::execute(&profile,"not-a-request").unwrap_err().code,"UPDATE_TRUST_PLATFORM_UNVERIFIED");
+        assert_eq!(crate::update_execution_handoff::execute(&profile,"not-a-request").unwrap_err().code,"UPDATE_HANDOFF_INVALID");
+        assert_eq!(crate::update_rollback_handoff::execute(&profile,"not-a-request").unwrap_err().code,"UPDATE_HANDOFF_INVALID");
         drop(controller);cleanup(parent);
     }
     #[test]

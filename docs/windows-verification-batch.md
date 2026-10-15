@@ -116,3 +116,8 @@ cargo test -p exhibitos-lifecycle --lib windows_trust_root --locked
 5개 새 합성 native 검사는 scope case alias/부재 보존·installation 구분, exclusive lock/root rename 거부, writer/hardlink/빈/초과 기록, 새 root에 대한 Everyone read ACL grant 거부, partial pending 보존을 확인한다. MSVC 교차 컴파일만 통과했으며 실제 Windows 검사는 단일 최종 배치까지 미실행이다.
 
 전체 Store 플랫폼 gate는 유지한다. [Microsoft Directory Handles](https://learn.microsoft.com/en-us/windows/win32/fileio/obtaining-a-handle-to-a-directory)와 [FlushFileBuffers](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)의 공식 문서는 현재 구현에 필요한 directory publication/power-loss durability 보장을 증명하지 않는다. File sync나 이 adapter의 guard를 그 증거로 대체하지 않는다. 남은 directory durability·host/archive·authority-loss/full recovery·executor 연결 및 crash corpus가 필요하다.
+
+
+## 2026-10-15 최신 앱 종료 후 실행 연결
+
+기존 Windows Store·복구 transport 위에 Prepared 참조 적용과 전체 복원·중단 재시도 helper를 연결했다. 요청·참조·선택·작업 세대 검사와 native ACL/파일 식별자 고정을 유지하며 실제 원본·writer·복구·health 검사도 그대로 수행한다. 새 Windows 합성 검사 5개는 Windows 대상 컴파일만 확인했으며 실제 실행은 아직 하지 않았다. 기존 최종 일괄 검사의 `cargo test --workspace --locked`에 포함되므로 별도 사용자 실행을 요청하지 않는다. Mac 코어 통과나 컴파일 결과를 Windows Docker·GUI·원래 전체 복원 통과로 세지 않는다. 최신 소스 commit과 전체 배치 준비 여부는 최종 검증 기록에서 확정한다.
