@@ -66,3 +66,40 @@ impl Store {
         Ok(bound)
     }
 }
+
+/// Internal routing from existing, verified immutable completion history.
+pub(crate) fn resolve_selected_scope(profile: &Path, registry: &installations::Registry) -> crate::Result<String> {
+    #[cfg(not(unix))]
+    { let _ = (profile, registry); Err(crate::err("UPDATE_TRUST_PLATFORM_UNVERIFIED")) }
+    #[cfg(unix)]
+    {
+        installations::valid(registry)?;
+        let selected = registry.installations.iter().find(|e| e.id == registry.active_id)
+            .ok_or_else(|| crate::err("INSTALLATION_SELECTION_INVALID"))?;
+        let mut scopes = BTreeSet::from(["default".to_owned()]);
+        scopes.extend(registry.installations.iter().map(|e| e.id.clone()));
+        let mut matched = None;
+        let mut selected_used = false;
+        for scope in scopes {
+            let (primary, recovery) = lifecycle_writer::namespaces(profile, &scope)?;
+            if !lifecycle_writer::present(&primary)? && !lifecycle_writer::present(&recovery)? { continue; }
+            let store = Store::open_for_inspection(profile, &scope).map_err(|e| crate::err(e.code()))?;
+            selected_used |= store.used_instances.contains(&registry.active_id);
+            if store.bound_source_id(registry)? == registry.active_id {
+                if matched.replace(scope).is_some() { return Err(crate::err("UPDATE_AUTHORITY_UNAVAILABLE")); }
+            }
+        }
+        if let Some(scope) = matched { return Ok(scope); }
+        // A previously used candidate cannot escape its history as an absent authority.
+        if selected_used { return Err(crate::err("UPDATE_SOURCE_MISMATCH")); }
+        Ok(if selected.kind == "default" { "default".into() } else { selected.id.clone() })
+    }
+}
+impl Store {
+    pub(crate) fn verify_bound_selected(&self, registry: &installations::Registry) -> crate::Result<()> {
+        if self.bound_source_id(registry)? != registry.active_id {
+            return Err(crate::err("UPDATE_HANDOFF_SELECTION_CHANGED"));
+        }
+        Ok(())
+    }
+}

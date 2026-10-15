@@ -558,7 +558,7 @@ fn root_locks(profile: &Path, spaces: &[Space]) -> Result<Vec<File>> {
     }
     Ok(guards)
 }
-fn external_key(profile: &Path, key: &Path) -> Result<Vec<u8>> {
+pub(crate) fn external_key(profile: &Path, key: &Path) -> Result<Vec<u8>> {
     let parent = key.parent().ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
     canonical_private(parent)?;
     if key.starts_with(profile) || fs::canonicalize(key).ok().as_deref() != Some(key) {

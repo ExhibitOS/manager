@@ -16,6 +16,8 @@ pub mod retry;
 pub mod signed_release;
 pub mod update;
 pub mod update_handoff;
+mod execution_reference;
+pub mod update_execution_handoff;
 #[cfg(windows)]
 pub mod windows_private;
 
