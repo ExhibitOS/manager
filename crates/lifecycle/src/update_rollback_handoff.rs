@@ -43,7 +43,7 @@ pub struct RollbackContext {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Request {
+pub(crate) struct Request {
     id: String,
     installation_id: String,
     scope: String,

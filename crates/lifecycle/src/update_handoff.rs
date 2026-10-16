@@ -10,7 +10,7 @@ const MAX_RECORDS: usize = 384;
 pub struct CancelInput { pub operation_id:String, pub generation:u64, pub preserve_data:bool, pub close_app_and_cancel:bool }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all="camelCase", deny_unknown_fields)]
-struct Request { id:String, installation_id:String, scope:String, registry_sha256:String, input:CancelInput, created_at:u64 }
+pub(crate) struct Request { id:String, installation_id:String, scope:String, registry_sha256:String, input:CancelInput, created_at:u64 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all="camelCase", deny_unknown_fields)]
 pub struct Receipt { pub id:String, pub installation_id:String, pub state:String, pub code:Option<String>, pub created_at:u64, pub request_sha256:String }
