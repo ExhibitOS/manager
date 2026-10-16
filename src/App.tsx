@@ -18,6 +18,7 @@ export function App(){
  const [updateActive,setUpdateActive]=useState(false);
  const [pendingAction,setPendingAction]=useState<'install'|Action|null>(null);
  const [lifecycleFeedback,setLifecycleFeedback]=useState('');
+ const [statusError,setStatusError]=useState<ManagerError|null>(null);
  const [status,setStatus]=useState<Status|null>(null),[engines,setEngines]=useState<EngineProbe[]>([]),[jobs,setJobs]=useState<Job[]>([]),[logs,setLogs]=useState<LogEvent[]>([]),[error,setError]=useState<ManagerError|null>(null),[busy,setBusy]=useState(false),[loading,setLoading]=useState(false),[notice,setNotice]=useState('');
  const [backupJobs,setBackupJobs]=useState<BackupJob[]>([]),[backupHistoryError,setBackupHistoryError]=useState<ManagerError|null>(null);
  const [restoration,setRestoration]=useState<RestorationContext|null>(null),[restorationError,setRestorationError]=useState<ManagerError|null>(null);
@@ -33,10 +34,10 @@ export function App(){
    try{const selected=await client.installations();if(live.current&&generation===statusGeneration.current){setInstallation(selected);setInstallationError(null);}}
    catch(e){if(live.current&&generation===statusGeneration.current){setInstallation(null);setInstallationError(managerError(e));}throw e;}
    const result=await Promise.all([client.status(),client.engines(),client.jobs(),client.logs()]);
-   if(live.current&&generation===statusGeneration.current){setStatus(result[0]);setEngines(result[1]);setJobs(result[2]);setLogs(result[3]);}
+   if(live.current&&generation===statusGeneration.current){setStatus(result[0]);setEngines(result[1]);setJobs(result[2]);setLogs(result[3]);setStatusError(null);}
    try{const saved=await client.backupJobs();if(live.current&&generation===statusGeneration.current){setBackupJobs(saved);setBackupHistoryError(null);}}
    catch(e){if(live.current&&generation===statusGeneration.current)setBackupHistoryError(managerError(e));}
-  }catch(e){if(live.current&&generation===statusGeneration.current){setStatus(null);setError(managerError(e));}}
+  }catch(e){if(live.current&&generation===statusGeneration.current){setStatus(null);setStatusError(managerError(e));}}
   finally{
    try{const saved=await client.restorationContext();if(live.current&&generation===statusGeneration.current){setRestoration(saved);setRestorationError(null);}}
    catch(e){if(live.current&&generation===statusGeneration.current){setRestoration(null);setRestorationError(managerError(e));}}
@@ -104,6 +105,7 @@ export function App(){
  }
  async function openOex(){setError(null);try{await client.openOex();setNotice('선택한 관리 공간의 Studio를 열었습니다. Artist CMS에서 로그인한 뒤 OEX 작업 상태를 확인하세요.');}catch(e){setError(managerError(e));}}
  async function open(){setError(null);try{await client.open();setNotice('기본 브라우저에서 내 컴퓨터의 전시를 열었습니다.');}catch(e){setError(managerError(e));}}
+ const visibleError=error??statusError;
  const latestJob=jobs.at(-1),currentJob=status?.activeJob??(latestJob?.state==='running'?latestJob:null),recoverable=latestJob&&['failed','interrupted'].includes(latestJob.state)?latestJob:null;
  const installationBlocked=!installation||!!installationError||!!installation.errorCode||!installation.installations.find(root=>root.id===installation.activeId)?.available;
  const restorationBlocked=!!restorationError||!restoration||!!restoration.job&&restoration.job.state!=='completed';
@@ -111,7 +113,7 @@ export function App(){
  return <main><header><a className="skip" href="#controls">전시 관리로 건너뛰기</a><div className="brand">E<span>ExhibitOS<br/><small>MANAGER</small></span></div><p className="local-tag">내 컴퓨터에서 관리</p></header>
  <section className="welcome"><p className="eyebrow">LOCAL EXHIBITION</p><h1>전시를 시작할 준비</h1><p>실행 도구를 확인하고 전시를 설치하세요. 작품과 전시 데이터는 정지해도 보존됩니다.</p></section>
  {!client.native&&<div className="alert" role="status"><strong>데스크톱 앱에서 열어주세요.</strong><p>웹 브라우저에서는 컴퓨터의 실행 도구와 실제 전시 상태를 조회하거나 변경할 수 없습니다.</p></div>}
- {error&&<div className="alert" role="alert"><strong>{error.guidance}</strong><p className="code">확인 코드: {error.code}</p><button disabled={active||loading} onClick={()=>{setError(null);void refresh();}}>상태 다시 확인</button></div>}
+ {visibleError&&<div className="alert" role="alert"><strong>{visibleError.guidance}</strong><p className="code">확인 코드: {visibleError.code}</p><button disabled={active||loading} onClick={()=>{setError(null);setStatusError(null);void refresh();}}>상태 다시 확인</button></div>}
  <aside className="next-step" aria-label="다음 할 일"><strong>다음 할 일</strong><p>{installationBlocked&&client.native&&!active?'현재 관리 공간을 확인하거나 아래에서 새 복원 공간을 선택하세요. 기존 데이터는 지우지 않습니다.':restorationBlocked&&client.native&&!active?'저장된 복원 상태를 확인하세요. 실패·중단 후보는 보존하며 덮어쓰거나 일반 다시 시도를 실행하지 않습니다.':backupHistoryError&&!active?'저장된 백업 기록을 확인할 수 없어 변경을 멈췄습니다. 실행 도구 다시 확인을 누르세요.':recoverable&&!active?'아래 작업 진행과 복구 안내를 확인한 뒤 실패한 작업 다시 시도를 누르세요.':nextStep(status,engineReady,active,client.native)}</p></aside>
  <DeploymentWizard/>
  <InstallationSelection native={client.native} active={active} loading={loading} context={installation} historyError={installationError} change={changeInstallation}/>
