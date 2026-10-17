@@ -2,6 +2,7 @@
 import {useCallback,useEffect,useRef,useState} from 'react';
 import {client,managerError,statusLabel,actionLabel,formatBytes,serviceStateLabel,healthLabel,nextStep,type Status,type EngineProbe,type Job,type LogEvent,type ManagerError,type Action} from './lifecycle';
 import './style.css';
+import {prepareStudio,studioSetupLabel,type StudioSetupStage} from './studio-setup';
 import {AppearanceControl} from './AppearanceControl';
 import {DeploymentWizard} from './DeploymentWizard';
 import {HostedDeployment} from './HostedDeployment';
@@ -16,6 +17,8 @@ import {RetryDiagnosisPanel} from './RetryDiagnosis';
 import {MaintenanceRetryPanel} from './MaintenanceRetry';
 import type {VerificationInput,CreationInput,BackupJob,RestorationInput,RestorationContext,InstallationContext,ReconciliationInput,ReconciliationJob,MaintenanceRetry,RetryRequest,RetryDiagnosisInput} from './lifecycle';
 export function App(){
+ const [setupStage,setSetupStage]=useState<StudioSetupStage|null>(null);
+ const [showDetails,setShowDetails]=useState(false);
  const [cancellationActive,setCancellationActive]=useState(false);
  const [updateActive,setUpdateActive]=useState(false);
  const [pendingAction,setPendingAction]=useState<'install'|Action|null>(null);
@@ -107,6 +110,13 @@ export function App(){
  }
  async function openOex(){setError(null);try{await client.openOex();setNotice('선택한 관리 공간의 Studio를 열었습니다. Artist CMS에서 로그인한 뒤 OEX 작업 상태를 확인하세요.');}catch(e){setError(managerError(e));}}
  async function open(){setError(null);try{await client.open();setNotice('기본 브라우저에서 내 컴퓨터의 전시를 열었습니다.');}catch(e){setError(managerError(e));}}
+ async function openStudioFlow(){
+  if(working.current||!client.native||active||loading||installationBlocked||restorationBlocked||backupHistoryError||reconciliationError||retryError||(!ready&&recoverable))return;
+  working.current=true;setBusy(true);setError(null);setSetupStage('checking');setNotice('Studio를 준비합니다. 현재 설치와 저장된 데이터를 재사용해요.');
+  try{await prepareStudio(client,stage=>{if(live.current)setSetupStage(stage);});if(live.current)setNotice('브라우저에 Studio를 열도록 요청했어요. 작품 가져오기와 편집은 Studio에서 진행하세요.');}
+  catch(e){if(live.current){setError(managerError(e));setNotice('Studio 준비를 완료하지 못했어요. 현재 전시와 작업 기록을 확인한 뒤 다시 시도하세요.');}}
+  finally{working.current=false;if(live.current){setBusy(false);setSetupStage(null);void refresh();}}
+ }
  const visibleError=error??statusError;
  const latestJob=jobs.at(-1),currentJob=status?.activeJob??(latestJob?.state==='running'?latestJob:null),recoverable=latestJob&&['failed','interrupted'].includes(latestJob.state)?latestJob:null;
  const installationBlocked=!installation||!!installationError||!!installation.errorCode||!installation.installations.find(root=>root.id===installation.activeId)?.available;
@@ -118,6 +128,14 @@ export function App(){
  {!client.native&&<div className="alert" role="status"><strong>데스크톱 앱에서 열어주세요.</strong><p>웹 브라우저에서는 컴퓨터의 실행 도구와 실제 전시 상태를 조회하거나 변경할 수 없습니다.</p></div>}
  {visibleError&&<div className="alert" role="alert"><strong>{visibleError.guidance}</strong><p className="code">확인 코드: {visibleError.code}</p><button disabled={active||loading} onClick={()=>{setError(null);setStatusError(null);void refresh();}}>상태 다시 확인</button></div>}
  <aside className="next-step" aria-label="다음 할 일"><strong>다음 할 일</strong><p>{installationBlocked&&client.native&&!active?'현재 관리 공간을 확인하거나 아래에서 새 복원 공간을 선택하세요. 기존 데이터는 지우지 않습니다.':restorationBlocked&&client.native&&!active?'저장된 복원 상태를 확인하세요. 실패·중단 후보는 보존하며 덮어쓰거나 일반 다시 시도를 실행하지 않습니다.':backupHistoryError&&!active?'저장된 백업 기록을 확인할 수 없어 변경을 멈췄습니다. 실행 도구 다시 확인을 누르세요.':recoverable&&!active?'아래 작업 진행과 복구 안내를 확인한 뒤 실패한 작업 다시 시도를 누르세요.':nextStep(status,engineReady,active,client.native)}</p></aside>
+ <section className="panel studio-start" aria-labelledby="studio-start-title"><div className="panel-top"><h2 id="studio-start-title">전시 만들기·이어서 편집하기</h2><button aria-pressed={showDetails} onClick={()=>setShowDetails(value=>!value)}>{showDetails?'세부 안내 접기':'세부 안내 보기'}</button></div>
+ <p>내 컴퓨터의 설치를 확인하고, 필요한 설치·시작을 마친 뒤 Studio를 브라우저에서 열어요. 로컬 작업에는 클라우드 계정이 필요 없어요.</p>
+ <button className="primary" disabled={!client.native||active||loading||!status||installationBlocked||restorationBlocked||!!backupHistoryError||!!reconciliationError||!!retryError||(!ready&&!!recoverable)} onClick={()=>void openStudioFlow()}>{setupStage?'Studio 준비 중…':ready?'Studio 열기':'Studio 준비하고 열기'}</button>
+ {setupStage&&<div role="status" aria-live="polite"><progress aria-label="Studio 준비 중"/><p>{studioSetupLabel[setupStage]}</p></div>}
+ {!engineReady&&<p className="note">먼저 아래 ‘실행 도구 확인’에서 Docker 또는 Podman을 준비해 주세요.</p>}
+ <p className="note">현재 개발판은 검증된 실행 패키지가 먼저 준비돼 있어야 해요. 실행 도구 설치와 패키지 자동 다운로드는 아직 연결되지 않았어요.</p>
+ <div hidden={!showDetails}><p>설치·시작에는 기존 검증과 권한 확인을 그대로 사용해요. 앱을 다시 여는 것만으로 서버나 브라우저를 자동 실행하지 않아요. 준비 중 창을 닫으면 다음 실행에서 실제 작업 기록을 확인해 주세요.</p><p>Capture나 Mac Processing이 없어도 기존 지원 작품 파일을 Studio로 가져올 수 있어요. 서버 준비와 브라우저 실행은 작품 등록·저장 완료와 별개예요.</p></div>
+ </section>
  <InstallationSelection native={client.native} active={active} loading={loading} context={installation} historyError={installationError} change={changeInstallation}/>
  <section className="panel" aria-labelledby="oex-title"><h2 id="oex-title">전시 파일 가져오기·내보내기</h2>
  <p>현재 선택한 관리 공간의 Studio에서 OEX 전시 파일을 옮깁니다. 서버가 관람 준비 완료 상태여야 열 수 있습니다.</p>

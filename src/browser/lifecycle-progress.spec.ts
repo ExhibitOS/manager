@@ -6,6 +6,10 @@ for(const action of ['install','start','stop','restart','failure'] as const)test
   const installed=action!=='install',ready=action==='stop'||action==='restart';
   const status={installed,bundleId:'synthetic',version:'0.1.0',state:ready?'running':'stopped',services:[],readiness:{ready,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
   Object.assign(window,{isTauri:true,__finishOperation:null,__operationCount:0,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
+   if(cmd==='manager_hosted_resume')return null;
+   if(cmd==='manager_hosted_connected')return false;
+   if(cmd==='manager_update_cancel')return null;
+   if(cmd==='manager_update_status')return {installationId:'56789012-1234-1234-1234-123456789012',authorityPresent:false,generation:null,stage:null,operationId:null,failure:null,changedSchema:false,writeUncertain:false};
    if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:'56789012-1234-1234-1234-123456789012',mode:'managed',installations:[{id:'56789012-1234-1234-1234-123456789012',kind:'default',createdAt:1,path:'/private/tmp/synthetic-progress/local-runtime',available:true}],errorCode:null};
    if(cmd==='manager_status')return status;
    if(cmd==='manager_detect')return [{kind:'docker',installed:true,available:true,engineVersion:'synthetic',composeVersion:'synthetic',errorCode:null,guidance:null}];

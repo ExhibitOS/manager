@@ -1,0 +1,66 @@
+{
+  "status": "IMPLEMENTED_SYNTHETIC_UI_VERIFIED_NATIVE_NOT_RUN",
+  "updated_at": "2026-10-17T15:11:01.608043+00:00",
+  "tasks": [
+    "T08-01",
+    "T08-03"
+  ],
+  "base_commit": "8820fd507975e9f6e781b5859c9b839bc371f55d",
+  "source_sha256": {
+    "src/App.tsx": "466501daf71092b4e42484ded2e775958ede0c561da84ebf76ce431e0e231966",
+    "src/studio-setup.ts": "bae358a332eba7a2dd418c564787c7d2a875d12b2b26e8596a0860f06f254d1c",
+    "src/studio-setup.test.ts": "57f7ccb4dbdc454880abddd06be90adcfd243c30c3a9c28bf518e7fe12cd4e2a",
+    "src/browser/studio-setup.spec.ts": "92e48447db9626976d95a89e2219dfb32355b209e3b334ecdd00d6c4b088d44e",
+    "src/browser/lifecycle-progress.spec.ts": "c404658284ceb613ef2ccef4b9975ac316f4842bf6e3a8e58f055bb8197f8156",
+    "src/browser/status-ux.spec.ts": "22ce7e84d73d3378dc623da7b313b463955d954d053441950d9ff918d99feb8e",
+    "docs/desktop.md": "639ff700369326c391aedb86f211355a79e937126a33d749bb9b71a1339aed22"
+  },
+  "implementation": [
+    "Explicit user action uses existing guarded install/start/readiness/openOex adapters.",
+    "Ready installations reused without install/start; failed/running/changed-selection/unconfirmed readiness stops chain.",
+    "One active chain, real stage descriptions, no invented percent or remaining time.",
+    "Details disclosure preserves mounted inputs. Browser open request is not Studio edit/save completion."
+  ],
+  "verification": [
+    {
+      "command": "npm run typecheck",
+      "result": "PASS"
+    },
+    {
+      "command": "npm run lint",
+      "result": "PASS"
+    },
+    {
+      "command": "npm test -- src/studio-setup.test.ts",
+      "result": "PASS",
+      "tests": 6
+    },
+    {
+      "command": "npm run test:browser -- src/browser/studio-setup.spec.ts src/browser/manager.spec.ts src/browser/lifecycle-progress.spec.ts src/browser/status-ux.spec.ts --project desktop",
+      "result": "PASS",
+      "tests": 13,
+      "seconds": 15.8,
+      "scope": "Chromium actual browser controls with synthetic IPC; desktop viewport plus explicit 320/640/1120 width checks in relevant tests; not native engine execution"
+    },
+    {
+      "command": "npm run build",
+      "result": "PASS",
+      "scope": "TypeScript/Vite frontend only; 37 modules; no native app build"
+    },
+    {
+      "command": "git diff --check",
+      "result": "PASS"
+    }
+  ],
+  "resolved_test_failures": [
+    "New first-run fixture attempted filling backup-key input while installation was absent; input preservation now verified in ready installed scenario, original product guard retained.",
+    "Existing lifecycle/status fixtures omitted read-only hosted resume/update queries and produced unrelated alerts; added normal empty-history replies while retaining every original assertion."
+  ],
+  "not_verified": [
+    "Native app UI and real engine/install/start/readiness/Studio editing in an isolated user distribution environment.",
+    "Engine official installation, VM preparation and verified runtime automatic download.",
+    "Complete simple/advanced screen reorganization.",
+    "Developer ID signing, notarization, App Store integration and production installer."
+  ],
+  "preservation": "No engine, remote provider, user data, key, backup or installation was changed by these checks. No product task or GUI-wide completion is claimed."
+}

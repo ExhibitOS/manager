@@ -12,6 +12,10 @@ for(const scenario of ['running','failed','ready'] as const)test(`synthetic ${sc
    if(cmd==='manager_maintenance_context')return null;
    if(cmd==='manager_maintenance_retries')return [];
    if(cmd==='manager_helper_reconciliations')return [];
+   if(cmd==='manager_hosted_resume')return null;
+   if(cmd==='manager_hosted_connected')return false;
+   if(cmd==='manager_update_cancel')return null;
+   if(cmd==='manager_update_status')return {installationId:'56789012-1234-1234-1234-123456789012',authorityPresent:false,generation:null,stage:null,operationId:null,failure:null,changedSchema:false,writeUncertain:false};
    if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:'56789012-1234-1234-1234-123456789012',mode:'managed',installations:[{id:'56789012-1234-1234-1234-123456789012',kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true}],errorCode:null};
    if(cmd==='manager_status')return status;
    if(cmd==='manager_detect')return [{kind:'docker',installed:true,available:true,engineVersion:'synthetic',composeVersion:'synthetic',errorCode:null,guidance:null}];
@@ -41,6 +45,10 @@ test('automatic poll recovery clears stale connection error but preserves action
   const status={installed:true,bundleId:'synthetic-poll-recovery',version:'0.1.0',state:'stopped',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
   Object.assign(window,{isTauri:true,__pollRecovered:false,__statusReads:0,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
    const harness=window as unknown as {__pollRecovered:boolean;__statusReads:number};
+   if(cmd==='manager_hosted_resume')return null;
+   if(cmd==='manager_hosted_connected')return false;
+   if(cmd==='manager_update_cancel')return null;
+   if(cmd==='manager_update_status')return {installationId:'56789012-1234-1234-1234-123456789012',authorityPresent:false,generation:null,stage:null,operationId:null,failure:null,changedSchema:false,writeUncertain:false};
    if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:'56789012-1234-1234-1234-123456789012',mode:'managed',installations:[{id:'56789012-1234-1234-1234-123456789012',kind:'default',createdAt:1,path:'/private/tmp/synthetic-poll-recovery/local-runtime',available:true}],errorCode:null};
    if(cmd==='manager_status'){harness.__statusReads++;if(!harness.__pollRecovered)throw {code:'ENGINE_UNAVAILABLE',guidance:'일시적으로 실행 상태를 확인하지 못했습니다.'};return status;}
    if(cmd==='manager_detect')return [{kind:'docker',installed:true,available:true,engineVersion:'synthetic',composeVersion:'synthetic',errorCode:null,guidance:null}];
