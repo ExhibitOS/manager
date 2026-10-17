@@ -8,6 +8,7 @@ for(const scenario of ['success','failure','malformed','wrong-image'] as const)t
   let stopped=false;
   Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string,args?:{input:unknown})=>{
    fixture.__creationCalls.push(cmd);
+   if(cmd==='manager_backup_tool')return null;
    if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};
    if(cmd==='manager_maintenance_context')return null;
    if(cmd==='manager_maintenance_retries')return [];
@@ -26,6 +27,9 @@ for(const scenario of ['success','failure','malformed','wrong-image'] as const)t
  },{scenario});
  const faults:string[]=[];page.on('pageerror',e=>faults.push(e.message));await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();
  const section=page.getByRole('region',{name:'설치된 전시 백업'}),submit=section.getByRole('button',{name:'전시를 멈추고 백업 생성'});
+ // Existing manual-path cases explicitly open the optional fields, preserving their validation coverage.
+ for(const summary of await section.getByText('경로 직접 입력',{exact:true}).all())await summary.click();
+ await section.getByText('복구 도구 고급 설정',{exact:true}).click();
  await expect(section.getByLabel('생성에 사용할 외부 키 파일의 전체 경로')).toBeEnabled();
  await section.getByLabel('생성에 사용할 외부 키 파일의 전체 경로').fill('private key bytes');
  await section.getByLabel('백업 생성용 유지보수 이미지의 고정 ID').fill('sha256:'+'a'.repeat(64));
@@ -71,6 +75,7 @@ for(const state of ['running','interrupted','malformed'] as const)test(`persiste
   Object.assign(window,{isTauri:true,__historyFixed:false,__historyMutations:0,__TAURI_INTERNALS__:{invoke:async(cmd:string,args?:{input?:unknown})=>{
    if(cmd==='manager_hosted_resume')return null;
    if(cmd==='manager_hosted_connected')return false;
+   if(cmd==='manager_backup_tool')return null;
    if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};
    if(cmd==='manager_maintenance_context')return null;
    // Existing read-only refresh: cancellation submission is still refused.
@@ -107,6 +112,7 @@ test('a pre-backup status request cannot resurrect stale ready state during crea
   let reads=0,finished=false;
   const status=()=>({installed:true,bundleId:'synthetic',version:'0.1.0',state:finished?'stopped':'running',services:[],readiness:{ready:!finished,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null});
   Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
+   if(cmd==='manager_backup_tool')return null;
    if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};
    if(cmd==='manager_maintenance_context')return null;
    if(cmd==='manager_maintenance_retries')return [];
@@ -120,6 +126,7 @@ test('a pre-backup status request cannot resurrect stale ready state during crea
   }}});
  });
  await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const section=page.getByRole('region',{name:'설치된 전시 백업'}),state=page.getByRole('region',{name:'실제 전시 상태'});
+ for(const summary of await section.getByText('경로 직접 입력',{exact:true}).all())await summary.click();await section.getByText('복구 도구 고급 설정',{exact:true}).click();
  await expect(section.getByLabel('생성에 사용할 외부 키 파일의 전체 경로')).toBeEnabled();
  await section.getByLabel('생성에 사용할 외부 키 파일의 전체 경로').fill('/private/tmp/synthetic-key');await section.getByLabel('백업 생성용 유지보수 이미지의 고정 ID').fill('sha256:'+'a'.repeat(64));
  for(const checkbox of await section.getByRole('checkbox').all())await checkbox.check();

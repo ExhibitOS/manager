@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 mod startup;
+mod maintenance_picker;
 mod remote;
 mod hosted;
 mod publication;
@@ -577,13 +578,16 @@ async fn manager_retry_restoration(
 #[tauri::command]
 async fn manager_restore_backup(
     window: WebviewWindow,
+    app: tauri::AppHandle,
     state: State<'_, DesktopState>,
     selection_token: String,
     input: RestorationInput,
 ) -> Result<exhibitos_lifecycle::restoration::RestorationReceipt, LifecycleError> {
     caller(&window)?;
     input.validate()?;
+    let resources=app.path().resource_dir().map_err(|_|error("PLATFORM_RUNTIME_UNAVAILABLE"))?;
     blocking(state.0.clone(), selection_token, move |service| {
+        service.prepare_bundled_maintenance(&resources.join("platform-runtime/generated"),&input.image)?;
         service.restore_backup(
             &input.image,
             std::path::Path::new(&input.key_path),
@@ -607,15 +611,33 @@ async fn manager_restoration_context(
     .await
 }
 #[tauri::command]
+async fn manager_choose_backup_path(window:WebviewWindow,state:State<'_,DesktopState>,selection_token:String,kind:maintenance_picker::Kind)->Result<Option<String>,LifecycleError>{
+ caller(&window)?;let controller=state.0.clone();
+ tauri::async_runtime::spawn_blocking(move||{
+  controller.with_current(&selection_token,|_|Ok(()))?;
+  let selected=maintenance_picker::choose(kind)?;
+  if matches!(kind,maintenance_picker::Kind::NewKey){if let Some(path)=&selected {controller.create_backup_key(&selection_token,std::path::Path::new(path))?;}}
+  controller.with_current(&selection_token,|_|Ok(selected))
+ }).await.map_err(|_|error("MANAGER_OPERATION"))?
+}
+#[tauri::command]
+async fn manager_backup_tool(window:WebviewWindow,app:tauri::AppHandle,state:State<'_,DesktopState>,selection_token:String)->Result<Option<String>,LifecycleError>{
+ caller(&window)?;let resources=app.path().resource_dir().map_err(|_|error("PLATFORM_RUNTIME_UNAVAILABLE"))?;
+ blocking(state.0.clone(),selection_token,move|service|service.bundled_maintenance_image(&resources.join("platform-runtime/generated"))).await
+}
+#[tauri::command]
 async fn manager_create_backup(
     window: WebviewWindow,
+    app: tauri::AppHandle,
     state: State<'_, DesktopState>,
     selection_token: String,
     input: CreationInput,
 ) -> Result<exhibitos_lifecycle::backup_creation::BackupCreationReceipt, LifecycleError> {
     caller(&window)?;
     input.validate()?;
+    let resources=app.path().resource_dir().map_err(|_|error("PLATFORM_RUNTIME_UNAVAILABLE"))?;
     blocking(state.0.clone(), selection_token, move |service| {
+        service.prepare_bundled_maintenance(&resources.join("platform-runtime/generated"),&input.image)?;
         service.create_backup(
             &input.image,
             std::path::Path::new(&input.key_path),
@@ -639,13 +661,16 @@ async fn manager_backup_jobs(
 #[tauri::command]
 async fn manager_verify_backup(
     window: WebviewWindow,
+    app: tauri::AppHandle,
     state: State<'_, DesktopState>,
     selection_token: String,
     input: VerificationInput,
 ) -> Result<exhibitos_lifecycle::maintenance::VerificationReceipt, LifecycleError> {
     caller(&window)?;
     input.validate()?;
+    let resources=app.path().resource_dir().map_err(|_|error("PLATFORM_RUNTIME_UNAVAILABLE"))?;
     blocking(state.0.clone(), selection_token, move |service| {
+        service.prepare_bundled_maintenance(&resources.join("platform-runtime/generated"),&input.image)?;
         service.verify_backup(
             &input.image,
             std::path::Path::new(&input.key_path),
@@ -878,6 +903,8 @@ pub fn run() {
             manager_open_oex,
             manager_verify_backup,
             manager_create_backup,
+            manager_choose_backup_path,
+            manager_backup_tool,
             manager_backup_jobs,
             manager_restore_backup,
             manager_restoration_context,

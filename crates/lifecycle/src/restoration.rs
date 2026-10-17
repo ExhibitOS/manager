@@ -76,16 +76,23 @@ struct Helper<'a> {
 const AUTHENTICATE: &str = r#"
 import {main} from './scripts/service-backup.mjs';
 import {createHash} from 'node:crypto';
-import {readFile,mkdir,copyFile} from 'node:fs/promises';
+import {readFile,mkdir,copyFile,lstat} from 'node:fs/promises';
 const v=await main(['verify','--key-file','/key','--source','/archive','--destination','/work/authenticated']);
 const bytes=await readFile('/work/authenticated/manifest.json'),manifest=JSON.parse(bytes);
 await mkdir('/work/configuration',{mode:0o700});await mkdir('/work/deployment',{mode:0o700});await mkdir('/work/deployment/images',{mode:0o700});
+const sourceBundle=manifest.files.find(f=>f.role==='configuration'&&f.name==='manager-bundle-manifest.json');
+if(!sourceBundle||!/^files\/[0-9]{8}\.gcm$/.test(sourceBundle.path))throw Error('RESTORE_LAYOUT_UNSUPPORTED');
+const originalPath='/work/authenticated/'+sourceBundle.path.slice(6)+'.plain',originalStat=await lstat(originalPath);
+if(!originalStat.isFile()||originalStat.isSymbolicLink()||originalStat.nlink!==1||originalStat.size>1024*1024)throw Error('RESTORE_LAYOUT_UNSUPPORTED');
+const originalBundle=JSON.parse(await readFile(originalPath));
+const extra=originalBundle.images?.[2];
+const fixedHelper=originalBundle.images?.length===3&&/^sha256:[a-f0-9]{64}$/.test(extra?.reference)&&['maintenance-image.tar','image-2.tar'].includes(extra?.archive?.path);
 const configuration=['manager-bundle-manifest.json','manager-compose.yaml','manager-runtime.env','manager-installed.json','manager-engine.json','manager-image-inventory.json','freeze-signing-key.json'];
 for(const f of manifest.files){
  if(f.role==='runtime')throw Error('RESTORE_LAYOUT_UNSUPPORTED');
  if(!['configuration','deployment'].includes(f.role))continue;
  if(!/^files\/[0-9]{8}\.gcm$/.test(f.path))throw Error('RESTORE_LAYOUT_UNSUPPORTED');
- if(f.role==='configuration'&&!configuration.includes(f.name)||f.role==='deployment'&&!/^images\/image-[01]\.tar$/.test(f.name))throw Error('RESTORE_LAYOUT_UNSUPPORTED');
+ if(f.role==='configuration'&&!configuration.includes(f.name)||f.role==='deployment'&&!(/^images\/image-[01]\.tar$/.test(f.name)||fixedHelper&&f.name==='images/image-2.tar'))throw Error('RESTORE_LAYOUT_UNSUPPORTED');
  await copyFile('/work/authenticated/'+f.path.slice(6)+'.plain','/work/'+f.role+'/'+f.name,1);
 }
 console.log(JSON.stringify({operation:'authenticated-installation',files:v.files,backupId:manifest.id,manifestSha256:createHash('sha256').update(bytes).digest('hex')}));
@@ -167,19 +174,30 @@ pub(crate) fn fresh_root(root: &Path) -> Result<()> {
     directory.check()?;
     Ok(())
 }
+/// Existing two runtime images, optionally followed by the fixed, unused maintenance archive.
+/// Restored archives keep their existing index-based path rather than introducing a new format.
+pub(crate) fn supported_recovery_images(manifest:&BundleManifest)->bool {
+    if manifest.images.len()==2{return true;}
+    if manifest.images.len()!=3{return false;}
+    let extra=&manifest.images[2];
+    extra.reference.strip_prefix("sha256:").is_some_and(hash_valid)
+        && !manifest.images[..2].iter().any(|image|image.reference==extra.reference)
+        && extra.archive.as_ref().is_some_and(|archive|matches!(archive.path.as_str(),"maintenance-image.tar"|"image-2.tar")&&archive.bytes>0&&archive.bytes<=2*1024*1024*1024&&hash_valid(&archive.sha256))
+}
 pub(crate) fn preserved_images(
     bytes: &[u8],
     original: &BundleManifest,
 ) -> Result<Vec<PreservedImage>> {
     let images: Vec<PreservedImage> =
         serde_json::from_slice(bytes).map_err(|_| err("RESTORE_LAYOUT_UNSUPPORTED"))?;
-    if images.len() != 2
+    if images.len() != original.images.len()
+        || !supported_recovery_images(original)
         || images
             .iter()
             .map(|i| i.bytes)
             .try_fold(0u64, u64::checked_add)
             .is_none_or(|n| n > 2 * 1024 * 1024 * 1024)
-        || original.images.len() != 2
+        || images.len()==3 && images[2].content_id!=original.images[2].reference
         || images.iter().enumerate().any(|(index, image)| {
             image.reference != original.images[index].reference
                 || !image
@@ -356,7 +374,9 @@ pub(crate) fn remapped_bundle(
 ) -> Result<(BundleManifest, Vec<u8>)> {
     if Uuid::parse_str(bundle_id).is_err()
         || port < 1024
-        || images.len() != 2
+        || images.len()!=original.images.len()
+        || !supported_recovery_images(original)
+        || images.len()==3 && (images[2].content_id!=original.images[2].reference||images[2].content_id==database||images[2].content_id==platform)
         || database == platform
         || [database, platform]
             .iter()
@@ -1737,6 +1757,20 @@ mod tests {
                 .code,
             "RESTORE_LAYOUT_UNSUPPORTED"
         );
+    }
+    #[test]
+    fn fixed_maintenance_image_preserves_two_runtime_roles_and_exact_inventory(){
+        let mut m=crate::tests::manifest_for_detection();m.services=vec!["database".into(),"platform".into()];
+        m.images=vec![Image{reference:format!("sha256:{}","a".repeat(64)),archive:None},Image{reference:format!("sha256:{}","b".repeat(64)),archive:None},Image{reference:format!("sha256:{}","c".repeat(64)),archive:Some(Archive{path:"maintenance-image.tar".into(),sha256:"d".repeat(64),bytes:1})}];
+        let inventory:Vec<Value>=m.images.iter().enumerate().map(|(i,image)|serde_json::json!({"reference":image.reference,"contentId":image.reference,"archive":format!("images/image-{i}.tar"),"bytes":1,"sha256":"e".repeat(64)})).collect();
+        let bytes=serde_json::to_vec(&inventory).unwrap();let images=preserved_images(&bytes,&m).unwrap();
+        let (mapped,compose)=remapped_bundle(&m,&images,&Uuid::new_v4().to_string(),14500,&images[1].content_id,&images[0].content_id,None).unwrap();
+        assert!(supported_recovery_images(&mapped));assert_eq!(mapped.images.len(),3);assert_eq!(mapped.images[2].archive.as_ref().unwrap().path,"image-2.tar");
+        let config:Value=serde_json::from_slice(&compose).unwrap();assert_eq!(config["services"].as_object().unwrap().len(),2);assert_eq!(config["services"]["platform"]["image"],images[0].content_id);assert_eq!(config["services"]["database"]["image"],images[1].content_id);
+        assert!(remapped_bundle(&m,&images,&Uuid::new_v4().to_string(),14500,&images[2].content_id,&images[0].content_id,None).is_err());
+        let mut changed:Value=serde_json::from_slice(&bytes).unwrap();changed[2]["contentId"]=format!("sha256:{}","f".repeat(64)).into();assert!(preserved_images(&serde_json::to_vec(&changed).unwrap(),&m).is_err());
+        m.images[2].archive.as_mut().unwrap().path="arbitrary-extra.tar".into();assert!(!supported_recovery_images(&m));assert!(preserved_images(&bytes,&m).is_err());
+        m.images.pop();assert!(supported_recovery_images(&m));assert!(preserved_images(&bytes,&m).is_err());
     }
     #[test]
     fn image_identity_inventory_and_completed_receipt_are_not_assumed() {

@@ -339,6 +339,15 @@ fn backup_network_members(
             && v.keys().all(|id| id == database || id == platform)
     })
 }
+fn environment_values(text:&str)->Result<BTreeMap<String,String>> {
+    let mut values=BTreeMap::new();
+    for line in text.lines(){
+        let(key,value)=line.split_once('=').ok_or_else(||err("BACKUP_CONFIGURATION_INVALID"))?;
+        let value=if key=="ADMIN_PASSWORD" {super::initial_account::decode_password(value).map_err(|_|err("BACKUP_CONFIGURATION_INVALID"))?}else{value.into()};
+        if values.insert(key.into(),value).is_some(){return Err(err("BACKUP_CONFIGURATION_INVALID"));}
+    }
+    Ok(values)
+}
 fn layout(
     service: &LifecycleService,
     m: &BundleManifest,
@@ -348,7 +357,7 @@ fn layout(
     if m.services.len() != 2
         || !m.services.iter().any(|s| s == "database")
         || !m.services.iter().any(|s| s == "platform")
-        || m.images.len() != 2
+        || !super::restoration::supported_recovery_images(m)
     {
         return Err(err("BACKUP_LAYOUT_UNSUPPORTED"));
     }
@@ -367,14 +376,16 @@ fn layout(
             .map_err(|_| err("BACKUP_CONFIGURATION_INVALID"))?,
     )
     .map_err(|_| err("BACKUP_CONFIGURATION_INVALID"))?;
-    let environment: BTreeMap<_, _> = environment
-        .lines()
-        .filter_map(|s| s.split_once('='))
-        .collect();
-    for (key, value) in &environment {
-        if config["services"]["platform"]["environment"][*key] != *value {
-            return Err(err("BACKUP_LAYOUT_UNSUPPORTED"));
-        }
+    let environment=environment_values(&environment)?;
+    for (key,value) in &environment {
+        // Compose config escapes literal dollar signs; container inspect below is plaintext.
+        let projected=if key=="ADMIN_PASSWORD" {value.replace('$',"$$")}else{value.clone()};
+        if config["services"]["platform"]["environment"][key]!=projected{return Err(err("BACKUP_LAYOUT_UNSUPPORTED"));}
+    }
+    if m.images.len()==3 {
+        let database=config["services"]["database"]["image"].as_str().ok_or_else(||err("BACKUP_LAYOUT_UNSUPPORTED"))?;
+        let platform=config["services"]["platform"]["image"].as_str().ok_or_else(||err("BACKUP_LAYOUT_UNSUPPORTED"))?;
+        if database==platform||[database,platform].iter().any(|pin|m.images[..2].iter().filter(|image|image.reference==**pin).count()!=1){return Err(err("BACKUP_LAYOUT_UNSUPPORTED"));}
     }
     if config["services"]["platform"]["environment"]["BLOB_ROOT"] != "/data/blobs"
         || config["services"]["platform"]["environment"]["CONFIG_ROOT"] != "/data/config"
@@ -407,9 +418,9 @@ fn layout(
     let actual_database = actual_environment(&db)?;
     if environment
         .iter()
-        .any(|(key, value)| actual_app.get(*key).map(String::as_str) != Some(*value))
+        .any(|(key, value)| actual_app.get(key).map(String::as_str) != Some(value.as_str()))
         || actual_database.get("POSTGRES_PASSWORD").map(String::as_str)
-            != Some(environment["POSTGRES_PASSWORD"])
+            != Some(environment["POSTGRES_PASSWORD"].as_str())
     {
         return Err(err("BACKUP_CONFIGURATION_INVALID"));
     }
@@ -1061,6 +1072,14 @@ impl LifecycleService {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn backup_environment_uses_literal_password_without_changing_source_bytes(){
+        let password="synthetic $VAR ${value} space # quote' \" slash\\ 한글";
+        let original=format!("ADMIN_PASSWORD={}\nPOSTGRES_PASSWORD=synthetic-alphanumeric\n",super::super::initial_account::encode_password(password));let before=original.clone();
+        let values=super::environment_values(&original).unwrap();assert!(values["ADMIN_PASSWORD"]==password);assert_eq!(values["POSTGRES_PASSWORD"],"synthetic-alphanumeric");assert!(original==before);
+        let raw=super::environment_values("ADMIN_PASSWORD=legacy-alphanumeric\n").unwrap();assert_eq!(raw["ADMIN_PASSWORD"],"legacy-alphanumeric");
+        assert!(super::environment_values("ADMIN_PASSWORD=one\nADMIN_PASSWORD=two\n").is_err());assert!(super::environment_values("ADMIN_PASSWORD=\"unterminated\n").is_err());
+    }
     #[test]
     fn quiesced_platform_network_accepts_only_owned_database_and_optional_own_platform() {
         use serde_json::json;

@@ -579,6 +579,14 @@ impl InstallationController {
         private_directory(&current.path)?;
         task(service)
     }
+    /// Explicit user save only; no key bytes cross IPC. Selection is held throughout creation.
+    pub fn create_backup_key(&self, token:&str, path:&Path)->Result<()> {
+        self.with_current(token, |service| {
+            let _operation=service.lock()?;
+            let protected=self.profile.as_ref().map(|profile|profile.root.as_path()).unwrap_or(service.root.as_path());
+            super::backup_key::create(path,protected,&service.root)
+        })
+    }
     // Diagnosis must remain available when ordinary startup rejects an incomplete candidate.
     fn with_retry_diagnostics<T>(
         &self,

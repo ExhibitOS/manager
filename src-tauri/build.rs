@@ -43,6 +43,8 @@ fn main() {
             "manager_open_oex",
             "manager_verify_backup",
             "manager_create_backup",
+            "manager_choose_backup_path",
+            "manager_backup_tool",
             "manager_backup_jobs",
             "manager_restore_backup",
             "manager_restoration_context",

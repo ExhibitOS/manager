@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
+import {BackupPathField} from './BackupPathField';
+import {BackupToolField,type BackupToolContext} from './BackupToolField';
 import {useEffect,useRef,useState} from 'react';
 import {managerError,restorationStageLabel,validRestorationInput,type ManagerError,type RestorationInput,type RestorationReceipt,type RestorationContext} from './lifecycle';
-interface Props{native:boolean;active:boolean;engineReady:boolean;context:RestorationContext|null;historyError:ManagerError|null;restore(input:RestorationInput):Promise<RestorationReceipt>}
-export function BackupRestoration({native,active,engineReady,context,historyError,restore}:Props){
+interface Props{tool:BackupToolContext;native:boolean;active:boolean;engineReady:boolean;context:RestorationContext|null;historyError:ManagerError|null;restore(input:RestorationInput):Promise<RestorationReceipt>}
+export function BackupRestoration({tool,native,active,engineReady,context,historyError,restore}:Props){
  const [input,setInput]=useState<RestorationInput>({image:'',keyPath:'',sourcePath:'',port:4500,freshInstallationAccepted:false});
  const [result,setResult]=useState<RestorationReceipt|null>(null),[error,setError]=useState<ManagerError|null>(null),[pending,setPending]=useState(false);
  const live=useRef(true),working=useRef(false),errorElement=useRef<HTMLDivElement>(null);
@@ -25,12 +27,12 @@ export function BackupRestoration({native,active,engineReady,context,historyErro
   <p className="note">현재 복원 경로는 macOS·Docker 기준입니다. Windows·Podman과 전체 작품 검증은 준비 중입니다. 실행 중 취소는 위의 취소 요청을 사용하며 자동 재개하지 않습니다.</p>
   <form onSubmit={event=>void submit(event)} aria-describedby="restoration-scope">
    <fieldset disabled={disabled}><legend>복원할 사본과 별도 키</legend>
-    <label htmlFor="restoration-source">복원할 암호화 백업 폴더의 전체 경로</label><input id="restoration-source" value={input.sourcePath} onChange={event=>change('sourcePath',event.target.value)} maxLength={2048} autoComplete="off" spellCheck={false}/>
-    <label htmlFor="restoration-key">복원에 사용할 외부 키 파일의 전체 경로</label><input id="restoration-key" value={input.keyPath} onChange={event=>change('keyPath',event.target.value)} maxLength={2048} autoComplete="off" spellCheck={false} aria-describedby="restoration-key-help"/>
-    <p className="note" id="restoration-key-help">키 내용 대신 백업·설치 폴더 밖의 비공개 32-byte 키 파일 경로를 입력하세요. 입력은 이 화면에만 유지합니다.</p>
+    <BackupPathField id="restoration-source" label="복원할 암호화 백업 폴더의 전체 경로" kind="archive" value={input.sourcePath} onChange={value=>change('sourcePath',value)} disabled={disabled}/>
+    <BackupPathField id="restoration-key" label="복원에 사용할 외부 키 파일의 전체 경로" kind="key" value={input.keyPath} onChange={value=>change('keyPath',value)} disabled={disabled} helpId="restoration-key-help"/>
+    <p className="note" id="restoration-key-help">키 내용 대신 백업·설치 폴더 밖의 비공개 32-byte 키 파일을 선택하세요. 선택 경로는 이 화면에만 유지합니다.</p>
     <label htmlFor="restoration-port">새 전시의 로컬 포트</label><input id="restoration-port" type="number" min={1024} max={65535} step={1} value={Number.isFinite(input.port)?input.port:''} onChange={event=>change('port',event.target.value===''?NaN:Number(event.target.value))} aria-describedby="restoration-port-help"/>
     <p className="note" id="restoration-port-help">1024–65535 중 사용하지 않는 포트를 선택하세요. 새 주소는 내 컴퓨터에서만 열립니다.</p>
-    <details open><summary>검증된 실행 패키지 설정</summary><label htmlFor="restoration-image">복원용 유지보수 이미지의 고정 ID</label><input id="restoration-image" value={input.image} onChange={event=>change('image',event.target.value)} maxLength={71} autoComplete="off" spellCheck={false}/><p className="note">신뢰할 운영자가 준비한 sha256: 형식의 로컬 이미지 ID를 사용합니다. 사본 인증은 배포 서명 확인을 대신하지 않습니다.</p></details>
+    <BackupToolField id="restoration-image" label="복원용 유지보수 이미지의 고정 ID" value={input.image} onChange={value=>change('image',value)} context={tool}/>
     <label className="backup-ack"><input type="checkbox" checked={input.freshInstallationAccepted} onChange={event=>change('freshInstallationAccepted',event.target.checked)}/><span>원래 전시의 쓰기를 중지했으며, 비어 있는 설치 공간에 복원하고 새 전시를 시작하는 데 동의합니다.</span></label>
    </fieldset>
    <button className="primary" type="submit" disabled={disabled||!validRestorationInput(input)}>{pending?'복원과 전시 응답 확인 중…':'새 전시 복원과 시작'}</button>

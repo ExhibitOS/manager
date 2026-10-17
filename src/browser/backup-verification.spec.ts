@@ -8,6 +8,7 @@ for(const scenario of ['success','failure','malformed'] as const)test(`backup ${
   fixture.__verificationCalls=0;fixture.__verificationInputs=[];
   Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string,args?:{input:unknown})=>{
    if(cmd==='manager_backup_jobs')return [];
+   if(cmd==='manager_backup_tool')return null;
    if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};
    if(cmd==='manager_maintenance_context')return null;
    if(cmd==='manager_maintenance_retries')return [];
@@ -27,6 +28,9 @@ for(const scenario of ['success','failure','malformed'] as const)test(`backup ${
  },{scenario});
  const faults:string[]=[];page.on('pageerror',error=>faults.push(error.message));
  await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const section=page.getByRole('region',{name:'백업 사본 검증'}),submit=section.getByRole('button',{name:'백업 사본 검증',exact:true});
+ // Existing manual-path cases explicitly open the optional fields, preserving their validation coverage.
+ for(const summary of await section.getByText('경로 직접 입력',{exact:true}).all())await summary.click();
+ await section.getByText('복구 도구 고급 설정',{exact:true}).click();
  await expect(section.getByLabel('암호화된 백업 폴더의 전체 경로')).toBeEnabled();
  await section.getByLabel('암호화된 백업 폴더의 전체 경로').fill('/private/tmp/synthetic-archive');
  await section.getByLabel('별도로 보관한 키 파일의 전체 경로').fill('key contents');

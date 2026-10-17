@@ -4,7 +4,7 @@
     "T08-02",
     "T08-03"
   ],
-  "status": "LATEST_SUCCESS_RECONCILED_NATIVE_GUI_PREPARATION_ONLY",
+  "status": "RECOVERY_GUI_IMPLEMENTED_LOCAL_REGRESSIONS_PASS_ACTUAL_NATIVE_RECOVERY_PENDING",
   "managerHead": "8f4f60df47e4bf89bf46d220fca0514c30506bc4",
   "sourceCleanBeforeThisRecord": true,
   "branch": "codex/windows-recovery-integration",
@@ -73,7 +73,7 @@
       "Compatible fixed maintenance image and any required safe test data",
       "Additional storage/single heavy slot before actual engine operations"
     ],
-    "implementationChange": "None made. Beginner backup/restore forms currently expose full key/archive paths and maintenance SHA input; reuse existing selection/resource metadata only if a concrete minimum UX change is authorized and needed."
+    "implementationChange": "Normal native key/archive selectors and explicit new external service-backup key save, shared bound helper metadata/default with advanced fallback, action-time declared helper import via existing archive admission, and observed DB-running backup prerequisite implemented; new native GUI/actual recovery not yet executed."
   },
   "separateIncompleteScope": {
     "noEngineInstall": "Source/tests exist at8f4f60d; no-engine official download/install/OS approval/VM start is unqualified. Existing Docker is preserved. A separately authorized fresh environment is required; do not uninstall/hide existing engine or introduce a new VM/support environment.",
@@ -109,5 +109,169 @@
     "relatedChanges": "Initial-account literal ADMIN_PASSWORD decode/project handling changed installation_backup/restoration; existing focused regressions pass but actual new-account backup/restore GUI needs qualification.",
     "0a87506To8f4f60d": "Backup/restore/verify/update panels and backend backup/restoration code unchanged. Only engine preparation additions in App/native lib; existing0a app can qualify unchanged recovery components with exact scope, not new8f4 engine preparation."
   },
-  "reconciliationCorrection": "Initial preparation selected older failure evidence; latest successful original receipt and independent witnesses were then read and reconciled before any product execution, build or commit. No duplicate full-recovery run occurred."
+  "reconciliationCorrection": "Initial preparation selected older failure evidence; latest successful original receipt and independent witnesses were then read and reconciled before any product execution, build or commit. No duplicate full-recovery run occurred.",
+  "recordUpdatedAt": "2026-10-17T21:48:46.177412+00:00",
+  "recoveryGuiChange": {
+    "baseCommit": "f0e27b0b3ebd20b79fa4012c7e93c7b6794b402c",
+    "implementation": [
+      "Normal fixed OS key/archive/save selectors return only paths through current selected-installation IPC",
+      "User-initiated macOS OsRng32 key creation: external canonical parent; F_GETPATH/inode/protected-path checks before create; create_new/O_NOFOLLOW0600/fsync; no old key overwrite; no secret bytes returned",
+      "Bundled fixed maintenance-image.tar metadata bound to prepared receipt and small manifest, with missing/error states and explicit retry; custom existing local image ID retained in advanced controls",
+      "Only explicit recovery actions check exact local helper content ID; absent local helper uses existing full archive hash/load/inspect admission; no remote pull or service start",
+      "Stopped database prevents backup submit while key preparation remains available; existing writer/downtime/restore consent and data validation retained"
+    ],
+    "scopeProof": [
+      "Existing service backup external 32-byte/private-file policy retained; stricter profile-backup parent policy is not changed",
+      "Original successful same-schema CLI reference/apply/rollback evidence is reused only for unchanged matching core scope",
+      "Native public caller/capability and selected-token guards remain; stale or cancelled picker results cannot populate another selected installation"
+    ],
+    "review": [
+      "Independent review identified pre-write parent race and same-render duplicate picker race; fixes retain pre/post path guards, F_GETPATH/inode pre-write admission and synchronous working-ref.",
+      "Pre-open symlink replacement regression passed: protected profile and original external directory receive zero new key files.",
+      "Coordinator-authorized direct helper-count/literal-password compatibility fixes received independent read-only review with no remaining concrete blocker; related local regressions and final native compilation passed. Actual new backup/restore remains pending."
+    ],
+    "checks": {
+      "typescript": {
+        "exitCode": 0,
+        "handle": 58928,
+        "scope": "npm run build includes final UI TypeScript"
+      },
+      "eslint": {
+        "exitCode": 0,
+        "handle": 43858,
+        "scope": "changed UI/client/browser sources"
+      },
+      "diffCheck": true,
+      "rustFocused": {
+        "keyAndRace": {
+          "exitCode": 0,
+          "handle": 20838,
+          "passed": 2,
+          "log": "/private/tmp/manager-recovery-key-rust.log"
+        },
+        "metadataCacheAndImport": {
+          "exitCode": 0,
+          "handle": "29e690",
+          "passed": 1,
+          "log": "/private/tmp/manager-recovery-metadata-rust.log"
+        },
+        "directCompatibilityFix": {
+          "literalPassword": {
+            "handle": 96312,
+            "exitCode": 0,
+            "passed": 1,
+            "log": "/private/tmp/manager-recovery-literal-backup-rust.log"
+          },
+          "restorationAndRollbackAdmission": {
+            "handle": 67027,
+            "exitCode": 0,
+            "passed": 17,
+            "ignored": 1,
+            "ignoredReason": "pre-existing explicit actual Docker backup/restore qualification; not executed",
+            "log": "/private/tmp/manager-recovery-compatible-restore-rust.log"
+          }
+        }
+      },
+      "desktopCheck": {
+        "handle": 79532,
+        "exitCode": 0,
+        "scope": "final selected native/picker/key/metadata/optional fixed helper and literal backup/restore source",
+        "log": "/private/tmp/manager-recovery-desktop-final-check.log"
+      },
+      "browserInteractions": {
+        "kind": "synthetic native IPC; actual browser interaction",
+        "initialHandle": 34895,
+        "initialExitCode": 1,
+        "initialPassed": 50,
+        "initialFixtureFailures": 2,
+        "initialFailureReason": "new test tried to click an exhibition-page refresh button while on simple backup page; product polling already showed correct stopped DB state",
+        "correction": "remove nonexistent button and observe existing periodic status refresh; all original DB-running/disabled/preservation assertions retained",
+        "failedCaseOnlyHandle": 28967,
+        "recheckExitCode": 0,
+        "recheckPassed": 2,
+        "uniqueQualifiedCases": 52,
+        "viewports": [
+          "desktop1120x900",
+          "narrow640x850"
+        ],
+        "logs": [
+          "/private/tmp/manager-recovery-browser.log",
+          "/private/tmp/manager-recovery-browser-failed-case-recheck.log"
+        ]
+      },
+      "nativeOsPicker": "not run",
+      "actualUserKeyCreated": false,
+      "actualBackupVerifyRestoreNewGui": "not run",
+      "frontendBuild": {
+        "exitCode": 0,
+        "handle": 58928,
+        "scope": "TypeScript and production Vite frontend only"
+      },
+      "nodeHelperSyntax": {
+        "exitCode": 0,
+        "scope": "changed fixed AUTHENTICATE Node helper syntax only; no script execution"
+      },
+      "nodeHelperExtraction": {
+        "exitCode": 0,
+        "passed": 2,
+        "log": "/private/tmp/manager-recovery-authenticate-node.log",
+        "scope": "actual fixed source script under synthetic in-memory I/O; legacy2/fixedhelper3/exactpaths/source-preservation and undeclared/arbitrary/oversized rejection; not crypto/DB/native qualification"
+      }
+    },
+    "remaining": [
+      "Prepare a new preserved application-resource tree from the fixed verified producer bundle and build one exact-source native application under coordinator single-heavy-slot approval",
+      "Actual isolated native OS selectors/new key save/backup/verify/fresh restore and result/error/retry observations; preserve old data/key/archive/volumes and distinguish them from these source/local checks",
+      "Measure actual raw backup image inventory against existing 2GiB limit; do not substitute compressed package byte totals",
+      "User temporarily absent: do not open OS approval/Keychain panels. Queue any genuine user action with coordinator; never fabricate approval",
+      "Native new recovery success must not be inferred from prior CLI, focused unit checks, desktop compilation or synthetic browser interactions"
+    ],
+    "resourceCoordination": "All scoped local checks terminal; heavy slot returned to Processing. No new native build or actual engine/recovery action started by this agent.",
+    "sourceSha256": {
+      "crates/lifecycle/src/backup_key.rs": "14bcc09f28b367e82c25e32a1dcbd2d4f4bd9261ca13685aeb9b3d2d1ce2b6b9",
+      "crates/lifecycle/src/installations.rs": "a9caeff0e4894ad2f10892ddbbd752f6db65441a00d4c53e215b9deb38706784",
+      "crates/lifecycle/src/lib.rs": "178215e24b1c7609103b2dc8d8bc555ceae4beaee37e5868f61fd32f2c5514dc",
+      "crates/lifecycle/src/runtime_prepare.rs": "abf3fb8248223681f986b097c74ae15edac54e28721ef62c9fee8803fc35d333",
+      "src-tauri/src/maintenance_picker.rs": "031dffa5938be129741360344b2c7799f3266053f9011893139750bedaa04a25",
+      "src-tauri/src/lib.rs": "0c2f5d0f63e961518b976c3581f1db1454a0d1f7210314ba885f3a31c424292d",
+      "src-tauri/build.rs": "25d8057a76412396cc14ab47568bd0092d65d9c1fc84ab3f7b77d2ceb44548bb",
+      "src-tauri/capabilities/manager-local.json": "8d0554604eb855b48d75af542078654469b27e21d7187eb4a36ceddcf27c73aa",
+      "src/BackupPathField.tsx": "7a9908515461f66e3a85bab392d3a822257f20f68d7ef32d9b3ae299b4e799b9",
+      "src/BackupToolField.tsx": "8baf18b06069f305387743a44ef3f71c6547f40194b39e405c2b82a7f1d7a2f9",
+      "src/BackupCreation.tsx": "b56bc58e41575e34aea6dc2cc1b366a6fb75ab3e244f5de7c80b0a0ee675d9c5",
+      "src/BackupRestoration.tsx": "cc91b3cc4b968acbde19ff0c75db415b8151d65c5c6c9544bd7c1f2e88cd87fe",
+      "src/BackupVerification.tsx": "8d3f86e32ee4d1da1b879be234cde37be81e228db48c92bac357c4feeb61db6b",
+      "src/App.tsx": "d8ecd4b25aeb42c0fdd9a313de5ba6cc666856252efe9abacfe4c918da88adc8",
+      "src/lifecycle.ts": "8e4054e41047fe2f5161f6f38e75cdf62edd68f7737e81f4b7b7533b15d822a1",
+      "src/browser/backup-preparation.spec.ts": "15d1049c493661d2ada1a4f20f2c329493bbebd31d2ad4601f35260cb25eb1e9",
+      "src/browser/backup-creation.spec.ts": "4b315e4b3c5c649e452fc4096c6b538b436dcc526f6f3b491884fa82cf245c2c",
+      "src/browser/backup-restoration.spec.ts": "3d473e8e94298885fc30862d563a0ceb806b3513448ba11c4c8d019ceffd6199",
+      "src/browser/backup-verification.spec.ts": "db65abe4e77776635cd2709c5af474962b3cb53605f8892b9e4189b38a9eb355",
+      "src/browser/studio-setup.spec.ts": "9a40b330472488b951a803294cd6dfc1068d5a2e15ff77114fa026e172007234",
+      "crates/lifecycle/src/backup_creation.rs": "874af7b1ab6b72a43826e351f22d8991693a51d7e1830c6a18aaa505c1e1cbcd",
+      "crates/lifecycle/src/restoration.rs": "89e17f7f4df2b4af59002bde15ea88ebb5856e639b25ba85141bdfb6143ee92b",
+      "src-tauri/permissions/autogenerated/manager_backup_tool.toml": "4315b03be6bc4765f9b145418d516a70564fda2b9808970eda2316ce85c1cd11",
+      "src-tauri/permissions/autogenerated/manager_choose_backup_path.toml": "445a59e99d3be5a22a4f672dac8f5d5566693b586a08a8ef1810a49ec4a26e25",
+      "scripts/recovery-authenticate.test.mjs": "bc7c5e25448a3be09ef197b15fd87a64bfd0cd53bbbf0aa6182855b3f12e7ed4"
+    },
+    "directCompatibilityFix": {
+      "runtimeServices": "database/platform exactly two; optional third fixed maintenance archive is preserved without adding a service",
+      "images": "Existing two-image behavior unchanged; optional third must have canonical immutable ID, fixed maintenance-image.tar or restored image-2.tar basename, bound archive metadata and distinct runtime role. Existing total 2GiB inventory budget and archive/index/SHA identity checks retained.",
+      "authenticate": "Only an authenticated, existing-size-bounded original bundle manifest may permit the one extra deployment/images/image-2.tar file. Arbitrary extra images remain unsupported.",
+      "password": "Existing literal decoder is reused; Compose config dollar escaping and actual container plaintext are compared separately. Original runtime.env bytes are never rewritten.",
+      "scope": "Existing macOS recovery only; Windows and actual new helper/recovery flows remain separately unqualified."
+    },
+    "packagedHelperInput": {
+      "bundle": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-runtime-helper-b701aac-92871ded-1ff2-401b-9658-950c28c07d93/bundle",
+      "receipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-runtime-helper-b701aac-92871ded-1ff2-401b-9658-950c28c07d93/actual-package-verification.json",
+      "combinedPackagedArchiveBytes": 317895168,
+      "services": [
+        "platform",
+        "database"
+      ],
+      "composeHashMatches": true,
+      "actualLinuxArm64ImageIdentitiesMatch": true,
+      "actualBackupRestoreRoundtrip": false,
+      "rawBackupInventoryBudget": "Packaged compressed archive bytes are not the raw docker image-save backup sum. Existing 2GiB raw inventory budget remains unchanged; actual raw exports including PostgreSQL must be qualified separately before claiming backup budget success."
+    }
+  }
 }

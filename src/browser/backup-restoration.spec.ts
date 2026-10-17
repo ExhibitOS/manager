@@ -16,6 +16,7 @@ for(const scenario of ['success','failure','malformed','wrong-port'] as const)te
    if(cmd==='manager_status'){if(attempted)await new Promise<void>(resolve=>{f.__restoreRefresh=resolve;});return {installed:attempted&&scenario!=='failure',bundleId:attempted?receipt.bundleId:null,version:null,state:attempted?'running':'not_installed',services:[],readiness:{ready:attempted&&scenario!=='failure',version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};}
    if(cmd==='manager_detect')return [{kind:'docker',installed:true,available:true,engineVersion:'synthetic',composeVersion:'synthetic',errorCode:null,guidance:null}];
    if(cmd==='manager_jobs'||cmd==='manager_logs'||cmd==='manager_backup_jobs')return [];
+   if(cmd==='manager_backup_tool')return null;
    if(cmd==='manager_restoration_context')return attempted?{fresh:false,job:{id:receipt.id,state:scenario==='failure'?'failed':'completed',stage:scenario==='failure'?'restoring-and-verifying':'complete',errorCode:scenario==='failure'?'ENGINE_OPERATION_FAILED':null,createdAt:1,updatedAt:2},receipt:scenario==='failure'?null:receipt}:{fresh:true,job:null,receipt:null};
    if(cmd==='manager_restore_backup'){
     f.__restoreInputs.push(args?.input);await new Promise<void>(resolve=>{f.__restoreResolve=resolve;});attempted=true;
@@ -27,6 +28,9 @@ for(const scenario of ['success','failure','malformed','wrong-port'] as const)te
  },{scenario});
  const faults:string[]=[];page.on('pageerror',e=>faults.push(e.message));await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();
  const region=page.getByRole('region',{name:'백업에서 새 전시 복원'}),submit=region.getByRole('button',{name:'새 전시 복원과 시작'});
+ // Existing manual-path cases explicitly open the optional fields, preserving their validation coverage.
+ for(const summary of await region.getByText('경로 직접 입력',{exact:true}).all())await summary.click();
+ await region.getByText('복구 도구 고급 설정',{exact:true}).click();
  await expect(region.getByLabel('복원에 사용할 외부 키 파일의 전체 경로')).toBeEnabled();
  await region.getByLabel('복원할 암호화 백업 폴더의 전체 경로').fill('/private/tmp/synthetic-archive');
  await region.getByLabel('복원에 사용할 외부 키 파일의 전체 경로').fill('key contents');
@@ -66,6 +70,7 @@ for(const state of ['completed','failed','interrupted','running','malformed','un
    if(cmd==='manager_status')return {installed:true,bundleId:'synthetic',version:null,state:'running',services:[],readiness:{ready:true,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
    if(cmd==='manager_detect')return [{kind:'docker',installed:true,available:true,engineVersion:'synthetic',composeVersion:'synthetic',errorCode:null,guidance:null}];
    if(cmd==='manager_jobs'||cmd==='manager_logs'||cmd==='manager_backup_jobs')return [];
+   if(cmd==='manager_backup_tool')return null;
    if(cmd==='manager_restoration_context'){
     if(state==='unavailable')throw {code:'STATE_UNAVAILABLE',guidance:'기록을 확인하세요.'};
     const receipt={id:'12345678-1234-1234-1234-123456789012',operation:'restored-and-running',backupId:'23456789-1234-1234-1234-123456789012',authenticatedManifestSha256:'b'.repeat(64),bundleId:'34567890-1234-1234-1234-123456789012',projectName:'exhibitos-34567890-1234-1234-1234-123456789012',openUrl:'http://127.0.0.1:4500',at:2};

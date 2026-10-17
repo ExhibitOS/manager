@@ -8,6 +8,7 @@ for(const scenario of ['new','ready','failure'] as const)test(`Studio preparatio
   Object.assign(window,{isTauri:true,__studioWrites:[] as string[],__cloudReads:0,__finishSetup:null,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
    const harness=window as unknown as {__studioWrites:string[];__finishSetup:()=>void};
    if(cmd==='manager_hosted_resume'||cmd==='manager_hosted_connected'){(window as unknown as {__cloudReads:number}).__cloudReads++;return cmd==='manager_hosted_resume'?null:false;}
+   if(cmd==='manager_backup_tool')return null;
    if(cmd==='manager_update_cancel')return null;
    if(cmd==='manager_update_status')return {installationId:'56789012-1234-1234-1234-123456789012',authorityPresent:false,generation:null,stage:null,operationId:null,failure:null,changedSchema:false,writeUncertain:false};
    if(cmd==='manager_installations')return selection;
@@ -31,7 +32,7 @@ for(const scenario of ['new','ready','failure'] as const)test(`Studio preparatio
  await page.goto('/');const panel=page.getByRole('region',{name:'전시 만들기·이어서 편집하기'});
  const action=panel.getByRole('button',{name:scenario==='ready'?'Studio 열기':'Studio 준비하고 열기',exact:true});
  await expect(action).toBeEnabled();expect(await page.evaluate(()=>(window as unknown as {__cloudReads:number}).__cloudReads)).toBe(0);await expect(page.locator('main')).toHaveAttribute('data-manager-mode','simple');await expect(page.getByRole('region',{name:'설치된 전시 백업'})).toHaveCount(0);expect(await page.evaluate(()=>(window as unknown as {__studioWrites:string[]}).__studioWrites)).toEqual([]);
- if(scenario==='ready'){await page.getByRole('link',{name:'백업·복원',exact:true}).click();await page.getByLabel('별도로 보관한 키 파일의 전체 경로').fill('/private/tmp/user-selected-key');await page.getByRole('link',{name:'전시',exact:true}).click();
+ if(scenario==='ready'){await page.getByRole('link',{name:'백업·복원',exact:true}).click();await page.getByRole('region',{name:'백업 사본 검증'}).getByText('경로 직접 입력',{exact:true}).last().click();await page.getByLabel('별도로 보관한 키 파일의 전체 경로').fill('/private/tmp/user-selected-key');await page.getByRole('link',{name:'전시',exact:true}).click();
   await page.getByRole('button',{name:'고급 설정',exact:true}).click();await expect.poll(()=>page.evaluate(()=>(window as unknown as {__cloudReads:number}).__cloudReads)).toBeGreaterThan(0);const firstCloudReads=await page.evaluate(()=>(window as unknown as {__cloudReads:number}).__cloudReads);await expect(page.getByRole('region',{name:'설치된 전시 백업'})).toBeVisible();await expect(page.locator('#backup-key')).toHaveValue('/private/tmp/user-selected-key');
   await page.getByRole('button',{name:'간편 화면',exact:true}).click();await expect(page.getByRole('region',{name:'설치된 전시 백업'})).toHaveCount(0);
   await page.getByRole('link',{name:'백업·복원',exact:true}).click();await expect(page.locator('#backup-key')).toHaveValue('/private/tmp/user-selected-key');await page.getByRole('link',{name:'전시',exact:true}).click();await expect(page.locator('#exhibition')).toBeFocused();

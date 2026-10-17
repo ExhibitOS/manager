@@ -2,6 +2,7 @@
 //! Trusted-bundle desktop lifecycle. No shell, arbitrary compose paths or destructive volume removal.
 pub mod backup_creation;
 mod cached_install;
+mod backup_key;
 mod runtime_prepare;
 pub mod cancellation;
 pub mod helper_reconciliation;
@@ -1369,6 +1370,14 @@ impl LifecycleService {
         });
         write_json(&self.root, "events.json", &events)
     }
+    /// Read only fixed, prepared maintenance metadata; full payload checks remain at use.
+    pub fn bundled_maintenance_image(&self,source:&Path)->Result<Option<String>>{runtime_prepare::maintenance_image(source)}
+    /// Explicit native recovery preparation; cached immutable IDs avoid repeated tar hashing.
+    pub fn prepare_bundled_maintenance(&self,source:&Path,image:&str)->Result<()> {
+        let _guard=self.lock()?;
+        runtime_prepare::ensure_maintenance(source,image,|args,seconds|run("docker",args,None,seconds))
+    }
+
     /// Stage fixed application resources only into a missing bundle; existing data is never replaced.
     pub fn prepare_bundled_runtime(&self, source: &Path) -> Result<()> {
         let _lock = self.lock()?;

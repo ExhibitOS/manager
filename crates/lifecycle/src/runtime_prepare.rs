@@ -69,6 +69,41 @@ fn directory(path: &Path) -> Result<()> {
     }
     Ok(())
 }
+/// Only the producer's fixed declared maintenance archive is a default. Metadata first:
+/// hash the small manifest now; existing installation/import and backup admission verify payloads.
+fn maintenance_manifest(source:&Path)->Result<Option<BundleManifest>> {
+    let receipt=source.join("prepared.json");
+    match fs::symlink_metadata(&receipt){Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Ok(None),Err(_)=>return Err(failure("PLATFORM_RUNTIME_UNAVAILABLE")),Ok(_)=>{}}
+    directory(source)?;if regular(&receipt)?.len()>65536{return Err(failure("PLATFORM_RUNTIME_INVALID"));}
+    let descriptor:Prepared=serde_json::from_slice(&fs::read(&receipt).map_err(|_|failure("PLATFORM_RUNTIME_UNAVAILABLE"))?).map_err(|_|failure("PLATFORM_RUNTIME_INVALID"))?;
+    let architecture=if cfg!(target_arch="aarch64"){ "arm64" }else if cfg!(target_arch="x86_64"){ "x86_64" }else{ "unsupported" };
+    if descriptor.format!="exhibitos-manager-platform-runtime-v1"||descriptor.architecture!=architecture||descriptor.platform_commit.len()!=40||!descriptor.platform_commit.bytes().all(|b|b.is_ascii_hexdigit()&&!b.is_ascii_uppercase())||descriptor.files.len()<2||descriptor.files.len()>18{return Err(failure("PLATFORM_RUNTIME_INVALID"));}
+    let pin=descriptor.files.get("manifest.json").ok_or_else(||failure("PLATFORM_RUNTIME_INVALID"))?;
+    if pin.bytes==0||pin.bytes>65536||!hash_valid(&pin.sha256){return Err(failure("PLATFORM_RUNTIME_INVALID"));}
+    pin_file(&source.join("manifest.json"),pin)?;
+    let mut manifest:BundleManifest=serde_json::from_slice(&fs::read(source.join("manifest.json")).map_err(|_|failure("PLATFORM_RUNTIME_UNAVAILABLE"))?).map_err(|_|failure("PLATFORM_RUNTIME_INVALID"))?;
+    if manifest.schema_version!="1.0.0-draft.1"||manifest.protocol_version!="1"||manifest.version!=descriptor.version||manifest.images.is_empty()||manifest.images.len()>16{return Err(failure("PLATFORM_RUNTIME_INVALID"));}
+    let images:Vec<_>=manifest.images.iter().filter(|image|image.archive.as_ref().is_some_and(|a|a.path=="maintenance-image.tar")).collect();
+    if images.is_empty()&&!descriptor.files.contains_key("maintenance-image.tar"){return Ok(None);}
+    if images.len()!=1{return Err(failure("PLATFORM_RUNTIME_INVALID"));}
+    let image=images[0];let archive=image.archive.as_ref().ok_or_else(||failure("PLATFORM_RUNTIME_INVALID"))?;
+    let pin=descriptor.files.get("maintenance-image.tar").ok_or_else(||failure("PLATFORM_RUNTIME_INVALID"))?;
+    if !image.reference.strip_prefix("sha256:").is_some_and(hash_valid)||!hash_valid(&archive.sha256)||pin.sha256!=archive.sha256||pin.bytes!=archive.bytes||pin.bytes==0||pin.bytes>8*1024*1024*1024||regular(&source.join("maintenance-image.tar"))?.len()!=pin.bytes{return Err(failure("PLATFORM_RUNTIME_INVALID"));}
+    let selected=image.clone();manifest.images=vec![selected];Ok(Some(manifest))
+}
+
+pub(super) fn maintenance_image(source:&Path)->Result<Option<String>> {Ok(maintenance_manifest(source)?.map(|manifest|manifest.images[0].reference.clone()))}
+/// Import only the declared helper on explicit recovery action. No pull, service or DB write.
+pub(super) fn ensure_maintenance(source:&Path,requested:&str,mut backend:impl FnMut(&[String],u64)->Result<Vec<u8>>)->Result<()> {
+    let Some(manifest)=maintenance_manifest(source)? else {return Ok(());};
+    if manifest.images[0].reference!=requested{return Ok(());}
+    let output=backend(&["image".into(),"ls".into(),"--quiet".into(),"--no-trunc".into()],15)?;
+    let listing=std::str::from_utf8(&output).map_err(|_|failure("PLATFORM_RUNTIME_INVALID"))?;
+    if listing.lines().any(|line|!line.strip_prefix("sha256:").is_some_and(hash_valid)){return Err(failure("PLATFORM_RUNTIME_INVALID"));}
+    if listing.lines().any(|line|line==requested){return Ok(());}
+    super::cached_install::admit_images(&manifest,source,false,|args,seconds|backend(args,seconds))
+}
+
 pub(super) fn prepare(root: &Path, source: &Path) -> Result<()> {
     prepare_with_network(root, source, super::choose_explicit_local_network)
 }
@@ -455,6 +490,28 @@ mod tests {
         )
         .unwrap();
         (root, source)
+    }
+    #[test]
+    fn maintenance_metadata_uses_only_fixed_bound_archive_and_preserves_legacy(){
+        let(root,source)=fixture();assert_eq!(maintenance_image(&source).unwrap(),None);
+        let payload=b"synthetic maintenance archive metadata only";
+        let mut manifest:Value=serde_json::from_slice(&fs::read(source.join("manifest.json")).unwrap()).unwrap();
+        manifest["images"].as_array_mut().unwrap().push(serde_json::json!({"reference":format!("sha256:{}","b".repeat(64)),"archive":{"path":"maintenance-image.tar","sha256":digest(payload),"bytes":payload.len()}}));
+        let bytes=serde_json::to_vec(&manifest).unwrap();fs::write(source.join("manifest.json"),&bytes).unwrap();fs::write(source.join("maintenance-image.tar"),payload).unwrap();
+        let mut prepared:Value=serde_json::from_slice(&fs::read(source.join("prepared.json")).unwrap()).unwrap();
+        prepared["files"]["manifest.json"]=serde_json::json!({"bytes":bytes.len(),"sha256":digest(&bytes)});
+        prepared["files"]["maintenance-image.tar"]=serde_json::json!({"bytes":payload.len(),"sha256":digest(payload)});
+        fs::write(source.join("prepared.json"),serde_json::to_vec(&prepared).unwrap()).unwrap();
+        assert_eq!(maintenance_image(&source).unwrap(),Some(format!("sha256:{}","b".repeat(64))));
+        let expected=format!("sha256:{}","b".repeat(64));let mut calls=Vec::new();
+        ensure_maintenance(&source,&expected,|args,_|{calls.push(args[0].clone());Ok(if args[0]=="image"&&args[1]=="ls"{Vec::new()}else if args[0]=="load"{b"loaded".to_vec()}else{serde_json::to_vec(&serde_json::json!([{ "Id":expected }])).unwrap()})}).unwrap();
+        assert_eq!(calls,vec!["image","load","image"]);
+        calls.clear();ensure_maintenance(&source,&expected,|args,_|{calls.push(args[0].clone());Ok(format!("{expected}\n").into_bytes())}).unwrap();assert_eq!(calls,vec!["image"]);
+        assert!(ensure_maintenance(&source,&expected,|_,_|Err(err("ENGINE_OPERATION_FAILED"))).is_err());
+        ensure_maintenance(&source,&format!("sha256:{}","c".repeat(64)),|_,_|panic!("custom helper remains under existing admission")).unwrap();
+        prepared["files"]["maintenance-image.tar"]["sha256"]="c".repeat(64).into();fs::write(source.join("prepared.json"),serde_json::to_vec(&prepared).unwrap()).unwrap();assert!(maintenance_image(&source).is_err());
+        assert_eq!(fs::read(source.join("maintenance-image.tar")).unwrap(),payload);
+        fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
     fn docker_fixture() -> (PathBuf, PathBuf) {
         let (root, source) = fixture();

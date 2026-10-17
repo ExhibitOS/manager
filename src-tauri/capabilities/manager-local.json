@@ -28,6 +28,8 @@
     "allow-manager-open-oex",
     "allow-manager-verify-backup",
     "allow-manager-create-backup",
+    "allow-manager-choose-backup-path",
+    "allow-manager-backup-tool",
     "allow-manager-backup-jobs",
     "allow-manager-restore-backup",
     "allow-manager-restoration-context",
