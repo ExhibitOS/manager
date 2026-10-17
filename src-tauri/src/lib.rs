@@ -647,6 +647,15 @@ async fn manager_create_backup(
     .await
 }
 #[tauri::command]
+async fn manager_export_backup(window:WebviewWindow,state:State<'_,DesktopState>,selection_token:String,job_id:String)->Result<Option<exhibitos_lifecycle::backup_export::ExportReceipt>,LifecycleError>{
+ caller(&window)?;if !retry_id(&job_id){return Err(error("BACKUP_EXPORT_JOB_INVALID"))}
+ let controller=state.0.clone();tauri::async_runtime::spawn_blocking(move||{
+  controller.with_current(&selection_token,|_|Ok(()))?;
+  let parent=maintenance_picker::choose(maintenance_picker::Kind::ExportParent)?;
+  match parent{Some(path)=>controller.export_backup(&selection_token,&job_id,std::path::Path::new(&path)).map(Some),None=>controller.with_current(&selection_token,|_|Ok(None))}
+ }).await.map_err(|_|error("MANAGER_OPERATION"))?
+}
+#[tauri::command]
 async fn manager_backup_jobs(
     window: WebviewWindow,
     state: State<'_, DesktopState>,
@@ -903,6 +912,7 @@ pub fn run() {
             manager_open_oex,
             manager_verify_backup,
             manager_create_backup,
+            manager_export_backup,
             manager_choose_backup_path,
             manager_backup_tool,
             manager_backup_jobs,

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import {describe,it,expect} from 'vitest';
-import {parseUpdateRollbackContext,validUpdateRollbackInput,parseUpdateRollbackReceipt,parseUpdateReferences,validUpdateApplyInput,parseUpdateApplyReceipt,parseUpdateCancelReceipt,validUpdateCancelInput,parseUpdateStatus,parseRetryDiagnosis,parseRetryRecoveryReceipt,validRetryDiagnosisInput,parseMaintenanceRetry,parseRetryReceipt,validBackupRetryInput,validRestorationRetryInput,parseMaintenanceContext,validReconciliationInput,parseReconciliationReceipt,parseReconciliationJob,parseInstallationContext,parseJob,parseStatus,managerError,formatBytes,statusLabel,validVerificationInput,parseVerificationReceipt,validCreationInput,parseCreationReceipt,parseBackupJob,validRestorationInput,parseRestorationContext,parseRestorationReceipt} from './lifecycle';
+import {parseBackupExportReceipt,parseUpdateRollbackContext,validUpdateRollbackInput,parseUpdateRollbackReceipt,parseUpdateReferences,validUpdateApplyInput,parseUpdateApplyReceipt,parseUpdateCancelReceipt,validUpdateCancelInput,parseUpdateStatus,parseRetryDiagnosis,parseRetryRecoveryReceipt,validRetryDiagnosisInput,parseMaintenanceRetry,parseRetryReceipt,validBackupRetryInput,validRestorationRetryInput,parseMaintenanceContext,validReconciliationInput,parseReconciliationReceipt,parseReconciliationJob,parseInstallationContext,parseJob,parseStatus,managerError,formatBytes,statusLabel,validVerificationInput,parseVerificationReceipt,validCreationInput,parseCreationReceipt,parseBackupJob,validRestorationInput,parseRestorationContext,parseRestorationReceipt} from './lifecycle';
 const status={installed:false,bundleId:null,version:null,state:'not_installed',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0,quotaBytes:5368709120},activeJob:null};
 describe('Manager lifecycle boundary',()=>{
  it('preserves unknown storage/readiness without claiming success',()=>{const value=parseStatus(status);expect(formatBytes(value.storage.usedBytes)).toBe('측정할 수 없음');expect(value.readiness.ready).toBe(false);expect(statusLabel(value.state)).toBe('설치 전');});
@@ -164,3 +164,8 @@ describe('Original full rollback boundary',()=>{
   for(const bad of [{...receipt,state:'completed'},{...receipt,state:'failed'},{...receipt,state:'rolled-back',code:'FAILED'},{...receipt,archive:'/private/archive'}])expect(()=>parseUpdateRollbackReceipt(bad)).toThrow('MANAGER_PROTOCOL');
  });
 });
+
+describe('Completed encrypted backup export boundary',()=>{it('accepts a path-only copy receipt and refuses secrets, partial or unsafe paths',()=>{
+ const value={jobId:'12345678-1234-1234-1234-123456789012',backupId:'23456789-1234-1234-1234-123456789012',path:'/private/tmp/external/ExhibitOS-backup-copy',files:15,bytes:1234};expect(parseBackupExportReceipt(value)).toEqual(value);
+ for(const bad of [{...value,key:'secret'},{...value,path:'relative'},{...value,files:3},{...value,bytes:0},{...value,jobId:'wrong'},{...value,path:'/private/tmp/a,target=/private'}])expect(()=>parseBackupExportReceipt(bad)).toThrow('MANAGER_PROTOCOL');
+});});

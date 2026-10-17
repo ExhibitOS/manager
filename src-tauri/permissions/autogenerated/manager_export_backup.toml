@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-export-backup"
+description = "Enables the manager_export_backup command without any pre-configured scope."
+commands.allow = ["manager_export_backup"]
+
+[[permission]]
+identifier = "deny-manager-export-backup"
+description = "Denies the manager_export_backup command without any pre-configured scope."
+commands.deny = ["manager_export_backup"]

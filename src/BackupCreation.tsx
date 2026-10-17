@@ -2,11 +2,13 @@
 import {BackupPathField} from './BackupPathField';
 import {BackupToolField,type BackupToolContext} from './BackupToolField';
 import {useEffect,useRef,useState} from 'react';
-import {backupStageLabel,managerError,validCreationInput,type BackupJob,type CreationInput,type CreationReceipt,type ManagerError} from './lifecycle';
-interface Props{tool:BackupToolContext;databaseRunning:boolean;native:boolean;installed:boolean;active:boolean;engineReady:boolean;jobs:BackupJob[];historyError:ManagerError|null;create(input:CreationInput):Promise<CreationReceipt>}
-export function BackupCreation({tool,databaseRunning,native,installed,active,engineReady,jobs,historyError,create}:Props){
+import {backupStageLabel,managerError,validCreationInput,type BackupJob,type CreationInput,type CreationReceipt,type BackupExportReceipt,type ManagerError} from './lifecycle';
+interface Props{tool:BackupToolContext;databaseRunning:boolean;native:boolean;installed:boolean;active:boolean;engineReady:boolean;jobs:BackupJob[];historyError:ManagerError|null;create(input:CreationInput):Promise<CreationReceipt>;exportBackup(jobId:string,keyPath:string):Promise<BackupExportReceipt|null>}
+export function BackupCreation({tool,databaseRunning,native,installed,active,engineReady,jobs,historyError,create,exportBackup}:Props){
  const [input,setInput]=useState<CreationInput>({image:'',keyPath:'',externalWritersQuiesced:false,downtimeAccepted:false});
  const [result,setResult]=useState<CreationReceipt|null>(null),[error,setError]=useState<ManagerError|null>(null),[pending,setPending]=useState(false);
+ const [exporting,setExporting]=useState<string|null>(null),[exportError,setExportError]=useState<ManagerError|null>(null),[exported,setExported]=useState<BackupExportReceipt|null>(null);
+ const exportWorking=useRef(false);
  const working=useRef(false),live=useRef(true),errorElement=useRef<HTMLDivElement>(null);
  useEffect(()=>{live.current=true;return()=>{live.current=false;};},[]);
  useEffect(()=>{if(error)errorElement.current?.focus();},[error]);
@@ -17,6 +19,11 @@ export function BackupCreation({tool,databaseRunning,native,installed,active,eng
   working.current=true;setPending(true);setResult(null);setError(null);
   try{const receipt=await create(input);if(live.current)setResult(receipt);}catch(e){if(live.current)setError(managerError(e));}
   finally{working.current=false;if(live.current){setPending(false);setInput(previous=>({...previous,externalWritersQuiesced:false,downtimeAccepted:false}));}}
+ }
+ async function saveCopy(id:string){
+  if(exportWorking.current||disabled)return;exportWorking.current=true;setExporting(id);setExportError(null);
+  try{const receipt=await exportBackup(id,input.keyPath);if(live.current&&receipt)setExported(receipt);}catch(e){if(live.current)setExportError(managerError(e));}
+  finally{exportWorking.current=false;if(live.current)setExporting(null);}
  }
  return <section className="panel backup-verification backup-creation" aria-labelledby="creation-heading">
   <p className="eyebrow">PRESERVE THE INSTALLATION</p><h2 id="creation-heading">설치된 전시 백업</h2>
@@ -37,9 +44,12 @@ export function BackupCreation({tool,databaseRunning,native,installed,active,eng
   </form>
   {pending&&<div className="job-summary" role="status"><strong>백업 도구를 준비하고 사본을 생성·인증하고 있습니다.</strong><p>완료까지 걸리는 시간은 데이터 크기에 따라 다릅니다. 진행률을 추측하지 않습니다. 창을 유지하세요. 설치·시작·검증 등 다른 작업은 함께 실행하지 않습니다.</p><progress aria-label="백업 생성과 인증 진행 중"/></div>}
   {error&&<div className="alert" role="alert" ref={errorElement} tabIndex={-1}><strong>{error.guidance}</strong><p className="code">확인 코드: {error.code}</p><p>원본과 키, 새 사본·작업 공간은 보존됩니다. 전시가 정지 상태일 수 있습니다. 남은 helper와 작업 기록을 확인하고 외부 쓰기 중지·전시 중단을 다시 확인한 뒤 새 백업을 생성하세요.</p></div>}
-  {result&&<div className="verification-result" role="status"><h3>암호화 백업 생성과 인증을 완료했습니다.</h3><p>{result.files.toLocaleString('ko-KR')}개 파일을 인증하고 암호화 사본을 보관했습니다. 전시는 정지 상태로 남습니다. 데이터 복원은 실행하지 않았습니다.</p><p>사본은 설치 폴더 안의 <code>backup-creation-{result.id}/archive/</code>에 보관됩니다. 이 폴더와 키를 서로 분리된 비공개 위치에 추가 보관하세요. 생성 작업 volume에는 민감한 인증 검사의 복호화 파일이 남습니다. 자동 삭제는 없습니다.</p><details><summary>생성 식별 정보</summary><dl><div><dt>작업 ID</dt><dd>{result.id}</dd></div><div><dt>백업 ID</dt><dd>{result.backupId}</dd></div><div><dt>인증 manifest SHA-256</dt><dd><code>{result.authenticatedManifestSha256}</code></dd></div></dl></details></div>}
+  {result&&<div className="verification-result" role="status"><h3>암호화 백업 생성과 인증을 완료했습니다.</h3><p>{result.files.toLocaleString('ko-KR')}개 파일을 인증하고 암호화 사본을 보관했습니다. 전시는 정지 상태로 남습니다. 데이터 복원은 실행하지 않았습니다.</p><p>사본은 설치 폴더 안의 <code>backup-creation-{result.id}/archive/</code>에 보관됩니다. 아래 보관 버튼으로 설치 폴더 밖에 사본을 보관한 뒤 검증하세요. 키는 사본과 별도로 보관합니다. 생성 작업 volume에는 민감한 인증 검사의 복호화 파일이 남습니다. 자동 삭제는 없습니다.</p><button type="button" disabled={disabled||exporting!==null} onClick={()=>void saveCopy(result.id)}>백업 사본 보관</button><details><summary>생성 식별 정보</summary><dl><div><dt>작업 ID</dt><dd>{result.id}</dd></div><div><dt>백업 ID</dt><dd>{result.backupId}</dd></div><div><dt>인증 manifest SHA-256</dt><dd><code>{result.authenticatedManifestSha256}</code></dd></div></dl></details></div>}
+  {exporting&&<div className="job-summary" role="status"><strong>선택한 위치에 암호화 사본을 보관하고 있습니다.</strong><p>파일 선택 창을 확인하세요. 복사 후 원본과 파일을 비교합니다. 원래 백업과 키는 유지됩니다.</p><progress aria-label="백업 사본 보관 중"/></div>}
+  {exportError&&<div className="alert" role="alert"><strong>{exportError.guidance}</strong><p>원래 백업 생성 결과는 바뀌지 않았습니다. 사본 보관만 다시 시도하세요.</p><p className="code">확인 코드: {exportError.code}</p></div>}
+  {exported&&<div className="verification-result" role="status"><h3>암호화 백업 사본을 외부에 보관했습니다.</h3><p>원본과 같은 {exported.files.toLocaleString('ko-KR')}개 파일을 보관했습니다. 아래 백업 사본 검증에 이 사본을 연결했습니다. 아직 새 복원을 실행하지 않았습니다.</p><details><summary>보관 위치</summary><p className="code">{exported.path}</p></details></div>}
   <div className="backup-history" role="region" aria-label="저장된 백업 생성 기록"><h3>백업 생성 기록</h3>
-   {historyError?<div className="alert" role="alert"><strong>저장된 백업 작업을 확인할 수 없습니다.</strong><p>상태 다시 확인으로 기록을 읽기 전까지 새 생성은 중지합니다. 완료 상태를 추측하지 않습니다.</p><p className="code">확인 코드: {historyError.code}</p></div>:jobs.length?<ol className="job-list">{[...jobs].reverse().slice(0,10).map(job=><li key={job.id}><strong>{{running:'진행 중',completed:'생성 완료',failed:'실패',interrupted:'중단됨'}[job.state]}</strong><span>{backupStageLabel(job.stage)}</span><time dateTime={new Date(job.updatedAt).toISOString()}>{new Date(job.updatedAt).toLocaleString('ko-KR')}</time><p className="code">작업 ID: {job.id}{job.errorCode&&` · 확인 코드: ${job.errorCode}`}</p>{job.state==='running'&&<p>다른 작업이 실행 중입니다. 완료 전까지 설치·시작·검증·새 백업을 실행하지 않습니다.</p>}{['failed','interrupted'].includes(job.state)&&<p>완료된 사본으로 표시하지 않습니다. 원본·실패 후보와 volume은 보존됩니다. 중단된 작업은 ID와 정확한 label로 남은 helper를 조사한 뒤 새로 생성하세요. 자동 재개·취소 기능은 아직 없습니다.</p>}</li>)}</ol>:<p className="note">저장된 생성 기록이 없습니다. 실제 인증을 마친 사본만 생성 완료로 기록합니다.</p>}
+   {historyError?<div className="alert" role="alert"><strong>저장된 백업 작업을 확인할 수 없습니다.</strong><p>상태 다시 확인으로 기록을 읽기 전까지 새 생성은 중지합니다. 완료 상태를 추측하지 않습니다.</p><p className="code">확인 코드: {historyError.code}</p></div>:jobs.length?<ol className="job-list">{[...jobs].reverse().slice(0,10).map(job=><li key={job.id}><strong>{{running:'진행 중',completed:'생성 완료',failed:'실패',interrupted:'중단됨'}[job.state]}</strong><span>{backupStageLabel(job.stage)}</span><time dateTime={new Date(job.updatedAt).toISOString()}>{new Date(job.updatedAt).toLocaleString('ko-KR')}</time><p className="code">작업 ID: {job.id}{job.errorCode&&` · 확인 코드: ${job.errorCode}`}</p>{job.state==='completed'&&job.id!==result?.id&&<button type="button" disabled={disabled||exporting!==null} onClick={()=>void saveCopy(job.id)}>백업 사본 보관</button>}{job.state==='running'&&<p>다른 작업이 실행 중입니다. 완료 전까지 설치·시작·검증·새 백업을 실행하지 않습니다.</p>}{['failed','interrupted'].includes(job.state)&&<p>완료된 사본으로 표시하지 않습니다. 원본·실패 후보와 volume은 보존됩니다. 중단된 작업은 ID와 정확한 label로 남은 helper를 조사한 뒤 새로 생성하세요. 자동 재개·취소 기능은 아직 없습니다.</p>}</li>)}</ol>:<p className="note">저장된 생성 기록이 없습니다. 실제 인증을 마친 사본만 생성 완료로 기록합니다.</p>}
   </div>
  </section>;
 }

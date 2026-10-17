@@ -3,6 +3,7 @@
 pub mod backup_creation;
 mod cached_install;
 mod backup_key;
+pub mod backup_export;
 mod runtime_prepare;
 pub mod cancellation;
 pub mod helper_reconciliation;

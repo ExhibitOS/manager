@@ -587,6 +587,10 @@ impl InstallationController {
             super::backup_key::create(path,protected,&service.root)
         })
     }
+    /// Copy only the current completed backup while selection remains pinned.
+    pub fn export_backup(&self,token:&str,id:&str,parent:&Path)->Result<super::backup_export::ExportReceipt>{
+        self.with_current(token,|service|{let protected=self.profile.as_ref().map(|profile|profile.root.as_path()).unwrap_or(service.root.as_path());service.export_backup(protected,id,parent)})
+    }
     // Diagnosis must remain available when ordinary startup rejects an incomplete candidate.
     fn with_retry_diagnostics<T>(
         &self,
