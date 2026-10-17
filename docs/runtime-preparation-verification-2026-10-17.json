@@ -1,7 +1,7 @@
 {
   "date": "2026-10-17",
   "scope": "Existing T08 runtime preparation, selected installation and developer packaging; no task acceptance change",
-  "status": "IMPLEMENTED_SCOPED_CHECKS_PASS_REAL_ARTIFACT_AND_NATIVE_INSTALL_NOT_VERIFIED",
+  "status": "IMPLEMENTED_SCOPED_CHECKS_AND_REAL_ARM64_RESOURCE_PREPARATION_PASS_NATIVE_INSTALL_NOT_VERIFIED",
   "verification_tuple_fields": [
     "check",
     "source",
@@ -111,8 +111,6 @@
     "git_diff_check": "PASS before recording; repeated before scoped commit"
   },
   "not_run": [
-    "real prepared Platform OCI artifact",
-    "large archive copy",
     "native GUI install/start/readiness",
     "Developer ID/notarization",
     "App Store",
@@ -122,5 +120,48 @@
   ],
   "trust": "Checksums are byte identity, not publisher authentication. Production application trust requires Developer ID/notarization; no new trust-on-first-use or signature scheme. Supplied image architecture and Platform revision require producer qualification. No actual prepared artifact is present.",
   "preservation": "Existing roots, installations, keys and bundles not touched; only synthetic temporary fixtures created and cleaned by own tests",
-  "git": "Scoped commit will contain only runtime preparation code, documentation, resource declaration and this record. Other App/style/browser/hosted changes are excluded."
+  "git": "Scoped commit will contain only runtime preparation code, documentation, resource declaration and this record. Other App/style/browser/hosted changes are excluded.",
+  "actual_development_artifact_preparation": {
+    "sourceCommit": "99ae38d44106a276f2675f4118a7ea4d498d4e9a",
+    "sourceCleanBeforeAndAfter": true,
+    "producer": "Existing Platform packageLocalRuntime with targetPlatform linux/arm64; existing Dockerfile.local unchanged",
+    "image": {
+      "id": "sha256:7059446a99a3a46ef7420e13f1d6184167e64be7c6969b9a3fe2cebcd15e156c",
+      "os": "linux",
+      "architecture": "arm64",
+      "version": "0.1.0",
+      "source": "https://github.com/ExhibitOS/platform"
+    },
+    "files": {
+      "manifest.json": {
+        "bytes": 962,
+        "sha256": "f3a22360ecc18c89fbfbc27f4a3bf5ed1eed557efb203b99e8e7bc77b8c40aba"
+      },
+      "compose.yaml": {
+        "bytes": 3221,
+        "sha256": "417252d6712630a0890e77fbe9b554b97b418db1a1aba32dda2e9cc875c7569b"
+      },
+      "platform-image.tar": {
+        "bytes": 97028096,
+        "sha256": "5a9b9279dfcca9de53425faec6c78828b173f94cb4e29458c5626a5e138108b9"
+      }
+    },
+    "manager_resource_preparation": {
+      "prepared": true,
+      "architecture": "arm64",
+      "platformCommit": "99ae38d44106a276f2675f4118a7ea4d498d4e9a",
+      "files": 3,
+      "bytes": 97032279,
+      "networkAcquisition": false,
+      "distribution": "operator-prepared-resource; publisher authenticity requires trusted application distribution"
+    },
+    "scope": "Real local image build/save and resource preparation only; no lifecycle install/start or GUI qualification",
+    "not_verified": [
+      "Developer ID signature and notarization",
+      "Native application first setup/start/readiness",
+      "Source-free end-user installation",
+      "Cross-engine or Intel bundle compatibility"
+    ],
+    "private_artifact_receipt": "Local verification workspace manager-runtime-resource-610b3150-e62c-4aa9-ba01-f94d5c75d9f2/artifact-verification.json; not a runtime dependency"
+  }
 }
