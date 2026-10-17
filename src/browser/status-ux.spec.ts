@@ -25,7 +25,7 @@ for(const scenario of ['running','failed','ready'] as const)test(`synthetic ${sc
    throw Error('Unexpected synthetic command');
   }}});
  },{scenario});
- await page.goto('/');const state=page.getByRole('region',{name:'실제 전시 상태'});await expect(state.getByText('실행 중 · 응답 정상')).toBeVisible();await expect(page.getByRole('heading',{name:'작업 기록'})).toBeVisible();
+ await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const state=page.getByRole('region',{name:'실제 전시 상태'});await expect(state.getByText('실행 중 · 응답 정상')).toBeVisible();await expect(page.getByRole('heading',{name:'작업 기록'})).toBeVisible();
  if(scenario==='running'){await expect(page.getByRole('progressbar',{name:'현재 작업 진행률'})).toHaveAttribute('value','30');for(const name of ['시작','정지','재시작','전시 열기','실패한 작업 다시 시도'])await expect(page.getByRole('button',{name,exact:true})).toBeDisabled();}
  if(scenario==='failed'){await expect(page.getByRole('region',{name:'작업 진행과 복구'})).toContainText('실행 도구 접근 권한을 확인하세요');await expect(page.getByRole('complementary',{name:'다음 할 일'})).toContainText('복구 안내');}
  if(scenario==='ready'){await expect(page.getByRole('button',{name:'전시 열기',exact:true})).toBeEnabled();await expect(page.getByRole('button',{name:'시작',exact:true})).toBeDisabled();}
@@ -60,7 +60,7 @@ test('automatic poll recovery clears stale connection error but preserves action
    throw Error('Unexpected synthetic command');
   }}});
  });
- await page.goto('/');await expect(page.getByRole('alert')).toContainText('ENGINE_UNAVAILABLE');
+ await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();await expect(page.getByRole('alert')).toContainText('ENGINE_UNAVAILABLE');
  await page.evaluate(()=>{(window as unknown as {__pollRecovered:boolean}).__pollRecovered=true;});
  const controls=page.getByRole('region',{name:'전시 설치와 실행'}),start=controls.getByRole('button',{name:'시작',exact:true});
  await expect(start).toBeEnabled();await expect(page.getByRole('alert')).toHaveCount(0);

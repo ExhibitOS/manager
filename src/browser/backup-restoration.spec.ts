@@ -25,7 +25,7 @@ for(const scenario of ['success','failure','malformed','wrong-port'] as const)te
    throw Error('Unexpected synthetic mutation');
   }}});
  },{scenario});
- const faults:string[]=[];page.on('pageerror',e=>faults.push(e.message));await page.goto('/');
+ const faults:string[]=[];page.on('pageerror',e=>faults.push(e.message));await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();
  const region=page.getByRole('region',{name:'백업에서 새 전시 복원'}),submit=region.getByRole('button',{name:'새 전시 복원과 시작'});
  await expect(region.getByLabel('복원에 사용할 외부 키 파일의 전체 경로')).toBeEnabled();
  await region.getByLabel('복원할 암호화 백업 폴더의 전체 경로').fill('/private/tmp/synthetic-archive');
@@ -73,7 +73,7 @@ for(const state of ['completed','failed','interrupted','running','malformed','un
    }
    throw Error('Unexpected mutation');
   }}});
- },{state});await page.goto('/');
+ },{state});await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();
  const region=page.getByRole('region',{name:'백업에서 새 전시 복원'});
  if(state==='completed'){await expect(region.getByRole('heading',{name:'새 전시 복원과 시작을 확인했습니다.'})).toBeVisible();await expect(page.getByRole('button',{name:'재시작',exact:true})).toBeEnabled();}
  else {

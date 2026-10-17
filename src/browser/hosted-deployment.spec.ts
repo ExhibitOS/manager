@@ -13,7 +13,7 @@ test('hosted static publication clears token input and never requires Render or 
    throw {code:'MANAGER_CONNECTION',guidance:'Synthetic native bridge preview only'};
   }}});
  });
- await page.goto('/');const section=page.getByRole('region',{name:'전시를 웹에 공개하기'});
+ await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const section=page.getByRole('region',{name:'전시를 웹에 공개하기'});
  await expect(section.getByLabel('Cloudflare API 토큰')).toBeVisible();await expect(section.getByLabel('Render API 토큰')).toHaveCount(0);await expect(section.getByRole('note',{name:'무료 데이터베이스 보존 조건'})).toHaveCount(0);
  await section.getByLabel('Cloudflare API 토큰').fill('synthetic-transient-token');await section.getByRole('button',{name:'키체인에 보관하고 연결 확인'}).click();
  await expect(section.getByLabel('Cloudflare API 토큰')).toHaveValue('');await expect(section.getByLabel('사용할 계정')).toHaveValue('account-a');
@@ -26,7 +26,7 @@ test('hosted static publication clears token input and never requires Render or 
  await section.getByRole('button',{name:'연결 해제',exact:true}).click();await expect(section.getByLabel('사용할 계정')).toHaveCount(0);
 });
 test('browser preview offers no token entry or deployment authority',async({page})=>{
- await page.goto('/');const section=page.getByRole('region',{name:'전시를 웹에 공개하기'});
+ await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const section=page.getByRole('region',{name:'전시를 웹에 공개하기'});
  await expect(section.getByLabel('Cloudflare API 토큰')).toBeDisabled();await expect(section.getByRole('button',{name:'선택한 전시 배포'})).toBeDisabled();
 });
 
@@ -37,7 +37,7 @@ test('serialized previous work survives reload and missing bundle only blocks an
   w.__TAURI_INTERNALS__={invoke:async command=>{w.hostedCommands.push(command);if(command==='manager_hosted_connected')return true;if(command==='manager_hosted_resume')return work;if(command==='manager_hosted_resume_remote')return {...work,phase:'observed'};throw {code:'MANAGER_CONNECTION',guidance:'Synthetic read-only restart fixture'};}};
  });
  for(let run=0;run<2;run++){
-  await page.goto('/');const section=page.getByRole('region',{name:'전시를 웹에 공개하기'});
+  await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const section=page.getByRole('region',{name:'전시를 웹에 공개하기'});
   await expect(section.getByRole('heading',{name:'이전 공개 작업'})).toBeVisible();await expect(section.getByText(/전시 묶음이 없거나 변경됐습니다/)).toBeVisible();await expect(section.getByRole('button',{name:'선택한 전시 배포'})).toBeDisabled();
   await section.getByRole('button',{name:'이전 배포 상태 확인'}).click();await expect(section.getByText(/저장된 작업 기록/)).toBeVisible();
   expect(await page.evaluate(()=>(window as unknown as {hostedCommands:string[]}).hostedCommands.filter(c=>c==='manager_hosted'))).toEqual([]);
@@ -50,7 +50,7 @@ test('previous-work read-only error reaches the user as a bounded diagnostic wit
   const w=window as unknown as {isTauri:boolean;hostedCommands:string[];hostedError:string;__TAURI_INTERNALS__:{invoke:(command:string)=>Promise<unknown>}};w.isTauri=true;w.hostedCommands=[];w.hostedError='HOSTED_CF_PROJECT_READ_HTTP_404_CODE_7003';
   w.__TAURI_INTERNALS__={invoke:async command=>{w.hostedCommands.push(command);if(command==='manager_hosted_connected')return true;if(command==='manager_hosted_resume')return {provider:'cloudflare',accountId:'account-a',source:{title:'Preserved exhibition',publicationId:'publication-original',projectName:'show-a'},receipt:null,staticReceipt:null,apiReceipt:null,phase:'uncertain',sourceAvailable:false,staticOnly:true};if(command==='manager_hosted_resume_remote')throw {code:w.hostedError,guidance:'Synthetic safe boundary'};throw {code:'HOSTED_OPERATION_UNCERTAIN'};}};
  });
- await page.goto('/');const section=page.getByRole('region',{name:'전시를 웹에 공개하기'});await section.getByRole('button',{name:'이전 배포 상태 확인'}).click();
+ await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const section=page.getByRole('region',{name:'전시를 웹에 공개하기'});await section.getByRole('button',{name:'이전 배포 상태 확인'}).click();
  await expect(section.getByRole('alert')).toContainText('HOSTED_CF_PROJECT_READ_HTTP_404_CODE_7003');
  expect(await page.evaluate(()=>(window as unknown as {hostedCommands:string[]}).hostedCommands.filter(c=>c==='manager_hosted'))).toEqual([]);
  await page.evaluate(()=>{(window as unknown as {hostedError:string}).hostedError='HOSTED_JS_DEPLOY_FORM_ERROR';});
@@ -68,7 +68,7 @@ test('unclassified API exception retains static publication and requires resourc
    throw {code:'HOSTED_OPERATION_UNCERTAIN'};
   }};
  });
- await page.goto('/');const section=page.getByRole('region',{name:'전시를 웹에 공개하기'});await section.getByRole('radio',{name:'API·데이터베이스 준비 · 추가 연결 필요'}).check();
+ await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const section=page.getByRole('region',{name:'전시를 웹에 공개하기'});await section.getByRole('radio',{name:'API·데이터베이스 준비 · 추가 연결 필요'}).check();
  for(const provider of ['Cloudflare','Render']){await section.getByLabel(`${provider} API 토큰`).fill('synthetic-token');await section.getByRole('group',{name:`${provider} 연결`}).getByRole('button',{name:'키체인에 보관하고 연결 확인'}).click();}
  const notice=section.getByRole('note',{name:'무료 데이터베이스 보존 조건'});await expect(notice).toBeVisible();await expect(notice).toContainText('30일');await expect(notice).toContainText('14일');await expect(notice).toContainText('자동 연장·자동 재생성은 하지 않습니다');await expect(notice).toContainText('로컬 백업');
  expect(await notice.evaluate(node=>Boolean(node.compareDocumentPosition(document.querySelector('.hosted-deployment input[type=checkbox]')!)&Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
@@ -83,6 +83,6 @@ test('observed ready result updates the same saved-work banner without another j
   const w=window as unknown as {isTauri:boolean;journalReads:number;__TAURI_INTERNALS__:{invoke:(command:string)=>Promise<unknown>}};w.isTauri=true;w.journalReads=0;
   w.__TAURI_INTERNALS__={invoke:async command=>{if(command==='manager_hosted_connected')return true;if(command==='manager_hosted_resume'){w.journalReads++;return {provider:'cloudflare',accountId:'account-a',source,receipt:null,staticReceipt:null,apiReceipt:null,phase:'uncertain',sourceAvailable:true,staticOnly:true};}if(command==='manager_hosted')return {provider:'cloudflare',action:'deploy-static',state:'ready',projectName:'show-a',deploymentId:'existing-ready',url:'https://show-a.pages.dev'};throw {code:'HOSTED_OPERATION_UNCERTAIN'};}};
  });
- await page.goto('/');const section=page.getByRole('region',{name:'전시를 웹에 공개하기'});await expect(section.getByText('Previously uncertain exhibition · 결과 확인 필요')).toBeVisible();
+ await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const section=page.getByRole('region',{name:'전시를 웹에 공개하기'});await expect(section.getByText('Previously uncertain exhibition · 결과 확인 필요')).toBeVisible();
  await section.getByLabel('이 전시의 공개 권리를 확인했으며 선택한 계정에 파일을 올리는 데 동의합니다.').check();await section.getByRole('button',{name:'선택한 전시 배포'}).click();await expect(section.getByRole('heading',{name:'전시 배포 확인 완료'})).toBeVisible();await expect(section.getByText('Previously uncertain exhibition · 저장된 작업 기록')).toBeVisible();expect(await page.evaluate(()=>(window as unknown as {journalReads:number}).journalReads)).toBe(1);
 });

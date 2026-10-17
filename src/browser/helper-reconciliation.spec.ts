@@ -27,7 +27,7 @@ for(const scenario of ['backup-stopped','restoration-absent','ownership-failure'
    throw Error('Unexpected synthetic mutation');
   }}});
  },{scenario});
- const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));await page.goto('/');const region=page.getByRole('region',{name:'중단된 작업의 helper 확인'}),submit=region.getByRole('button',{name:'해당 helper 확인·정지'});
+ const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const region=page.getByRole('region',{name:'중단된 작업의 helper 확인'}),submit=region.getByRole('button',{name:'해당 helper 확인·정지'});
  await expect(region).toBeVisible();await expect(submit).toBeDisabled();const kind=scenario==='restoration-absent'?'restoration':'backup';await region.getByRole('combobox').selectOption(`${kind}:23456789-1234-1234-1234-123456789012`);await expect(submit).toBeDisabled();await region.getByRole('checkbox').check();await expect(submit).toBeEnabled();await submit.click();
  await expect(region.getByRole('progressbar',{name:'helper 정지 여부 확인 중'})).toBeVisible();await region.locator('form').dispatchEvent('submit');await expect(page.getByRole('button',{name:'새 복원 공간 만들고 선택'})).toBeDisabled();await expect(page.getByRole('button',{name:'시작',exact:true})).toBeDisabled();
  const inputs=await page.evaluate(()=>(window as unknown as {__helperInputs:unknown[]}).__helperInputs);expect(inputs).toEqual([{selectionToken:'45678901-1234-1234-1234-123456789012',input:{kind,targetId:'23456789-1234-1234-1234-123456789012',preserveCandidates:true}}]);

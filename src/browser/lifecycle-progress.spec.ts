@@ -27,7 +27,7 @@ for(const action of ['install','start','stop','restart','failure'] as const)test
    throw Error('Unexpected synthetic command');
   }}});
  },{action});
- await page.goto('/');const controls=page.getByRole('region',{name:'전시 설치와 실행'});await expect(page.getByRole('alert')).toHaveCount(0);
+ await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const controls=page.getByRole('region',{name:'전시 설치와 실행'});await expect(page.getByRole('alert')).toHaveCount(0);
  const label=action==='install'?'전시 설치':action==='stop'?'정지':action==='restart'?'재시작':'시작';
  await expect(controls.getByRole('button',{name:label,exact:true})).toBeEnabled();
  await controls.getByRole('button',{name:label,exact:true}).click();

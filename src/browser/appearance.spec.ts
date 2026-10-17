@@ -42,10 +42,11 @@ test('both appearances retain readable semantic text, primary controls and warni
 });
 
 test('task navigation stays visible and does not cover linked headings or keyboard focus',async({page})=>{
- await page.goto('/');
+ await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();
  const nav=page.getByRole('navigation',{name:'관리 메뉴'});
  for(const width of [320,640,1120]){
   await page.setViewportSize({width,height:900});
+  await nav.getByRole('link',{name:'작업 기록',exact:true}).click();
   await page.locator('#history').scrollIntoViewIfNeeded();
   const pinned=await nav.boundingBox();
   expect(pinned!.y).toBeGreaterThanOrEqual(0);expect(pinned!.y).toBeLessThan(24);

@@ -23,7 +23,7 @@ for(const scenario of ['no-child','child-found','unproven','contradictory','chan
    throw Error(`unexpected synthetic command ${cmd}`);
   }}});
  },{scenario});
- await page.goto('/');const panel=page.getByRole('heading',{name:'재시도 연결 진단',exact:true}).locator('..');
+ await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const panel=page.getByRole('heading',{name:'재시도 연결 진단',exact:true}).locator('..');
  await panel.getByLabel('진단할 재시도 기록').selectOption('23456789-1234-1234-1234-123456789012');
  const diagnose=panel.getByRole('button',{name:'기록을 변경하지 않고 진단',exact:true});await expect(diagnose).toBeEnabled();
  if(scenario==='pending'){

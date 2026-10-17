@@ -2,7 +2,7 @@
 import {test,expect} from '@playwright/test';
 const image='ghcr.io/exhibitos/platform@sha256:'+'a'.repeat(64);
 test('deployment preparation validates local/server/cloud, clears stale results and falls back without executing',async({page})=>{
- await page.goto('/');await page.getByText('기존 서버 배포 도구',{exact:true}).click();const panel=page.getByRole('region',{name:'배포 준비'}),prepare=panel.getByRole('button',{name:'입력 확인·파일 준비'});
+ await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();await page.getByText('기존 서버 배포 도구',{exact:true}).click();const panel=page.getByRole('region',{name:'배포 준비'}),prepare=panel.getByRole('button',{name:'입력 확인·파일 준비'});
  await prepare.click();await expect(panel.getByRole('alert')).toBeVisible();await expect(panel.getByRole('button',{name:'준비 파일 저장'})).toHaveCount(0);
  await panel.getByLabel('검증한 실행 이미지 (저장소 digest 또는 로컬 이미지 ID)').fill(image);await prepare.click();
  await expect(panel.getByText('준비 파일 생성됨 · 배포 미실행',{exact:true})).toBeVisible();

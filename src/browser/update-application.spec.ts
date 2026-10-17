@@ -22,7 +22,7 @@ for(const scenario of ['pending','malformed-reference','schema-change'] as const
    throw Error('Unexpected synthetic command');
   }}});
  },{scenario});
- await page.goto('/');const panel=page.getByRole('region',{name:'업데이트 상태'});
+ await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const panel=page.getByRole('region',{name:'업데이트 상태'});
  if(scenario==='malformed-reference'){
   await expect(panel.getByRole('alert')).toContainText('MANAGER_PROTOCOL');
   await expect(panel.getByRole('button',{name:'앱을 닫고 업데이트 적용'})).toHaveCount(0);

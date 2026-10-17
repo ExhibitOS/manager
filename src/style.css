@@ -57,3 +57,16 @@ html{scroll-padding-top:var(--navigation-clearance)}
 
 /* Hosted publication uses the existing semantic surfaces and display preference. */
 .hosted-deployment fieldset{border:1px solid var(--line);border-radius:var(--radius);padding:var(--space-m);margin:var(--space-m) 0 var(--space-l);min-width:0}.hosted-deployment legend{font-weight:600;padding:0 var(--space-xs)}.hosted-deployment label{display:block;margin:var(--space-s) 0}.hosted-deployment label>input:not([type=checkbox]):not([type=radio]),.hosted-deployment label>select{display:block;width:100%;margin-top:var(--space-xs)}.hosted-deployment input[type=radio],.hosted-deployment input[type=checkbox]{margin-right:var(--space-xs)}
+
+/* Purpose navigation changes visibility, not component identity or its saved form/job state. */
+.manager-view.is-concealed,.manager-development-tools.is-concealed{display:none}
+/* Problems and ongoing work remain visible even after navigating to another purpose. */
+.manager-view.is-concealed:has([role="alert"],progress,[data-needs-attention="true"]),.manager-development-tools.is-concealed:has([role="alert"],progress){display:block}
+.section-navigation a[aria-current="page"]{background:var(--tonal);color:var(--accent-text)}
+.header-tools button[aria-pressed="true"]{background:var(--tonal);border-color:var(--accent)}
+
+[data-manager-mode="simple"] .manager-technical{display:none}
+
+.status-panel .button-row{margin-top:var(--space-s)}.task-notice{padding:var(--space-m);border-radius:12px;background:var(--tonal);color:var(--accent-text)}
+
+[data-manager-mode="simple"] .dashboard{grid-template-columns:1fr}

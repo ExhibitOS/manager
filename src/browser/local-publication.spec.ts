@@ -12,7 +12,7 @@ test('local published catalog prepares the selected exhibition without exposing 
    throw {code:'MANAGER_CONNECTION'};
   }};
  });
- await page.goto('/');const section=page.getByRole('region',{name:'전시를 웹에 공개하기'});
+ await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const section=page.getByRole('region',{name:'전시를 웹에 공개하기'});
  await section.getByRole('button',{name:'로컬 공개 전시 불러오기'}).click();await expect(section.getByLabel('공개할 전시')).toHaveValue('00000000-0000-4000-8000-000000000003');await section.getByRole('button',{name:'선택한 전시 준비'}).click();await expect(section.getByText('선택한 전시: 나의 공개 전시')).toBeVisible();
  const calls=await page.evaluate(()=>(window as unknown as {publicationCalls:{command:string;args:Record<string,unknown>}[]}).publicationCalls);
  expect(calls.filter(c=>c.command==='manager_publication_export').map(c=>c.args)).toEqual([{selectionToken:'00000000-0000-4000-8000-000000000001',publicationId:'00000000-0000-4000-8000-000000000003'}]);expect(calls.filter(c=>c.command==='manager_hosted')).toHaveLength(0);expect(JSON.stringify(calls)).not.toContain('password');await expect(section.getByRole('button',{name:'선택한 전시 배포'})).toBeDisabled();
