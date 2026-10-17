@@ -40,5 +40,5 @@ export const hostedClient={
 };
 export function hostedFailure(value:unknown):string{
  const code=record(value)&&typeof value.code==='string'?value.code:value instanceof Error?value.message:'';
- return /^HOSTED_[A-Z_]{1,72}$/.test(code)?code:'HOSTED_OPERATION_UNCERTAIN';
+ return (/^HOSTED_[A-Z_]{1,72}$/.test(code)||/^HOSTED_CF_(?:ASSET_CHECK|ASSET_UPSERT|ASSET_UPLOAD|UPLOAD_TOKEN|DEPLOY_STATUS|DEPLOY_CREATE|DEPLOY_LIST|PROJECT_CREATE|PROJECT_READ)_HTTP_(?:200|4[0-9]{2})(?:_CODE_[1-9][0-9]{3,7})?$/.test(code))?code:'HOSTED_OPERATION_UNCERTAIN';
 }

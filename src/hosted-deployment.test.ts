@@ -14,6 +14,9 @@ describe('hosted public receipt boundary',()=>{
   expect(hostedUrl('https://my-show.pages.dev')).toBe(true);expect(hostedUrl('https://user:password@my-show.pages.dev')).toBe(false);expect(hostedUrl('https://my-show.pages.dev/?token=secret')).toBe(false);
  });
  it('only shows fixed local error codes, never original exception text',()=>{
+  expect(hostedFailure({code:'HOSTED_CF_ASSET_CHECK_HTTP_404_CODE_10000'})).toBe('HOSTED_CF_ASSET_CHECK_HTTP_404_CODE_10000');
+  expect(hostedFailure({code:'HOSTED_CF_UNKNOWN_HTTP_404_CODE_10000'})).toBe('HOSTED_OPERATION_UNCERTAIN');
+  expect(hostedFailure({code:'HOSTED_CF_ASSET_CHECK_HTTP_404_CODE_secret'})).toBe('HOSTED_OPERATION_UNCERTAIN');
   expect(hostedFailure(Error('Bearer synthetic-private-token'))).toBe('HOSTED_OPERATION_UNCERTAIN');
   expect(hostedFailure({code:'HOSTED_TOKEN_REQUIRED',raw:'synthetic-private-token'})).toBe('HOSTED_TOKEN_REQUIRED');
  });

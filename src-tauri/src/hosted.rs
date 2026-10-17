@@ -90,6 +90,46 @@ pub struct Request {
     #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub expected_manifest_sha256: Option<String>,
 }
+fn safe_failure_code(code: &str) -> bool {
+    if code.len() > 80 {
+        return false;
+    }
+    if code.starts_with("HOSTED_") && code.bytes().all(|b| b.is_ascii_uppercase() || b == b'_') {
+        return true;
+    }
+    let Some((stage, tail)) = code
+        .strip_prefix("HOSTED_CF_")
+        .and_then(|s| s.split_once("_HTTP_"))
+    else {
+        return false;
+    };
+    if !matches!(
+        stage,
+        "ASSET_CHECK"
+            | "ASSET_UPSERT"
+            | "ASSET_UPLOAD"
+            | "UPLOAD_TOKEN"
+            | "DEPLOY_STATUS"
+            | "DEPLOY_CREATE"
+            | "DEPLOY_LIST"
+            | "PROJECT_CREATE"
+            | "PROJECT_READ"
+    ) {
+        return false;
+    }
+    let (http, provider) = tail
+        .split_once("_CODE_")
+        .map_or((tail, None), |(h, c)| (h, Some(c)));
+    if http.len() != 3
+        || !http.bytes().all(|b| b.is_ascii_digit())
+        || !(http == "200" || http.starts_with('4'))
+    {
+        return false;
+    }
+    provider.is_none_or(|n| {
+        n.len() >= 4 && n.len() <= 8 && !n.starts_with('0') && n.bytes().all(|b| b.is_ascii_digit())
+    })
+}
 pub fn refused(code: &str) -> LifecycleError {
     LifecycleError { code: code.into(), guidance: "연결이나 배포를 완료하지 못했습니다. 저장된 자료는 그대로입니다. 계정 권한과 제공자의 실제 작업 상태를 확인하세요.".into() }
 }
@@ -814,16 +854,11 @@ pub fn execute(
             .unwrap()
             .map_err(|_| refused("HOSTED_OPERATION_UNCERTAIN"))?;
         let code = std::str::from_utf8(&error).unwrap_or("").trim();
-        return Err(refused(
-            if code.starts_with("HOSTED_")
-                && code.len() <= 80
-                && code.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')
-            {
-                code
-            } else {
-                "HOSTED_OPERATION_UNCERTAIN"
-            },
-        ));
+        return Err(refused(if safe_failure_code(code) {
+            code
+        } else {
+            "HOSTED_OPERATION_UNCERTAIN"
+        }));
     }
     let response: serde_json::Value =
         serde_json::from_slice(&output).map_err(|_| refused("HOSTED_RESPONSE_INVALID"))?;
@@ -887,6 +922,24 @@ pub fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn diagnostics_accept_only_fixed_stage_status_and_numeric_provider_code() {
+        assert!(safe_failure_code(
+            "HOSTED_CF_ASSET_CHECK_HTTP_404_CODE_10000"
+        ));
+        assert!(safe_failure_code(
+            "HOSTED_CF_DEPLOY_STATUS_HTTP_200_CODE_8000000"
+        ));
+        for code in [
+            "HOSTED_CF_ARBITRARY_HTTP_404_CODE_10000",
+            "HOSTED_CF_ASSET_CHECK_HTTP_500",
+            "HOSTED_CF_ASSET_CHECK_HTTP_404_CODE_secret",
+            "HOSTED_CF_ASSET_CHECK_HTTP_404_CODE_0000",
+            "HOSTED_CF_ASSET_CHECK_HTTP_404?token=secret",
+        ] {
+            assert!(!safe_failure_code(code));
+        }
+    }
     #[test]
     fn provider_wire_refuses_credentials_and_renderer_manifest_authority() {
         assert!(
