@@ -26,10 +26,20 @@ export function parseHostedReceipt(value:unknown):HostedReceipt{
  if(value.action==='accounts'&&!Array.isArray(value.accounts))throw Error('HOSTED_RESPONSE_INVALID');
  return value as HostedReceipt;
 }
+/** A stale or malformed saved-work response must show recovery guidance, not crash the screen. */
+export function parseHostedResume(value:unknown):HostedResume|null{
+ if(value===null)return null;
+ if(!record(value)||!['cloudflare','render'].includes(String(value.provider))||!text(value.phase,64)||typeof value.sourceAvailable!=='boolean'||typeof value.staticOnly!=='boolean'||!record(value.source))throw Error('HOSTED_RESPONSE_INVALID');
+ const source=value.source;
+ if(!text(source.title,512)||!text(source.publicationId,128)||!text(source.projectName,128))throw Error('HOSTED_RESPONSE_INVALID');
+ for(const key of ['accountId','workspaceId'])if(value[key]!==undefined&&value[key]!==null&&!text(value[key],128))throw Error('HOSTED_RESPONSE_INVALID');
+ for(const key of ['receipt','staticReceipt','apiReceipt'])if(value[key]!==undefined&&value[key]!==null){const receipt=parseHostedReceipt(value[key]);const expected=key==='staticReceipt'?'cloudflare':key==='apiReceipt'?'render':value.provider;if(receipt.provider!==expected)throw Error('HOSTED_RESPONSE_INVALID');}
+ return value as HostedResume;
+}
 export const hostedClient={
  native:()=>isTauri(),
- resume:()=>invoke<HostedResume|null>('manager_hosted_resume'),
- resumeRemote:()=>invoke<HostedResume|null>('manager_hosted_resume_remote'),
+ resume:async()=>parseHostedResume(await invoke<unknown>('manager_hosted_resume')),
+ resumeRemote:async()=>parseHostedResume(await invoke<unknown>('manager_hosted_resume_remote')),
  connected:(provider:HostedProvider)=>invoke<boolean>('manager_hosted_connected',{input:{provider}}),
  store:(provider:HostedProvider,token:string)=>invoke<boolean>('manager_hosted_store',{input:{provider,token}}),
  disconnect:(provider:HostedProvider)=>invoke<boolean>('manager_hosted_disconnect',{input:{provider}}),

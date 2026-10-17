@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import {describe,it,expect} from 'vitest';
-import {parseHostedReceipt,hostedUrl,hostedFailure,hostedUncertain} from './hosted-deployment';
+import {parseHostedReceipt,parseHostedResume,hostedUrl,hostedFailure,hostedUncertain} from './hosted-deployment';
 describe('hosted public receipt boundary',()=>{
  it('keeps provider completion separate from dynamic application readiness and optional expiry',()=>{
   const r=parseHostedReceipt({provider:'render',action:'status',state:'deployed',databaseState:'available',serviceId:'srv-synthetic'});
@@ -28,4 +28,12 @@ describe('hosted public receipt boundary',()=>{
   expect(hostedFailure(Error('Bearer synthetic-private-token'))).toBe('HOSTED_OPERATION_UNCERTAIN');
   expect(hostedFailure({code:'HOSTED_TOKEN_REQUIRED',raw:'synthetic-private-token'})).toBe('HOSTED_TOKEN_REQUIRED');
  });
+});
+
+describe('saved hosted work rendering boundary',()=>{
+ const source={title:'Saved exhibition',publicationId:'publication-a',projectName:'show-a',revisionSha256:'a'.repeat(64),indexSha256:'b'.repeat(64)};
+ const work={provider:'cloudflare',accountId:null,workspaceId:null,source,receipt:null,staticReceipt:null,apiReceipt:null,phase:'uncertain',sourceAvailable:false,staticOnly:true};
+ it('retains old unavailable-source metadata and null optional receipts without another read',()=>{expect(parseHostedResume(null)).toBeNull();expect(parseHostedResume(work)).toEqual(work);});
+ it('refuses malformed saved work before it can break the entire Manager screen',()=>{for(const invalid of [undefined,[],{}, {...work,source:null},{...work,source:[]},{...work,source:{...source,title:4}},{...work,staticOnly:'true'},{...work,receipt:[]}])expect(()=>parseHostedResume(invalid)).toThrow('HOSTED_RESPONSE_INVALID');});
+ it('preserves observed receipts but rejects a crossed provider receipt',()=>{const receipt={provider:'cloudflare',action:'status',state:'ready',url:'https://show-a.pages.dev'};expect(parseHostedResume({...work,staticReceipt:receipt})?.staticReceipt).toEqual(receipt);expect(()=>parseHostedResume({...work,apiReceipt:receipt})).toThrow('HOSTED_RESPONSE_INVALID');});
 });
