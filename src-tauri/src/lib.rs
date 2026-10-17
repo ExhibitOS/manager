@@ -2,6 +2,7 @@
 mod startup;
 mod remote;
 mod hosted;
+mod publication;
 mod hosted_keychain;
 use exhibitos_lifecycle::{
     Action, EngineProbe, Job, LifecycleError, LifecycleService, LogEvent, Status,
@@ -48,6 +49,10 @@ async fn blocking<T: Send + 'static>(
         .await
         .map_err(|_| error("MANAGER_OPERATION"))?
 }
+#[tauri::command]
+async fn manager_publication_catalog(window:WebviewWindow,app:tauri::AppHandle,state:State<'_,DesktopState>,selection_token:String)->Result<publication::Catalog,LifecycleError>{caller(&window)?;let resources=app.path().resource_dir().map_err(|_|error("LOCAL_CMS_RUNTIME_UNAVAILABLE"))?;let pin=selection_token.clone();blocking(state.0.clone(),selection_token,move|service|publication::catalog(resources,service,pin)).await}
+#[tauri::command]
+async fn manager_publication_export(window:WebviewWindow,app:tauri::AppHandle,state:State<'_,DesktopState>,selection_token:String,publication_id:String)->Result<hosted::SourceInfo,LifecycleError>{caller(&window)?;let resources=app.path().resource_dir().map_err(|_|error("LOCAL_CMS_RUNTIME_UNAVAILABLE"))?;let pin=selection_token.clone();blocking(state.0.clone(),selection_token,move|service|publication::export(resources,service,&pin,&publication_id)).await}
 #[tauri::command]
 async fn manager_hosted_store(window:WebviewWindow,input:hosted::TokenInput)->Result<bool,LifecycleError>{caller(&window)?;tauri::async_runtime::spawn_blocking(move||hosted::store(input)).await.map_err(|_|hosted::refused("HOSTED_KEYCHAIN_STORE_FAILED"))?}
 #[tauri::command]
@@ -788,7 +793,7 @@ pub fn run() {
         return;
     }
     let result = tauri::Builder::default()
-        .on_window_event(|_,event|{if let tauri::WindowEvent::CloseRequested{api,..}=event && (remote::busy()||hosted::busy()){api.prevent_close();}})
+        .on_window_event(|_,event|{if let tauri::WindowEvent::CloseRequested{api,..}=event && (remote::busy()||hosted::busy()||publication::busy()){api.prevent_close();}})
         .setup(|app| {
             let override_root = startup::override_root(std::env::var_os("EXHIBITOS_MANAGER_ROOT"))?;
             let profile = match startup::managed_profile(
@@ -819,6 +824,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             manager_status,
             manager_hosted,
+            manager_publication_catalog,
+            manager_publication_export,
             manager_hosted_store,
             manager_hosted_connected,
             manager_hosted_disconnect,

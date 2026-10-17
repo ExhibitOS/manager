@@ -421,6 +421,13 @@ fn read_source(path: &str) -> Result<SourcePin, LifecycleError> {
         },
     })
 }
+pub(crate) fn select_local_export(path:&str, publication_id:&str, revision:&str, manifest_sha256:&str)->Result<SourceInfo,LifecycleError>{
+    let pin=read_source(path)?;
+    if pin.info.publication_id!=publication_id || pin.info.revision_sha256!=revision || pin.sha256!=manifest_sha256 {return Err(refused("LOCAL_CMS_SOURCE_CHANGED"));}
+    let info=pin.info.clone();
+    *SOURCE.lock().map_err(|_|refused("HOSTED_SOURCE_INVALID"))?=Some(pin);
+    Ok(info)
+}
 pub fn choose_source() -> Result<Option<SourceInfo>, LifecycleError> {
     #[cfg(target_os = "macos")]
     {

@@ -10,6 +10,7 @@ pub mod maintenance;
 mod maintenance_stream;
 mod process_window;
 pub mod profile_backup;
+pub mod publication_source;
 pub mod restoration;
 mod restoration_auxiliary;
 pub mod retry;

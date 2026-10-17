@@ -42,7 +42,10 @@
       "../vendor/deployment/": "vendor/deployment/",
       "../scripts/remote-runner.mjs": "scripts/remote-runner.mjs",
       "remote-runtime/": "remote-runtime/",
-      "../scripts/hosted-runner.mjs": "scripts/hosted-runner.mjs"
+      "../scripts/hosted-runner.mjs": "scripts/hosted-runner.mjs",
+      "../scripts/publication-runner.mjs": "scripts/publication-runner.mjs",
+      "../scripts/publication-client.mjs": "scripts/publication-client.mjs",
+      "publication-runtime/": "publication-runtime/"
     }
   }
 }

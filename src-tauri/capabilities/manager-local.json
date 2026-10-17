@@ -47,6 +47,8 @@
     "allow-manager-hosted-link",
     "allow-manager-hosted-open-url",
     "allow-manager-hosted-resume",
-    "allow-manager-hosted-resume-remote"
+    "allow-manager-hosted-resume-remote",
+    "allow-manager-publication-catalog",
+    "allow-manager-publication-export"
   ]
 }
