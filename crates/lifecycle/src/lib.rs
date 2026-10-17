@@ -2,6 +2,7 @@
 //! Trusted-bundle desktop lifecycle. No shell, arbitrary compose paths or destructive volume removal.
 pub mod backup_creation;
 mod cached_install;
+mod runtime_prepare;
 pub mod cancellation;
 pub mod helper_reconciliation;
 pub mod installation_backup;
@@ -1364,6 +1365,13 @@ impl LifecycleService {
             message: message.into(),
         });
         write_json(&self.root, "events.json", &events)
+    }
+    /// Stage fixed application resources only into a missing bundle; existing data is never replaced.
+    pub fn prepare_bundled_runtime(&self, source: &Path) -> Result<()> {
+        let _lock = self.lock()?;
+        #[cfg(any(unix, windows))]
+        signed_release::trust::lifecycle_writer::admit(&self.root, &Action::Install)?;
+        runtime_prepare::prepare(&self.root, source)
     }
     pub fn install(&self) -> Result<Job> {
         self.execute(Action::Install)

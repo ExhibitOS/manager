@@ -3,6 +3,7 @@ mod startup;
 mod remote;
 mod hosted;
 mod publication;
+mod platform_runtime;
 mod hosted_keychain;
 use exhibitos_lifecycle::{
     Action, EngineProbe, Job, LifecycleError, LifecycleService, LogEvent, Status,
@@ -673,11 +674,14 @@ async fn manager_detect(
 #[tauri::command]
 async fn manager_install(
     window: WebviewWindow,
+    app: tauri::AppHandle,
     state: State<'_, DesktopState>,
     selection_token: String,
 ) -> Result<Job, LifecycleError> {
     caller(&window)?;
-    blocking(state.0.clone(), selection_token, |service| {
+    let resources = app.path().resource_dir().map_err(|_| error("PLATFORM_RUNTIME_UNAVAILABLE"))?;
+    blocking(state.0.clone(), selection_token, move |service| {
+        platform_runtime::prepare(&resources, service)?;
         service.install()
     })
     .await

@@ -45,7 +45,8 @@
       "../scripts/hosted-runner.mjs": "scripts/hosted-runner.mjs",
       "../scripts/publication-runner.mjs": "scripts/publication-runner.mjs",
       "../scripts/publication-client.mjs": "scripts/publication-client.mjs",
-      "publication-runtime/": "publication-runtime/"
+      "publication-runtime/": "publication-runtime/",
+      "platform-runtime/": "platform-runtime/"
     }
   }
 }

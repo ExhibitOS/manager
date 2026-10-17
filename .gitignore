@@ -31,3 +31,5 @@ key.bin
 /src-tauri/remote-runtime/generated/
 
 /src-tauri/publication-runtime/generated/
+
+/src-tauri/platform-runtime/generated/
