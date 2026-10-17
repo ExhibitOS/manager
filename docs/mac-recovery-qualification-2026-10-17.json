@@ -273,5 +273,31 @@
       "actualBackupRestoreRoundtrip": false,
       "rawBackupInventoryBudget": "Packaged compressed archive bytes are not the raw docker image-save backup sum. Existing 2GiB raw inventory budget remains unchanged; actual raw exports including PostgreSQL must be qualified separately before claiming backup budget success."
     }
+  },
+  "nativePackagingQualification": {
+    "managerSource": "b0a9853e13eac2106d4f5b5d7d289280e03a70eb",
+    "platformSource": "b701aaccfaa2206fe761a535ddbecac2a003d266",
+    "receipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-native-b0a9853-e98d35ee-a8d9-4408-9eb8-6eb627c00aaf/native-app-verification.json",
+    "resourcePreparation": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-native-b0a9853-e98d35ee-a8d9-4408-9eb8-6eb627c00aaf/resource-preparation.json",
+    "buildLog": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-native-b0a9853-e98d35ee-a8d9-4408-9eb8-6eb627c00aaf/desktop-build.log",
+    "buildExitCode": 0,
+    "buildSeconds": 169.30646037496626,
+    "rawApp": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-native-b0a9853-e98d35ee-a8d9-4408-9eb8-6eb627c00aaf/raw-build/ExhibitOS Manager.app",
+    "rawStrictDeepExitCode": 1,
+    "developmentApp": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-native-b0a9853-e98d35ee-a8d9-4408-9eb8-6eb627c00aaf/development-adhoc/ExhibitOS Manager.app",
+    "developmentStrictDeepExitCode": 0,
+    "developmentRootOnlyAdhocSeal": true,
+    "resourcesUnchangedBySeal": true,
+    "resourceEntries": 9136,
+    "executableSha256": "daa0b43fac824a6a87c01f761b226684fb70f395c730f9b49f6ab40d79f45188",
+    "previousPreparedResourcesRetained": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-native-b0a9853-e98d35ee-a8d9-4408-9eb8-6eb627c00aaf/retained-prepared-runtime-66d06fb",
+    "sourceCleanAfterPackaging": true,
+    "appLaunched": false,
+    "osDialogRequested": false,
+    "userProfileAccessed": false,
+    "developerIdSigned": false,
+    "notarized": false,
+    "actualBackupRestore": false,
+    "qualification": "Exact committed source builds and separate development ad-hoc app verifies; original failed signature evidence retained. This does not qualify formal distribution, actual OS chooser, new-key save, or three-image/literal-password recovery roundtrip. Packaged archive sum does not attest the raw backup inventory budget."
   }
 }
