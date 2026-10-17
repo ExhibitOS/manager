@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
+import {InitialAccount} from './InitialAccount';
+import type {InitialAccountInput} from './initial-account';
 import {useCallback,useEffect,useRef,useState} from 'react';
 import {client,managerError,statusLabel,actionLabel,formatBytes,serviceStateLabel,healthLabel,nextStep,type Status,type EngineProbe,type Job,type LogEvent,type ManagerError,type Action} from './lifecycle';
 import './style.css';
@@ -24,6 +26,7 @@ export function App(){
  const [view,setView]=useState<ManagerView>(()=>{const hash=window.location.hash.slice(1) as ManagerView;return managerViews.includes(hash)?hash:'exhibition';});
  useEffect(()=>{const sync=()=>{const hash=window.location.hash.slice(1) as ManagerView;if(managerViews.includes(hash)){setView(hash);if(hash==='deployment')setPublicationOpened(true);}};window.addEventListener('hashchange',sync);return()=>window.removeEventListener('hashchange',sync);},[]);
 
+ const [initialAccountRequest,setInitialAccountRequest]=useState<{action:'studio'|'install';selectionToken:string}|null>(null);
  const [setupStage,setSetupStage]=useState<StudioSetupStage|null>(null);
  const [showDetails,setShowDetails]=useState(false);
  const [cancellationActive,setCancellationActive]=useState(false);
@@ -37,6 +40,7 @@ export function App(){
  const [installation,setInstallation]=useState<InstallationContext|null>(null),[installationError,setInstallationError]=useState<ManagerError|null>(null);
  const [reconciliationJobs,setReconciliationJobs]=useState<ReconciliationJob[]>([]),[reconciliationError,setReconciliationError]=useState<ManagerError|null>(null);
  const [retryJobs,setRetryJobs]=useState<MaintenanceRetry[]>([]),[retryError,setRetryError]=useState<ManagerError|null>(null);
+ useEffect(()=>{setInitialAccountRequest(null);},[installation?.selectionToken]);
  const live=useRef(true),working=useRef(false),refreshing=useRef(false),statusGeneration=useRef(0);
  const refresh=useCallback(async()=>{
   if(!client.native||refreshing.current)return;
@@ -61,7 +65,7 @@ export function App(){
   }
  },[]);
  useEffect(()=>{live.current=true;let timer:ReturnType<typeof setTimeout>;const poll=async()=>{if(!working.current)await refresh();if(live.current)timer=setTimeout(()=>void poll(),3000);};void poll();return()=>{live.current=false;clearTimeout(timer);};},[refresh]);
- async function operation(action:'install'|Action){if(working.current||!client.native)return;working.current=true;setBusy(true);setPendingAction(action);setLifecycleFeedback('');setError(null);setNotice(`${actionLabel(action)} 작업을 진행합니다. 창을 닫아도 저장된 작업 기록은 남습니다.`);try{const result=action==='install'?await client.install():await client.action(action);if(!live.current)return;if(result.state==='failed'||result.state==='interrupted'){setError({code:result.errorCode??'JOB_FAILED',guidance:result.guidance??'작업 기록을 확인하고 다시 시도하세요.'});setLifecycleFeedback(`${actionLabel(action)} 작업을 완료하지 못했습니다. 확인 코드: ${result.errorCode??'JOB_FAILED'}`);}else {const feedback=result.state==='completed'?`${actionLabel(action)} 작업이 완료됐습니다.`:'진행 중인 작업 기록을 확인합니다.';setNotice(feedback);setLifecycleFeedback(feedback);}await refresh();}catch(e){if(live.current){const failure=managerError(e);setError(failure);setLifecycleFeedback(`${actionLabel(action)} 작업을 완료하지 못했습니다. 확인 코드: ${failure.code}`);}}finally{working.current=false;if(live.current){setBusy(false);setPendingAction(null);}}}
+ async function operation(action:'install'|Action,initialAccount?:InitialAccountInput,expectedSelection?:string){if(working.current||!client.native)return;working.current=true;setBusy(true);setPendingAction(action);setLifecycleFeedback('');setError(null);setNotice(`${actionLabel(action)} 작업을 진행합니다. 창을 닫아도 저장된 작업 기록은 남습니다.`);try{if(action==='install'){const selected=await client.installations();if(expectedSelection&&selected.selectionToken!==expectedSelection)throw {code:'INSTALLATION_CHANGED',guidance:'선택한 전시가 바뀌어 계정 설정을 멈췄어요. 현재 전시에서 다시 시작하세요.'};if(!initialAccount&&(await client.initialAccountContext()).state==='required'){setInitialAccountRequest({action:'install',selectionToken:selected.selectionToken});return;}}const result=action==='install'?await client.install(initialAccount):await client.action(action);if(!live.current)return;if(result.state==='failed'||result.state==='interrupted'){setError({code:result.errorCode??'JOB_FAILED',guidance:result.guidance??'작업 기록을 확인하고 다시 시도하세요.'});setLifecycleFeedback(`${actionLabel(action)} 작업을 완료하지 못했습니다. 확인 코드: ${result.errorCode??'JOB_FAILED'}`);}else {const feedback=result.state==='completed'?`${actionLabel(action)} 작업이 완료됐습니다.`:'진행 중인 작업 기록을 확인합니다.';setNotice(feedback);setLifecycleFeedback(feedback);}await refresh();}catch(e){if(live.current){const failure=managerError(e);setError(failure);setLifecycleFeedback(`${actionLabel(action)} 작업을 완료하지 못했습니다. 확인 코드: ${failure.code}`);}}finally{working.current=false;if(live.current){setBusy(false);setPendingAction(null);}}}
  async function verifyBackup(input:VerificationInput){
   if(working.current||!client.native)throw {code:'BUSY',guidance:'진행 중인 작업이 끝날 때까지 기다려 주세요.'};
   working.current=true;setBusy(true);setError(null);setNotice('백업 사본의 인증을 확인하고 있습니다.');
@@ -117,13 +121,14 @@ export function App(){
  }
  async function openOex(){setError(null);try{await client.openOex();setNotice('선택한 관리 공간의 Studio를 열었습니다. Artist CMS에서 로그인한 뒤 OEX 작업 상태를 확인하세요.');}catch(e){setError(managerError(e));}}
  async function open(){setError(null);try{await client.open();setNotice('기본 브라우저에서 내 컴퓨터의 전시를 열었습니다.');}catch(e){setError(managerError(e));}}
- async function openStudioFlow(){
+ async function openStudioFlow(initialAccount?:InitialAccountInput,expectedSelection?:string){
   if(working.current||!client.native||active||loading||installationBlocked||restorationBlocked||backupHistoryError||reconciliationError||retryError||(!ready&&recoverable))return;
   working.current=true;setBusy(true);setError(null);setSetupStage('checking');setNotice('Studio를 준비합니다. 현재 설치와 저장된 데이터를 재사용해요.');
-  try{await prepareStudio(client,stage=>{if(live.current)setSetupStage(stage);});if(live.current)setNotice('브라우저에 Studio를 열도록 요청했어요. 작품 가져오기와 편집은 Studio에서 진행하세요.');}
+  try{const selected=await client.installations();if(expectedSelection&&selected.selectionToken!==expectedSelection)throw {code:'INSTALLATION_CHANGED',guidance:'선택한 전시가 바뀌어 계정 설정을 멈췄어요. 현재 전시에서 다시 시작하세요.'};if(!status?.installed&&!initialAccount&&(await client.initialAccountContext()).state==='required'){setInitialAccountRequest({action:'studio',selectionToken:selected.selectionToken});setNotice('이 컴퓨터에서 사용할 계정을 설정해 주세요.');return;}await prepareStudio(client,stage=>{if(live.current)setSetupStage(stage);},initialAccount);if(live.current)setNotice('브라우저에 Studio를 열도록 요청했어요. 작품 가져오기와 편집은 Studio에서 진행하세요.');}
   catch(e){if(live.current){setError(managerError(e));setNotice('Studio 준비를 완료하지 못했어요. 현재 전시와 작업 기록을 확인한 뒤 다시 시도하세요.');}}
   finally{working.current=false;if(live.current){setBusy(false);setSetupStage(null);void refresh();}}
  }
+ function submitInitialAccount(input:InitialAccountInput){const request=initialAccountRequest;setInitialAccountRequest(null);if(request){if(request.action==='studio')void openStudioFlow(input,request.selectionToken);else void operation('install',input,request.selectionToken);}}
  const visibleError=error??statusError;
  const latestJob=jobs.at(-1),currentJob=status?.activeJob??(latestJob?.state==='running'?latestJob:null),recoverable=latestJob&&['failed','interrupted'].includes(latestJob.state)?latestJob:null;
  const installationBlocked=!installation||!!installationError||!!installation.errorCode||!installation.installations.find(root=>root.id===installation.activeId)?.available;
@@ -140,10 +145,11 @@ export function App(){
  {notice&&<p className="task-notice" role="status" aria-live="polite">{notice}</p>}
  <div id="exhibition" role="region" aria-label="전시" tabIndex={-1} className={viewClass('exhibition',!!setupStage||!!pendingAction)}><section className="panel studio-start" aria-labelledby="studio-start-title"><div className="panel-top"><h2 id="studio-start-title">전시 만들기·이어서 편집하기</h2><button aria-pressed={showDetails} onClick={()=>setShowDetails(value=>!value)}>{showDetails?'세부 안내 접기':'세부 안내 보기'}</button></div>
  <p>내 컴퓨터의 설치를 확인하고, 필요한 설치·시작을 마친 뒤 Studio를 브라우저에서 열어요. 로컬 작업에는 클라우드 계정이 필요 없어요.</p>
- <button className="primary" disabled={!client.native||active||loading||!status||installationBlocked||restorationBlocked||!!backupHistoryError||!!reconciliationError||!!retryError||(!ready&&!!recoverable)} onClick={()=>void openStudioFlow()}>{setupStage?'Studio 준비 중…':ready?'Studio 열기':'Studio 준비하고 열기'}</button>
+ <button className="primary" disabled={!!initialAccountRequest||!client.native||active||loading||!status||installationBlocked||restorationBlocked||!!backupHistoryError||!!reconciliationError||!!retryError||(!ready&&!!recoverable)} onClick={()=>void openStudioFlow()}>{setupStage?'Studio 준비 중…':ready?'Studio 열기':'Studio 준비하고 열기'}</button>
+ {initialAccountRequest&&<InitialAccount key={initialAccountRequest.selectionToken} onSubmit={submitInitialAccount} onCancel={()=>{setInitialAccountRequest(null);setNotice('계정 설정을 취소했어요. 설치는 시작하지 않았어요.');}}/>}
  {setupStage&&<div role="status" aria-live="polite"><progress aria-label="Studio 준비 중"/><p>{studioSetupLabel[setupStage]}</p></div>}
  {!engineReady&&<p className="note">먼저 아래 ‘실행 도구 확인’에서 Docker 또는 Podman을 준비해 주세요.</p>}
- <p className="note">현재 개발판은 검증된 실행 패키지가 먼저 준비돼 있어야 해요. 실행 도구 설치와 패키지 자동 다운로드는 아직 연결되지 않았어요.</p>
+ <p className="note">Manager에 포함된 설치 파일은 자동으로 준비해요. 실행 도구 설치와 원격 패키지 다운로드는 아직 연결되지 않았어요.</p>
  <div hidden={!showDetails}><p>설치·시작에는 기존 검증과 권한 확인을 그대로 사용해요. 앱을 다시 여는 것만으로 서버나 브라우저를 자동 실행하지 않아요. 준비 중 창을 닫으면 다음 실행에서 실제 작업 기록을 확인해 주세요.</p><p>Capture나 Mac Processing이 없어도 기존 지원 작품 파일을 Studio로 가져올 수 있어요. 서버 준비와 브라우저 실행은 작품 등록·저장 완료와 별개예요.</p></div>
  </section>
 

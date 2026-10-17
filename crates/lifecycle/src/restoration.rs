@@ -236,7 +236,9 @@ fn validate_source_layout(config: &Value, bytes: &[u8], m: &BundleManifest) -> R
         let (key, value) = line
             .split_once('=')
             .ok_or_else(|| err("BACKUP_CONFIGURATION_INVALID"))?;
-        expected.insert(key.into(), value.into());
+        // Docker Compose config serializes literal dollars as $$ in its resolved JSON model.
+        let projected=if key=="ADMIN_PASSWORD" {super::initial_account::decode_password(value).map_err(|_|err("BACKUP_CONFIGURATION_INVALID"))?.replace('$',"$$")}else{value.into()};
+        expected.insert(key.into(), projected);
     }
     for (key, value) in [
         ("NODE_ENV", "production".to_string()),
@@ -1701,6 +1703,14 @@ mod tests {
         config["services"]["database"]["command"] = Value::Null;
         config["services"]["platform"]["entrypoint"] = Value::Null;
         assert!(validate_source_layout(&config, text.as_bytes(), &m).is_ok());
+        let literal="synthetic$VAR ${VAR} # text' \"quoted\" \\ trailing\\";
+        let encoded=super::super::initial_account::encode_password(literal);
+        let quoted=text.replace("ADMIN_PASSWORD=synthetic-admin-password",&format!("ADMIN_PASSWORD={encoded}"));
+        let mut quoted_config=config.clone();quoted_config["services"]["platform"]["environment"]["ADMIN_PASSWORD"]=literal.replace('$',"$$").into();
+        assert!(validate_source_layout(&quoted_config,quoted.as_bytes(),&m).is_ok());
+        assert_eq!(remapped_environment(quoted.as_bytes(),&m,13201).unwrap(),quoted.replace("EXHIBITOS_PORT=13200","EXHIBITOS_PORT=13201").as_bytes());
+        quoted_config["services"]["platform"]["environment"]["ADMIN_PASSWORD"]="wrong-synthetic-password".into();
+        assert!(validate_source_layout(&quoted_config,quoted.as_bytes(),&m).is_err());
         for user in ["0", "0:0", "1000", "1001:1000", "1000:1001", "${APP_USER}"] {
             config["services"]["platform"]["user"] = user.into();
             assert!(validate_source_layout(&config, text.as_bytes(), &m).is_err());

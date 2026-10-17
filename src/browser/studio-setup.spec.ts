@@ -12,6 +12,7 @@ for(const scenario of ['new','ready','failure'] as const)test(`Studio preparatio
    if(cmd==='manager_update_status')return {installationId:'56789012-1234-1234-1234-123456789012',authorityPresent:false,generation:null,stage:null,operationId:null,failure:null,changedSchema:false,writeUncertain:false};
    if(cmd==='manager_installations')return selection;
    if(cmd==='manager_status')return state;
+   if(cmd==='manager_initial_account_context')return {state:'existing',tenantId:'11111111-1111-4111-8111-111111111111',subject:'synthetic-owner'};
    if(cmd==='manager_detect')return [{kind:'docker',installed:true,available:true,engineVersion:null,composeVersion:null,errorCode:null,guidance:null}];
    if(['manager_jobs','manager_logs','manager_backup_jobs','manager_helper_reconciliations','manager_maintenance_retries'].includes(cmd))return [];
    if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};

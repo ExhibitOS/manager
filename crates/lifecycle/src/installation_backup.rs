@@ -167,14 +167,16 @@ pub(crate) fn environment_valid(bytes: &[u8], manifest: &BundleManifest) -> Resu
             return Err(err("BACKUP_CONFIGURATION_INVALID"));
         }
     }
+    let admin_password=super::initial_account::decode_password(values.get("ADMIN_PASSWORD").ok_or_else(||err("BACKUP_CONFIGURATION_INVALID"))?).map_err(|_|err("BACKUP_CONFIGURATION_INVALID"))?;
     if values.len() != 6
         || values["EXHIBITOS_PORT"] != port.to_string()
         || Uuid::parse_str(values["TENANT_ID"]).is_err()
         || values["ADMIN_SUBJECT"].len() > 128
         || values["POSTGRES_PASSWORD"].len() < 12
-        || values["ADMIN_PASSWORD"].len() < 12
+        || admin_password.len() < 12
         || values["POSTGRES_PASSWORD"].len() > 1024
-        || values["ADMIN_PASSWORD"].len() > 1024
+        || admin_password.len() > 1024
+        || admin_password.chars().any(char::is_control)
         || values["DATABASE_URL"]
             != format!(
                 "postgresql://exhibitos:{}@database:5432/exhibitos",
@@ -400,6 +402,18 @@ mod tests {
             "BACKUP_CONFIGURATION_INVALID"
         );
     }
+    #[test]
+    fn literal_admin_password_keeps_backup_bytes_and_byte_policy(){
+        let (service,original)=fixture();let manifest:BundleManifest=read_json(&service.root.join("installed.json")).unwrap();
+        for password in ["synthetic$VAR ${VAR} # text' \"quoted\" \\ end\\".to_string(),"\\".repeat(1024)]{
+            let encoded=super::super::initial_account::encode_password(&password);
+            let text=original.lines().map(|line|if line.starts_with("ADMIN_PASSWORD="){format!("ADMIN_PASSWORD={encoded}\n")}else{format!("{line}\n")}).collect::<String>();
+            assert!(environment_valid(text.as_bytes(),&manifest).is_ok());
+            fs::write(service.root.join("runtime.env"),text.as_bytes()).unwrap();let before=fs::read(service.root.join("runtime.env")).unwrap();
+            service.prepare_installation_backup().unwrap();assert_eq!(fs::read(service.root.join("runtime.env")).unwrap(),before);
+        }
+    }
+
 }
 
 #[cfg(all(test, windows))]

@@ -19,6 +19,7 @@
     "allow-manager-update-rollback",
     "allow-manager-detect",
     "allow-manager-install",
+    "allow-manager-initial-account-context",
     "allow-manager-action",
     "allow-manager-jobs",
     "allow-manager-logs",

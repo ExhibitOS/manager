@@ -43,9 +43,10 @@ fn parse(bytes: &[u8], origin: String) -> Result<LocalPublicationCredentials, Li
     let subject = values
         .get("ADMIN_SUBJECT")
         .ok_or_else(|| err("LOCAL_CMS_CREDENTIALS_INVALID"))?;
-    let password = values
+    let encoded_password = values
         .get("ADMIN_PASSWORD")
         .ok_or_else(|| err("LOCAL_CMS_CREDENTIALS_INVALID"))?;
+    let password=super::initial_account::decode_password(encoded_password).map_err(|_|err("LOCAL_CMS_CREDENTIALS_INVALID"))?;
     if uuid::Uuid::parse_str(tenant).is_err()
         || !(3..=128).contains(&subject.len())
         || !subject
@@ -65,7 +66,7 @@ fn parse(bytes: &[u8], origin: String) -> Result<LocalPublicationCredentials, Li
     })
 }
 #[cfg(unix)]
-fn read(root: &Path, origin: String) -> Result<LocalPublicationCredentials, LifecycleError> {
+pub(super) fn read(root: &Path, origin: String) -> Result<LocalPublicationCredentials, LifecycleError> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     let path = root.join("runtime.env");
     let before = fs::symlink_metadata(&path).map_err(|_| err("LOCAL_CMS_CREDENTIALS_INVALID"))?;

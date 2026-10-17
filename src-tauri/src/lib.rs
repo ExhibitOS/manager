@@ -672,16 +672,23 @@ async fn manager_detect(
     blocking(state.0.clone(), selection_token, |service| service.detect()).await
 }
 #[tauri::command]
+async fn manager_initial_account_context(window: WebviewWindow,state: State<'_,DesktopState>,selection_token:String)->Result<exhibitos_lifecycle::initial_account::InitialAccountContext,LifecycleError>{
+ caller(&window)?;
+ blocking(state.0.clone(),selection_token,|service|service.initial_account_context()).await
+}
+#[tauri::command]
 async fn manager_install(
     window: WebviewWindow,
     app: tauri::AppHandle,
     state: State<'_, DesktopState>,
     selection_token: String,
+    initial_account: Option<exhibitos_lifecycle::initial_account::InitialAccountInput>,
 ) -> Result<Job, LifecycleError> {
     caller(&window)?;
     let resources = app.path().resource_dir().map_err(|_| error("PLATFORM_RUNTIME_UNAVAILABLE"))?;
     blocking(state.0.clone(), selection_token, move |service| {
         platform_runtime::prepare(&resources, service)?;
+        service.prepare_initial_account(initial_account)?;
         service.install()
     })
     .await
@@ -765,8 +772,9 @@ async fn manager_open_oex(
     caller(&window)?;
     blocking(state.0.clone(), selection_token, |service| {
         // open_url requires fresh native running/readiness and the installed port.
-        let url = oex_studio_url(&service.open_url()?)?;
-        open::that_detached(url).map_err(|_| error("MANAGER_OPEN_FAILED"))
+        let mut url = Url::parse(&oex_studio_url(&service.open_url()?)?).map_err(|_|error("MANAGER_OPEN_URL"))?;
+        if let Ok(account)=service.initial_account_context(){if let (Some(tenant),Some(subject))=(account.tenant_id,account.subject){url.query_pairs_mut().append_pair("localTenant",&tenant).append_pair("localSubject",&subject);}}
+        open::that_detached(url.as_str()).map_err(|_| error("MANAGER_OPEN_FAILED"))
     }).await
 }
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -851,6 +859,7 @@ pub fn run() {
             manager_update_rollback,
             manager_detect,
             manager_install,
+            manager_initial_account_context,
             manager_action,
             manager_jobs,
             manager_logs,
