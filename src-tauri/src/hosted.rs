@@ -466,8 +466,10 @@ pub fn resume_local() -> Result<Option<ResumeInfo>, LifecycleError> {
         api_receipt: work.api_receipt,
     }))
 }
-pub fn resume_remote(resources: PathBuf) -> Result<Option<ResumeInfo>, LifecycleError> {
-    let work = load_work()?.ok_or_else(|| refused("HOSTED_WORK_UNAVAILABLE"))?;
+fn reconcile_work(
+    work: Work,
+    mut observe: impl FnMut(Request) -> Result<serde_json::Value, LifecycleError>,
+) -> Result<(), LifecycleError> {
     let mut requests = Vec::new();
     if let Some(request) = work.static_request {
         requests.push(request);
@@ -478,25 +480,33 @@ pub fn resume_remote(resources: PathBuf) -> Result<Option<ResumeInfo>, Lifecycle
     if requests.is_empty() {
         requests.push(work.request);
     }
-    let mut failed = false;
+    let mut first_error = None;
     for mut request in requests {
         request.action = Action::Reconcile;
         request.expected_manifest_sha256 = Some(work.source_sha256.clone());
         if matches!(request.provider, Provider::Cloudflare) {
             request.api_origin = work.api_origin.clone();
         }
-        if execute(resources.clone(), request).is_err() {
-            failed = true;
+        if let Err(error) = observe(request) {
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
         }
     }
-    if failed {
+    first_error.map_or(Ok(()), Err)
+}
+pub fn resume_remote(resources: PathBuf) -> Result<Option<ResumeInfo>, LifecycleError> {
+    let work = load_work()?.ok_or_else(|| refused("HOSTED_WORK_UNAVAILABLE"))?;
+    if let Err(error) = reconcile_work(work, |request| execute(resources.clone(), request)) {
         if let Some(mut work) = load_work()? {
             work.phase = "uncertain".into();
             save_work(&work)?;
         }
+        return Err(error);
     }
     resume_local()
 }
+
 fn base64(bytes: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
@@ -922,6 +932,38 @@ pub fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reconciliation_returns_first_safe_failure_and_still_observes_both_saved_targets() {
+        let work: Work = serde_json::from_value(serde_json::json!({
+            "version":1,"request":{"provider":"cloudflare","action":"deploy-static"},
+            "sourcePath":"/synthetic/preserved","sourceSha256":"a".repeat(64),
+            "source":{"title":"Existing","publicationId":"original-publication","projectName":"show-a","revisionSha256":"b".repeat(64),"indexSha256":"c".repeat(64)},
+            "phase":"pending","staticRequest":{"provider":"cloudflare","action":"deploy-static","accountId":"account-a","projectName":"show-a","staticOnly":false},
+            "apiRequest":{"provider":"render","action":"deploy-api","workspaceId":"workspace-a","projectName":"show-a"},
+            "apiOrigin":"https://show-a.onrender.com"
+        })).unwrap();
+        let mut observed = 0;
+        let error = reconcile_work(work, |request| {
+            assert!(matches!(request.action, Action::Reconcile));
+            assert_eq!(
+                request.expected_manifest_sha256.as_deref(),
+                Some("a".repeat(64).as_str())
+            );
+            observed += 1;
+            if matches!(request.provider, Provider::Cloudflare) {
+                assert_eq!(
+                    request.api_origin.as_deref(),
+                    Some("https://show-a.onrender.com")
+                );
+                Err(refused("HOSTED_CF_PROJECT_READ_HTTP_404_CODE_7003"))
+            } else {
+                Err(refused("HOSTED_PERMISSION_REQUIRED"))
+            }
+        })
+        .unwrap_err();
+        assert_eq!(observed, 2);
+        assert_eq!(error.code, "HOSTED_CF_PROJECT_READ_HTTP_404_CODE_7003");
+    }
     #[test]
     fn diagnostics_accept_only_fixed_stage_status_and_numeric_provider_code() {
         assert!(safe_failure_code(

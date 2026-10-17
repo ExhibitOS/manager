@@ -44,3 +44,14 @@ test('serialized previous work survives reload and missing bundle only blocks an
   await expect(section.getByLabel('Cloudflare API 토큰')).toHaveValue('');
  }
 });
+
+test('previous-work read-only error reaches the user as a bounded diagnostic without repeating a write',async({page})=>{
+ await page.addInitScript(()=>{
+  const w=window as unknown as {isTauri:boolean;hostedCommands:string[];__TAURI_INTERNALS__:{invoke:(command:string)=>Promise<unknown>}};w.isTauri=true;w.hostedCommands=[];
+  w.__TAURI_INTERNALS__={invoke:async command=>{w.hostedCommands.push(command);if(command==='manager_hosted_connected')return true;if(command==='manager_hosted_resume')return {provider:'cloudflare',accountId:'account-a',source:{title:'Preserved exhibition',publicationId:'publication-original',projectName:'show-a'},receipt:null,staticReceipt:null,apiReceipt:null,phase:'uncertain',sourceAvailable:false,staticOnly:true};if(command==='manager_hosted_resume_remote')throw {code:'HOSTED_CF_PROJECT_READ_HTTP_404_CODE_7003',guidance:'Synthetic safe boundary'};throw {code:'HOSTED_OPERATION_UNCERTAIN'};}};
+ });
+ await page.goto('/');const section=page.getByRole('region',{name:'전시를 웹에 공개하기'});await section.getByRole('button',{name:'이전 배포 상태 확인'}).click();
+ await expect(section.getByRole('alert')).toContainText('HOSTED_CF_PROJECT_READ_HTTP_404_CODE_7003');
+ expect(await page.evaluate(()=>(window as unknown as {hostedCommands:string[]}).hostedCommands.filter(c=>c==='manager_hosted'))).toEqual([]);
+ await expect(section.getByRole('heading',{name:'이전 공개 작업'})).toBeVisible();
+});
