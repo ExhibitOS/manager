@@ -4,7 +4,7 @@
     "T08-02",
     "T08-03"
   ],
-  "status": "RECOVERY_GUI_IMPLEMENTED_LOCAL_REGRESSIONS_PASS_ACTUAL_NATIVE_RECOVERY_PENDING",
+  "status": "RECOVERY_GUI_IMPLEMENTED_LOCAL_REGRESSIONS_AND_CHANGED_CONTRACT_ACTUAL_ROUNDTRIP_PASS_NATIVE_GUI_PENDING",
   "managerHead": "8f4f60df47e4bf89bf46d220fca0514c30506bc4",
   "sourceCleanBeforeThisRecord": true,
   "branch": "codex/windows-recovery-integration",
@@ -297,7 +297,65 @@
     "userProfileAccessed": false,
     "developerIdSigned": false,
     "notarized": false,
-    "actualBackupRestore": false,
-    "qualification": "Exact committed source builds and separate development ad-hoc app verifies; original failed signature evidence retained. This does not qualify formal distribution, actual OS chooser, new-key save, or three-image/literal-password recovery roundtrip. Packaged archive sum does not attest the raw backup inventory budget."
+    "qualification": "Exact committed source builds and separate development ad-hoc app verifies; original failed signature evidence retained. This does not qualify formal distribution, actual OS chooser, new-key save, or three-image/literal-password recovery roundtrip. Packaged archive sum does not attest the raw backup inventory budget.",
+    "actualBackupRestoreAtPackagingTime": false
+  },
+  "changedContractActualRecovery": {
+    "managerSource": "b0a9853e13eac2106d4f5b5d7d289280e03a70eb",
+    "platformSource": "b701aaccfaa2206fe761a535ddbecac2a003d266",
+    "firstReceipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-three-image-literal-c4d7f33c-2cf4-4e73-9112-fdffe430b2ff/roundtrip-result.json",
+    "continuationReceipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-three-image-literal-c4d7f33c-2cf4-4e73-9112-fdffe430b2ff/continuation-result.json",
+    "finalObservation": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-three-image-literal-c4d7f33c-2cf4-4e73-9112-fdffe430b2ff/final-observation.json",
+    "qualificationSources": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-three-image-literal-c4d7f33c-2cf4-4e73-9112-fdffe430b2ff/qualification-source",
+    "actualCommandHandles": {
+      "compile": 15243,
+      "firstAttempt": 19324,
+      "continuationCompile": 12122,
+      "continuation": 31241
+    },
+    "rawImageBudget": {
+      "receipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-three-image-budget-c49392f0-8bf5-4f4b-8ab0-9cfacd06bd00/raw-image-budget.json",
+      "actualRawImageCount": 3,
+      "actualRawImageBytes": 485062144,
+      "existing2GiBAggregateLimitSatisfied": true,
+      "packagedBytesNotUsedAsRawBudget": true
+    },
+    "originalArchive": {
+      "files": 15,
+      "bytes": 485251498,
+      "externalSiblingCopyByteExact": true,
+      "originalAndCopyRetainedUnchanged": true
+    },
+    "seconds": {
+      "sourceInstall": 11.784,
+      "sourceStart": 13.821,
+      "createAndAuthenticateBackup": 38.14,
+      "externalArchiveVerify": 17.466,
+      "freshRestore": 61.392,
+      "restoredLogin": 0.728,
+      "freshRestoreNormalStop": 4.173
+    },
+    "passed": [
+      "New synthetic source account containing dollars, braces, spaces, hash, quotes, backslashes and Unicode really logged in before backup.",
+      "Original generated freeze-signing-key.json existed and its actual hash was compared; no fake signing witness was created.",
+      "Existing three-image backup created-and-authenticated, external sibling byte-exact copy verified, fresh installation restored and ready.",
+      "Three actual local content IDs, DB witness, original blob and actual signing witness matched after restore.",
+      "Restored account login used existing public native credentials only and secret stdin; HTTP200 and Set-Cookie observed without returning secret headers.",
+      "Original env bytes except existing port-remap field, source key and both archive inventories remained unchanged.",
+      "Final label-scoped observation confirmed exactly two own exited containers per new source/restore installation."
+    ],
+    "firstAttemptLimitation": "First verifier was passed the archive inside its own service root and failed before helper work; BACKUP_PATH_OVERLAP is a source-based diagnosis, not an observed returned code because the first wrapper discarded stderr. The existing overlap protection was unchanged. Continuation copied only the same synthetic archive outside service root and resumed verify/restore; install/backup were not repeated. Later errors retain private0600 raw diagnostics.",
+    "secretAndDataBoundary": {
+      "existingUserProfilesOrKeysAccessed": false,
+      "osChooserOrKeychainUsed": false,
+      "pullOrDeletionRequested": false,
+      "forceKillUsed": false,
+      "sourceAndRestoreVolumesRetained": true
+    },
+    "nativeGuiQualified": false,
+    "formalDistributionQualified": false,
+    "noEngineInstallQualified": false,
+    "updateRollbackReexecuted": false,
+    "qualification": "Actual macOS local Docker engine and existing public lifecycle API on two newly isolated synthetic roots. This qualifies the changed three-image/literal-password backup/verify/fresh-restore path only; browser regressions and native app packaging are separately recorded and do not qualify OS chooser or new-key UI."
   }
 }
