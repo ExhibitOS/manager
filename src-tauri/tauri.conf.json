@@ -41,7 +41,8 @@
       "../licenses/signed-release/": "licenses/signed-release/",
       "../vendor/deployment/": "vendor/deployment/",
       "../scripts/remote-runner.mjs": "scripts/remote-runner.mjs",
-      "remote-runtime/": "remote-runtime/"
+      "remote-runtime/": "remote-runtime/",
+      "../scripts/hosted-runner.mjs": "scripts/hosted-runner.mjs"
     }
   }
 }

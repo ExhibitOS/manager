@@ -16,7 +16,7 @@ test('synthetic remote IPC shows owned progress/cancel/uncertain status and requ
    throw {code:'SSH_OPERATION_REFUSED',guidance:'합성 검사 범위 밖입니다.'};
   }};
  });
- await page.goto('/');const wizard=page.getByRole('region',{name:'배포 준비'});
+ await page.goto('/');await page.getByText('기존 서버 배포 도구',{exact:true}).click();const wizard=page.getByRole('region',{name:'배포 준비'});
  await wizard.getByLabel('배포 장소').selectOption('server');await wizard.getByLabel('검증한 실행 이미지 (저장소 digest 또는 로컬 이미지 ID)').fill('ghcr.io/exhibitos/platform@sha256:'+'a'.repeat(64));await wizard.getByLabel('서버 주소').fill('host.example.invalid');await wizard.getByLabel('서버 사용자 (root 제외)').fill('exhibitos');await wizard.getByRole('button',{name:'입력 확인·파일 준비'}).click();
  const remote=page.getByRole('region',{name:'보유 서버 연결·실행'});
  for(const[label,value]of [['서버의 전시 관리 폴더','/home/exhibitos/runtime'],['서버 Manager 실행파일 경로','/home/exhibitos/bin/manager'],['서버 Manager SHA256','a'.repeat(64)],['이 컴퓨터의 확인한 known_hosts 파일 위치','/tmp/fixture_known_hosts'],['known_hosts SHA256','b'.repeat(64)],['전시 공개 주소 (https://도메인/)','https://host.example.invalid/']])await remote.getByLabel(label!).fill(value!);

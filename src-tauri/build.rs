@@ -7,6 +7,15 @@ fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "manager_status",
+            "manager_hosted",
+            "manager_hosted_store",
+            "manager_hosted_connected",
+            "manager_hosted_disconnect",
+            "manager_hosted_choose_source",
+            "manager_hosted_link",
+            "manager_hosted_open_url",
+            "manager_hosted_resume",
+            "manager_hosted_resume_remote",
             "manager_remote",
             "manager_remote_available",
             "manager_remote_cancel",

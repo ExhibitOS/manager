@@ -1,5 +1,7 @@
 # ExhibitOS Manager
 
+[웹 전시 공개](docs/hosted-deployment.md)는 승인한 전시를 Cloudflare Pages로 공개하고 필요한 경우에만 Render API·PostgreSQL을 준비하는 Mac 경로입니다. 제공자 토큰은 native Keychain에 보관하며 정적 전시만 공개할 때는 Render가 필요 없습니다. 실제 계정·배포와 동적 전시·복구 검증은 별도로 구분합니다.
+
 > 1차 출시 범위(2026-10-15 사용자 변경)는 Mac Manager의 설치·실행·백업·복원·업데이트·롤백입니다. 기존 Windows/Linux 구현과 결과는 보존하되 해당 native 배포는 후속이며 1차 필수 검사가 아닙니다. 서버 Ubuntu 단일 운영 profile과 사용자 앱 OS 지원을 구분합니다. Mac 실제 설치·복구 검증과 원본 보존 조건은 유지합니다.
 
 로컬 전시 서버의 설치·시작·정지·재시작·상태와 작업 기록을 관리하는

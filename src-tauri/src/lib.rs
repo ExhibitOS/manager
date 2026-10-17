@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 mod startup;
 mod remote;
+mod hosted;
+mod hosted_keychain;
 use exhibitos_lifecycle::{
     Action, EngineProbe, Job, LifecycleError, LifecycleService, LogEvent, Status,
 };
@@ -46,6 +48,24 @@ async fn blocking<T: Send + 'static>(
         .await
         .map_err(|_| error("MANAGER_OPERATION"))?
 }
+#[tauri::command]
+async fn manager_hosted_store(window:WebviewWindow,input:hosted::TokenInput)->Result<bool,LifecycleError>{caller(&window)?;tauri::async_runtime::spawn_blocking(move||hosted::store(input)).await.map_err(|_|hosted::refused("HOSTED_KEYCHAIN_STORE_FAILED"))?}
+#[tauri::command]
+async fn manager_hosted_connected(window:WebviewWindow,input:hosted::ProviderInput)->Result<bool,LifecycleError>{caller(&window)?;tauri::async_runtime::spawn_blocking(move||hosted::connected(input)).await.map_err(|_|hosted::refused("HOSTED_KEYCHAIN_UNAVAILABLE"))?}
+#[tauri::command]
+async fn manager_hosted_disconnect(window:WebviewWindow,input:hosted::ProviderInput)->Result<bool,LifecycleError>{caller(&window)?;tauri::async_runtime::spawn_blocking(move||hosted::disconnect(input)).await.map_err(|_|hosted::refused("HOSTED_KEYCHAIN_REMOVE_FAILED"))?}
+#[tauri::command]
+async fn manager_hosted_choose_source(window:WebviewWindow)->Result<Option<hosted::SourceInfo>,LifecycleError>{caller(&window)?;tauri::async_runtime::spawn_blocking(hosted::choose_source).await.map_err(|_|hosted::refused("HOSTED_FOLDER_UNAVAILABLE"))?}
+#[tauri::command]
+async fn manager_hosted_resume(window:WebviewWindow)->Result<Option<hosted::ResumeInfo>,LifecycleError>{caller(&window)?;tauri::async_runtime::spawn_blocking(hosted::resume_local).await.map_err(|_|hosted::refused("HOSTED_WORK_UNAVAILABLE"))?}
+#[tauri::command]
+async fn manager_hosted_resume_remote(window:WebviewWindow,app:tauri::AppHandle)->Result<Option<hosted::ResumeInfo>,LifecycleError>{caller(&window)?;let resources=app.path().resource_dir().map_err(|_|hosted::refused("HOSTED_RUNTIME_UNAVAILABLE"))?;tauri::async_runtime::spawn_blocking(move||hosted::resume_remote(resources)).await.map_err(|_|hosted::refused("HOSTED_OPERATION_UNCERTAIN"))?}
+#[tauri::command]
+fn manager_hosted_open_url(window:WebviewWindow,input:hosted::PublicUrlInput)->Result<(),LifecycleError>{caller(&window)?;hosted::open_url(input)}
+#[tauri::command]
+fn manager_hosted_link(window:WebviewWindow,link:hosted::Link)->Result<(),LifecycleError>{caller(&window)?;hosted::open_link(link)}
+#[tauri::command]
+async fn manager_hosted(window:WebviewWindow,app:tauri::AppHandle,input:hosted::Request)->Result<serde_json::Value,LifecycleError>{caller(&window)?;let resources=app.path().resource_dir().map_err(|_|hosted::refused("HOSTED_RUNTIME_UNAVAILABLE"))?;tauri::async_runtime::spawn_blocking(move||hosted::execute(resources,input)).await.map_err(|_|hosted::refused("HOSTED_OPERATION_UNCERTAIN"))?}
 #[tauri::command]
 async fn manager_remote_available(window:WebviewWindow,app:tauri::AppHandle)->Result<bool,LifecycleError>{
  caller(&window)?;let resources=app.path().resource_dir().map_err(|_|error("REMOTE_RUNTIME_UNAVAILABLE"))?;
@@ -768,7 +788,7 @@ pub fn run() {
         return;
     }
     let result = tauri::Builder::default()
-        .on_window_event(|_,event|{if let tauri::WindowEvent::CloseRequested{api,..}=event && remote::busy(){api.prevent_close();}})
+        .on_window_event(|_,event|{if let tauri::WindowEvent::CloseRequested{api,..}=event && (remote::busy()||hosted::busy()){api.prevent_close();}})
         .setup(|app| {
             let override_root = startup::override_root(std::env::var_os("EXHIBITOS_MANAGER_ROOT"))?;
             let profile = match startup::managed_profile(
@@ -798,6 +818,15 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             manager_status,
+            manager_hosted,
+            manager_hosted_store,
+            manager_hosted_connected,
+            manager_hosted_disconnect,
+            manager_hosted_choose_source,
+            manager_hosted_link,
+            manager_hosted_open_url,
+            manager_hosted_resume,
+            manager_hosted_resume_remote,
             manager_remote,
             manager_remote_available,
             manager_remote_cancel,

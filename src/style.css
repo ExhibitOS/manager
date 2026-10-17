@@ -54,3 +54,6 @@ html{scroll-padding-top:var(--navigation-clearance)}
 .section-navigation{position:sticky;top:var(--space-xs);z-index:1;border:1px solid var(--canvas)}
 .manager-section,#controls,button,input,select,summary{scroll-margin-top:var(--space-m)}
 @media(max-width:520px){:root{--navigation-clearance:208px}}
+
+/* Hosted publication uses the existing semantic surfaces and display preference. */
+.hosted-deployment fieldset{border:1px solid var(--line);border-radius:var(--radius);padding:var(--space-m);margin:var(--space-m) 0 var(--space-l);min-width:0}.hosted-deployment legend{font-weight:600;padding:0 var(--space-xs)}.hosted-deployment label{display:block;margin:var(--space-s) 0}.hosted-deployment label>input:not([type=checkbox]):not([type=radio]),.hosted-deployment label>select{display:block;width:100%;margin-top:var(--space-xs)}.hosted-deployment input[type=radio],.hosted-deployment input[type=checkbox]{margin-right:var(--space-xs)}
