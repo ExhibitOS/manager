@@ -7,12 +7,13 @@ function ProviderConnection({provider,disabled,onAccount}:{provider:HostedProvid
  useEffect(()=>{if(hostedClient.native())void hostedClient.connected(provider).then(setStored).catch(()=>{});},[provider]);
  async function verify(save:boolean){
   const password=token.trim();setToken('');setBusy(true);setError('');setAccounts([]);setSelected('');onAccount('');
-  try{if(save){await hostedClient.store(provider,password);setStored(true);}const result=await hostedClient.operation({provider,action:'accounts'});const list=result.accounts??[];setAccounts(list);const id=list.length===1?list[0]!.id:'';setSelected(id);onAccount(id);if(!list.length)setError('접근할 수 있는 계정이 없습니다. 토큰의 계정 권한을 확인하세요.');}
-  catch(e){setError(`연결을 확인하지 못했습니다. 토큰 권한을 확인하세요. 확인 코드: ${hostedFailure(e)}`);}finally{setBusy(false);}
+  try{if(save){await hostedClient.store(provider,password);setStored(true);}const result=await hostedClient.operation({provider,action:'accounts'});const list=result.accounts??[];setAccounts(list);const id=list.length===1?list[0]!.id:'';setSelected(id);onAccount(id);if(!list.length)setError(provider==='cloudflare'?'수락한 계정 멤버십을 찾지 못했습니다. 계정 초대 수락 상태와 토큰의 사용자 멤버십 읽기 권한을 확인하세요.':'접근할 수 있는 워크스페이스가 없습니다. 토큰의 계정 권한을 확인하세요.');}
+  catch(e){const code=hostedFailure(e);setError(provider==='cloudflare'&&code==='HOSTED_PERMISSION_REQUIRED'?`토큰에 사용자 멤버십 읽기와 선택 계정의 Cloudflare Pages 편집 권한을 허용하세요. 확인 코드: ${code}`:`연결을 확인하지 못했습니다. 토큰 권한을 확인하세요. 확인 코드: ${code}`);}finally{setBusy(false);}
  }
  async function disconnect(){setBusy(true);setError('');try{await hostedClient.disconnect(provider);setStored(false);setAccounts([]);setSelected('');setToken('');onAccount('');}catch(e){setError(`연결 해제를 완료하지 못했습니다. 확인 코드: ${hostedFailure(e)}`);}finally{setBusy(false);}}
  return <fieldset disabled={disabled||busy} className="hosted-connection"><legend>{name(provider)} 연결</legend>
  <p>{provider==='cloudflare'?'전시 파일을 Pages에 올립니다.':'API 자원을 준비할 때만 연결합니다. 전시 데이터 이전·연결은 아직 완료되지 않습니다.'} 토큰은 이 Mac의 키체인에 보관합니다.</p>
+ {provider==='cloudflare'&&<details><summary>필요한 토큰 권한</summary><p>사용자 → Memberships → Read, 선택한 계정 → Cloudflare Pages → Edit를 허용하세요. 계정 목록이 보여도 Pages 편집 권한은 배포할 때 별도로 확인합니다.</p></details>}
  <div className="button-row"><button type="button" onClick={()=>void hostedClient.link(`${provider}-signup`).catch(()=>setError('가입 페이지를 열지 못했습니다.'))}>계정 만들기</button><button type="button" onClick={()=>void hostedClient.link(`${provider}-token`).catch(()=>setError('토큰 설정 페이지를 열지 못했습니다.'))}>토큰 발급 안내</button></div>
  <label>{stored?'토큰 교체 (선택)':'API 토큰'}<input type="password" value={token} maxLength={4096} autoComplete="off" autoCapitalize="none" spellCheck={false} onChange={e=>setToken(e.target.value)} aria-label={`${name(provider)} API 토큰`}/></label>
  <div className="button-row"><button type="button" disabled={!token.trim()} onClick={()=>void verify(true)}>키체인에 보관하고 연결 확인</button>{stored&&<><button type="button" onClick={()=>void verify(false)}>보관한 토큰으로 연결 확인</button><button type="button" onClick={()=>void disconnect()}>연결 해제</button></>}</div>

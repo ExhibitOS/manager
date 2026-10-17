@@ -13,3 +13,5 @@ Mac 앱에서 공개 방식 선택 → 제공자 API 토큰을 암호 입력란�
 검증은 TypeScript·lint·native offline check, 합성 응답의 provider/URL/비밀 경계 단위 검사, 브라우저의 정적 공개·입력 지우기·재시작 GET-only 흐름으로 구분합니다. 실제 제공자 토큰·계정·자원 생성·공개 URL·서명 앱의 UI는 실행한 증거 없이 통과로 주장하지 않습니다. 개발용 브라우저의 native bridge 모사는 실제 Keychain이나 클라우드 배포 증거가 아닙니다.
 
 디자인 적용: P1/P3/P5·PD1 — 필요한 제공자만 연결하고, 공개 제목과 다음 행동을 먼저 보이며 내부 식별자는 상세에 둡니다. 화면 모드는 기존 system/light/dark 설정과 semantic 색·간격을 그대로 사용합니다.
+
+Cloudflare 토큰에는 사용자 Memberships Read와 선택한 계정의 Cloudflare Pages Edit를 허용합니다. 계정 조회가 비거나 목록 권한이 부족하면 공식 GET /memberships로 수락한 API 접근 가능 계정을 확인합니다. 계정이 표시되는 것만으로 Pages 쓰기 권한이 검증됐다고 표시하지 않습니다.
