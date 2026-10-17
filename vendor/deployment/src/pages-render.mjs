@@ -35,12 +35,12 @@ function cfDiagnostic(path,method,status,value){
 }
 function transport(provider,{fetch:fetcher=globalThis.fetch,tokens={}}={}){
  const token=tokens[provider];if(typeof token!=='string'||!token.length||token.length>8192||/[\r\n\0]/.test(token))fail('HOSTED_TOKEN_REQUIRED');
- return async(path,{method='GET',body,bearer=token,missing=false}={})=>{
+ return async(path,{method='GET',body,bearer=token,missing=false,pageInfo=false}={})=>{
   let response;try{response=await fetcher((provider==='cloudflare'?CF:RENDER)+path,{method,redirect:'error',headers:{Authorization:'Bearer '+bearer,Accept:'application/json',...(body!==undefined&&!(body instanceof FormData)?{'Content-Type':'application/json'}:{})},...(body===undefined?{}:{body:body instanceof FormData?body:JSON.stringify(body)}),signal:AbortSignal.timeout(90000)});}catch{fail(method==='GET'?'HOSTED_CONNECTION_FAILED':'HOSTED_RESULT_UNCERTAIN');}
   if(response.redirected||response.status>=300&&response.status<400)fail(method==='GET'?'HOSTED_REDIRECT_REFUSED':'HOSTED_RESULT_UNCERTAIN');
   if(missing&&response.status===404){await response.body?.cancel().catch(()=>{});return null;}
   if(!response.ok){let diagnostic;if(provider==='cloudflare'&&response.status>=400&&response.status<500&&!([402,429].includes(response.status))){let value;try{value=await boundedResponse(response);}catch{}diagnostic=cfDiagnostic(path,method,response.status,value);}else await response.body?.cancel().catch(()=>{});if(diagnostic)fail(diagnostic);if(response.status===401)fail('HOSTED_TOKEN_INVALID');if(response.status===403)fail('HOSTED_PERMISSION_REQUIRED');if(response.status===402)fail('HOSTED_PAID_PLAN_REFUSED');if(response.status===429)fail('HOSTED_RATE_LIMITED');fail(method!=='GET'&&response.status>=500?'HOSTED_RESULT_UNCERTAIN':'HOSTED_REMOTE_REJECTED');}
-  let value;try{value=await boundedResponse(response);}catch{fail(method==='GET'?'HOSTED_RESPONSE_INVALID':'HOSTED_RESULT_UNCERTAIN');}if(provider==='cloudflare'){if(value?.success!==true)fail(cfDiagnostic(path,method,response.status,value)??'HOSTED_REMOTE_REJECTED');return value.result;}return value;
+  let value;try{value=await boundedResponse(response);}catch{fail(method==='GET'?'HOSTED_RESPONSE_INVALID':'HOSTED_RESULT_UNCERTAIN');}if(provider==='cloudflare'){if(value?.success!==true)fail(cfDiagnostic(path,method,response.status,value)??'HOSTED_REMOTE_REJECTED');return pageInfo?{result:value.result,totalPages:Number.isSafeInteger(value.result_info?.total_pages)&&value.result_info.total_pages>=0&&value.result_info.total_pages<=100000?value.result_info.total_pages:undefined}:value.result;}return value;
  };
 }
 const MIME={'.html':'text/html','.js':'application/javascript','.mjs':'application/javascript','.css':'text/css','.json':'application/json','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.ico':'image/x-icon','.woff':'font/woff','.woff2':'font/woff2','.glb':'model/gltf-binary','.bin':'application/octet-stream','.txt':'text/plain'};
@@ -64,7 +64,15 @@ export async function inspectStaticBundle(sourcePath,{expectedManifestSha256}={}
 }
 async function cfProject(api,accountId,projectName){const route=`/accounts/${accountId}/pages/projects/${projectName}`;let p=await api(route,{missing:true});if(!p){try{p=await api(`/accounts/${accountId}/pages/projects`,{method:'POST',body:{name:projectName,production_branch:'main'}});}catch(e){if(e.message!=='HOSTED_RESULT_UNCERTAIN')throw e;p=await api(route,{missing:true});if(!p)fail('HOSTED_RESULT_UNCERTAIN');}}if(p?.name!==projectName||p.source||(p.production_branch&&p.production_branch!=='main'))fail('HOSTED_PROJECT_CONFLICT');if(p.subdomain&&p.subdomain!==projectName+'.pages.dev')fail('HOSTED_CANONICAL_ORIGIN_CONFLICT');return p;}
 function deploymentProjection(d,projectName,action){if(!id(d?.id))fail('HOSTED_RESPONSE_INVALID');if(d.environment==='preview'||(d.deployment_trigger?.metadata?.branch&&d.deployment_trigger.metadata.branch!=='main'))fail('HOSTED_DEPLOYMENT_BRANCH_CONFLICT');const status=d.latest_stage?.status,state=status==='success'?'ready':['failure','canceled'].includes(status)?'failed':'deploying';const canonical='https://'+projectName+'.pages.dev',provided=publicURL(d.url,'pages.dev');const linked=provided&&(provided===canonical||new URL(provided).hostname.endsWith('.'+projectName+'.pages.dev'))||Array.isArray(d.aliases)&&d.aliases.some(a=>publicURL(a,'pages.dev')===canonical);return {...baseResult('cloudflare',action,state),projectName,deploymentId:d.id,...(linked?{url:canonical}:{})};}
-async function findDeployment(api,route,hash){const list=await api(route+'?per_page=100');if(!Array.isArray(list))fail('HOSTED_RESPONSE_INVALID');const found=list.filter(d=>d.deployment_trigger?.metadata?.commit_hash===hash);return found[0]??null;}
+async function findDeployment(api,route,hash){
+ for(let page=1;page<=100;page++){
+  const {result:list,totalPages}=await api(route+`?per_page=20&page=${page}`,{pageInfo:true});
+  if(!Array.isArray(list)||list.length>20)fail('HOSTED_RESPONSE_INVALID');
+  const found=list.find(d=>d.deployment_trigger?.metadata?.commit_hash===hash);if(found)return found;
+  if(totalPages!==undefined?page>=totalPages:list.length<20)return null;
+ }
+ fail('HOSTED_PAGINATION_LIMIT');
+}
 async function cloudflare(request,options){const api=transport('cloudflare',options),action=request.action;
  if(action==='accounts'){
   const accounts=new Map();let fallback=false,complete=false;
