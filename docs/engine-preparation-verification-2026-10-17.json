@@ -1,0 +1,106 @@
+{
+  "date": "2026-10-17",
+  "status": "IMPLEMENTED_LOCAL_CHECKS_PASSED_NO_ENGINE_INSTALL_NOT_RUN",
+  "managerBaseCommit": "0a87506a16bae99c0d5d4418e5f4eda5f8634d48",
+  "connectedTasks": [
+    "T08-01",
+    "T08-03"
+  ],
+  "research": "docs/engine-preparation-research-2026-10-17.json",
+  "changes": [
+    "Existing engines and their data are reused. Only bundled preferred Docker plus macOS arm64 enables this official preparation candidate; existing compatible Podman support is retained.",
+    "One explicit user action starts a fixed official Docker Desktop4.95.0 transfer with pinned bytes/SHA256, bounded resumable private cache, digest and OS signature verification.",
+    "Only absent /Applications/Docker.app may be published, using a verified staged app copy and atomic no-replace rename. Existing applications, VM and data are never replaced/reset.",
+    "Standard non-admin application copy is attempted where writable; actual OS permission failure offers the official installer. No sudo password, license acceptance flag or paid action is implemented.",
+    "An existing helper pattern preserves work when GUI closes. Current job identity binds cancellation and cache reuse; verified-download to install/start handoff checks the same cancellation intent.",
+    "Actual byte progress and explicit verify/copy/vendor-action states are shown. Existing App engine probes determine readiness, not installer or browser launch.",
+    "Bundled-main-window command manifest and capability retain selected-installation checks; no arbitrary URL, path, version or command is accepted by IPC.",
+    "User documentation now distinguishes bundled runtime automatic preparation, absent-engine source implementation, unimplemented remote runtime download and actual unperformed OS installation."
+  ],
+  "checks": {
+    "gitDiffCheck": "PASS",
+    "finalRust": {
+      "passed": 7,
+      "command": "cargo test -p exhibitos-lifecycle --lib engine_preparation --offline",
+      "handle": 13101,
+      "exitCode": 0,
+      "compileSeconds": 9.03,
+      "warnings": "existing eight non_snake_case test warnings"
+    },
+    "finalDesktopCargoCheck": {
+      "result": "PASS",
+      "command": "cargo check -p exhibitos-manager-desktop --offline",
+      "handle": 71954,
+      "exitCode": 0,
+      "seconds": 18.76,
+      "includes": "generated manager_engine_preparation command permission and capability; not a native app build"
+    },
+    "finalFrontend": {
+      "lint": "PASS",
+      "typecheck": "PASS via npm run build",
+      "unitPassed": 8,
+      "scope": "engine-preparation2 + studio-setup6",
+      "build": "PASS Vite41 modules",
+      "handle": 8728,
+      "exitCode": 0
+    },
+    "finalBrowser": {
+      "passed": 6,
+      "handle": 67069,
+      "exitCode": 0,
+      "seconds": 7.2,
+      "workers": 1,
+      "projects": [
+        "desktop",
+        "narrow"
+      ],
+      "kind": "Chromium real browser interaction with closed synthetic IPC",
+      "covers": [
+        "explicit action only; no prepare on app startup",
+        "actual byte progress displayed from input",
+        "cancel intent and preserved partial across page reload",
+        "OS user-action state remains not ready",
+        "hash failure offers no execute-installer action",
+        "320px and1120px no horizontal overflow"
+      ]
+    },
+    "independentSourceReview": "Two concrete handoff/cached-state issues corrected; rereview found no additional concrete blocker. Read-only review is not actual installer qualification."
+  },
+  "earlierChecksNotFinalSource": {
+    "rustFocused": {
+      "passed": 6,
+      "notes": "Before handoff cancellation regression and later refinements; not evidence for final source."
+    },
+    "frontendUnit": {
+      "passed": 8,
+      "scope": "engine-preparation2 + studio-setup6"
+    },
+    "typecheck": "PASS before latest copy/storage wording"
+  },
+  "limits": [
+    "No actual Docker DMG body download, cache resume over network, hdiutil/spctl installer qualification, app copy, OS permission, vendor license acceptance or first engine/VM boot was executed.",
+    "This host already has Docker. It was not removed, reinstalled, reset or started by this preparation work to simulate an absent engine.",
+    "Only the official fixed DMG HEAD and official checksum text were observed; transfer integrity and OS signature commands remain unperformed.",
+    "No native app rebuild or no-engine fresh machine GUI qualification for this source has run.",
+    "Docker free eligibility is conditional. No universal free entitlement, automatic license acceptance, payment, subscription or new support environment is claimed.",
+    "Existing native Manager install/Studio evidence used the previous0a87506 source and existing Docker; it does not validate this new no-engine installer.",
+    "Developer ID signing, notarization, Store actions and public publication are separate and were not performed."
+  ],
+  "sourceHashes": {
+    "crates/lifecycle/src/engine_preparation.rs": "51e34eb1c5454dd2f61cf2450dbf42eea73f3e30abcddbe996d27d9bffc721eb",
+    "crates/lifecycle/src/lib.rs": "e0e16162c52d4126a34698d6bae632efdfced94b5e2cb1ca6f21af7c9b2c5fcb",
+    "src-tauri/src/engine_preparation.rs": "fe292c65365c43846944a9dac91ce434ebec91d97eec4c03b898d70a45e5cc3c",
+    "src-tauri/src/lib.rs": "81f633e3d8153f7867677137a0705dc437b589741234728d40c6e3f1239245e6",
+    "src-tauri/build.rs": "c536b84812249a0238bbadc9738bd9a3e6d9936dc15cd473b27e6a5d2cafe638",
+    "src-tauri/capabilities/manager-local.json": "1ba908e9ece66f49bba742dcb94726d6132d0f36db0e74c117ae5088307500ef",
+    "src-tauri/permissions/autogenerated/manager_engine_preparation.toml": "0254379066030acdcc96e3707eea96578695f419b964d35ab3a73a16da156fdb",
+    "src/App.tsx": "d01a2282071665a1381f31ea8f6fdc9390ac83994c2d85ea6e224e58f83af755",
+    "src/EnginePreparation.tsx": "bf9030fb77b04697d6e6daca24cc88199acf557eaebd609361212487c091d1fe",
+    "src/engine-preparation.ts": "1a3d57fc9af1ece9445ef54c580b814f4edda8a2ef4bde2c1989da1147f021eb",
+    "src/engine-preparation.test.ts": "9860221195e90e89c41b93fc8a3c51cf436891eece865c8104427630d18e9173",
+    "src/browser/engine-preparation.spec.ts": "509f9ab5b1a3baded03a643bddeba12a2973321194c4ec0afbc9e86f3c63ec7c",
+    "src/lifecycle.ts": "13242f3bf52964bdd74dd3f27ad21c968b4393080b20544258a591bd7a08f7dd",
+    "src/style.css": "e0cc8ab4c0db336b35eec16f47fc593cbc336157231e59c8526e71fc35872d9b",
+    "docs/desktop.md": "4a5b98ffe474670f624b5d2a25f5c3941e5bddcbf3bb9f5e590d2b83cb54617d"
+  }
+}

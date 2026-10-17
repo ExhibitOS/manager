@@ -70,3 +70,5 @@ html{scroll-padding-top:var(--navigation-clearance)}
 .status-panel .button-row{margin-top:var(--space-s)}.task-notice{padding:var(--space-m);border-radius:12px;background:var(--tonal);color:var(--accent-text)}
 
 [data-manager-mode="simple"] .dashboard{grid-template-columns:1fr}
+
+.engine-preparation{margin-top:var(--space-l);padding-top:var(--space-m);border-top:1px solid var(--line);min-width:0}.engine-preparation h4{font-size:17px;margin:0 0 var(--space-s)}.engine-preparation progress{display:block;width:100%;max-width:100%;accent-color:var(--accent)}.engine-preparation .actions{display:flex;flex-wrap:wrap;gap:var(--space-s)}.engine-preparation .code{overflow-wrap:anywhere}

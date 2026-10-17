@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+export const enginePreparationStages=['not-started','downloading','verifying','installer-ready','installing','awaiting-installation','awaiting-engine','ready','cancelled','interrupted','failed'] as const;
+export type EnginePreparationAction='status'|'prepare'|'install'|'open-installer'|'start'|'cancel'|'license';
+export interface EnginePreparationContext {jobId:string|null;stage:typeof enginePreparationStages[number];savedBytes:number;totalBytes:number;version:string;errorCode:string|null}
+export function parseEnginePreparation(value:unknown):EnginePreparationContext{
+ if(!value||typeof value!=='object'||Array.isArray(value))throw Error('MANAGER_PROTOCOL');const v=value as Record<string,unknown>;
+ if(Object.keys(v).sort().join(',')!=='errorCode,jobId,savedBytes,stage,totalBytes,version'||!enginePreparationStages.includes(v.stage as EnginePreparationContext['stage'])||v.version!=='4.95.0'||v.totalBytes!==589939097||typeof v.savedBytes!=='number'||!Number.isSafeInteger(v.savedBytes)||v.savedBytes<0||v.savedBytes>v.totalBytes||!(v.jobId===null||typeof v.jobId==='string'&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(v.jobId))||!(v.errorCode===null||typeof v.errorCode==='string'&&/^ENGINE_PREP_[A-Z_]+$/.test(v.errorCode)))throw Error('MANAGER_PROTOCOL');return v as unknown as EnginePreparationContext;
+}
+export const enginePreparationLabels:Record<EnginePreparationContext['stage'],string>={'not-started':'실행 도구를 준비할 수 있어요.',downloading:'공식 설치 파일을 받고 있어요.',verifying:'받은 설치 파일을 확인하고 있어요.','installer-ready':'설치 파일을 확인했어요.',installing:'실행 도구를 설치하고 있어요.','awaiting-installation':'공식 설치 창에서 필요한 macOS 승인을 마쳐 주세요.','awaiting-engine':'Docker 창의 이용 약관과 필요한 설정을 마쳐 주세요. 연결을 다시 확인하고 있어요.',ready:'실행 도구를 사용할 수 있어요.',cancelled:'준비를 멈췄어요. 받은 부분은 보존돼 있어요.',interrupted:'이전 준비가 중단됐어요. 받은 부분을 확인하고 이어서 준비할 수 있어요.',failed:'실행 도구 준비를 마치지 못했어요. 아래 안내를 확인하세요.'};

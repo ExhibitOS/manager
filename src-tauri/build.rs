@@ -35,6 +35,7 @@ fn main() {
             "manager_detect",
             "manager_install",
             "manager_initial_account_context",
+            "manager_engine_preparation",
             "manager_action",
             "manager_jobs",
             "manager_logs",

@@ -8,6 +8,7 @@ pub mod helper_reconciliation;
 pub mod installation_backup;
 pub mod installations;
 pub mod initial_account;
+pub mod engine_preparation;
 pub mod maintenance;
 mod maintenance_stream;
 mod process_window;

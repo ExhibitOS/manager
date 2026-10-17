@@ -20,6 +20,7 @@
     "allow-manager-detect",
     "allow-manager-install",
     "allow-manager-initial-account-context",
+    "allow-manager-engine-preparation",
     "allow-manager-action",
     "allow-manager-jobs",
     "allow-manager-logs",

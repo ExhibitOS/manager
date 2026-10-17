@@ -4,6 +4,7 @@ mod remote;
 mod hosted;
 mod publication;
 mod platform_runtime;
+mod engine_preparation;
 mod hosted_keychain;
 use exhibitos_lifecycle::{
     Action, EngineProbe, Job, LifecycleError, LifecycleService, LogEvent, Status,
@@ -672,6 +673,11 @@ async fn manager_detect(
     blocking(state.0.clone(), selection_token, |service| service.detect()).await
 }
 #[tauri::command]
+async fn manager_engine_preparation(window:WebviewWindow,app:tauri::AppHandle,state:State<'_,DesktopState>,selection_token:String,action:engine_preparation::Action)->Result<exhibitos_lifecycle::engine_preparation::Context,LifecycleError>{
+ caller(&window)?;let root=engine_preparation::cache(&app)?;let resources=app.path().resource_dir().map_err(|_|error("ENGINE_PREP_STATE"))?;
+ blocking(state.0.clone(),selection_token,move|service|engine_preparation::request(&root,&resources,service,action)).await
+}
+#[tauri::command]
 async fn manager_initial_account_context(window: WebviewWindow,state: State<'_,DesktopState>,selection_token:String)->Result<exhibitos_lifecycle::initial_account::InitialAccountContext,LifecycleError>{
  caller(&window)?;
  blocking(state.0.clone(),selection_token,|service|service.initial_account_context()).await
@@ -780,6 +786,10 @@ async fn manager_open_oex(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let arguments: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if arguments.get(1).is_some_and(|value|value=="--manager-engine-preparation-helper") {
+        if arguments.len()!=3||engine_preparation::helper(std::path::Path::new(&arguments[2])).is_err(){std::process::exit(1);}
+        return;
+    }
     if arguments.get(1).is_some_and(|value| value == "--manager-update-cancel-helper") {
         let result = if arguments.len() == 4 {
             arguments[3].to_str().ok_or_else(|| error("UPDATE_HANDOFF_INVALID")).and_then(|id|
@@ -860,6 +870,7 @@ pub fn run() {
             manager_detect,
             manager_install,
             manager_initial_account_context,
+            manager_engine_preparation,
             manager_action,
             manager_jobs,
             manager_logs,
