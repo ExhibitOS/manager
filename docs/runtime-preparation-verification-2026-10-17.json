@@ -163,5 +163,69 @@
       "Cross-engine or Intel bundle compatibility"
     ],
     "private_artifact_receipt": "Local verification workspace manager-runtime-resource-610b3150-e62c-4aa9-ba01-f94d5c75d9f2/artifact-verification.json; not a runtime dependency"
+  },
+  "native_fresh_network_fix": {
+    "reason": "Root observed the previous native resource preparation/install complete, followed by Start failure ENGINE_NETWORK_CAPACITY. Existing failed installation is preserved; no installed manifest is rewritten.",
+    "source": {
+      "baseCommit": "56a0512b9c90dc25857e06836fef1f7dac1d3487",
+      "fileSha256": {
+        "crates/lifecycle/src/local_network.rs": "4cfd118a49b5ded69246e6af829c1aeb1dc8faf8f29b016d752b1093591ab104",
+        "crates/lifecycle/src/runtime_prepare.rs": "b095e804dce91f3e9800ef53c83dd424dda20394f0100a6a77fdcc594e20d1c3",
+        "crates/lifecycle/src/lib.rs": "7533da25d6b6b26f1bdb32bcd83f8bc4e38714d9606f507308bef3dd21c5a91d",
+        "src-tauri/src/lib.rs": "de25c4acd0afbf3cfc1508e8f69b76a50197d3d1c3851fe0c6da93c510d3c5f4"
+      }
+    },
+    "implemented": "Native setup enables only an I/O-free flag. Actual Docker command or bounded IPAM admission lazily reads the current context endpoint once, requires a local Unix endpoint with no context/TLS selectors, and pins subsequent core Docker commands. New Docker resource installations reuse the existing allocator and bind its exact policy into the existing manifest/Compose fields and persistent local preparation identity.",
+    "unchanged": "Legacy CLI explicit environment admission; Podman policy; existing allocator range/route exclusions; install/start fresh overlap admission; original failed installation and networks. No daemon settings, network deletion, unsafe/global environment mutation, selector erasure or fixed producer-template subnet.",
+    "checks": [
+      {
+        "check": "runtime_prepare::tests",
+        "source_sha256": {
+          "crates/lifecycle/src/local_network.rs": "4cfd118a49b5ded69246e6af829c1aeb1dc8faf8f29b016d752b1093591ab104",
+          "crates/lifecycle/src/runtime_prepare.rs": "b095e804dce91f3e9800ef53c83dd424dda20394f0100a6a77fdcc594e20d1c3",
+          "crates/lifecycle/src/lib.rs": "7533da25d6b6b26f1bdb32bcd83f8bc4e38714d9606f507308bef3dd21c5a91d",
+          "src-tauri/src/lib.rs": "de25c4acd0afbf3cfc1508e8f69b76a50197d3d1c3851fe0c6da93c510d3c5f4"
+        },
+        "environment": "macOS arm64, Rust1.99.0, jobs1, existing target, offline/locked",
+        "command": "cargo test -p exhibitos-lifecycle --lib --offline --locked --jobs 1 runtime_prepare::tests",
+        "input_and_expected": "10 synthetic cases, injected allocator only, including selection persistence/Compose policy agreement/refused allocation preserving inputs",
+        "observed": "10 PASS / 0 FAIL / 432 filtered;0.13s execution",
+        "limits": "No actual Docker network or native GUI execution"
+      },
+      {
+        "check": "local_network::",
+        "source_sha256": {
+          "crates/lifecycle/src/local_network.rs": "4cfd118a49b5ded69246e6af829c1aeb1dc8faf8f29b016d752b1093591ab104",
+          "crates/lifecycle/src/runtime_prepare.rs": "b095e804dce91f3e9800ef53c83dd424dda20394f0100a6a77fdcc594e20d1c3",
+          "crates/lifecycle/src/lib.rs": "7533da25d6b6b26f1bdb32bcd83f8bc4e38714d9606f507308bef3dd21c5a91d",
+          "src-tauri/src/lib.rs": "de25c4acd0afbf3cfc1508e8f69b76a50197d3d1c3851fe0c6da93c510d3c5f4"
+        },
+        "environment": "same offline macOS arm64 toolchain",
+        "command": "cargo test -p exhibitos-lifecycle --lib --offline --locked --jobs 1 local_network::",
+        "input_and_expected": "Existing policy/gateway/remap and new endpoint/selector/command binding cases",
+        "observed": "6 PASS / 0 FAIL / 436 filtered;0.03s execution",
+        "limits": "Endpoint and command tests use synthetic values; no real context pin or lifecycle"
+      },
+      {
+        "check": "desktop compile",
+        "source_sha256": {
+          "crates/lifecycle/src/local_network.rs": "4cfd118a49b5ded69246e6af829c1aeb1dc8faf8f29b016d752b1093591ab104",
+          "crates/lifecycle/src/runtime_prepare.rs": "b095e804dce91f3e9800ef53c83dd424dda20394f0100a6a77fdcc594e20d1c3",
+          "crates/lifecycle/src/lib.rs": "7533da25d6b6b26f1bdb32bcd83f8bc4e38714d9606f507308bef3dd21c5a91d",
+          "src-tauri/src/lib.rs": "de25c4acd0afbf3cfc1508e8f69b76a50197d3d1c3851fe0c6da93c510d3c5f4"
+        },
+        "environment": "same toolchain, jobs1",
+        "command": "cargo check -p exhibitos-manager-desktop --offline --locked --jobs 1",
+        "input_and_expected": "Native I/O-free setup flag and lazy lifecycle command admission compile",
+        "observed": "PASS15.79s",
+        "limits": "No native application build, launch or server readiness"
+      }
+    ],
+    "actual_gui_new_candidate": "NOT_RUN; root must validate a new isolated candidate with the changed native application.",
+    "privateLogs": [
+      "/private/tmp/exhibitos-native-runtime-ipam-tests-20261017.log",
+      "/private/tmp/exhibitos-native-docker-pin-tests-20261017.log",
+      "/private/tmp/exhibitos-native-runtime-ipam-desktop-check-20261017.log"
+    ]
   }
 }

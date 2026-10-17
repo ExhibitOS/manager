@@ -70,6 +70,13 @@ fn directory(path: &Path) -> Result<()> {
     Ok(())
 }
 pub(super) fn prepare(root: &Path, source: &Path) -> Result<()> {
+    prepare_with_network(root, source, super::choose_explicit_local_network)
+}
+fn prepare_with_network(
+    root: &Path,
+    source: &Path,
+    choose: impl FnOnce() -> Result<ExplicitLocalNetwork>,
+) -> Result<()> {
     // This is called with the existing lifecycle operation lock and selected-profile admission.
     // Never repair or replace a user's pre-existing bundle, including a partial one.
     if fs::symlink_metadata(root.join("bundle")).is_ok() {
@@ -183,8 +190,19 @@ pub(super) fn prepare(root: &Path, source: &Path) -> Result<()> {
     let template =
         digest(&fs::read(&receipt).map_err(|_| failure("PLATFORM_RUNTIME_UNAVAILABLE"))?);
     if !selection.exists() {
-        let binding =
-            serde_json::json!({"templateSha256":template,"id":Uuid::new_v4().to_string()});
+        // Reuse the bounded allocator; never embed this machine's addresses in the template.
+        if manifest.explicit_local_network.is_some() {
+            return Err(failure("PLATFORM_RUNTIME_INVALID"));
+        }
+        let network = if manifest.preferred_engine.as_deref() == Some("docker") {
+            Some(choose()?)
+        } else {
+            None
+        };
+        if let Some(policy) = &network {
+            policy.validate()?;
+        }
+        let binding = serde_json::json!({"templateSha256":template,"id":Uuid::new_v4().to_string(),"explicitLocalNetwork":network});
         let mut file = private_options()
             .open(&selection)
             .map_err(|_| failure("PLATFORM_RUNTIME_UNAVAILABLE"))?;
@@ -212,6 +230,18 @@ pub(super) fn prepare(root: &Path, source: &Path) -> Result<()> {
     {
         return Err(failure("PLATFORM_RUNTIME_CONFLICT"));
     }
+    let network = if manifest.preferred_engine.as_deref() == Some("docker") {
+        let policy: ExplicitLocalNetwork =
+            serde_json::from_value(binding["explicitLocalNetwork"].clone())
+                .map_err(|_| failure("PLATFORM_RUNTIME_CONFLICT"))?;
+        policy.validate()?;
+        Some(policy)
+    } else {
+        if !binding["explicitLocalNetwork"].is_null() {
+            return Err(failure("PLATFORM_RUNTIME_CONFLICT"));
+        }
+        None
+    };
     let project = format!("exhibitos-{local_id}");
     let mut compose: serde_json::Value = serde_json::from_slice(
         &fs::read(source.join("compose.yaml"))
@@ -251,10 +281,24 @@ pub(super) fn prepare(root: &Path, source: &Path) -> Result<()> {
         &project,
         local_id,
     );
+    if let Some(policy) = &network {
+        let default = compose["networks"]["default"]
+            .as_object_mut()
+            .ok_or_else(|| failure("PLATFORM_RUNTIME_INVALID"))?;
+        if default.contains_key("ipam") {
+            return Err(failure("PLATFORM_RUNTIME_INVALID"));
+        }
+        default.insert(
+            "ipam".into(),
+            serde_json::json!({"config":[{"subnet":policy.subnet,"gateway":policy.gateway}]}),
+        );
+    }
     let compose = serde_json::to_vec(&compose).map_err(|_| failure("PLATFORM_RUNTIME_INVALID"))?;
     manifest.project_name = project;
     manifest.bundle_id = local_id.into();
+    manifest.explicit_local_network = network;
     manifest.compose_sha256 = digest(&compose);
+    super::local_network::bind_compose(&manifest, &compose)?;
     let manifest =
         serde_json::to_vec(&manifest).map_err(|_| failure("PLATFORM_RUNTIME_INVALID"))?;
     let derived = BTreeMap::from([
@@ -411,6 +455,95 @@ mod tests {
         )
         .unwrap();
         (root, source)
+    }
+    fn docker_fixture() -> (PathBuf, PathBuf) {
+        let (root, source) = fixture();
+        let mut manifest: BundleManifest =
+            serde_json::from_slice(&fs::read(source.join("manifest.json")).unwrap()).unwrap();
+        manifest.preferred_engine = Some("docker".into());
+        let mut compose: Value =
+            serde_json::from_slice(&fs::read(source.join("compose.yaml")).unwrap()).unwrap();
+        compose["networks"]["default"] = serde_json::json!({"labels":{"com.exhibitos.bundle":manifest.bundle_id,"com.exhibitos.project":manifest.project_name,"com.exhibitos.schema":manifest.schema_version}});
+        let bytes = serde_json::to_vec(&compose).unwrap();
+        manifest.compose_sha256 = digest(&bytes);
+        let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+        fs::write(source.join("compose.yaml"), &bytes).unwrap();
+        fs::write(source.join("manifest.json"), &manifest_bytes).unwrap();
+        let mut receipt: Value =
+            serde_json::from_slice(&fs::read(source.join("prepared.json")).unwrap()).unwrap();
+        for (name, payload) in [("compose.yaml", bytes), ("manifest.json", manifest_bytes)] {
+            receipt["files"][name] =
+                serde_json::json!({"bytes":payload.len(),"sha256":digest(&payload)});
+        }
+        fs::write(
+            source.join("prepared.json"),
+            serde_json::to_vec(&receipt).unwrap(),
+        )
+        .unwrap();
+        (root, source)
+    }
+    fn synthetic_network() -> ExplicitLocalNetwork {
+        ExplicitLocalNetwork {
+            mode: "explicit-rfc1918-v1".into(),
+            subnet: "10.240.0.0/28".into(),
+            gateway: "10.240.0.1".into(),
+        }
+    }
+    #[test]
+    fn selected_docker_network_matches_existing_manifest_and_compose_contract() {
+        let (root, source) = docker_fixture();
+        let before = fs::read(source.join("manifest.json")).unwrap();
+        prepare_with_network(&root, &source, || Ok(synthetic_network())).unwrap();
+        let manifest: BundleManifest =
+            serde_json::from_slice(&fs::read(root.join("bundle/manifest.json")).unwrap()).unwrap();
+        let compose = fs::read(root.join("bundle/compose.yaml")).unwrap();
+        assert_eq!(
+            manifest.explicit_local_network.as_ref().unwrap().gateway,
+            "10.240.0.1"
+        );
+        super::super::local_network::bind_compose(&manifest, &compose).unwrap();
+        assert_eq!(digest(&compose), manifest.compose_sha256);
+        assert_eq!(fs::read(source.join("manifest.json")).unwrap(), before);
+        cleanup(&root);
+    }
+    #[test]
+    fn interrupted_preparation_reuses_selected_network_without_rechoosing() {
+        let (root, source) = docker_fixture();
+        let stage = root.join(".platform-runtime-preparing");
+        fs::create_dir(&stage).unwrap();
+        fs::write(stage.join("compose.yaml"), b"changed").unwrap();
+        assert_eq!(
+            prepare_with_network(&root, &source, || Ok(synthetic_network()))
+                .unwrap_err()
+                .code,
+            "PLATFORM_RUNTIME_CHANGED"
+        );
+        let before = fs::read(root.join(".platform-runtime-selection.json")).unwrap();
+        fs::write(stage.join("compose.yaml"), b"{\"name\"").unwrap();
+        prepare_with_network(&root, &source, || {
+            panic!("must preserve the selected network on retry")
+        })
+        .unwrap();
+        assert_eq!(
+            fs::read(root.join(".platform-runtime-selection.json")).unwrap(),
+            before
+        );
+        cleanup(&root);
+    }
+    #[test]
+    fn refused_allocator_never_publishes_or_changes_the_source() {
+        let (root, source) = docker_fixture();
+        let before = fs::read(source.join("manifest.json")).unwrap();
+        assert_eq!(
+            prepare_with_network(&root, &source, || Err(err("ENGINE_NETWORK_CAPACITY")))
+                .unwrap_err()
+                .code,
+            "ENGINE_NETWORK_CAPACITY"
+        );
+        assert!(!root.join("bundle").exists());
+        assert!(!root.join(".platform-runtime-selection.json").exists());
+        assert_eq!(fs::read(source.join("manifest.json")).unwrap(), before);
+        cleanup(&root);
     }
     fn cleanup(root: &Path) {
         fs::remove_dir_all(root.parent().unwrap()).unwrap();

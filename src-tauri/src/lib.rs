@@ -799,6 +799,8 @@ pub fn run() {
     let result = tauri::Builder::default()
         .on_window_event(|_,event|{if let tauri::WindowEvent::CloseRequested{api,..}=event && (remote::busy()||hosted::busy()||publication::busy()){api.prevent_close();}})
         .setup(|app| {
+            #[cfg(target_os="macos")]
+            exhibitos_lifecycle::enable_native_docker_transport();
             let override_root = startup::override_root(std::env::var_os("EXHIBITOS_MANAGER_ROOT"))?;
             let profile = match startup::managed_profile(
                 std::env::var_os("EXHIBITOS_MANAGER_PROFILE"),

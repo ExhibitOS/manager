@@ -788,6 +788,7 @@ fn run_observed_stream(
         PathBuf::from(binary)
     };
     let mut command = process_window::background_command(executable);
+    if binary == "docker" { local_network::pin_command(&mut command)?; }
     if matches!(binary, "docker" | "podman") {
         let mut paths: Vec<PathBuf> =
             std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
@@ -2238,6 +2239,8 @@ mod engine_failure_tests;
 mod local_network;
 mod restoration_network;
 pub use local_network::{ExplicitLocalNetwork, choose_explicit_local_network};
+#[cfg(target_os="macos")]
+pub use local_network::enable_native_docker_transport;
 
 #[cfg(all(test, unix))]
 mod bounded_input_transport_tests {
