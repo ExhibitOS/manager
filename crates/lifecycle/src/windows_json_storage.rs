@@ -57,6 +57,31 @@ pub(crate) fn read_json_path(path: &Path) -> Result<Vec<u8>> {
 /// Check root, old destination and new file; rename the retained source handle.
 /// Successful file sync is not proof of host-powerloss/directory durability.
 pub(crate) fn write_json_root(path: &Path, name: &str, bytes: &[u8]) -> Result<()> {
+    publish_record(path, name, bytes, None)
+}
+
+/// Recovery compares private old bytes, including empty/corrupt pointers.
+/// Ordinary JSON publication still requires valid old JSON.
+pub(crate) fn replace_private_record(
+    path: &Path,
+    name: &str,
+    expected: Option<&[u8]>,
+    bytes: &[u8],
+) -> Result<()> {
+    // Only the authenticated profile recovery pointer needs this exception.
+    if name != "installation-selection.json" {
+        return Err(err("PROFILE_PATH_INVALID"));
+    }
+    serde_json::from_slice::<serde_json::Value>(bytes).map_err(|_| err("STATE_INVALID"))?;
+    publish_record(path, name, bytes, Some(expected))
+}
+
+fn publish_record(
+    path: &Path,
+    name: &str,
+    bytes: &[u8],
+    exact_old: Option<Option<&[u8]>>,
+) -> Result<()> {
     valid_name(name)?;
     if name == PUBLICATION_LOCK {
         return Err(err("PROFILE_PATH_INVALID"));
@@ -70,11 +95,22 @@ pub(crate) fn write_json_root(path: &Path, name: &str, bytes: &[u8]) -> Result<(
     let replacing = match std::fs::symlink_metadata(&destination) {
         Ok(_) => {
             let verified_old = root.read_record(name)?.read_bounded(JSON_LIMIT)?;
-            serde_json::from_slice::<serde_json::Value>(&verified_old)
-                .map_err(|_| err("STATE_INVALID"))?;
+            if let Some(expected) = exact_old {
+                if expected != Some(verified_old.as_slice()) {
+                    return Err(err("BACKUP_SOURCE_CHANGED"));
+                }
+            } else {
+                serde_json::from_slice::<serde_json::Value>(&verified_old)
+                    .map_err(|_| err("STATE_INVALID"))?;
+            }
             true
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if exact_old.is_some_and(|expected| expected.is_some()) {
+                return Err(err("BACKUP_SOURCE_CHANGED"));
+            }
+            false
+        }
         Err(_) => return Err(err("WINDOWS_PROFILE_RECORD_OPEN_REFUSED")),
     };
     let temporary = format!(".exhibitos-json-{}.tmp", uuid::Uuid::new_v4());
@@ -106,6 +142,22 @@ pub(crate) fn write_json_root(path: &Path, name: &str, bytes: &[u8]) -> Result<(
         );
     }
     root.check()?;
+    if let Some(expected) = exact_old {
+        // Recheck under the same retained publication lock immediately before
+        // replacement. Existing bytes are never repaired or adopted.
+        match expected {
+            Some(expected) => {
+                let old = root.read_record(name)?.read_bounded(JSON_LIMIT)?;
+                if old.as_slice() != expected {
+                    return Err(err("BACKUP_SOURCE_CHANGED"));
+                }
+            }
+            None => match std::fs::symlink_metadata(&destination) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                _ => return Err(err("BACKUP_SOURCE_CHANGED")),
+            },
+        }
+    }
     if unsafe {
         fsapi::SetFileInformationByHandle(
             file.as_raw_handle().cast(),
@@ -168,6 +220,55 @@ mod tests {
             std::fs::remove_file(file).unwrap();
         }
         std::fs::remove_dir(path).unwrap();
+    }
+    #[test]
+    fn exact_pointer_recovery_accepts_empty_and_corrupt_but_refuses_stale_bytes() {
+        let root = fresh();
+        let name = "installation-selection.json";
+        let initial = root.create_record(name).unwrap();
+        drop(initial);
+        assert!(write_json_root(root.path(), name, b"{}").is_err());
+        assert!(replace_private_record(root.path(), name, None, b"{}").is_err());
+        assert!(replace_private_record(root.path(), name, Some(b"stale"), b"{}").is_err());
+        assert_eq!(
+            root.read_record(name)
+                .unwrap()
+                .read_bounded(JSON_LIMIT)
+                .unwrap(),
+            b""
+        );
+        replace_private_record(root.path(), name, Some(b""), b"{}").unwrap();
+        assert_eq!(
+            root.read_record(name)
+                .unwrap()
+                .read_bounded(JSON_LIMIT)
+                .unwrap(),
+            b"{}"
+        );
+        cleanup(root);
+        let root = fresh();
+        drop(root.write_new_record(name, b"corrupt", 1024).unwrap());
+        assert!(write_json_root(root.path(), name, b"{}").is_err());
+        replace_private_record(root.path(), name, Some(b"corrupt"), b"{}").unwrap();
+        cleanup(root);
+    }
+    #[test]
+    fn exact_pointer_recovery_refuses_open_reader_without_changing_previous_bytes() {
+        let root = fresh();
+        let name = "installation-selection.json";
+        replace_private_record(root.path(), name, None, b"{}").unwrap();
+        let mut reader = root.read_record(name).unwrap();
+        assert!(replace_private_record(root.path(), name, Some(b"{}"), b"{\"v\":2}").is_err());
+        assert_eq!(reader.read_bounded(JSON_LIMIT).unwrap(), b"{}");
+        drop(reader);
+        assert_eq!(
+            root.read_record(name)
+                .unwrap()
+                .read_bounded(JSON_LIMIT)
+                .unwrap(),
+            b"{}"
+        );
+        cleanup(root);
     }
     #[test]
     fn native_core_json_write_read_and_replace_preserve_other_records() {

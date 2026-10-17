@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Saved native references locate inputs; only a fresh owned preflight permits execution.
 use super::*;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::signed_release::trust::Store;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -165,7 +165,7 @@ pub(crate) fn list(
     entries.sort_by(|a, b| a.reference_id.cmp(&b.reference_id));
     Ok(entries)
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn apply(
     profile: &Path,
     r: &Reference,

@@ -166,6 +166,8 @@ fn validate_helper(
         .ok_or_else(|| err("OWNERSHIP_CONFLICT"))?;
     let expected_work = if kind == "backup" {
         format!("exhibitos-backup-work-{target}")
+    } else if cfg!(windows) {
+        format!("exhibitos-restore-work-{target}")
     } else {
         service
             .root
@@ -188,6 +190,11 @@ fn validate_helper(
         if dest == "/work" {
             let valid = if kind == "backup" {
                 mount["Type"] == "volume" && mount["Name"] == expected_work
+            } else if cfg!(windows) {
+                desktop
+                    && mount["Type"] == "volume"
+                    && mount["Name"] == expected_work
+                    && mount["Driver"] == "local"
             } else {
                 owned_work_bind(value, mount, &expected_work, desktop)
             };
@@ -289,6 +296,13 @@ pub(crate) fn check_volume(
 ) -> Result<()> {
     let named_target = name
         .strip_prefix("exhibitos-restore-aux-")
+        .or_else(|| {
+            if cfg!(windows) {
+                name.strip_prefix("exhibitos-restore-work-")
+            } else {
+                None
+            }
+        })
         .filter(|id| uuid(id));
     if !container_id(name) && named_target.is_none() {
         return Err(err("OWNERSHIP_CONFLICT"));
@@ -640,14 +654,15 @@ impl LifecycleService {
         };
         let first = inspect(&mut command)?;
         let desktop = if kind == "restoration"
-            && first["Mounts"].as_array().is_some_and(|mounts| {
-                mounts.iter().any(|m| {
-                    m["Destination"] == "/work"
-                        && m["Source"]
-                            .as_str()
-                            .is_some_and(|s| s.starts_with("/host_mnt/"))
-                })
-            }) {
+            && (cfg!(windows)
+                || first["Mounts"].as_array().is_some_and(|mounts| {
+                    mounts.iter().any(|m| {
+                        m["Destination"] == "/work"
+                            && m["Source"]
+                                .as_str()
+                                .is_some_and(|s| s.starts_with("/host_mnt/"))
+                    })
+                })) {
             let bytes = command(&["info".into(), "--format".into(), "{{json .}}".into()])?;
             if bytes.len() > 256 * 1024 {
                 return Err(err("ENGINE_OUTPUT_LIMIT"));
@@ -661,6 +676,14 @@ impl LifecycleService {
         let declared = declared_volumes(&mut command, &first)?;
         let running = validate_helper(self, kind, target, id, &first, &declared, desktop)?;
         let auxiliary = auxiliary_volumes(&first, &declared);
+        #[cfg(windows)]
+        let native_work = if kind == "restoration" {
+            let volume = format!("exhibitos-restore-work-{target}");
+            check_volume(&mut command, &volume)?;
+            Some(volume)
+        } else {
+            None
+        };
         for (_, volume) in &auxiliary {
             check_volume(&mut command, volume)?;
         }
@@ -690,6 +713,10 @@ impl LifecycleService {
             check_retention(&mut command, retention, target, nonce, &first, &auxiliary)?;
         }
         for (_, volume) in &auxiliary {
+            check_volume(&mut command, volume)?;
+        }
+        #[cfg(windows)]
+        if let Some(volume) = &native_work {
             check_volume(&mut command, volume)?;
         }
         let remaining = list(&mut command, &name, &label, target)?;
@@ -1148,6 +1175,104 @@ mod tests {
         assert_eq!(
             original,
             fs::read(service.root.join("restoration.json")).unwrap()
+        );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_work_tests {
+    use super::*;
+    #[test]
+    fn native_restoration_work_requires_exact_local_labeled_volume() {
+        let target = Uuid::new_v4().to_string();
+        let name = format!("exhibitos-restore-work-{target}");
+        let volume = serde_json::json!([{"Name":name,"Driver":"local","Options":{},"Labels":{"com.exhibitos.restoration":target}}]);
+        check_volume(
+            &mut |_: &[String]| Ok(serde_json::to_vec(&volume).unwrap()),
+            &name,
+        )
+        .unwrap();
+        for key in ["label", "driver", "options", "name"] {
+            let mut bad = volume.clone();
+            match key {
+                "label" => bad[0]["Labels"]["com.exhibitos.restoration"] = "other".into(),
+                "driver" => bad[0]["Driver"] = "remote".into(),
+                "options" => bad[0]["Options"] = serde_json::json!({"type":"bind"}),
+                _ => bad[0]["Name"] = "unrelated".into(),
+            }
+            assert!(
+                check_volume(
+                    &mut |_: &[String]| Ok(serde_json::to_vec(&bad).unwrap()),
+                    &name
+                )
+                .is_err()
+            );
+        }
+    }
+    #[test]
+    fn native_helper_work_admission_requires_observed_desktop_and_exact_namespace() {
+        let service = LifecycleService::new(
+            std::env::temp_dir().join(format!("native-reconcile-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let target = Uuid::new_v4().to_string();
+        let id = "a".repeat(64);
+        let name = format!("exhibitos-restore-work-{target}");
+        let helper = serde_json::json!({"Id":id,"Name":format!("/exhibitos-restore-{target}"),"Image":format!("sha256:{}","b".repeat(64)),
+            "Config":{"Labels":{"com.exhibitos.restoration":target}},"HostConfig":{"Privileged":false,"ReadonlyRootfs":true,"AutoRemove":false},
+            "State":{"Running":false},"Mounts":[{"Type":"volume","Name":name,"Destination":"/work","Driver":"local","RW":true}]});
+        let declared = BTreeSet::new();
+        assert!(
+            !validate_helper(
+                &service,
+                "restoration",
+                &target,
+                &id,
+                &helper,
+                &declared,
+                true
+            )
+            .unwrap()
+        );
+        assert!(
+            validate_helper(
+                &service,
+                "restoration",
+                &target,
+                &id,
+                &helper,
+                &declared,
+                false
+            )
+            .is_err()
+        );
+        let mut foreign = helper.clone();
+        foreign["Mounts"][0]["Name"] = "unrelated".into();
+        assert!(
+            validate_helper(
+                &service,
+                "restoration",
+                &target,
+                &id,
+                &foreign,
+                &declared,
+                true
+            )
+            .is_err()
+        );
+        let mut driver = helper;
+        driver["Mounts"][0]["Driver"] = "remote".into();
+        assert!(
+            validate_helper(
+                &service,
+                "restoration",
+                &target,
+                &id,
+                &driver,
+                &declared,
+                true
+            )
+            .is_err()
         );
     }
 }

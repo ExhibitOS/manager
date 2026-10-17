@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+import {describe,it,expect} from 'vitest';
+import {validInitialSubject,validInitialPassword,parseInitialAccountContext} from './initial-account';
+describe('first local account uses existing subject and byte password policy',()=>{
+ it('validates account and real UTF8 byte lengths without environment injection',()=>{expect(validInitialSubject('owner.name-1')).toBe(true);for(const value of ['ab',' space','a\nb','<script>'])expect(validInitialSubject(value)).toBe(false);expect(validInitialPassword('가'.repeat(4))).toBe(true);expect(validInitialPassword('a'.repeat(12))).toBe(true);expect(validInitialPassword('a'.repeat(1024))).toBe(true);for(const value of ['a'.repeat(11),'가'.repeat(342),'password\nline','password\u0000line'])expect(validInitialPassword(value)).toBe(false);});
+ it('accepts only nonsecret required or existing context without extra fields',()=>{expect(parseInitialAccountContext({state:'required',tenantId:null,subject:null}).state).toBe('required');expect(parseInitialAccountContext({state:'existing',tenantId:'11111111-1111-4111-8111-111111111111',subject:'owner'}).state).toBe('existing');for(const value of [{state:'required',tenantId:null,subject:null,password:'never'},{state:'existing',tenantId:null,subject:null},{state:'required',tenantId:'invalid',subject:'owner'}])expect(()=>parseInitialAccountContext(value)).toThrow('MANAGER_PROTOCOL');});
+});

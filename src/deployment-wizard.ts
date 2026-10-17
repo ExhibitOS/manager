@@ -11,7 +11,7 @@ function reference(id:string,input:CredentialReference){
 }
 /** Public OED restricted to the actual local/Generic SSH consumer. Never resolves a credential. */
 export function deploymentDescriptor(input:DeploymentInput,id=crypto.randomUUID(),createdAt=new Date().toISOString()){
- if(!closed(input,['mode','image','database','host','port','user','ssh']) || !['local','server'].includes(input.mode) || typeof input.image!=='string' || input.image.length>512 || !/^[a-z0-9][a-z0-9./:_-]+@sha256:[a-f0-9]{64}$/.test(input.image) || /@sha256:0{64}$/.test(input.image) || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:[0-5]\d(?:\.\d{3})?Z$/.test(createdAt) || !Number.isFinite(Date.parse(createdAt)) || new Date(createdAt).toISOString().replace('.000Z','Z')!==createdAt.replace('.000Z','Z'))return reject();
+ if(!closed(input,['mode','image','database','host','port','user','ssh']) || !['local','server'].includes(input.mode) || typeof input.image!=='string' || input.image.length>512 || !/^(?:sha256:|[a-z0-9][a-z0-9./:_-]+@sha256:)[a-f0-9]{64}$(?![\s\S])/.test(input.image) || /(?:^|@)sha256:0{64}$/.test(input.image) || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:[0-5]\d(?:\.\d{3})?Z$/.test(createdAt) || !Number.isFinite(Date.parse(createdAt)) || new Date(createdAt).toISOString().replace('.000Z','Z')!==createdAt.replace('.000Z','Z'))return reject();
  const database=reference('database-password',input.database);
  let target:{type:'local-compose'}|{type:'generic-ssh';host:string;port:number;user:string;sshKeySecretRef:string}={type:'local-compose'};
  const secretRefs=[database];

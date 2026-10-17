@@ -89,6 +89,8 @@ impl Store {
         }
         installations::private_directory(parent).map_err(|_| invalid())?;
         let before = self.checkpoint_records()?;
+        #[cfg(not(windows))]
+        {
         let mut builder = fs::DirBuilder::new();
         #[cfg(unix)]
         {
@@ -100,7 +102,7 @@ impl Store {
         for (name, bytes) in &before {
             let mut file = private_file(&destination.join(name), true)?;
             file.write_all(bytes)
-                .and_then(|_| file.sync_all())
+                .and_then(|_| file.sync_all().map_err(|_| std::io::Error::other("private record sync failed")))
                 .map_err(|_| Error::TrustWriteUncertain)?;
         }
         sync_dir(destination)?;
@@ -109,8 +111,57 @@ impl Store {
             return Err(invalid());
         }
         self.verify_trust_checkpoint(destination)
+        }
+        #[cfg(windows)]
+        {
+            let parent_guard=crate::windows_private::HostDirectory::inspect(parent).map_err(|_|invalid())?;
+            parent_guard.check_private().map_err(|_|invalid())?;
+            let directory=parent_guard.create_directory(destination.file_name().and_then(|n|n.to_str()).ok_or_else(invalid)?).map_err(|_|invalid())?;
+            directory.check_private().map_err(|_|invalid())?;
+            for (name,bytes) in &before {
+                let mut file=directory.create_file(name).map_err(|_|invalid())?;
+                file.write_all(bytes).map_err(|_|Error::TrustWriteUncertain)?;
+                file.sync_all().map_err(|_|Error::TrustWriteUncertain)?;
+                file.check_private().map_err(|_|Error::TrustWriteUncertain)?;
+            }
+            directory.sync_all().map_err(|_|Error::TrustWriteUncertain)?;
+            parent_guard.sync_all().map_err(|_|Error::TrustWriteUncertain)?;
+            if self.checkpoint_records()? != before { return Err(invalid()); }
+            self.verify_trust_checkpoint_native(&directory)
+        }
     }
     /// Exact current bytes, no caller success flags, historical-head fallback or activation.
+    #[cfg(windows)]
+    pub(super) fn verify_trust_checkpoint_native(&self,directory:&crate::windows_private::HostDirectory)->Result<TrustCheckpointReceipt,Error> {
+        let destination=directory.path();
+        directory.check_private().map_err(|_|invalid())?;
+        if fs::canonicalize(destination).map_err(|_|invalid())? != destination || destination.starts_with(&self.profile) || destination.starts_with(&self.root) { return Err(invalid()); }
+        let before=self.checkpoint_records()?;
+        let mut names=Vec::new();
+        for entry in fs::read_dir(destination).map_err(|_|invalid())? {
+            names.push(entry.map_err(|_|invalid())?.file_name().into_string().map_err(|_|invalid())?);
+            if names.len()>MAX_RECORDS { return Err(Error::TrustLimit); }
+        }
+        names.sort();
+        if names != before.iter().map(|(n,_)|n.clone()).collect::<Vec<_>>() { return Err(invalid()); }
+        for (name,expected) in &before {
+            let mut file=directory.child_file(name).map_err(|_|invalid())?;
+            file.check_private().map_err(|_|invalid())?;
+            let mut bytes=Vec::new();
+            (&mut file).take(MAX_RECORD+1).read_to_end(&mut bytes).map_err(|_|invalid())?;
+            file.check_private().map_err(|_|invalid())?;
+            if bytes != *expected { return Err(invalid()); }
+        }
+        directory.check_private().map_err(|_|invalid())?;
+        if self.checkpoint_records()? != before { return Err(invalid()); }
+        Ok(TrustCheckpointReceipt {generation:self.current.generation,head_sha256:self.current_sha256.clone(),records:before.len(),full_history_verified:true,live_trust_restored:false})
+    }
+    #[cfg(windows)]
+    pub fn verify_trust_checkpoint(&self,destination:&Path)->Result<TrustCheckpointReceipt,Error> {
+        let guard=crate::windows_private::HostDirectory::inspect(destination).map_err(|_|invalid())?;
+        self.verify_trust_checkpoint_native(&guard)
+    }
+    #[cfg(not(windows))]
     pub fn verify_trust_checkpoint(
         &self,
         destination: &Path,

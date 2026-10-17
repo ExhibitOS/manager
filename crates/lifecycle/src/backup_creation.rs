@@ -2,6 +2,9 @@
 //! Quiesced installed-runtime backup producer. Never restores or deletes source volumes.
 use super::*;
 use std::collections::BTreeMap;
+#[cfg(windows)]
+#[path = "windows_cipher_transport.rs"]
+pub(crate) mod windows_cipher_transport;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -26,13 +29,13 @@ pub struct BackupCreationReceipt {
     pub writers_paused: bool,
     pub at: u64,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FileHash {
     pub(crate) bytes: u64,
     pub(crate) sha256: String,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct HelperResult {
     operation: String,
@@ -67,6 +70,7 @@ fn private_directory(path: &Path) -> Result<restoration::StageDirectory> {
     // The caller retains the protected namespace guard through journal/helper use.
     restoration::directory(path)
 }
+#[cfg(not(windows))]
 pub(crate) fn hash_file(path: &Path) -> Result<FileHash> {
     let mut options = OpenOptions::new();
     options.read(true);
@@ -135,6 +139,64 @@ pub(crate) fn hash_file(path: &Path) -> Result<FileHash> {
         {
             return Err(err("BACKUP_SOURCE_CHANGED"));
         }
+    }
+    Ok(FileHash {
+        bytes: count,
+        sha256: format!("{:x}", hash.finalize()),
+    })
+}
+#[cfg(windows)]
+pub(crate) fn hash_file(path: &Path) -> Result<FileHash> {
+    use std::os::windows::fs::MetadataExt;
+    let parent = path.parent().ok_or_else(|| err("BACKUP_RESULT_INVALID"))?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| err("BACKUP_RESULT_INVALID"))?;
+    // Retain the private namespace and read-only native handle for the entire
+    // stream. The native guard refuses reparse points, aliases, hardlinks,
+    // unrelated ACL grants and existing writers without repairing the source.
+    let directory = super::windows_private::PrivateDirectory::inspect(parent)?;
+    let mut file = directory.retained_read_file(name)?;
+    directory.check_record(&file, name)?;
+    let before = file.metadata().map_err(|_| err("BACKUP_RESULT_INVALID"))?;
+    if !before.is_file() || before.len() == 0 || before.len() > 8 * 1024 * 1024 * 1024 {
+        return Err(err("BACKUP_RESULT_INVALID"));
+    }
+    let mut hash = Sha256::new();
+    let mut count = 0u64;
+    let mut buffer = [0; 65536];
+    loop {
+        let n = file
+            .read(&mut buffer)
+            .map_err(|_| err("BACKUP_RESULT_INVALID"))?;
+        if n == 0 {
+            break;
+        }
+        count += n as u64;
+        if count > before.len() {
+            return Err(err("BACKUP_SOURCE_CHANGED"));
+        }
+        hash.update(&buffer[..n]);
+    }
+    // Reopen the named identity under the retained parent fence and recheck its
+    // private ACL before accepting the complete byte hash.
+    directory.check_record(&file, name)?;
+    let after = file.metadata().map_err(|_| err("BACKUP_RESULT_INVALID"))?;
+    if count != before.len()
+        || (
+            before.len(),
+            before.creation_time(),
+            before.last_write_time(),
+            before.file_attributes(),
+        ) != (
+            after.len(),
+            after.creation_time(),
+            after.last_write_time(),
+            after.file_attributes(),
+        )
+    {
+        return Err(err("BACKUP_SOURCE_CHANGED"));
     }
     Ok(FileHash {
         bytes: count,
@@ -401,6 +463,7 @@ fn layout(
         configuration,
     })
 }
+#[cfg(any(not(windows), test))]
 fn validate_copy(root: &Path, result: &HelperResult) -> Result<()> {
     if result.operation != "created-and-authenticated"
         || Uuid::parse_str(&result.backup_id).is_err()
@@ -608,17 +671,24 @@ impl LifecycleService {
         external_writers_quiesced: bool,
         retry: Option<super::retry::RetryLink<'_>>,
     ) -> Result<BackupCreationReceipt> {
-        if cfg!(windows) {
-            return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
-        }
         if !external_writers_quiesced {
             return Err(err("BACKUP_OPERATOR_ACK_REQUIRED"));
         }
         if !image.strip_prefix("sha256:").is_some_and(hash_valid) {
             return Err(err("BACKUP_IMAGE_INVALID"));
         }
+        #[cfg(windows)]
+        let native_key = super::maintenance::native_input_path(key, false)?;
+        #[cfg(windows)]
+        let key = native_key.as_path();
         super::maintenance::input_path(&self.root, true)?;
         super::maintenance::input_path(key, false)?;
+        #[cfg(windows)]
+        let _native_key_guard = {
+            let guard = crate::windows_private::HostFile::open(key)?;
+            guard.check_private()?;
+            guard
+        };
         if key.starts_with(&self.root) {
             return Err(err("BACKUP_PATH_OVERLAP"));
         }
@@ -677,33 +747,48 @@ impl LifecycleService {
             let _deployment_guard = private_directory(&deployment)?;
             let mut artifacts = BTreeMap::new();
             let mut image_inventory = Vec::new();
+            #[cfg(windows)]
+            let mut native_images = BTreeMap::new();
             let mut image_bytes = 0;
             for (index, pin) in m.images.iter().enumerate() {
                 self.maintenance_checkpoint("backup", &id)?;
                 let content = local_image(&engine, &pin.reference)?;
                 let filename = format!("image-{index}.tar");
                 let path = deployment.join(&filename);
-                private_options()
-                    .open(&path)
-                    .map_err(|_| err("STATE_UNAVAILABLE"))?;
-                run(
-                    &engine,
-                    &[
-                        "image".into(),
-                        "save".into(),
-                        "--output".into(),
-                        path.to_string_lossy().into_owned(),
-                        content.clone(),
-                    ],
-                    None,
-                    1800,
+                #[cfg(not(windows))]
+                let hashed = {
+                    private_options()
+                        .open(&path)
+                        .map_err(|_| err("STATE_UNAVAILABLE"))?;
+                    run(
+                        &engine,
+                        &[
+                            "image".into(),
+                            "save".into(),
+                            "--output".into(),
+                            path.to_string_lossy().into_owned(),
+                            content.clone(),
+                        ],
+                        None,
+                        1800,
+                    )?;
+                    hash_file(&path)?
+                };
+                #[cfg(windows)]
+                let hashed = windows_cipher_transport::save_image(
+                    self,
+                    &id,
+                    &content,
+                    &path,
+                    2 * 1024 * 1024 * 1024 - image_bytes,
                 )?;
-                let hashed = hash_file(&path)?;
+                #[cfg(windows)]
+                native_images.insert(filename.clone(), hashed.clone());
                 image_bytes += hashed.bytes;
                 if image_bytes > 2 * 1024 * 1024 * 1024 {
                     return Err(err("STORAGE_QUOTA"));
                 }
-                artifacts.insert(format!("images/{filename}"),serde_json::json!({"path":format!("/deployment/{filename}"),"bytes":hashed.bytes,"sha256":hashed.sha256}));
+                artifacts.insert(format!("images/{filename}"),serde_json::json!({"path":format!("{}/{filename}", if cfg!(windows) { "/work/inputs/deployment" } else { "/deployment" }),"bytes":hashed.bytes,"sha256":hashed.sha256}));
                 image_inventory.push(serde_json::json!({"reference":pin.reference,"contentId":content,"archive":format!("images/{filename}"),"bytes":hashed.bytes,"sha256":hashed.sha256}));
             }
             write_json(
@@ -720,12 +805,32 @@ impl LifecycleService {
                 "manager-image-inventory.json",
             ]
             .iter()
-            .map(|name| (name.to_string(), format!("/installation/{name}")))
+            .map(|name| {
+                (
+                    name.to_string(),
+                    format!(
+                        "{}/{name}",
+                        if cfg!(windows) {
+                            "/work/inputs/installation"
+                        } else {
+                            "/installation"
+                        }
+                    ),
+                )
+            })
             .collect();
             configuration.insert(
                 "freeze-signing-key.json".into(),
                 "/configuration/freeze-signing-key.json".into(),
             );
+            #[cfg(windows)]
+            let (native_input, native_input_limit) = windows_cipher_transport::inputs(
+                &self.root,
+                key,
+                &preparation,
+                &deployment,
+                &native_images,
+            )?;
             stage(&mut job, "pausing-writers")?;
             run(
                 &engine,
@@ -797,6 +902,7 @@ impl LifecycleService {
                     .to_string_lossy()
                     .into_owned(),
             ];
+            #[cfg(not(windows))]
             for mount in [
                 format!(
                     "type=bind,source={},target=/backup-key,readonly",
@@ -810,6 +916,12 @@ impl LifecycleService {
                     "type=bind,source={},target=/deployment,readonly",
                     deployment.display()
                 ),
+            ] {
+                args.extend(["--mount".into(), mount]);
+            }
+            #[cfg(windows)]
+            args.push("--interactive".into());
+            for mount in [
                 format!(
                     "type=volume,source={},target=/data/blobs,readonly",
                     layout.blobs
@@ -838,23 +950,50 @@ impl LifecycleService {
                 image.into(),
                 "--input-type=module".into(),
                 "-e".into(),
-                HELPER.into(),
+                {
+                    #[cfg(windows)]
+                    {
+                        windows_cipher_transport::helper()
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        HELPER.into()
+                    }
+                },
             ]);
-            let result: HelperResult =
-                serde_json::from_slice(&self.run_maintenance_helper("backup", &id, &args)?)
-                    .map_err(|_| err("BACKUP_RESULT_INVALID"))?;
-            stage(&mut job, "copying-authenticated-archive")?;
-            run(
-                &engine,
-                &[
-                    "cp".into(),
-                    format!("{container}:/work/archive"),
-                    workspace.to_string_lossy().into_owned(),
-                ],
-                None,
-                1800,
+            #[cfg(not(windows))]
+            let output = self.run_maintenance_helper("backup", &id, &args)?;
+            #[cfg(windows)]
+            let output = self.run_maintenance_helper_with_input(
+                "backup",
+                &id,
+                &args,
+                native_input,
+                native_input_limit,
             )?;
-            validate_copy(&workspace.join("archive"), &result)?;
+            let result: HelperResult =
+                serde_json::from_slice(&output).map_err(|_| err("BACKUP_RESULT_INVALID"))?;
+            stage(&mut job, "copying-authenticated-archive")?;
+            #[cfg(not(windows))]
+            {
+                run(
+                    &engine,
+                    &[
+                        "cp".into(),
+                        format!("{container}:/work/archive"),
+                        workspace.to_string_lossy().into_owned(),
+                    ],
+                    None,
+                    1800,
+                )?;
+                validate_copy(&workspace.join("archive"), &result)?;
+            }
+            #[cfg(windows)]
+            windows_cipher_transport::copy_archive(
+                self, &id, &container, &volume, image, &workspace, &result,
+            )?;
+            #[cfg(windows)]
+            _native_key_guard.check_private()?;
             let value = BackupCreationReceipt {
                 id: id.clone(),
                 backup_id: result.backup_id,
@@ -1010,22 +1149,14 @@ mod tests {
                 .create_backup("image:latest", Path::new("relative"), false)
                 .unwrap_err()
                 .code,
-            if cfg!(windows) {
-                "BACKUP_PLATFORM_UNVERIFIED"
-            } else {
-                "BACKUP_OPERATOR_ACK_REQUIRED"
-            }
+            "BACKUP_OPERATOR_ACK_REQUIRED"
         );
         assert_eq!(
             service
                 .create_backup("image:latest", Path::new("relative"), true)
                 .unwrap_err()
                 .code,
-            if cfg!(windows) {
-                "BACKUP_PLATFORM_UNVERIFIED"
-            } else {
-                "BACKUP_IMAGE_INVALID"
-            }
+            "BACKUP_IMAGE_INVALID"
         );
         assert_eq!(
             service
@@ -1036,11 +1167,7 @@ mod tests {
                 )
                 .unwrap_err()
                 .code,
-            if cfg!(windows) {
-                "BACKUP_PLATFORM_UNVERIFIED"
-            } else {
-                "BACKUP_PATH_INVALID"
-            }
+            "BACKUP_PATH_INVALID"
         );
         assert!(service.backup_jobs().unwrap().is_empty());
     }
@@ -1097,6 +1224,84 @@ mod tests {
         drop(guard);
         fs::rename(&path, &renamed).unwrap();
     }
+    #[cfg(windows)]
+    fn windows_hash_fixture() -> super::super::windows_private::PrivateDirectory {
+        super::super::windows_private::PrivateDirectory::create(
+            &std::env::temp_dir().join(format!("backup-private-hash-{}", Uuid::new_v4())),
+        )
+        .unwrap()
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_backup_hash_reads_exact_private_bytes_and_rejects_live_writer() {
+        let directory = windows_hash_fixture();
+        let path = directory.path().join("cipher.bin");
+        let mut writer = directory.create_record("cipher.bin").unwrap();
+        writer
+            .write_all(b"synthetic encrypted backup bytes")
+            .unwrap();
+        writer.sync_all().unwrap();
+        assert!(hash_file(&path).is_err());
+        drop(writer);
+        let value = hash_file(&path).unwrap();
+        assert_eq!(value.bytes, 32);
+        assert_eq!(
+            value.sha256,
+            format!("{:x}", Sha256::digest(b"synthetic encrypted backup bytes"))
+        );
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"synthetic encrypted backup bytes"
+        );
+        let root = directory.path().to_owned();
+        drop(directory);
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_backup_hash_refuses_hardlink_without_changing_bytes() {
+        let directory = windows_hash_fixture();
+        let root = directory.path().to_owned();
+        let path = root.join("cipher.bin");
+        let mut writer = directory.create_record("cipher.bin").unwrap();
+        writer.write_all(b"synthetic cipher").unwrap();
+        writer.sync_all().unwrap();
+        drop(writer);
+        let alias = root.join("alias.bin");
+        fs::hard_link(&path, &alias).unwrap();
+        assert!(hash_file(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"synthetic cipher");
+        drop(directory);
+        fs::remove_file(alias).unwrap();
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_backup_hash_refuses_shared_acl_without_repairing_it() {
+        let directory = windows_hash_fixture();
+        let root = directory.path().to_owned();
+        let path = root.join("cipher.bin");
+        let mut writer = directory.create_record("cipher.bin").unwrap();
+        writer.write_all(b"synthetic cipher").unwrap();
+        writer.sync_all().unwrap();
+        drop(writer);
+        let status = crate::process_window::background_command("icacls.exe")
+            .arg(&path)
+            .args(["/grant", "*S-1-1-0:R"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(hash_file(&path).is_err());
+        assert!(directory.retained_read_file("cipher.bin").is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"synthetic cipher");
+        drop(directory);
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
     #[test]
     fn copied_cipher_inventory_must_match_exact_private_bytes() {
         let root = std::env::temp_dir().join(format!("backup-copy-test-{}", Uuid::new_v4()));
@@ -1109,6 +1314,16 @@ mod tests {
             "manifest.gcm",
             "files/00000000.gcm",
         ] {
+            #[cfg(windows)]
+            let parent = super::super::windows_private::PrivateDirectory::inspect(
+                root.join(name).parent().unwrap(),
+            )
+            .unwrap();
+            #[cfg(windows)]
+            let mut file = parent
+                .create_record(root.join(name).file_name().unwrap().to_str().unwrap())
+                .unwrap();
+            #[cfg(not(windows))]
             let mut file = private_options().open(root.join(name)).unwrap();
             file.write_all(b"synthetic cipher").unwrap();
             drop(file);

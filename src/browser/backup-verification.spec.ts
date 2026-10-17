@@ -26,7 +26,7 @@ for(const scenario of ['success','failure','malformed'] as const)test(`backup ${
   }}});
  },{scenario});
  const faults:string[]=[];page.on('pageerror',error=>faults.push(error.message));
- await page.goto('/');const section=page.getByRole('region',{name:'백업 사본 검증'}),submit=section.getByRole('button',{name:'백업 사본 검증',exact:true});
+ await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const section=page.getByRole('region',{name:'백업 사본 검증'}),submit=section.getByRole('button',{name:'백업 사본 검증',exact:true});
  await expect(section.getByLabel('암호화된 백업 폴더의 전체 경로')).toBeEnabled();
  await section.getByLabel('암호화된 백업 폴더의 전체 경로').fill('/private/tmp/synthetic-archive');
  await section.getByLabel('별도로 보관한 키 파일의 전체 경로').fill('key contents');

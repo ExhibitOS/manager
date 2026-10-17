@@ -9,7 +9,9 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, OsRng, Payload, rand_core::RngCore},
 };
-#[cfg(test)]
+#[cfg(windows)]
+pub(crate) use host_checkpoint::HostWindowsPermissions;
+#[cfg(all(test, unix))]
 pub(crate) use host_checkpoint::verify_unused_extraction_archive;
 pub use host_checkpoint::{
     HostCurrentReceipt, HostReceipt, checkpoint_host, extract_host, extract_host_clone_only,
@@ -20,10 +22,10 @@ pub(crate) use host_checkpoint::{
     checkpoint_host_borrowed, recheck_extracted_host_current, verify_extracted_host,
     verify_host_current_borrowed,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "authority_host_fence.rs"]
 mod authority_host_fence;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) use authority_host_fence::AuthorityHostFence;
 use std::collections::BTreeMap;
 const MAGIC: &[u8] = b"ExhibitOS-profile-v1\0";
@@ -57,6 +59,8 @@ pub struct ProfileReceipt {
     pub history: usize,
     pub archive_sha256: String,
     pub at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) windows_directory_sync: Option<host_checkpoint::WindowsDirectorySync>,
 }
 fn unique_history<'de, D: serde::Deserializer<'de>>(
     d: D,
@@ -98,9 +102,12 @@ fn lock_file(root: &Path, name: &str, exclusive: bool) -> Result<File> {
 fn lock_file_mode(root: &Path, name: &str, exclusive: bool, create: bool) -> Result<File> {
     #[cfg(windows)]
     {
-        if !create { return Err(err("PROFILE_PLATFORM_UNVERIFIED")); }
         let directory = super::windows_private::PrivateDirectory::inspect(root)?;
-        let file = directory.lock_record(name)?;
+        let file = if create {
+            directory.lock_record(name)?
+        } else {
+            directory.inspect_lock_record(name)?
+        };
         if exclusive {
             file.try_lock_exclusive()
         } else {
@@ -117,22 +124,29 @@ fn lock_file_mode(root: &Path, name: &str, exclusive: bool, create: bool) -> Res
             let mut options = OpenOptions::new();
             options.read(true);
             #[cfg(unix)]
-            { use std::os::unix::fs::OpenOptionsExt; options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK); }
-            options.open(&path).map_err(|_| err("PROFILE_LOCK_INVALID"))?
-        } else { match private_options().open(&path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let mut o = OpenOptions::new();
-                o.read(true).write(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-                }
-                o.open(&path).map_err(|_| err("PROFILE_LOCK_INVALID"))?
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
             }
-            Err(_) => return Err(err("STATE_UNAVAILABLE")),
-        }};
+            options
+                .open(&path)
+                .map_err(|_| err("PROFILE_LOCK_INVALID"))?
+        } else {
+            match private_options().open(&path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let mut o = OpenOptions::new();
+                    o.read(true).write(true);
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::OpenOptionsExt;
+                        o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+                    }
+                    o.open(&path).map_err(|_| err("PROFILE_LOCK_INVALID"))?
+                }
+                Err(_) => return Err(err("STATE_UNAVAILABLE")),
+            }
+        };
         let m = file.metadata().map_err(|_| err("PROFILE_LOCK_INVALID"))?;
         if !m.is_file() {
             return Err(err("PROFILE_LOCK_INVALID"));
@@ -281,10 +295,13 @@ pub(crate) fn anchor_lock(profile: &Path, exclusive: bool) -> Result<(PathBuf, P
 pub(crate) fn inspect_anchor_lock(profile: &Path) -> Result<(PathBuf, ProfileAnchor)> {
     anchor_lock_mode(profile, false, false)
 }
-fn anchor_lock_mode(profile: &Path, exclusive: bool, create: bool) -> Result<(PathBuf, ProfileAnchor)> {
+fn anchor_lock_mode(
+    profile: &Path,
+    exclusive: bool,
+    create: bool,
+) -> Result<(PathBuf, ProfileAnchor)> {
     #[cfg(windows)]
     {
-        if !create { return Err(err("PROFILE_PLATFORM_UNVERIFIED")); }
         let parent = super::windows_private::ParentDirectory::inspect(
             profile
                 .parent()
@@ -300,7 +317,11 @@ fn anchor_lock_mode(profile: &Path, exclusive: bool, create: bool) -> Result<(Pa
             ".exhibitos-profile-session-{}.lock",
             parent.logical_child_key(&profile_name)?
         );
-        let file = parent.lock_record(&lock_name)?;
+        let file = if create {
+            parent.lock_record(&lock_name)?
+        } else {
+            parent.inspect_lock_record(&lock_name)?
+        };
         if exclusive {
             file.try_lock_exclusive()
         } else {
@@ -394,6 +415,55 @@ pub(crate) fn current_host_locks(
     let profile_lock = lock_file(profile, "operation.lock", true)?;
     let snapshot = capture(profile)?;
     let roots = root_locks(profile, &snapshot.spaces)?;
+    Ok((profile_lock, roots))
+}
+#[cfg(windows)]
+pub(crate) struct NativeHostLock {
+    directory: super::windows_private::PrivateDirectory,
+    file: File,
+}
+#[cfg(windows)]
+impl NativeHostLock {
+    fn acquire(root: &Path, create: bool) -> Result<Self> {
+        let directory = super::windows_private::PrivateDirectory::inspect(root)?;
+        let file = if create {
+            directory.lock_record("operation.lock")?
+        } else {
+            directory.inspect_lock_record("operation.lock")?
+        };
+        file.try_lock_exclusive().map_err(|_| err("PROFILE_BUSY"))?;
+        directory.check_record(&file, "operation.lock")?;
+        Ok(Self { directory, file })
+    }
+    fn inspect(root: &Path) -> Result<Self> {
+        Self::acquire(root, false)
+    }
+    pub(crate) fn check(&self) -> Result<()> {
+        self.directory.check_record(&self.file, "operation.lock")
+    }
+}
+/// Retains every native parent fence together with its existing operation lock.
+#[cfg(windows)]
+pub(crate) fn current_host_locks(
+    profile: &Path,
+    session: &ProfileSession,
+) -> Result<(NativeHostLock, Vec<NativeHostLock>)> {
+    session.check_exclusive(profile)?;
+    let profile_lock = NativeHostLock::inspect(profile)?;
+    let snapshot = capture(profile)?;
+    let mut paths: Vec<_> = snapshot.spaces.iter().map(|s| s.relative.clone()).collect();
+    paths.sort();
+    paths.dedup();
+    let mut roots = Vec::new();
+    for path in paths {
+        if space_available(profile, &path)? {
+            roots.push(NativeHostLock::inspect(&profile.join(path))?);
+        }
+    }
+    profile_lock.check()?;
+    for root in &roots {
+        root.check()?;
+    }
     Ok((profile_lock, roots))
 }
 pub(crate) fn anchored_session(
@@ -546,6 +616,7 @@ fn capture(profile: &Path) -> Result<Snapshot> {
         spaces,
     })
 }
+#[cfg(not(windows))]
 fn root_locks(profile: &Path, spaces: &[Space]) -> Result<Vec<File>> {
     let mut guards = Vec::new();
     let mut paths: Vec<_> = spaces.iter().map(|s| s.relative.clone()).collect();
@@ -558,6 +629,26 @@ fn root_locks(profile: &Path, spaces: &[Space]) -> Result<Vec<File>> {
     }
     Ok(guards)
 }
+#[cfg(windows)]
+fn root_locks(profile: &Path, spaces: &[Space]) -> Result<Vec<NativeHostLock>> {
+    let mut paths: Vec<_> = spaces.iter().map(|s| s.relative.clone()).collect();
+    paths.sort();
+    paths.dedup();
+    let mut guards = Vec::new();
+    for path in paths {
+        if space_available(profile, &path)? {
+            guards.push(NativeHostLock::acquire(&profile.join(path), true)?);
+        }
+    }
+    Ok(guards)
+}
+#[cfg(windows)]
+pub(crate) fn external_key(profile: &Path, key: &Path) -> Result<Vec<u8>> {
+    super::windows_private::read_external_private_key(key, profile)
+        .map(|value| value.to_vec())
+        .map_err(|_| err("PROFILE_KEY_INVALID"))
+}
+#[cfg(not(windows))]
 pub(crate) fn external_key(profile: &Path, key: &Path) -> Result<Vec<u8>> {
     let parent = key.parent().ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
     canonical_private(parent)?;
@@ -591,11 +682,13 @@ fn archive_parent(profile: &Path, archive: &Path, key: &Path) -> Result<PathBuf>
     }
     Ok(parent)
 }
+#[cfg(not(windows))]
 fn sync(path: &Path) -> Result<()> {
     File::open(path)
         .and_then(|f| f.sync_all())
         .map_err(|_| err("PROFILE_WRITE_UNCERTAIN"))
 }
+#[cfg(not(windows))]
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut file = private_options().open(path).map_err(|e| {
         err(if e.kind() == std::io::ErrorKind::AlreadyExists {
@@ -609,6 +702,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
         .map_err(|_| err("PROFILE_WRITE_UNCERTAIN"))?;
     sync(path.parent().ok_or_else(|| err("PROFILE_PATH_INVALID"))?)
 }
+#[cfg(not(windows))]
 fn publish(temporary: &Path, archive: &Path) -> Result<()> {
     fs::hard_link(temporary, archive).map_err(|e| {
         err(if e.kind() == std::io::ErrorKind::AlreadyExists {
@@ -619,8 +713,34 @@ fn publish(temporary: &Path, archive: &Path) -> Result<()> {
         })
     })
 }
+#[cfg(windows)]
+fn sync(path: &Path) -> Result<()> {
+    let root = super::windows_private::HostDirectory::inspect(path)?;
+    root.check_private()?;
+    root.sync_all()
+        .map(|_| ())
+        .map_err(|_| err("PROFILE_WRITE_UNCERTAIN"))
+}
+#[cfg(windows)]
+fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+    let root = super::windows_private::HostDirectory::inspect(
+        path.parent().ok_or_else(|| err("PROFILE_PATH_INVALID"))?,
+    )?;
+    root.check_private()?;
+    let mut file = root.create_file(
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| err("PROFILE_PATH_INVALID"))?,
+    )?;
+    file.write_all(bytes)
+        .map_err(|_| err("PROFILE_WRITE_UNCERTAIN"))?;
+    file.sync_all()?;
+    file.check_private()?;
+    root.sync_all()?;
+    Ok(())
+}
 fn acknowledgement(ack: bool) -> Result<()> {
-    if !cfg!(unix) {
+    if !cfg!(any(unix, windows)) {
         return Err(err("PROFILE_PLATFORM_UNVERIFIED"));
     }
     if !ack {
@@ -664,7 +784,10 @@ fn backup_mode(
         Err(_) => return Err(err("PROFILE_DESTINATION_UNAVAILABLE")),
     }
     let _session = session_lock(profile, true)?;
+    #[cfg(not(windows))]
     let _profile = lock_file(profile, "operation.lock", true)?;
+    #[cfg(windows)]
+    let _profile = NativeHostLock::acquire(profile, true)?;
     let s = capture(profile)?;
     let _roots = root_locks(profile, &s.spaces)?;
     let second = capture(profile)?;
@@ -712,13 +835,58 @@ fn backup_mode(
         return Err(err("PROFILE_QUOTA"));
     }
     let temporary = parent.join(format!(".profile-backup-{}.pending", s.id));
-    write_new(&temporary, &bytes)?;
-    // Verify authentication and closed schema before publishing; failed encrypted pending files remain for inspection.
-    let opened = decrypt(&bytes, &key)?;
-    validate(&opened)?;
-    publish(&temporary, archive)?;
-    fs::remove_file(&temporary).map_err(|_| err("PROFILE_WRITE_UNCERTAIN"))?;
-    sync(&parent)?;
+    #[cfg(not(windows))]
+    {
+        write_new(&temporary, &bytes)?;
+        // Failed encrypted pending files remain for inspection.
+        let opened = decrypt(&bytes, &key)?;
+        validate(&opened)?;
+        publish(&temporary, archive)?;
+        fs::remove_file(&temporary).map_err(|_| err("PROFILE_WRITE_UNCERTAIN"))?;
+        sync(&parent)?;
+    }
+    #[cfg(windows)]
+    let windows_directory_sync = {
+        use std::io::{Seek, SeekFrom};
+        let parent_guard = super::windows_private::HostDirectory::inspect(&parent)?;
+        parent_guard.check_private()?;
+        let mut pending = parent_guard.create_file(
+            temporary
+                .file_name()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| err("PROFILE_PATH_INVALID"))?,
+        )?;
+        pending
+            .write_all(&bytes)
+            .map_err(|_| err("PROFILE_WRITE_UNCERTAIN"))?;
+        pending.sync_all()?;
+        pending.check_private()?;
+        pending
+            .seek(SeekFrom::Start(0))
+            .map_err(|_| err("PROFILE_WRITE_UNCERTAIN"))?;
+        let mut reread = Vec::new();
+        (&mut pending)
+            .take(LIMIT + 1)
+            .read_to_end(&mut reread)
+            .map_err(|_| err("PROFILE_WRITE_UNCERTAIN"))?;
+        if reread != bytes {
+            return Err(err("BACKUP_SOURCE_CHANGED"));
+        }
+        validate(&decrypt(&reread, &key)?)?;
+        _session.check_exclusive(profile)?;
+        _profile.check()?;
+        for root in &_roots {
+            root.check()?;
+        }
+        pending.publish_into(
+            &parent_guard,
+            archive
+                .file_name()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| err("PROFILE_PATH_INVALID"))?,
+        )?;
+        host_checkpoint::WindowsDirectorySync::from(parent_guard.sync_all()?)
+    };
     Ok(ProfileReceipt {
         id: s.id,
         operation: "profile-backup".into(),
@@ -726,6 +894,10 @@ fn backup_mode(
         history: s.history.len(),
         archive_sha256: digest(&bytes),
         at: now(),
+        #[cfg(windows)]
+        windows_directory_sync: Some(windows_directory_sync),
+        #[cfg(not(windows))]
+        windows_directory_sync: None,
     })
 }
 fn decrypt(bytes: &[u8], key: &[u8]) -> Result<Snapshot> {
@@ -756,6 +928,7 @@ fn decrypt(bytes: &[u8], key: &[u8]) -> Result<Snapshot> {
         .map_err(|_| err("PROFILE_AUTHENTICATION_FAILED"))?;
     serde_json::from_slice(&plain).map_err(|_| err("PROFILE_FORMAT_INVALID"))
 }
+#[cfg(not(windows))]
 fn current_registry(profile: &Path) -> Result<Option<Vec<u8>>> {
     let path = profile.join("installation-selection.json");
     let before = match fs::symlink_metadata(&path) {
@@ -827,6 +1000,21 @@ fn current_registry(profile: &Path) -> Result<Option<Vec<u8>>> {
     }
     Ok(Some(Vec::new()))
 }
+#[cfg(windows)]
+fn current_registry(profile: &Path) -> Result<Option<Vec<u8>>> {
+    let root = super::windows_private::PrivateDirectory::inspect(profile)?;
+    match fs::symlink_metadata(profile.join("installation-selection.json")) {
+        Ok(_) => root
+            .read_record("installation-selection.json")?
+            .read_bounded(64 * 1024)
+            .map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            root.check()?;
+            Ok(None)
+        }
+        Err(_) => Err(err("PROFILE_PATH_INVALID")),
+    }
+}
 pub fn restore(profile: &Path, key: &Path, archive: &Path, ack: bool) -> Result<ProfileReceipt> {
     acknowledgement(ack)?;
     canonical_private(profile)?;
@@ -844,7 +1032,10 @@ pub fn restore(profile: &Path, key: &Path, archive: &Path, ack: bool) -> Result<
     let s = decrypt(&bytes, &key)?;
     validate(&s)?;
     let _session = session_lock(profile, true)?;
+    #[cfg(not(windows))]
     let _profile = lock_file(profile, "operation.lock", true)?;
+    #[cfg(windows)]
+    let _profile = NativeHostLock::acquire(profile, true)?;
     let _roots = root_locks(profile, &s.spaces)?;
     let current = current_registry(profile)?;
     // Preserve the old pointer and lock current-only roots on an older-point restore.
@@ -874,6 +1065,14 @@ pub fn restore(profile: &Path, key: &Path, archive: &Path, ack: bool) -> Result<
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => return Err(err("PROFILE_PATH_INVALID")),
     }
+    #[cfg(windows)]
+    let _history_guard = if history.exists() {
+        let guard = super::windows_private::HostDirectory::inspect(&history)?;
+        guard.check_private()?;
+        Some(guard)
+    } else {
+        None
+    };
     // Preflight every filename collision before preserving/writing any registry bytes.
     for (name, value) in &s.history {
         match fs::symlink_metadata(history.join(name)) {
@@ -888,6 +1087,10 @@ pub fn restore(profile: &Path, key: &Path, archive: &Path, ack: bool) -> Result<
     }
     let retained = profile.join(format!("profile-restore-{}", Uuid::new_v4()));
     installations::new_directory(&retained)?;
+    #[cfg(windows)]
+    let retained_guard = super::windows_private::HostDirectory::inspect(&retained)?;
+    #[cfg(windows)]
+    retained_guard.check_private()?;
     if let Some(ref b) = current {
         write_new(&retained.join("previous-registry.bin"), b)?;
     }
@@ -895,6 +1098,10 @@ pub fn restore(profile: &Path, key: &Path, archive: &Path, ack: bool) -> Result<
     if !history.exists() {
         installations::new_directory(&history)?;
     }
+    #[cfg(windows)]
+    let history_guard = super::windows_private::HostDirectory::inspect(&history)?;
+    #[cfg(windows)]
+    history_guard.check_private()?;
     // Valid pre-restore pointers also enter typed history, so the next encrypted
     // profile checkpoint preserves later-only registrations. Corrupt bytes stay diagnostic.
     if let Some(ref previous) = current
@@ -909,16 +1116,50 @@ pub fn restore(profile: &Path, key: &Path, archive: &Path, ack: bool) -> Result<
             write_new(&history.join(name), value)?;
         }
     }
+    #[cfg(not(windows))]
     let staging = profile.join(format!(".profile-registry-{}.pending", Uuid::new_v4()));
+    #[cfg(not(windows))]
     write_new(&staging, &s.registry)?;
     // Refuse an external writer changing the original pointer while guards are held.
     let latest = current_registry(profile)?;
     if latest != current {
         return Err(err("BACKUP_SOURCE_CHANGED"));
     }
-    fs::rename(staging, profile.join("installation-selection.json"))
-        .map_err(|_| err("PROFILE_WRITE_UNCERTAIN"))?;
-    sync(profile)?;
+    #[cfg(not(windows))]
+    {
+        fs::rename(staging, profile.join("installation-selection.json"))
+            .map_err(|_| err("PROFILE_WRITE_UNCERTAIN"))?;
+        sync(profile)?;
+    }
+    #[cfg(windows)]
+    let windows_directory_sync = {
+        _session.check_exclusive(profile)?;
+        _profile.check()?;
+        retained_guard.check_private()?;
+        history_guard.check_private()?;
+        for guard in _roots.iter().chain(_current_roots.iter()) {
+            guard.check()?;
+        }
+        // The exact old bytes may intentionally be empty/corrupt. They were
+        // retained above; restoration must not adopt a permissive old ACL.
+        super::windows_private::replace_private_record(
+            profile,
+            "installation-selection.json",
+            current.as_deref(),
+            &s.registry,
+        )?;
+        let root = super::windows_private::HostDirectory::inspect(profile)?;
+        root.check_private()?;
+        let after = current_registry(profile)?;
+        if after.as_deref() != Some(s.registry.as_slice()) {
+            return Err(err("PROFILE_WRITE_UNCERTAIN"));
+        }
+        _profile.check()?;
+        for guard in _roots.iter().chain(_current_roots.iter()) {
+            guard.check()?;
+        }
+        host_checkpoint::WindowsDirectorySync::from(root.sync_all()?)
+    };
     let receipt = ProfileReceipt {
         id: s.id,
         operation: "profile-restore".into(),
@@ -926,9 +1167,19 @@ pub fn restore(profile: &Path, key: &Path, archive: &Path, ack: bool) -> Result<
         history: s.history.len(),
         archive_sha256: digest(&bytes),
         at: now(),
+        #[cfg(windows)]
+        windows_directory_sync: Some(windows_directory_sync),
+        #[cfg(not(windows))]
+        windows_directory_sync: None,
     };
     write_json(&retained, "receipt.json", &receipt).map_err(|_| err("PROFILE_WRITE_UNCERTAIN"))?;
     sync(&retained)?;
+    #[cfg(windows)]
+    {
+        retained_guard.check_private()?;
+        history_guard.check_private()?;
+        _session.check_exclusive(profile)?;
+    }
     Ok(receipt)
 }
 #[cfg(all(test, unix))]
@@ -1433,5 +1684,243 @@ mod tests {
                 .unwrap()
                 .fresh
         );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_read_only_lock_tests {
+    use super::*;
+    fn fixture() -> PathBuf {
+        let parent =
+            std::env::temp_dir().join(format!("windows-readonly-profile-{}", Uuid::new_v4()));
+        installations::new_directory(&parent).unwrap();
+        let profile = parent.join("profile");
+        let _guard = super::super::windows_private::PrivateDirectory::create(&profile).unwrap();
+        fs::canonicalize(profile).unwrap()
+    }
+    fn names(path: &Path) -> Vec<String> {
+        let mut result = fs::read_dir(path)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        result.sort();
+        result
+    }
+    #[test]
+    fn windows_read_only_operation_lock_never_creates_or_changes_existing_record() {
+        let profile = fixture();
+        let before = names(&profile);
+        assert!(inspect_operation_lock(&profile).is_err());
+        assert_eq!(names(&profile), before);
+        let original = lock_file(&profile, "operation.lock", true).unwrap();
+        assert!(inspect_operation_lock(&profile).is_err());
+        drop(original);
+        let bytes = fs::read(profile.join("operation.lock")).unwrap();
+        let inspected = inspect_operation_lock(&profile).unwrap();
+        assert!(lock_file(&profile, "operation.lock", true).is_err());
+        assert_eq!(fs::read(profile.join("operation.lock")).unwrap(), bytes);
+        drop(inspected);
+        assert!(lock_file(&profile, "operation.lock", true).is_ok());
+    }
+    #[test]
+    fn windows_read_only_anchor_shares_existing_lock_and_refuses_exclusive_owner() {
+        let profile = fixture();
+        let parent = profile.parent().unwrap();
+        let before = names(parent);
+        assert!(inspect_anchor_lock(&profile).is_err());
+        assert_eq!(names(parent), before);
+        let (_, shared) = anchor_lock(&profile, false).unwrap();
+        let (_, inspected) = inspect_anchor_lock(&profile).unwrap();
+        assert!(anchor_lock(&profile, true).is_err());
+        assert!(anchor_lock(&profile, false).is_ok());
+        drop(shared);
+        assert!(anchor_lock(&profile, true).is_err());
+        drop(inspected);
+        let (_, exclusive) = anchor_lock(&profile, true).unwrap();
+        assert!(inspect_anchor_lock(&profile).is_err());
+        drop(exclusive);
+        assert!(inspect_anchor_lock(&profile).is_ok());
+    }
+    #[test]
+    fn windows_read_only_lock_refuses_hardlink_without_repair_or_new_files() {
+        let profile = fixture();
+        drop(lock_file(&profile, "operation.lock", true).unwrap());
+        fs::hard_link(
+            profile.join("operation.lock"),
+            profile.join("retained-alias.lock"),
+        )
+        .unwrap();
+        let before = names(&profile);
+        let bytes = fs::read(profile.join("operation.lock")).unwrap();
+        assert!(inspect_operation_lock(&profile).is_err());
+        assert_eq!(names(&profile), before);
+        assert_eq!(
+            fs::read(profile.join("retained-alias.lock")).unwrap(),
+            bytes
+        );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_profile_snapshot_tests {
+    use super::installations::InstallationController;
+    use super::*;
+    fn fixture() -> (PathBuf, PathBuf, PathBuf) {
+        let parent = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("profile-proof-{}", Uuid::new_v4()));
+        installations::new_directory(&parent).unwrap();
+        let p = parent.join("profile");
+        let c = InstallationController::new(p.clone(), None).unwrap();
+        let cx = c.context().unwrap();
+        c.create(&cx.selection_token, true).unwrap();
+        drop(c);
+        let k = parent.join("key.bin");
+        write_new(&k, &[7u8; 32]).unwrap();
+        let a = parent.join("profile.exb");
+        (fs::canonicalize(p).unwrap(), k, a)
+    }
+    #[test]
+    fn authenticated_old_pointer_restore_preserves_every_space_and_old_pointer() {
+        let (p, k, a) = fixture();
+        let before = fs::read(p.join("installation-selection.json")).unwrap();
+        let original = registry(&before).unwrap();
+        for e in &original.installations {
+            write_new(&installations::root(&p, e).join("witness"), e.id.as_bytes()).unwrap();
+        }
+        let saved = backup(&p, &k, &a, true).unwrap();
+        let encrypted = fs::read(&a).unwrap();
+        assert!(!encrypted.windows(before.len()).any(|v| v == before));
+        let c = InstallationController::new(p.clone(), None).unwrap();
+        let cx = c.context().unwrap();
+        let later = c.create(&cx.selection_token, true).unwrap();
+        drop(c);
+        let later_bytes = fs::read(p.join("installation-selection.json")).unwrap();
+        let r = restore(&p, &k, &a, true).unwrap();
+        assert_eq!(saved.id, r.id);
+        assert_eq!(
+            fs::read(p.join("installation-selection.json")).unwrap(),
+            before
+        );
+        assert!(p.join("installations").join(later.active_id).exists());
+        for e in &original.installations {
+            assert_eq!(
+                fs::read(installations::root(&p, e).join("witness")).unwrap(),
+                e.id.as_bytes()
+            );
+        }
+        assert!(fs::read_dir(&p).unwrap().filter_map(|v| v.ok()).any(|v| {
+            v.file_name()
+                .to_string_lossy()
+                .starts_with("profile-restore-")
+                && fs::read(v.path().join("previous-registry.bin"))
+                    .ok()
+                    .as_deref()
+                    == Some(later_bytes.as_slice())
+        }));
+        let next = a.with_file_name("next-profile-checkpoint.exb");
+        backup(&p, &k, &next, true).unwrap();
+        let next_snapshot = decrypt(&fs::read(&next).unwrap(), &[7u8; 32]).unwrap();
+        assert!(next_snapshot.history.values().any(|v| v == &later_bytes));
+        assert_eq!(fs::read(&a).unwrap(), encrypted);
+        assert_eq!(
+            InstallationController::new(p, None)
+                .unwrap()
+                .context()
+                .unwrap()
+                .active_id,
+            original.active_id
+        );
+    }
+    #[test]
+    fn wrong_key_tamper_truncation_ack_and_overwrite_preserve_registry() {
+        let (p, k, a) = fixture();
+        assert_eq!(
+            backup(&p, &k, &a, false).unwrap_err().code,
+            "PROFILE_ACK_REQUIRED"
+        );
+        backup(&p, &k, &a, true).unwrap();
+        let before = fs::read(p.join("installation-selection.json")).unwrap();
+        let bytes = fs::read(&a).unwrap();
+        assert_eq!(
+            backup(&p, &k, &a, true).unwrap_err().code,
+            "PROFILE_DESTINATION_EXISTS"
+        );
+        let other = k.with_file_name("wrong-key.bin");
+        write_new(&other, &[9u8; 32]).unwrap();
+        assert_eq!(
+            restore(&p, &other, &a, true).unwrap_err().code,
+            "PROFILE_AUTHENTICATION_FAILED"
+        );
+        for mut bad in [bytes[..bytes.len() - 1].to_vec(), bytes.clone()] {
+            let last = bad.len() - 1;
+            bad[last] ^= 1;
+            let path = k.with_file_name(format!("bad-{}.exb", Uuid::new_v4()));
+            write_new(&path, &bad).unwrap();
+            assert_eq!(
+                restore(&p, &k, &path, true).unwrap_err().code,
+                "PROFILE_AUTHENTICATION_FAILED"
+            );
+            assert_eq!(
+                fs::read(p.join("installation-selection.json")).unwrap(),
+                before
+            );
+        }
+        assert_eq!(fs::read(&a).unwrap(), bytes);
+    }
+    #[test]
+    fn corrupt_current_registry_is_retained_before_authenticated_replacement() {
+        let (p, k, a) = fixture();
+        let original = fs::read(p.join("installation-selection.json")).unwrap();
+        backup(&p, &k, &a, true).unwrap();
+        fs::write(
+            p.join("installation-selection.json"),
+            b"synthetic corruption",
+        )
+        .unwrap();
+        restore(&p, &k, &a, true).unwrap();
+        assert_eq!(
+            fs::read(p.join("installation-selection.json")).unwrap(),
+            original
+        );
+        fs::write(p.join("installation-selection.json"), b"").unwrap();
+        restore(&p, &k, &a, true).unwrap();
+        assert_eq!(
+            fs::read(p.join("installation-selection.json")).unwrap(),
+            original
+        );
+        assert!(fs::read_dir(p).unwrap().filter_map(|v| v.ok()).any(|v| {
+            v.file_name()
+                .to_string_lossy()
+                .starts_with("profile-restore-")
+                && fs::read(v.path().join("previous-registry.bin"))
+                    .ok()
+                    .as_deref()
+                    == Some(b"synthetic corruption")
+        }));
+    }
+    #[test]
+    fn opt_in_stream_profile_restores_same_registry_and_rejects_truncated_prefix() {
+        let (p, k, a) = fixture();
+        let before = fs::read(p.join("installation-selection.json")).unwrap();
+        let receipt = backup_stream(&p, &k, &a, true).unwrap();
+        let bytes = fs::read(&a).unwrap();
+        assert!(bytes.starts_with(super::super::maintenance_stream::MAGIC));
+        assert_eq!(restore(&p, &k, &a, true).unwrap().id, receipt.id);
+        assert_eq!(
+            fs::read(p.join("installation-selection.json")).unwrap(),
+            before
+        );
+        let bad = a.with_file_name("truncated-stream.exb");
+        write_new(&bad, &bytes[..bytes.len() - 1]).unwrap();
+        assert_eq!(
+            restore(&p, &k, &bad, true).unwrap_err().code,
+            "PROFILE_AUTHENTICATION_FAILED"
+        );
+        assert_eq!(
+            fs::read(p.join("installation-selection.json")).unwrap(),
+            before
+        );
+        assert_eq!(fs::read(&a).unwrap(), bytes);
     }
 }

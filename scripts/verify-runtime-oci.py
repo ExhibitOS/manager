@@ -46,6 +46,8 @@ def migration_binding(source,current,target=None,target_schema=None):
  return source_hash,target_schema,'strict-migration-extension',sha(target['migrations'])
 
 def qualify(a,f,source_manifest_bytes=None,target_inventory_bytes=None):
+ runtime_target=getattr(a,'target','linux-arm64');assert runtime_target in ('linux-arm64','linux-amd64')
+ architecture=runtime_target.split('-',1)[1]
  assert re.fullmatch(r'sha256:[a-f0-9]{64}',a.image) and re.fullmatch(r'[a-f0-9]{40}',a.source_commit)
  if source_manifest_bytes is None:
   source,source_manifest_hash=private_json(a.source_manifest)
@@ -68,7 +70,13 @@ def qualify(a,f,source_manifest_bytes=None,target_inventory_bytes=None):
   assert (target_path is None and target_pin is None and target_schema is None) or (target_path is not None and target_pin is not None and target_schema is not None)
   target,target_inventory_hash=private_json(target_path,target_pin) if target_path is not None else (None,None)
  assert a.archive.is_absolute() and a.archive.resolve()==a.archive
- before=a.archive.stat();assert stat.S_ISREG(before.st_mode) and before.st_nlink==1 and stat.S_IMODE(before.st_mode) in (0o400,0o600) and before.st_uid==os.getuid() and 0<before.st_size<=2*1024**3
+ before=a.archive.stat();assert stat.S_ISREG(before.st_mode) and before.st_nlink==1 and 0<before.st_size<=2*1024**3
+ if os.name=='nt':
+  # Only the internal retained-stdin Rust adapter supplies native protected
+  # archive and authenticated manifest inputs; standalone path input stays closed.
+  assert source_manifest_bytes is not None and f.fileno()==0
+ else:
+  assert stat.S_IMODE(before.st_mode) in (0o400,0o600) and before.st_uid==os.getuid()
  sha=lambda b:hashlib.sha256(b).hexdigest()
  with __import__('contextlib').nullcontext(f) as f:
   assert (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)==identity(os.fstat(f.fileno()))
@@ -99,7 +107,7 @@ def qualify(a,f,source_manifest_bytes=None,target_inventory_bytes=None):
      # metadata only, never publisher provenance or image/tag authority.
      created=annotations['org.opencontainers.image.created'];assert isinstance(created,str) and re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z',created)
      datetime.datetime.fromisoformat(created)
-     assert desc.get('platform')=={'architecture':'arm64','os':'linux'} and set(annotations)=={'org.opencontainers.image.created'}
+     assert desc.get('platform')=={'architecture':architecture,'os':'linux'} and set(annotations)=={'org.opencontainers.image.created'}
     assert depth<=8 and re.fullmatch(r'sha256:[a-f0-9]{64}',desc['digest'])
     name='blobs/sha256/'+desc['digest'][7:];assert records[name].size==desc['size'];reached.add(name)
     value=read(name);assert not value.get('annotations')
@@ -113,9 +121,11 @@ def qualify(a,f,source_manifest_bytes=None,target_inventory_bytes=None):
      for layer in layers:
       assert not layer.get('urls') and not layer.get('data')
       assert re.fullmatch(r'sha256:[a-f0-9]{64}',layer['digest']);path='blobs/sha256/'+layer['digest'][7:];assert records[path].size==layer['size'];reached.add(path)
-     if cfg.get('os')=='linux' and cfg.get('architecture')=='arm64':
+     if cfg.get('os')=='linux' and cfg.get('architecture')==architecture:
       assert config['mediaType']=='application/vnd.oci.image.config.v1+json' and not config.get('data')
-      assert desc.get('platform')=={'architecture':'arm64','os':'linux'}
+      # OCI descriptor platform is optional; the digest-bound config above
+      # must still match the target, and present metadata must agree exactly.
+      assert 'platform' not in desc or desc['platform']=={'architecture':architecture,'os':'linux'}
       runnable.append((cfg,layers,desc['digest'],cfgname))
      else:
       # Tagless BuildKit exports have an empty attestation config. Treat this as
@@ -142,8 +152,8 @@ def qualify(a,f,source_manifest_bytes=None,target_inventory_bytes=None):
    assert cfg['config']['Cmd']==['node','scripts/local-runtime.mjs']
    migrations={};expanded=0
    for layer,diff in zip(layers,cfg['rootfs']['diff_ids']):
-    path='blobs/sha256/'+layer['digest'][7:];raw=archive.extractfile(records[path]);media=layer['mediaType'];assert media in ('application/vnd.oci.image.layer.v1.tar','application/vnd.oci.image.layer.v1.tar+gzip')
-    if media.endswith('+gzip'):raw=gzip.GzipFile(fileobj=raw)
+    path='blobs/sha256/'+layer['digest'][7:];raw=archive.extractfile(records[path]);media=layer['mediaType'];assert media in ('application/vnd.oci.image.layer.v1.tar','application/vnd.oci.image.layer.v1.tar+gzip','application/vnd.docker.image.rootfs.diff.tar.gzip')
+    if media in ('application/vnd.oci.image.layer.v1.tar+gzip','application/vnd.docker.image.rootfs.diff.tar.gzip'):raw=gzip.GzipFile(fileobj=raw)
     # No layer is extracted to disk. Bounded decoded bytes and content digest.
     h=hashlib.sha256();parts=[];size=0
     while True:
@@ -177,11 +187,11 @@ def qualify(a,f,source_manifest_bytes=None,target_inventory_bytes=None):
    current=[{'name':k,'sha256':v} for k,v in sorted(migrations.items())]
    source_schema,target_schema,mode,migration_hash=migration_binding(source['inventory'],current,target,target_schema)
   after=a.archive.stat();assert (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)==(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns)
-  report={'format':1,'artifactBytes':before.st_size,'exportLayout':'docker-compatible-oci' if 'manifest.json' in records else 'standard-oci','artifactSha256':artifact,'runtimeImageSha256':a.image[7:],'target':'linux-arm64','version':labels['org.opencontainers.image.version'],'sourceCommit':a.source_commit,'sourceSchemaSha256':source_schema,'targetSchemaSha256':target_schema,'migrationMode':mode,'sourceManifestSha256':source_manifest_hash,'targetInventorySha256':target_inventory_hash,'targetMigrationsSha256':migration_hash,'embeddedMigrations':current,'ociBlobs':len(reached),'runtimeConfigSha256':cfgname.split('/')[-1],'layerDiffIds':cfg['rootfs']['diff_ids'],'limits':['read-only genuine artifact qualification, no load/start/migration/health/rollback','embedded migration binding is not actual catalog observation, migration compatibility, data preservation or rollback proof','target inventory/schema hash must originate from trusted independent catalog qualification and signed release; caller-selected hashes are not authentication','BuildKit attestation metadata has empty subjects; no authenticated source provenance claim','development source labels, not production signing authority or Windows/amd64 qualification']}
+  report={'format':1,'artifactBytes':before.st_size,'exportLayout':'docker-compatible-oci' if 'manifest.json' in records else 'standard-oci','artifactSha256':artifact,'runtimeImageSha256':a.image[7:],'target':runtime_target,'version':labels['org.opencontainers.image.version'],'sourceCommit':a.source_commit,'sourceSchemaSha256':source_schema,'targetSchemaSha256':target_schema,'migrationMode':mode,'sourceManifestSha256':source_manifest_hash,'targetInventorySha256':target_inventory_hash,'targetMigrationsSha256':migration_hash,'embeddedMigrations':current,'ociBlobs':len(reached),'runtimeConfigSha256':cfgname.split('/')[-1],'layerDiffIds':cfg['rootfs']['diff_ids'],'limits':['read-only genuine artifact qualification, no load/start/migration/health/rollback','embedded migration binding is not actual catalog observation, migration compatibility, data preservation or rollback proof','target inventory/schema hash must originate from trusted independent catalog qualification and signed release; caller-selected hashes are not authentication','BuildKit attestation metadata has empty subjects; no authenticated source provenance claim','development source labels, not production signing authority or Windows/amd64 qualification']}
   return report
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('--archive',type=Path,required=True);p.add_argument('--image',required=True);p.add_argument('--source-manifest',type=Path,required=True);p.add_argument('--source-commit',required=True);p.add_argument('--target-inventory',type=Path);p.add_argument('--target-inventory-sha256');p.add_argument('--target-schema-sha256');p.add_argument('--output',type=Path,required=True);a=p.parse_args()
+ p=argparse.ArgumentParser();p.add_argument('--archive',type=Path,required=True);p.add_argument('--image',required=True);p.add_argument('--target',choices=('linux-arm64','linux-amd64'),default='linux-arm64');p.add_argument('--source-manifest',type=Path,required=True);p.add_argument('--source-commit',required=True);p.add_argument('--target-inventory',type=Path);p.add_argument('--target-inventory-sha256');p.add_argument('--target-schema-sha256');p.add_argument('--output',type=Path,required=True);a=p.parse_args()
  with a.archive.open('rb') as f:report=qualify(a,f)
  with a.output.open('x') as out:out.write(json.dumps(report,indent=2)+'\n')
  a.output.chmod(0o600);print('PASS bounded tagless OCI graph/blob/layer/config/migration identity; no artifact execution')

@@ -19,8 +19,20 @@ impl ExplicitLocalNetwork {
         Ok(())
     }
 }
-fn local_transport() -> Result<()> {
-    let host = std::env::var("DOCKER_HOST").map_err(|_| err("ENGINE_LOCALITY_UNVERIFIED"))?;
+const DOCKER_SELECTORS: [&str; 4] = [
+    "DOCKER_CONTEXT",
+    "DOCKER_TLS",
+    "DOCKER_TLS_VERIFY",
+    "DOCKER_CERT_PATH",
+];
+#[cfg(target_os = "macos")]
+static NATIVE_DOCKER_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+static NATIVE_DOCKER_ENDPOINT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+#[cfg(target_os = "macos")]
+static NATIVE_DOCKER_PIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn validate_transport(host: &str, selectors: bool) -> Result<()> {
     if host.len() > 1024
         || host
             .bytes()
@@ -31,18 +43,134 @@ fn local_transport() -> Result<()> {
                     && p.bytes()
                         .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
             }))
-        || [
-            "DOCKER_CONTEXT",
-            "DOCKER_TLS",
-            "DOCKER_TLS_VERIFY",
-            "DOCKER_CERT_PATH",
-        ]
+        || selectors
+    {
+        return Err(err("ENGINE_LOCALITY_UNVERIFIED"));
+    }
+    Ok(())
+}
+#[cfg(any(target_os = "macos", test))]
+fn native_endpoint(value: &Value) -> Result<String> {
+    let host = value["Host"]
+        .as_str()
+        .ok_or_else(|| err("ENGINE_LOCALITY_UNVERIFIED"))?;
+    validate_transport(host, false)?;
+    if !host.starts_with("unix:///") || value["SkipTLSVerify"] != Value::Bool(false) {
+        return Err(err("ENGINE_LOCALITY_UNVERIFIED"));
+    }
+    Ok(host.into())
+}
+/// Enables lazy native-only admission without doing I/O during application setup.
+#[cfg(target_os = "macos")]
+pub fn enable_native_docker_transport() {
+    NATIVE_DOCKER_ENABLED.store(true, std::sync::atomic::Ordering::Release);
+}
+/// Called lazily only when an off-main operation actually needs Docker. CLI callers
+/// do not enable this path and retain their explicit environment-pin admission.
+#[cfg(target_os = "macos")]
+fn prepare_native_docker_transport() -> Result<()> {
+    if NATIVE_DOCKER_ENDPOINT.get().is_some() {
+        return Ok(());
+    }
+    let _guard = NATIVE_DOCKER_PIN_LOCK.lock().map_err(|_| err("BUSY"))?;
+    if NATIVE_DOCKER_ENDPOINT.get().is_some() {
+        return Ok(());
+    }
+    if super::engine_executable("docker").is_none() {
+        return Ok(());
+    }
+    if DOCKER_SELECTORS
         .iter()
         .any(|k| std::env::var_os(k).is_some())
     {
         return Err(err("ENGINE_LOCALITY_UNVERIFIED"));
     }
+    let endpoint = if let Some(value) = std::env::var_os("DOCKER_HOST") {
+        let host = value
+            .into_string()
+            .map_err(|_| err("ENGINE_LOCALITY_UNVERIFIED"))?;
+        validate_transport(&host, false)?;
+        if !host.starts_with("unix:///") {
+            return Err(err("ENGINE_LOCALITY_UNVERIFIED"));
+        }
+        host
+    } else {
+        // An absolute resolved executable uses the existing bounded process backend
+        // without re-entering the symbolic Docker pin hook. Arguments are fixed/read-only.
+        let executable =
+            super::engine_executable("docker").ok_or_else(|| err("RUNTIME_MISSING"))?;
+        let bytes = super::run(
+            executable
+                .to_str()
+                .ok_or_else(|| err("ENGINE_LOCALITY_UNVERIFIED"))?,
+            &[
+                "context".into(),
+                "inspect".into(),
+                "--format".into(),
+                "{{json .Endpoints.docker}}".into(),
+            ],
+            None,
+            15,
+        )?;
+        let value: Value =
+            serde_json::from_slice(&bytes).map_err(|_| err("ENGINE_LOCALITY_UNVERIFIED"))?;
+        native_endpoint(&value)?
+    };
+    NATIVE_DOCKER_ENDPOINT
+        .set(endpoint)
+        .map_err(|_| err("ENGINE_LOCALITY_UNVERIFIED"))?;
     Ok(())
+}
+#[cfg(any(target_os = "macos", test))]
+fn command_endpoint(
+    command: &mut std::process::Command,
+    host: &str,
+    selectors: bool,
+) -> Result<()> {
+    validate_transport(host, selectors)?;
+    command.env("DOCKER_HOST", host);
+    Ok(())
+}
+pub(super) fn pin_command(command: &mut std::process::Command) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    if NATIVE_DOCKER_ENABLED.load(std::sync::atomic::Ordering::Acquire) {
+        prepare_native_docker_transport()?;
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(host) = NATIVE_DOCKER_ENDPOINT.get() {
+        command_endpoint(
+            command,
+            host,
+            DOCKER_SELECTORS
+                .iter()
+                .any(|k| std::env::var_os(k).is_some()),
+        )?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = command;
+    Ok(())
+}
+fn local_transport() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    if NATIVE_DOCKER_ENABLED.load(std::sync::atomic::Ordering::Acquire) {
+        prepare_native_docker_transport()?;
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(host) = NATIVE_DOCKER_ENDPOINT.get() {
+        return validate_transport(
+            host,
+            DOCKER_SELECTORS
+                .iter()
+                .any(|k| std::env::var_os(k).is_some()),
+        );
+    }
+    let host = std::env::var("DOCKER_HOST").map_err(|_| err("ENGINE_LOCALITY_UNVERIFIED"))?;
+    validate_transport(
+        &host,
+        DOCKER_SELECTORS
+            .iter()
+            .any(|k| std::env::var_os(k).is_some()),
+    )
 }
 /// A read-only observation, not a reservation or permission. Host routes include VPN routes.
 pub fn choose_explicit_local_network() -> Result<ExplicitLocalNetwork> {
@@ -239,5 +367,63 @@ mod remap_tests {
         assert_eq!(p.gateway, "10.240.0.17");
         assert_eq!(m.compose_sha256, digest(&c));
         assert!(bind_compose(&m, &c).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod native_transport_tests {
+    use super::*;
+    #[test]
+    fn endpoint_validation_preserves_explicit_cli_and_refuses_remote_or_selectors() {
+        assert!(validate_transport("unix:///tmp/synthetic-docker.sock", false).is_ok());
+        assert!(validate_transport("npipe:////./pipe/docker_engine", false).is_ok());
+        for host in [
+            "tcp://127.0.0.1:2375",
+            "ssh://example.invalid",
+            "unix:///tmp/socket?x",
+            "unix:///tmp/with space",
+            "unix://",
+        ] {
+            assert!(validate_transport(host, false).is_err());
+        }
+        assert!(validate_transport("unix:///tmp/synthetic-docker.sock", true).is_err());
+    }
+    #[test]
+    fn native_context_requires_explicit_unencrypted_local_unix_endpoint() {
+        assert_eq!(native_endpoint(&serde_json::json!({"Host":"unix:///tmp/synthetic-docker.sock","SkipTLSVerify":false})).unwrap(),"unix:///tmp/synthetic-docker.sock");
+        for value in [
+            serde_json::json!({"Host":"tcp://localhost:2375","SkipTLSVerify":false}),
+            serde_json::json!({"Host":"ssh://example.invalid","SkipTLSVerify":false}),
+            serde_json::json!({"Host":"unix:///tmp/socket","SkipTLSVerify":true}),
+            serde_json::json!({"Host":"unix:///tmp/socket"}),
+            serde_json::json!({"Host":"npipe:////./pipe/docker_engine","SkipTLSVerify":false}),
+        ] {
+            assert!(native_endpoint(&value).is_err());
+        }
+    }
+    #[test]
+    fn pinned_command_uses_exact_endpoint_and_never_erases_selectors() {
+        let mut command = std::process::Command::new("docker");
+        command.env("DOCKER_CONTEXT", "existing-user-selector");
+        assert!(command_endpoint(&mut command, "unix:///tmp/pin.sock", true).is_err());
+        assert!(command.get_envs().any(|(k, v)| k == "DOCKER_CONTEXT"
+            && v == Some(std::ffi::OsStr::new("existing-user-selector"))));
+        let mut clean = std::process::Command::new("docker");
+        command_endpoint(&mut clean, "unix:///tmp/pin.sock", false).unwrap();
+        assert!(
+            clean.get_envs().any(|(k, v)| k == "DOCKER_HOST"
+                && v == Some(std::ffi::OsStr::new("unix:///tmp/pin.sock")))
+        );
+    }
+    #[test]
+    fn native_endpoint_lifetime_cannot_switch_to_a_later_context() {
+        let pin = std::sync::OnceLock::new();
+        let first = native_endpoint(
+            &serde_json::json!({"Host":"unix:///tmp/first.sock","SkipTLSVerify":false}),
+        )
+        .unwrap();
+        pin.set(first).unwrap();
+        assert!(pin.set("unix:///tmp/changed.sock".to_string()).is_err());
+        assert_eq!(pin.get().unwrap(), "unix:///tmp/first.sock");
     }
 }

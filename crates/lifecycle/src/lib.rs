@@ -2,14 +2,17 @@
 //! Trusted-bundle desktop lifecycle. No shell, arbitrary compose paths or destructive volume removal.
 pub mod backup_creation;
 mod cached_install;
+mod runtime_prepare;
 pub mod cancellation;
 pub mod helper_reconciliation;
 pub mod installation_backup;
 pub mod installations;
+pub mod initial_account;
 pub mod maintenance;
 mod maintenance_stream;
 mod process_window;
 pub mod profile_backup;
+pub mod publication_source;
 pub mod restoration;
 mod restoration_auxiliary;
 pub mod retry;
@@ -410,14 +413,19 @@ fn version_major(value: &str) -> Option<u32> {
     if value.is_empty() || value.len() > 64 {
         return None;
     }
-    let valid_suffix = |s: &str| {
+    // Engine CLI distribution build metadata may contain Debian/Ubuntu tildes.
+    // Prerelease identifiers retain the existing strict grammar.
+    let valid_suffix = |s: &str, allow_tilde: bool| {
         !s.is_empty()
             && s.split('.').all(|part| {
-                !part.is_empty() && part.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+                !part.is_empty()
+                    && part.bytes().all(|c| {
+                        c.is_ascii_alphanumeric() || c == b'-' || allow_tilde && c == b'~'
+                    })
             })
     };
     let without_build = if let Some((core, build)) = value.split_once('+') {
-        if !valid_suffix(build) {
+        if !valid_suffix(build, true) {
             return None;
         }
         core
@@ -425,7 +433,7 @@ fn version_major(value: &str) -> Option<u32> {
         value
     };
     let core = if let Some((core, pre)) = without_build.split_once('-') {
-        if !valid_suffix(pre) {
+        if !valid_suffix(pre, false) {
             return None;
         }
         core
@@ -754,14 +762,34 @@ fn run_observed_inputs(
     seconds: u64,
     input: Option<File>,
     extra: Option<File>,
+    observe: impl FnMut() -> Result<()>,
+) -> Result<Vec<u8>> {
+    run_observed_stream(binary, args, cwd, seconds, (input, extra), None, observe)
+}
+fn run_observed_stream(
+    binary: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    seconds: u64,
+    files: (Option<File>, Option<File>),
+    streamed: Option<(Box<dyn Read + Send>, u64)>,
     mut observe: impl FnMut() -> Result<()>,
 ) -> Result<Vec<u8>> {
+    let (input, extra) = files;
+    if streamed.is_some() && input.is_some() {
+        return Err(err("ENGINE_INPUT_INVALID"));
+    }
+    if streamed.as_ref().is_some_and(|(_, limit)| *limit == 0) {
+        return Err(err("ENGINE_INPUT_INVALID"));
+    }
+    let has_stream = streamed.is_some();
     let executable = if matches!(binary, "docker" | "podman") {
         engine_executable(binary).ok_or_else(|| err("RUNTIME_MISSING"))?
     } else {
         PathBuf::from(binary)
     };
     let mut command = process_window::background_command(executable);
+    if binary == "docker" { local_network::pin_command(&mut command)?; }
     if matches!(binary, "docker" | "podman") {
         let mut paths: Vec<PathBuf> =
             std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
@@ -778,7 +806,11 @@ fn run_observed_inputs(
     }
     command
         .args(args)
-        .stdin(input.map(Stdio::from).unwrap_or_else(Stdio::null))
+        .stdin(if has_stream {
+            Stdio::piped()
+        } else {
+            input.map(Stdio::from).unwrap_or_else(Stdio::null)
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(dir) = cwd {
@@ -810,6 +842,42 @@ fn run_observed_inputs(
             err("ENGINE_PERMISSION")
         }
     })?;
+    // The producer is a bounded, finite protected reader; it must verify its
+    // retained source identity on EOF. No payload enters argv or diagnostics.
+    let input_result = streamed.map(|(mut source, limit)| {
+        let mut sink = child.stdin.take().unwrap();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = (|| -> Result<()> {
+                let mut written = 0u64;
+                let mut buffer = [0u8; 65536];
+                loop {
+                    let wanted = (limit.saturating_sub(written).saturating_add(1))
+                        .min(buffer.len() as u64) as usize;
+                    let n = source
+                        .read(&mut buffer[..wanted])
+                        .map_err(|_| err("ENGINE_INPUT_FAILED"))?;
+                    if n == 0 {
+                        break;
+                    }
+                    written = written
+                        .checked_add(n as u64)
+                        .ok_or_else(|| err("ENGINE_INPUT_LIMIT"))?;
+                    if written > limit {
+                        return Err(err("ENGINE_INPUT_LIMIT"));
+                    }
+                    sink.write_all(&buffer[..n])
+                        .map_err(|_| err("ENGINE_INPUT_FAILED"))?;
+                }
+                sink.flush().map_err(|_| err("ENGINE_INPUT_FAILED"))?;
+                Ok(())
+            })();
+            drop(sink);
+            let _ = tx.send(result);
+        });
+        rx
+    });
+    let mut input_done = !has_stream;
     let (tx, rx) = mpsc::channel();
     for (index, mut stream) in [
         Box::new(child.stdout.take().unwrap()) as Box<dyn Read + Send>,
@@ -841,6 +909,22 @@ fn run_observed_inputs(
     drop(tx);
     let deadline = Instant::now() + Duration::from_secs(seconds);
     let status = loop {
+        if !input_done {
+            match input_result.as_ref().unwrap().try_recv() {
+                Ok(Ok(())) => input_done = true,
+                Ok(Err(error)) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(err("ENGINE_INPUT_FAILED"));
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
         match child.try_wait() {
             Ok(Some(s)) => break s,
             Ok(None) => {
@@ -859,6 +943,13 @@ fn run_observed_inputs(
             Err(_) => return Err(err("ENGINE_OPERATION_FAILED")),
         }
     };
+    if !input_done {
+        input_result
+            .as_ref()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_| err("ENGINE_INPUT_FAILED"))??;
+    }
     let a = rx
         .recv_timeout(Duration::from_secs(2))
         .map_err(|_| err("ENGINE_TIMEOUT"))?;
@@ -1277,6 +1368,13 @@ impl LifecycleService {
         });
         write_json(&self.root, "events.json", &events)
     }
+    /// Stage fixed application resources only into a missing bundle; existing data is never replaced.
+    pub fn prepare_bundled_runtime(&self, source: &Path) -> Result<()> {
+        let _lock = self.lock()?;
+        #[cfg(any(unix, windows))]
+        signed_release::trust::lifecycle_writer::admit(&self.root, &Action::Install)?;
+        runtime_prepare::prepare(&self.root, source)
+    }
     pub fn install(&self) -> Result<Job> {
         self.execute(Action::Install)
     }
@@ -1314,7 +1412,7 @@ impl LifecycleService {
         expected_retry: Option<(&str, u32)>,
     ) -> Result<Job> {
         let _lock = self.lock()?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         signed_release::trust::lifecycle_writer::admit(&self.root, &action)?;
         let mut jobs = self.job_history()?;
         if let Some((expected_id, expected_attempt)) = expected_retry {
@@ -1961,6 +2059,50 @@ mod detection_tests {
         }
     }
     #[test]
+    fn ubuntu_packaged_compose_build_metadata_remains_available() {
+        // Actual Ubuntu 24.04 Docker/Compose CLI output from native qualification.
+        let compose = "2.40.3+ds1-0ubuntu1~24.04.1";
+        assert_eq!(version_major(compose), Some(2));
+        let p = probe_engine("docker", |args| {
+            Ok(match args[0].as_str() {
+                "version" => b"{\"Client\":{\"Version\":\"29.1.3\"}}".to_vec(),
+                "compose" => format!("{compose}\n").into_bytes(),
+                _ => b"{}".to_vec(),
+            })
+        });
+        assert!(p.installed);
+        assert!(p.available);
+        assert!(p.error_code.is_none());
+        assert_eq!(p.engine_version.as_deref(), Some("29.1.3"));
+        assert_eq!(p.compose_version.as_deref(), Some(compose));
+    }
+    #[test]
+    fn distribution_build_metadata_does_not_relax_core_prerelease_or_output_bounds() {
+        let too_long = format!("2.40.3+{}", "a".repeat(58));
+        for text in [
+            "2.40", "2.40.3.1", "2..3", "4294967296.40.3", "2.4294967296.3",
+            "2.40.4294967296", "2~1.40.3", "2.40.3-", "2.40.3-dev~1+build",
+            "2.40.3-dev..1+build", "2.40.3+", "2.40.3+ds1..ubuntu",
+            "2.40.3+ds1-0ubuntu1~24.04.1+extra", "2.40.3+ds1\0ubuntu",
+            "2.40.3+ds1\tubuntu", "2.40.3+ds1\rubuntu", "2.40.3+ds1\nubuntu",
+            too_long.as_str(),
+        ] {
+            assert!(version_major(text).is_none());
+            let p = probe_engine("docker", |args| {
+                Ok(match args[0].as_str() {
+                    "version" => b"{\"Client\":{\"Version\":\"29.1.3\"}}".to_vec(),
+                    "compose" => text.as_bytes().to_vec(),
+                    _ => b"{}".to_vec(),
+                })
+            });
+            assert!(p.installed);
+            assert!(!p.available);
+            assert_eq!(p.error_code.as_deref(), Some("ENGINE_OUTPUT_INVALID"));
+            assert!(p.compose_version.is_none());
+        }
+        assert_eq!(version_major("2.40.3-dev.1+ds1-0ubuntu1~24.04.1"), Some(2));
+    }
+    #[test]
     fn stopped_version_or_info_is_unavailable_not_upgrade() {
         for stage in ["version", "info"] {
             let p = probe("podman", Some((stage, "ENGINE_OPERATION_FAILED")));
@@ -2098,3 +2240,110 @@ mod engine_failure_tests;
 mod local_network;
 mod restoration_network;
 pub use local_network::{ExplicitLocalNetwork, choose_explicit_local_network};
+#[cfg(target_os="macos")]
+pub use local_network::enable_native_docker_transport;
+
+#[cfg(all(test, unix))]
+mod bounded_input_transport_tests {
+    use super::*;
+    #[test]
+    fn protected_input_roundtrip_and_limit_never_claim_partial_success() {
+        let bytes = vec![0x5a; 65537];
+        let got = run_observed_stream(
+            "/bin/cat",
+            &[],
+            None,
+            5,
+            (None, None),
+            Some((
+                Box::new(std::io::Cursor::new(bytes.clone())),
+                bytes.len() as u64,
+            )),
+            || Ok(()),
+        )
+        .unwrap();
+        assert_eq!(got, bytes);
+        let error = run_observed_stream(
+            "/bin/cat",
+            &[],
+            None,
+            5,
+            (None, None),
+            Some((Box::new(std::io::Cursor::new(bytes)), 65536)),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "ENGINE_INPUT_LIMIT");
+    }
+    struct FailedFinalCheck(bool);
+    impl Read for FailedFinalCheck {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.0 {
+                return Err(std::io::Error::other("synthetic identity change"));
+            }
+            self.0 = true;
+            buf[0] = 7;
+            Ok(1)
+        }
+    }
+    #[test]
+    fn source_final_check_failure_and_early_exit_are_not_completion() {
+        let error = run_observed_stream(
+            "/bin/cat",
+            &[],
+            None,
+            5,
+            (None, None),
+            Some((Box::new(FailedFinalCheck(false)), 1024)),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "ENGINE_INPUT_FAILED");
+        let error = run_observed_stream(
+            "/usr/bin/true",
+            &[],
+            None,
+            5,
+            (None, None),
+            Some((
+                Box::new(std::io::Cursor::new(vec![1; 1024 * 1024])),
+                1024 * 1024,
+            )),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "ENGINE_INPUT_FAILED");
+    }
+    #[test]
+    fn blocked_stdin_obeys_original_timeout_and_observer() {
+        for cancel in [false, true] {
+            let error = run_observed_stream(
+                "/bin/sleep",
+                &["5".into()],
+                None,
+                0,
+                (None, None),
+                Some((
+                    Box::new(std::io::Cursor::new(vec![1; 1024 * 1024])),
+                    1024 * 1024,
+                )),
+                || {
+                    if cancel {
+                        Err(err("CANCELLED"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.code,
+                if cancel {
+                    "CANCELLED"
+                } else {
+                    "ENGINE_TIMEOUT"
+                }
+            );
+        }
+    }
+}

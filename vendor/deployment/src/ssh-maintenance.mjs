@@ -1,5 +1,6 @@
 // Copyright 2026 ExhibitOS contributors. SPDX-License-Identifier: Apache-2.0
 // Optional remote native maintenance actions. No independent update engine.
+import {join} from 'node:path';
 const fail=code=>{throw Object.assign(Error(code),{code});};
 const closed=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===keys.sort().join(',');
 const path=v=>typeof v==='string'&&v.startsWith('/')&&v.length<4096&&!/[\0\r\n]/.test(v);
@@ -27,7 +28,7 @@ export function projectMaintenance(action,r,operationId){
 }
 // Embedded verbatim into the existing protected remote script; all resources
 // remain under the same checked unprivileged home. No raw output escapes.
-export function executeRemoteMaintenance(i,{fs,execFileSync,join,read,ancestors,sha,fail,boundedJSON,uuid,hash}){
+export function executeRemoteMaintenance(i,{fs,execFileSync,join,read,ancestors,sha,fail,boundedJSON,uuid,hash,resolveSourceRoot}){
  const m=i.maintenance,action=i.action;
  const call=(executable,args)=>{try{const v=boundedJSON(execFileSync(executable,args,{timeout:action==='update'?2400000:action==='backup'?1800000:110000,maxBuffer:262144,stdio:['ignore','pipe','ignore']}).toString(),262144);if(v?.code)fail('SSH_NATIVE_REFUSED');return v;}catch{fail('SSH_MAINTENANCE_UNCERTAIN');}};
  const safe=p=>{ancestors(p);if(fs.realpathSync(p)!==p)fail('SSH_MAINTENANCE_INPUT_UNSAFE');};
@@ -46,7 +47,8 @@ export function executeRemoteMaintenance(i,{fs,execFileSync,join,read,ancestors,
  const update=(command,args=[])=>call(m.updatePath,[command,'--profile',m.profilePath,'--installation','default',...args,'--apps-closed']);
  const before=update('update-intent'),intent=before?.intent?.update,plan=intent?.plan;
  if(!Number.isSafeInteger(before?.trust?.generation)||before.trust.generation<m.expectedGeneration||(action==='update'&&before.trust.generation!==m.expectedGeneration)||plan?.operationId!==m.operationId)fail('SSH_UPDATE_AUTHORITY_CHANGED');
- const source=plan.sourceInstance==='default'?join(m.profilePath,'local-runtime'):join(m.profilePath,'installations',plan.sourceInstance);if(source!==i.remoteRoot)fail('SSH_UPDATE_SOURCE_MISMATCH');
+ const registry=boundedJSON(read(join(m.profilePath,'installation-selection.json'),65536).toString(),65536);
+ let source;try{source=resolveSourceRoot(m.profilePath,plan.sourceInstance,registry);}catch{fail('SSH_UPDATE_SOURCE_MISMATCH');}if(source!==i.remoteRoot)fail('SSH_UPDATE_SOURCE_MISMATCH');
  let result=null;
  if(action==='update'){
   if(intent.stage!=='prepared')fail('SSH_UPDATE_STAGE_INVALID');
@@ -66,4 +68,20 @@ export function executeRemoteMaintenance(i,{fs,execFileSync,join,read,ancestors,
   if(!health||!selected)fail('SSH_UPDATE_UNVERIFIED');
  }
  return {version:1,action,operationId:m.operationId,state:current.stage,authorityGeneration:cold.trust.generation,candidateId:candidate,healthVerified:health,selectionVerified:selected,updateExecuted:action==='update',preservedVolumes:true};
+}
+
+/** Resolve the native registered UUID by its kind, never by a caller path/alias. */
+export function resolveManagedSourceRoot(profile,sourceId,registry){
+ const refuse=()=>{throw Object.assign(Error('SSH_SOURCE_REGISTRY_INVALID'),{code:'SSH_SOURCE_REGISTRY_INVALID'});};
+ const uuid=v=>typeof v==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(v);
+ const closed=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===keys.sort().join(',');
+ if(typeof profile!=='string'||!profile.startsWith('/')||join(profile)!==profile||!uuid(sourceId)||!closed(registry,['format','activeId','installations'])||registry.format!==1||!uuid(registry.activeId)||!Array.isArray(registry.installations)||registry.installations.length<1||registry.installations.length>128)refuse();
+ const ids=new Set();let defaults=0;
+ for(const entry of registry.installations){
+  if(!closed(entry,['id','kind','createdAt'])||!uuid(entry.id)||ids.has(entry.id)||!['default','recovery'].includes(entry.kind)||!Number.isSafeInteger(entry.createdAt)||entry.createdAt<0||entry.createdAt>8640000000000000)refuse();
+  ids.add(entry.id);if(entry.kind==='default')defaults++;
+ }
+ if(defaults!==1||!ids.has(registry.activeId))refuse();
+ const source=registry.installations.find(entry=>entry.id===sourceId);if(!source)refuse();
+ return source.kind==='default'?join(profile,'local-runtime'):join(profile,'installations',source.id);
 }

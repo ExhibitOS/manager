@@ -2,18 +2,20 @@
 //! App-closed local trust journal, outside replaceable profile data. It does not
 //! resist the trusted OS account deleting/rolling back this entire journal.
 use super::*;
+#[cfg(not(windows))]
+use std::fs::OpenOptions;
 use crate::{installations, profile_backup};
 use fs2::FileExt;
 use std::{
     collections::BTreeSet,
-    fs::{self, File, Metadata, OpenOptions},
+    fs::{self, File, Metadata},
     io::{Read, Write},
     path::{Path, PathBuf},
 };
 #[cfg(windows)]
 #[path = "windows_trust_root.rs"]
 mod windows_root;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "lifecycle_writer.rs"]
 pub(crate) mod lifecycle_writer;
 const MAX_RECORD: u64 = 96 * 1024;
@@ -47,15 +49,15 @@ struct Record {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     recovery_binding: Option<String>,
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "authority_recovery_vault.rs"]
 mod authority_recovery_vault;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use authority_recovery_vault::{AuthorityReconciliationReceipt, AuthorityRecoveryReceipt};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "selection_activation.rs"]
 mod selection_activation;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use selection_activation::SelectionActivationReceipt;
 #[path = "authority_selection.rs"]
 mod authority_selection;
@@ -69,19 +71,19 @@ pub use trust_checkpoint::binding::{
 pub use trust_checkpoint::{HostTrustReceipt, MissingHostRecoveryReceipt, TrustCheckpointReceipt};
 #[path = "owned_execution.rs"]
 mod owned_execution;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "rollback_registration.rs"]
 mod rollback_registration;
 #[path = "update_target_registration.rs"]
 mod target_registration;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use rollback_registration::RegisteredRollbackCandidate;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "rollback_restoration.rs"]
 mod rollback_restoration;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use rollback_restoration::RollbackRestorationReceipt;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "rollback_runtime.rs"]
 mod rollback_runtime;
 #[path = "trust_update.rs"]
@@ -94,7 +96,7 @@ pub use owned_execution::{
     PreparedArtifactReceipt, PreparedOciReceipt, RecoveryRuntimeInputs, RuntimeCompatibility,
     SourceHostTrustReceipt, SourceRecoveryReceipt,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use owned_execution::{OwnedPreflight, ReadyCandidate, StartedUpdate};
 pub use target_registration::RegisteredUpdateTarget;
 use update_journal::{UpdateEvent, evolve, in_flight, remember_ids, validate_new_ids};
@@ -169,9 +171,6 @@ impl UpdateStatus {
 /// Inspect persisted authority without interruption recovery or creation of trust.
 /// Busy/corrupt authority remains an error; absence never provisions a policy.
 pub fn inspect_update_status(profile: &Path, installation: &str) -> Result<UpdateStatus, Error> {
-    #[cfg(windows)]
-    { let _ = (profile, installation); Err(Error::TrustPlatformUnverified) }
-    #[cfg(not(windows))]
     {
         let store = match Store::open_for_inspection(profile, installation) {
             Ok(store) => store,
@@ -188,16 +187,15 @@ pub fn inspect_update_status(profile: &Path, installation: &str) -> Result<Updat
     }
 }
 /// Read-only current intent projection for native reference selection; no saved receipt is an execution permit.
-pub(crate) fn inspect_prepared_apply(profile:&Path,scope:&str)->Result<Option<(crate::update::Plan,u64,String,String,u64)>,Error> {
- #[cfg(windows)] {let _=(profile,scope);return Err(Error::TrustPlatformUnverified);}
- #[cfg(not(windows))] {
+type PreparedApplyInspection = (crate::update::Plan,u64,String,String,u64);
+pub(crate) fn inspect_prepared_apply(profile:&Path,scope:&str)->Result<Option<PreparedApplyInspection>,Error> {
+ // Existing-only native inspection never creates an execution permit.
  let store=match Store::open_for_inspection(profile,scope){Ok(s)=>s,Err(Error::TrustMissing)=>return Ok(None),Err(e)=>return Err(e)};
  let Some(intent)=store.intent() else{return Ok(None)};
  if intent.update.stage()!=crate::update::Stage::Prepared||store.receipt().write_uncertain{return Ok(None)}
  let envelope:Envelope=serde_json::from_str(&intent.envelope).map_err(|_|invalid())?;
  let release:Release=serde_json::from_str(&envelope.payload).map_err(|_|invalid())?;
  Ok(Some((intent.update.plan().clone(),store.receipt().generation,release.version,release.artifact.sha256,release.artifact.bytes)))
- }
 }
 /// Holds the stable profile fence exclusively through verification/publication.
 /// Open never bootstraps missing/corrupt trust. The caller selects default or a
@@ -218,7 +216,7 @@ pub struct Store {
     uncertain: bool,
     used_operations: BTreeSet<String>,
     used_instances: BTreeSet<String>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     recovery: Option<authority_recovery_vault::Vault>,
 }
 impl Drop for Store {
@@ -232,6 +230,7 @@ impl Drop for Store {
 fn invalid() -> Error {
     Error::TrustInvalid
 }
+#[cfg(not(windows))]
 fn identity(a: &Metadata, b: &Metadata) -> bool {
     #[cfg(unix)]
     {
@@ -244,6 +243,7 @@ fn identity(a: &Metadata, b: &Metadata) -> bool {
         false
     }
 }
+#[cfg(not(windows))]
 fn private_file(path: &Path, create: bool) -> Result<File, Error> {
     let mut o = OpenOptions::new();
     o.read(true).write(create);
@@ -270,6 +270,16 @@ fn private_file(path: &Path, create: bool) -> Result<File, Error> {
         }
     }
     Ok(f)
+}
+#[cfg(windows)]
+fn private_file(path: &Path, create: bool) -> Result<crate::windows_private::HostFile, Error> {
+    let file = if create {
+        let parent = crate::windows_private::HostDirectory::inspect(path.parent().ok_or_else(invalid)?).map_err(|_|invalid())?;
+        parent.check_private().map_err(|_|invalid())?;
+        parent.create_file(path.file_name().and_then(|s|s.to_str()).ok_or_else(invalid)?).map_err(|_|invalid())?
+    } else { crate::windows_private::HostFile::open(path).map_err(|_|invalid())? };
+    file.check_private().map_err(|_|invalid())?;
+    Ok(file)
 }
 #[cfg(not(windows))]
 fn read_record(path: &Path) -> Result<Vec<u8>, Error> {
@@ -342,7 +352,7 @@ fn scope_with_anchor(
     if installation != "default" && !installations::uuid(installation) {
         return Err(invalid());
     }
-    if !cfg!(any(target_os = "macos", target_os = "linux")) {
+    if !cfg!(any(target_os = "macos", target_os = "linux", windows)) {
         return Err(Error::TrustPlatformUnverified);
     }
     let anchor = if inspection { profile_backup::inspect_anchor_lock(profile) }
@@ -583,13 +593,28 @@ fn existing_lock(root: &Path) -> Result<File, Error> {
     Ok(file)
 }
 #[cfg(windows)]
+fn existing_lock(root: &Path) -> Result<File,Error> {
+    let directory = crate::windows_private::PrivateDirectory::inspect(root).map_err(|_|invalid())?;
+    let file = directory.inspect_lock_record("trust.lock").map_err(|_|invalid())?;
+    file.try_lock_exclusive().map_err(|_|Error::TrustBusy)?;
+    directory.check_record(&file,"trust.lock").map_err(|_|invalid())?;
+    Ok(file)
+}
+#[cfg(windows)]
 fn lock(root: &Path) -> Result<File, Error> {
     windows_root::NativeRoot::inspect(root)?.lock()
 }
+#[cfg(not(windows))]
 fn sync_dir(root: &Path) -> Result<(), Error> {
     File::open(root)
         .and_then(|f| f.sync_all())
         .map_err(|_| Error::TrustWriteUncertain)
+}
+#[cfg(windows)]
+fn sync_dir(root: &Path) -> Result<(), Error> {
+    // Windows file writes flush actual handles; this is a retained namespace
+    // recheck, not Unix directory fsync or a power-loss durability promise.
+    crate::windows_private::ParentDirectory::inspect(root).and_then(|parent|parent.check()).map_err(|_|Error::TrustWriteUncertain)
 }
 fn publish(from: &Path, to: &Path) -> Result<(), Error> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -622,7 +647,15 @@ fn publish(from: &Path, to: &Path) -> Result<(), Error> {
         }
         Ok(())
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    {
+        let mut candidate = crate::windows_private::HostDirectory::inspect_for_publication(from).map_err(|_|invalid())?;
+        candidate.check_private().map_err(|_|invalid())?;
+        let parent = crate::windows_private::HostDirectory::inspect(to.parent().ok_or_else(invalid)?).map_err(|_|invalid())?;
+        candidate.publish_into(&parent,to.file_name().and_then(|s|s.to_str()).ok_or_else(invalid)?).map_err(|_|Error::TrustWriteUncertain)?;
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         let _ = (from, to);
         Err(Error::TrustPlatformUnverified)
@@ -673,7 +706,7 @@ impl Store {
     ) -> Result<Self, Error> {
         keys(&policy)?;
         let (root, scope, profile, anchor) = scope(profile, installation)?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if !authority_recovery_vault::absent(&authority_recovery_vault::locator(&root, &scope)?)? {
             return Err(Error::TrustExists);
         }
@@ -731,10 +764,11 @@ impl Store {
             uncertain: false,
             used_operations: BTreeSet::new(),
             used_instances: BTreeSet::new(),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             recovery: None,
         })
     }
+    #[cfg(any(unix, windows))]
     pub(crate) fn open_for_prepared_handoff(profile: &Path, installation: &str) -> Result<Self, Error> {
         Self::open_mode(profile, installation, false)
     }
@@ -783,7 +817,7 @@ impl Store {
             existing_lock(&root)?
         } else { lock(&root)? };
         #[cfg(windows)]
-        let lock = lock(&root)?;
+        let lock = if inspection { existing_lock(&root)? } else { lock(&root)? };
         #[cfg(not(windows))]
         let root_identity = fs::symlink_metadata(&root).map_err(|_| invalid())?;
         let mut paths = Vec::new();
@@ -881,10 +915,10 @@ impl Store {
             uncertain: false,
             used_operations,
             used_instances,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             recovery: None,
         };
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             s.recovery = if inspection {
                 authority_recovery_vault::Vault::open_for_inspection(&s)?
@@ -934,7 +968,8 @@ impl Store {
     fn check_root_identity(&self) -> Result<(), Error> {
         #[cfg(windows)]
         {
-            self.native_root.check()
+            self.native_root.check()?;
+            crate::windows_private::PrivateDirectory::inspect(&self.root).map_err(|_|invalid())?.check_record(&self._lock,"trust.lock").map_err(|_|invalid())
         }
         #[cfg(not(windows))]
         {
@@ -953,7 +988,7 @@ impl Store {
             return Err(Error::TrustWriteUncertain);
         }
         self.check_root_identity()?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             if let Some(vault) = &self.recovery {
                 if self.current.recovery_binding.is_some() {
@@ -992,14 +1027,14 @@ impl Store {
             &self.used_instances,
         )?;
         self.uncertain = true;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if let Some(vault) = &self.recovery {
             vault.prepare(&next)?;
         }
         let h = write(&self.root, &next)?;
         self.check_root_identity()
             .map_err(|_| Error::TrustWriteUncertain)?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if let Some(vault) = &self.recovery {
             vault.finish(&self.root, &next, &h)?;
         }
@@ -2145,8 +2180,211 @@ mod tests {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use owned_execution::InterruptedRecoveryInputs;
+
+#[cfg(all(test, windows))]
+mod windows_status_handoff_tests {
+    use super::*;
+    use crate::windows_private::PrivateDirectory;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    pub(super) fn prepared() -> (PrivateDirectory, PathBuf, Store, VerifiedRelease) {
+        let parent = PrivateDirectory::create(
+            &PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
+                .join(format!("exhibitos-status-handoff-test-{}", uuid::Uuid::new_v4())),
+        ).unwrap();
+        let profile = parent.path().join("profile");
+        let controller = installations::InstallationController::new(profile.clone(), None).unwrap();
+        let context = controller.context().unwrap();
+        let status = controller.update_status(&context.selection_token).unwrap();
+        assert!(!status.authority_present);
+        assert!(status.generation.is_none());
+        assert!(!windows_root::namespace(&profile, "default").unwrap().0.exists());
+        drop(controller);
+        let key = SigningKey::from_bytes(&[31; 32]);
+        let policy = Policy {
+            format: 1, channel: "development".into(), target: "linux-amd64".into(),
+            protocol_version: 1, source_schema_sha256: "a".repeat(64),
+            minimum_sequence: 1, minimum_issued_at: 10,
+            public_keys: vec![key.verifying_key().to_bytes().iter().map(|b| format!("{b:02x}")).collect()],
+        };
+        let release = Release {
+            format: 1, product: "ExhibitOS/runtime".into(), channel: policy.channel.clone(),
+            target: policy.target.clone(), version: "0.2.0-dev.1".into(), sequence: 2,
+            issued_at: 10, expires_at: 100, protocol_version: 1,
+            source_schemas: vec![policy.source_schema_sha256.clone()],
+            artifact: Artifact {
+                name: "runtime.tar".into(), bytes: 7, sha256: hash(b"fixture"),
+                runtime_image_sha256: "b".repeat(64), schema_sha256: "c".repeat(64),
+            },
+        };
+        let payload = serde_json::to_string(&release).unwrap();
+        let envelope = serde_json::to_vec(&Envelope {
+            format: 1, algorithm: "ed25519".into(), key_id: hash(key.verifying_key().as_bytes()),
+            signature: key.sign(&message(&payload)).to_bytes().iter().map(|b| format!("{b:02x}")).collect(),
+            payload,
+        }).unwrap();
+        let mut store = Store::provision(&profile, "default", policy, 10).unwrap();
+        let mut verified = store.verify_for_preparation(&envelope, 20).unwrap();
+        verified.verify_artifact(&mut b"fixture".as_slice()).unwrap();
+        store.prepare_update(&envelope, &verified, plan(), 20).unwrap();
+        (parent, profile, store, verified)
+    }
+    fn plan() -> crate::update::Plan {
+        crate::update::Plan {
+            operation_id: "update-1".into(), source_instance: "source-1".into(), target_instance: "target-1".into(),
+            source_image: "d".repeat(64), target_image: "b".repeat(64), source_schema: "a".repeat(64),
+            target_schema: "c".repeat(64), backup_id: "backup-1".into(), backup_manifest: "e".repeat(64),
+            source_inventory: "f".repeat(64), required_free_bytes: 1024,
+        }
+    }
+    pub(super) fn observations() -> crate::update::Preflight {
+        crate::update::Preflight {
+            plan: plan(), signature_verified: false, artifact_verified: false, compatibility_verified: true,
+            backup_restore_verified: true, current_source_matches_backup: true, available_free_bytes: 1024,
+            image_only_rollback_verified: false,
+        }
+    }
+    fn input(generation: u64) -> crate::update_handoff::CancelInput {
+        crate::update_handoff::CancelInput {
+            operation_id: "update-1".into(), generation, preserve_data: true, close_app_and_cancel: true,
+        }
+    }
+    pub(super) fn cleanup(parent: PrivateDirectory) {
+        parent.check().unwrap();
+        let path = parent.path().to_owned();
+        assert!(path.file_name().unwrap().to_str().unwrap().starts_with("exhibitos-status-handoff-test-"));
+        drop(parent);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn windows_update_status_reads_inflight_with_shared_manager_anchor_without_recovery_or_lock_creation() {
+        let (parent, profile, mut store, verified) = prepared();
+        store.begin_update(observations(), &verified, 21).unwrap();
+        let root = store.root.clone();
+        let generation = store.receipt().generation;
+        let record = root.join(format!("{generation:020}.json"));
+        let original = fs::read(&record).unwrap();
+        assert!(matches!(inspect_update_status(&profile, "default"), Err(Error::TrustBusy)));
+        drop(store);
+        let controller = installations::InstallationController::new(profile.clone(), None).unwrap();
+        let context = controller.context().unwrap();
+        let status = controller.update_status(&context.selection_token).unwrap();
+        assert_eq!(status.stage, Some(crate::update::Stage::Applying));
+        assert_eq!(status.generation, Some(generation));
+        assert_eq!(fs::read(&record).unwrap(), original);
+        assert!(!root.join(format!("{:020}.json", generation + 1)).exists());
+        let json = serde_json::to_value(status).unwrap();
+        assert!(json.get("envelope").is_none());
+        assert!(json.get("keyId").is_none());
+        fs::rename(root.join("trust.lock"), root.join("retained-status-lock")).unwrap();
+        assert!(controller.update_status(&context.selection_token).is_err());
+        assert!(!root.join("trust.lock").exists());
+        assert_eq!(fs::read(&record).unwrap(), original);
+        fs::rename(root.join("retained-status-lock"), root.join("trust.lock")).unwrap();
+        drop(controller);
+        cleanup(parent);
+    }
+    #[test]
+    fn windows_scope_routing_inspects_inflight_history_without_mutating_authority() {
+        let (parent,profile,mut store,verified)=prepared();
+        store.begin_update(observations(),&verified,21).unwrap();
+        let root=store.root.clone();let generation=store.current.generation;
+        let record=fs::read(root.join(format!("{generation:020}.json"))).unwrap();
+        drop(store);
+        let controller=installations::InstallationController::new(profile.clone(),None).unwrap();
+        let context=controller.context().unwrap();
+        let registry=installations::load(&profile).unwrap().unwrap().0;
+        assert_eq!(resolve_selected_scope(&profile,&registry).unwrap(),"default");
+        let status=controller.update_status(&context.selection_token).unwrap();
+        assert_eq!(status.stage,Some(crate::update::Stage::Applying));
+        assert_eq!(status.generation,Some(generation));
+        assert!(controller.update_apply_references(&context.selection_token).unwrap().is_empty());
+        let rollback=controller.update_rollback_context(&context.selection_token).unwrap().unwrap();
+        assert_eq!(rollback.stage,crate::update::Stage::Applying);
+        assert_eq!(rollback.generation,generation);
+        assert!(rollback.can_restore_original);
+        assert_eq!(fs::read(root.join(format!("{generation:020}.json"))).unwrap(),record);
+        assert!(!root.join(format!("{:020}.json",generation+1)).exists());
+        assert_eq!(crate::update_execution_handoff::execute(&profile,"not-a-request").unwrap_err().code,"UPDATE_HANDOFF_INVALID");
+        assert_eq!(crate::update_rollback_handoff::execute(&profile,"not-a-request").unwrap_err().code,"UPDATE_HANDOFF_INVALID");
+        drop(controller);cleanup(parent);
+    }
+    #[test]
+    fn windows_scope_routing_rejects_two_verified_namespaces_for_same_selection() {
+        let (parent,profile,store,_)=prepared();
+        let policy=store.current.policy.clone();drop(store);
+        let registry=installations::load(&profile).unwrap().unwrap().0;
+        let extra=Store::provision(&profile,&registry.active_id,policy,30).unwrap();drop(extra);
+        assert_eq!(resolve_selected_scope(&profile,&registry).unwrap_err().code,"UPDATE_AUTHORITY_UNAVAILABLE");
+        cleanup(parent);
+    }
+    #[test]
+    fn windows_prepared_cancel_waits_for_manager_exit_preserves_history_and_refuses_replay_or_overwrite() {
+        let (parent, profile, store, _) = prepared();
+        let root = store.root.clone();
+        let generation = store.receipt().generation;
+        let floor = store.receipt().minimum_sequence;
+        let original = fs::read(root.join(format!("{generation:020}.json"))).unwrap();
+        drop(store);
+        let controller = installations::InstallationController::new(profile.clone(), None).unwrap();
+        let context = controller.context().unwrap();
+        let witness = profile.join("operator-witness");
+        crate::write_private_new(&profile, "operator-witness", b"retained host data", 1024).unwrap();
+        assert!(controller.update_cancel_handoff(&context.selection_token, Some(input(generation + 1))).is_err());
+        assert!(!profile.join("update-cancel-handoffs").exists());
+        let (_, receipt) = controller.update_cancel_handoff(&context.selection_token, Some(input(generation))).unwrap();
+        let request = receipt.unwrap();
+        assert!(matches!(Store::open_for_prepared_handoff(&profile, "default"), Err(Error::TrustBusy)));
+        let helper_profile = profile.clone();
+        let helper_id = request.id.clone();
+        let helper = std::thread::spawn(move || crate::update_handoff::execute(&helper_profile, &helper_id));
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert_eq!(crate::update_handoff::latest(&profile, &context.active_id).unwrap().unwrap().state, "awaiting-app-close");
+        assert_eq!(fs::read(root.join(format!("{generation:020}.json"))).unwrap(), original);
+        drop(controller);
+        helper.join().unwrap().unwrap();
+        let status = inspect_update_status(&profile, "default").unwrap();
+        assert_eq!(status.generation, Some(generation + 1));
+        assert!(status.stage.is_none());
+        let reopened = Store::open_for_inspection(&profile, "default").unwrap();
+        assert_eq!(reopened.receipt().minimum_sequence, floor);
+        drop(reopened);
+        assert_eq!(crate::update_handoff::latest(&profile, &context.active_id).unwrap().unwrap().state, "cancelled");
+        assert!(crate::update_handoff::execute(&profile, &request.id).is_err());
+        assert!(crate::update_handoff::record_launch_failure(&profile, &request.id).is_err());
+        assert_eq!(crate::update_handoff::latest(&profile, &context.active_id).unwrap().unwrap().state, "cancelled");
+        assert_eq!(fs::read(root.join(format!("{generation:020}.json"))).unwrap(), original);
+        assert_eq!(fs::read(witness).unwrap(), b"retained host data");
+        cleanup(parent);
+    }
+    #[test]
+    fn windows_prepared_cancel_refuses_changed_generation_without_recovering_applying_intent() {
+        let (parent, profile, store, verified) = prepared();
+        let generation = store.receipt().generation;
+        let root = store.root.clone();
+        drop(store);
+        let controller = installations::InstallationController::new(profile.clone(), None).unwrap();
+        let context = controller.context().unwrap();
+        let (_, receipt) = controller.update_cancel_handoff(&context.selection_token, Some(input(generation))).unwrap();
+        let request = receipt.unwrap();
+        drop(controller);
+        let mut store = Store::open_for_prepared_handoff(&profile, "default").unwrap();
+        store.begin_update(observations(), &verified, 21).unwrap();
+        let applying_generation = store.receipt().generation;
+        let original = fs::read(root.join(format!("{applying_generation:020}.json"))).unwrap();
+        drop(store);
+        assert!(crate::update_handoff::execute(&profile, &request.id).is_err());
+        let status = inspect_update_status(&profile, "default").unwrap();
+        assert_eq!(status.stage, Some(crate::update::Stage::Applying));
+        assert_eq!(status.generation, Some(applying_generation));
+        assert_eq!(fs::read(root.join(format!("{applying_generation:020}.json"))).unwrap(), original);
+        assert!(!root.join(format!("{:020}.json", applying_generation + 1)).exists());
+        assert_eq!(crate::update_handoff::latest(&profile, &context.active_id).unwrap().unwrap().state, "failed");
+        cleanup(parent);
+    }
+}
 
 #[cfg(all(test, unix))]
 #[path = "registered_update_tests.rs"]

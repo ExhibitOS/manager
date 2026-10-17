@@ -32,7 +32,7 @@ pub struct OwnedPreflight<'session, 'store, 'inputs> {
     checkpoint: VerifiedCheckpointPair,
     host: crate::profile_backup::HostReceipt,
     host_path: PathBuf,
-    host_identity: Metadata,
+    host_identity: DirectoryIdentity,
     oci: PreparedOciReceipt,
     authority: InactiveAuthorityProof,
     migration: Option<std::cell::RefCell<super::super::migration_catalog::CatalogInput>>,
@@ -137,7 +137,7 @@ impl<'store> ExecutionSession<'store> {
             destination,
             key_file,
             checkpoint,
-            host_identity: fs::symlink_metadata(&host_path).map_err(|_|err("HOST_CHECKPOINT_INVALID"))?,
+            host_identity: directory_identity(&host_path).map_err(|_|err("HOST_CHECKPOINT_INVALID"))?,
             host_path,
             host,
             oci,
@@ -229,8 +229,11 @@ impl<'session, 'store, 'inputs> OwnedPreflight<'session, 'store, 'inputs> {
         // Secret bytes are absent; re-observe original evidence before publication.
         self.recheck()?;
         crate::write_private_new(&root, &format!("{id}.json"), &bytes, 16 * 1024)?;
+        #[cfg(not(windows))]
         File::open(&root).and_then(|file| file.sync_all())
             .map_err(|_| err("UPDATE_REFERENCE_UNCERTAIN"))?;
+        #[cfg(windows)]
+        crate::windows_private::HostDirectory::inspect(&root)?.sync_all()?;
         Ok(serde_json::json!({"referenceId":id,
             "installationId":self.artifact.plan.source_instance,
             "operationId":self.artifact.plan.operation_id,
@@ -261,7 +264,7 @@ impl<'session, 'store, 'inputs> OwnedPreflight<'session, 'store, 'inputs> {
             &self.session._session,
             &self.checkpoint.receipt().host_manifest_sha256,
         )?;
-        if !identity(&self.host_identity,&fs::symlink_metadata(&self.host_path).map_err(|_|err("HOST_CHECKPOINT_INVALID"))?) {
+        if !directory_matches(&self.host_identity,&self.host_path).map_err(|_|err("HOST_CHECKPOINT_INVALID"))? {
             return Err(err("HOST_CHECKPOINT_INVALID"));
         }
         crate::profile_backup::verify_extracted_host(
@@ -348,7 +351,7 @@ fn require_executable_schema(plan: &crate::update::Plan) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
  use super::*;
  #[test]

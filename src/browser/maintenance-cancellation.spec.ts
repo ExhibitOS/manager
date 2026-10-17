@@ -15,7 +15,7 @@ for(const scenario of ['confirmed','uncertain','malformed','stale-poll','unknown
    throw Error('Unexpected mutation');
   }}});
  },{scenario});
- await page.goto('/');const region=page.getByRole('region',{name:'진행 중 백업·복원 취소'}),button=region.getByRole('button',{name:'작업 취소 요청'});
+ await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const region=page.getByRole('region',{name:'진행 중 백업·복원 취소'}),button=region.getByRole('button',{name:'작업 취소 요청'});
  if(scenario==='unknown-context'){await expect(region.getByRole('alert')).toBeVisible();await expect(page.getByRole('button',{name:'새 복원 공간 만들고 선택'})).toBeDisabled();await expect(button).toHaveCount(0);return;}
  if(scenario==='stale-poll')await expect.poll(()=>page.evaluate(()=>(window as unknown as {__stalePending:boolean}).__stalePending)).toBe(true);
  await expect(button).toBeDisabled();await region.getByRole('checkbox').check();expect(await region.getByRole('checkbox').evaluate(el=>el.closest('label')!.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);await button.click();await expect(button).toBeDisabled();await expect(region.getByRole('checkbox')).not.toBeChecked();
@@ -23,7 +23,7 @@ for(const scenario of ['confirmed','uncertain','malformed','stale-poll','unknown
  await expect(page.getByRole('button',{name:'새 복원 공간 만들고 선택'})).toBeDisabled();
  if(scenario==='stale-poll'){await page.evaluate(()=>(window as unknown as {__releaseStale:()=>void}).__releaseStale());await page.waitForTimeout(1100);await expect(button).toBeDisabled();await expect(region).toContainText('취소를 요청했습니다.');}
  if(scenario==='malformed'){await expect(region.getByRole('alert')).toBeVisible();await expect(region).not.toContainText('취소를 확인했습니다.');}
- else {await expect(region).toContainText('취소를 요청했습니다.');await expect(region).not.toContainText('취소를 확인했습니다.');await page.evaluate(()=>(window as unknown as {__finishCancel:()=>void}).__finishCancel());await expect(region).toContainText(scenario==='confirmed'||scenario==='stale-poll'?'취소를 확인했습니다.':'정지 확인이 불확실합니다.');}
+ else {await page.getByRole('button',{name:'간편 화면',exact:true}).click();await expect(region).toBeVisible();await expect(region).toHaveAttribute('data-needs-attention','true');await expect(region).toContainText('취소를 요청했습니다.');await expect(region).not.toContainText('취소를 확인했습니다.');await page.evaluate(()=>(window as unknown as {__finishCancel:()=>void}).__finishCancel());await expect(region).toContainText(scenario==='confirmed'||scenario==='stale-poll'?'취소를 확인했습니다.':'정지 확인이 불확실합니다.');}
  if(scenario==='confirmed'){await page.evaluate(()=>(window as unknown as {__failContext:()=>void}).__failContext());await expect(region.getByRole('alert')).toBeVisible();await expect(region).toContainText('현재 작업과 정지 여부를 확인할 수 없습니다.');await expect(region).not.toContainText('취소를 확인했습니다.');}
  for(const width of [320,640,1120]){await page.setViewportSize({width,height:900});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);}
 });

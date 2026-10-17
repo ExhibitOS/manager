@@ -29,3 +29,7 @@ key.bin
 
 # Verified public runtime resources are regenerated, never committed binaries.
 /src-tauri/remote-runtime/generated/
+
+/src-tauri/publication-runtime/generated/
+
+/src-tauri/platform-runtime/generated/

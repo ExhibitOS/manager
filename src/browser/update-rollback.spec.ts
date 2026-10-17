@@ -23,7 +23,8 @@ for(const scenario of ['restore-pending','complete-uncertain','stale-context','s
    throw Error('Unexpected synthetic command');
   }}});
  },{scenario});
- await page.goto('/');const panel=page.getByRole('region',{name:'업데이트 상태'});
+ await page.goto('/');if(scenario!=='restore-pending')await page.getByRole('button',{name:'고급 설정',exact:true}).click();const panel=page.getByRole('region',{name:'업데이트 상태'});
+ if(scenario==='restore-pending'){await expect(page.locator('main')).toHaveAttribute('data-manager-mode','simple');await expect(panel).toBeVisible();await expect(panel).toHaveAttribute('data-needs-attention','true');await page.getByRole('button',{name:'고급 설정',exact:true}).click();}
  if(scenario==='stale-context'){
   await expect(panel.getByRole('alert')).toContainText('MANAGER_PROTOCOL');
   await expect(panel.getByRole('button',{name:'앱을 닫고 원래 전시 전체 복원'})).toHaveCount(0);

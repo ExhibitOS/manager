@@ -146,7 +146,7 @@ mod tests {
             scope: &actual.scope,
             plan: &actual.plan,
             stage,
-            public_keys: &[actual.public_key.clone()],
+            public_keys: std::slice::from_ref(&actual.public_key),
             manager_source_commit: &actual.manager_source_commit,
             dirty_source: dirty,
         })

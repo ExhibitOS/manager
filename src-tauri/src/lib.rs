@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 mod startup;
 mod remote;
+mod hosted;
+mod publication;
+mod platform_runtime;
+mod hosted_keychain;
 use exhibitos_lifecycle::{
     Action, EngineProbe, Job, LifecycleError, LifecycleService, LogEvent, Status,
 };
@@ -46,6 +50,28 @@ async fn blocking<T: Send + 'static>(
         .await
         .map_err(|_| error("MANAGER_OPERATION"))?
 }
+#[tauri::command]
+async fn manager_publication_catalog(window:WebviewWindow,app:tauri::AppHandle,state:State<'_,DesktopState>,selection_token:String)->Result<publication::Catalog,LifecycleError>{caller(&window)?;let resources=app.path().resource_dir().map_err(|_|error("LOCAL_CMS_RUNTIME_UNAVAILABLE"))?;let pin=selection_token.clone();blocking(state.0.clone(),selection_token,move|service|publication::catalog(resources,service,pin)).await}
+#[tauri::command]
+async fn manager_publication_export(window:WebviewWindow,app:tauri::AppHandle,state:State<'_,DesktopState>,selection_token:String,publication_id:String)->Result<hosted::SourceInfo,LifecycleError>{caller(&window)?;let resources=app.path().resource_dir().map_err(|_|error("LOCAL_CMS_RUNTIME_UNAVAILABLE"))?;let pin=selection_token.clone();blocking(state.0.clone(),selection_token,move|service|publication::export(resources,service,&pin,&publication_id)).await}
+#[tauri::command]
+async fn manager_hosted_store(window:WebviewWindow,input:hosted::TokenInput)->Result<bool,LifecycleError>{caller(&window)?;tauri::async_runtime::spawn_blocking(move||hosted::store(input)).await.map_err(|_|hosted::refused("HOSTED_KEYCHAIN_STORE_FAILED"))?}
+#[tauri::command]
+async fn manager_hosted_connected(window:WebviewWindow,input:hosted::ProviderInput)->Result<bool,LifecycleError>{caller(&window)?;tauri::async_runtime::spawn_blocking(move||hosted::connected(input)).await.map_err(|_|hosted::refused("HOSTED_KEYCHAIN_UNAVAILABLE"))?}
+#[tauri::command]
+async fn manager_hosted_disconnect(window:WebviewWindow,input:hosted::ProviderInput)->Result<bool,LifecycleError>{caller(&window)?;tauri::async_runtime::spawn_blocking(move||hosted::disconnect(input)).await.map_err(|_|hosted::refused("HOSTED_KEYCHAIN_REMOVE_FAILED"))?}
+#[tauri::command]
+async fn manager_hosted_choose_source(window:WebviewWindow)->Result<Option<hosted::SourceInfo>,LifecycleError>{caller(&window)?;tauri::async_runtime::spawn_blocking(hosted::choose_source).await.map_err(|_|hosted::refused("HOSTED_FOLDER_UNAVAILABLE"))?}
+#[tauri::command]
+async fn manager_hosted_resume(window:WebviewWindow)->Result<Option<hosted::ResumeInfo>,LifecycleError>{caller(&window)?;tauri::async_runtime::spawn_blocking(hosted::resume_local).await.map_err(|_|hosted::refused("HOSTED_WORK_UNAVAILABLE"))?}
+#[tauri::command]
+async fn manager_hosted_resume_remote(window:WebviewWindow,app:tauri::AppHandle)->Result<Option<hosted::ResumeInfo>,LifecycleError>{caller(&window)?;let resources=app.path().resource_dir().map_err(|_|hosted::refused("HOSTED_RUNTIME_UNAVAILABLE"))?;tauri::async_runtime::spawn_blocking(move||hosted::resume_remote(resources)).await.map_err(|_|hosted::refused("HOSTED_OPERATION_UNCERTAIN"))?}
+#[tauri::command]
+fn manager_hosted_open_url(window:WebviewWindow,input:hosted::PublicUrlInput)->Result<(),LifecycleError>{caller(&window)?;hosted::open_url(input)}
+#[tauri::command]
+fn manager_hosted_link(window:WebviewWindow,link:hosted::Link)->Result<(),LifecycleError>{caller(&window)?;hosted::open_link(link)}
+#[tauri::command]
+async fn manager_hosted(window:WebviewWindow,app:tauri::AppHandle,input:hosted::Request)->Result<serde_json::Value,LifecycleError>{caller(&window)?;let resources=app.path().resource_dir().map_err(|_|hosted::refused("HOSTED_RUNTIME_UNAVAILABLE"))?;tauri::async_runtime::spawn_blocking(move||hosted::execute(resources,input)).await.map_err(|_|hosted::refused("HOSTED_OPERATION_UNCERTAIN"))?}
 #[tauri::command]
 async fn manager_remote_available(window:WebviewWindow,app:tauri::AppHandle)->Result<bool,LifecycleError>{
  caller(&window)?;let resources=app.path().resource_dir().map_err(|_|error("REMOTE_RUNTIME_UNAVAILABLE"))?;
@@ -646,13 +672,23 @@ async fn manager_detect(
     blocking(state.0.clone(), selection_token, |service| service.detect()).await
 }
 #[tauri::command]
+async fn manager_initial_account_context(window: WebviewWindow,state: State<'_,DesktopState>,selection_token:String)->Result<exhibitos_lifecycle::initial_account::InitialAccountContext,LifecycleError>{
+ caller(&window)?;
+ blocking(state.0.clone(),selection_token,|service|service.initial_account_context()).await
+}
+#[tauri::command]
 async fn manager_install(
     window: WebviewWindow,
+    app: tauri::AppHandle,
     state: State<'_, DesktopState>,
     selection_token: String,
+    initial_account: Option<exhibitos_lifecycle::initial_account::InitialAccountInput>,
 ) -> Result<Job, LifecycleError> {
     caller(&window)?;
-    blocking(state.0.clone(), selection_token, |service| {
+    let resources = app.path().resource_dir().map_err(|_| error("PLATFORM_RUNTIME_UNAVAILABLE"))?;
+    blocking(state.0.clone(), selection_token, move |service| {
+        platform_runtime::prepare(&resources, service)?;
+        service.prepare_initial_account(initial_account)?;
         service.install()
     })
     .await
@@ -736,8 +772,9 @@ async fn manager_open_oex(
     caller(&window)?;
     blocking(state.0.clone(), selection_token, |service| {
         // open_url requires fresh native running/readiness and the installed port.
-        let url = oex_studio_url(&service.open_url()?)?;
-        open::that_detached(url).map_err(|_| error("MANAGER_OPEN_FAILED"))
+        let mut url = Url::parse(&oex_studio_url(&service.open_url()?)?).map_err(|_|error("MANAGER_OPEN_URL"))?;
+        if let Ok(account)=service.initial_account_context(){if let (Some(tenant),Some(subject))=(account.tenant_id,account.subject){url.query_pairs_mut().append_pair("localTenant",&tenant).append_pair("localSubject",&subject);}}
+        open::that_detached(url.as_str()).map_err(|_| error("MANAGER_OPEN_FAILED"))
     }).await
 }
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -768,8 +805,10 @@ pub fn run() {
         return;
     }
     let result = tauri::Builder::default()
-        .on_window_event(|_,event|{if let tauri::WindowEvent::CloseRequested{api,..}=event{if remote::busy(){api.prevent_close();}}})
+        .on_window_event(|_,event|{if let tauri::WindowEvent::CloseRequested{api,..}=event && (remote::busy()||hosted::busy()||publication::busy()){api.prevent_close();}})
         .setup(|app| {
+            #[cfg(target_os="macos")]
+            exhibitos_lifecycle::enable_native_docker_transport();
             let override_root = startup::override_root(std::env::var_os("EXHIBITOS_MANAGER_ROOT"))?;
             let profile = match startup::managed_profile(
                 std::env::var_os("EXHIBITOS_MANAGER_PROFILE"),
@@ -798,6 +837,17 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             manager_status,
+            manager_hosted,
+            manager_publication_catalog,
+            manager_publication_export,
+            manager_hosted_store,
+            manager_hosted_connected,
+            manager_hosted_disconnect,
+            manager_hosted_choose_source,
+            manager_hosted_link,
+            manager_hosted_open_url,
+            manager_hosted_resume,
+            manager_hosted_resume_remote,
             manager_remote,
             manager_remote_available,
             manager_remote_cancel,
@@ -809,6 +859,7 @@ pub fn run() {
             manager_update_rollback,
             manager_detect,
             manager_install,
+            manager_initial_account_context,
             manager_action,
             manager_jobs,
             manager_logs,

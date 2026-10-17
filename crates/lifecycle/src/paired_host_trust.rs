@@ -146,6 +146,8 @@ impl Store {
                 .ok_or_else(|| crate::err("PROFILE_PATH_INVALID"))?;
             installations::private_directory(parent)?;
             let stage = parent.join(format!(".missing-host-recovery-{}", uuid::Uuid::new_v4()));
+            #[cfg(not(windows))]
+            {
             let builder = fs::DirBuilder::new();
             #[cfg(unix)]
             let mut builder = builder;
@@ -157,6 +159,9 @@ impl Store {
             builder
                 .create(&stage)
                 .map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?;
+            }
+            #[cfg(windows)]
+            installations::new_directory(&stage).map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?;
             // The old trust archive is authenticated provenance, never the authority
             // to activate. Independently retained latest records supply this new small
             // checkpoint and exact inactive extraction under the same Store fence.
@@ -243,7 +248,7 @@ impl Store {
                     )
                     .map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?,
                 )
-                .and_then(|_| pending.sync_all())
+                .and_then(|_| pending.sync_all().map_err(|_| std::io::Error::other("private record sync failed")))
                 .map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?;
             sync_dir(&stage).map_err(|e| crate::err(e.code()))?;
             profile_backup::activate_missing_host(
@@ -267,7 +272,7 @@ impl Store {
                     &serde_json::to_vec(&receipt)
                         .map_err(|_| crate::err("HOST_RESTORE_UNCERTAIN"))?,
                 )
-                .and_then(|_| completed.sync_all())
+                .and_then(|_| completed.sync_all().map_err(|_| std::io::Error::other("private record sync failed")))
                 .map_err(|_| crate::err("HOST_RESTORE_UNCERTAIN"))?;
             sync_dir(&stage).map_err(|_| crate::err("HOST_RESTORE_UNCERTAIN"))?;
             Ok(receipt)
@@ -315,6 +320,8 @@ impl Store {
         }
         let result = (|| {
             let stage = parent.join(format!("pending-host-trust-{}", uuid::Uuid::new_v4()));
+            #[cfg(not(windows))]
+            {
             let mut builder = fs::DirBuilder::new();
             #[cfg(unix)]
             {
@@ -324,6 +331,9 @@ impl Store {
             builder
                 .create(&stage)
                 .map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?;
+            }
+            #[cfg(windows)]
+            installations::new_directory(&stage).map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?;
             let anchor = self
                 ._anchor
                 .try_clone()
@@ -374,8 +384,11 @@ impl Store {
                 serde_json::to_vec(&receipt).map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?;
             marker
                 .write_all(&bytes)
-                .and_then(|_| marker.sync_all())
+                .and_then(|_| marker.sync_all().map_err(|_| std::io::Error::other("private record sync failed")))
                 .map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?;
+            #[cfg(windows)]
+            marker.check_private().map_err(|_| crate::err("HOST_WRITE_UNCERTAIN"))?;
+            drop(marker);
             sync_dir(&stage).map_err(|e| crate::err(e.code()))?;
             self.check_root().map_err(|e| crate::err(e.code()))?;
             publish(&stage, target).map_err(|e| crate::err(e.code()))?;
@@ -1278,6 +1291,7 @@ mod tests {
             manifest_sha256: bound.host_manifest_sha256,
             external_volumes_saved: false,
             host_writer_quiescence: "operator-acknowledged".into(),
+            windows_directory_sync: None,
         };
         store
             .seal_recovery_pair(

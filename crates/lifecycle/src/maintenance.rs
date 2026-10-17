@@ -42,6 +42,18 @@ pub(crate) fn input_path(path: &Path, directory: bool) -> Result<()> {
             return Err(err("BACKUP_PRIVATE_PERMISSIONS"));
         }
     }
+    #[cfg(windows)]
+    {
+        if directory {
+            crate::windows_private::HostDirectory::inspect(path)?.check_private()?;
+        } else {
+            let file = crate::windows_private::HostFile::open(path)?;
+            file.check_private()?;
+            if file.metadata()?.len() != 32 {
+                return Err(err("BACKUP_PATH_INVALID"));
+            }
+        }
+    }
     Ok(())
 }
 fn receipt(
@@ -83,9 +95,17 @@ impl LifecycleService {
         source: &Path,
     ) -> Result<VerificationReceipt> {
         let _lock = self.lock()?;
-        if cfg!(windows) {
-            return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
+        if !image.strip_prefix("sha256:").is_some_and(hash_valid) {
+            return Err(err("BACKUP_IMAGE_INVALID"));
         }
+        #[cfg(windows)]
+        {
+            let key = native_input_path(key, false)?;
+            let source = native_input_path(source, true)?;
+            self.verify_backup_windows(image, &key, &source)
+        }
+        #[cfg(not(windows))]
+        {
         if !image.strip_prefix("sha256:").is_some_and(hash_valid) {
             return Err(err("BACKUP_IMAGE_INVALID"));
         }
@@ -236,8 +256,269 @@ impl LifecycleService {
                 Err(err("BACKUP_VERIFICATION_FAILED"))
             }
         }
+        }
     }
 }
+#[cfg(windows)]
+impl LifecycleService {
+    fn verify_backup_windows(
+        &self,
+        image: &str,
+        key: &Path,
+        source: &Path,
+    ) -> Result<VerificationReceipt> {
+        use crate::backup_creation::windows_cipher_transport as transport;
+        if !image.strip_prefix("sha256:").is_some_and(hash_valid) {
+            return Err(err("BACKUP_IMAGE_INVALID"));
+        }
+        input_path(&self.root, true)?;
+        input_path(key, false)?;
+        input_path(source, true)?;
+        if key.starts_with(source)
+            || source.starts_with(&self.root)
+            || self.root.starts_with(source)
+        {
+            return Err(err("BACKUP_PATH_OVERLAP"));
+        }
+        let key_guard = crate::windows_private::HostFile::open(key)?;
+        key_guard.check_private()?;
+        let source_guard = crate::windows_private::HostDirectory::inspect(source)?;
+        source_guard.check_private()?;
+        let manifest = self.manifest()?;
+        let installed: BundleManifest = read_json(&self.root.join("installed.json"))?;
+        if serde_json::to_value(installed).ok() != serde_json::to_value(&manifest).ok() {
+            return Err(err("BUNDLE_CHANGED"));
+        }
+        let engine = self.engine(&manifest, false)?;
+        if engine != "docker" {
+            return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
+        }
+        let info = backup_creation::inspected(
+            &engine,
+            &["info".into(), "--format".into(), "{{json .}}".into()],
+        )?;
+        if info["OperatingSystem"] != "Docker Desktop" || info["OSType"] != "linux" {
+            return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
+        }
+        backup_creation::local_image(&engine, image)?;
+        let (input, limit) = transport::archive_inputs(&self.root, key, source)?;
+        let id = Uuid::new_v4().to_string();
+        let workspace = self.root.join(format!("backup-verification-{id}"));
+        let _workspace_guard = restoration::directory(&workspace)?;
+        let volume = format!("exhibitos-verify-work-{id}");
+        let container = format!("exhibitos-verify-{id}");
+        run(
+            &engine,
+            &[
+                "volume".into(),
+                "create".into(),
+                "--label".into(),
+                format!("com.exhibitos.verification={id}"),
+                volume.clone(),
+            ],
+            None,
+            30,
+        )?;
+        let check_volume = || -> Result<()> {
+            let observed = backup_creation::inspected(
+                &engine,
+                &["volume".into(), "inspect".into(), volume.clone()],
+            )?;
+            if observed["Name"] != volume
+                || observed["Driver"] != "local"
+                || observed["Labels"]["com.exhibitos.verification"] != id
+                || !(observed["Options"].is_null()
+                    || observed["Options"]
+                        .as_object()
+                        .is_some_and(|o| o.is_empty()))
+            {
+                return Err(err("OWNERSHIP_CONFLICT"));
+            }
+            Ok(())
+        };
+        check_volume()?;
+        write_json(
+            &workspace,
+            "work.json",
+            &serde_json::json!({"format":1,"id":id,"image":image,"volume":volume,"container":container,"createdAt":now()}),
+        )?;
+        let script = transport::bootstrap_archive(
+            r#"
+import {main} from './scripts/service-backup.mjs';
+import {open,lstat} from 'node:fs/promises';
+import {constants} from 'node:fs';
+import {createHash} from 'node:crypto';
+const result=await main(['verify','--key-file','/key','--source','/archive','--destination','/work/plaintext']);
+const path='/work/plaintext/manifest.json',file=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+let manifestHash;
+try{
+ const before=await file.stat({bigint:true});
+ if(!before.isFile()||before.nlink!==1n||before.size>16777216n)throw Error('BACKUP_RESULT_INVALID');
+ const hash=createHash('sha256');let count=0;
+ for await(const chunk of file.createReadStream({autoClose:false})){count+=chunk.length;if(count>16777216)throw Error('BACKUP_RESULT_INVALID');hash.update(chunk);}
+ const after=await file.stat({bigint:true}),named=await lstat(path,{bigint:true});
+ if(BigInt(count)!==before.size||before.dev!==after.dev||before.ino!==after.ino||before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs||before.mode!==after.mode||before.uid!==after.uid||before.gid!==after.gid||after.nlink!==1n||named.isSymbolicLink()||named.dev!==after.dev||named.ino!==after.ino)throw Error('BACKUP_RESULT_INVALID');
+ manifestHash=hash.digest('hex');
+}finally{await file.close();}
+console.log(JSON.stringify({operation:result.operation,files:result.files,manifestHash}));
+"#,
+        );
+        let args: Vec<String> = [
+            "run",
+            "--pull",
+            "never",
+            "--interactive",
+            "--name",
+            &container,
+            "--label",
+            &format!("com.exhibitos.verification={id}"),
+            "--network",
+            "none",
+            "--user",
+            "0:0",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges:true",
+            "--pids-limit",
+            "128",
+            "--memory",
+            "1536m",
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,size=256m,mode=1777",
+            "--mount",
+            &format!("type=volume,source={volume},target=/work"),
+            "--entrypoint",
+            "node",
+            image,
+            "--input-type=module",
+            "-e",
+            &script,
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let output = run_observed_stream(
+            &engine,
+            &args,
+            None,
+            3600,
+            (None, None),
+            Some((input, limit)),
+            || Ok(()),
+        );
+        if output.is_err()
+            && let Ok(helper) =
+                backup_creation::inspected(&engine, &["inspect".into(), container.clone()])
+            && helper["Name"] == format!("/{container}")
+                    && helper["Config"]["Labels"]["com.exhibitos.verification"] == id
+                    && helper["Image"] == image
+                    && helper["Mounts"].as_array().is_some_and(|m| {
+                        m.iter().any(|m| {
+                            m["Type"] == "volume"
+                                && m["Name"] == volume
+                                && m["Destination"] == "/work"
+                        })
+                    })
+                {
+                    let _ = run(
+                        &engine,
+                        &[
+                            "stop".into(),
+                            "--time".into(),
+                            "30".into(),
+                            container.clone(),
+                        ],
+                        None,
+                        60,
+                    );
+        }
+        let outcome = output.and_then(|bytes| {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct NativeOutput {
+                operation: String,
+                files: u64,
+                manifest_hash: String,
+            }
+            let result: NativeOutput =
+                serde_json::from_slice(&bytes).map_err(|_| err("BACKUP_RESULT_INVALID"))?;
+            let output = serde_json::to_vec(
+                &serde_json::json!({"operation":result.operation,"files":result.files}),
+            )
+            .map_err(|_| err("BACKUP_RESULT_INVALID"))?;
+            check_volume()?;
+            key_guard.check_private()?;
+            source_guard.check_private()?;
+            let helper = backup_creation::inspected(&engine, &["inspect".into(), container])?;
+            if helper["Name"] != format!("/exhibitos-verify-{id}")
+                || helper["Config"]["Labels"]["com.exhibitos.verification"] != id
+                || helper["Image"] != image
+                || helper["State"]["Running"] != false
+                || helper["State"]["ExitCode"] != 0
+                || !helper["Mounts"].as_array().is_some_and(|m| {
+                    m.iter().any(|m| {
+                        m["Type"] == "volume" && m["Name"] == volume && m["Destination"] == "/work"
+                    })
+                })
+            {
+                return Err(err("OWNERSHIP_CONFLICT"));
+            }
+            receipt(&output, &id, image, &result.manifest_hash)
+        });
+        match outcome {
+            Ok(value) => {
+                write_json(&workspace, "receipt.json", &value)?;
+                Ok(value)
+            }
+            Err(_) => {
+                write_json(
+                    &workspace,
+                    "failed.json",
+                    &serde_json::json!({"id":id,"operation":"verification-failed","at":now()}),
+                )?;
+                Err(err("BACKUP_VERIFICATION_FAILED"))
+            }
+        }
+    }
+}
+
+/// Resolve ordinary Windows drive spelling only after native lexical ancestor
+/// checks. A junction/alias must not silently become a different accepted input.
+#[cfg(windows)]
+pub(crate) fn native_input_path(path: &Path, directory: bool) -> Result<PathBuf> {
+    let text = path.to_str().ok_or_else(|| err("BACKUP_PATH_INVALID"))?;
+    if !path.is_absolute()
+        || text.len() > 2048
+        || text.chars().any(|c| c.is_control() || c == ',')
+        || path
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+    {
+        return Err(err("BACKUP_PATH_INVALID"));
+    }
+    if directory {
+        let root = crate::windows_private::PrivateDirectory::inspect(path)?;
+        root.check()?;
+        Ok(root.path().to_owned())
+    } else {
+        let parent = crate::windows_private::ParentDirectory::inspect(
+            path.parent().ok_or_else(|| err("BACKUP_PATH_INVALID"))?,
+        )?;
+        let canonical = parent
+            .path()
+            .join(path.file_name().ok_or_else(|| err("BACKUP_PATH_INVALID"))?);
+        let file = crate::windows_private::HostFile::open(&canonical)?;
+        file.check_private()?;
+        if file.metadata()?.len() != 32 {
+            return Err(err("BACKUP_PATH_INVALID"));
+        }
+        parent.check()?;
+        Ok(canonical)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,11 +558,7 @@ mod tests {
                 .verify_backup("image:latest", &root, &root)
                 .unwrap_err()
                 .code,
-            if cfg!(windows) {
-                "BACKUP_PLATFORM_UNVERIFIED"
-            } else {
-                "BACKUP_IMAGE_INVALID"
-            }
+            "BACKUP_IMAGE_INVALID"
         );
         assert!(input_path(Path::new("relative"), true).is_err());
         #[cfg(unix)]

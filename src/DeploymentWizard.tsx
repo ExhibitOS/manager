@@ -27,7 +27,7 @@ export function DeploymentWizard(){
  {level==='beginner'&&<p>내 컴퓨터에서 먼저 전시를 확인하세요. 외부 서버를 사용하려면 서버 운영자와 인증 정보 보관 위치를 준비하세요.</p>}
  {level==='intermediate'&&<p>서버의 접근 권한과 공개 주소, 독립적으로 복원한 백업을 확인한 뒤 배포를 검토하세요.</p>}
  {level==='advanced'&&<p>OED 1.0.0-draft.1의 현재 지원 범위: 단일 Compose 전시, PostgreSQL, filesystem. 실행기에서 패키지·권한·readiness를 다시 검증합니다.</p>}
- {mode!=='cloud'&&<>{field('검증한 실행 이미지 (저장소@sha256:식별자)',image,setImage)}
+ {mode!=='cloud'&&<>{field('검증한 실행 이미지 (저장소 digest 또는 로컬 이미지 ID)',image,setImage)}
  {mode==='server'&&<>{field('서버 주소',host,setHost)}{field('SSH 포트',port,setPort)}{field('서버 사용자 (root 제외)',user,setUser)}<label>인증 정보 보관 위치<select value={credential} onChange={e=>{changed();setCredential(e.target.value as typeof credential);}}><option value="environment">환경변수 참조</option><option value="os-keychain">OS keychain 참조</option></select></label></>}
  {mode==='local'||credential==='environment'?<>{field('DB 비밀번호 환경변수 이름',dbVariable,setDbVariable)}{mode==='server'&&field('SSH 키 환경변수 이름',sshVariable,setSshVariable)}</>:<>{field('Keychain 서비스 이름',service,setService)}{field('DB 계정 참조 이름',dbAccount,setDbAccount)}{field('SSH 키 계정 참조 이름',sshAccount,setSshAccount)}<p>현재 Generic SSH keychain 해석은 macOS에서 제공됩니다. 다른 환경에서는 환경변수 참조를 사용하세요.</p></>}
  </>}

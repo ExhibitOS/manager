@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Reserve rollback identity before any fresh host publication. No Engine work.
 use super::*;
+use super::owned_execution::{directory_identity, directory_matches};
 use crate::{Result as LifecycleResult, err};
 
 /// Registration only: never a restore, inventory, health or activation permit.
@@ -85,7 +86,7 @@ impl Store {
         let parent = self.profile.join("installations");
         installations::private_directory(&parent)?;
         let parent_identity =
-            fs::symlink_metadata(&parent).map_err(|_| err("UPDATE_TARGET_CHANGED"))?;
+            directory_identity(&parent)?;
         let entry = installations::Entry {
             id: uuid::Uuid::new_v4().to_string(),
             kind: "recovery".into(),
@@ -108,23 +109,14 @@ impl Store {
         )
         .map_err(|e| err(e.code()))?;
         observed("reserved", &root)?;
-        if !identity(
-            &parent_identity,
-            &fs::symlink_metadata(&parent).map_err(|_| err("UPDATE_TARGET_CHANGED"))?,
-        ) {
+        if !directory_matches(&parent_identity,&parent).map_err(|_|crate::err("UPDATE_TARGET_CHANGED"))? {
             return Err(err("UPDATE_TARGET_CHANGED"));
         }
         installations::new_directory(&root)?;
         let root_identity =
-            fs::symlink_metadata(&root).map_err(|_| err("UPDATE_TARGET_CHANGED"))?;
+            directory_identity(&root)?;
         observed("created", &root)?;
-        if !identity(
-            &root_identity,
-            &fs::symlink_metadata(&root).map_err(|_| err("UPDATE_TARGET_CHANGED"))?,
-        ) || !identity(
-            &parent_identity,
-            &fs::symlink_metadata(&parent).map_err(|_| err("UPDATE_TARGET_CHANGED"))?,
-        ) {
+        if !directory_matches(&root_identity,&root).map_err(|_|crate::err("UPDATE_TARGET_CHANGED"))? || !directory_matches(&parent_identity,&parent).map_err(|_|crate::err("UPDATE_TARGET_CHANGED"))? {
             return Err(err("UPDATE_TARGET_CHANGED"));
         }
         // A reserved namespace must not adopt any bytes supplied after creation.
@@ -143,10 +135,7 @@ impl Store {
         self.check_root().map_err(|e| err(e.code()))?;
         installations::save(&self.profile, &registry, Some(&previous))?;
         observed("published", &root)?;
-        if !identity(
-            &root_identity,
-            &fs::symlink_metadata(&root).map_err(|_| err("UPDATE_TARGET_CHANGED"))?,
-        ) {
+        if !directory_matches(&root_identity,&root).map_err(|_|crate::err("UPDATE_TARGET_CHANGED"))? {
             return Err(err("UPDATE_TARGET_CHANGED"));
         }
         let (current, bytes) = installations::load(&self.profile)?
@@ -174,7 +163,7 @@ impl Store {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) mod tests {
     use super::super::tests::{fixture as trust_fixture, observations, plan, seal};
     use super::*;

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-initial-account-context"
+description = "Enables the manager_initial_account_context command without any pre-configured scope."
+commands.allow = ["manager_initial_account_context"]
+
+[[permission]]
+identifier = "deny-manager-initial-account-context"
+description = "Denies the manager_initial_account_context command without any pre-configured scope."
+commands.deny = ["manager_initial_account_context"]

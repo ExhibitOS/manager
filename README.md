@@ -1,9 +1,13 @@
 # ExhibitOS Manager
 
+[웹 전시 공개](docs/hosted-deployment.md)는 승인한 전시를 Cloudflare Pages로 공개하고 필요한 경우에만 Render API·PostgreSQL을 준비하는 Mac 경로입니다. 제공자 토큰은 native Keychain에 보관하며 정적 전시만 공개할 때는 Render가 필요 없습니다. 실제 계정·배포와 동적 전시·복구 검증은 별도로 구분합니다.
+
+> 1차 출시 범위(2026-10-15 사용자 변경)는 Mac Manager의 설치·실행·백업·복원·업데이트·롤백입니다. 기존 Windows/Linux 구현과 결과는 보존하되 해당 native 배포는 후속이며 1차 필수 검사가 아닙니다. 서버 Ubuntu 단일 운영 profile과 사용자 앱 OS 지원을 구분합니다. Mac 실제 설치·복구 검증과 원본 보존 조건은 유지합니다.
+
 로컬 전시 서버의 설치·시작·정지·재시작·상태와 작업 기록을 관리하는
 Tauri2/Rust 데스크톱 앱의 개발 구현입니다. Windows Docker 기본 설치·시작·정지·재시작·API 연결과 진행 표시를 실제 사용자 환경에서 확인했습니다. 전체 Windows 복구·업데이트·설치 프로그램 검증,
 macOS 서명·공증과 배포용 설치 프로그램은 완료되지 않았습니다. 앱의 실제 복원 GUI 조작·취소/재개,
-업데이트·rollback과 cloud wizard는 후속 작업입니다.
+업데이트 적용·원래 전시 전체 복원과 취소·재시도 화면은 소스에 연결돼 있으나 실제 네이티브 GUI와 전체 signed apply·rollback 검증은 남아 있습니다. 기존 cloud wizard는 보존하며 1차 출시 범위의 필수 경로가 아닙니다.
 [설치된 전시의 백업 생성](docs/backup-creation.md)은 개발 CLI에서 Docker 기반
 설치의 DB·작품·서명 설정·설치 파일·images를 암호화·인증하며 전시 writer를 정지 상태로 둡니다.
 로컬 앱 창의 생성 화면에 같은 adapter를 연결했으며 실제 네이티브 GUI 조작과
@@ -170,3 +174,9 @@ The selected installation's existing immutable plan supplies the original backup
 The fixed `--manager-update-rollback-helper` claims one immutable request before waiting for app closure. It checks the exact registry, operation, generation and context before reusing existing interruption recovery. Updated records enter the existing explicit rollback transition; interrupted restoration retains its previous candidate and reserves a fresh candidate for retry. Already restored candidates use the existing activation and health re-observation path. Original data, keys, backups, failed candidates and previous activation attempts are preserved. A pending exact selection publication is reconciled using its existing immutable proof; it cannot grant general write authority to an unfinished candidate. Generation-specific rollback activation records permit retry without overwriting legacy `-rollback` records, which remain readable.
 
 Only the existing committed RolledBack/health/selection result produces a completed receipt. A dispatched helper, missing outcome, failed restore or interrupted request never counts as completion. Source checks cover synthetic inputs and crash boundaries; real native GUI/full recovery, Windows qualification and the existing changed-schema publication gates remain unfinished. No operating installation or operating key was used for these source checks.
+
+### Windows app-closed update and full rollback source connection
+
+Prepared reference lookup, fresh apply qualification and full rollback handoffs also use the existing Windows native Store, service-recovery transport and guarded authority readers. Windows request/reference files stay pinned against writers and replacement throughout execution; claim-before-app-close ordering and exact registry/operation/generation checks are unchanged. Record publication uses private CREATE_NEW files with actual file flush, followed by namespace/identity checks. It does not claim Unix directory fsync semantics on Windows.
+
+The source includes five Windows synthetic regressions for request/reference preservation, app-close waiting, single ownership, stale generation and changed reference refusal. They were compiled by strict Windows-target Clippy, not executed on Windows. Mac core and desktop compilation are separate regression evidence. Actual Windows Docker/helper/native GUI/full recovery and changed-schema publication acceptance remain unverified; no operating key or runtime was used in these source checks.

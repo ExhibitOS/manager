@@ -61,7 +61,7 @@ export function UpdateStatusPanel({native,selectionToken,active,onActivity}:{nat
   finally{if(live.current&&epoch.current===run){working.current=false;setPending(false);}}
  }
  const recovery=status?.stage==='recovery_required'||status?.stage==='restoring'||status?.stage==='awaiting_rollback_health';
- return <section className="panel" aria-label="업데이트 상태">
+ return <section className="panel" aria-label="업데이트 상태" data-needs-attention={recovery||status?.stage==='applying'||status?.stage==='awaiting_health'||!!status?.failure||!!status?.writeUncertain||pending||!!application&&application.state!=='updated'||!!rollbackReceipt&&rollbackReceipt.state!=='rolled-back'||!!cancellation&&cancellation.state!=='cancelled'}>
   <h2>업데이트와 복원 상태</h2><p>선택한 관리 공간의 업데이트 기록을 확인합니다. 기록 확인만으로 전시를 변경하지 않습니다.</p>
   <button disabled={!native||active||pending} onClick={()=>void refresh()}>{pending?'업데이트 요청 처리 중…':'업데이트 상태 확인'}</button>
   <div role="status" aria-live="polite">{pending&&<p>작업을 처리하고 있습니다. 앱이 종료되면 다음 실행에서 결과를 확인하세요.</p>}{status&&<>

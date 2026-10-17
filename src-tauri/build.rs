@@ -2,11 +2,27 @@
 fn main() {
     let path="remote-runtime/generated/manifest.json";
     println!("cargo:rerun-if-changed={path}");
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref()!=Ok("windows") { if let Ok(text)=std::fs::read_to_string(path) { println!("cargo:rustc-env=EXHIBITOS_REMOTE_RUNTIME_MANIFEST={}",text.trim()); }}
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref()!=Ok("windows") && let Ok(text)=std::fs::read_to_string(path) { println!("cargo:rustc-env=EXHIBITOS_REMOTE_RUNTIME_MANIFEST={}",text.trim()); }
+
+    let publication="publication-runtime/generated/manifest.json";
+    println!("cargo:rerun-if-changed={publication}");
+    let publication_manifest=std::fs::read(publication).unwrap_or_else(|_|b"{}".to_vec());
+    std::fs::write(std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("publication-manifest.json"),publication_manifest).expect("publication manifest copy");
 
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "manager_status",
+            "manager_publication_catalog",
+            "manager_publication_export",
+            "manager_hosted",
+            "manager_hosted_store",
+            "manager_hosted_connected",
+            "manager_hosted_disconnect",
+            "manager_hosted_choose_source",
+            "manager_hosted_link",
+            "manager_hosted_open_url",
+            "manager_hosted_resume",
+            "manager_hosted_resume_remote",
             "manager_remote",
             "manager_remote_available",
             "manager_remote_cancel",
@@ -18,6 +34,7 @@ fn main() {
             "manager_update_rollback",
             "manager_detect",
             "manager_install",
+            "manager_initial_account_context",
             "manager_action",
             "manager_jobs",
             "manager_logs",
