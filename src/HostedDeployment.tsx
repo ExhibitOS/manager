@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import {useEffect,useRef,useState} from 'react';
-import {hostedClient,hostedFailure,type HostedProvider,type HostedAccount,type HostedReceipt,type HostedSource,type HostedResource,type HostedResume} from './hosted-deployment';
+import {hostedClient,hostedFailure,hostedUncertain,type HostedProvider,type HostedAccount,type HostedReceipt,type HostedSource,type HostedResource,type HostedResume} from './hosted-deployment';
 const name=(provider:HostedProvider)=>provider==='cloudflare'?'Cloudflare':'Render';
 function ProviderConnection({provider,disabled,onAccount}:{provider:HostedProvider;disabled:boolean;onAccount:(id:string)=>void}){
  const [token,setToken]=useState(''),[stored,setStored]=useState(false),[accounts,setAccounts]=useState<HostedAccount[]>([]),[selected,setSelected]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
@@ -43,7 +43,7 @@ export function HostedDeployment(){
    if(api?.state!=='deployed'){api=await hostedClient.operation({provider:'render',action:'deploy-api',workspaceId:workspace,projectName:project,publicUploadApproved:publicConsent,costReviewed:costConsent,apiRequested:true,...(serviceId?{serviceId}:{}),...(postgresId?{postgresId}:{}),staticOnly:false});setApiReceipt(api);if(api.serviceId)setServiceId(api.serviceId);if(api.postgresId)setPostgresId(api.postgresId);if(api.state!=='deployed')return;}
    if(!api.url){setError('API의 실제 공개 주소가 아직 확인되지 않았습니다. 정적 전시는 그대로 공개돼 있습니다.');return;}
    setReceipt(await pages(false));
-  }catch(e){if(hostedFailure(e)==='HOSTED_EXISTING_DATABASE_REQUIRED'){setError('기존 API 서버를 선택했다면 그 서버가 사용하는 데이터베이스도 목록에서 선택하세요. 새 데이터베이스를 만들지 않았습니다.');return;}if(mode==='api'&&hostedFailure(e).includes('UNCERTAIN')){setUncertain(true);setCostConsent(false);}setError(`후속 배포 결과를 확인하지 못했습니다. 기존 정적 전시와 자료는 보존합니다. 제공자의 실제 상태를 확인하세요. 확인 코드: ${hostedFailure(e)}`);}finally{setPending(false);}
+  }catch(e){if(hostedFailure(e)==='HOSTED_EXISTING_DATABASE_REQUIRED'){setError('기존 API 서버를 선택했다면 그 서버가 사용하는 데이터베이스도 목록에서 선택하세요. 새 데이터베이스를 만들지 않았습니다.');return;}if(mode==='api'&&hostedUncertain(e)){setUncertain(true);setCostConsent(false);}setError(`후속 배포 결과를 확인하지 못했습니다. 기존 정적 전시와 자료는 보존합니다. 제공자의 실제 상태를 확인하세요. 확인 코드: ${hostedFailure(e)}`);}finally{setPending(false);}
  }
  async function resources(){if(!workspace)return;setPending(true);setError('');try{const value=await hostedClient.operation({provider:'render',action:'services',workspaceId:workspace});setServices(value.services??[]);setDatabases(value.postgres??[]);setUncertain(false);setCostConsent(false);}catch(e){setError(`사용 가능한 서비스를 확인하지 못했습니다. 확인 코드: ${hostedFailure(e)}`);}finally{setPending(false);}}
  async function refreshApi(){if(!workspace||!apiReceipt)return;setPending(true);setError('');try{setApiReceipt(await hostedClient.operation({provider:'render',action:'status',workspaceId:workspace,projectName:project,...(apiReceipt.serviceId?{serviceId:apiReceipt.serviceId}:{}),...(apiReceipt.postgresId?{postgresId:apiReceipt.postgresId}:{})}));}catch(e){setError(`API 상태를 확인하지 못했습니다. 확인 코드: ${hostedFailure(e)}`);}finally{setPending(false);}}

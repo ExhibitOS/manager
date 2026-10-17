@@ -94,7 +94,88 @@ fn safe_failure_code(code: &str) -> bool {
     if code.len() > 80 {
         return false;
     }
-    if code.starts_with("HOSTED_") && code.bytes().all(|b| b.is_ascii_uppercase() || b == b'_') {
+    if let Some(diagnostic) = code.strip_prefix("HOSTED_JS_") {
+        return [
+            "INPUT",
+            "OUTPUT",
+            "ACCOUNTS",
+            "MEMBERSHIPS",
+            "PROJECT_READ",
+            "PROJECT_CREATE",
+            "UPLOAD_TOKEN",
+            "ASSET_CHECK",
+            "ASSET_UPLOAD",
+            "ASSET_UPSERT",
+            "DEPLOY_LIST",
+            "DEPLOY_STATUS",
+            "DEPLOY_CREATE",
+            "BUNDLE_VERIFY",
+            "ASSET_PREPARE",
+            "DEPLOY_FORM",
+            "RENDER_REQUEST",
+        ]
+        .iter()
+        .any(|stage| {
+            diagnostic
+                .strip_prefix(&format!("{stage}_"))
+                .is_some_and(|kind| {
+                    matches!(
+                        kind,
+                        "TYPE_ERROR"
+                            | "RANGE_ERROR"
+                            | "SYNTAX_ERROR"
+                            | "REFERENCE_ERROR"
+                            | "ERROR"
+                            | "UNKNOWN"
+                    )
+                })
+        });
+    }
+    if [
+        "HOSTED_API_ORIGIN_INVALID",
+        "HOSTED_API_ORIGIN_UNVERIFIED",
+        "HOSTED_BUSY",
+        "HOSTED_CANONICAL_ORIGIN_CONFLICT",
+        "HOSTED_CONFIGURATION_REQUIRED",
+        "HOSTED_CONNECTION_FAILED",
+        "HOSTED_DEPLOYMENT_BRANCH_CONFLICT",
+        "HOSTED_EXISTING_DATABASE_REQUIRED",
+        "HOSTED_FOLDER_UNAVAILABLE",
+        "HOSTED_KEYCHAIN_REMOVE_FAILED",
+        "HOSTED_KEYCHAIN_STORE_FAILED",
+        "HOSTED_KEYCHAIN_UNAVAILABLE",
+        "HOSTED_LINK_UNAVAILABLE",
+        "HOSTED_OPERATION_UNCERTAIN",
+        "HOSTED_PAGINATION_LIMIT",
+        "HOSTED_PAID_PLAN_REFUSED",
+        "HOSTED_PERMISSION_REQUIRED",
+        "HOSTED_PLATFORM_UNSUPPORTED",
+        "HOSTED_PROJECT_CONFLICT",
+        "HOSTED_RATE_LIMITED",
+        "HOSTED_REDIRECT_REFUSED",
+        "HOSTED_REMOTE_REJECTED",
+        "HOSTED_RENDER_NOT_REQUIRED",
+        "HOSTED_REQUEST_INVALID",
+        "HOSTED_RESOURCE_CONFLICT",
+        "HOSTED_RESPONSE_INVALID",
+        "HOSTED_RESULT_UNCERTAIN",
+        "HOSTED_RUNTIME_UNAVAILABLE",
+        "HOSTED_RUNTIME_INPUT_UNCERTAIN",
+        "HOSTED_RUNTIME_WAIT_UNCERTAIN",
+        "HOSTED_RUNTIME_TIMEOUT_UNCERTAIN",
+        "HOSTED_RUNTIME_OUTPUT_UNCERTAIN",
+        "HOSTED_SOURCE_INVALID",
+        "HOSTED_SOURCE_REQUIRED",
+        "HOSTED_STATIC_BUNDLE_CHANGED",
+        "HOSTED_STATIC_BUNDLE_INVALID",
+        "HOSTED_TOKEN_INVALID",
+        "HOSTED_TOKEN_REQUIRED",
+        "HOSTED_URL_UNAVAILABLE",
+        "HOSTED_WORK_INVALID",
+        "HOSTED_WORK_UNAVAILABLE",
+    ]
+    .contains(&code)
+    {
         return true;
     }
     let Some((stage, tail)) = code
@@ -122,12 +203,56 @@ fn safe_failure_code(code: &str) -> bool {
         .map_or((tail, None), |(h, c)| (h, Some(c)));
     if http.len() != 3
         || !http.bytes().all(|b| b.is_ascii_digit())
-        || !(http == "200" || http.starts_with('4'))
+        || !(http.starts_with('2') || http.starts_with('4'))
     {
         return false;
     }
     provider.is_none_or(|n| {
         n.len() >= 4 && n.len() <= 8 && !n.starts_with('0') && n.bytes().all(|b| b.is_ascii_digit())
+    })
+}
+fn write_runtime_input(mut pipe: Option<impl Write>, bytes: &[u8]) -> Result<(), LifecycleError> {
+    pipe.as_mut()
+        .ok_or_else(|| refused("HOSTED_RUNTIME_INPUT_UNCERTAIN"))?
+        .write_all(bytes)
+        .map_err(|_| refused("HOSTED_RUNTIME_INPUT_UNCERTAIN"))
+}
+fn runtime_wait(
+    result: std::io::Result<Option<std::process::ExitStatus>>,
+) -> Result<Option<std::process::ExitStatus>, LifecycleError> {
+    result.map_err(|_| refused("HOSTED_RUNTIME_WAIT_UNCERTAIN"))
+}
+fn runtime_abort(
+    elapsed: Duration,
+    stdout_failed: bool,
+    stderr_failed: bool,
+) -> Option<LifecycleError> {
+    if elapsed > Duration::from_secs(180) {
+        Some(refused("HOSTED_RUNTIME_TIMEOUT_UNCERTAIN"))
+    } else if stdout_failed || stderr_failed {
+        Some(refused("HOSTED_RUNTIME_OUTPUT_UNCERTAIN"))
+    } else {
+        None
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct FailureFrame {
+    error_code: String,
+}
+fn runtime_failure(output: &[u8], stderr: &[u8]) -> LifecycleError {
+    if !output.iter().all(u8::is_ascii_whitespace) {
+        return match serde_json::from_slice::<FailureFrame>(output) {
+            Ok(frame) if safe_failure_code(&frame.error_code) => refused(&frame.error_code),
+            _ => refused("HOSTED_RESPONSE_INVALID"),
+        };
+    }
+    // Compatibility for older fixed-code runners; arbitrary stderr is never forwarded.
+    let code = std::str::from_utf8(stderr).unwrap_or("").trim();
+    refused(if safe_failure_code(code) {
+        code
+    } else {
+        "HOSTED_OPERATION_UNCERTAIN"
     })
 }
 pub fn refused(code: &str) -> LifecycleError {
@@ -787,24 +912,21 @@ pub fn execute(
     let mut child = command
         .spawn()
         .map_err(|_| refused("HOSTED_RUNTIME_UNAVAILABLE"))?;
-    let written = child
-        .stdin
-        .take()
-        .is_some_and(|mut pipe| pipe.write_all(&input).is_ok());
+    let written = write_runtime_input(child.stdin.take(), &input);
     input.fill(0);
-    if !written {
+    if let Err(error) = written {
         super::remote::stop(&mut child);
         token.fill(0);
-        return Err(refused("HOSTED_OPERATION_UNCERTAIN"));
+        return Err(error);
     }
     let out = child
         .stdout
         .take()
-        .ok_or_else(|| refused("HOSTED_OPERATION_UNCERTAIN"))?;
+        .ok_or_else(|| refused("HOSTED_RUNTIME_OUTPUT_UNCERTAIN"))?;
     let err = child
         .stderr
         .take()
-        .ok_or_else(|| refused("HOSTED_OPERATION_UNCERTAIN"))?;
+        .ok_or_else(|| refused("HOSTED_RUNTIME_OUTPUT_UNCERTAIN"))?;
     let (tx, rx) = mpsc::channel();
     let (etx, erx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -825,22 +947,23 @@ pub fn execute(
             errors = erx.try_recv().ok();
         }
         if status.is_none() {
-            status = match child.try_wait() {
+            status = match runtime_wait(child.try_wait()) {
                 Ok(value) => value,
-                Err(_) => {
+                Err(error) => {
                     super::remote::stop(&mut child);
                     token.fill(0);
-                    return Err(refused("HOSTED_OPERATION_UNCERTAIN"));
+                    return Err(error);
                 }
             };
         }
-        if start.elapsed() > Duration::from_secs(180)
-            || output.as_ref().is_some_and(Result::is_err)
-            || errors.as_ref().is_some_and(Result::is_err)
-        {
+        if let Some(error) = runtime_abort(
+            start.elapsed(),
+            output.as_ref().is_some_and(Result::is_err),
+            errors.as_ref().is_some_and(Result::is_err),
+        ) {
             super::remote::stop(&mut child);
             token.fill(0);
-            return Err(refused("HOSTED_OPERATION_UNCERTAIN"));
+            return Err(error);
         }
         if status.is_some() && output.is_some() && errors.is_some() {
             break;
@@ -862,13 +985,8 @@ pub fn execute(
     if !status.unwrap().success() {
         let error = errors
             .unwrap()
-            .map_err(|_| refused("HOSTED_OPERATION_UNCERTAIN"))?;
-        let code = std::str::from_utf8(&error).unwrap_or("").trim();
-        return Err(refused(if safe_failure_code(code) {
-            code
-        } else {
-            "HOSTED_OPERATION_UNCERTAIN"
-        }));
+            .map_err(|_| refused("HOSTED_RUNTIME_OUTPUT_UNCERTAIN"))?;
+        return Err(runtime_failure(&output, &error));
     }
     let response: serde_json::Value =
         serde_json::from_slice(&output).map_err(|_| refused("HOSTED_RESPONSE_INVALID"))?;
@@ -932,6 +1050,77 @@ pub fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_io_failures_keep_uncertainty_and_hide_system_error_text() {
+        struct FailedWriter;
+        impl Write for FailedWriter {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("SYNTHETIC_PRIVATE_SYSTEM_TEXT"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let error = write_runtime_input(Some(FailedWriter), b"synthetic-input").unwrap_err();
+        assert_eq!(error.code, "HOSTED_RUNTIME_INPUT_UNCERTAIN");
+        assert!(!error.guidance.contains("SYNTHETIC_PRIVATE"));
+        assert_eq!(
+            write_runtime_input(None::<Vec<u8>>, b"input")
+                .unwrap_err()
+                .code,
+            "HOSTED_RUNTIME_INPUT_UNCERTAIN"
+        );
+        let error =
+            runtime_wait(Err(std::io::Error::other("SYNTHETIC_PRIVATE_SYSTEM_TEXT"))).unwrap_err();
+        assert_eq!(error.code, "HOSTED_RUNTIME_WAIT_UNCERTAIN");
+        assert!(!error.guidance.contains("SYNTHETIC_PRIVATE"));
+        assert!(runtime_wait(Ok(None)).unwrap().is_none());
+        assert!(runtime_abort(Duration::from_secs(180), false, false).is_none());
+        assert_eq!(
+            runtime_abort(Duration::from_secs(181), false, false)
+                .unwrap()
+                .code,
+            "HOSTED_RUNTIME_TIMEOUT_UNCERTAIN"
+        );
+        for (stdout, stderr) in [(true, false), (false, true)] {
+            assert_eq!(
+                runtime_abort(Duration::ZERO, stdout, stderr).unwrap().code,
+                "HOSTED_RUNTIME_OUTPUT_UNCERTAIN"
+            );
+        }
+    }
+    #[test]
+    fn failure_frame_survives_warnings_and_rejects_extra_or_duplicate_fields() {
+        let frame = br#"{"errorCode":"HOSTED_CF_ASSET_UPLOAD_HTTP_204"}"#;
+        assert_eq!(
+            runtime_failure(frame, b"incidental synthetic warning").code,
+            "HOSTED_CF_ASSET_UPLOAD_HTTP_204"
+        );
+        assert_eq!(
+            runtime_failure(
+                br#"{"errorCode":"HOSTED_JS_DEPLOY_FORM_TYPE_ERROR"}"#,
+                b"warning"
+            )
+            .code,
+            "HOSTED_JS_DEPLOY_FORM_TYPE_ERROR"
+        );
+        assert_eq!(
+            runtime_failure(b"", b"HOSTED_TOKEN_REQUIRED").code,
+            "HOSTED_TOKEN_REQUIRED"
+        );
+        for frame in [
+            br#"{"errorCode":"HOSTED_TOKEN_REQUIRED","message":"private"}"#.as_slice(),
+            br#"{"errorCode":"HOSTED_TOKEN_REQUIRED","errorCode":"HOSTED_BUSY"}"#,
+            br#"{"errorCode":"HOSTED_JS_ARBITRARY_ERROR"}"#,
+            br#"{"errorCode":"HOSTED_UNCLASSIFIED_EXCEPTION"}"#,
+            br#"{"errorCode":"HOSTED_CF_ASSET_UPLOAD_HTTP_204?token=private"}"#,
+        ] {
+            assert_eq!(
+                runtime_failure(frame, b"HOSTED_TOKEN_REQUIRED").code,
+                "HOSTED_RESPONSE_INVALID"
+            );
+        }
+    }
     #[test]
     fn reconciliation_returns_first_safe_failure_and_still_observes_both_saved_targets() {
         let work: Work = serde_json::from_value(serde_json::json!({

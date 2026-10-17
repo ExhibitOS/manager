@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import {describe,it,expect} from 'vitest';
-import {parseHostedReceipt,hostedUrl,hostedFailure} from './hosted-deployment';
+import {parseHostedReceipt,hostedUrl,hostedFailure,hostedUncertain} from './hosted-deployment';
 describe('hosted public receipt boundary',()=>{
  it('keeps provider completion separate from dynamic application readiness and optional expiry',()=>{
   const r=parseHostedReceipt({provider:'render',action:'status',state:'deployed',databaseState:'available',serviceId:'srv-synthetic'});
@@ -12,6 +12,14 @@ describe('hosted public receipt boundary',()=>{
   expect(parseHostedReceipt(base).accounts).toHaveLength(1);
   for(const bad of [{...base,token:'synthetic-token'},{...base,accounts:[{id:'a',name:'A',raw:'private'}]},{...base,url:'https://attacker.invalid/'},{...base,expiresAt:'never'}])expect(()=>parseHostedReceipt(bad)).toThrow('HOSTED_RESPONSE_INVALID');
   expect(hostedUrl('https://my-show.pages.dev')).toBe(true);expect(hostedUrl('https://user:password@my-show.pages.dev')).toBe(false);expect(hostedUrl('https://my-show.pages.dev/?token=secret')).toBe(false);
+ });
+ it('keeps all bounded 2xx diagnostics and only fixed JavaScript stage/class pairs',()=>{
+  for(const code of ['HOSTED_CF_ASSET_UPLOAD_HTTP_204','HOSTED_JS_DEPLOY_FORM_TYPE_ERROR','HOSTED_JS_ASSET_PREPARE_ERROR','HOSTED_RUNTIME_INPUT_UNCERTAIN','HOSTED_RUNTIME_WAIT_UNCERTAIN','HOSTED_RUNTIME_TIMEOUT_UNCERTAIN','HOSTED_RUNTIME_OUTPUT_UNCERTAIN'])expect(hostedFailure({code})).toBe(code);
+  for(const code of ['HOSTED_UNCLASSIFIED_EXCEPTION','HOSTED_JS_PRIVATE_ERROR','HOSTED_JS_DEPLOY_FORM_ERR_INVALID_STATE','HOSTED_CF_ASSET_UPLOAD_HTTP_204_SECRET'])expect(hostedFailure({code})).toBe('HOSTED_OPERATION_UNCERTAIN');
+ });
+ it('keeps unknown JS 2xx envelopes native failures and malformed response frames uncertain',()=>{
+  for(const code of ['HOSTED_JS_DEPLOY_FORM_ERROR','HOSTED_CF_ASSET_UPLOAD_HTTP_204','HOSTED_RUNTIME_TIMEOUT_UNCERTAIN','HOSTED_RESPONSE_INVALID'])expect(hostedUncertain({code})).toBe(true);
+  expect(hostedUncertain({code:'HOSTED_CF_DEPLOY_LIST_HTTP_400_CODE_8000024'})).toBe(false);
  });
  it('only shows fixed local error codes, never original exception text',()=>{
   expect(hostedFailure({code:'HOSTED_CF_ASSET_CHECK_HTTP_404_CODE_10000'})).toBe('HOSTED_CF_ASSET_CHECK_HTTP_404_CODE_10000');

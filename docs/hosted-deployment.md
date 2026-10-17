@@ -17,3 +17,7 @@ Mac 앱에서 공개 방식 선택 → 제공자 API 토큰을 암호 입력란�
 Cloudflare 토큰에는 사용자 Memberships Read와 선택한 계정의 Cloudflare Pages Edit를 허용합니다. 계정 조회가 비거나 목록 권한이 부족하면 공식 GET /memberships로 수락한 API 접근 가능 계정을 확인합니다. 계정이 표시되는 것만으로 Pages 쓰기 권한이 검증됐다고 표시하지 않습니다.
 
 Pages 요청 거절은 고정 단계·HTTP 상태·숫자 제공자 코드만 확인 코드에 표시합니다. 원격 응답 메시지·헤더·계정 ID·경로·토큰은 표시하지 않습니다. 단계 진단을 위해 배포 쓰기를 자동 재시도하지 않으며, 저장된 이전 작업의 상태 조회는 GET-only입니다.
+
+실패 runner는 stdout에 `{errorCode: 고정코드}` 단일 프레임을 반환합니다. native는 알 수 없는 필드·중복 필드·미허용 코드를 거부하고 stderr 경고와 분리합니다. 이전 고정 stderr 코드만 반환하는 runner도 호환합니다. 미분류 JS 예외는 고정 처리 단계와 Error/TypeError 등 종류만 표시하며 원문 message/code/stack은 표시하지 않습니다. 2xx 응답의 예기치 않은 빈·거절 결과도 HTTP 상태를 보존합니다. 정상 성공 결과 wire와 네트워크·5xx 쓰기 불확실성 정책은 유지합니다.
+
+Native의 stdin 전달·프로세스 대기·180초 제한·출력 상한 실패는 각각 고정 UNCERTAIN 코드로 구분합니다. 기존 180초·stdout256KiB·stderr4KiB 및 종료 정책은 유지하며, 상한 내의 stderr 경고만 유효한 stdout 오류 프레임과 분리합니다. 상한 초과는 성공이나 안전한 미실행으로 취급하지 않습니다.
