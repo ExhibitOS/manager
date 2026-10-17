@@ -21,3 +21,5 @@ Pages 요청 거절은 고정 단계·HTTP 상태·숫자 제공자 코드만 �
 실패 runner는 stdout에 `{errorCode: 고정코드}` 단일 프레임을 반환합니다. native는 알 수 없는 필드·중복 필드·미허용 코드를 거부하고 stderr 경고와 분리합니다. 이전 고정 stderr 코드만 반환하는 runner도 호환합니다. 미분류 JS 예외는 고정 처리 단계와 Error/TypeError 등 종류만 표시하며 원문 message/code/stack은 표시하지 않습니다. 2xx 응답의 예기치 않은 빈·거절 결과도 HTTP 상태를 보존합니다. 정상 성공 결과 wire와 네트워크·5xx 쓰기 불확실성 정책은 유지합니다.
 
 Native의 stdin 전달·프로세스 대기·180초 제한·출력 상한 실패는 각각 고정 UNCERTAIN 코드로 구분합니다. 기존 180초·stdout256KiB·stderr4KiB 및 종료 정책은 유지하며, 상한 내의 stderr 경고만 유효한 stdout 오류 프레임과 분리합니다. 상한 초과는 성공이나 안전한 미실행으로 취급하지 않습니다.
+
+Render 비용 동의 앞에는 무료 PostgreSQL의 생성30일 후 만료·접근 중단, 14일 유예 뒤 삭제, 제공자 백업 미지원, 별도 로컬 보관 필요와 앱의 자동 연장·재생성·유료 전환 없음이 표시됩니다. 이는 일반 무료 정책이며 실제 날짜는 여전히 제공자 `expiresAt`가 있을 때만 표시합니다. [Render 공식 무료 정책](https://render.com/docs/free)을 근거로 하며 자동 원격 백업 완료를 주장하지 않습니다. 같은 전시의 실제 응답을 받으면 UI의 이전 작업 receipt/phase도 함께 갱신하며 이를 위한 추가 Keychain 조회는 하지 않습니다.
