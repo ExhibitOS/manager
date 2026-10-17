@@ -1,0 +1,113 @@
+{
+  "date": "2026-10-17T20:25:40.056838+00:00",
+  "existingTasks": [
+    "T08-02",
+    "T08-03"
+  ],
+  "status": "LATEST_SUCCESS_RECONCILED_NATIVE_GUI_PREPARATION_ONLY",
+  "managerHead": "8f4f60df47e4bf89bf46d220fca0514c30506bc4",
+  "sourceCleanBeforeThisRecord": true,
+  "branch": "codex/windows-recovery-integration",
+  "pr": {
+    "url": "https://github.com/ExhibitOS/manager/pull/180",
+    "observedState": "OPEN DRAFT",
+    "observedRemoteHead": "0a87506a16bae99c0d5d4418e5f4eda5f8634d48",
+    "observationCommandHandle": 51928,
+    "localEnginePreparationNotYetInRemotePR": true
+  },
+  "evidenceReused": {
+    "nativeExistingEngine": {
+      "source": "0a87506a16bae99c0d5d4418e5f4eda5f8634d48",
+      "scope": [
+        "isolated fresh local account",
+        "install/start/readiness",
+        "Studio local edit/save/reopen",
+        "normal stop/quit/relaunch without auto-start",
+        "reuse without duplicate install"
+      ],
+      "qualification": "Does not qualify backup/restore/update/rollback or no-engine installation."
+    },
+    "preservedRecoveryRealm": {
+      "source": "2535d934cc3fb93f90fe61c9319d78e7aa06c395",
+      "scope": "Synthetic Mac Docker source/candidate; not operating user data",
+      "serviceRestore": "PASS restored-ready",
+      "sourceBackup": "PASS 13.535s",
+      "candidateRestore": "PASS 38.287s",
+      "sourceBoundHostTrustPair": "PASS 180.175s",
+      "fullReferenceRegistration": "PASS 560.019s after f0d242f, reference published",
+      "actualApply": "PASS 570.612s; public updated/gen6, writeUncertain=false; independent selected-image/readiness/DB/blob/signing witness matched",
+      "actualFullRollback": "PASS 50.065s; public rolled_back/gen10, writeUncertain=false; independent source image/DB/blob/signing witness/authenticated schema matched; source and updated target preserved",
+      "fullReferenceRegistrationHistoricalFailure": "FAILED HOST_CHECKPOINT_INVALID 565.501s before fixed comparison policy; preserved historical result, superseded by following actual success.",
+      "qualification": "Same-schema actual CLI/public handoff execution on synthetic Mac realm. Native GUI and interrupted/failure/changed-migration acceptance are separate."
+    },
+    "fix": {
+      "source": "f0d242f",
+      "scope": "Only four fixed native runtime-control namespaces separately validated during current service-state comparison. Authenticated archive extraction and all other source/trust/config/key checks unchanged.",
+      "focusedRegressionPassed": 6,
+      "independentReadReview": "PASS",
+      "actualReferenceRequalification": "PASS; supersedes initial historical failure."
+    },
+    "latestAuthoritativeReceipts": {
+      "registration": "full-reference-registration-after-f0d-93ad90e0-7fed-432c-b897-614afcd02048-result.json",
+      "apply": "actual-public-apply-8ff7cd6a-c4fd-43ae-ad30-b20a7f79552b.json",
+      "rollback": "actual-public-rollback-be5b3e35-c777-4699-95c4-f1020b8474e5.json",
+      "realm": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-current-signed-realm-e0b69c7a-ba83-45e2-a92b-cba86b32121d",
+      "inspection": "actual-rollback-independent-inspection-72aaab0c-5ba0-4ca5-96d5-ee6ae73c35c5/rollback-verification.json and rollback-witness-verification.json allPassed=true",
+      "runtimeAtRecordedFinish": "Own test services normally stopped; no image/volume/container deletion. Historical observed state, not a new live engine observation."
+    }
+  },
+  "nextSmallestExistingUnit": {
+    "first": "Actual native backup/verify/fresh-restore user flow on the already-qualified isolated user-chosen-account installation; reuse supported known engine, safe key selection and qualified immutable maintenance image.",
+    "then": [
+      "Observe original-record visibility, selection, valid/invalid paths, duplicate-action prevention, failure/retry and result/readiness distinction.",
+      "Verify actual restored special-character account login and preservation of original/ciphertext/key/volumes; no credential output.",
+      "Read actual terminal update/rollback status in native GUI. Do not replay a terminal rolled-back intent or repeat complete successful CLI qualification only to accumulate a GUI claim."
+    ],
+    "doNotRepeat": [
+      "Full reference/apply/rollback happy path already independently verified on unchanged core",
+      "Accepted source/unit/browser passes with no changed source or new failure"
+    ],
+    "requiredInputsToConfirmWithCoordinator": [
+      "Permitted isolated native app/profile and no active user work",
+      "Existing test key locator and safe permission checks, without key contents",
+      "Compatible fixed maintenance image and any required safe test data",
+      "Additional storage/single heavy slot before actual engine operations"
+    ],
+    "implementationChange": "None made. Beginner backup/restore forms currently expose full key/archive paths and maintenance SHA input; reuse existing selection/resource metadata only if a concrete minimum UX change is authorized and needed."
+  },
+  "separateIncompleteScope": {
+    "noEngineInstall": "Source/tests exist at8f4f60d; no-engine official download/install/OS approval/VM start is unqualified. Existing Docker is preserved. A separately authorized fresh environment is required; do not uninstall/hide existing engine or introduce a new VM/support environment.",
+    "formalDistribution": "Developer ID/notarization and actual clean user-distribution qualifications remain external requirements. Local ad-hoc/build passes do not qualify them.",
+    "changedSchema": "Existing adapter still refuses changed schema with UPDATE_RUNTIME_MIGRATION_UNQUALIFIED. Same-schema qualification cannot complete changed-migration/full recovery requirements.",
+    "nativeRecoveryGUI": "Source connected; actual backup/restore/app-close update and original rollback user flows are not yet qualified."
+  },
+  "binaryBaseline": {
+    "target/release/exhibitos-manager": "cff2fa00250f48aab4a7065786c882e81ae27d3db0a8e8ed519097fdf6602634",
+    "target/release/exhibitos-update": "532352ebbc7d1c8e97503747c197a102a2610f71c2df99defd26dae45c7f3224",
+    "qualification": "Retained binaries have exact historical evidence: update532352… matches successful f0d core registration. Do not label them a current8f4 build or repeat the whole successful path. A fresh build is needed only for relevant changed source execution."
+  },
+  "safety": {
+    "keyContentsRead": false,
+    "privateRuntimeEnvironmentRead": false,
+    "engineCommandsRun": false,
+    "buildsRun": false,
+    "userOrEngineDataDeleted": false,
+    "newTasksOrGates": false,
+    "newSupportEnvironment": false
+  },
+  "relatedDocs": [
+    "authority-recovery.md",
+    "current-host-stream.md",
+    "backup-creation.md",
+    "backup-restoration.md",
+    "rollback-runtime.md",
+    "initial-account-verification-2026-10-17.json",
+    "engine-preparation-verification-2026-10-17.json"
+  ],
+  "sourceReuseAssessment": {
+    "f0d242fToCurrent": "No diff in update_execution_reference, update_execution_handoff, update_rollback_handoff and host_current_inventory. UpdateStatus adds attention visibility only. Native apply/rollback IPC dispatch bodies unchanged.",
+    "relatedChanges": "Initial-account literal ADMIN_PASSWORD decode/project handling changed installation_backup/restoration; existing focused regressions pass but actual new-account backup/restore GUI needs qualification.",
+    "0a87506To8f4f60d": "Backup/restore/verify/update panels and backend backup/restoration code unchanged. Only engine preparation additions in App/native lib; existing0a app can qualify unchanged recovery components with exact scope, not new8f4 engine preparation."
+  },
+  "reconciliationCorrection": "Initial preparation selected older failure evidence; latest successful original receipt and independent witnesses were then read and reconciled before any product execution, build or commit. No duplicate full-recovery run occurred."
+}
