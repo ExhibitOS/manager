@@ -314,8 +314,23 @@ struct Work {
     #[serde(default)]
     api_origin: Option<String>,
 }
+fn work_bytes(work: &Work) -> Result<Vec<u8>, LifecycleError> {
+    let mut value = serde_json::to_value(work).map_err(|_| refused("HOSTED_WORK_UNAVAILABLE"))?;
+    // Internal pins have dedicated journal fields. Keep persisted requests on the
+    // renderer wire schema so deny_unknown_fields still rejects renderer overrides.
+    for key in ["request", "staticRequest", "apiRequest"] {
+        if let Some(request) = value
+            .get_mut(key)
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            request.remove("expectedManifestSha256");
+            request.remove("apiOrigin");
+        }
+    }
+    serde_json::to_vec(&value).map_err(|_| refused("HOSTED_WORK_UNAVAILABLE"))
+}
 fn save_work(work: &Work) -> Result<(), LifecycleError> {
-    let mut bytes = serde_json::to_vec(work).map_err(|_| refused("HOSTED_WORK_UNAVAILABLE"))?;
+    let mut bytes = work_bytes(work)?;
     let result = super::hosted_keychain::store("hosted-work", &bytes);
     bytes.fill(0);
     result.map_err(|_| refused("HOSTED_WORK_UNAVAILABLE"))
@@ -916,6 +931,9 @@ mod tests {
     #[test]
     fn serialized_restart_intent_preserves_both_stages_without_credentials() {
         let request:Request=serde_json::from_value(serde_json::json!({"provider":"cloudflare","action":"deploy-static","staticOnly":false,"accountId":"account-a","projectName":"show-a"})).unwrap();
+        let mut request = request;
+        request.expected_manifest_sha256 = Some("a".repeat(64));
+        request.api_origin = Some("https://show-a.onrender.com".into());
         let work = Work {
             version: 1,
             request: request.clone(),
@@ -941,7 +959,7 @@ mod tests {
             api_requested: true,
             api_origin: Some("https://show-a.onrender.com".into()),
         };
-        let bytes = serde_json::to_vec(&work).unwrap();
+        let bytes = work_bytes(&work).unwrap();
         let restored: Work = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(restored.source.publication_id, "publication-original");
         assert_eq!(
