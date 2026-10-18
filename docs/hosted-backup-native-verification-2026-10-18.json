@@ -1014,5 +1014,52 @@
       "handle": null,
       "appLaunched": false
     }
+  },
+  "externalVerificationSourceLink": {
+    "recordedAt": "2026-10-18T11:50:45.320104+00:00",
+    "status": "NATIVE_SOURCE_LINK_IMPLEMENTED_AUTHENTICATION_AND_REOPEN_VERIFIED_NOT_DB_RESTORE",
+    "tasks": [
+      "T08-02"
+    ],
+    "implementation": "Native source.json beside successful verification receipt binds authenticated backupId, manifest SHA, exact cipher inventory and source metadata pins. No key data, fabricated hosted Job, new IPC or public receipt fields. Original hosted validation and Windows route unchanged. Metadata custody is not fresh crypto authorization.",
+    "sourceFiles": {
+      "crates/lifecycle/src/lib.rs": "12563826f8c01a39040196fd945ec3497470e20e2364784b80134c8876c4fe4d",
+      "crates/lifecycle/src/maintenance.rs": "e3d379fedca384256ec1f4edd892a8577078bc7c8986e6cfe2a24b7f78933e08",
+      "crates/lifecycle/src/maintenance_source.rs": "706f540d0aebc76346057aecdc0a1e76e636ff7ee9ab884ba45c009222eb8143"
+    },
+    "tests": {
+      "focusedRust": 19,
+      "firstRun": "17913:14 PASS/4 invalid synthetic archive fixtures; corrected fixtures without weakening closed inventory",
+      "regressions": "Unknown fields, missing legacy source link, altered receipt/manifest/file/directory/mode, extra cipher, symlink, Unicode paths, helper-time churn",
+      "actualSession": 86010,
+      "actualExit": 0,
+      "actualCrypto": true,
+      "actualSourceRecordAndServiceReopen": true,
+      "wrongKeyRejected": true,
+      "originalArchiveAndKeyPreserved": true,
+      "freshInstallationRootPreserved": true,
+      "actualDBRestore": false,
+      "actualNativeGUI": false,
+      "actualRender": false,
+      "dockerNormalStopExit": 0,
+      "postStopObservation": "Only pre-existing vmnetd PID528 observed; preserved"
+    },
+    "evidence": [
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/verification-source-linkage-f7cd4351-4d80-4f4d-bbb5-7e04be9abbfd/receipt.json",
+        "sha256": "bc37fe641118e7442c2d221a353d0780252743bec08c4b428b8e644ae63d15a9"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-verification-source-actual-e496cf87-6859-4cad-8edd-a8316eb5b63a/receipt.json",
+        "sha256": "f102423c6afbe4073ffc16cd2869c6c2c2384c90f7b1e340de31190f366e69e0"
+      }
+    ],
+    "independentReview": "remaining_studio_flow read-only review; root byte-boundary and directory-mode defects corrected before final tests; no remaining concrete blocker reported",
+    "remaining": [
+      "Durable external archive DB-check job and explicit ownership/cancel/reconcile/relaunch routing",
+      "GUI source selection/reopen and isolated restore action",
+      "Whole-service activation, migration/update/rollback and actual native user validation"
+    ],
+    "scope": "No task/gate/support change; legacy receipts stay valid authentication receipts and are not promoted to new source records."
   }
 }

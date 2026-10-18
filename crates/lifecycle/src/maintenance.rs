@@ -164,6 +164,7 @@ impl LifecycleService {
         {
             return Err(err("IMAGE_INTEGRITY"));
         }
+        let source_snapshot=super::maintenance_source::SourceSnapshot::capture(source)?;
         let id = Uuid::new_v4().to_string();
         let workspace = self.root.join(format!("backup-verification-{id}"));
         fs::create_dir(&workspace).map_err(|_| err("STATE_UNAVAILABLE"))?;
@@ -260,7 +261,9 @@ impl LifecycleService {
             if bytes.len() > 16 * 1024 * 1024 {
                 return Err(err("BACKUP_RESULT_INVALID"));
             }
-            receipt(&value, &id, image, &digest(&bytes))
+            let receipt=receipt(&value, &id, image, &digest(&bytes))?;
+            source_snapshot.preserve(&workspace,&receipt)?;
+            Ok(receipt)
         });
         match outcome {
             Ok(value) => {
@@ -544,12 +547,14 @@ mod tests {
     #[cfg(all(unix,target_os="macos"))]
     #[test]
     fn external_archive_preinstall_authentication_is_profile_private_and_engine_bound(){
+        use std::os::unix::fs::PermissionsExt;
         let base=std::env::temp_dir().join(format!("external-verify-{}",Uuid::new_v4()));
         fs::create_dir(&base).unwrap();let base=fs::canonicalize(base).unwrap();
         let profile=LifecycleService::new(base.join("profile")).unwrap();
         let selected=LifecycleService::new(profile.root.join("fresh-installation")).unwrap();
-        let source=LifecycleService::new(base.join("archive")).unwrap().root;
-        fs::write(source.join("original"),b"unchanged encrypted fixture").unwrap();
+        let source=base.join("archive");fs::create_dir(&source).unwrap();fs::set_permissions(&source,fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(source.join("manifest.gcm"),b"unchanged encrypted fixture").unwrap();
+        fs::create_dir(source.join("files")).unwrap();for name in ["complete.json","writing.json","files/00000000.gcm"]{write_private_new(&source,name,b"synthetic",1024).unwrap();}fs::set_permissions(source.join("files"),fs::Permissions::from_mode(0o700)).unwrap();fs::set_permissions(source.join("manifest.gcm"),fs::Permissions::from_mode(0o600)).unwrap();
         let key=base.join("backup.key");write_private_new(&base,"backup.key",&[7u8;32],32).unwrap();
         let resources=base.join("resources");fs::create_dir(&resources).unwrap();
         let image=format!("sha256:{}","b".repeat(64));let payload=b"synthetic helper archive";
@@ -571,7 +576,7 @@ mod tests {
             let mount=args.iter().find(|p|p.ends_with(",target=/backup-workspace")).unwrap();
             let workspace=PathBuf::from(mount.strip_prefix("type=bind,source=").unwrap().strip_suffix(",target=/backup-workspace").unwrap());
             assert_eq!(workspace.parent(),Some(profile.root.as_path()));
-            fs::create_dir(workspace.join("plaintext")).unwrap();fs::write(workspace.join("plaintext/manifest.json"),b"authenticated fixture only").unwrap();
+            fs::create_dir(workspace.join("plaintext")).unwrap();write_private_new(&workspace.join("plaintext"),"manifest.json",&serde_json::to_vec(&serde_json::json!({"schemaVersion":"1.0.0-draft.1","kind":"service-backup","id":"c30e227b-e771-43dc-b315-023e0469d4d2","files":[{"path":"files/00000000.gcm"}]})).unwrap(),4096).unwrap();
             Ok(br#"{"operation":"verified","files":1}"#.to_vec())
         }).unwrap();
         assert_eq!(result.operation,"verified");assert_eq!(calls,vec!["image","image","run"]);
@@ -579,7 +584,7 @@ mod tests {
         // Existing preparation, not a relaxed fresh-root admission, still accepts the target.
         runtime_prepare::prepare(&selected.root,&resources).unwrap();
         assert!(selected.root.join("bundle/manifest.json").is_file());assert!(!selected.root.join("installed.json").exists());
-        assert_eq!(fs::read(source.join("original")).unwrap(),b"unchanged encrypted fixture");assert_eq!(fs::read(&key).unwrap(),[7u8;32]);
+        assert_eq!(fs::read(source.join("manifest.gcm")).unwrap(),b"unchanged encrypted fixture");assert_eq!(fs::read(&key).unwrap(),[7u8;32]);
         for _ in 0..2{
             assert_eq!(profile.verify_external_backup_with(&resources,&image,&key,&source,||probe(true),|args,_|{
                 if args[0]=="image"&&args[1]=="ls"{Ok(format!("{image}\n").into_bytes())}else if args[0]=="image"{Ok(serde_json::to_vec(&serde_json::json!([{"Id":image}])).unwrap())}else{Err(err("ENGINE_OPERATION_FAILED"))}
@@ -587,7 +592,7 @@ mod tests {
         }
         let failed=fs::read_dir(&profile.root).unwrap().filter_map(|e|{let p=e.unwrap().path();p.join("failed.json").is_file().then_some(p)}).collect::<Vec<_>>();assert_eq!(failed.len(),2);
         assert!(profile.root.join(format!("backup-verification-{}/receipt.json",result.id)).is_file());
-        assert_eq!(fs::read(source.join("original")).unwrap(),b"unchanged encrypted fixture");
+        assert_eq!(fs::read(source.join("manifest.gcm")).unwrap(),b"unchanged encrypted fixture");
     }
     #[test]
     fn receipt_accepts_only_exact_safe_success_and_never_repeats_raw_output() {

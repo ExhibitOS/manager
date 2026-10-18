@@ -14,6 +14,8 @@ pub mod installations;
 pub mod initial_account;
 pub mod engine_preparation;
 pub mod maintenance;
+#[cfg(not(windows))]
+pub mod maintenance_source;
 mod maintenance_stream;
 mod process_window;
 pub mod profile_backup;
