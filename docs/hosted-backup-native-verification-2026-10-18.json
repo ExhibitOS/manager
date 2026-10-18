@@ -795,5 +795,44 @@
     "taskCountsChanged": false,
     "goal": "active",
     "nativeHumanQualityAndWholeGuiAccepted": false
+  },
+  "localPublicationCustody20261018": {
+    "source": "7d97011",
+    "scope": "Optional job-bound local approved static-publication custody beside existing encrypted DB backup; original archive unchanged.",
+    "behavior": [
+      "One Work v1 observation binds original DB source/configuration and static publication/revision/index pins.",
+      "Safe identifier-only Work snapshot and complete static files are retained privately in the original job sibling workspace. No tokens, DB passwords or signing keys join the companion.",
+      "Fixed resource-pinned native Node mode verifies source manifest and every file, copies through bounded file handles, verifies copy and preserves partial failures.",
+      "Missing legacy metadata/source or companion failure leaves DB backup completion unchanged. Existing current-space floor/budget is reused.",
+      "UI shows a separate historical custody record; it does not reverify every file on each history read. Existing archive export contains no companion."
+    ],
+    "checks": {
+      "fixedRunner": "12 passed (existingDB7 + new5), no provider network",
+      "nativeHosted": "33055 exit0 /24 cases",
+      "versionCapture": "67862 exit0 /1 updated case",
+      "jobWorkspace": "24763 exit0 /1; initial6985 fixture-only failure retained",
+      "aggregate": "33212 exit0; type/lint/build,72Vitest/11files,9receipt,6installer",
+      "browser": "67922 exit0; desktop/narrow2; real Chromium UI with synthetic IPC",
+      "actualCC0Copy": "25files/7,740,023B source and destination SHA/mode equality; fixed Node copy and reuse exit0",
+      "independentReview": "Root and independent agent reviewed native/JS/UI/callback lock flow; no concrete blocking regression."
+    },
+    "evidence": [
+      {
+        "directory": "manager-hosted-publication-native-7c3b1902-bcf8-42df-a5be-0d7ef7322bed",
+        "receiptSHA256": "fba76dd478cdb05f4fb1d36a0868e8a1af2560c38c058e41ad321825b7ddb389"
+      },
+      {
+        "directory": "hosted-publication-custody-actual-6f62f77d-b190-4530-a4d4-b5648779645f",
+        "receiptSHA256": "c9aa3b68b8b331c95722e41fdba7bcc731df218f107829c3a08b245b8c3e6080"
+      }
+    ],
+    "limits": [
+      "Native actual provider/Keychain DB-create-to-copy not executed.",
+      "New Manager app/runtime resource package not yet produced or launched.",
+      "Companion excluded from archive export and not yet consumed by whole restore.",
+      "Actual transformed Pages HTML/worker/routes and original Render executable are not proven preserved.",
+      "Whole installation/service restore, migration/update/rollback and human GUI acceptance remain incomplete."
+    ],
+    "integration": "Code committed/pushed to existing draft PR180; no publication or paid work."
   }
 }
