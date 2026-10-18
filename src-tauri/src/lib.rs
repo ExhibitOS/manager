@@ -696,15 +696,16 @@ async fn manager_verify_backup(
     caller(&window)?;
     input.validate()?;
     let resources=app.path().resource_dir().map_err(|_|error("PLATFORM_RUNTIME_UNAVAILABLE"))?;
-    blocking(state.0.clone(), selection_token, move |service| {
-        service.prepare_bundled_maintenance(&resources.join("platform-runtime/generated"),&input.image)?;
-        service.verify_backup(
+    let controller=state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        controller.verify_external_backup(
+            &selection_token,
+            &resources.join("platform-runtime/generated"),
             &input.image,
             std::path::Path::new(&input.key_path),
             std::path::Path::new(&input.source_path),
         )
-    })
-    .await
+    }).await.map_err(|_|error("MANAGER_OPERATION"))?
 }
 #[tauri::command]
 async fn manager_status(

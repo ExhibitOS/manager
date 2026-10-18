@@ -109,6 +109,36 @@ impl LifecycleService {
         if !image.strip_prefix("sha256:").is_some_and(hash_valid) {
             return Err(err("BACKUP_IMAGE_INVALID"));
         }
+        self.verification_inputs(key,source)?;
+        let manifest = self.manifest()?;
+        let installed: BundleManifest = read_json(&self.root.join("installed.json"))?;
+        if serde_json::to_value(installed).ok() != serde_json::to_value(&manifest).ok() {
+            return Err(err("BUNDLE_CHANGED"));
+        }
+        let engine = self.engine(&manifest, false)?;
+        self.verify_backup_with_backend(image,key,source,|args,seconds|run(&engine,args,None,seconds))
+        }
+    }
+    /// A new Mac authenticates external bytes using only this app's declared helper.
+    /// Profile storage is distinct from the still-empty installation destination.
+    #[cfg(target_os="macos")]
+    pub(crate) fn verify_external_backup_uninstalled(&self,resources:&Path,image:&str,key:&Path,source:&Path)->Result<VerificationReceipt>{
+        let _lock=self.lock()?;
+        self.verify_external_backup_with(resources,image,key,source,||self.detect(),|args,seconds|run("docker",args,None,seconds))
+    }
+    #[cfg(all(not(windows),any(target_os="macos",test)))]
+    fn verify_external_backup_with(&self,resources:&Path,image:&str,key:&Path,source:&Path,detect:impl FnOnce()->Result<Vec<EngineProbe>>,mut backend:impl FnMut(&[String],u64)->Result<Vec<u8>>)->Result<VerificationReceipt>{
+        self.verification_inputs(key,source)?;
+        if self.bundled_maintenance_image(resources)?.as_deref()!=Some(image){return Err(err("BACKUP_IMAGE_INVALID"));}
+        // The bundled maintenance importer is Docker-only. Never prepare in one
+        // engine and inspect/run in another or change an installed engine pin.
+        let engine=choose_engine(&detect()?,Some("docker"))?;
+        if engine!="docker"{return Err(err("STATE_INVALID"));}
+        runtime_prepare::ensure_maintenance(resources,image,&mut backend)?;
+        self.verify_backup_with_backend(image,key,source,backend)
+    }
+    #[cfg(not(windows))]
+    fn verification_inputs(&self,key:&Path,source:&Path)->Result<()>{
         input_path(&self.root, true)?;
         input_path(key, false)?;
         input_path(source, true)?;
@@ -118,16 +148,13 @@ impl LifecycleService {
         {
             return Err(err("BACKUP_PATH_OVERLAP"));
         }
-        let manifest = self.manifest()?;
-        let installed: BundleManifest = read_json(&self.root.join("installed.json"))?;
-        if serde_json::to_value(installed).ok() != serde_json::to_value(&manifest).ok() {
-            return Err(err("BUNDLE_CHANGED"));
-        }
-        let engine = self.engine(&manifest, false)?;
-        let inspected: Value = serde_json::from_slice(&run(
-            &engine,
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    fn verify_backup_with_backend(&self,image:&str,key:&Path,source:&Path,mut backend:impl FnMut(&[String],u64)->Result<Vec<u8>>)->Result<VerificationReceipt>{
+        self.verification_inputs(key,source)?;
+        let inspected: Value = serde_json::from_slice(&backend(
             &["image".into(), "inspect".into(), image.into()],
-            None,
             15,
         )?)
         .map_err(|_| err("IMAGE_INTEGRITY"))?;
@@ -199,27 +226,20 @@ impl LifecycleService {
             "--destination".into(),
             "/backup-workspace/plaintext".into(),
         ]);
-        let output = run(&engine, &args, None, 3600);
+        let output = backend(&args, 3600);
         if output.is_err() {
             // A killed engine CLI may leave its child container alive. Remove only our exact label.
-            if let Ok(bytes) = run(
-                &engine,
+            if let Ok(bytes) = backend(
                 &[
                     "inspect".into(),
                     "--format".into(),
                     "{{index .Config.Labels \"com.exhibitos.verification\"}}".into(),
                     container.clone(),
                 ],
-                None,
                 15,
             ) && String::from_utf8(bytes).is_ok_and(|value| value.trim() == id)
             {
-                let _ = run(
-                    &engine,
-                    &["rm".into(), "--force".into(), container],
-                    None,
-                    30,
-                );
+                let _ = backend(&["rm".into(), "--force".into(), container],30);
             }
         }
         let outcome = output.and_then(|value| {
@@ -255,7 +275,6 @@ impl LifecycleService {
                 )?;
                 Err(err("BACKUP_VERIFICATION_FAILED"))
             }
-        }
         }
     }
 }
@@ -522,6 +541,54 @@ pub(crate) fn native_input_path(path: &Path, directory: bool) -> Result<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(unix,target_os="macos"))]
+    #[test]
+    fn external_archive_preinstall_authentication_is_profile_private_and_engine_bound(){
+        let base=std::env::temp_dir().join(format!("external-verify-{}",Uuid::new_v4()));
+        fs::create_dir(&base).unwrap();let base=fs::canonicalize(base).unwrap();
+        let profile=LifecycleService::new(base.join("profile")).unwrap();
+        let selected=LifecycleService::new(profile.root.join("fresh-installation")).unwrap();
+        let source=LifecycleService::new(base.join("archive")).unwrap().root;
+        fs::write(source.join("original"),b"unchanged encrypted fixture").unwrap();
+        let key=base.join("backup.key");write_private_new(&base,"backup.key",&[7u8;32],32).unwrap();
+        let resources=base.join("resources");fs::create_dir(&resources).unwrap();
+        let image=format!("sha256:{}","b".repeat(64));let payload=b"synthetic helper archive";
+        let compose=br#"{"name":"exhibitos-synthetic","services":{"platform":{"labels":{"com.exhibitos.bundle":"synthetic","com.exhibitos.project":"exhibitos-synthetic"}}},"volumes":{"objects":{"labels":{"com.exhibitos.bundle":"synthetic","com.exhibitos.project":"exhibitos-synthetic"}}},"networks":{}}"#;
+        let manifest=serde_json::to_vec(&serde_json::json!({"schemaVersion":"1.0.0-draft.1","bundleId":"synthetic","version":"0.1.0","protocolVersion":"1","composeSha256":digest(compose),"projectName":"exhibitos-synthetic","services":["platform"],"images":[{"reference":image,"archive":{"path":"maintenance-image.tar","sha256":digest(payload),"bytes":payload.len()}}],"ports":[13200],"openUrl":"http://127.0.0.1:13200","readinessUrl":"http://127.0.0.1:13200/api/v1/readiness","minimumFreeBytes":1})).unwrap();
+        fs::write(resources.join("manifest.json"),&manifest).unwrap();fs::write(resources.join("compose.yaml"),compose).unwrap();fs::write(resources.join("maintenance-image.tar"),payload).unwrap();
+        let architecture=if cfg!(target_arch="aarch64"){"arm64"}else{"x86_64"};
+        fs::write(resources.join("prepared.json"),serde_json::to_vec(&serde_json::json!({"format":"exhibitos-manager-platform-runtime-v1","version":"0.1.0","architecture":architecture,"platformCommit":"a".repeat(40),"files":{"manifest.json":{"bytes":manifest.len(),"sha256":digest(&manifest)},"compose.yaml":{"bytes":compose.len(),"sha256":digest(compose)},"maintenance-image.tar":{"bytes":payload.len(),"sha256":digest(payload)}}})).unwrap()).unwrap();
+        let probe=|available|Ok(vec![EngineProbe{kind:"docker".into(),installed:true,available,engine_version:Some("29.0.0".into()),compose_version:Some("2.0.0".into()),error_code:None,guidance:None}]);
+        assert_eq!(profile.verify_external_backup_with(&resources,&format!("sha256:{}","c".repeat(64)),&key,&source,||panic!("untrusted image must not probe"),|_,_|panic!("untrusted image must not run")).unwrap_err().code,"BACKUP_IMAGE_INVALID");
+        assert_eq!(profile.verify_external_backup_with(&resources,&image,&key,&source,||probe(false),|_,_|panic!("unavailable engine must not run")).unwrap_err().code,"ENGINE_UNAVAILABLE");
+        let mut calls=Vec::new();
+        let result=profile.verify_external_backup_with(&resources,&image,&key,&source,||probe(true),|args,_|{
+            calls.push(args[0].clone());
+            if args[0]=="image"&&args[1]=="ls"{return Ok(format!("{image}\n").into_bytes());}
+            if args[0]=="image"{return Ok(serde_json::to_vec(&serde_json::json!([{"Id":image}])).unwrap());}
+            assert_eq!(args[0],"run");assert!(args.windows(2).any(|p|p==["--network","none"]));
+            assert!(args.iter().any(|p|p==&format!("type=bind,source={},target=/backup-source,readonly",source.display())));
+            let mount=args.iter().find(|p|p.ends_with(",target=/backup-workspace")).unwrap();
+            let workspace=PathBuf::from(mount.strip_prefix("type=bind,source=").unwrap().strip_suffix(",target=/backup-workspace").unwrap());
+            assert_eq!(workspace.parent(),Some(profile.root.as_path()));
+            fs::create_dir(workspace.join("plaintext")).unwrap();fs::write(workspace.join("plaintext/manifest.json"),b"authenticated fixture only").unwrap();
+            Ok(br#"{"operation":"verified","files":1}"#.to_vec())
+        }).unwrap();
+        assert_eq!(result.operation,"verified");assert_eq!(calls,vec!["image","image","run"]);
+        assert!(fs::read_dir(&selected.root).unwrap().all(|entry|entry.unwrap().file_name()=="operation.lock"));
+        // Existing preparation, not a relaxed fresh-root admission, still accepts the target.
+        runtime_prepare::prepare(&selected.root,&resources).unwrap();
+        assert!(selected.root.join("bundle/manifest.json").is_file());assert!(!selected.root.join("installed.json").exists());
+        assert_eq!(fs::read(source.join("original")).unwrap(),b"unchanged encrypted fixture");assert_eq!(fs::read(&key).unwrap(),[7u8;32]);
+        for _ in 0..2{
+            assert_eq!(profile.verify_external_backup_with(&resources,&image,&key,&source,||probe(true),|args,_|{
+                if args[0]=="image"&&args[1]=="ls"{Ok(format!("{image}\n").into_bytes())}else if args[0]=="image"{Ok(serde_json::to_vec(&serde_json::json!([{"Id":image}])).unwrap())}else{Err(err("ENGINE_OPERATION_FAILED"))}
+            }).unwrap_err().code,"BACKUP_VERIFICATION_FAILED");
+        }
+        let failed=fs::read_dir(&profile.root).unwrap().filter_map(|e|{let p=e.unwrap().path();p.join("failed.json").is_file().then_some(p)}).collect::<Vec<_>>();assert_eq!(failed.len(),2);
+        assert!(profile.root.join(format!("backup-verification-{}/receipt.json",result.id)).is_file());
+        assert_eq!(fs::read(source.join("original")).unwrap(),b"unchanged encrypted fixture");
+    }
     #[test]
     fn receipt_accepts_only_exact_safe_success_and_never_repeats_raw_output() {
         assert_eq!(

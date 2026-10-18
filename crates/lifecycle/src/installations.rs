@@ -579,6 +579,28 @@ impl InstallationController {
         private_directory(&current.path)?;
         task(service)
     }
+    /// External archive authentication only; never installs or restores a DB.
+    pub fn verify_external_backup(&self,token:&str,resources:&Path,image:&str,key:&Path,source:&Path)->Result<super::maintenance::VerificationReceipt>{
+        self.with_current(token,|service|{
+            let installed=match fs::symlink_metadata(service.root.join("installed.json")){
+                Ok(_)=>true,Err(error) if error.kind()==std::io::ErrorKind::NotFound=>false,Err(_)=>return Err(err("STATE_UNAVAILABLE"))
+            };
+            if installed{
+                service.prepare_bundled_maintenance(resources,image)?;
+                return service.verify_backup(image,key,source);
+            }
+            #[cfg(target_os="macos")]
+            {
+                let _operation=service.lock()?;
+                let profile=self.profile.as_ref().ok_or_else(||err("NOT_INSTALLED"))?;
+                private_directory(&profile.root)?;
+                if profile.root==service.root{return Err(err("NOT_INSTALLED"));}
+                profile.verify_external_backup_uninstalled(resources,image,key,source)
+            }
+            #[cfg(not(target_os="macos"))]
+            {Err(err("NOT_INSTALLED"))}
+        })
+    }
     /// Explicit user save only; no key bytes cross IPC. Selection is held throughout creation.
     pub fn create_backup_key(&self, token:&str, path:&Path)->Result<()> {
         self.with_current(token, |service| {
@@ -944,6 +966,16 @@ mod tests {
         let mut f = private_options().open(path).unwrap();
         f.write_all(bytes).unwrap();
         f.sync_all().unwrap();
+    }
+    #[test]
+    fn external_verification_rejects_stale_selection_before_tools_or_inputs(){
+        let (_profile,controller)=fixture();
+        let missing=Path::new("/nonexistent-external-archive-fixture");
+        assert_eq!(controller.verify_external_backup(&Uuid::new_v4().to_string(),missing,"tag",missing,missing).unwrap_err().code,"INSTALLATION_SELECTION_CHANGED");
+        let context=controller.context().unwrap();
+        controller.with_current(&context.selection_token,|service|{fs::write(service.root.join("installed.json"),b"{}").unwrap();Ok(())}).unwrap();
+        assert!(controller.verify_external_backup(&context.selection_token,missing,"tag",missing,missing).is_err());
+        controller.with_current(&context.selection_token,|service|{assert_eq!(fs::read(service.root.join("installed.json")).unwrap(),b"{}");assert!(!service.root.join("engine.json").exists());Ok(())}).unwrap();
     }
     #[test]
     fn raw_diagnosis_survives_actual_incomplete_candidate_startup_without_rewriting_it() {
