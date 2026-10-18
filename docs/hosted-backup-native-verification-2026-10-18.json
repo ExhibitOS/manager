@@ -922,5 +922,57 @@
       "Packaged app remains Managerd5afbfd, not this new UI commit. No latest native package acceptance claimed.",
       "Whole recovery and original authority/config/runtime custody gaps unchanged."
     ]
+  },
+  "externalArchivePreinstall20261018": {
+    "status": "IMPLEMENTED_ACTUAL_CONTROLLER_CRYPTO_AND_DEVELOPMENT_PACKAGE_PASS_GUI_AND_WHOLE_RESTORE_PENDING",
+    "managerSource": "09e80266bd97af75f0a2793a2846d3a068c17445",
+    "platformSource": "486e5e675dbdf1f422213691eeb19dad6a54db27",
+    "tasks": [
+      "T08-02",
+      "T08-01",
+      "T10-05"
+    ],
+    "behavior": [
+      "Existing installed branch preserves manifest/installed marker and selected engine admission. No stale/corrupt marker enters fresh route.",
+      "Uninstalled managed macOS uses only exact bundled image and actually available Docker, same backend prepare/inspect/run. No arbitrary image ID or engine fallback. Override/legacy without profile remains unavailable.",
+      "Selection guard and separate selected/profile operation locks retained; verification plaintext/receipt/failure candidates live under private profile outside fresh installation root. Existing fresh-root rules unchanged.",
+      "Existing file pickers/input/receipt/readonly key/archive/network-none/cap-drop/host UID/owned cleanup remain. No DB restore or installation activation."
+    ],
+    "checks": {
+      "lifecycle": "26032 maintenance3 + selection1 + existing installed engine1 PASS; first fixture6810 expected zero entries incorrectly, corrected to existing allowed operation.lock; raw output transcription explicitly labelled.",
+      "browser": "62011 before fails, after14 desktop+narrow verification/export flows PASS, type/focused lint PASS; real Chromium with synthetic native boundary. Existing invalid key path, malformed result, pending exclusion, cancel and input reset coverage retained.",
+      "native": "23242 macOS cargo check exit0; 18.94s",
+      "aggregate": "68754 existing npmcheck exit0:73Vitest/11files,9receipt,6installer,type/lint/build",
+      "platform": "Existing packaging7 PASS. Fixed-source runtime producer123.794s + prepare2.029s PASS.",
+      "actual": "8381 exit0: actual fresh controller→fixed helper image→2 encrypted files authenticated; wrong key rejected;1success receipt+1failed candidate. Original archive/key SHA/modes unchanged; selected fresh root still only operation.lock and no installed/bundle markers.",
+      "review": "Independent six-file admission/locks/UI review and independent Docker image COPY/scope review found no concrete blockers.",
+      "engine": "Normal Docker stop exit0, afterward only pre-existing vmnetd528 observed; no force/remove/prune."
+    },
+    "failureHistory": [
+      "Driver missing src-tauri resource segment failed before engine/build; candidate54da07e0 retained.",
+      "Initial actual helperdbf17bf failed BACKUP_VERIFICATION_FAILED; diagnostic exposed Node EACCES reading image product script before main. No successful crypto claim for this attempt.",
+      "Private source snapshot modes propagated into image. Platform486e5e6 makes only /opt/exhibitos product payload readable/traversable (a+rX), not writable; host originals/keys/mounts/UID unchanged. Fixed helper8c58a1c actual retest passed."
+    ],
+    "limits": [
+      "Actual OS file chooser/GUI/user installation not executed. User away.",
+      "Only encrypted byte authentication; no original-authority DB restore or whole service/installation recovery.",
+      "Original hosted Job/Keychain/config/authority and actual Pages/Render executable preservation gaps remain.",
+      "Previous actual DB restore proof remains scoped to old image/source; new helper cipher verification does not requalify DB restore.",
+      "Developer ad-hoc resource/signature validation is not Developer ID/notarization/Store/release acceptance."
+    ],
+    "integration": "Code committed locally; pending scoped documentation/Git push to existing draft PRs. No public deployment, paid work or user data deletion.",
+    "nativePackage": {
+      "handle": null,
+      "priorHandle": 66902,
+      "exit": 0,
+      "files": 7807,
+      "bytes": 504103056,
+      "inventorySHA256": "83d105163eb96971233ca4d30b9e3d15cd62293d00c8b58f75df36a4c8be7ad2",
+      "appLaunched": false,
+      "keychainAccessed": false,
+      "officialSignature": false,
+      "notarized": false,
+      "publicationSource": "Qualified1b7e000 resource reused unchanged, retained original metadata; not relabelled486e5e6"
+    }
   }
 }
