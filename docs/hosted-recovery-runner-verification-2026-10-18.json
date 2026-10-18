@@ -1,0 +1,54 @@
+{
+  "date": "2026-10-18",
+  "task": "T10-05",
+  "status": "PRIVATE_RUNNER_SYNTHETIC_PASS_NATIVE_AND_ACTUAL_REMOTE_NOT_QUALIFIED",
+  "deploymentCommit": "afc10ec",
+  "tests": {
+    "node": "24.21.0",
+    "passed": 6,
+    "failed": 0,
+    "toolChunk": "21ef17",
+    "milliseconds": 124.712416,
+    "actualDockerApiDbKeychainOS": false
+  },
+  "contract": {
+    "secretTransport": "native private stdin; fixed helper private stdin only",
+    "jobBudgetBytes": "native available minus6GiB floor and64MiB reserve once; actual same-snapshot object bytes subtracted by fixed worker",
+    "scratch": "fixed TMPDIR=/work job-owned volume, ephemeral key tmpfs",
+    "timeout": "native owns4200s/reconciliation; runner emits one bounded final JSON",
+    "sourceScope": "DB+objects only; active runtime/Pages/signing recovery and independent restore/update/rollback remain incomplete"
+  },
+  "remaining": [
+    "native command/owned job/cancellation integration and qualification",
+    "immutable image packaging/pin/actual execution",
+    "actual Render permissions/narrow sourceCIDR/expiresAt/writer stop confirmation",
+    "actual encrypted backup and independent restore/migration/update/rollback"
+  ],
+  "sources": [
+    {
+      "path": "scripts/hosted-recovery-runner.mjs",
+      "bytes": 7597,
+      "sha256": "2b97908bccbb096b50db791256293954588ded439140a159ad21bc8311135ef6"
+    },
+    {
+      "path": "scripts/hosted-recovery-runner.test.mjs",
+      "bytes": 7282,
+      "sha256": "96aa3d2550503114fedfe34e6f3f6ea8db6d54424a2c4d04f476c161f45ba2de"
+    },
+    {
+      "path": "scripts/prepare-remote-runtime.mjs",
+      "bytes": 3073,
+      "sha256": "b84ee4699306904c9fedd9a78158b3d01953d6fe40838875c3764ba946edc580"
+    },
+    {
+      "path": "vendor/deployment/src/pages-render.mjs",
+      "bytes": 33746,
+      "sha256": "93a9b876e5c1b615ebc45ad1e536e298e53cf0d7a62cfa309be62814963a1561"
+    },
+    {
+      "path": "vendor/deployment/source.json",
+      "bytes": 1089,
+      "sha256": "553c1935a50beddb4d781f32b7021af5b8908fe7ac7a5c7f0b03b0201fe64318"
+    }
+  ]
+}

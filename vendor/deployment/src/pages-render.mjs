@@ -166,3 +166,40 @@ export async function executeHosted(request,options={}){
  if(result.expiresAt&&Date.parse(result.expiresAt)<=Date.now()){result.state='failed';result.databaseState='unavailable';}
  return result;
 }
+
+/** Private native recovery bridge. Not part of executeHosted's public wire.
+ * It neither suspends a service nor changes an IP rule. The selected source
+ * must already be observed suspended and an operator must confirm all other
+ * writers stopped. Connection secrets exist only within the executor callback.
+ */
+export async function withRenderRecoveryConnection(request,options,consume){
+ if(!object(request)||Object.keys(request).sort().join(',')!=='postgresId,serviceId,workspaceId'||![request.workspaceId,request.serviceId,request.postgresId].every(id)||typeof consume!=='function')fail('HOSTED_RECOVERY_REQUEST');
+ const cidr=options?.sourceCidr;
+ const {isIP}=await import('node:net');
+ if(typeof cidr!=='string'||cidr.length>64)fail('HOSTED_RECOVERY_NETWORK_REQUIRED');
+ const parts=cidr.split('/'),family=isIP(parts[0]);
+ if(parts.length!==2||!(family===4&&parts[1]==='32'||family===6&&parts[1]==='128'))fail('HOSTED_RECOVERY_NETWORK_REQUIRED');
+ const api=transport('render',options),db=assertFree(await api('/postgres/'+request.postgresId),'postgres'),service=assertFree(await api('/services/'+request.serviceId),'services');
+ if(db.id!==request.postgresId||db.owner?.id!==request.workspaceId||db.version!=='18'||db.status!=='available'||service.id!==request.serviceId||service.ownerId!==request.workspaceId||service.type!=='web_service'||service.repo!=='https://github.com/ExhibitOS/platform'||service.serviceDetails?.runtime!=='node'||service.serviceDetails?.healthCheckPath!=='/api/v1/readiness')fail('HOSTED_RESOURCE_CONFLICT');
+ const expiresAt=typeof db.expiresAt==='string'&&!Number.isNaN(Date.parse(db.expiresAt))?new Date(db.expiresAt).toISOString():undefined;
+ if(expiresAt&&Date.parse(expiresAt)<=Date.now())fail('HOSTED_RECOVERY_DATABASE_EXPIRED');
+ if(!Array.isArray(db.ipAllowList)||!db.ipAllowList.some(rule=>object(rule)&&rule.cidrBlock===cidr))fail('HOSTED_RECOVERY_NETWORK_REQUIRED');
+ if(service.suspended!=='suspended')fail('HOSTED_RECOVERY_WRITERS_ACTIVE');
+ const info=await api('/postgres/'+request.postgresId+'/connection-info');
+ if(typeof info?.internalConnectionString!=='string'||typeof info.externalConnectionString!=='string')fail('HOSTED_RESPONSE_INVALID');
+ const saved=await api('/services/'+request.serviceId+'/env-vars?limit=100');
+ if(!Array.isArray(saved)||saved.filter(row=>row?.envVar?.key==='DATABASE_URL').length!==1||!saved.some(row=>row?.envVar?.key==='DATABASE_URL'&&row.envVar.value===info.internalConnectionString))fail('HOSTED_RESOURCE_CONFLICT');
+ let external,internal;try{external=new URL(info.externalConnectionString);internal=new URL(info.internalConnectionString);}catch{fail('HOSTED_RESPONSE_INVALID');}
+ if(!['postgres:','postgresql:'].includes(external.protocol)||!['postgres:','postgresql:'].includes(internal.protocol)||!external.username||!external.password||external.username!==internal.username||external.password!==internal.password||external.pathname!==internal.pathname||external.hostname.split('.')[0]!==internal.hostname||external.pathname.length<2||external.hash||external.port&&external.port!=='5432'||!/^[a-z0-9-]+\.[a-z0-9-]+-postgres\.render\.com$/.test(external.hostname))fail('HOSTED_RECOVERY_CONNECTION_INVALID');
+ if([...external.searchParams].some(([key,value])=>key!=='sslmode'||!['require','verify-full'].includes(value))||external.searchParams.getAll('sslmode').length>1)fail('HOSTED_RECOVERY_TLS_REQUIRED');
+ external.search='';external.searchParams.set('sslmode','verify-full');
+ if(typeof options.confirmExternalWritersStopped!=='function'||await options.confirmExternalWritersStopped({workspaceId:request.workspaceId,serviceId:request.serviceId,postgresId:request.postgresId})!==true)fail('HOSTED_RECOVERY_OPERATOR_REQUIRED');
+ let output;
+ try{output=await consume({url:external.href});}catch{fail('HOSTED_RECOVERY_EXECUTION_FAILED');}
+ // A resumed/changed remote source leaves any created local archive intact but
+ // does not receive an all-writers-paused completion claim.
+ const after=assertFree(await api('/services/'+request.serviceId),'services');
+ if(after.id!==service.id||after.ownerId!==service.ownerId||after.suspended!=='suspended')fail('HOSTED_RECOVERY_SOURCE_CHANGED');
+ if(!object(output)||Object.keys(output).sort().join(',')!=='authenticatedManifestSha256,backupId,files,operation'||output.operation!=='created-and-verified'||typeof output.backupId!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(output.backupId)||!Number.isSafeInteger(output.files)||output.files<1||output.files>100000||!hex(output.authenticatedManifestSha256))fail('HOSTED_RECOVERY_RESULT_INVALID');
+ return {provider:'render',action:'local-encrypted-backup',workspaceId:request.workspaceId,serviceId:request.serviceId,postgresId:request.postgresId,...(expiresAt?{expiresAt}:{}),...output};
+}
