@@ -46,10 +46,86 @@ pub struct Input {
 #[serde(rename_all = "camelCase")]
 pub struct Context {
     pub source: Option<Source>,
+    pub publication_copies: Vec<PublicationCopy>,
     pub jobs: Vec<Job>,
     pub restore_checks: Vec<exhibitos_lifecycle::hosted_restoration::CheckJob>,
     pub key_saved: bool,
     pub archive_saved: Option<exhibitos_lifecycle::backup_export::ExportReceipt>,
+}
+#[derive(Clone,Deserialize,Serialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub struct PublicationCopy { pub job_id:String,pub state:String,pub files:u64,pub bytes:u64 }
+#[derive(Deserialize,Serialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+struct PublicationReceipt { operation:String,state:String,files:u64,bytes:u64,manifest_sha256:String,publication_id:String,revision_sha256:String,index_sha256:String }
+fn private_bytes(path:&Path)->Result<Vec<u8>,LifecycleError>{
+    let (bytes,pin)=super::remote::bounded(path,65536)?;
+    #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;if std::fs::metadata(path).map_err(|_|failure("HOSTED_PUBLICATION_UNAVAILABLE"))?.permissions().mode()&0o777!=0o600{return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}}
+    pin.check()?;Ok(bytes)
+}
+fn preserve_publication_bytes(folder:&Path,name:&str,bytes:&[u8])->Result<(),LifecycleError>{
+    use std::io::Write;
+    if bytes.is_empty()||bytes.len()>65536{return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}
+    let path=folder.join(name);
+    let mut options=std::fs::OpenOptions::new();options.write(true).create_new(true);
+    #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+    match options.open(&path){
+        Ok(mut file)=>{file.write_all(bytes).and_then(|_|file.sync_all()).map_err(|_|failure("HOSTED_PUBLICATION_UNAVAILABLE"))?;}
+        Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists=>{if private_bytes(&path)?!=bytes{return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}}
+        Err(_)=>return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE")),
+    }
+    if private_bytes(&path)?!=bytes{return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}Ok(())
+}
+fn publication_receipt(bytes:&[u8],publication:&super::hosted::RecoveryPublication,max_bytes:u64)->Result<PublicationReceipt,LifecycleError>{
+    let value:PublicationReceipt=serde_json::from_slice(bytes).map_err(|_|failure("HOSTED_PUBLICATION_UNAVAILABLE"))?;
+    if value.operation!="publication-custody"||!["copied","reused"].contains(&value.state.as_str())||!(3..=20000).contains(&value.files)||value.bytes==0||value.bytes>max_bytes||value.manifest_sha256!=publication.manifest_sha256||value.publication_id!=publication.publication_id||value.revision_sha256!=publication.revision_sha256||value.index_sha256!=publication.index_sha256{return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}Ok(value)
+}
+#[cfg(target_os="macos")]
+fn copy_publication(resources:&Path,folder:&Path,publication:&super::hosted::RecoveryPublication,max_bytes:u64)->Result<(),LifecycleError>{
+    use std::{io::Write,process::{Command,Stdio},sync::mpsc,time::{Duration,Instant}};
+    let pins=super::remote::verified_resources(resources)?;
+    let input=serde_json::to_vec(&serde_json::json!({"sourcePath":publication.source_path,"expectedManifestSha256":publication.manifest_sha256,"publicationId":publication.publication_id,"revisionSha256":publication.revision_sha256,"indexSha256":publication.index_sha256,"destinationPath":folder.join("publication"),"maxBytes":max_bytes})).map_err(|_|failure("HOSTED_PUBLICATION_UNAVAILABLE"))?;
+    let mut command=Command::new(resources.join("remote-runtime/generated/node"));
+    command.args(["--disable-proto=throw","--no-warnings"]).arg(resources.join("scripts/hosted-recovery-runner.mjs")).arg("--publication-custody").env_clear().env("PATH","/usr/bin:/bin:/usr/sbin:/sbin").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    {use std::os::unix::process::CommandExt;command.process_group(0);}
+    for pin in &pins{pin.check()?;}
+    let mut child=command.spawn().map_err(|_|failure("HOSTED_PUBLICATION_UNAVAILABLE"))?;
+    if child.stdin.take().is_none_or(|mut stdin|stdin.write_all(&input).is_err()){super::remote::stop(&mut child);return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}
+    let out=child.stdout.take().ok_or_else(||failure("HOSTED_PUBLICATION_UNAVAILABLE"))?;
+    let err=child.stderr.take().ok_or_else(||failure("HOSTED_PUBLICATION_UNAVAILABLE"))?;
+    let (tx,rx)=mpsc::channel();let(etx,erx)=mpsc::channel();
+    std::thread::spawn(move||{let _=tx.send(super::remote::reader(out,65536));});std::thread::spawn(move||{let _=etx.send(super::remote::reader(err,4096));});
+    let start=Instant::now();let(mut stdout,mut stderr,mut status)=(None,None,None);
+    loop{
+        if stdout.is_none(){stdout=rx.try_recv().ok();}if stderr.is_none(){stderr=erx.try_recv().ok();}
+        if status.is_none(){match child.try_wait(){Ok(value)=>status=value,Err(_)=>{super::remote::stop(&mut child);return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}}}
+        if stdout.as_ref().is_some_and(Result::is_err)||stderr.as_ref().is_some_and(Result::is_err)||start.elapsed()>Duration::from_secs(600){super::remote::stop(&mut child);return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}
+        if stdout.is_some()&&stderr.is_some()&&status.is_some(){break;}std::thread::sleep(Duration::from_millis(25));
+    }
+    for pin in &pins{pin.check()?;}
+    let output=stdout.unwrap().map_err(|_|failure("HOSTED_PUBLICATION_UNAVAILABLE"))?;
+    if !status.unwrap().success(){return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}
+    let receipt=publication_receipt(&output,publication,max_bytes)?;
+    preserve_publication_bytes(folder,"publication-custody.json",&serde_json::to_vec(&receipt).map_err(|_|failure("HOSTED_PUBLICATION_UNAVAILABLE"))?)
+}
+pub(crate) fn publication_copies(service:&LifecycleService)->Vec<PublicationCopy>{
+    #[cfg(target_os="macos")]
+    {service.hosted_backup_jobs().unwrap_or_default().into_iter().map(|job|{
+        let mut result=PublicationCopy{job_id:job.id.clone(),state:"unavailable".into(),files:0,bytes:0};
+        let loaded=(||{
+            if job.state!="completed"{return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}
+            let folder=service.hosted_publication_workspace(&job.id)?;
+            let work=private_bytes(&folder.join("publication-work.json"))?;
+            if !super::hosted::recovery_snapshot_matches(&work,&job.source){return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}
+            let snapshot:serde_json::Value=serde_json::from_slice(&work).map_err(|_|failure("HOSTED_PUBLICATION_UNAVAILABLE"))?;
+            // Read only this immutable job's pins; never today's deployment selection.
+            let text=|key:&str|snapshot["source"][key].as_str().map(str::to_owned).ok_or_else(||failure("HOSTED_PUBLICATION_UNAVAILABLE"));
+            let publication=super::hosted::RecoveryPublication{source_path:String::new(),manifest_sha256:snapshot["sourceSha256"].as_str().unwrap_or("").into(),publication_id:text("publicationId")?,revision_sha256:text("revisionSha256")?,index_sha256:text("indexSha256")?,snapshot:Vec::new()};
+            publication_receipt(&private_bytes(&folder.join("publication-custody.json"))?,&publication,job.job_budget_bytes.unwrap_or(0))
+        })();
+        if let Ok(receipt)=loaded{result.state="copied".into();result.files=receipt.files;result.bytes=receipt.bytes;}result
+    }).collect()}
+    #[cfg(not(target_os="macos"))] {let _=service;Vec::new()}
 }
 // Private Keychain-only record. It is not an archive or renderer contract.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
@@ -129,6 +205,7 @@ pub fn operation(
             restore_checks: service.hosted_restore_checks().map_err(fail)?,
             key_saved: false,
             archive_saved: None,
+            publication_copies: publication_copies(service),
         }),
         Action::Context => Ok(Context {
             source: Some(super::hosted::recovery_source().map_err(fail)?),
@@ -136,6 +213,7 @@ pub fn operation(
             restore_checks: service.hosted_restore_checks().map_err(fail)?,
             key_saved: false,
             archive_saved: None,
+            publication_copies: publication_copies(service),
         }),
         Action::ExportKey | Action::ExportArchive => Err(failure("HOSTED_RECOVERY_REQUEST")),
         Action::CheckRestore => {
@@ -159,7 +237,7 @@ pub fn operation(
                         serde_json::to_vec(&serde_json::json!({"execution":plan,"expectedConfiguration":original})).map_err(|_|failure("HOSTED_RECOVERY_REQUEST"))
                     })();key.fill(0);result
                 },||{for pin in &pins{pin.check()?;}Ok(())}).map_err(fail)?;
-                Ok(Context{source:None,jobs:service.hosted_backup_jobs().map_err(fail)?,restore_checks:service.hosted_restore_checks().map_err(fail)?,key_saved:false,archive_saved:None})
+                Ok(Context{source:None,jobs:service.hosted_backup_jobs().map_err(fail)?,restore_checks:service.hosted_restore_checks().map_err(fail)?,key_saved:false,archive_saved:None,publication_copies:publication_copies(service)})
             }
             #[cfg(not(target_os="macos"))]
             {let _=(source_job,pins,image);Err(failure("HOSTED_PLATFORM_UNSUPPORTED"))}
@@ -174,9 +252,11 @@ pub fn operation(
             if !input.confirm_external_writers_stopped || input.job_id.is_some() {
                 return Err(failure("HOSTED_RECOVERY_OPERATOR_REQUIRED"));
             }
-            let source = super::hosted::recovery_source().map_err(fail)?;
+            let recovery = super::hosted::recovery_context().map_err(fail)?;
+            let source=recovery.source;
             if !expected_source_matches(input.expected_source.as_ref(), &source) { return Err(failure("HOSTED_RECOVERY_SOURCE_CHANGED")); }
-            let expected_configuration=super::hosted::recovery_configuration(&source).map_err(fail)?;
+            let expected_configuration=recovery.configuration;
+            let publication=recovery.publication;
             let manifest: serde_json::Value = serde_json::from_str(
                 option_env!("EXHIBITOS_REMOTE_RUNTIME_MANIFEST").unwrap_or("{}"),
             )
@@ -199,10 +279,16 @@ pub fn operation(
             {
                 let request = serde_json::to_value(&source)
                     .map_err(|_| failure("HOSTED_RECOVERY_REQUEST"))?;
-                service.create_hosted_backup(source.clone(),&image,&resources.join("remote-runtime/generated/node"),&resources.join("scripts/hosted-recovery-runner.mjs"),|execution|{
+                let mut copy_plan=None;
+                let job=service.create_hosted_backup(source.clone(),&image,&resources.join("remote-runtime/generated/node"),&resources.join("scripts/hosted-recovery-runner.mjs"),|execution|{
      // This UUID and source belong to the already journalled native job.
      // Neither item is overwritten or deleted if the other step fails.
      preserve_original_configuration(&execution.job_id,&source,&expected_configuration,super::hosted_keychain::add_backup_only)?;
+     if let Some(publication)=publication.as_ref(){
+         if let Ok(folder)=service.hosted_publication_workspace(&execution.job_id){
+             if Some(folder.as_path())==Path::new(&execution.output_path).parent() && preserve_publication_bytes(&folder,"publication-work.json",&publication.snapshot).is_ok(){copy_plan=Some((folder.to_path_buf(),execution.job_budget_bytes));}
+         }
+     }
      let mut token=super::hosted_keychain::load("render").map_err(|_|failure("HOSTED_TOKEN_REQUIRED"))?;
      let mut key=[0u8;32];
      let result=(||{
@@ -216,12 +302,19 @@ pub fn operation(
      })();
      key.fill(0);token.fill(0);result
     },||{for pin in &pins{pin.check()?;}Ok(())}).map_err(fail)?;
+                // Optional custody cannot change a completed DB backup to failure.
+                if job.state=="completed"{if let (Some(publication),Some((folder,budget)))=(publication.as_ref(),copy_plan){
+                    if let (Ok(current_folder),Ok(remaining_budget))=(service.hosted_publication_workspace(&job.id),service.hosted_publication_budget(&job.id)){
+                        if current_folder==folder && private_bytes(&folder.join("publication-work.json")).ok().as_ref()==Some(&publication.snapshot){let _=copy_publication(resources,&folder,publication,budget.min(remaining_budget));}
+                    }
+                }}
                 return Ok(Context {
                     source: Some(source),
                     jobs: service.hosted_backup_jobs().map_err(fail)?,
                     restore_checks: service.hosted_restore_checks().map_err(fail)?,
             key_saved: false,
             archive_saved: None,
+            publication_copies: publication_copies(service),
                 });
             }
             #[cfg(not(target_os = "macos"))]
@@ -274,6 +367,26 @@ pub fn export_archive(controller: &exhibitos_lifecycle::installations::Installat
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn publication_receipt_is_closed_pin_bound_and_does_not_claim_full_restore(){
+        let publication=super::super::hosted::RecoveryPublication{source_path:"/synthetic".into(),manifest_sha256:"a".repeat(64),publication_id:"public-fixture".into(),revision_sha256:"b".repeat(64),index_sha256:"c".repeat(64),snapshot:Vec::new()};
+        let valid=serde_json::json!({"operation":"publication-custody","state":"copied","files":3,"bytes":100,"manifestSha256":"a".repeat(64),"publicationId":"public-fixture","revisionSha256":"b".repeat(64),"indexSha256":"c".repeat(64)});
+        assert!(publication_receipt(&serde_json::to_vec(&valid).unwrap(),&publication,100).is_ok());
+        assert!(publication_receipt(&serde_json::to_vec(&valid).unwrap(),&publication,99).is_err());
+        for (key,value) in [("operation",serde_json::json!("restored-and-running")),("indexSha256",serde_json::json!("d".repeat(64))),("token",serde_json::json!("must-not-cross")),("files",serde_json::json!(0))]{let mut changed=valid.clone();changed[key]=value;assert!(publication_receipt(&serde_json::to_vec(&changed).unwrap(),&publication,100).is_err());}
+    }
+    #[test]
+    fn publication_metadata_is_exclusive_and_existing_bytes_are_never_replaced(){
+        let folder=std::env::temp_dir().join(format!("exhibitos-publication-metadata-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&folder).unwrap();
+        #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(&folder,std::fs::Permissions::from_mode(0o700)).unwrap();}
+        preserve_publication_bytes(&folder,"publication-work.json",b"original-work").unwrap();
+        preserve_publication_bytes(&folder,"publication-work.json",b"original-work").unwrap();
+        assert!(preserve_publication_bytes(&folder,"publication-work.json",b"changed-work").is_err());
+        assert_eq!(private_bytes(&folder.join("publication-work.json")).unwrap(),b"original-work");
+        #[cfg(unix)] {std::os::unix::fs::symlink(folder.join("publication-work.json"),folder.join("link")).unwrap();assert!(private_bytes(&folder.join("link")).is_err());}
+        std::fs::remove_dir_all(folder).unwrap();
+    }
     fn synthetic_configuration()->serde_json::Value { serde_json::json!({"origin":"https://synthetic.onrender.com","envVars":[{"key":"CLIENT_ORIGIN","value":"https://synthetic.pages.dev"},{"key":"TENANT_ID","value":"10000000-0000-4000-8000-000000000001"},{"key":"ADMIN_SUBJECT","value":"synthetic-owner"},{"key":"ADMIN_PASSWORD","value":"synthetic-original-password"},{"key":"FREEZE_SIGNING_KEY_BASE64","value":"synthetic-key-shape-only"}]}) }
     fn decode_saved(bytes:&[u8],expected:&Source)->Result<OriginalConfigurationSnapshot,LifecycleError>{
         let value:OriginalConfigurationSnapshot=serde_json::from_slice(bytes).map_err(|_|failure("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;

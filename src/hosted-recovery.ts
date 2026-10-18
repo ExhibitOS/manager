@@ -3,7 +3,8 @@ import {invoke,isTauri} from '@tauri-apps/api/core';
 export type HostedBackupSource={workspaceId:string;serviceId:string;postgresId:string};
 export type HostedBackupJob={id:string;source:HostedBackupSource;image:string;jobBudgetBytes:number|null;state:'running'|'completed'|'failed'|'interrupted';stage:string;errorCode:string|null;receipt:({backupId:string;files:number;authenticatedManifestSha256:string}&HostedBackupSource)|null;createdAt:number;updatedAt:number};
 export type HostedRestoreCheck={id:string;sourceJobId:string;source:HostedBackupSource;image:string;expectedBackupId:string;expectedManifestSha256:string;expectedFiles:number;jobBudgetBytes:number;state:'running'|'completed'|'failed'|'interrupted';stage:string;errorCode:string|null;receipt:{operation:'restored-and-verified';backupId:string;authenticatedManifestSha256:string;files:number}|null;createdAt:number;updatedAt:number};
-export type HostedRecoveryContext={source:HostedBackupSource|null;jobs:HostedBackupJob[];restoreChecks:HostedRestoreCheck[];keySaved:boolean;archiveSaved:{jobId:string;backupId:string;path:string;files:number;bytes:number}|null};
+export type HostedPublicationCopy={jobId:string;state:'copied'|'unavailable';files:number;bytes:number};
+export type HostedRecoveryContext={publicationCopies:HostedPublicationCopy[];source:HostedBackupSource|null;jobs:HostedBackupJob[];restoreChecks:HostedRestoreCheck[];keySaved:boolean;archiveSaved:{jobId:string;backupId:string;path:string;files:number;bytes:number}|null};
 export type HostedRecoveryInput={action:'context'|'jobs'|'create'|'export-key'|'export-archive'|'check-restore';sourceCidr?:string;confirmExternalWritersStopped?:boolean;jobId?:string;expectedSource?:HostedBackupSource};
 const object=(v:unknown):v is Record<string,unknown>=>!!v&&typeof v==='object'&&!Array.isArray(v);
 const keys=(v:Record<string,unknown>,fields:string[])=>Object.keys(v).sort().join(',')===[...fields].sort().join(',');
@@ -12,7 +13,7 @@ const digest=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 const number=(v:unknown):v is number=>Number.isSafeInteger(v)&&Number(v)>=0;
 function source(v:unknown):v is HostedBackupSource{return object(v)&&keys(v,['workspaceId','serviceId','postgresId'])&&Object.values(v).every(s=>typeof s==='string'&&/^[a-zA-Z0-9_-]{1,128}$/.test(s));}
 export function parseHostedRecovery(v:unknown):HostedRecoveryContext{
- if(!object(v)||!keys(v,['source','jobs','keySaved','archiveSaved',...(v.restoreChecks!==undefined?['restoreChecks']:[])])||!(v.source===null||source(v.source))||typeof v.keySaved!=='boolean'||!Array.isArray(v.jobs)||v.jobs.length>10000)throw Error('MANAGER_PROTOCOL');
+ if(!object(v)||!keys(v,['source','jobs','keySaved','archiveSaved',...(v.restoreChecks!==undefined?['restoreChecks']:[]),...(v.publicationCopies!==undefined?['publicationCopies']:[])])||!(v.source===null||source(v.source))||typeof v.keySaved!=='boolean'||!Array.isArray(v.jobs)||v.jobs.length>10000)throw Error('MANAGER_PROTOCOL');
  for(const job of v.jobs){
   if(!object(job)||!keys(job,['id','source','image','jobBudgetBytes','state','stage','errorCode','receipt','createdAt','updatedAt'])||!(job.jobBudgetBytes===null||number(job.jobBudgetBytes)&&job.jobBudgetBytes>=4194304)||!uuid(job.id)||!source(job.source)||typeof job.image!=='string'||!/^sha256:[a-f0-9]{64}$/.test(job.image)||!['running','completed','failed','interrupted'].includes(String(job.state))||!['checking-source-and-creating','completed','failed','interrupted'].includes(String(job.stage))||!number(job.createdAt)||!number(job.updatedAt)||job.updatedAt<job.createdAt||job.updatedAt>8640000000000000||!(job.errorCode===null||typeof job.errorCode==='string'&&/^[A-Z_]{1,128}$/.test(job.errorCode))||(['failed','interrupted'].includes(String(job.state))!==(job.errorCode!==null)))throw Error('MANAGER_PROTOCOL');
   if(job.state==='completed'){
@@ -32,6 +33,15 @@ export function parseHostedRecovery(v:unknown):HostedRecoveryContext{
   }else if(check.receipt!==null)throw Error('MANAGER_PROTOCOL');
  }
  if(v.archiveSaved!==null){const r=v.archiveSaved;if(!object(r)||!keys(r,['jobId','backupId','path','files','bytes'])||!uuid(r.jobId)||!uuid(r.backupId)||typeof r.path!=='string'||!r.path.startsWith('/')||/[\x00-\x1f]/.test(r.path)||!number(r.files)||r.files<4||r.files>100003||!number(r.bytes)||r.bytes===0)throw Error('MANAGER_PROTOCOL');}
- return {...v,restoreChecks} as unknown as HostedRecoveryContext;
+ const publicationCopies=v.publicationCopies??[];
+ if(!Array.isArray(publicationCopies)||publicationCopies.length>v.jobs.length)throw Error('MANAGER_PROTOCOL');
+ const seenCopies=new Set<string>();
+ for(const copy of publicationCopies){
+  if(!object(copy)||!keys(copy,['jobId','state','files','bytes'])||!uuid(copy.jobId)||seenCopies.has(copy.jobId)||!v.jobs.some(job=>job.id===copy.jobId)||!['copied','unavailable'].includes(String(copy.state))||!number(copy.files)||!number(copy.bytes)||(copy.state==='copied'?(copy.files<3||copy.files>20000||copy.bytes===0):(copy.files!==0||copy.bytes!==0)))throw Error('MANAGER_PROTOCOL');
+  const original=v.jobs.find(job=>job.id===copy.jobId);
+  if(copy.state==='copied'&&(original?.state!=='completed'||!number(original.jobBudgetBytes)||copy.bytes>original.jobBudgetBytes))throw Error('MANAGER_PROTOCOL');
+  seenCopies.add(copy.jobId);
+ }
+ return {...v,restoreChecks,publicationCopies} as unknown as HostedRecoveryContext;
 }
 export const hostedRecoveryClient={native:isTauri,async operation(selectionToken:string,input:HostedRecoveryInput){if(!['context','jobs','create','export-key','export-archive','check-restore'].includes(input.action))throw Error('MANAGER_PROTOCOL');return parseHostedRecovery(await invoke('manager_hosted_recovery',{selectionToken,input}));}};

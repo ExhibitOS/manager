@@ -376,6 +376,25 @@ impl LifecycleService {
         }
         Ok(count)
     }
+    /// Existing private hosted-job workspace, only for native companion metadata.
+    /// This does not turn the DB archive into a complete installation archive.
+    #[cfg(target_os="macos")]
+    pub fn hosted_publication_workspace(&self,id:&str)->Result<PathBuf>{
+        if !uuid(id){return Err(err("HOSTED_RECOVERY_REQUEST"));}
+        self.hosted_backup_job(id)?;
+        let path=fs::canonicalize(self.root.join(format!("hosted-backup-{id}"))).map_err(|_|err("BACKUP_SOURCE_INVALID"))?;
+        let expected=self.root.join(format!("hosted-backup-{id}"));
+        if path!=expected{return Err(err("BACKUP_SOURCE_INVALID"));}
+        let _pin=output_guard(&path)?;
+        Ok(path)
+    }
+
+    #[cfg(target_os="macos")]
+    pub fn hosted_publication_budget(&self,id:&str)->Result<u64>{
+        let folder=self.hosted_publication_workspace(id)?;
+        job_budget(fs2::available_space(folder).map_err(|_|err("STORAGE_UNAVAILABLE"))?)
+    }
+
     /// Trusted native caller supplies fixed pinned Node/runner paths and private input.
     /// Paths/keys/binaries are never accepted on a renderer recovery request.
     #[cfg(target_os = "macos")]
@@ -768,6 +787,27 @@ mod tests {
             service_id: "srv-synthetic".into(),
             postgres_id: "dpg-synthetic".into(),
         }
+    }
+    #[cfg(target_os="macos")]
+    #[test]
+    fn publication_workspace_requires_known_job_and_private_canonical_directory(){
+        let root=std::env::temp_dir().join(format!("exhibitos-publication-path-{}",Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();let root=fs::canonicalize(root).unwrap();
+        let service=LifecycleService::new(root.clone()).unwrap();let id=Uuid::new_v4().to_string();
+        assert!(service.hosted_publication_workspace(&id).is_err());
+        assert!(service.hosted_publication_workspace("../outside").is_err());
+        let job=Job{id:id.clone(),source:source(),image:format!("sha256:{}","a".repeat(64)),job_budget_bytes:Some(4194304),state:"running".into(),stage:"checking-source-and-creating".into(),error_code:None,receipt:None,created_at:1,updated_at:1};
+        let folder=root.join(format!("hosted-backup-{id}"));
+        fs::create_dir(&folder).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&folder,fs::Permissions::from_mode(0o700)).unwrap();
+        service.save_hosted_backup_job(&job).unwrap();
+        assert_eq!(service.hosted_publication_workspace(&id).unwrap(),folder);
+        fs::set_permissions(&folder,fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(service.hosted_publication_workspace(&id).is_err());
+        fs::set_permissions(&folder,fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(service.hosted_backup_jobs().unwrap().len(),1);
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn helper_resource_identity_preserves_private_key_and_disk_work_boundaries() {

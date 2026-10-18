@@ -23,3 +23,14 @@ it('isolated restore checks remain bound to their completed original and cannot 
  expect(parseHostedRecovery({source,jobs:[job],keySaved:false,archiveSaved:null}).restoreChecks).toEqual([]);
  for(const patch of [{id},{sourceJobId:check.id},{expectedManifestSha256:'e'.repeat(64)},{source:{...source,serviceId:'srv-other'}},{jobBudgetBytes:33*1024**3},{receipt:{...check.receipt,operation:'restored-and-running'}},{activated:true},{state:'running',stage:'checking-archive-and-restoring'}])expect(()=>parseHostedRecovery({...value,restoreChecks:[{...check,...patch}]})).toThrow('MANAGER_PROTOCOL');
 });
+
+ it('keeps publication custody separate and closed without paths or secret-bearing metadata',()=>{
+  const base={source,jobs:[job],keySaved:false,archiveSaved:null};
+  const copy={jobId:id,state:'copied',files:3,bytes:100};
+  expect(parseHostedRecovery({...base,publicationCopies:[copy]}).publicationCopies).toEqual([copy]);
+  expect(parseHostedRecovery(base).publicationCopies).toEqual([]);
+  expect(()=>parseHostedRecovery({...base,publicationCopies:[{...copy,bytes:job.jobBudgetBytes+1}]})).toThrow('MANAGER_PROTOCOL');
+  expect(()=>parseHostedRecovery({...base,jobs:[{...job,jobBudgetBytes:null}],publicationCopies:[copy]})).toThrow('MANAGER_PROTOCOL');
+  expect(parseHostedRecovery({...base,publicationCopies:[{...copy,state:'unavailable',files:0,bytes:0}]}).publicationCopies[0]?.state).toBe('unavailable');
+  for(const publicationCopies of [[{...copy,sourcePath:'/private/original'}],[{...copy,tokens:'not-allowed'}],[{...copy,state:'unavailable'}],[copy,copy],[{...copy,jobId:'00000000-0000-4000-8000-000000000002'}]])expect(()=>parseHostedRecovery({...base,publicationCopies})).toThrow('MANAGER_PROTOCOL');
+ });

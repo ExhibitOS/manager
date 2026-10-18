@@ -59,9 +59,9 @@ async fn manager_hosted_recovery(window:WebviewWindow,app:tauri::AppHandle,state
  caller(&window)?;let resources=app.path().resource_dir().map_err(|_|error("HOSTED_RUNTIME_UNAVAILABLE"))?;let controller=state.0.clone();
  tauri::async_runtime::spawn_blocking(move||{
   #[cfg(target_os="macos")]
-  if matches!(input.action,hosted_recovery::Action::ExportArchive){let id=input.job_id.ok_or_else(||error("HOSTED_RECOVERY_REQUEST"))?;let saved=hosted_recovery::export_archive(&controller,&selection_token,&id)?;return controller.with_current(&selection_token,|service|Ok(hosted_recovery::Context{source:None,jobs:service.hosted_backup_jobs()?,restore_checks:service.hosted_restore_checks()?,key_saved:false,archive_saved:saved}));}
+  if matches!(input.action,hosted_recovery::Action::ExportArchive){let id=input.job_id.ok_or_else(||error("HOSTED_RECOVERY_REQUEST"))?;let saved=hosted_recovery::export_archive(&controller,&selection_token,&id)?;return controller.with_current(&selection_token,|service|Ok(hosted_recovery::Context{source:None,jobs:service.hosted_backup_jobs()?,restore_checks:service.hosted_restore_checks()?,key_saved:false,archive_saved:saved,publication_copies:hosted_recovery::publication_copies(service)}));}
   #[cfg(target_os="macos")]
-  if matches!(input.action,hosted_recovery::Action::ExportKey){let id=input.job_id.ok_or_else(||error("HOSTED_RECOVERY_REQUEST"))?;let saved=hosted_recovery::export_key(&controller,&selection_token,&id)?;return controller.with_current(&selection_token,|service|Ok(hosted_recovery::Context{source:None,jobs:service.hosted_backup_jobs()?,restore_checks:service.hosted_restore_checks()?,key_saved:saved,archive_saved:None}));}
+  if matches!(input.action,hosted_recovery::Action::ExportKey){let id=input.job_id.ok_or_else(||error("HOSTED_RECOVERY_REQUEST"))?;let saved=hosted_recovery::export_key(&controller,&selection_token,&id)?;return controller.with_current(&selection_token,|service|Ok(hosted_recovery::Context{source:None,jobs:service.hosted_backup_jobs()?,restore_checks:service.hosted_restore_checks()?,key_saved:saved,archive_saved:None,publication_copies:hosted_recovery::publication_copies(service)}));}
   controller.with_current(&selection_token,|service|hosted_recovery::operation(&resources,service,input))
  }).await.map_err(|_|error("MANAGER_OPERATION"))?
 }

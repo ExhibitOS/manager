@@ -712,10 +712,52 @@ fn recovery_configuration_from_work(work:&Work,expected:&exhibitos_lifecycle::ho
     if !required.iter().all(|key|names.contains(*key))||![0,3].contains(&optional_count){return Err(refused("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"));}
     Ok(serde_json::json!({"envVars":value["envVars"],"origin":origin}))
 }
-pub(crate) fn recovery_configuration(expected:&exhibitos_lifecycle::hosted_backup::Source)->Result<serde_json::Value,LifecycleError>{
-    let work=load_work()?.ok_or_else(||refused("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
-    recovery_configuration_from_work(&work,expected,super::hosted_keychain::load)
+/// One saved Work observation binds the DB source, original configuration and
+/// optional public-file copy. No current SOURCE or newly generated keys are used.
+pub(crate) struct RecoveryContext {
+    pub source:exhibitos_lifecycle::hosted_backup::Source,
+    pub configuration:serde_json::Value,
+    pub publication:Option<RecoveryPublication>,
 }
+pub(crate) struct RecoveryPublication {
+    pub source_path:String, pub manifest_sha256:String, pub publication_id:String,
+    pub revision_sha256:String, pub index_sha256:String, pub snapshot:Vec<u8>,
+}
+fn recovery_publication(work:&Work,configuration:&serde_json::Value)->Option<RecoveryPublication>{
+    if work.version!=1{return None;}
+    let env=configuration["envVars"].as_array()?;
+    let get=|name:&str|env.iter().find(|v|v["key"]==name)?.get("value")?.as_str();
+    if get("STATIC_PUBLICATION_ID")?!=work.source.publication_id || get("STATIC_REVISION_SHA256")?!=work.source.revision_sha256 || get("STATIC_INDEX_SHA256")?!=work.source.index_sha256{return None;}
+    let digest=|s:&str|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b));
+    if !digest(&work.source_sha256)||!digest(&work.source.revision_sha256)||!digest(&work.source.index_sha256)||!std::path::Path::new(&work.source_path).is_absolute(){return None;}
+    let mut value:serde_json::Value=serde_json::from_slice(&work_bytes(work).ok()?).ok()?;
+    // Provider response objects are not a secret-safe storage schema. Preserve
+    // only identifiers from them; credentials/configuration never join this file.
+    for key in ["receipt","staticReceipt","apiReceipt"]{
+        let projected=value.get(key).and_then(serde_json::Value::as_object).map(|receipt|{
+            let mut out=serde_json::Map::new();
+            for name in ["deploymentId","serviceId","postgresId","projectName"]{
+                if let Some(text)=receipt.get(name).and_then(serde_json::Value::as_str).filter(|s|!s.is_empty()&&s.len()<=128&&s.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_')){out.insert(name.into(),text.into());}
+            }
+            serde_json::Value::Object(out)
+        }).unwrap_or(serde_json::Value::Null);
+        value[key]=projected;
+    }
+    let snapshot=serde_json::to_vec(&value).ok()?;
+    if snapshot.len()>65536{return None;}
+    Some(RecoveryPublication{source_path:work.source_path.clone(),manifest_sha256:work.source_sha256.clone(),publication_id:work.source.publication_id.clone(),revision_sha256:work.source.revision_sha256.clone(),index_sha256:work.source.index_sha256.clone(),snapshot})
+}
+pub(crate) fn recovery_snapshot_matches(bytes:&[u8],source:&exhibitos_lifecycle::hosted_backup::Source)->bool{
+    serde_json::from_slice::<Work>(bytes).ok().is_some_and(|work|work.version==1&&recovery_source_from_work(&work).ok().as_ref()==Some(source))
+}
+pub(crate) fn recovery_context()->Result<RecoveryContext,LifecycleError>{
+    let work=load_work()?.ok_or_else(||refused("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
+    let source=recovery_source_from_work(&work)?;
+    let configuration=recovery_configuration_from_work(&work,&source,super::hosted_keychain::load)?;
+    let publication=recovery_publication(&work,&configuration);
+    Ok(RecoveryContext{source,configuration,publication})
+}
+
 fn runtime_configuration(
     workspace: &str,
     project: &str,
@@ -1348,6 +1390,23 @@ mod tests {
         }
         let mut original=work;original.api_origin=Some("https://other.onrender.com".into());
         assert_eq!(recovery_configuration_from_work(&original,&source,|_|panic!("Mismatched origin must not load")).unwrap_err().code,"HOSTED_RECOVERY_CONFIGURATION_CHANGED");
+    }
+    #[test]
+    fn publication_capture_requires_original_pins_and_projects_receipts_without_secrets(){
+        let mut work=saved_recovery_fixture();let source=recovery_source_from_work(&work).unwrap();
+        let mut configuration=saved_configuration_fixture();
+        assert!(recovery_publication(&work,&configuration).is_none());
+        for (key,value) in [("STATIC_PUBLICATION_ID",work.source.publication_id.clone()),("STATIC_REVISION_SHA256",work.source.revision_sha256.clone()),("STATIC_INDEX_SHA256",work.source.index_sha256.clone())]{configuration["envVars"].as_array_mut().unwrap().push(serde_json::json!({"key":key,"value":value}));}
+        work.api_receipt.as_mut().unwrap()["tokens"]=serde_json::json!({"render":"synthetic-forbidden-secret"});
+        work.api_receipt.as_mut().unwrap()["envVars"]=serde_json::json!([{"key":"ADMIN_PASSWORD","value":"synthetic-forbidden-password"}]);
+        let copy=recovery_publication(&work,&configuration).unwrap();
+        assert_eq!(copy.manifest_sha256,work.source_sha256);
+        let text=String::from_utf8(copy.snapshot.clone()).unwrap();
+        for forbidden in ["synthetic-forbidden","tokens","envVars","ADMIN_PASSWORD","FREEZE_SIGNING_KEY"]{assert!(!text.contains(forbidden));}
+        assert!(recovery_snapshot_matches(&copy.snapshot,&source));
+        let mut other=source;other.service_id="srv-other".into();assert!(!recovery_snapshot_matches(&copy.snapshot,&other));
+        work.version=2;assert!(recovery_publication(&work,&configuration).is_none());work.version=1;
+        work.source.index_sha256="d".repeat(64);assert!(recovery_publication(&work,&configuration).is_none());
     }
     #[test]
     fn signing_key_base64_uses_standard_padding_without_a_new_crypto_format() {
