@@ -834,5 +834,71 @@
       "Whole installation/service restore, migration/update/rollback and human GUI acceptance remain incomplete."
     ],
     "integration": "Code committed/pushed to existing draft PR180; no publication or paid work."
+  },
+  "publicationDelivery20261018": {
+    "source": "d5afbfd8ee3559c46cd03c4e1315e30d47f84bd3",
+    "scope": "Existing encrypted archive delivery plus optional separate private public-file sibling; archive format unchanged. Existing approved-package selection reuses publication subfolder.",
+    "checks": "Related lifecycle1/nativeHosted25/type/Vitest5/browser2 PASS; final browser2 + aggregate73Vitest/11files,receipt9,installer6,type/lint/build PASS. Independent read review found no concrete blocking regression.",
+    "developmentPackage": {
+      "status": "DEVELOPMENT_APP_RESOURCE_AND_ADHOC_SIGNATURE_PASS_NOT_LAUNCHED",
+      "receiptSHA256": "685f992be433744541ddf9dbffe943a3a55c69100f49efd6626910f041cad03b",
+      "managerSource": "d5afbfd8ee3559c46cd03c4e1315e30d47f84bd3",
+      "platformSource": "1b7e0003e872e32c21156d2b4e4d4a77013ae7ef",
+      "files": 7807,
+      "bytes": 504079232,
+      "inventorySHA256": "79cb87dbd01b11c4a113b177191e8267efcd0aba7f7f47cc779ec9d2f0502ea3",
+      "publicationManifestSHA256": "ffefde0647d1e4bad686821c90402042fcdd8a2c88ef51a33683fb2b2806503b",
+      "steps": [
+        {
+          "name": "start-docker",
+          "exit": 0,
+          "seconds": 0.07233762496616691
+        },
+        {
+          "name": "container-preview",
+          "exit": 0,
+          "seconds": 1.5920384170021862
+        },
+        {
+          "name": "produce-platform-runtime",
+          "exit": 0,
+          "seconds": 132.52515470806975
+        },
+        {
+          "name": "prepare-remote",
+          "exit": 0,
+          "seconds": 4.389339416986331
+        },
+        {
+          "name": "tauri-build",
+          "exit": 0,
+          "seconds": 164.3314333750168
+        },
+        {
+          "name": "adhoc-sign",
+          "exit": 0,
+          "seconds": 2.8152538330759853
+        },
+        {
+          "name": "strict-signature",
+          "exit": 0,
+          "seconds": 1.7274019580800086
+        }
+      ],
+      "appLaunched": false,
+      "actualNativeGUI": false,
+      "keychainAccessed": false,
+      "officialSignature": false,
+      "notarized": false,
+      "session": 48701,
+      "exit": 0,
+      "heavyProcessRunning": false
+    },
+    "limits": [
+      "Actual native file chooser/provider/Keychain transfer unexecuted. Browser IPC checks are synthetic at native boundary.",
+      "Companion is not editable Studio source or whole DB/service/installation restoration. Original job/private configuration/keys and runtime provenance are still required.",
+      "Ad-hoc development signature is not Developer ID, notarization, Store or actual installation acceptance.",
+      "Earlier actual isolated SQL proof used previous image/source; new image packaging does not requalify SQL recovery."
+    ]
   }
 }
