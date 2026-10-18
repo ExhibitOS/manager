@@ -279,6 +279,18 @@ fn checkpoint_key(path: &Path, profile: &Path) -> Result<[u8; 32], String> {
     Ok(key)
 }
 
+// Optional internal locator pair for the existing native-reference registration.
+// These inputs only locate a fresh full qualification; they are not a permit.
+fn registered_catalog_options(args: &[String]) -> Result<bool, &'static str> {
+    if args.len() == 30 { return Ok(false); }
+    if args.len() != 34 || args[28] != "--target-catalog"
+        || args[30] != "--target-catalog-sha256"
+        || !Path::new(&args[29]).is_absolute() || args[29].len() > 4096
+        || args[31].len() != 64 || !args[31].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        return Err("UPDATE_USAGE");
+    }
+    Ok(true)
+}
 fn restored_rollback_options(args: &[String]) -> Result<&str, &'static str> {
     if args.len() != 10
         || args[1] != "complete-restored-rollback"
@@ -745,7 +757,8 @@ fn run() -> Result<(), String> {
     ) {
         let execute = a[1] == "execute-full-update";
         let register = a[1] == "register-full-update-reference";
-        let migrated = a[1] == "qualify-migrated-full-recovery-runtime";
+        let migrated = a[1] == "qualify-migrated-full-recovery-runtime"
+            || (register && registered_catalog_options(&a).map_err(str::to_owned)?);
         let full = a[1] == "qualify-full-recovery-runtime" || execute || register || migrated;
         let expected_authority = if execute {
             full_update_authority_options(&a).map_err(str::to_owned)?
@@ -842,14 +855,15 @@ fn run() -> Result<(), String> {
             };
             #[cfg(any(unix, windows))]
             if execute || register {
-                let mut admitted = session
-                    .prepare_owned_update(
-                        &mut artifact,
-                        &inputs,
-                        Path::new(&a[27]),
-                        Path::new(&a[23]),
-                    )
-                    .map_err(|e| e.code.to_string())?;
+                let mut admitted = if migrated {
+                    session.prepare_owned_migrated_update(&mut artifact, &inputs,
+                        &signed_release::trust::MigrationRuntimeInputs {
+                            catalog: Path::new(&a[29]), catalog_sha256: &a[31],
+                        }, Path::new(&a[27]), Path::new(&a[23]))
+                } else {
+                    session.prepare_owned_update(&mut artifact, &inputs,
+                        Path::new(&a[27]), Path::new(&a[23]))
+                }.map_err(|e| e.code.to_string())?;
                 if register {
                     return admitted
                         .register_execution_reference()
@@ -1894,5 +1908,26 @@ mod full_update_authority_cli_tests {
         }
         args.pop();
         assert!(full_update_authority_options(&args).is_err());
+    }
+}
+
+#[cfg(test)]
+mod registered_catalog_cli_tests {
+    use super::*;
+    #[test]
+    fn registered_catalog_is_a_paired_bounded_locator_never_a_success_flag() {
+        let mut args=vec![String::new();30];
+        assert!(!registered_catalog_options(&args).unwrap());
+        args.truncate(28);
+        args.extend(["--target-catalog".into(),"/private/catalog.json".into(),
+            "--target-catalog-sha256".into(),"a".repeat(64),
+            "--external-writers-quiesced".into(),"--apps-closed".into()]);
+        assert!(registered_catalog_options(&args).unwrap());
+        for n in [28,29,31,32,33] { assert!(registered_catalog_options(&args[..n]).is_err()); }
+        for (at,value) in [(28,"--preflight-verified"),(29,"relative"),(30,"--success"),(31,"bad-sha")] {
+            let mut bad=args.clone();bad[at]=value.into();assert!(registered_catalog_options(&bad).is_err());
+        }
+        let mut long=args.clone();long[29]=format!("/{}","a".repeat(4097));assert!(registered_catalog_options(&long).is_err());
+        args.push("--caller-verified".into());assert!(registered_catalog_options(&args).is_err());
     }
 }

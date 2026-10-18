@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import {test,expect} from '@playwright/test';
 // Synthetic IPC verifies consent/dispatch/uncertainty only, never real signed update qualification.
-for(const scenario of ['pending','malformed-reference','schema-change'] as const)test(`registered update ${scenario} keeps dispatch explicit and results truthful`,async({page})=>{
+for(const scenario of ['pending','malformed-reference','schema-change','qualified-schema-change'] as const)test(`registered update ${scenario} keeps dispatch explicit and results truthful`,async({page})=>{
  await page.addInitScript(({scenario})=>{
   const owner='56789012-1234-1234-1234-123456789012',referenceId='12345678-1234-1234-1234-123456789012';
   type Fixture=Window&{__updateInputs:unknown[];__finishUpdate:()=>void};const fixture=window as unknown as Fixture;fixture.__updateInputs=[];
@@ -13,7 +13,7 @@ for(const scenario of ['pending','malformed-reference','schema-change'] as const
    if(command==='manager_restoration_context')return {fresh:false,job:null,receipt:null};
    if(command==='manager_maintenance_context'||command==='manager_update_cancel')return null;
    if(command==='manager_update_status')return {installationId:owner,authorityPresent:true,generation:2,stage:'prepared',operationId:'update-1',failure:null,changedSchema:false,writeUncertain:false};
-   if(command==='manager_update_references')return [{referenceId,operationId:'update-1',generation:2,version:'1.2.3',sourceSchema:'a'.repeat(64),targetSchema:(scenario==='schema-change'?'b':'a').repeat(64),changedSchema:scenario==='schema-change',priorQualificationRecorded:true,executionRequalificationRequired:scenario!=='malformed-reference'}];
+   if(command==='manager_update_references')return [{referenceId,operationId:'update-1',generation:2,version:'1.2.3',sourceSchema:'a'.repeat(64),targetSchema:(scenario.endsWith('schema-change')?'b':'a').repeat(64),changedSchema:scenario.endsWith('schema-change'),...(scenario==='qualified-schema-change'?{migrationInputsRecorded:true}:{}),priorQualificationRecorded:true,executionRequalificationRequired:scenario!=='malformed-reference'}];
    if(command==='manager_update_apply'){
     if(args?.input===null)return null;
     fixture.__updateInputs.push(args?.input);await new Promise<void>(resolve=>{fixture.__finishUpdate=resolve;});
@@ -31,6 +31,7 @@ for(const scenario of ['pending','malformed-reference','schema-change'] as const
   await panel.getByRole('checkbox').nth(0).check();await panel.getByRole('checkbox').nth(1).check();
   await expect(panel.getByRole('button',{name:'앱을 닫고 업데이트 적용'})).toBeDisabled();
  }else{
+  if(scenario==='qualified-schema-change')await expect(panel).toContainText('적용 전에 변경 자료·서명·원본·전체 복구 자료를 다시 검사합니다.');
   const apply=panel.getByRole('button',{name:'앱을 닫고 업데이트 적용'});
   await expect(apply).toBeDisabled();
   await panel.getByRole('checkbox',{name:'외부에서 이 전시에 쓰는 작업을 중지했습니다. 앱은 실제 실행 상태도 다시 확인합니다.'}).check();await expect(apply).toBeDisabled();
@@ -42,6 +43,6 @@ for(const scenario of ['pending','malformed-reference','schema-change'] as const
   await expect(panel).toContainText('앱 종료 또는 실행 대기');await expect(panel).not.toContainText('업데이트 적용 완료 기록');
   await expect(apply).toBeDisabled();
  }
- expect(await page.evaluate(()=>(window as unknown as {__updateInputs:unknown[]}).__updateInputs.length)).toBe(scenario==='pending'?1:0);
+ expect(await page.evaluate(()=>(window as unknown as {__updateInputs:unknown[]}).__updateInputs.length)).toBe(scenario==='pending'||scenario==='qualified-schema-change'?1:0);
  for(const width of [320,640,1120]){await page.setViewportSize({width,height:900});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);}
 });

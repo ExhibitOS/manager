@@ -40,8 +40,9 @@ export function UpdateStatusPanel({native,selectionToken,active,onActivity,tool}
   finally{if(live.current&&epoch.current===run){working.current=false;setPending(false);}}
  }
  const selected=references.find(reference=>reference.referenceId===referenceId);
+ const migrationInputsMissing=!!selected?.changedSchema&&selected.migrationInputsRecorded!==true;
  async function apply(){
-  if(!native||active||working.current||!applyConsent||!writersStopped||status?.stage!=='prepared'||status.writeUncertain||!selected||selected.changedSchema||selected.operationId!==status.operationId||selected.generation!==status.generation)return;
+  if(!native||active||working.current||!applyConsent||!writersStopped||status?.stage!=='prepared'||status.writeUncertain||!selected||migrationInputsMissing||selected.operationId!==status.operationId||selected.generation!==status.generation)return;
   const run=epoch.current;working.current=true;onActivity(true);setPending(true);setError(null);
   try{const receipt=await client.updateApplication({referenceId:selected.referenceId,operationId:selected.operationId,generation:selected.generation,preserveData:true,closeAppAndApply:true,externalWritersQuiesced:true});if(!receipt)throw Error('MANAGER_PROTOCOL');if(live.current&&epoch.current===run){setApplication(receipt);setApplyConsent(false);setWritersStopped(false);if(receipt.state!=='awaiting-app-close')onActivity(false);}}
   catch(e){if(live.current&&epoch.current===run){setError(managerError(e));onActivity(false);}}
@@ -79,10 +80,10 @@ export function UpdateStatusPanel({native,selectionToken,active,onActivity,tool}
    <fieldset disabled={!native||active||pending}><legend>준비된 업데이트 적용</legend>
     {references.length===0?<p>등록된 실행 자료가 없습니다. 준비와 복구 검증을 마친 뒤 다시 확인하세요.</p>:<>
      <label>준비된 버전<select value={referenceId} onChange={event=>{setReferenceId(event.target.value);setApplyConsent(false);setWritersStopped(false);}}><option value="">선택하세요</option>{references.map(reference=><option key={reference.referenceId} value={reference.referenceId}>{reference.version} · {reference.referenceId.slice(0,8)}</option>)}</select></label>
-     {selected&&<p>{selected.changedSchema?'데이터 구조가 바뀌는 업데이트의 앱 적용은 아직 검증되지 않았습니다. 이 참조는 적용할 수 없습니다.':'적용 전에 서명·원본·전체 복구 자료를 다시 검사합니다. 데이터 구조는 유지합니다.'}</p>}
+     {selected&&<p>{migrationInputsMissing?'데이터 구조 변경에 필요한 준비 자료가 없습니다. 이 참조는 적용할 수 없습니다.':selected.changedSchema?'데이터 구조가 바뀝니다. 적용 전에 변경 자료·서명·원본·전체 복구 자료를 다시 검사합니다.':'적용 전에 서명·원본·전체 복구 자료를 다시 검사합니다. 데이터 구조는 유지합니다.'}</p>}
      <label><input type="checkbox" checked={writersStopped} onChange={event=>setWritersStopped(event.target.checked)}/>외부에서 이 전시에 쓰는 작업을 중지했습니다. 앱은 실제 실행 상태도 다시 확인합니다.</label>
      <label><input type="checkbox" checked={applyConsent} onChange={event=>setApplyConsent(event.target.checked)}/>기존 데이터·백업·키를 보존하고 앱을 닫아 업데이트를 적용합니다. 적용 중 전시가 중단됩니다.</label>
-     <button disabled={!selected||selected.changedSchema||!writersStopped||!applyConsent} onClick={()=>void apply()}>앱을 닫고 업데이트 적용</button>
+     <button disabled={!selected||migrationInputsMissing||!writersStopped||!applyConsent} onClick={()=>void apply()}>앱을 닫고 업데이트 적용</button>
      <p>앱이 완전히 종료된 뒤 실행합니다. 다시 앱을 열어 실제 결과를 확인하세요.</p>
     </>}
    </fieldset>

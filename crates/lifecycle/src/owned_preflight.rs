@@ -36,6 +36,7 @@ pub struct OwnedPreflight<'session, 'store, 'inputs> {
     oci: PreparedOciReceipt,
     authority: InactiveAuthorityProof,
     migration: Option<std::cell::RefCell<super::super::migration_catalog::CatalogInput>>,
+    migration_path: Option<PathBuf>,
     lease: candidate_inventory::RetainedCandidateLease,
     evidence: crate::update::Preflight,
     receipt: Value,
@@ -78,12 +79,31 @@ impl<'store> ExecutionSession<'store> {
             |_| Ok(()),
         )?;
         let host = host.ok_or_else(|| err("UPDATE_RECOVERY_RUNTIME_MISMATCH"))?;
-        self.finish_owned_permit(artifact,inputs,destination,key_file,destination.join("host"),host,receipt,lease,oci,None)
+        self.finish_owned_permit(artifact,inputs,destination,key_file,destination.join("host"),host,receipt,lease,oci,None,None)
+    }
+    /// Fresh full recovery qualification with the signed target migration catalog.
+    /// The catalog is held and rechecked by the existing OCI/runtime observers;
+    /// saved qualification JSON is never an execution permit.
+    pub fn prepare_owned_migrated_update<'session, 'inputs>(
+        &'session mut self, artifact: &'session mut PreparedArtifact,
+        inputs: &'inputs RecoveryRuntimeInputs<'inputs>, migration: &MigrationRuntimeInputs<'_>,
+        destination: &'inputs Path, key_file: &'inputs Path,
+    ) -> Result<OwnedPreflight<'session, 'store, 'inputs>> {
+        self.check()?;
+        self.require_selected_source()?;
+        self.store.require_authority_recovery().map_err(|e| err(e.code()))?;
+        self.reverify_prepared_artifact(artifact)?;
+        let observed = self.with_recovery_runtime_retained(
+            artifact, inputs, Some((destination, key_file)), Some(migration), None, |_| Ok(()))?;
+        let host = observed.host.ok_or_else(|| err("UPDATE_RECOVERY_RUNTIME_MISMATCH"))?;
+        let catalog = observed.catalog.ok_or_else(|| err("UPDATE_RUNTIME_MIGRATION_UNQUALIFIED"))?;
+        self.finish_owned_permit(artifact, inputs, destination, key_file, destination.join("host"),
+            host, observed.receipt, observed.lease, observed.oci, Some(catalog), Some(migration.catalog.to_owned()))
     }
     /// Reuse a complete inactive host extraction only after current archive/profile
     /// and exact extracted bytes/modes are reobserved. Fresh trust/authority records
-    /// remain current-generation. This permit cannot begin changed-schema execution
-    /// until the whole migrated activation/failure recovery gate is qualified.
+    /// remain current-generation. Changed-schema execution also retains the live
+    /// catalog and repeats its signed target-schema binding before admission.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_owned_migrated_update_reusing_host<'session,'inputs>(
         &'session mut self, artifact: &'session mut PreparedArtifact,
@@ -97,7 +117,7 @@ impl<'store> ExecutionSession<'store> {
             artifact,inputs,Some((destination,key_file)),Some(migration),Some(retained_host),|_|Ok(()))?;
         let host=observed.host.ok_or_else(||err("UPDATE_RECOVERY_RUNTIME_MISMATCH"))?;
         let catalog=observed.catalog.ok_or_else(||err("UPDATE_RUNTIME_MIGRATION_UNQUALIFIED"))?;
-        self.finish_owned_permit(artifact,inputs,destination,key_file,retained_host.to_owned(),host,observed.receipt,observed.lease,observed.oci,Some(catalog))
+        self.finish_owned_permit(artifact,inputs,destination,key_file,retained_host.to_owned(),host,observed.receipt,observed.lease,observed.oci,Some(catalog),Some(migration.catalog.to_owned()))
     }
     #[allow(clippy::too_many_arguments)]
     fn finish_owned_permit<'session,'inputs>(
@@ -106,6 +126,7 @@ impl<'store> ExecutionSession<'store> {
         host_path: PathBuf,host: crate::profile_backup::HostReceipt,mut receipt: Value,
         lease: candidate_inventory::RetainedCandidateLease,oci: PreparedOciReceipt,
         migration: Option<super::super::migration_catalog::CatalogInput>,
+        migration_path: Option<PathBuf>,
     )->Result<OwnedPreflight<'session,'store,'inputs>> {
         let cp = &inputs.checkpoint;
         let checkpoint = self
@@ -143,6 +164,7 @@ impl<'store> ExecutionSession<'store> {
             oci,
             authority,
             migration: migration.map(std::cell::RefCell::new),
+            migration_path,
             lease,
             evidence,
             receipt,
@@ -176,6 +198,10 @@ struct RegisteredExecutionReference<'a> {
     key_file: &'a Path,
     qualification_destination: &'a Path,
     qualification_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_catalog: Option<&'a Path>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_catalog_sha256: Option<String>,
     created_at: u64,
 }
 impl<'session, 'store, 'inputs> OwnedPreflight<'session, 'store, 'inputs> {
@@ -222,6 +248,8 @@ impl<'session, 'store, 'inputs> OwnedPreflight<'session, 'store, 'inputs> {
             qualification_destination: self.destination,
             qualification_sha256: crate::digest(&serde_json::to_vec(&self.receipt)
                 .map_err(|_| err("UPDATE_REFERENCE_INVALID"))?),
+            target_catalog: self.migration_path.as_deref(),
+            target_catalog_sha256: self.migration.as_ref().map(|c| c.borrow().pin().to_owned()),
             created_at,
         };
         let bytes = serde_json::to_vec(&record)
@@ -317,13 +345,12 @@ impl<'session, 'store, 'inputs> OwnedPreflight<'session, 'store, 'inputs> {
     /// Applying record; the same Store, staged artifact and source/target locks
     /// transfer into the future executor without an unlock/relock interval.
     pub fn begin(self) -> Result<StartedUpdate<'session, 'store, 'inputs>> {
-        require_executable_schema(&self.artifact.plan)?;
+        require_executable_catalog(&self.artifact.plan, self.migration.as_ref(),
+            self.oci.target_catalog_sha256.as_deref())?;
         self.begin_journaled()
     }
-    // Shared implementation for production admission and the explicit native
-    // qualification test. Public changed-schema admission stays CLOSED until
-    // the full real apply/failure/recovery matrix is qualified. No feature flag,
-    // CLI switch, serialized permit or caller-supplied verification can open it.
+    // Shared journal transition after live admission, also used by the explicit
+    // native qualification fixture. No serialized receipt supplies this permit.
     fn begin_journaled(mut self) -> Result<StartedUpdate<'session, 'store, 'inputs>> {
         self.recheck()?;
         // Time is observed after all potentially slow full-corpus rechecks.
@@ -346,6 +373,22 @@ impl<'session, 'store, 'inputs> OwnedPreflight<'session, 'store, 'inputs> {
     }
 }
 
+fn require_executable_catalog(
+    plan: &crate::update::Plan,
+    catalog: Option<&std::cell::RefCell<super::super::migration_catalog::CatalogInput>>,
+    oci_pin: Option<&str>,
+) -> Result<()> {
+    if let Some(catalog) = catalog {
+        let mut held = catalog.borrow_mut();
+        held.recheck_for_schema(&plan.target_schema)?;
+        if oci_pin != Some(held.pin()) {
+            return Err(err("UPDATE_RUNTIME_MIGRATION_UNQUALIFIED"));
+        }
+        Ok(())
+    } else {
+        require_executable_schema(plan)
+    }
+}
 fn require_executable_schema(plan: &crate::update::Plan) -> Result<()> {
     if plan.source_schema!=plan.target_schema {return Err(err("UPDATE_RUNTIME_MIGRATION_UNQUALIFIED"));}
     Ok(())
@@ -355,14 +398,33 @@ fn require_executable_schema(plan: &crate::update::Plan) -> Result<()> {
 mod tests {
  use super::*;
  #[test]
- fn changed_schema_permit_cannot_begin_before_execution_recovery_gate() {
+ fn changed_schema_without_live_catalog_cannot_begin() {
   let mut p:crate::update::Plan=serde_json::from_value(serde_json::json!({"operationId":"update-1","sourceInstance":"source-1","targetInstance":"target-1","backupId":"backup-1","backupManifest":"a".repeat(64),"sourceInventory":"b".repeat(64),"sourceImage":"c".repeat(64),"targetImage":"d".repeat(64),"sourceSchema":"e".repeat(64),"targetSchema":"f".repeat(64),"requiredFreeBytes":1})).unwrap();
   assert_eq!(require_executable_schema(&p).unwrap_err().code,"UPDATE_RUNTIME_MIGRATION_UNQUALIFIED");
   p.target_schema=p.source_schema.clone();require_executable_schema(&p).unwrap();
  }
  #[test]
+ fn changed_schema_requires_retained_signed_catalog_and_exact_oci_pin() {
+  use std::os::unix::fs::PermissionsExt;
+  let root=std::env::temp_dir().canonicalize().unwrap().join(format!("exhibitos-owned-catalog-{}",uuid::Uuid::new_v4()));
+  fs::create_dir(&root).unwrap();fs::set_permissions(&root,fs::Permissions::from_mode(0o700)).unwrap();
+  let path=root.join("catalog.json");
+  let raw=serde_json::to_vec(&serde_json::json!({"migrations":[{"name":"001.sql","sha256":"b".repeat(64)}],"schemaDigest":"a".repeat(64),"schemaVersion":"1.0.0-draft.1"})).unwrap();
+  let pin=crate::digest(&raw);fs::write(&path,&raw).unwrap();fs::set_permissions(&path,fs::Permissions::from_mode(0o600)).unwrap();
+  let catalog=std::cell::RefCell::new(super::super::super::migration_catalog::CatalogInput::read(&path,&pin,&pin).unwrap());
+  let mut plan:crate::update::Plan=serde_json::from_value(serde_json::json!({"operationId":"update-1","sourceInstance":"source-1","targetInstance":"target-1","backupId":"backup-1","backupManifest":"a".repeat(64),"sourceInventory":"b".repeat(64),"sourceImage":"c".repeat(64),"targetImage":"d".repeat(64),"sourceSchema":"e".repeat(64),"targetSchema":pin,"requiredFreeBytes":1})).unwrap();
+  assert!(require_executable_catalog(&plan,None,Some(&pin)).is_err());
+  assert!(require_executable_catalog(&plan,Some(&catalog),None).is_err());
+  assert!(require_executable_catalog(&plan,Some(&catalog),Some(&"d".repeat(64))).is_err());
+  require_executable_catalog(&plan,Some(&catalog),Some(&pin)).unwrap();
+  plan.target_schema="f".repeat(64);assert!(require_executable_catalog(&plan,Some(&catalog),Some(&pin)).is_err());
+  plan.target_schema=pin.clone();fs::write(&path,b"tampered").unwrap();
+  assert!(require_executable_catalog(&plan,Some(&catalog),Some(&pin)).is_err());
+  drop(catalog);fs::remove_dir_all(root).unwrap();
+ }
+ #[test]
  #[ignore="explicit current signed synthetic fixture; reuse complete retained host, refresh small trust/authority, observe actual Runtime; no execution/activation"]
- fn actual_owned_migrated_permit_reuses_full_host_and_refuses_execution() {
+ fn actual_owned_migrated_permit_reuses_full_host_and_refuses_missing_oci_binding() {
   let input:Value=serde_json::from_slice(&fs::read(std::env::var("EXHIBITOS_MIGRATED_PERMIT_INPUT").unwrap()).unwrap()).unwrap();
   let path=|n:&str|PathBuf::from(input[n].as_str().unwrap());
   let root=path("root");let profile=root.join("profile");let mut store=crate::signed_release::trust::Store::open(&profile,"default").unwrap();
@@ -376,9 +438,10 @@ mod tests {
   let inputs=RecoveryRuntimeInputs{checkpoint:CheckpointInputs{binding:&binding,host:&host,trust:&trust,key:&key},export_parent:&export,python:&python,source_commit:input["sourceCommit"].as_str().unwrap(),maintenance_image:input["maintenance"].as_str().unwrap(),external_writers_quiesced:true};
   let migration=MigrationRuntimeInputs{catalog:&catalog,catalog_sha256:input["catalogSha256"].as_str().unwrap()};
   let mut session=store.execution().unwrap();let mut artifact=session.stage_prepared_artifact(&path("artifact"),&staging).unwrap();
-  let permit=session.prepare_owned_migrated_update_reusing_host(&mut artifact,&inputs,&migration,&retained_host,&destination,&key_file).unwrap();
+  let mut permit=session.prepare_owned_migrated_update_reusing_host(&mut artifact,&inputs,&migration,&retained_host,&destination,&key_file).unwrap();
   assert!(permit.migration.is_some());assert_eq!(permit.host_path,retained_host);
   let receipt=permit.receipt().clone();assert_eq!(receipt["inactiveFullRecovery"]["retainedHostReused"],true);assert_eq!(receipt["currentAuthorityInactiveRestorationVerified"],true);assert_eq!(receipt["executionStarted"],false);
+  permit.oci.target_catalog_sha256 = None; // Deliberate missing OCI binding: never an execution permit.
   let error=match permit.begin(){Ok(_)=>panic!("unqualified changed execution began"),Err(e)=>e};assert_eq!(error.code,"UPDATE_RUNTIME_MIGRATION_UNQUALIFIED");
   drop(artifact);drop(session);assert_eq!(store.current.generation,generation);assert_eq!(store.intent().unwrap().update.plan(),&plan);assert_eq!(store.intent().unwrap().update.stage(),crate::update::Stage::Prepared);
   assert_eq!(installations::load(&profile).unwrap().unwrap().0.active_id,plan.source_instance);assert!(!destination.join("host").exists());

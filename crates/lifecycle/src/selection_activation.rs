@@ -850,6 +850,8 @@ mod tests {
             host_archive: external.join("unused-host"), trust_archive: external.join("unused-trust"),
             pair_binding: external.join("unused-pair"), key_file: external.join("unused-key"),
             qualification_destination: external.join("unused-qualification"), qualification_sha256: "b".repeat(64), created_at: 25,
+            target_catalog: None,
+            target_catalog_sha256: None,
         };
         let ref_path = ref_root.join(format!("{ref_id}.json"));
         crate::write_private_new(&ref_root, &format!("{ref_id}.json"), &serde_json::to_vec(&reference).unwrap(), 16384).unwrap();

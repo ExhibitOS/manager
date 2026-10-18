@@ -3,9 +3,10 @@
 use super::*;
 use crate::{execution_reference as refs, update_execution_handoff as handoff};
 use serde_json::Value;
-fn registered_fixture() -> (PathBuf, String, u64, String) {
+fn registered_fixture() -> (PathBuf, String, u64, String) { registered_fixture_mode(false) }
+fn registered_fixture_mode(changed: bool) -> (PathBuf, String, u64, String) {
     let (profile, key, policy, mut release) = tests::fixture();
-    release.artifact.schema_sha256 = "a".repeat(64);
+    release.artifact.schema_sha256 = if changed { "f".repeat(64) } else { "a".repeat(64) };
     let envelope = tests::seal(&key, &release);
     let mut store = Store::provision(&profile, "default", policy, 10).unwrap();
     let mut verified = store.verify_for_preparation(&envelope, 20).unwrap();
@@ -15,7 +16,7 @@ fn registered_fixture() -> (PathBuf, String, u64, String) {
     let mut plan = tests::plan();
     plan.source_instance = uuid::Uuid::new_v4().to_string();
     plan.target_instance = uuid::Uuid::new_v4().to_string();
-    plan.target_schema = plan.source_schema.clone();
+    plan.target_schema = release.artifact.schema_sha256.clone();
     let installation = plan.source_instance.clone();
     store
         .prepare_update(&envelope, &verified, plan, 20)
@@ -63,6 +64,8 @@ fn registered_fixture() -> (PathBuf, String, u64, String) {
         key_file: external.join("unused-key"),
         qualification_destination: external.join("old-qualification"),
         qualification_sha256: "b".repeat(64),
+        target_catalog: None,
+        target_catalog_sha256: None,
         created_at: 20,
     };
     crate::write_private_new(
@@ -295,4 +298,41 @@ fn registered_update_duplicate_helper_cannot_publish_outcome_while_owner_waits()
         crate::installations::load(&profile).unwrap().unwrap().1,
         bytes
     );
+}
+
+#[test]
+fn registered_migrated_reference_pair_is_optional_closed_bounded_and_requalified() {
+    let (profile, installation, generation, id) = registered_fixture_mode(true);
+    let (_, registry) = crate::installations::load(&profile).unwrap().unwrap();
+    let path = profile.join("update-execution-references").join(format!("{id}.json"));
+    let original: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert!(handoff::prepare(&profile, &installation, "default", &registry, input(&id, generation)).is_err());
+    assert!(!profile.join("update-apply-handoffs").exists());
+    let mut record = original.clone();
+    record["targetCatalog"] = serde_json::json!(profile.parent().unwrap().join("catalog.json"));
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    assert!(refs::load(&profile, &id).is_err());
+    record["targetCatalogSha256"] = serde_json::json!("a".repeat(64));
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    let summary = refs::list(&profile, &installation, "default", &registry).unwrap();
+    assert!(summary[0].changed_schema);
+    assert_eq!(summary[0].migration_inputs_recorded, Some(true));
+    let wire = serde_json::to_value(&summary[0]).unwrap();
+    assert!(wire.get("targetCatalog").is_none());assert!(wire.get("targetCatalogSha256").is_none());
+    let request = handoff::prepare(&profile, &installation, "default", &registry, input(&id, generation)).unwrap();
+    // Locator metadata cannot replace missing actual key/source/Engine proof.
+    assert!(handoff::execute(&profile, &request.id).is_err());
+    assert_eq!(inspect_update_status(&profile, "default").unwrap().stage, Some(crate::update::Stage::Prepared));
+    assert_eq!(crate::installations::load(&profile).unwrap().unwrap().1, registry);
+    for (field, bad) in [("targetCatalog", serde_json::json!("relative.json")),
+                         ("targetCatalog", serde_json::json!(format!("/{}", "a".repeat(4097)))),
+                         ("targetCatalogSha256", serde_json::json!("not-a-sha")),
+                         ("targetCatalogSha256", Value::Null)] {
+        let mut invalid=record.clone();invalid[field]=bad;
+        fs::write(&path,serde_json::to_vec(&invalid).unwrap()).unwrap();
+        assert!(refs::load(&profile,&id).is_err());
+    }
+    let mut invalid=record;invalid["unexpectedSuccess"]=serde_json::json!(true);
+    fs::write(&path,serde_json::to_vec(&invalid).unwrap()).unwrap();
+    assert!(refs::load(&profile,&id).is_err());
 }

@@ -142,6 +142,12 @@ describe('Registered update application boundary',()=>{
  const reference={referenceId:'12345678-1234-1234-1234-123456789012',operationId:'update-1',generation:2,version:'1.2.3',sourceSchema:'a'.repeat(64),targetSchema:'a'.repeat(64),changedSchema:false,priorQualificationRecorded:true,executionRequalificationRequired:true};
  it('treats stored qualification as a reference, never execution approval',()=>{
   expect(parseUpdateReferences([reference])).toHaveLength(1);
+  const migrated={...reference,targetSchema:'b'.repeat(64),changedSchema:true,migrationInputsRecorded:true};
+  expect(parseUpdateReferences([migrated])[0]?.migrationInputsRecorded).toBe(true);
+  expect(parseUpdateReferences([{...reference,targetSchema:'b'.repeat(64),changedSchema:true}])[0]?.migrationInputsRecorded).toBeUndefined();
+  for(const invalid of [false,null,'true',1])expect(()=>parseUpdateReferences([{...migrated,migrationInputsRecorded:invalid}])).toThrow('MANAGER_PROTOCOL');
+  expect(()=>parseUpdateReferences([{...migrated,targetCatalog:'/private/catalog'}])).toThrow('MANAGER_PROTOCOL');
+
   for(const rows of [[reference,reference],[{...reference,keyFile:'/private/key'}],[{...reference,executionRequalificationRequired:false}],[{...reference,targetSchema:'b'.repeat(64)}],[{...reference,referenceId:'/private/ref'}],[{...reference,generation:Number.MAX_SAFE_INTEGER+1}]])expect(()=>parseUpdateReferences(rows)).toThrow('MANAGER_PROTOCOL');
  });
  it('requires bound operation and explicit close/preservation/writer consent',()=>{

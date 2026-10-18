@@ -116,7 +116,7 @@ pub(crate) fn prepare(
         r.reference_id == input.reference_id
             && r.operation_id == input.operation_id
             && r.generation == input.generation
-            && !r.changed_schema
+            && (!r.changed_schema || r.migration_inputs_recorded == Some(true))
     }) {
         return Err(err("UPDATE_REFERENCE_STALE"));
     }
@@ -523,6 +523,8 @@ mod windows_tests {
             key_file: external.join("unused-key"),
             qualification_destination: external.join("old-qualification"),
             qualification_sha256: "b".repeat(64),
+            target_catalog: None,
+            target_catalog_sha256: None,
             created_at: 20,
         };
         directory
