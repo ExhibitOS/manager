@@ -1,14 +1,14 @@
 {
   "date": "2026-10-18",
   "task": "T10-05",
-  "status": "PRIVATE_RUNNER_SYNTHETIC_PASS_NATIVE_AND_ACTUAL_REMOTE_NOT_QUALIFIED",
-  "deploymentCommit": "afc10ec",
+  "status": "LOAD_ONLY_PRIVATE_EXPECTED_CONFIGURATION_RUNNER_SYNTHETIC_PASS_NATIVE_PENDING",
+  "deploymentCommit": "10bfe399a94d725c4219db33c49430a2c027a427",
   "tests": {
     "node": "24.21.0",
-    "passed": 6,
+    "passed": 7,
     "failed": 0,
-    "toolChunk": "21ef17",
-    "milliseconds": 124.712416,
+    "toolChunk": "cee442",
+    "milliseconds": 174.844875,
     "actualDockerApiDbKeychainOS": false
   },
   "contract": {
@@ -16,24 +16,29 @@
     "jobBudgetBytes": "native available minus6GiB floor and64MiB reserve once; actual same-snapshot object bytes subtracted by fixed worker",
     "scratch": "fixed TMPDIR=/work job-owned volume, ephemeral key tmpfs",
     "timeout": "native owns4200s/reconciliation; runner emits one bounded final JSON",
-    "sourceScope": "DB+objects only; active runtime/Pages/signing recovery and independent restore/update/rollback remain incomplete"
+    "sourceScope": "DB+objects only; active runtime/Pages/signing recovery and independent restore/update/rollback remain incomplete",
+    "expectedConfiguration": "native-loaded original envVars5required + STATIC3all/none and original origin; strict validation before API; remote exact equality/Ed25519 public authority and postcheck; no fallback generation/current-export substitution",
+    "privateSecretBoundary": "original admin password/signing key compare in runner/provider only; absent from helper4-field stdin/argv/env/result; input-copy secret strings cleared, not a heap-zeroization guarantee"
   },
   "remaining": [
     "native command/owned job/cancellation integration and qualification",
     "immutable image packaging/pin/actual execution",
     "actual Render permissions/narrow sourceCIDR/expiresAt/writer stop confirmation",
-    "actual encrypted backup and independent restore/migration/update/rollback"
+    "actual encrypted backup and independent restore/migration/update/rollback",
+    "native Keychain load-only/selection fence actual qualification",
+    "immutable backup-time protected configuration reference",
+    "DB freeze-authority, observed deploy ID/commit and preserved runtime/Pages binding"
   ],
   "sources": [
     {
       "path": "scripts/hosted-recovery-runner.mjs",
-      "bytes": 7597,
-      "sha256": "2b97908bccbb096b50db791256293954588ded439140a159ad21bc8311135ef6"
+      "bytes": 8028,
+      "sha256": "c531034fe82de1a23689407d034adc539e9372e2b14847ed216672a7eeaa1f8c"
     },
     {
       "path": "scripts/hosted-recovery-runner.test.mjs",
-      "bytes": 7282,
-      "sha256": "96aa3d2550503114fedfe34e6f3f6ea8db6d54424a2c4d04f476c161f45ba2de"
+      "bytes": 9367,
+      "sha256": "298e1586ee9e9f63227d208e281d93ec7bf03068ad7eb268f85ca0ff0130327a"
     },
     {
       "path": "scripts/prepare-remote-runtime.mjs",
@@ -42,13 +47,13 @@
     },
     {
       "path": "vendor/deployment/src/pages-render.mjs",
-      "bytes": 33746,
-      "sha256": "93a9b876e5c1b615ebc45ad1e536e298e53cf0d7a62cfa309be62814963a1561"
+      "bytes": 37702,
+      "sha256": "4effff724ea19b5e15b586b2968d93aaa8a5638a0adf906004fbca4c1b94caa4"
     },
     {
       "path": "vendor/deployment/source.json",
       "bytes": 1089,
-      "sha256": "553c1935a50beddb4d781f32b7021af5b8908fe7ac7a5c7f0b03b0201fe64318"
+      "sha256": "c61b5e6949ded64871e31a613070fedbb6695491c83ec683fb445573c016a263"
     }
   ]
 }

@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/ExhibitOS/deployment",
-  "commit": "afc10ec9b1d04e23bfcabda0e10b2b8cfea2d386",
+  "commit": "10bfe399a94d725c4219db33c49430a2c027a427",
   "files": {
     "generic-ssh.mjs": "a63b1f0b1b30a51783f1524e1a3e94ca097b383d3340b00cf8c59e335ce96c59",
     "ssh-maintenance.mjs": "905c322675e24903e5c366f18b7eacfce6219abdd77b50474ce959787d62fa8a",
@@ -9,7 +9,7 @@
     "local-selfhost-profile.mjs": "c8898628c6f6fcfb0c4c4f9d10fb9d9a36bfe85cfcbe10567b057ba0dd58a2ca",
     "diagnostics.mjs": "96c8bfefe5f3a8bf70b7eaac9992b12326556344b297f1404cb2d8d54a994a95",
     "engine-locality.mjs": "0708772cef4d701ddeb9c2f9343451191b934cb47439d330fac7d427b5b6f63f",
-    "pages-render.mjs": "93a9b876e5c1b615ebc45ad1e536e298e53cf0d7a62cfa309be62814963a1561",
+    "pages-render.mjs": "4effff724ea19b5e15b586b2968d93aaa8a5638a0adf906004fbca4c1b94caa4",
     "pages-asset-hash.mjs": "c4da9c98ded29e23f37863d200a7c0d8139b9bbdecf6dd8cbc71b45e61967eae",
     "pages-render-worker.mjs": "c62cc32dbf4189234d865853d8b12b5a617f6eb876dc0b0379b0f26f688fa208"
   }

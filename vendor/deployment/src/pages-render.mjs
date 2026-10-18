@@ -1,7 +1,7 @@
 // Copyright 2026 ExhibitOS contributors. SPDX-License-Identifier: Apache-2.0
 import {readFile,lstat,readdir,realpath} from 'node:fs/promises';
 import {resolve,join,extname,isAbsolute} from 'node:path';
-import {createHash} from 'node:crypto';
+import {createHash,createPrivateKey,createPublicKey} from 'node:crypto';
 import {pagesAssetHash} from './pages-asset-hash.mjs';
 import {pagesDeploymentIdentity,appendPagesProxy,dynamicPublicationHTML} from './pages-render-worker.mjs';
 const CF='https://api.cloudflare.com/client/v4',RENDER='https://api.render.com/v1';
@@ -172,8 +172,36 @@ export async function executeHosted(request,options={}){
  * must already be observed suspended and an operator must confirm all other
  * writers stopped. Connection secrets exist only within the executor callback.
  */
+// Private native-loaded original configuration. No fallback creation, renderer
+// configuration input or secret projection is provided by this helper.
+export function validateRecoveryConfiguration(value){
+ try{
+  if(!object(value)||Object.keys(value).sort().join(',')!=='envVars,origin'||publicURL(value.origin,'onrender.com')!==value.origin||!Array.isArray(value.envVars))throw Error();
+  const required=['CLIENT_ORIGIN','TENANT_ID','ADMIN_SUBJECT','ADMIN_PASSWORD','FREEZE_SIGNING_KEY_BASE64'],optional=['STATIC_PUBLICATION_ID','STATIC_REVISION_SHA256','STATIC_INDEX_SHA256'];
+  const allowed=new Set([...required,...optional]),env=new Map();
+  for(const entry of value.envVars){if(!object(entry)||Object.keys(entry).sort().join(',')!=='key,value'||!allowed.has(entry.key)||env.has(entry.key)||typeof entry.value!=='string'||!entry.value.length||Buffer.byteLength(entry.value)>8192||entry.value.includes('\0'))throw Error();env.set(entry.key,entry.value);}
+  if(!required.every(k=>env.has(k))||![0,3].includes(optional.filter(k=>env.has(k)).length))throw Error();
+  const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+  if(publicURL(env.get('CLIENT_ORIGIN'),'pages.dev')!==env.get('CLIENT_ORIGIN')||!uuid.test(env.get('TENANT_ID'))||!/^([a-zA-Z0-9][a-zA-Z0-9_.@-]{2,127})$/.test(env.get('ADMIN_SUBJECT'))||Buffer.byteLength(env.get('ADMIN_PASSWORD'))<12||Buffer.byteLength(env.get('ADMIN_PASSWORD'))>1024)throw Error();
+  if(optional.every(k=>env.has(k))&&(!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(env.get(optional[0]))||!hex(env.get(optional[1]))||!hex(env.get(optional[2]))))throw Error();
+  const bytes=Buffer.from(env.get('FREEZE_SIGNING_KEY_BASE64'),'base64');
+  try{if(bytes.toString('base64')!==env.get('FREEZE_SIGNING_KEY_BASE64'))throw Error();const key=createPrivateKey({key:bytes,format:'der',type:'pkcs8'});if(key.asymmetricKeyType!=='ed25519')throw Error();const publicKey=createPublicKey(key).export({format:'der',type:'spki'});return {origin:value.origin,keyId:sha(publicKey),publicKey:publicKey.toString('base64')};}finally{bytes.fill(0);}
+ }catch{fail('HOSTED_RECOVERY_CONFIGURATION_REQUIRED');}
+}
+function matchRecoveryConfiguration(saved,service,expected){
+ try{
+  if(!Array.isArray(saved)||saved.length>100)throw Error();
+  const selected=new Set(['CLIENT_ORIGIN','TENANT_ID','ADMIN_SUBJECT','ADMIN_PASSWORD','FREEZE_SIGNING_KEY_BASE64','STATIC_PUBLICATION_ID','STATIC_REVISION_SHA256','STATIC_INDEX_SHA256','AUTH_ORIGIN','RENDER_EXTERNAL_URL']),env=new Map();
+  for(const row of saved){const e=row?.envVar;if(!e||!selected.has(e.key))continue;if(env.has(e.key)||typeof e.value!=='string')throw Error();env.set(e.key,e.value);}
+  const origin=env.get('AUTH_ORIGIN')??env.get('RENDER_EXTERNAL_URL')??publicURL(service.serviceDetails?.url,'onrender.com');
+  const actual={origin,envVars:[...env].filter(([key])=>!['AUTH_ORIGIN','RENDER_EXTERNAL_URL'].includes(key)).map(([key,value])=>({key,value}))};
+  const authority=validateRecoveryConfiguration(actual),wanted=validateRecoveryConfiguration(expected);
+  if(authority.origin!==wanted.origin||authority.keyId!==wanted.keyId||authority.publicKey!==wanted.publicKey||actual.envVars.length!==expected.envVars.length||!expected.envVars.every(e=>env.get(e.key)===e.value))throw Error();
+ }catch{fail('HOSTED_RECOVERY_CONFIGURATION_CHANGED');}
+}
 export async function withRenderRecoveryConnection(request,options,consume){
  if(!object(request)||Object.keys(request).sort().join(',')!=='postgresId,serviceId,workspaceId'||![request.workspaceId,request.serviceId,request.postgresId].every(id)||typeof consume!=='function')fail('HOSTED_RECOVERY_REQUEST');
+ validateRecoveryConfiguration(options?.expectedConfiguration);
  const cidr=options?.sourceCidr;
  const {isIP}=await import('node:net');
  if(typeof cidr!=='string'||cidr.length>64)fail('HOSTED_RECOVERY_NETWORK_REQUIRED');
@@ -189,6 +217,7 @@ export async function withRenderRecoveryConnection(request,options,consume){
  if(typeof info?.internalConnectionString!=='string'||typeof info.externalConnectionString!=='string')fail('HOSTED_RESPONSE_INVALID');
  const saved=await api('/services/'+request.serviceId+'/env-vars?limit=100');
  if(!Array.isArray(saved)||saved.filter(row=>row?.envVar?.key==='DATABASE_URL').length!==1||!saved.some(row=>row?.envVar?.key==='DATABASE_URL'&&row.envVar.value===info.internalConnectionString))fail('HOSTED_RESOURCE_CONFLICT');
+ matchRecoveryConfiguration(saved,service,options.expectedConfiguration);
  let external,internal;try{external=new URL(info.externalConnectionString);internal=new URL(info.internalConnectionString);}catch{fail('HOSTED_RESPONSE_INVALID');}
  if(!['postgres:','postgresql:'].includes(external.protocol)||!['postgres:','postgresql:'].includes(internal.protocol)||!external.username||!external.password||external.username!==internal.username||external.password!==internal.password||external.pathname!==internal.pathname||external.hostname.split('.')[0]!==internal.hostname||external.pathname.length<2||external.hash||external.port&&external.port!=='5432'||!/^[a-z0-9-]+\.[a-z0-9-]+-postgres\.render\.com$/.test(external.hostname))fail('HOSTED_RECOVERY_CONNECTION_INVALID');
  if([...external.searchParams].some(([key,value])=>key!=='sslmode'||!['require','verify-full'].includes(value))||external.searchParams.getAll('sslmode').length>1)fail('HOSTED_RECOVERY_TLS_REQUIRED');
@@ -200,6 +229,9 @@ export async function withRenderRecoveryConnection(request,options,consume){
  // does not receive an all-writers-paused completion claim.
  const after=assertFree(await api('/services/'+request.serviceId),'services');
  if(after.id!==service.id||after.ownerId!==service.ownerId||after.suspended!=='suspended')fail('HOSTED_RECOVERY_SOURCE_CHANGED');
+ const finalEnv=await api('/services/'+request.serviceId+'/env-vars?limit=100');
+ if(!Array.isArray(finalEnv)||finalEnv.filter(row=>row?.envVar?.key==='DATABASE_URL').length!==1||!finalEnv.some(row=>row?.envVar?.key==='DATABASE_URL'&&row.envVar.value===info.internalConnectionString))fail('HOSTED_RESOURCE_CONFLICT');
+ matchRecoveryConfiguration(finalEnv,after,options.expectedConfiguration);
  if(!object(output)||Object.keys(output).sort().join(',')!=='authenticatedManifestSha256,backupId,files,operation'||output.operation!=='created-and-verified'||typeof output.backupId!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(output.backupId)||!Number.isSafeInteger(output.files)||output.files<1||output.files>100000||!hex(output.authenticatedManifestSha256))fail('HOSTED_RECOVERY_RESULT_INVALID');
  return {provider:'render',action:'local-encrypted-backup',workspaceId:request.workspaceId,serviceId:request.serviceId,postgresId:request.postgresId,...(expiresAt?{expiresAt}:{}),...output};
 }

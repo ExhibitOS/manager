@@ -4,13 +4,14 @@ import {spawn} from 'node:child_process';
 import {lstat,realpath} from 'node:fs/promises';
 import {isAbsolute,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {withRenderRecoveryConnection} from '../vendor/deployment/src/pages-render.mjs';
+import {withRenderRecoveryConnection,validateRecoveryConfiguration} from '../vendor/deployment/src/pages-render.mjs';
 import {boundedJSON} from '../vendor/deployment/src/bounded-json.mjs';
 const fail=code=>{throw Error(code);};
 const uuid=v=>typeof v==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v);
-const safeCodes=new Set(['HOSTED_TOKEN_REQUIRED','HOSTED_TOKEN_INVALID','HOSTED_PERMISSION_REQUIRED','HOSTED_PAID_PLAN_REFUSED','HOSTED_RATE_LIMITED','HOSTED_CONNECTION_FAILED','HOSTED_REDIRECT_REFUSED','HOSTED_RESPONSE_INVALID','HOSTED_REMOTE_REJECTED','HOSTED_RESOURCE_CONFLICT','HOSTED_RECOVERY_REQUEST','HOSTED_RECOVERY_NETWORK_REQUIRED','HOSTED_RECOVERY_DATABASE_EXPIRED','HOSTED_RECOVERY_WRITERS_ACTIVE','HOSTED_RECOVERY_CONNECTION_INVALID','HOSTED_RECOVERY_TLS_REQUIRED','HOSTED_RECOVERY_OPERATOR_REQUIRED','HOSTED_RECOVERY_EXECUTION_FAILED','HOSTED_RECOVERY_SOURCE_CHANGED','HOSTED_RECOVERY_RESULT_INVALID','HOSTED_BACKUP_REQUEST_INVALID','HOSTED_BACKUP_OUTPUT_CHANGED','HOSTED_BACKUP_HELPER_FAILED','HOSTED_BACKUP_RESULT_INVALID']);
+const safeCodes=new Set(['HOSTED_TOKEN_REQUIRED','HOSTED_TOKEN_INVALID','HOSTED_PERMISSION_REQUIRED','HOSTED_PAID_PLAN_REFUSED','HOSTED_RATE_LIMITED','HOSTED_CONNECTION_FAILED','HOSTED_REDIRECT_REFUSED','HOSTED_RESPONSE_INVALID','HOSTED_REMOTE_REJECTED','HOSTED_RESOURCE_CONFLICT','HOSTED_RECOVERY_REQUEST','HOSTED_RECOVERY_CONFIGURATION_REQUIRED','HOSTED_RECOVERY_CONFIGURATION_CHANGED','HOSTED_RECOVERY_NETWORK_REQUIRED','HOSTED_RECOVERY_DATABASE_EXPIRED','HOSTED_RECOVERY_WRITERS_ACTIVE','HOSTED_RECOVERY_CONNECTION_INVALID','HOSTED_RECOVERY_TLS_REQUIRED','HOSTED_RECOVERY_OPERATOR_REQUIRED','HOSTED_RECOVERY_EXECUTION_FAILED','HOSTED_RECOVERY_SOURCE_CHANGED','HOSTED_RECOVERY_RESULT_INVALID','HOSTED_BACKUP_REQUEST_INVALID','HOSTED_BACKUP_OUTPUT_CHANGED','HOSTED_BACKUP_HELPER_FAILED','HOSTED_BACKUP_RESULT_INVALID']);
 export function validateRecoveryInput(input){
- if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).sort().join(',')!=='confirmExternalWritersStopped,execution,request,sourceCidr,tokens'||input.confirmExternalWritersStopped!==true||typeof input.sourceCidr!=='string'||input.sourceCidr.length>64||!input.tokens||Object.keys(input.tokens).join(',')!=='render'||typeof input.tokens.render!=='string'||input.tokens.render.length<1||input.tokens.render.length>8192)fail('HOSTED_BACKUP_REQUEST_INVALID');
+ if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).sort().join(',')!=='confirmExternalWritersStopped,execution,expectedConfiguration,request,sourceCidr,tokens'||input.confirmExternalWritersStopped!==true||typeof input.sourceCidr!=='string'||input.sourceCidr.length>64||!input.tokens||Object.keys(input.tokens).join(',')!=='render'||typeof input.tokens.render!=='string'||input.tokens.render.length<1||input.tokens.render.length>8192)fail('HOSTED_BACKUP_REQUEST_INVALID');
+ validateRecoveryConfiguration(input.expectedConfiguration);
  const e=input.execution;if(!e||typeof e!=='object'||Object.keys(e).sort().join(',')!=='dockerEndpoint,dockerPath,helperName,image,jobBudgetBytes,jobId,keyBase64,maxDumpBytes,outputPath,workVolume'||!uuid(e.jobId)||e.helperName!=='exhibitos-hosted-backup-'+e.jobId||e.workVolume!=='exhibitos-hosted-backup-work-'+e.jobId||!/^sha256:[a-f0-9]{64}$/.test(e.image)||typeof e.keyBase64!=='string')fail('HOSTED_BACKUP_REQUEST_INVALID');
  if(!Number.isSafeInteger(e.jobBudgetBytes)||e.jobBudgetBytes<4*1024*1024)fail('HOSTED_BACKUP_REQUEST_INVALID');
  if(!Number.isSafeInteger(e.maxDumpBytes)||e.maxDumpBytes<1024*1024||e.maxDumpBytes>32*1024*1024*1024)fail('HOSTED_BACKUP_REQUEST_INVALID');
@@ -42,14 +43,14 @@ export async function runHostedRecovery(input,dependencies={}){
   // This acknowledgement is native-created from the same retained job/action.
   // It is not accepted as public renderer/remote operation input. Suspension and
   // resource binding are still independently observed by the provider bridge.
-  const result=await (dependencies.bridge??withRenderRecoveryConnection)(input.request,{tokens:input.tokens,sourceCidr:input.sourceCidr,...(dependencies.fetch?{fetch:dependencies.fetch}:{}),confirmExternalWritersStopped:async()=>input.confirmExternalWritersStopped===true},async connection=>{
+  const result=await (dependencies.bridge??withRenderRecoveryConnection)(input.request,{tokens:input.tokens,sourceCidr:input.sourceCidr,expectedConfiguration:input.expectedConfiguration,...(dependencies.fetch?{fetch:dependencies.fetch}:{}),confirmExternalWritersStopped:async()=>input.confirmExternalWritersStopped===true},async connection=>{
    if(!samePin(pin,await outputPin(e.outputPath)))fail('HOSTED_BACKUP_OUTPUT_CHANGED');
    const result=await (dependencies.executeHelper??((execution,value)=>executeHelper(execution,value,dependencies.spawn??spawn)))(e,connection);
    if(!samePin(pin,await outputPin(e.outputPath)))fail('HOSTED_BACKUP_OUTPUT_CHANGED');return result;
   });
   return result;
  }catch(error){const code=safeCodes.has(error?.message)?error.message:'HOSTED_BACKUP_HELPER_FAILED';throw Error(code);}
- finally{if(input?.tokens)input.tokens.render='';if(input?.execution)input.execution.keyBase64='';}
+ finally{if(input?.tokens)input.tokens.render='';if(input?.execution)input.execution.keyBase64='';if(Array.isArray(input?.expectedConfiguration?.envVars))for(const e of input.expectedConfiguration.envVars)if(e&&['ADMIN_PASSWORD','FREEZE_SIGNING_KEY_BASE64'].includes(e.key))e.value='';}
 }
 export async function readRecoveryInput(stream){const chunks=[];let size=0;for await(const part of stream){const b=Buffer.from(part);size+=b.length;if(size>131072)fail('HOSTED_BACKUP_REQUEST_INVALID');chunks.push(b);}try{return boundedJSON(Buffer.concat(chunks).toString('utf8'),131072);}finally{for(const b of chunks)b.fill(0);}}
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){
