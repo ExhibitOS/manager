@@ -44,6 +44,7 @@ fn main() {
             "manager_open_exhibition",
             "manager_open_oex",
             "manager_verify_backup",
+            "manager_external_restore",
             "manager_create_backup",
             "manager_export_backup",
             "manager_choose_backup_path",

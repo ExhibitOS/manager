@@ -20,6 +20,7 @@ for(const outcome of ['success','cancel','failure'] as const)test(`completed bac
    }
    if(cmd==='manager_choose_backup_path')return '/private/tmp/synthetic-external.key';
    if(cmd==='manager_verify_backup'){(window as unknown as {__verifyInputs:unknown[]}).__verifyInputs.push(args?.input);return {id:'34567890-1234-1234-1234-123456789012',operation:'verified',files:12,image,authenticatedManifestSha256:'b'.repeat(64),at:3};}
+   if(cmd==='manager_external_restore'&&(args?.input as {action?:string}|undefined)?.action==='context')return {sources:[],checks:[]};
    throw Error('Unexpected synthetic command '+cmd);
   }}});
  },{outcome});

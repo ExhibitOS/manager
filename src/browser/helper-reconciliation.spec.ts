@@ -24,6 +24,7 @@ for(const scenario of ['backup-stopped','restoration-absent','ownership-failure'
     if(scenario==='ownership-failure')throw {code:'OWNERSHIP_CONFLICT',guidance:'소유권이 확인되지 않아 정지하지 않았습니다.'};
     return {id:rid,targetId:id,kind,operation:'helper-reconciled',helperState,dataPreserved:true,writersResumed:scenario==='malformed-receipt',at:2};
    }
+   if(cmd==='manager_external_restore'&&(args.input as {action?:string}|undefined)?.action==='context')return {sources:[],checks:[]};
    throw Error('Unexpected synthetic mutation');
   }}});
  },{scenario});

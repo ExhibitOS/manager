@@ -18,7 +18,7 @@ fn uuid(id: &str) -> bool {
 }
 fn valid(v: &MaintenanceContext) -> Result<()> {
     if !uuid(&v.id)
-        || !["backup", "restoration", "hosted-backup", "hosted-restoration"].contains(&v.kind.as_str())
+        || !["backup", "restoration", "hosted-backup", "hosted-restoration", "external-restoration"].contains(&v.kind.as_str())
         || ![
             "running",
             "requested",
@@ -192,7 +192,7 @@ impl LifecycleService {
         if !preserve {
             return Err(err("CANCEL_ACK_REQUIRED"));
         }
-        if !uuid(id) || !["backup", "restoration", "hosted-backup", "hosted-restoration"].contains(&kind) {
+        if !uuid(id) || !["backup", "restoration", "hosted-backup", "hosted-restoration", "external-restoration"].contains(&kind) {
             return Err(err("CANCEL_INPUT_INVALID"));
         }
         if self.read_maintenance()?.is_none() {
@@ -211,7 +211,7 @@ impl LifecycleService {
             Err(e) => return Err(e),
             Ok(_) => return Err(err("CANCEL_TARGET_INVALID")),
         }
-        let path = if kind == "hosted-restoration" {
+        let path = if kind=="external-restoration" {format!("external-restoration-{id}/job.json")}else if kind == "hosted-restoration" {
             format!("hosted-restoration-{id}/job.json")
         } else if kind == "hosted-backup" {
             format!("hosted-backup-{id}/job.json")
@@ -221,7 +221,11 @@ impl LifecycleService {
             "restoration.json".into()
         };
         let bytes = source_bytes(&self.root, &path, 16 * 1024, true)?;
-        let (job_id, state, stage, error, created, updated) = if kind == "hosted-restoration" {
+        #[cfg(not(windows))]
+        let external=if kind=="external-restoration"{let j:super::external_restoration::ExternalCheckJob=serde_json::from_slice(&bytes).map_err(|_|err("STATE_INVALID"))?;j.validate()?;Some((j.id,j.state,j.stage,j.error_code,j.created_at,j.updated_at))}else{None};
+        #[cfg(windows)]
+        let external:Option<(String,String,String,Option<String>,u64,u64)>=None;
+        let (job_id, state, stage, error, created, updated) = if let Some(external)=external{external}else if kind == "hosted-restoration" {
             let job: hosted_restoration::CheckJob = serde_json::from_slice(&bytes).map_err(|_| err("STATE_INVALID"))?;
             job.validate()?;
             (job.id, job.state, job.stage, job.error_code, job.created_at, job.updated_at)
@@ -350,6 +354,8 @@ impl LifecycleService {
         Ok(())
     }
     fn confirm_maintenance_stop(&self, kind: &str, id: &str) -> Result<()> {
+        #[cfg(not(windows))]
+        if kind=="external-restoration"{return self.stop_owned_external_restore(id);}
         if kind == "hosted-restoration" {
             return self.stop_owned_hosted_restore(id);
         }

@@ -44,6 +44,7 @@ fn names(kind: &str, id: &str) -> Result<(String, String)> {
         "backup" => ("exhibitos-backup", "com.exhibitos.backup"),
         "restoration" => ("exhibitos-restore", "com.exhibitos.restoration"),
         "hosted-backup" => ("exhibitos-hosted-backup", "com.exhibitos.hosted-backup"),
+        "external-restoration" => ("exhibitos-external-restore", "com.exhibitos.external-restore"),
         "hosted-restoration" => ("exhibitos-hosted-restore", "com.exhibitos.hosted-restore"),
         _ => return Err(err("RECONCILIATION_INPUT_INVALID")),
     };
@@ -447,7 +448,11 @@ impl LifecycleService {
     }
     pub(crate) fn reconciliation_target(&self, kind: &str, id: &str) -> Result<()> {
         names(kind, id)?;
-        let (target, state, stage, created, updated, error) = if kind == "hosted-restoration" {
+        #[cfg(not(windows))]
+        let external=if kind=="external-restoration"{let j=self.external_restore_check(id)?;Some((j.id,j.state,j.stage,j.created_at,j.updated_at,j.error_code))}else{None};
+        #[cfg(windows)]
+        let external:Option<(String,String,String,u64,u64,Option<String>)>=None;
+        let (target, state, stage, created, updated, error) = if let Some(external)=external{external}else if kind == "hosted-restoration" {
             let job=self.hosted_restore_check(id)?;
             (job.id,job.state,job.stage,job.created_at,job.updated_at,job.error_code)
         } else if kind == "hosted-backup" {
@@ -502,7 +507,7 @@ impl LifecycleService {
         }
         Ok(())
     }
-    fn reconciliation_history(&self) -> Result<Vec<ReconciliationJob>> {
+    pub(crate) fn reconciliation_history(&self) -> Result<Vec<ReconciliationJob>> {
         let mut jobs = Vec::new();
         for entry in fs::read_dir(&self.root).map_err(|_| err("STATE_UNAVAILABLE"))? {
             let entry = entry.map_err(|_| err("STATE_UNAVAILABLE"))?;
@@ -644,6 +649,9 @@ impl LifecycleService {
         mut command: impl FnMut(&[String]) -> Result<Vec<u8>>,
     ) -> Result<String> {
         let (name, label) = names(kind, target)?;
+        #[cfg(not(windows))]
+        if kind=="external-restoration"{self.stop_owned_external_restore(target)?;return self.external_restore_helper_state(&self.external_restore_check(target)?);}
+
         if kind=="hosted-restoration" {
             self.stop_owned_hosted_restore(target)?;
             return self.hosted_restore_helper_state(&self.hosted_restore_check(target)?);

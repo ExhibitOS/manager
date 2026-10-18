@@ -579,6 +579,42 @@ impl InstallationController {
         private_directory(&current.path)?;
         task(service)
     }
+    #[cfg(not(windows))]
+    pub fn external_restore_context(&self,token:&str)->Result<super::external_restoration::ExternalRestoreContext>{self.with_current(token,|service|{
+        let mut sources=service.verification_sources()?;let mut checks=service.external_restore_checks()?;
+        if let Some(profile)=&self.profile{if profile.root!=service.root{private_directory(&profile.root)?;sources.extend(profile.verification_sources()?);checks.extend(profile.external_restore_checks()?);}}
+        let mut source_ids=std::collections::BTreeSet::new();let mut job_ids=std::collections::BTreeSet::new();
+        if sources.len()>1000||checks.len()>1000||sources.iter().any(|r|!source_ids.insert(r.verification_id.clone()))||checks.iter().any(|r|!job_ids.insert(r.id.clone())){return Err(err("STATE_INVALID"));}
+        sources.sort_by_key(|r|r.at);checks.sort_by_key(|r|r.created_at);Ok(super::external_restoration::ExternalRestoreContext{sources,checks})
+    })}
+    #[cfg(not(windows))]
+    fn with_external_owner<T>(&self,token:&str,id:&str,job:bool,task:impl FnOnce(&LifecycleService)->Result<T>)->Result<T>{self.with_current(token,|service|{
+        if !uuid(id){return Err(err("HOSTED_RECOVERY_REQUEST"));}
+        let relative=if job{format!("external-restoration-{id}/job.json")}else{format!("backup-verification-{id}/source.json")};
+        let exists=|root:&Path|->Result<bool>{match fs::symlink_metadata(root.join(&relative)){Ok(_)=>Ok(true),Err(e)if e.kind()==std::io::ErrorKind::NotFound=>Ok(false),Err(_)=>Err(err("STATE_UNAVAILABLE"))}};
+        let selected=exists(&service.root)?;let profile=self.profile.as_ref().filter(|p|p.root!=service.root);let saved=match profile{Some(p)=>{private_directory(&p.root)?;exists(&p.root)?},None=>false};
+        if selected==saved{return Err(err("HOSTED_RECOVERY_SOURCE_REQUIRED"));}
+        if selected{let _profile=match profile{Some(profile)=>Some(profile.lock()?),None=>None};if !job{if let Some(profile)=profile{profile.ensure_external_archive_reconciled()?;}service.ensure_external_archive_reconciled()?;}if job{service.external_restore_check(id)?;}else{service.verification_source_metadata_unlocked(id)?;}return task(service);}
+        let _selected=service.lock()?;let profile=profile.ok_or_else(||err("NOT_INSTALLED"))?;
+        if !job{service.ensure_external_archive_reconciled()?;profile.ensure_external_archive_reconciled()?;}
+        if job{profile.external_restore_check(id)?;}else{profile.verification_source_metadata_unlocked(id)?;}task(profile)
+    })}
+    #[cfg(not(windows))]
+    pub fn with_external_archive_source<T>(&self,token:&str,verification_id:&str,task:impl FnOnce(&LifecycleService)->Result<T>)->Result<T>{self.with_external_owner(token,verification_id,false,task)}
+    #[cfg(not(windows))]
+    pub fn with_external_archive_job<T>(&self,token:&str,job_id:&str,task:impl FnOnce(&LifecycleService)->Result<T>)->Result<T>{self.with_external_owner(token,job_id,true,task)}
+    pub fn ensure_external_archive_idle(&self,token:&str)->Result<()>{self.with_current(token,|service|{
+        #[cfg(not(windows))]
+        {if let Some(profile)=&self.profile{profile.ensure_external_archive_reconciled()?;}service.ensure_external_archive_reconciled()?;}
+        Ok(())
+    })}
+    /// Pins the profile operation lock across admission and mutation. A precheck alone is not atomic.
+    pub fn with_current_mutation<T>(&self,token:&str,task:impl FnOnce(&LifecycleService)->Result<T>)->Result<T>{self.with_current(token,|service|{
+        let _profile=if let Some(profile)=&self.profile{if profile.root!=service.root{Some(profile.lock()?)}else{None}}else{None};
+        #[cfg(not(windows))]
+        {if let Some(profile)=&self.profile{profile.ensure_external_archive_reconciled()?;}service.ensure_external_archive_reconciled()?;}
+        task(service)
+    })}
     /// External archive authentication only; never installs or restores a DB.
     pub fn verify_external_backup(&self,token:&str,resources:&Path,image:&str,key:&Path,source:&Path)->Result<super::maintenance::VerificationReceipt>{
         self.with_current(token,|service|{
@@ -586,6 +622,9 @@ impl InstallationController {
                 Ok(_)=>true,Err(error) if error.kind()==std::io::ErrorKind::NotFound=>false,Err(_)=>return Err(err("STATE_UNAVAILABLE"))
             };
             if installed{
+                let _profile=if let Some(profile)=&self.profile{if profile.root!=service.root{Some(profile.lock()?)}else{None}}else{None};
+                #[cfg(not(windows))]
+                {if let Some(profile)=&self.profile{profile.ensure_external_archive_reconciled()?;}service.ensure_external_archive_reconciled()?;}
                 service.prepare_bundled_maintenance(resources,image)?;
                 return service.verify_backup(image,key,source);
             }
@@ -595,6 +634,8 @@ impl InstallationController {
                 let profile=self.profile.as_ref().ok_or_else(||err("NOT_INSTALLED"))?;
                 private_directory(&profile.root)?;
                 if profile.root==service.root{return Err(err("NOT_INSTALLED"));}
+                profile.ensure_external_archive_reconciled()?;
+                service.ensure_external_archive_reconciled()?;
                 profile.verify_external_backup_uninstalled(resources,image,key,source)
             }
             #[cfg(not(target_os="macos"))]
@@ -732,6 +773,8 @@ impl InstallationController {
                 .as_ref()
                 .ok_or_else(|| err("INSTALLATION_SELECTION_DISABLED"))?;
             let _profile = profile_lock(profile)?;
+            #[cfg(not(windows))]
+            {profile.ensure_external_archive_reconciled()?;source.ensure_external_archive_reconciled()?;}
             let (registry, _) =
                 load(&profile.root)?.ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
             let source_entry = registry
@@ -840,7 +883,10 @@ impl InstallationController {
                 }
                 Ok(context)
             } else {
-                source.maintenance_context()
+                let current=source.maintenance_context()?;
+                #[cfg(not(windows))]
+                if let Some(profile)=&self.profile{if profile.root!=source.root{if let Some(external)=profile.maintenance_context()?.filter(|c|c.kind=="external-restoration"&&!["completed","confirmed"].contains(&c.state.as_str())){match profile.ensure_external_archive_reconciled(){Ok(())=>{},Err(e)if ["HOSTED_RECOVERY_HELPER_ACTIVE","CANCEL_RECOVERY_REQUIRED"].contains(&e.code.as_str())=>{if current.as_ref().is_some_and(|c|["running","requested","uncertain"].contains(&c.state.as_str())){return Err(err("STATE_INVALID"));}return Ok(Some(external));},Err(e)=>return Err(e)}}}}
+                Ok(current)
             }
         })
     }
@@ -863,6 +909,8 @@ impl InstallationController {
                 }
                 destination.request_maintenance_cancel(kind, &id, preserve)
             } else {
+                #[cfg(not(windows))]
+                if kind=="external-restoration"{if let Some(profile)=&self.profile{if profile.root!=source.root&&profile.external_restore_checks()?.iter().any(|j|j.id==target){if source.external_restore_checks()?.iter().any(|j|j.id==target){return Err(err("STATE_INVALID"));}return profile.request_maintenance_cancel(kind,target,preserve);}}}
                 source.request_maintenance_cancel(kind, target, preserve)
             }
         })
@@ -880,6 +928,8 @@ impl InstallationController {
             .as_ref()
             .ok_or_else(|| err("INSTALLATION_SELECTION_DISABLED"))?;
         let _lock = profile_lock(profile)?;
+        #[cfg(not(windows))]
+        profile.ensure_external_archive_reconciled()?;
         let (mut registry, previous) =
             load(&profile.root)?.ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
         if registry.installations.len() >= 128 {
@@ -931,6 +981,8 @@ impl InstallationController {
             .as_ref()
             .ok_or_else(|| err("INSTALLATION_SELECTION_DISABLED"))?;
         let _lock = profile_lock(profile)?;
+        #[cfg(not(windows))]
+        profile.ensure_external_archive_reconciled()?;
         let (mut registry, previous) =
             load(&profile.root)?.ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
         let entry = registry
@@ -966,6 +1018,23 @@ mod tests {
         let mut f = private_options().open(path).unwrap();
         f.write_all(bytes).unwrap();
         f.sync_all().unwrap();
+    }
+    #[cfg(not(windows))]
+    #[test]
+    fn external_profile_history_owner_and_orphan_guard_survive_installed_state(){
+        let (profile,controller)=fixture();let context=controller.context().unwrap();let mut job=super::super::external_restoration::fixture_job();job.state="interrupted".into();job.stage="interrupted".into();job.error_code=Some("INTERRUPTED".into());let folder=profile.join(format!("external-restoration-{}",job.id));super::super::restoration::directory(&folder).unwrap();write_json(&folder,"job.json",&job).unwrap();
+        controller.with_current(&context.selection_token,|service|{write_json(&service.root,"installed.json",&serde_json::json!({}))}).unwrap();
+        let history=controller.external_restore_context(&context.selection_token).unwrap();assert_eq!(history.checks.len(),1);assert_eq!(history.checks[0].id,job.id);
+        let owner=controller.with_external_archive_job(&context.selection_token,&job.id,|service|Ok(service.root.clone())).unwrap();assert_eq!(owner,profile);
+        let mut called=false;assert_eq!(controller.with_current_mutation(&context.selection_token,|_|{called=true;Ok(())}).unwrap_err().code,"CANCEL_RECOVERY_REQUIRED");assert!(!called);assert!(controller.create(&context.selection_token,true).is_err());
+        assert_eq!(controller.with_retry_destination(&context.selection_token,&Uuid::new_v4().to_string(),|_,_,_|Ok(())).unwrap_err().code,"CANCEL_RECOVERY_REQUIRED");
+        controller.with_retry_diagnostics(&context.selection_token,None,|_,_|Ok(())).unwrap();
+        let maintenance=super::super::cancellation::MaintenanceContext{id:job.id.clone(),kind:"external-restoration".into(),state:"interrupted".into(),stage:"checking-archive-and-restoring".into(),error_code:Some("INTERRUPTED".into()),created_at:1,updated_at:1};
+        write_json(&profile,&format!("maintenance-{}.json",job.id),&maintenance).unwrap();write_json(&profile,"maintenance-active.json",&job.id).unwrap();assert_eq!(controller.maintenance_context(&context.selection_token).unwrap().unwrap().id,job.id);
+        let reconciliation=super::super::helper_reconciliation::ReconciliationJob{id:Uuid::new_v4().to_string(),target_id:job.id.clone(),kind:"external-restoration".into(),state:"completed".into(),helper_state:Some("absent".into()),error_code:None,created_at:1,updated_at:2};write_json(&profile,&format!("helper-reconciliation-{}.json",reconciliation.id),&reconciliation).unwrap();
+        assert!(controller.maintenance_context(&context.selection_token).unwrap().is_none());controller.with_current_mutation(&context.selection_token,|_|Ok(())).unwrap();
+        controller.with_current(&context.selection_token,|service|{let copy=service.root.join(format!("external-restoration-{}",job.id));super::super::restoration::directory(&copy)?;write_json(&copy,"job.json",&job)}).unwrap();
+        assert!(controller.external_restore_context(&context.selection_token).is_err());assert!(controller.with_external_archive_job(&context.selection_token,&job.id,|_|Ok(())).is_err());
     }
     #[test]
     fn external_verification_rejects_stale_selection_before_tools_or_inputs(){

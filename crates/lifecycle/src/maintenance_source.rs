@@ -72,18 +72,37 @@ fn authenticated_manifest(workspace:&Path,receipt:&VerificationReceipt)->Result<
  let entries=manifest["files"].as_array().filter(|f|f.len()==receipt.files as usize).ok_or_else(invalid)?;let mut paths=Vec::new();
  for entry in entries{let name=entry["path"].as_str().ok_or_else(invalid)?;if !name.as_bytes().strip_prefix(b"files/").is_some_and(cipher_name){return Err(invalid());}paths.push(name.to_owned());}paths.sort();if paths.windows(2).any(|p|p[0]==p[1]){return Err(invalid());}Ok((id,paths))
 }
+#[derive(Clone,Debug,Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct VerificationSummary{pub verification_id:String,pub backup_id:String,pub image:String,pub files:u64,pub at:u64}
 impl LifecycleService{
+ /// Historical metadata only; explicit restore admission must recheck source and crypto.
+ pub fn verification_sources(&self)->Result<Vec<VerificationSummary>>{
+  let mut out=Vec::new();for entry in fs::read_dir(&self.root).map_err(|_|invalid())?{let name=entry.map_err(|_|invalid())?.file_name();let Some(id)=name.to_str().and_then(|s|s.strip_prefix("backup-verification-")).filter(|id|uuid(id))else{continue};
+   let workspace=self.root.join(format!("backup-verification-{id}"));if !workspace.join("receipt.json").exists()||!workspace.join("source.json").exists(){continue;}if out.len()>=1000{return Err(err("JOB_HISTORY_FULL"));}
+   let receipt:VerificationReceipt=serde_json::from_slice(&super::installation_backup::source_bytes(&workspace,"receipt.json",4096,true)?).map_err(|_|invalid())?;
+   let record:VerificationSource=serde_json::from_slice(&super::installation_backup::source_bytes(&workspace,"source.json",LIMIT,true)?).map_err(|_|invalid())?;
+   if receipt.id!=id||record.verification_id!=id||!uuid(&record.backup_id)||receipt.operation!="verified"||receipt.files==0||receipt.files>MAX_FILES as u64||record.files!=receipt.files||record.image!=receipt.image||!receipt.image.strip_prefix("sha256:").is_some_and(hash_valid)||!hash_valid(&receipt.authenticated_manifest_sha256)||record.authenticated_manifest_sha256!=receipt.authenticated_manifest_sha256||record.pins.len()>MAX_FILES+3{return Err(invalid());}out.push(VerificationSummary{verification_id:record.verification_id,backup_id:record.backup_id,image:record.image,files:record.files,at:receipt.at});
+  }out.sort_by_key(|r|r.at);Ok(out)
+ }
  /// Revalidates a retained native source link. Existing receipts without a link
  /// remain authentication receipts, but are not silently promoted to this input.
  /// Metadata custody is not fresh cryptographic authorization: a later restore
  /// must authenticate the ciphertext and expected backup ID/SHA before SQL.
  pub fn verification_source(&self,id:&str)->Result<VerificationSource>{
-  let _operation=self.lock()?;if !uuid(id){return Err(invalid());}let workspace=self.root.join(format!("backup-verification-{id}"));
+  let _operation=self.lock()?;self.verification_source_unlocked(id)
+ }
+ pub(crate) fn verification_source_unlocked(&self,id:&str)->Result<VerificationSource>{
+  let record=self.verification_source_metadata_unlocked(id)?;
+  let current=SourceSnapshot::capture(&record.source_path)?;if current.pins!=record.pins||current.directory_pins!=record.directory_pins{return Err(invalid());}Ok(record)
+ }
+ pub(crate) fn verification_source_metadata_unlocked(&self,id:&str)->Result<VerificationSource>{
+  if !uuid(id){return Err(invalid());}let workspace=self.root.join(format!("backup-verification-{id}"));
   let receipt:VerificationReceipt=serde_json::from_slice(&super::installation_backup::source_bytes(&workspace,"receipt.json",4096,true)?).map_err(|_|invalid())?;
   let record:VerificationSource=serde_json::from_slice(&super::installation_backup::source_bytes(&workspace,"source.json",LIMIT,true)?).map_err(|_|invalid())?;
   let (backup_id,files)=authenticated_manifest(&workspace,&receipt)?;
   if receipt.id!=id||record.verification_id!=id||record.backup_id!=backup_id||record.image!=receipt.image||record.authenticated_manifest_sha256!=receipt.authenticated_manifest_sha256||record.files!=receipt.files||record.pins.len()>MAX_FILES+3||files!=record.pins.iter().filter(|p|p.path.starts_with("files/")).map(|p|p.path.clone()).collect::<Vec<_>>(){return Err(invalid());}
-  let current=SourceSnapshot::capture(&record.source_path)?;if current.pins!=record.pins||current.directory_pins!=record.directory_pins{return Err(invalid());}Ok(record)
+  Ok(record)
  }
 }
 
@@ -97,6 +116,10 @@ mod tests{
   let id=Uuid::new_v4().to_string();let workspace=service.root.join(format!("backup-verification-{id}"));fs::create_dir(&workspace).unwrap();fs::set_permissions(&workspace,fs::Permissions::from_mode(0o700)).unwrap();fs::create_dir(workspace.join("plaintext")).unwrap();
   let bytes=serde_json::to_vec(&serde_json::json!({"schemaVersion":"1.0.0-draft.1","kind":"service-backup","id":"c30e227b-e771-43dc-b315-023e0469d4d2","files":[{"path":"files/00000000.gcm"}]})).unwrap();write_private_new(&workspace.join("plaintext"),"manifest.json",&bytes,4096).unwrap();
   let receipt=VerificationReceipt{id,operation:"verified".into(),files:1,image:format!("sha256:{}","a".repeat(64)),authenticated_manifest_sha256:digest(&bytes),at:now()};(service,source,workspace,receipt)
+ }
+ #[test]
+ fn historical_source_summary_is_metadata_only_but_explicit_action_rechecks_source(){
+  let(service,source,workspace,receipt)=fixture();SourceSnapshot::capture(&source).unwrap().preserve(&workspace,&receipt).unwrap();write_json(&workspace,"receipt.json",&receipt).unwrap();fs::rename(&source,source.with_extension("moved")).unwrap();let summaries=service.verification_sources().unwrap();assert_eq!(summaries.len(),1);assert_eq!(summaries[0].verification_id,receipt.id);assert!(service.verification_source(&receipt.id).is_err());
  }
  #[test]
  fn verification_source_links_only_matching_native_receipt_and_original_pins(){

@@ -1061,5 +1061,55 @@
       "Whole-service activation, migration/update/rollback and actual native user validation"
     ],
     "scope": "No task/gate/support change; legacy receipts stay valid authentication receipts and are not promoted to new source records."
+  },
+  "externalArchiveIsolatedDBCheck": {
+    "status": "IMPLEMENTED_AND_LOCAL_INTEGRATION_VERIFIED_NOT_NATIVE_GUI_OR_WHOLE_SERVICE_RESTORE",
+    "tests": {
+      "coreDistinctSelected": 28,
+      "finalControllerRoutingRerun": 1,
+      "runner": 8,
+      "parser": 3,
+      "focusedBrowserDesktopAndNarrow": 10,
+      "existingRelatedBrowser": 26,
+      "nativeFocused": 2,
+      "finalIntegration": {
+        "vitest": 76,
+        "files": 12,
+        "receipt": 9,
+        "installer": 6,
+        "typeLintBuild": true
+      }
+    },
+    "actualWorkflow": {
+      "actualCrypto": true,
+      "actualIsolatedPostgres": true,
+      "frozenRows": 0,
+      "originalHostedJobRequired": false,
+      "fakeHostedJobCreated": false,
+      "completed": 2,
+      "wrongKeyFailed": 1,
+      "interruptedBeforeHelper": 1,
+      "cancelledCandidate": 1,
+      "orphanActualHelperState": "absent",
+      "cancelActualHelperState": "stopped",
+      "actualReopenAndMetadataReadback": true,
+      "sourceArchiveAndKeyUnchanged": true,
+      "firstDriverExit": 1,
+      "firstDriverReason": "Test-only poll unwrapped transient BUSY after completed SQL/retry stages; original receipt retained",
+      "firstContinuationExit": 1,
+      "firstContinuationReason": "Docker readiness query timed out before product execution; normally stopped0; record retained",
+      "secondContinuationExit": 0,
+      "secondContinuation": "Retries readiness observations and maintenance BUSY without restarting live product work; actual orphan reconcile, request/confirmed stop, new-candidate preservation and reopen passed",
+      "dockerNormalStopExit": 0
+    },
+    "evidence": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-external-native-0161bc76-1b66-4ba9-b8e2-4586ed2815fa/receipt.json",
+    "evidenceSHA256": "9ce0f13d5c05834db42de994c420ddebfa799883caa336f64304782ab9b70ce8",
+    "notVerified": [
+      "Actual native IPC invocation/OS file picker/real GUI",
+      "Actual Render data/server recovery",
+      "Whole service activation/private runtime settings/publication and executable custody",
+      "Developer ID/notarization/App Store and first-user installation",
+      "Actual Safari/iOS/VoiceOver/novice GUI acceptance"
+    ]
   }
 }

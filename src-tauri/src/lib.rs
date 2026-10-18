@@ -5,6 +5,7 @@ mod processing_app;
 mod remote;
 mod hosted;
 mod hosted_recovery;
+mod external_archive;
 mod publication;
 mod platform_runtime;
 mod engine_preparation;
@@ -53,6 +54,9 @@ async fn blocking<T: Send + 'static>(
     tauri::async_runtime::spawn_blocking(move || state.with_current(&selection_token, task))
         .await
         .map_err(|_| error("MANAGER_OPERATION"))?
+}
+async fn blocking_mutation<T:Send+'static>(state:Arc<exhibitos_lifecycle::installations::InstallationController>,selection_token:String,task:impl FnOnce(&LifecycleService)->Result<T,LifecycleError>+Send+'static)->Result<T,LifecycleError>{
+ tauri::async_runtime::spawn_blocking(move||state.with_current_mutation(&selection_token,task)).await.map_err(|_|error("MANAGER_OPERATION"))?
 }
 #[tauri::command]
 async fn manager_hosted_recovery(window:WebviewWindow,app:tauri::AppHandle,state:State<'_,DesktopState>,selection_token:String,input:hosted_recovery::Input)->Result<hosted_recovery::Context,LifecycleError>{
@@ -551,7 +555,7 @@ async fn manager_retry_backup(
 > {
     caller(&window)?;
     input.validate()?;
-    blocking(state.0.clone(), selection_token, move |s| {
+    blocking_mutation(state.0.clone(), selection_token, move |s| {
         s.retry_backup(
             &input.target_id,
             &input.image,
@@ -604,7 +608,7 @@ async fn manager_restore_backup(
     caller(&window)?;
     input.validate()?;
     let resources=app.path().resource_dir().map_err(|_|error("PLATFORM_RUNTIME_UNAVAILABLE"))?;
-    blocking(state.0.clone(), selection_token, move |service| {
+    blocking_mutation(state.0.clone(), selection_token, move |service| {
         service.prepare_bundled_maintenance(&resources.join("platform-runtime/generated"),&input.image)?;
         service.restore_backup(
             &input.image,
@@ -654,7 +658,7 @@ async fn manager_create_backup(
     caller(&window)?;
     input.validate()?;
     let resources=app.path().resource_dir().map_err(|_|error("PLATFORM_RUNTIME_UNAVAILABLE"))?;
-    blocking(state.0.clone(), selection_token, move |service| {
+    blocking_mutation(state.0.clone(), selection_token, move |service| {
         service.prepare_bundled_maintenance(&resources.join("platform-runtime/generated"),&input.image)?;
         service.create_backup(
             &input.image,
@@ -684,6 +688,11 @@ async fn manager_backup_jobs(
         service.backup_jobs()
     })
     .await
+}
+#[tauri::command]
+async fn manager_external_restore(window:WebviewWindow,app:tauri::AppHandle,state:State<'_,DesktopState>,selection_token:String,input:external_archive::Input)->Result<serde_json::Value,LifecycleError>{
+ caller(&window)?;input.validate()?;let resources=app.path().resource_dir().map_err(|_|error("HOSTED_RUNTIME_UNAVAILABLE"))?;let controller=state.0.clone();
+ tauri::async_runtime::spawn_blocking(move||external_archive::operation(&resources,&controller,&selection_token,input)).await.map_err(|_|error("MANAGER_OPERATION"))?
 }
 #[tauri::command]
 async fn manager_verify_backup(
@@ -745,7 +754,7 @@ async fn manager_install(
 ) -> Result<Job, LifecycleError> {
     caller(&window)?;
     let resources = app.path().resource_dir().map_err(|_| error("PLATFORM_RUNTIME_UNAVAILABLE"))?;
-    blocking(state.0.clone(), selection_token, move |service| {
+    blocking_mutation(state.0.clone(), selection_token, move |service| {
         platform_runtime::prepare(&resources, service)?;
         service.prepare_initial_account(initial_account)?;
         service.install()
@@ -763,7 +772,7 @@ async fn manager_action(
     if action == Action::Install {
         return Err(error("MANAGER_ACTION"));
     }
-    blocking(state.0.clone(), selection_token, move |service| {
+    blocking_mutation(state.0.clone(), selection_token, move |service| {
         service.execute(action)
     })
     .await
@@ -932,6 +941,7 @@ pub fn run() {
             manager_open_exhibition,
             manager_open_oex,
             manager_verify_backup,
+            manager_external_restore,
             manager_create_backup,
             manager_export_backup,
             manager_choose_backup_path,

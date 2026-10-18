@@ -562,7 +562,7 @@ impl LifecycleService {
         Ok(())
     }
 }
-fn observed_desktop_mapping(value: &Value) -> Result<bool> {
+pub(crate) fn observed_desktop_mapping(value: &Value) -> Result<bool> {
     if !cfg!(target_os = "macos")
         || !value["Mounts"].as_array().is_some_and(|mounts| {
             mounts.iter().any(|m| {
@@ -640,8 +640,17 @@ fn restore_caps_match(value: &Value) -> bool {
                 == 1
         })
 }
-fn validate_helper(
-    job: &CheckJob,
+fn validate_helper(job:&CheckJob,value:&Value,output:&Path,cid:&str,desktop:bool)->Result<()>{validate_restore_helper(&RestoreHelperSpec::hosted(&job.id,&job.image),value,output,cid,desktop)}
+pub(crate) struct RestoreHelperSpec<'a>{pub id:&'a str,pub image:&'a str,external:bool}
+impl<'a> RestoreHelperSpec<'a>{
+ pub(crate) fn hosted(id:&'a str,image:&'a str)->Self{Self{id,image,external:false}}
+ pub(crate) fn external(id:&'a str,image:&'a str)->Self{Self{id,image,external:true}}
+ pub(crate) fn label(&self)->&'static str{if self.external{"com.exhibitos.external-restore"}else{"com.exhibitos.hosted-restore"}}
+ pub(crate) fn name(&self)->String{format!("exhibitos-{}-restore-{}",if self.external{"external"}else{"hosted"},self.id)}
+ pub(crate) fn volume(&self)->String{format!("exhibitos-{}-restore-work-{}",if self.external{"external"}else{"hosted"},self.id)}
+}
+pub(crate) fn validate_restore_helper(
+    spec: &RestoreHelperSpec,
     value: &Value,
     output: &Path,
     cid: &str,
@@ -653,10 +662,10 @@ fn validate_helper(
     if value["Id"] != cid
         || cid.len() != 64
         || !hash_valid(cid)
-        || value["Name"] != format!("/exhibitos-hosted-restore-{}", job.id)
-        || value["Config"]["Labels"]["com.exhibitos.hosted-restore"] != job.id
-        || value["Config"]["Image"] != job.image
-        || value["Image"] != job.image
+        || value["Name"] != format!("/{}",spec.name())
+        || value["Config"]["Labels"][spec.label()] != spec.id
+        || value["Config"]["Image"] != spec.image
+        || value["Image"] != spec.image
         || value["HostConfig"]["Privileged"] != false
         || value["HostConfig"]["ReadonlyRootfs"] != true
         || value["HostConfig"]["AutoRemove"] != false
@@ -688,7 +697,7 @@ fn validate_helper(
         .filter(|m| {
             m["Destination"] == "/work"
                 && m["Type"] == "volume"
-                && m["Name"] == format!("exhibitos-hosted-restore-work-{}", job.id)
+                && m["Name"] == spec.volume()
                 && m["RW"] == true
         })
         .count();

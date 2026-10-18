@@ -13,6 +13,7 @@ for(const scenario of ['confirmed','uncertain','malformed','stale-poll','unknown
    if(['manager_jobs','manager_logs','manager_backup_jobs','manager_helper_reconciliations','manager_maintenance_retries'].includes(cmd))return [];
    if(cmd==='manager_restoration_context'&&scenario==='hosted-confirmed')return {fresh:false,job:null,receipt:null};
    if(cmd==='manager_restoration_context')return {fresh:false,job:{id,state:'running',stage:'authenticating',errorCode:null,createdAt:1,updatedAt:2},receipt:null};
+   if(cmd==='manager_external_restore'&&(args as {input?:{action?:string}})?.input?.action==='context')return {sources:[],checks:[]};
    throw Error('Unexpected mutation');
   }}});
  },{scenario});

@@ -3,6 +3,8 @@
 pub mod backup_creation;
 pub mod hosted_backup;
 pub mod hosted_restoration;
+#[cfg(not(windows))]
+pub mod external_restoration;
 mod cached_install;
 mod backup_key;
 pub mod backup_export;
@@ -1137,6 +1139,8 @@ impl LifecycleService {
         service.recover_backup_jobs()?;
         service.recover_hosted_backups()?;
         service.recover_hosted_restore_checks()?;
+        #[cfg(not(windows))]
+        service.recover_external_restore_checks()?;
         service.recover_restoration()?;
         service.recover_helper_reconciliations()?;
         service.recover_maintenance_cancellation()?;

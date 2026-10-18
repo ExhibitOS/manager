@@ -56,6 +56,7 @@
     "allow-manager-hosted-resume",
     "allow-manager-hosted-resume-remote",
     "allow-manager-publication-catalog",
-    "allow-manager-publication-export"
+    "allow-manager-publication-export",
+    "allow-manager-external-restore"
   ]
 }

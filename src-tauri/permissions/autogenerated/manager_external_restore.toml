@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-external-restore"
+description = "Enables the manager_external_restore command without any pre-configured scope."
+commands.allow = ["manager_external_restore"]
+
+[[permission]]
+identifier = "deny-manager-external-restore"
+description = "Denies the manager_external_restore command without any pre-configured scope."
+commands.deny = ["manager_external_restore"]
