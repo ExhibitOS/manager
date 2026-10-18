@@ -654,5 +654,146 @@
     "developerIdOrNotarization": false,
     "supportedEnvironmentObserved": "macOS27.0.1 arm64 build only; declared minimum is not execution qualification",
     "next": "User return: exact app native chooser/Keychain/restore-cancel/relaunch; no prompt while away."
+  },
+  "studioBackgroundRefreshFix20261018": {
+    "observedAt": "2026-10-18T07:28:58.983838+00:00",
+    "status": "IMPLEMENTED_REGRESSION_AND_PACKAGE_PASS_NATIVE_HUMAN_OBSERVATION_PENDING",
+    "source": "ad6770c0eceb528043178aeae07b8b82bf23674f",
+    "userReport": {
+      "thread": "01a0fd99-5060-75e1-afa4-b6af398cfde2",
+      "message": "01a14dd2-b872-7cc3-8a04-cc144193892f",
+      "symptom": "Studio 준비하고 열기 periodically enabled/disabled without user action",
+      "verifiedDirectUserMessage": true
+    },
+    "cause": "Existing every3s refresh sets loading true. Studio disabled and its click guard directly used loading, so valid unchanged state lost its action on every pending read. Reproduced with held actual IPC read before fix.",
+    "fix": [
+      "Studio action retains current same-selection verified state during pending background reads; loading is no longer its execution lock",
+      "Initial absent status, real busy, restoration/history errors, native readiness and engine checks remain",
+      "Click increments request generation so earlier read completions cannot overwrite user-started preparation",
+      "Observed selection changes clear prior status/maintenance snapshots; core status/engine/jobs/logs batch is rechecked against current selection before application",
+      "Capture clicked selection token and require same token at prepareStudio entry before status or writers; existing between-stage fences remain"
+    ],
+    "scopeLimit": "Core status batch selection fence does not claim atomicity of every later maintenance history read. Native per-command selection/writer guards remain.",
+    "checks": {
+      "beforeFix": {
+        "session": 93354,
+        "exit": 1,
+        "failure": "Delayed background refresh incorrectly disabled Studio action"
+      },
+      "initialFocusedAfterFix": {
+        "session": 21298,
+        "exit": 0,
+        "cases": 2
+      },
+      "nodeFinal": {
+        "session": 57713,
+        "exit": 0,
+        "vitest": 71,
+        "files": 11,
+        "receipt": 9,
+        "installer": 6,
+        "typeLintBuild": true
+      },
+      "existingRelatedBrowser": {
+        "session": 37658,
+        "exit": 1,
+        "passed": 24,
+        "newFixtureFailed": 2,
+        "reason": "New stale-selection test attempted an actual selection click while that UI is intentionally disabled during refresh; product guard retained"
+      },
+      "correctedFocusedFinal": {
+        "session": 87737,
+        "exit": 0,
+        "cases": 2,
+        "coverage": "Two held polling cycles preserve enable/focus, initial unknown blocked, setup busy duplicate refusal, real failure revokes cache, engine refusal, valid external/native A→B late response fencing"
+      },
+      "independentReview": "No further concrete blocker in ad6770c; first-click target mismatch resolved; broader history atomicity not claimed",
+      "rustRerun": false,
+      "reasonRustNotRerun": "No Rust source changed"
+    },
+    "nativeArtifact": {
+      "session": 75068,
+      "exit": 0,
+      "receipt": {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/receipt.json",
+        "sha256": "8ecf719e132fe08481c776cb48e8cf97e0a875adb98d70fcdab3a30f4c22f2c9"
+      },
+      "app": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/development-adhoc/ExhibitOS Manager.app",
+      "bytes": 503636376,
+      "files": 7807,
+      "inventory": {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/app-inventory.json",
+        "sha256": "b73d3045d0b4e0e3eff25cf6d4dc7a2f0235d99c4b0ef8eaf3465bee442a9cba"
+      },
+      "adHocStrictSignatureAndResources": true,
+      "developerId": false,
+      "notarized": false,
+      "previousArtifactsPreserved": true
+    },
+    "actualAppReplacement": {
+      "session": 21613,
+      "exit": 0,
+      "oldPID": 37021,
+      "normalExitObserved": true,
+      "forced": false,
+      "newExactAppOpenCommandExit": 0,
+      "human20SecondStabilityCheck": "requested; waiting"
+    },
+    "separatePickerObservation": {
+      "user": "버튼이 활성화 되어있지 않음",
+      "selectedInstallation": "856290e0-be0e-4d77-919c-3671559bb6f4",
+      "kind": "recovery",
+      "actualDirectory": "Only operation.lock, no installed files/job writes observed",
+      "interpretation": "Existing installed/engine prerequisites prevent backup verification in this blank selected space. Not a successful picker test. No install/selection/data change to bypass."
+    },
+    "iphoneMetadata": {
+      "device": "00008150-000C30921E93C01C",
+      "unlockedQuerySession": 15041,
+      "exit": 0,
+      "bundleIdentifier": "org.exhibitos.capture.spike",
+      "version": "0.1.0",
+      "build": "1",
+      "sourceCommitFromVersion": "not provable",
+      "cameraStarted": false,
+      "installedOrDeleted": false,
+      "otherIphoneAccessed": false
+    },
+    "rawEvidence": [
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/exhibitos-studio-button-before-fix-20261018.log",
+        "sha256": "36db7a3dae9391f91e552b2dd6b2de9acd8894ca710ece25925989cf8d4a0825"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/exhibitos-studio-button-after-fix-20261018.log",
+        "sha256": "52624259529d3f2b78e6283affcf68455a5704301cdf698af6b75e0040c453e2"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/exhibitos-studio-button-final-nodecheck-20261018.log",
+        "sha256": "725c9f5508f0c60092341efe585ebd7329b1ca04e04256806ea0b5cc232338a5"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/exhibitos-studio-button-final-browser-20261018.log",
+        "sha256": "3f2c5b36938918529920df2c34189cb21c33b14f3c726703594b222e890fc496"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/exhibitos-studio-button-selection-fence-20261018.log",
+        "sha256": "308cca6dad7a4a8afc933a6ffe6239e911e4f89a81dcc175a1bb3f7112e4d475"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/exhibitos-studio-refresh-replace-app.log",
+        "sha256": "55639d3cfcff34e53eff8f2478ad3af069d1c712a1afd4a18f830bd8106c4200"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/exhibitos-studio-refresh-replace-app.swift",
+        "sha256": "dbdcb5773c02b6d10ff01720f25c9fc43aa5946caa7cef6f9054329b831b2b6a"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/exhibitos-manager-studio-refresh-app-20261018.py",
+        "sha256": "ed6193848a5e92c9c3a942319ea58ed574789e5844cec1239e70e12b019f8f34"
+      }
+    ],
+    "taskCountsChanged": false,
+    "goal": "active",
+    "nativeHumanQualityAndWholeGuiAccepted": false
   }
 }
