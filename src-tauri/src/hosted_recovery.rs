@@ -48,6 +48,46 @@ pub struct Context {
     pub key_saved: bool,
     pub archive_saved: Option<exhibitos_lifecycle::backup_export::ExportReceipt>,
 }
+// Private Keychain-only record. It is not an archive or renderer contract.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(rename_all="SCREAMING_SNAKE_CASE")]
+enum ConfigurationKey { ClientOrigin, TenantId, AdminSubject, AdminPassword, FreezeSigningKeyBase64, StaticPublicationId, StaticRevisionSha256, StaticIndexSha256 }
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigurationEntry { key:ConfigurationKey, value:String }
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+struct OriginalConfiguration { env_vars:Vec<ConfigurationEntry>, origin:String }
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+struct OriginalConfigurationSnapshot { version:u8, source:Source, expected_configuration:OriginalConfiguration }
+impl OriginalConfiguration {
+    // Domain/crypto validation remains the existing load-only validator and
+    // fixed Node runner's responsibility. This closes only storage field names
+    // and cardinality, so tokens/database URLs cannot be added to the record.
+    fn closed(&self)->bool {
+        use ConfigurationKey::*;
+        let required=[ClientOrigin,TenantId,AdminSubject,AdminPassword,FreezeSigningKeyBase64];
+        let optional=[StaticPublicationId,StaticRevisionSha256,StaticIndexSha256];
+        let mut names=std::collections::BTreeSet::new();
+        self.env_vars.iter().all(|e| !e.value.is_empty() && names.insert(e.key))
+            && required.iter().all(|key|names.contains(key))
+            && [0,3].contains(&optional.iter().filter(|key|names.contains(*key)).count())
+    }
+}
+fn add_configuration_bytes(account:&str,bytes:&mut[u8],add:impl FnOnce(&str,&[u8])->Result<(),()>)->Result<(),LifecycleError>{
+    let result=if (1..=65536).contains(&bytes.len()){add(account,bytes)}else{Err(())};
+    bytes.fill(0);
+    result.map_err(|_|failure("HOSTED_KEYCHAIN_STORE_FAILED"))
+}
+fn preserve_original_configuration(job_id:&str,source:&Source,configuration:&serde_json::Value,add:impl FnOnce(&str,&[u8])->Result<(),()>)->Result<(),LifecycleError>{
+    source.validate()?;
+    let original:OriginalConfiguration=serde_json::from_value(configuration.clone()).map_err(|_|failure("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
+    if !original.closed(){return Err(failure("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"));}
+    let snapshot=OriginalConfigurationSnapshot{version:1,source:source.clone(),expected_configuration:original};
+    let mut bytes=serde_json::to_vec(&snapshot).map_err(|_|failure("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
+    add_configuration_bytes(&format!("render-backup-configuration-{job_id}"),&mut bytes,add)
+}
 fn expected_source_matches(expected: Option<&Source>, current: &Source) -> bool { expected == Some(current) }
 fn network(value: &str) -> bool {
     let Some((ip, bits)) = value.split_once('/') else {
@@ -118,15 +158,21 @@ pub fn operation(
                 let request = serde_json::to_value(&source)
                     .map_err(|_| failure("HOSTED_RECOVERY_REQUEST"))?;
                 service.create_hosted_backup(source.clone(),&image,&resources.join("remote-runtime/generated/node"),&resources.join("scripts/hosted-recovery-runner.mjs"),|execution|{
+     // This UUID and source belong to the already journalled native job.
+     // Neither item is overwritten or deleted if the other step fails.
+     preserve_original_configuration(&execution.job_id,&source,&expected_configuration,super::hosted_keychain::add_backup_only)?;
      let mut token=super::hosted_keychain::load("render").map_err(|_|failure("HOSTED_TOKEN_REQUIRED"))?;
-     let mut key=[0u8;32];super::hosted_keychain::random(&mut key).map_err(|_|failure("HOSTED_KEYCHAIN_UNAVAILABLE"))?;
-     let account=format!("render-backup-key-{}",execution.job_id);
-     let stored=super::hosted_keychain::store(&account,&key);
-     if stored.is_err(){key.fill(0);token.fill(0);return Err(failure("HOSTED_KEYCHAIN_STORE_FAILED"));}
-     let mut plan=serde_json::to_value(execution).map_err(|_|failure("HOSTED_RECOVERY_REQUEST"))?;
-     plan["keyBase64"]=super::hosted::base64(&key).into();key.fill(0);
-     let result=std::str::from_utf8(&token).map_err(|_|failure("HOSTED_TOKEN_REQUIRED")).and_then(|text|serde_json::to_vec(&serde_json::json!({"request":request,"expectedConfiguration":expected_configuration,"tokens":{"render":text},"sourceCidr":cidr,"confirmExternalWritersStopped":true,"execution":plan})).map_err(|_|failure("HOSTED_RECOVERY_REQUEST")));
-     token.fill(0);Ok(result?)
+     let mut key=[0u8;32];
+     let result=(||{
+         super::hosted_keychain::random(&mut key).map_err(|_|failure("HOSTED_KEYCHAIN_UNAVAILABLE"))?;
+         let account=format!("render-backup-key-{}",execution.job_id);
+         super::hosted_keychain::add_backup_only(&account,&key).map_err(|_|failure("HOSTED_KEYCHAIN_STORE_FAILED"))?;
+         let mut plan=serde_json::to_value(execution).map_err(|_|failure("HOSTED_RECOVERY_REQUEST"))?;
+         plan["keyBase64"]=super::hosted::base64(&key).into();
+         let text=std::str::from_utf8(&token).map_err(|_|failure("HOSTED_TOKEN_REQUIRED"))?;
+         serde_json::to_vec(&serde_json::json!({"request":request,"expectedConfiguration":expected_configuration,"tokens":{"render":text},"sourceCidr":cidr,"confirmExternalWritersStopped":true,"execution":plan})).map_err(|_|failure("HOSTED_RECOVERY_REQUEST"))
+     })();
+     key.fill(0);token.fill(0);result
     },||{for pin in &pins{pin.check()?;}Ok(())}).map_err(fail)?;
                 return Ok(Context {
                     source: Some(source),
@@ -185,6 +231,37 @@ pub fn export_archive(controller: &exhibitos_lifecycle::installations::Installat
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn synthetic_configuration()->serde_json::Value { serde_json::json!({"origin":"https://synthetic.onrender.com","envVars":[{"key":"CLIENT_ORIGIN","value":"https://synthetic.pages.dev"},{"key":"TENANT_ID","value":"10000000-0000-4000-8000-000000000001"},{"key":"ADMIN_SUBJECT","value":"synthetic-owner"},{"key":"ADMIN_PASSWORD","value":"synthetic-original-password"},{"key":"FREEZE_SIGNING_KEY_BASE64","value":"synthetic-key-shape-only"}]}) }
+    fn decode_saved(bytes:&[u8],expected:&Source)->Result<OriginalConfigurationSnapshot,LifecycleError>{
+        let value:OriginalConfigurationSnapshot=serde_json::from_slice(bytes).map_err(|_|failure("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
+        if value.version!=1 || value.source!=*expected || !value.expected_configuration.closed(){return Err(failure("HOSTED_RECOVERY_CONFIGURATION_CHANGED"));}Ok(value)
+    }
+    #[test]
+    fn job_configuration_is_closed_source_bound_and_original_copy_survives_later_changes() {
+        let source=Source{workspace_id:"tea-original".into(),service_id:"srv-original".into(),postgres_id:"dpg-original".into()};
+        let mut original=synthetic_configuration();let before=original.clone();let mut retained=Vec::new();let mut calls=0;
+        preserve_original_configuration("c30e227b-e771-43dc-b315-023e0469d4d2",&source,&original,|account,bytes|{calls+=1;assert_eq!(account,"render-backup-configuration-c30e227b-e771-43dc-b315-023e0469d4d2");retained=bytes.to_vec();Ok(())}).unwrap();
+        assert_eq!(calls,1);assert_eq!(original,before);original["envVars"][3]["value"]="later mutable runtime change".into();
+        let saved=decode_saved(&retained,&source).unwrap();assert_eq!(serde_json::to_value(saved.expected_configuration).unwrap(),before);
+        let mut other=source.clone();other.postgres_id="dpg-other".into();assert!(decode_saved(&retained,&other).is_err());
+        let mut wrong:serde_json::Value=serde_json::from_slice(&retained).unwrap();wrong["version"]=2.into();assert!(decode_saved(&serde_json::to_vec(&wrong).unwrap(),&source).is_err());
+        for key in ["tokens","databaseURL","extra"]{let mut wrong:serde_json::Value=serde_json::from_slice(&retained).unwrap();wrong[key]="forbidden".into();assert!(decode_saved(&serde_json::to_vec(&wrong).unwrap(),&source).is_err());}
+        let duplicate=String::from_utf8(retained).unwrap().replacen("{", "{\"version\":1,",1);assert!(decode_saved(duplicate.as_bytes(),&source).is_err());
+    }
+    #[test]
+    fn job_configuration_rejects_unknown_fields_duplicates_partial_pins_before_add() {
+        let source=Source{workspace_id:"tea-original".into(),service_id:"srv-original".into(),postgres_id:"dpg-original".into()};
+        let mut unknown=synthetic_configuration();unknown["tokens"]=serde_json::json!({"render":"forbidden"});
+        let mut duplicate=synthetic_configuration();let first=duplicate["envVars"][0].clone();duplicate["envVars"].as_array_mut().unwrap().push(first);
+        let mut partial=synthetic_configuration();partial["envVars"].as_array_mut().unwrap().push(serde_json::json!({"key":"STATIC_INDEX_SHA256","value":"a".repeat(64)}));
+        let mut database=synthetic_configuration();database["envVars"].as_array_mut().unwrap().push(serde_json::json!({"key":"DATABASE_URL","value":"forbidden"}));
+        for value in [unknown,duplicate,partial,database]{assert!(preserve_original_configuration("c30e227b-e771-43dc-b315-023e0469d4d2",&source,&value,|_,_|panic!("invalid closed record must not touch OS")).is_err());}
+    }
+    #[test]
+    fn configuration_store_buffer_is_zero_on_success_duplicate_denial_and_oversize() {
+        for status in [Ok(()),Err(())]{let mut bytes=b"synthetic secret store bytes".to_vec();let result=add_configuration_bytes("synthetic-test-only",&mut bytes,|_,value|{assert_eq!(value,b"synthetic secret store bytes");status});assert_eq!(result.is_ok(),status.is_ok());assert!(bytes.iter().all(|b|*b==0));}
+        let mut oversized=vec![1u8;65537];assert!(add_configuration_bytes("synthetic-test-only",&mut oversized,|_,_|panic!("oversize must not touch OS")).is_err());assert!(oversized.iter().all(|b|*b==0));
+    }
     #[test]
     fn recovery_wire_never_accepts_stop_or_reconcile_authority() {
         for action in ["stop", "reconcile", "cancel", "resume"] {

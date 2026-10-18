@@ -134,5 +134,79 @@
       "Complete restore/migration/update/rollback validation"
     ],
     "wholeTaskComplete": false
+  },
+  "mountAndImmutableConfigurationFollowup": {
+    "observedAt": "2026-10-18T03:28:21.989503+00:00",
+    "status": "LOCAL_REGRESSION_AND_ACTUAL_MOUNT_PROJECTION_PASS_NOT_NATIVE_KEYCHAIN_OR_RENDER",
+    "implementation": [
+      "Fixed PostgreSQL base-image VOLUME shadowed by exact bounded1MiB tmpfs; no anonymous volume accepted.",
+      "Observed Mac Docker Desktop /host_mnt mapping accepted only after actual engine identity and exact original HostConfig bind-source crosscheck. Existing ownership/resource checks retained.",
+      "Backup-time original settings stored with source IDs and actual native job UUID in existing Keychain using Add-only; duplicate/denied failure before helper starts, no overwrite/delete/random fallback. Archive key also Add-only.",
+      "Serialized settings buffer explicitly zeroed; no whole String/heap zeroization claim. Existing provider/runtime accounts unchanged."
+    ],
+    "checks": {
+      "nodeRunner": 7,
+      "nativeHostedLifecycle": 6,
+      "nativeKeychainAndCoordinator": 9,
+      "sessions": {
+        "19762": 0,
+        "42089": 0,
+        "25276": 1
+      },
+      "actualMountFollowup": {
+        "status": "ACTUAL_FIXED_HELPER_MOUNTS_PASS_INVALID_INPUT_NO_SQL",
+        "root": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-mount-check-f480b41e-81f6-4960-b80d-f4db08428045",
+        "jobId": "f480b41e-81f6-4960-b80d-f4db08428045",
+        "image": "sha256:e14e5267fe2a1a705caee87000abfaa1e4035b8f3fb5d3c2cf6ebbf9d1d69dee",
+        "anonymousVolumes": 0,
+        "mountCount": 2,
+        "tmpfsCount": 3,
+        "actualNativeCommand": false,
+        "actualRender": false,
+        "containerStopped": true,
+        "priorObservationFailure": "HostConfig.Source is also the exact Docker Desktop VM mapping; same stopped fixture re-observed, no rerun",
+        "resourceDeletion": false,
+        "projectionSha256": "f71b364c1d3d1a14a5be16266b83c1a5f63e1a1ebd064f8f5df4a2fd2aaea434"
+      }
+    },
+    "rawEvidenceRoot": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-mount-check-f480b41e-81f6-4960-b80d-f4db08428045",
+    "sources": [
+      {
+        "path": "crates/lifecycle/src/hosted_backup.rs",
+        "sha256": "79539e1e524bed1c80e867b9cc4591608ae6b3e761d63fc0ec950012b31cbf57"
+      },
+      {
+        "path": "scripts/hosted-recovery-runner.mjs",
+        "sha256": "749d307e3de2e3abfb06b815af784967b4f4e9e5d29aa0dcb0367c0b9680a9f7"
+      },
+      {
+        "path": "scripts/hosted-recovery-runner.test.mjs",
+        "sha256": "caaef2d598e22dbe518a11e0f4588579350c3df5155e999bdf3d187461a2432a"
+      },
+      {
+        "path": "src-tauri/src/hosted_keychain.rs",
+        "sha256": "58d7aa4e4ffeb248cb9f3df7653d8cedef734029640e106e34c416866349ab3d"
+      },
+      {
+        "path": "src-tauri/src/hosted_recovery.rs",
+        "sha256": "dc4357d0cd845380512f19c175eeee47757e754060ca1b613129e08e35cf9bc3"
+      }
+    ],
+    "notVerified": [
+      "Actual native Keychain persistence, picker, native cancellation/relaunch",
+      "Protected backup-time configuration restore-load API not connected; frozen source authority/deploy/runtime/Pages binding incomplete",
+      "Actual Render DB and full fresh restore/migration/update/rollback",
+      "Runtime package produced/hash verified, not actual Manager install/activation"
+    ],
+    "observationCorrection": "25276 failed only observation assumption that HostConfig.Source must be host form; actual Docker also returns exact /host_mnt form. Same stopped fixture re-observed, no rerun; product already accepted both exact forms.",
+    "qualifiedRuntime": {
+      "source": "d424642c1262fdaf2c0e9fe505a3fddb662764af",
+      "session": 2951,
+      "terminalExit": 0,
+      "producerSeconds": 147.68345062504523,
+      "prepareSeconds": 2.8425189999397844,
+      "prepared": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-runtime-recovery-d424642-703befb4-7041-4fdb-b25d-c82738f6b957/prepared",
+      "status": "PRODUCED_AND_HASH_BOUND_NOT_NATIVE_INSTALL"
+    }
   }
 }

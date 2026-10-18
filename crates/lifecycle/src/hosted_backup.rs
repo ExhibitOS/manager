@@ -254,6 +254,7 @@ impl LifecycleService {
             &value,
             &self.root.join(format!("hosted-backup-{}/output", job.id)),
             id,
+            observed_desktop_mapping(&value)?,
         )?;
         Ok(if value["State"]["Running"] == true {
             "running"
@@ -281,6 +282,7 @@ impl LifecycleService {
             &observed,
             &self.root.join(format!("hosted-backup-{id}/output")),
             cid,
+            observed_desktop_mapping(&observed)?,
         )?;
         run(
             "docker",
@@ -670,9 +672,10 @@ fn helper_resources_match(value: &Value) -> bool {
         && value["HostConfig"]["Memory"] == 1536_u64 * 1024 * 1024
         && value["HostConfig"]["PidsLimit"] == 128
         && value["HostConfig"]["SecurityOpt"] == serde_json::json!(["no-new-privileges:true"])
-        && temporary.as_object().is_some_and(|v| v.len() == 2)
+        && temporary.as_object().is_some_and(|v| v.len() == 3)
         && tmpfs(&temporary["/tmp"], 256 * 1024 * 1024, 0o1777)
         && tmpfs(&temporary["/run/exhibitos"], 1024 * 1024, 0o700)
+        && tmpfs(&temporary["/var/lib/postgresql"], 1024 * 1024, 0o700)
         && env.is_some_and(|v| {
             v.iter()
                 .filter_map(Value::as_str)
@@ -681,7 +684,25 @@ fn helper_resources_match(value: &Value) -> bool {
                 == ["TMPDIR=/work"]
         })
 }
-fn validate_helper(job: &Job, value: &Value, output: &Path, cid: &str) -> Result<()> {
+fn observed_desktop_mapping(value: &Value) -> Result<bool> {
+    if !cfg!(target_os = "macos") || !value["Mounts"].as_array().is_some_and(|mounts| mounts.iter().any(|m|m["Destination"]=="/output" && m["Source"].as_str().is_some_and(|s|s.starts_with("/host_mnt/")))) { return Ok(false); }
+    let bytes=run("docker", &["info".into(),"--format".into(),"{{json .}}".into()],None,30)?;
+    if bytes.len()>256*1024 { return Err(err("ENGINE_OUTPUT_LIMIT")); }
+    let info:Value=serde_json::from_slice(&bytes).map_err(|_|err("ENGINE_OUTPUT_INVALID"))?;
+    Ok(info["OperatingSystem"]=="Docker Desktop" && info["OSType"]=="linux")
+}
+fn output_bind_matches(value: &Value, mount: &Value, expected: &str, desktop: bool) -> bool {
+    if mount["Type"]!="bind" || mount["RW"]!=true { return false; }
+    if mount["Source"]==expected { return true; }
+    cfg!(target_os="macos") && desktop && mount["Source"]==format!("/host_mnt{expected}")
+        && value["HostConfig"]["Mounts"].as_array().is_some_and(|mounts| {
+            let selected:Vec<_>=mounts.iter().filter(|m|m["Target"]=="/output").collect();
+            selected.len()==1 && selected[0]["Type"]=="bind"
+                && (selected[0]["Source"]==expected || selected[0]["Source"]==format!("/host_mnt{expected}"))
+                && (selected[0]["ReadOnly"].is_null() || selected[0]["ReadOnly"]==false)
+        })
+}
+fn validate_helper(job: &Job, value: &Value, output: &Path, cid: &str, desktop: bool) -> Result<()> {
     let mounts = value["Mounts"]
         .as_array()
         .ok_or_else(|| err("OWNERSHIP_CONFLICT"))?;
@@ -724,9 +745,7 @@ fn validate_helper(job: &Job, value: &Value, output: &Path, cid: &str) -> Result
         .iter()
         .filter(|m| {
             m["Destination"] == "/output"
-                && m["Type"] == "bind"
-                && m["Source"] == output.to_string_lossy().as_ref()
-                && m["RW"] == true
+                && output_bind_matches(value,m,output.to_string_lossy().as_ref(),desktop)
         })
         .count();
     if work != 1 || out != 1 {
@@ -746,7 +765,7 @@ mod tests {
     }
     #[test]
     fn helper_resource_identity_preserves_private_key_and_disk_work_boundaries() {
-        let v = serde_json::json!({"Config":{"User":"0:0","Env":["PATH=/usr/bin:/bin","TMPDIR=/work"]},"HostConfig":{"Memory":1610612736_u64,"PidsLimit":128,"SecurityOpt":["no-new-privileges:true"],"Tmpfs":{"/tmp":"rw,nosuid,nodev,size=256m,mode=1777","/run/exhibitos":"rw,nosuid,nodev,size=1m,mode=0700"}}});
+        let v = serde_json::json!({"Config":{"User":"0:0","Env":["PATH=/usr/bin:/bin","TMPDIR=/work"]},"HostConfig":{"Memory":1610612736_u64,"PidsLimit":128,"SecurityOpt":["no-new-privileges:true"],"Tmpfs":{"/tmp":"rw,nosuid,nodev,size=256m,mode=1777","/run/exhibitos":"rw,nosuid,nodev,size=1m,mode=0700","/var/lib/postgresql":"rw,nosuid,nodev,size=1m,mode=0700"}}});
         assert!(helper_resources_match(&v));
         for (pointer, value) in [
             ("/HostConfig/Memory", serde_json::json!(0)),
@@ -762,6 +781,26 @@ mod tests {
             *changed.pointer_mut(pointer).unwrap() = value;
             assert!(!helper_resources_match(&changed));
         }
+    }
+    #[test]
+    fn output_mapping_requires_exact_host_mount_and_observed_desktop() {
+        let expected="/Volumes/ExhibitSSD/private/output";
+        let value=serde_json::json!({"HostConfig":{"Mounts":[{"Type":"bind","Source":expected,"Target":"/output","ReadOnly":false}]}});
+        let mut mount=serde_json::json!({"Type":"bind","Source":expected,"RW":true});
+        assert!(output_bind_matches(&value,&mount,expected,false));
+        mount["Source"]=format!("/host_mnt{expected}").into();
+        assert!(!output_bind_matches(&value,&mount,expected,false));
+        assert_eq!(output_bind_matches(&value,&mount,expected,true),cfg!(target_os="macos"));
+        for path in [format!("/host_mnt{expected}/../other"),"/host_mnt/foreign/output".into()] {
+            mount["Source"]=path.into();assert!(!output_bind_matches(&value,&mount,expected,true));
+        }
+        mount["Source"]=format!("/host_mnt{expected}").into();
+        let mut wrong=value.clone();wrong["HostConfig"]["Mounts"][0]["Source"]="/foreign".into();
+        assert!(!output_bind_matches(&wrong,&mount,expected,true));
+        wrong=value.clone();wrong["HostConfig"]["Mounts"][0]["ReadOnly"]=true.into();
+        assert!(!output_bind_matches(&wrong,&mount,expected,true));
+        wrong=value.clone();wrong["HostConfig"]["Mounts"].as_array_mut().unwrap().push(value["HostConfig"]["Mounts"][0].clone());
+        assert!(!output_bind_matches(&wrong,&mount,expected,true));
     }
     #[test]
     fn receipt_is_closed_and_bound_to_the_selected_source() {

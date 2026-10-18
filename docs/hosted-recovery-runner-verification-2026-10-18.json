@@ -32,13 +32,13 @@
   "sources": [
     {
       "path": "scripts/hosted-recovery-runner.mjs",
-      "bytes": 8028,
-      "sha256": "c531034fe82de1a23689407d034adc539e9372e2b14847ed216672a7eeaa1f8c"
+      "bytes": 8094,
+      "sha256": "749d307e3de2e3abfb06b815af784967b4f4e9e5d29aa0dcb0367c0b9680a9f7"
     },
     {
       "path": "scripts/hosted-recovery-runner.test.mjs",
-      "bytes": 9367,
-      "sha256": "298e1586ee9e9f63227d208e281d93ec7bf03068ad7eb268f85ca0ff0130327a"
+      "bytes": 9446,
+      "sha256": "caaef2d598e22dbe518a11e0f4588579350c3df5155e999bdf3d187461a2432a"
     },
     {
       "path": "scripts/prepare-remote-runtime.mjs",
@@ -55,5 +55,11 @@
       "bytes": 1089,
       "sha256": "c61b5e6949ded64871e31a613070fedbb6695491c83ec683fb445573c016a263"
     }
-  ]
+  ],
+  "mountFollowup": {
+    "evidence": "docs/hosted-backup-native-verification-2026-10-18.json#mountAndImmutableConfigurationFollowup",
+    "nodePassed": 7,
+    "actualStoppedHelperMountsPassed": true,
+    "noSQLInMountCheck": true
+  }
 }
