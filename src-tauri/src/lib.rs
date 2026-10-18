@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 mod startup;
 mod maintenance_picker;
+mod processing_app;
 mod remote;
 mod hosted;
 mod publication;
@@ -51,6 +52,11 @@ async fn blocking<T: Send + 'static>(
     tauri::async_runtime::spawn_blocking(move || state.with_current(&selection_token, task))
         .await
         .map_err(|_| error("MANAGER_OPERATION"))?
+}
+#[tauri::command]
+async fn manager_processing_app(window:WebviewWindow,app:tauri::AppHandle,action:processing_app::Action)->Result<processing_app::Context,LifecycleError>{
+ caller(&window)?;let config=app.path().app_config_dir().map_err(|_|error("PROCESSING_SELECTION_UNAVAILABLE"))?;
+ tauri::async_runtime::spawn_blocking(move||processing_app::operation(&config,action)).await.map_err(|_|error("MANAGER_OPERATION"))?
 }
 #[tauri::command]
 async fn manager_publication_catalog(window:WebviewWindow,app:tauri::AppHandle,state:State<'_,DesktopState>,selection_token:String)->Result<publication::Catalog,LifecycleError>{caller(&window)?;let resources=app.path().resource_dir().map_err(|_|error("LOCAL_CMS_RUNTIME_UNAVAILABLE"))?;let pin=selection_token.clone();blocking(state.0.clone(),selection_token,move|service|publication::catalog(resources,service,pin)).await}
@@ -881,6 +887,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             manager_status,
+            manager_processing_app,
             manager_hosted,
             manager_publication_catalog,
             manager_publication_export,

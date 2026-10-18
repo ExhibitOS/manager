@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+import {OptionalProcessing} from './OptionalProcessing';
 import {InitialAccount} from './InitialAccount';
 import {EnginePreparation} from './EnginePreparation';
 import type {InitialAccountInput} from './initial-account';
@@ -175,6 +176,7 @@ export function App(){
  <div hidden={!showDetails}><p>설치·시작에는 기존 검증과 권한 확인을 그대로 사용해요. 앱을 다시 여는 것만으로 서버나 브라우저를 자동 실행하지 않아요. 준비 중 창을 닫으면 다음 실행에서 실제 작업 기록을 확인해 주세요.</p><p>Capture나 Mac Processing이 없어도 기존 지원 작품 파일을 Studio로 가져올 수 있어요. 서버 준비와 브라우저 실행은 작품 등록·저장 완료와 별개예요.</p></div>
  </section>
 
+ <OptionalProcessing/>
  <section className="panel manager-technical" aria-labelledby="oex-title"><h2 id="oex-title">전시 파일 옮기기</h2>
  <p>현재 선택한 전시의 Studio에서 저장한 전시 파일을 가져오거나 내보냅니다. 서버가 관람 준비 완료 상태여야 열 수 있습니다.</p>
  <button disabled={!client.native||!ready||active||loading} onClick={()=>void openOex()}>전시 파일 가져오기·내보내기</button>
