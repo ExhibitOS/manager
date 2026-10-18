@@ -900,5 +900,27 @@
       "Ad-hoc development signature is not Developer ID, notarization, Store or actual installation acceptance.",
       "Earlier actual isolated SQL proof used previous image/source; new image packaging does not requalify SQL recovery."
     ]
+  },
+  "manualHostedJobsRefresh20261018": {
+    "status": "IMPLEMENTED_FOCUSED_BROWSER_TYPE_LINT_PASS_NATIVE_GUI_PENDING",
+    "source": "1a1525880451ea5bb0dabec7548b218fe48cd142",
+    "tasks": [
+      "T08-02",
+      "T10-03"
+    ],
+    "problem": "Manual Jobs response has source:null and replaced prepared target; CIDR/consent view vanished. Automatic polling already preserved source.",
+    "change": "Manual jobs merge preserves existing source within same selected space, like existing polling. Real context target changes still reset CIDR/consent; selection generation fences unchanged.",
+    "checks": {
+      "before": "86220 exit1: CIDR field removed from DOM after manual refresh",
+      "after": "13765 exit0: desktop/narrow2 browser cases, typecheck, focused lint and diffcheck PASS",
+      "scope": "Real Chromium UI with synthetic native IPC. Existing target-change clearing, export cancel/result pairing and stale selection checks retained. No app/engine/provider/Keychain."
+    },
+    "receiptSHA256": "245884c8bff33db0a133f79c4c0c3aac98e6f6d8eba47272e7d5cd148bf5be58",
+    "review": "Root reviewed exact two-file patch against receipt source SHA; no guard or source revalidation weakening.",
+    "limits": [
+      "Native user operation not performed; user away.",
+      "Packaged app remains Managerd5afbfd, not this new UI commit. No latest native package acceptance claimed.",
+      "Whole recovery and original authority/config/runtime custody gaps unchanged."
+    ]
   }
 }
