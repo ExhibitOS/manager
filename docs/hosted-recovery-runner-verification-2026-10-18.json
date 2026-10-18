@@ -74,6 +74,16 @@
     },
     "contract": "Only derived public origin/keyId/SPKI authority is added to fixed helper private stdin. Original private key/admin remain outside helper/argv/env/receipt. New entry/image must match five-field contract.",
     "actualSqlEvidence": "platform/docs/remote-backup-adapter-verification-2026-10-18.json#publicAuthoritySnapshotFollowup",
-    "newImageNativeRenderOrWholeRestore": false
+    "newImageNativeRenderOrWholeRestore": false,
+    "matchedCorrectedImage": {
+      "platformSource": "2e7cefde59550f098210700dcb6ea09b94379a0f",
+      "platformEvidenceCommit": "5903ad4",
+      "image": "sha256:0e88e0c290e0f2d8bee2aa33450de7944e61902f7a453037ed2b3d24438cf08c",
+      "actualLocalRoundtripSession": 50345,
+      "exit": 0,
+      "receipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/exhibitos-authority-roundtrip-54c5b7a7-c72d-494f-b12a-617ba1205d96/receipt.json",
+      "notNativeInstallOrKeychain": true,
+      "scope": "Exact three scripts plus real TLS SQL/crypto independent fresh restore; separate byte-identical65-row signature verifier proof, not one real user corpus. Native protected settings restore-load and original deploy/runtime/Pages activation remain incomplete."
+    }
   }
 }
