@@ -549,6 +549,16 @@
         "pathsPublished": false,
         "applicationLaunched": false,
         "actualStoreVerification": false
+      },
+      "desktopIntegration": {
+        "source": "b33900d8b741717239a750a18ca4ecc86af3e9e1",
+        "command": "cargo check --manifest-path src-tauri/Cargo.toml --locked",
+        "jobs": 1,
+        "handle": 24457,
+        "exitCode": 0,
+        "seconds": 16.95,
+        "log": "/private/tmp/manager-optional-processing-desktopcheck.log",
+        "scope": "Actual Tauri desktop command registration, manifest/capability and native module compilation. No app launch or OS interaction."
       }
     },
     "sdkBoundary": "LSCopyApplicationURLsForBundleIdentifier is available in the inspected local macOS SDK; header marks future deprecation and recommends NSWorkspace replacement. No latest-recommended API claim.",
