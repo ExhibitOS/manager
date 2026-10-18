@@ -5,9 +5,10 @@ export type StudioSetupStage='checking'|'installing'|'starting'|'opening';
 export const studioSetupLabel:Record<StudioSetupStage,string>={checking:'내 컴퓨터의 준비 상태를 확인하고 있어요.',installing:'전시를 설치하고 있어요.',starting:'전시를 시작하고 응답을 확인하고 있어요.',opening:'준비된 Studio를 열고 있어요.'};
 type SetupClient=Pick<ManagerClient,'installations'|'status'|'engines'|'install'|'action'|'openOex'>;
 /** Only runs after a user action; preserves the existing native writer and readiness checks. */
-export async function prepareStudio(api:SetupClient,stage:(value:StudioSetupStage)=>void,initialAccount?:InitialAccountInput):Promise<void>{
+export async function prepareStudio(api:SetupClient,stage:(value:StudioSetupStage)=>void,initialAccount?:InitialAccountInput,expectedSelection?:string):Promise<void>{
  stage('checking');
  const selection=await api.installations();
+ if(expectedSelection&&selection.selectionToken!==expectedSelection)throw {code:'INSTALLATION_CHANGED',guidance:'선택한 전시가 바뀌어 준비를 멈췄어요. 현재 전시를 확인한 뒤 다시 시작하세요.'};
  const sameSelection=async()=>{const current=await api.installations();if(current.selectionToken!==selection.selectionToken||current.activeId!==selection.activeId||current.errorCode)throw {code:'INSTALLATION_CHANGED',guidance:'선택한 전시가 바뀌어 준비를 멈췄어요. 현재 전시를 확인한 뒤 다시 시작하세요.'};};
  if(selection.errorCode||!selection.installations.some(root=>root.id===selection.activeId&&root.available))throw {code:'INSTALLATION_UNAVAILABLE',guidance:'선택한 전시 저장 위치를 확인하세요. 기존 데이터는 변경하지 않았어요.'};
  let status=await api.status();
