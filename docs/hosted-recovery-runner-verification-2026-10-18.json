@@ -32,13 +32,13 @@
   "sources": [
     {
       "path": "scripts/hosted-recovery-runner.mjs",
-      "bytes": 8094,
-      "sha256": "749d307e3de2e3abfb06b815af784967b4f4e9e5d29aa0dcb0367c0b9680a9f7"
+      "bytes": 8231,
+      "sha256": "6e87552b49ef45e51005c7c514d630fd13074393c9bc77d0105c1bf3382a3520"
     },
     {
       "path": "scripts/hosted-recovery-runner.test.mjs",
-      "bytes": 9446,
-      "sha256": "caaef2d598e22dbe518a11e0f4588579350c3df5155e999bdf3d187461a2432a"
+      "bytes": 9655,
+      "sha256": "2e8d051eaeec878eb7680a8e270ccc7b2d682827ad65bcffefd747b6b349c065"
     },
     {
       "path": "scripts/prepare-remote-runtime.mjs",
@@ -61,5 +61,19 @@
     "nodePassed": 7,
     "actualStoppedHelperMountsPassed": true,
     "noSQLInMountCheck": true
+  },
+  "publicAuthoritySnapshotFollowup": {
+    "platformCommit": "8b2592c",
+    "nodeRunnerPassed": 7,
+    "nativeCompile": {
+      "session": 44326,
+      "exit": 0,
+      "seconds": 14.8,
+      "selectedTests": 0,
+      "scope": "resource regeneration/build compile only; filter matched no tests, not a native regression pass"
+    },
+    "contract": "Only derived public origin/keyId/SPKI authority is added to fixed helper private stdin. Original private key/admin remain outside helper/argv/env/receipt. New entry/image must match five-field contract.",
+    "actualSqlEvidence": "platform/docs/remote-backup-adapter-verification-2026-10-18.json#publicAuthoritySnapshotFollowup",
+    "newImageNativeRenderOrWholeRestore": false
   }
 }

@@ -27,7 +27,7 @@ async function outputPin(path){const named=await lstat(path,{bigint:true});if(!n
 const samePin=(a,b)=>['dev','ino','mode','uid'].every(k=>a[k]===b[k]);
 async function executeHelper(execution,connection,spawner=spawn){
  const command=helperCommand(execution),child=spawner(command.command,command.args,{env:command.env,stdio:['pipe','pipe','pipe']});
- let size=0,errorSize=0,failed=false;const chunks=[];let input=Buffer.from(JSON.stringify({databaseURL:connection.url,keyBase64:execution.keyBase64,maxDumpBytes:execution.maxDumpBytes,jobBudgetBytes:execution.jobBudgetBytes}));
+ let size=0,errorSize=0,failed=false;const chunks=[];let input=Buffer.from(JSON.stringify({databaseURL:connection.url,keyBase64:execution.keyBase64,maxDumpBytes:execution.maxDumpBytes,jobBudgetBytes:execution.jobBudgetBytes,expectedAuthority:validateRecoveryConfiguration(connection.expectedConfiguration)}));
  return new Promise((resolve,reject)=>{
   const refuse=()=>{failed=true;};
   child.stdout.on('data',chunk=>{size+=chunk.length;if(size>262144)refuse();else chunks.push(chunk);});
@@ -45,7 +45,7 @@ export async function runHostedRecovery(input,dependencies={}){
   // resource binding are still independently observed by the provider bridge.
   const result=await (dependencies.bridge??withRenderRecoveryConnection)(input.request,{tokens:input.tokens,sourceCidr:input.sourceCidr,expectedConfiguration:input.expectedConfiguration,...(dependencies.fetch?{fetch:dependencies.fetch}:{}),confirmExternalWritersStopped:async()=>input.confirmExternalWritersStopped===true},async connection=>{
    if(!samePin(pin,await outputPin(e.outputPath)))fail('HOSTED_BACKUP_OUTPUT_CHANGED');
-   const result=await (dependencies.executeHelper??((execution,value)=>executeHelper(execution,value,dependencies.spawn??spawn)))(e,connection);
+   const result=await (dependencies.executeHelper??((execution,value)=>executeHelper(execution,value,dependencies.spawn??spawn)))(e,{...connection,expectedConfiguration:input.expectedConfiguration});
    if(!samePin(pin,await outputPin(e.outputPath)))fail('HOSTED_BACKUP_OUTPUT_CHANGED');return result;
   });
   return result;
