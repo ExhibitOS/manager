@@ -44,6 +44,7 @@ fn names(kind: &str, id: &str) -> Result<(String, String)> {
         "backup" => ("exhibitos-backup", "com.exhibitos.backup"),
         "restoration" => ("exhibitos-restore", "com.exhibitos.restoration"),
         "hosted-backup" => ("exhibitos-hosted-backup", "com.exhibitos.hosted-backup"),
+        "hosted-restoration" => ("exhibitos-hosted-restore", "com.exhibitos.hosted-restore"),
         _ => return Err(err("RECONCILIATION_INPUT_INVALID")),
     };
     if !uuid(id) {
@@ -446,7 +447,10 @@ impl LifecycleService {
     }
     pub(crate) fn reconciliation_target(&self, kind: &str, id: &str) -> Result<()> {
         names(kind, id)?;
-        let (target, state, stage, created, updated, error) = if kind == "hosted-backup" {
+        let (target, state, stage, created, updated, error) = if kind == "hosted-restoration" {
+            let job=self.hosted_restore_check(id)?;
+            (job.id,job.state,job.stage,job.created_at,job.updated_at,job.error_code)
+        } else if kind == "hosted-backup" {
             let job=self.hosted_backup_job(id)?;
             (job.id,job.state,job.stage,job.created_at,job.updated_at,job.error_code)
         } else if kind == "backup" {
@@ -640,6 +644,10 @@ impl LifecycleService {
         mut command: impl FnMut(&[String]) -> Result<Vec<u8>>,
     ) -> Result<String> {
         let (name, label) = names(kind, target)?;
+        if kind=="hosted-restoration" {
+            self.stop_owned_hosted_restore(target)?;
+            return self.hosted_restore_helper_state(&self.hosted_restore_check(target)?);
+        }
         if kind=="hosted-backup" {
             self.stop_owned_hosted_backup(target)?;
             return self.hosted_helper_state(&self.hosted_backup_job(target)?);

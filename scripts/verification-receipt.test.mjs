@@ -53,7 +53,9 @@ test('manifest rewrites during actual streamed inventory cannot return success',
  // reject the observed modification. Continue until the reader has finished.
  let stopped=false,writes=0;
  const writer=(async()=>{while(!stopped){const pending=join(input.bundle,'manifest-rewrite.pending');await writeFile(pending,original);await rename(pending,manifestPath);writes++;await new Promise(resolve=>setTimeout(resolve,1));}})();
- try {await assert.rejects(collectReceipt(input),/RECEIPT_FILE_CHANGED/);}
+ // Concurrent rename may unlink the inode before the first lstat returns;
+ // both the early link-safety guard and the later FD/path guard must refuse.
+ try {await assert.rejects(collectReceipt(input),error=>['RECEIPT_FILE_CHANGED','RECEIPT_FILE_UNSAFE'].includes(error.message));}
  finally {stopped=true;await writer;}
  assert.ok(writes>0);assert.equal(await readFile(manifestPath,'utf8'),original);
 });

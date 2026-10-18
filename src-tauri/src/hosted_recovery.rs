@@ -10,6 +10,7 @@ fn failure(code: &str) -> LifecycleError {
     LifecycleError{code:code.into(),guidance:match code{
  "HOSTED_RECOVERY_CONFIGURATION_REQUIRED"=>"원래 서버 설정을 이 Mac에서 확인하지 못했어요. 새 키를 만들지 않았습니다. 기존 계정 연결과 보관한 설정을 확인한 뒤 다시 시도하세요.",
  "HOSTED_RECOVERY_CONFIGURATION_CHANGED"=>"보관된 설정과 서버의 설정이 달라요. 원본과 사본은 유지됩니다. 원래 서버·계정·주소를 다시 확인하세요.",
+ "HOSTED_RESTORE_CHECK_FAILED"=>"사본을 새 빈 데이터베이스에서 확인하지 못했어요. 원본과 이전 결과는 보존합니다. 복원 확인 기록과 실행 도구 상태를 확인한 뒤 다시 시도하세요.",
  "HOSTED_RECOVERY_SOURCE_CHANGED"=>"배포 대상이나 서버 상태가 바뀌었어요. 기존 사본은 보존합니다. 백업 준비에서 대상을 다시 확인한 뒤 요청하세요.",
  "HOSTED_RECOVERY_NETWORK_REQUIRED"=>"Render의 데이터베이스 접근 설정에서 현재 Mac의 좁은 IP 범위를 허용한 뒤 같은 범위를 확인하세요. 전체 인터넷 허용은 사용하지 않습니다.",
  "HOSTED_RECOVERY_WRITERS_ACTIVE"=>"Render에서 선택한 API를 일시 중지하고 다른 데이터 쓰기도 멈춘 뒤 백업하세요. 정적 전시 관람은 계속할 수 있습니다.",
@@ -26,6 +27,7 @@ pub enum Action {
     Create,
     ExportKey,
     ExportArchive,
+    CheckRestore,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -45,6 +47,7 @@ pub struct Input {
 pub struct Context {
     pub source: Option<Source>,
     pub jobs: Vec<Job>,
+    pub restore_checks: Vec<exhibitos_lifecycle::hosted_restoration::CheckJob>,
     pub key_saved: bool,
     pub archive_saved: Option<exhibitos_lifecycle::backup_export::ExportReceipt>,
 }
@@ -88,6 +91,17 @@ fn preserve_original_configuration(job_id:&str,source:&Source,configuration:&ser
     let mut bytes=serde_json::to_vec(&snapshot).map_err(|_|failure("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
     add_configuration_bytes(&format!("render-backup-configuration-{job_id}"),&mut bytes,add)
 }
+// Load only the immutable backup-time record. Never consult the current
+// publication/runtime creator or generate replacement signing/archive keys.
+fn load_original_configuration(job_id:&str,expected:&Source,load:impl FnOnce(&str)->Result<Vec<u8>,()>)->Result<serde_json::Value,LifecycleError>{
+    if !super::hosted_keychain::canonical_backup_uuid(job_id){return Err(failure("HOSTED_RECOVERY_REQUEST"));}
+    expected.validate()?;
+    let mut bytes=load(&format!("render-backup-configuration-{job_id}")).map_err(|_|failure("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
+    let parsed=if (1..=65536).contains(&bytes.len()){serde_json::from_slice::<OriginalConfigurationSnapshot>(&bytes).ok()}else{None};bytes.fill(0);
+    let snapshot=parsed.ok_or_else(||failure("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
+    if snapshot.version!=1||snapshot.source!=*expected||!snapshot.expected_configuration.closed(){return Err(failure("HOSTED_RECOVERY_CONFIGURATION_CHANGED"));}
+    serde_json::to_value(snapshot.expected_configuration).map_err(|_|failure("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))
+}
 fn expected_source_matches(expected: Option<&Source>, current: &Source) -> bool { expected == Some(current) }
 fn network(value: &str) -> bool {
     let Some((ip, bits)) = value.split_once('/') else {
@@ -112,16 +126,44 @@ pub fn operation(
         Action::Jobs => Ok(Context {
             source: None,
             jobs: service.hosted_backup_jobs().map_err(fail)?,
+            restore_checks: service.hosted_restore_checks().map_err(fail)?,
             key_saved: false,
             archive_saved: None,
         }),
         Action::Context => Ok(Context {
             source: Some(super::hosted::recovery_source().map_err(fail)?),
             jobs: service.hosted_backup_jobs().map_err(fail)?,
+            restore_checks: service.hosted_restore_checks().map_err(fail)?,
             key_saved: false,
             archive_saved: None,
         }),
         Action::ExportKey | Action::ExportArchive => Err(failure("HOSTED_RECOVERY_REQUEST")),
+        Action::CheckRestore => {
+            let _hosted_operation=super::hosted::hold_operation()?;
+            let id=input.job_id.ok_or_else(||failure("HOSTED_RECOVERY_REQUEST"))?;
+            let source_job=service.completed_hosted_backup(&id).map_err(fail)?;
+            let manifest:serde_json::Value=serde_json::from_str(option_env!("EXHIBITOS_REMOTE_RUNTIME_MANIFEST").unwrap_or("{}")).map_err(|_|failure("HOSTED_RUNTIME_UNAVAILABLE"))?;
+            if !manifest["files"].as_object().is_some_and(|m|m.contains_key("scripts/hosted-restore-runner.mjs")){return Err(failure("HOSTED_RUNTIME_UNAVAILABLE"));}
+            let pins=super::remote::verified_resources(resources).map_err(fail)?;
+            let image=service.bundled_maintenance_image(&resources.join("platform-runtime/generated")).map_err(fail)?.ok_or_else(||failure("HOSTED_RUNTIME_UNAVAILABLE"))?;
+            service.prepare_bundled_maintenance(&resources.join("platform-runtime/generated"),&image).map_err(fail)?;
+            #[cfg(target_os="macos")]
+            {
+                let original=load_original_configuration(&id,&source_job.source,super::hosted_keychain::load)?;
+                service.create_hosted_restore_check(&id,&image,&resources.join("remote-runtime/generated/node"),&resources.join("scripts/hosted-restore-runner.mjs"),|execution|{
+                    let mut key=super::hosted_keychain::load(&format!("render-backup-key-{id}")).map_err(|_|failure("HOSTED_KEYCHAIN_UNAVAILABLE"))?;
+                    let result=(||{
+                        if key.len()!=32{return Err(failure("HOSTED_KEYCHAIN_UNAVAILABLE"));}
+                        let mut plan=serde_json::to_value(execution).map_err(|_|failure("HOSTED_RECOVERY_REQUEST"))?;
+                        plan["keyBase64"]=super::hosted::base64(&key).into();
+                        serde_json::to_vec(&serde_json::json!({"execution":plan,"expectedConfiguration":original})).map_err(|_|failure("HOSTED_RECOVERY_REQUEST"))
+                    })();key.fill(0);result
+                },||{for pin in &pins{pin.check()?;}Ok(())}).map_err(fail)?;
+                Ok(Context{source:None,jobs:service.hosted_backup_jobs().map_err(fail)?,restore_checks:service.hosted_restore_checks().map_err(fail)?,key_saved:false,archive_saved:None})
+            }
+            #[cfg(not(target_os="macos"))]
+            {let _=(source_job,pins,image);Err(failure("HOSTED_PLATFORM_UNSUPPORTED"))}
+        }
         Action::Create => {
             // Share the existing deployment lock through source selection and provider postcheck.
             let _hosted_operation = super::hosted::hold_operation()?;
@@ -177,7 +219,8 @@ pub fn operation(
                 return Ok(Context {
                     source: Some(source),
                     jobs: service.hosted_backup_jobs().map_err(fail)?,
-                    key_saved: false,
+                    restore_checks: service.hosted_restore_checks().map_err(fail)?,
+            key_saved: false,
             archive_saved: None,
                 });
             }
@@ -247,6 +290,18 @@ mod tests {
         let mut wrong:serde_json::Value=serde_json::from_slice(&retained).unwrap();wrong["version"]=2.into();assert!(decode_saved(&serde_json::to_vec(&wrong).unwrap(),&source).is_err());
         for key in ["tokens","databaseURL","extra"]{let mut wrong:serde_json::Value=serde_json::from_slice(&retained).unwrap();wrong[key]="forbidden".into();assert!(decode_saved(&serde_json::to_vec(&wrong).unwrap(),&source).is_err());}
         let duplicate=String::from_utf8(retained).unwrap().replacen("{", "{\"version\":1,",1);assert!(decode_saved(duplicate.as_bytes(),&source).is_err());
+    }
+    #[test]
+    fn restore_load_uses_original_job_configuration_only_without_fallback() {
+        let id="c30e227b-e771-43dc-b315-023e0469d4d2";
+        let source=Source{workspace_id:"tea-original".into(),service_id:"srv-original".into(),postgres_id:"dpg-original".into()};
+        let configuration=synthetic_configuration();let mut retained=Vec::new();
+        preserve_original_configuration(id,&source,&configuration,|_,b|{retained=b.to_vec();Ok(())}).unwrap();
+        let loaded=load_original_configuration(id,&source,|account|{assert_eq!(account,format!("render-backup-configuration-{id}"));Ok(retained.clone())}).unwrap();assert_eq!(loaded,configuration);
+        assert!(load_original_configuration(id,&source,|_|Err(())).is_err());
+        let mut changed=source.clone();changed.service_id="srv-other".into();assert!(load_original_configuration(id,&changed,|_|Ok(retained.clone())).is_err());
+        for bad in ["invalid", "00000000-0000-0000-0000-000000000000"]{assert!(load_original_configuration(bad,&source,|_|panic!("invalid job cannot read OS keychain")).is_err());}
+        assert!(load_original_configuration(id,&source,|_|Ok(vec![0;65537])).is_err());
     }
     #[test]
     fn job_configuration_rejects_unknown_fields_duplicates_partial_pins_before_add() {

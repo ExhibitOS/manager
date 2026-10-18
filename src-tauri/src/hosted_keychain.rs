@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Fixed-provider generic passwords in the macOS login Keychain. Never shell out with secrets.
 // These closed namespaces hold immutable job material, not provider tokens.
-fn canonical_backup_uuid(id: &str) -> bool {
+pub(crate) fn canonical_backup_uuid(id: &str) -> bool {
     let bytes=id.as_bytes();
     bytes.len()==36 && bytes.iter().enumerate().all(|(i,b)|if [8,13,18,23].contains(&i){*b==b'-'}else{b.is_ascii_digit()||(b'a'..=b'f').contains(b)})
         && (b'1'..=b'8').contains(&bytes[14]) && [b'8',b'9',b'a',b'b'].contains(&bytes[19])

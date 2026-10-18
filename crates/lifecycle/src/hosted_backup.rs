@@ -125,6 +125,7 @@ pub(crate) fn runner_error(bytes: &[u8]) -> LifecycleError {
         "HOSTED_BACKUP_OUTPUT_CHANGED",
         "HOSTED_BACKUP_HELPER_FAILED",
         "HOSTED_BACKUP_RESULT_INVALID",
+        "HOSTED_RESTORE_CHECK_FAILED",
     ];
     if bytes.len() <= 1024 {
         if let Ok(value) = serde_json::from_slice::<Failure>(bytes) {
@@ -164,7 +165,7 @@ impl Drop for SecretInput {
     }
 }
 #[cfg(target_os = "macos")]
-fn output_guard(path: &Path) -> Result<File> {
+pub(crate) fn output_guard(path: &Path) -> Result<File> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     let file = OpenOptions::new()
         .read(true)
@@ -295,7 +296,7 @@ impl LifecycleService {
         }
         Ok(())
     }
-    fn validate_hosted_archive(&self, id: &str, budget: u64) -> Result<u64> {
+    pub(crate) fn validate_hosted_archive(&self, id: &str, budget: u64) -> Result<u64> {
         let relative = format!("hosted-backup-{id}/output/archive");
         let archive = self.root.join(&relative);
         maintenance::input_path(&archive, true)?;
@@ -394,6 +395,11 @@ impl LifecycleService {
         }
         for old in self.hosted_backup_jobs()? {
             if self.hosted_helper_state(&old)? == "running" {
+                return Err(err("HOSTED_RECOVERY_HELPER_ACTIVE"));
+            }
+        }
+        for old in self.hosted_restore_checks()? {
+            if ["running", "pending"].contains(&self.hosted_restore_helper_state(&old)?.as_str()) {
                 return Err(err("HOSTED_RECOVERY_HELPER_ACTIVE"));
             }
         }
@@ -638,7 +644,7 @@ impl LifecycleService {
         Ok(())
     }
 }
-fn helper_resources_match(value: &Value) -> bool {
+pub(crate) fn helper_resources_match(value: &Value) -> bool {
     fn tmpfs(value: &Value, bytes: u64, mode: u32) -> bool {
         let Some(text) = value.as_str() else {
             return false;

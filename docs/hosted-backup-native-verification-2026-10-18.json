@@ -370,5 +370,115 @@
       "Whole GUI acceptance"
     ],
     "wholeTaskDone": false
+  },
+  "isolatedRestoreCheckSource20261018": {
+    "observedAt": "2026-10-18T05:45:12.198780+00:00",
+    "baseSource": "d5c9724",
+    "platformEntrySource": "2cbdf71",
+    "status": "CONNECTED_SOURCE_AND_LOCAL_CHECKS_PASS_ACTUAL_IMAGE_AND_NATIVE_OS_PENDING",
+    "connectedFlow": "Completed hosted backup -> immutable per-job original configuration/key load -> fixed pinned Node runner -> fresh owned network-none maintenance candidate -> closed receipt and persistent source-bound check history. No fake installation/Studio activation.",
+    "preservation": "Original archive/job/source/provider unchanged; separate candidate volume retained. Missing original config/key fails without creator/new-key fallback. Fresh Mac still needs original protected configuration; archive and32-byte key alone do not recover original private signing/settings.",
+    "sourceBoundaries": [
+      "Exact source3IDs/original backupID/plain manifestSHA/filecount bind checks to completed source.",
+      "Existing local installation restore contract remains separate, original runtime/Pages/whole-service authority not inferred.",
+      "Metadata/history first; archive validation/authentication occurs on explicit restore check.",
+      "Restore-only exact5 capabilities CHOWN/SETUID/SETGID/DAC_READ_SEARCH/KILL, private PID/network-none/readonly source+root/owned work; existing backup policy unchanged."
+    ],
+    "verification": {
+      "finalNodeCheck": {
+        "session": 14223,
+        "exit": 0,
+        "typecheckLintBuild": true,
+        "vitest": 70,
+        "receipt": 9,
+        "installer": 6
+      },
+      "rustWorkspace": {
+        "session": 29885,
+        "exit": 0,
+        "lifecyclePassed": 446,
+        "integrationPassed": 20,
+        "desktopPassed": 42,
+        "existingIgnored": 36,
+        "compileFailDoctestsPassed": 4
+      },
+      "fixedRunner": {
+        "passed": 5,
+        "scope": "Synthetic process/authority projection, strict source/receipt binding, private-input clearing, no actual Docker"
+      },
+      "browser": {
+        "session": 43131,
+        "exit": 0,
+        "passed": 12,
+        "scope": "Actual desktop/narrow Chromium, synthetic IPC; source before terminal-result visibility fix"
+      },
+      "newHostedCancellation": {
+        "initialSession": 72153,
+        "initialExit": 1,
+        "correctedSession": 74303,
+        "correctedExit": 0,
+        "passed": 2,
+        "cause": "Confirmed stop immediately hid simple-view result without unrelated legacy restoration context. Result visibility now persists; onActivity busy guard still clears."
+      }
+    },
+    "initialFailuresRetained": [
+      "TypeScript property narrowing corrected without weaker parser.",
+      "Native compile reused existing canonical jobUUID validator rather than add new dependency.",
+      "Null-prototype bounded JSON test expectations corrected with explicit prototype assertion and exact data comparison.",
+      "Existing concurrent-rename receipt test observed early nlink safety refusal instead of late FD-change refusal. Exact two error messages now accepted; real writer/writes>0/final bytes and refusal assertions retained. Independent review confirmed same validation purpose; no production guard changed."
+    ],
+    "independentReview": "Split lifecycle/entry/native-runner/GUI reviews found and corrected password-unlink permission and forced-stop-success defects; current counterpart contracts align.",
+    "logs": [
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-manager-check-20261018.log",
+        "sha256": "163ca257a2b0de0f90498c10613aeb16e3f5e84747e9587277f10ec737f1f9b4"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-manager-check-corrected-20261018.log",
+        "sha256": "ac85eadd4e26b5ce26fa34d43951f5fec1fe1668bda199ebae2095cf242d7d45"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-manager-final-check-20261018.log",
+        "sha256": "79a325b427d3dfdb98f44ff1709061d72e5b65adea7f19f60d4cd57b8766d6f9"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-manager-rust-integration-20261018.log",
+        "sha256": "e58b1b55c0eda987a2fd623f5acc79ed75e0fa69bd34b3b90b73802cfe896f73"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-manager-rust-corrected-20261018.log",
+        "sha256": "d7b417e7ab31686d4ae7707415369eb78c2c1cf9cbf12ed3c314a20e5d0bff1f"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-runner-20261018.log",
+        "sha256": "a82369543d9de6a45344b62bb6d214aa07432d4483a9753fcbe25b2727dc6bcf"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-runner-corrected-20261018.log",
+        "sha256": "50198e94320d08dd9e54e4701e186c8f66aa75b3fd4b46e2f302d20abe6b5a8c"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-manager-browser-20261018.log",
+        "sha256": "2c0b70934c5e840ee0f122768990dd6455ee2709358fd4d5bea044e050f432f4"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-specific-cancel-browser-20261018.log",
+        "sha256": "5977bcff34b6165911cfbfeb24bcaf4fa1a94bf77f04f1a4d2d959c82501b2ae"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-specific-cancel-corrected-20261018.log",
+        "sha256": "3ac96268b211af20aeed9a90cad9ce75943540618a0408bf15607198f4a3c3f7"
+      }
+    ],
+    "actualImageProduced": false,
+    "nativeKeychainAccessed": false,
+    "providerAccessed": false,
+    "wholeTaskDone": false,
+    "remaining": [
+      "Actual matching image+fresh PG+native helper guard/cancel/relaunch qualification",
+      "Actual OS chooser/Keychain and Render account recovery",
+      "Original runtime/Pages artifact provenance and whole service restore/migration/update/rollback",
+      "Official distribution and whole GUI acceptance"
+    ]
   }
 }
