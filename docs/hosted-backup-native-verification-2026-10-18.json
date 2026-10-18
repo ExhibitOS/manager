@@ -500,5 +500,105 @@
     "actualPGOrHelperRestore": false,
     "actualNativeOrKeychain": false,
     "remaining": "Actual fixed-image isolated PG restore with lifecycle/helper ownership and normal-stop receipt; then native OS/provider/full runtime/Pages activation acceptance."
+  },
+  "isolatedRestoreActualLifecycle20261018": {
+    "observedAt": "2026-10-18T06:30:33.625452+00:00",
+    "status": "ACTUAL_ISOLATED_LIFECYCLE_PG_RESTORE_AND_NORMAL_STOP_PASS_NOT_WHOLE_SERVICE",
+    "managerImplementation": "6e11dc67ad1121a1d904b157b37658f8ae200cf0",
+    "platformImplementation": "2cbdf719149f77fb897afa46917dfd8b26b924e3",
+    "maintenanceImage": "sha256:559fd8a0481f448d6326cf6e0e4b616d0a953a3c11e756eec371b67e7954c6ad",
+    "sessions": {
+      "initialFixture": {
+        "id": 57054,
+        "exit": 1
+      },
+      "nativeTransportFixtureCorrection": {
+        "id": 16695,
+        "exit": 1
+      },
+      "capPrefixRegression": {
+        "id": 95785,
+        "exit": 0,
+        "tests": 8
+      },
+      "actualFixedLifecycle": {
+        "id": 9506,
+        "exit": 0
+      }
+    },
+    "actualProof": {
+      "actualLifecycleFactory": true,
+      "actualSQLRestore": true,
+      "actualCurrentFixedRunnerAndImage": true,
+      "sourceStoppedBeforeRestore": true,
+      "archiveAndOriginalJobUnchanged": true,
+      "helperNormalExitZeroNoOOM": true,
+      "network": "none",
+      "privatePID": true,
+      "readonlySource": true,
+      "ownedWorkVolumeOnly": true,
+      "noAnonymousPostgresVolume": true,
+      "reopenedJournal": true,
+      "noInstalledRecordFabricated": true,
+      "backupId": "f1870546-73a8-4f4a-b39a-62ab117d694c",
+      "authenticatedManifestSha256": "7d58769f94a7c6b01803f22fb7318604618743d2226f731beac589a5bac8c247",
+      "files": 2,
+      "checkJobId": "9f27c331-34ab-4435-b128-5b72f4f9b5bc",
+      "sourceFreezeRows": 0,
+      "fixtureArchiveKeyRetainedSeparately": true,
+      "originalsAndCandidatesPreserved": true
+    },
+    "confirmedDefectAndFix": "Actual Docker inspect returned canonical CAP_ names. Same five allowed capabilities were misclassified OWNERSHIP_CONFLICT after SQL success. Normalize exactly one uppercase CAP_ prefix; keep exact set cardinality, duplicate/extra/missing/type/name rejection. Independent read review found no boundary expansion. No default backup helper change.",
+    "fixtureCorrection": "Initial standalone harness did not call the public native Docker transport initializer. Corrected harness, not product guards. Earlier uncertainty is preserved; later exact label scan observed first helper absent and later helpers stopped. Exact Cargo compiler-artifact paths and library/executable/source/patch SHA retained.",
+    "scopeLimits": [
+      "Synthetic TLS source and synthetic provider job metadata; not actual Render resources",
+      "Source dump has zero frozen rows; separate real 65-row signature/authority proof remains necessary and unchanged",
+      "No actual native Keychain/file chooser/cancellation/relaunch/Store/notarization verification",
+      "No original remote deployment/runtime/Pages qualification or activation",
+      "Whole restore/migration/update/rollback and seven GUI acceptance remain incomplete"
+    ],
+    "rawEvidence": [
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200/receipt.json",
+        "sha256": "e55251641aaf301a4f41ce4e6c33d8de2be9085474a32d21cdb3d4252545c270"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200/receipt-continuation.json",
+        "sha256": "ab1dcc54231012d3a285c53200c83d6856bfdf45a798947d4fee52955d84ed6d"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200/attempt-before-cap-prefix-fix/receipt-continuation.json",
+        "sha256": "831f214346fec3663e5b93cb7dd8f67dae6de2715ec41096c6e230eb345eaeb6"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200/cap-prefix-tests.log",
+        "sha256": "a8033b62cf6f9ad6f08eb3049feca022c0615f59f20be65cfb783fa48e1198d0"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200/actual-cap-prefix-run.log",
+        "sha256": "de8db4d4d674d3b38e920d396f091332cba3b1a712a6dae5bd7a35496ac17d78"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200/prior-cap-prefix-failure.log",
+        "sha256": "84254ccb5c3dcd2f2104851b01fc0bc0bf1ab0b9d88804a8f124d8896719f6fc"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200/continuation.mjs",
+        "sha256": "478f63f6b2915918166c355d6eb0f79d97f8acf59855d48fd7926016b9f26e73"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200/fixture-continuation.rs",
+        "sha256": "4792d8e88ceb430b01a08635d559cdcbd7f97cb4a37227a40bd5b7f6a8b5c7f4"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200/manager-cap-prefix.patch",
+        "sha256": "aef98ba88d40cdf3c67799f9796d78c3508a3fcc24091c48583cf2f058dfacd6"
+      }
+    ],
+    "privateRoot": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200",
+    "privateMaterial": "Retained key/config outside Git; paths/content not copied into public evidence.",
+    "goal": "active",
+    "taskCountsChanged": false,
+    "userAwayUntil": "복귀"
   }
 }
