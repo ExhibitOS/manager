@@ -181,12 +181,12 @@ fn preserve_original_configuration(job_id:&str,source:&Source,configuration:&ser
 }
 // Load only the immutable backup-time record. Never consult the current
 // publication/runtime creator or generate replacement signing/archive keys.
-fn load_original_configuration(job_id:&str,expected:&Source,load:impl FnOnce(&str)->Result<Vec<u8>,()>)->Result<serde_json::Value,LifecycleError>{
+fn load_original_configuration(job_id:&str,expected:&Source,load:impl FnOnce(&str)->Result<Vec<u8>,super::hosted_keychain::BackupConfigurationReadError>)->Result<serde_json::Value,LifecycleError>{
     if !super::hosted_keychain::canonical_backup_uuid(job_id){return Err(failure("HOSTED_RECOVERY_REQUEST"));}
     expected.validate()?;
-    let mut bytes=load(&format!("render-backup-configuration-{job_id}")).map_err(|_|failure("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
+    let mut bytes=load(&format!("render-backup-configuration-{job_id}")).map_err(|error|failure(match error{super::hosted_keychain::BackupConfigurationReadError::Missing=>"HOSTED_RECOVERY_CONFIGURATION_REQUIRED",super::hosted_keychain::BackupConfigurationReadError::Unavailable=>"HOSTED_KEYCHAIN_UNAVAILABLE"}))?;
     let parsed=if (1..=65536).contains(&bytes.len()){serde_json::from_slice::<OriginalConfigurationSnapshot>(&bytes).ok()}else{None};bytes.fill(0);
-    let snapshot=parsed.ok_or_else(||failure("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
+    let snapshot=parsed.ok_or_else(||failure("HOSTED_RECOVERY_CONFIGURATION_CHANGED"))?;
     if snapshot.version!=1||snapshot.source!=*expected||!snapshot.expected_configuration.closed(){return Err(failure("HOSTED_RECOVERY_CONFIGURATION_CHANGED"));}
     serde_json::to_value(snapshot.expected_configuration).map_err(|_|failure("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))
 }
@@ -241,14 +241,22 @@ pub fn operation(
             service.prepare_bundled_maintenance(&resources.join("platform-runtime/generated"),&image).map_err(fail)?;
             #[cfg(target_os="macos")]
             {
-                let original=load_original_configuration(&id,&source_job.source,super::hosted_keychain::load)?;
+                // Missing local configuration can use only authenticated archive authority.
+                // Corrupt/changed snapshots still refuse, with no current-config fallback.
+                let original=match load_original_configuration(&id,&source_job.source,super::hosted_keychain::load_backup_configuration){
+                    Ok(value)=>Some(value),
+                    Err(error) if error.code=="HOSTED_RECOVERY_CONFIGURATION_REQUIRED"=>None,
+                    Err(error)=>return Err(error),
+                };
                 service.create_hosted_restore_check(&id,&image,&resources.join("remote-runtime/generated/node"),&resources.join("scripts/hosted-restore-runner.mjs"),|execution|{
                     let mut key=super::hosted_keychain::load(&format!("render-backup-key-{id}")).map_err(|_|failure("HOSTED_KEYCHAIN_UNAVAILABLE"))?;
                     let result=(||{
                         if key.len()!=32{return Err(failure("HOSTED_KEYCHAIN_UNAVAILABLE"));}
                         let mut plan=serde_json::to_value(execution).map_err(|_|failure("HOSTED_RECOVERY_REQUEST"))?;
                         plan["keyBase64"]=super::hosted::base64(&key).into();
-                        serde_json::to_vec(&serde_json::json!({"execution":plan,"expectedConfiguration":original})).map_err(|_|failure("HOSTED_RECOVERY_REQUEST"))
+                        let mut input=serde_json::json!({"execution":plan});
+                        if let Some(configuration)=original.as_ref(){input["expectedConfiguration"]=configuration.clone();}
+                        serde_json::to_vec(&input).map_err(|_|failure("HOSTED_RECOVERY_REQUEST"))
                     })();key.fill(0);result
                 },||{for pin in &pins{pin.check()?;}Ok(())}).map_err(fail)?;
                 Ok(Context{source:None,jobs:service.hosted_backup_jobs().map_err(fail)?,restore_checks:service.hosted_restore_checks().map_err(fail)?,key_saved:false,archive_saved:None,publication_saved:None,publication_copies:publication_copies(service)})
@@ -449,7 +457,9 @@ mod tests {
         let configuration=synthetic_configuration();let mut retained=Vec::new();
         preserve_original_configuration(id,&source,&configuration,|_,b|{retained=b.to_vec();Ok(())}).unwrap();
         let loaded=load_original_configuration(id,&source,|account|{assert_eq!(account,format!("render-backup-configuration-{id}"));Ok(retained.clone())}).unwrap();assert_eq!(loaded,configuration);
-        assert!(load_original_configuration(id,&source,|_|Err(())).is_err());
+        assert_eq!(load_original_configuration(id,&source,|_|Err(super::super::hosted_keychain::BackupConfigurationReadError::Missing)).unwrap_err().code,"HOSTED_RECOVERY_CONFIGURATION_REQUIRED");
+        assert_eq!(load_original_configuration(id,&source,|_|Err(super::super::hosted_keychain::BackupConfigurationReadError::Unavailable)).unwrap_err().code,"HOSTED_KEYCHAIN_UNAVAILABLE");
+        assert_eq!(load_original_configuration(id,&source,|_|Ok(b"invalid retained snapshot".to_vec())).unwrap_err().code,"HOSTED_RECOVERY_CONFIGURATION_CHANGED");
         let mut changed=source.clone();changed.service_id="srv-other".into();assert!(load_original_configuration(id,&changed,|_|Ok(retained.clone())).is_err());
         for bad in ["invalid", "00000000-0000-0000-0000-000000000000"]{assert!(load_original_configuration(bad,&source,|_|panic!("invalid job cannot read OS keychain")).is_err());}
         assert!(load_original_configuration(id,&source,|_|Ok(vec![0;65537])).is_err());

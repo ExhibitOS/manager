@@ -17,6 +17,11 @@ fn add_backup_only_with(account: &str, bytes: &[u8], add: impl FnOnce(&str,&[u8]
     // there is no lookup/update/delete/recreate or random-key fallback here.
     if add(account,bytes)?==0{Ok(())}else{Err(())}
 }
+#[derive(Debug,PartialEq,Eq)]
+pub(crate) enum BackupConfigurationReadError { Missing, Unavailable }
+fn configuration_read_status(status:i32,has_result:bool)->Result<(),BackupConfigurationReadError>{
+    match (status,has_result){(0,true)=>Ok(()),(-25300,false)=>Err(BackupConfigurationReadError::Missing),_=>Err(BackupConfigurationReadError::Unavailable)}
+}
 #[cfg(target_os = "macos")]
 mod native {
     use std::{
@@ -157,6 +162,18 @@ mod native {
                 .to_vec(),
         )
     }
+    pub fn load_backup_configuration(account:&str)->Result<Vec<u8>,super::BackupConfigurationReadError>{
+        use super::BackupConfigurationReadError as E;
+        if !account.strip_prefix("render-backup-configuration-").is_some_and(super::canonical_backup_uuid){return Err(E::Unavailable);}
+        let query=query(account).map_err(|_|E::Unavailable)?;
+        unsafe {set(&query,kSecReturnData,kCFBooleanTrue);set(&query,kSecMatchLimit,kSecMatchLimitOne);}
+        let mut value=ptr::null();let status=unsafe{SecItemCopyMatching(query.0,&mut value)};
+        let value=Owned(value);super::configuration_read_status(status,!value.0.is_null())?;
+        if unsafe{CFGetTypeID(value.0)!=CFDataGetTypeID()}{return Err(E::Unavailable);}
+        let size=unsafe{CFDataGetLength(value.0)};
+        if !(1..=65536).contains(&size){return Err(E::Unavailable);}
+        Ok(unsafe{std::slice::from_raw_parts(CFDataGetBytePtr(value.0),size as usize)}.to_vec())
+    }
     pub fn add_backup_only(account: &str, bytes: &[u8]) -> Result<(), ()> {
         super::add_backup_only_with(account,bytes,|account,bytes|{
             let query=query(account)?;
@@ -206,11 +223,13 @@ mod native {
     }
 }
 #[cfg(target_os = "macos")]
-pub use native::{add_backup_only, contains, load, random, remove, store};
+pub use native::{add_backup_only, contains, load, load_backup_configuration, random, remove, store};
 #[cfg(not(target_os = "macos"))]
 pub fn contains(_: &str) -> Result<bool, ()> {
     Err(())
 }
+#[cfg(not(target_os = "macos"))]
+pub fn load_backup_configuration(_: &str) -> Result<Vec<u8>,BackupConfigurationReadError> { Err(BackupConfigurationReadError::Unavailable) }
 #[cfg(not(target_os = "macos"))]
 pub fn load(_: &str) -> Result<Vec<u8>, ()> {
     Err(())
@@ -236,6 +255,13 @@ pub fn add_backup_only(_: &str, _: &[u8]) -> Result<(), ()> { Err(()) }
 mod tests {
     use super::*;
     const ID:&str="c30e227b-e771-43dc-b315-023e0469d4d2";
+    #[test]
+    fn only_exact_not_found_without_data_can_use_archived_authority(){
+        assert_eq!(configuration_read_status(-25300,false),Err(BackupConfigurationReadError::Missing));
+        assert_eq!(configuration_read_status(0,true),Ok(()));
+        for status in [-128,-25293,-25308,-36,0]{assert_eq!(configuration_read_status(status,false),Err(BackupConfigurationReadError::Unavailable));}
+        assert_eq!(configuration_read_status(-25300,true),Err(BackupConfigurationReadError::Unavailable));
+    }
     #[test]
     fn immutable_job_material_uses_exactly_one_add_and_preserves_input() {
         for (prefix,bytes) in [("render-backup-key-",vec![23u8;32]),("render-backup-configuration-",b"synthetic private configuration".to_vec()),("render-backup-configuration-",vec![1u8;65536])] {

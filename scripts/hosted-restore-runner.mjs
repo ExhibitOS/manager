@@ -12,8 +12,8 @@ const digest=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 const closed=(v,fields)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===fields.split(',').sort().join(',');
 const path=v=>typeof v==='string'&&v.length<=4096&&isAbsolute(v)&&resolve(v)===v&&!Array.from(v).some(c=>c.charCodeAt(0)<32||c.charCodeAt(0)===127||c===',');
 export function validateRestoreInput(input){
- if(!closed(input,'execution,expectedConfiguration'))fail();
- validateRecoveryConfiguration(input.expectedConfiguration);
+ if(!closed(input,'execution,expectedConfiguration')&&!closed(input,'execution'))fail();
+ if(Object.hasOwn(input,'expectedConfiguration'))validateRecoveryConfiguration(input.expectedConfiguration);
  const e=input.execution;
  if(!closed(e,'jobId,sourceJobId,helperName,image,sourcePath,workVolume,dockerPath,dockerEndpoint,jobBudgetBytes,expectedBackupId,expectedManifestSha256,expectedFiles,keyBase64')||!uuid(e.jobId)||!uuid(e.sourceJobId)||!uuid(e.expectedBackupId)||!digest(e.expectedManifestSha256)||e.helperName!=='exhibitos-hosted-restore-'+e.jobId||e.workVolume!=='exhibitos-hosted-restore-work-'+e.jobId||typeof e.image!=='string'||!/^sha256:[a-f0-9]{64}$/.test(e.image)||!path(e.sourcePath)||!path(e.dockerPath)||!Number.isSafeInteger(e.jobBudgetBytes)||e.jobBudgetBytes<4194304||e.jobBudgetBytes>32*1024**3||!Number.isSafeInteger(e.expectedFiles)||e.expectedFiles<1||e.expectedFiles>100000||typeof e.keyBase64!=='string')fail();
  if(typeof e.dockerEndpoint!=='string'||!e.dockerEndpoint.startsWith('unix:///')||!path(e.dockerEndpoint.slice(7))||/[ ?#]/.test(e.dockerEndpoint))fail();
@@ -37,7 +37,7 @@ async function execute(e,authority,spawner){
 }
 export async function runHostedRestoreCheck(input,dependencies={}){
  try{
-  validateRestoreInput(input);const e=input.execution,pin=await sourcePin(e.sourcePath),authority=validateRecoveryConfiguration(input.expectedConfiguration);
+  validateRestoreInput(input);const e=input.execution,pin=await sourcePin(e.sourcePath),authority=Object.hasOwn(input,'expectedConfiguration')?validateRecoveryConfiguration(input.expectedConfiguration):undefined;
   const result=await execute(e,authority,dependencies.spawn??spawn);
   if(!same(pin,await sourcePin(e.sourcePath))||!closed(result,'operation,backupId,authenticatedManifestSha256,files')||result.operation!=='restored-and-verified'||result.backupId!==e.expectedBackupId||result.authenticatedManifestSha256!==e.expectedManifestSha256||result.files!==e.expectedFiles)fail();
   return result;
