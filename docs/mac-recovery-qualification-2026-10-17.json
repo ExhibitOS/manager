@@ -453,9 +453,36 @@
     ],
     "notQualified": [
       "Actual macOS OS chooser and native GUI button interactions",
-      "New packaged app containing this implementation",
       "Formal distribution/notarization or no-engine installation"
     ],
     "sourceChangeDoesNotReopenCompletedParentTasks": true
+  },
+  "latestGuiRuntimePackaging": {
+    "managerSource": "e235c4ddb8a84a336927b2333edd259e0af6680c",
+    "platformSource": "f0cd0f6f272b802bfe88dd48c7b8e9f153c7a012",
+    "receipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-gui-native-e235c4d-ffea8539-d6d3-4aa7-b062-dd739d0a85a4/native-app-verification.json",
+    "resourcePreparation": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-gui-native-e235c4d-ffea8539-d6d3-4aa7-b062-dd739d0a85a4/resource-preparation.json",
+    "producerReceipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-gui-native-e235c4d-ffea8539-d6d3-4aa7-b062-dd739d0a85a4/producer-packaging-receipt.json",
+    "ociIndexArm64ConfigChain": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-gui-native-e235c4d-ffea8539-d6d3-4aa7-b062-dd739d0a85a4/oci-index-arm64-config-chain.json",
+    "localImageIdReadOnlyObservation": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-gui-native-e235c4d-ffea8539-d6d3-4aa7-b062-dd739d0a85a4/local-image-id-readonly-observation.json",
+    "app": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-gui-native-e235c4d-ffea8539-d6d3-4aa7-b062-dd739d0a85a4/development-adhoc/ExhibitOS Manager.app",
+    "rawApp": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-gui-native-e235c4d-ffea8539-d6d3-4aa7-b062-dd739d0a85a4/raw-build/ExhibitOS Manager.app",
+    "buildExitCode": 0,
+    "buildSeconds": 172.5015260410728,
+    "rawStrictDeepExitCode": 1,
+    "developmentRootOnlyAdhocSeal": true,
+    "developmentStrictDeepExitCode": 0,
+    "resourceEntries": 9136,
+    "resourcesUnchangedBySeal": true,
+    "executableSha256": "bf4976ed063617b436486d9bda8f1bd396987d51e3e8572016946f41f545c2b1",
+    "retainedPreviousPrepared": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-gui-native-e235c4d-ffea8539-d6d3-4aa7-b062-dd739d0a85a4/retained-prepared-runtime-b701aac",
+    "developerIdSigned": false,
+    "notarized": false,
+    "appLaunched": false,
+    "osDialogRequested": false,
+    "userProfileAccessed": false,
+    "actualNewRuntimeInstallation": false,
+    "sourceCleanAfterPackaging": true,
+    "qualification": "One exact native development app build with latest Platform GUI runtime. Original raw signature result preserved and separate root-only ad-hoc copy verifies strictly. This is not native OS chooser/GUI, new runtime install, formal distribution or fresh-device qualification. Previous b0a app and all recovery fixtures remain preserved."
   }
 }
