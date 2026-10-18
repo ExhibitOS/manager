@@ -10,6 +10,29 @@ pub struct ExportReceipt {
     pub files: u64,
     pub bytes: u64,
 }
+/// Native-only pin for an optional companion outside managed installations.
+#[cfg(target_os="macos")]
+pub struct PublicationExportTarget {
+    pub path:PathBuf,
+    pub created:bool,
+    parent:PathBuf,
+    root:PathBuf,
+    profile:PathBuf,
+    parent_guard:File,
+    directory_guard:File,
+}
+#[cfg(target_os="macos")]
+impl PublicationExportTarget {
+    pub fn check(&self)->Result<()>{
+        native::allowed(&self.parent,&self.profile,&self.root)?;
+        native::check(&self.parent_guard,&self.parent)?;
+        native::check(&self.directory_guard,&self.path)?;
+        use std::os::unix::fs::MetadataExt;
+        if self.directory_guard.metadata().map_err(|_|failure("BACKUP_EXPORT_PATH_CHANGED"))?.mode()&0o7777!=0o700{return Err(failure("BACKUP_EXPORT_PRIVATE_PERMISSIONS"));}Ok(())
+    }
+    pub fn preserve_metadata(&self,name:&str,bytes:&[u8])->Result<()>{native::publication_metadata(self,name,bytes)}
+    pub fn available_budget(&self)->Result<u64>{self.check()?;super::hosted_backup::job_budget(fs2::available_space(&self.path).map_err(|_|failure("STORAGE_UNAVAILABLE"))?)}
+}
 fn failure(code: &str) -> LifecycleError {
     LifecycleError{code:code.into(),guidance:"백업 사본을 보관하지 못했어요. 원래 백업과 키는 유지됩니다. 설치·백업 폴더 밖의 다른 위치나 남은 공간을 확인하고 이 백업의 보관만 다시 시도하세요. 실패한 부분 사본은 보존되며 완료 사본이 아닙니다.".into()}
 }
@@ -92,7 +115,7 @@ pub(crate) mod native {
         }
         Ok(())
     }
-    fn allowed(parent: &Path, profile: &Path, root: &Path) -> Result<()> {
+    pub(super) fn allowed(parent: &Path, profile: &Path, root: &Path) -> Result<()> {
         let text = parent
             .to_str()
             .ok_or_else(|| failure("BACKUP_EXPORT_PATH_INVALID"))?;
@@ -142,6 +165,34 @@ pub(crate) mod native {
             return Err(failure("BACKUP_EXPORT_PRIVATE_PERMISSIONS"));
         }
         Ok(directory)
+    }
+    pub(super) fn publication_metadata(target:&PublicationExportTarget,name:&str,bytes:&[u8])->Result<()>{
+        if !["publication-work.json","publication-custody.json"].contains(&name)||bytes.is_empty()||bytes.len()>65536{return Err(failure("BACKUP_EXPORT_SOURCE_CHANGED"));}
+        target.check()?;
+        if let Ok(mut file)=openat(&target.directory_guard,name,false,true){
+            file.write_all(bytes).and_then(|_|file.sync_all()).map_err(|_|failure("BACKUP_EXPORT_IO"))?;
+        }
+        let mut file=openat(&target.directory_guard,name,false,false)?;
+        let before=regular(&file,65536)?;
+        if before.len()!=bytes.len() as u64||bounded_hash(&mut file,bytes.len() as u64)?!=<[u8;32]>::from(Sha256::digest(bytes)){return Err(failure("BACKUP_EXPORT_SOURCE_CHANGED"));}
+        let named=openat(&target.directory_guard,name,false,false)?;let after=regular(&named,65536)?;
+        if before.dev()!=after.dev()||before.ino()!=after.ino()||before.len()!=after.len()||before.mtime()!=after.mtime()||before.mtime_nsec()!=after.mtime_nsec()||before.ctime()!=after.ctime()||before.ctime_nsec()!=after.ctime_nsec(){return Err(failure("BACKUP_EXPORT_SOURCE_CHANGED"));}
+        target.check()
+    }
+    pub(super) fn publication_target(root:&Path,profile:&Path,parent:&Path,job_id:&str,backup_id:&str)->Result<PublicationExportTarget>{
+        if [job_id,backup_id].iter().any(|id|Uuid::parse_str(id).ok().is_none_or(|v|v.to_string()!=*id)){return Err(failure("BACKUP_EXPORT_JOB_INVALID"));}
+        allowed(parent,profile,root)?;
+        let parent_guard=OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY|libc::O_NOFOLLOW|libc::O_CLOEXEC).open(parent).map_err(|_|failure("BACKUP_EXPORT_PATH_INVALID"))?;
+        check(&parent_guard,parent)?;allowed(parent,profile,root)?;
+        let name=format!("ExhibitOS-publication-{backup_id}-{job_id}");let path=parent.join(&name);
+        let created=match fs::symlink_metadata(&path){Ok(_)=>false,Err(e) if e.kind()==std::io::ErrorKind::NotFound=>true,Err(_)=>return Err(failure("BACKUP_EXPORT_IO"))};
+        let directory_guard=if created{mkdir(&parent_guard,&name)?}else{openat(&parent_guard,&name,true,false)?};
+        check(&directory_guard,&path)?;
+        if !created{
+            let mut names=fs::read_dir(&path).map_err(|_|failure("BACKUP_EXPORT_IO"))?.map(|e|e.map(|e|e.file_name().to_string_lossy().into_owned())).collect::<std::io::Result<Vec<_>>>().map_err(|_|failure("BACKUP_EXPORT_IO"))?;
+            names.sort();if names!=["publication","publication-custody.json","publication-work.json"]{return Err(failure("BACKUP_EXPORT_SOURCE_CHANGED"));}
+        }
+        let target=PublicationExportTarget{path,created,parent:parent.into(),root:root.into(),profile:profile.into(),parent_guard,directory_guard};target.check()?;Ok(target)
     }
     pub(super) fn copy(
         root: &Path,
@@ -407,6 +458,15 @@ pub(crate) mod native {
     }
 }
 impl LifecycleService {
+    #[cfg(target_os="macos")]
+    pub(crate) fn prepare_hosted_publication_export(&self,profile:&Path,id:&str,archive:&ExportReceipt)->Result<PublicationExportTarget>{
+        let _operation=self.lock()?;let job=self.hosted_backup_job(id)?;
+        let receipt=job.receipt.as_ref().ok_or_else(||failure("BACKUP_EXPORT_JOB_INVALID"))?;
+        if job.state!="completed"||job.error_code.is_some()||archive.job_id!=id||receipt.backup_id!=archive.backup_id{return Err(failure("BACKUP_EXPORT_JOB_INVALID"));}
+        receipt.validate(&job.source)?;
+        let parent=Path::new(&archive.path).parent().ok_or_else(||failure("BACKUP_EXPORT_PATH_INVALID"))?;
+        native::publication_target(&self.root,profile,parent,id,&receipt.backup_id)
+    }
     pub(crate) fn export_hosted_backup(&self, profile: &Path, id: &str, parent: &Path) -> Result<ExportReceipt> {
         let _operation = self.lock()?;
         let job = self.hosted_backup_job(id)?;
@@ -502,6 +562,26 @@ mod tests {
             fs::set_permissions(source.join(name), fs::Permissions::from_mode(0o600)).unwrap()
         }
         (base, root, parent, receipt)
+    }
+    #[test]
+    fn publication_sibling_is_private_stable_and_does_not_change_encrypted_archive(){
+        let (base,root,parent,r)=fixture();
+        let archive=native::test_copy(&root,&root,&parent,&r,||{}).unwrap();
+        let original=fs::read(Path::new(&archive.path).join("manifest.gcm")).unwrap();
+        let target=native::publication_target(&root,&root,&parent,&r.id,&r.backup_id).unwrap();
+        assert!(target.created);assert_eq!(target.path.parent(),Some(parent.as_path()));
+        assert_eq!(target.path.file_name().unwrap().to_str().unwrap(),format!("ExhibitOS-publication-{}-{}",r.backup_id,r.id));
+        assert_eq!(fs::metadata(&target.path).unwrap().permissions().mode()&0o7777,0o700);
+        assert!(native::publication_target(&root,&root,&parent,&r.id,&r.backup_id).is_err(),"Partial wrapper must remain a failed candidate");
+        fs::create_dir(target.path.join("publication")).unwrap();fs::set_permissions(target.path.join("publication"),fs::Permissions::from_mode(0o700)).unwrap();
+        for name in ["publication-work.json","publication-custody.json"]{target.preserve_metadata(name,b"synthetic-metadata").unwrap();target.preserve_metadata(name,b"synthetic-metadata").unwrap();assert!(target.preserve_metadata(name,b"changed-metadata").is_err());}
+        assert!(target.preserve_metadata("../outside",b"forbidden").is_err());
+        let same=native::publication_target(&root,&root,&parent,&r.id,&r.backup_id).unwrap();assert!(!same.created);same.check().unwrap();
+        assert!(native::publication_target(&root,&root,&root,&r.id,&r.backup_id).is_err());
+        let moved=parent.join("preserved-publication-candidate");fs::rename(&target.path,&moved).unwrap();assert!(target.check().is_err());assert!(target.preserve_metadata("publication-work.json",b"not-written").is_err());
+        std::os::unix::fs::symlink(&moved,&target.path).unwrap();assert!(native::publication_target(&root,&root,&parent,&r.id,&r.backup_id).is_err());
+        assert_eq!(fs::read(Path::new(&archive.path).join("manifest.gcm")).unwrap(),original);assert_eq!(archive.files,4);
+        fs::remove_dir_all(base).unwrap();
     }
     #[test]
     fn encrypted_copy_is_exact_private_and_repeat_never_overwrites() {

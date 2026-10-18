@@ -51,10 +51,15 @@ pub struct Context {
     pub restore_checks: Vec<exhibitos_lifecycle::hosted_restoration::CheckJob>,
     pub key_saved: bool,
     pub archive_saved: Option<exhibitos_lifecycle::backup_export::ExportReceipt>,
+    pub publication_saved: Option<PublicationSaved>,
 }
 #[derive(Clone,Deserialize,Serialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
 pub struct PublicationCopy { pub job_id:String,pub state:String,pub files:u64,pub bytes:u64 }
+#[derive(Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct PublicationSaved {pub job_id:String,pub state:String,pub path:Option<String>,pub files:u64,pub bytes:u64}
+pub struct ArchiveDelivery {pub archive:Option<exhibitos_lifecycle::backup_export::ExportReceipt>,pub publication:Option<PublicationSaved>}
 #[derive(Deserialize,Serialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
 struct PublicationReceipt { operation:String,state:String,files:u64,bytes:u64,manifest_sha256:String,publication_id:String,revision_sha256:String,index_sha256:String }
@@ -81,7 +86,7 @@ fn publication_receipt(bytes:&[u8],publication:&super::hosted::RecoveryPublicati
     if value.operation!="publication-custody"||!["copied","reused"].contains(&value.state.as_str())||!(3..=20000).contains(&value.files)||value.bytes==0||value.bytes>max_bytes||value.manifest_sha256!=publication.manifest_sha256||value.publication_id!=publication.publication_id||value.revision_sha256!=publication.revision_sha256||value.index_sha256!=publication.index_sha256{return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}Ok(value)
 }
 #[cfg(target_os="macos")]
-fn copy_publication(resources:&Path,folder:&Path,publication:&super::hosted::RecoveryPublication,max_bytes:u64)->Result<(),LifecycleError>{
+fn run_publication_copy(resources:&Path,folder:&Path,publication:&super::hosted::RecoveryPublication,max_bytes:u64)->Result<PublicationReceipt,LifecycleError>{
     use std::{io::Write,process::{Command,Stdio},sync::mpsc,time::{Duration,Instant}};
     let pins=super::remote::verified_resources(resources)?;
     let input=serde_json::to_vec(&serde_json::json!({"sourcePath":publication.source_path,"expectedManifestSha256":publication.manifest_sha256,"publicationId":publication.publication_id,"revisionSha256":publication.revision_sha256,"indexSha256":publication.index_sha256,"destinationPath":folder.join("publication"),"maxBytes":max_bytes})).map_err(|_|failure("HOSTED_PUBLICATION_UNAVAILABLE"))?;
@@ -105,24 +110,31 @@ fn copy_publication(resources:&Path,folder:&Path,publication:&super::hosted::Rec
     for pin in &pins{pin.check()?;}
     let output=stdout.unwrap().map_err(|_|failure("HOSTED_PUBLICATION_UNAVAILABLE"))?;
     if !status.unwrap().success(){return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}
-    let receipt=publication_receipt(&output,publication,max_bytes)?;
+    publication_receipt(&output,publication,max_bytes)
+}
+#[cfg(target_os="macos")]
+fn copy_publication(resources:&Path,folder:&Path,publication:&super::hosted::RecoveryPublication,max_bytes:u64)->Result<(),LifecycleError>{
+    let receipt=run_publication_copy(resources,folder,publication,max_bytes)?;
     preserve_publication_bytes(folder,"publication-custody.json",&serde_json::to_vec(&receipt).map_err(|_|failure("HOSTED_PUBLICATION_UNAVAILABLE"))?)
+}
+#[cfg(target_os="macos")]
+fn stored_publication(service:&LifecycleService,job:&Job)->Result<(super::hosted::RecoveryPublication,Vec<u8>,PublicationReceipt),LifecycleError>{
+    if job.state!="completed"{return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}
+    let folder=service.hosted_publication_workspace(&job.id)?;
+    let work=private_bytes(&folder.join("publication-work.json"))?;
+    if !super::hosted::recovery_snapshot_matches(&work,&job.source){return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}
+    let snapshot:serde_json::Value=serde_json::from_slice(&work).map_err(|_|failure("HOSTED_PUBLICATION_UNAVAILABLE"))?;
+    let text=|key:&str|snapshot["source"][key].as_str().map(str::to_owned).ok_or_else(||failure("HOSTED_PUBLICATION_UNAVAILABLE"));
+    let publication=super::hosted::RecoveryPublication{source_path:folder.join("publication").to_str().ok_or_else(||failure("HOSTED_PUBLICATION_UNAVAILABLE"))?.into(),manifest_sha256:snapshot["sourceSha256"].as_str().unwrap_or("").into(),publication_id:text("publicationId")?,revision_sha256:text("revisionSha256")?,index_sha256:text("indexSha256")?,snapshot:work};
+    let receipt_bytes=private_bytes(&folder.join("publication-custody.json"))?;
+    let receipt=publication_receipt(&receipt_bytes,&publication,job.job_budget_bytes.unwrap_or(0))?;
+    Ok((publication,receipt_bytes,receipt))
 }
 pub(crate) fn publication_copies(service:&LifecycleService)->Vec<PublicationCopy>{
     #[cfg(target_os="macos")]
     {service.hosted_backup_jobs().unwrap_or_default().into_iter().map(|job|{
         let mut result=PublicationCopy{job_id:job.id.clone(),state:"unavailable".into(),files:0,bytes:0};
-        let loaded=(||{
-            if job.state!="completed"{return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}
-            let folder=service.hosted_publication_workspace(&job.id)?;
-            let work=private_bytes(&folder.join("publication-work.json"))?;
-            if !super::hosted::recovery_snapshot_matches(&work,&job.source){return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}
-            let snapshot:serde_json::Value=serde_json::from_slice(&work).map_err(|_|failure("HOSTED_PUBLICATION_UNAVAILABLE"))?;
-            // Read only this immutable job's pins; never today's deployment selection.
-            let text=|key:&str|snapshot["source"][key].as_str().map(str::to_owned).ok_or_else(||failure("HOSTED_PUBLICATION_UNAVAILABLE"));
-            let publication=super::hosted::RecoveryPublication{source_path:String::new(),manifest_sha256:snapshot["sourceSha256"].as_str().unwrap_or("").into(),publication_id:text("publicationId")?,revision_sha256:text("revisionSha256")?,index_sha256:text("indexSha256")?,snapshot:Vec::new()};
-            publication_receipt(&private_bytes(&folder.join("publication-custody.json"))?,&publication,job.job_budget_bytes.unwrap_or(0))
-        })();
+        let loaded=stored_publication(service,&job).map(|(_,_,receipt)|receipt);
         if let Ok(receipt)=loaded{result.state="copied".into();result.files=receipt.files;result.bytes=receipt.bytes;}result
     }).collect()}
     #[cfg(not(target_os="macos"))] {let _=service;Vec::new()}
@@ -205,6 +217,7 @@ pub fn operation(
             restore_checks: service.hosted_restore_checks().map_err(fail)?,
             key_saved: false,
             archive_saved: None,
+            publication_saved: None,
             publication_copies: publication_copies(service),
         }),
         Action::Context => Ok(Context {
@@ -213,6 +226,7 @@ pub fn operation(
             restore_checks: service.hosted_restore_checks().map_err(fail)?,
             key_saved: false,
             archive_saved: None,
+            publication_saved: None,
             publication_copies: publication_copies(service),
         }),
         Action::ExportKey | Action::ExportArchive => Err(failure("HOSTED_RECOVERY_REQUEST")),
@@ -237,7 +251,7 @@ pub fn operation(
                         serde_json::to_vec(&serde_json::json!({"execution":plan,"expectedConfiguration":original})).map_err(|_|failure("HOSTED_RECOVERY_REQUEST"))
                     })();key.fill(0);result
                 },||{for pin in &pins{pin.check()?;}Ok(())}).map_err(fail)?;
-                Ok(Context{source:None,jobs:service.hosted_backup_jobs().map_err(fail)?,restore_checks:service.hosted_restore_checks().map_err(fail)?,key_saved:false,archive_saved:None,publication_copies:publication_copies(service)})
+                Ok(Context{source:None,jobs:service.hosted_backup_jobs().map_err(fail)?,restore_checks:service.hosted_restore_checks().map_err(fail)?,key_saved:false,archive_saved:None,publication_saved:None,publication_copies:publication_copies(service)})
             }
             #[cfg(not(target_os="macos"))]
             {let _=(source_job,pins,image);Err(failure("HOSTED_PLATFORM_UNSUPPORTED"))}
@@ -314,6 +328,7 @@ pub fn operation(
                     restore_checks: service.hosted_restore_checks().map_err(fail)?,
             key_saved: false,
             archive_saved: None,
+            publication_saved: None,
             publication_copies: publication_copies(service),
                 });
             }
@@ -354,16 +369,39 @@ pub fn export_key(
     Ok(true)
 }
 #[cfg(target_os = "macos")]
-pub fn export_archive(controller: &exhibitos_lifecycle::installations::InstallationController, selection: &str, id: &str)
-    -> Result<Option<exhibitos_lifecycle::backup_export::ExportReceipt>, LifecycleError> {
-    controller.with_current(selection, |service| {
-        let job=service.hosted_backup_jobs()?.into_iter().find(|job|job.id==id).ok_or_else(||failure("HOSTED_RECOVERY_REQUEST"))?;
-        if job.state!="completed" || job.error_code.is_some() { return Err(failure("HOSTED_RECOVERY_REQUEST")); }
-        Ok(())
-    })?;
-    let Some(path)=super::maintenance_picker::choose(super::maintenance_picker::Kind::ExportParent)? else { return Ok(None); };
-    controller.export_hosted_backup(selection,id,Path::new(&path)).map(Some)
+pub fn export_archive(resources:&Path,controller: &exhibitos_lifecycle::installations::InstallationController, selection: &str, id: &str)
+    -> Result<ArchiveDelivery, LifecycleError> {
+    controller.with_current(selection, |service| {service.completed_hosted_backup(id).map(|_|())})?;
+    let Some(path)=super::maintenance_picker::choose(super::maintenance_picker::Kind::ExportParent)? else { return Ok(ArchiveDelivery{archive:None,publication:None}); };
+    let archive=controller.export_hosted_backup(selection,id,Path::new(&path))?;
+    // The encrypted archive already completed. Optional public-file delivery must
+    // never turn that success into failure, including a later selection change.
+    let mut publication=PublicationSaved{job_id:id.into(),state:"unavailable".into(),path:None,files:0,bytes:0};
+    let copied=(||{
+        let _hosted_operation=super::hosted::hold_operation()?;
+        let (saved,receipt_bytes,expected)=controller.with_current(selection,|service|{let job=service.completed_hosted_backup(id)?;stored_publication(service,&job)})?;
+        let target=controller.prepare_hosted_publication_export(selection,id,&archive)?;
+        publication.path=Some(target.path.to_string_lossy().into_owned());
+        controller.with_current(selection,|service|{
+            let job=service.completed_hosted_backup(id)?;
+            if !super::hosted::recovery_snapshot_matches(&saved.snapshot,&job.source){return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}
+            target.check()?;
+            if !target.created{
+                if private_bytes(&target.path.join("publication-work.json"))?!=saved.snapshot||private_bytes(&target.path.join("publication-custody.json"))?!=receipt_bytes{return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}
+            }
+            let budget=job.job_budget_bytes.unwrap_or(0).min(target.available_budget()?);
+            let actual=run_publication_copy(resources,&target.path,&saved,budget)?;
+            target.check()?;
+            if actual.files!=expected.files||actual.bytes!=expected.bytes{return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}
+            target.preserve_metadata("publication-work.json",&saved.snapshot)?;
+            target.preserve_metadata("publication-custody.json",&receipt_bytes)?;
+            target.check()?;Ok(actual)
+        })
+    })();
+    if let Ok(receipt)=copied{publication.state="copied".into();publication.files=receipt.files;publication.bytes=receipt.bytes;}
+    Ok(ArchiveDelivery{archive:Some(archive),publication:Some(publication)})
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

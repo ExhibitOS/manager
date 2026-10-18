@@ -34,3 +34,14 @@ it('isolated restore checks remain bound to their completed original and cannot 
   expect(parseHostedRecovery({...base,publicationCopies:[{...copy,state:'unavailable',files:0,bytes:0}]}).publicationCopies[0]?.state).toBe('unavailable');
   for(const publicationCopies of [[{...copy,sourcePath:'/private/original'}],[{...copy,tokens:'not-allowed'}],[{...copy,state:'unavailable'}],[copy,copy],[{...copy,jobId:'00000000-0000-4000-8000-000000000002'}]])expect(()=>parseHostedRecovery({...base,publicationCopies})).toThrow('MANAGER_PROTOCOL');
  });
+
+it('keeps companion delivery optional, archive bound and distinct from encrypted archive contents',()=>{
+ const archiveSaved={jobId:id,backupId:id,path:'/synthetic/ExhibitOS-backup-copy',files:4,bytes:400};
+ const base={source,jobs:[job],keySaved:false,archiveSaved};
+ const copy={jobId:id,state:'copied',path:'/synthetic/ExhibitOS-publication',files:3,bytes:100};
+ expect(parseHostedRecovery({...base,publicationSaved:copy}).publicationSaved).toEqual(copy);
+ expect(parseHostedRecovery({...base,publicationSaved:{...copy,state:'unavailable',path:null,files:0,bytes:0}}).archiveSaved).toEqual(archiveSaved);
+ expect(parseHostedRecovery(base).publicationSaved).toBeNull();
+ for(const publicationSaved of [{...copy,path:'relative'},{...copy,path:'/bad\npath'},{...copy,token:'forbidden'},{...copy,state:'unavailable'},{...copy,jobId:'00000000-0000-4000-8000-000000000002'}])expect(()=>parseHostedRecovery({...base,publicationSaved})).toThrow('MANAGER_PROTOCOL');
+ expect(()=>parseHostedRecovery({...base,archiveSaved:null,publicationSaved:copy})).toThrow('MANAGER_PROTOCOL');
+});

@@ -607,6 +607,10 @@ impl InstallationController {
             service.export_hosted_backup(protected,id,parent)
         })
     }
+    #[cfg(target_os="macos")]
+    pub fn prepare_hosted_publication_export(&self,token:&str,id:&str,archive:&super::backup_export::ExportReceipt)->Result<super::backup_export::PublicationExportTarget>{
+        self.with_current(token,|service|{let protected=self.profile.as_ref().map(|p|p.root.as_path()).unwrap_or(service.root.as_path());service.prepare_hosted_publication_export(protected,id,archive)})
+    }
     // Diagnosis must remain available when ordinary startup rejects an incomplete candidate.
     fn with_retry_diagnostics<T>(
         &self,

@@ -1392,6 +1392,20 @@ mod tests {
         assert_eq!(recovery_configuration_from_work(&original,&source,|_|panic!("Mismatched origin must not load")).unwrap_err().code,"HOSTED_RECOVERY_CONFIGURATION_CHANGED");
     }
     #[test]
+    fn exported_publication_subfolder_reuses_existing_source_admission_and_rejects_changed_bytes(){
+        let folder=std::env::temp_dir().join(format!("exhibitos-source-admission-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let publication=folder.join("publication");std::fs::create_dir_all(publication.join("data")).unwrap();
+        let document=serde_json::to_vec(&serde_json::json!({"publication":{"id":"publication-original","status":"published","revisionSha256":"b".repeat(64)},"exhibition":{"title":"Synthetic restored static source"}})).unwrap();
+        let hash=format!("{:x}",Sha256::digest(&document));let name=format!("data/{hash}.json");
+        let index=serde_json::to_vec(&serde_json::json!({"publication":{"path":name,"sha256":hash}})).unwrap();
+        let manifest=serde_json::to_vec(&serde_json::json!({"format":"exhibitos-static-publication-v1","publicationId":"publication-original","revisionSha256":"b".repeat(64),"indexSha256":format!("{:x}",Sha256::digest(&index))})).unwrap();
+        for (name,bytes) in [(name.as_str(),document.as_slice()),("static-publication-index.json",index.as_slice()),("static-export-manifest.json",manifest.as_slice())]{std::fs::write(publication.join(name),bytes).unwrap();}
+        assert!(read_source(folder.to_str().unwrap()).is_err(),"Select the publication subfolder, not the companion wrapper");
+        let source=read_source(publication.to_str().unwrap()).unwrap();assert_eq!(source.info.publication_id,"publication-original");assert_eq!(source.sha256,format!("{:x}",Sha256::digest(&manifest)));
+        std::fs::write(publication.join(name),b"changed").unwrap();assert!(read_source(publication.to_str().unwrap()).is_err());
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+    #[test]
     fn publication_capture_requires_original_pins_and_projects_receipts_without_secrets(){
         let mut work=saved_recovery_fixture();let source=recovery_source_from_work(&work).unwrap();
         let mut configuration=saved_configuration_fixture();

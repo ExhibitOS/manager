@@ -15,11 +15,11 @@ test('hosted backup invalidates prior-source confirmation and keeps archive copy
    if(cmd==='manager_maintenance_context'||cmd==='manager_hosted_resume')return null;
    if(cmd==='manager_hosted_connected')return false;
    if(cmd==='manager_hosted_recovery'){
-    const input=args!.input!;calls.push(input);let archiveSaved=null;
+    const input=args!.input!;calls.push(input);let archiveSaved=null,publicationSaved=null;
     if(input.action==='create')jobs=[{id,source,image:`sha256:${'a'.repeat(64)}`,jobBudgetBytes:64*1024**3,state:'completed',stage:'completed',errorCode:null,createdAt:1,updatedAt:2,receipt:{provider:'render',action:'local-encrypted-backup',operation:'created-and-verified',...source,backupId:id,files:1,authenticatedManifestSha256:'b'.repeat(64)}}];
     if(input.action==='check-restore')restoreChecks=[{id:'00000000-0000-4000-8000-000000000002',sourceJobId:id,source,image:`sha256:${'a'.repeat(64)}`,expectedBackupId:id,expectedManifestSha256:'b'.repeat(64),expectedFiles:1,jobBudgetBytes:1024**3,state:'completed',stage:'completed',errorCode:null,receipt:{operation:'restored-and-verified',backupId:id,authenticatedManifestSha256:'b'.repeat(64),files:1},createdAt:2,updatedAt:3}];
-    if(input.action==='export-archive'&&++copies>1){if(copies===3)await new Promise<void>(resolve=>Object.assign(window,{__finishHostedArchive:resolve}));archiveSaved={jobId:id,backupId:id,path:'/synthetic/ExhibitOS-backup-copy',files:4,bytes:400};}
-    return {publicationCopies:jobs.map(()=>({jobId:id,state:publicationCopied?'copied':'unavailable',files:publicationCopied?3:0,bytes:publicationCopied?100:0})),source:input.action==='context'||input.action==='create'?source:null,jobs,restoreChecks,keySaved:false,archiveSaved};
+    if(input.action==='export-archive'&&++copies>1&&copies!==4){if(copies===5)await new Promise<void>(resolve=>Object.assign(window,{__finishHostedArchive:resolve}));archiveSaved={jobId:id,backupId:id,path:'/synthetic/ExhibitOS-backup-copy',files:4,bytes:400};publicationSaved={jobId:id,state:copies===2?'unavailable':'copied',path:'/synthetic/ExhibitOS-publication',files:copies===2?0:3,bytes:copies===2?0:100};}
+    return {publicationSaved,publicationCopies:jobs.map(()=>({jobId:id,state:publicationCopied?'copied':'unavailable',files:publicationCopied?3:0,bytes:publicationCopied?100:0})),source:input.action==='context'||input.action==='create'?source:null,jobs,restoreChecks,keySaved:false,archiveSaved};
    }
    throw {code:'MANAGER_CONNECTION',guidance:'Synthetic native bridge only'};
   }}});
@@ -39,6 +39,10 @@ test('hosted backup invalidates prior-source confirmation and keeps archive copy
  const calls=await page.evaluate(()=>(window as unknown as {__hostedRecoveryCalls:{action:string;expectedSource?:unknown}[]}).__hostedRecoveryCalls);expect(calls.filter(c=>c.action==='create')).toEqual([{action:'create',sourceCidr:'192.0.2.4/32',confirmExternalWritersStopped:true,expectedSource:{workspaceId:'tea-b',serviceId:'srv-b',postgresId:'dpg-b'}}]);
  expect(calls.filter(c=>c.action==='check-restore')).toEqual([{action:'check-restore',jobId:'00000000-0000-4000-8000-000000000001'}]);
  expect(calls.filter(c=>c.action==='export-archive')).toHaveLength(2);
+ await expect(panel).toContainText('암호화 백업 사본은 보관했지만 전시 파일 별도 전달은 완료하지 못했어요.');await expect(copy).toBeEnabled();
+ await copy.click();await expect(panel).toContainText('전시 파일도 별도 폴더에 보관했어요. 위치: /synthetic/ExhibitOS-publication');await expect(panel).toContainText('이 폴더 안의 ‘publication’');await expect(panel).toContainText('DB 복원이나 전체 서비스 복원은 아닙니다.');
+ await panel.getByRole('button',{name:'백업 기록 다시 확인',exact:true}).click();await expect(panel).toContainText('전시 파일도 별도 폴더에 보관했어요. 위치: /synthetic/ExhibitOS-publication');
+ await copy.click();await expect(panel.getByRole('status',{name:'별도 전시 파일 전달 결과',exact:true})).toHaveCount(0);await expect(panel).not.toContainText('백업 사본을 보관했어요. 위치:');await expect(copy).toBeEnabled();
  // A delayed chooser result belongs to its original space. Changing spaces
  // must discard that result but still release the completed request's busy UI.
  await copy.click();await expect(prepare).toBeDisabled();
