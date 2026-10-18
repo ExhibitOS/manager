@@ -600,5 +600,59 @@
     "goal": "active",
     "taskCountsChanged": false,
     "userAwayUntil": "복귀"
+  },
+  "isolatedRestoreNativeArtifact20261018": {
+    "observedAt": "2026-10-18T06:46:22.003796+00:00",
+    "status": "PACKAGED_ADHOC_RESOURCE_SHA_PASS_NOT_LAUNCHED_OR_NOTARIZED",
+    "source": "17f51668e44fa5d1833d4c37b021ca4f122537d2",
+    "platformSource": "2cbdf719149f77fb897afa46917dfd8b26b924e3",
+    "session": 59116,
+    "exit": 0,
+    "receipt": {
+      "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-native-17f5166-0932d7c7-cc08-45d6-a211-8eda8f4b9eaa/receipt.json",
+      "sha256": "2fdefabb683cb8c091b3ec3e993514f27a7a997605519845fd26274a36246f22"
+    },
+    "app": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-native-17f5166-0932d7c7-cc08-45d6-a211-8eda8f4b9eaa/development-adhoc/ExhibitOS Manager.app",
+    "files": 7807,
+    "bytes": 503636376,
+    "inventory": {
+      "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-native-17f5166-0932d7c7-cc08-45d6-a211-8eda8f4b9eaa/app-inventory.json",
+      "sha256": "ddd05f30768023c7238e0648d6790c30b378b891e9038118b3ae4248336e5490"
+    },
+    "steps": [
+      {
+        "name": "prepare-platform",
+        "exit": 0,
+        "seconds": 2.4685619169613346
+      },
+      {
+        "name": "prepare-remote",
+        "exit": 0,
+        "seconds": 4.231302708038129
+      },
+      {
+        "name": "tauri-build",
+        "exit": 0,
+        "seconds": 160.8794242499862
+      },
+      {
+        "name": "adhoc-sign",
+        "exit": 0,
+        "seconds": 7.52782754204236
+      },
+      {
+        "name": "strict-verify",
+        "exit": 0,
+        "seconds": 4.060042082914151
+      }
+    ],
+    "resourceHashesVerified": true,
+    "packagedRestoreRunner": true,
+    "previousAppRuntimeAndExecutablesRetained": true,
+    "actualOSKeychainChooserOrInstallation": false,
+    "appLaunched": false,
+    "developerIdOrNotarization": false,
+    "supportedEnvironmentObserved": "macOS27.0.1 arm64 build only; declared minimum is not execution qualification",
+    "next": "User return: exact app native chooser/Keychain/restore-cancel/relaunch; no prompt while away."
   }
 }
