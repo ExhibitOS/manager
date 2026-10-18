@@ -29,6 +29,7 @@ test('hosted backup invalidates prior-source confirmation and keeps archive copy
  const prepare=panel.getByRole('button',{name:'배포한 서버의 백업 준비'});await prepare.click();await panel.getByText('네트워크 접근 설정',{exact:true}).click();
  const cidr=panel.getByLabel('허용한 현재 Mac의 IP 범위'),consent=panel.getByLabel('Render에서 이 API를 일시 중지했고, 다른 앱의 DB 쓰기도 멈췄습니다.'),create=panel.getByRole('button',{name:'이 Mac에 암호화 백업 만들기'});
  await cidr.fill('192.0.2.3/32');await consent.check();await expect(create).toBeEnabled();
+ await panel.getByRole('button',{name:'백업 기록 다시 확인',exact:true}).click();await expect(cidr).toBeVisible();await expect(cidr).toHaveValue('192.0.2.3/32');await expect(consent).toBeChecked();await expect(create).toBeEnabled();
  await page.evaluate(()=>(window as unknown as {__changeHostedSource:()=>void}).__changeHostedSource());await prepare.click();await expect(consent).not.toBeChecked();await expect(cidr).toHaveValue('');await expect(create).toBeDisabled();
  await cidr.fill('192.0.2.4/32');await consent.check();await create.click();await expect(panel.getByRole('heading',{name:'암호화 사본 생성·검증 완료'})).toBeVisible();
  await expect(panel).toContainText('이 Mac의 전시 파일 별도 사본 보관 기록이 있어요.');await expect(panel).toContainText('암호화 백업 사본에는 포함되지 않으며 전체 서비스 복원을 뜻하지 않습니다.');
