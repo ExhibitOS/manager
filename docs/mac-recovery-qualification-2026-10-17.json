@@ -574,5 +574,43 @@
       "findingResolved": "Processing chooser errors reuse Processing guidance (choose again / Studio independent), keeping backup picker guidance unchanged.",
       "validationBoundary": "Final error-guidance mapping is syntax/formatted only after native5 qualification; full native rebuild not repeated."
     }
+  },
+  "matchedAuthorityNativePackage20261018": {
+    "observedAt": "2026-10-18T04:14:05.629879+00:00",
+    "status": "PACKAGED_ADHOC_RESOURCE_SHA_PASS_NOT_LAUNCHED_OR_NOTARIZED",
+    "managerSource": "5cdf4b19b5ae896e808ddcebec4daf99594f247e",
+    "platformSource": "2e7cefde59550f098210700dcb6ea09b94379a0f",
+    "receipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-authority-native-5cdf4b1-e6c4e9ab-8a76-442a-9106-c4f7343b6cb7/receipt.json",
+    "receiptSha256": "7cb672125c2791f19d6fb0dc079a5b443986f29c2a6dabfff3b98ab5f2ef989e",
+    "app": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-authority-native-5cdf4b1-e6c4e9ab-8a76-442a-9106-c4f7343b6cb7/development-adhoc/ExhibitOS Manager.app",
+    "buildSession": 74945,
+    "exit": 0,
+    "buildSeconds": 158.53880295797717,
+    "appBytes": 503458436,
+    "files": 7806,
+    "postPackageVerification": {
+      "remoteNodeSHA": "e4b5a3af0e05c75de2eae013904145f40fe7fc2a6e6f17510128bf45cca4e79b",
+      "nodeVersion": "v24.21.0",
+      "embeddedManifestExact": true,
+      "publicationFilesVerified": 7676,
+      "publicationPlatformSource": "99ae38d44106a276f2675f4118a7ea4d498d4e9a",
+      "bundleIdentifier": "org.exhibitos.manager",
+      "declaredMinSystem": "12.0",
+      "actualHostQualification": "Build host macOS27.0.1 arm64 only; declared minimum is not an actual compatibility claim",
+      "actualNativeGUI": false,
+      "keychainAccessed": false
+    },
+    "previousRuntimeSource": "f0cd0f6f272b802bfe88dd48c7b8e9f153c7a012",
+    "previousAppRuntimeExecutablesRetained": true,
+    "existingExternalManagerObservation": {
+      "pid": 21669,
+      "scope": "Read-only process observation before build; old app outside target dir left untouched. This is not a current-job or future process-liveness claim."
+    },
+    "notVerified": [
+      "Actual native OS Keychain/chooser and hosted backup interaction/cancellation/relaunch",
+      "Original settings/signing key restore-load and deployment/runtime/Pages provenance",
+      "Actual installer, Developer ID, notarization and user environment without dev tools",
+      "Full restore/migration/update/rollback and7GUI acceptance"
+    ]
   }
 }
