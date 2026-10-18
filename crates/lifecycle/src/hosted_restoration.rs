@@ -626,10 +626,19 @@ fn restore_caps_match(value: &Value) -> bool {
         return false;
     };
     let expected = ["CHOWN", "SETUID", "SETGID", "DAC_READ_SEARCH", "KILL"];
+    // Docker inspect may canonicalize the same capability to CAP_<name>.
+    // Strip exactly one canonical prefix; never broaden names or ignore extras.
     caps.len() == expected.len()
-        && expected
-            .iter()
-            .all(|cap| caps.iter().filter(|v| v.as_str() == Some(*cap)).count() == 1)
+        && expected.iter().all(|cap| {
+            caps.iter()
+                .filter(|v| {
+                    v.as_str()
+                        .map(|name| name.strip_prefix("CAP_").unwrap_or(name))
+                        == Some(*cap)
+                })
+                .count()
+                == 1
+        })
 }
 fn validate_helper(
     job: &CheckJob,
@@ -883,6 +892,67 @@ mod tests {
             serde_json::json!({"Type":"bind","Source":"/foreign","Destination":"/other","RW":true}),
         );
         assert!(validate_helper(&job, &changed, path, &cid, false).is_err());
+    }
+    #[test]
+    fn restore_caps_normalize_only_single_docker_prefix_and_reject_nonexact_sets() {
+        let actual = serde_json::json!([
+            "CAP_CHOWN",
+            "CAP_DAC_READ_SEARCH",
+            "CAP_KILL",
+            "CAP_SETGID",
+            "CAP_SETUID"
+        ]);
+        assert!(restore_caps_match(&actual));
+        let job = job();
+        let cid = "d".repeat(64);
+        let path = Path::new("/Volumes/ExhibitSSD/synthetic/archive");
+        let mut observed = helper(&job, path.to_str().unwrap(), &cid);
+        observed["HostConfig"]["CapAdd"] = actual;
+        assert!(validate_helper(&job, &observed, path, &cid, false).is_ok());
+        for invalid in [
+            serde_json::json!(null),
+            serde_json::json!("CAP_CHOWN"),
+            serde_json::json!(["CAP_CHOWN", "CHOWN", "CAP_KILL", "CAP_SETGID", "CAP_SETUID"]),
+            serde_json::json!(["CAP_CHOWN", "CAP_DAC_READ_SEARCH", "CAP_KILL", "CAP_SETGID"]),
+            serde_json::json!([
+                "CAP_CHOWN",
+                "CAP_DAC_READ_SEARCH",
+                "CAP_KILL",
+                "CAP_SETGID",
+                "CAP_SETUID",
+                "CAP_SYS_ADMIN"
+            ]),
+            serde_json::json!([
+                "CAP_CHOWN",
+                "CAP_DAC_OVERRIDE",
+                "CAP_KILL",
+                "CAP_SETGID",
+                "CAP_SETUID"
+            ]),
+            serde_json::json!([
+                "CAP_CAP_CHOWN",
+                "CAP_DAC_READ_SEARCH",
+                "CAP_KILL",
+                "CAP_SETGID",
+                "CAP_SETUID"
+            ]),
+            serde_json::json!([
+                "cap_CHOWN",
+                "CAP_DAC_READ_SEARCH",
+                "CAP_KILL",
+                "CAP_SETGID",
+                "CAP_SETUID"
+            ]),
+            serde_json::json!([
+                "CAP_CHOWN",
+                "CAP_DAC_READ_SEARCH",
+                "CAP_KILL",
+                "CAP_SETGID",
+                1
+            ]),
+        ] {
+            assert!(!restore_caps_match(&invalid), "{invalid}");
+        }
     }
     #[test]
     fn desktop_mapping_needs_exact_source_and_observed_engine() {
