@@ -493,8 +493,12 @@ mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
     fn fixture() -> (PathBuf, PathBuf) {
+        // SystemTime resolution alone can collide across parallel tests.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
-            "processing-app-test-{}",
+            "processing-app-test-{}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

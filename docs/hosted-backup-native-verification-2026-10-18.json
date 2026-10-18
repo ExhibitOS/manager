@@ -246,5 +246,58 @@
       "Actual installer, Developer ID, notarization and user environment without dev tools",
       "Full restore/migration/update/rollback and7GUI acceptance"
     ]
+  },
+  "sourceIntegration20261018": {
+    "observedAt": "2026-10-18T04:37:25.062257+00:00",
+    "sourceBeforeTestFixtureCorrections": "e4f8dda0fed75249f192b5a158cea9e4ebe91bb8",
+    "status": "LOCAL_CHECKS_PASS_AFTER_TEST_FIXTURE_CORRECTIONS_NOT_NATIVE_GUI_OR_RECOVERY_COMPLETION",
+    "node": {
+      "typecheckLintBuild": true,
+      "vitest": 69,
+      "receipt": 9,
+      "installer": 6
+    },
+    "rust": {
+      "lifecyclePassed": 439,
+      "lifecycleExistingIgnored": 36,
+      "integrationPassed": 20,
+      "desktopPassed": 41,
+      "compileFailDoctestsPassed": 4,
+      "singleWorkspaceCommandPassed": false,
+      "sequence": "Initial workspace command failed in two restoration fixtures; corrected workspace run passed lifecycle/integration but exposed a parallel temporary-directory collision; final desktop library and all workspace doctests passed after test-only directory uniqueness correction."
+    },
+    "corrections": [
+      "Restoration success fixtures now declare their actual two preserved runtime images; original one-image fixture is explicitly rejected. Production image-count guard unchanged.",
+      "Processing app test fixtures use PID and atomic sequence with timestamp to prevent parallel directory collisions; production code and assertions unchanged."
+    ],
+    "review": "Independent read-only review of incremental source and all three test-only corrections found no concrete blocker.",
+    "logs": [
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-integration-6bee447b-792c-49df-a7bc-a7f2c37a3770/exhibitos-manager-recovery-integration-node-20261018.log",
+        "sha256": "580a2608340fc426b2c1776cf1ef9053e0453cb7cbed45e08bc785cc0053802a"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-integration-6bee447b-792c-49df-a7bc-a7f2c37a3770/exhibitos-manager-recovery-integration-rust-20261018.log",
+        "sha256": "ef7e2a6581e8475469a5e8c88cfff50b7da2fc6dc641cffb673adb58ed8bf1ae"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-integration-6bee447b-792c-49df-a7bc-a7f2c37a3770/exhibitos-manager-recovery-integration-rust-corrected-20261018.log",
+        "sha256": "81488afbacf12c68ac625d9f02202acd7150f34f7312f45ae31a1adc65b6de38"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-integration-6bee447b-792c-49df-a7bc-a7f2c37a3770/exhibitos-manager-recovery-integration-desktop-final-20261018.log",
+        "sha256": "d3eda409204bfac041de49df5d2bea054326bdcfa36be1f8a462bc655cd2f7aa"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-integration-6bee447b-792c-49df-a7bc-a7f2c37a3770/exhibitos-manager-recovery-integration-doc-final-20261018.log",
+        "sha256": "c3d6ad7383ee498fd65298ebde40a10cbc2b3376fa9f2be8adc4ce9f36e28d0c"
+      }
+    ],
+    "notVerified": [
+      "Native GUI and Keychain",
+      "Actual Render account deployment/recovery",
+      "Developer ID/notarization/clean user installation",
+      "Whole backup/restore/migration/update/rollback acceptance"
+    ]
   }
 }

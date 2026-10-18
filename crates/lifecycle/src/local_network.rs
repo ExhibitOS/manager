@@ -329,7 +329,15 @@ mod remap_tests {
                 sha256: "c".repeat(64),
             })
             .collect();
+        // Detection deliberately has a one-image fixture; restoration needs
+        // the actual two runtime image identities, before optional maintenance.
         let new_id = "70000000-0000-4000-8000-000000000010";
+        assert!(crate::restoration::remapped_bundle(
+            &original, &images, new_id, 13201, &ids[0], &ids[1], Some("10.240.0.16/28")
+        ).is_err());
+        original.images = ids.iter().map(|reference| crate::Image {
+            reference: reference.clone(), archive: None,
+        }).collect();
         let (legacy, _) = crate::restoration::remapped_bundle(
             &original,
             &images,

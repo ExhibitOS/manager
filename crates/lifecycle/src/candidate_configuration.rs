@@ -334,8 +334,7 @@ mod tests {
     }
     #[test]
     fn shared_remapping_preserves_original_fields_and_refuses_ambiguous_images() {
-        let original = crate::tests::manifest_for_detection();
-        let before = serde_json::to_vec(&original).unwrap();
+        let mut original = crate::tests::manifest_for_detection();
         let images = vec![
             crate::restoration::PreservedImage {
                 reference: "original-db".into(),
@@ -353,6 +352,13 @@ mod tests {
             },
         ];
         let id = uuid::Uuid::new_v4().to_string();
+        assert!(crate::restoration::remapped_bundle(
+            &original, &images, &id, 13201, &images[0].content_id, &images[1].content_id, None
+        ).is_err());
+        original.images = images.iter().map(|image| crate::Image {
+            reference: image.content_id.clone(), archive: None,
+        }).collect();
+        let before = serde_json::to_vec(&original).unwrap();
         let (m, compose) = crate::restoration::remapped_bundle(
             &original,
             &images,
