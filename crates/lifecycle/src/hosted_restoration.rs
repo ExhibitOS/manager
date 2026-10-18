@@ -416,8 +416,7 @@ impl LifecycleService {
                 ],
                 None,
                 4200,
-                (None, None),
-                Some((Box::new(SecretInput(std::io::Cursor::new(input))), 131072)),
+                ObservedInputs { files: (None, None), streamed: Some((Box::new(SecretInput(std::io::Cursor::new(input))), 131072)) },
                 true,
                 || {
                     if Instant::now() >= next {
@@ -533,7 +532,7 @@ impl LifecycleService {
             }
             jobs.push(self.hosted_restore_check(id)?);
         }
-        jobs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        jobs.sort_by_key(|a| std::cmp::Reverse(a.created_at));
         Ok(jobs)
     }
     pub(crate) fn save_hosted_restore_check(&self, job: &CheckJob) -> Result<()> {

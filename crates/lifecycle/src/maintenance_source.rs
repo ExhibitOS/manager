@@ -79,7 +79,8 @@ impl LifecycleService{
  /// Historical metadata only; explicit restore admission must recheck source and crypto.
  pub fn verification_sources(&self)->Result<Vec<VerificationSummary>>{
   let mut out=Vec::new();for entry in fs::read_dir(&self.root).map_err(|_|invalid())?{let name=entry.map_err(|_|invalid())?.file_name();let Some(id)=name.to_str().and_then(|s|s.strip_prefix("backup-verification-")).filter(|id|uuid(id))else{continue};
-   let workspace=self.root.join(format!("backup-verification-{id}"));if !workspace.join("receipt.json").exists()||!workspace.join("source.json").exists(){continue;}if out.len()>=1000{return Err(err("JOB_HISTORY_FULL"));}
+   let workspace=self.root.join(format!("backup-verification-{id}"));if !workspace.join("receipt.json").exists()||!workspace.join("source.json").exists(){continue;}
+   if out.len()>=1000{return Err(err("JOB_HISTORY_FULL"));}
    let receipt:VerificationReceipt=serde_json::from_slice(&super::installation_backup::source_bytes(&workspace,"receipt.json",4096,true)?).map_err(|_|invalid())?;
    let record:VerificationSource=serde_json::from_slice(&super::installation_backup::source_bytes(&workspace,"source.json",LIMIT,true)?).map_err(|_|invalid())?;
    if receipt.id!=id||record.verification_id!=id||!uuid(&record.backup_id)||receipt.operation!="verified"||receipt.files==0||receipt.files>MAX_FILES as u64||record.files!=receipt.files||record.image!=receipt.image||!receipt.image.strip_prefix("sha256:").is_some_and(hash_valid)||!hash_valid(&receipt.authenticated_manifest_sha256)||record.authenticated_manifest_sha256!=receipt.authenticated_manifest_sha256||record.pins.len()>MAX_FILES+3{return Err(invalid());}out.push(VerificationSummary{verification_id:record.verification_id,backup_id:record.backup_id,image:record.image,files:record.files,at:receipt.at});

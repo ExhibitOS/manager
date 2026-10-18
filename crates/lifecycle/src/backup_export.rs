@@ -204,14 +204,25 @@ pub(crate) mod native {
         let manifest: BundleManifest = read_json(&root.join("bundle/manifest.json"))?;
         copy_archive(root, profile, parent,
             &root.join(format!("backup-creation-{}/archive", receipt.id)),
-            &receipt.id, &receipt.backup_id, receipt.files, 10000,
-            manifest.minimum_free_bytes, 8 * 1024 * 1024 * 1024, before_open)
+            ArchiveCopy { job_id: &receipt.id, backup_id: &receipt.backup_id,
+                file_count: receipt.files, file_limit: 10000,
+                minimum_free_bytes: manifest.minimum_free_bytes,
+                maximum_file_bytes: 8 * 1024 * 1024 * 1024 }, before_open)
+    }
+    pub(super) struct ArchiveCopy<'a> {
+        pub(super) job_id: &'a str,
+        pub(super) backup_id: &'a str,
+        pub(super) file_count: u64,
+        pub(super) file_limit: u64,
+        pub(super) minimum_free_bytes: u64,
+        pub(super) maximum_file_bytes: u64,
     }
     pub(super) fn copy_archive(
         root: &Path, profile: &Path, parent: &Path, source_path: &Path,
-        job_id: &str, backup_id: &str, file_count: u64, file_limit: u64,
-        minimum_free_bytes: u64, maximum_file_bytes: u64, before_open: impl FnOnce(),
+        archive: ArchiveCopy<'_>, before_open: impl FnOnce(),
     ) -> Result<ExportReceipt> {
+        let ArchiveCopy { job_id, backup_id, file_count, file_limit,
+            minimum_free_bytes, maximum_file_bytes } = archive;
         allowed(parent, profile, root)?;
         before_open();
         let output = OpenOptions::new()
@@ -224,9 +235,9 @@ pub(crate) mod native {
         let source = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&source_path)
+            .open(source_path)
             .map_err(|_| failure("BACKUP_EXPORT_SOURCE_CHANGED"))?;
-        check(&source, &source_path)?;
+        check(&source, source_path)?;
         let encrypted = openat(&source, "files", true, false)?;
         check(&encrypted, &source_path.join("files"))?;
         if source
@@ -245,7 +256,7 @@ pub(crate) mod native {
             return Err(failure("BACKUP_EXPORT_SOURCE_CHANGED"));
         }
         let mut names = Vec::new();
-        for e in fs::read_dir(&source_path).map_err(|_| failure("BACKUP_EXPORT_SOURCE_CHANGED"))? {
+        for e in fs::read_dir(source_path).map_err(|_| failure("BACKUP_EXPORT_SOURCE_CHANGED"))? {
             let n = e
                 .map_err(|_| failure("BACKUP_EXPORT_SOURCE_CHANGED"))?
                 .file_name()
@@ -309,7 +320,7 @@ pub(crate) mod native {
         for (in_files, name) in &names {
             check(&output, parent)?;
             allowed(parent, profile, root)?;
-            check(&source, &source_path)?;
+            check(&source, source_path)?;
             check(&encrypted, &source_path.join("files"))?;
             let mut input = openat(
                 if *in_files { &encrypted } else { &source },
@@ -369,7 +380,7 @@ pub(crate) mod native {
         }
         // Recheck every source byte after the whole copy, including files copied first.
         let mut current = Vec::new();
-        for e in fs::read_dir(&source_path).map_err(|_| failure("BACKUP_EXPORT_SOURCE_CHANGED"))? {
+        for e in fs::read_dir(source_path).map_err(|_| failure("BACKUP_EXPORT_SOURCE_CHANGED"))? {
             let name = e
                 .map_err(|_| failure("BACKUP_EXPORT_SOURCE_CHANGED"))?
                 .file_name()
@@ -416,7 +427,7 @@ pub(crate) mod native {
         allowed(parent, profile, root)?;
         check(&folder, &parent.join(&stage))?;
         check(&files, &parent.join(&stage).join("files"))?;
-        check(&source, &source_path)?;
+        check(&source, source_path)?;
         let a = c(std::ffi::OsStr::new(&stage))?;
         let b = c(std::ffi::OsStr::new(&name))?;
         if unsafe {
@@ -478,7 +489,10 @@ impl LifecycleService {
         #[cfg(target_os = "macos")]
         return native::copy_archive(&self.root, profile, parent,
             &self.root.join(format!("hosted-backup-{id}/output/archive")),
-            id, &receipt.backup_id, receipt.files, 100000, 6 * 1024 * 1024 * 1024, 32 * 1024 * 1024 * 1024 + 36, || {});
+            native::ArchiveCopy { job_id: id, backup_id: &receipt.backup_id,
+                file_count: receipt.files, file_limit: 100000,
+                minimum_free_bytes: 6 * 1024 * 1024 * 1024,
+                maximum_file_bytes: 32 * 1024 * 1024 * 1024 + 36 }, || {});
         #[cfg(not(target_os = "macos"))]
         { let _ = (profile, parent, receipt); Err(failure("BACKUP_EXPORT_PLATFORM_UNAVAILABLE")) }
     }
@@ -619,11 +633,15 @@ mod tests {
         fs::create_dir_all(source.parent().unwrap()).unwrap();
         fs::rename(root.join(format!("backup-creation-{}/archive", r.id)), &source).unwrap();
         fs::rename(root.join("bundle"), base.join("unused-local-bundle")).unwrap();
-        assert!(native::copy_archive(&root, &root, &parent, &source, &r.id,
-            &r.backup_id, 2, 100000, 0, 32 * 1024 * 1024 * 1024 + 36, || {}).is_err());
+        assert!(native::copy_archive(&root, &root, &parent, &source,
+            native::ArchiveCopy { job_id: &r.id, backup_id: &r.backup_id,
+                file_count: 2, file_limit: 100000, minimum_free_bytes: 0,
+                maximum_file_bytes: 32 * 1024 * 1024 * 1024 + 36 }, || {}).is_err());
         assert_eq!(fs::read_dir(&parent).unwrap().count(), 0);
-        let saved = native::copy_archive(&root, &root, &parent, &source, &r.id,
-            &r.backup_id, 1, 100000, 0, 32 * 1024 * 1024 * 1024 + 36, || {}).unwrap();
+        let saved = native::copy_archive(&root, &root, &parent, &source,
+            native::ArchiveCopy { job_id: &r.id, backup_id: &r.backup_id,
+                file_count: 1, file_limit: 100000, minimum_free_bytes: 0,
+                maximum_file_bytes: 32 * 1024 * 1024 * 1024 + 36 }, || {}).unwrap();
         assert_eq!(saved.job_id,r.id);
         assert_eq!(saved.files,4);
         for name in ["complete.json", "writing.json", "manifest.gcm", "files/00000000.gcm"] {

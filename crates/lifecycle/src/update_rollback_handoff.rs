@@ -154,6 +154,14 @@ fn allowed(context: &RollbackContext, input: &RollbackInput) -> bool {
             RollbackAction::CompleteRestored => context.can_complete_restored,
         }
 }
+/// Existing input and authority admission, shared with native tool preparation.
+pub(crate) fn admit(profile: &Path, installation: &str, scope: &str, input: &RollbackInput) -> Result<RollbackContext> {
+    validate(input)?;
+    let context = crate::signed_release::trust::inspect_rollback_context(profile, scope, installation)?
+        .ok_or_else(|| err("UPDATE_HANDOFF_AUTHORITY_CHANGED"))?;
+    if !allowed(&context, input) { return Err(err("UPDATE_HANDOFF_AUTHORITY_CHANGED")); }
+    Ok(context)
+}
 pub(crate) fn prepare(
     profile: &Path,
     installation: &str,
@@ -161,13 +169,7 @@ pub(crate) fn prepare(
     registry: &[u8],
     input: RollbackInput,
 ) -> Result<Receipt> {
-    validate(&input)?;
-    let context =
-        crate::signed_release::trust::inspect_rollback_context(profile, scope, installation)?
-            .ok_or_else(|| err("UPDATE_HANDOFF_AUTHORITY_CHANGED"))?;
-    if !allowed(&context, &input) {
-        return Err(err("UPDATE_HANDOFF_AUTHORITY_CHANGED"));
-    }
+    let context = admit(profile, installation, scope, &input)?;
     let root = directory(profile);
     match fs::symlink_metadata(&root) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => installations::new_directory(&root)?,

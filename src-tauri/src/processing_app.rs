@@ -245,12 +245,10 @@ mod native {
                 continue;
             }
             let path = owned(unsafe { CFURLCopyFileSystemPath(url, 0) })?;
-            if let Ok(path) = text(path.0) {
-                if let Ok(app) = inspect(Path::new(&path)) {
-                    if app.bundle_id == BUNDLE {
-                        applications.insert(app.path.clone(), app);
-                    }
-                }
+            if let Ok(path) = text(path.0)
+                && let Ok(app) = inspect(Path::new(&path))
+                && app.bundle_id == BUNDLE {
+                applications.insert(app.path.clone(), app);
             }
         }
         Ok(applications.into_values().collect())

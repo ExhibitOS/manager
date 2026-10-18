@@ -102,7 +102,8 @@ fn run_publication_copy(resources:&Path,folder:&Path,publication:&super::hosted:
     std::thread::spawn(move||{let _=tx.send(super::remote::reader(out,65536));});std::thread::spawn(move||{let _=etx.send(super::remote::reader(err,4096));});
     let start=Instant::now();let(mut stdout,mut stderr,mut status)=(None,None,None);
     loop{
-        if stdout.is_none(){stdout=rx.try_recv().ok();}if stderr.is_none(){stderr=erx.try_recv().ok();}
+        if stdout.is_none(){stdout=rx.try_recv().ok();}
+        if stderr.is_none(){stderr=erx.try_recv().ok();}
         if status.is_none(){match child.try_wait(){Ok(value)=>status=value,Err(_)=>{super::remote::stop(&mut child);return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}}}
         if stdout.as_ref().is_some_and(Result::is_err)||stderr.as_ref().is_some_and(Result::is_err)||start.elapsed()>Duration::from_secs(600){super::remote::stop(&mut child);return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}
         if stdout.is_some()&&stderr.is_some()&&status.is_some(){break;}std::thread::sleep(Duration::from_millis(25));
@@ -306,11 +307,10 @@ pub fn operation(
      // This UUID and source belong to the already journalled native job.
      // Neither item is overwritten or deleted if the other step fails.
      preserve_original_configuration(&execution.job_id,&source,&expected_configuration,super::hosted_keychain::add_backup_only)?;
-     if let Some(publication)=publication.as_ref(){
-         if let Ok(folder)=service.hosted_publication_workspace(&execution.job_id){
-             if Some(folder.as_path())==Path::new(&execution.output_path).parent() && preserve_publication_bytes(&folder,"publication-work.json",&publication.snapshot).is_ok(){copy_plan=Some((folder.to_path_buf(),execution.job_budget_bytes));}
-         }
-     }
+     if let Some(publication)=publication.as_ref()
+         && let Ok(folder)=service.hosted_publication_workspace(&execution.job_id)
+         && Some(folder.as_path())==Path::new(&execution.output_path).parent()
+         && preserve_publication_bytes(&folder,"publication-work.json",&publication.snapshot).is_ok(){copy_plan=Some((folder.to_path_buf(),execution.job_budget_bytes));}
      let mut token=super::hosted_keychain::load("render").map_err(|_|failure("HOSTED_TOKEN_REQUIRED"))?;
      let mut key=[0u8;32];
      let result=(||{
@@ -325,12 +325,12 @@ pub fn operation(
      key.fill(0);token.fill(0);result
     },||{for pin in &pins{pin.check()?;}Ok(())}).map_err(fail)?;
                 // Optional custody cannot change a completed DB backup to failure.
-                if job.state=="completed"{if let (Some(publication),Some((folder,budget)))=(publication.as_ref(),copy_plan){
-                    if let (Ok(current_folder),Ok(remaining_budget))=(service.hosted_publication_workspace(&job.id),service.hosted_publication_budget(&job.id)){
-                        if current_folder==folder && private_bytes(&folder.join("publication-work.json")).ok().as_ref()==Some(&publication.snapshot){let _=copy_publication(resources,&folder,publication,budget.min(remaining_budget));}
-                    }
-                }}
-                return Ok(Context {
+                if job.state=="completed"
+                    && let (Some(publication),Some((folder,budget)))=(publication.as_ref(),copy_plan)
+                    && let (Ok(current_folder),Ok(remaining_budget))=(service.hosted_publication_workspace(&job.id),service.hosted_publication_budget(&job.id))
+                    && current_folder==folder
+                    && private_bytes(&folder.join("publication-work.json")).ok().as_ref()==Some(&publication.snapshot){let _=copy_publication(resources,&folder,publication,budget.min(remaining_budget));}
+                Ok(Context {
                     source: Some(source),
                     jobs: service.hosted_backup_jobs().map_err(fail)?,
                     restore_checks: service.hosted_restore_checks().map_err(fail)?,
@@ -338,7 +338,7 @@ pub fn operation(
             archive_saved: None,
             publication_saved: None,
             publication_copies: publication_copies(service),
-                });
+                })
             }
             #[cfg(not(target_os = "macos"))]
             {
@@ -394,9 +394,8 @@ pub fn export_archive(resources:&Path,controller: &exhibitos_lifecycle::installa
             let job=service.completed_hosted_backup(id)?;
             if !super::hosted::recovery_snapshot_matches(&saved.snapshot,&job.source){return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}
             target.check()?;
-            if !target.created{
-                if private_bytes(&target.path.join("publication-work.json"))?!=saved.snapshot||private_bytes(&target.path.join("publication-custody.json"))?!=receipt_bytes{return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}
-            }
+            if !target.created
+                && (private_bytes(&target.path.join("publication-work.json"))?!=saved.snapshot||private_bytes(&target.path.join("publication-custody.json"))?!=receipt_bytes){return Err(failure("HOSTED_PUBLICATION_UNAVAILABLE"));}
             let budget=job.job_budget_bytes.unwrap_or(0).min(target.available_budget()?);
             let actual=run_publication_copy(resources,&target.path,&saved,budget)?;
             target.check()?;

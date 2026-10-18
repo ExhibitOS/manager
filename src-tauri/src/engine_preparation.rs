@@ -40,14 +40,13 @@ pub fn helper(root: &Path) -> Result<(), LifecycleError> {
     }
     engine::run(root)?;
     engine::ensure_automatic_continuation(root)?;
-    if !Path::new("/Applications/Docker.app").exists() {
-        if let Err(e) = engine::install_desktop(root) {
-            if e.code == "ENGINE_PREP_OS_PERMISSION" {
-                let path = engine::installer(root)?;
-                open::that_detached(path).map_err(|_| failure("ENGINE_PREP_STATE"))?;
-            }
-            return Err(e);
+    if !Path::new("/Applications/Docker.app").exists()
+        && let Err(e) = engine::install_desktop(root) {
+        if e.code == "ENGINE_PREP_OS_PERMISSION" {
+            let path = engine::installer(root)?;
+            open::that_detached(path).map_err(|_| failure("ENGINE_PREP_STATE"))?;
         }
+        return Err(e);
     }
     engine::ensure_automatic_continuation(root)?;
     start(root).map(|_| ())

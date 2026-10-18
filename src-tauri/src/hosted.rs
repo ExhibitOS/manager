@@ -462,7 +462,7 @@ pub fn choose_source() -> Result<Option<SourceInfo>, LifecycleError> {
         *SOURCE
             .lock()
             .map_err(|_| refused("HOSTED_SOURCE_INVALID"))? = Some(pin);
-        return Ok(Some(info));
+        Ok(Some(info))
     }
     #[cfg(not(target_os = "macos"))]
     Err(refused("HOSTED_PLATFORM_UNSUPPORTED"))
@@ -561,9 +561,9 @@ pub fn resume_local() -> Result<Option<ResumeInfo>, LifecycleError> {
         false
     };
     for receipt in [&work.static_receipt, &work.api_receipt, &work.receipt] {
-        if let Some(url) = receipt.as_ref().and_then(|r| r["url"].as_str()) {
-            if let Ok(parsed) = url::Url::parse(url) {
-                if parsed.scheme() == "https"
+        if let Some(url) = receipt.as_ref().and_then(|r| r["url"].as_str())
+            && let Ok(parsed) = url::Url::parse(url)
+            && parsed.scheme() == "https"
                     && parsed.username().is_empty()
                     && parsed.password().is_none()
                     && parsed.query().is_none()
@@ -577,8 +577,6 @@ pub fn resume_local() -> Result<Option<ResumeInfo>, LifecycleError> {
                         .lock()
                         .map_err(|_| refused("HOSTED_URL_UNAVAILABLE"))?
                         .push(url.into());
-                }
-            }
         }
     }
     Ok(Some(ResumeInfo {
@@ -623,10 +621,9 @@ fn reconcile_work(
         if matches!(request.provider, Provider::Cloudflare) {
             request.api_origin = work.api_origin.clone();
         }
-        if let Err(error) = observe(request) {
-            if first_error.is_none() {
-                first_error = Some(error);
-            }
+        if let Err(error) = observe(request)
+            && first_error.is_none() {
+            first_error = Some(error);
         }
     }
     first_error.map_or(Ok(()), Err)
@@ -1109,8 +1106,8 @@ pub fn execute(
             allowed.push(text.into());
         }
     }
-    if writing || matches!(request.action, Action::Reconcile | Action::Status) {
-        if let Some(mut work) = load_work()? {
+    if (writing || matches!(request.action, Action::Reconcile | Action::Status))
+        && let Some(mut work) = load_work()? {
             let target = if matches!(request.provider, Provider::Cloudflare) {
                 work.static_request.as_ref()
             } else {
@@ -1137,7 +1134,6 @@ pub fn execute(
                 }
                 save_work(&work)?;
             }
-        }
     }
     Ok(response)
 }

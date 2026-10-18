@@ -127,12 +127,10 @@ pub(crate) fn runner_error(bytes: &[u8]) -> LifecycleError {
         "HOSTED_BACKUP_RESULT_INVALID",
         "HOSTED_RESTORE_CHECK_FAILED",
     ];
-    if bytes.len() <= 1024 {
-        if let Ok(value) = serde_json::from_slice::<Failure>(bytes) {
-            if allowed.contains(&value.error_code.as_str()) {
-                return err(&value.error_code);
-            }
-        }
+    if bytes.len() <= 1024
+        && let Ok(value) = serde_json::from_slice::<Failure>(bytes)
+        && allowed.contains(&value.error_code.as_str()) {
+        return err(&value.error_code);
     }
     err("HOSTED_RECOVERY_EXECUTION_FAILED")
 }
@@ -535,8 +533,7 @@ impl LifecycleService {
                 ],
                 None,
                 4200,
-                (None, None),
-                Some((Box::new(SecretInput(std::io::Cursor::new(input))), 131072)),
+                ObservedInputs { files: (None, None), streamed: Some((Box::new(SecretInput(std::io::Cursor::new(input))), 131072)) },
                 true,
                 || {
                     if Instant::now() >= next {
@@ -634,7 +631,7 @@ impl LifecycleService {
             }
             jobs.push(self.hosted_backup_job(id)?);
         }
-        jobs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        jobs.sort_by_key(|a| std::cmp::Reverse(a.created_at));
         Ok(jobs)
     }
     pub(crate) fn save_hosted_backup_job(&self, job: &Job) -> Result<()> {

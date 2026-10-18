@@ -4,7 +4,7 @@
 pub(crate) fn canonical_backup_uuid(id: &str) -> bool {
     let bytes=id.as_bytes();
     bytes.len()==36 && bytes.iter().enumerate().all(|(i,b)|if [8,13,18,23].contains(&i){*b==b'-'}else{b.is_ascii_digit()||(b'a'..=b'f').contains(b)})
-        && (b'1'..=b'8').contains(&bytes[14]) && [b'8',b'9',b'a',b'b'].contains(&bytes[19])
+        && (b'1'..=b'8').contains(&bytes[14]) && b"89ab".contains(&bytes[19])
 }
 fn backup_namespace(account: &str) -> bool {
     account.starts_with("render-backup-configuration-") || account.starts_with("render-backup-key-")

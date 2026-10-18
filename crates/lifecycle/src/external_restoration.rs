@@ -278,8 +278,7 @@ impl LifecycleService{
                 ],
                 None,
                 4200,
-                (None, None),
-                Some((Box::new(SecretInput(std::io::Cursor::new(input))), 131072)),
+                ObservedInputs { files: (None, None), streamed: Some((Box::new(SecretInput(std::io::Cursor::new(input))), 131072)) },
                 true,
                 || {
                     if Instant::now() >= next {

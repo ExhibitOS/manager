@@ -113,11 +113,11 @@ impl LifecycleService {
         {
             let account = publication_source::read(&self.root, String::new())
                 .map_err(|_| failure("INITIAL_ACCOUNT_UNAVAILABLE"))?;
-            return Ok(InitialAccountContext {
+            Ok(InitialAccountContext {
                 state: "existing".into(),
                 tenant_id: Some(account.tenant_id.clone()),
                 subject: Some(account.subject.clone()),
-            });
+            })
         }
         #[cfg(not(unix))]
         {

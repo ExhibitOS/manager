@@ -543,6 +543,13 @@ impl InstallationController {
         crate::signed_release::trust::inspect_rollback_context(&profile.root, &scope, &entry.id)
     }
     pub fn update_rollback_handoff(&self, token: &str, input: Option<crate::update_rollback_handoff::RollbackInput>) -> Result<(PathBuf, Option<crate::update_rollback_handoff::Receipt>)> {
+        self.update_rollback_handoff_inner(token, input, None)
+    }
+    /// Native resources only: admit original intent before importing the fixed bundled helper.
+    pub fn update_rollback_handoff_prepared(&self, token: &str, input: Option<crate::update_rollback_handoff::RollbackInput>, resources: &Path) -> Result<(PathBuf, Option<crate::update_rollback_handoff::Receipt>)> {
+        self.update_rollback_handoff_inner(token, input, Some(resources))
+    }
+    fn update_rollback_handoff_inner(&self, token: &str, input: Option<crate::update_rollback_handoff::RollbackInput>, resources: Option<&Path>) -> Result<(PathBuf, Option<crate::update_rollback_handoff::Receipt>)> {
         let current = self.current.try_read().map_err(|_| err("BUSY"))?;
         if !uuid(token) || current.token != token { return Err(err("INSTALLATION_SELECTION_CHANGED")); }
         let profile = self.profile.as_ref().ok_or_else(|| err("UPDATE_PROFILE_UNAVAILABLE"))?;
@@ -556,6 +563,13 @@ impl InstallationController {
         if registry.active_id != entry.id || root(&profile.root, entry) != current.path { return Err(err("INSTALLATION_SELECTION_CHANGED")); }
         let receipt = if let Some(input) = input {
             let scope = crate::signed_release::trust::resolve_selected_scope(&profile.root, &registry)?;
+            if let Some(resources) = resources {
+                crate::update_rollback_handoff::admit(&profile.root, &entry.id, &scope, &input)?;
+                let service = current.service.as_ref().ok_or_else(|| err("INSTALLATION_ROOT_UNAVAILABLE"))?;
+                #[cfg(not(windows))]
+                { profile.ensure_external_archive_reconciled()?; service.ensure_external_archive_reconciled()?; }
+                service.prepare_bundled_maintenance(resources, &input.maintenance_image)?;
+            }
             Some(crate::update_rollback_handoff::prepare(&profile.root, &entry.id, &scope, &bytes, input)?)
         } else { crate::update_rollback_handoff::latest(&profile.root, &entry.id)? };
         Ok((profile.root.clone(), receipt))
@@ -582,7 +596,7 @@ impl InstallationController {
     #[cfg(not(windows))]
     pub fn external_restore_context(&self,token:&str)->Result<super::external_restoration::ExternalRestoreContext>{self.with_current(token,|service|{
         let mut sources=service.verification_sources()?;let mut checks=service.external_restore_checks()?;
-        if let Some(profile)=&self.profile{if profile.root!=service.root{private_directory(&profile.root)?;sources.extend(profile.verification_sources()?);checks.extend(profile.external_restore_checks()?);}}
+        if let Some(profile)=&self.profile && profile.root!=service.root{private_directory(&profile.root)?;sources.extend(profile.verification_sources()?);checks.extend(profile.external_restore_checks()?);}
         let mut source_ids=std::collections::BTreeSet::new();let mut job_ids=std::collections::BTreeSet::new();
         if sources.len()>1000||checks.len()>1000||sources.iter().any(|r|!source_ids.insert(r.verification_id.clone()))||checks.iter().any(|r|!job_ids.insert(r.id.clone())){return Err(err("STATE_INVALID"));}
         sources.sort_by_key(|r|r.at);checks.sort_by_key(|r|r.created_at);Ok(super::external_restoration::ExternalRestoreContext{sources,checks})
@@ -594,7 +608,8 @@ impl InstallationController {
         let exists=|root:&Path|->Result<bool>{match fs::symlink_metadata(root.join(&relative)){Ok(_)=>Ok(true),Err(e)if e.kind()==std::io::ErrorKind::NotFound=>Ok(false),Err(_)=>Err(err("STATE_UNAVAILABLE"))}};
         let selected=exists(&service.root)?;let profile=self.profile.as_ref().filter(|p|p.root!=service.root);let saved=match profile{Some(p)=>{private_directory(&p.root)?;exists(&p.root)?},None=>false};
         if selected==saved{return Err(err("HOSTED_RECOVERY_SOURCE_REQUIRED"));}
-        if selected{let _profile=match profile{Some(profile)=>Some(profile.lock()?),None=>None};if !job{if let Some(profile)=profile{profile.ensure_external_archive_reconciled()?;}service.ensure_external_archive_reconciled()?;}if job{service.external_restore_check(id)?;}else{service.verification_source_metadata_unlocked(id)?;}return task(service);}
+        if selected{let _profile=match profile{Some(profile)=>Some(profile.lock()?),None=>None};if !job{if let Some(profile)=profile{profile.ensure_external_archive_reconciled()?;}service.ensure_external_archive_reconciled()?;}
+        if job{service.external_restore_check(id)?;}else{service.verification_source_metadata_unlocked(id)?;}return task(service);}
         let _selected=service.lock()?;let profile=profile.ok_or_else(||err("NOT_INSTALLED"))?;
         if !job{service.ensure_external_archive_reconciled()?;profile.ensure_external_archive_reconciled()?;}
         if job{profile.external_restore_check(id)?;}else{profile.verification_source_metadata_unlocked(id)?;}task(profile)
@@ -885,7 +900,18 @@ impl InstallationController {
             } else {
                 let current=source.maintenance_context()?;
                 #[cfg(not(windows))]
-                if let Some(profile)=&self.profile{if profile.root!=source.root{if let Some(external)=profile.maintenance_context()?.filter(|c|c.kind=="external-restoration"&&!["completed","confirmed"].contains(&c.state.as_str())){match profile.ensure_external_archive_reconciled(){Ok(())=>{},Err(e)if ["HOSTED_RECOVERY_HELPER_ACTIVE","CANCEL_RECOVERY_REQUIRED"].contains(&e.code.as_str())=>{if current.as_ref().is_some_and(|c|["running","requested","uncertain"].contains(&c.state.as_str())){return Err(err("STATE_INVALID"));}return Ok(Some(external));},Err(e)=>return Err(e)}}}}
+                if let Some(profile)=&self.profile
+                    && profile.root!=source.root
+                    && let Some(external)=profile.maintenance_context()?.filter(|c|c.kind=="external-restoration"&&!["completed","confirmed"].contains(&c.state.as_str())) {
+                    match profile.ensure_external_archive_reconciled(){
+                        Ok(())=>{},
+                        Err(e)if ["HOSTED_RECOVERY_HELPER_ACTIVE","CANCEL_RECOVERY_REQUIRED"].contains(&e.code.as_str())=>{
+                            if current.as_ref().is_some_and(|c|["running","requested","uncertain"].contains(&c.state.as_str())){return Err(err("STATE_INVALID"));}
+                            return Ok(Some(external));
+                        },
+                        Err(e)=>return Err(e),
+                    }
+                }
                 Ok(current)
             }
         })
@@ -910,7 +936,13 @@ impl InstallationController {
                 destination.request_maintenance_cancel(kind, &id, preserve)
             } else {
                 #[cfg(not(windows))]
-                if kind=="external-restoration"{if let Some(profile)=&self.profile{if profile.root!=source.root&&profile.external_restore_checks()?.iter().any(|j|j.id==target){if source.external_restore_checks()?.iter().any(|j|j.id==target){return Err(err("STATE_INVALID"));}return profile.request_maintenance_cancel(kind,target,preserve);}}}
+                if kind=="external-restoration"
+                    && let Some(profile)=&self.profile
+                    && profile.root!=source.root
+                    && profile.external_restore_checks()?.iter().any(|j|j.id==target) {
+                    if source.external_restore_checks()?.iter().any(|j|j.id==target){return Err(err("STATE_INVALID"));}
+                    return profile.request_maintenance_cancel(kind,target,preserve);
+                }
                 source.request_maintenance_cancel(kind, target, preserve)
             }
         })

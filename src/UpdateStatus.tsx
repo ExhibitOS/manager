@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 import {useEffect,useRef,useState} from 'react';
+import {BackupToolField,type BackupToolContext} from './BackupToolField';
+import {BackupPathField} from './BackupPathField';
 import {client,managerError,validVerificationInput,type UpdateRollbackContext,type UpdateRollbackReceipt,type UpdateStatus as Status,type ManagerError,type UpdateCancelReceipt,type UpdateReference,type UpdateApplyReceipt} from './lifecycle';
 const labels={prepared:'업데이트 준비 기록',applying:'업데이트 적용 단계 기록',awaiting_health:'새 전시 응답 확인 단계 기록',updated:'업데이트 완료 기록',recovery_required:'원래 전시 복원 필요',restoring:'원래 전시 복원 단계 기록',awaiting_rollback_health:'복원된 전시 응답 확인 단계 기록',rolled_back:'원래 전시 복원 완료 기록'};
-export function UpdateStatusPanel({native,selectionToken,active,onActivity}:{native:boolean;selectionToken:string;active:boolean;onActivity:(active:boolean)=>void}){
+export function UpdateStatusPanel({native,selectionToken,active,onActivity,tool}:{native:boolean;selectionToken:string;active:boolean;onActivity:(active:boolean)=>void;tool:BackupToolContext}){
  const [status,setStatus]=useState<Status|null>(null),[error,setError]=useState<ManagerError|null>(null),[pending,setPending]=useState(false);
  const [cancellation,setCancellation]=useState<UpdateCancelReceipt|null>(null),[cancelConsent,setCancelConsent]=useState(false);
  const [references,setReferences]=useState<UpdateReference[]>([]),[referenceId,setReferenceId]=useState('');
@@ -14,7 +16,7 @@ export function UpdateStatusPanel({native,selectionToken,active,onActivity}:{nat
  const live=useRef(true),working=useRef(false),epoch=useRef(0);
  useEffect(()=>{live.current=true;return()=>{live.current=false;epoch.current++;onActivity(false);};},[]);
  async function refresh(){
-  const run=++epoch.current;working.current=true;setPending(true);setStatus(null);setError(null);setReferences([]);setReferenceId('');setApplication(null);setCancellation(null);setApplyConsent(false);setWritersStopped(false);setCancelConsent(false);setRollbackContext(null);setRollbackReceipt(null);setRollbackConsent(false);setRollbackWritersStopped(false);setKeyFile('');setArchive('');setMaintenanceImage('');setPort(4500);setPreferredRollbackAction('completeRestored');
+  const run=++epoch.current;working.current=true;setPending(true);setStatus(null);setError(null);setReferences([]);setReferenceId('');setApplication(null);setCancellation(null);setApplyConsent(false);setWritersStopped(false);setCancelConsent(false);setRollbackContext(null);setRollbackReceipt(null);setRollbackConsent(false);setRollbackWritersStopped(false);setPreferredRollbackAction('completeRestored');
   if(!native){working.current=false;setPending(false);return;}
   try{
    const result=await client.updateStatus(),cancelled=await client.updateCancellation();
@@ -100,11 +102,10 @@ export function UpdateStatusPanel({native,selectionToken,active,onActivity}:{nat
    {rollbackContext.canRestoreOriginal&&rollbackContext.canCompleteRestored&&<details><summary>복원 방법 선택</summary><label>진행할 복원 방법<select value={rollbackAction??''} onChange={e=>{setPreferredRollbackAction(e.target.value as 'restoreOriginal'|'completeRestored');resetRollbackConsent();}}><option value="completeRestored">복원된 후보 확인 계속</option><option value="restoreOriginal">원래 전체 백업을 새 후보에 다시 복원</option></select></label><p>새 후보에 다시 복원해도 기존 복원 후보와 원본 자료는 보존합니다.</p></details>}
    {rollbackAction?<>
     <p>{rollbackAction==='completeRestored'?'전체 복원 후보가 준비됐습니다. 원본 자료를 다시 풀지 않고 후보 활성화와 전시 응답 확인을 이어갑니다.':'전체 자료를 별도 후보에 복원한 뒤 활성화와 전시 응답을 확인합니다. 이미지 파일만 되돌려 완료 처리하지 않습니다.'}</p>
-    <label>복원용 유지보수 이미지의 고정 ID<input value={maintenanceImage} onChange={e=>{setMaintenanceImage(e.target.value);resetRollbackConsent();}} maxLength={71} autoComplete="off" spellCheck={false}/></label>
-    <p>신뢰할 운영자가 준비한 sha256: 형식의 로컬 이미지 ID를 사용합니다.</p>
+    <BackupToolField id="rollback-image" label="복원용 유지보수 이미지의 고정 ID" value={maintenanceImage} onChange={value=>{setMaintenanceImage(value);resetRollbackConsent();}} context={tool}/>
     {rollbackAction==='restoreOriginal'&&<>
-     <label>원래 전체 백업 폴더의 전체 경로<input value={archive} onChange={e=>{setArchive(e.target.value);resetRollbackConsent();}} maxLength={2048} autoComplete="off" spellCheck={false}/></label>
-     <label>복원에 사용할 별도 키 파일의 전체 경로<input value={keyFile} onChange={e=>{setKeyFile(e.target.value);resetRollbackConsent();}} maxLength={2048} autoComplete="off" spellCheck={false}/></label>
+     <BackupPathField id="rollback-archive" label="원래 전체 백업 폴더의 전체 경로" kind="archive" value={archive} onChange={value=>{setArchive(value);resetRollbackConsent();}} disabled={!native||active||pending||!rollbackMatches||!!status?.writeUncertain}/>
+     <BackupPathField id="rollback-key" label="복원에 사용할 별도 키 파일의 전체 경로" kind="key" value={keyFile} onChange={value=>{setKeyFile(value);resetRollbackConsent();}} disabled={!native||active||pending||!rollbackMatches||!!status?.writeUncertain}/>
      <p>키 내용은 입력하지 마세요. 경로 입력은 이 화면에서만 유지합니다.</p>
      <label>복원 후보의 로컬 포트<input type="number" min={1024} max={65535} step={1} value={Number.isFinite(port)?port:''} onChange={e=>{setPort(e.target.value===''?NaN:Number(e.target.value));resetRollbackConsent();}}/></label>
     </>}

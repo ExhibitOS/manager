@@ -191,7 +191,11 @@ async fn manager_update_rollback(
     caller(&window)?;
     let prepare = input.is_some();
     let controller = state.0.clone();
-    let (profile, receipt) = tauri::async_runtime::spawn_blocking(move || controller.update_rollback_handoff(&selection_token, input))
+    let resources = if prepare { Some(app.path().resource_dir().map_err(|_| error("PLATFORM_RUNTIME_UNAVAILABLE"))?) } else { None };
+    let (profile, receipt) = tauri::async_runtime::spawn_blocking(move || match resources {
+        Some(resources) => controller.update_rollback_handoff_prepared(&selection_token, input, &resources.join("platform-runtime/generated")),
+        None => controller.update_rollback_handoff(&selection_token, input),
+    })
         .await.map_err(|_| error("MANAGER_OPERATION"))??;
     if prepare {
         let request = receipt.as_ref().ok_or_else(|| error("UPDATE_HANDOFF_INVALID"))?;
@@ -638,7 +642,7 @@ async fn manager_choose_backup_path(window:WebviewWindow,state:State<'_,DesktopS
  tauri::async_runtime::spawn_blocking(move||{
   controller.with_current(&selection_token,|_|Ok(()))?;
   let selected=maintenance_picker::choose(kind)?;
-  if matches!(kind,maintenance_picker::Kind::NewKey){if let Some(path)=&selected {controller.create_backup_key(&selection_token,std::path::Path::new(path))?;}}
+  if matches!(kind,maintenance_picker::Kind::NewKey) && let Some(path)=&selected {controller.create_backup_key(&selection_token,std::path::Path::new(path))?;}
   controller.with_current(&selection_token,|_|Ok(selected))
  }).await.map_err(|_|error("MANAGER_OPERATION"))?
 }
@@ -841,7 +845,7 @@ async fn manager_open_oex(
     blocking(state.0.clone(), selection_token, |service| {
         // open_url requires fresh native running/readiness and the installed port.
         let mut url = Url::parse(&oex_studio_url(&service.open_url()?)?).map_err(|_|error("MANAGER_OPEN_URL"))?;
-        if let Ok(account)=service.initial_account_context(){if let (Some(tenant),Some(subject))=(account.tenant_id,account.subject){url.query_pairs_mut().append_pair("localTenant",&tenant).append_pair("localSubject",&subject);}}
+        if let Ok(account)=service.initial_account_context() && let (Some(tenant),Some(subject))=(account.tenant_id,account.subject){url.query_pairs_mut().append_pair("localTenant",&tenant).append_pair("localSubject",&subject);}
         open::that_detached(url.as_str()).map_err(|_| error("MANAGER_OPEN_FAILED"))
     }).await
 }

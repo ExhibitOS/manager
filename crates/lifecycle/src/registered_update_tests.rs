@@ -32,7 +32,7 @@ fn registered_fixture() -> (PathBuf, String, u64, String) {
         }],
     };
     crate::installations::save(&profile, &registry, None).unwrap();
-    let (_, registryBytes) = crate::installations::load(&profile).unwrap().unwrap();
+    let (_, registry_bytes) = crate::installations::load(&profile).unwrap().unwrap();
     drop(
         crate::private_options()
             .open(profile.join("operation.lock"))
@@ -49,7 +49,7 @@ fn registered_fixture() -> (PathBuf, String, u64, String) {
         scope: "default".into(),
         operation_id: "update-1".into(),
         generation,
-        registry_sha256: crate::digest(&registryBytes),
+        registry_sha256: crate::digest(&registry_bytes),
         artifact: external.join("runtime.tar"),
         artifact_sha256: crate::digest(b"fixture"),
         artifact_bytes: 7,
@@ -155,9 +155,9 @@ fn registered_update_helper_waits_for_app_close_then_requires_real_requalificati
     )
     .unwrap();
     let session = crate::profile_backup::session_lock(&profile, false).unwrap();
-    let childProfile = profile.clone();
-    let childId = request.id.clone();
-    let helper = std::thread::spawn(move || handoff::execute(&childProfile, &childId));
+    let child_profile = profile.clone();
+    let child_id = request.id.clone();
+    let helper = std::thread::spawn(move || handoff::execute(&child_profile, &child_id));
     std::thread::sleep(std::time::Duration::from_millis(150));
     assert_eq!(
         handoff::latest(&profile, &installation)
@@ -239,9 +239,9 @@ fn registered_update_duplicate_helper_cannot_publish_outcome_while_owner_waits()
     )
     .unwrap();
     let session = crate::profile_backup::session_lock(&profile, false).unwrap();
-    let firstProfile = profile.clone();
-    let firstId = request.id.clone();
-    let owner = std::thread::spawn(move || handoff::execute(&firstProfile, &firstId));
+    let first_profile = profile.clone();
+    let first_id = request.id.clone();
+    let owner = std::thread::spawn(move || handoff::execute(&first_profile, &first_id));
     let root = profile.join("update-apply-handoffs");
     let claim = root.join(format!("{}.claim.json", request.id));
     let outcome = root.join(format!("{}.outcome.json", request.id));
@@ -253,12 +253,12 @@ fn registered_update_duplicate_helper_cannot_publish_outcome_while_owner_waits()
         claim.exists(),
         "helper must own the request before waiting for app close"
     );
-    let originalClaim = fs::read(&claim).unwrap();
+    let original_claim = fs::read(&claim).unwrap();
     let (send, receive) = std::sync::mpsc::channel();
-    let secondProfile = profile.clone();
-    let secondId = request.id.clone();
+    let second_profile = profile.clone();
+    let second_id = request.id.clone();
     let duplicate = std::thread::spawn(move || {
-        send.send(handoff::execute(&secondProfile, &secondId).map_err(|e| e.code))
+        send.send(handoff::execute(&second_profile, &second_id).map_err(|e| e.code))
             .unwrap();
     });
     let rejected = receive
@@ -266,7 +266,7 @@ fn registered_update_duplicate_helper_cannot_publish_outcome_while_owner_waits()
         .expect("competing helper must not enter the anchor wait/timeout path");
     assert_eq!(rejected.unwrap_err(), "UPDATE_HANDOFF_ALREADY_CLAIMED");
     assert!(!outcome.exists());
-    assert_eq!(fs::read(&claim).unwrap(), originalClaim);
+    assert_eq!(fs::read(&claim).unwrap(), original_claim);
     assert_eq!(
         inspect_update_status(&profile, "default")
             .unwrap()
@@ -290,7 +290,7 @@ fn registered_update_duplicate_helper_cannot_publish_outcome_while_owner_waits()
             .state,
         "failed"
     );
-    assert_eq!(fs::read(claim).unwrap(), originalClaim);
+    assert_eq!(fs::read(claim).unwrap(), original_claim);
     assert_eq!(
         crate::installations::load(&profile).unwrap().unwrap().1,
         bytes

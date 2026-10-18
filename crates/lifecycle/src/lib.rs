@@ -784,19 +784,22 @@ fn run_observed_stream(
     streamed: Option<(Box<dyn Read + Send>, u64)>,
     observe: impl FnMut() -> Result<()>,
 ) -> Result<Vec<u8>> {
-    run_observed_stream_environment(binary, args, cwd, seconds, files, streamed, false, observe)
+    run_observed_stream_environment(binary, args, cwd, seconds, ObservedInputs { files, streamed }, false, observe)
+}
+struct ObservedInputs {
+    files: (Option<File>, Option<File>),
+    streamed: Option<(Box<dyn Read + Send>, u64)>,
 }
 fn run_observed_stream_environment(
     binary: &str,
     args: &[String],
     cwd: Option<&Path>,
     seconds: u64,
-    files: (Option<File>, Option<File>),
-    streamed: Option<(Box<dyn Read + Send>, u64)>,
+    inputs: ObservedInputs,
     private_environment: bool,
     mut observe: impl FnMut() -> Result<()>,
 ) -> Result<Vec<u8>> {
-    let (input, extra) = files;
+    let ObservedInputs { files: (input, extra), streamed } = inputs;
     if streamed.is_some() && input.is_some() {
         return Err(err("ENGINE_INPUT_INVALID"));
     }

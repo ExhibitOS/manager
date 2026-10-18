@@ -44,7 +44,7 @@ pub fn choose(kind: Kind) -> Result<Option<String>, LifecycleError> {
         if !path.starts_with('/') || path.len() > 2048 || path.contains(['\r', '\n', '\0', ',']) {
             return Err(failure("MAINTENANCE_PICKER_PATH_INVALID"));
         }
-        return Ok(Some(path.into()));
+        Ok(Some(path.into()))
     }
     #[cfg(not(target_os = "macos"))]
     {
