@@ -4,8 +4,11 @@ import {test,expect} from '@playwright/test';
 test('hosted backup invalidates prior-source confirmation and keeps archive copy cancellation safe',async({page})=>{
  await page.addInitScript(()=>{
   const id='00000000-0000-4000-8000-000000000001';let source={workspaceId:'tea-a',serviceId:'srv-a',postgresId:'dpg-a'},jobs:unknown[]=[];let copies=0;
+  let selectionToken='45678901-1234-1234-1234-123456789012',activeId='56789012-1234-1234-1234-123456789012';
+  const installation=()=>({selectionToken,activeId,mode:'managed',installations:[{id:activeId,kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true}],errorCode:null});
   const calls:unknown[]=[];Object.assign(window,{isTauri:true,__hostedRecoveryCalls:calls,__changeHostedSource:()=>{source={workspaceId:'tea-b',serviceId:'srv-b',postgresId:'dpg-b'};},__TAURI_INTERNALS__:{invoke:async(cmd:string,args?:{input?:{action:string;expectedSource?:unknown}})=>{
-   if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:'56789012-1234-1234-1234-123456789012',mode:'managed',installations:[{id:'56789012-1234-1234-1234-123456789012',kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true}],errorCode:null};
+   if(cmd==='manager_installations')return installation();
+   if(cmd==='manager_create_installation'){selectionToken='78901234-1234-1234-1234-123456789012';activeId='67890123-1234-1234-1234-123456789012';jobs=[];return installation();}
    if(cmd==='manager_status')return {installed:true,bundleId:'synthetic',version:'0.1.0',state:'stopped',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
    if(cmd==='manager_detect'||cmd==='manager_jobs'||cmd==='manager_logs'||cmd==='manager_backup_jobs'||cmd==='manager_helper_reconciliations'||cmd==='manager_maintenance_retries')return [];
    if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};
@@ -14,7 +17,7 @@ test('hosted backup invalidates prior-source confirmation and keeps archive copy
    if(cmd==='manager_hosted_recovery'){
     const input=args!.input!;calls.push(input);let archiveSaved=null;
     if(input.action==='create')jobs=[{id,source,image:`sha256:${'a'.repeat(64)}`,jobBudgetBytes:64*1024**3,state:'completed',stage:'completed',errorCode:null,createdAt:1,updatedAt:2,receipt:{provider:'render',action:'local-encrypted-backup',operation:'created-and-verified',...source,backupId:id,files:1,authenticatedManifestSha256:'b'.repeat(64)}}];
-    if(input.action==='export-archive'&&++copies>1)archiveSaved={jobId:id,backupId:id,path:'/synthetic/ExhibitOS-backup-copy',files:4,bytes:400};
+    if(input.action==='export-archive'&&++copies>1){if(copies===3)await new Promise<void>(resolve=>Object.assign(window,{__finishHostedArchive:resolve}));archiveSaved={jobId:id,backupId:id,path:'/synthetic/ExhibitOS-backup-copy',files:4,bytes:400};}
     return {source:input.action==='context'||input.action==='create'?source:null,jobs,keySaved:false,archiveSaved};
    }
    throw {code:'MANAGER_CONNECTION',guidance:'Synthetic native bridge only'};
@@ -29,5 +32,13 @@ test('hosted backup invalidates prior-source confirmation and keeps archive copy
  await cidr.fill('192.0.2.4/32');await consent.check();await create.click();await expect(panel.getByRole('heading',{name:'암호화 사본 생성·검증 완료'})).toBeVisible();
  const copy=panel.getByRole('button',{name:'암호화 백업 사본 보관'});await copy.click();await expect(panel).not.toContainText('백업 사본을 보관했어요. 위치:');await expect(copy).toBeEnabled();await copy.click();await expect(panel).toContainText('위치: /synthetic/ExhibitOS-backup-copy');
  const calls=await page.evaluate(()=>(window as unknown as {__hostedRecoveryCalls:{action:string;expectedSource?:unknown}[]}).__hostedRecoveryCalls);expect(calls.filter(c=>c.action==='create')).toEqual([{action:'create',sourceCidr:'192.0.2.4/32',confirmExternalWritersStopped:true,expectedSource:{workspaceId:'tea-b',serviceId:'srv-b',postgresId:'dpg-b'}}]);
- expect(calls.filter(c=>c.action==='export-archive')).toHaveLength(2);expect(errors).toEqual([]);expect(await page.evaluate(()=>Object.keys(localStorage).concat(Object.keys(sessionStorage)))).toEqual([]);
+ expect(calls.filter(c=>c.action==='export-archive')).toHaveLength(2);
+ // A delayed chooser result belongs to its original space. Changing spaces
+ // must discard that result but still release the completed request's busy UI.
+ await copy.click();await expect(prepare).toBeDisabled();
+ const spaces=page.getByRole('region',{name:'관리 공간 선택'});await spaces.getByRole('checkbox').check();await spaces.getByRole('button',{name:'새 복원 공간 만들고 선택'}).click();
+ await expect(panel).not.toContainText('위치: /synthetic/ExhibitOS-backup-copy');
+ await page.evaluate(()=>(window as unknown as {__finishHostedArchive:()=>void}).__finishHostedArchive());
+ await expect(prepare).toBeEnabled();await expect(panel).not.toContainText('위치: /synthetic/ExhibitOS-backup-copy');await expect(panel.getByRole('heading',{name:'암호화 사본 생성·검증 완료'})).toHaveCount(0);
+ expect(errors).toEqual([]);expect(await page.evaluate(()=>Object.keys(localStorage).concat(Object.keys(sessionStorage)))).toEqual([]);
 });

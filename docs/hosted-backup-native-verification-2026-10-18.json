@@ -299,5 +299,76 @@
       "Developer ID/notarization/clean user installation",
       "Whole backup/restore/migration/update/rollback acceptance"
     ]
+  },
+  "selectedSpaceBusyRecovery20261018": {
+    "observedAt": "2026-10-18T04:57:13.742581+00:00",
+    "baseSource": "2a5a1d4",
+    "status": "BROWSER_REGRESSION_REPRODUCED_AND_CORRECTED_WITH_SYNTHETIC_IPC",
+    "problem": "After an old archive chooser request completed following a management-space switch, generation fencing also suppressed release of pending, leaving preparation disabled indefinitely.",
+    "change": "Keep results/errors generation-fenced; release sole serialized completed request busy state for mounted component. Clear old notice/CIDR on space switch; preserve acknowledgement and result fences.",
+    "before": {
+      "session": 52858,
+      "exit": 1,
+      "assertion": "Preparation remained disabled after delayed old-space response completed."
+    },
+    "after": {
+      "session": 5668,
+      "exit": 0,
+      "desktopAndNarrow": 2,
+      "scope": "Actual browser button/space-selector interactions with synthetic IPC, not actual OS chooser/Keychain/provider."
+    },
+    "relatedSelectionRegression": {
+      "initialSession": 56376,
+      "initialExit": 1,
+      "initialPassed": 6,
+      "initialFailed": 2,
+      "reason": "Older test filled the optional manual-path input while its details disclosure was closed.",
+      "correction": "Explicitly click existing parent summary before fill; all original values/fencing/preservation assertions retained.",
+      "correctedSession": 54647,
+      "exit": 0,
+      "passed": 8
+    },
+    "nodeCheck": {
+      "typecheckLintBuild": true,
+      "vitest": 69,
+      "receipt": 9,
+      "installer": 6,
+      "finalTypecheckLintSession": 77286,
+      "finalExit": 0
+    },
+    "independentReview": "Read-only two-file product/regression review and additional disclosure-only test review found no concrete blocker or weakened assertion.",
+    "logs": [
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-selection-ui-8cc9b7bc-8bf9-46c2-b082-8db9e6dd8902/exhibitos-hosted-selection-before-20261018.log",
+        "sha256": "c18fb0e6ec0ad9547045775ee905571d65761f027dd70dbf174cfbadbb4d4328"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-selection-ui-8cc9b7bc-8bf9-46c2-b082-8db9e6dd8902/exhibitos-hosted-selection-after-20261018.log",
+        "sha256": "081656427e2f456ab7ecbd861dcccaed3da4d4a0559c3c6d5935ca3a79715ba4"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-selection-ui-8cc9b7bc-8bf9-46c2-b082-8db9e6dd8902/exhibitos-hosted-selection-check-20261018.log",
+        "sha256": "fdc84e79269b603e490425bb4e1daa6cedfd8d8ce4fbbc307e644a3d25173e29"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-selection-ui-8cc9b7bc-8bf9-46c2-b082-8db9e6dd8902/exhibitos-hosted-selection-installations-20261018.log",
+        "sha256": "d12fc15dbec58d002e417e19d50fa536433c217cde467b75b0b75e7c12a9ae71"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-selection-ui-8cc9b7bc-8bf9-46c2-b082-8db9e6dd8902/exhibitos-hosted-selection-installations-corrected-20261018.log",
+        "sha256": "ea4732fb64445a7d4c04e23bbe2e62920c7331c99c4e83bc7c28a79a5a0fa9dc"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-selection-ui-8cc9b7bc-8bf9-46c2-b082-8db9e6dd8902/exhibitos-hosted-selection-final-static-20261018.log",
+        "sha256": "46700e506e2e60d7121777a8259ba954564885cc7729b92a28029c64769646b0"
+      }
+    ],
+    "notVerified": [
+      "Actual native chooser and Keychain",
+      "Real Render backup or restore",
+      "Official release/native rebuilt app",
+      "Whole GUI acceptance"
+    ],
+    "wholeTaskDone": false
   }
 }
