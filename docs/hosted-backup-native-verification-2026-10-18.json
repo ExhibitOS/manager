@@ -480,5 +480,25 @@
       "Original runtime/Pages artifact provenance and whole service restore/migration/update/rollback",
       "Official distribution and whole GUI acceptance"
     ]
+  },
+  "isolatedRestoreMatchingRuntime20261018": {
+    "observedAt": "2026-10-18T05:49:46.018680+00:00",
+    "status": "MATCHING_SOURCE_RUNTIME_PRODUCED_NOT_EXECUTED_AS_RESTORE_OR_NATIVE_APP",
+    "platformSource": "2cbdf719149f77fb897afa46917dfd8b26b924e3",
+    "managerSource": "49046bd",
+    "producerSession": 24883,
+    "exit": 0,
+    "producerSeconds": 165.65415674995165,
+    "prepareSeconds": 2.708658374962397,
+    "base": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-runtime-isolated-restore-2cbdf71-09de8fb3-7815-4b49-8931-d321667ed130",
+    "prepared": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-runtime-isolated-restore-2cbdf71-09de8fb3-7815-4b49-8931-d321667ed130/prepared",
+    "receipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-runtime-isolated-restore-2cbdf71-09de8fb3-7815-4b49-8931-d321667ed130/execution.json",
+    "receiptSha256": "f650cc83b1a1d7e33ea8efdbc8b97ccccad00d457cb41e26e714ed31319f610c",
+    "maintenanceImage": "sha256:559fd8a0481f448d6326cf6e0e4b616d0a953a3c11e756eec371b67e7954c6ad",
+    "platformImage": "sha256:d87b68d24f80fae5ca7039c7499eb5cb0348c26652c7adb52d0f05dc0ab96954",
+    "budget": "4GiB additional/6GiB floor passed; observed available833896263680 bytes; preview only, no cleanup",
+    "actualPGOrHelperRestore": false,
+    "actualNativeOrKeychain": false,
+    "remaining": "Actual fixed-image isolated PG restore with lifecycle/helper ownership and normal-stop receipt; then native OS/provider/full runtime/Pages activation acceptance."
   }
 }
