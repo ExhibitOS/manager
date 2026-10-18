@@ -93,5 +93,46 @@
       "Successful copy location displayed, browser storage stays empty"
     ],
     "limits": "Synthetic IPC only; no actual Render, native OS chooser, keychain, native cancellation or fresh restore. No full visual/HIG/VoiceOver qualification."
+  },
+  "loadOnlyConfigurationFollowup": {
+    "observedAt": "2026-10-18T02:56:41.650375+00:00",
+    "nodeCommits": {
+      "manager": "e27236a",
+      "deployment": "10bfe39"
+    },
+    "nativeImplementation": [
+      "Reuses unchanged runtime account hash from saved original Work, not current source selection",
+      "Exact expected3IDs and original canonical origin/receipt consistency before key lookup",
+      "Direct load only; missing/denied/malformed fail without creator/store/random/public_runtime",
+      "Preserves original required5 env and STATIC all-or-none; strict Node validation and remote equality still mandatory",
+      "Original signingkey/adminpassword private native->runner comparison only, not helper/UI/archive/log"
+    ],
+    "checks": {
+      "handle": 20950,
+      "terminalExit": 0,
+      "remoteRuntimePrepare": true,
+      "nativeHostedTests": 14,
+      "hostedLifecycleTests": 5,
+      "managerNodeRunnerTests": 7,
+      "deploymentPrivateBridgeTests": 8,
+      "independentReadReview": "No concrete blocker; no execution claimed"
+    },
+    "rawEvidence": [
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-native-234b992-8c39c723-b353-4890-a17d-9a82c92edaf9/exhibitos-manager-recovery-config-native.log",
+        "sha256": "51610b8d2c967128cc6e5c9fef8472a2bbe335018eb6b34c204b9b0216780e73"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-native-234b992-8c39c723-b353-4890-a17d-9a82c92edaf9/exhibitos-manager-recovery-config-native.json",
+        "sha256": "5e77b94645daa6f2187c8a6c0351d01ff9479d17906457412241f8ea0c4b2ef4"
+      }
+    ],
+    "pending": [
+      "Actual original Keychain/native/Render/OS flow",
+      "Immutable backup-time protected configuration retention and matching DB freeze authority",
+      "Active deploy/version plus original runtime/Pages artifacts binding",
+      "Complete restore/migration/update/rollback validation"
+    ],
+    "wholeTaskComplete": false
   }
 }

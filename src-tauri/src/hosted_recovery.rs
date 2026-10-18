@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 fn failure(code: &str) -> LifecycleError {
     LifecycleError{code:code.into(),guidance:match code{
+ "HOSTED_RECOVERY_CONFIGURATION_REQUIRED"=>"원래 서버 설정을 이 Mac에서 확인하지 못했어요. 새 키를 만들지 않았습니다. 기존 계정 연결과 보관한 설정을 확인한 뒤 다시 시도하세요.",
+ "HOSTED_RECOVERY_CONFIGURATION_CHANGED"=>"보관된 설정과 서버의 설정이 달라요. 원본과 사본은 유지됩니다. 원래 서버·계정·주소를 다시 확인하세요.",
  "HOSTED_RECOVERY_SOURCE_CHANGED"=>"배포 대상이나 서버 상태가 바뀌었어요. 기존 사본은 보존합니다. 백업 준비에서 대상을 다시 확인한 뒤 요청하세요.",
  "HOSTED_RECOVERY_NETWORK_REQUIRED"=>"Render의 데이터베이스 접근 설정에서 현재 Mac의 좁은 IP 범위를 허용한 뒤 같은 범위를 확인하세요. 전체 인터넷 허용은 사용하지 않습니다.",
  "HOSTED_RECOVERY_WRITERS_ACTIVE"=>"Render에서 선택한 API를 일시 중지하고 다른 데이터 쓰기도 멈춘 뒤 백업하세요. 정적 전시 관람은 계속할 수 있습니다.",
@@ -92,6 +94,7 @@ pub fn operation(
             }
             let source = super::hosted::recovery_source().map_err(fail)?;
             if !expected_source_matches(input.expected_source.as_ref(), &source) { return Err(failure("HOSTED_RECOVERY_SOURCE_CHANGED")); }
+            let expected_configuration=super::hosted::recovery_configuration(&source).map_err(fail)?;
             let manifest: serde_json::Value = serde_json::from_str(
                 option_env!("EXHIBITOS_REMOTE_RUNTIME_MANIFEST").unwrap_or("{}"),
             )
@@ -122,7 +125,7 @@ pub fn operation(
      if stored.is_err(){key.fill(0);token.fill(0);return Err(failure("HOSTED_KEYCHAIN_STORE_FAILED"));}
      let mut plan=serde_json::to_value(execution).map_err(|_|failure("HOSTED_RECOVERY_REQUEST"))?;
      plan["keyBase64"]=super::hosted::base64(&key).into();key.fill(0);
-     let result=std::str::from_utf8(&token).map_err(|_|failure("HOSTED_TOKEN_REQUIRED")).and_then(|text|serde_json::to_vec(&serde_json::json!({"request":request,"tokens":{"render":text},"sourceCidr":cidr,"confirmExternalWritersStopped":true,"execution":plan})).map_err(|_|failure("HOSTED_RECOVERY_REQUEST")));
+     let result=std::str::from_utf8(&token).map_err(|_|failure("HOSTED_TOKEN_REQUIRED")).and_then(|text|serde_json::to_vec(&serde_json::json!({"request":request,"expectedConfiguration":expected_configuration,"tokens":{"render":text},"sourceCidr":cidr,"confirmExternalWritersStopped":true,"execution":plan})).map_err(|_|failure("HOSTED_RECOVERY_REQUEST")));
      token.fill(0);Ok(result?)
     },||{for pin in &pins{pin.check()?;}Ok(())}).map_err(fail)?;
                 return Ok(Context {

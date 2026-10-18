@@ -665,22 +665,62 @@ pub(crate) fn base64(bytes: &[u8]) -> String {
     }
     out
 }
+fn recovery_request(work: &Work) -> Result<&Request,LifecycleError> {
+    work.api_request.as_ref().or_else(||matches!(work.request.provider,Provider::Render).then_some(&work.request)).ok_or_else(||refused("HOSTED_RECOVERY_REQUEST"))
+}
+fn recovery_source_from_work(work: &Work)->Result<exhibitos_lifecycle::hosted_backup::Source,LifecycleError>{
+    let request=recovery_request(work)?;
+    let receipt=work.api_receipt.as_ref().ok_or_else(||refused("HOSTED_RECOVERY_REQUEST"))?;
+    let source=exhibitos_lifecycle::hosted_backup::Source{workspace_id:request.workspace_id.clone().ok_or_else(||refused("HOSTED_RECOVERY_REQUEST"))?,service_id:receipt["serviceId"].as_str().ok_or_else(||refused("HOSTED_RECOVERY_REQUEST"))?.into(),postgres_id:receipt["postgresId"].as_str().or(request.postgres_id.as_deref()).ok_or_else(||refused("HOSTED_RECOVERY_REQUEST"))?.into()};
+    if request.service_id.as_ref().is_some_and(|id|id!=&source.service_id)||request.postgres_id.as_ref().is_some_and(|id|id!=&source.postgres_id){return Err(refused("HOSTED_RESOURCE_CONFLICT"));}
+    source.validate()?;Ok(source)
+}
 pub(crate) fn recovery_source()->Result<exhibitos_lifecycle::hosted_backup::Source,LifecycleError>{
     let work=load_work()?.ok_or_else(||refused("HOSTED_WORK_UNAVAILABLE"))?;
-    let request=work.api_request.or_else(||matches!(work.request.provider,Provider::Render).then_some(work.request)).ok_or_else(||refused("HOSTED_RECOVERY_REQUEST"))?;
-    let receipt=work.api_receipt.ok_or_else(||refused("HOSTED_RECOVERY_REQUEST"))?;
-    let source=exhibitos_lifecycle::hosted_backup::Source{workspace_id:request.workspace_id.ok_or_else(||refused("HOSTED_RECOVERY_REQUEST"))?,service_id:receipt["serviceId"].as_str().ok_or_else(||refused("HOSTED_RECOVERY_REQUEST"))?.into(),postgres_id:receipt["postgresId"].as_str().or(request.postgres_id.as_deref()).ok_or_else(||refused("HOSTED_RECOVERY_REQUEST"))?.into()};
-    if request.service_id.is_some_and(|id|id!=source.service_id)||request.postgres_id.is_some_and(|id|id!=source.postgres_id){return Err(refused("HOSTED_RESOURCE_CONFLICT"));}
-    source.validate()?;Ok(source)
+    recovery_source_from_work(&work)
+}
+fn runtime_account(workspace: &str,project: &str)->String {
+    format!("render-runtime-{:x}",Sha256::digest(format!("{workspace}\0{project}").as_bytes()))
+}
+// Recovery only loads the saved source configuration. It must never call the
+// deployment creator/public_runtime or derive new values from current SOURCE.
+fn recovery_configuration_from_work(work:&Work,expected:&exhibitos_lifecycle::hosted_backup::Source,load:impl FnOnce(&str)->Result<Vec<u8>,()>)->Result<serde_json::Value,LifecycleError>{
+    if recovery_source_from_work(work)?!=*expected{return Err(refused("HOSTED_RECOVERY_CONFIGURATION_CHANGED"));}
+    let request=recovery_request(work)?;
+    let project=request.project_name.as_deref().unwrap_or(&work.source.project_name);
+    if project.is_empty()||project.len()>63||!project.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()||b==b'-'){return Err(refused("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"));}
+    let receipt_origin=work.api_receipt.as_ref().and_then(|r|r["url"].as_str());
+    if work.api_origin.as_deref().zip(receipt_origin).is_some_and(|(a,b)|a!=b){return Err(refused("HOSTED_RECOVERY_CONFIGURATION_CHANGED"));}
+    let origin=work.api_origin.as_deref().or(receipt_origin).ok_or_else(||refused("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
+    let parsed=url::Url::parse(origin).map_err(|_|refused("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
+    if parsed.scheme()!="https"||!parsed.username().is_empty()||parsed.password().is_some()||parsed.port().is_some()||parsed.query().is_some()||parsed.fragment().is_some()||parsed.path()!="/"||!parsed.host_str().is_some_and(|h|h.ends_with(".onrender.com"))||parsed.origin().ascii_serialization()!=origin{return Err(refused("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"));}
+    let mut bytes=load(&runtime_account(&expected.workspace_id,project)).map_err(|_|refused("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
+    let decoded=if bytes.is_empty()||bytes.len()>65536{None}else{serde_json::from_slice::<serde_json::Value>(&bytes).ok()};bytes.fill(0);
+    let value=decoded.ok_or_else(||refused("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
+    if value.as_object().is_none_or(|v|v.len()!=1||!v.contains_key("envVars")){return Err(refused("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"));}
+    let env=value["envVars"].as_array().ok_or_else(||refused("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
+    let required=["CLIENT_ORIGIN","TENANT_ID","ADMIN_SUBJECT","ADMIN_PASSWORD","FREEZE_SIGNING_KEY_BASE64"];
+    let optional=["STATIC_PUBLICATION_ID","STATIC_REVISION_SHA256","STATIC_INDEX_SHA256"];
+    let mut names=std::collections::BTreeSet::new();
+    for row in env {
+        let object=row.as_object().ok_or_else(||refused("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
+        let key=row["key"].as_str().ok_or_else(||refused("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
+        let text=row["value"].as_str().ok_or_else(||refused("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
+        if object.len()!=2||(!required.contains(&key)&&!optional.contains(&key))||!names.insert(key)||text.is_empty()||text.len()>8192||text.contains('\0'){return Err(refused("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"));}
+    }
+    let optional_count=optional.iter().filter(|key|names.contains(**key)).count();
+    if !required.iter().all(|key|names.contains(*key))||![0,3].contains(&optional_count){return Err(refused("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"));}
+    Ok(serde_json::json!({"envVars":value["envVars"],"origin":origin}))
+}
+pub(crate) fn recovery_configuration(expected:&exhibitos_lifecycle::hosted_backup::Source)->Result<serde_json::Value,LifecycleError>{
+    let work=load_work()?.ok_or_else(||refused("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
+    recovery_configuration_from_work(&work,expected,super::hosted_keychain::load)
 }
 fn runtime_configuration(
     workspace: &str,
     project: &str,
 ) -> Result<serde_json::Value, LifecycleError> {
-    let account = format!(
-        "render-runtime-{:x}",
-        Sha256::digest(format!("{workspace}\0{project}").as_bytes())
-    );
+    let account = runtime_account(workspace,project);
     if super::hosted_keychain::contains(&account)
         .map_err(|_| refused("HOSTED_KEYCHAIN_UNAVAILABLE"))?
     {
@@ -1280,6 +1320,34 @@ mod tests {
         assert!(!text.contains("ADMIN_PASSWORD"));
         assert!(!text.contains("FREEZE_SIGNING_KEY"));
         assert!(!text.contains("tokens"));
+    }
+    fn saved_recovery_fixture()->Work {
+        serde_json::from_value(serde_json::json!({"version":1,"request":{"provider":"render","action":"status","workspaceId":"tea-fixture","projectName":"show-a","serviceId":"srv-fixture","postgresId":"dpg-fixture"},"sourcePath":"/synthetic/absent-package","sourceSha256":"a".repeat(64),"source":{"title":"Synthetic","publicationId":"public-fixture","projectName":"show-a","revisionSha256":"b".repeat(64),"indexSha256":"c".repeat(64)},"receipt":null,"phase":"observed","apiReceipt":{"provider":"render","serviceId":"srv-fixture","postgresId":"dpg-fixture","url":"https://show-a.onrender.com"},"apiOrigin":"https://show-a.onrender.com"})).unwrap()
+    }
+    fn saved_configuration_fixture()->serde_json::Value {
+        serde_json::json!({"envVars":[{"key":"CLIENT_ORIGIN","value":"https://show-a.pages.dev"},{"key":"TENANT_ID","value":"00000000-0000-4000-8000-000000000001"},{"key":"ADMIN_SUBJECT","value":"fixture-owner"},{"key":"ADMIN_PASSWORD","value":"synthetic-password"},{"key":"FREEZE_SIGNING_KEY_BASE64","value":"synthetic-key-shape-only-Node-validates-crypto"}]})
+    }
+    #[test]
+    fn recovery_loads_exact_original_configuration_without_static_pin_invention() {
+        let work=saved_recovery_fixture();let expected=recovery_source_from_work(&work).unwrap();
+        let original=serde_json::to_vec(&saved_configuration_fixture()).unwrap();let retained=original.clone();
+        let value=recovery_configuration_from_work(&work,&expected,|account|{assert_eq!(account,runtime_account("tea-fixture","show-a"));Ok(original.clone())}).unwrap();
+        assert_eq!(original,retained);assert_eq!(value["envVars"],saved_configuration_fixture()["envVars"]);assert_eq!(value["origin"],"https://show-a.onrender.com");
+        assert!(!value.to_string().contains("STATIC_"));
+        let mut changed=expected;changed.postgres_id="dpg-other".into();
+        assert_eq!(recovery_configuration_from_work(&work,&changed,|_|panic!("No key lookup for another source")).unwrap_err().code,"HOSTED_RECOVERY_CONFIGURATION_CHANGED");
+    }
+    #[test]
+    fn recovery_missing_denied_malformed_and_partial_saved_configuration_never_create_values() {
+        let work=saved_recovery_fixture();let source=recovery_source_from_work(&work).unwrap();
+        assert_eq!(recovery_configuration_from_work(&work,&source,|_|Err(())).unwrap_err().code,"HOSTED_RECOVERY_CONFIGURATION_REQUIRED");
+        let mut partial=saved_configuration_fixture();partial["envVars"].as_array_mut().unwrap().push(serde_json::json!({"key":"STATIC_INDEX_SHA256","value":"d".repeat(64)}));
+        let mut duplicate=saved_configuration_fixture();let first=duplicate["envVars"][0].clone();duplicate["envVars"].as_array_mut().unwrap().push(first);
+        for bytes in [Vec::new(),b"invalid-json".to_vec(),b"{}".to_vec(),serde_json::to_vec(&partial).unwrap(),serde_json::to_vec(&duplicate).unwrap()] {
+            assert_eq!(recovery_configuration_from_work(&work,&source,|_|Ok(bytes)).unwrap_err().code,"HOSTED_RECOVERY_CONFIGURATION_REQUIRED");
+        }
+        let mut original=work;original.api_origin=Some("https://other.onrender.com".into());
+        assert_eq!(recovery_configuration_from_work(&original,&source,|_|panic!("Mismatched origin must not load")).unwrap_err().code,"HOSTED_RECOVERY_CONFIGURATION_CHANGED");
     }
     #[test]
     fn signing_key_base64_uses_standard_padding_without_a_new_crypto_format() {
