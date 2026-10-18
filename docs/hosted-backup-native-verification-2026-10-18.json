@@ -42,24 +42,28 @@
   },
   "rawEvidence": [
     {
-      "path": "/private/tmp/manager-hosted-export-final-check.log",
+      "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-native-234b992-8c39c723-b353-4890-a17d-9a82c92edaf9/manager-hosted-export-final-check.log",
       "sha256": "51cb79ee1d1f7e91dcba69e692ac75c6af232eec2a3138bcafad540f8b7e4411"
     },
     {
-      "path": "/private/tmp/manager-hosted-export-final-check.json",
+      "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-native-234b992-8c39c723-b353-4890-a17d-9a82c92edaf9/manager-hosted-export-final-check.json",
       "sha256": "0c88ad792136446829897afee318869494f9241e8bae379844b088eaf44627b3"
     },
     {
-      "path": "/private/tmp/manager-hosted-export-cipher-bound-check.log",
+      "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-native-234b992-8c39c723-b353-4890-a17d-9a82c92edaf9/manager-hosted-export-cipher-bound-check.log",
       "sha256": "ff00041f8ab1b3a8946b5dc7c039f951a389aa3c758b78e9dd3b8a59eda418dd"
     },
     {
-      "path": "/private/tmp/manager-hosted-export-ui-check.log",
+      "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-native-234b992-8c39c723-b353-4890-a17d-9a82c92edaf9/manager-hosted-export-ui-check.log",
       "sha256": "0bd6473f98c68baa735cea4f1e6ddd8671812386a0fd0c7f3e2fd8a79e3ff7ca"
     },
     {
-      "path": "/private/tmp/manager-hosted-export-lint.log",
+      "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-native-234b992-8c39c723-b353-4890-a17d-9a82c92edaf9/manager-hosted-export-lint.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-native-234b992-8c39c723-b353-4890-a17d-9a82c92edaf9/manager-hosted-recovery-browser-check.log",
+      "sha256": "4f2fcca01f408b267a52e479d131a485dbedc72383da66419ab824ed7b735336"
     }
   ],
   "notVerified": [
@@ -69,5 +73,25 @@
     "Actual pinned helper image and real SQL/encryption independent restore: preparation only",
     "All affected GUI flows and first-release acceptance remain incomplete"
   ],
-  "sourceReview": "Independent read review found consent inheritance; corrected. No additional concrete export boundary blocker found. Review is not runtime evidence."
+  "sourceReview": "Independent read review found consent inheritance; corrected. No additional concrete export boundary blocker found. Review is not runtime evidence.",
+  "browserFollowup": {
+    "source": "234b992 plus hosted-recovery.spec.ts",
+    "observedAt": "2026-10-18T02:10:55.118763+00:00",
+    "session": 6170,
+    "terminalExit": 0,
+    "uniqueCases": 1,
+    "viewports": [
+      "desktop1120x900",
+      "narrow640x850"
+    ],
+    "passedExecutions": 2,
+    "actualBrowserInteractions": [
+      "Switch API mode and open backup panel",
+      "Source change clears previous writer acknowledgement and IP field",
+      "Create IPC contains exact new expected source and no repeated create",
+      "Archive chooser-cancel result retains completed job and permits retry",
+      "Successful copy location displayed, browser storage stays empty"
+    ],
+    "limits": "Synthetic IPC only; no actual Render, native OS chooser, keychain, native cancellation or fresh restore. No full visual/HIG/VoiceOver qualification."
+  }
 }
