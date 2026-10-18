@@ -71,6 +71,7 @@ pub use trust_checkpoint::binding::{
 pub use trust_checkpoint::{HostTrustReceipt, MissingHostRecoveryReceipt, TrustCheckpointReceipt};
 #[path = "owned_execution.rs"]
 mod owned_execution;
+pub(crate) use owned_execution::{source_deployment, source_images};
 #[cfg(any(unix, windows))]
 #[path = "rollback_registration.rs"]
 mod rollback_registration;

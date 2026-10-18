@@ -71,13 +71,13 @@ pub use current_recovery_runtime::{OwnedPreflight, ReadyCandidate, StartedUpdate
 mod source_stopped;
 pub use source_stopped::SourceStoppedReceipt;
 #[path = "source_deployment.rs"]
-mod source_deployment;
+pub(crate) mod source_deployment;
 pub use source_deployment::SourceDeploymentReceipt;
 #[path = "source_configuration.rs"]
 mod source_configuration;
 pub use source_configuration::NativeConfigurationReceipt;
 #[path = "source_images.rs"]
-mod source_images;
+pub(crate) mod source_images;
 pub use source_images::SourceImageReceipt;
 #[path = "source_database.rs"]
 mod source_database;

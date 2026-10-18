@@ -33,7 +33,7 @@ pub struct RestorationReceipt {
 }
 #[path = "restoration_binding.rs"]
 mod binding;
-pub(crate) use binding::RestorationBinding;
+pub(crate) use binding::{RestorationBinding, schema_fingerprint, inventory_fingerprint};
 pub use binding::RestorationProof;
 struct RestorationRoute<'a> {
     retry: Option<super::retry::RetryLink<'a>>,

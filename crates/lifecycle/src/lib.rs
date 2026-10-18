@@ -18,6 +18,8 @@ pub mod engine_preparation;
 pub mod maintenance;
 #[cfg(not(windows))]
 pub mod maintenance_source;
+#[cfg(not(windows))]
+pub mod update_preparation_source;
 mod maintenance_stream;
 mod process_window;
 pub mod profile_backup;
@@ -313,6 +315,7 @@ fn err(code: &str) -> LifecycleError {
         "RUNTIME_MISSING" => "컨테이너 실행 도구를 설치한 후 다시 시도하세요.",
         "ENGINE_UNAVAILABLE" => "컨테이너 실행 도구를 시작한 후 다시 시도하세요.",
         "COMPOSE_UNAVAILABLE" => "Compose 실행 도구를 설치하거나 설정한 후 다시 시도하세요.",
+        "UPDATE_PLAN_SOURCE_INVALID" => "업데이트 준비에 사용할 백업 정보를 확인하지 못했습니다. 원본과 백업을 보존하고 선택한 사본을 다시 확인하세요.",
         "ENGINE_TIMEOUT" => "실행 도구의 응답이 늦습니다. 상태를 확인한 후 다시 시도하세요.",
         "ENGINE_OUTPUT_INVALID" | "ENGINE_OUTPUT_LIMIT" => {
             "실행 도구의 응답을 확인하지 못했습니다. 실행 도구를 확인한 후 다시 시도하세요."
