@@ -974,5 +974,45 @@
       "notarized": false,
       "publicationSource": "Qualified1b7e000 resource reused unchanged, retained original metadata; not relabelled486e5e6"
     }
+  },
+  "archivedPublicAuthority20261018": {
+    "status": "IMPLEMENTED_SQL_STAGES_AND_DEVELOPMENT_PACKAGE_VERIFIED_HOST_WRAPPER_FAILURE_RETAINED_GUI_AND_WHOLE_RESTORE_PENDING",
+    "managerSource": "3dae9bccda50fdbcb6accac4b4f68da7e14514d0",
+    "platformSource": "256faba59636bcb7d66a95f6ddaee896688c5414",
+    "tasks": [
+      "T08-02",
+      "T10-05"
+    ],
+    "implementation": [
+      "Default backup preserves only original closed HTTPS/Ed25519 public authority in existing encrypted configuration role hosted-public-authority.json. No private signing key/admin password/provider token added to helper or archive.",
+      "Archive crypto/backup ID/manifest SHA/file digest checks precede public record semantics and PG start. Provided original authority must agree with archived authority. Legacy requires provided original authority when no archived record. No DB-row-derived key or invented issuer.",
+      "Manager retains original completed Job/archive pins and per-job key. Only exact Keychain not-found/null-result may omit local expectedConfiguration; denial/cancel/locked/wrongtype/invalidsize/malformed/source mismatch refuse. Generic provider/key reads unchanged.",
+      "No new archive schema, provider, engine, task or release gate. Cross-Mac original Job import and whole service activation remain unimplemented."
+    ],
+    "checks": {
+      "platform": "89533 Node32PASS; existing crypto format exercised with injectedPG; not actual DB proof by itself.",
+      "manager": "runner6PASS; native67084 hosted modules13PASS. Initial5928 original-config1 PASS before typed-error review.",
+      "review": "Independent review found all Keychain errors treated missing; dedicated typed namespace reader fixed exact not-found distinction. Re-review found no remaining concrete blocker. No actual OS Keychain test.",
+      "actualSQL": "83932 actual backup/PG/helper normalstop/Lifecycle completed journal/reopen/preservation stages PASS on imagef614f3d;3encrypted files, no original private configuration in restore input. Synthetic source0frozen rows.",
+      "hostHarness": "83932 overall wrapper exit1 after SQL completion and receipt save: host-only scrub referenced deliberately absent optional config. Original fixture/receipt retained. Corrected optional cleanup Node syntax/execution and journal/readback exit0, no SQL repeat; do not call full driver pass.",
+      "nativePackage": "33946 exit0 resources/inventory/strict ad-hoc signature PASS; app not launched, no Keychain access, not DeveloperID/notarized. Qualified Viewer publication1b7 reused unchanged with original metadata.",
+      "engine": "Normal Docker stop0, subsequentps only pre-existingvmnetd528; original/source/archive/key/candidates retained."
+    },
+    "approval": "Initial Manager edit blocked because archive-reader implementation missing; no rejected action ran. Actual Platform source+32PASS supplied, scoped connection then approved. No bypass. Later independent missing-vs-denied defect corrected before actual fixture.",
+    "limits": [
+      "No actual Render/native OS Keychain/chooser/human GUI/user installation/DeveloperID/notarization.",
+      "Actual SQL source0frozen rows; previous independent65-row signature proof remains separately scoped.",
+      "Still requires original completed hosted job/per-job archive key; portable original Job import not implemented.",
+      "Original private runtime config, exact served Pages/Render artifacts and full service/installation recovery/migration/update/rollback remain incomplete. No original private secrets exported."
+    ],
+    "integration": "Code committed, scoped documentation/push pending; keep existing PR drafts and Goal active.",
+    "nativePackage": {
+      "files": 7807,
+      "bytes": 504098627,
+      "inventorySHA256": "37a5d5675f982892ce450dd4539a98ea3f2330575284e9c039804784c38482c5",
+      "exit": 0,
+      "handle": null,
+      "appLaunched": false
+    }
   }
 }
