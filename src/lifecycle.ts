@@ -74,11 +74,19 @@ export const backupStageLabel=(stage:BackupJob['stage'])=>({'preflight':'설치�
 export interface RestorationInput extends VerificationInput{port:number;freshInstallationAccepted:boolean}
 export const restorationStages=['authenticating','validating-installation','importing-images','creating-fresh-target','restoring-and-verifying','checking-runtime','complete'] as const;
 export interface RestorationJob{id:string;state:'running'|'completed'|'failed'|'interrupted';stage:typeof restorationStages[number];errorCode:string|null;createdAt:number;updatedAt:number}
-export interface RestorationReceipt{id:string;operation:'restored-and-running';backupId:string;authenticatedManifestSha256:string;bundleId:string;projectName:string;openUrl:string;at:number}
+export interface RestorationProof{inventorySha256:string;schemaSha256:string;runtimeImageSha256:string}
+export interface RestorationReceipt{id:string;operation:'restored-and-running';backupId:string;authenticatedManifestSha256:string;bundleId:string;projectName:string;openUrl:string;at:number;sourceVerification?:RestorationProof;networkSubnet?:string}
 export interface RestorationContext{fresh:boolean;job:RestorationJob|null;receipt:RestorationReceipt|null}
 export const validRestorationInput=(v:RestorationInput)=>validVerificationInput(v)&&Number.isInteger(v.port)&&v.port>=1024&&v.port<=65535&&v.freshInstallationAccepted===true;
 export function parseRestorationReceipt(v:unknown):RestorationReceipt{
- if(!object(v)||Object.keys(v).sort().join(',')!=='at,authenticatedManifestSha256,backupId,bundleId,id,openUrl,operation,projectName'||!uuid(v.id)||!uuid(v.backupId)||!uuid(v.bundleId)||v.projectName!==`exhibitos-${v.bundleId}`||v.operation!=='restored-and-running'||!digest(v.authenticatedManifestSha256)||!number(v.at)||v.at>8640000000000000||!text(v.openUrl,64)||!/^http:\/\/127\.0\.0\.1:[0-9]{4,5}$/.test(v.openUrl))throw Error('MANAGER_PROTOCOL');
+ if(!object(v)||Object.keys(v).filter(key=>key!=='sourceVerification'&&key!=='networkSubnet').sort().join(',')!=='at,authenticatedManifestSha256,backupId,bundleId,id,openUrl,operation,projectName'||!uuid(v.id)||!uuid(v.backupId)||!uuid(v.bundleId)||v.projectName!==`exhibitos-${v.bundleId}`||v.operation!=='restored-and-running'||!digest(v.authenticatedManifestSha256)||!number(v.at)||v.at>8640000000000000||!text(v.openUrl,64)||!/^http:\/\/127\.0\.0\.1:[0-9]{4,5}$/.test(v.openUrl))throw Error('MANAGER_PROTOCOL');
+ // Rust omits absent Option values; explicit null/undefined is not its wire format.
+ if(Object.hasOwn(v,'sourceVerification')){const proof=v.sourceVerification;if(!object(proof)||Object.keys(proof).sort().join(',')!=='inventorySha256,runtimeImageSha256,schemaSha256'||!digest(proof.inventorySha256)||!digest(proof.schemaSha256)||!digest(proof.runtimeImageSha256))throw Error('MANAGER_PROTOCOL');}
+ if(Object.hasOwn(v,'networkSubnet')){
+  // Same canonical 10.240.0.0/16, /28-only pool as restoration_network::policy_subnet.
+  const match=typeof v.networkSubnet==='string'?/^10\.240\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\/28$/.exec(v.networkSubnet):null;
+  if(!match||Number(match[1])>255||Number(match[2])>255||Number(match[2])%16!==0)throw Error('MANAGER_PROTOCOL');
+ }
  const port=Number(v.openUrl.split(':').at(-1));if(port<1024||port>65535||String(port)!==v.openUrl.split(':').at(-1))throw Error('MANAGER_PROTOCOL');
  return v as unknown as RestorationReceipt;
 }

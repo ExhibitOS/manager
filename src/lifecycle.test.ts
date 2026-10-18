@@ -51,6 +51,16 @@ describe('Fresh restoration native boundary',()=>{
   expect(parseRestorationReceipt(restored).openUrl).toBe('http://127.0.0.1:4500');
   for(const value of [{...restored,operation:'verified'},{...restored,openUrl:'https://example.com'},{...restored,openUrl:'http://127.0.0.1:4500/?secret=x'},{...restored,openUrl:'http://127.0.0.1:80'},{...restored,projectName:'foreign'},{...restored,private:'secret'}])expect(()=>parseRestorationReceipt(value)).toThrow('MANAGER_PROTOCOL');
  });
+ it('accepts current native optional restoration receipt fields without weakening the legacy contract',()=>{
+  // Native RestorationReceipt serializes these exact camelCase optional fields;
+  // normal restoration always includes networkSubnet (restoration.rs).
+  const sourceVerification={inventorySha256:'c'.repeat(64),schemaSha256:'d'.repeat(64),runtimeImageSha256:'e'.repeat(64)};
+  for(const receipt of [restored,{...restored,networkSubnet:'10.240.0.0/28'},{...restored,sourceVerification},{...restored,networkSubnet:'10.240.255.240/28',sourceVerification}]){
+   expect(parseRestorationReceipt(receipt)).toEqual(receipt);
+   expect(parseRestorationContext({fresh:false,job:restoredJob,receipt}).receipt).toEqual(receipt);
+  }
+  for(const extra of [{networkSubnet:null},{networkSubnet:'10.240.0.1/28'},{networkSubnet:'10.240.0.0/24'},{networkSubnet:'10.241.0.0/28'},{networkSubnet:'010.240.0.0/28'},{networkSubnet:'10.240.0.00/28'},{networkSubnet:'10.240.256.0/28'},{networkSubnet:'10.240.0.0/28\n'},{sourceVerification:null},{sourceVerification:{}},{sourceVerification:{...sourceVerification,private:'forbidden'}},{sourceVerification:{...sourceVerification,inventorySha256:'c'.repeat(63)}},{sourceVerification:{...sourceVerification,runtimeImageSha256:'E'.repeat(64)}},{networkSubnet:'10.240.0.0/28',extra:true}])expect(()=>parseRestorationReceipt({...restored,...extra})).toThrow('MANAGER_PROTOCOL');
+ });
  it('requires completed history to bind an actual receipt and fences incomplete candidates',()=>{
   expect(parseRestorationContext({fresh:true,job:null,receipt:null}).fresh).toBe(true);
   expect(parseRestorationContext({fresh:false,job:restoredJob,receipt:restored}).receipt?.backupId).toBe(creation.backupId);

@@ -6,9 +6,10 @@ for(const scenario of ['success','failure','malformed','wrong-port'] as const)te
   type Fixture=Window&{__restoreInputs:unknown[];__restoreResolve:()=>void;__restoreRefresh:()=>void;__restoreCalls:string[]};
   const f=window as unknown as Fixture;f.__restoreInputs=[];f.__restoreCalls=[];
   let attempted=false;
-  const receipt={id:'12345678-1234-1234-1234-123456789012',operation:'restored-and-running',backupId:'23456789-1234-1234-1234-123456789012',authenticatedManifestSha256:'b'.repeat(64),bundleId:'34567890-1234-1234-1234-123456789012',projectName:'exhibitos-34567890-1234-1234-1234-123456789012',openUrl:'http://127.0.0.1:4500',at:2};
+  const receipt={id:'12345678-1234-1234-1234-123456789012',operation:'restored-and-running',backupId:'23456789-1234-1234-1234-123456789012',authenticatedManifestSha256:'b'.repeat(64),bundleId:'34567890-1234-1234-1234-123456789012',projectName:'exhibitos-34567890-1234-1234-1234-123456789012',openUrl:'http://127.0.0.1:4500',at:2,networkSubnet:'10.240.0.16/28',sourceVerification:{inventorySha256:'c'.repeat(64),schemaSha256:'d'.repeat(64),runtimeImageSha256:'e'.repeat(64)}};
   Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string,args?:{input:unknown})=>{
    f.__restoreCalls.push(cmd);
+   if(cmd==='manager_external_restore'&&(args?.input as {action?:string}|undefined)?.action==='context')return {sources:[],checks:[]};
    if(cmd==='manager_maintenance_context')return null;
    if(cmd==='manager_maintenance_retries')return [];
    if(cmd==='manager_helper_reconciliations')return [];
@@ -62,7 +63,8 @@ for(const scenario of ['success','failure','malformed','wrong-port'] as const)te
 
 for(const state of ['completed','failed','interrupted','running','malformed','unavailable'] as const)test(`persisted restoration ${state} fences unsafe writes and never invents success`,async({page})=>{
  await page.addInitScript(({state})=>{
-  Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
+  Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string,args?:{input:unknown})=>{
+   if(cmd==='manager_external_restore'&&(args?.input as {action?:string}|undefined)?.action==='context')return {sources:[],checks:[]};
    if(cmd==='manager_maintenance_context')return null;
    if(cmd==='manager_maintenance_retries')return [];
    if(cmd==='manager_helper_reconciliations')return [];
@@ -73,7 +75,7 @@ for(const state of ['completed','failed','interrupted','running','malformed','un
    if(cmd==='manager_backup_tool')return null;
    if(cmd==='manager_restoration_context'){
     if(state==='unavailable')throw {code:'STATE_UNAVAILABLE',guidance:'기록을 확인하세요.'};
-    const receipt={id:'12345678-1234-1234-1234-123456789012',operation:'restored-and-running',backupId:'23456789-1234-1234-1234-123456789012',authenticatedManifestSha256:'b'.repeat(64),bundleId:'34567890-1234-1234-1234-123456789012',projectName:'exhibitos-34567890-1234-1234-1234-123456789012',openUrl:'http://127.0.0.1:4500',at:2};
+    const receipt={id:'12345678-1234-1234-1234-123456789012',operation:'restored-and-running',backupId:'23456789-1234-1234-1234-123456789012',authenticatedManifestSha256:'b'.repeat(64),bundleId:'34567890-1234-1234-1234-123456789012',projectName:'exhibitos-34567890-1234-1234-1234-123456789012',openUrl:'http://127.0.0.1:4500',at:2,networkSubnet:'10.240.0.16/28',sourceVerification:{inventorySha256:'c'.repeat(64),schemaSha256:'d'.repeat(64),runtimeImageSha256:'e'.repeat(64)}};
     return {fresh:false,job:{id:receipt.id,state:state==='malformed'?'completed':state,stage:state==='completed'||state==='malformed'?'complete':'restoring-and-verifying',errorCode:['failed','interrupted'].includes(state)?'INTERRUPTED':null,createdAt:1,updatedAt:2},receipt:state==='completed'?receipt:null};
    }
    throw Error('Unexpected mutation');

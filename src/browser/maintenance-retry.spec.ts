@@ -23,9 +23,10 @@ for(const scenario of ['backup','restoration','cancel-restoration','ownership-fa
     if(scenario==='ownership-failure'){history.push({...audit,newJobId:null,errorCode:'OWNERSHIP_CONFLICT'});throw {code:'OWNERSHIP_CONFLICT',guidance:'소유권이 확인되지 않아 재시도하지 않았습니다.'};}
     history.push({...audit,state:'completed',errorCode:null});
     const image=(args.input as {image:string}).image;
-    const result=kind==='backup'?{id:scenario==='wrong-child'?targetId:child,backupId:id,operation:'created-and-authenticated',files:11,image,authenticatedManifestSha256:'a'.repeat(64),writersPaused:true,at:2}:{id:child,backupId:id,operation:'restored-and-running',bundleId:id,projectName:`exhibitos-${id}`,openUrl:'http://127.0.0.1:4512',authenticatedManifestSha256:'a'.repeat(64),at:2};
+    const result=kind==='backup'?{id:scenario==='wrong-child'?targetId:child,backupId:id,operation:'created-and-authenticated',files:11,image,authenticatedManifestSha256:'a'.repeat(64),writersPaused:true,at:2}:{id:child,backupId:id,operation:'restored-and-running',bundleId:id,projectName:`exhibitos-${id}`,openUrl:'http://127.0.0.1:4512',authenticatedManifestSha256:'a'.repeat(64),at:2,networkSubnet:'10.240.0.32/28'};
     return {id,targetId,newJobId:child,kind,dataPreserved:true,result};
    }
+   if(cmd==='manager_external_restore'&&(args.input as {action?:string}|undefined)?.action==='context')return {sources:[],checks:[]};
    throw Error('Unexpected synthetic command');
   }}});
  },{scenario});
