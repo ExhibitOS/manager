@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Trusted-bundle desktop lifecycle. No shell, arbitrary compose paths or destructive volume removal.
 pub mod backup_creation;
+pub mod hosted_backup;
 mod cached_install;
 mod backup_key;
 pub mod backup_export;
@@ -776,6 +777,18 @@ fn run_observed_stream(
     seconds: u64,
     files: (Option<File>, Option<File>),
     streamed: Option<(Box<dyn Read + Send>, u64)>,
+    observe: impl FnMut() -> Result<()>,
+) -> Result<Vec<u8>> {
+    run_observed_stream_environment(binary, args, cwd, seconds, files, streamed, false, observe)
+}
+fn run_observed_stream_environment(
+    binary: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    seconds: u64,
+    files: (Option<File>, Option<File>),
+    streamed: Option<(Box<dyn Read + Send>, u64)>,
+    private_environment: bool,
     mut observe: impl FnMut() -> Result<()>,
 ) -> Result<Vec<u8>> {
     let (input, extra) = files;
@@ -792,6 +805,9 @@ fn run_observed_stream(
         PathBuf::from(binary)
     };
     let mut command = process_window::background_command(executable);
+    if private_environment {
+        command.env_clear().env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+    }
     if binary == "docker" { local_network::pin_command(&mut command)?; }
     if matches!(binary, "docker" | "podman") {
         let mut paths: Vec<PathBuf> =
@@ -963,6 +979,9 @@ fn run_observed_stream(
         return Err(err("ENGINE_OUTPUT_LIMIT"));
     }
     if !status.success() {
+        if private_environment {
+            return Err(hosted_backup::runner_error(if a.0 == 0 { &a.1 } else { &b.1 }));
+        }
         let text = format!(
             "{} {}",
             String::from_utf8_lossy(&a.1),
@@ -1113,6 +1132,7 @@ impl LifecycleService {
         drop(service.lock()?);
         service.recover_jobs()?;
         service.recover_backup_jobs()?;
+        service.recover_hosted_backups()?;
         service.recover_restoration()?;
         service.recover_helper_reconciliations()?;
         service.recover_maintenance_cancellation()?;

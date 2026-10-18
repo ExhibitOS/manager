@@ -4,6 +4,7 @@ mod maintenance_picker;
 mod processing_app;
 mod remote;
 mod hosted;
+mod hosted_recovery;
 mod publication;
 mod platform_runtime;
 mod engine_preparation;
@@ -52,6 +53,17 @@ async fn blocking<T: Send + 'static>(
     tauri::async_runtime::spawn_blocking(move || state.with_current(&selection_token, task))
         .await
         .map_err(|_| error("MANAGER_OPERATION"))?
+}
+#[tauri::command]
+async fn manager_hosted_recovery(window:WebviewWindow,app:tauri::AppHandle,state:State<'_,DesktopState>,selection_token:String,input:hosted_recovery::Input)->Result<hosted_recovery::Context,LifecycleError>{
+ caller(&window)?;let resources=app.path().resource_dir().map_err(|_|error("HOSTED_RUNTIME_UNAVAILABLE"))?;let controller=state.0.clone();
+ tauri::async_runtime::spawn_blocking(move||{
+  #[cfg(target_os="macos")]
+  if matches!(input.action,hosted_recovery::Action::ExportArchive){let id=input.job_id.ok_or_else(||error("HOSTED_RECOVERY_REQUEST"))?;let saved=hosted_recovery::export_archive(&controller,&selection_token,&id)?;return controller.with_current(&selection_token,|service|Ok(hosted_recovery::Context{source:None,jobs:service.hosted_backup_jobs()?,key_saved:false,archive_saved:saved}));}
+  #[cfg(target_os="macos")]
+  if matches!(input.action,hosted_recovery::Action::ExportKey){let id=input.job_id.ok_or_else(||error("HOSTED_RECOVERY_REQUEST"))?;let saved=hosted_recovery::export_key(&controller,&selection_token,&id)?;return controller.with_current(&selection_token,|service|Ok(hosted_recovery::Context{source:None,jobs:service.hosted_backup_jobs()?,key_saved:saved,archive_saved:None}));}
+  controller.with_current(&selection_token,|service|hosted_recovery::operation(&resources,service,input))
+ }).await.map_err(|_|error("MANAGER_OPERATION"))?
 }
 #[tauri::command]
 async fn manager_processing_app(window:WebviewWindow,app:tauri::AppHandle,action:processing_app::Action)->Result<processing_app::Context,LifecycleError>{
@@ -888,6 +900,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             manager_status,
             manager_processing_app,
+            manager_hosted_recovery,
             manager_hosted,
             manager_publication_catalog,
             manager_publication_export,

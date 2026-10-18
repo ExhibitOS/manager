@@ -83,7 +83,8 @@ mod native {
         }
     }
     fn query(provider: &str) -> Result<Owned, ()> {
-        if !matches!(provider, "cloudflare" | "render" | "hosted-work")
+        let backup=provider.strip_prefix("render-backup-key-").is_some_and(|id|id.len()==36&&id.bytes().enumerate().all(|(i,b)|if [8,13,18,23].contains(&i){b==b'-'}else{b.is_ascii_digit()||(b'a'..=b'f').contains(&b)}));
+        if !backup && !matches!(provider, "cloudflare" | "render" | "hosted-work")
             && !(provider.starts_with("render-runtime-")
                 && provider.len() == 79
                 && provider[15..].bytes().all(|b| b.is_ascii_hexdigit()))

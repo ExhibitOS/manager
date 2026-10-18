@@ -13,6 +13,7 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "manager_status",
             "manager_processing_app",
+            "manager_hosted_recovery",
             "manager_publication_catalog",
             "manager_publication_export",
             "manager_hosted",

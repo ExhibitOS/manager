@@ -1,0 +1,73 @@
+{
+  "observedAt": "2026-10-18T01:53:08.256212+00:00",
+  "status": "IMPLEMENTED_LOCAL_REGRESSION_PASSED_NOT_ACTUAL_RENDER_OR_NATIVE_GUI",
+  "tasks": [
+    "T08-01",
+    "T08-02",
+    "T08-03",
+    "T10-04"
+  ],
+  "implemented": [
+    "Source-bound hosted jobs preserve their actual remote source class; no local installation receipt fabrication.",
+    "Shared existing deployment BUSY guard and expected source comparison prevent stale-target creation. Source changes invalidate writer-stop acknowledgement in UI.",
+    "Existing maintenance cancellation and exact owned image/name/labels/mounts/resource checks extend to hosted jobs; partial candidates retained.",
+    "Job storage budget replaces unjustified fixed 34GiB cap; DB dump remains32GiB with separately budgeted objects.",
+    "Explicit completed encrypted archive copy uses existing nofollow/private FD/hash/readback/exclusive publish path, fixed hosted source, 100000-file contract and6GiB floor. Local8GiB/10000 limits unchanged; hosted dump cipher allows existing32GiB+20header+16tag.",
+    "Native file chooser and keychain separation; no raw secret crosses IPC. No remote mutation, keychain access or chooser execution in these checks."
+  ],
+  "checks": {
+    "archiveCopy": {
+      "passed": 7,
+      "includesHostedWithoutLocalBundle": true
+    },
+    "hostedLifecycle": {
+      "passed": 5
+    },
+    "nativeHosted": {
+      "passed": 12,
+      "includesSharedBusyAndStaleTarget": true
+    },
+    "typescript": {
+      "passed": true
+    },
+    "closedProtocol": {
+      "passed": 2
+    },
+    "targetedLint": {
+      "passed": true
+    },
+    "diffCheck": {
+      "passed": true
+    }
+  },
+  "rawEvidence": [
+    {
+      "path": "/private/tmp/manager-hosted-export-final-check.log",
+      "sha256": "51cb79ee1d1f7e91dcba69e692ac75c6af232eec2a3138bcafad540f8b7e4411"
+    },
+    {
+      "path": "/private/tmp/manager-hosted-export-final-check.json",
+      "sha256": "0c88ad792136446829897afee318869494f9241e8bae379844b088eaf44627b3"
+    },
+    {
+      "path": "/private/tmp/manager-hosted-export-cipher-bound-check.log",
+      "sha256": "ff00041f8ab1b3a8946b5dc7c039f951a389aa3c758b78e9dd3b8a59eda418dd"
+    },
+    {
+      "path": "/private/tmp/manager-hosted-export-ui-check.log",
+      "sha256": "0bd6473f98c68baa735cea4f1e6ddd8671812386a0fd0c7f3e2fd8a79e3ff7ca"
+    },
+    {
+      "path": "/private/tmp/manager-hosted-export-lint.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "notVerified": [
+    "Actual Render account/source DB connectivity and external IP policy",
+    "Actual native OS picker, keychain roundtrip, cancellation or relaunch",
+    "Fresh restore/migration/update/rollback using this hosted source",
+    "Actual pinned helper image and real SQL/encryption independent restore: preparation only",
+    "All affected GUI flows and first-release acceptance remain incomplete"
+  ],
+  "sourceReview": "Independent read review found consent inheritance; corrected. No additional concrete export boundary blocker found. Review is not runtime evidence."
+}

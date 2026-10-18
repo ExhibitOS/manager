@@ -588,8 +588,24 @@ impl InstallationController {
         })
     }
     /// Copy only the current completed backup while selection remains pinned.
+    #[cfg(target_os="macos")]
+    pub fn save_hosted_backup_key(&self,token:&str,id:&str,path:&Path,bytes:&[u8;32])->Result<()> {
+        self.with_current(token,|service|{
+            let _operation=service.lock()?;
+            service.hosted_backup_job(id)?;
+            let protected=self.profile.as_ref().map(|profile|profile.root.as_path()).unwrap_or(service.root.as_path());
+            super::backup_key::save_existing(path,protected,&service.root,bytes)
+        })
+    }
+    /// Copy only the current completed backup while selection remains pinned.
     pub fn export_backup(&self,token:&str,id:&str,parent:&Path)->Result<super::backup_export::ExportReceipt>{
         self.with_current(token,|service|{let protected=self.profile.as_ref().map(|profile|profile.root.as_path()).unwrap_or(service.root.as_path());service.export_backup(protected,id,parent)})
+    }
+    pub fn export_hosted_backup(&self, token:&str, id:&str, parent:&Path)->Result<super::backup_export::ExportReceipt> {
+        self.with_current(token, |service| {
+            let protected=self.profile.as_ref().map(|p|p.root.as_path()).unwrap_or(service.root.as_path());
+            service.export_hosted_backup(protected,id,parent)
+        })
     }
     // Diagnosis must remain available when ordinary startup rejects an incomplete candidate.
     fn with_retry_diagnostics<T>(

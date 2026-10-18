@@ -9,6 +9,7 @@
   "permissions": [
     "allow-manager-status",
     "allow-manager-processing-app",
+    "allow-manager-hosted-recovery",
     "allow-manager-remote",
     "allow-manager-remote-available",
     "allow-manager-remote-cancel",

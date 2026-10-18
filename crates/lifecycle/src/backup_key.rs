@@ -15,6 +15,14 @@ fn create_with_hook(
     installation: &Path,
     before_open: impl FnOnce(),
 ) -> Result<()> {
+    write_with_hook(path, profile, installation, None, before_open)
+}
+#[cfg(target_os = "macos")]
+pub(super) fn save_existing(path:&Path,profile:&Path,installation:&Path,bytes:&[u8;32])->Result<()> {
+    write_with_hook(path,profile,installation,Some(*bytes),||{})
+}
+#[cfg(target_os = "macos")]
+fn write_with_hook(path:&Path,profile:&Path,installation:&Path,existing:Option<[u8;32]>,before_open:impl FnOnce())->Result<()> {
     use aes_gcm::aead::{rand_core::RngCore, OsRng};
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::{
@@ -96,10 +104,8 @@ fn create_with_hook(
     {
         return Err(failure("BACKUP_KEY_PATH_INVALID"));
     }
-    let mut bytes = [0u8; 32];
-    OsRng
-        .try_fill_bytes(&mut bytes)
-        .map_err(|_| failure("BACKUP_KEY_RANDOM_UNAVAILABLE"))?;
+    let mut bytes = existing.unwrap_or([0u8;32]);
+    if existing.is_none(){OsRng.try_fill_bytes(&mut bytes).map_err(|_| failure("BACKUP_KEY_RANDOM_UNAVAILABLE"))?;}
     let fd = unsafe {
         libc::openat(
             directory.as_raw_fd(),

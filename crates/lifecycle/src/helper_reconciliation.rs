@@ -43,6 +43,7 @@ fn names(kind: &str, id: &str) -> Result<(String, String)> {
     let (prefix, label) = match kind {
         "backup" => ("exhibitos-backup", "com.exhibitos.backup"),
         "restoration" => ("exhibitos-restore", "com.exhibitos.restoration"),
+        "hosted-backup" => ("exhibitos-hosted-backup", "com.exhibitos.hosted-backup"),
         _ => return Err(err("RECONCILIATION_INPUT_INVALID")),
     };
     if !uuid(id) {
@@ -445,7 +446,10 @@ impl LifecycleService {
     }
     pub(crate) fn reconciliation_target(&self, kind: &str, id: &str) -> Result<()> {
         names(kind, id)?;
-        let (target, state, stage, created, updated, error) = if kind == "backup" {
+        let (target, state, stage, created, updated, error) = if kind == "hosted-backup" {
+            let job=self.hosted_backup_job(id)?;
+            (job.id,job.state,job.stage,job.created_at,job.updated_at,job.error_code)
+        } else if kind == "backup" {
             let bytes = source_bytes(
                 &self.root,
                 &format!("backup-creation-{id}/job.json"),
@@ -636,6 +640,10 @@ impl LifecycleService {
         mut command: impl FnMut(&[String]) -> Result<Vec<u8>>,
     ) -> Result<String> {
         let (name, label) = names(kind, target)?;
+        if kind=="hosted-backup" {
+            self.stop_owned_hosted_backup(target)?;
+            return self.hosted_helper_state(&self.hosted_backup_job(target)?);
+        }
         // Absence requires successful scoped engine queries, never a failed inspect.
         let ids = list(&mut command, &name, &label, target)?;
         let Some(id) = ids.first() else {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import {useEffect,useRef,useState} from 'react';
 import {LocalPublicationPicker} from './LocalPublicationPicker';
+import {HostedRecovery} from './HostedRecovery';
 import {hostedClient,hostedFailure,hostedUncertain,type HostedProvider,type HostedAccount,type HostedReceipt,type HostedSource,type HostedResource,type HostedResume} from './hosted-deployment';
 const name=(provider:HostedProvider)=>provider==='cloudflare'?'Cloudflare':'Render';
 function ProviderConnection({provider,disabled,onAccount}:{provider:HostedProvider;disabled:boolean;onAccount:(id:string)=>void}){
@@ -72,5 +73,6 @@ export function HostedDeployment({selectionToken}:{selectionToken?:string}){
  {error&&<p role="alert">{error}</p>}{mode==='api'&&uncertain&&<p>생성 여부가 불확실해 새 배포를 멈췄습니다. 제공자의 실제 상태와 기존 서비스 목록을 먼저 확인하세요.</p>}
  {apiReceipt&&<p role="status">API 상태: {apiReceipt.state==='deployed'?'제공자 배포 완료 · 실제 API 응답은 별도 확인':apiReceipt.state==='deploying'?'준비 중':'완료 확인 필요'}{apiReceipt.expiresAt?` · 제공자가 알려 준 만료일: ${new Date(apiReceipt.expiresAt).toLocaleDateString()}`:''}<button type="button" disabled={working} onClick={()=>void refreshApi()}>API 상태 다시 확인</button></p>}
  {receipt&&<div role="status"><h3>{receipt.state==='ready'?(mode==='static'?'전시 배포 확인 완료':'정적 전시 배포 완료 · API 데이터 연결 미완료'):receipt.state==='deploying'?'전시 배포 진행 중':'배포 완료 확인 필요'}</h3>{receipt.state==='ready'&&receipt.url&&<p><button type="button" onClick={()=>void hostedClient.openUrl(receipt.url!).catch(()=>setError('공개 전시를 열지 못했습니다. 배포 상태를 다시 확인하세요.'))}>공개 전시 열기</button></p>}{receipt.deploymentId&&<button type="button" disabled={working} onClick={()=>void refresh()}>배포 상태 다시 확인</button>}<p>준비 중이거나 응답이 불확실하면 배포가 없었다고 가정하지 마세요. 제공자에서 실제 상태를 확인하세요.</p></div>}
+ {mode==='api'&&<HostedRecovery selectionToken={selectionToken}/>}
  </section>;
 }

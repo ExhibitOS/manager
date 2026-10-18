@@ -17,11 +17,15 @@ static BUSY: AtomicBool = AtomicBool::new(false);
 pub fn busy() -> bool {
     BUSY.load(Ordering::Acquire)
 }
-struct Busy;
+pub(crate) struct Busy;
 impl Drop for Busy {
     fn drop(&mut self) {
         BUSY.store(false, Ordering::Release);
     }
+}
+pub(crate) fn hold_operation() -> Result<Busy, LifecycleError> {
+    if BUSY.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() { return Err(refused("HOSTED_BUSY")); }
+    Ok(Busy)
 }
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -639,7 +643,7 @@ pub fn resume_remote(resources: PathBuf) -> Result<Option<ResumeInfo>, Lifecycle
     resume_local()
 }
 
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for chunk in bytes.chunks(3) {
@@ -660,6 +664,14 @@ fn base64(bytes: &[u8]) -> String {
         });
     }
     out
+}
+pub(crate) fn recovery_source()->Result<exhibitos_lifecycle::hosted_backup::Source,LifecycleError>{
+    let work=load_work()?.ok_or_else(||refused("HOSTED_WORK_UNAVAILABLE"))?;
+    let request=work.api_request.or_else(||matches!(work.request.provider,Provider::Render).then_some(work.request)).ok_or_else(||refused("HOSTED_RECOVERY_REQUEST"))?;
+    let receipt=work.api_receipt.ok_or_else(||refused("HOSTED_RECOVERY_REQUEST"))?;
+    let source=exhibitos_lifecycle::hosted_backup::Source{workspace_id:request.workspace_id.ok_or_else(||refused("HOSTED_RECOVERY_REQUEST"))?,service_id:receipt["serviceId"].as_str().ok_or_else(||refused("HOSTED_RECOVERY_REQUEST"))?.into(),postgres_id:receipt["postgresId"].as_str().or(request.postgres_id.as_deref()).ok_or_else(||refused("HOSTED_RECOVERY_REQUEST"))?.into()};
+    if request.service_id.is_some_and(|id|id!=source.service_id)||request.postgres_id.is_some_and(|id|id!=source.postgres_id){return Err(refused("HOSTED_RESOURCE_CONFLICT"));}
+    source.validate()?;Ok(source)
 }
 fn runtime_configuration(
     workspace: &str,
@@ -774,13 +786,7 @@ pub fn execute(
     if !valid_request(&request) {
         return Err(refused("HOSTED_REQUEST_INVALID"));
     }
-    if BUSY
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return Err(refused("HOSTED_BUSY"));
-    }
-    let _busy = Busy;
+    let _busy = hold_operation()?;
     let manifest: serde_json::Value =
         serde_json::from_str(option_env!("EXHIBITOS_REMOTE_RUNTIME_MANIFEST").unwrap_or("{}"))
             .map_err(|_| refused("HOSTED_RUNTIME_UNAVAILABLE"))?;
@@ -1057,6 +1063,14 @@ pub fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_operation_guard_refuses_concurrent_deploy_and_backup() {
+        let first=hold_operation().unwrap();
+        assert!(matches!(hold_operation(),Err(e) if e.code=="HOSTED_BUSY"));
+        drop(first);
+        assert!(hold_operation().is_ok());
+    }
+
     #[test]
     fn native_io_failures_keep_uncertainty_and_hide_system_error_text() {
         struct FailedWriter;

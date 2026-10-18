@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-hosted-recovery"
+description = "Enables the manager_hosted_recovery command without any pre-configured scope."
+commands.allow = ["manager_hosted_recovery"]
+
+[[permission]]
+identifier = "deny-manager-hosted-recovery"
+description = "Denies the manager_hosted_recovery command without any pre-configured scope."
+commands.deny = ["manager_hosted_recovery"]

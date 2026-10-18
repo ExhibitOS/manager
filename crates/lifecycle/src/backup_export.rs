@@ -14,7 +14,7 @@ fn failure(code: &str) -> LifecycleError {
     LifecycleError{code:code.into(),guidance:"백업 사본을 보관하지 못했어요. 원래 백업과 키는 유지됩니다. 설치·백업 폴더 밖의 다른 위치나 남은 공간을 확인하고 이 백업의 보관만 다시 시도하세요. 실패한 부분 사본은 보존되며 완료 사본이 아닙니다.".into()}
 }
 #[cfg(target_os = "macos")]
-mod native {
+pub(crate) mod native {
     use super::*;
     use std::os::{
         fd::{AsRawFd, FromRawFd},
@@ -67,7 +67,7 @@ mod native {
         }
         Ok(hash.finalize().into())
     }
-    fn check(directory: &File, path: &Path) -> Result<()> {
+    pub(crate) fn check(directory: &File, path: &Path) -> Result<()> {
         let mut actual = [0u8; libc::PATH_MAX as usize];
         if unsafe { libc::fcntl(directory.as_raw_fd(), libc::F_GETPATH, actual.as_mut_ptr()) } < 0 {
             return Err(failure("BACKUP_EXPORT_PATH_CHANGED"));
@@ -114,7 +114,7 @@ mod native {
         }
         Ok(())
     }
-    fn regular(file: &File) -> Result<fs::Metadata> {
+    fn regular(file: &File, maximum_file_bytes: u64) -> Result<fs::Metadata> {
         let m = file
             .metadata()
             .map_err(|_| failure("BACKUP_EXPORT_SOURCE_CHANGED"))?;
@@ -123,7 +123,7 @@ mod native {
             || m.mode() & 0o7777 != 0o600
             || m.uid() != unsafe { libc::geteuid() }
             || m.len() == 0
-            || m.len() > 8 * 1024 * 1024 * 1024
+            || m.len() > maximum_file_bytes
         {
             return Err(failure("BACKUP_EXPORT_SOURCE_CHANGED"));
         }
@@ -150,6 +150,17 @@ mod native {
         receipt: &backup_creation::BackupCreationReceipt,
         before_open: impl FnOnce(),
     ) -> Result<ExportReceipt> {
+        let manifest: BundleManifest = read_json(&root.join("bundle/manifest.json"))?;
+        copy_archive(root, profile, parent,
+            &root.join(format!("backup-creation-{}/archive", receipt.id)),
+            &receipt.id, &receipt.backup_id, receipt.files, 10000,
+            manifest.minimum_free_bytes, 8 * 1024 * 1024 * 1024, before_open)
+    }
+    pub(super) fn copy_archive(
+        root: &Path, profile: &Path, parent: &Path, source_path: &Path,
+        job_id: &str, backup_id: &str, file_count: u64, file_limit: u64,
+        minimum_free_bytes: u64, maximum_file_bytes: u64, before_open: impl FnOnce(),
+    ) -> Result<ExportReceipt> {
         allowed(parent, profile, root)?;
         before_open();
         let output = OpenOptions::new()
@@ -159,7 +170,6 @@ mod native {
             .map_err(|_| failure("BACKUP_EXPORT_PATH_INVALID"))?;
         check(&output, parent)?;
         allowed(parent, profile, root)?;
-        let source_path = root.join(format!("backup-creation-{}/archive", receipt.id));
         let source = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -217,7 +227,7 @@ mod native {
             }
             names.push((true, n));
         }
-        if names.len() != receipt.files as usize + 3 || names.len() > 10003 {
+        if names.len() as u64 != file_count + 3 || names.len() as u64 > file_limit + 3 {
             return Err(failure("BACKUP_EXPORT_SOURCE_CHANGED"));
         }
         names.sort();
@@ -230,17 +240,16 @@ mod native {
                 false,
             )?;
             total = total
-                .checked_add(regular(&f)?.len())
+                .checked_add(regular(&f, maximum_file_bytes)?.len())
                 .ok_or_else(|| failure("BACKUP_EXPORT_SOURCE_CHANGED"))?;
         }
-        let manifest: BundleManifest = read_json(&root.join("bundle/manifest.json"))?;
         let required = total
-            .checked_add(manifest.minimum_free_bytes)
+            .checked_add(minimum_free_bytes)
             .ok_or_else(|| failure("STORAGE_INSUFFICIENT"))?;
         if fs2::available_space(parent).map_err(|_| failure("STORAGE_UNAVAILABLE"))? < required {
             return Err(failure("STORAGE_INSUFFICIENT"));
         }
-        let name = format!("ExhibitOS-backup-{}-{}", receipt.backup_id, Uuid::new_v4());
+        let name = format!("ExhibitOS-backup-{}-{}", backup_id, Uuid::new_v4());
         let stage = format!(".{name}.partial");
         let folder = mkdir(&output, &stage)?;
         let files = mkdir(&folder, "files")?;
@@ -257,7 +266,7 @@ mod native {
                 false,
                 false,
             )?;
-            let before = regular(&input)?;
+            let before = regular(&input, maximum_file_bytes)?;
             let mut target = openat(if *in_files { &files } else { &folder }, name, false, true)?;
             let created = target.metadata().map_err(|_| failure("BACKUP_EXPORT_IO"))?;
             if created.mode() & 0o7777 != 0o600
@@ -288,7 +297,7 @@ mod native {
                 hash.update(&bytes[..n]);
             }
             target.sync_all().map_err(|_| failure("BACKUP_EXPORT_IO"))?;
-            let after = regular(&input)?;
+            let after = regular(&input, maximum_file_bytes)?;
             if copied != before.len()
                 || before.dev() != after.dev()
                 || before.ino() != after.ino()
@@ -341,7 +350,7 @@ mod native {
                 false,
                 false,
             )?;
-            if regular(&f)?.len() != size {
+            if regular(&f, maximum_file_bytes)?.len() != size {
                 return Err(failure("BACKUP_EXPORT_SOURCE_CHANGED"));
             }
             if bounded_hash(&mut f, size)? != expected {
@@ -375,14 +384,14 @@ mod native {
         check(&output, parent)?;
         check(&folder, &parent.join(&name))?;
         Ok(ExportReceipt {
-            job_id: receipt.id.clone(),
-            backup_id: receipt.backup_id.clone(),
+            job_id: job_id.into(),
+            backup_id: backup_id.into(),
             path: parent
                 .join(name)
                 .to_str()
                 .ok_or_else(|| failure("BACKUP_EXPORT_PATH_INVALID"))?
                 .into(),
-            files: receipt.files + 3,
+            files: file_count + 3,
             bytes: count,
         })
     }
@@ -398,6 +407,21 @@ mod native {
     }
 }
 impl LifecycleService {
+    pub(crate) fn export_hosted_backup(&self, profile: &Path, id: &str, parent: &Path) -> Result<ExportReceipt> {
+        let _operation = self.lock()?;
+        let job = self.hosted_backup_job(id)?;
+        if job.state != "completed" || job.error_code.is_some() {
+            return Err(failure("BACKUP_EXPORT_JOB_INVALID"));
+        }
+        let receipt = job.receipt.as_ref().ok_or_else(|| failure("BACKUP_EXPORT_JOB_INVALID"))?;
+        receipt.validate(&job.source)?;
+        #[cfg(target_os = "macos")]
+        return native::copy_archive(&self.root, profile, parent,
+            &self.root.join(format!("hosted-backup-{id}/output/archive")),
+            id, &receipt.backup_id, receipt.files, 100000, 6 * 1024 * 1024 * 1024, 32 * 1024 * 1024 * 1024 + 36, || {});
+        #[cfg(not(target_os = "macos"))]
+        { let _ = (profile, parent, receipt); Err(failure("BACKUP_EXPORT_PLATFORM_UNAVAILABLE")) }
+    }
     pub(crate) fn export_backup(
         &self,
         profile: &Path,
@@ -507,6 +531,25 @@ mod tests {
             0o700
         );
         fs::remove_dir_all(base).unwrap()
+    }
+    #[test]
+    fn hosted_cipher_copy_needs_no_local_installation_receipt_or_bundle() {
+        let (base, root, parent, r) = fixture();
+        let source = root.join(format!("hosted-backup-{}/output/archive", r.id));
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::rename(root.join(format!("backup-creation-{}/archive", r.id)), &source).unwrap();
+        fs::rename(root.join("bundle"), base.join("unused-local-bundle")).unwrap();
+        assert!(native::copy_archive(&root, &root, &parent, &source, &r.id,
+            &r.backup_id, 2, 100000, 0, 32 * 1024 * 1024 * 1024 + 36, || {}).is_err());
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 0);
+        let saved = native::copy_archive(&root, &root, &parent, &source, &r.id,
+            &r.backup_id, 1, 100000, 0, 32 * 1024 * 1024 * 1024 + 36, || {}).unwrap();
+        assert_eq!(saved.job_id,r.id);
+        assert_eq!(saved.files,4);
+        for name in ["complete.json", "writing.json", "manifest.gcm", "files/00000000.gcm"] {
+            assert_eq!(fs::read(source.join(name)).unwrap(),fs::read(Path::new(&saved.path).join(name)).unwrap());
+        }
+        fs::remove_dir_all(base).unwrap();
     }
     #[test]
     fn protected_or_raced_destination_cannot_receive_ciphertext() {
