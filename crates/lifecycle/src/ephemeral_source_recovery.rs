@@ -28,10 +28,13 @@ impl ExecutionSession<'_> {
             ctx.receipt,
             ctx.plan,
         )?;
-        let first = ephemeral_inventory::observe_source(ctx, image)?;
+        let first = ephemeral_inventory::observe_source(ctx, image)
+            .map_err(|error| recovery_engine_failure(error, RecoveryEngineStage::SourceInventory))?;
         let configuration =
-            self.verify_configuration_inventory_at(image, true, true, Some(export_parent), true)?;
-        let repeated = ephemeral_inventory::observe_source(ctx, image)?;
+            self.verify_configuration_inventory_at(image, true, true, Some(export_parent), true)
+                .map_err(|error| recovery_engine_failure(error, RecoveryEngineStage::SourceConfiguration))?;
+        let repeated = ephemeral_inventory::observe_source(ctx, image)
+            .map_err(|error| recovery_engine_failure(error, RecoveryEngineStage::SourceInventory))?;
         if !candidate_inventory::copies_match(&first.physical, &repeated.physical) {
             return Err(crate::err("UPDATE_SOURCE_CHANGED"));
         }
@@ -47,11 +50,12 @@ impl ExecutionSession<'_> {
             image,
             &ctx.source_before.configuration_volume,
             &source_configuration::expected(ctx.raw)?,
-        )?;
+        ).map_err(|error| recovery_engine_failure(error, RecoveryEngineStage::SourceConfiguration))?;
         let generated =
             source_full_configuration::generated_inventory(&configuration.images, &manifest)?;
         let late_full = source_full_configuration::files(&late_files, late_key, generated)?;
-        source_images::observe(&self.source, ctx.workspace, ctx.raw)?;
+        source_images::observe(&self.source, ctx.workspace, ctx.raw)
+            .map_err(|error| recovery_engine_failure(error, RecoveryEngineStage::SourceConfiguration))?;
         if original_files != late_files
             || late_full != configuration.files
             || configuration.source_instance != ctx.plan.source_instance
@@ -63,7 +67,8 @@ impl ExecutionSession<'_> {
             return Err(crate::err("UPDATE_SOURCE_CHANGED"));
         }
         for proof in &configuration.images {
-            if crate::backup_creation::local_image("docker", &proof.reference)? != proof.content_id
+            if crate::backup_creation::local_image("docker", &proof.reference)
+                .map_err(|error| recovery_engine_failure(error, RecoveryEngineStage::SourceConfiguration))? != proof.content_id
             {
                 return Err(crate::err("UPDATE_SOURCE_IMAGES_MISMATCH"));
             }
