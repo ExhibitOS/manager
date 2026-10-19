@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,rm,realpath} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,rm,realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
 import {restoreTarget} from '../scripts/remote-target-entry.mjs';
 const sha=b=>createHash('sha256').update(b).digest('hex');
@@ -21,3 +22,13 @@ test('serialized target role or arbitrary SQL input is refused instead of wideni
 test('native work budget rejects over-budget authenticated output before SQL',async t=>{const f=await fixture(t),run=f.dependencies.worker.runRemoteBackup;f.dependencies.worker.runRemoteBackup=async(...args)=>{const out=await run(...args);if(args[0].operation==='verify')await writeFile(f.dependencies.paths.work+'/excess',Buffer.alloc(4194304));return out;};await assert.rejects(restoreTarget(f.input,f.dependencies),/HOSTED_REMOTE_RESTORE_FAILED/);assert.equal(f.restores(),0);});
 
 test('restored manifest must still match authenticated original receipt after SQL',async t=>{const f=await fixture(t),run=f.dependencies.worker.runRemoteBackup;f.dependencies.worker.runRemoteBackup=async(...args)=>{const out=await run(...args);if(args[0].operation==='restore')await writeFile(args[0].destination+'/manifest.json',JSON.stringify({id:f.input.backupId,changed:true}));return out;};await assert.rejects(restoreTarget(f.input,f.dependencies),/HOSTED_REMOTE_RESTORE_FAILED/);assert.equal(f.restores(),1);});
+
+test('relocated mounted entry resolves the real worker beside itself, without an unrelated absolute fallback',async t=>{
+ const f=await fixture(t),directory=join(f.dependencies.paths.keys,'..','mounted-entry');await mkdir(directory,{mode:0o700});
+ const entryPath=join(directory,'manager-remote-target-entry.mjs');await writeFile(entryPath,await readFile(new URL('./remote-target-entry.mjs',import.meta.url)),{mode:0o600});
+ const entry=await import(pathToFileURL(entryPath).href),dependencies={...f.dependencies};delete dependencies.worker;
+ // No fake worker is provided. This host fixture intentionally lacks the image's
+ // sibling module: assert its precise resolution, not a successful image import.
+ await assert.rejects(entry.restoreTarget(f.input,dependencies),error=>error.code==='ERR_MODULE_NOT_FOUND'&&error.url===pathToFileURL(join(directory,'remote-backup-worker.mjs')).href);
+ assert.equal(f.restores(),0);
+});

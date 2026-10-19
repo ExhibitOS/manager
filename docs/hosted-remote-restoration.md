@@ -1,6 +1,6 @@
 # Render 원격 사본 복원 연결 — 구현 후보
 
-이 문서는 기존 T08-02/T10-04의 원격 DB 복원을 연결하는 **소스 후보**의 경계입니다. 네이티브 컴파일·새 앱 패키징·실제 Render/TLS/SQL·GUI 검사 결과가 아닙니다. 기존 `check-restore`는 계속 로컬 격리 사본 검사이며 이 기능의 원격 복원 결과로 바꾸지 않습니다.
+이 문서는 기존 T08-02/T10-04의 원격 DB 복원을 연결하는 **소스 후보**의 경계입니다. 소스 검증과 실제 새 앱 패키징·Render/TLS/SQL·네이티브 GUI 검증을 구분합니다. 원격 복원 완료를 뜻하지 않습니다. 기존 `check-restore`는 계속 로컬 격리 사본 검사이며 이 기능의 원격 복원 결과로 바꾸지 않습니다.
 
 기존 완료 백업 Job의 실제 `job.json` 해시, 백업 ID, 인증된 manifest 해시, 파일 수, 원래 Render 소유자/서비스/DB를 새 내부 복원 작업에 묶습니다. 원래 공개 service-backup 형식과 Deployment의 기존 여섯 공개 action은 바꾸지 않습니다. 추가 네이티브 action은 `remote-targets`, `remote-restore`, `remote-connect`만 받으며 renderer에서 URL·토큰·키·실행 파일·SQL·worker role을 받지 않습니다.
 
@@ -21,6 +21,6 @@
 
 ## Producer / consumer와 남은 실제 확인
 
-`prepare-remote-runtime.mjs`는 고정 Node24.21.0 archive, 정확한 Deploymente4379bfe 소스, 세 개의 새 고정 script를 기존 resource manifest에 해시로 묶습니다. `remote.rs`와 `remote_restore_pins`가 같은 목록과 compile-time manifest를 검증합니다. 기존 패키지에는 이 파일들이 없으므로 정확히 unavailable이며 PATH fallback이나 임의 entry mount는 없습니다. Platform f28의 git source 계약은 확인했지만 기존 실제 maintenance image 안의 해당 모듈/권한/의존성 실행은 이 소스 작업에서 검증하지 않았습니다.
+`prepare-remote-runtime.mjs`는 고정 Node24.21.0 archive, 정확한 Deploymente4379bfe 소스, 세 개의 새 고정 script를 기존 resource manifest에 해시로 묶습니다. `remote.rs`와 `remote_restore_pins`가 같은 목록과 compile-time manifest를 검증합니다. 기존 패키지에는 이 파일들이 없으므로 정확히 unavailable이며 PATH fallback이나 임의 entry mount는 없습니다. 실제 고정 f28 maintenance image에서 `/opt/exhibitos/scripts` 경로와 worker·pg·새 entry의 import를 네트워크 없는 읽기 전용 컨테이너로 확인했습니다. 처음 `/app/scripts`를 가정한 import는 실패했고, entry 옆 worker의 상대 import와 고정 절대 entry 실행으로 정정했습니다. 이 검사는 실제 DB 권한·연결·복원을 검증하지 않습니다.
 
-실행한 검사는 작은 synthetic Node 회귀와 Rust/TS 구문 검사뿐입니다. 실제 이미지/패키지 재생성, Cargo/typecheck/GUI, provider 계정 quota/DB 권한, 실제 TLS·empty SQL·restore/inventory/authority, 실제 deploy/rollback 및 원격 중단 재조정은 총괄의 별도 통합 검증 대상입니다. 미완료 상태를 원격 복원 완료나 출시 완료로 세지 않습니다.
+소스 검증은 데스크톱 Cargo check, 전체 프런트엔드 타입 검사, 관련 Node·응답 parser 회귀, 합성 IPC를 사용하는 두 화면 크기의 실제 브라우저 조작을 포함합니다. 완료 백업별 복원 입력·동의는 원본 식별과 manifest에 묶고, 현재 배포의 백업 동의와 구분합니다. 늦은 조회와 다른 관리 공간의 응답은 현재 결과를 덮어쓰지 않습니다. 새 앱 패키징·OS 파일 선택·Keychain, 실제 provider quota/DB 권한, TLS·빈 SQL·restore/inventory/authority, deploy/rollback 및 원격 중단 재조정은 남아 있습니다. 빌드·합성 검사·모듈 import를 원격 복원 완료나 출시 완료로 세지 않습니다.
