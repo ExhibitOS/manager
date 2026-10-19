@@ -82,3 +82,10 @@ test('Cargo config after the literal separator remains local and forwards unchan
  await buildDesktop({repo,environment:{},args},{runCommand:async command=>commands.push(command)});
  assert.equal(commands.length,2);assert.deepEqual(commands[1].args.slice(4),args);
 });
+
+test('actual plan with forwarded Cargo configuration does not print argument values',()=>{
+ const secret='synthetic-forwarded-value-must-not-be-logged',args=['--','--config','env.EXHIBITOS_SYNTHETIC='+secret];
+ const result=spawnSync(process.execPath,[resolve('scripts/build-desktop.mjs'),'--plan',...args],{encoding:'utf8',env:{PATH:process.env.PATH,APPLE_SIGNING_IDENTITY:'-'},timeout:10000});
+ assert.equal(result.status,0);assert.equal(result.stderr,'');assert.equal(result.stdout.includes(secret),false);
+ const plan=JSON.parse(result.stdout);assert.equal(plan.commands,undefined);assert.deepEqual(plan.stages,['remote-prepare','tauri-build']);assert.equal(plan.forwardedArgumentCount,args.length);assert.equal(plan.buildExecuted,false);
+});

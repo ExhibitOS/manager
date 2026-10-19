@@ -66,7 +66,7 @@ export async function buildDesktop({repo,environment=process.env,planOnly=false,
    }
    progress.commandsCompleted++;
   }
-  return{format:1,distribution:'local-development',...progress,buildExecuted:progress.commandsStarted>0,productionSigned:false,notarized:false,officialReleaseQualified:false,...(planOnly?{commands}:{} )};
+  return{format:1,distribution:'local-development',...progress,buildExecuted:progress.commandsStarted>0,productionSigned:false,notarized:false,officialReleaseQualified:false,...(planOnly?{stages:['remote-prepare','tauri-build'],forwardedArgumentCount:args.length}:{} )};
  }catch(error){const failure=error instanceof Error?error:Error('DESKTOP_BUILD_FAILED');failure.desktopProgress={...progress};throw failure;}
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){

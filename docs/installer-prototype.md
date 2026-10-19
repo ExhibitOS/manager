@@ -54,7 +54,7 @@ if ($LASTEXITCODE -ne 0) { throw "Installer build failed; preserve the receipt a
 
 `desktop:build`는 기존 remote 준비 → Tauri app 빌드를 `scripts/build-desktop.mjs`로 실행합니다. 무서명, `-` ad-hoc, 이름이 명시된 Apple Development 로컬 경로는 유지합니다. Developer ID/분류할 수 없는 identity, 인증서 import·Apple 공증 설정, updater signing 설정 또는 Tauri 외부 구성 override가 있으면 remote 준비와 빌드 전에 실제 update-runtime manifest를 검사합니다. 현재 `private-validation-only` 산출물은 명시적으로 거부하며, 누락·unknown·임의 `public` 변경과 unsafe/과대 manifest도 거부합니다. 환경 변수의 값은 오류에 출력하지 않습니다. certificate SHA1의 개발 identity 확인은 기존 별도 개발 서명 도구를 사용합니다.
 
-`node scripts/build-desktop.mjs --plan`은 같은 경계를 검사하되 준비·빌드는 실행하지 않습니다. 공식 환경에서의 거부는 현재 runtime 재배포 자격이 없다는 뜻입니다. 공식 서명·공증·공개 pipeline 구현이나 자격 완료를 의미하지 않으며 새로운 public flag나 허용 목록을 만들지 않습니다. 향후 실제 자격이 검증된 runtime과 producer/native 계약을 함께 검토해야 합니다. 직접 Tauri CLI나 외부 수동 서명을 통제하는 OS 보안 경계는 아니며, 공식 게시 전 기존 실제 승인·검증 조건은 유지합니다.
+`node scripts/build-desktop.mjs --plan`은 같은 경계를 검사하되 준비·빌드는 실행하지 않습니다. 계획 출력은 단계와 전달 인자 수만 표시하며 인자 값은 출력하지 않습니다. 공식 환경에서의 거부는 현재 runtime 재배포 자격이 없다는 뜻입니다. 공식 서명·공증·공개 pipeline 구현이나 자격 완료를 의미하지 않으며 새로운 public flag나 허용 목록을 만들지 않습니다. 향후 실제 자격이 검증된 runtime과 producer/native 계약을 함께 검토해야 합니다. 직접 Tauri CLI나 외부 수동 서명을 통제하는 OS 보안 경계는 아니며, 공식 게시 전 기존 실제 승인·검증 조건은 유지합니다.
 
 기존 `desktop:build -- --debug -- --locked` 같은 Tauri/Cargo 인자는 순서 그대로 전달합니다. 첫 literal `--` 이전의 Tauri `--config`, `-c`, `--config=…` override는 별도 구성의 서명·runtime 변경을 사전 분류할 수 없으므로 공식 의도로 검사합니다. 오류 JSON은 값 없이 `phase`, `commandsStarted`, `commandsCompleted`, `buildExecuted`로 준비 전 거부와 실제 명령 시작 뒤 실패를 구분합니다.
 
