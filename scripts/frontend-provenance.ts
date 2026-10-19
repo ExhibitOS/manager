@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import {createHash} from 'node:crypto';
 import {constants,openSync,closeSync,readSync,lstatSync,fstatSync,realpathSync,existsSync} from 'node:fs';
-import {resolve,relative,dirname,sep,posix} from 'node:path';
+import {resolve,relative,dirname,sep,posix,isAbsolute} from 'node:path';
 import type {Plugin} from 'vite';
 import type {Stats} from 'node:fs';
 
@@ -21,10 +21,18 @@ function bytes(file:string,limit:number):Buffer{
  }catch(error){if(error instanceof Error&&/^FRONTEND_PROVENANCE_[A-Z_]+$/.test(error.message))throw error;fail('INPUT_UNSAFE');}
 }
 function outputPath(name:string):string{
- if(!name||name.length>512||name.includes('\\')||name.includes('\0')||name.includes('?')||name.startsWith('/')||name.split('/').some(x=>!x||x==='.'||x==='..')||posix.normalize(name)!==name)fail('OUTPUT_PATH_UNSAFE');return name;
+ if(!name||name.length>512||name.includes('\\')||name.includes('\0')||name.includes('?')||isAbsolute(name)||name.split('/').some(x=>!x||x==='.'||x==='..')||posix.normalize(name)!==name)fail('OUTPUT_PATH_UNSAFE');return name;
 }
-function relativePath(root:string,file:string):string{
- const name=relative(root,file).split(sep).join('/');outputPath(name);return name;
+type PathPolicy=Pick<typeof import('node:path'),'resolve'|'relative'|'sep'|'isAbsolute'>;
+const nativePaths:PathPolicy={resolve,relative,sep,isAbsolute};
+export function nativeModuleFile(file:string,paths:PathPolicy=nativePaths):string{
+ if(!paths.isAbsolute(file)||file.includes('\0')||file.includes('#'))fail('MODULE_ID_UNSUPPORTED');
+ const native=paths.resolve(file);
+ // Convert producer separators only; do not resolve aliases past the realpath/symlink check.
+ if(native.split(paths.sep).join('/')!==file.split(paths.sep).join('/'))fail('MODULE_ID_UNSUPPORTED');return native;
+}
+export function relativePath(root:string,file:string,paths:PathPolicy=nativePaths):string{
+ const name=paths.relative(root,file).split(paths.sep).join('/');if(paths.isAbsolute(name))fail('OUTPUT_PATH_UNSAFE');outputPath(name);return name;
 }
 function parse(file:string,limit:number):{data:any;sha256:string}{
  const raw=bytes(file,limit);try{return{data:JSON.parse(raw.toString('utf8')),sha256:digest(raw)};}catch{fail('INPUT_JSON_INVALID');}
@@ -82,9 +90,8 @@ export function createFrontendProvenance(rootInput:string,bundle:Bundle){
     const virtual=id.startsWith('\0'),plain=virtual?id.slice(1):id,index=plain.indexOf('?'),file=index<0?plain:plain.slice(0,index),query=index<0?undefined:plain.slice(index+1);
     if(query!==undefined&&!queries.has(query))fail('MODULE_QUERY_UNSUPPORTED');
     if(virtual&&(!query||!query.startsWith('commonjs-')))fail('VIRTUAL_MODULE_UNKNOWN');
-    if(!file.startsWith('/')||file.includes('\0')||file.includes('#'))fail('MODULE_ID_UNSUPPORTED');
-    const path=relativePath(root,file),source=bytes(file,8*1024**2);inputs.set(path,digest(source));
-    if(path.split('/').includes('node_modules'))record={id:path,...(query?{transform:query}:{}),kind:virtual?'generated-npm-proxy':'npm',package:owner(file),sourceSHA256:digest(source)};
+    const nativeFile=nativeModuleFile(file),path=relativePath(root,nativeFile),source=bytes(nativeFile,8*1024**2);inputs.set(path,digest(source));
+    if(path.split('/').includes('node_modules'))record={id:path,...(query?{transform:query}:{}),kind:virtual?'generated-npm-proxy':'npm',package:owner(nativeFile),sourceSHA256:digest(source)};
     else{if(!(path.startsWith('src/')||path==='index.html')||path.split('/').some(s=>s.startsWith('.')))fail('LOCAL_SOURCE_UNSUPPORTED');record={id:path,...(query?{transform:query}:{}),kind:'local-source',sourceSHA256:digest(source)};}
    }
    modules.push({...record,renderedLength:rendered.renderedLength,...(typeof rendered.code==='string'?{renderedCodeSHA256:digest(rendered.code)}:{})});

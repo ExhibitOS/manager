@@ -3,9 +3,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,readFile,rm,realpath,symlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join,win32,posix} from 'node:path';
 import {createHash} from 'node:crypto';
-import {createFrontendProvenance,frontendProvenance,PROVENANCE_FILE} from './frontend-provenance.ts';
+import {createFrontendProvenance,frontendProvenance,PROVENANCE_FILE,nativeModuleFile,relativePath} from './frontend-provenance.ts';
 const hash=data=>createHash('sha256').update(data).digest('hex');
 async function fixture(t){
  const root=await mkdtemp(join(await realpath(tmpdir()),'exhi-front-provenance-'));t.after(()=>rm(root,{recursive:true,force:true}));
@@ -79,4 +79,26 @@ test('actual plugin emits the asset and refuses written chunk changes after gene
 test('installed Rolldown runtime.js producer ID is a specifically bound generated helper',async t=>{
  const {root,bundle}=await fixture(t);bundle['assets/main.js'].modules['\0rolldown/runtime.js']={renderedLength:12,code:'generated helper'};
  const {report,encoded}=createFrontendProvenance(root,bundle);assert.ok(report.chunks[1].modules.some(m=>m.id==='generated:rolldown/runtime'&&m.kind==='generated-tool-helper'));assert.equal(encoded.includes(root),false);
+});
+
+test('portable module policy accepts normalized Windows drive and UNC producer IDs',()=>{
+ for(const [root,id,name]of [
+  ['C:\\repo','C:/repo/src/main.tsx','src/main.tsx'],
+  ['C:\\repo','C:/repo/node_modules/react/index.js','node_modules/react/index.js'],
+  ['C:\\repo','C:\\repo\\src\\main.tsx','src/main.tsx'],
+  ['\\\\server\\share\\repo','//server/share/repo/src/main.tsx','src/main.tsx'],
+ ]){const native=nativeModuleFile(id,win32);assert.equal(native,win32.resolve(id));assert.equal(relativePath(root,native,win32),name);}
+});
+test('portable module policy refuses aliases, drive-relative and foreign scheme IDs',()=>{
+ for(const id of ['C:repo/src/main.tsx','C:/repo/src/../src/main.tsx','C:/repo/./src/main.tsx','C:/repo//src/main.tsx','file:///C:/repo/src/main.tsx','C:/repo/src/main.tsx#fragment','C:/repo/src/\0main.tsx'])assert.throws(()=>nativeModuleFile(id,win32),/FRONTEND_PROVENANCE_MODULE_ID_UNSUPPORTED/);
+});
+test('portable relative policy refuses cross-drive, cross-share and same-drive root escapes',()=>{
+ // win32.resolve('/repo') depends on the host drive; the full source policy must refuse it.
+ assert.throws(()=>relativePath('C:\\repo',nativeModuleFile('/repo/src/main.tsx',win32),win32),/FRONTEND_PROVENANCE_(MODULE_ID_UNSUPPORTED|OUTPUT_PATH_UNSAFE)/);
+ for(const [root,file]of [['C:\\repo','D:\\outside\\node_modules\\react\\index.js'],['C:\\repo','C:\\outside\\src\\main.tsx'],['\\\\server\\share\\repo','\\\\other\\share\\node_modules\\react\\index.js']])assert.throws(()=>relativePath(root,file,win32),/FRONTEND_PROVENANCE_OUTPUT_PATH_UNSAFE/);
+});
+test('portable module policy preserves POSIX canonical spelling and path-free refusals',()=>{
+ assert.equal(nativeModuleFile('/repo/src/main.tsx',posix),'/repo/src/main.tsx');assert.equal(relativePath('/repo','/repo/src/main.tsx',posix),'src/main.tsx');
+ for(const file of ['src/main.tsx','/repo/src/../src/main.tsx','/repo//src/main.tsx','/repo/./src/main.tsx'])assert.throws(()=>nativeModuleFile(file,posix),/FRONTEND_PROVENANCE_MODULE_ID_UNSUPPORTED/);
+ assert.throws(()=>relativePath('/repo','/outside/src/main.tsx',posix),/FRONTEND_PROVENANCE_OUTPUT_PATH_UNSAFE/);
 });
