@@ -7,10 +7,11 @@ pub(crate) fn canonical_backup_uuid(id: &str) -> bool {
         && (b'1'..=b'8').contains(&bytes[14]) && b"89ab".contains(&bytes[19])
 }
 fn backup_namespace(account: &str) -> bool {
-    account.starts_with("render-backup-configuration-") || account.starts_with("render-backup-key-")
+    account.starts_with("render-remote-configuration-") || account.starts_with("render-backup-configuration-") || account.starts_with("render-backup-key-")
 }
 fn add_backup_only_with(account: &str, bytes: &[u8], add: impl FnOnce(&str,&[u8])->Result<i32,()>) -> Result<(),()> {
     let valid=if let Some(id)=account.strip_prefix("render-backup-configuration-"){canonical_backup_uuid(id) && (1..=65536).contains(&bytes.len())}
+        else if let Some(id)=account.strip_prefix("render-remote-configuration-"){canonical_backup_uuid(id) && (1..=65536).contains(&bytes.len())}
         else if let Some(id)=account.strip_prefix("render-backup-key-"){canonical_backup_uuid(id) && bytes.len()==32}else{false};
     if !valid{return Err(());}
     // Duplicate, denial and every other non-success are terminal. In particular,
@@ -106,7 +107,7 @@ mod native {
     }
     fn query(provider: &str) -> Result<Owned, ()> {
         let backup=provider.strip_prefix("render-backup-key-").is_some_and(|id|id.len()==36&&id.bytes().enumerate().all(|(i,b)|if [8,13,18,23].contains(&i){b==b'-'}else{b.is_ascii_digit()||(b'a'..=b'f').contains(&b)}));
-        let configuration=provider.strip_prefix("render-backup-configuration-").is_some_and(super::canonical_backup_uuid);
+        let configuration=provider.strip_prefix("render-backup-configuration-").is_some_and(super::canonical_backup_uuid)||provider.strip_prefix("render-remote-configuration-").is_some_and(super::canonical_backup_uuid);
         if !backup && !configuration && !matches!(provider, "cloudflare" | "render" | "hosted-work")
             && !(provider.starts_with("render-runtime-")
                 && provider.len() == 79
@@ -164,7 +165,7 @@ mod native {
     }
     pub fn load_backup_configuration(account:&str)->Result<Vec<u8>,super::BackupConfigurationReadError>{
         use super::BackupConfigurationReadError as E;
-        if !account.strip_prefix("render-backup-configuration-").is_some_and(super::canonical_backup_uuid){return Err(E::Unavailable);}
+        if !account.strip_prefix("render-backup-configuration-").or_else(||account.strip_prefix("render-remote-configuration-")).is_some_and(super::canonical_backup_uuid){return Err(E::Unavailable);}
         let query=query(account).map_err(|_|E::Unavailable)?;
         unsafe {set(&query,kSecReturnData,kCFBooleanTrue);set(&query,kSecMatchLimit,kSecMatchLimitOne);}
         let mut value=ptr::null();let status=unsafe{SecItemCopyMatching(query.0,&mut value)};
@@ -264,7 +265,7 @@ mod tests {
     }
     #[test]
     fn immutable_job_material_uses_exactly_one_add_and_preserves_input() {
-        for (prefix,bytes) in [("render-backup-key-",vec![23u8;32]),("render-backup-configuration-",b"synthetic private configuration".to_vec()),("render-backup-configuration-",vec![1u8;65536])] {
+        for (prefix,bytes) in [("render-backup-key-",vec![23u8;32]),("render-backup-configuration-",b"synthetic private configuration".to_vec()),("render-backup-configuration-",vec![1u8;65536]),("render-remote-configuration-",b"synthetic original connection".to_vec())] {
             let account=format!("{prefix}{ID}");let original=bytes.clone();let mut calls=0;
             assert_eq!(add_backup_only_with(&account,&bytes,|name,value|{calls+=1;assert_eq!(name,account);assert_eq!(value,original);Ok(0)}),Ok(()));
             assert_eq!(calls,1);assert_eq!(bytes,original);
@@ -273,7 +274,7 @@ mod tests {
     #[test]
     fn duplicate_or_denied_add_never_overwrites_or_retries_existing_material() {
         for status in [-25299,-25308,-25293,-1] {
-            let account=format!("render-backup-configuration-{ID}");let existing=b"retained original".to_vec();let before=existing.clone();let mut calls=0;
+            let account=format!("render-remote-configuration-{ID}");let existing=b"retained original".to_vec();let before=existing.clone();let mut calls=0;
             assert_eq!(add_backup_only_with(&account,b"new candidate",|_,_|{calls+=1;Ok(status)}),Err(()));
             assert_eq!(calls,1);assert_eq!(existing,before);
         }
@@ -284,10 +285,10 @@ mod tests {
         for account in ["render".to_owned(),format!("render-runtime-{ID}"),format!("render-backup-key-{}",ID.to_uppercase()),"render-backup-key-00000000-0000-0000-0000-000000000000".into(),format!("render-backup-configuration-{ID}-extra"),format!("render-backup-configuration-{ID}/other")] {
             assert_eq!(add_backup_only_with(&account,&[1u8;32],|_,_|panic!("invalid input must not call OS")),Err(()));
         }
-        for (prefix,n) in [("render-backup-key-",0),("render-backup-key-",31),("render-backup-key-",33),("render-backup-configuration-",0),("render-backup-configuration-",65537)] {
+        for (prefix,n) in [("render-backup-key-",0),("render-backup-key-",31),("render-backup-key-",33),("render-backup-configuration-",0),("render-backup-configuration-",65537),("render-remote-configuration-",0),("render-remote-configuration-",65537)] {
             assert_eq!(add_backup_only_with(&format!("{prefix}{ID}"),&vec![1u8;n],|_,_|panic!("invalid size must not call OS")),Err(()));
         }
         for account in ["cloudflare","render","hosted-work","render-runtime-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] { assert!(!backup_namespace(account)); }
-        assert!(backup_namespace(&format!("render-backup-key-{ID}")));assert!(backup_namespace(&format!("render-backup-configuration-{ID}")));
+        assert!(backup_namespace(&format!("render-remote-configuration-{ID}")));assert!(backup_namespace(&format!("render-backup-key-{ID}")));assert!(backup_namespace(&format!("render-backup-configuration-{ID}")));
     }
 }

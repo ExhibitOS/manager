@@ -3,6 +3,7 @@
 pub mod backup_creation;
 pub mod hosted_backup;
 pub mod hosted_restoration;
+pub mod hosted_remote_restoration;
 #[cfg(not(windows))]
 pub mod external_restoration;
 mod cached_install;
@@ -220,6 +221,18 @@ fn same_local_image_id(actual: &str, reference: &str) -> bool {
 }
 fn err(code: &str) -> LifecycleError {
     let guidance = match code {
+        "UPDATE_SOURCE_IMAGE_EXPORT_ENGINE_FAILED" => {
+            "업데이트 전 원본 실행 이미지의 검사 사본을 준비하지 못했습니다. 원본과 검사 사본을 보존하고 엔진 상태와 이 오류 코드를 확인하세요."
+        }
+        "UPDATE_SOURCE_CONFIGURATION_ENGINE_FAILED" => {
+            "업데이트 전 원본 설정과 이미지 연결을 확인하지 못했습니다. 원본·백업·실패 후보를 보존하고 엔진 상태와 이 오류 코드를 확인하세요."
+        }
+        "UPDATE_SOURCE_INVENTORY_ENGINE_FAILED" => {
+            "업데이트 전 원본 데이터 검사를 완료하지 못했습니다. 원본·백업·실패 후보를 보존하고 엔진 상태와 이 오류 코드를 확인하세요."
+        }
+        "UPDATE_CANDIDATE_PREFLIGHT_ENGINE_FAILED" => {
+            "업데이트 전 복구 후보 검사를 완료하지 못했습니다. 원본과 후보를 보존하고 엔진 상태와 이 오류 코드를 확인하세요."
+        }
         "UPDATE_WRITER_BLOCKED" => {
             "업데이트 또는 복구 중인 공간과 실패한 후보는 일반 실행할 수 없습니다. 원본과 실패 후보를 보존하고 검증된 복구 절차를 사용하세요."
         }

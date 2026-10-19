@@ -54,3 +54,74 @@ test('hosted backup invalidates prior-source confirmation and keeps archive copy
  await expect(prepare).toBeEnabled();await expect(panel).not.toContainText('위치: /synthetic/ExhibitOS-backup-copy');await expect(panel.getByRole('heading',{name:'암호화 사본 생성·검증 완료'})).toHaveCount(0);
  expect(errors).toEqual([]);expect(await page.evaluate(()=>Object.keys(localStorage).concat(Object.keys(sessionStorage)))).toEqual([]);
 });
+
+// Completed originals can outlive the current deployment record. These are
+// actual component interactions with synthetic IPC, never provider/OS evidence.
+test('remote originals own confirmations and reject stale or malformed IPC',async({page})=>{
+ await page.addInitScript(()=>{
+  const jobA='10000000-0000-4000-8000-000000000001',jobB='10000000-0000-4000-8000-000000000002',operationId='10000000-0000-4000-8000-000000000003';
+  const currentSource={workspaceId:'tea-current',serviceId:'srv-current',postgresId:'dpg-current'};
+  const makeJob=(id:string,suffix:string)=>{const source={workspaceId:'tea-'+suffix,serviceId:'srv-'+suffix,postgresId:'dpg-'+suffix};return {id,source,image:`sha256:${'a'.repeat(64)}`,jobBudgetBytes:1024**3,state:'completed',stage:'completed',errorCode:null,createdAt:1,updatedAt:2,receipt:{provider:'render',action:'local-encrypted-backup',operation:'created-and-verified',...source,backupId:id,files:1,authenticatedManifestSha256:'b'.repeat(64)}};};
+  let jobs=[makeJob(jobA,'a'),makeJob(jobB,'b')],remoteRestores:unknown[]=[],selectionToken='45678901-1234-1234-1234-123456789012',activeId='56789012-1234-1234-1234-123456789012';
+  let malformed=false,holdPoll=false,holdTargets=false,targetsAvailable=true;
+  const calls:unknown[]=[],snapshot=()=>({source:null,jobs:structuredClone(jobs),restoreChecks:[],keySaved:false,archiveSaved:null,remoteTargets:[],remoteRestores:structuredClone(remoteRestores)});
+  Object.assign(window,{isTauri:true,__remoteCalls:calls,__changeOriginal:()=>{jobs[0]=makeJob(jobA,'changed');},__malformedRemote:()=>{malformed=true;},__holdRemotePoll:()=>{holdPoll=true;},__holdRemoteTargets:()=>{holdTargets=true;},__removeRemoteTarget:()=>{targetsAvailable=false;},__TAURI_INTERNALS__:{invoke:async(cmd:string,args?:{input?:{action:string;jobId?:string;operationId?:string}})=>{
+   const installations=()=>({selectionToken,activeId,mode:'managed',installations:[{id:activeId,kind:'default',createdAt:1,path:'/synthetic/profile/local-runtime',available:true}],errorCode:null});
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
+   if(cmd==='manager_installations')return installations();
+   if(cmd==='manager_create_installation'){selectionToken='78901234-1234-1234-1234-123456789012';activeId='67890123-1234-1234-1234-123456789012';jobs=[];remoteRestores=[];return installations();}
+   if(cmd==='manager_status')return {installed:true,bundleId:'synthetic',version:'0.1.0',state:'stopped',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
+   if(['manager_detect','manager_jobs','manager_logs','manager_backup_jobs','manager_helper_reconciliations','manager_maintenance_retries'].includes(cmd))return [];
+   if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};
+   if(cmd==='manager_maintenance_context'||cmd==='manager_hosted_resume')return null;
+   if(cmd==='manager_hosted_connected')return false;
+   if(cmd==='manager_hosted_recovery'){
+    const input=args!.input!;calls.push(structuredClone(input));
+    if(input.action==='jobs'&&holdPoll){holdPoll=false;const old=snapshot();return new Promise(resolve=>Object.assign(window,{__releaseRemotePoll:()=>resolve(old)}));}
+    if(input.action==='remote-targets'&&holdTargets){holdTargets=false;const old=snapshot();return new Promise(resolve=>Object.assign(window,{__releaseRemoteTargets:()=>resolve(old)}));}
+    if(input.action==='remote-targets'&&malformed){malformed=false;return {...snapshot(),token:'synthetic-private-must-not-display'};}
+    if(input.action==='remote-targets'){const original=jobs.find(job=>job.id===input.jobId)!;return {...snapshot(),remoteTargets:targetsAvailable?[{sourceJobId:original.id,workspaceId:original.source.workspaceId,postgresId:'dpg-visible-target',name:'Visible synthetic target'}]:[]};}
+    if(input.action==='context')return {...snapshot(),source:currentSource};
+    if(input.action==='remote-restore'){
+     const original=jobs.find(job=>job.id===input.jobId)!;
+     remoteRestores=[{id:operationId,sourceJobId:original.id,source:original.source,target:{workspaceId:original.source.workspaceId,postgresId:'dpg-restored',createRequested:true},expectedBackupId:original.receipt.backupId,expectedManifestSha256:original.receipt.authenticatedManifestSha256,expectedFiles:original.receipt.files,sourceJobSha256:'c'.repeat(64),targetIdentitySha256:'d'.repeat(64),state:'verified',errorCode:null}];
+    }
+    if(input.action==='remote-connect')remoteRestores=(remoteRestores as {state:string}[]).map(op=>({...op,state:'connected'}));
+    return snapshot();
+   }
+   throw {code:'MANAGER_CONNECTION',guidance:'Synthetic bridge only'};
+  }}});
+ });
+ const errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();await page.getByLabel('API·데이터베이스 준비 · 추가 연결 필요').check();
+ const panel=page.getByRole('region',{name:'원격 서버 백업'});await panel.getByText('서버 백업 관리',{exact:true}).click();
+ await expect(panel.getByRole('heading',{name:'암호화 사본 생성·검증 완료'})).toHaveCount(2);
+ const jobs=panel.locator('article').filter({has:page.getByRole('heading',{name:'암호화 사본 생성·검증 완료',exact:true})}),a=jobs.nth(0),b=jobs.nth(1);
+ await a.getByText('다른 원격 DB에 사본 복원',{exact:true}).click();await b.getByText('다른 원격 DB에 사본 복원',{exact:true}).click();
+ const groupA=a.getByRole('group',{name:'이 백업의 원격 복원 입력'}),groupB=b.getByRole('group',{name:'이 백업의 원격 복원 입력'}),cidrA=groupA.getByRole('textbox'),cidrB=groupB.getByRole('textbox');
+ const createA=a.getByRole('button',{name:'새 무료 DB 준비·Mac IP 한 개 허용·복원'}),createB=b.getByRole('button',{name:'새 무료 DB 준비·Mac IP 한 개 허용·복원'});
+ // Jobs-only source:null still exposes the original-specific controls.
+ await expect(cidrA).toBeVisible();await cidrA.fill('192.0.2.10/32');await groupA.getByRole('checkbox').check();await expect(createA).toBeEnabled();await expect(cidrB).toHaveValue('');await expect(groupB.getByRole('checkbox')).not.toBeChecked();await expect(createB).toBeDisabled();
+ // The unrelated current deployment's backup acknowledgement is never inherited.
+ await panel.getByRole('button',{name:'배포한 서버의 백업 준비'}).click();await panel.getByText('네트워크 접근 설정',{exact:true}).click();await panel.getByLabel('허용한 현재 Mac의 IP 범위',{exact:true}).fill('192.0.2.20/32');await panel.getByLabel('Render에서 이 API를 일시 중지했고, 다른 앱의 DB 쓰기도 멈췄습니다.',{exact:true}).check();await expect(createB).toBeDisabled();await expect(groupB.getByRole('checkbox')).not.toBeChecked();
+ await page.evaluate(()=>(window as unknown as {__changeOriginal:()=>void}).__changeOriginal());await panel.getByRole('button',{name:'백업 기록 다시 확인',exact:true}).click();await expect(cidrA).toHaveValue('');await expect(groupA.getByRole('checkbox')).not.toBeChecked();await expect(createA).toBeDisabled();
+ // Malformed bridge data is refused without rendering its private extra field.
+ await page.evaluate(()=>(window as unknown as {__malformedRemote:()=>void}).__malformedRemote());await b.getByRole('button',{name:'사용 가능한 다른 DB 확인'}).click();await expect(panel.getByRole('alert')).toBeVisible();await expect(panel).not.toContainText('synthetic-private-must-not-display');await expect(panel.getByRole('heading',{name:'암호화 사본 생성·검증 완료'})).toHaveCount(2);
+ await cidrB.fill('192.0.2.30/32');await groupB.getByRole('checkbox').check();
+ const refreshTargets=b.getByRole('button',{name:'사용 가능한 다른 DB 확인'}),selector=b.getByRole('combobox'),restoreSelected=b.getByRole('button',{name:'선택한 다른 DB에 원본 사본 복원',exact:true});
+ await refreshTargets.click();await selector.selectOption('dpg-visible-target');await expect(restoreSelected).toBeEnabled();
+ // A direct export response has no target options: it clears only the choice,
+ // preserving this original's CIDR/acknowledgement and never sending a hidden ID.
+ await b.getByRole('button',{name:'백업 키 사본 별도 보관',exact:true}).click();await expect(selector).toHaveValue('');await expect(restoreSelected).toBeDisabled();await expect(cidrB).toHaveValue('192.0.2.30/32');await expect(groupB.getByRole('checkbox')).toBeChecked();
+ await refreshTargets.click();await selector.selectOption('dpg-visible-target');await expect(restoreSelected).toBeEnabled();await page.evaluate(()=>(window as unknown as {__removeRemoteTarget:()=>void}).__removeRemoteTarget());await refreshTargets.click();await expect(selector).toHaveValue('');await expect(restoreSelected).toBeDisabled();
+ expect(await page.evaluate(()=>(window as unknown as {__remoteCalls:{action:string}[]}).__remoteCalls.filter(call=>call.action==='remote-restore'))).toEqual([]);
+ await createB.click();
+ const restored=panel.locator('article').filter({has:page.getByRole('heading',{name:'원격 DB 사본 복원·검증 완료',exact:true})});await expect(restored).toHaveCount(1);await expect(restored.getByRole('textbox')).toHaveValue('192.0.2.30/32');await expect(restored.getByRole('group').getByRole('checkbox')).toBeChecked();
+ await page.evaluate(()=>(window as unknown as {__holdRemotePoll:()=>void}).__holdRemotePoll());await page.waitForFunction(()=>typeof (window as unknown as {__releaseRemotePoll?:unknown}).__releaseRemotePoll==='function');
+ await restored.getByRole('checkbox').filter({visible:true}).last().check();await restored.getByRole('button',{name:'기존 서비스를 복원 DB에 명시적으로 연결',exact:true}).click();await expect(panel.getByRole('heading',{name:'복원 DB의 기존 서비스 연결 확인 완료'})).toBeVisible();
+ await page.evaluate(async()=>{(window as unknown as {__releaseRemotePoll:()=>void}).__releaseRemotePoll();await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);});await expect(panel.getByRole('heading',{name:'복원 DB의 기존 서비스 연결 확인 완료'})).toBeVisible();await expect(panel.getByRole('heading',{name:'원격 DB 사본 복원·검증 완료',exact:true})).toHaveCount(0);
+ // A late response from the old selection cannot repopulate its originals.
+ await page.evaluate(()=>(window as unknown as {__holdRemoteTargets:()=>void}).__holdRemoteTargets());await b.getByRole('button',{name:'사용 가능한 다른 DB 확인'}).click({noWaitAfter:true});await page.waitForFunction(()=>typeof (window as unknown as {__releaseRemoteTargets?:unknown}).__releaseRemoteTargets==='function');
+ const spaces=page.getByRole('region',{name:'관리 공간 선택'});await spaces.getByRole('checkbox').check();await spaces.getByRole('button',{name:'새 복원 공간 만들고 선택'}).click();await page.evaluate(()=>(window as unknown as {__releaseRemoteTargets:()=>void}).__releaseRemoteTargets());await expect(panel.getByRole('button',{name:'배포한 서버의 백업 준비'})).toBeEnabled();await expect(panel.getByRole('heading',{name:'암호화 사본 생성·검증 완료'})).toHaveCount(0);await expect(panel.getByRole('group',{name:'이 백업의 원격 복원 입력'})).toHaveCount(0);
+ const calls=await page.evaluate(()=>(window as unknown as {__remoteCalls:{action:string;jobId?:string;sourceCidr?:string;confirmExternalWritersStopped?:boolean}[]}).__remoteCalls);
+ expect(calls.filter(call=>call.action==='remote-restore')).toEqual([{action:'remote-restore',jobId:'10000000-0000-4000-8000-000000000002',createNewTarget:true,sourceCidr:'192.0.2.30/32',confirmExternalWritersStopped:true}]);expect(calls.filter(call=>call.action==='remote-connect')).toHaveLength(1);expect(errors).toEqual([]);expect(await page.evaluate(()=>Object.keys(localStorage).concat(Object.keys(sessionStorage)))).toEqual([]);
+});

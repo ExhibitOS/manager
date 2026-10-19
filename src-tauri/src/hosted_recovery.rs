@@ -19,7 +19,7 @@ fn failure(code: &str) -> LifecycleError {
  _=>"서버 백업을 완료하지 못했어요. 원격 원본·기존 사본·실패 후보는 보존합니다. 연결·데이터 쓰기 중지·접근 범위를 확인한 뒤 실패한 작업을 다시 확인하세요."
 }.into()}
 }
-#[derive(Deserialize)]
+#[derive(Clone,Copy,Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Action {
     Context,
@@ -28,6 +28,9 @@ pub enum Action {
     ExportKey,
     ExportArchive,
     CheckRestore,
+    RemoteTargets,
+    RemoteRestore,
+    RemoteConnect,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -41,6 +44,14 @@ pub struct Input {
     pub job_id: Option<String>,
     #[serde(default)]
     pub expected_source: Option<Source>,
+    #[serde(default)]
+    pub target_postgres_id: Option<String>,
+    #[serde(default)]
+    pub operation_id: Option<String>,
+    #[serde(default)]
+    pub create_new_target: bool,
+    #[serde(default)]
+    pub confirm_service_connection: bool,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +63,8 @@ pub struct Context {
     pub key_saved: bool,
     pub archive_saved: Option<exhibitos_lifecycle::backup_export::ExportReceipt>,
     pub publication_saved: Option<PublicationSaved>,
+    pub remote_restores: Vec<exhibitos_lifecycle::hosted_remote_restoration::Operation>,
+    pub remote_targets: Vec<serde_json::Value>,
 }
 #[derive(Clone,Deserialize,Serialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -220,6 +233,7 @@ pub fn operation(
             archive_saved: None,
             publication_saved: None,
             publication_copies: publication_copies(service),
+            remote_restores:service.hosted_remote_restores().map_err(fail)?,remote_targets:Vec::new(),
         }),
         Action::Context => Ok(Context {
             source: Some(super::hosted::recovery_source().map_err(fail)?),
@@ -229,8 +243,85 @@ pub fn operation(
             archive_saved: None,
             publication_saved: None,
             publication_copies: publication_copies(service),
+            remote_restores:service.hosted_remote_restores().map_err(fail)?,remote_targets:Vec::new(),
         }),
         Action::ExportKey | Action::ExportArchive => Err(failure("HOSTED_RECOVERY_REQUEST")),
+        Action::RemoteConnect => {
+            #[cfg(not(target_os="macos"))] { return Err(failure("HOSTED_PLATFORM_UNSUPPORTED")); }
+            #[cfg(target_os="macos")] {
+                let _hosted_operation=super::hosted::hold_operation()?;
+                if !input.confirm_service_connection||!input.confirm_external_writers_stopped{return Err(failure("HOSTED_RECOVERY_OPERATOR_REQUIRED"));}
+                let id=input.operation_id.ok_or_else(||failure("HOSTED_RECOVERY_REQUEST"))?;
+                let op=service.hosted_remote_restores()?.into_iter().find(|v|v.id==id).ok_or_else(||failure("HOSTED_RECOVERY_REQUEST"))?;
+                if input.job_id.as_deref()!=Some(op.source_job_id.as_str()){return Err(failure("HOSTED_RECOVERY_SOURCE_CHANGED"));}
+                let configuration=load_original_configuration(&op.source_job_id,&op.source,super::hosted_keychain::load_backup_configuration)?;
+                let pins=remote_restore_pins(resources)?;
+                let image=service.bundled_maintenance_image(&resources.join("platform-runtime/generated"))?.ok_or_else(||failure("HOSTED_RUNTIME_UNAVAILABLE"))?;
+                service.prepare_bundled_maintenance(&resources.join("platform-runtime/generated"),&image)?;
+                let entry=resources.join("scripts/remote-target-entry.mjs");let(entry_bytes,entry_pin)=super::remote::bounded(&entry,65536)?;
+                use sha2::{Digest,Sha256};let entry_sha=format!("{:x}",Sha256::digest(&entry_bytes));
+                let mut token=super::hosted_keychain::load("render").map_err(|_|failure("HOSTED_TOKEN_REQUIRED"))?;
+                let result=(||{
+                    let text=std::str::from_utf8(&token).map_err(|_|failure("HOSTED_TOKEN_REQUIRED"))?;
+                    service.connect_hosted_remote(&id,&image,&resources.join("remote-runtime/generated/node"),&resources.join("scripts/hosted-remote-restore-runner.mjs"),|operation,execution|{
+                        let mut execution=execution.clone();execution["entryPath"]=entry.to_string_lossy().into_owned().into();execution["entrySha256"]=entry_sha.clone().into();
+                        let account=format!("render-remote-configuration-{}",operation.id);
+                        let mut bytes=match super::hosted_keychain::load_backup_configuration(&account){
+                            Ok(value)=>value,
+                            Err(super::hosted_keychain::BackupConfigurationReadError::Missing)=>{
+                                let cidr=input.source_cidr.as_deref().filter(|v|network(v)).ok_or_else(||failure("HOSTED_RECOVERY_NETWORK_REQUIRED"))?;
+                                let plan=run_remote_private(resources,&serde_json::json!({"action":"connection-plan","token":text,"operation":operation,"execution":execution,"expectedConfiguration":configuration,"sourceCidr":cidr}))?;
+                                let mut encoded=serde_json::to_vec(&plan).map_err(|_|failure("HOSTED_RECOVERY_CONFIGURATION_REQUIRED"))?;
+                                let added=super::hosted_keychain::add_backup_only(&account,&encoded);if added.is_err(){encoded.fill(0);return Err(failure("HOSTED_KEYCHAIN_STORE_FAILED"));}encoded
+                            },
+                            Err(_)=>return Err(failure("HOSTED_KEYCHAIN_UNAVAILABLE")),
+                        };
+                        let parsed=serde_json::from_slice::<serde_json::Value>(&bytes);bytes.fill(0);let plan=parsed.map_err(|_|failure("HOSTED_RECOVERY_CONFIGURATION_CHANGED"))?;
+                        if plan["operationId"]!=operation.id||plan["sourceJobId"]!=operation.source_job_id||plan["target"]["postgresId"].as_str()!=operation.target.postgres_id.as_deref(){return Err(failure("HOSTED_RECOVERY_CONFIGURATION_CHANGED"));}
+                        serde_json::to_vec(&serde_json::json!({"action":"connect","token":text,"operation":operation,"execution":execution,"plan":plan,"confirmServiceConnection":true})).map_err(|_|failure("HOSTED_RECOVERY_REQUEST"))
+                    },||{entry_pin.check()?;for pin in &pins{pin.check()?;}Ok(())})
+                })();token.fill(0);result?;
+                Ok(Context{source:None,jobs:service.hosted_backup_jobs()?,restore_checks:service.hosted_restore_checks()?,key_saved:false,archive_saved:None,publication_saved:None,publication_copies:publication_copies(service),remote_restores:service.hosted_remote_restores()?,remote_targets:Vec::new()})
+            }
+        },
+        Action::RemoteTargets | Action::RemoteRestore => {
+            #[cfg(not(target_os="macos"))] { return Err(failure("HOSTED_PLATFORM_UNSUPPORTED")); }
+            #[cfg(target_os="macos")] {
+            let _hosted_operation=super::hosted::hold_operation()?;
+            let id=input.job_id.ok_or_else(||failure("HOSTED_RECOVERY_REQUEST"))?;
+            let original=service.completed_hosted_backup(&id).map_err(fail)?;
+            let pins=remote_restore_pins(resources)?;
+            let mut token=super::hosted_keychain::load("render").map_err(|_|failure("HOSTED_TOKEN_REQUIRED"))?;
+            let mut targets=Vec::new();
+            let result=(||{
+                let text=std::str::from_utf8(&token).map_err(|_|failure("HOSTED_TOKEN_REQUIRED"))?;
+                if matches!(input.action,Action::RemoteTargets){
+                    let value=run_remote_private(resources,&serde_json::json!({"action":"targets","source":original.source,"token":text}))?;
+                    targets=value["targets"].as_array().ok_or_else(||failure("HOSTED_RECOVERY_RESULT_INVALID"))?.clone();
+                    if targets.len()>10000{return Err(failure("HOSTED_RECOVERY_RESULT_INVALID"));}
+                    for target in &mut targets{target.as_object_mut().ok_or_else(||failure("HOSTED_RECOVERY_RESULT_INVALID"))?.insert("sourceJobId".into(),id.clone().into());}
+                }else{
+                    if !input.confirm_external_writers_stopped{return Err(failure("HOSTED_RECOVERY_OPERATOR_REQUIRED"));}
+                    let cidr=input.source_cidr.as_deref().filter(|v|network(v)).ok_or_else(||failure("HOSTED_RECOVERY_NETWORK_REQUIRED"))?;
+                    let configuration=load_original_configuration(&id,&original.source,super::hosted_keychain::load_backup_configuration)?;
+                    let mut key=super::hosted_keychain::load(&format!("render-backup-key-{id}")).map_err(|_|failure("HOSTED_KEYCHAIN_UNAVAILABLE"))?;
+                    let result=(||{
+                        let image=service.bundled_maintenance_image(&resources.join("platform-runtime/generated"))?.ok_or_else(||failure("HOSTED_RUNTIME_UNAVAILABLE"))?;
+                        service.prepare_bundled_maintenance(&resources.join("platform-runtime/generated"),&image)?;
+                        let entry=resources.join("scripts/remote-target-entry.mjs");let(entry_bytes,entry_pin)=super::remote::bounded(&entry,65536)?;
+                        use sha2::{Digest,Sha256};let entry_sha=format!("{:x}",Sha256::digest(&entry_bytes));
+                        let target=exhibitos_lifecycle::hosted_remote_restoration::Target{workspace_id:original.source.workspace_id.clone(),postgres_id:input.target_postgres_id.clone(),create_requested:input.create_new_target};
+                        service.restore_hosted_remote(&id,target,&image,input.operation_id.as_deref(),&resources.join("remote-runtime/generated/node"),&resources.join("scripts/hosted-remote-restore-runner.mjs"),|operation,execution|{
+                            let mut execution=execution.clone();execution["keyBase64"]=super::hosted::base64(&key).into();execution["entryPath"]=entry.to_string_lossy().into_owned().into();execution["entrySha256"]=entry_sha.clone().into();
+                            serde_json::to_vec(&serde_json::json!({"action":"restore","token":text,"operation":operation,"execution":execution,"sourceCidr":cidr,"confirmExternalWritersStopped":true,"expectedConfiguration":configuration})).map_err(|_|failure("HOSTED_RECOVERY_REQUEST"))
+                        },||{entry_pin.check()?;for pin in &pins{pin.check()?;}Ok(())})?;Ok::<(),LifecycleError>(())
+                    })();key.fill(0);result?;
+                }
+                Ok::<(),LifecycleError>(())
+            })();token.fill(0);result?;
+            Ok(Context{source:None,jobs:service.hosted_backup_jobs()?,restore_checks:service.hosted_restore_checks()?,key_saved:false,archive_saved:None,publication_saved:None,publication_copies:publication_copies(service),remote_restores:service.hosted_remote_restores()?,remote_targets:targets})
+            }
+        },
         Action::CheckRestore => {
             let _hosted_operation=super::hosted::hold_operation()?;
             let id=input.job_id.ok_or_else(||failure("HOSTED_RECOVERY_REQUEST"))?;
@@ -260,7 +351,7 @@ pub fn operation(
                         serde_json::to_vec(&input).map_err(|_|failure("HOSTED_RECOVERY_REQUEST"))
                     })();key.fill(0);result
                 },||{for pin in &pins{pin.check()?;}Ok(())}).map_err(fail)?;
-                Ok(Context{source:None,jobs:service.hosted_backup_jobs().map_err(fail)?,restore_checks:service.hosted_restore_checks().map_err(fail)?,key_saved:false,archive_saved:None,publication_saved:None,publication_copies:publication_copies(service)})
+                Ok(Context{source:None,jobs:service.hosted_backup_jobs().map_err(fail)?,restore_checks:service.hosted_restore_checks().map_err(fail)?,key_saved:false,archive_saved:None,publication_saved:None,publication_copies:publication_copies(service),remote_restores:service.hosted_remote_restores().map_err(fail)?,remote_targets:Vec::new()})
             }
             #[cfg(not(target_os="macos"))]
             {let _=(source_job,pins,image);Err(failure("HOSTED_PLATFORM_UNSUPPORTED"))}
@@ -338,6 +429,7 @@ pub fn operation(
             archive_saved: None,
             publication_saved: None,
             publication_copies: publication_copies(service),
+            remote_restores:service.hosted_remote_restores().map_err(fail)?,remote_targets:Vec::new(),
                 })
             }
             #[cfg(not(target_os = "macos"))]
@@ -508,4 +600,40 @@ mod tests {
             assert!(!network(v));
         }
     }
+}
+
+#[cfg(target_os="macos")]
+fn run_remote_private(resources:&Path,input:&serde_json::Value)->Result<serde_json::Value,LifecycleError>{
+    use std::{io::Write,process::{Command,Stdio},sync::mpsc,time::{Duration,Instant}};
+    let pins=remote_restore_pins(resources)?;
+    let mut bytes=serde_json::to_vec(input).map_err(|_|failure("HOSTED_RECOVERY_REQUEST"))?;
+    if bytes.len()>131072{bytes.fill(0);return Err(failure("HOSTED_RECOVERY_REQUEST"));}
+    let mut command=Command::new(resources.join("remote-runtime/generated/node"));
+    command.args(["--disable-proto=throw","--no-warnings"]).arg(resources.join("scripts/hosted-remote-restore-runner.mjs")).env_clear().env("PATH","/usr/bin:/bin:/usr/sbin:/sbin").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    {use std::os::unix::process::CommandExt;command.process_group(0);}
+    for pin in &pins{pin.check()?;}
+    let mut child=command.spawn().map_err(|_|failure("HOSTED_RUNTIME_UNAVAILABLE"))?;
+    let write=child.stdin.take().ok_or_else(||failure("HOSTED_RUNTIME_UNAVAILABLE"))?.write_all(&bytes);bytes.fill(0);
+    if write.is_err(){super::remote::stop(&mut child);return Err(failure("HOSTED_RUNTIME_UNAVAILABLE"));}
+    let out=child.stdout.take().ok_or_else(||failure("HOSTED_RUNTIME_UNAVAILABLE"))?;let err=child.stderr.take().ok_or_else(||failure("HOSTED_RUNTIME_UNAVAILABLE"))?;
+    let(tx,rx)=mpsc::channel();let(etx,erx)=mpsc::channel();
+    std::thread::spawn(move||{let _=tx.send(super::remote::reader(out,1048576));});std::thread::spawn(move||{let _=etx.send(super::remote::reader(err,4096));});
+    let start=Instant::now();let(mut stdout,mut stderr,mut status)=(None,None,None);
+    loop{
+        if stdout.is_none(){stdout=rx.try_recv().ok();}if stderr.is_none(){stderr=erx.try_recv().ok();}
+        if status.is_none(){match child.try_wait(){Ok(value)=>status=value,Err(_)=>{super::remote::stop(&mut child);return Err(failure("HOSTED_RECOVERY_EXECUTION_FAILED"));}}}
+        if stdout.as_ref().is_some_and(Result::is_err)||stderr.as_ref().is_some_and(Result::is_err)||start.elapsed()>Duration::from_secs(600){super::remote::stop(&mut child);return Err(failure("HOSTED_RECOVERY_EXECUTION_FAILED"));}
+        for pin in &pins{if pin.check().is_err(){super::remote::stop(&mut child);return Err(failure("REMOTE_RUNTIME_CHANGED"));}}
+        if stdout.is_some()&&stderr.is_some()&&status.is_some(){break;}std::thread::sleep(Duration::from_millis(25));
+    }
+    let out=stdout.unwrap().map_err(|_|failure("HOSTED_RECOVERY_RESULT_INVALID"))?;let err=stderr.unwrap().map_err(|_|failure("HOSTED_RECOVERY_RESULT_INVALID"))?;
+    if !status.unwrap().success()||!err.is_empty(){return Err(failure("HOSTED_RECOVERY_EXECUTION_FAILED"));}
+    serde_json::from_slice(&out).map_err(|_|failure("HOSTED_RECOVERY_RESULT_INVALID"))
+}
+
+#[cfg(target_os="macos")]
+fn remote_restore_pins(resources:&Path)->Result<Vec<super::remote::Pin>,LifecycleError>{
+ let manifest:serde_json::Value=serde_json::from_str(option_env!("EXHIBITOS_REMOTE_RUNTIME_MANIFEST").unwrap_or("{}")).map_err(|_|failure("HOSTED_RUNTIME_UNAVAILABLE"))?;
+ for name in ["scripts/hosted-remote-restore-runner.mjs","scripts/render-restore-provider.mjs","scripts/remote-target-entry.mjs"]{if manifest["files"][name].as_str().is_none(){return Err(failure("HOSTED_RUNTIME_UNAVAILABLE"));}}
+ super::remote::verified_resources(resources)
 }

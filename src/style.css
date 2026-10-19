@@ -72,3 +72,10 @@ html{scroll-padding-top:var(--navigation-clearance)}
 [data-manager-mode="simple"] .dashboard{grid-template-columns:1fr}
 
 .engine-preparation{margin-top:var(--space-l);padding-top:var(--space-m);border-top:1px solid var(--line);min-width:0}.engine-preparation h4{font-size:17px;margin:0 0 var(--space-s)}.engine-preparation progress{display:block;width:100%;max-width:100%;accent-color:var(--accent)}.engine-preparation .actions{display:flex;flex-wrap:wrap;gap:var(--space-s)}.engine-preparation .code{overflow-wrap:anywhere}
+
+/* Canonical Manager mark; existing semantic accent adapts to appearance. */
+.manager-mark{display:block;width:48px;height:48px;flex:0 0 48px}
+
+/* Keep the mark and appearance controls inside narrow desktop windows. */
+@media(max-width:760px){header{flex-wrap:wrap}.header-tools{max-width:100%}}
+h1{word-break:keep-all;overflow-wrap:anywhere}

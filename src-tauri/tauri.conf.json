@@ -49,7 +49,10 @@
       "../scripts/publication-client.mjs": "scripts/publication-client.mjs",
       "publication-runtime/": "publication-runtime/",
       "platform-runtime/": "platform-runtime/",
-      "update-runtime/": "update-runtime/"
+      "update-runtime/": "update-runtime/",
+      "../scripts/hosted-remote-restore-runner.mjs": "scripts/hosted-remote-restore-runner.mjs",
+      "../scripts/render-restore-provider.mjs": "scripts/render-restore-provider.mjs",
+      "../scripts/remote-target-entry.mjs": "scripts/remote-target-entry.mjs"
     }
   }
 }

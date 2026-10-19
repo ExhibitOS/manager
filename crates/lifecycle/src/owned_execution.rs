@@ -2,6 +2,27 @@
 //! Existing registered source adapters under the borrowed exclusive trust fence.
 use super::*;
 
+// Fixed qualification stages only. Preserve every existing safety/refusal code;
+// a generic Engine failure identifies this call boundary, not its root cause.
+#[derive(Clone, Copy)]
+enum RecoveryEngineStage {
+    SourceImageExport,
+    SourceConfiguration,
+    SourceInventory,
+    CandidatePreflight,
+}
+fn recovery_engine_failure(error: crate::LifecycleError, stage: RecoveryEngineStage) -> crate::LifecycleError {
+    if error.code != "ENGINE_OPERATION_FAILED" {
+        return error;
+    }
+    crate::err(match stage {
+        RecoveryEngineStage::SourceImageExport => "UPDATE_SOURCE_IMAGE_EXPORT_ENGINE_FAILED",
+        RecoveryEngineStage::SourceConfiguration => "UPDATE_SOURCE_CONFIGURATION_ENGINE_FAILED",
+        RecoveryEngineStage::SourceInventory => "UPDATE_SOURCE_INVENTORY_ENGINE_FAILED",
+        RecoveryEngineStage::CandidatePreflight => "UPDATE_CANDIDATE_PREFLIGHT_ENGINE_FAILED",
+    })
+}
+
 #[cfg(test)]
 fn native_test_image() -> String {
     native_test_fixture_image(
@@ -780,7 +801,8 @@ impl ExecutionSession<'_> {
                     .map_err(|_| crate::err("STATE_UNAVAILABLE"))?;
             }
             installations::private_directory(&exported)?;
-            let images = source_image_bytes::export(&exported, &preserved)?;
+            let images = source_image_bytes::export(&exported, &preserved)
+                .map_err(|error| recovery_engine_failure(error, RecoveryEngineStage::SourceImageExport))?;
             let generated = source_full_configuration::generated_inventory(&images, &manifest)?;
             if source_configuration::observe(image, &before.configuration_volume, &expected)?
                 != observed
@@ -1750,6 +1772,22 @@ mod tests {
     use super::super::tests::{fixture, plan, seal};
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn recovery_engine_failure_preserves_existing_refusals_and_nested_stage() {
+        for stage in [RecoveryEngineStage::SourceImageExport, RecoveryEngineStage::SourceConfiguration,
+                      RecoveryEngineStage::SourceInventory, RecoveryEngineStage::CandidatePreflight] {
+            for code in ["ENGINE_PERMISSION", "ENGINE_TIMEOUT", "ENGINE_OUTPUT_LIMIT", "IMAGE_INTEGRITY",
+                         "OWNERSHIP_CONFLICT", "UPDATE_SOURCE_CHANGED", "UPDATE_SOURCE_IMAGES_MISMATCH",
+                         "RESTORE_SPACE_REQUIRED", "UPDATE_SOURCE_IMAGE_EXPORT_ENGINE_FAILED"] {
+                let original = crate::LifecycleError {code: code.into(), guidance: "existing safe guidance".into()};
+                let failure = recovery_engine_failure(original, stage);
+                assert_eq!(failure.code, code);
+                assert_eq!(failure.guidance, "existing safe guidance");
+            }
+        }
+    }
+
     const SOURCE: &str = "ab6a178b-a401-48c1-b0aa-ddf87b059e31";
     fn prepared(scope: &str) -> (PathBuf, Store) {
         prepared_with_budget(scope, 1024)

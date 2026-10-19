@@ -267,7 +267,8 @@ impl ExecutionSession<'_> {
             let host = crate::profile_backup::verify_host_current_borrowed(
                 &self.store.profile, cp.host, cp.key, &self._session, &checkpoint.receipt().host_manifest_sha256)?;
             let before = self.observe_source_recovery_at(ctx, image, inputs.export_parent)?;
-            let candidate = self.observe_ephemeral_candidate_recovery_at(ctx, image, inputs.export_parent)?;
+            let candidate = self.observe_ephemeral_candidate_recovery_at(ctx, image, inputs.export_parent)
+                .map_err(|error| recovery_engine_failure(error, RecoveryEngineStage::CandidatePreflight))?;
             check_catalog()?;
             let runtime = if migration_input.is_some() {
                 self.observe_runtime_at_inner(&mut held_artifact.borrow_mut(), ctx, image, &oci, migration_input.as_ref())?

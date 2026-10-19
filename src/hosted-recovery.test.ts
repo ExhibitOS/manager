@@ -45,3 +45,81 @@ it('keeps companion delivery optional, archive bound and distinct from encrypted
  for(const publicationSaved of [{...copy,path:'relative'},{...copy,path:'/bad\npath'},{...copy,token:'forbidden'},{...copy,state:'unavailable'},{...copy,jobId:'00000000-0000-4000-8000-000000000002'}])expect(()=>parseHostedRecovery({...base,publicationSaved})).toThrow('MANAGER_PROTOCOL');
  expect(()=>parseHostedRecovery({...base,archiveSaved:null,publicationSaved:copy})).toThrow('MANAGER_PROTOCOL');
 });
+
+const remoteTarget={sourceJobId:id,workspaceId:source.workspaceId,postgresId:'dpg-restored-copy',name:'Synthetic separate recovery DB'};
+const remoteOperation={id:'00000000-0000-4000-8000-000000000003',sourceJobId:id,source,target:{workspaceId:source.workspaceId,postgresId:remoteTarget.postgresId,createRequested:false},expectedBackupId:job.receipt.backupId,expectedManifestSha256:job.receipt.authenticatedManifestSha256,expectedFiles:job.receipt.files,sourceJobSha256:'c'.repeat(64),targetIdentitySha256:'d'.repeat(64),state:'verified',errorCode:null};
+const remoteContext={source,jobs:[job],restoreChecks:[check],remoteTargets:[remoteTarget],remoteRestores:[remoteOperation],keySaved:false,archiveSaved:null};
+
+describe('remote recovery native response boundaries',()=>{
+ it('preserves distinct archive, local-copy, remote-copy and service-connection results',()=>{
+  const remoteCopy=parseHostedRecovery(remoteContext);
+  expect(remoteCopy.jobs[0]?.state).toBe('completed');
+  expect(remoteCopy.restoreChecks[0]?.receipt?.operation).toBe('restored-and-verified');
+  expect(remoteCopy.remoteRestores[0]?.state).toBe('verified');
+  expect(remoteCopy.remoteTargets).toEqual([remoteTarget]);
+  expect(remoteCopy.keySaved).toBe(false);
+  for(const state of ['connecting','connected','connection-restored','connection-recovery-required']){
+   const result=parseHostedRecovery({...remoteContext,remoteRestores:[{...remoteOperation,state,errorCode:state==='connection-restored'||state==='connection-recovery-required'?'HOSTED_REMOTE_CONNECTION_RECOVERY_REQUIRED':null}]});
+   expect(result.remoteRestores[0]?.state).toBe(state);
+   expect(result.jobs[0]?.receipt).toEqual(job.receipt);
+   expect(result.restoreChecks[0]?.state).toBe('completed');
+  }
+  const legacy=parseHostedRecovery({source,jobs:[job],keySaved:false,archiveSaved:null});
+  expect(legacy.remoteTargets).toEqual([]);expect(legacy.remoteRestores).toEqual([]);
+ });
+
+ it('retains an unfinished new-target request without accepting it as a verified DB or connection',()=>{
+  const waiting={...remoteOperation,target:{workspaceId:source.workspaceId,postgresId:null,createRequested:true},targetIdentitySha256:null,state:'prepared'};
+  expect(parseHostedRecovery({...remoteContext,remoteRestores:[waiting]}).remoteRestores[0]).toEqual(waiting);
+  for(const state of ['verified','connecting','connected','connection-restored']){
+   expect(()=>parseHostedRecovery({...remoteContext,remoteRestores:[{...waiting,state}]})).toThrow('MANAGER_PROTOCOL');
+   expect(()=>parseHostedRecovery({...remoteContext,remoteRestores:[{...remoteOperation,state,targetIdentitySha256:null}]})).toThrow('MANAGER_PROTOCOL');
+  }
+ });
+
+ it('rejects another backup or native job being substituted for the original archive',()=>{
+  const anotherSource={...source,serviceId:'srv-another',postgresId:'dpg-another'};
+  const anotherJob={...job,id:'00000000-0000-4000-8000-000000000004',source:anotherSource,receipt:{...job.receipt,...anotherSource,backupId:'00000000-0000-4000-8000-000000000005'}};
+  for(const patch of [
+   {sourceJobId:anotherJob.id},
+   {source:{...source,workspaceId:'tea-another'}},
+   {source:{...source,serviceId:anotherSource.serviceId}},
+   {source:{...source,postgresId:anotherSource.postgresId}},
+   {expectedBackupId:anotherJob.receipt.backupId},
+   {expectedManifestSha256:'e'.repeat(64)},
+   {expectedFiles:job.receipt.files+1},
+  ])expect(()=>parseHostedRecovery({...remoteContext,jobs:[job,anotherJob],remoteRestores:[{...remoteOperation,...patch}]})).toThrow('MANAGER_PROTOCOL');
+ });
+
+ it('refuses original-DB targets, foreign workspaces and a duplicated operation retargeted within one response',()=>{
+  for(const target of [
+   {...remoteOperation.target,postgresId:source.postgresId},
+   {...remoteOperation.target,workspaceId:'tea-another'},
+  ])expect(()=>parseHostedRecovery({...remoteContext,remoteRestores:[{...remoteOperation,target}]})).toThrow('MANAGER_PROTOCOL');
+  const retargeted={...remoteOperation,target:{...remoteOperation.target,postgresId:'dpg-second-copy'}};
+  expect(()=>parseHostedRecovery({...remoteContext,remoteRestores:[remoteOperation,retargeted]})).toThrow('MANAGER_PROTOCOL');
+ });
+
+ it('shows only candidate selectors tied to an existing completed backup in its original workspace',()=>{
+  for(const patch of [
+   {sourceJobId:'00000000-0000-4000-8000-000000000099'},
+   {workspaceId:'tea-another'},
+   {postgresId:source.postgresId},
+  ])expect(()=>parseHostedRecovery({...remoteContext,remoteTargets:[{...remoteTarget,...patch}]})).toThrow('MANAGER_PROTOCOL');
+  const failedOriginal={...job,state:'failed',stage:'failed',errorCode:'HOSTED_RECOVERY_EXECUTION_FAILED',receipt:null};
+  expect(()=>parseHostedRecovery({...remoteContext,jobs:[failedOriginal],restoreChecks:[],remoteRestores:[]})).toThrow('MANAGER_PROTOCOL');
+ });
+
+ it('rejects secret-bearing native additions instead of letting selectors or results carry private inputs',()=>{
+  for(const extra of [
+   {token:'synthetic-not-a-real-provider-token'},
+   {keyBase64:'synthetic-not-a-backup-key'},
+   {databaseURL:'postgresql://synthetic.invalid/db'},
+   {plan:{originalEnvironment:[{key:'ADMIN_PASSWORD',value:'synthetic-secret'}]}},
+   {creationProof:{postgresId:remoteTarget.postgresId}},
+  ])expect(()=>parseHostedRecovery({...remoteContext,remoteRestores:[{...remoteOperation,...extra}]})).toThrow('MANAGER_PROTOCOL');
+  expect(()=>parseHostedRecovery({...remoteContext,remoteTargets:[{...remoteTarget,externalConnectionString:'postgresql://synthetic.invalid/db'}]})).toThrow('MANAGER_PROTOCOL');
+  expect(()=>parseHostedRecovery({...remoteContext,remoteRestores:[{...remoteOperation,target:{...remoteOperation.target,password:'synthetic-secret'}}]})).toThrow('MANAGER_PROTOCOL');
+  expect(()=>parseHostedRecovery({...remoteContext,remoteRestores:[{...remoteOperation,source:{...source,token:'synthetic-secret'}}]})).toThrow('MANAGER_PROTOCOL');
+ });
+});
