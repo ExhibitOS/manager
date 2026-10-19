@@ -90,3 +90,40 @@ Authoritative tool coverage:
 [Trivy Rust package and auditable binary coverage](https://trivy.dev/docs/latest/coverage/language/rust/),
 [Trivy filesystem scanning](https://trivy.dev/docs/latest/target/filesystem/),
 [Trivy SBOM generation](https://trivy.dev/docs/latest/supply-chain/sbom/).
+
+
+## Pinned Python notice supplement
+
+The update-runtime selector preserves the original `20261013` CPython archive
+pin and `PYTHON.json`. That archive declares `licenses/LICENSE.zlib-ng.txt` for
+its zlib extension but omits that file. The upstream metadata generator matches
+both zlib and zlib-ng by library name `z`; the selected metadata describes a
+system link. This is not evidence that a zlib-ng implementation is bundled.
+
+The generator now supplies only that exact missing notice from
+`python/cpython-source-deps`, tag `zlib-ng-2.2.4`, commit
+`a502e047655c31db29601def76ad6539acacf43d`. Its unmodified `LICENSE.md` is
+867 bytes, SHA256
+`6c9f0d975b41afaa34d22f55bb8986ce69e5cb7ad327cb2b28820cd425edf5ee`.
+The source descriptor and verbatim copyright/terms are retained under
+`scripts/update-runtime-notices/`. No generator network fetch is performed.
+
+Before writing a fresh runtime, the generator checks the exact descriptor and
+notice bytes, rejects any change to the archive's unique missing-license set,
+and checks every declared license path against its selected `notices/` file.
+Existing notice bytes and original metadata remain unchanged. The discrepancy
+record distinguishes the original omission from this explicit supplement and
+records the path, origin, byte count and SHA256 of each declared notice.
+Unknown missing paths, empty or changed notices and altered metadata are refused.
+
+The runtime remains `private-validation-only`. This notice delivery correction
+does not establish legal clearance, a complete artifact SBOM, linked dependency
+membership, public redistribution qualification, signing or notarization. Existing
+generated runtimes and sealed Apps are not rewritten by a source change. Tiny
+synthetic tar/selection regressions exercise the mapping and refusal boundaries;
+no full archive extraction or Python execution is required for those checks.
+
+Upstream evidence:
+[release dependency metadata](https://github.com/astral-sh/python-build-standalone/blob/20261013/pythonbuild/downloads.json),
+[license annotation generator](https://github.com/astral-sh/python-build-standalone/blob/20261013/pythonbuild/utils.py#L513-L549),
+[exact supplemental notice](https://github.com/python/cpython-source-deps/blob/a502e047655c31db29601def76ad6539acacf43d/LICENSE.md).
