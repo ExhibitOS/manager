@@ -53,6 +53,15 @@ fn valid_target(t: &Target) -> bool {
         }
 }
 
+/// Native-only argument grouping; not an IPC or persisted record.
+#[cfg(target_os = "macos")]
+pub struct RestoreRequest<'a> {
+    pub source_job_id: &'a str,
+    pub target: Target,
+    pub image: &'a str,
+    pub operation_id: Option<&'a str>,
+}
+
 impl LifecycleService {
     pub fn hosted_remote_restores(&self) -> Result<Vec<Operation>> {
         let mut result = Vec::new();
@@ -93,15 +102,13 @@ impl LifecycleService {
     #[cfg(target_os = "macos")]
     pub fn restore_hosted_remote(
         &self,
-        source_job_id: &str,
-        target: Target,
-        image: &str,
-        operation_id: Option<&str>,
+        request: RestoreRequest<'_>,
         node: &Path,
         runner: &Path,
         make_input: impl FnOnce(&Operation, &serde_json::Value) -> Result<Vec<u8>>,
         check: impl Fn() -> Result<()>,
     ) -> Result<Operation> {
+        let RestoreRequest { source_job_id, target, image, operation_id } = request;
         let _lock = self.lock()?;
         if operation_id.is_none() && target.create_requested && target.postgres_id.is_some() {
             return Err(err("HOSTED_RECOVERY_REQUEST"));
@@ -232,7 +239,7 @@ impl LifecycleService {
                 streamed: Some((Box::new(SecretInput(std::io::Cursor::new(input))), 131072)),
             },
             true,
-            || check(),
+            &check,
         );
         match outcome {
             Ok(bytes) => {
@@ -285,16 +292,14 @@ impl LifecycleService {
                     .as_ref()
                     .filter(|v| v["operationId"] == op.id && v["sourceJobId"] == op.source_job_id)
                     .and_then(|v| v["targetPostgresId"].as_str())
+                    && id != op.source.postgres_id
+                    && id.len() <= 128
+                    && id
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+                    && op.target.postgres_id.as_deref().is_none_or(|old| old == id)
                 {
-                    if id != op.source.postgres_id
-                        && id.len() <= 128
-                        && id
-                            .bytes()
-                            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
-                        && op.target.postgres_id.as_deref().is_none_or(|old| old == id)
-                    {
-                        op.target.postgres_id = Some(id.into());
-                    }
+                    op.target.postgres_id = Some(id.into());
                 }
                 let before_import = checkpoint.as_ref().is_some_and(|v| {
                     v["operationId"] == op.id
@@ -411,7 +416,7 @@ impl LifecycleService {
                 streamed: Some((Box::new(SecretInput(std::io::Cursor::new(input))), 131072)),
             },
             true,
-            || check(),
+            &check,
         );
         let outcome = result
             .ok()

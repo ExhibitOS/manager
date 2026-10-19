@@ -1160,6 +1160,41 @@ pub fn reconcile(profile: &Path, id: &str) -> Result<Startup> {
     drop(_claim);
     startup(profile)
 }
+/// Fixed helper admission failed before any preparation action. Does not adopt
+/// a claimed request or replace an outcome. Only safe closed error codes persist.
+pub fn before_start_failed(profile: &Path, id: &str, code: &str) -> Result<()> {
+    if code.is_empty()
+        || code.len() > 128
+        || !code.as_bytes()[0].is_ascii_uppercase()
+        || !code
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+    {
+        return Err(invalid());
+    }
+    let root = workspace(profile, id)?;
+    let _claim = claim(&root)?;
+    let r = request(&root, id)?;
+    if root.join("started.json").exists() || root.join("outcome.json").exists() {
+        return Err(err("UPDATE_PREPARATION_ALREADY_CLAIMED"));
+    }
+    persist(
+        &root,
+        "outcome.json",
+        &Receipt {
+            id: r.id,
+            installation_id: r.installation_id,
+            state: State::Failed,
+            phase: Phase::ValidatingInputs,
+            code: Some(code.into()),
+            reference_id: None,
+            updated_at: now(),
+            can_cancel: false,
+            can_retry: false,
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1263,39 +1298,4 @@ mod tests {
         assert_eq!(work.parent().unwrap().file_name().unwrap(), "jobs");
         assert!(profile.read_dir().unwrap().next().is_none());
     }
-}
-
-/// Fixed helper admission failed before any preparation action. Does not adopt
-/// a claimed request or replace an outcome. Only safe closed error codes persist.
-pub fn before_start_failed(profile: &Path, id: &str, code: &str) -> Result<()> {
-    if code.is_empty()
-        || code.len() > 128
-        || !code.as_bytes()[0].is_ascii_uppercase()
-        || !code
-            .bytes()
-            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
-    {
-        return Err(invalid());
-    }
-    let root = workspace(profile, id)?;
-    let _claim = claim(&root)?;
-    let r = request(&root, id)?;
-    if root.join("started.json").exists() || root.join("outcome.json").exists() {
-        return Err(err("UPDATE_PREPARATION_ALREADY_CLAIMED"));
-    }
-    persist(
-        &root,
-        "outcome.json",
-        &Receipt {
-            id: r.id,
-            installation_id: r.installation_id,
-            state: State::Failed,
-            phase: Phase::ValidatingInputs,
-            code: Some(code.into()),
-            reference_id: None,
-            updated_at: now(),
-            can_cancel: false,
-            can_retry: false,
-        },
-    )
 }
