@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-update-preparation-startup"
+description = "Enables the manager_update_preparation_startup command without any pre-configured scope."
+commands.allow = ["manager_update_preparation_startup"]
+
+[[permission]]
+identifier = "deny-manager-update-preparation-startup"
+description = "Denies the manager_update_preparation_startup command without any pre-configured scope."
+commands.deny = ["manager_update_preparation_startup"]

@@ -6,6 +6,7 @@ for(const scenario of ['new','ready','failure'] as const)test(`Studio preparatio
   const state={installed:scenario==='ready',bundleId:null,version:null,state:scenario==='ready'?'running':'stopped',services:[],readiness:{ready:scenario==='ready',version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
   const selection={selectionToken:'45678901-1234-1234-1234-123456789012',activeId:'56789012-1234-1234-1234-123456789012',mode:'managed',installations:[{id:'56789012-1234-1234-1234-123456789012',kind:'default',createdAt:1,path:'/private/tmp/synthetic-studio/local-runtime',available:true}],errorCode:null};
   Object.assign(window,{isTauri:true,__studioWrites:[] as string[],__cloudReads:0,__finishSetup:null,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    const harness=window as unknown as {__studioWrites:string[];__finishSetup:()=>void};
    if(cmd==='manager_hosted_resume'||cmd==='manager_hosted_connected'){(window as unknown as {__cloudReads:number}).__cloudReads++;return cmd==='manager_hosted_resume'?null:false;}
    if(cmd==='manager_backup_tool')return null;

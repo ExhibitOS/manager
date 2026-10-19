@@ -497,6 +497,39 @@ impl InstallationController {
         } else { crate::update_handoff::latest(&profile.root, &entry.id)? };
         Ok((profile.root.clone(), receipt))
     }
+    #[cfg(unix)]
+    fn with_update_preparation<T>(&self,token:&str,task:impl FnOnce(&Path,&str,&str,&[u8],&Path)->Result<T>)->Result<T>{
+        let current=self.current.try_read().map_err(|_|err("BUSY"))?;
+        if !uuid(token)||current.token!=token{return Err(err("INSTALLATION_SELECTION_CHANGED"));}
+        let profile=self.profile.as_ref().ok_or_else(||err("UPDATE_PROFILE_UNAVAILABLE"))?;
+        let _lock=profile_lock(profile)?;
+        let(registry,bytes)=load(&profile.root)?.ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
+        let entry=registry.installations.iter().find(|e|e.id==current.entry.id).ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
+        if registry.active_id!=entry.id||root(&profile.root,entry)!=current.path{return Err(err("INSTALLATION_SELECTION_CHANGED"));}
+        let source=current.service.as_ref().ok_or_else(||err("INSTALLATION_ROOT_UNAVAILABLE"))?;
+        private_directory(&source.root)?;
+        if !source.root.join("installed.json").exists(){return Err(err("NOT_INSTALLED"));}
+        profile.ensure_external_archive_reconciled()?;source.ensure_external_archive_reconciled()?;
+        crate::update_preparation::source_eligible(source)?;
+        let scope=crate::signed_release::trust::resolve_selected_scope(&profile.root,&registry)?;
+        task(&profile.root,&entry.id,&scope,&bytes,&source.root)
+    }
+    #[cfg(unix)]
+    pub fn inspect_update_preparation(&self,token:&str,folder:&Path,key:&Path)->Result<crate::update_preparation::Inspection>{
+        self.with_update_preparation(token,|profile,_,scope,_,source|{
+            if crate::update_preparation::startup(profile)?.controller_blocked{return Err(err("UPDATE_PREPARATION_BUSY"));}
+            let(inputs,release)=crate::update_preparation::inspect(profile,scope,source,folder,key)?;
+            let changed=inputs.catalog.is_some();
+            Ok(crate::update_preparation::Inspection{available:true,code:None,version:Some(release.version),changed_schema:Some(changed)})
+        })
+    }
+    #[cfg(unix)]
+    pub fn prepare_update_handoff(&self,token:&str,input:crate::update_preparation::Input)->Result<(PathBuf,crate::update_preparation::Receipt)>{
+        self.with_update_preparation(token,|profile,id,scope,registry,source|{
+            let receipt=crate::update_preparation::enqueue(profile,id,scope,registry,source,input)?;
+            Ok((profile.into(),receipt))
+        })
+    }
     pub fn update_apply_references(&self,token:&str)->Result<Vec<crate::update_execution_handoff::ReferenceSummary>> {
         let current=self.current.try_read().map_err(|_|err("BUSY"))?;
         if !uuid(token)||current.token!=token{return Err(err("INSTALLATION_SELECTION_CHANGED"));}

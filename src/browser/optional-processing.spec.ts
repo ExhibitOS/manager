@@ -6,6 +6,7 @@ for(const scenario of ['detected','choose','cancel','error'] as const)test(`opti
   const app={path:'/Applications/Synthetic.app',name:'Synthetic Processing',version:'1',bundleId:scenario==='detected'?'org.exhibitos.processing':'test.compatible'};
   let selected=scenario==='cancel'?app:null;const context=()=>({supported:true,detectedCount:scenario==='detected'?1:0,detected:scenario==='detected'?app:null,selected,selectionUnavailable:false,storeAvailable:false});
   Object.assign(window,{isTauri:true,__processingCalls:[],__lifecycleMutations:[],__TAURI_INTERNALS__:{invoke:async(cmd:string,args?:{action?:string})=>{
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    if(cmd==='manager_processing_app'){
     (window as unknown as {__processingCalls:unknown[]}).__processingCalls.push(args);
     if(scenario==='error')throw {code:'PROCESSING_DETECTION_FAILED',guidance:'앱 목록을 확인하지 못했어요. Studio는 계속 사용할 수 있어요.'};

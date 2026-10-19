@@ -9,6 +9,11 @@ fn main() {
     let publication_manifest=std::fs::read(publication).unwrap_or_else(|_|b"{}".to_vec());
     std::fs::write(std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("publication-manifest.json"),publication_manifest).expect("publication manifest copy");
 
+    let update_runtime="update-runtime/generated/manifest.json";
+    println!("cargo:rerun-if-changed={update_runtime}");
+    let update_manifest=std::fs::read(update_runtime).unwrap_or_else(|_|b"{}".to_vec());
+    std::fs::write(std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("update-runtime-manifest.json"),update_manifest).expect("update runtime manifest copy");
+
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "manager_status",
@@ -28,6 +33,14 @@ fn main() {
             "manager_remote",
             "manager_remote_available",
             "manager_remote_cancel",
+            "manager_update_preparation_startup",
+            "manager_update_preparation_status",
+            "manager_update_preparation_inspect",
+            "manager_update_preparation_dispatch",
+            "manager_update_preparation_cancel",
+            "manager_update_preparation_reconcile",
+            "manager_update_preparation_open_manager",
+            "manager_update_preparation_choose_release",
             "manager_update_status",
             "manager_update_cancel",
             "manager_update_references",

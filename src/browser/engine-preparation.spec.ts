@@ -7,6 +7,7 @@ for(const scenario of ['progress','permission','hash'] as const)test(`official e
   let prepared={jobId:'11111111-1111-4111-8111-111111111111',stage:'not-started',savedBytes:0,totalBytes:589939097,version:'4.95.0',errorCode:null as string|null};
   const saved=sessionStorage.getItem('synthetic-engine-cache');if(saved)prepared=JSON.parse(saved);
   Object.assign(window,{isTauri:true,__engineWrites:writes,__engineReady:()=>{ready=true;},__TAURI_INTERNALS__:{invoke:async(cmd:string,args:Record<string,unknown>)=>{
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:'56789012-1234-1234-1234-123456789012',mode:'managed',installations:[{id:'56789012-1234-1234-1234-123456789012',kind:'default',createdAt:1,path:'/private/tmp/synthetic-engine/local-runtime',available:true}],errorCode:null};
    if(cmd==='manager_status')return {installed:false,bundleId:null,version:null,state:'not_installed',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
    if(cmd==='manager_detect')return [{kind:'docker',installed:ready,available:ready,engineVersion:null,composeVersion:null,errorCode:null,guidance:null}];

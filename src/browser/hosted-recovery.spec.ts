@@ -7,6 +7,7 @@ test('hosted backup invalidates prior-source confirmation and keeps archive copy
   let selectionToken='45678901-1234-1234-1234-123456789012',activeId='56789012-1234-1234-1234-123456789012';
   const installation=()=>({selectionToken,activeId,mode:'managed',installations:[{id:activeId,kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true}],errorCode:null});
   const calls:unknown[]=[];Object.assign(window,{isTauri:true,__hostedRecoveryCalls:calls,__clearHostedPublication:()=>{publicationCopied=false;},__changeHostedSource:()=>{source={workspaceId:'tea-b',serviceId:'srv-b',postgresId:'dpg-b'};},__TAURI_INTERNALS__:{invoke:async(cmd:string,args?:{input?:{action:string;expectedSource?:unknown}})=>{
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    if(cmd==='manager_installations')return installation();
    if(cmd==='manager_create_installation'){selectionToken='78901234-1234-1234-1234-123456789012';activeId='67890123-1234-1234-1234-123456789012';jobs=[];restoreChecks=[];return installation();}
    if(cmd==='manager_status')return {installed:true,bundleId:'synthetic',version:'0.1.0',state:'stopped',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};

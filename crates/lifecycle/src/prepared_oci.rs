@@ -274,6 +274,7 @@ impl ExecutionSession<'_> {
         let script = format!("__name__='exhibitos_embedded_oci'\nexhibitos_runtime_target={target_json}\n{QUALIFIER}\n{ENTRY}");
         let mut args = vec![
             "-I".into(),
+            "-B".into(),
             "-c".into(),
             script,
             artifact.staged.path().to_string_lossy().into_owned(),

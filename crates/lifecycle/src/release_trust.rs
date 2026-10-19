@@ -72,6 +72,8 @@ pub use trust_checkpoint::{HostTrustReceipt, MissingHostRecoveryReceipt, TrustCh
 #[path = "owned_execution.rs"]
 mod owned_execution;
 pub(crate) use owned_execution::{source_deployment, source_images};
+#[cfg(unix)]
+pub(crate) use owned_execution::validate_preparation_catalog;
 #[cfg(any(unix, windows))]
 #[path = "rollback_registration.rs"]
 mod rollback_registration;
@@ -197,6 +199,16 @@ pub(crate) fn inspect_prepared_apply(profile:&Path,scope:&str)->Result<Option<Pr
  let envelope:Envelope=serde_json::from_str(&intent.envelope).map_err(|_|invalid())?;
  let release:Release=serde_json::from_str(&envelope.payload).map_err(|_|invalid())?;
  Ok(Some((intent.update.plan().clone(),store.receipt().generation,release.version,release.artifact.sha256,release.artifact.bytes)))
+}
+/// Signed offline discovery using the existing-only inspection Store. Does not
+/// expose that Store for mutation, bootstrap policy or attest OCI compatibility.
+#[cfg(unix)]
+pub(crate) fn inspect_preparation_inputs(profile:&Path,scope:&str,folder:&Path,key:&Path,scratch:&Path)
+ ->crate::Result<(crate::update_preparation_inputs::Inputs,Release)> {
+ let store=Store::open_for_inspection(profile,scope).map_err(|e|crate::err(e.code()))?;
+ if store.intent().is_some()||store.receipt().write_uncertain{return Err(crate::err("UPDATE_OPERATION_PENDING"));}
+ store.verify_authority_recovery().map_err(|e|crate::err(e.code()))?;
+ crate::update_preparation_inputs::discover(folder,key,&store.policy().source_schema_sha256,scratch,|raw|store.verify_for_preparation(raw,crate::now()/1000).map_err(|e|crate::err(e.code())))
 }
 /// Holds the stable profile fence exclusively through verification/publication.
 /// Open never bootstraps missing/corrupt trust. The caller selects default or a

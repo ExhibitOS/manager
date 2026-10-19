@@ -7,6 +7,7 @@ for(const scenario of ['success','failure','malformed','wrong-image'] as const)t
   const fixture=window as unknown as FixtureWindow;fixture.__creationInputs=[];fixture.__creationCalls=[];
   let stopped=false;
   Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string,args?:{input:unknown})=>{
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    fixture.__creationCalls.push(cmd);
    if(cmd==='manager_backup_tool')return null;
    if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};

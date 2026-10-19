@@ -4,6 +4,7 @@ test('local published catalog prepares the selected exhibition without exposing 
  await page.addInitScript(()=>{
   const w=window as unknown as {isTauri:boolean;publicationCalls:{command:string,args:Record<string,unknown>}[];__TAURI_INTERNALS__:{invoke:(command:string,args:Record<string,unknown>)=>Promise<unknown>}};w.isTauri=true;w.publicationCalls=[];
   w.__TAURI_INTERNALS__={invoke:async(command,args={})=>{
+   if(command==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    w.publicationCalls.push({command,args});
    if(command==='manager_installations')return {selectionToken:'00000000-0000-4000-8000-000000000001',activeId:'00000000-0000-4000-8000-000000000002',mode:'managed',errorCode:null,installations:[{id:'00000000-0000-4000-8000-000000000002',kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true}]};
    if(command==='manager_hosted_resume')return null;if(command==='manager_hosted_connected')return false;

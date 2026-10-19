@@ -7,6 +7,7 @@ for(const scenario of ['required','existing'] as const)test(`first account ${sce
   const state={installed:false,bundleId:null,version:null,state:'not_installed',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
   const writes:string[]=[];
   Object.assign(window,{isTauri:true,__accountWrites:writes,__accountInputAccepted:false,__TAURI_INTERNALS__:{invoke:async(cmd:string,args:Record<string,unknown>)=>{
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    if(cmd==='manager_installations')return selection;
    if(cmd==='manager_status')return state;
    if(cmd==='manager_detect')return [{kind:'docker',installed:true,available:true,engineVersion:null,composeVersion:null,errorCode:null,guidance:null}];

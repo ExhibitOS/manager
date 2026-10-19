@@ -6,6 +6,7 @@ for(const scenario of ['running','failed','ready'] as const)test(`synthetic ${sc
   const job={id:'synthetic-ux',action:'start',state:scenario==='ready'?'completed':scenario,attempt:1,progress:30,createdAt:1,updatedAt:2,errorCode:scenario==='failed'?'ENGINE_PERMISSION':null,guidance:scenario==='failed'?'실행 도구 접근 권한을 확인하세요. 데이터는 보존됩니다.':null};
   const status={installed:true,bundleId:'synthetic',version:'0.1.0',state:scenario==='ready'?'running':'stopped',services:[{name:'synthetic-service-with-a-long-name-for-narrow-layout',state:'running',health:'healthy'}],readiness:{ready:scenario==='ready',version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:scenario==='running'?job:null};
   Object.assign(window,{isTauri:true,__uxCalls:[],__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    (window as unknown as {__uxCalls:string[]}).__uxCalls.push(cmd);
    if(cmd==='manager_backup_jobs')return [];
    if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};

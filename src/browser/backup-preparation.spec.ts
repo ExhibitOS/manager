@@ -8,6 +8,7 @@ test.beforeEach(async({page})=>{
   Object.assign(w,{__path:'/private/tmp/synthetic-external.key',__defer:false,__running:true,__calls:[]});
   const context=()=>({selectionToken:['45678901-1234-1234-1234-123456789012','78901234-1234-1234-1234-123456789012'][selected],activeId:ids[selected],mode:'managed',installations:ids.map((id,index)=>({id,kind:index?'recovery':'default',createdAt:1,path:index?'/private/tmp/synthetic-profile/installations/'+id:'/private/tmp/synthetic-profile/local-runtime',available:true})),errorCode:null});
   Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string,args:Record<string,unknown>={})=>{
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    if(cmd==='manager_installations')return context();
    if(cmd==='manager_select_installation'){selected=ids.indexOf(args.targetId as string);return context();}
    if(cmd==='manager_status')return {installed:true,bundleId:'synthetic',version:'0.1.0',state:w.__running?'running':'stopped',services:[],readiness:{ready:w.__running,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:0,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};

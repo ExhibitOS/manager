@@ -48,6 +48,11 @@ pub use candidate_configuration::CandidateConfigurationReceipt;
 pub use candidate_inventory::CandidateInventoryReceipt;
 #[path = "migration_catalog.rs"]
 mod migration_catalog;
+/// Native input discovery only; the full qualifier must retain and recheck it.
+#[cfg(unix)]
+pub(crate) fn validate_preparation_catalog(path:&Path,pin:&str,signed_schema:&str)->crate::Result<()> {
+ let mut input=migration_catalog::CatalogInput::read(path,pin,signed_schema)?;input.recheck()
+}
 #[path = "prepared_oci.rs"]
 mod prepared_oci;
 #[path = "runtime_compatibility.rs"]

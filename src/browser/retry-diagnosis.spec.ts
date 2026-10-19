@@ -7,6 +7,7 @@ for(const scenario of ['no-child','child-found','unproven','contradictory','chan
   const audit={id,targetId:target,kind,state:'preparing',newJobId:null,originalJobSha256:'a'.repeat(64),destinationRootSha256:kind==='backup'?'ac5d97aee7fbfabe891d373247a8aefdc9cbc804f2ec9ba13005f440bdb5215e':'7d277be2fe45eebc11b1551791b949f6babd62451b74f14dbb506a89320f9d12',errorCode:null,createdAt:1,updatedAt:2};
   const calls:unknown[]=[];let resolve=()=>{};
   Object.assign(window,{isTauri:true,__diagnosisCalls:calls,__finishDiagnosis:()=>resolve(),__TAURI_INTERNALS__:{invoke:async(cmd:string,args:Record<string,unknown>={})=>{
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:source,mode:'managed',installations:[{id:source,kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true},{id:destination,kind:'recovery',createdAt:2,path:`/private/tmp/synthetic-profile/installations/${destination}`,available:true}],errorCode:'STATE_INVALID'};
    if(cmd==='manager_status'||cmd==='manager_backup_jobs'||cmd==='manager_restoration_context')throw {code:'STATE_INVALID',guidance:'합성 불완전 후보'};
    if(cmd==='manager_detect'||cmd==='manager_jobs'||cmd==='manager_logs'||cmd==='manager_helper_reconciliations')return [];

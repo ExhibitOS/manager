@@ -8,6 +8,7 @@ for(const scenario of ['success','failure','malformed','wrong-port'] as const)te
   let attempted=false;
   const receipt={id:'12345678-1234-1234-1234-123456789012',operation:'restored-and-running',backupId:'23456789-1234-1234-1234-123456789012',authenticatedManifestSha256:'b'.repeat(64),bundleId:'34567890-1234-1234-1234-123456789012',projectName:'exhibitos-34567890-1234-1234-1234-123456789012',openUrl:'http://127.0.0.1:4500',at:2,networkSubnet:'10.240.0.16/28',sourceVerification:{inventorySha256:'c'.repeat(64),schemaSha256:'d'.repeat(64),runtimeImageSha256:'e'.repeat(64)}};
   Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string,args?:{input:unknown})=>{
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    f.__restoreCalls.push(cmd);
    if(cmd==='manager_external_restore'&&(args?.input as {action?:string}|undefined)?.action==='context')return {sources:[],checks:[]};
    if(cmd==='manager_maintenance_context')return null;

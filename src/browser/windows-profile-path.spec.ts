@@ -6,6 +6,7 @@ for(const scenario of ['override','platform-unverified','device-refused'] as con
   const slash=String.fromCharCode(92);
   const path=scenario==='device-refused'?slash+slash+'.'+slash+'PhysicalDrive0':slash+slash+'?'+slash+'C:'+slash+'Users'+slash+'Jung'+slash+'AppData'+slash+'Local'+slash+'ExhibitOS-GuiCheck-synthetic';
   Object.assign(window,{isTauri:true,__windowsGuiCalls:calls,__TAURI_INTERNALS__:{invoke:async(command:string,args?:{input?:unknown})=>{
+   if(command==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    // Provider history is independent of selected local-installation path authority.
    if(command==='manager_hosted_resume')return null;
    if(command==='manager_hosted_connected')return false;

@@ -6,6 +6,7 @@ for(const scenario of ['pending','malformed-reference','schema-change','qualifie
   const owner='56789012-1234-1234-1234-123456789012',referenceId='12345678-1234-1234-1234-123456789012';
   type Fixture=Window&{__updateInputs:unknown[];__finishUpdate:()=>void};const fixture=window as unknown as Fixture;fixture.__updateInputs=[];
   Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(command:string,args?:{input?:unknown})=>{
+   if(command==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    if(command==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:owner,mode:'managed',installations:[{id:owner,kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true}],errorCode:null};
    if(command==='manager_status')return {installed:true,bundleId:'synthetic',version:'1.0.0',state:'stopped',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
    if(command==='manager_detect')return [{kind:'docker',installed:true,available:true,engineVersion:'synthetic',composeVersion:'synthetic',errorCode:null,guidance:null}];

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 mod startup;
+mod update_preparation;
+mod update_runtime;
 mod maintenance_picker;
 mod processing_app;
 mod remote;
@@ -852,6 +854,14 @@ async fn manager_open_oex(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let arguments: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if arguments.get(1).is_some_and(|value|value=="--manager-update-preparation-helper") {
+        let result=if arguments.len()==5 {
+            arguments[3].to_str().ok_or_else(||error("UPDATE_PREPARATION_INPUT_INVALID")).and_then(|id|
+                update_preparation::helper(std::path::Path::new(&arguments[2]),id,std::path::Path::new(&arguments[4])))
+        }else{Err(error("UPDATE_PREPARATION_INPUT_INVALID"))};
+        if result.is_err(){std::process::exit(1);}
+        return;
+    }
     if arguments.get(1).is_some_and(|value|value=="--manager-engine-preparation-helper") {
         if arguments.len()!=3||engine_preparation::helper(std::path::Path::new(&arguments[2])).is_err(){std::process::exit(1);}
         return;
@@ -896,12 +906,22 @@ pub fn run() {
                     .app_data_dir()
                     .map_err(|_| startup::Failure::from_code("MANAGER_DATA_PATH_UNAVAILABLE"))?,
             };
+            let preparation_profile=if override_root.is_none(){Some(profile.clone())}else{None};
+            let blocked=match preparation_profile.as_deref(){
+                Some(profile)=>match update_preparation::boot(profile){
+                    Ok(blocked)=>blocked,
+                    Err(error)=>{eprintln!("Manager update preparation startup: {}",error.code);true}
+                },None=>false,
+            };
+            app.manage(update_preparation::Profile(preparation_profile));
+            if !blocked {
             let controller = exhibitos_lifecycle::installations::InstallationController::new(
                 profile,
                 override_root,
             )
             .map_err(|error| startup::Failure::from_code(&error.code))?;
             app.manage(DesktopState(Arc::new(controller)));
+            }
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("ExhibitOS Manager")
                 .inner_size(1120.0, 900.0)
@@ -912,6 +932,14 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            update_preparation::manager_update_preparation_startup,
+            update_preparation::manager_update_preparation_status,
+            update_preparation::manager_update_preparation_inspect,
+            update_preparation::manager_update_preparation_dispatch,
+            update_preparation::manager_update_preparation_cancel,
+            update_preparation::manager_update_preparation_reconcile,
+            update_preparation::manager_update_preparation_open_manager,
+            update_preparation::manager_update_preparation_choose_release,
             manager_status,
             manager_processing_app,
             manager_hosted_recovery,

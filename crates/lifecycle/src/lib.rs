@@ -20,6 +20,10 @@ pub mod maintenance;
 pub mod maintenance_source;
 #[cfg(not(windows))]
 pub mod update_preparation_source;
+#[cfg(unix)]
+pub mod update_preparation;
+#[cfg(unix)]
+mod update_preparation_inputs;
 mod maintenance_stream;
 mod process_window;
 pub mod profile_backup;
@@ -315,6 +319,7 @@ fn err(code: &str) -> LifecycleError {
         "RUNTIME_MISSING" => "컨테이너 실행 도구를 설치한 후 다시 시도하세요.",
         "ENGINE_UNAVAILABLE" => "컨테이너 실행 도구를 시작한 후 다시 시도하세요.",
         "COMPOSE_UNAVAILABLE" => "Compose 실행 도구를 설치하거나 설정한 후 다시 시도하세요.",
+        "UPDATE_PREPARATION_START_REQUIRED" => "백업 확인을 위해 서버가 켜져 있어야 합니다. Manager에서 서버 시작을 누른 뒤 업데이트 자료를 다시 확인하세요. 현재 전시와 백업은 변경하지 않았습니다.",
         "UPDATE_PLAN_SOURCE_INVALID" => "업데이트 준비에 사용할 백업 정보를 확인하지 못했습니다. 원본과 백업을 보존하고 선택한 사본을 다시 확인하세요.",
         "ENGINE_TIMEOUT" => "실행 도구의 응답이 늦습니다. 상태를 확인한 후 다시 시도하세요.",
         "ENGINE_OUTPUT_INVALID" | "ENGINE_OUTPUT_LIMIT" => {

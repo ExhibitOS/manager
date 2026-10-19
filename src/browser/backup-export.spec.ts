@@ -5,6 +5,7 @@ for(const outcome of ['success','cancel','failure'] as const)test(`completed bac
  await page.addInitScript(({outcome})=>{
   const id='12345678-1234-1234-1234-123456789012',image='sha256:'+'a'.repeat(64);
   Object.assign(window,{isTauri:true,__exportCalls:[],__verifyInputs:[],__TAURI_INTERNALS__:{invoke:async(cmd:string,args?:{jobId?:string;input?:unknown})=>{
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:'56789012-1234-1234-1234-123456789012',mode:'managed',installations:[{id:'56789012-1234-1234-1234-123456789012',kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true}],errorCode:null};
    if(cmd==='manager_status')return {installed:true,bundleId:'synthetic',version:'0.1.0',state:'stopped',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
    if(cmd==='manager_detect')return [{kind:'docker',installed:true,available:true,engineVersion:'synthetic',composeVersion:'synthetic',errorCode:null,guidance:null}];

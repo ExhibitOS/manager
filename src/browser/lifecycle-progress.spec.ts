@@ -6,6 +6,7 @@ for(const action of ['install','start','stop','restart','failure'] as const)test
   const installed=action!=='install',ready=action==='stop'||action==='restart';
   const status={installed,bundleId:'synthetic',version:'0.1.0',state:ready?'running':'stopped',services:[],readiness:{ready,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
   Object.assign(window,{isTauri:true,__finishOperation:null,__operationCount:0,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    if(cmd==='manager_hosted_resume')return null;
    if(cmd==='manager_hosted_connected')return false;
    if(cmd==='manager_update_cancel')return null;

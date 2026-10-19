@@ -7,6 +7,7 @@ for(const scenario of ['success','failure','malformed','preinstall'] as const)te
   const fixture=window as unknown as FixtureWindow;
   fixture.__verificationCalls=0;fixture.__verificationInputs=[];
   Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string,args?:{input:unknown})=>{
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    if(cmd==='manager_external_restore')return {sources:[],checks:[]};
    if(cmd==='manager_backup_jobs')return [];
    if(cmd==='manager_backup_tool')return scenario==='preinstall'?'sha256:'+'a'.repeat(64):null;
