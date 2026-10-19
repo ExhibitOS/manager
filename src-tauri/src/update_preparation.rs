@@ -198,18 +198,16 @@ pub fn helper(profile: &Path, id: &str, resources: &Path) -> Result<(), Lifecycl
         return Err(failure("UPDATE_PREPARATION_INPUT_INVALID"));
     }
     exhibitos_lifecycle::enable_native_docker_transport();
-    let python = super::update_runtime::verified(resources).map_err(|e| {
+    let python = super::update_runtime::verified(resources).inspect_err(|e| {
         let _ = core::before_start_failed(profile, id, &e.code);
-        e
     })?;
     let runtime = core::Runtime::from_native_resources(
         &resources.join("platform-runtime/generated"),
         python.python(),
         python.sha256(),
     )
-    .map_err(|e| {
+    .inspect_err(|e| {
         let _ = core::before_start_failed(profile, id, &e.code);
-        e
     })?;
     let receipt = core::execute(profile, id, &runtime, || python.check())?;
     python.check()?;
