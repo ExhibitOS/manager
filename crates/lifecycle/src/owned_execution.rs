@@ -264,6 +264,38 @@ pub(super) fn release_now() -> crate::Result<u64> {
         .map(|v| v.as_secs())
         .map_err(|_| crate::err("UPDATE_CLOCK_UNVERIFIED"))
 }
+/// Raw pre-stop ownership observations, not a fabricated stopped-state receipt.
+#[cfg(not(windows))]
+fn candidate_stop_isolated(
+    source: &SourceStoppedReceipt,
+    bundle: &str,
+    project: &str,
+    source_project: &str,
+    containers: [&str; 2],
+    volumes: [&str; 3],
+) -> crate::Result<()> {
+    let source_containers = [
+        source.platform_container.as_str(),
+        source.database_container.as_str(),
+    ];
+    let source_volumes = [
+        source.blob_volume.as_str(),
+        source.configuration_volume.as_str(),
+        source.database_volume.as_str(),
+    ];
+    if bundle == source.bundle_id
+        || project == source_project
+        || containers[0] == containers[1]
+        || containers.iter().any(|id| source_containers.contains(id))
+        || volumes[0] == volumes[1]
+        || volumes[0] == volumes[2]
+        || volumes[1] == volumes[2]
+        || volumes.iter().any(|name| source_volumes.contains(name))
+    {
+        return Err(crate::err("UPDATE_TARGET_CHANGED"));
+    }
+    Ok(())
+}
 impl ExecutionSession<'_> {
     /// Stage the current intent's exact signed artifact under the borrowed execution
     /// fence. No caller policy/envelope/plan or success booleans are accepted.
@@ -1481,6 +1513,206 @@ impl ExecutionSession<'_> {
         post_check?;
         result
     }
+    /// Normally stop only the exact completed recovery candidate reserved by the
+    /// current Prepared plan. Source selection and update generation do not change.
+    /// Call this before the final host/trust checkpoint: the normal Stop job writes
+    /// candidate history and therefore invalidates an earlier whole-profile snapshot.
+    /// A completed Stop and fresh stopped observation are not update qualification.
+    #[cfg(not(windows))]
+    pub fn stop_target_candidate(
+        &self,
+        acknowledged: bool,
+    ) -> crate::Result<(crate::Job, SourceStoppedReceipt)> {
+        self.require_selected_source()?;
+        if !acknowledged {
+            return Err(crate::err("BACKUP_OPERATOR_ACK_REQUIRED"));
+        }
+        let intent = self
+            .store
+            .intent()
+            .ok_or_else(|| crate::err("UPDATE_INTENT_MISSING"))?;
+        if intent.update.stage() != crate::update::Stage::Prepared {
+            return Err(crate::err("UPDATE_CANDIDATE_STAGE_INVALID"));
+        }
+        let plan = intent.update.plan();
+        let binding = crate::restoration::RestorationBinding::from_plan(plan)?;
+        let (registry, _) = installations::load(&self.store.profile)?
+            .ok_or_else(|| crate::err("UPDATE_SOURCE_CHANGED"))?;
+        if plan.target_instance == plan.source_instance
+            || registry.active_id == plan.target_instance
+        {
+            return Err(crate::err("UPDATE_TARGET_CHANGED"));
+        }
+        let entry = registry
+            .installations
+            .iter()
+            .find(|entry| entry.id == plan.target_instance && entry.kind == "recovery")
+            .ok_or_else(|| crate::err("UPDATE_TARGET_UNREGISTERED"))?;
+        let root = installations::root(&self.store.profile, entry);
+        installations::private_directory(&self.store.profile.join("installations"))?;
+        installations::private_directory(&root)?;
+        let identity_before =
+            directory_identity(&root).map_err(|_| crate::err("UPDATE_TARGET_CHANGED"))?;
+        let target = LifecycleService::open_retry_diagnostics(root.clone())?;
+        let source_guard = self.source.lock()?;
+        let target_guard = target.lock()?;
+        self.source.check_restoration_guard(&source_guard)?;
+        target.check_restoration_guard(&target_guard)?;
+        // The profile/trust session and both original operation guards remain
+        // held; retained external helpers must not be bypassed by this new entry.
+        LifecycleService::open_retry_diagnostics(self.store.profile.clone())?
+            .ensure_external_archive_reconciled()?;
+        self.source.ensure_external_archive_reconciled()?;
+        target.ensure_external_archive_reconciled()?;
+        let restored = target
+            .restoration_status()?
+            .filter(|job| {
+                job.state == "completed" && job.stage == "complete" && job.error_code.is_none()
+            })
+            .ok_or_else(|| crate::err("UPDATE_CANDIDATE_PROOF_MISSING"))?;
+        let workspace = root.join(format!("restore-{}", restored.id));
+        let receipt_bytes = crate::installation_backup::source_bytes(
+            &workspace,
+            "receipt.json",
+            1024 * 1024,
+            true,
+        )?;
+        let receipt: crate::restoration::RestorationReceipt =
+            serde_json::from_slice(&receipt_bytes)
+                .map_err(|_| crate::err("UPDATE_CANDIDATE_PROOF_MISSING"))?;
+        let manifest = target.manifest()?;
+        candidate_inventory::receipt_matches(&receipt, &restored.id, &manifest, plan)?;
+        let raw = crate::installation_backup::source_bytes(
+            &workspace.join("authenticated"),
+            "manifest.json",
+            16 * 1024 * 1024,
+            true,
+        )?;
+        binding.authenticated(
+            &receipt.backup_id,
+            &receipt.authenticated_manifest_sha256,
+            &raw,
+        )?;
+        source_deployment::authenticated_files(&self.source.root, &workspace, &receipt, plan)?;
+        let source_before = source_stopped::observe(&self.source, plan)?;
+        let result = (|| {
+            let source_manifest = self.source.manifest()?;
+            let engine = target.engine(&manifest, false)?;
+            if engine != "docker" {
+                return Err(crate::err("BACKUP_PLATFORM_UNVERIFIED"));
+            }
+            target.ensure_backup_helpers_idle(&engine)?;
+            target.validate_compose(&manifest, &engine)?;
+            let config: serde_json::Value = serde_json::from_slice(&crate::run(
+                &engine,
+                &crate::compose_args(&manifest, &["config", "--format", "json"]),
+                Some(&target.root.join("bundle")),
+                30,
+            )?)
+            .map_err(|_| crate::err("ENGINE_OUTPUT_INVALID"))?;
+            let (app_id, app) =
+                crate::backup_creation::one_container(&target, &manifest, &engine, "platform")?;
+            let (db_id, db) =
+                crate::backup_creation::one_container(&target, &manifest, &engine, "database")?;
+            if app["Image"] != format!("sha256:{}", plan.source_image) {
+                return Err(crate::err("UPDATE_SOURCE_IMAGE_MISMATCH"));
+            }
+            let blobs = crate::backup_creation::volume_for(
+                &engine,
+                &manifest,
+                &config,
+                "platform",
+                "/data/blobs",
+                &app,
+            )?;
+            let configuration = crate::backup_creation::volume_for(
+                &engine,
+                &manifest,
+                &config,
+                "platform",
+                "/data/config",
+                &app,
+            )?;
+            let database = crate::backup_creation::volume_for(
+                &engine,
+                &manifest,
+                &config,
+                "database",
+                "/var/lib/postgresql",
+                &db,
+            )?;
+            candidate_stop_isolated(
+                &source_before,
+                &manifest.bundle_id,
+                &manifest.project_name,
+                &source_manifest.project_name,
+                [&app_id, &db_id],
+                [&blobs, &configuration, &database],
+            )?;
+            self.check()?;
+            target.check_restoration_guard(&target_guard)?;
+            if !directory_matches(&identity_before, &root)? {
+                return Err(crate::err("UPDATE_TARGET_CHANGED"));
+            }
+            let job = target.stop_with_retained_guard(&target_guard)?;
+            if job.action != crate::Action::Stop || job.state != crate::JobState::Completed {
+                return Err(crate::err(
+                    job.error_code
+                        .as_deref()
+                        .unwrap_or("UPDATE_SOURCE_NOT_STOPPED"),
+                ));
+            }
+            let jobs = target.job_history()?;
+            if jobs.last().is_none_or(|stored| {
+                serde_json::to_value(stored).ok() != serde_json::to_value(&job).ok()
+            }) {
+                return Err(crate::err("UPDATE_TARGET_CHANGED"));
+            }
+            let mut candidate_plan = plan.clone();
+            candidate_plan.source_instance = plan.target_instance.clone();
+            let stopped = source_stopped::observe(&target, &candidate_plan)?;
+            if stopped.platform_container != app_id
+                || stopped.database_container != db_id
+                || stopped.blob_volume != blobs
+                || stopped.configuration_volume != configuration
+                || stopped.database_volume != database
+                || !candidate_inventory::isolated(&source_before, &stopped)
+                || target.restoration_status()?.is_none_or(|job| {
+                    job.id != restored.id || job.state != "completed" || job.error_code.is_some()
+                })
+                || crate::installation_backup::source_bytes(
+                    &workspace,
+                    "receipt.json",
+                    1024 * 1024,
+                    true,
+                )? != receipt_bytes
+                || crate::installation_backup::source_bytes(
+                    &workspace.join("authenticated"),
+                    "manifest.json",
+                    16 * 1024 * 1024,
+                    true,
+                )? != raw
+                || serde_json::to_value(target.manifest()?).ok()
+                    != serde_json::to_value(&manifest).ok()
+            {
+                return Err(crate::err("UPDATE_TARGET_CHANGED"));
+            }
+            source_deployment::authenticated_files(&self.source.root, &workspace, &receipt, plan)?;
+            Ok((job, stopped))
+        })();
+        // Observe the original even if stopping/observing the candidate failed.
+        let source_after = source_stopped::observe(&self.source, plan);
+        self.check()?;
+        self.source.check_restoration_guard(&source_guard)?;
+        target.check_restoration_guard(&target_guard)?;
+        installations::private_directory(&root)?;
+        if !directory_matches(&identity_before, &root)?
+            || !candidate_inventory::same_stopped(&source_before, &source_after?)
+        {
+            return Err(crate::err("UPDATE_SOURCE_CHANGED"));
+        }
+        result
+    }
     /// Actual authenticated decryption, bound to the prepared manifest hash.
     /// Authentication alone cannot authorize update or prove complete restoration.
     pub fn verify_backup(
@@ -1996,6 +2228,229 @@ mod tests {
         let target = parent.join(id);
         installations::new_directory(&target).unwrap();
         target
+    }
+    #[test]
+    fn candidate_stop_requires_ack_registered_private_target_and_preserves_selection() {
+        let (p, mut store) = prepared("default");
+        let source = registered(&p, SOURCE, "default");
+        fs::write(source.join("original-witness"), b"keep source").unwrap();
+        let registry = fs::read(p.join("installation-selection.json")).unwrap();
+        {
+            let lease = store.execution().unwrap();
+            assert_eq!(
+                lease.stop_target_candidate(false).unwrap_err().code,
+                "BACKUP_OPERATOR_ACK_REQUIRED"
+            );
+            assert_eq!(
+                lease.stop_target_candidate(true).unwrap_err().code,
+                "UPDATE_TARGET_UNREGISTERED"
+            );
+        }
+        assert_eq!(
+            fs::read(p.join("installation-selection.json")).unwrap(),
+            registry
+        );
+        let target = register_target(&p);
+        let retained = p.join("retained-target");
+        fs::rename(&target, &retained).unwrap();
+        symlink(&retained, &target).unwrap();
+        let registered = fs::read(p.join("installation-selection.json")).unwrap();
+        {
+            let lease = store.execution().unwrap();
+            assert!(lease.stop_target_candidate(true).is_err());
+        }
+        assert_eq!(
+            fs::read(p.join("installation-selection.json")).unwrap(),
+            registered
+        );
+        assert_eq!(
+            fs::read(source.join("original-witness")).unwrap(),
+            b"keep source"
+        );
+        assert_eq!(fs::read_dir(retained).unwrap().count(), 0);
+        assert_eq!(store.receipt().generation, 2);
+    }
+    #[test]
+    fn candidate_stop_rejects_applying_and_an_active_candidate_before_mutation() {
+        let (p, mut store) = prepared("default");
+        registered(&p, SOURCE, "default");
+        let target = register_target(&p);
+        fs::write(target.join("candidate-witness"), b"keep candidate").unwrap();
+        let envelope = store.intent().unwrap().envelope.as_bytes().to_vec();
+        let mut verified = store.verify_for_preparation(&envelope, 20).unwrap();
+        verified
+            .verify_artifact(&mut b"fixture".as_slice())
+            .unwrap();
+        let mut observations = super::super::tests::observations();
+        observations.plan = store.intent().unwrap().update.plan().clone();
+        store.begin_update(observations, &verified, 21).unwrap();
+        {
+            let lease = store.execution().unwrap();
+            assert_eq!(
+                lease.stop_target_candidate(true).unwrap_err().code,
+                "UPDATE_CANDIDATE_STAGE_INVALID"
+            );
+        }
+        assert_eq!(
+            fs::read(target.join("candidate-witness")).unwrap(),
+            b"keep candidate"
+        );
+        assert!(!target.join("jobs.json").exists());
+        let (p, mut store) = prepared("default");
+        registered(&p, SOURCE, "default");
+        let target = register_target(&p);
+        let (mut registry, _) = installations::load(&p).unwrap().unwrap();
+        registry.active_id = store
+            .intent()
+            .unwrap()
+            .update
+            .plan()
+            .target_instance
+            .clone();
+        fs::write(
+            p.join("installation-selection.json"),
+            serde_json::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+        let before = fs::read(p.join("installation-selection.json")).unwrap();
+        let lease = store.execution().unwrap();
+        assert_eq!(
+            lease.stop_target_candidate(true).unwrap_err().code,
+            "UPDATE_SELECTION_AUTHORITY_MISMATCH"
+        );
+        assert_eq!(
+            fs::read(p.join("installation-selection.json")).unwrap(),
+            before
+        );
+        assert!(!target.join("jobs.json").exists());
+    }
+    #[test]
+    fn candidate_stop_rejects_wrong_backup_receipt_before_source_or_target_engine_action() {
+        let (p, mut store) = prepared("default");
+        let source = registered(&p, SOURCE, "default");
+        fs::write(source.join("original-witness"), b"keep source").unwrap();
+        let target = register_target(&p);
+        let bundle = target.join("bundle");
+        installations::new_directory(&bundle).unwrap();
+        crate::write_private_new(&bundle, "compose.yaml", b"{}", 1024).unwrap();
+        let m: crate::BundleManifest = serde_json::from_value(serde_json::json!({"schemaVersion":"1.0.0-draft.1","bundleId":"recovered-fixture","version":"1","protocolVersion":"1","composeSha256":crate::digest(b"{}"),"projectName":"exhibitos-recovered-fixture","services":["platform","database"],"images":[{"reference":format!("sha256:{}","a".repeat(64))}],"ports":[13200],"openUrl":"http://127.0.0.1:13200","readinessUrl":"http://127.0.0.1:13200/health","minimumFreeBytes":1})).unwrap();
+        crate::write_json(&bundle, "manifest.json", &m).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let restored = crate::restoration::RestorationJob {
+            id: id.clone(),
+            state: "completed".into(),
+            stage: "complete".into(),
+            error_code: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+        crate::write_json(&target, "restoration.json", &restored).unwrap();
+        let workspace = target.join(format!("restore-{id}"));
+        installations::new_directory(&workspace).unwrap();
+        let plan = store.intent().unwrap().update.plan();
+        // Intentionally mismatched fixture; never accepted as actual restoration.
+        let receipt = crate::restoration::RestorationReceipt {
+            id,
+            operation: "restored-and-running".into(),
+            backup_id: uuid::Uuid::new_v4().to_string(),
+            authenticated_manifest_sha256: plan.backup_manifest.clone(),
+            bundle_id: m.bundle_id.clone(),
+            project_name: m.project_name.clone(),
+            open_url: m.open_url.clone(),
+            at: 1,
+            network_subnet: None,
+            source_verification: Some(crate::restoration::RestorationProof {
+                inventory_sha256: plan.source_inventory.clone(),
+                schema_sha256: plan.source_schema.clone(),
+                runtime_image_sha256: plan.source_image.clone(),
+            }),
+        };
+        crate::write_json(&workspace, "receipt.json", &receipt).unwrap();
+        let original = fs::read(workspace.join("receipt.json")).unwrap();
+        let registry = fs::read(p.join("installation-selection.json")).unwrap();
+        {
+            let lease = store.execution().unwrap();
+            assert_eq!(
+                lease.stop_target_candidate(true).unwrap_err().code,
+                "UPDATE_CANDIDATE_PROOF_MISSING"
+            );
+        }
+        assert_eq!(fs::read(workspace.join("receipt.json")).unwrap(), original);
+        assert_eq!(
+            fs::read(p.join("installation-selection.json")).unwrap(),
+            registry
+        );
+        assert_eq!(
+            fs::read(source.join("original-witness")).unwrap(),
+            b"keep source"
+        );
+        assert!(!target.join("jobs.json").exists());
+        assert_eq!(store.receipt().generation, 2);
+    }
+    #[test]
+    fn candidate_stop_pre_stop_isolation_rejects_every_original_alias() {
+        let source = SourceStoppedReceipt {
+            source_instance: SOURCE.into(),
+            bundle_id: "original".into(),
+            platform_container: "app".into(),
+            database_container: "db".into(),
+            runtime_image_sha256: "a".repeat(64),
+            blob_volume: "blob".into(),
+            configuration_volume: "config".into(),
+            database_volume: "data".into(),
+            observed_at: 1,
+        };
+        assert!(
+            candidate_stop_isolated(
+                &source,
+                "candidate",
+                "candidate-project",
+                "source-project",
+                ["new-app", "new-db"],
+                ["new-blob", "new-config", "new-data"]
+            )
+            .is_ok()
+        );
+        for mode in 0..5 {
+            let (bundle, project, ids, volumes) = match mode {
+                0 => (
+                    "original",
+                    "candidate-project",
+                    ["new-app", "new-db"],
+                    ["new-blob", "new-config", "new-data"],
+                ),
+                1 => (
+                    "candidate",
+                    "source-project",
+                    ["new-app", "new-db"],
+                    ["new-blob", "new-config", "new-data"],
+                ),
+                2 => (
+                    "candidate",
+                    "candidate-project",
+                    ["db", "new-db"],
+                    ["new-blob", "new-config", "new-data"],
+                ),
+                3 => (
+                    "candidate",
+                    "candidate-project",
+                    ["new-app", "new-db"],
+                    ["new-blob", "config", "new-data"],
+                ),
+                _ => (
+                    "candidate",
+                    "candidate-project",
+                    ["new-app", "new-db"],
+                    ["new-blob", "new-blob", "new-data"],
+                ),
+            };
+            assert_eq!(
+                candidate_stop_isolated(&source, bundle, project, "source-project", ids, volumes)
+                    .unwrap_err()
+                    .code,
+                "UPDATE_TARGET_CHANGED"
+            );
+        }
     }
     #[test]
     fn candidate_requires_ack_existing_registered_target_and_private_namespace() {

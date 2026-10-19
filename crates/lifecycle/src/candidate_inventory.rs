@@ -19,7 +19,7 @@ pub struct CandidateInventoryReceipt {
     pub preflight_verified: bool,
     pub update_executed: bool,
 }
-fn receipt_matches(
+pub(super) fn receipt_matches(
     r: &crate::restoration::RestorationReceipt,
     job: &str,
     m: &crate::BundleManifest,
@@ -45,7 +45,7 @@ fn receipt_matches(
     }
     Ok(())
 }
-fn same_stopped(a: &SourceStoppedReceipt, b: &SourceStoppedReceipt) -> bool {
+pub(super) fn same_stopped(a: &SourceStoppedReceipt, b: &SourceStoppedReceipt) -> bool {
     a.source_instance == b.source_instance
         && a.bundle_id == b.bundle_id
         && a.platform_container == b.platform_container
@@ -55,7 +55,7 @@ fn same_stopped(a: &SourceStoppedReceipt, b: &SourceStoppedReceipt) -> bool {
         && a.blob_volume == b.blob_volume
         && a.configuration_volume == b.configuration_volume
 }
-fn isolated(a: &SourceStoppedReceipt, b: &SourceStoppedReceipt) -> bool {
+pub(super) fn isolated(a: &SourceStoppedReceipt, b: &SourceStoppedReceipt) -> bool {
     let original = [
         a.database_volume.as_str(),
         a.blob_volume.as_str(),

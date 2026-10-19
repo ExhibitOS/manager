@@ -102,6 +102,8 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 
 [실제 Runtime 릴리스 계획과 복원 후보 검사](docs/genuine-update-plan.md)는 실제 artifact에 새 준비 계획을 연결합니다. 복원 후보는 원본 버전 Runtime을 검사하며 신규 target 적용·health·rollback은 별도입니다.
 
+기존 native 준비 경로의 `ExecutionSession::stop_target_candidate(true)`는 현재 Prepared 계획에 등록되고 원래 백업의 복원 receipt와 결속된 후보만 정상 정지합니다. 원본이 이미 정지되어 있는지 앞뒤로 관측하고 원래 선택·설정·신뢰 기록을 유지하며, 같은 operation lock 아래 기존 Stop 작업의 완료와 실제 후보 정지를 다시 확인합니다. 후보 작업 기록도 바뀌므로 **최종 host/trust checkpoint 전에 호출**해야 하며, 정지 전에 만든 checkpoint를 그대로 재사용하지 않습니다. 관련 fixture 6개와 기존 작업·잠금 회귀 2개 및 library Clippy를 확인했지만, 이 새 API의 실제 후보 정지·native GUI·전체 업데이트/rollback 검증은 아직 별도 미완료입니다.
+
 [독립 사본 target Runtime 검사](docs/target-runtime-probe.md)는 신규 버전과 이전 버전의 기본 동작을 별도 synthetic 사본에서 검사합니다. 실제 설치 전환·전체 호환성·rollback 인수 조건은 별도입니다.
 
 [호스트·신뢰 묶음 사본](docs/paired-host-trust-checkpoint.md)은 같은 cooperative 잠금에서 두 암호화 사본을 만들고 비활성 경로 추출을 지원합니다. 현재 외부 서비스 볼륨 백업·authority 복원·실제 업데이트 인수 조건은 별도로 유지합니다.

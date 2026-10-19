@@ -1456,7 +1456,18 @@ impl LifecycleService {
         cached_images_only: bool,
         expected_retry: Option<(&str, u32)>,
     ) -> Result<Job> {
-        let _lock = self.lock()?;
+        let guard = self.lock()?;
+        self.execute_with_retained_operation_guard(action, cached_images_only, expected_retry, &guard)
+    }
+    /// Common existing job body; its caller retains the original operation lock.
+    /// Ordinary execute admission and ordering are intentionally unchanged.
+    fn execute_with_retained_operation_guard(
+        &self,
+        action: Action,
+        cached_images_only: bool,
+        expected_retry: Option<(&str, u32)>,
+        _guard: &OperationGuard,
+    ) -> Result<Job> {
         #[cfg(any(unix, windows))]
         signed_release::trust::lifecycle_writer::admit(&self.root, &action)?;
         let mut jobs = self.job_history()?;
@@ -1549,6 +1560,17 @@ impl LifecycleService {
         jobs[index] = job.clone();
         write_json(&self.root, "jobs.json", &jobs)?;
         Ok(job)
+    }
+    /// Native-only candidate preparation retains the same typed lock from its
+    /// receipt/ownership admission through the normal Stop job and observation.
+    #[cfg(not(windows))]
+    pub(crate) fn stop_with_retained_guard(&self, guard: &OperationGuard) -> Result<Job> {
+        installations::private_directory(&self.root)?;
+        self.check_restoration_guard(guard)?;
+        let result = self.execute_with_retained_operation_guard(Action::Stop, false, None, guard);
+        self.check_restoration_guard(guard)?;
+        installations::private_directory(&self.root)?;
+        result
     }
     fn operation(&self, action: &Action) -> Result<()> {
         self.operation_with_image_policy(action, false)
@@ -1980,6 +2002,55 @@ mod tests {
         assert_eq!(retry.state, JobState::Failed);
         assert!(retry.error_code.is_some());
         assert_eq!(recovered.jobs().unwrap().len(), 2);
+    }
+    #[cfg(not(windows))]
+    fn canonical_retained_stop_fixture() -> LifecycleService {
+        let service = LifecycleService::new(root()).unwrap();
+        LifecycleService::bound_existing(fs::canonicalize(&service.root).unwrap()).unwrap()
+    }
+    #[test]
+    #[cfg(not(windows))]
+    fn retained_stop_rejects_wrong_root_and_replaced_operation_file_before_job() {
+        for replaced in [false, true] {
+            let service = canonical_retained_stop_fixture();
+            let guard = service.lock().unwrap();
+            let other = canonical_retained_stop_fixture();
+            let selected = if replaced {
+                fs::rename(
+                    service.root.join("operation.lock"),
+                    service.root.join("retained-operation.lock"),
+                )
+                .unwrap();
+                write_private_new(&service.root, "operation.lock", b"replacement", 64).unwrap();
+                &service
+            } else {
+                &other
+            };
+            assert_eq!(
+                selected.stop_with_retained_guard(&guard).unwrap_err().code,
+                "UPDATE_FENCE_UNAVAILABLE"
+            );
+            assert!(service.jobs().unwrap().is_empty());
+            assert!(other.jobs().unwrap().is_empty());
+        }
+    }
+    #[test]
+    #[cfg(not(windows))]
+    fn retained_stop_reuses_normal_failed_job_and_keeps_original_lock_alive() {
+        let ordinary = canonical_retained_stop_fixture();
+        let expected = ordinary.execute(Action::Stop).unwrap();
+        let retained = canonical_retained_stop_fixture();
+        let guard = retained.lock().unwrap();
+        let actual = retained.stop_with_retained_guard(&guard).unwrap();
+        // Missing bundle fails before any engine action in both existing paths.
+        assert_eq!(actual.action, expected.action);
+        assert_eq!(actual.state, expected.state);
+        assert_eq!(actual.state, JobState::Failed);
+        assert_eq!(actual.error_code, expected.error_code);
+        assert_eq!(retained.jobs().unwrap().len(), 1);
+        assert_eq!(retained.lock().err().unwrap().code, "BUSY");
+        drop(guard);
+        assert!(retained.lock().is_ok());
     }
     #[test]
     fn active_cross_process_lock_is_never_interrupted() {
