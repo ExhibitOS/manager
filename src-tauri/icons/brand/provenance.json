@@ -6,35 +6,35 @@
   "canonicalManifestSha256": "39e8645c8eb10683802d6ccc16dfdc2e49054fe7a32f9d5b56eca0585478efe0",
   "assets": {
     "128x128.png": {
-      "sha256": "e00c05c3a337db154cccf9df4d4897ad5e6e38ec5a556f8c137f573bef3f0e59",
-      "bytes": 982
+      "sha256": "f498568856fd84a8affb2132b7487fc0dd33a725c63b7535e074a98f9082fd96",
+      "bytes": 1114
     },
     "128x128@2x.png": {
-      "sha256": "cf9f6294038b1e3ad839051faf605aae4b5aaa42cc6cd1867cb8ceb48c721114",
-      "bytes": 2699
+      "sha256": "6fa627987a0e04cf21e2c7663d3917a4ef3425dcfa22caf2cb7dacf1b07f4d36",
+      "bytes": 3559
     },
     "32x32.png": {
-      "sha256": "edaabded1f2ed7fc7f728ae3c183024b0631b07e7c7ac54aefca0d751f8799d0",
-      "bytes": 356
+      "sha256": "f84a47a27f8e78afade5ec7e800ac498053d322c8ca5506b2ad87f6e7fc8d6c7",
+      "bytes": 362
     },
     "64x64.png": {
-      "sha256": "13d8bd7e360b4e7c55c00e2fa1604c234ecafb8e47b360b5b6c6ad4f80bc0f13",
-      "bytes": 511
+      "sha256": "71ffb7817c56e35fe2c3affd19e5c088e46dd50536ef1a396f0e02e46251d276",
+      "bytes": 557
     },
     "icon.icns": {
       "sha256": "32e1e34e6781bb1a26e68072b1a2e6113e1dcc9131115e5a0660864ee446b9cc",
       "bytes": 63089
     },
     "icon.png": {
-      "sha256": "9b9e3a8ce68b40cef415614d6af1f5d2bab8ee12a8e80ed044e0bc65aa8d5900",
-      "bytes": 9114
+      "sha256": "27c64589b1f9a798edf9aa770450025b94ec4a95d9f9c66ca82bbc89bc18993b",
+      "bytes": 10488
     },
     "icon.svg": {
       "sha256": "073415fa5c1e3cdb3007c93b85b0e9d4dd5cd04b75f1e6683d7de7a6641d2d10",
       "bytes": 539
     }
   },
-  "derivation": "Exact original canonical geometry; header inline React attribute conversion only. Tile full square with OS mask separate. Existing PNG dimensions retained; ICNS from standard 1x/2x iconset. Local files require no private repository at build time.",
+  "derivation": "Exact original canonical geometry; header inline React attribute conversion only. Tile full square with OS mask separate. Existing PNG dimensions retained; ICNS from standard 1x/2x iconset. Local files require no private repository at build time. PNG encoding correction: opaque RGBA required by Tauri; decoded RGB pixels and dimensions are unchanged.",
   "header": "Decorative aria-hidden inline SVG, existing semantic --accent; visible ExhibitOS/MANAGER unchanged. No inline styles or external image/CSP change.",
   "scope": "Applied product source assets and decorative header mark; file provenance does not claim native platform presentation verification",
   "rights": "Original same-project branding use; no new public asset license or trademark grant",
