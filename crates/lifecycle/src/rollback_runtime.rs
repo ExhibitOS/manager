@@ -68,6 +68,20 @@ fn volumes(row: &serde_json::Value, expected: &[&str]) -> LifecycleResult<Vec<St
     }
     Ok(names)
 }
+// The optional third archive is retained maintenance material, not a running service.
+// Original inventory binding remains responsible for authenticating these identities.
+fn rollback_database_image<'a>(m: &'a crate::BundleManifest, platform: &str) -> LifecycleResult<&'a str> {
+    if !crate::restoration::supported_recovery_images(m) {
+        return Err(err("UPDATE_ROLLBACK_HEALTH_FAILED"));
+    }
+    let runtime = &m.images[..2];
+    if runtime.iter().filter(|image| image.reference == platform).count() != 1 {
+        return Err(err("UPDATE_ROLLBACK_HEALTH_FAILED"));
+    }
+    runtime.iter().find(|image| image.reference != platform)
+        .map(|image| image.reference.as_str())
+        .ok_or_else(|| err("UPDATE_ROLLBACK_HEALTH_FAILED"))
+}
 pub(super) fn pair(
     target: &crate::LifecycleService,
     m: &crate::BundleManifest,
@@ -78,19 +92,11 @@ pub(super) fn pair(
     let (app, a) = crate::backup_creation::one_container(target, m, "docker", "platform")?;
     let (db, d) = crate::backup_creation::one_container(target, m, "docker", "database")?;
     let pin = format!("sha256:{}", plan.source_image);
-    let database = m
-        .images
-        .iter()
-        .filter(|i| i.reference != pin)
-        .collect::<Vec<_>>();
-    if app == db
-        || database.len() != 1
-        || m.images.len() != 2
-        || m.images.iter().filter(|i| i.reference == pin).count() != 1
-    {
+    let database = rollback_database_image(m, &pin)?;
+    if app == db {
         return Err(err("UPDATE_ROLLBACK_HEALTH_FAILED"));
     }
-    let states=[ready_row(&a,m,"platform",&pin),ready_row(&d,m,"database",&database[0].reference)];
+    let states=[ready_row(&a,m,"platform",&pin),ready_row(&d,m,"database",database)];
     if let Some(error)=states.iter().filter_map(|s|s.as_ref().err()).find(|e|e.code!="UPDATE_ROLLBACK_HEALTH_STARTING") {return Err(err(&error.code));}
     let mut names = volumes(&a, &["/data/blobs", "/data/config"])?;
     names.extend(volumes(&d, &["/var/lib/postgresql"])?);
@@ -410,6 +416,52 @@ impl Store {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::{Archive, Image};
+    #[test]
+    fn rollback_runtime_image_roles_preserve_two_services_and_optional_maintenance() {
+        let mut m = crate::tests::manifest_for_detection();
+        let platform = format!("sha256:{}", "a".repeat(64));
+        let database = format!("sha256:{}", "b".repeat(64));
+        let maintenance = format!("sha256:{}", "c".repeat(64));
+        m.images = vec![
+            Image { reference: platform.clone(), archive: None },
+            Image { reference: database.clone(), archive: None },
+        ];
+        assert_eq!(rollback_database_image(&m, &platform).unwrap(), database);
+        m.images.swap(0, 1);
+        assert_eq!(rollback_database_image(&m, &platform).unwrap(), database);
+        m.images.swap(0, 1);
+        let two = m.clone();
+        m.images.push(Image { reference: maintenance.clone(), archive: Some(Archive {
+            path: "image-2.tar".into(), bytes: 1, sha256: "d".repeat(64),
+        }) });
+        for path in ["image-2.tar", "maintenance-image.tar"] {
+            m.images[2].archive.as_mut().unwrap().path = path.into();
+            assert_eq!(rollback_database_image(&m, &platform).unwrap(), database);
+        }
+        let valid = m.clone();
+        assert!(rollback_database_image(&m, &maintenance).is_err());
+        let mut unhealthy_db = serde_json::json!({"Image":maintenance,"State":{"Running":true,"Paused":false,"Restarting":false,"Health":{"Status":"healthy"}},"Config":{"Labels":{"com.docker.compose.service":"database","com.docker.compose.project":m.project_name,"com.exhibitos.bundle":m.bundle_id,"com.exhibitos.project":m.project_name,"com.exhibitos.schema":m.schema_version}}});
+        assert_eq!(ready_row(&unhealthy_db, &m, "database", rollback_database_image(&m, &platform).unwrap()).unwrap_err().code, "UPDATE_ROLLBACK_HEALTH_FAILED");
+        unhealthy_db["Image"] = database.clone().into();
+        ready_row(&unhealthy_db, &m, "database", rollback_database_image(&m, &platform).unwrap()).unwrap();
+        m.images[2].archive.as_mut().unwrap().path = "unknown-extra.tar".into();
+        assert!(rollback_database_image(&m, &platform).is_err());
+        m = valid.clone(); m.images[2].archive = None;
+        assert!(rollback_database_image(&m, &platform).is_err());
+        for duplicate in [&platform, &database] {
+            m = valid.clone(); m.images[2].reference = duplicate.clone();
+            assert!(rollback_database_image(&m, &platform).is_err());
+        }
+        m = valid.clone(); m.images.push(m.images[2].clone());
+        assert!(rollback_database_image(&m, &platform).is_err());
+        m = two.clone(); m.images[1].reference = platform.clone();
+        assert!(rollback_database_image(&m, &platform).is_err());
+        m = two.clone(); m.images.remove(0);
+        assert!(rollback_database_image(&m, &platform).is_err());
+        m = two; m.images[0].reference = maintenance;
+        assert!(rollback_database_image(&m, &platform).is_err());
+    }
     #[test]
     fn rollback_native_startup_never_waits_for_wrong_identity_or_unhealthy_state() {
         let m=crate::tests::manifest_for_detection();
