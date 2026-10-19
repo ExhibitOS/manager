@@ -18,12 +18,12 @@
     "test:browser": "playwright test",
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
-    "desktop:build": "npm run remote:prepare && tauri build --bundles app",
+    "desktop:build": "node scripts/build-desktop.mjs",
     "check": "npm run typecheck && npm run lint && npm test && npm run build && npm run test:receipt && npm run test:installer",
     "test:receipt": "node --test scripts/verification-receipt.test.mjs",
     "installer:plan": "node scripts/build-installer.mjs --plan",
     "installer:prototype": "node scripts/build-installer.mjs --build",
-    "test:installer": "node --test scripts/build-installer.test.mjs",
+    "test:installer": "node --test scripts/build-installer.test.mjs scripts/build-desktop.test.mjs",
     "remote:prepare": "node scripts/prepare-remote-runtime.mjs"
   },
   "dependencies": {
