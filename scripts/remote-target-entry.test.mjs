@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: Apache-2.0
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,mkdir,writeFile,rm,realpath} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {createHash} from 'node:crypto';
+import {restoreTarget} from '../scripts/remote-target-entry.mjs';
+const sha=b=>createHash('sha256').update(b).digest('hex');
+const authority={origin:'https://synthetic.onrender.com',keyId:'b'.repeat(64),publicKey:'synthetic-public-only'};
+async function fixture(t,wrong=false){const root=await realpath(await mkdtemp(join(tmpdir(),'exhibitos-remote-entry-test-')));t.after(()=>rm(root,{recursive:true,force:true}));const paths={work:root+'/work',source:root+'/source',keys:root+'/keys'};for(const p of Object.values(paths))await mkdir(p,{mode:0o700});
+ const ab=Buffer.from(JSON.stringify(authority)),manifest={id:'10000000-0000-4000-8000-000000000001',files:[{role:'configuration',name:'hosted-public-authority.json',path:'files/00000000.gcm',bytes:ab.length,sha256:sha(ab)}]},bytes=Buffer.from(JSON.stringify(manifest));let restores=0;
+ const input={jobBudgetBytes:4194304,operationId:'20000000-0000-4000-8000-000000000002',backupId:manifest.id,authenticatedManifestSha256:wrong?'a'.repeat(64):sha(bytes),files:1,expectedAuthority:authority,databaseURL:'postgresql://u:synthetic-p@dpg-target-a.frankfurt-postgres.render.com/db?sslmode=verify-full',keyBase64:Buffer.alloc(32,19).toString('base64')};
+ const worker={validatePublicAuthority:v=>v,runRemoteBackup:async(arg,executor)=>{if(arg.operation==='verify'){assert.equal(executor,undefined);await mkdir(arg.destination,{mode:0o700});await writeFile(arg.destination+'/manifest.json',bytes,{mode:0o600});await writeFile(arg.destination+'/00000000.gcm.plain',ab,{mode:0o600});return {operation:'verified',files:1};}restores++;assert.equal(arg.operation,'restore');await mkdir(arg.destination,{mode:0o700});await writeFile(arg.destination+'/manifest.json',bytes,{mode:0o600});return executor.withIsolatedDestination(async connection=>{assert.equal(connection.role,'verified-remote-restore-target');assert.equal(connection.expectedAuthority.keyId,authority.keyId);assert.equal(new URL(connection.url).searchParams.get('sslmode'),'verify-full');return {operation:'restored-and-verified'};});}};
+ return {input,dependencies:{paths,worker,identity:async()=>({system:'999',oid:'123',database:'synthetic'})},restores:()=>restores};}
+test('fixed helper authenticates original manifest and authority before its internal restore callback',async t=>{const f=await fixture(t);const result=await restoreTarget(f.input,f.dependencies);assert.equal(result.operation,'restored-and-verified');assert.equal(f.restores(),1);assert.equal(f.input.keyBase64,'');assert.equal(f.input.databaseURL,'');});
+test('wrong authenticated manifest never reaches SQL callback',async t=>{const f=await fixture(t,true);await assert.rejects(restoreTarget(f.input,f.dependencies),/HOSTED_REMOTE_RESTORE_FAILED/);assert.equal(f.restores(),0);});
+test('wrong original authority never reaches SQL callback',async t=>{const f=await fixture(t);f.input.expectedAuthority={...authority,keyId:'c'.repeat(64)};await assert.rejects(restoreTarget(f.input,f.dependencies),/HOSTED_REMOTE_RESTORE_FAILED/);assert.equal(f.restores(),0);});
+test('serialized target role or arbitrary SQL input is refused instead of widening helper contract',async t=>{const f=await fixture(t);f.input.role='verified-remote-restore-target';await assert.rejects(restoreTarget(f.input,f.dependencies),/HOSTED_REMOTE_RESTORE_FAILED/);assert.equal(f.restores(),0);});
+
+test('native work budget rejects over-budget authenticated output before SQL',async t=>{const f=await fixture(t),run=f.dependencies.worker.runRemoteBackup;f.dependencies.worker.runRemoteBackup=async(...args)=>{const out=await run(...args);if(args[0].operation==='verify')await writeFile(f.dependencies.paths.work+'/excess',Buffer.alloc(4194304));return out;};await assert.rejects(restoreTarget(f.input,f.dependencies),/HOSTED_REMOTE_RESTORE_FAILED/);assert.equal(f.restores(),0);});
+
+test('restored manifest must still match authenticated original receipt after SQL',async t=>{const f=await fixture(t),run=f.dependencies.worker.runRemoteBackup;f.dependencies.worker.runRemoteBackup=async(...args)=>{const out=await run(...args);if(args[0].operation==='restore')await writeFile(args[0].destination+'/manifest.json',JSON.stringify({id:f.input.backupId,changed:true}));return out;};await assert.rejects(restoreTarget(f.input,f.dependencies),/HOSTED_REMOTE_RESTORE_FAILED/);assert.equal(f.restores(),1);});

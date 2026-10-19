@@ -3,6 +3,7 @@
 pub mod backup_creation;
 pub mod hosted_backup;
 pub mod hosted_restoration;
+pub mod hosted_remote_restoration;
 #[cfg(not(windows))]
 pub mod external_restoration;
 mod cached_install;
