@@ -1,0 +1,103 @@
+{
+  "status": "STRICT_WORKSPACE_ALL_TARGETS_CLIPPY_PASS_EXISTING_TESTS_PASS_NOT_NATIVE_OR_REMOTE_QUALIFICATION",
+  "at": "2026-10-19T20:23:48.846559+00:00",
+  "base": "e415a0bbe37587d7e1d5ed8df69c7b80b861d4c5",
+  "branch": "codex/remote-restore-clippy",
+  "problem": "Four existing strict library Clippy errors prevented the documented check. Workspace/all-target lint then exposed three existing layout warnings, also resolved without suppression.",
+  "changes": [
+    "Group source_job_id/target/image/operation_id into a native Rust RestoreRequest with no serialization; same caller values and validation order.",
+    "Pass the existing observer as &check in two places; preserve borrow lifetime and private input zeroization.",
+    "Use an equivalent if-let chain for existing target checkpoint conditions.",
+    "Separate independent stdout/stderr polling conditions by one newline.",
+    "Move existing test modules, unchanged internally, after product helpers in hosted_recovery.rs and update_preparation.rs. Product helper order and contents preserved except the stated polling newline."
+  ],
+  "compatibility": "No IPC, serialized/persisted record, runner path, credential input, permission, lifecycle or provider contract change. No dependency or lockfile change.",
+  "checks": {
+    "toolchain": "Rust1.99.0; Node24.21.0/npm11.19.0 existing toolchain",
+    "strict_workspace": "cargo clippy --workspace --all-targets --locked --offline -- -D warnings PASS, jobs1 existing worktree target",
+    "workspace_tests": "cargo test --workspace --locked --offline -- --test-threads=1 PASS568/ignored36/fail0, before whitespace/module placement-only followups",
+    "workspace_breakdown": {
+      "lifecycle_lib": 487,
+      "update_bin": 8,
+      "authority_recovery_cli": 1,
+      "detection_permissions": 1,
+      "update_safety": 13,
+      "desktop_lib": 54,
+      "lifecycle_doctests": 4
+    },
+    "final_desktop": "cargo test -p exhibitos-manager-desktop --lib --locked --offline -- --test-threads=1 PASS54 after hosted helper whitespace and test module move",
+    "final_preparation": "cargo test -p exhibitos-lifecycle --lib --locked --offline update_preparation::tests -- --test-threads=1 PASS5 after preparation test module move",
+    "related_node": "node --test scripts/hosted-remote-restore-runner.test.mjs scripts/remote-target-entry.test.mjs PASS20 synthetic dependencies; no actual engine/provider calls",
+    "diff_check": "PASS"
+  },
+  "preserved_failures": [
+    "Original library strict baseline FAIL101 four existing errors (reused source-bound log).",
+    "First workspace strict FAIL101 exposed hosted_recovery.rs possible_missing_else; independent conditions split by newline only.",
+    "Second workspace strict FAIL101 exposed hosted_recovery.rs items_after_test_module; test module moved unchanged.",
+    "Third workspace strict FAIL101 exposed update_preparation.rs items_after_test_module; additional file scope approved and test module moved unchanged."
+  ],
+  "source_binding": {
+    "workspace_test_source_sha256": {
+      "crates/lifecycle/src/hosted_remote_restoration.rs": "3ee22eb1210e676ee370b81f994be3eeba35ca369ac4be908fd5131812b212c5",
+      "src-tauri/src/hosted_recovery.rs": "579609a74ef357b8d30a0947ff0cb225d809d2485e05bf5fb506c33622ac151a",
+      "crates/lifecycle/src/update_preparation.rs": "f41ad9dd274f30ce6c965da1bdb63cb434fae7f96c6e4ad1f72b81f473cb13c2"
+    },
+    "final_source_sha256": {
+      "crates/lifecycle/src/hosted_remote_restoration.rs": "3ee22eb1210e676ee370b81f994be3eeba35ca369ac4be908fd5131812b212c5",
+      "crates/lifecycle/src/update_preparation.rs": "8355e701266967a1f6731912e25194b9e1c2eaed72ef2c7f87e7c67b84c182e3",
+      "src-tauri/src/hosted_recovery.rs": "d67b75731ab5bad3df21d0c5eee44dc0ac64dc627494c0257ac0236c076a9ec8"
+    },
+    "module_content_checks": {
+      "hosted_recovery_tests_unchanged": true,
+      "update_preparation_tests_unchanged": true,
+      "product_helper_content_and_order_preserved": true,
+      "only_product_helper_delta": "Independent stdout/stderr polling statements separated by newline; no else or condition change"
+    }
+  },
+  "limits": [
+    "Synthetic/unit/compile/lint validation only; no actual native GUI, clean installation, remote SQL restore, engine/service mutation, provider call or real credential/trust state change.",
+    "Default ignored test boundaries retained; no ignored real-engine or external qualification enabled.",
+    "Existing full base/Draft183 and separate Draft182 integration boundaries remain; no broad merge or whole T08 completion implied.",
+    "No warning allowance or test expectation weakening.",
+    "No push or merge by this change."
+  ],
+  "logs": {
+    "strict-clippy": {
+      "file": "exhibitos-remote-restore-strict-clippy.log",
+      "sha256": "32ae922d11749e011412e9440696ee62592aab10a2639deff41b6a3feca1a26c"
+    },
+    "related-node": {
+      "file": "exhibitos-remote-restore-related-node.log",
+      "sha256": "4ef05c87ce0296b20e1b9775f7f5b52bf1152fce7d5632658d8d061260045aa3"
+    },
+    "workspace-test": {
+      "file": "exhibitos-remote-restore-workspace-test.log",
+      "sha256": "d6d2b8d5b87b71eaf324398eaa3985383eaf79c11cfaec2a39d4d2e5aafd66ce"
+    },
+    "strict-clippy-final": {
+      "file": "exhibitos-remote-restore-strict-clippy-final.log",
+      "sha256": "8d1de215f73e9c4878f9c74c0f26e12cc1a64ea3441e31a60f262962f2fd8c16"
+    },
+    "strict-clippy-complete": {
+      "file": "exhibitos-remote-restore-strict-clippy-complete.log",
+      "sha256": "47058cab71e9daa505519e7ad3c992be5364883ec01649b2d6d7464a8e932144"
+    },
+    "strict-clippy-accepted": {
+      "file": "exhibitos-remote-restore-strict-clippy-accepted.log",
+      "sha256": "207a90119653a1a7f352c5db92c9b660a9e8021fdc911def643da3145f2b68bd"
+    },
+    "desktop-final-test": {
+      "file": "exhibitos-remote-restore-desktop-final-test.log",
+      "sha256": "80cbf0b45ec08bda3a76958fb93fee4d080c8a464f9ebd3f7bea29e654f04b99"
+    },
+    "preparation-final-test": {
+      "file": "exhibitos-remote-restore-preparation-final-test.log",
+      "sha256": "98e0a9504a200b5312346c2d147389d498a583c0c6b0cc1a9a098b939fcfefda"
+    },
+    "original-library-baseline": {
+      "file": "exhibitos-selected-engine-clippy-baseline.log",
+      "sha256": "ccc7d902db40312a4e95738709ab1a4b674c7708cfe6a7b3ed218b4074edeb0e",
+      "reuse": "Existing exact original-source4 errors; not re-executed"
+    }
+  }
+}
