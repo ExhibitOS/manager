@@ -17,7 +17,7 @@ export function officialIntent(environment,config,args=[]){
  const separator=args.indexOf('--'),tauriArgs=separator<0?args:args.slice(0,separator);
  return releaseIdentity(environment.APPLE_SIGNING_IDENTITY)||releaseIdentity(config.bundle?.macOS?.signingIdentity)||
   ['APPLE_CERTIFICATE','APPLE_CERTIFICATE_PASSWORD','APPLE_ID','APPLE_PASSWORD','APPLE_TEAM_ID','APPLE_API_KEY','APPLE_API_ISSUER','APPLE_API_KEY_PATH','TAURI_SIGNING_PRIVATE_KEY','TAURI_SIGNING_PRIVATE_KEY_PASSWORD'].some(key=>hasValue(environment[key]))||
-  (config.bundle?.createUpdaterArtifacts!==undefined&&config.bundle.createUpdaterArtifacts!==false)||hasValue(environment.TAURI_CONFIG)||tauriArgs.some(arg=>arg==='--config'||arg.startsWith('--config=')||arg==='-c'||(arg.startsWith('-c')&&arg.length>2));
+  (config.bundle?.createUpdaterArtifacts!==undefined&&config.bundle.createUpdaterArtifacts!==false)||hasValue(environment.TAURI_CONFIG)||tauriArgs.some(arg=>arg==='--config'||arg.startsWith('--config=')||/^-[vd]*c/.test(arg));
 }
 async function guardedManifest(repo){
  const folder=join(repo,'src-tauri/update-runtime/generated'),file=join(folder,'manifest.json');

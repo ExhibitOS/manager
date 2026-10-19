@@ -89,3 +89,13 @@ test('actual plan with forwarded Cargo configuration does not print argument val
  assert.equal(result.status,0);assert.equal(result.stderr,'');assert.equal(result.stdout.includes(secret),false);
  const plan=JSON.parse(result.stdout);assert.equal(plan.commands,undefined);assert.deepEqual(plan.stages,['remote-prepare','tauri-build']);assert.equal(plan.forwardedArgumentCount,args.length);assert.equal(plan.buildExecuted,false);
 });
+test('supported verbose/debug short clusters classify config before preparation without consuming value options',async t=>{
+ const repo=await fixture(t);
+ for(const args of [['-vcsynthetic.json'],['-dcsynthetic.json'],['-vvcsynthetic.json'],['-vdc','synthetic.json']]){
+  let calls=0;await assert.rejects(buildDesktop({repo,environment:{},args},{runCommand:()=>calls++}),/DESKTOP_PRIVATE_RUNTIME_OFFICIAL_RELEASE_REFUSED/);assert.equal(calls,0);
+ }
+ for(const args of [['-rcsynthetic'],['-tcsynthetic'],['-fcsynthetic'],['-bcsynthetic'],['--','-vcsynthetic.json']]){
+  const commands=[];await buildDesktop({repo,environment:{},args},{runCommand:async command=>commands.push(command)});
+  assert.equal(commands.length,2);assert.deepEqual(commands[1].args.slice(4),args);
+ }
+});
