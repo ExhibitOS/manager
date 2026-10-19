@@ -214,6 +214,19 @@ This creates current identity with `sourcePlanBound=false`; it does not inherit 
 `exhibitos-update register-planned-update-target --profile <absolute-profile> --installation default --preserve-active --apps-closed` creates the exact recovery namespace reserved by the current Prepared plan. It takes no caller ID/path, preserves source selection/history, and starts no runtime. Missing intent, non-Prepared stage, source mismatch, an existing candidate/name or unsafe namespace refuse. Repeating it refuses without adopting or overwriting the earlier candidate. The older `register-update-target` continues to allocate a new random namespace for workflows that register before preparing a plan.
 
 
+### Stop the prepared recovery candidate
+
+```sh
+exhibitos-update stop-update-candidate \
+  --profile /absolute/private/profile --installation default \
+  --external-writers-quiesced --apps-closed
+```
+
+이 native 준비 명령은 기존 `Store.execution().stop_target_candidate`를 호출합니다. 현재 Prepared 계획에 등록된 별도 recovery 후보와 실제 완료 복원 receipt·원래 backup/image/schema/inventory를 결속하며, 이미 정지된 원본을 앞뒤로 관측합니다. caller는 후보 ID·경로·성공 플래그를 제공할 수 없고 원본 정지나 선택 전환을 요청하지 않습니다. 같은 후보 operation lock 아래 기존 정상 Stop 작업을 실행하고 완료된 실제 작업과 후보의 정지 상태를 다시 확인합니다. Windows 경로는 아직 지원 검증 전 거부합니다.
+
+응답의 `candidateStopped`, `normalJob`, `state`, `observation`은 이 실제 작업과 관측을 나타냅니다. `updateExecuted=false`, `preflightVerified=false`이며 업데이트 권한이나 전체 품질 검증을 부여하지 않습니다. Stop 작업 기록도 후보 호스트 파일을 바꾸므로 **최종 source-bound host/trust checkpoint 전에 실행**해야 하며 이전 checkpoint를 그대로 재사용하지 않습니다. 이 새 CLI 경로의 실제 Engine 실행·native GUI·전체 migration/rollback 검증은 아직 미실행입니다.
+
+
 ## 실패한 업데이트에서 원래 서비스 전체 복원
 
 ```sh
