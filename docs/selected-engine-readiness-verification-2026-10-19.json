@@ -1,0 +1,123 @@
+{
+  "status": "IMPLEMENTED_SCOPED_LOCAL_TESTS_PASS_STRICT_CLIPPY_BASELINE_FAILURE_NOT_NATIVE_GUI",
+  "at": "2026-10-19T20:10:38.334131+00:00",
+  "base": "8a2a77e0633ff159c5a1cb766c819b8eddfde64c",
+  "branch": "codex/selected-engine-readiness",
+  "problem": "An unrelated available engine hid preparation for a selected space pinned to an unavailable engine.",
+  "change": "Optional requiredEngine on existing native status; installed pin first, uninstalled local manifest then bundled manifest metadata. App and Studio preflight share the affinity predicate. Podman spaces retain Podman guidance and never offer automatic Docker replacement.",
+  "metadata_limits": "Manifest reads bounded to 65536 bytes, symlinks/unrecognized engine rejected. Missing bundle/resources retain unknown affinity and existing installation entry. No payload/image hashing, pin writes, automatic engine fallback, service/container or account changes. Metadata guides UI only; original native installation validation still applies.",
+  "compatibility": "Additive optional status field; old responses continue to parse. Existing writer and pin semantics unchanged. No new IPC command, dependency or lockfile change.",
+  "checks": {
+    "node": "24.21.0",
+    "npm": "11.19.0",
+    "typecheck": "PASS",
+    "lint_final": "PASS",
+    "unit": "PASS10 (Studio8, affinity/parser2)",
+    "browser": "PASS5 desktop Chromium synthetic IPC (existing4 including delayed refresh/selection protection plus new affinity1)",
+    "native": "PASS3: selected_engine_metadata_is_small_readonly_and_preserves_unprepared_entry; installed_engine_is_preserved_without_detection_or_silent_switch; explicit_producer_never_falls_back_and_failed_selection_writes_no_pin",
+    "desktop_compile": "cargo check -p exhibitos-manager-desktop --locked --offline PASS; jobs1, existing own target",
+    "strict_clippy": "FAIL101, same four pre-existing errors reproduced with original base lib: hosted_remote_restoration.rs94 too_many_arguments,235/414 redundant_closure,284 collapsible_if. No suppression or unrelated change."
+  },
+  "failure_preservation": {
+    "first_before": "Fixture omitted update startup IPC; not product failure evidence.",
+    "corrected_before": "Original App/preflight plus corrected new fixture FAIL1: selected Docker preparation region hidden while Podman available. Same case PASS after fix.",
+    "existing_baseline": "Original sources existing desktop4 yielded2PASS/2FAIL: missing startup context and missing external restore context. Minimal fixture responses added, assertions unchanged; final existing4 allPASS. Alert-driven panel visibility was intentional product behavior."
+  },
+  "native_test_coverage": [
+    "missing resources and bundle preserve None",
+    "bundled metadata with missing image archive is readable without artifact validation",
+    "local manifest preferred engine takes precedence",
+    "installed engine pin wins, byte contents unchanged",
+    "65537-byte manifest rejected",
+    "unrecognized engine rejected",
+    "symlink manifest rejected"
+  ],
+  "limits": [
+    "No actual native GUI, engine installation/start/stop, OS approval, service lifecycle, clean-user installation or whole T08 acceptance performed.",
+    "Draft183 base remains independent of unmerged Draft182 cb88dd2 engine-preparation stale poll/cancel fix. EnginePreparation implementation is unchanged; its pending integration requirement remains.",
+    "Desktop Chromium is synthetic IPC; not Safari or native qualification.",
+    "No push, PR or merge by this change; no broad base integration claimed.",
+    "Existing node_modules reused; dependency install not repeated. Full repository check suite was not rerun for this bounded change."
+  ],
+  "source_sha256": {
+    "src/App.tsx": "7dccaf8a783e1ccd80cd2f6ffe57b3c470865617d5d4d9a20b4ae6fcacf4f9c8",
+    "src/lifecycle.ts": "7b6edd3d8871d9aae4d93484ced9965e1c43d4dda8d7b1860cc067513efc8868",
+    "src/studio-setup.ts": "73a4a07e8c81d6ce609ea6bba00d00f5a8c4c153a8e188a57dbc85101936f5f4",
+    "src/studio-setup.test.ts": "56f778cc170d0ec9a39f7ce15f971359fef5603ed322b9b3f36cce13d1fac7c0",
+    "src/selected-engine.ts": "334159992820f52024836723b6d1a54aa9d51d614fe5a95b892af5204c651ac6",
+    "src/selected-engine.test.ts": "18e70e71d95ef863a220e3f89758840d973eaae23c045f5ee5d62713dda0b532",
+    "src/browser/studio-setup.spec.ts": "ebb702e86e2027882eb3df6eff7feafc8c1347fc06ccb54fc200f496cb272c38",
+    "crates/lifecycle/src/lib.rs": "64b1e035de5986313a39b315e0536d134fb19f96d50a9ac922458c896a24cab8",
+    "src-tauri/src/lib.rs": "cd94357769b51218cbad8d9e188387e8af5b04e07d07b7859165199638d38e4f"
+  },
+  "logs": {
+    "before": {
+      "file": "exhibitos-selected-engine-before.log",
+      "sha256": "b2b7526d85323ff1b38c93e5c28d9c491499e4431dd7a9ea9ebb0193a92b1c10"
+    },
+    "before-corrected": {
+      "file": "exhibitos-selected-engine-before-corrected.log",
+      "sha256": "9df7113f2ff21318214b9ad2378889f7926b61fe1935e7a27de25454b9059880"
+    },
+    "existing-baseline": {
+      "file": "exhibitos-selected-engine-existing-baseline.log",
+      "sha256": "652039466bb95c9c50a7dfc486c0f18152a5a56ea771db9976fd801d4470b565"
+    },
+    "toolchain": {
+      "file": "exhibitos-selected-engine-toolchain.log",
+      "sha256": "f2ec568164f99546161909b0189b57bb5be3e80f8e2ccd8a51a4aed8c4055a04"
+    },
+    "npm": {
+      "file": "exhibitos-selected-engine-npm.log",
+      "sha256": "005206ab803f8881d8227540b7980b37e723b69a8849edb31734a90b7e7964e2"
+    },
+    "typecheck": {
+      "file": "exhibitos-selected-engine-typecheck.log",
+      "sha256": "0bd6473f98c68baa735cea4f1e6ddd8671812386a0fd0c7f3e2fd8a79e3ff7ca"
+    },
+    "lint": {
+      "file": "exhibitos-selected-engine-lint.log",
+      "sha256": "11e6a290b61bdd371371928d65640b20d664e60b65d214da97ef0f0a2d137a82"
+    },
+    "unit": {
+      "file": "exhibitos-selected-engine-unit.log",
+      "sha256": "6e2398fabc5bf580f7d97b8d04ff92a2e5c9bdc1cd98ec78956c1e3d37575d36"
+    },
+    "browser": {
+      "file": "exhibitos-selected-engine-browser.log",
+      "sha256": "b6adf88c48b876cc023391ac79636f1eab743916bf62f65d1ea68fddf624f82a"
+    },
+    "native": {
+      "file": "exhibitos-selected-engine-native.log",
+      "sha256": "0b5c90b43c369b44f4fd4b04aa474247b98b627380e26df877e7c2e784c0cd1e"
+    },
+    "native-affinity": {
+      "file": "exhibitos-selected-engine-native-affinity.log",
+      "sha256": "7e05c1e7a7541ca0db90ca79d2a4132673b22eb4040fe5df0b9aabe80c7fb42f"
+    },
+    "native-preferred": {
+      "file": "exhibitos-selected-engine-native-preferred.log",
+      "sha256": "91493b55f97f403ac2a3f5202847c72db7fa5af090032a5b4ebc13a667782d09"
+    },
+    "desktop-check": {
+      "file": "exhibitos-selected-engine-desktop-check.log",
+      "sha256": "1be86d966c9e94fc7128ecf5c57c26385ff0095cb7d327467e06b681b0f10658"
+    },
+    "browser-final": {
+      "file": "exhibitos-selected-engine-browser-final.log",
+      "sha256": "a3216cd040979bc70837f61e27e5934307dba848849f436178dfcc0ac0b3a87b"
+    },
+    "lint-final": {
+      "file": "exhibitos-selected-engine-lint-final.log",
+      "sha256": "11e6a290b61bdd371371928d65640b20d664e60b65d214da97ef0f0a2d137a82"
+    },
+    "clippy": {
+      "file": "exhibitos-selected-engine-clippy.log",
+      "sha256": "da2fd54566ed08fb55d822ce3f34b9d3395415bc4dc59fccd9845488602e30a0"
+    },
+    "clippy-baseline": {
+      "file": "exhibitos-selected-engine-clippy-baseline.log",
+      "sha256": "ccc7d902db40312a4e95738709ab1a4b674c7708cfe6a7b3ed218b4074edeb0e"
+    }
+  }
+}

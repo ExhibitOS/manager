@@ -725,11 +725,19 @@ async fn manager_verify_backup(
 #[tauri::command]
 async fn manager_status(
     window: WebviewWindow,
+    app: tauri::AppHandle,
     state: State<'_, DesktopState>,
     selection_token: String,
 ) -> Result<Status, LifecycleError> {
     caller(&window)?;
-    blocking(state.0.clone(), selection_token, |service| service.status()).await
+    let resources = app.path().resource_dir().map_err(|_| error("PLATFORM_RUNTIME_UNAVAILABLE"))?;
+    blocking(state.0.clone(), selection_token, move |service| {
+        let mut status = service.status()?;
+        if !status.installed {
+            status.required_engine = service.required_engine(Some(&resources.join("platform-runtime/generated")))?;
+        }
+        Ok(status)
+    }).await
 }
 #[tauri::command]
 async fn manager_detect(
