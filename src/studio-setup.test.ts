@@ -18,3 +18,12 @@ describe('user-started Studio setup uses existing guarded lifecycle',()=>{
  it('rejects a different selection at setup entry before status or writers',async()=>{const {api}=fixture();await expect(prepareStudio(api,()=>{},undefined,'67890123-1234-1234-1234-123456789012')).rejects.toMatchObject({code:'INSTALLATION_CHANGED'});expect(api.status).not.toHaveBeenCalled();expect(api.install).not.toHaveBeenCalled();expect(api.action).not.toHaveBeenCalled();expect(api.openOex).not.toHaveBeenCalled();});
  it('refuses unavailable engine, active job and unconfirmed readiness',async()=>{const noEngine=fixture();noEngine.api.engines.mockResolvedValue([]);await expect(prepareStudio(noEngine.api,()=>{})).rejects.toMatchObject({code:'ENGINE_UNAVAILABLE'});expect(noEngine.api.install).not.toHaveBeenCalled();const active=fixture(true,false);active.status.activeJob={...active.job('start'),state:'running'};await expect(prepareStudio(active.api,()=>{})).rejects.toMatchObject({code:'BUSY'});expect(active.api.action).not.toHaveBeenCalled();const unready=fixture(true,false);unready.api.action.mockResolvedValue(unready.job('start'));await expect(prepareStudio(unready.api,()=>{})).rejects.toMatchObject({code:'RUNTIME_NOT_READY'});expect(unready.api.openOex).not.toHaveBeenCalled();});
 });
+
+it('does not start a selected engine using an unrelated available engine',async()=>{
+ for(const requiredEngine of ['docker','podman'] as const){
+  const {api,status}=fixture(true,false);status.requiredEngine=requiredEngine;
+  api.engines.mockResolvedValue(['docker','podman'].map(kind=>({kind,installed:true,available:kind!==requiredEngine,engineVersion:null,composeVersion:null,errorCode:null,guidance:null})));
+  await expect(prepareStudio(api,()=>{})).rejects.toMatchObject({code:'ENGINE_UNAVAILABLE'});
+  expect(api.install).not.toHaveBeenCalled();expect(api.action).not.toHaveBeenCalled();expect(api.openOex).not.toHaveBeenCalled();
+ }
+});

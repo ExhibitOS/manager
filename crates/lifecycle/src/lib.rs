@@ -149,6 +149,8 @@ pub struct StorageState {
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub installed: bool,
+    #[serde(default)]
+    pub required_engine: Option<String>,
     pub bundle_id: Option<String>,
     pub version: Option<String>,
     pub state: String,
@@ -1342,6 +1344,36 @@ impl LifecycleService {
             .map_err(|_| err("SECRET_FILE_INVALID"))?;
         Ok(())
     }
+    /// Read only small engine-affinity metadata for guidance. This does not attest
+    /// payloads or authorize installation; the writer keeps full bundle validation.
+    pub fn required_engine(&self, bundled_source: Option<&Path>) -> Result<Option<String>> {
+        if self.root.join("installed.json").exists() {
+            let kind: String = read_json(&checked_path(&self.root, "engine.json")?)?;
+            return if matches!(kind.as_str(), "docker" | "podman") { Ok(Some(kind)) } else { Err(err("STATE_INVALID")) };
+        }
+        let local = self.root.join("bundle/manifest.json");
+        let path = if local.try_exists().map_err(|_| err("BUNDLE_INVALID"))? {
+            checked_path(&self.root, "bundle/manifest.json")?
+        } else {
+            if self.root.join("bundle").try_exists().map_err(|_| err("BUNDLE_INVALID"))? {
+                checked_path(&self.root, "bundle")?;
+            }
+            let Some(source) = bundled_source else { return Ok(None); };
+            if !source.join("manifest.json").try_exists().map_err(|_| err("BUNDLE_INVALID"))? { return Ok(None); }
+            checked_path(source, "manifest.json")?
+        };
+        let info = fs::symlink_metadata(&path).map_err(|_| err("BUNDLE_INVALID"))?;
+        if !info.is_file() || info.len() > 65536 { return Err(err("BUNDLE_INVALID")); }
+        let mut bytes = Vec::new();
+        File::open(path).map_err(|_| err("BUNDLE_INVALID"))?.take(65537).read_to_end(&mut bytes).map_err(|_| err("BUNDLE_INVALID"))?;
+        if bytes.len() > 65536 { return Err(err("BUNDLE_INVALID")); }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Affinity { preferred_engine: Option<String> }
+        let value: Affinity = serde_json::from_slice(&bytes).map_err(|_| err("BUNDLE_INVALID"))?;
+        if value.preferred_engine.as_deref().is_some_and(|kind| !matches!(kind, "docker" | "podman")) { return Err(err("BUNDLE_INVALID")); }
+        Ok(value.preferred_engine)
+    }
     pub fn detect(&self) -> Result<Vec<EngineProbe>> {
         Ok(["podman", "docker"]
             .into_iter()
@@ -1816,6 +1848,7 @@ impl LifecycleService {
         if !installed_path.exists() {
             return Ok(Status {
                 installed: false,
+                required_engine: None,
                 bundle_id: None,
                 version: None,
                 state: "not_installed".into(),
@@ -1889,6 +1922,7 @@ impl LifecycleService {
         }
         Ok(Status {
             installed: true,
+            required_engine: Some(engine),
             bundle_id: Some(m.bundle_id),
             version: Some(m.version),
             state,
@@ -1916,6 +1950,35 @@ impl LifecycleService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn selected_engine_metadata_is_small_readonly_and_preserves_unprepared_entry() {
+        let root = root();
+        let service = LifecycleService::new(root.clone()).unwrap();
+        let resources = root.join("resources");
+        fs::create_dir(&resources).unwrap();
+        assert_eq!(service.required_engine(Some(&resources)).unwrap(), None);
+        fs::write(resources.join("manifest.json"), br#"{"preferredEngine":"docker","images":[{"archive":{"path":"missing-image.tar"}}]}"#).unwrap();
+        assert_eq!(service.required_engine(Some(&resources)).unwrap().as_deref(), Some("docker"));
+        assert!(!root.join("bundle").exists());
+        fs::create_dir(root.join("bundle")).unwrap();
+        fs::write(root.join("bundle/manifest.json"), br#"{"preferredEngine":"podman"}"#).unwrap();
+        assert_eq!(service.required_engine(Some(&resources)).unwrap().as_deref(), Some("podman"));
+        fs::write(root.join("installed.json"), b"{}").unwrap();
+        fs::write(root.join("engine.json"), br#""docker""#).unwrap();
+        assert_eq!(service.required_engine(Some(&resources)).unwrap().as_deref(), Some("docker"));
+        assert_eq!(fs::read(root.join("engine.json")).unwrap(), br#""docker""#);
+        fs::remove_file(root.join("installed.json")).unwrap();
+        fs::write(root.join("bundle/manifest.json"), vec![b' ';65537]).unwrap();
+        assert_eq!(service.required_engine(Some(&resources)).unwrap_err().code, "BUNDLE_INVALID");
+        fs::write(root.join("bundle/manifest.json"), br#"{"preferredEngine":"other"}"#).unwrap();
+        assert_eq!(service.required_engine(Some(&resources)).unwrap_err().code, "BUNDLE_INVALID");
+        #[cfg(unix)] {
+            fs::remove_file(root.join("bundle/manifest.json")).unwrap();
+            std::os::unix::fs::symlink(resources.join("manifest.json"), root.join("bundle/manifest.json")).unwrap();
+            assert_eq!(service.required_engine(Some(&resources)).unwrap_err().code, "BUNDLE_INVALID");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn native_image_ids_preserve_exact_digest_across_engine_representation() {
         let digest = "a".repeat(64);

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+import {selectedEngineReady} from './selected-engine';
 import type {InitialAccountInput} from './initial-account';
 import type {ManagerClient,Job} from './lifecycle';
 export type StudioSetupStage='checking'|'installing'|'starting'|'opening';
@@ -15,7 +16,7 @@ export async function prepareStudio(api:SetupClient,stage:(value:StudioSetupStag
  if(status.activeJob)throw {code:'BUSY',guidance:'진행 중인 작업이 있어요. 작업 기록에서 완료 여부를 확인한 뒤 다시 열어 주세요.'};
  const completed=(job:Job)=>{if(job.state!=='completed')throw {code:job.errorCode??(job.state==='running'?'BUSY':'JOB_FAILED'),guidance:job.guidance??'준비가 아직 완료되지 않았어요. 작업 기록을 확인한 뒤 해당 단계부터 다시 시도하세요.'};};
  if(!status.installed||!status.readiness.ready){
-  if(!(await api.engines()).some(engine=>engine.available))throw {code:'ENGINE_UNAVAILABLE',guidance:'실행 도구를 준비하거나 시작한 뒤 다시 시도하세요. 기존 전시는 그대로 있어요.'};
+  if(!selectedEngineReady(status,await api.engines()))throw {code:'ENGINE_UNAVAILABLE',guidance:'실행 도구를 준비하거나 시작한 뒤 다시 시도하세요. 기존 전시는 그대로 있어요.'};
   if(!status.installed){await sameSelection();stage('installing');completed(await api.install(initialAccount));status=await api.status();if(!status.installed)throw {code:'INSTALLATION_NOT_READY',guidance:'설치 완료를 확인하지 못했어요. 작업 기록을 확인한 뒤 다시 시도하세요.'};}
   if(!status.readiness.ready){if(status.activeJob)throw {code:'BUSY',guidance:'진행 중인 작업이 있어요. 작업 기록에서 완료 여부를 확인하세요.'};await sameSelection();stage('starting');completed(await api.action('start'));status=await api.status();}
  }

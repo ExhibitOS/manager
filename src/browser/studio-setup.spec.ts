@@ -9,6 +9,7 @@ for(const scenario of ['new','ready','failure'] as const)test(`Studio preparatio
    if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    const harness=window as unknown as {__studioWrites:string[];__finishSetup:()=>void};
    if(cmd==='manager_hosted_resume'||cmd==='manager_hosted_connected'){(window as unknown as {__cloudReads:number}).__cloudReads++;return cmd==='manager_hosted_resume'?null:false;}
+   if(cmd==='manager_external_restore')return {sources:[],checks:[]};
    if(cmd==='manager_backup_tool')return null;
    if(cmd==='manager_update_cancel')return null;
    if(cmd==='manager_update_status')return {installationId:'56789012-1234-1234-1234-123456789012',authorityPresent:false,generation:null,stage:null,operationId:null,failure:null,changedSchema:false,writeUncertain:false};
@@ -61,6 +62,7 @@ test('Studio action stays stable across delayed background refresh and invalidat
   let selection={selectionToken:'45678901-1234-1234-1234-123456789012',activeId:'56789012-1234-1234-1234-123456789012',mode:'managed',installations:[{id:'56789012-1234-1234-1234-123456789012',kind:'default',createdAt:1,path:'/private/tmp/synthetic-studio/local-runtime',available:true}],errorCode:null as string|null};
   Object.assign(window,{isTauri:true,__studioRefresh:{writes,get calls(){return statusCalls;},hold(){holdNext=true;},mode(value:string){mode=value;},switchNativeSpace(){installed=false;ready=false;selection={...selection,selectionToken:'78901234-1234-1234-1234-123456789012',activeId:'67890123-1234-1234-1234-123456789012',installations:[...selection.installations,{id:'67890123-1234-1234-1234-123456789012',kind:'recovery',createdAt:2,path:'/private/tmp/synthetic-studio/installations/67890123-1234-1234-1234-123456789012',available:true}]};},release:()=>{},finish:()=>{}},__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
    const control=(window as unknown as {__studioRefresh:{release:()=>void;finish:()=>void}}).__studioRefresh;
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    if(cmd==='manager_installations')return mode==='selection-error'?{...selection,errorCode:'INSTALLATION_UNAVAILABLE',installations:selection.installations.map(root=>({...root,available:false}))}:selection;
    if(cmd==='manager_status'){
     const observed={installed,bundleId:null,version:null,state:ready?'running':installed?'stopped':'not_installed',services:[],readiness:{ready,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
@@ -132,4 +134,31 @@ test('Studio action stays stable across delayed background refresh and invalidat
  expect(await page.evaluate(()=>(window as unknown as {__studioRefresh:{writes:string[]}}).__studioRefresh.writes)).toEqual(['manager_install','manager_action','manager_open_oex']);
  await page.evaluate(()=>(window as unknown as {__studioRefresh:{release:()=>void}}).__studioRefresh.release());await expect(panel.getByRole('button',{name:'Studio 준비하고 열기',exact:true})).toBeEnabled();
  expect(await page.evaluate(()=>(window as unknown as {__studioRefresh:{writes:string[]}}).__studioRefresh.writes)).toEqual(['manager_install','manager_action','manager_open_oex']);
+});
+
+// A different available engine cannot prepare the selected installed space.
+test('selected Docker space exposes preparation when only Podman is available',async({page})=>{
+ await page.addInitScript(()=>{
+  const selection={selectionToken:'45678901-1234-1234-1234-123456789012',activeId:'56789012-1234-1234-1234-123456789012',mode:'managed',installations:[{id:'56789012-1234-1234-1234-123456789012',kind:'default',createdAt:1,path:'/private/tmp/synthetic/local-runtime',available:true}],errorCode:null};
+  const writes:string[]=[];
+  Object.assign(window,{isTauri:true,__affinityWrites:writes,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
+   if(cmd==='manager_installations')return selection;
+   if(cmd==='manager_status')return {installed:true,requiredEngine:'docker',bundleId:null,version:null,state:'runtime_unavailable',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
+   if(cmd==='manager_detect')return ['docker','podman'].map(kind=>({kind,installed:true,available:kind==='podman',engineVersion:null,composeVersion:null,errorCode:null,guidance:null}));
+   if(cmd==='manager_engine_preparation')return {stage:'not-started',jobId:null,savedBytes:0,totalBytes:589939097,version:'4.95.0',errorCode:null};
+   if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};
+   if(cmd==='manager_update_status')return {installationId:selection.activeId,authorityPresent:false,generation:null,stage:null,operationId:null,failure:null,changedSchema:false,writeUncertain:false};
+   if(['manager_jobs','manager_logs','manager_backup_jobs','manager_helper_reconciliations','manager_maintenance_retries'].includes(cmd))return [];
+   if(['manager_backup_tool','manager_update_cancel','manager_maintenance_context','manager_hosted_resume'].includes(cmd))return null;
+   if(cmd==='manager_hosted_connected')return false;
+   if(cmd==='manager_action'||cmd==='manager_install'||cmd==='manager_open_oex'){writes.push(cmd);throw {code:'ENGINE_UNAVAILABLE',guidance:'선택한 실행 도구를 시작하세요.'};}
+   throw Error('Unexpected synthetic command: '+cmd);
+  }}});
+ });
+ await page.goto('/');
+ const action=page.getByRole('button',{name:'Studio 준비하고 열기',exact:true});await expect(action).toBeEnabled();
+ await expect(page.getByRole('region',{name:'실행 도구 준비',exact:true})).toBeVisible();
+ await action.click();await expect(page.locator('#controls')).toBeFocused();
+ expect(await page.evaluate(()=>(window as unknown as {__affinityWrites:string[]}).__affinityWrites)).toEqual([]);
 });
