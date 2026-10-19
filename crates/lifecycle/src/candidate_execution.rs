@@ -109,6 +109,9 @@ fn replacement(
     image.reference = format!("sha256:{}", plan.target_image);
     image.archive = None;
     next.compose_sha256 = crate::digest(&bytes);
+    // A published candidate must remain readable by ordinary lifecycle APIs.
+    // Reuse their existing explicit-network invariant before any file changes.
+    crate::local_network::bind_compose(&next, &bytes)?;
     // Preserve the observed unchanged API/OED version; signed package version is
     // retained by the authority intent, not guessed from a packaging label.
     Ok((next, config))
@@ -823,6 +826,30 @@ mod tests {
     }
     fn retire(root: &Path) {
         fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+    #[test]
+    fn candidate_publication_preserves_closed_normalized_network_binding() {
+        let (root, workspace, mut manifest, mut config, plan) = fixture();
+        manifest.preferred_engine = Some("docker".into());
+        manifest.explicit_local_network = Some(crate::local_network::ExplicitLocalNetwork {
+            mode: "explicit-rfc1918-v1".into(),
+            subnet: "10.240.0.0/28".into(),
+            gateway: "10.240.0.1".into(),
+        });
+        config["networks"] = serde_json::json!({"default":{"name":format!("{}_default",manifest.project_name),"labels":{"com.exhibitos.bundle":manifest.bundle_id,"com.exhibitos.project":manifest.project_name,"com.exhibitos.schema":manifest.schema_version},"ipam":{"config":[{"subnet":"10.240.0.0/28","gateway":"10.240.0.1"}]}}});
+        assert!(replacement(&manifest, &config, &plan, None).is_ok());
+        let before = fs::read(root.join("bundle/compose.yaml")).unwrap();
+        config["networks"]["default"]["name"] = serde_json::json!("foreign_default");
+        assert_eq!(
+            Deployment::stage(&root, &workspace, &manifest, &config, &plan, None)
+                .err()
+                .unwrap()
+                .code,
+            "BUNDLE_INVALID"
+        );
+        assert_eq!(fs::read(root.join("bundle/compose.yaml")).unwrap(), before);
+        assert_eq!(fs::read_dir(&workspace).unwrap().count(), 0);
+        retire(&root);
     }
     #[test]
     fn candidate_execution_changes_only_qualified_platform_image_and_keeps_original_copies() {

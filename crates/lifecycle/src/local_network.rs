@@ -194,8 +194,17 @@ struct ClosedNetworks {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ClosedNetwork {
+    #[serde(default, deserialize_with = "present_network_name")]
+    name: Option<String>,
     labels: ClosedLabels,
     ipam: ClosedIPAM,
+}
+// Missing is the original raw wire format; present must be an actual string,
+// so explicit null cannot silently become the legacy absent case.
+fn present_network_name<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -229,7 +238,10 @@ pub(crate) fn bind_compose(m: &BundleManifest, bytes: &[u8]) -> Result<()> {
     let value: ComposeNetworkBinding =
         serde_json::from_slice(bytes).map_err(|_| err("BUNDLE_INVALID"))?;
     let n = value.networks.default;
-    if n.labels.bundle != m.bundle_id
+    if n.name
+        .as_deref()
+        .is_some_and(|name| name != format!("{}_default", m.project_name))
+        || n.labels.bundle != m.bundle_id
         || n.labels.project != m.project_name
         || n.labels.schema != m.schema_version
         || n.ipam.config.len() != 1
@@ -255,6 +267,45 @@ pub(crate) fn admit(m: &BundleManifest, engine: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn normalized_network_name_is_optional_but_exact_and_closed() {
+        let mut m = super::super::tests::manifest_for_detection();
+        m.preferred_engine = Some("docker".into());
+        m.explicit_local_network = Some(ExplicitLocalNetwork {
+            mode: "explicit-rfc1918-v1".into(),
+            subnet: "10.240.0.0/28".into(),
+            gateway: "10.240.0.1".into(),
+        });
+        let raw = serde_json::json!({"networks":{"default":{"labels":{"com.exhibitos.bundle":m.bundle_id,"com.exhibitos.project":m.project_name,"com.exhibitos.schema":m.schema_version},"ipam":{"config":[{"subnet":"10.240.0.0/28","gateway":"10.240.0.1"}]}}}});
+        assert!(bind_compose(&m, &serde_json::to_vec(&raw).unwrap()).is_ok());
+        let mut normalized = raw;
+        normalized["networks"]["default"]["name"] =
+            serde_json::json!(format!("{}_default", m.project_name));
+        assert!(bind_compose(&m, &serde_json::to_vec(&normalized).unwrap()).is_ok());
+        for name in [
+            serde_json::json!("foreign_default"),
+            serde_json::json!(""),
+            Value::Null,
+            Value::Bool(false),
+        ] {
+            let mut bad = normalized.clone();
+            bad["networks"]["default"]["name"] = name;
+            assert!(bind_compose(&m, &serde_json::to_vec(&bad).unwrap()).is_err());
+        }
+        let mut bad = normalized.clone();
+        bad["networks"]["default"]["external"] = Value::Bool(false);
+        assert!(bind_compose(&m, &serde_json::to_vec(&bad).unwrap()).is_err());
+        let mut bad = normalized.clone();
+        bad["networks"]["extra"] = normalized["networks"]["default"].clone();
+        assert!(bind_compose(&m, &serde_json::to_vec(&bad).unwrap()).is_err());
+        let mut bad = normalized.clone();
+        bad["networks"]["default"]["ipam"]["config"][0]["subnet"] =
+            serde_json::json!("10.240.0.16/28");
+        assert!(bind_compose(&m, &serde_json::to_vec(&bad).unwrap()).is_err());
+        let mut bad = normalized;
+        bad["networks"]["default"]["ipam"]["driver"] = serde_json::json!("default");
+        assert!(bind_compose(&m, &serde_json::to_vec(&bad).unwrap()).is_err());
+    }
     #[test]
     fn local_network_policy_closed_gateway_and_legacy_wire() {
         let mut m = super::super::tests::manifest_for_detection();
