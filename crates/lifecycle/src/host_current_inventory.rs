@@ -12,6 +12,118 @@ pub struct HostCurrentReceipt {
     pub plaintext_files_created: usize,
     pub external_volumes_saved: bool,
 }
+// These are bounded native dispatch records, not the service/configuration or
+// trust authority being restored. They are necessarily written AFTER a host
+// checkpoint (reference publication, app-close request and atomic helper claim).
+// Authenticate every archived byte as before; project only these exact namespaces
+// out of the archive/current comparison. Never accept caller-supplied exclusions.
+const RUNTIME_CONTROLS: [&str; 4] = [
+    "update-execution-references",
+    "update-apply-handoffs",
+    "update-cancel-handoffs",
+    "update-rollback-handoffs",
+];
+fn runtime_control(path: &str) -> bool {
+    RUNTIME_CONTROLS
+        .iter()
+        .any(|root| path == *root || path.strip_prefix(root).is_some_and(|s| s.starts_with('/')))
+}
+fn validate_runtime_controls(profile: &Path, current: &Inventory) -> Result<()> {
+    for root in RUNTIME_CONTROLS {
+        let Some(directory) = current.items.iter().find(|item| item.path == root) else {
+            continue;
+        };
+        if directory.kind != "directory" {
+            return Err(fail());
+        }
+        installations::private_directory(&profile.join(root))?;
+        let mut count = 0;
+        for item in current
+            .items
+            .iter()
+            .filter(|item| item.path.starts_with(&format!("{root}/")))
+        {
+            count += 1;
+            let reference = root == "update-execution-references";
+            let limit = if reference || root == "update-rollback-handoffs" {
+                16384
+            } else {
+                8192
+            };
+            if count > if reference { 128 } else { 384 }
+                || item.kind != "file"
+                || item.bytes > limit
+            {
+                return Err(fail());
+            }
+            let name = item
+                .path
+                .strip_prefix(&format!("{root}/"))
+                .ok_or_else(fail)?;
+            if reference {
+                let id = name
+                    .strip_suffix(".json")
+                    .filter(|id| installations::uuid(id))
+                    .ok_or_else(fail)?;
+                crate::execution_reference::load(profile, id)?;
+                continue;
+            }
+            let (id, suffix) = name.split_once('.').ok_or_else(fail)?;
+            if !installations::uuid(id)
+                || !["request.json", "claim.json", "outcome.json"].contains(&suffix)
+            {
+                return Err(fail());
+            }
+            let bytes = source_bytes(&profile.join(root), name, limit, true)?;
+            let value: Value = serde_json::from_slice(&bytes).map_err(|_| fail())?;
+            if value["id"].as_str() != Some(id) {
+                return Err(fail());
+            }
+            // Parse the actual native closed schemas; none of these observations
+            // grants execution. Consumers still rebind authority/op/generation,
+            // registry and reference digests and enforce single claim ownership.
+            match (root, suffix == "request.json") {
+                ("update-apply-handoffs", true) => {
+                    let _: crate::update_execution_handoff::Request =
+                        serde_json::from_slice(&bytes).map_err(|_| fail())?;
+                }
+                ("update-apply-handoffs", false) => {
+                    let _: crate::update_execution_handoff::Receipt =
+                        serde_json::from_slice(&bytes).map_err(|_| fail())?;
+                }
+                ("update-cancel-handoffs", true) => {
+                    let _: crate::update_handoff::Request =
+                        serde_json::from_slice(&bytes).map_err(|_| fail())?;
+                }
+                ("update-cancel-handoffs", false) => {
+                    let _: crate::update_handoff::Receipt =
+                        serde_json::from_slice(&bytes).map_err(|_| fail())?;
+                }
+                ("update-rollback-handoffs", true) => {
+                    let _: crate::update_rollback_handoff::Request =
+                        serde_json::from_slice(&bytes).map_err(|_| fail())?;
+                }
+                ("update-rollback-handoffs", false) => {
+                    let _: crate::update_rollback_handoff::Receipt =
+                        serde_json::from_slice(&bytes).map_err(|_| fail())?;
+                }
+                _ => return Err(fail()),
+            }
+        }
+    }
+    Ok(())
+}
+fn current_items_match(profile: &Path, current: &Inventory, archived: &Inventory) -> Result<bool> {
+    validate_runtime_controls(profile, current)?;
+    Ok(current
+        .items
+        .iter()
+        .filter(|item| !runtime_control(&item.path))
+        .eq(archived
+            .items
+            .iter()
+            .filter(|item| !runtime_control(&item.path))))
+}
 struct Comparison {
     profile: PathBuf,
     expected: String,
@@ -98,7 +210,10 @@ impl Comparison {
                 return Err(fail());
             }
             let current = inventory(&self.profile, &excluded, &m.id)?;
-            if current.items != m.items || current.registry_sha256 != m.registry_sha256 {
+            if !current_items_match(&self.profile, &current, &m)?
+                || current.registry_sha256 != m.registry_sha256
+                || current.root_windows_permissions != m.root_windows_permissions
+            {
                 return Err(err("HOST_SOURCE_CHANGED"));
             }
             self.inventory = Some(m);
@@ -147,7 +262,10 @@ impl Comparison {
         }
         let excluded = m.excluded_locks.iter().cloned().collect();
         let current = inventory(&self.profile, &excluded, &m.id)?;
-        if current.items != m.items || current.registry_sha256 != m.registry_sha256 {
+        if !current_items_match(&self.profile, &current, m)?
+            || current.registry_sha256 != m.registry_sha256
+            || current.root_windows_permissions != m.root_windows_permissions
+        {
             return Err(err("HOST_SOURCE_CHANGED"));
         }
         Ok(HostCurrentReceipt {
@@ -183,7 +301,7 @@ pub(crate) fn verify_host_current_borrowed(
     }
     let mut source = file(archive)?;
     let before = source.metadata().map_err(|_| fail())?;
-    if mode(&before) != 0o600 || before.len() > DATA_LIMIT + 16 * 1024 * 1024 {
+    if !archive_permissions(&source, &before)? || before.len() > DATA_LIMIT + 16 * 1024 * 1024 {
         return Err(fail());
     }
     let mut sink = Comparison::new(profile, expected);
@@ -195,6 +313,7 @@ pub(crate) fn verify_host_current_borrowed(
     {
         return Err(fail());
     }
+    file_check(&source)?;
     let receipt = sink.finish()?;
     session.check_exclusive(profile)?;
     Ok(receipt)
@@ -230,6 +349,93 @@ mod tests {
         )
         .unwrap();
         (root, profile, archive, r.manifest_sha256, plain)
+    }
+    fn reference_bytes(profile: &Path, id: &str) -> Vec<u8> {
+        let path = profile.parent().unwrap().join("synthetic-input");
+        serde_json::to_vec(&serde_json::json!({
+            "format":1,"id":id,"installationId":Uuid::new_v4().to_string(),
+            "scope":"default","operationId":"synthetic-op","generation":3,
+            "registrySha256":"a".repeat(64),"artifact":path,"artifactSha256":"b".repeat(64),
+            "artifactBytes":7,"python":path,"sourceCommit":"c".repeat(40),
+            "maintenanceImage":format!("sha256:{}","d".repeat(64)),"exportParent":path,
+            "hostArchive":path,"trustArchive":path,"pairBinding":path,"keyFile":path,
+            "qualificationDestination":path,"qualificationSha256":"e".repeat(64),"createdAt":21
+        }))
+        .unwrap()
+    }
+    #[test]
+    fn current_host_runtime_controls_allow_reference_and_app_close_claim_but_not_service_change() {
+        let (_root, profile, archive, expected, plain) = prepared();
+        let original = fs::read(&archive).unwrap();
+        let references = profile.join("update-execution-references");
+        installations::new_directory(&references).unwrap();
+        let id = Uuid::new_v4().to_string();
+        write_new(
+            &references.join(format!("{id}.json")),
+            &reference_bytes(&profile, &id),
+        )
+        .unwrap();
+        let mut comparison = Comparison::new(&profile, &expected);
+        comparison.accept(&plain).unwrap();
+        let handoffs = profile.join("update-apply-handoffs");
+        installations::new_directory(&handoffs).unwrap();
+        let request = Uuid::new_v4().to_string();
+        let installation = Uuid::new_v4().to_string();
+        let bytes = serde_json::to_vec(&serde_json::json!({"id":request,
+            "installationId":installation,"scope":"default","registrySha256":"a".repeat(64),
+            "referenceSha256":"b".repeat(64),"createdAt":21,
+            "input":{"referenceId":id,"operationId":"synthetic-op","generation":3,
+                "preserveData":true,"closeAppAndApply":true,"externalWritersQuiesced":true}}))
+        .unwrap();
+        write_new(&handoffs.join(format!("{request}.request.json")), &bytes).unwrap();
+        let claim = serde_json::to_vec(&serde_json::json!({"id":request,
+            "installationId":installation,"state":"failed","code":null,
+            "createdAt":21,"requestSha256":digest(&bytes)}))
+        .unwrap();
+        write_new(&handoffs.join(format!("{request}.claim.json")), &claim).unwrap();
+        assert!(comparison.finish().unwrap().current_profile_matched);
+        let session = session_lock(&profile, true).unwrap();
+        assert!(
+            verify_host_current_borrowed(&profile, &archive, &[17; 32], &session, &expected)
+                .is_ok()
+        );
+        write_new(
+            &profile.join("synthetic/real-service-change"),
+            b"not a runtime control",
+        )
+        .unwrap();
+        assert!(
+            verify_host_current_borrowed(&profile, &archive, &[17; 32], &session, &expected)
+                .is_err()
+        );
+        assert_eq!(fs::read(&archive).unwrap(), original);
+    }
+    #[test]
+    fn current_host_runtime_controls_refuse_unrecognized_names_schema_and_oversized_records() {
+        let (_root, profile, _archive, expected, plain) = prepared();
+        let references = profile.join("update-execution-references");
+        installations::new_directory(&references).unwrap();
+        let id = Uuid::new_v4().to_string();
+        let path = references.join(format!("{id}.json"));
+        let check = || {
+            let mut c = Comparison::new(&profile, &expected);
+            c.accept(&plain).and_then(|_| c.finish()).is_err()
+        };
+        write_new(&path, b"{}").unwrap();
+        assert!(check());
+        fs::remove_file(&path).unwrap();
+        write_new(&path, &vec![b' '; 16385]).unwrap();
+        assert!(check());
+        fs::remove_file(&path).unwrap();
+        write_new(
+            &references.join("not-a-reference.json"),
+            &reference_bytes(&profile, &id),
+        )
+        .unwrap();
+        assert!(check());
+        fs::remove_file(references.join("not-a-reference.json")).unwrap();
+        std::os::unix::fs::symlink(profile.join("synthetic/data"), &path).unwrap();
+        assert!(check());
     }
     #[test]
     fn current_host_public_boundary_refuses_missing_ack_key_and_changed_source_without_copy() {

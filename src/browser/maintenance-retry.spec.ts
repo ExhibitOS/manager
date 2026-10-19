@@ -8,6 +8,7 @@ for(const scenario of ['backup','restoration','cancel-restoration','ownership-fa
   const audit={id,targetId,kind,state:'failed',newJobId:child,originalJobSha256:'a'.repeat(64),destinationRootSha256:kind==='backup'?'ac5d97aee7fbfabe891d373247a8aefdc9cbc804f2ec9ba13005f440bdb5215e':'7d277be2fe45eebc11b1551791b949f6babd62451b74f14dbb506a89320f9d12',errorCode:'CANCELLED',createdAt:1,updatedAt:2};
   const history:unknown[]=scenario==='blocked-child'?[audit]:[],inputs:unknown[]=[],cancelInputs:unknown[]=[];let resolve:()=>void=()=>{},running=false,cancelled=false;
   Object.assign(window,{isTauri:true,__retryInputs:inputs,__retryCancelInputs:cancelInputs,__resolveRetry:()=>resolve(),__originalRetryJob:original,__TAURI_INTERNALS__:{invoke:async(cmd:string,args:Record<string,unknown>={})=>{
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:source,mode:'managed',installations:[{id:source,kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true},{id:destination,kind:'recovery',createdAt:2,path:`/private/tmp/synthetic-profile/installations/${destination}`,available:true}],errorCode:null};
    if(cmd==='manager_status')return {installed:kind==='backup',bundleId:null,version:null,state:'stopped',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
    if(cmd==='manager_detect')return [{kind:'docker',installed:true,available:true,engineVersion:'synthetic',composeVersion:'synthetic',errorCode:null,guidance:null}];
@@ -23,13 +24,14 @@ for(const scenario of ['backup','restoration','cancel-restoration','ownership-fa
     if(scenario==='ownership-failure'){history.push({...audit,newJobId:null,errorCode:'OWNERSHIP_CONFLICT'});throw {code:'OWNERSHIP_CONFLICT',guidance:'소유권이 확인되지 않아 재시도하지 않았습니다.'};}
     history.push({...audit,state:'completed',errorCode:null});
     const image=(args.input as {image:string}).image;
-    const result=kind==='backup'?{id:scenario==='wrong-child'?targetId:child,backupId:id,operation:'created-and-authenticated',files:11,image,authenticatedManifestSha256:'a'.repeat(64),writersPaused:true,at:2}:{id:child,backupId:id,operation:'restored-and-running',bundleId:id,projectName:`exhibitos-${id}`,openUrl:'http://127.0.0.1:4512',authenticatedManifestSha256:'a'.repeat(64),at:2};
+    const result=kind==='backup'?{id:scenario==='wrong-child'?targetId:child,backupId:id,operation:'created-and-authenticated',files:11,image,authenticatedManifestSha256:'a'.repeat(64),writersPaused:true,at:2}:{id:child,backupId:id,operation:'restored-and-running',bundleId:id,projectName:`exhibitos-${id}`,openUrl:'http://127.0.0.1:4512',authenticatedManifestSha256:'a'.repeat(64),at:2,networkSubnet:'10.240.0.32/28'};
     return {id,targetId,newJobId:child,kind,dataPreserved:true,result};
    }
+   if(cmd==='manager_external_restore'&&(args.input as {action?:string}|undefined)?.action==='context')return {sources:[],checks:[]};
    throw Error('Unexpected synthetic command');
   }}});
  },{scenario});
- const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));await page.goto('/');const region=page.getByRole('region',{name:'중단된 백업·복원 재시도'}),submit=region.getByRole('button',{name:'새 작업으로 재시도'});
+ const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const region=page.getByRole('region',{name:'중단된 백업·복원 재시도'}),submit=region.getByRole('button',{name:'새 작업으로 재시도'});
  await expect(region).toBeVisible();if(scenario==='history-failure'){await expect(submit).toBeDisabled();await expect(region).toContainText('기록을 확인할 수 없습니다');expect(await page.evaluate(()=>(window as unknown as {__retryInputs:unknown[]}).__retryInputs)).toHaveLength(0);return;}const kind=['restoration','cancel-restoration'].includes(scenario)?'restoration':'backup';await region.getByLabel('재시도할 현재 공간의 작업').selectOption(`${kind}:12345678-1234-1234-1234-123456789012`);
  if(scenario==='blocked-child'){
   await expect(submit).toBeDisabled();await expect(region).toContainText('확인이 필요한 재시도 기록');await expect(region.getByLabel('재시도할 현재 공간의 작업')).toBeEnabled();await region.getByLabel('재시도할 현재 공간의 작업').selectOption('backup:34567890-1234-1234-1234-123456789012');await region.getByLabel('별도 비공개 키 파일의 전체 경로').fill('/private/tmp/synthetic-key');await region.getByLabel('유지보수 이미지의 고정 ID').fill(`sha256:${'a'.repeat(64)}`);await region.getByRole('checkbox').nth(0).check();await region.getByRole('checkbox').nth(1).check();await expect(submit).toBeEnabled();expect(await page.evaluate(()=>(window as unknown as {__retryInputs:unknown[]}).__retryInputs)).toHaveLength(0);return;

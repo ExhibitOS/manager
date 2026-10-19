@@ -2,6 +2,7 @@
 //! Recovery may authenticate authority before recreating an absent host. Keep
 //! its external pathname fence; never create or adopt a host to satisfy a lock.
 use super::*;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
 pub(crate) enum AuthorityHostFence {
@@ -10,8 +11,12 @@ pub(crate) enum AuthorityHostFence {
 }
 pub(crate) struct PresentHost {
     session: ProfileSession,
+    #[cfg(not(windows))]
     _locks: (File, Vec<File>),
+    #[cfg(windows)]
+    _locks: (NativeHostLock, Vec<NativeHostLock>),
 }
+#[cfg(not(windows))]
 pub(crate) struct AbsentHost {
     profile: PathBuf,
     parent_identity: fs::Metadata,
@@ -19,6 +24,8 @@ pub(crate) struct AbsentHost {
     anchor_path: PathBuf,
     anchor: ProfileAnchor,
 }
+#[cfg(windows)]
+pub(crate) struct AbsentHost { profile: PathBuf, anchor: ProfileAnchor }
 impl AuthorityHostFence {
     pub(crate) fn acquire(profile: &Path, anchor: ProfileAnchor) -> Result<Self> {
         match fs::symlink_metadata(profile) {
@@ -31,6 +38,8 @@ impl AuthorityHostFence {
                 })))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                #[cfg(not(windows))]
+                let missing = {
                 let parent = canonical_private(
                     profile
                         .parent()
@@ -39,7 +48,7 @@ impl AuthorityHostFence {
                 let text = profile
                     .to_str()
                     .ok_or_else(|| err("PROFILE_PATH_INVALID"))?;
-                let missing = AbsentHost {
+                AbsentHost {
                     profile: profile.into(),
                     parent_identity: fs::symlink_metadata(&parent)
                         .map_err(|_| err("PROFILE_PATH_INVALID"))?,
@@ -53,7 +62,10 @@ impl AuthorityHostFence {
                         digest(text.as_bytes())
                     )),
                     anchor,
+                }
                 };
+                #[cfg(windows)]
+                let missing = AbsentHost { profile: profile.into(), anchor };
                 missing.check()?;
                 Ok(Self::Absent(Box::new(missing)))
             }
@@ -62,12 +74,18 @@ impl AuthorityHostFence {
     }
     pub(crate) fn check(&self, profile: &Path) -> Result<()> {
         match self {
-            Self::Present(held) => held.session.check_exclusive(profile),
+            Self::Present(held) => {
+                held.session.check_exclusive(profile)?;
+                #[cfg(windows)]
+                { held._locks.0.check()?; for lock in &held._locks.1 { lock.check()?; } }
+                Ok(())
+            },
             Self::Absent(held) if held.profile == profile => held.check(),
             Self::Absent(_) => Err(err("PROFILE_LOCK_INVALID")),
         }
     }
 }
+#[cfg(not(windows))]
 impl AbsentHost {
     fn check(&self) -> Result<()> {
         let parent = canonical_private(
@@ -108,7 +126,17 @@ impl AbsentHost {
     }
 }
 
-#[cfg(test)]
+#[cfg(windows)]
+impl AbsentHost {
+    fn check(&self) -> Result<()> {
+        self.anchor.check(&self.profile,true)?;
+        match fs::symlink_metadata(&self.profile) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(err("PROFILE_PATH_INVALID")),
+        }
+    }
+}
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     fn fixture() -> (PathBuf, PathBuf) {

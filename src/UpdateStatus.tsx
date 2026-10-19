@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 import {useEffect,useRef,useState} from 'react';
+import {UpdatePreparation} from './UpdatePreparation';
+import {BackupToolField,type BackupToolContext} from './BackupToolField';
+import {BackupPathField} from './BackupPathField';
 import {client,managerError,validVerificationInput,type UpdateRollbackContext,type UpdateRollbackReceipt,type UpdateStatus as Status,type ManagerError,type UpdateCancelReceipt,type UpdateReference,type UpdateApplyReceipt} from './lifecycle';
 const labels={prepared:'업데이트 준비 기록',applying:'업데이트 적용 단계 기록',awaiting_health:'새 전시 응답 확인 단계 기록',updated:'업데이트 완료 기록',recovery_required:'원래 전시 복원 필요',restoring:'원래 전시 복원 단계 기록',awaiting_rollback_health:'복원된 전시 응답 확인 단계 기록',rolled_back:'원래 전시 복원 완료 기록'};
-export function UpdateStatusPanel({native,selectionToken,active,onActivity}:{native:boolean;selectionToken:string;active:boolean;onActivity:(active:boolean)=>void}){
+export function UpdateStatusPanel({native,selectionToken,active,onActivity,tool}:{native:boolean;selectionToken:string;active:boolean;onActivity:(active:boolean)=>void;tool:BackupToolContext}){
  const [status,setStatus]=useState<Status|null>(null),[error,setError]=useState<ManagerError|null>(null),[pending,setPending]=useState(false);
+ const [requestKind,setRequestKind]=useState<'조회'|'취소'|'적용'|'복원'>('조회');
  const [cancellation,setCancellation]=useState<UpdateCancelReceipt|null>(null),[cancelConsent,setCancelConsent]=useState(false);
  const [references,setReferences]=useState<UpdateReference[]>([]),[referenceId,setReferenceId]=useState('');
  const [application,setApplication]=useState<UpdateApplyReceipt|null>(null),[applyConsent,setApplyConsent]=useState(false),[writersStopped,setWritersStopped]=useState(false);
@@ -14,7 +18,7 @@ export function UpdateStatusPanel({native,selectionToken,active,onActivity}:{nat
  const live=useRef(true),working=useRef(false),epoch=useRef(0);
  useEffect(()=>{live.current=true;return()=>{live.current=false;epoch.current++;onActivity(false);};},[]);
  async function refresh(){
-  const run=++epoch.current;working.current=true;setPending(true);setStatus(null);setError(null);setReferences([]);setReferenceId('');setApplication(null);setCancellation(null);setApplyConsent(false);setWritersStopped(false);setCancelConsent(false);setRollbackContext(null);setRollbackReceipt(null);setRollbackConsent(false);setRollbackWritersStopped(false);setKeyFile('');setArchive('');setMaintenanceImage('');setPort(4500);setPreferredRollbackAction('completeRestored');
+  setRequestKind('조회');const run=++epoch.current;working.current=true;setPending(true);setStatus(null);setError(null);setReferences([]);setReferenceId('');setApplication(null);setCancellation(null);setApplyConsent(false);setWritersStopped(false);setCancelConsent(false);setRollbackContext(null);setRollbackReceipt(null);setRollbackConsent(false);setRollbackWritersStopped(false);setPreferredRollbackAction('completeRestored');
   if(!native){working.current=false;setPending(false);return;}
   try{
    const result=await client.updateStatus(),cancelled=await client.updateCancellation();
@@ -32,15 +36,16 @@ export function UpdateStatusPanel({native,selectionToken,active,onActivity}:{nat
  useEffect(()=>{void refresh();},[native,selectionToken]);
  async function cancel(){
   if(!native||active||working.current||!cancelConsent||status?.stage!=='prepared'||!status.operationId||status.generation===null||status.writeUncertain)return;
-  const run=epoch.current;working.current=true;onActivity(true);setPending(true);setError(null);
+  const run=epoch.current;setRequestKind('취소');working.current=true;onActivity(true);setPending(true);setError(null);
   try{const result=await client.updateCancellation({operationId:status.operationId,generation:status.generation,preserveData:true,closeAppAndCancel:true});if(!result)throw Error('MANAGER_PROTOCOL');if(live.current&&epoch.current===run){setCancellation(result);setCancelConsent(false);if(result.state!=='awaiting-app-close')onActivity(false);}}
   catch(e){if(live.current&&epoch.current===run){setError(managerError(e));onActivity(false);}}
   finally{if(live.current&&epoch.current===run){working.current=false;setPending(false);}}
  }
  const selected=references.find(reference=>reference.referenceId===referenceId);
+ const migrationInputsMissing=!!selected?.changedSchema&&selected.migrationInputsRecorded!==true;
  async function apply(){
-  if(!native||active||working.current||!applyConsent||!writersStopped||status?.stage!=='prepared'||status.writeUncertain||!selected||selected.changedSchema||selected.operationId!==status.operationId||selected.generation!==status.generation)return;
-  const run=epoch.current;working.current=true;onActivity(true);setPending(true);setError(null);
+  if(!native||active||working.current||!applyConsent||!writersStopped||status?.stage!=='prepared'||status.writeUncertain||!selected||migrationInputsMissing||selected.operationId!==status.operationId||selected.generation!==status.generation)return;
+  const run=epoch.current;setRequestKind('적용');working.current=true;onActivity(true);setPending(true);setError(null);
   try{const receipt=await client.updateApplication({referenceId:selected.referenceId,operationId:selected.operationId,generation:selected.generation,preserveData:true,closeAppAndApply:true,externalWritersQuiesced:true});if(!receipt)throw Error('MANAGER_PROTOCOL');if(live.current&&epoch.current===run){setApplication(receipt);setApplyConsent(false);setWritersStopped(false);if(receipt.state!=='awaiting-app-close')onActivity(false);}}
   catch(e){if(live.current&&epoch.current===run){setError(managerError(e));onActivity(false);}}
   finally{if(live.current&&epoch.current===run){working.current=false;setPending(false);}}
@@ -52,7 +57,7 @@ export function UpdateStatusPanel({native,selectionToken,active,onActivity}:{nat
  function resetRollbackConsent(){setRollbackConsent(false);setRollbackWritersStopped(false);}
  async function rollback(){
   if(!native||active||working.current||!rollbackAllowed||!rollbackContext||!rollbackAction)return;
-  const run=epoch.current;working.current=true;onActivity(true);setPending(true);setError(null);
+  const run=epoch.current;setRequestKind('복원');working.current=true;onActivity(true);setPending(true);setError(null);
   try{
    const receipt=await client.updateRollback({action:rollbackAction,operationId:rollbackContext.operationId,generation:rollbackContext.generation,maintenanceImage,keyFile:rollbackAction==='restoreOriginal'?keyFile:null,archive:rollbackAction==='restoreOriginal'?archive:null,port:rollbackAction==='restoreOriginal'?port:null,preserveData:true,closeAppAndRollback:true,externalWritersQuiesced:true});
    if(!receipt)throw Error('MANAGER_PROTOCOL');
@@ -61,26 +66,27 @@ export function UpdateStatusPanel({native,selectionToken,active,onActivity}:{nat
   finally{if(live.current&&epoch.current===run){working.current=false;setPending(false);}}
  }
  const recovery=status?.stage==='recovery_required'||status?.stage==='restoring'||status?.stage==='awaiting_rollback_health';
- return <section className="panel" aria-label="업데이트 상태">
+ return <section className="panel" aria-label="업데이트 상태" data-needs-attention={recovery||status?.stage==='applying'||status?.stage==='awaiting_health'||!!status?.failure||!!status?.writeUncertain||pending||!!application&&application.state!=='updated'||!!rollbackReceipt&&rollbackReceipt.state!=='rolled-back'||!!cancellation&&cancellation.state!=='cancelled'}>
   <h2>업데이트와 복원 상태</h2><p>선택한 관리 공간의 업데이트 기록을 확인합니다. 기록 확인만으로 전시를 변경하지 않습니다.</p>
-  <button disabled={!native||active||pending} onClick={()=>void refresh()}>{pending?'업데이트 요청 처리 중…':'업데이트 상태 확인'}</button>
-  <div role="status" aria-live="polite">{pending&&<p>작업을 처리하고 있습니다. 앱이 종료되면 다음 실행에서 결과를 확인하세요.</p>}{status&&<>
+  <button disabled={!native||active||pending} onClick={()=>void refresh()}>{pending?`${requestKind} 응답 대기 중…`:'업데이트 상태 확인'}</button>
+  <div role="status" aria-live="polite">{pending&&<p>{requestKind==='조회'?'저장된 업데이트 상태를 확인하고 있습니다.':`${requestKind} 요청을 확인하고 있습니다. 앱 종료가 필요한 요청은 다음 실행에서 실제 결과를 확인하세요.`}</p>}{status&&<>
    <h3>{status.stage?labels[status.stage]:status.authorityPresent?'업데이트 작업 기록 없음':'서명된 업데이트 권한이 준비되지 않음'}</h3>
-   {status.operationId&&<p>작업 ID: {status.operationId}</p>}{status.generation!==null&&<p>기록 번호: {status.generation}</p>}
+   <details><summary>업데이트 기록 정보</summary>{status.operationId&&<p>작업 ID: {status.operationId}</p>}{status.generation!==null&&<p>기록 번호: {status.generation}</p>}</details>
    <p>저장된 완료 기록은 현재 서버의 정상 응답을 대신하지 않습니다. 상단의 서버 준비 상태를 함께 확인하세요.</p>
    {recovery&&<p>기존 전시·백업·키·복원 후보를 보존하세요. 원래 전체 백업 복원과 응답 확인이 필요합니다.</p>}
    {status.failure&&<p>완료하지 못한 작업: {({update_failed:'업데이트 적용',health_failed:'전시 응답 확인',restore_failed:'원래 전시 복원',interrupted:'작업 중단'})[status.failure]}. 자동 재실행하지 말고 보존한 기록을 확인하세요.</p>}
    {status.writeUncertain&&<p>기록 완료 여부를 확인할 수 없습니다. 이전 기록과 후보를 보존하세요.</p>}
   </>}</div>
   {error&&<div role="alert"><p>업데이트 요청을 완료하지 못했습니다. 확인 코드: {error.code}</p><p>원래 데이터·권한·후보를 유지하고 다른 작업이 종료된 뒤 상태를 확인하세요.</p></div>}
+  <UpdatePreparation native={native} selectionToken={selectionToken} installationId={status?.installationId??null} active={active||pending} onActivity={onActivity}/>
   {status?.stage==='prepared'&&!status.writeUncertain&&<>
    <fieldset disabled={!native||active||pending}><legend>준비된 업데이트 적용</legend>
     {references.length===0?<p>등록된 실행 자료가 없습니다. 준비와 복구 검증을 마친 뒤 다시 확인하세요.</p>:<>
      <label>준비된 버전<select value={referenceId} onChange={event=>{setReferenceId(event.target.value);setApplyConsent(false);setWritersStopped(false);}}><option value="">선택하세요</option>{references.map(reference=><option key={reference.referenceId} value={reference.referenceId}>{reference.version} · {reference.referenceId.slice(0,8)}</option>)}</select></label>
-     {selected&&<p>{selected.changedSchema?'데이터 구조가 바뀌는 업데이트의 앱 적용은 아직 검증되지 않았습니다. 이 참조는 적용할 수 없습니다.':'적용 전에 서명·원본·전체 복구 자료를 다시 검사합니다. 데이터 구조는 유지합니다.'}</p>}
+     {selected&&<p>{migrationInputsMissing?'데이터 구조 변경에 필요한 준비 자료가 없습니다. 이 참조는 적용할 수 없습니다.':selected.changedSchema?'데이터 구조가 바뀝니다. 적용 전에 변경 자료·서명·원본·전체 복구 자료를 다시 검사합니다.':'적용 전에 서명·원본·전체 복구 자료를 다시 검사합니다. 데이터 구조는 유지합니다.'}</p>}
      <label><input type="checkbox" checked={writersStopped} onChange={event=>setWritersStopped(event.target.checked)}/>외부에서 이 전시에 쓰는 작업을 중지했습니다. 앱은 실제 실행 상태도 다시 확인합니다.</label>
      <label><input type="checkbox" checked={applyConsent} onChange={event=>setApplyConsent(event.target.checked)}/>기존 데이터·백업·키를 보존하고 앱을 닫아 업데이트를 적용합니다. 적용 중 전시가 중단됩니다.</label>
-     <button disabled={!selected||selected.changedSchema||!writersStopped||!applyConsent} onClick={()=>void apply()}>앱을 닫고 업데이트 적용</button>
+     <button disabled={!selected||migrationInputsMissing||!writersStopped||!applyConsent} onClick={()=>void apply()}>앱을 닫고 업데이트 적용</button>
      <p>앱이 완전히 종료된 뒤 실행합니다. 다시 앱을 열어 실제 결과를 확인하세요.</p>
     </>}
    </fieldset>
@@ -100,11 +106,10 @@ export function UpdateStatusPanel({native,selectionToken,active,onActivity}:{nat
    {rollbackContext.canRestoreOriginal&&rollbackContext.canCompleteRestored&&<details><summary>복원 방법 선택</summary><label>진행할 복원 방법<select value={rollbackAction??''} onChange={e=>{setPreferredRollbackAction(e.target.value as 'restoreOriginal'|'completeRestored');resetRollbackConsent();}}><option value="completeRestored">복원된 후보 확인 계속</option><option value="restoreOriginal">원래 전체 백업을 새 후보에 다시 복원</option></select></label><p>새 후보에 다시 복원해도 기존 복원 후보와 원본 자료는 보존합니다.</p></details>}
    {rollbackAction?<>
     <p>{rollbackAction==='completeRestored'?'전체 복원 후보가 준비됐습니다. 원본 자료를 다시 풀지 않고 후보 활성화와 전시 응답 확인을 이어갑니다.':'전체 자료를 별도 후보에 복원한 뒤 활성화와 전시 응답을 확인합니다. 이미지 파일만 되돌려 완료 처리하지 않습니다.'}</p>
-    <label>복원용 유지보수 이미지의 고정 ID<input value={maintenanceImage} onChange={e=>{setMaintenanceImage(e.target.value);resetRollbackConsent();}} maxLength={71} autoComplete="off" spellCheck={false}/></label>
-    <p>신뢰할 운영자가 준비한 sha256: 형식의 로컬 이미지 ID를 사용합니다.</p>
+    <BackupToolField id="rollback-image" label="복원용 유지보수 이미지의 고정 ID" value={maintenanceImage} onChange={value=>{setMaintenanceImage(value);resetRollbackConsent();}} context={tool}/>
     {rollbackAction==='restoreOriginal'&&<>
-     <label>원래 전체 백업 폴더의 전체 경로<input value={archive} onChange={e=>{setArchive(e.target.value);resetRollbackConsent();}} maxLength={2048} autoComplete="off" spellCheck={false}/></label>
-     <label>복원에 사용할 별도 키 파일의 전체 경로<input value={keyFile} onChange={e=>{setKeyFile(e.target.value);resetRollbackConsent();}} maxLength={2048} autoComplete="off" spellCheck={false}/></label>
+     <BackupPathField id="rollback-archive" label="원래 전체 백업 폴더의 전체 경로" kind="archive" value={archive} onChange={value=>{setArchive(value);resetRollbackConsent();}} disabled={!native||active||pending||!rollbackMatches||!!status?.writeUncertain}/>
+     <BackupPathField id="rollback-key" label="복원에 사용할 별도 키 파일의 전체 경로" kind="key" value={keyFile} onChange={value=>{setKeyFile(value);resetRollbackConsent();}} disabled={!native||active||pending||!rollbackMatches||!!status?.writeUncertain}/>
      <p>키 내용은 입력하지 마세요. 경로 입력은 이 화면에서만 유지합니다.</p>
      <label>복원 후보의 로컬 포트<input type="number" min={1024} max={65535} step={1} value={Number.isFinite(port)?port:''} onChange={e=>{setPort(e.target.value===''?NaN:Number(e.target.value));resetRollbackConsent();}}/></label>
     </>}

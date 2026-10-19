@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-engine-preparation"
+description = "Enables the manager_engine_preparation command without any pre-configured scope."
+commands.allow = ["manager_engine_preparation"]
+
+[[permission]]
+identifier = "deny-manager-engine-preparation"
+description = "Denies the manager_engine_preparation command without any pre-configured scope."
+commands.deny = ["manager_engine_preparation"]

@@ -29,7 +29,7 @@ struct CandidateState {
     frozen: Vec<(String, String)>,
 }
 impl ReadyCandidate<'_, '_, '_> {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn started_receipt_for_qualification(&self) -> Value {
         self.started.admission.receipt.clone()
     }
@@ -45,10 +45,13 @@ fn immutable(root: &Path, name: &str, bytes: &[u8]) -> Result<()> {
     if bytes.is_empty() || bytes.len() > LIMIT {
         return Err(err("UPDATE_DEPLOYMENT_INVALID"));
     }
-    let mut file = private_file(&root.join(name), true).map_err(|e| err(e.code()))?;
-    file.write_all(bytes)
-        .and_then(|_| file.sync_all())
-        .map_err(|_| err("UPDATE_DEPLOYMENT_UNCERTAIN"))?;
+    #[cfg(not(windows))]
+    {
+        let mut file = private_file(&root.join(name), true).map_err(|e| err(e.code()))?;
+        file.write_all(bytes).and_then(|_| file.sync_all()).map_err(|_| err("UPDATE_DEPLOYMENT_UNCERTAIN"))?;
+    }
+    #[cfg(windows)]
+    crate::write_private_new(root, name, bytes, LIMIT)?;
     sync_dir(root).map_err(|e| err(e.code()))
 }
 fn phase(root: &Path, name: &str, plan: &crate::update::Plan, generation: u64) -> Result<()> {
@@ -106,13 +109,16 @@ fn replacement(
     image.reference = format!("sha256:{}", plan.target_image);
     image.archive = None;
     next.compose_sha256 = crate::digest(&bytes);
+    // A published candidate must remain readable by ordinary lifecycle APIs.
+    // Reuse their existing explicit-network invariant before any file changes.
+    crate::local_network::bind_compose(&next, &bytes)?;
     // Preserve the observed unchanged API/OED version; signed package version is
     // retained by the authority intent, not guessed from a packaging label.
     Ok((next, config))
 }
 struct Deployment {
     root: PathBuf,
-    bundle_identity: Metadata,
+    bundle_identity: DirectoryIdentity,
     manifest: BundleManifest,
     compose: Value,
     originals: Vec<(String, Vec<u8>)>,
@@ -152,8 +158,7 @@ impl Deployment {
         )?;
         let staged = Self {
             root: root.to_owned(),
-            bundle_identity: fs::symlink_metadata(&bundle)
-                .map_err(|_| err("UPDATE_TARGET_CHANGED"))?,
+            bundle_identity: directory_identity(&bundle)?,
             manifest: next,
             compose,
             originals,
@@ -163,11 +168,7 @@ impl Deployment {
     }
     fn check_parent(&self) -> Result<()> {
         installations::private_directory(&self.root.join("bundle"))?;
-        if !identity(
-            &self.bundle_identity,
-            &fs::symlink_metadata(self.root.join("bundle"))
-                .map_err(|_| err("UPDATE_TARGET_CHANGED"))?,
-        ) {
+        if !directory_matches(&self.bundle_identity,self.root.join("bundle"))? {
             return Err(err("UPDATE_TARGET_CHANGED"));
         }
         Ok(())
@@ -418,7 +419,7 @@ impl<'session, 'store, 'inputs> StartedUpdate<'session, 'store, 'inputs> {
         )?;
         if loaded["Id"] != image
             || loaded["Os"] != "linux"
-            || loaded["Architecture"] != "arm64"
+            || loaded["Architecture"] != super::super::super::prepared_oci::runtime_architecture(&self.admission.artifact.verified.release.target)?
             || loaded["RootFS"]["Layers"] != self.admission.oci.proof["layerDiffIds"]
         {
             return Err(err("IMAGE_INTEGRITY"));
@@ -791,7 +792,7 @@ impl ReadyCandidate<'_, '_, '_> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
@@ -825,6 +826,30 @@ mod tests {
     }
     fn retire(root: &Path) {
         fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+    #[test]
+    fn candidate_publication_preserves_closed_normalized_network_binding() {
+        let (root, workspace, mut manifest, mut config, plan) = fixture();
+        manifest.preferred_engine = Some("docker".into());
+        manifest.explicit_local_network = Some(crate::local_network::ExplicitLocalNetwork {
+            mode: "explicit-rfc1918-v1".into(),
+            subnet: "10.240.0.0/28".into(),
+            gateway: "10.240.0.1".into(),
+        });
+        config["networks"] = serde_json::json!({"default":{"name":format!("{}_default",manifest.project_name),"labels":{"com.exhibitos.bundle":manifest.bundle_id,"com.exhibitos.project":manifest.project_name,"com.exhibitos.schema":manifest.schema_version},"ipam":{"config":[{"subnet":"10.240.0.0/28","gateway":"10.240.0.1"}]}}});
+        assert!(replacement(&manifest, &config, &plan, None).is_ok());
+        let before = fs::read(root.join("bundle/compose.yaml")).unwrap();
+        config["networks"]["default"]["name"] = serde_json::json!("foreign_default");
+        assert_eq!(
+            Deployment::stage(&root, &workspace, &manifest, &config, &plan, None)
+                .err()
+                .unwrap()
+                .code,
+            "BUNDLE_INVALID"
+        );
+        assert_eq!(fs::read(root.join("bundle/compose.yaml")).unwrap(), before);
+        assert_eq!(fs::read_dir(&workspace).unwrap().count(), 0);
+        retire(&root);
     }
     #[test]
     fn candidate_execution_changes_only_qualified_platform_image_and_keeps_original_copies() {

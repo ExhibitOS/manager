@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Trusted running-candidate inventory via qualified maintenance code, not Runtime packaging.
 use crate::*;
+#[cfg(not(windows))]
 use std::fs::File;
+#[cfg(not(windows))]
+pub(in super::super) type InputFile = File;
+#[cfg(windows)]
+pub(in super::super) type InputFile = crate::windows_private::HostFile;
 const READER: &str = include_str!("native_inventory_reader.mjs");
 pub(in super::super) struct Inputs<'a> {
     pub image: &'a str,
@@ -28,7 +33,7 @@ fn network_name(m: &BundleManifest, app: &Value) -> Result<String> {
 }
 pub(in super::super) fn observe(
     inputs: &Inputs<'_>,
-    input: File,
+    input: InputFile,
     mut check: impl FnMut() -> Result<()>,
 ) -> Result<super::source_inventory::InventoryProof> {
     let raw = observe_raw(inputs, input, READER, &[], &mut check, |raw| {
@@ -36,7 +41,7 @@ pub(in super::super) fn observe(
     })?;
     serde_json::from_slice(&raw).map_err(|_| err("UPDATE_INVENTORY_RESULT_INVALID"))
 }
-fn observe_raw(inputs: &Inputs<'_>, input: File, reader: &str, extra: &[String], mut check: impl FnMut() -> Result<()>, validate: impl FnOnce(&[u8]) -> Result<()>) -> Result<Vec<u8>> {
+fn observe_raw(inputs: &Inputs<'_>, input: InputFile, reader: &str, extra: &[String], mut check: impl FnMut() -> Result<()>, validate: impl FnOnce(&[u8]) -> Result<()>) -> Result<Vec<u8>> {
     let i = inputs;
     if !i.image.strip_prefix("sha256:").is_some_and(hash_valid)
         || !hash_valid(i.expected_manifest)
@@ -125,7 +130,16 @@ fn observe_raw(inputs: &Inputs<'_>, input: File, reader: &str, extra: &[String],
         "--interactive".into(),
         helper.into(),
     ];
+    #[cfg(not(windows))]
     let raw = run_observed_input("docker", &args, None, 180, Some(input), &mut check)?;
+    #[cfg(windows)]
+    let raw = {
+        input.check_private()?;
+        let stdin = input.try_clone_read_handle()?;
+        let bytes = run_observed_input("docker", &args, None, 180, Some(stdin), &mut check)?;
+        input.check_private()?;
+        bytes
+    };
     let stopped = crate::backup_creation::inspected("docker", &["inspect".into(), helper.into()])?;
     if stopped["State"]["Running"] != false
         || stopped["State"]["ExitCode"] != 0
@@ -160,7 +174,7 @@ impl Observation {
 /// Runs only qualified native maintenance code. The catalog is a retained file
 /// bound to the signed plan, not JSON supplied as a health/success receipt.
 pub(super) fn observe_for_plan(
-    inputs: &Inputs<'_>, input: File,
+    inputs: &Inputs<'_>, input: InputFile,
     catalog: Option<&mut super::migration_catalog::CatalogInput>,
     plan: &crate::update::Plan, mut check: impl FnMut() -> Result<()>,
 ) -> Result<Observation> {
@@ -187,7 +201,7 @@ pub(super) fn observe_for_plan(
     check()?;
     Ok(Observation::Migrated(proof))
 }
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]

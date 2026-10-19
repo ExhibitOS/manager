@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Development OCI preparation under current intent/profile/source/target fences.
 use super::*;
-use crate::{Value, err, run, run_observed_input, run_observed_inputs};
+use crate::{Value, err, run, run_observed_input};
+#[cfg(not(windows))]
+use crate::run_observed_inputs;
 use std::collections::BTreeSet;
 
 const QUALIFIER: &str = include_str!("../../../scripts/verify-runtime-oci.py");
 const ENTRY: &str = r#"
 from types import SimpleNamespace
-with os.fdopen(int(sys.argv[3]),'rb',closefd=False) as manifest_fd:
+manifest_input=(open(sys.argv[3],'rb') if os.name=='nt' else os.fdopen(int(sys.argv[3]),'rb',closefd=False))
+with manifest_input as manifest_fd:
     raw_manifest=manifest_fd.read(16*1024*1024+1)
     assert len(raw_manifest)<=16*1024*1024 and hashlib.sha256(raw_manifest).hexdigest()==sys.argv[5]
 assert len(sys.argv) in (6,9)
-args = SimpleNamespace(archive=Path(sys.argv[1]),image=sys.argv[2],source_manifest=None,source_commit=sys.argv[4])
+args = SimpleNamespace(archive=Path(sys.argv[1]),image=sys.argv[2],source_manifest=None,source_commit=sys.argv[4],target=exhibitos_runtime_target)
 target_bytes=None
 if len(sys.argv)==9:
     target_bytes=sys.argv[6].encode('utf8')
@@ -34,6 +37,13 @@ pub struct PreparedOciReceipt {
     pub target_catalog_sha256: Option<String>,
     pub target_catalog_observed: bool,
     pub runtime_compatibility_qualified: bool,
+}
+pub(super) fn runtime_architecture(target: &str) -> crate::Result<&'static str> {
+    match target {
+        "linux-arm64" => Ok("arm64"),
+        "linux-amd64" => Ok("amd64"),
+        _ => Err(err("UPDATE_OCI_PLATFORM_UNVERIFIED")),
+    }
 }
 fn docker(args: &[&str]) -> crate::Result<Vec<u8>> {
     run(
@@ -161,7 +171,7 @@ impl ExecutionSession<'_> {
         }
         self.reverify_prepared_artifact(artifact)?;
         if artifact.verified.release.channel != "development"
-            || artifact.verified.release.target != "linux-arm64"
+            || !matches!(artifact.verified.release.target.as_str(), "linux-arm64" | "linux-amd64")
         {
             return Err(err("UPDATE_OCI_PLATFORM_UNVERIFIED"));
         }
@@ -184,7 +194,7 @@ impl ExecutionSession<'_> {
             .ok_or_else(|| err("UPDATE_TARGET_UNREGISTERED"))?;
         let root = installations::root(&self.store.profile, entry);
         installations::private_directory(&root)?;
-        let before = fs::symlink_metadata(&root).map_err(|_| err("UPDATE_TARGET_CHANGED"))?;
+        let before = directory_identity(&root)?;
         let target = LifecycleService::open_retry_diagnostics(root.clone())?;
         let _source_lock = self.source.lock()?;
         let _target_lock = target.lock()?;
@@ -214,6 +224,8 @@ impl ExecutionSession<'_> {
             .parent()
             .ok_or_else(|| err("UPDATE_OCI_INPUT_INVALID"))?
             .join("authenticated-manifest.json");
+        #[cfg(not(windows))]
+        let (manifest_input,manifest_descriptor) = {
         let mut out = private_file(&manifest, true).map_err(|e| err(e.code()))?;
         out.write_all(&raw)
             .and_then(|_| out.sync_all())
@@ -242,9 +254,27 @@ impl ExecutionSession<'_> {
         };
         #[cfg(not(unix))]
         let manifest_descriptor = String::new();
-        let script = format!("__name__='exhibitos_embedded_oci'\n{QUALIFIER}\n{ENTRY}");
+            (manifest_input,manifest_descriptor)
+        };
+        #[cfg(windows)]
+        let manifest_input = {
+            let directory=crate::windows_private::HostDirectory::inspect(manifest.parent().ok_or_else(||err("UPDATE_OCI_INPUT_INVALID"))?)?;
+            directory.check_private()?;
+            let mut output=directory.create_file("authenticated-manifest.json")?;
+            output.write_all(&raw).map_err(|_|err("UPDATE_ARTIFACT_UNAVAILABLE"))?;
+            output.sync_all()?; output.check_private()?;
+            drop(output);
+            let input=directory.child_file("authenticated-manifest.json")?;
+            input.check_private()?;
+            input
+        };
+        #[cfg(windows)]
+        let manifest_descriptor=manifest.to_string_lossy().into_owned();
+        let target_json = serde_json::to_string(&artifact.verified.release.target).map_err(|_|err("UPDATE_OCI_INPUT_INVALID"))?;
+        let script = format!("__name__='exhibitos_embedded_oci'\nexhibitos_runtime_target={target_json}\n{QUALIFIER}\n{ENTRY}");
         let mut args = vec![
             "-I".into(),
+            "-B".into(),
             "-c".into(),
             script,
             artifact.staged.path().to_string_lossy().into_owned(),
@@ -266,6 +296,7 @@ impl ExecutionSession<'_> {
             .staged
             .retained_input()
             .map_err(|e| err(e.code()))?;
+        #[cfg(not(windows))]
         let output = run_observed_inputs(
             python
                 .to_str()
@@ -278,12 +309,20 @@ impl ExecutionSession<'_> {
             || self.check(),
         )
         .map_err(|_| err("UPDATE_OCI_INVALID"))?;
+        #[cfg(windows)]
+        let output = {
+            manifest_input.check_private()?;
+            let bytes=run_observed_input(python.to_str().ok_or_else(||err("UPDATE_OCI_INPUT_INVALID"))?,&args,None,300,Some(input),||self.check()).map_err(|_|err("UPDATE_OCI_INVALID"))?;
+            manifest_input.check_private()?;
+            bytes
+        };
         if let Some(input) = &mut catalog {
             input.recheck()?;
         }
         let proof: Value =
             serde_json::from_slice(&output).map_err(|_| err("UPDATE_OCI_INVALID"))?;
-        if proof["artifactSha256"] != artifact.verified.release.artifact.sha256
+        if proof["target"] != artifact.verified.release.target
+            || proof["artifactSha256"] != artifact.verified.release.artifact.sha256
             || proof["artifactBytes"].as_u64() != Some(artifact.verified.release.artifact.bytes)
             || proof["runtimeImageSha256"] != artifact.plan.target_image
             || proof["targetSchemaSha256"] != artifact.plan.target_schema
@@ -336,7 +375,7 @@ impl ExecutionSession<'_> {
                 .ok_or_else(|| err("UPDATE_OCI_INVALID"))?;
             if observation["Id"] != image
                 || observation["Os"] != "linux"
-                || observation["Architecture"] != "arm64"
+                || observation["Architecture"] != runtime_architecture(&artifact.verified.release.target)?
                 || observation["RootFS"]["Layers"] != proof["layerDiffIds"]
                 || !observation["RepoTags"].as_array().is_none_or(Vec::is_empty)
             {
@@ -362,10 +401,7 @@ impl ExecutionSession<'_> {
                 16 * 1024 * 1024,
                 false,
             )? != raw
-            || !identity(
-                &before,
-                &fs::symlink_metadata(&root).map_err(|_| err("UPDATE_TARGET_CHANGED"))?,
-            )
+            || !directory_matches(&before,&root)?
         {
             return Err(err("UPDATE_SOURCE_CHANGED"));
         }
@@ -409,7 +445,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let script = format!("__name__='exhibitos_embedded_oci'\n{QUALIFIER}\n{ENTRY}");
+        let script = format!("__name__='exhibitos_embedded_oci'\nexhibitos_runtime_target='linux-arm64'\n{QUALIFIER}\n{ENTRY}");
         for bad in [false, true] {
             let source = fs::File::open(&archive).unwrap();
             let extra = fs::File::open(&manifest).unwrap();

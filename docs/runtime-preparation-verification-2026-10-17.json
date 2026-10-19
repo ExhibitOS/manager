@@ -1,0 +1,231 @@
+{
+  "date": "2026-10-17",
+  "scope": "Existing T08 runtime preparation, selected installation and developer packaging; no task acceptance change",
+  "status": "IMPLEMENTED_SCOPED_CHECKS_AND_REAL_ARM64_RESOURCE_PREPARATION_PASS_NATIVE_INSTALL_NOT_VERIFIED",
+  "verification_tuple_fields": [
+    "check",
+    "source",
+    "environment",
+    "command",
+    "input_and_expected",
+    "observed",
+    "limits"
+  ],
+  "checks": [
+    {
+      "check": "operator-packager",
+      "source": {
+        "base_commit_at_recording": "cfba5a247e972a2a07db590ad45c72342923aa23",
+        "tested_file_sha256": {
+          "scripts/prepare-platform-runtime.mjs": "3268548b431a6c2e380278f5e791bb88775dd0dbb1d25399bb1b53403ce49931",
+          "scripts/prepare-platform-runtime.test.mjs": "556a23dfd20790f3c01fdd0e718e70c496292baf2e8a2b9dba2afe390e193a0a",
+          "crates/lifecycle/src/runtime_prepare.rs": "15dd8b0e80a352b58ea300cafd3898319cb2b4abeb042e744b93d68d6d397254",
+          "crates/lifecycle/src/lib.rs": "5a8fdaa2ab0bdf2eb5e9c517442ebf36ae20c17191440a740f0324b58e230ee6",
+          "src-tauri/src/platform_runtime.rs": "45451d5a87f7ab6a35537253f978c1ea283ee9964758a88e98dad04301b81b95",
+          "src-tauri/src/lib.rs": "4d219a56275e9801578efbc635b236a05951e895110109c02bb532767b647933",
+          "src-tauri/tauri.conf.json": "e9de412b6a51bb7238eb3fd70b0c71c7ec3449b0600dded211ee832f50225b62"
+        },
+        "binding": "Every listed source hash compared equal to the execution-time receipt; unrelated worktree edits are outside this verification claim"
+      },
+      "environment": {
+        "os": "macOS",
+        "machine": "arm64",
+        "node": "24.21.0",
+        "rust": "1.99.0",
+        "cargo_jobs": 1,
+        "network": "No dependency acquisition / no runtime pull"
+      },
+      "command": "node --test scripts/prepare-platform-runtime.test.mjs",
+      "input_and_expected": {
+        "input": "Small synthetic manifest, JSON Compose and image-byte fixture; unsafe/changed/extra inputs",
+        "expected": "Declared payload copied once; existing output and secret/unsafe payload refused"
+      },
+      "observed": "4 PASS / 0 FAIL; source preserved",
+      "limits": "No real OCI archive or image architecture verification"
+    },
+    {
+      "check": "lifecycle-preparation",
+      "source": {
+        "base_commit_at_recording": "cfba5a247e972a2a07db590ad45c72342923aa23",
+        "tested_file_sha256": {
+          "scripts/prepare-platform-runtime.mjs": "3268548b431a6c2e380278f5e791bb88775dd0dbb1d25399bb1b53403ce49931",
+          "scripts/prepare-platform-runtime.test.mjs": "556a23dfd20790f3c01fdd0e718e70c496292baf2e8a2b9dba2afe390e193a0a",
+          "crates/lifecycle/src/runtime_prepare.rs": "15dd8b0e80a352b58ea300cafd3898319cb2b4abeb042e744b93d68d6d397254",
+          "crates/lifecycle/src/lib.rs": "5a8fdaa2ab0bdf2eb5e9c517442ebf36ae20c17191440a740f0324b58e230ee6",
+          "src-tauri/src/platform_runtime.rs": "45451d5a87f7ab6a35537253f978c1ea283ee9964758a88e98dad04301b81b95",
+          "src-tauri/src/lib.rs": "4d219a56275e9801578efbc635b236a05951e895110109c02bb532767b647933",
+          "src-tauri/tauri.conf.json": "e9de412b6a51bb7238eb3fd70b0c71c7ec3449b0600dded211ee832f50225b62"
+        },
+        "binding": "Every listed source hash compared equal to the execution-time receipt; unrelated worktree edits are outside this verification claim"
+      },
+      "environment": {
+        "os": "macOS",
+        "machine": "arm64",
+        "node": "24.21.0",
+        "rust": "1.99.0",
+        "cargo_jobs": 1,
+        "network": "No dependency acquisition / no runtime pull"
+      },
+      "command": "cargo test -p exhibitos-lifecycle runtime_prepare::tests --lib --offline --locked --jobs 1",
+      "input_and_expected": {
+        "input": "Seven macOS temporary-file cases; no engine",
+        "expected": "Complete and partial copying; original data/bundle preserved; unique project/volume identity"
+      },
+      "observed": "7 PASS / 0 FAIL / 428 filtered; compile14.90s, tests0.08s; 8 pre-existing non_snake_case warnings",
+      "limits": "No real engine, GUI restart, process-kill or user installation"
+    },
+    {
+      "check": "desktop-connection",
+      "source": {
+        "base_commit_at_recording": "cfba5a247e972a2a07db590ad45c72342923aa23",
+        "tested_file_sha256": {
+          "scripts/prepare-platform-runtime.mjs": "3268548b431a6c2e380278f5e791bb88775dd0dbb1d25399bb1b53403ce49931",
+          "scripts/prepare-platform-runtime.test.mjs": "556a23dfd20790f3c01fdd0e718e70c496292baf2e8a2b9dba2afe390e193a0a",
+          "crates/lifecycle/src/runtime_prepare.rs": "15dd8b0e80a352b58ea300cafd3898319cb2b4abeb042e744b93d68d6d397254",
+          "crates/lifecycle/src/lib.rs": "5a8fdaa2ab0bdf2eb5e9c517442ebf36ae20c17191440a740f0324b58e230ee6",
+          "src-tauri/src/platform_runtime.rs": "45451d5a87f7ab6a35537253f978c1ea283ee9964758a88e98dad04301b81b95",
+          "src-tauri/src/lib.rs": "4d219a56275e9801578efbc635b236a05951e895110109c02bb532767b647933",
+          "src-tauri/tauri.conf.json": "e9de412b6a51bb7238eb3fd70b0c71c7ec3449b0600dded211ee832f50225b62"
+        },
+        "binding": "Every listed source hash compared equal to the execution-time receipt; unrelated worktree edits are outside this verification claim"
+      },
+      "environment": {
+        "os": "macOS",
+        "machine": "arm64",
+        "node": "24.21.0",
+        "rust": "1.99.0",
+        "cargo_jobs": 1,
+        "network": "No dependency acquisition / no runtime pull"
+      },
+      "command": "cargo check -p exhibitos-manager-desktop --offline --locked --jobs 1",
+      "input_and_expected": {
+        "input": "Existing target reused; current resource declaration and native selected-install connection",
+        "expected": "Desktop and lifecycle compile without acquiring dependencies"
+      },
+      "observed": "PASS;16.96s",
+      "limits": "Compile only; app not built, launched, signed or notarized"
+    }
+  ],
+  "additional_checks": {
+    "rustfmt": "PASS; two new Rust modules only",
+    "git_diff_check": "PASS before recording; repeated before scoped commit"
+  },
+  "not_run": [
+    "native GUI install/start/readiness",
+    "Developer ID/notarization",
+    "App Store",
+    "remote image pull",
+    "Application interruption and relaunch during metadata publication",
+    "Actual first preparation of signed/notarized distribution"
+  ],
+  "trust": "Checksums are byte identity, not publisher authentication. Production application trust requires Developer ID/notarization; no new trust-on-first-use or signature scheme. Supplied image architecture and Platform revision require producer qualification. No actual prepared artifact is present.",
+  "preservation": "Existing roots, installations, keys and bundles not touched; only synthetic temporary fixtures created and cleaned by own tests",
+  "git": "Scoped commit will contain only runtime preparation code, documentation, resource declaration and this record. Other App/style/browser/hosted changes are excluded.",
+  "actual_development_artifact_preparation": {
+    "sourceCommit": "99ae38d44106a276f2675f4118a7ea4d498d4e9a",
+    "sourceCleanBeforeAndAfter": true,
+    "producer": "Existing Platform packageLocalRuntime with targetPlatform linux/arm64; existing Dockerfile.local unchanged",
+    "image": {
+      "id": "sha256:7059446a99a3a46ef7420e13f1d6184167e64be7c6969b9a3fe2cebcd15e156c",
+      "os": "linux",
+      "architecture": "arm64",
+      "version": "0.1.0",
+      "source": "https://github.com/ExhibitOS/platform"
+    },
+    "files": {
+      "manifest.json": {
+        "bytes": 962,
+        "sha256": "f3a22360ecc18c89fbfbc27f4a3bf5ed1eed557efb203b99e8e7bc77b8c40aba"
+      },
+      "compose.yaml": {
+        "bytes": 3221,
+        "sha256": "417252d6712630a0890e77fbe9b554b97b418db1a1aba32dda2e9cc875c7569b"
+      },
+      "platform-image.tar": {
+        "bytes": 97028096,
+        "sha256": "5a9b9279dfcca9de53425faec6c78828b173f94cb4e29458c5626a5e138108b9"
+      }
+    },
+    "manager_resource_preparation": {
+      "prepared": true,
+      "architecture": "arm64",
+      "platformCommit": "99ae38d44106a276f2675f4118a7ea4d498d4e9a",
+      "files": 3,
+      "bytes": 97032279,
+      "networkAcquisition": false,
+      "distribution": "operator-prepared-resource; publisher authenticity requires trusted application distribution"
+    },
+    "scope": "Real local image build/save and resource preparation only; no lifecycle install/start or GUI qualification",
+    "not_verified": [
+      "Developer ID signature and notarization",
+      "Native application first setup/start/readiness",
+      "Source-free end-user installation",
+      "Cross-engine or Intel bundle compatibility"
+    ],
+    "private_artifact_receipt": "Local verification workspace manager-runtime-resource-610b3150-e62c-4aa9-ba01-f94d5c75d9f2/artifact-verification.json; not a runtime dependency"
+  },
+  "native_fresh_network_fix": {
+    "reason": "Root observed the previous native resource preparation/install complete, followed by Start failure ENGINE_NETWORK_CAPACITY. Existing failed installation is preserved; no installed manifest is rewritten.",
+    "source": {
+      "baseCommit": "56a0512b9c90dc25857e06836fef1f7dac1d3487",
+      "fileSha256": {
+        "crates/lifecycle/src/local_network.rs": "4cfd118a49b5ded69246e6af829c1aeb1dc8faf8f29b016d752b1093591ab104",
+        "crates/lifecycle/src/runtime_prepare.rs": "b095e804dce91f3e9800ef53c83dd424dda20394f0100a6a77fdcc594e20d1c3",
+        "crates/lifecycle/src/lib.rs": "7533da25d6b6b26f1bdb32bcd83f8bc4e38714d9606f507308bef3dd21c5a91d",
+        "src-tauri/src/lib.rs": "de25c4acd0afbf3cfc1508e8f69b76a50197d3d1c3851fe0c6da93c510d3c5f4"
+      }
+    },
+    "implemented": "Native setup enables only an I/O-free flag. Actual Docker command or bounded IPAM admission lazily reads the current context endpoint once, requires a local Unix endpoint with no context/TLS selectors, and pins subsequent core Docker commands. New Docker resource installations reuse the existing allocator and bind its exact policy into the existing manifest/Compose fields and persistent local preparation identity.",
+    "unchanged": "Legacy CLI explicit environment admission; Podman policy; existing allocator range/route exclusions; install/start fresh overlap admission; original failed installation and networks. No daemon settings, network deletion, unsafe/global environment mutation, selector erasure or fixed producer-template subnet.",
+    "checks": [
+      {
+        "check": "runtime_prepare::tests",
+        "source_sha256": {
+          "crates/lifecycle/src/local_network.rs": "4cfd118a49b5ded69246e6af829c1aeb1dc8faf8f29b016d752b1093591ab104",
+          "crates/lifecycle/src/runtime_prepare.rs": "b095e804dce91f3e9800ef53c83dd424dda20394f0100a6a77fdcc594e20d1c3",
+          "crates/lifecycle/src/lib.rs": "7533da25d6b6b26f1bdb32bcd83f8bc4e38714d9606f507308bef3dd21c5a91d",
+          "src-tauri/src/lib.rs": "de25c4acd0afbf3cfc1508e8f69b76a50197d3d1c3851fe0c6da93c510d3c5f4"
+        },
+        "environment": "macOS arm64, Rust1.99.0, jobs1, existing target, offline/locked",
+        "command": "cargo test -p exhibitos-lifecycle --lib --offline --locked --jobs 1 runtime_prepare::tests",
+        "input_and_expected": "10 synthetic cases, injected allocator only, including selection persistence/Compose policy agreement/refused allocation preserving inputs",
+        "observed": "10 PASS / 0 FAIL / 432 filtered;0.13s execution",
+        "limits": "No actual Docker network or native GUI execution"
+      },
+      {
+        "check": "local_network::",
+        "source_sha256": {
+          "crates/lifecycle/src/local_network.rs": "4cfd118a49b5ded69246e6af829c1aeb1dc8faf8f29b016d752b1093591ab104",
+          "crates/lifecycle/src/runtime_prepare.rs": "b095e804dce91f3e9800ef53c83dd424dda20394f0100a6a77fdcc594e20d1c3",
+          "crates/lifecycle/src/lib.rs": "7533da25d6b6b26f1bdb32bcd83f8bc4e38714d9606f507308bef3dd21c5a91d",
+          "src-tauri/src/lib.rs": "de25c4acd0afbf3cfc1508e8f69b76a50197d3d1c3851fe0c6da93c510d3c5f4"
+        },
+        "environment": "same offline macOS arm64 toolchain",
+        "command": "cargo test -p exhibitos-lifecycle --lib --offline --locked --jobs 1 local_network::",
+        "input_and_expected": "Existing policy/gateway/remap and new endpoint/selector/command binding cases",
+        "observed": "6 PASS / 0 FAIL / 436 filtered;0.03s execution",
+        "limits": "Endpoint and command tests use synthetic values; no real context pin or lifecycle"
+      },
+      {
+        "check": "desktop compile",
+        "source_sha256": {
+          "crates/lifecycle/src/local_network.rs": "4cfd118a49b5ded69246e6af829c1aeb1dc8faf8f29b016d752b1093591ab104",
+          "crates/lifecycle/src/runtime_prepare.rs": "b095e804dce91f3e9800ef53c83dd424dda20394f0100a6a77fdcc594e20d1c3",
+          "crates/lifecycle/src/lib.rs": "7533da25d6b6b26f1bdb32bcd83f8bc4e38714d9606f507308bef3dd21c5a91d",
+          "src-tauri/src/lib.rs": "de25c4acd0afbf3cfc1508e8f69b76a50197d3d1c3851fe0c6da93c510d3c5f4"
+        },
+        "environment": "same toolchain, jobs1",
+        "command": "cargo check -p exhibitos-manager-desktop --offline --locked --jobs 1",
+        "input_and_expected": "Native I/O-free setup flag and lazy lifecycle command admission compile",
+        "observed": "PASS15.79s",
+        "limits": "No native application build, launch or server readiness"
+      }
+    ],
+    "actual_gui_new_candidate": "NOT_RUN; root must validate a new isolated candidate with the changed native application.",
+    "privateLogs": [
+      "/private/tmp/exhibitos-native-runtime-ipam-tests-20261017.log",
+      "/private/tmp/exhibitos-native-docker-pin-tests-20261017.log",
+      "/private/tmp/exhibitos-native-runtime-ipam-desktop-check-20261017.log"
+    ]
+  }
+}

@@ -99,3 +99,22 @@ This creates and starts an independent original-version candidate, keeps active
 selection and update stage unchanged, and does not prove complete update preflight
 or rollback. Existing empty-root, permission, acknowledgement, cancellation,
 helper ownership and 2GiB space requirements remain in force.
+
+## Native receipt compatibility
+
+The desktop receipt reader accepts the existing optional `networkSubnet` and
+`sourceVerification` emitted by native restoration. Absent fields remain valid for
+legacy records; unknown fields, malformed proof hashes and noncanonical subnets
+are refused. This reader fix does not authenticate an archive or authorize a
+restoration by itself. Fresh results, persisted history and retry results use the
+same reader.
+
+The full-exhibition restoration screen requires a Manager local full backup with
+its authenticated runtime configuration and execution images. A Render database
+archive uses the separate isolated database check; it is not a full-service
+restoration input.
+
+The compatibility regression was reproduced against three retained historical
+native receipts and verified after the fix. The related 34 desktop/narrow browser
+cases use synthetic IPC. These checks do not constitute a new native GUI, engine
+restoration, deployment or operating-system qualification.

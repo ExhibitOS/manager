@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import {describe,it,expect} from 'vitest';
-import {parseUpdateRollbackContext,validUpdateRollbackInput,parseUpdateRollbackReceipt,parseUpdateReferences,validUpdateApplyInput,parseUpdateApplyReceipt,parseUpdateCancelReceipt,validUpdateCancelInput,parseUpdateStatus,parseRetryDiagnosis,parseRetryRecoveryReceipt,validRetryDiagnosisInput,parseMaintenanceRetry,parseRetryReceipt,validBackupRetryInput,validRestorationRetryInput,parseMaintenanceContext,validReconciliationInput,parseReconciliationReceipt,parseReconciliationJob,parseInstallationContext,parseJob,parseStatus,managerError,formatBytes,statusLabel,validVerificationInput,parseVerificationReceipt,validCreationInput,parseCreationReceipt,parseBackupJob,validRestorationInput,parseRestorationContext,parseRestorationReceipt} from './lifecycle';
+import {parseBackupExportReceipt,parseUpdateRollbackContext,validUpdateRollbackInput,parseUpdateRollbackReceipt,parseUpdateReferences,validUpdateApplyInput,parseUpdateApplyReceipt,parseUpdateCancelReceipt,validUpdateCancelInput,parseUpdateStatus,parseRetryDiagnosis,parseRetryRecoveryReceipt,validRetryDiagnosisInput,parseMaintenanceRetry,parseRetryReceipt,validBackupRetryInput,validRestorationRetryInput,parseMaintenanceContext,validReconciliationInput,parseReconciliationReceipt,parseReconciliationJob,parseInstallationContext,parseJob,parseStatus,managerError,formatBytes,statusLabel,validVerificationInput,parseVerificationReceipt,validCreationInput,parseCreationReceipt,parseBackupJob,validRestorationInput,parseRestorationContext,parseRestorationReceipt} from './lifecycle';
 const status={installed:false,bundleId:null,version:null,state:'not_installed',services:[],readiness:{ready:false,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0,quotaBytes:5368709120},activeJob:null};
 describe('Manager lifecycle boundary',()=>{
  it('preserves unknown storage/readiness without claiming success',()=>{const value=parseStatus(status);expect(formatBytes(value.storage.usedBytes)).toBe('측정할 수 없음');expect(value.readiness.ready).toBe(false);expect(statusLabel(value.state)).toBe('설치 전');});
@@ -50,6 +50,16 @@ describe('Fresh restoration native boundary',()=>{
  it('does not accept verification-only receipts or external exhibition addresses',()=>{
   expect(parseRestorationReceipt(restored).openUrl).toBe('http://127.0.0.1:4500');
   for(const value of [{...restored,operation:'verified'},{...restored,openUrl:'https://example.com'},{...restored,openUrl:'http://127.0.0.1:4500/?secret=x'},{...restored,openUrl:'http://127.0.0.1:80'},{...restored,projectName:'foreign'},{...restored,private:'secret'}])expect(()=>parseRestorationReceipt(value)).toThrow('MANAGER_PROTOCOL');
+ });
+ it('accepts current native optional restoration receipt fields without weakening the legacy contract',()=>{
+  // Native RestorationReceipt serializes these exact camelCase optional fields;
+  // normal restoration always includes networkSubnet (restoration.rs).
+  const sourceVerification={inventorySha256:'c'.repeat(64),schemaSha256:'d'.repeat(64),runtimeImageSha256:'e'.repeat(64)};
+  for(const receipt of [restored,{...restored,networkSubnet:'10.240.0.0/28'},{...restored,sourceVerification},{...restored,networkSubnet:'10.240.255.240/28',sourceVerification}]){
+   expect(parseRestorationReceipt(receipt)).toEqual(receipt);
+   expect(parseRestorationContext({fresh:false,job:restoredJob,receipt}).receipt).toEqual(receipt);
+  }
+  for(const extra of [{networkSubnet:null},{networkSubnet:'10.240.0.1/28'},{networkSubnet:'10.240.0.0/24'},{networkSubnet:'10.241.0.0/28'},{networkSubnet:'010.240.0.0/28'},{networkSubnet:'10.240.0.00/28'},{networkSubnet:'10.240.256.0/28'},{networkSubnet:'10.240.0.0/28\n'},{sourceVerification:null},{sourceVerification:{}},{sourceVerification:{...sourceVerification,private:'forbidden'}},{sourceVerification:{...sourceVerification,inventorySha256:'c'.repeat(63)}},{sourceVerification:{...sourceVerification,runtimeImageSha256:'E'.repeat(64)}},{networkSubnet:'10.240.0.0/28',extra:true}])expect(()=>parseRestorationReceipt({...restored,...extra})).toThrow('MANAGER_PROTOCOL');
  });
  it('requires completed history to bind an actual receipt and fences incomplete candidates',()=>{
   expect(parseRestorationContext({fresh:true,job:null,receipt:null}).fresh).toBe(true);
@@ -132,6 +142,12 @@ describe('Registered update application boundary',()=>{
  const reference={referenceId:'12345678-1234-1234-1234-123456789012',operationId:'update-1',generation:2,version:'1.2.3',sourceSchema:'a'.repeat(64),targetSchema:'a'.repeat(64),changedSchema:false,priorQualificationRecorded:true,executionRequalificationRequired:true};
  it('treats stored qualification as a reference, never execution approval',()=>{
   expect(parseUpdateReferences([reference])).toHaveLength(1);
+  const migrated={...reference,targetSchema:'b'.repeat(64),changedSchema:true,migrationInputsRecorded:true};
+  expect(parseUpdateReferences([migrated])[0]?.migrationInputsRecorded).toBe(true);
+  expect(parseUpdateReferences([{...reference,targetSchema:'b'.repeat(64),changedSchema:true}])[0]?.migrationInputsRecorded).toBeUndefined();
+  for(const invalid of [false,null,'true',1])expect(()=>parseUpdateReferences([{...migrated,migrationInputsRecorded:invalid}])).toThrow('MANAGER_PROTOCOL');
+  expect(()=>parseUpdateReferences([{...migrated,targetCatalog:'/private/catalog'}])).toThrow('MANAGER_PROTOCOL');
+
   for(const rows of [[reference,reference],[{...reference,keyFile:'/private/key'}],[{...reference,executionRequalificationRequired:false}],[{...reference,targetSchema:'b'.repeat(64)}],[{...reference,referenceId:'/private/ref'}],[{...reference,generation:Number.MAX_SAFE_INTEGER+1}]])expect(()=>parseUpdateReferences(rows)).toThrow('MANAGER_PROTOCOL');
  });
  it('requires bound operation and explicit close/preservation/writer consent',()=>{
@@ -164,3 +180,8 @@ describe('Original full rollback boundary',()=>{
   for(const bad of [{...receipt,state:'completed'},{...receipt,state:'failed'},{...receipt,state:'rolled-back',code:'FAILED'},{...receipt,archive:'/private/archive'}])expect(()=>parseUpdateRollbackReceipt(bad)).toThrow('MANAGER_PROTOCOL');
  });
 });
+
+describe('Completed encrypted backup export boundary',()=>{it('accepts a path-only copy receipt and refuses secrets, partial or unsafe paths',()=>{
+ const value={jobId:'12345678-1234-1234-1234-123456789012',backupId:'23456789-1234-1234-1234-123456789012',path:'/private/tmp/external/ExhibitOS-backup-copy',files:15,bytes:1234};expect(parseBackupExportReceipt(value)).toEqual(value);
+ for(const bad of [{...value,key:'secret'},{...value,path:'relative'},{...value,files:3},{...value,bytes:0},{...value,jobId:'wrong'},{...value,path:'/private/tmp/a,target=/private'}])expect(()=>parseBackupExportReceipt(bad)).toThrow('MANAGER_PROTOCOL');
+});});

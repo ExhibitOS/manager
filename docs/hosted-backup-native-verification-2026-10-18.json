@@ -1,0 +1,1115 @@
+{
+  "observedAt": "2026-10-18T01:53:08.256212+00:00",
+  "status": "IMPLEMENTED_LOCAL_REGRESSION_PASSED_NOT_ACTUAL_RENDER_OR_NATIVE_GUI",
+  "tasks": [
+    "T08-01",
+    "T08-02",
+    "T08-03",
+    "T10-04"
+  ],
+  "implemented": [
+    "Source-bound hosted jobs preserve their actual remote source class; no local installation receipt fabrication.",
+    "Shared existing deployment BUSY guard and expected source comparison prevent stale-target creation. Source changes invalidate writer-stop acknowledgement in UI.",
+    "Existing maintenance cancellation and exact owned image/name/labels/mounts/resource checks extend to hosted jobs; partial candidates retained.",
+    "Job storage budget replaces unjustified fixed 34GiB cap; DB dump remains32GiB with separately budgeted objects.",
+    "Explicit completed encrypted archive copy uses existing nofollow/private FD/hash/readback/exclusive publish path, fixed hosted source, 100000-file contract and6GiB floor. Local8GiB/10000 limits unchanged; hosted dump cipher allows existing32GiB+20header+16tag.",
+    "Native file chooser and keychain separation; no raw secret crosses IPC. No remote mutation, keychain access or chooser execution in these checks."
+  ],
+  "checks": {
+    "archiveCopy": {
+      "passed": 7,
+      "includesHostedWithoutLocalBundle": true
+    },
+    "hostedLifecycle": {
+      "passed": 5
+    },
+    "nativeHosted": {
+      "passed": 12,
+      "includesSharedBusyAndStaleTarget": true
+    },
+    "typescript": {
+      "passed": true
+    },
+    "closedProtocol": {
+      "passed": 2
+    },
+    "targetedLint": {
+      "passed": true
+    },
+    "diffCheck": {
+      "passed": true
+    }
+  },
+  "rawEvidence": [
+    {
+      "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-native-234b992-8c39c723-b353-4890-a17d-9a82c92edaf9/manager-hosted-export-final-check.log",
+      "sha256": "51cb79ee1d1f7e91dcba69e692ac75c6af232eec2a3138bcafad540f8b7e4411"
+    },
+    {
+      "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-native-234b992-8c39c723-b353-4890-a17d-9a82c92edaf9/manager-hosted-export-final-check.json",
+      "sha256": "0c88ad792136446829897afee318869494f9241e8bae379844b088eaf44627b3"
+    },
+    {
+      "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-native-234b992-8c39c723-b353-4890-a17d-9a82c92edaf9/manager-hosted-export-cipher-bound-check.log",
+      "sha256": "ff00041f8ab1b3a8946b5dc7c039f951a389aa3c758b78e9dd3b8a59eda418dd"
+    },
+    {
+      "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-native-234b992-8c39c723-b353-4890-a17d-9a82c92edaf9/manager-hosted-export-ui-check.log",
+      "sha256": "0bd6473f98c68baa735cea4f1e6ddd8671812386a0fd0c7f3e2fd8a79e3ff7ca"
+    },
+    {
+      "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-native-234b992-8c39c723-b353-4890-a17d-9a82c92edaf9/manager-hosted-export-lint.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-native-234b992-8c39c723-b353-4890-a17d-9a82c92edaf9/manager-hosted-recovery-browser-check.log",
+      "sha256": "4f2fcca01f408b267a52e479d131a485dbedc72383da66419ab824ed7b735336"
+    }
+  ],
+  "notVerified": [
+    "Actual Render account/source DB connectivity and external IP policy",
+    "Actual native OS picker, keychain roundtrip, cancellation or relaunch",
+    "Fresh restore/migration/update/rollback using this hosted source",
+    "Actual pinned helper image and real SQL/encryption independent restore: preparation only",
+    "All affected GUI flows and first-release acceptance remain incomplete"
+  ],
+  "sourceReview": "Independent read review found consent inheritance; corrected. No additional concrete export boundary blocker found. Review is not runtime evidence.",
+  "browserFollowup": {
+    "source": "234b992 plus hosted-recovery.spec.ts",
+    "observedAt": "2026-10-18T02:10:55.118763+00:00",
+    "session": 6170,
+    "terminalExit": 0,
+    "uniqueCases": 1,
+    "viewports": [
+      "desktop1120x900",
+      "narrow640x850"
+    ],
+    "passedExecutions": 2,
+    "actualBrowserInteractions": [
+      "Switch API mode and open backup panel",
+      "Source change clears previous writer acknowledgement and IP field",
+      "Create IPC contains exact new expected source and no repeated create",
+      "Archive chooser-cancel result retains completed job and permits retry",
+      "Successful copy location displayed, browser storage stays empty"
+    ],
+    "limits": "Synthetic IPC only; no actual Render, native OS chooser, keychain, native cancellation or fresh restore. No full visual/HIG/VoiceOver qualification."
+  },
+  "loadOnlyConfigurationFollowup": {
+    "observedAt": "2026-10-18T02:56:41.650375+00:00",
+    "nodeCommits": {
+      "manager": "e27236a",
+      "deployment": "10bfe39"
+    },
+    "nativeImplementation": [
+      "Reuses unchanged runtime account hash from saved original Work, not current source selection",
+      "Exact expected3IDs and original canonical origin/receipt consistency before key lookup",
+      "Direct load only; missing/denied/malformed fail without creator/store/random/public_runtime",
+      "Preserves original required5 env and STATIC all-or-none; strict Node validation and remote equality still mandatory",
+      "Original signingkey/adminpassword private native->runner comparison only, not helper/UI/archive/log"
+    ],
+    "checks": {
+      "handle": 20950,
+      "terminalExit": 0,
+      "remoteRuntimePrepare": true,
+      "nativeHostedTests": 14,
+      "hostedLifecycleTests": 5,
+      "managerNodeRunnerTests": 7,
+      "deploymentPrivateBridgeTests": 8,
+      "independentReadReview": "No concrete blocker; no execution claimed"
+    },
+    "rawEvidence": [
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-native-234b992-8c39c723-b353-4890-a17d-9a82c92edaf9/exhibitos-manager-recovery-config-native.log",
+        "sha256": "51610b8d2c967128cc6e5c9fef8472a2bbe335018eb6b34c204b9b0216780e73"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-native-234b992-8c39c723-b353-4890-a17d-9a82c92edaf9/exhibitos-manager-recovery-config-native.json",
+        "sha256": "5e77b94645daa6f2187c8a6c0351d01ff9479d17906457412241f8ea0c4b2ef4"
+      }
+    ],
+    "pending": [
+      "Actual original Keychain/native/Render/OS flow",
+      "Immutable backup-time protected configuration retention and matching DB freeze authority",
+      "Active deploy/version plus original runtime/Pages artifacts binding",
+      "Complete restore/migration/update/rollback validation"
+    ],
+    "wholeTaskComplete": false
+  },
+  "mountAndImmutableConfigurationFollowup": {
+    "observedAt": "2026-10-18T03:28:21.989503+00:00",
+    "status": "LOCAL_REGRESSION_AND_ACTUAL_MOUNT_PROJECTION_PASS_NOT_NATIVE_KEYCHAIN_OR_RENDER",
+    "implementation": [
+      "Fixed PostgreSQL base-image VOLUME shadowed by exact bounded1MiB tmpfs; no anonymous volume accepted.",
+      "Observed Mac Docker Desktop /host_mnt mapping accepted only after actual engine identity and exact original HostConfig bind-source crosscheck. Existing ownership/resource checks retained.",
+      "Backup-time original settings stored with source IDs and actual native job UUID in existing Keychain using Add-only; duplicate/denied failure before helper starts, no overwrite/delete/random fallback. Archive key also Add-only.",
+      "Serialized settings buffer explicitly zeroed; no whole String/heap zeroization claim. Existing provider/runtime accounts unchanged."
+    ],
+    "checks": {
+      "nodeRunner": 7,
+      "nativeHostedLifecycle": 6,
+      "nativeKeychainAndCoordinator": 9,
+      "sessions": {
+        "19762": 0,
+        "42089": 0,
+        "25276": 1
+      },
+      "actualMountFollowup": {
+        "status": "ACTUAL_FIXED_HELPER_MOUNTS_PASS_INVALID_INPUT_NO_SQL",
+        "root": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-mount-check-f480b41e-81f6-4960-b80d-f4db08428045",
+        "jobId": "f480b41e-81f6-4960-b80d-f4db08428045",
+        "image": "sha256:e14e5267fe2a1a705caee87000abfaa1e4035b8f3fb5d3c2cf6ebbf9d1d69dee",
+        "anonymousVolumes": 0,
+        "mountCount": 2,
+        "tmpfsCount": 3,
+        "actualNativeCommand": false,
+        "actualRender": false,
+        "containerStopped": true,
+        "priorObservationFailure": "HostConfig.Source is also the exact Docker Desktop VM mapping; same stopped fixture re-observed, no rerun",
+        "resourceDeletion": false,
+        "projectionSha256": "f71b364c1d3d1a14a5be16266b83c1a5f63e1a1ebd064f8f5df4a2fd2aaea434"
+      }
+    },
+    "rawEvidenceRoot": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-mount-check-f480b41e-81f6-4960-b80d-f4db08428045",
+    "sources": [
+      {
+        "path": "crates/lifecycle/src/hosted_backup.rs",
+        "sha256": "79539e1e524bed1c80e867b9cc4591608ae6b3e761d63fc0ec950012b31cbf57"
+      },
+      {
+        "path": "scripts/hosted-recovery-runner.mjs",
+        "sha256": "749d307e3de2e3abfb06b815af784967b4f4e9e5d29aa0dcb0367c0b9680a9f7"
+      },
+      {
+        "path": "scripts/hosted-recovery-runner.test.mjs",
+        "sha256": "caaef2d598e22dbe518a11e0f4588579350c3df5155e999bdf3d187461a2432a"
+      },
+      {
+        "path": "src-tauri/src/hosted_keychain.rs",
+        "sha256": "58d7aa4e4ffeb248cb9f3df7653d8cedef734029640e106e34c416866349ab3d"
+      },
+      {
+        "path": "src-tauri/src/hosted_recovery.rs",
+        "sha256": "dc4357d0cd845380512f19c175eeee47757e754060ca1b613129e08e35cf9bc3"
+      }
+    ],
+    "notVerified": [
+      "Actual native Keychain persistence, picker, native cancellation/relaunch",
+      "Protected backup-time configuration restore-load API not connected; frozen source authority/deploy/runtime/Pages binding incomplete",
+      "Actual Render DB and full fresh restore/migration/update/rollback",
+      "Runtime package produced/hash verified, not actual Manager install/activation"
+    ],
+    "observationCorrection": "25276 failed only observation assumption that HostConfig.Source must be host form; actual Docker also returns exact /host_mnt form. Same stopped fixture re-observed, no rerun; product already accepted both exact forms.",
+    "qualifiedRuntime": {
+      "source": "d424642c1262fdaf2c0e9fe505a3fddb662764af",
+      "session": 2951,
+      "terminalExit": 0,
+      "producerSeconds": 147.68345062504523,
+      "prepareSeconds": 2.8425189999397844,
+      "prepared": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-runtime-recovery-d424642-703befb4-7041-4fdb-b25d-c82738f6b957/prepared",
+      "status": "PRODUCED_AND_HASH_BOUND_NOT_NATIVE_INSTALL"
+    }
+  },
+  "matchedAuthorityNativePackage20261018": {
+    "observedAt": "2026-10-18T04:14:05.629879+00:00",
+    "status": "PACKAGED_ADHOC_RESOURCE_SHA_PASS_NOT_LAUNCHED_OR_NOTARIZED",
+    "managerSource": "5cdf4b19b5ae896e808ddcebec4daf99594f247e",
+    "platformSource": "2e7cefde59550f098210700dcb6ea09b94379a0f",
+    "receipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-authority-native-5cdf4b1-e6c4e9ab-8a76-442a-9106-c4f7343b6cb7/receipt.json",
+    "receiptSha256": "7cb672125c2791f19d6fb0dc079a5b443986f29c2a6dabfff3b98ab5f2ef989e",
+    "app": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-authority-native-5cdf4b1-e6c4e9ab-8a76-442a-9106-c4f7343b6cb7/development-adhoc/ExhibitOS Manager.app",
+    "buildSession": 74945,
+    "exit": 0,
+    "buildSeconds": 158.53880295797717,
+    "appBytes": 503458436,
+    "files": 7806,
+    "postPackageVerification": {
+      "remoteNodeSHA": "e4b5a3af0e05c75de2eae013904145f40fe7fc2a6e6f17510128bf45cca4e79b",
+      "nodeVersion": "v24.21.0",
+      "embeddedManifestExact": true,
+      "publicationFilesVerified": 7676,
+      "publicationPlatformSource": "99ae38d44106a276f2675f4118a7ea4d498d4e9a",
+      "bundleIdentifier": "org.exhibitos.manager",
+      "declaredMinSystem": "12.0",
+      "actualHostQualification": "Build host macOS27.0.1 arm64 only; declared minimum is not an actual compatibility claim",
+      "actualNativeGUI": false,
+      "keychainAccessed": false
+    },
+    "previousRuntimeSource": "f0cd0f6f272b802bfe88dd48c7b8e9f153c7a012",
+    "previousAppRuntimeExecutablesRetained": true,
+    "existingExternalManagerObservation": {
+      "pid": 21669,
+      "scope": "Read-only process observation before build; old app outside target dir left untouched. This is not a current-job or future process-liveness claim."
+    },
+    "notVerified": [
+      "Actual native OS Keychain/chooser and hosted backup interaction/cancellation/relaunch",
+      "Original settings/signing key restore-load and deployment/runtime/Pages provenance",
+      "Actual installer, Developer ID, notarization and user environment without dev tools",
+      "Full restore/migration/update/rollback and7GUI acceptance"
+    ]
+  },
+  "sourceIntegration20261018": {
+    "observedAt": "2026-10-18T04:37:25.062257+00:00",
+    "sourceBeforeTestFixtureCorrections": "e4f8dda0fed75249f192b5a158cea9e4ebe91bb8",
+    "status": "LOCAL_CHECKS_PASS_AFTER_TEST_FIXTURE_CORRECTIONS_NOT_NATIVE_GUI_OR_RECOVERY_COMPLETION",
+    "node": {
+      "typecheckLintBuild": true,
+      "vitest": 69,
+      "receipt": 9,
+      "installer": 6
+    },
+    "rust": {
+      "lifecyclePassed": 439,
+      "lifecycleExistingIgnored": 36,
+      "integrationPassed": 20,
+      "desktopPassed": 41,
+      "compileFailDoctestsPassed": 4,
+      "singleWorkspaceCommandPassed": false,
+      "sequence": "Initial workspace command failed in two restoration fixtures; corrected workspace run passed lifecycle/integration but exposed a parallel temporary-directory collision; final desktop library and all workspace doctests passed after test-only directory uniqueness correction."
+    },
+    "corrections": [
+      "Restoration success fixtures now declare their actual two preserved runtime images; original one-image fixture is explicitly rejected. Production image-count guard unchanged.",
+      "Processing app test fixtures use PID and atomic sequence with timestamp to prevent parallel directory collisions; production code and assertions unchanged."
+    ],
+    "review": "Independent read-only review of incremental source and all three test-only corrections found no concrete blocker.",
+    "logs": [
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-integration-6bee447b-792c-49df-a7bc-a7f2c37a3770/exhibitos-manager-recovery-integration-node-20261018.log",
+        "sha256": "580a2608340fc426b2c1776cf1ef9053e0453cb7cbed45e08bc785cc0053802a"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-integration-6bee447b-792c-49df-a7bc-a7f2c37a3770/exhibitos-manager-recovery-integration-rust-20261018.log",
+        "sha256": "ef7e2a6581e8475469a5e8c88cfff50b7da2fc6dc641cffb673adb58ed8bf1ae"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-integration-6bee447b-792c-49df-a7bc-a7f2c37a3770/exhibitos-manager-recovery-integration-rust-corrected-20261018.log",
+        "sha256": "81488afbacf12c68ac625d9f02202acd7150f34f7312f45ae31a1adc65b6de38"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-integration-6bee447b-792c-49df-a7bc-a7f2c37a3770/exhibitos-manager-recovery-integration-desktop-final-20261018.log",
+        "sha256": "d3eda409204bfac041de49df5d2bea054326bdcfa36be1f8a462bc655cd2f7aa"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-integration-6bee447b-792c-49df-a7bc-a7f2c37a3770/exhibitos-manager-recovery-integration-doc-final-20261018.log",
+        "sha256": "c3d6ad7383ee498fd65298ebde40a10cbc2b3376fa9f2be8adc4ce9f36e28d0c"
+      }
+    ],
+    "notVerified": [
+      "Native GUI and Keychain",
+      "Actual Render account deployment/recovery",
+      "Developer ID/notarization/clean user installation",
+      "Whole backup/restore/migration/update/rollback acceptance"
+    ]
+  },
+  "selectedSpaceBusyRecovery20261018": {
+    "observedAt": "2026-10-18T04:57:13.742581+00:00",
+    "baseSource": "2a5a1d4",
+    "status": "BROWSER_REGRESSION_REPRODUCED_AND_CORRECTED_WITH_SYNTHETIC_IPC",
+    "problem": "After an old archive chooser request completed following a management-space switch, generation fencing also suppressed release of pending, leaving preparation disabled indefinitely.",
+    "change": "Keep results/errors generation-fenced; release sole serialized completed request busy state for mounted component. Clear old notice/CIDR on space switch; preserve acknowledgement and result fences.",
+    "before": {
+      "session": 52858,
+      "exit": 1,
+      "assertion": "Preparation remained disabled after delayed old-space response completed."
+    },
+    "after": {
+      "session": 5668,
+      "exit": 0,
+      "desktopAndNarrow": 2,
+      "scope": "Actual browser button/space-selector interactions with synthetic IPC, not actual OS chooser/Keychain/provider."
+    },
+    "relatedSelectionRegression": {
+      "initialSession": 56376,
+      "initialExit": 1,
+      "initialPassed": 6,
+      "initialFailed": 2,
+      "reason": "Older test filled the optional manual-path input while its details disclosure was closed.",
+      "correction": "Explicitly click existing parent summary before fill; all original values/fencing/preservation assertions retained.",
+      "correctedSession": 54647,
+      "exit": 0,
+      "passed": 8
+    },
+    "nodeCheck": {
+      "typecheckLintBuild": true,
+      "vitest": 69,
+      "receipt": 9,
+      "installer": 6,
+      "finalTypecheckLintSession": 77286,
+      "finalExit": 0
+    },
+    "independentReview": "Read-only two-file product/regression review and additional disclosure-only test review found no concrete blocker or weakened assertion.",
+    "logs": [
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-selection-ui-8cc9b7bc-8bf9-46c2-b082-8db9e6dd8902/exhibitos-hosted-selection-before-20261018.log",
+        "sha256": "c18fb0e6ec0ad9547045775ee905571d65761f027dd70dbf174cfbadbb4d4328"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-selection-ui-8cc9b7bc-8bf9-46c2-b082-8db9e6dd8902/exhibitos-hosted-selection-after-20261018.log",
+        "sha256": "081656427e2f456ab7ecbd861dcccaed3da4d4a0559c3c6d5935ca3a79715ba4"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-selection-ui-8cc9b7bc-8bf9-46c2-b082-8db9e6dd8902/exhibitos-hosted-selection-check-20261018.log",
+        "sha256": "fdc84e79269b603e490425bb4e1daa6cedfd8d8ce4fbbc307e644a3d25173e29"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-selection-ui-8cc9b7bc-8bf9-46c2-b082-8db9e6dd8902/exhibitos-hosted-selection-installations-20261018.log",
+        "sha256": "d12fc15dbec58d002e417e19d50fa536433c217cde467b75b0b75e7c12a9ae71"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-selection-ui-8cc9b7bc-8bf9-46c2-b082-8db9e6dd8902/exhibitos-hosted-selection-installations-corrected-20261018.log",
+        "sha256": "ea4732fb64445a7d4c04e23bbe2e62920c7331c99c4e83bc7c28a79a5a0fa9dc"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-hosted-selection-ui-8cc9b7bc-8bf9-46c2-b082-8db9e6dd8902/exhibitos-hosted-selection-final-static-20261018.log",
+        "sha256": "46700e506e2e60d7121777a8259ba954564885cc7729b92a28029c64769646b0"
+      }
+    ],
+    "notVerified": [
+      "Actual native chooser and Keychain",
+      "Real Render backup or restore",
+      "Official release/native rebuilt app",
+      "Whole GUI acceptance"
+    ],
+    "wholeTaskDone": false
+  },
+  "isolatedRestoreCheckSource20261018": {
+    "observedAt": "2026-10-18T05:45:12.198780+00:00",
+    "baseSource": "d5c9724",
+    "platformEntrySource": "2cbdf71",
+    "status": "CONNECTED_SOURCE_AND_LOCAL_CHECKS_PASS_ACTUAL_IMAGE_AND_NATIVE_OS_PENDING",
+    "connectedFlow": "Completed hosted backup -> immutable per-job original configuration/key load -> fixed pinned Node runner -> fresh owned network-none maintenance candidate -> closed receipt and persistent source-bound check history. No fake installation/Studio activation.",
+    "preservation": "Original archive/job/source/provider unchanged; separate candidate volume retained. Missing original config/key fails without creator/new-key fallback. Fresh Mac still needs original protected configuration; archive and32-byte key alone do not recover original private signing/settings.",
+    "sourceBoundaries": [
+      "Exact source3IDs/original backupID/plain manifestSHA/filecount bind checks to completed source.",
+      "Existing local installation restore contract remains separate, original runtime/Pages/whole-service authority not inferred.",
+      "Metadata/history first; archive validation/authentication occurs on explicit restore check.",
+      "Restore-only exact5 capabilities CHOWN/SETUID/SETGID/DAC_READ_SEARCH/KILL, private PID/network-none/readonly source+root/owned work; existing backup policy unchanged."
+    ],
+    "verification": {
+      "finalNodeCheck": {
+        "session": 14223,
+        "exit": 0,
+        "typecheckLintBuild": true,
+        "vitest": 70,
+        "receipt": 9,
+        "installer": 6
+      },
+      "rustWorkspace": {
+        "session": 29885,
+        "exit": 0,
+        "lifecyclePassed": 446,
+        "integrationPassed": 20,
+        "desktopPassed": 42,
+        "existingIgnored": 36,
+        "compileFailDoctestsPassed": 4
+      },
+      "fixedRunner": {
+        "passed": 5,
+        "scope": "Synthetic process/authority projection, strict source/receipt binding, private-input clearing, no actual Docker"
+      },
+      "browser": {
+        "session": 43131,
+        "exit": 0,
+        "passed": 12,
+        "scope": "Actual desktop/narrow Chromium, synthetic IPC; source before terminal-result visibility fix"
+      },
+      "newHostedCancellation": {
+        "initialSession": 72153,
+        "initialExit": 1,
+        "correctedSession": 74303,
+        "correctedExit": 0,
+        "passed": 2,
+        "cause": "Confirmed stop immediately hid simple-view result without unrelated legacy restoration context. Result visibility now persists; onActivity busy guard still clears."
+      }
+    },
+    "initialFailuresRetained": [
+      "TypeScript property narrowing corrected without weaker parser.",
+      "Native compile reused existing canonical jobUUID validator rather than add new dependency.",
+      "Null-prototype bounded JSON test expectations corrected with explicit prototype assertion and exact data comparison.",
+      "Existing concurrent-rename receipt test observed early nlink safety refusal instead of late FD-change refusal. Exact two error messages now accepted; real writer/writes>0/final bytes and refusal assertions retained. Independent review confirmed same validation purpose; no production guard changed."
+    ],
+    "independentReview": "Split lifecycle/entry/native-runner/GUI reviews found and corrected password-unlink permission and forced-stop-success defects; current counterpart contracts align.",
+    "logs": [
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-manager-check-20261018.log",
+        "sha256": "163ca257a2b0de0f90498c10613aeb16e3f5e84747e9587277f10ec737f1f9b4"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-manager-check-corrected-20261018.log",
+        "sha256": "ac85eadd4e26b5ce26fa34d43951f5fec1fe1668bda199ebae2095cf242d7d45"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-manager-final-check-20261018.log",
+        "sha256": "79a325b427d3dfdb98f44ff1709061d72e5b65adea7f19f60d4cd57b8766d6f9"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-manager-rust-integration-20261018.log",
+        "sha256": "e58b1b55c0eda987a2fd623f5acc79ed75e0fa69bd34b3b90b73802cfe896f73"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-manager-rust-corrected-20261018.log",
+        "sha256": "d7b417e7ab31686d4ae7707415369eb78c2c1cf9cbf12ed3c314a20e5d0bff1f"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-runner-20261018.log",
+        "sha256": "a82369543d9de6a45344b62bb6d214aa07432d4483a9753fcbe25b2727dc6bcf"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-runner-corrected-20261018.log",
+        "sha256": "50198e94320d08dd9e54e4701e186c8f66aa75b3fd4b46e2f302d20abe6b5a8c"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-manager-browser-20261018.log",
+        "sha256": "2c0b70934c5e840ee0f122768990dd6455ee2709358fd4d5bea044e050f432f4"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-specific-cancel-browser-20261018.log",
+        "sha256": "5977bcff34b6165911cfbfeb24bcaf4fa1a94bf77f04f1a4d2d959c82501b2ae"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-source-22f45757-6127-451c-aa1c-8488de159433/exhibitos-hosted-restore-specific-cancel-corrected-20261018.log",
+        "sha256": "3ac96268b211af20aeed9a90cad9ce75943540618a0408bf15607198f4a3c3f7"
+      }
+    ],
+    "actualImageProduced": false,
+    "nativeKeychainAccessed": false,
+    "providerAccessed": false,
+    "wholeTaskDone": false,
+    "remaining": [
+      "Actual matching image+fresh PG+native helper guard/cancel/relaunch qualification",
+      "Actual OS chooser/Keychain and Render account recovery",
+      "Original runtime/Pages artifact provenance and whole service restore/migration/update/rollback",
+      "Official distribution and whole GUI acceptance"
+    ]
+  },
+  "isolatedRestoreMatchingRuntime20261018": {
+    "observedAt": "2026-10-18T05:49:46.018680+00:00",
+    "status": "MATCHING_SOURCE_RUNTIME_PRODUCED_NOT_EXECUTED_AS_RESTORE_OR_NATIVE_APP",
+    "platformSource": "2cbdf719149f77fb897afa46917dfd8b26b924e3",
+    "managerSource": "49046bd",
+    "producerSession": 24883,
+    "exit": 0,
+    "producerSeconds": 165.65415674995165,
+    "prepareSeconds": 2.708658374962397,
+    "base": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-runtime-isolated-restore-2cbdf71-09de8fb3-7815-4b49-8931-d321667ed130",
+    "prepared": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-runtime-isolated-restore-2cbdf71-09de8fb3-7815-4b49-8931-d321667ed130/prepared",
+    "receipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-runtime-isolated-restore-2cbdf71-09de8fb3-7815-4b49-8931-d321667ed130/execution.json",
+    "receiptSha256": "f650cc83b1a1d7e33ea8efdbc8b97ccccad00d457cb41e26e714ed31319f610c",
+    "maintenanceImage": "sha256:559fd8a0481f448d6326cf6e0e4b616d0a953a3c11e756eec371b67e7954c6ad",
+    "platformImage": "sha256:d87b68d24f80fae5ca7039c7499eb5cb0348c26652c7adb52d0f05dc0ab96954",
+    "budget": "4GiB additional/6GiB floor passed; observed available833896263680 bytes; preview only, no cleanup",
+    "actualPGOrHelperRestore": false,
+    "actualNativeOrKeychain": false,
+    "remaining": "Actual fixed-image isolated PG restore with lifecycle/helper ownership and normal-stop receipt; then native OS/provider/full runtime/Pages activation acceptance."
+  },
+  "isolatedRestoreActualLifecycle20261018": {
+    "observedAt": "2026-10-18T06:30:33.625452+00:00",
+    "status": "ACTUAL_ISOLATED_LIFECYCLE_PG_RESTORE_AND_NORMAL_STOP_PASS_NOT_WHOLE_SERVICE",
+    "managerImplementation": "6e11dc67ad1121a1d904b157b37658f8ae200cf0",
+    "platformImplementation": "2cbdf719149f77fb897afa46917dfd8b26b924e3",
+    "maintenanceImage": "sha256:559fd8a0481f448d6326cf6e0e4b616d0a953a3c11e756eec371b67e7954c6ad",
+    "sessions": {
+      "initialFixture": {
+        "id": 57054,
+        "exit": 1
+      },
+      "nativeTransportFixtureCorrection": {
+        "id": 16695,
+        "exit": 1
+      },
+      "capPrefixRegression": {
+        "id": 95785,
+        "exit": 0,
+        "tests": 8
+      },
+      "actualFixedLifecycle": {
+        "id": 9506,
+        "exit": 0
+      }
+    },
+    "actualProof": {
+      "actualLifecycleFactory": true,
+      "actualSQLRestore": true,
+      "actualCurrentFixedRunnerAndImage": true,
+      "sourceStoppedBeforeRestore": true,
+      "archiveAndOriginalJobUnchanged": true,
+      "helperNormalExitZeroNoOOM": true,
+      "network": "none",
+      "privatePID": true,
+      "readonlySource": true,
+      "ownedWorkVolumeOnly": true,
+      "noAnonymousPostgresVolume": true,
+      "reopenedJournal": true,
+      "noInstalledRecordFabricated": true,
+      "backupId": "f1870546-73a8-4f4a-b39a-62ab117d694c",
+      "authenticatedManifestSha256": "7d58769f94a7c6b01803f22fb7318604618743d2226f731beac589a5bac8c247",
+      "files": 2,
+      "checkJobId": "9f27c331-34ab-4435-b128-5b72f4f9b5bc",
+      "sourceFreezeRows": 0,
+      "fixtureArchiveKeyRetainedSeparately": true,
+      "originalsAndCandidatesPreserved": true
+    },
+    "confirmedDefectAndFix": "Actual Docker inspect returned canonical CAP_ names. Same five allowed capabilities were misclassified OWNERSHIP_CONFLICT after SQL success. Normalize exactly one uppercase CAP_ prefix; keep exact set cardinality, duplicate/extra/missing/type/name rejection. Independent read review found no boundary expansion. No default backup helper change.",
+    "fixtureCorrection": "Initial standalone harness did not call the public native Docker transport initializer. Corrected harness, not product guards. Earlier uncertainty is preserved; later exact label scan observed first helper absent and later helpers stopped. Exact Cargo compiler-artifact paths and library/executable/source/patch SHA retained.",
+    "scopeLimits": [
+      "Synthetic TLS source and synthetic provider job metadata; not actual Render resources",
+      "Source dump has zero frozen rows; separate real 65-row signature/authority proof remains necessary and unchanged",
+      "No actual native Keychain/file chooser/cancellation/relaunch/Store/notarization verification",
+      "No original remote deployment/runtime/Pages qualification or activation",
+      "Whole restore/migration/update/rollback and seven GUI acceptance remain incomplete"
+    ],
+    "rawEvidence": [
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200/receipt.json",
+        "sha256": "e55251641aaf301a4f41ce4e6c33d8de2be9085474a32d21cdb3d4252545c270"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200/receipt-continuation.json",
+        "sha256": "ab1dcc54231012d3a285c53200c83d6856bfdf45a798947d4fee52955d84ed6d"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200/attempt-before-cap-prefix-fix/receipt-continuation.json",
+        "sha256": "831f214346fec3663e5b93cb7dd8f67dae6de2715ec41096c6e230eb345eaeb6"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200/cap-prefix-tests.log",
+        "sha256": "a8033b62cf6f9ad6f08eb3049feca022c0615f59f20be65cfb783fa48e1198d0"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200/actual-cap-prefix-run.log",
+        "sha256": "de8db4d4d674d3b38e920d396f091332cba3b1a712a6dae5bd7a35496ac17d78"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200/prior-cap-prefix-failure.log",
+        "sha256": "84254ccb5c3dcd2f2104851b01fc0bc0bf1ab0b9d88804a8f124d8896719f6fc"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200/continuation.mjs",
+        "sha256": "478f63f6b2915918166c355d6eb0f79d97f8acf59855d48fd7926016b9f26e73"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200/fixture-continuation.rs",
+        "sha256": "4792d8e88ceb430b01a08635d559cdcbd7f97cb4a37227a40bd5b7f6a8b5c7f4"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200/manager-cap-prefix.patch",
+        "sha256": "aef98ba88d40cdf3c67799f9796d78c3508a3fcc24091c48583cf2f058dfacd6"
+      }
+    ],
+    "privateRoot": "/Volumes/ExhibitSSD/ExhibitOS-Backups/isolated-restore-lifecycle-897da405-2602-4f3b-b2cc-47f15e2af200",
+    "privateMaterial": "Retained key/config outside Git; paths/content not copied into public evidence.",
+    "goal": "active",
+    "taskCountsChanged": false,
+    "userAwayUntil": "복귀"
+  },
+  "isolatedRestoreNativeArtifact20261018": {
+    "observedAt": "2026-10-18T06:46:22.003796+00:00",
+    "status": "PACKAGED_ADHOC_RESOURCE_SHA_PASS_NOT_LAUNCHED_OR_NOTARIZED",
+    "source": "17f51668e44fa5d1833d4c37b021ca4f122537d2",
+    "platformSource": "2cbdf719149f77fb897afa46917dfd8b26b924e3",
+    "session": 59116,
+    "exit": 0,
+    "receipt": {
+      "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-native-17f5166-0932d7c7-cc08-45d6-a211-8eda8f4b9eaa/receipt.json",
+      "sha256": "2fdefabb683cb8c091b3ec3e993514f27a7a997605519845fd26274a36246f22"
+    },
+    "app": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-native-17f5166-0932d7c7-cc08-45d6-a211-8eda8f4b9eaa/development-adhoc/ExhibitOS Manager.app",
+    "files": 7807,
+    "bytes": 503636376,
+    "inventory": {
+      "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-isolated-restore-native-17f5166-0932d7c7-cc08-45d6-a211-8eda8f4b9eaa/app-inventory.json",
+      "sha256": "ddd05f30768023c7238e0648d6790c30b378b891e9038118b3ae4248336e5490"
+    },
+    "steps": [
+      {
+        "name": "prepare-platform",
+        "exit": 0,
+        "seconds": 2.4685619169613346
+      },
+      {
+        "name": "prepare-remote",
+        "exit": 0,
+        "seconds": 4.231302708038129
+      },
+      {
+        "name": "tauri-build",
+        "exit": 0,
+        "seconds": 160.8794242499862
+      },
+      {
+        "name": "adhoc-sign",
+        "exit": 0,
+        "seconds": 7.52782754204236
+      },
+      {
+        "name": "strict-verify",
+        "exit": 0,
+        "seconds": 4.060042082914151
+      }
+    ],
+    "resourceHashesVerified": true,
+    "packagedRestoreRunner": true,
+    "previousAppRuntimeAndExecutablesRetained": true,
+    "actualOSKeychainChooserOrInstallation": false,
+    "appLaunched": false,
+    "developerIdOrNotarization": false,
+    "supportedEnvironmentObserved": "macOS27.0.1 arm64 build only; declared minimum is not execution qualification",
+    "next": "User return: exact app native chooser/Keychain/restore-cancel/relaunch; no prompt while away."
+  },
+  "studioBackgroundRefreshFix20261018": {
+    "observedAt": "2026-10-18T07:28:58.983838+00:00",
+    "status": "IMPLEMENTED_REGRESSION_AND_PACKAGE_PASS_NATIVE_HUMAN_OBSERVATION_PENDING",
+    "source": "ad6770c0eceb528043178aeae07b8b82bf23674f",
+    "userReport": {
+      "thread": "01a0fd99-5060-75e1-afa4-b6af398cfde2",
+      "message": "01a14dd2-b872-7cc3-8a04-cc144193892f",
+      "symptom": "Studio 준비하고 열기 periodically enabled/disabled without user action",
+      "verifiedDirectUserMessage": true
+    },
+    "cause": "Existing every3s refresh sets loading true. Studio disabled and its click guard directly used loading, so valid unchanged state lost its action on every pending read. Reproduced with held actual IPC read before fix.",
+    "fix": [
+      "Studio action retains current same-selection verified state during pending background reads; loading is no longer its execution lock",
+      "Initial absent status, real busy, restoration/history errors, native readiness and engine checks remain",
+      "Click increments request generation so earlier read completions cannot overwrite user-started preparation",
+      "Observed selection changes clear prior status/maintenance snapshots; core status/engine/jobs/logs batch is rechecked against current selection before application",
+      "Capture clicked selection token and require same token at prepareStudio entry before status or writers; existing between-stage fences remain"
+    ],
+    "scopeLimit": "Core status batch selection fence does not claim atomicity of every later maintenance history read. Native per-command selection/writer guards remain.",
+    "checks": {
+      "beforeFix": {
+        "session": 93354,
+        "exit": 1,
+        "failure": "Delayed background refresh incorrectly disabled Studio action"
+      },
+      "initialFocusedAfterFix": {
+        "session": 21298,
+        "exit": 0,
+        "cases": 2
+      },
+      "nodeFinal": {
+        "session": 57713,
+        "exit": 0,
+        "vitest": 71,
+        "files": 11,
+        "receipt": 9,
+        "installer": 6,
+        "typeLintBuild": true
+      },
+      "existingRelatedBrowser": {
+        "session": 37658,
+        "exit": 1,
+        "passed": 24,
+        "newFixtureFailed": 2,
+        "reason": "New stale-selection test attempted an actual selection click while that UI is intentionally disabled during refresh; product guard retained"
+      },
+      "correctedFocusedFinal": {
+        "session": 87737,
+        "exit": 0,
+        "cases": 2,
+        "coverage": "Two held polling cycles preserve enable/focus, initial unknown blocked, setup busy duplicate refusal, real failure revokes cache, engine refusal, valid external/native A→B late response fencing"
+      },
+      "independentReview": "No further concrete blocker in ad6770c; first-click target mismatch resolved; broader history atomicity not claimed",
+      "rustRerun": false,
+      "reasonRustNotRerun": "No Rust source changed"
+    },
+    "nativeArtifact": {
+      "session": 75068,
+      "exit": 0,
+      "receipt": {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/receipt.json",
+        "sha256": "8ecf719e132fe08481c776cb48e8cf97e0a875adb98d70fcdab3a30f4c22f2c9"
+      },
+      "app": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/development-adhoc/ExhibitOS Manager.app",
+      "bytes": 503636376,
+      "files": 7807,
+      "inventory": {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/app-inventory.json",
+        "sha256": "b73d3045d0b4e0e3eff25cf6d4dc7a2f0235d99c4b0ef8eaf3465bee442a9cba"
+      },
+      "adHocStrictSignatureAndResources": true,
+      "developerId": false,
+      "notarized": false,
+      "previousArtifactsPreserved": true
+    },
+    "actualAppReplacement": {
+      "session": 21613,
+      "exit": 0,
+      "oldPID": 37021,
+      "normalExitObserved": true,
+      "forced": false,
+      "newExactAppOpenCommandExit": 0,
+      "human20SecondStabilityCheck": "requested; waiting"
+    },
+    "separatePickerObservation": {
+      "user": "버튼이 활성화 되어있지 않음",
+      "selectedInstallation": "856290e0-be0e-4d77-919c-3671559bb6f4",
+      "kind": "recovery",
+      "actualDirectory": "Only operation.lock, no installed files/job writes observed",
+      "interpretation": "Existing installed/engine prerequisites prevent backup verification in this blank selected space. Not a successful picker test. No install/selection/data change to bypass."
+    },
+    "iphoneMetadata": {
+      "device": "00008150-000C30921E93C01C",
+      "unlockedQuerySession": 15041,
+      "exit": 0,
+      "bundleIdentifier": "org.exhibitos.capture.spike",
+      "version": "0.1.0",
+      "build": "1",
+      "sourceCommitFromVersion": "not provable",
+      "cameraStarted": false,
+      "installedOrDeleted": false,
+      "otherIphoneAccessed": false
+    },
+    "rawEvidence": [
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/exhibitos-studio-button-before-fix-20261018.log",
+        "sha256": "36db7a3dae9391f91e552b2dd6b2de9acd8894ca710ece25925989cf8d4a0825"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/exhibitos-studio-button-after-fix-20261018.log",
+        "sha256": "52624259529d3f2b78e6283affcf68455a5704301cdf698af6b75e0040c453e2"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/exhibitos-studio-button-final-nodecheck-20261018.log",
+        "sha256": "725c9f5508f0c60092341efe585ebd7329b1ca04e04256806ea0b5cc232338a5"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/exhibitos-studio-button-final-browser-20261018.log",
+        "sha256": "3f2c5b36938918529920df2c34189cb21c33b14f3c726703594b222e890fc496"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/exhibitos-studio-button-selection-fence-20261018.log",
+        "sha256": "308cca6dad7a4a8afc933a6ffe6239e911e4f89a81dcc175a1bb3f7112e4d475"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/exhibitos-studio-refresh-replace-app.log",
+        "sha256": "55639d3cfcff34e53eff8f2478ad3af069d1c712a1afd4a18f830bd8106c4200"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/exhibitos-studio-refresh-replace-app.swift",
+        "sha256": "dbdcb5773c02b6d10ff01720f25c9fc43aa5946caa7cef6f9054329b831b2b6a"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-studio-refresh-native-ad6770c-434c99f2-1e20-4bb8-8337-20cccd92b099/exhibitos-manager-studio-refresh-app-20261018.py",
+        "sha256": "ed6193848a5e92c9c3a942319ea58ed574789e5844cec1239e70e12b019f8f34"
+      }
+    ],
+    "taskCountsChanged": false,
+    "goal": "active",
+    "nativeHumanQualityAndWholeGuiAccepted": false
+  },
+  "localPublicationCustody20261018": {
+    "source": "7d97011",
+    "scope": "Optional job-bound local approved static-publication custody beside existing encrypted DB backup; original archive unchanged.",
+    "behavior": [
+      "One Work v1 observation binds original DB source/configuration and static publication/revision/index pins.",
+      "Safe identifier-only Work snapshot and complete static files are retained privately in the original job sibling workspace. No tokens, DB passwords or signing keys join the companion.",
+      "Fixed resource-pinned native Node mode verifies source manifest and every file, copies through bounded file handles, verifies copy and preserves partial failures.",
+      "Missing legacy metadata/source or companion failure leaves DB backup completion unchanged. Existing current-space floor/budget is reused.",
+      "UI shows a separate historical custody record; it does not reverify every file on each history read. Existing archive export contains no companion."
+    ],
+    "checks": {
+      "fixedRunner": "12 passed (existingDB7 + new5), no provider network",
+      "nativeHosted": "33055 exit0 /24 cases",
+      "versionCapture": "67862 exit0 /1 updated case",
+      "jobWorkspace": "24763 exit0 /1; initial6985 fixture-only failure retained",
+      "aggregate": "33212 exit0; type/lint/build,72Vitest/11files,9receipt,6installer",
+      "browser": "67922 exit0; desktop/narrow2; real Chromium UI with synthetic IPC",
+      "actualCC0Copy": "25files/7,740,023B source and destination SHA/mode equality; fixed Node copy and reuse exit0",
+      "independentReview": "Root and independent agent reviewed native/JS/UI/callback lock flow; no concrete blocking regression."
+    },
+    "evidence": [
+      {
+        "directory": "manager-hosted-publication-native-7c3b1902-bcf8-42df-a5be-0d7ef7322bed",
+        "receiptSHA256": "fba76dd478cdb05f4fb1d36a0868e8a1af2560c38c058e41ad321825b7ddb389"
+      },
+      {
+        "directory": "hosted-publication-custody-actual-6f62f77d-b190-4530-a4d4-b5648779645f",
+        "receiptSHA256": "c9aa3b68b8b331c95722e41fdba7bcc731df218f107829c3a08b245b8c3e6080"
+      }
+    ],
+    "limits": [
+      "Native actual provider/Keychain DB-create-to-copy not executed.",
+      "New Manager app/runtime resource package not yet produced or launched.",
+      "Companion excluded from archive export and not yet consumed by whole restore.",
+      "Actual transformed Pages HTML/worker/routes and original Render executable are not proven preserved.",
+      "Whole installation/service restore, migration/update/rollback and human GUI acceptance remain incomplete."
+    ],
+    "integration": "Code committed/pushed to existing draft PR180; no publication or paid work."
+  },
+  "publicationDelivery20261018": {
+    "source": "d5afbfd8ee3559c46cd03c4e1315e30d47f84bd3",
+    "scope": "Existing encrypted archive delivery plus optional separate private public-file sibling; archive format unchanged. Existing approved-package selection reuses publication subfolder.",
+    "checks": "Related lifecycle1/nativeHosted25/type/Vitest5/browser2 PASS; final browser2 + aggregate73Vitest/11files,receipt9,installer6,type/lint/build PASS. Independent read review found no concrete blocking regression.",
+    "developmentPackage": {
+      "status": "DEVELOPMENT_APP_RESOURCE_AND_ADHOC_SIGNATURE_PASS_NOT_LAUNCHED",
+      "receiptSHA256": "685f992be433744541ddf9dbffe943a3a55c69100f49efd6626910f041cad03b",
+      "managerSource": "d5afbfd8ee3559c46cd03c4e1315e30d47f84bd3",
+      "platformSource": "1b7e0003e872e32c21156d2b4e4d4a77013ae7ef",
+      "files": 7807,
+      "bytes": 504079232,
+      "inventorySHA256": "79cb87dbd01b11c4a113b177191e8267efcd0aba7f7f47cc779ec9d2f0502ea3",
+      "publicationManifestSHA256": "ffefde0647d1e4bad686821c90402042fcdd8a2c88ef51a33683fb2b2806503b",
+      "steps": [
+        {
+          "name": "start-docker",
+          "exit": 0,
+          "seconds": 0.07233762496616691
+        },
+        {
+          "name": "container-preview",
+          "exit": 0,
+          "seconds": 1.5920384170021862
+        },
+        {
+          "name": "produce-platform-runtime",
+          "exit": 0,
+          "seconds": 132.52515470806975
+        },
+        {
+          "name": "prepare-remote",
+          "exit": 0,
+          "seconds": 4.389339416986331
+        },
+        {
+          "name": "tauri-build",
+          "exit": 0,
+          "seconds": 164.3314333750168
+        },
+        {
+          "name": "adhoc-sign",
+          "exit": 0,
+          "seconds": 2.8152538330759853
+        },
+        {
+          "name": "strict-signature",
+          "exit": 0,
+          "seconds": 1.7274019580800086
+        }
+      ],
+      "appLaunched": false,
+      "actualNativeGUI": false,
+      "keychainAccessed": false,
+      "officialSignature": false,
+      "notarized": false,
+      "session": 48701,
+      "exit": 0,
+      "heavyProcessRunning": false
+    },
+    "limits": [
+      "Actual native file chooser/provider/Keychain transfer unexecuted. Browser IPC checks are synthetic at native boundary.",
+      "Companion is not editable Studio source or whole DB/service/installation restoration. Original job/private configuration/keys and runtime provenance are still required.",
+      "Ad-hoc development signature is not Developer ID, notarization, Store or actual installation acceptance.",
+      "Earlier actual isolated SQL proof used previous image/source; new image packaging does not requalify SQL recovery."
+    ]
+  },
+  "manualHostedJobsRefresh20261018": {
+    "status": "IMPLEMENTED_FOCUSED_BROWSER_TYPE_LINT_PASS_NATIVE_GUI_PENDING",
+    "source": "1a1525880451ea5bb0dabec7548b218fe48cd142",
+    "tasks": [
+      "T08-02",
+      "T10-03"
+    ],
+    "problem": "Manual Jobs response has source:null and replaced prepared target; CIDR/consent view vanished. Automatic polling already preserved source.",
+    "change": "Manual jobs merge preserves existing source within same selected space, like existing polling. Real context target changes still reset CIDR/consent; selection generation fences unchanged.",
+    "checks": {
+      "before": "86220 exit1: CIDR field removed from DOM after manual refresh",
+      "after": "13765 exit0: desktop/narrow2 browser cases, typecheck, focused lint and diffcheck PASS",
+      "scope": "Real Chromium UI with synthetic native IPC. Existing target-change clearing, export cancel/result pairing and stale selection checks retained. No app/engine/provider/Keychain."
+    },
+    "receiptSHA256": "245884c8bff33db0a133f79c4c0c3aac98e6f6d8eba47272e7d5cd148bf5be58",
+    "review": "Root reviewed exact two-file patch against receipt source SHA; no guard or source revalidation weakening.",
+    "limits": [
+      "Native user operation not performed; user away.",
+      "Packaged app remains Managerd5afbfd, not this new UI commit. No latest native package acceptance claimed.",
+      "Whole recovery and original authority/config/runtime custody gaps unchanged."
+    ]
+  },
+  "externalArchivePreinstall20261018": {
+    "status": "IMPLEMENTED_ACTUAL_CONTROLLER_CRYPTO_AND_DEVELOPMENT_PACKAGE_PASS_GUI_AND_WHOLE_RESTORE_PENDING",
+    "managerSource": "09e80266bd97af75f0a2793a2846d3a068c17445",
+    "platformSource": "486e5e675dbdf1f422213691eeb19dad6a54db27",
+    "tasks": [
+      "T08-02",
+      "T08-01",
+      "T10-05"
+    ],
+    "behavior": [
+      "Existing installed branch preserves manifest/installed marker and selected engine admission. No stale/corrupt marker enters fresh route.",
+      "Uninstalled managed macOS uses only exact bundled image and actually available Docker, same backend prepare/inspect/run. No arbitrary image ID or engine fallback. Override/legacy without profile remains unavailable.",
+      "Selection guard and separate selected/profile operation locks retained; verification plaintext/receipt/failure candidates live under private profile outside fresh installation root. Existing fresh-root rules unchanged.",
+      "Existing file pickers/input/receipt/readonly key/archive/network-none/cap-drop/host UID/owned cleanup remain. No DB restore or installation activation."
+    ],
+    "checks": {
+      "lifecycle": "26032 maintenance3 + selection1 + existing installed engine1 PASS; first fixture6810 expected zero entries incorrectly, corrected to existing allowed operation.lock; raw output transcription explicitly labelled.",
+      "browser": "62011 before fails, after14 desktop+narrow verification/export flows PASS, type/focused lint PASS; real Chromium with synthetic native boundary. Existing invalid key path, malformed result, pending exclusion, cancel and input reset coverage retained.",
+      "native": "23242 macOS cargo check exit0; 18.94s",
+      "aggregate": "68754 existing npmcheck exit0:73Vitest/11files,9receipt,6installer,type/lint/build",
+      "platform": "Existing packaging7 PASS. Fixed-source runtime producer123.794s + prepare2.029s PASS.",
+      "actual": "8381 exit0: actual fresh controller→fixed helper image→2 encrypted files authenticated; wrong key rejected;1success receipt+1failed candidate. Original archive/key SHA/modes unchanged; selected fresh root still only operation.lock and no installed/bundle markers.",
+      "review": "Independent six-file admission/locks/UI review and independent Docker image COPY/scope review found no concrete blockers.",
+      "engine": "Normal Docker stop exit0, afterward only pre-existing vmnetd528 observed; no force/remove/prune."
+    },
+    "failureHistory": [
+      "Driver missing src-tauri resource segment failed before engine/build; candidate54da07e0 retained.",
+      "Initial actual helperdbf17bf failed BACKUP_VERIFICATION_FAILED; diagnostic exposed Node EACCES reading image product script before main. No successful crypto claim for this attempt.",
+      "Private source snapshot modes propagated into image. Platform486e5e6 makes only /opt/exhibitos product payload readable/traversable (a+rX), not writable; host originals/keys/mounts/UID unchanged. Fixed helper8c58a1c actual retest passed."
+    ],
+    "limits": [
+      "Actual OS file chooser/GUI/user installation not executed. User away.",
+      "Only encrypted byte authentication; no original-authority DB restore or whole service/installation recovery.",
+      "Original hosted Job/Keychain/config/authority and actual Pages/Render executable preservation gaps remain.",
+      "Previous actual DB restore proof remains scoped to old image/source; new helper cipher verification does not requalify DB restore.",
+      "Developer ad-hoc resource/signature validation is not Developer ID/notarization/Store/release acceptance."
+    ],
+    "integration": "Code committed locally; pending scoped documentation/Git push to existing draft PRs. No public deployment, paid work or user data deletion.",
+    "nativePackage": {
+      "handle": null,
+      "priorHandle": 66902,
+      "exit": 0,
+      "files": 7807,
+      "bytes": 504103056,
+      "inventorySHA256": "83d105163eb96971233ca4d30b9e3d15cd62293d00c8b58f75df36a4c8be7ad2",
+      "appLaunched": false,
+      "keychainAccessed": false,
+      "officialSignature": false,
+      "notarized": false,
+      "publicationSource": "Qualified1b7e000 resource reused unchanged, retained original metadata; not relabelled486e5e6"
+    }
+  },
+  "archivedPublicAuthority20261018": {
+    "status": "IMPLEMENTED_SQL_STAGES_AND_DEVELOPMENT_PACKAGE_VERIFIED_HOST_WRAPPER_FAILURE_RETAINED_GUI_AND_WHOLE_RESTORE_PENDING",
+    "managerSource": "3dae9bccda50fdbcb6accac4b4f68da7e14514d0",
+    "platformSource": "256faba59636bcb7d66a95f6ddaee896688c5414",
+    "tasks": [
+      "T08-02",
+      "T10-05"
+    ],
+    "implementation": [
+      "Default backup preserves only original closed HTTPS/Ed25519 public authority in existing encrypted configuration role hosted-public-authority.json. No private signing key/admin password/provider token added to helper or archive.",
+      "Archive crypto/backup ID/manifest SHA/file digest checks precede public record semantics and PG start. Provided original authority must agree with archived authority. Legacy requires provided original authority when no archived record. No DB-row-derived key or invented issuer.",
+      "Manager retains original completed Job/archive pins and per-job key. Only exact Keychain not-found/null-result may omit local expectedConfiguration; denial/cancel/locked/wrongtype/invalidsize/malformed/source mismatch refuse. Generic provider/key reads unchanged.",
+      "No new archive schema, provider, engine, task or release gate. Cross-Mac original Job import and whole service activation remain unimplemented."
+    ],
+    "checks": {
+      "platform": "89533 Node32PASS; existing crypto format exercised with injectedPG; not actual DB proof by itself.",
+      "manager": "runner6PASS; native67084 hosted modules13PASS. Initial5928 original-config1 PASS before typed-error review.",
+      "review": "Independent review found all Keychain errors treated missing; dedicated typed namespace reader fixed exact not-found distinction. Re-review found no remaining concrete blocker. No actual OS Keychain test.",
+      "actualSQL": "83932 actual backup/PG/helper normalstop/Lifecycle completed journal/reopen/preservation stages PASS on imagef614f3d;3encrypted files, no original private configuration in restore input. Synthetic source0frozen rows.",
+      "hostHarness": "83932 overall wrapper exit1 after SQL completion and receipt save: host-only scrub referenced deliberately absent optional config. Original fixture/receipt retained. Corrected optional cleanup Node syntax/execution and journal/readback exit0, no SQL repeat; do not call full driver pass.",
+      "nativePackage": "33946 exit0 resources/inventory/strict ad-hoc signature PASS; app not launched, no Keychain access, not DeveloperID/notarized. Qualified Viewer publication1b7 reused unchanged with original metadata.",
+      "engine": "Normal Docker stop0, subsequentps only pre-existingvmnetd528; original/source/archive/key/candidates retained."
+    },
+    "approval": "Initial Manager edit blocked because archive-reader implementation missing; no rejected action ran. Actual Platform source+32PASS supplied, scoped connection then approved. No bypass. Later independent missing-vs-denied defect corrected before actual fixture.",
+    "limits": [
+      "No actual Render/native OS Keychain/chooser/human GUI/user installation/DeveloperID/notarization.",
+      "Actual SQL source0frozen rows; previous independent65-row signature proof remains separately scoped.",
+      "Still requires original completed hosted job/per-job archive key; portable original Job import not implemented.",
+      "Original private runtime config, exact served Pages/Render artifacts and full service/installation recovery/migration/update/rollback remain incomplete. No original private secrets exported."
+    ],
+    "integration": "Code committed, scoped documentation/push pending; keep existing PR drafts and Goal active.",
+    "nativePackage": {
+      "files": 7807,
+      "bytes": 504098627,
+      "inventorySHA256": "37a5d5675f982892ce450dd4539a98ea3f2330575284e9c039804784c38482c5",
+      "exit": 0,
+      "handle": null,
+      "appLaunched": false
+    }
+  },
+  "externalVerificationSourceLink": {
+    "recordedAt": "2026-10-18T11:50:45.320104+00:00",
+    "status": "NATIVE_SOURCE_LINK_IMPLEMENTED_AUTHENTICATION_AND_REOPEN_VERIFIED_NOT_DB_RESTORE",
+    "tasks": [
+      "T08-02"
+    ],
+    "implementation": "Native source.json beside successful verification receipt binds authenticated backupId, manifest SHA, exact cipher inventory and source metadata pins. No key data, fabricated hosted Job, new IPC or public receipt fields. Original hosted validation and Windows route unchanged. Metadata custody is not fresh crypto authorization.",
+    "sourceFiles": {
+      "crates/lifecycle/src/lib.rs": "12563826f8c01a39040196fd945ec3497470e20e2364784b80134c8876c4fe4d",
+      "crates/lifecycle/src/maintenance.rs": "e3d379fedca384256ec1f4edd892a8577078bc7c8986e6cfe2a24b7f78933e08",
+      "crates/lifecycle/src/maintenance_source.rs": "706f540d0aebc76346057aecdc0a1e76e636ff7ee9ab884ba45c009222eb8143"
+    },
+    "tests": {
+      "focusedRust": 19,
+      "firstRun": "17913:14 PASS/4 invalid synthetic archive fixtures; corrected fixtures without weakening closed inventory",
+      "regressions": "Unknown fields, missing legacy source link, altered receipt/manifest/file/directory/mode, extra cipher, symlink, Unicode paths, helper-time churn",
+      "actualSession": 86010,
+      "actualExit": 0,
+      "actualCrypto": true,
+      "actualSourceRecordAndServiceReopen": true,
+      "wrongKeyRejected": true,
+      "originalArchiveAndKeyPreserved": true,
+      "freshInstallationRootPreserved": true,
+      "actualDBRestore": false,
+      "actualNativeGUI": false,
+      "actualRender": false,
+      "dockerNormalStopExit": 0,
+      "postStopObservation": "Only pre-existing vmnetd PID528 observed; preserved"
+    },
+    "evidence": [
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/verification-source-linkage-f7cd4351-4d80-4f4d-bbb5-7e04be9abbfd/receipt.json",
+        "sha256": "bc37fe641118e7442c2d221a353d0780252743bec08c4b428b8e644ae63d15a9"
+      },
+      {
+        "path": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-verification-source-actual-e496cf87-6859-4cad-8edd-a8316eb5b63a/receipt.json",
+        "sha256": "f102423c6afbe4073ffc16cd2869c6c2c2384c90f7b1e340de31190f366e69e0"
+      }
+    ],
+    "independentReview": "remaining_studio_flow read-only review; root byte-boundary and directory-mode defects corrected before final tests; no remaining concrete blocker reported",
+    "remaining": [
+      "Durable external archive DB-check job and explicit ownership/cancel/reconcile/relaunch routing",
+      "GUI source selection/reopen and isolated restore action",
+      "Whole-service activation, migration/update/rollback and actual native user validation"
+    ],
+    "scope": "No task/gate/support change; legacy receipts stay valid authentication receipts and are not promoted to new source records."
+  },
+  "externalArchiveIsolatedDBCheck": {
+    "status": "IMPLEMENTED_AND_LOCAL_INTEGRATION_VERIFIED_NOT_NATIVE_GUI_OR_WHOLE_SERVICE_RESTORE",
+    "tests": {
+      "coreDistinctSelected": 28,
+      "finalControllerRoutingRerun": 1,
+      "runner": 8,
+      "parser": 3,
+      "focusedBrowserDesktopAndNarrow": 10,
+      "existingRelatedBrowser": 26,
+      "nativeFocused": 2,
+      "finalIntegration": {
+        "vitest": 76,
+        "files": 12,
+        "receipt": 9,
+        "installer": 6,
+        "typeLintBuild": true
+      }
+    },
+    "actualWorkflow": {
+      "actualCrypto": true,
+      "actualIsolatedPostgres": true,
+      "frozenRows": 0,
+      "originalHostedJobRequired": false,
+      "fakeHostedJobCreated": false,
+      "completed": 2,
+      "wrongKeyFailed": 1,
+      "interruptedBeforeHelper": 1,
+      "cancelledCandidate": 1,
+      "orphanActualHelperState": "absent",
+      "cancelActualHelperState": "stopped",
+      "actualReopenAndMetadataReadback": true,
+      "sourceArchiveAndKeyUnchanged": true,
+      "firstDriverExit": 1,
+      "firstDriverReason": "Test-only poll unwrapped transient BUSY after completed SQL/retry stages; original receipt retained",
+      "firstContinuationExit": 1,
+      "firstContinuationReason": "Docker readiness query timed out before product execution; normally stopped0; record retained",
+      "secondContinuationExit": 0,
+      "secondContinuation": "Retries readiness observations and maintenance BUSY without restarting live product work; actual orphan reconcile, request/confirmed stop, new-candidate preservation and reopen passed",
+      "dockerNormalStopExit": 0
+    },
+    "evidence": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-external-native-0161bc76-1b66-4ba9-b8e2-4586ed2815fa/receipt.json",
+    "evidenceSHA256": "9ce0f13d5c05834db42de994c420ddebfa799883caa336f64304782ab9b70ce8",
+    "notVerified": [
+      "Actual native IPC invocation/OS file picker/real GUI",
+      "Actual Render data/server recovery",
+      "Whole service activation/private runtime settings/publication and executable custody",
+      "Developer ID/notarization/App Store and first-user installation",
+      "Actual Safari/iOS/VoiceOver/novice GUI acceptance"
+    ]
+  }
+}

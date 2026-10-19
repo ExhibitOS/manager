@@ -1,0 +1,616 @@
+{
+  "date": "2026-10-17T20:25:40.056838+00:00",
+  "existingTasks": [
+    "T08-02",
+    "T08-03"
+  ],
+  "status": "RECOVERY_GUI_IMPLEMENTED_LOCAL_REGRESSIONS_AND_CHANGED_CONTRACT_ACTUAL_ROUNDTRIP_PASS_NATIVE_GUI_PENDING",
+  "managerHead": "8f4f60df47e4bf89bf46d220fca0514c30506bc4",
+  "sourceCleanBeforeThisRecord": true,
+  "branch": "codex/windows-recovery-integration",
+  "pr": {
+    "url": "https://github.com/ExhibitOS/manager/pull/180",
+    "observedState": "OPEN DRAFT",
+    "observedRemoteHead": "0a87506a16bae99c0d5d4418e5f4eda5f8634d48",
+    "observationCommandHandle": 51928,
+    "localEnginePreparationNotYetInRemotePR": true
+  },
+  "evidenceReused": {
+    "nativeExistingEngine": {
+      "source": "0a87506a16bae99c0d5d4418e5f4eda5f8634d48",
+      "scope": [
+        "isolated fresh local account",
+        "install/start/readiness",
+        "Studio local edit/save/reopen",
+        "normal stop/quit/relaunch without auto-start",
+        "reuse without duplicate install"
+      ],
+      "qualification": "Does not qualify backup/restore/update/rollback or no-engine installation."
+    },
+    "preservedRecoveryRealm": {
+      "source": "2535d934cc3fb93f90fe61c9319d78e7aa06c395",
+      "scope": "Synthetic Mac Docker source/candidate; not operating user data",
+      "serviceRestore": "PASS restored-ready",
+      "sourceBackup": "PASS 13.535s",
+      "candidateRestore": "PASS 38.287s",
+      "sourceBoundHostTrustPair": "PASS 180.175s",
+      "fullReferenceRegistration": "PASS 560.019s after f0d242f, reference published",
+      "actualApply": "PASS 570.612s; public updated/gen6, writeUncertain=false; independent selected-image/readiness/DB/blob/signing witness matched",
+      "actualFullRollback": "PASS 50.065s; public rolled_back/gen10, writeUncertain=false; independent source image/DB/blob/signing witness/authenticated schema matched; source and updated target preserved",
+      "fullReferenceRegistrationHistoricalFailure": "FAILED HOST_CHECKPOINT_INVALID 565.501s before fixed comparison policy; preserved historical result, superseded by following actual success.",
+      "qualification": "Same-schema actual CLI/public handoff execution on synthetic Mac realm. Native GUI and interrupted/failure/changed-migration acceptance are separate."
+    },
+    "fix": {
+      "source": "f0d242f",
+      "scope": "Only four fixed native runtime-control namespaces separately validated during current service-state comparison. Authenticated archive extraction and all other source/trust/config/key checks unchanged.",
+      "focusedRegressionPassed": 6,
+      "independentReadReview": "PASS",
+      "actualReferenceRequalification": "PASS; supersedes initial historical failure."
+    },
+    "latestAuthoritativeReceipts": {
+      "registration": "full-reference-registration-after-f0d-93ad90e0-7fed-432c-b897-614afcd02048-result.json",
+      "apply": "actual-public-apply-8ff7cd6a-c4fd-43ae-ad30-b20a7f79552b.json",
+      "rollback": "actual-public-rollback-be5b3e35-c777-4699-95c4-f1020b8474e5.json",
+      "realm": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-current-signed-realm-e0b69c7a-ba83-45e2-a92b-cba86b32121d",
+      "inspection": "actual-rollback-independent-inspection-72aaab0c-5ba0-4ca5-96d5-ee6ae73c35c5/rollback-verification.json and rollback-witness-verification.json allPassed=true",
+      "runtimeAtRecordedFinish": "Own test services normally stopped; no image/volume/container deletion. Historical observed state, not a new live engine observation."
+    }
+  },
+  "nextSmallestExistingUnit": {
+    "first": "Actual native backup/verify/fresh-restore user flow on the already-qualified isolated user-chosen-account installation; reuse supported known engine, safe key selection and qualified immutable maintenance image.",
+    "then": [
+      "Observe original-record visibility, selection, valid/invalid paths, duplicate-action prevention, failure/retry and result/readiness distinction.",
+      "Verify actual restored special-character account login and preservation of original/ciphertext/key/volumes; no credential output.",
+      "Read actual terminal update/rollback status in native GUI. Do not replay a terminal rolled-back intent or repeat complete successful CLI qualification only to accumulate a GUI claim."
+    ],
+    "doNotRepeat": [
+      "Full reference/apply/rollback happy path already independently verified on unchanged core",
+      "Accepted source/unit/browser passes with no changed source or new failure"
+    ],
+    "requiredInputsToConfirmWithCoordinator": [
+      "Permitted isolated native app/profile and no active user work",
+      "Existing test key locator and safe permission checks, without key contents",
+      "Compatible fixed maintenance image and any required safe test data",
+      "Additional storage/single heavy slot before actual engine operations"
+    ],
+    "implementationChange": "Normal native key/archive selectors and explicit new external service-backup key save, shared bound helper metadata/default with advanced fallback, action-time declared helper import via existing archive admission, and observed DB-running backup prerequisite implemented; new native GUI/actual recovery not yet executed."
+  },
+  "separateIncompleteScope": {
+    "noEngineInstall": "Source/tests exist at8f4f60d; no-engine official download/install/OS approval/VM start is unqualified. Existing Docker is preserved. A separately authorized fresh environment is required; do not uninstall/hide existing engine or introduce a new VM/support environment.",
+    "formalDistribution": "Developer ID/notarization and actual clean user-distribution qualifications remain external requirements. Local ad-hoc/build passes do not qualify them.",
+    "changedSchema": "Existing adapter still refuses changed schema with UPDATE_RUNTIME_MIGRATION_UNQUALIFIED. Same-schema qualification cannot complete changed-migration/full recovery requirements.",
+    "nativeRecoveryGUI": "Source connected; actual backup/restore/app-close update and original rollback user flows are not yet qualified."
+  },
+  "binaryBaseline": {
+    "target/release/exhibitos-manager": "cff2fa00250f48aab4a7065786c882e81ae27d3db0a8e8ed519097fdf6602634",
+    "target/release/exhibitos-update": "532352ebbc7d1c8e97503747c197a102a2610f71c2df99defd26dae45c7f3224",
+    "qualification": "Retained binaries have exact historical evidence: update532352… matches successful f0d core registration. Do not label them a current8f4 build or repeat the whole successful path. A fresh build is needed only for relevant changed source execution."
+  },
+  "safety": {
+    "keyContentsRead": false,
+    "privateRuntimeEnvironmentRead": false,
+    "engineCommandsRun": false,
+    "buildsRun": false,
+    "userOrEngineDataDeleted": false,
+    "newTasksOrGates": false,
+    "newSupportEnvironment": false
+  },
+  "relatedDocs": [
+    "authority-recovery.md",
+    "current-host-stream.md",
+    "backup-creation.md",
+    "backup-restoration.md",
+    "rollback-runtime.md",
+    "initial-account-verification-2026-10-17.json",
+    "engine-preparation-verification-2026-10-17.json"
+  ],
+  "sourceReuseAssessment": {
+    "f0d242fToCurrent": "No diff in update_execution_reference, update_execution_handoff, update_rollback_handoff and host_current_inventory. UpdateStatus adds attention visibility only. Native apply/rollback IPC dispatch bodies unchanged.",
+    "relatedChanges": "Initial-account literal ADMIN_PASSWORD decode/project handling changed installation_backup/restoration; existing focused regressions pass but actual new-account backup/restore GUI needs qualification.",
+    "0a87506To8f4f60d": "Backup/restore/verify/update panels and backend backup/restoration code unchanged. Only engine preparation additions in App/native lib; existing0a app can qualify unchanged recovery components with exact scope, not new8f4 engine preparation."
+  },
+  "reconciliationCorrection": "Initial preparation selected older failure evidence; latest successful original receipt and independent witnesses were then read and reconciled before any product execution, build or commit. No duplicate full-recovery run occurred.",
+  "recordUpdatedAt": "2026-10-17T21:48:46.177412+00:00",
+  "recoveryGuiChange": {
+    "baseCommit": "f0e27b0b3ebd20b79fa4012c7e93c7b6794b402c",
+    "implementation": [
+      "Normal fixed OS key/archive/save selectors return only paths through current selected-installation IPC",
+      "User-initiated macOS OsRng32 key creation: external canonical parent; F_GETPATH/inode/protected-path checks before create; create_new/O_NOFOLLOW0600/fsync; no old key overwrite; no secret bytes returned",
+      "Bundled fixed maintenance-image.tar metadata bound to prepared receipt and small manifest, with missing/error states and explicit retry; custom existing local image ID retained in advanced controls",
+      "Only explicit recovery actions check exact local helper content ID; absent local helper uses existing full archive hash/load/inspect admission; no remote pull or service start",
+      "Stopped database prevents backup submit while key preparation remains available; existing writer/downtime/restore consent and data validation retained"
+    ],
+    "scopeProof": [
+      "Existing service backup external 32-byte/private-file policy retained; stricter profile-backup parent policy is not changed",
+      "Original successful same-schema CLI reference/apply/rollback evidence is reused only for unchanged matching core scope",
+      "Native public caller/capability and selected-token guards remain; stale or cancelled picker results cannot populate another selected installation"
+    ],
+    "review": [
+      "Independent review identified pre-write parent race and same-render duplicate picker race; fixes retain pre/post path guards, F_GETPATH/inode pre-write admission and synchronous working-ref.",
+      "Pre-open symlink replacement regression passed: protected profile and original external directory receive zero new key files.",
+      "Coordinator-authorized direct helper-count/literal-password compatibility fixes received independent read-only review with no remaining concrete blocker; related local regressions and final native compilation passed. Actual new backup/restore remains pending."
+    ],
+    "checks": {
+      "typescript": {
+        "exitCode": 0,
+        "handle": 58928,
+        "scope": "npm run build includes final UI TypeScript"
+      },
+      "eslint": {
+        "exitCode": 0,
+        "handle": 43858,
+        "scope": "changed UI/client/browser sources"
+      },
+      "diffCheck": true,
+      "rustFocused": {
+        "keyAndRace": {
+          "exitCode": 0,
+          "handle": 20838,
+          "passed": 2,
+          "log": "/private/tmp/manager-recovery-key-rust.log"
+        },
+        "metadataCacheAndImport": {
+          "exitCode": 0,
+          "handle": "29e690",
+          "passed": 1,
+          "log": "/private/tmp/manager-recovery-metadata-rust.log"
+        },
+        "directCompatibilityFix": {
+          "literalPassword": {
+            "handle": 96312,
+            "exitCode": 0,
+            "passed": 1,
+            "log": "/private/tmp/manager-recovery-literal-backup-rust.log"
+          },
+          "restorationAndRollbackAdmission": {
+            "handle": 67027,
+            "exitCode": 0,
+            "passed": 17,
+            "ignored": 1,
+            "ignoredReason": "pre-existing explicit actual Docker backup/restore qualification; not executed",
+            "log": "/private/tmp/manager-recovery-compatible-restore-rust.log"
+          }
+        }
+      },
+      "desktopCheck": {
+        "handle": 79532,
+        "exitCode": 0,
+        "scope": "final selected native/picker/key/metadata/optional fixed helper and literal backup/restore source",
+        "log": "/private/tmp/manager-recovery-desktop-final-check.log"
+      },
+      "browserInteractions": {
+        "kind": "synthetic native IPC; actual browser interaction",
+        "initialHandle": 34895,
+        "initialExitCode": 1,
+        "initialPassed": 50,
+        "initialFixtureFailures": 2,
+        "initialFailureReason": "new test tried to click an exhibition-page refresh button while on simple backup page; product polling already showed correct stopped DB state",
+        "correction": "remove nonexistent button and observe existing periodic status refresh; all original DB-running/disabled/preservation assertions retained",
+        "failedCaseOnlyHandle": 28967,
+        "recheckExitCode": 0,
+        "recheckPassed": 2,
+        "uniqueQualifiedCases": 52,
+        "viewports": [
+          "desktop1120x900",
+          "narrow640x850"
+        ],
+        "logs": [
+          "/private/tmp/manager-recovery-browser.log",
+          "/private/tmp/manager-recovery-browser-failed-case-recheck.log"
+        ]
+      },
+      "nativeOsPicker": "not run",
+      "actualUserKeyCreated": false,
+      "actualBackupVerifyRestoreNewGui": "not run",
+      "frontendBuild": {
+        "exitCode": 0,
+        "handle": 58928,
+        "scope": "TypeScript and production Vite frontend only"
+      },
+      "nodeHelperSyntax": {
+        "exitCode": 0,
+        "scope": "changed fixed AUTHENTICATE Node helper syntax only; no script execution"
+      },
+      "nodeHelperExtraction": {
+        "exitCode": 0,
+        "passed": 2,
+        "log": "/private/tmp/manager-recovery-authenticate-node.log",
+        "scope": "actual fixed source script under synthetic in-memory I/O; legacy2/fixedhelper3/exactpaths/source-preservation and undeclared/arbitrary/oversized rejection; not crypto/DB/native qualification"
+      }
+    },
+    "remaining": [
+      "Prepare a new preserved application-resource tree from the fixed verified producer bundle and build one exact-source native application under coordinator single-heavy-slot approval",
+      "Actual isolated native OS selectors/new key save/backup/verify/fresh restore and result/error/retry observations; preserve old data/key/archive/volumes and distinguish them from these source/local checks",
+      "Measure actual raw backup image inventory against existing 2GiB limit; do not substitute compressed package byte totals",
+      "User temporarily absent: do not open OS approval/Keychain panels. Queue any genuine user action with coordinator; never fabricate approval",
+      "Native new recovery success must not be inferred from prior CLI, focused unit checks, desktop compilation or synthetic browser interactions"
+    ],
+    "resourceCoordination": "All scoped local checks terminal; heavy slot returned to Processing. No new native build or actual engine/recovery action started by this agent.",
+    "sourceSha256": {
+      "crates/lifecycle/src/backup_key.rs": "14bcc09f28b367e82c25e32a1dcbd2d4f4bd9261ca13685aeb9b3d2d1ce2b6b9",
+      "crates/lifecycle/src/installations.rs": "a9caeff0e4894ad2f10892ddbbd752f6db65441a00d4c53e215b9deb38706784",
+      "crates/lifecycle/src/lib.rs": "178215e24b1c7609103b2dc8d8bc555ceae4beaee37e5868f61fd32f2c5514dc",
+      "crates/lifecycle/src/runtime_prepare.rs": "abf3fb8248223681f986b097c74ae15edac54e28721ef62c9fee8803fc35d333",
+      "src-tauri/src/maintenance_picker.rs": "031dffa5938be129741360344b2c7799f3266053f9011893139750bedaa04a25",
+      "src-tauri/src/lib.rs": "0c2f5d0f63e961518b976c3581f1db1454a0d1f7210314ba885f3a31c424292d",
+      "src-tauri/build.rs": "25d8057a76412396cc14ab47568bd0092d65d9c1fc84ab3f7b77d2ceb44548bb",
+      "src-tauri/capabilities/manager-local.json": "8d0554604eb855b48d75af542078654469b27e21d7187eb4a36ceddcf27c73aa",
+      "src/BackupPathField.tsx": "7a9908515461f66e3a85bab392d3a822257f20f68d7ef32d9b3ae299b4e799b9",
+      "src/BackupToolField.tsx": "8baf18b06069f305387743a44ef3f71c6547f40194b39e405c2b82a7f1d7a2f9",
+      "src/BackupCreation.tsx": "b56bc58e41575e34aea6dc2cc1b366a6fb75ab3e244f5de7c80b0a0ee675d9c5",
+      "src/BackupRestoration.tsx": "cc91b3cc4b968acbde19ff0c75db415b8151d65c5c6c9544bd7c1f2e88cd87fe",
+      "src/BackupVerification.tsx": "8d3f86e32ee4d1da1b879be234cde37be81e228db48c92bac357c4feeb61db6b",
+      "src/App.tsx": "d8ecd4b25aeb42c0fdd9a313de5ba6cc666856252efe9abacfe4c918da88adc8",
+      "src/lifecycle.ts": "8e4054e41047fe2f5161f6f38e75cdf62edd68f7737e81f4b7b7533b15d822a1",
+      "src/browser/backup-preparation.spec.ts": "15d1049c493661d2ada1a4f20f2c329493bbebd31d2ad4601f35260cb25eb1e9",
+      "src/browser/backup-creation.spec.ts": "4b315e4b3c5c649e452fc4096c6b538b436dcc526f6f3b491884fa82cf245c2c",
+      "src/browser/backup-restoration.spec.ts": "3d473e8e94298885fc30862d563a0ceb806b3513448ba11c4c8d019ceffd6199",
+      "src/browser/backup-verification.spec.ts": "db65abe4e77776635cd2709c5af474962b3cb53605f8892b9e4189b38a9eb355",
+      "src/browser/studio-setup.spec.ts": "9a40b330472488b951a803294cd6dfc1068d5a2e15ff77114fa026e172007234",
+      "crates/lifecycle/src/backup_creation.rs": "874af7b1ab6b72a43826e351f22d8991693a51d7e1830c6a18aaa505c1e1cbcd",
+      "crates/lifecycle/src/restoration.rs": "89e17f7f4df2b4af59002bde15ea88ebb5856e639b25ba85141bdfb6143ee92b",
+      "src-tauri/permissions/autogenerated/manager_backup_tool.toml": "4315b03be6bc4765f9b145418d516a70564fda2b9808970eda2316ce85c1cd11",
+      "src-tauri/permissions/autogenerated/manager_choose_backup_path.toml": "445a59e99d3be5a22a4f672dac8f5d5566693b586a08a8ef1810a49ec4a26e25",
+      "scripts/recovery-authenticate.test.mjs": "bc7c5e25448a3be09ef197b15fd87a64bfd0cd53bbbf0aa6182855b3f12e7ed4"
+    },
+    "directCompatibilityFix": {
+      "runtimeServices": "database/platform exactly two; optional third fixed maintenance archive is preserved without adding a service",
+      "images": "Existing two-image behavior unchanged; optional third must have canonical immutable ID, fixed maintenance-image.tar or restored image-2.tar basename, bound archive metadata and distinct runtime role. Existing total 2GiB inventory budget and archive/index/SHA identity checks retained.",
+      "authenticate": "Only an authenticated, existing-size-bounded original bundle manifest may permit the one extra deployment/images/image-2.tar file. Arbitrary extra images remain unsupported.",
+      "password": "Existing literal decoder is reused; Compose config dollar escaping and actual container plaintext are compared separately. Original runtime.env bytes are never rewritten.",
+      "scope": "Existing macOS recovery only; Windows and actual new helper/recovery flows remain separately unqualified."
+    },
+    "packagedHelperInput": {
+      "bundle": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-runtime-helper-b701aac-92871ded-1ff2-401b-9658-950c28c07d93/bundle",
+      "receipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-runtime-helper-b701aac-92871ded-1ff2-401b-9658-950c28c07d93/actual-package-verification.json",
+      "combinedPackagedArchiveBytes": 317895168,
+      "services": [
+        "platform",
+        "database"
+      ],
+      "composeHashMatches": true,
+      "actualLinuxArm64ImageIdentitiesMatch": true,
+      "actualBackupRestoreRoundtrip": false,
+      "rawBackupInventoryBudget": "Packaged compressed archive bytes are not the raw docker image-save backup sum. Existing 2GiB raw inventory budget remains unchanged; actual raw exports including PostgreSQL must be qualified separately before claiming backup budget success."
+    }
+  },
+  "nativePackagingQualification": {
+    "managerSource": "b0a9853e13eac2106d4f5b5d7d289280e03a70eb",
+    "platformSource": "b701aaccfaa2206fe761a535ddbecac2a003d266",
+    "receipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-native-b0a9853-e98d35ee-a8d9-4408-9eb8-6eb627c00aaf/native-app-verification.json",
+    "resourcePreparation": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-native-b0a9853-e98d35ee-a8d9-4408-9eb8-6eb627c00aaf/resource-preparation.json",
+    "buildLog": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-native-b0a9853-e98d35ee-a8d9-4408-9eb8-6eb627c00aaf/desktop-build.log",
+    "buildExitCode": 0,
+    "buildSeconds": 169.30646037496626,
+    "rawApp": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-native-b0a9853-e98d35ee-a8d9-4408-9eb8-6eb627c00aaf/raw-build/ExhibitOS Manager.app",
+    "rawStrictDeepExitCode": 1,
+    "developmentApp": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-native-b0a9853-e98d35ee-a8d9-4408-9eb8-6eb627c00aaf/development-adhoc/ExhibitOS Manager.app",
+    "developmentStrictDeepExitCode": 0,
+    "developmentRootOnlyAdhocSeal": true,
+    "resourcesUnchangedBySeal": true,
+    "resourceEntries": 9136,
+    "executableSha256": "daa0b43fac824a6a87c01f761b226684fb70f395c730f9b49f6ab40d79f45188",
+    "previousPreparedResourcesRetained": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-recovery-native-b0a9853-e98d35ee-a8d9-4408-9eb8-6eb627c00aaf/retained-prepared-runtime-66d06fb",
+    "sourceCleanAfterPackaging": true,
+    "appLaunched": false,
+    "osDialogRequested": false,
+    "userProfileAccessed": false,
+    "developerIdSigned": false,
+    "notarized": false,
+    "qualification": "Exact committed source builds and separate development ad-hoc app verifies; original failed signature evidence retained. This does not qualify formal distribution, actual OS chooser, new-key save, or three-image/literal-password recovery roundtrip. Packaged archive sum does not attest the raw backup inventory budget.",
+    "actualBackupRestoreAtPackagingTime": false
+  },
+  "changedContractActualRecovery": {
+    "managerSource": "b0a9853e13eac2106d4f5b5d7d289280e03a70eb",
+    "platformSource": "b701aaccfaa2206fe761a535ddbecac2a003d266",
+    "firstReceipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-three-image-literal-c4d7f33c-2cf4-4e73-9112-fdffe430b2ff/roundtrip-result.json",
+    "continuationReceipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-three-image-literal-c4d7f33c-2cf4-4e73-9112-fdffe430b2ff/continuation-result.json",
+    "finalObservation": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-three-image-literal-c4d7f33c-2cf4-4e73-9112-fdffe430b2ff/final-observation.json",
+    "qualificationSources": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-three-image-literal-c4d7f33c-2cf4-4e73-9112-fdffe430b2ff/qualification-source",
+    "actualCommandHandles": {
+      "compile": 15243,
+      "firstAttempt": 19324,
+      "continuationCompile": 12122,
+      "continuation": 31241
+    },
+    "rawImageBudget": {
+      "receipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-three-image-budget-c49392f0-8bf5-4f4b-8ab0-9cfacd06bd00/raw-image-budget.json",
+      "actualRawImageCount": 3,
+      "actualRawImageBytes": 485062144,
+      "existing2GiBAggregateLimitSatisfied": true,
+      "packagedBytesNotUsedAsRawBudget": true
+    },
+    "originalArchive": {
+      "files": 15,
+      "bytes": 485251498,
+      "externalSiblingCopyByteExact": true,
+      "originalAndCopyRetainedUnchanged": true
+    },
+    "seconds": {
+      "sourceInstall": 11.784,
+      "sourceStart": 13.821,
+      "createAndAuthenticateBackup": 38.14,
+      "externalArchiveVerify": 17.466,
+      "freshRestore": 61.392,
+      "restoredLogin": 0.728,
+      "freshRestoreNormalStop": 4.173
+    },
+    "passed": [
+      "New synthetic source account containing dollars, braces, spaces, hash, quotes, backslashes and Unicode really logged in before backup.",
+      "Original generated freeze-signing-key.json existed and its actual hash was compared; no fake signing witness was created.",
+      "Existing three-image backup created-and-authenticated, external sibling byte-exact copy verified, fresh installation restored and ready.",
+      "Three actual local content IDs, DB witness, original blob and actual signing witness matched after restore.",
+      "Restored account login used existing public native credentials only and secret stdin; HTTP200 and Set-Cookie observed without returning secret headers.",
+      "Original env bytes except existing port-remap field, source key and both archive inventories remained unchanged.",
+      "Final label-scoped observation confirmed exactly two own exited containers per new source/restore installation."
+    ],
+    "firstAttemptLimitation": "First verifier was passed the archive inside its own service root and failed before helper work; BACKUP_PATH_OVERLAP is a source-based diagnosis, not an observed returned code because the first wrapper discarded stderr. The existing overlap protection was unchanged. Continuation copied only the same synthetic archive outside service root and resumed verify/restore; install/backup were not repeated. Later errors retain private0600 raw diagnostics.",
+    "secretAndDataBoundary": {
+      "existingUserProfilesOrKeysAccessed": false,
+      "osChooserOrKeychainUsed": false,
+      "pullOrDeletionRequested": false,
+      "forceKillUsed": false,
+      "sourceAndRestoreVolumesRetained": true
+    },
+    "nativeGuiQualified": false,
+    "formalDistributionQualified": false,
+    "noEngineInstallQualified": false,
+    "updateRollbackReexecuted": false,
+    "qualification": "Actual macOS local Docker engine and existing public lifecycle API on two newly isolated synthetic roots. This qualifies the changed three-image/literal-password backup/verify/fresh-restore path only; browser regressions and native app packaging are separately recorded and do not qualify OS chooser or new-key UI."
+  },
+  "encryptedArchiveExport": {
+    "status": "IMPLEMENTED_LOCAL_BOUNDARIES_BROWSER_AND_ACTUAL_NATIVE_COPY_AUTHENTICATION_PASS_OS_CHOOSER_GUI_PENDING",
+    "baseline": "9fbce646e60f3074681dcc6469f6fa18b1a3ee0c",
+    "existingTasks": [
+      "T08-02",
+      "T08-03"
+    ],
+    "confirmedGap": "Creation kept the authenticated archive inside the installation, while same-installation verifier correctly rejects overlapping paths. GUI supplied only internal-path instructions, without external preservation or verification-state handoff.",
+    "implemented": [
+      "Completed result/history job action chooses an external parent with existing OS selector; current selection token and operation guard stay pinned during export.",
+      "Only fixed completed-job ciphertext archive names are copied using nofollow descriptor-relative create-new0700/0600 paths, bounded byte/SHA checks and final exclusive rename. Keys and decrypted workspaces are excluded.",
+      "Original source is retained, partial failed exports remain separate and are not announced as complete, and retry never regenerates the backup.",
+      "Successful external path is shared with the existing verifier in the same App selection context. Cancel preserves input; a different selection cannot receive the old path.",
+      "Existing overlap, key, file-count/size, minimum-free-space, authentication and fresh-restore policies are unchanged."
+    ],
+    "sourceSha256": {
+      "crates/lifecycle/src/backup_export.rs": "fb4fe814c808df22d54a880d22e9aee210d18f9344c1e7a448ded4e909777afd",
+      "crates/lifecycle/src/installations.rs": "e226f2682313ced233aa0a949d4ab9369d456103e553911ee13bdcfdfe611a53",
+      "crates/lifecycle/src/lib.rs": "e4974f1aa2ce7b07ebeb05d16482b69958722494e80b3b2e0fc110ce651f0899",
+      "src-tauri/src/lib.rs": "0873d3f51d0d3e1ca0de6b798cbde9cf251bd5a4ea8092590b9e3cc5d5ccb093",
+      "src-tauri/src/maintenance_picker.rs": "6d8681250d96b90e3271e1f59ce2f4f24533de9e2d7d76591174ad4c90daa4dc",
+      "src-tauri/build.rs": "fd95938dba9398fad79a885653938fb915cdbb638a51ba8627641e35c5b4b2b0",
+      "src-tauri/capabilities/manager-local.json": "a2400eb7ea655d2af11dfda74f0d19dd0fb7e6fc56b03d5559fb65eebb29df95",
+      "src-tauri/permissions/autogenerated/manager_export_backup.toml": "ca11088dac86e964fea90b4f5c4d68e1b36e4726e25c0f49bc44346782b0836c",
+      "src/App.tsx": "026f5fa2784e64287960a56f0956228a6031ecf1023da4b26c111e6469468478",
+      "src/BackupCreation.tsx": "a04f2cac390be133cdb212314d1efbbaa586c1d350c53b077a43975a3acb70ff",
+      "src/BackupVerification.tsx": "94b5b0831289c8b931dfc32cf8f705c4b47f364f8e8235f995705db6738d119b",
+      "src/lifecycle.ts": "c20d7138ea5d24969850f95c7ba3152aa562c8dd3f70d5bcc3830677d2b6913b",
+      "src/lifecycle.test.ts": "7282ea57ac6ce9306a35bb93a6a13cca9f455db1a5489da1163d50886bda2761",
+      "src/browser/backup-export.spec.ts": "57c7c7e99bac6bfef5ebfc68893c054ea388913918f08dcc459feacbd3fa4c77"
+    },
+    "localChecks": {
+      "rust": {
+        "handle": 81145,
+        "log": "/private/tmp/manager-backup-export-rust.log",
+        "actualTestResult": "6 passed;0 failed;0 ignored",
+        "cases": [
+          "exact private encrypted copy/repeated export unique output",
+          "failed completed-job admission",
+          "protected destination and parent symlink race",
+          "source symlink rejection",
+          "FIFO nonblocking rejection",
+          "bounded rehash exact/short/overgrown inputs"
+        ],
+        "wrapperExit": 1,
+        "wrapperFailure": "After successful tests, zsh rejected assignment to readonly status. Test success was read from original terminal log; successful tests were not repeated."
+      },
+      "desktopCheck": {
+        "handle": 39988,
+        "exitCode": 0,
+        "seconds": 25.196,
+        "log": "/private/tmp/manager-backup-export-desktop-check.log"
+      },
+      "frontendAndBrowser": {
+        "handle": 60516,
+        "receiptUnit": {
+          "passed": 1,
+          "unrelatedSkipped": 30
+        },
+        "frontendBuild": "PASS tsc/Vite",
+        "browser": {
+          "passed": 6,
+          "workers": 1,
+          "viewports": [
+            "1120x900",
+            "640x850"
+          ],
+          "scope": "Actual browser click/form interactions with synthetic IPC: export success->existing verifier exact path, cancel, and copy failure. OS chooser and native crypto are not replaced by these checks."
+        },
+        "logs": [
+          "/private/tmp/manager-backup-export-unit.log",
+          "/private/tmp/manager-backup-export-frontend.log",
+          "/private/tmp/manager-backup-export-browser.log"
+        ]
+      },
+      "lint": "Scoped ESLint passed; diff check passed"
+    },
+    "actualNativeCopy": {
+      "handle": 68957,
+      "receipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-three-image-literal-c4d7f33c-2cf4-4e73-9112-fdffe430b2ff/native-copy-result.json",
+      "seconds": 24.534,
+      "files": 15,
+      "bytes": 485251498,
+      "byteShaAndPrivateModeMatch": true,
+      "existingVerifierAuthenticated": true,
+      "originalArchiveEnvAndSyntheticKeyUnchanged": true,
+      "boundary": "Existing public InstallationController override on the same new synthetic source and completed job; new external destination only. No install/backup/restore rerun, existing user profile/key access or image/volume deletion."
+    },
+    "reviewFindingsResolved": [
+      "FIFO read descriptor uses O_NONBLOCK before regular-file refusal.",
+      "Target/source rehash reads at most expected length plus one byte and rejects short or growing inputs.",
+      "Stage/files descriptor paths are checked before each file write and before publication; later relocation fails final validation and retains the partial candidate."
+    ],
+    "notQualified": [
+      "Actual macOS OS chooser and native GUI button interactions",
+      "Formal distribution/notarization or no-engine installation"
+    ],
+    "sourceChangeDoesNotReopenCompletedParentTasks": true
+  },
+  "latestGuiRuntimePackaging": {
+    "managerSource": "e235c4ddb8a84a336927b2333edd259e0af6680c",
+    "platformSource": "f0cd0f6f272b802bfe88dd48c7b8e9f153c7a012",
+    "receipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-gui-native-e235c4d-ffea8539-d6d3-4aa7-b062-dd739d0a85a4/native-app-verification.json",
+    "resourcePreparation": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-gui-native-e235c4d-ffea8539-d6d3-4aa7-b062-dd739d0a85a4/resource-preparation.json",
+    "producerReceipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-gui-native-e235c4d-ffea8539-d6d3-4aa7-b062-dd739d0a85a4/producer-packaging-receipt.json",
+    "ociIndexArm64ConfigChain": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-gui-native-e235c4d-ffea8539-d6d3-4aa7-b062-dd739d0a85a4/oci-index-arm64-config-chain.json",
+    "localImageIdReadOnlyObservation": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-gui-native-e235c4d-ffea8539-d6d3-4aa7-b062-dd739d0a85a4/local-image-id-readonly-observation.json",
+    "app": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-gui-native-e235c4d-ffea8539-d6d3-4aa7-b062-dd739d0a85a4/development-adhoc/ExhibitOS Manager.app",
+    "rawApp": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-gui-native-e235c4d-ffea8539-d6d3-4aa7-b062-dd739d0a85a4/raw-build/ExhibitOS Manager.app",
+    "buildExitCode": 0,
+    "buildSeconds": 172.5015260410728,
+    "rawStrictDeepExitCode": 1,
+    "developmentRootOnlyAdhocSeal": true,
+    "developmentStrictDeepExitCode": 0,
+    "resourceEntries": 9136,
+    "resourcesUnchangedBySeal": true,
+    "executableSha256": "bf4976ed063617b436486d9bda8f1bd396987d51e3e8572016946f41f545c2b1",
+    "retainedPreviousPrepared": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-gui-native-e235c4d-ffea8539-d6d3-4aa7-b062-dd739d0a85a4/retained-prepared-runtime-b701aac",
+    "developerIdSigned": false,
+    "notarized": false,
+    "appLaunched": false,
+    "osDialogRequested": false,
+    "userProfileAccessed": false,
+    "actualNewRuntimeInstallation": false,
+    "sourceCleanAfterPackaging": true,
+    "qualification": "One exact native development app build with latest Platform GUI runtime. Original raw signature result preserved and separate root-only ad-hoc copy verifies strictly. This is not native OS chooser/GUI, new runtime install, formal distribution or fresh-device qualification. Previous b0a app and all recovery fixtures remain preserved."
+  },
+  "optionalProcessingConnection": {
+    "baselineManagerSource": "ec725fd4f79633436041c84515465ec4f845a21e",
+    "tasks": [
+      "T08-01",
+      "T08-03"
+    ],
+    "sourceSha256": {
+      "Cargo.lock": "218147cfc84c80112b6536f6946bcc2ec67b0f68095f5313684fa217d463de52",
+      "src-tauri/Cargo.toml": "2cc37995781cf1920e228e06f318f4dde7ac48d960627032730303f2a04476c0",
+      "src-tauri/build.rs": "39d47a9dea579f187780cb17735199a5ef461a73971ef58012bae931034372ac",
+      "src-tauri/capabilities/manager-local.json": "8fa150ace0cf3e79ea8bab1b574d34dc52e9eb8a9bde0a262d330120a52854bc",
+      "src-tauri/src/lib.rs": "72b730f5f8b05bb765db1b7e0632fe333630ad1f2e962d8b9df32c559202abb3",
+      "src-tauri/src/maintenance_picker.rs": "f76719193a4334045a7cc07c9944b1dbba3ab282098c61015bbfcea737b2732e",
+      "src-tauri/permissions/autogenerated/manager_processing_app.toml": "48e8638b5bca12a7310fa3701ad03b9554128f867de7596092b2dfa1924aa394",
+      "src-tauri/src/processing_app.rs": "6b84bd95907469e700d7799385fab501daaa0256839547a21dfc95694fa70c1e",
+      "src/App.tsx": "d3849bd8070d5202ff600716ecdc8ded22bc5ccd1f2a4a059fd84e07c847892a",
+      "src/OptionalProcessing.tsx": "e6f3c1c48013fa5a9014a6d1cb1796fbbd3201d063de21f0fa8d5e65d19e62eb",
+      "src/processing-app.ts": "dc493204971f4151873eaad8cad109c1f76df270f0cb26f24b474f6ae8d7ec03",
+      "src/processing-app.test.ts": "b74a43a10ac67731508a2e0620662b28b47427bb202ca3cedf765cfbbaa5f229",
+      "src/browser/optional-processing.spec.ts": "a28381ed058a98e675dd47b1b6d02b1f8ab0611eff1306785e762c63c2c610de"
+    },
+    "implementation": [
+      "Closed native actions status/choose/open-detected/open-selected; stable bundle identifier org.exhibitos.processing only for automatic LaunchServices lookup.",
+      "Multiple detected versions require explicit native app selection; no arbitrary candidate auto-launch.",
+      "Selected app canonical path is the only preference, stored privately in standard app_config_dir/processing-application.json. No artwork authentication or Store receipt requirement.",
+      "Default collapsed optional tools UI performs no initial lookup and never blocks Studio. Explicit launch uses fixed open argv without model/reconstruction arguments.",
+      "No actual Store product URL exists; preparing state is displayed without invented link or distribution verification."
+    ],
+    "validation": {
+      "rust": {
+        "tests": 5,
+        "exitCode": 0,
+        "handle": 41098,
+        "log": "/private/tmp/manager-optional-processing-rust.log"
+      },
+      "typescriptBoundary": {
+        "tests": 2,
+        "exitCode": 0,
+        "log": "/private/tmp/manager-optional-processing-unit.log"
+      },
+      "frontend": {
+        "typecheckAndBuildExitCode": 0,
+        "log": "/private/tmp/manager-optional-processing-frontend.log"
+      },
+      "lint": {
+        "exitCode": 0,
+        "log": "/private/tmp/manager-optional-processing-lint-qualified.log",
+        "initialFixtureLintCorrection": "let-to-const only; first lint rejection preserved in manager-optional-processing-lint.log"
+      },
+      "browser": {
+        "tests": 8,
+        "exitCode": 0,
+        "viewports": [
+          "1120x900",
+          "640x850"
+        ],
+        "ipc": "synthetic native responses; no actual chooser or app launch",
+        "log": "/private/tmp/manager-optional-processing-browser.log"
+      },
+      "readOnlyLaunchServices": {
+        "registeredBundleCount": 14,
+        "pathsPublished": false,
+        "applicationLaunched": false,
+        "actualStoreVerification": false
+      },
+      "desktopIntegration": {
+        "source": "b33900d8b741717239a750a18ca4ecc86af3e9e1",
+        "command": "cargo check --manifest-path src-tauri/Cargo.toml --locked",
+        "jobs": 1,
+        "handle": 24457,
+        "exitCode": 0,
+        "seconds": 16.95,
+        "log": "/private/tmp/manager-optional-processing-desktopcheck.log",
+        "scope": "Actual Tauri desktop command registration, manifest/capability and native module compilation. No app launch or OS interaction."
+      }
+    },
+    "sdkBoundary": "LSCopyApplicationURLsForBundleIdentifier is available in the inspected local macOS SDK; header marks future deprecation and recommends NSWorkspace replacement. No latest-recommended API claim.",
+    "authority": "Initial source-write review rejected historical pause; no action executed. Normal review resubmitted with direct human resume confirmation call_89b4899be53645caba4824ba9fcf1bfe and active parent Goal, then approved.",
+    "notQualified": [
+      "Actual OS app chooser, cancellation and preference persistence across actual native restart",
+      "Actual selected-app launch / existing-window activation",
+      "App Store product availability, official signature and Store installation",
+      "New native app packaging: previous e235 package does not include this source change"
+    ],
+    "noNewTasksOrReleaseGates": true,
+    "review": {
+      "findingResolved": "Processing chooser errors reuse Processing guidance (choose again / Studio independent), keeping backup picker guidance unchanged.",
+      "validationBoundary": "Final error-guidance mapping is syntax/formatted only after native5 qualification; full native rebuild not repeated."
+    }
+  },
+  "matchedAuthorityNativePackage20261018": {
+    "observedAt": "2026-10-18T04:14:05.629879+00:00",
+    "status": "PACKAGED_ADHOC_RESOURCE_SHA_PASS_NOT_LAUNCHED_OR_NOTARIZED",
+    "managerSource": "5cdf4b19b5ae896e808ddcebec4daf99594f247e",
+    "platformSource": "2e7cefde59550f098210700dcb6ea09b94379a0f",
+    "receipt": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-authority-native-5cdf4b1-e6c4e9ab-8a76-442a-9106-c4f7343b6cb7/receipt.json",
+    "receiptSha256": "7cb672125c2791f19d6fb0dc079a5b443986f29c2a6dabfff3b98ab5f2ef989e",
+    "app": "/Volumes/ExhibitSSD/ExhibitOS-Backups/manager-authority-native-5cdf4b1-e6c4e9ab-8a76-442a-9106-c4f7343b6cb7/development-adhoc/ExhibitOS Manager.app",
+    "buildSession": 74945,
+    "exit": 0,
+    "buildSeconds": 158.53880295797717,
+    "appBytes": 503458436,
+    "files": 7806,
+    "postPackageVerification": {
+      "remoteNodeSHA": "e4b5a3af0e05c75de2eae013904145f40fe7fc2a6e6f17510128bf45cca4e79b",
+      "nodeVersion": "v24.21.0",
+      "embeddedManifestExact": true,
+      "publicationFilesVerified": 7676,
+      "publicationPlatformSource": "99ae38d44106a276f2675f4118a7ea4d498d4e9a",
+      "bundleIdentifier": "org.exhibitos.manager",
+      "declaredMinSystem": "12.0",
+      "actualHostQualification": "Build host macOS27.0.1 arm64 only; declared minimum is not an actual compatibility claim",
+      "actualNativeGUI": false,
+      "keychainAccessed": false
+    },
+    "previousRuntimeSource": "f0cd0f6f272b802bfe88dd48c7b8e9f153c7a012",
+    "previousAppRuntimeExecutablesRetained": true,
+    "existingExternalManagerObservation": {
+      "pid": 21669,
+      "scope": "Read-only process observation before build; old app outside target dir left untouched. This is not a current-job or future process-liveness claim."
+    },
+    "notVerified": [
+      "Actual native OS Keychain/chooser and hosted backup interaction/cancellation/relaunch",
+      "Original settings/signing key restore-load and deployment/runtime/Pages provenance",
+      "Actual installer, Developer ID, notarization and user environment without dev tools",
+      "Full restore/migration/update/rollback and7GUI acceptance"
+    ]
+  }
+}

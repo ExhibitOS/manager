@@ -1,9 +1,13 @@
 # ExhibitOS Manager
 
+[웹 전시 공개](docs/hosted-deployment.md)는 승인한 전시를 Cloudflare Pages로 공개하고 필요한 경우에만 Render API·PostgreSQL을 준비하는 Mac 경로입니다. 제공자 토큰은 native Keychain에 보관하며 정적 전시만 공개할 때는 Render가 필요 없습니다. 실제 계정·배포와 동적 전시·복구 검증은 별도로 구분합니다.
+
+> 1차 출시 범위(2026-10-15 사용자 변경)는 Mac Manager의 설치·실행·백업·복원·업데이트·롤백입니다. 기존 Windows/Linux 구현과 결과는 보존하되 해당 native 배포는 후속이며 1차 필수 검사가 아닙니다. 서버 Ubuntu 단일 운영 profile과 사용자 앱 OS 지원을 구분합니다. Mac 실제 설치·복구 검증과 원본 보존 조건은 유지합니다.
+
 로컬 전시 서버의 설치·시작·정지·재시작·상태와 작업 기록을 관리하는
 Tauri2/Rust 데스크톱 앱의 개발 구현입니다. Windows Docker 기본 설치·시작·정지·재시작·API 연결과 진행 표시를 실제 사용자 환경에서 확인했습니다. 전체 Windows 복구·업데이트·설치 프로그램 검증,
 macOS 서명·공증과 배포용 설치 프로그램은 완료되지 않았습니다. 앱의 실제 복원 GUI 조작·취소/재개,
-업데이트·rollback과 cloud wizard는 후속 작업입니다.
+업데이트 적용·원래 전시 전체 복원과 취소·재시도 화면은 소스에 연결돼 있으나 실제 네이티브 GUI와 전체 signed apply·rollback 검증은 남아 있습니다. 기존 cloud wizard는 보존하며 1차 출시 범위의 필수 경로가 아닙니다.
 [설치된 전시의 백업 생성](docs/backup-creation.md)은 개발 CLI에서 Docker 기반
 설치의 DB·작품·서명 설정·설치 파일·images를 암호화·인증하며 전시 writer를 정지 상태로 둡니다.
 로컬 앱 창의 생성 화면에 같은 adapter를 연결했으며 실제 네이티브 GUI 조작과
@@ -98,6 +102,8 @@ AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를
 
 [실제 Runtime 릴리스 계획과 복원 후보 검사](docs/genuine-update-plan.md)는 실제 artifact에 새 준비 계획을 연결합니다. 복원 후보는 원본 버전 Runtime을 검사하며 신규 target 적용·health·rollback은 별도입니다.
 
+기존 native 준비 경로의 `ExecutionSession::stop_target_candidate(true)`는 현재 Prepared 계획에 등록되고 원래 백업의 복원 receipt와 결속된 후보만 정상 정지합니다. 원본이 이미 정지되어 있는지 앞뒤로 관측하고 원래 선택·설정·신뢰 기록을 유지하며, 같은 operation lock 아래 기존 Stop 작업의 완료와 실제 후보 정지를 다시 확인합니다. 후보 작업 기록도 바뀌므로 **최종 host/trust checkpoint 전에 호출**해야 하며, 정지 전에 만든 checkpoint를 그대로 재사용하지 않습니다. 관련 fixture 6개와 기존 작업·잠금 회귀 2개 및 library Clippy를 확인했지만, 이 새 API의 실제 후보 정지·native GUI·전체 업데이트/rollback 검증은 아직 별도 미완료입니다.
+
 [독립 사본 target Runtime 검사](docs/target-runtime-probe.md)는 신규 버전과 이전 버전의 기본 동작을 별도 synthetic 사본에서 검사합니다. 실제 설치 전환·전체 호환성·rollback 인수 조건은 별도입니다.
 
 [호스트·신뢰 묶음 사본](docs/paired-host-trust-checkpoint.md)은 같은 cooperative 잠금에서 두 암호화 사본을 만들고 비활성 경로 추출을 지원합니다. 현재 외부 서비스 볼륨 백업·authority 복원·실제 업데이트 인수 조건은 별도로 유지합니다.
@@ -165,8 +171,14 @@ The frontend keeps other lifecycle actions disabled during handoff. Startup/reop
 
 ## Original full rollback and interrupted recovery in Manager
 
-The selected installation's existing immutable plan supplies the original backup identity, image, schema and inventory. The panel offers either a full restore into a fresh candidate or completion of an already restored candidate, according to the current native context. Full restore takes the original encrypted service-backup directory, its external key-file path, a pinned maintenance image and a new candidate port. Completing a restored candidate does not request the key or archive again. Both actions require explicit downtime, preservation and external-writer acknowledgements; native observations remain mandatory.
+The selected installation's existing immutable plan supplies the original backup identity, image, schema and inventory. The panel offers either a full restore into a fresh candidate or completion of an already restored candidate, according to the current native context. Full restore takes the original encrypted service-backup directory, its external key-file path, a pinned maintenance image and a new candidate port. Completing a restored candidate does not request the key or archive again. The panel selects the bundled recovery tool by default and uses the existing native folder/key choosers; direct image/path inputs remain under advanced controls. Refresh retains these selected values while clearing acknowledgements, and changing management spaces discards the previous space's inputs. Both actions require explicit downtime, preservation and external-writer acknowledgements; native observations remain mandatory. Before a requested handoff, the native controller validates the same current rollback intent and existing interrupted-helper fences, prepares only the matching fixed bundled tool, then revalidates before persisting the handoff. Read-only receipt lookup does not prepare tools or require application resources.
 
 The fixed `--manager-update-rollback-helper` claims one immutable request before waiting for app closure. It checks the exact registry, operation, generation and context before reusing existing interruption recovery. Updated records enter the existing explicit rollback transition; interrupted restoration retains its previous candidate and reserves a fresh candidate for retry. Already restored candidates use the existing activation and health re-observation path. Original data, keys, backups, failed candidates and previous activation attempts are preserved. A pending exact selection publication is reconciled using its existing immutable proof; it cannot grant general write authority to an unfinished candidate. Generation-specific rollback activation records permit retry without overwriting legacy `-rollback` records, which remain readable.
 
 Only the existing committed RolledBack/health/selection result produces a completed receipt. A dispatched helper, missing outcome, failed restore or interrupted request never counts as completion. Source checks cover synthetic inputs and crash boundaries; real native GUI/full recovery, Windows qualification and the existing changed-schema publication gates remain unfinished. No operating installation or operating key was used for these source checks.
+
+### Windows app-closed update and full rollback source connection
+
+Prepared reference lookup, fresh apply qualification and full rollback handoffs also use the existing Windows native Store, service-recovery transport and guarded authority readers. Windows request/reference files stay pinned against writers and replacement throughout execution; claim-before-app-close ordering and exact registry/operation/generation checks are unchanged. Record publication uses private CREATE_NEW files with actual file flush, followed by namespace/identity checks. It does not claim Unix directory fsync semantics on Windows.
+
+The source includes five Windows synthetic regressions for request/reference preservation, app-close waiting, single ownership, stale generation and changed reference refusal. They were compiled by strict Windows-target Clippy, not executed on Windows. Mac core and desktop compilation are separate regression evidence. Actual Windows Docker/helper/native GUI/full recovery and changed-schema publication acceptance remain unverified; no operating key or runtime was used in these source checks.

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-choose-backup-path"
+description = "Enables the manager_choose_backup_path command without any pre-configured scope."
+commands.allow = ["manager_choose_backup_path"]
+
+[[permission]]
+identifier = "deny-manager-choose-backup-path"
+description = "Denies the manager_choose_backup_path command without any pre-configured scope."
+commands.deny = ["manager_choose_backup_path"]

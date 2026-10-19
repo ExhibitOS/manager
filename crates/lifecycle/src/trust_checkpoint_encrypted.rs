@@ -75,11 +75,20 @@ impl Store {
                 .map_err(|_| Error::TrustWriteUncertain)?;
         }
         file.sync_all().map_err(|_| Error::TrustWriteUncertain)?;
+        #[cfg(not(windows))]
         drop(file);
         if self.checkpoint_records()? != records {
             return Err(invalid());
         }
+        #[cfg(not(windows))]
         publish(&pending, archive)?;
+        #[cfg(windows)]
+        {
+            file.check_private().map_err(|_|invalid())?;
+            let directory=crate::windows_private::HostDirectory::inspect(&parent).map_err(|_|invalid())?;
+            directory.check_private().map_err(|_|invalid())?;
+            file.publish_into(&directory,archive.file_name().and_then(|n|n.to_str()).ok_or_else(invalid)?).map_err(|_|Error::TrustWriteUncertain)?;
+        }
         sync_dir(&parent)?;
         Ok(TrustCheckpointReceipt {
             generation: self.current.generation,
@@ -129,6 +138,8 @@ impl Store {
             return Err(invalid());
         }
         let stage = parent.join(format!("pending-trust-extract-{}", uuid::Uuid::new_v4()));
+        #[cfg(not(windows))]
+        {
         let mut builder = fs::DirBuilder::new();
         #[cfg(unix)]
         {
@@ -136,6 +147,13 @@ impl Store {
             builder.mode(0o700);
         }
         builder.create(&stage).map_err(|_| invalid())?;
+        }
+        #[cfg(windows)]
+        let parent_guard=crate::windows_private::HostDirectory::inspect(&parent).map_err(|_|invalid())?;
+        #[cfg(windows)]
+        parent_guard.check_private().map_err(|_|invalid())?;
+        #[cfg(windows)]
+        let mut stage_guard=parent_guard.create_directory(stage.file_name().and_then(|n|n.to_str()).ok_or_else(invalid)?).map_err(|_|invalid())?;
         let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| invalid())?;
         for (index, (name, expected)) in records.iter().enumerate() {
             file.read_exact(&mut length).map_err(|_| invalid())?;
@@ -160,10 +178,19 @@ impl Store {
                 plain.fill(0);
                 return Err(invalid());
             }
-            let mut out = private_file(&stage.join(name), true)?;
-            let written = out.write_all(&plain).and_then(|_| out.sync_all());
+            let written = (|| -> Result<(),Error> {
+                #[cfg(not(windows))]
+                let mut out=private_file(&stage.join(name),true)?;
+                #[cfg(windows)]
+                let mut out=stage_guard.create_file(name).map_err(|_|invalid())?;
+                out.write_all(&plain).map_err(|_|Error::TrustWriteUncertain)?;
+                out.sync_all().map_err(|_|Error::TrustWriteUncertain)?;
+                #[cfg(windows)]
+                out.check_private().map_err(|_|Error::TrustWriteUncertain)?;
+                Ok(())
+            })();
             plain.fill(0);
-            written.map_err(|_| Error::TrustWriteUncertain)?;
+            written?;
         }
         let mut extra = [0u8; 1];
         if file.read(&mut extra).map_err(|_| invalid())? != 0 {
@@ -171,12 +198,12 @@ impl Store {
         }
         let after = file.metadata().map_err(|_| invalid())?;
         let current = fs::symlink_metadata(archive).map_err(|_| invalid())?;
-        if !identity(&metadata, &after)
-            || !identity(&after, &current)
-            || metadata.len() != after.len()
-            || current.is_symlink()
+        #[cfg(not(windows))]
+        if !identity(&metadata,&after) || !identity(&after,&current) || metadata.len()!=after.len() || current.is_symlink() { return Err(invalid()); }
+        #[cfg(windows)]
         {
-            return Err(invalid());
+            file.check_private().map_err(|_|invalid())?;
+            if metadata.len()!=after.len() || current.is_symlink() || current.len()!=after.len() || metadata.modified().map_err(|_|invalid())? != after.modified().map_err(|_|invalid())? { return Err(invalid()); }
         }
         #[cfg(unix)]
         {
@@ -197,12 +224,25 @@ impl Store {
                 return Err(invalid());
             }
         }
-        sync_dir(&stage)?;
-        let receipt = self.verify_trust_checkpoint(&stage)?;
-        publish(&stage, target)?;
-        sync_dir(&parent)?;
-        self.verify_trust_checkpoint(target)?;
-        Ok(receipt)
+        #[cfg(not(windows))]
+        {
+            sync_dir(&stage)?;
+            let receipt=self.verify_trust_checkpoint(&stage)?;
+            publish(&stage,target)?;
+            sync_dir(&parent)?;
+            self.verify_trust_checkpoint(target)?;
+            Ok(receipt)
+        }
+        #[cfg(windows)]
+        {
+            stage_guard.sync_all().map_err(|_|Error::TrustWriteUncertain)?;
+            let receipt=self.verify_trust_checkpoint_native(&stage_guard)?;
+            file.check_private().map_err(|_|invalid())?;
+            stage_guard.publish_into(&parent_guard,target.file_name().and_then(|n|n.to_str()).ok_or_else(invalid)?).map_err(|_|Error::TrustWriteUncertain)?;
+            parent_guard.sync_all().map_err(|_|Error::TrustWriteUncertain)?;
+            self.verify_trust_checkpoint_native(&stage_guard)?;
+            Ok(receipt)
+        }
     }
 }
 #[cfg(all(test, unix))]

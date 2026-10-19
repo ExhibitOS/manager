@@ -64,7 +64,7 @@ pub(crate) fn source_bytes(
             return Err(err("BACKUP_SOURCE_INVALID"));
         }
         _root_fence.check()?;
-        return Ok(bytes);
+        Ok(bytes)
     }
     #[cfg(not(windows))]
     {
@@ -167,14 +167,16 @@ pub(crate) fn environment_valid(bytes: &[u8], manifest: &BundleManifest) -> Resu
             return Err(err("BACKUP_CONFIGURATION_INVALID"));
         }
     }
+    let admin_password=super::initial_account::decode_password(values.get("ADMIN_PASSWORD").ok_or_else(||err("BACKUP_CONFIGURATION_INVALID"))?).map_err(|_|err("BACKUP_CONFIGURATION_INVALID"))?;
     if values.len() != 6
         || values["EXHIBITOS_PORT"] != port.to_string()
         || Uuid::parse_str(values["TENANT_ID"]).is_err()
         || values["ADMIN_SUBJECT"].len() > 128
         || values["POSTGRES_PASSWORD"].len() < 12
-        || values["ADMIN_PASSWORD"].len() < 12
+        || admin_password.len() < 12
         || values["POSTGRES_PASSWORD"].len() > 1024
-        || values["ADMIN_PASSWORD"].len() > 1024
+        || admin_password.len() > 1024
+        || admin_password.chars().any(char::is_control)
         || values["DATABASE_URL"]
             != format!(
                 "postgresql://exhibitos:{}@database:5432/exhibitos",
@@ -193,9 +195,6 @@ impl LifecycleService {
         self.prepare_installation_backup_locked()
     }
     pub(crate) fn prepare_installation_backup_locked(&self) -> Result<InstallationBackupReceipt> {
-        if cfg!(windows) {
-            return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
-        }
         if fs::canonicalize(&self.root).map_err(|_| err("BACKUP_PATH_INVALID"))? != self.root {
             return Err(err("BACKUP_PATH_INVALID"));
         }
@@ -228,25 +227,15 @@ impl LifecycleService {
         environment_valid(&files["manager-runtime.env"], &manifest)?;
         let id = Uuid::new_v4().to_string();
         let workspace = self.root.join(format!("backup-preparation-{id}"));
-        fs::create_dir(&workspace).map_err(|_| err("STATE_UNAVAILABLE"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700))
-                .map_err(|_| err("STATE_UNAVAILABLE"))?;
-        }
+        // Keep the Windows directory identity/ACL fence alive through receipt or failure publication.
+        // The shared stage helper preserves the existing Unix 0700 directory behavior.
+        let _workspace_guard = super::restoration::directory(&workspace)?;
         let outcome = (|| -> Result<InstallationBackupReceipt> {
             let mut inventory = BTreeMap::new();
             let mut configuration = BTreeMap::new();
             for (name, bytes) in &files {
                 let path = workspace.join(name);
-                let mut output = private_options()
-                    .open(&path)
-                    .map_err(|_| err("STATE_UNAVAILABLE"))?;
-                output
-                    .write_all(bytes)
-                    .and_then(|_| output.sync_all())
-                    .map_err(|_| err("STATE_UNAVAILABLE"))?;
+                super::restoration::private_bytes(&path, bytes)?;
                 inventory.insert(
                     *name,
                     serde_json::json!({"bytes":bytes.len(),"sha256":digest(bytes)}),
@@ -412,5 +401,198 @@ mod tests {
             service.prepare_installation_backup().unwrap_err().code,
             "BACKUP_CONFIGURATION_INVALID"
         );
+    }
+    #[test]
+    fn literal_admin_password_keeps_backup_bytes_and_byte_policy(){
+        let (service,original)=fixture();let manifest:BundleManifest=read_json(&service.root.join("installed.json")).unwrap();
+        for password in ["synthetic$VAR ${VAR} # text' \"quoted\" \\ end\\".to_string(),"\\".repeat(1024)]{
+            let encoded=super::super::initial_account::encode_password(&password);
+            let text=original.lines().map(|line|if line.starts_with("ADMIN_PASSWORD="){format!("ADMIN_PASSWORD={encoded}\n")}else{format!("{line}\n")}).collect::<String>();
+            assert!(environment_valid(text.as_bytes(),&manifest).is_ok());
+            fs::write(service.root.join("runtime.env"),text.as_bytes()).unwrap();let before=fs::read(service.root.join("runtime.env")).unwrap();
+            service.prepare_installation_backup().unwrap();assert_eq!(fs::read(service.root.join("runtime.env")).unwrap(),before);
+        }
+    }
+
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    fn fixture() -> (LifecycleService, Vec<u8>) {
+        let service = LifecycleService::new(
+            std::env::temp_dir().join(format!("windows-installation-snapshot-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let bundle = service.root.join("bundle");
+        let _bundle_guard = super::super::restoration::directory(&bundle).unwrap();
+        let mut manifest = crate::tests::manifest_for_detection();
+        let compose = b"services: {}\n";
+        manifest.compose_sha256 = digest(compose);
+        super::super::restoration::private_bytes(&bundle.join("compose.yaml"), compose).unwrap();
+        write_json(&bundle, "manifest.json", &manifest).unwrap();
+        write_json(&service.root, "installed.json", &manifest).unwrap();
+        write_json(&service.root, "engine.json", &"docker").unwrap();
+        service.runtime_env(&manifest).unwrap();
+        let original = source_bytes(&service.root, "runtime.env", 8192, true).unwrap();
+        (service, original)
+    }
+
+    fn preparations(root: &Path) -> usize {
+        fs::read_dir(root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("backup-preparation-")
+            })
+            .count()
+    }
+
+    #[test]
+    fn windows_installation_snapshot_preserves_private_inputs_and_receipt_scope() {
+        let (service, original) = fixture();
+        let receipt = service.prepare_installation_backup().unwrap();
+        assert_eq!(receipt.operation, "prepared-configuration");
+        assert_eq!(receipt.files, 5);
+        let workspace = service
+            .root
+            .join(format!("backup-preparation-{}", receipt.id));
+        let directory =
+            super::super::windows_private::PrivateDirectory::inspect(&workspace).unwrap();
+        for (_, name, _, _) in SOURCES {
+            assert!(
+                !directory
+                    .read_record(name)
+                    .unwrap()
+                    .read_bounded(1024 * 1024)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        assert_eq!(
+            source_bytes(&workspace, "manager-runtime.env", 8192, true).unwrap(),
+            original
+        );
+        assert_eq!(
+            source_bytes(&service.root, "runtime.env", 8192, true).unwrap(),
+            original
+        );
+        let inventory: Value = read_json(&workspace.join("inventory.json")).unwrap();
+        assert_eq!(
+            digest(&serde_json::to_vec(&inventory).unwrap()),
+            receipt.inventory_sha256
+        );
+        let mapping: BTreeMap<String, PathBuf> =
+            read_json(&workspace.join("configuration-files.json")).unwrap();
+        assert_eq!(mapping.len(), 5);
+        assert!(mapping.values().all(|p| p.starts_with(&workspace)));
+        let public = serde_json::to_string(&receipt).unwrap();
+        for line in std::str::from_utf8(&original).unwrap().lines() {
+            if line.starts_with("POSTGRES_PASSWORD=") || line.starts_with("ADMIN_PASSWORD=") {
+                assert!(!public.contains(line.split_once('=').unwrap().1));
+            }
+        }
+        directory.check().unwrap();
+        assert_ne!(
+            service.prepare_installation_backup().unwrap().id,
+            receipt.id
+        );
+    }
+
+    #[test]
+    fn windows_installation_snapshot_rejects_inconsistent_bundle_or_compose() {
+        let (service, _) = fixture();
+        fs::write(service.root.join("bundle/compose.yaml"), b"changed").unwrap();
+        assert_eq!(
+            service.prepare_installation_backup().unwrap_err().code,
+            "BUNDLE_CHANGED"
+        );
+        assert_eq!(preparations(&service.root), 0);
+        let (service, _) = fixture();
+        let mut installed: BundleManifest =
+            read_json(&service.root.join("installed.json")).unwrap();
+        installed.version = "different".into();
+        write_json(&service.root, "installed.json", &installed).unwrap();
+        assert_eq!(
+            service.prepare_installation_backup().unwrap_err().code,
+            "BUNDLE_CHANGED"
+        );
+        assert_eq!(preparations(&service.root), 0);
+    }
+
+    #[test]
+    fn windows_installation_snapshot_refuses_shared_acl_hardlink_and_busy_operation() {
+        let (service, original) = fixture();
+        let secret = service.root.join("runtime.env");
+        let status = super::super::process_window::background_command("icacls.exe")
+            .arg(&secret)
+            .args(["/grant", "*S-1-1-0:R"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(
+            service.prepare_installation_backup().unwrap_err().code,
+            "WINDOWS_PROFILE_ACL_INVALID"
+        );
+        assert_eq!(fs::read(&secret).unwrap(), original);
+        assert_eq!(preparations(&service.root), 0);
+        let (service, original) = fixture();
+        fs::hard_link(
+            service.root.join("runtime.env"),
+            service.root.join("alias.env"),
+        )
+        .unwrap();
+        assert!(service.prepare_installation_backup().is_err());
+        assert_eq!(
+            fs::read(service.root.join("runtime.env")).unwrap(),
+            original
+        );
+        assert_eq!(preparations(&service.root), 0);
+        let (service, original) = fixture();
+        let _guard = service.lock().unwrap();
+        assert_eq!(
+            service.prepare_installation_backup().unwrap_err().code,
+            "BUSY"
+        );
+        assert_eq!(
+            fs::read(service.root.join("runtime.env")).unwrap(),
+            original
+        );
+        assert_eq!(preparations(&service.root), 0);
+    }
+
+    #[test]
+    fn windows_installation_snapshot_rejects_changed_configuration_without_rotation() {
+        for suffix in ["UNKNOWN_KEY=synthetic\n", "TENANT_ID=duplicate\n"] {
+            let (service, original) = fixture();
+            let mut changed = original;
+            changed.extend_from_slice(suffix.as_bytes());
+            fs::write(service.root.join("runtime.env"), &changed).unwrap();
+            assert_eq!(
+                service.prepare_installation_backup().unwrap_err().code,
+                "BACKUP_CONFIGURATION_INVALID"
+            );
+            assert_eq!(fs::read(service.root.join("runtime.env")).unwrap(), changed);
+            assert_eq!(preparations(&service.root), 0);
+        }
+        let (service, original) = fixture();
+        let changed = std::str::from_utf8(&original)
+            .unwrap()
+            .replace("EXHIBITOS_PORT=13200", "EXHIBITOS_PORT=13201");
+        fs::write(service.root.join("runtime.env"), changed.as_bytes()).unwrap();
+        assert_eq!(
+            service.prepare_installation_backup().unwrap_err().code,
+            "BACKUP_CONFIGURATION_INVALID"
+        );
+        assert_eq!(
+            fs::read_to_string(service.root.join("runtime.env")).unwrap(),
+            changed
+        );
+        assert_eq!(preparations(&service.root), 0);
     }
 }

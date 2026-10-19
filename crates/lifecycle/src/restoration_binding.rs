@@ -103,7 +103,7 @@ impl RestorationBinding {
 }
 /// Physical SQL schema plus every ordered migration name/checksum, including
 /// data-only migrations whose physical schema digest does not change.
-fn schema_fingerprint(inventory: &Value) -> Result<String> {
+pub(crate) fn schema_fingerprint(inventory: &Value) -> Result<String> {
     let physical = inventory["schemaDigest"]
         .as_str()
         .filter(|s| hash_valid(s))
@@ -139,7 +139,7 @@ fn schema_fingerprint(inventory: &Value) -> Result<String> {
 /// SHA-256 over compact JSON with recursively UTF-8-byte-sorted object keys,
 /// preserved array order and safe integer numbers. Timestamp is retained: this
 /// identifies the exact archived inventory, not a newly captured source snapshot.
-fn inventory_fingerprint(value: &Value) -> Result<String> {
+pub(crate) fn inventory_fingerprint(value: &Value) -> Result<String> {
     fn safe(v: &Value) -> bool {
         match v {
             Value::Number(n) => {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Saved native references locate inputs; only a fresh owned preflight permits execution.
 use super::*;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::signed_release::trust::Store;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -26,6 +26,10 @@ pub(crate) struct Reference {
     pub key_file: PathBuf,
     pub qualification_destination: PathBuf,
     pub qualification_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_catalog: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_catalog_sha256: Option<String>,
     pub created_at: u64,
 }
 #[derive(Debug, Serialize)]
@@ -40,6 +44,8 @@ pub struct ReferenceSummary {
     pub changed_schema: bool,
     pub prior_qualification_recorded: bool,
     pub execution_requalification_required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub migration_inputs_recorded: Option<bool>,
 }
 pub(crate) fn load(profile: &Path, id: &str) -> Result<(Reference, Vec<u8>)> {
     if !installations::uuid(id) {
@@ -89,7 +95,18 @@ pub(crate) fn load(profile: &Path, id: &str) -> Result<(Reference, Vec<u8>)> {
             return Err(err("UPDATE_REFERENCE_INVALID"));
         }
     }
+    catalog_pair(&value)?;
     Ok((value, bytes))
+}
+// Only a bounded locator/pin pair is stored. Actual bytes/schema/OCI are
+// requalified by a live permit on explicit apply, never by metadata listing.
+fn catalog_pair(r: &Reference) -> Result<Option<(&Path, &str)>> {
+    match (&r.target_catalog, &r.target_catalog_sha256) {
+        (None, None) => Ok(None),
+        (Some(path), Some(pin)) if path.is_absolute() && path.as_os_str().len() <= 4096 && hash_valid(pin) =>
+            Ok(Some((path.as_path(), pin.as_str()))),
+        _ => Err(err("UPDATE_REFERENCE_INVALID")),
+    }
 }
 pub(crate) fn bound(
     r: &Reference,
@@ -150,6 +167,7 @@ pub(crate) fn list(
         if r.artifact_sha256 != sha || r.artifact_bytes != bytes {
             return Err(err("UPDATE_REFERENCE_INVALID"));
         }
+        let migration_inputs_recorded = catalog_pair(&r)?.map(|_| true);
         entries.push(ReferenceSummary {
             reference_id: r.id,
             operation_id: r.operation_id,
@@ -160,12 +178,13 @@ pub(crate) fn list(
             changed_schema: plan.source_schema != plan.target_schema,
             prior_qualification_recorded: true,
             execution_requalification_required: true,
+            migration_inputs_recorded,
         });
     }
     entries.sort_by(|a, b| a.reference_id.cmp(&b.reference_id));
     Ok(entries)
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn apply(
     profile: &Path,
     r: &Reference,
@@ -198,8 +217,8 @@ pub(crate) fn apply(
         plan,
         store.receipt().generation,
     )?;
-    // Same-schema is the existing public execution boundary; no migration admission is invented here.
-    if plan.source_schema != plan.target_schema {
+    let migration = catalog_pair(r)?;
+    if plan.source_schema != plan.target_schema && migration.is_none() {
         return Err(err("UPDATE_RUNTIME_MIGRATION_UNQUALIFIED"));
     }
     store
@@ -252,8 +271,13 @@ pub(crate) fn apply(
                 .parent()
                 .ok_or_else(|| err("UPDATE_REFERENCE_INVALID"))?
                 .join(format!("manager-apply-{}", Uuid::new_v4()));
-            let admitted =
-                session.prepare_owned_update(&mut artifact, &inputs, &destination, &r.key_file)?;
+            let admitted = if let Some((catalog, catalog_sha256)) = migration {
+                session.prepare_owned_migrated_update(&mut artifact, &inputs,
+                    &signed_release::trust::MigrationRuntimeInputs { catalog, catalog_sha256 },
+                    &destination, &r.key_file)?
+            } else {
+                session.prepare_owned_update(&mut artifact, &inputs, &destination, &r.key_file)?
+            };
             admitted.begin()?.apply_candidate()?.activate()?;
             Ok(())
         })();

@@ -33,7 +33,7 @@ pub struct RestorationReceipt {
 }
 #[path = "restoration_binding.rs"]
 mod binding;
-pub(crate) use binding::RestorationBinding;
+pub(crate) use binding::{RestorationBinding, schema_fingerprint, inventory_fingerprint};
 pub use binding::RestorationProof;
 struct RestorationRoute<'a> {
     retry: Option<super::retry::RetryLink<'a>>,
@@ -48,7 +48,7 @@ pub(crate) struct PreservedImage {
     pub(crate) bytes: u64,
     pub(crate) sha256: String,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Authentication {
     operation: String,
@@ -76,16 +76,23 @@ struct Helper<'a> {
 const AUTHENTICATE: &str = r#"
 import {main} from './scripts/service-backup.mjs';
 import {createHash} from 'node:crypto';
-import {readFile,mkdir,copyFile} from 'node:fs/promises';
+import {readFile,mkdir,copyFile,lstat} from 'node:fs/promises';
 const v=await main(['verify','--key-file','/key','--source','/archive','--destination','/work/authenticated']);
 const bytes=await readFile('/work/authenticated/manifest.json'),manifest=JSON.parse(bytes);
 await mkdir('/work/configuration',{mode:0o700});await mkdir('/work/deployment',{mode:0o700});await mkdir('/work/deployment/images',{mode:0o700});
+const sourceBundle=manifest.files.find(f=>f.role==='configuration'&&f.name==='manager-bundle-manifest.json');
+if(!sourceBundle||!/^files\/[0-9]{8}\.gcm$/.test(sourceBundle.path))throw Error('RESTORE_LAYOUT_UNSUPPORTED');
+const originalPath='/work/authenticated/'+sourceBundle.path.slice(6)+'.plain',originalStat=await lstat(originalPath);
+if(!originalStat.isFile()||originalStat.isSymbolicLink()||originalStat.nlink!==1||originalStat.size>1024*1024)throw Error('RESTORE_LAYOUT_UNSUPPORTED');
+const originalBundle=JSON.parse(await readFile(originalPath));
+const extra=originalBundle.images?.[2];
+const fixedHelper=originalBundle.images?.length===3&&/^sha256:[a-f0-9]{64}$/.test(extra?.reference)&&['maintenance-image.tar','image-2.tar'].includes(extra?.archive?.path);
 const configuration=['manager-bundle-manifest.json','manager-compose.yaml','manager-runtime.env','manager-installed.json','manager-engine.json','manager-image-inventory.json','freeze-signing-key.json'];
 for(const f of manifest.files){
  if(f.role==='runtime')throw Error('RESTORE_LAYOUT_UNSUPPORTED');
  if(!['configuration','deployment'].includes(f.role))continue;
  if(!/^files\/[0-9]{8}\.gcm$/.test(f.path))throw Error('RESTORE_LAYOUT_UNSUPPORTED');
- if(f.role==='configuration'&&!configuration.includes(f.name)||f.role==='deployment'&&!/^images\/image-[01]\.tar$/.test(f.name))throw Error('RESTORE_LAYOUT_UNSUPPORTED');
+ if(f.role==='configuration'&&!configuration.includes(f.name)||f.role==='deployment'&&!(/^images\/image-[01]\.tar$/.test(f.name)||fixedHelper&&f.name==='images/image-2.tar'))throw Error('RESTORE_LAYOUT_UNSUPPORTED');
  await copyFile('/work/authenticated/'+f.path.slice(6)+'.plain','/work/'+f.role+'/'+f.name,1);
 }
 console.log(JSON.stringify({operation:'authenticated-installation',files:v.files,backupId:manifest.id,manifestSha256:createHash('sha256').update(bytes).digest('hex')}));
@@ -102,8 +109,10 @@ const manifestSha256=createHash('sha256').update(current).digest('hex');
 if(manifestSha256!==createHash('sha256').update(previous).digest('hex'))throw Error('RESTORE_SOURCE_CHANGED');
 const backupId=JSON.parse(current).id;
 await copyFile('/work/restored/configuration/freeze-signing-key.json','/data/config/freeze-signing-key.json',1);
-async function own(path){const s=await lstat(path);if(s.isSymbolicLink()||!s.isDirectory()&&!s.isFile())throw Error('RESTORE_PATH_INVALID');if(s.isDirectory())for(const name of await readdir(path))await own(path+'/'+name);const mode=s.isDirectory()?0o700:0o600;if((s.mode&0o7777)!==mode)await chmod(path,mode);if(s.uid!==1000||s.gid!==1000)await chown(path,1000,1000)}
+async function own(path,uid=1000,gid=1000){const s=await lstat(path);if(s.isSymbolicLink()||!s.isDirectory()&&!s.isFile())throw Error('RESTORE_PATH_INVALID');if(s.isDirectory())for(const name of await readdir(path))await own(path+'/'+name,uid,gid);const mode=s.isDirectory()?0o700:0o600;if((s.mode&0o7777)!==mode)await chmod(path,mode);if(s.uid!==uid||s.gid!==gid)await chown(path,uid,gid)}
 await own('/data/blobs');await own('/data/config');
+const workspace=await lstat('/work');if(workspace.isSymbolicLink()||!workspace.isDirectory())throw Error('RESTORE_PATH_INVALID');
+await own('/work/restored',workspace.uid,workspace.gid);
 console.log(JSON.stringify({operation:'restored-and-verified',manifestSha256,backupId}));
 "#;
 /// Keeps the newly created candidate namespace pinned throughout its enclosing stage.
@@ -165,19 +174,30 @@ pub(crate) fn fresh_root(root: &Path) -> Result<()> {
     directory.check()?;
     Ok(())
 }
+/// Existing two runtime images, optionally followed by the fixed, unused maintenance archive.
+/// Restored archives keep their existing index-based path rather than introducing a new format.
+pub(crate) fn supported_recovery_images(manifest:&BundleManifest)->bool {
+    if manifest.images.len()==2{return true;}
+    if manifest.images.len()!=3{return false;}
+    let extra=&manifest.images[2];
+    extra.reference.strip_prefix("sha256:").is_some_and(hash_valid)
+        && !manifest.images[..2].iter().any(|image|image.reference==extra.reference)
+        && extra.archive.as_ref().is_some_and(|archive|matches!(archive.path.as_str(),"maintenance-image.tar"|"image-2.tar")&&archive.bytes>0&&archive.bytes<=2*1024*1024*1024&&hash_valid(&archive.sha256))
+}
 pub(crate) fn preserved_images(
     bytes: &[u8],
     original: &BundleManifest,
 ) -> Result<Vec<PreservedImage>> {
     let images: Vec<PreservedImage> =
         serde_json::from_slice(bytes).map_err(|_| err("RESTORE_LAYOUT_UNSUPPORTED"))?;
-    if images.len() != 2
+    if images.len() != original.images.len()
+        || !supported_recovery_images(original)
         || images
             .iter()
             .map(|i| i.bytes)
             .try_fold(0u64, u64::checked_add)
             .is_none_or(|n| n > 2 * 1024 * 1024 * 1024)
-        || original.images.len() != 2
+        || images.len()==3 && images[2].content_id!=original.images[2].reference
         || images.iter().enumerate().any(|(index, image)| {
             image.reference != original.images[index].reference
                 || !image
@@ -234,7 +254,9 @@ fn validate_source_layout(config: &Value, bytes: &[u8], m: &BundleManifest) -> R
         let (key, value) = line
             .split_once('=')
             .ok_or_else(|| err("BACKUP_CONFIGURATION_INVALID"))?;
-        expected.insert(key.into(), value.into());
+        // Docker Compose config serializes literal dollars as $$ in its resolved JSON model.
+        let projected=if key=="ADMIN_PASSWORD" {super::initial_account::decode_password(value).map_err(|_|err("BACKUP_CONFIGURATION_INVALID"))?.replace('$',"$$")}else{value.into()};
+        expected.insert(key.into(), projected);
     }
     for (key, value) in [
         ("NODE_ENV", "production".to_string()),
@@ -259,9 +281,10 @@ fn validate_source_layout(config: &Value, bytes: &[u8], m: &BundleManifest) -> R
         let value = &config["services"][service];
         // Our restoration writer emits this exact non-root application identity.
         // Accept it on repeated restoration without admitting arbitrary users.
-        if value.get("user").is_some_and(|user| {
-            !user.is_null() && !(service == "platform" && user == "1000:1000")
-        }) {
+        if value
+            .get("user")
+            .is_some_and(|user| !user.is_null() && !(service == "platform" && user == "1000:1000"))
+        {
             return Err(err("RESTORE_LAYOUT_UNSUPPORTED"));
         }
         for field in [
@@ -314,16 +337,19 @@ fn labels(m: &BundleManifest) -> Value {
 }
 fn compose(m: &BundleManifest, database: &str, platform: &str, subnet: Option<&str>) -> Value {
     let labels = labels(m);
-    let mut value=serde_json::json!({"services":{
+    let mut value = serde_json::json!({"services":{
         "database":{"image":database,"pull_policy":"never","environment":{"POSTGRES_PASSWORD":"${POSTGRES_PASSWORD:?required}","POSTGRES_DB":"exhibitos","POSTGRES_USER":"exhibitos"},"volumes":["database:/var/lib/postgresql"],"labels":labels,"healthcheck":{"test":["CMD-SHELL","pg_isready -U exhibitos -d exhibitos"],"interval":"2s","timeout":"3s","retries":30},"restart":"unless-stopped"},
         "platform":{"image":platform,"pull_policy":"never","user":"1000:1000","env_file":["../runtime.env"],"environment":{"NODE_ENV":"production","EXHIBITOS_PORT":"${EXHIBITOS_PORT}","AUTH_ORIGIN":"http://127.0.0.1:${EXHIBITOS_PORT}","BLOB_ROOT":"/data/blobs","CONFIG_ROOT":"/data/config"},"ports":["127.0.0.1:${EXHIBITOS_PORT}:8080"],"volumes":["objects:/data/blobs","configuration:/data/config"],"labels":labels,"depends_on":{"database":{"condition":"service_healthy"}},"read_only":true,"tmpfs":["/tmp:rw,nosuid,nodev,size=256m,mode=1777"],"cap_drop":["ALL"],"security_opt":["no-new-privileges:true"],"restart":"unless-stopped","stop_grace_period":"30s"}},
         "volumes":{"database":{"labels":labels},"objects":{"labels":labels},"configuration":{"labels":labels}},"networks":{"default":{"labels":labels}}});
-    if let Some(subnet)=subnet {value["networks"]["default"]["ipam"]=serde_json::json!({"config":[{"subnet":subnet}]});}
+    if let Some(subnet) = subnet {
+        value["networks"]["default"]["ipam"] = serde_json::json!({"config":[{"subnet":subnet}]});
+    }
     value
 }
 /// Bind an explicit policy gateway without changing any legacy remapping bytes.
 pub(crate) fn bind_explicit_gateway(
-    mapped: (BundleManifest, Vec<u8>), subnet: &str,
+    mapped: (BundleManifest, Vec<u8>),
+    subnet: &str,
 ) -> Result<(BundleManifest, Vec<u8>)> {
     let (mut manifest, encoded) = mapped;
     if crate::restoration_network::compose_subnet(&encoded)?.as_deref() != Some(subnet) {
@@ -348,7 +374,9 @@ pub(crate) fn remapped_bundle(
 ) -> Result<(BundleManifest, Vec<u8>)> {
     if Uuid::parse_str(bundle_id).is_err()
         || port < 1024
-        || images.len() != 2
+        || images.len()!=original.images.len()
+        || !supported_recovery_images(original)
+        || images.len()==3 && (images[2].content_id!=original.images[2].reference||images[2].content_id==database||images[2].content_id==platform)
         || database == platform
         || [database, platform]
             .iter()
@@ -356,7 +384,9 @@ pub(crate) fn remapped_bundle(
     {
         return Err(err("RESTORE_LAYOUT_UNSUPPORTED"));
     }
-    if let Some(subnet)=subnet {crate::restoration_network::policy_subnet(subnet)?;}
+    if let Some(subnet) = subnet {
+        crate::restoration_network::policy_subnet(subnet)?;
+    }
     let mut manifest = original.clone();
     manifest.bundle_id = bundle_id.into();
     manifest.project_name = format!("exhibitos-{bundle_id}");
@@ -479,6 +509,7 @@ impl LifecycleService {
         }
         Ok(())
     }
+    #[cfg(not(windows))]
     fn restoration_helper(&self, request: Helper<'_>) -> Result<Vec<u8>> {
         let Helper {
             id,
@@ -561,6 +592,186 @@ impl LifecycleService {
         // A client error/timeout does not prove the daemon helper is stopped. Preserve it
         // for exact-owned reconciliation; named auxiliary storage survives --rm exits.
         self.run_maintenance_helper("restoration", id, &args)
+    }
+    #[cfg(windows)]
+    fn restoration_helper(&self, request: Helper<'_>) -> Result<Vec<u8>> {
+        use crate::backup_creation::windows_cipher_transport as transport;
+        let Helper {
+            id,
+            image,
+            key,
+            source,
+            workspace,
+            network,
+            extra,
+            script,
+        } = request;
+        let engine_bytes = run(
+            "docker",
+            &["info".into(), "--format".into(), "{{json .}}".into()],
+            None,
+            30,
+        )?;
+        if engine_bytes.len() > 256 * 1024 {
+            return Err(err("ENGINE_OUTPUT_LIMIT"));
+        }
+        let engine: Value =
+            serde_json::from_slice(&engine_bytes).map_err(|_| err("ENGINE_OUTPUT_INVALID"))?;
+        if engine["OperatingSystem"] != "Docker Desktop" || engine["OSType"] != "linux" {
+            return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
+        }
+        if !matches!(script, AUTHENTICATE | RESTORE) {
+            return Err(err("RESTORE_LAYOUT_UNSUPPORTED"));
+        }
+        let volume = format!("exhibitos-restore-work-{id}");
+        let container = format!("exhibitos-restore-{id}");
+        let record_path = workspace.join("windows-work-volume.json");
+        let record = serde_json::json!({"id":id,"image":image,"volume":volume});
+        if record_path.exists() {
+            let recorded: Value = read_json(&record_path)?;
+            if recorded != record {
+                return Err(err("OWNERSHIP_CONFLICT"));
+            }
+            windows_work_volume(
+                &inspected(
+                    "docker",
+                    &["volume".into(), "inspect".into(), volume.clone()],
+                )?,
+                id,
+                &volume,
+            )?;
+            let previous = inspected("docker", &["inspect".into(), container.clone()])?;
+            windows_stopped_helper(&previous, id, &container, image, &volume)?;
+            // Preserve the owned work volume and its authenticated bytes. Only
+            // the confirmed stopped successful helper container is replaced.
+            run("docker", &["rm".into(), container.clone()], None, 30)?;
+        } else {
+            let names = String::from_utf8(run(
+                "docker",
+                &[
+                    "volume".into(),
+                    "ls".into(),
+                    "--format".into(),
+                    "{{.Name}}".into(),
+                ],
+                None,
+                30,
+            )?)
+            .map_err(|_| err("ENGINE_OUTPUT_INVALID"))?;
+            if names.lines().any(|name| name == volume) {
+                return Err(err("OWNERSHIP_CONFLICT"));
+            }
+            run(
+                "docker",
+                &[
+                    "volume".into(),
+                    "create".into(),
+                    "--label".into(),
+                    format!("com.exhibitos.restoration={id}"),
+                    volume.clone(),
+                ],
+                None,
+                30,
+            )?;
+            windows_work_volume(
+                &inspected(
+                    "docker",
+                    &["volume".into(), "inspect".into(), volume.clone()],
+                )?,
+                id,
+                &volume,
+            )?;
+            write_json(workspace, "windows-work-volume.json", &record)?;
+        }
+        let auxiliary =
+            self.prepare_restoration_auxiliary(id, image, |args| run("docker", args, None, 60))?;
+        let (input, limit) = transport::archive_inputs(&self.root, key, source)?;
+        let body = if script == AUTHENTICATE {
+            windows_authenticate_script()
+        } else {
+            script.into()
+        };
+        let mut args = vec![
+            "run".into(),
+            "--interactive".into(),
+            "--pull".into(),
+            "never".into(),
+            "--name".into(),
+            container.clone(),
+            "--label".into(),
+            format!("com.exhibitos.restoration={id}"),
+            "--network".into(),
+            network.into(),
+            "--read-only".into(),
+            "--cap-drop".into(),
+            "ALL".into(),
+            "--security-opt".into(),
+            "no-new-privileges:true".into(),
+            "--pids-limit".into(),
+            "128".into(),
+            "--memory".into(),
+            "1536m".into(),
+            "--tmpfs".into(),
+            "/tmp:rw,nosuid,nodev,size=256m,mode=1777".into(),
+            "--mount".into(),
+            format!("type=volume,source={volume},target=/work,volume-nocopy"),
+            "--user".into(),
+            "0:0".into(),
+        ];
+        if network != "none" {
+            args.extend([
+                "--cap-add".into(),
+                "DAC_OVERRIDE".into(),
+                "--cap-add".into(),
+                "CHOWN".into(),
+            ]);
+        }
+        if let Some(auxiliary) = auxiliary {
+            args.extend([
+                "--mount".into(),
+                format!("type=volume,source={auxiliary},target=/var/lib/postgresql,volume-nocopy"),
+            ]);
+        }
+        args.extend_from_slice(extra);
+        args.extend([
+            "--entrypoint".into(),
+            "node".into(),
+            image.into(),
+            "--input-type=module".into(),
+            "-e".into(),
+            transport::bootstrap_archive(&body),
+        ]);
+        let output =
+            self.run_maintenance_helper_with_input("restoration", id, &args, input, limit)?;
+        let helper = inspected("docker", &["inspect".into(), container.clone()])?;
+        windows_stopped_helper(&helper, id, &container, image, &volume)?;
+        if script == AUTHENTICATE {
+            let result: Value =
+                serde_json::from_slice(&output).map_err(|_| err("RESTORE_RESULT_INVALID"))?;
+            let inventory: BTreeMap<String, crate::backup_creation::FileHash> =
+                serde_json::from_value(result["outputInventory"].clone())
+                    .map_err(|_| err("RESTORE_RESULT_INVALID"))?;
+            windows_output_inventory(&inventory, &result)?;
+            let _authenticated = directory(&workspace.join("authenticated"))?;
+            let _configuration = directory(&workspace.join("configuration"))?;
+            let _deployment = directory(&workspace.join("deployment"))?;
+            let _images = directory(&workspace.join("deployment/images"))?;
+            transport::copy_selected(
+                self,
+                transport::SelectedCopyOwner {
+                    kind: "restoration",
+                    id,
+                    container: &container,
+                    label_key: "com.exhibitos.restoration",
+                    volume: &volume,
+                    image,
+                },
+                workspace,
+                &inventory,
+            )?;
+            return windows_authentication_receipt(result);
+        }
+        Ok(output)
     }
     /// Explicitly acknowledged fresh Docker target only. Original archive/key remain read-only.
     pub fn restore_backup(
@@ -671,15 +882,20 @@ impl LifecycleService {
         route: RestorationRoute<'_>,
     ) -> Result<RestorationReceipt> {
         let RestorationRoute { retry, binding } = route;
-        if cfg!(windows) {
-            return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
-        }
         if !acknowledged {
             return Err(err("BACKUP_OPERATOR_ACK_REQUIRED"));
         }
         if !image.strip_prefix("sha256:").is_some_and(hash_valid) {
             return Err(err("BACKUP_IMAGE_INVALID"));
         }
+        #[cfg(windows)]
+        let native_key = maintenance::native_input_path(key, false)?;
+        #[cfg(windows)]
+        let key = native_key.as_path();
+        #[cfg(windows)]
+        let native_source = maintenance::native_input_path(source, true)?;
+        #[cfg(windows)]
+        let source = native_source.as_path();
         maintenance::input_path(&self.root, true)?;
         maintenance::input_path(key, false)?;
         maintenance::input_path(source, true)?;
@@ -873,7 +1089,7 @@ impl LifecycleService {
             if let Some(binding) = binding {
                 binding.runtime_image(&platform)?;
             }
-            let subnet=crate::restoration_network::choose()?;
+            let subnet = crate::restoration_network::choose()?;
             let (manifest, encoded) = remapped_bundle(
                 &original,
                 &images,
@@ -894,7 +1110,10 @@ impl LifecycleService {
                     return Err(err("IMAGE_INTEGRITY"));
                 }
                 let filename = format!("image-{index}.tar");
+                #[cfg(not(windows))]
                 fs::rename(&path, bundle.join(&filename)).map_err(|_| err("STATE_UNAVAILABLE"))?;
+                #[cfg(windows)]
+                windows_copy_image(&path, &bundle, &filename, &hashed)?;
             }
             private_bytes(&bundle.join("compose.yaml"), &encoded)?;
             write_json(&bundle, "manifest.json", &manifest)?;
@@ -970,9 +1189,21 @@ impl LifecycleService {
                     return Err(err("OWNERSHIP_CONFLICT"));
                 }
             }
-            let created_network=inspected("docker",&["network".into(),"inspect".into(),format!("{}_default",manifest.project_name)])?;
-            if created_network["Labels"]["com.exhibitos.bundle"]!=manifest.bundle_id || created_network["Labels"]["com.exhibitos.project"]!=manifest.project_name || created_network["Driver"]!="bridge" {return Err(err("OWNERSHIP_CONFLICT"));}
-            crate::restoration_network::verify_observed(&created_network,&subnet)?;
+            let created_network = inspected(
+                "docker",
+                &[
+                    "network".into(),
+                    "inspect".into(),
+                    format!("{}_default", manifest.project_name),
+                ],
+            )?;
+            if created_network["Labels"]["com.exhibitos.bundle"] != manifest.bundle_id
+                || created_network["Labels"]["com.exhibitos.project"] != manifest.project_name
+                || created_network["Driver"] != "bridge"
+            {
+                return Err(err("OWNERSHIP_CONFLICT"));
+            }
+            crate::restoration_network::verify_observed(&created_network, &subnet)?;
             run(
                 "docker",
                 &compose_args(
@@ -1020,7 +1251,7 @@ impl LifecycleService {
             {
                 return Err(err("OWNERSHIP_CONFLICT"));
             }
-            crate::restoration_network::verify_observed(&net,&subnet)?;
+            crate::restoration_network::verify_observed(&net, &subnet)?;
             job.stage = "restoring-and-verifying".into();
             job.updated_at = now();
             self.maintenance_stage("restoration", &id, &job.stage)?;
@@ -1128,7 +1359,9 @@ impl LifecycleService {
                 };
                 self.finish_maintenance(state, Some(&error.code))?;
                 Err(err(
-                    if ["CANCELLED", "CANCEL_UNCERTAIN", "ENGINE_NETWORK_CAPACITY"].contains(&error.code.as_str()) {
+                    if ["CANCELLED", "CANCEL_UNCERTAIN", "ENGINE_NETWORK_CAPACITY"]
+                        .contains(&error.code.as_str())
+                    {
                         &error.code
                     } else {
                         "RESTORE_FAILED"
@@ -1137,6 +1370,214 @@ impl LifecycleService {
             }
         }
     }
+}
+#[cfg(any(windows, test))]
+const WINDOWS_OUTPUT_NAMES: [&str; 10] = [
+    "authenticated/manifest.json",
+    "configuration/manager-bundle-manifest.json",
+    "configuration/manager-compose.yaml",
+    "configuration/manager-runtime.env",
+    "configuration/manager-installed.json",
+    "configuration/manager-engine.json",
+    "configuration/manager-image-inventory.json",
+    "configuration/freeze-signing-key.json",
+    "deployment/images/image-0.tar",
+    "deployment/images/image-1.tar",
+];
+#[cfg(any(windows, test))]
+fn windows_work_volume(value: &Value, id: &str, name: &str) -> Result<()> {
+    if value["Name"] != name
+        || value["Labels"]["com.exhibitos.restoration"] != id
+        || value["Driver"] != "local"
+        || !(value["Options"].is_null()
+            || value["Options"]
+                .as_object()
+                .is_some_and(|options| options.is_empty()))
+    {
+        return Err(err("OWNERSHIP_CONFLICT"));
+    }
+    Ok(())
+}
+#[cfg(any(windows, test))]
+fn windows_stopped_helper(
+    value: &Value,
+    id: &str,
+    name: &str,
+    image: &str,
+    volume: &str,
+) -> Result<()> {
+    if value["Name"] != format!("/{name}")
+        || value["Config"]["Labels"]["com.exhibitos.restoration"] != id
+        || value["Image"] != image
+        || value["State"]["Running"] != false
+        || value["State"]["Paused"] != false
+        || value["State"]["Restarting"] != false
+        || value["State"]["Dead"] != false
+        || value["State"]["ExitCode"] != 0
+        || value["State"]["Pid"].as_u64() != Some(0)
+        || value["State"]["Status"] != "exited"
+        || value["HostConfig"]["ReadonlyRootfs"] != true
+        || value["HostConfig"]["AutoRemove"] != false
+        || !value["Mounts"].as_array().is_some_and(|mounts| {
+            mounts
+                .iter()
+                .filter(|mount| mount["Destination"] == "/work")
+                .count()
+                == 1
+                && mounts.iter().any(|mount| {
+                    mount["Destination"] == "/work"
+                        && mount["Type"] == "volume"
+                        && mount["Name"] == volume
+                        && mount["RW"] == true
+                })
+        })
+    {
+        return Err(err("OWNERSHIP_CONFLICT"));
+    }
+    Ok(())
+}
+#[cfg(any(windows, test))]
+fn windows_output_inventory(
+    inventory: &BTreeMap<String, crate::backup_creation::FileHash>,
+    result: &Value,
+) -> Result<()> {
+    if result["operation"] != "authenticated-installation"
+        || result["backupId"]
+            .as_str()
+            .is_none_or(|id| Uuid::parse_str(id).is_err())
+        || result["manifestSha256"]
+            .as_str()
+            .is_none_or(|hash| !hash_valid(hash))
+        || result["files"]
+            .as_u64()
+            .is_none_or(|count| count == 0 || count > 10000)
+        || inventory.len() != WINDOWS_OUTPUT_NAMES.len()
+    {
+        return Err(err("RESTORE_RESULT_INVALID"));
+    }
+    for name in WINDOWS_OUTPUT_NAMES {
+        let entry = inventory
+            .get(name)
+            .ok_or_else(|| err("RESTORE_RESULT_INVALID"))?;
+        let limit = if name.starts_with("deployment/") {
+            8 * 1024 * 1024 * 1024
+        } else if name == "authenticated/manifest.json" {
+            16 * 1024 * 1024
+        } else {
+            1024 * 1024
+        };
+        if entry.bytes == 0 || entry.bytes > limit || !hash_valid(&entry.sha256) {
+            return Err(err("RESTORE_RESULT_INVALID"));
+        }
+    }
+    if inventory["authenticated/manifest.json"].sha256 != result["manifestSha256"] {
+        return Err(err("RESTORE_RESULT_INVALID"));
+    }
+    Ok(())
+}
+/// The native inventory has already been validated and its exact bytes copied.
+/// Return the original closed helper receipt consumed by the shared restorer.
+#[cfg(any(windows, test))]
+fn windows_authentication_receipt(mut result: Value) -> Result<Vec<u8>> {
+    result
+        .as_object_mut()
+        .and_then(|object| object.remove("outputInventory"))
+        .ok_or_else(|| err("RESTORE_RESULT_INVALID"))?;
+    let authentication: Authentication =
+        serde_json::from_value(result).map_err(|_| err("RESTORE_RESULT_INVALID"))?;
+    serde_json::to_vec(&authentication).map_err(|_| err("RESTORE_RESULT_INVALID"))
+}
+#[cfg(windows)]
+fn windows_authenticate_script() -> String {
+    const PREFIX: &str = r#"
+import {lstat as nativeLstat} from 'node:fs/promises';
+import {createReadStream as nativeStream} from 'node:fs';
+import {createHash as nativeDigest} from 'node:crypto';
+async function nativeOutputInventory(){
+ const names=['authenticated/manifest.json','configuration/manager-bundle-manifest.json','configuration/manager-compose.yaml','configuration/manager-runtime.env','configuration/manager-installed.json','configuration/manager-engine.json','configuration/manager-image-inventory.json','configuration/freeze-signing-key.json','deployment/images/image-0.tar','deployment/images/image-1.tar'];
+ const out={};for(const name of names){const path='/work/'+name,before=await nativeLstat(path);const limit=name.startsWith('deployment/')?8589934592:name==='authenticated/manifest.json'?16777216:1048576;
+  if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1||before.uid!==process.getuid()||(before.mode&0o7777)!==0o600||before.size<1||before.size>limit)throw Error('RESTORE_RESULT_INVALID');
+  let bytes=0;const hash=nativeDigest('sha256');for await(const chunk of nativeStream(path)){bytes+=chunk.length;if(bytes>before.size)throw Error('RESTORE_RESULT_INVALID');hash.update(chunk);}
+  const after=await nativeLstat(path);if(bytes!==before.size||after.ino!==before.ino||after.dev!==before.dev||after.size!==before.size||after.mtimeMs!==before.mtimeMs||after.ctimeMs!==before.ctimeMs||after.nlink!==1||(after.mode&0o7777)!==0o600)throw Error('RESTORE_RESULT_INVALID');
+  out[name]={bytes,sha256:hash.digest('hex')};}return out;
+}
+"#;
+    format!(
+        "{PREFIX}{}",
+        AUTHENTICATE.replace(
+            "{operation:'authenticated-installation'",
+            "{outputInventory:await nativeOutputInventory(),operation:'authenticated-installation'"
+        )
+    )
+}
+#[cfg(windows)]
+fn windows_copy_image(
+    source: &Path,
+    bundle: &Path,
+    name: &str,
+    expected: &crate::backup_creation::FileHash,
+) -> Result<()> {
+    use crate::windows_private::{HostDirectory, HostFile};
+    use std::os::windows::fs::MetadataExt;
+    if fs2::available_space(bundle).map_err(|_| err("STORAGE_UNAVAILABLE"))?
+        < expected
+            .bytes
+            .checked_add(2 * 1024 * 1024 * 1024)
+            .ok_or_else(|| err("STORAGE_QUOTA"))?
+    {
+        return Err(err("STORAGE_QUOTA"));
+    }
+    let mut input = HostFile::open(source)?;
+    input.check_private()?;
+    let before = input.metadata()?;
+    if before.len() != expected.bytes {
+        return Err(err("IMAGE_INTEGRITY"));
+    }
+    let parent = HostDirectory::inspect(bundle)?;
+    parent.check_private()?;
+    let mut output = parent.create_file(name)?;
+    let mut hash = Sha256::new();
+    let mut count = 0u64;
+    let mut buffer = [0u8; 65536];
+    loop {
+        let length = input
+            .read(&mut buffer)
+            .map_err(|_| err("IMAGE_INTEGRITY"))?;
+        if length == 0 {
+            break;
+        }
+        count += length as u64;
+        if count > expected.bytes {
+            return Err(err("IMAGE_INTEGRITY"));
+        }
+        output
+            .write_all(&buffer[..length])
+            .map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
+        hash.update(&buffer[..length]);
+    }
+    input.check_private()?;
+    output.sync_all()?;
+    let after = input.metadata()?;
+    let state = |metadata: &fs::Metadata| {
+        (
+            metadata.len(),
+            metadata.creation_time(),
+            metadata.last_write_time(),
+            metadata.file_attributes(),
+        )
+    };
+    if count != expected.bytes
+        || state(&after) != state(&before)
+        || format!("{:x}", hash.finalize()) != expected.sha256
+    {
+        return Err(err("IMAGE_INTEGRITY"));
+    }
+    drop(output);
+    let copied = hash_file(&bundle.join(name))?;
+    if copied.bytes != expected.bytes || copied.sha256 != expected.sha256 {
+        return Err(err("IMAGE_INTEGRITY"));
+    }
+    Ok(())
 }
 #[cfg(test)]
 mod tests {
@@ -1227,11 +1668,7 @@ mod tests {
                 .restore_backup("tag", &service.root, &service.root, 13200, false)
                 .unwrap_err()
                 .code,
-            if cfg!(windows) {
-                "BACKUP_PLATFORM_UNVERIFIED"
-            } else {
-                "BACKUP_OPERATOR_ACK_REQUIRED"
-            }
+            "BACKUP_OPERATOR_ACK_REQUIRED"
         );
         private_bytes(&service.root.join("retained"), b"keep").unwrap();
         assert_eq!(
@@ -1286,6 +1723,14 @@ mod tests {
         config["services"]["database"]["command"] = Value::Null;
         config["services"]["platform"]["entrypoint"] = Value::Null;
         assert!(validate_source_layout(&config, text.as_bytes(), &m).is_ok());
+        let literal="synthetic$VAR ${VAR} # text' \"quoted\" \\ trailing\\";
+        let encoded=super::super::initial_account::encode_password(literal);
+        let quoted=text.replace("ADMIN_PASSWORD=synthetic-admin-password",&format!("ADMIN_PASSWORD={encoded}"));
+        let mut quoted_config=config.clone();quoted_config["services"]["platform"]["environment"]["ADMIN_PASSWORD"]=literal.replace('$',"$$").into();
+        assert!(validate_source_layout(&quoted_config,quoted.as_bytes(),&m).is_ok());
+        assert_eq!(remapped_environment(quoted.as_bytes(),&m,13201).unwrap(),quoted.replace("EXHIBITOS_PORT=13200","EXHIBITOS_PORT=13201").as_bytes());
+        quoted_config["services"]["platform"]["environment"]["ADMIN_PASSWORD"]="wrong-synthetic-password".into();
+        assert!(validate_source_layout(&quoted_config,quoted.as_bytes(),&m).is_err());
         for user in ["0", "0:0", "1000", "1001:1000", "1000:1001", "${APP_USER}"] {
             config["services"]["platform"]["user"] = user.into();
             assert!(validate_source_layout(&config, text.as_bytes(), &m).is_err());
@@ -1293,8 +1738,14 @@ mod tests {
         config["services"]["platform"]["user"] = "1000:1000".into();
         config["services"]["database"]["user"] = "1000:1000".into();
         assert!(validate_source_layout(&config, text.as_bytes(), &m).is_err());
-        config["services"]["database"].as_object_mut().unwrap().remove("user");
-        config["services"]["platform"].as_object_mut().unwrap().remove("user");
+        config["services"]["database"]
+            .as_object_mut()
+            .unwrap()
+            .remove("user");
+        config["services"]["platform"]
+            .as_object_mut()
+            .unwrap()
+            .remove("user");
         assert!(validate_source_layout(&config, text.as_bytes(), &m).is_ok());
         config["services"]["platform"]["entrypoint"] = serde_json::json!(["unexpected-command"]);
         assert!(validate_source_layout(&config, text.as_bytes(), &m).is_err());
@@ -1306,6 +1757,20 @@ mod tests {
                 .code,
             "RESTORE_LAYOUT_UNSUPPORTED"
         );
+    }
+    #[test]
+    fn fixed_maintenance_image_preserves_two_runtime_roles_and_exact_inventory(){
+        let mut m=crate::tests::manifest_for_detection();m.services=vec!["database".into(),"platform".into()];
+        m.images=vec![Image{reference:format!("sha256:{}","a".repeat(64)),archive:None},Image{reference:format!("sha256:{}","b".repeat(64)),archive:None},Image{reference:format!("sha256:{}","c".repeat(64)),archive:Some(Archive{path:"maintenance-image.tar".into(),sha256:"d".repeat(64),bytes:1})}];
+        let inventory:Vec<Value>=m.images.iter().enumerate().map(|(i,image)|serde_json::json!({"reference":image.reference,"contentId":image.reference,"archive":format!("images/image-{i}.tar"),"bytes":1,"sha256":"e".repeat(64)})).collect();
+        let bytes=serde_json::to_vec(&inventory).unwrap();let images=preserved_images(&bytes,&m).unwrap();
+        let (mapped,compose)=remapped_bundle(&m,&images,&Uuid::new_v4().to_string(),14500,&images[1].content_id,&images[0].content_id,None).unwrap();
+        assert!(supported_recovery_images(&mapped));assert_eq!(mapped.images.len(),3);assert_eq!(mapped.images[2].archive.as_ref().unwrap().path,"image-2.tar");
+        let config:Value=serde_json::from_slice(&compose).unwrap();assert_eq!(config["services"].as_object().unwrap().len(),2);assert_eq!(config["services"]["platform"]["image"],images[0].content_id);assert_eq!(config["services"]["database"]["image"],images[1].content_id);
+        assert!(remapped_bundle(&m,&images,&Uuid::new_v4().to_string(),14500,&images[2].content_id,&images[0].content_id,None).is_err());
+        let mut changed:Value=serde_json::from_slice(&bytes).unwrap();changed[2]["contentId"]=format!("sha256:{}","f".repeat(64)).into();assert!(preserved_images(&serde_json::to_vec(&changed).unwrap(),&m).is_err());
+        m.images[2].archive.as_mut().unwrap().path="arbitrary-extra.tar".into();assert!(!supported_recovery_images(&m));assert!(preserved_images(&bytes,&m).is_err());
+        m.images.pop();assert!(supported_recovery_images(&m));assert!(preserved_images(&bytes,&m).is_err());
     }
     #[test]
     fn image_identity_inventory_and_completed_receipt_are_not_assumed() {
@@ -1338,5 +1803,141 @@ mod tests {
         };
         write_json(&service.root, "restoration.json", &job).unwrap();
         assert!(service.restoration_status().is_err());
+    }
+}
+
+#[cfg(test)]
+mod windows_restoration_protocol_tests {
+    use super::*;
+    #[test]
+    fn windows_authenticated_inventory_projects_to_the_shared_closed_receipt() {
+        let id = Uuid::new_v4().to_string();
+        let sha = "b".repeat(64);
+        let inventory = WINDOWS_OUTPUT_NAMES
+            .into_iter()
+            .map(|name| {
+                (
+                    name.to_owned(),
+                    crate::backup_creation::FileHash {
+                        bytes: 1,
+                        sha256: sha.clone(),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let result = serde_json::json!({
+            "operation":"authenticated-installation", "files":10,
+            "backupId":id, "manifestSha256":sha, "outputInventory":inventory
+        });
+        // Reproduce the actual native helper output rejected by the old bridge.
+        assert!(serde_json::from_value::<Authentication>(result.clone()).is_err());
+        windows_output_inventory(&inventory, &result).unwrap();
+        let output = windows_authentication_receipt(result.clone()).unwrap();
+        let receipt: Authentication = serde_json::from_slice(&output).unwrap();
+        assert_eq!(receipt.operation, "authenticated-installation");
+        assert_eq!(receipt.files, 10);
+        assert_eq!(receipt.backup_id, id);
+        assert_eq!(receipt.manifest_sha256, sha);
+        let value: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 4);
+        assert!(value.get("outputInventory").is_none());
+        let mut unexpected = result;
+        unexpected["unexpected"] = true.into();
+        assert!(windows_authentication_receipt(unexpected).is_err());
+        assert!(windows_authentication_receipt(value).is_err());
+    }
+    #[test]
+    fn windows_work_and_stopped_helper_bind_exact_owned_namespace() {
+        let id = Uuid::new_v4().to_string();
+        let volume = format!("exhibitos-restore-work-{id}");
+        let name = format!("exhibitos-restore-{id}");
+        let image = format!("sha256:{}", "a".repeat(64));
+        let owned = serde_json::json!({"Name":volume,"Driver":"local","Options":null,"Labels":{"com.exhibitos.restoration":id}});
+        assert!(windows_work_volume(&owned, &id, &volume).is_ok());
+        let helper = serde_json::json!({"Name":format!("/{name}"),"Image":image,"Config":{"Labels":{"com.exhibitos.restoration":id}},
+            "State":{"Running":false,"Paused":false,"Restarting":false,"Dead":false,"Pid":0,"ExitCode":0,"Status":"exited"},
+            "HostConfig":{"ReadonlyRootfs":true,"AutoRemove":false},"Mounts":[{"Destination":"/work","Type":"volume","Name":volume,"RW":true}]});
+        assert!(windows_stopped_helper(&helper, &id, &name, &image, &volume).is_ok());
+        let mut foreign = owned.clone();
+        foreign["Labels"]["com.exhibitos.restoration"] = "foreign".into();
+        assert!(windows_work_volume(&foreign, &id, &volume).is_err());
+        for (field, value) in [
+            ("Running", serde_json::json!(true)),
+            ("ExitCode", serde_json::json!(1)),
+            ("Pid", serde_json::json!(42)),
+        ] {
+            let mut changed = helper.clone();
+            changed["State"][field] = value;
+            assert!(windows_stopped_helper(&changed, &id, &name, &image, &volume).is_err());
+        }
+        let mut changed = helper;
+        changed["Mounts"][0]["Name"] = "foreign".into();
+        assert!(windows_stopped_helper(&changed, &id, &name, &image, &volume).is_err());
+    }
+    #[test]
+    fn windows_authenticated_output_is_exact_hash_bound_original_inventory() {
+        let sha = "b".repeat(64);
+        let id = Uuid::new_v4().to_string();
+        let result = serde_json::json!({"operation":"authenticated-installation","backupId":id,"files":10,"manifestSha256":sha});
+        let entries = WINDOWS_OUTPUT_NAMES
+            .into_iter()
+            .map(|name| {
+                (
+                    name.to_owned(),
+                    crate::backup_creation::FileHash {
+                        bytes: 1,
+                        sha256: sha.clone(),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert!(windows_output_inventory(&entries, &result).is_ok());
+        let mut changed = entries.clone();
+        changed.insert(
+            "configuration/private-original.bin".into(),
+            crate::backup_creation::FileHash {
+                bytes: 1,
+                sha256: sha.clone(),
+            },
+        );
+        assert!(windows_output_inventory(&changed, &result).is_err());
+        let mut changed = entries.clone();
+        changed
+            .get_mut("authenticated/manifest.json")
+            .unwrap()
+            .sha256 = "c".repeat(64);
+        assert!(windows_output_inventory(&changed, &result).is_err());
+        let mut changed = entries;
+        changed.remove("configuration/freeze-signing-key.json");
+        assert!(windows_output_inventory(&changed, &result).is_err());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_native_image_copy_preserves_source_and_existing_destination() {
+        let base = std::env::temp_dir().join(format!("restored-image-{}", Uuid::new_v4()));
+        let initial = crate::windows_private::PrivateDirectory::create(&base).unwrap();
+        let base = initial.path().to_owned();
+        let input = base.join("input.tar");
+        private_bytes(&input, b"synthetic original image bytes").unwrap();
+        let bundle = base.join("bundle");
+        let _bundle = directory(&bundle).unwrap();
+        let expected = hash_file(&input).unwrap();
+        windows_copy_image(&input, &bundle, "image-0.tar", &expected).unwrap();
+        assert_eq!(fs::read(&input).unwrap(), b"synthetic original image bytes");
+        assert_eq!(
+            fs::read(bundle.join("image-0.tar")).unwrap(),
+            b"synthetic original image bytes"
+        );
+        assert!(windows_copy_image(&input, &bundle, "image-0.tar", &expected).is_err());
+        assert_eq!(
+            fs::read(bundle.join("image-0.tar")).unwrap(),
+            b"synthetic original image bytes"
+        );
+        let wrong = crate::backup_creation::FileHash {
+            bytes: expected.bytes,
+            sha256: "d".repeat(64),
+        };
+        assert!(windows_copy_image(&input, &bundle, "image-1.tar", &wrong).is_err());
+        assert_eq!(fs::read(&input).unwrap(), b"synthetic original image bytes");
     }
 }

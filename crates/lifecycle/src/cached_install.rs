@@ -10,7 +10,7 @@ pub(super) fn admit_images(
 ) -> Result<()> {
     for image in &m.images {
         if let Some(a) = &image.archive {
-            let p = checked_path(&bundle, &a.path)?;
+            let p = checked_path(bundle, &a.path)?;
             let metadata = fs::metadata(&p).map_err(|_| err("BUNDLE_INVALID"))?;
             if !metadata.is_file()
                 || a.bytes == 0

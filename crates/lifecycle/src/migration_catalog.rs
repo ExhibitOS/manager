@@ -2,6 +2,8 @@
 //! Retained diagnostic catalog input; never a native observation or execution permit.
 use crate::{Result, err};
 use std::path::Path;
+#[cfg(windows)]
+use std::io::{Read, Seek, SeekFrom};
 #[cfg(unix)]
 use std::{
     fs::{self, File, Metadata},
@@ -10,6 +12,8 @@ use std::{
 };
 
 pub(super) struct CatalogInput {
+    #[cfg(windows)]
+    file: crate::windows_private::HostFile,
     #[cfg(unix)]
     file: File,
     #[cfg(unix)]
@@ -21,7 +25,7 @@ pub(super) struct CatalogInput {
     raw: Vec<u8>,
     pin: String,
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Catalog {
@@ -29,14 +33,14 @@ struct Catalog {
     schema_digest: String,
     migrations: Vec<Migration>,
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct Migration {
     name: String,
     sha256: String,
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn validate(raw: &[u8], pin: &str, schema: &str) -> Result<()> {
     let refuse = || err("UPDATE_CATALOG_INVALID");
     if raw.is_empty()
@@ -122,10 +126,20 @@ fn same(a: &Metadata, b: &Metadata) -> bool {
 }
 impl CatalogInput {
     pub(super) fn read(path: &Path, pin: &str, schema: &str) -> Result<Self> {
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (path, pin, schema);
             Err(err("UPDATE_CATALOG_PLATFORM_UNVERIFIED"))
+        }
+        #[cfg(windows)]
+        {
+            let mut file = crate::windows_private::HostFile::open(path)?;
+            file.check_private()?;
+            let mut raw = Vec::new();
+            (&mut file).take(65537).read_to_end(&mut raw).map_err(|_|err("UPDATE_CATALOG_INVALID"))?;
+            file.check_private()?;
+            validate(&raw,pin,schema)?;
+            Ok(Self { file, raw, pin: pin.into() })
         }
         #[cfg(unix)]
         {
@@ -173,9 +187,19 @@ impl CatalogInput {
         }
     }
     pub(super) fn recheck(&mut self) -> Result<()> {
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             Err(err("UPDATE_CATALOG_PLATFORM_UNVERIFIED"))
+        }
+        #[cfg(windows)]
+        {
+            self.file.check_private()?;
+            self.file.seek(SeekFrom::Start(0)).map_err(|_|err("UPDATE_CATALOG_INVALID"))?;
+            let mut raw = Vec::new();
+            (&mut self.file).take(65537).read_to_end(&mut raw).map_err(|_|err("UPDATE_CATALOG_INVALID"))?;
+            self.file.check_private()?;
+            if raw != self.raw || crate::digest(&raw) != self.pin { return Err(err("UPDATE_CATALOG_INVALID")); }
+            Ok(())
         }
         #[cfg(unix)]
         {
@@ -218,18 +242,18 @@ impl CatalogInput {
     }
     pub(super) fn recheck_for_schema(&mut self, schema: &str) -> Result<()> {
         self.recheck()?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         { validate(&self.raw, &self.pin, schema) }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         { let _ = schema; Err(err("UPDATE_CATALOG_PLATFORM_UNVERIFIED")) }
     }
     pub(super) fn migrations_sha256(&self) -> Result<String> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let catalog: Catalog = serde_json::from_slice(&self.raw).map_err(|_|err("UPDATE_CATALOG_INVALID"))?;
             Ok(crate::digest(&serde_json::to_vec(&catalog.migrations).map_err(|_|err("UPDATE_CATALOG_INVALID"))?))
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         { Err(err("UPDATE_CATALOG_PLATFORM_UNVERIFIED")) }
     }
     pub(super) fn text(&self) -> Result<String> {
@@ -265,13 +289,29 @@ mod tests {
     }
     #[test]
     fn retained_catalog_rechecks_plan_schema_and_migration_identity() {
-        let (root,path)=fixture();let pin=crate::digest(&raw());
-        let mut held=CatalogInput::read(&path,&pin,&pin).unwrap();
+        let (root, path) = fixture();
+        let pin = crate::digest(&raw());
+        let mut held = CatalogInput::read(&path, &pin, &pin).unwrap();
         held.recheck_for_schema(&pin).unwrap();
-        let expected=crate::digest(&serde_json::to_vec(&value()["migrations"]).unwrap());
-        assert_eq!(held.migrations_sha256().unwrap(),expected);
+        let expected = crate::digest(&serde_json::to_vec(&value()["migrations"]).unwrap());
+        assert_eq!(held.migrations_sha256().unwrap(), expected);
         assert!(held.recheck_for_schema(&"d".repeat(64)).is_err());
-        fs::write(&path,raw()).unwrap();
+        let previous_modified = held.identity.modified().unwrap();
+        fs::write(&path, raw()).unwrap();
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(
+                fs::FileTimes::new()
+                    .set_modified(previous_modified + std::time::Duration::from_secs(1)),
+            )
+            .unwrap();
+        assert_ne!(
+            fs::metadata(&path).unwrap().modified().unwrap(),
+            previous_modified
+        );
+        assert_eq!(crate::digest(&fs::read(&path).unwrap()), pin);
         assert!(held.recheck_for_schema(&pin).is_err());
         fs::remove_dir_all(root).unwrap();
     }

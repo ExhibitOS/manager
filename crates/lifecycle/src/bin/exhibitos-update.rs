@@ -279,6 +279,18 @@ fn checkpoint_key(path: &Path, profile: &Path) -> Result<[u8; 32], String> {
     Ok(key)
 }
 
+// Optional internal locator pair for the existing native-reference registration.
+// These inputs only locate a fresh full qualification; they are not a permit.
+fn registered_catalog_options(args: &[String]) -> Result<bool, &'static str> {
+    if args.len() == 30 { return Ok(false); }
+    if args.len() != 34 || args[28] != "--target-catalog"
+        || args[30] != "--target-catalog-sha256"
+        || !Path::new(&args[29]).is_absolute() || args[29].len() > 4096
+        || args[31].len() != 64 || !args[31].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        return Err("UPDATE_USAGE");
+    }
+    Ok(true)
+}
 fn restored_rollback_options(args: &[String]) -> Result<&str, &'static str> {
     if args.len() != 10
         || args[1] != "complete-restored-rollback"
@@ -298,7 +310,8 @@ fn restored_rollback_options(args: &[String]) -> Result<&str, &'static str> {
     Ok(&args[7])
 }
 
-fn original_rollback_options(args: &[String]) -> Result<(u16, Option<(&str, u64)>), &'static str> {
+type OriginalRollbackOptions<'a> = (u16, Option<(&'a str, u64)>);
+fn original_rollback_options(args: &[String]) -> Result<OriginalRollbackOptions<'_>, &'static str> {
     let flags = [
         (1, "restore-original-rollback"),
         (2, "--profile"),
@@ -432,6 +445,22 @@ fn migrated_runtime_options(args: &[String]) -> Result<(), &'static str> {
     Ok(())
 }
 
+// Closed candidate-stop input. Validate before opening the authority Store.
+fn candidate_stop_options(args: &[String]) -> Result<(), &'static str> {
+    if args.len() != 8
+        || args[1] != "stop-update-candidate"
+        || args[2] != "--profile"
+        || !Path::new(&args[3]).is_absolute()
+        || args[4] != "--installation"
+        || args[5].is_empty()
+        || args[6] != "--external-writers-quiesced"
+        || args[7] != "--apps-closed"
+    {
+        return Err("UPDATE_USAGE");
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     use signed_release::trust::Store;
     let a: Vec<String> = std::env::args().collect();
@@ -442,7 +471,7 @@ fn run() -> Result<(), String> {
     }
     let code = |e: signed_release::Error| e.code().to_string();
     let usage = || {
-        "UPDATE_USAGE: restore-original-rollback|complete-restored-rollback|execute-full-update|reconcile-selection-activation|reconcile-authority|enroll-authority-recovery|restore-missing-authority|restore-rollback-missing-host|restore-bound-missing-host|trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|register-update-target|release-completed-update|discard-update-intent|execution-status|verify-update-backup|verify-update-source-stopped|verify-update-source-deployment|verify-update-source-configuration|verify-update-source-images|snapshot-update-source-database|verify-update-source-inventory|verify-update-configuration-inventory|prepare-update-candidate require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
+        "UPDATE_USAGE: restore-original-rollback|complete-restored-rollback|execute-full-update|reconcile-selection-activation|reconcile-authority|enroll-authority-recovery|restore-missing-authority|restore-rollback-missing-host|restore-bound-missing-host|trust-provision|trust-policy|trust-status|accept|prepare-update|update-intent|register-update-target|release-completed-update|discard-update-intent|execution-status|verify-update-backup|verify-update-source-stopped|verify-update-source-deployment|verify-update-source-configuration|verify-update-source-images|snapshot-update-source-database|verify-update-source-inventory|verify-update-configuration-inventory|prepare-update-candidate|stop-update-candidate require --profile <absolute profile> --installation <default or UUID> and --apps-closed; see docs/release-trust.md".to_string()
     };
     if a.len() < 7
         || a[2] != "--profile"
@@ -456,7 +485,7 @@ fn run() -> Result<(), String> {
     if a[1] == "restore-original-rollback" {
         // Validate the exact wire contract BEFORE opening or changing authority.
         let (port, expected_authority) = original_rollback_options(&a).map_err(str::to_owned)?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let mut store = Store::open(profile, installation).map_err(code)?;
             // Bind the SSH-observed operation inside the same Store lock that
@@ -493,7 +522,7 @@ fn run() -> Result<(), String> {
             );
             return Ok(());
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = port;
             return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
@@ -501,7 +530,7 @@ fn run() -> Result<(), String> {
     }
     if a[1] == "complete-restored-rollback" {
         let image = restored_rollback_options(&a).map_err(str::to_owned)?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let mut store = Store::open(profile, installation).map_err(code)?;
             let receipt = store
@@ -513,7 +542,7 @@ fn run() -> Result<(), String> {
             );
             return Ok(());
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = image;
             return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
@@ -523,7 +552,7 @@ fn run() -> Result<(), String> {
         if a.len() != 9 || a[6] != "--operation-id" {
             return Err(usage());
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let mut store = Store::open(profile, installation).map_err(code)?;
             let receipt = store
@@ -535,14 +564,14 @@ fn run() -> Result<(), String> {
             );
             return Ok(());
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
     }
     if a[1] == "reconcile-authority" {
         if a.len() != 7 {
             return Err(usage());
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let receipt =
                 Store::reconcile_authority(profile, installation, true, now()?).map_err(code)?;
@@ -552,14 +581,14 @@ fn run() -> Result<(), String> {
             );
             return Ok(());
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
     }
     if a[1] == "qualify-inactive-authority-recovery" {
         if a.len() != 9 || a[6] != "--destination" {
             return Err(usage());
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let store = Store::open(profile, installation).map_err(code)?;
             let receipt = store
@@ -571,7 +600,7 @@ fn run() -> Result<(), String> {
             );
             return Ok(());
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
     }
     if a[1] == "enroll-authority-recovery" || a[1] == "restore-missing-authority" {
@@ -579,7 +608,7 @@ fn run() -> Result<(), String> {
         if enroll && (a.len() != 9 || a[6] != "--vault") || !enroll && a.len() != 7 {
             return Err(usage());
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let receipt = if enroll {
                 let mut store = Store::open(profile, installation).map_err(code)?;
@@ -595,7 +624,7 @@ fn run() -> Result<(), String> {
             );
             return Ok(());
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
     }
     if matches!(
@@ -744,7 +773,8 @@ fn run() -> Result<(), String> {
     ) {
         let execute = a[1] == "execute-full-update";
         let register = a[1] == "register-full-update-reference";
-        let migrated = a[1] == "qualify-migrated-full-recovery-runtime";
+        let migrated = a[1] == "qualify-migrated-full-recovery-runtime"
+            || (register && registered_catalog_options(&a).map_err(str::to_owned)?);
         let full = a[1] == "qualify-full-recovery-runtime" || execute || register || migrated;
         let expected_authority = if execute {
             full_update_authority_options(&a).map_err(str::to_owned)?
@@ -752,9 +782,7 @@ fn run() -> Result<(), String> {
             None
         };
         if a.len()
-            != if migrated {
-                34
-            } else if execute && expected_authority.is_some() {
+            != if migrated || (execute && expected_authority.is_some()) {
                 34
             } else if full {
                 30
@@ -783,7 +811,7 @@ fn run() -> Result<(), String> {
         {
             return Err(usage());
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         if execute || register {
             return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
         }
@@ -806,7 +834,7 @@ fn run() -> Result<(), String> {
             {
                 return Err("UPDATE_EXECUTION_AUTHORITY_CHANGED".into());
             }
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             if execute || register {
                 store.verify_authority_recovery().map_err(code)?;
             }
@@ -841,16 +869,17 @@ fn run() -> Result<(), String> {
                 maintenance_image: &a[15],
                 external_writers_quiesced: true,
             };
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             if execute || register {
-                let mut admitted = session
-                    .prepare_owned_update(
-                        &mut artifact,
-                        &inputs,
-                        Path::new(&a[27]),
-                        Path::new(&a[23]),
-                    )
-                    .map_err(|e| e.code.to_string())?;
+                let mut admitted = if migrated {
+                    session.prepare_owned_migrated_update(&mut artifact, &inputs,
+                        &signed_release::trust::MigrationRuntimeInputs {
+                            catalog: Path::new(&a[29]), catalog_sha256: &a[31],
+                        }, Path::new(&a[27]), Path::new(&a[23]))
+                } else {
+                    session.prepare_owned_update(&mut artifact, &inputs,
+                        Path::new(&a[27]), Path::new(&a[23]))
+                }.map_err(|e| e.code.to_string())?;
                 if register {
                     return admitted
                         .register_execution_reference()
@@ -1085,7 +1114,7 @@ fn run() -> Result<(), String> {
         );
         return Ok(());
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     if a[1] == "checkpoint-existing-host" {
         if a.len() != 16
             || a[6] != "--key-file"
@@ -1112,7 +1141,7 @@ fn run() -> Result<(), String> {
         );
         return Ok(());
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     if a[1] == "refresh-checkpoint-trust" {
         if a.len() != 18
             || a[6] != "--key-file"
@@ -1283,6 +1312,25 @@ fn run() -> Result<(), String> {
                 serde_json::json!({"restoration":receipt,"candidatePrepared":true,"updateExecuted":false,"preflightVerified":false,"intent":store.intent()})
             );
             return Ok(());
+        }
+        "stop-update-candidate" => {
+            candidate_stop_options(&a).map_err(str::to_owned)?;
+            #[cfg(not(windows))]
+            {
+                let mut store = Store::open(profile, installation).map_err(code)?;
+                let (job, observation) = store.execution().map_err(|e| e.code)?
+                    .stop_target_candidate(true).map_err(|e| e.code)?;
+                let stopped = job.action == exhibitos_lifecycle::Action::Stop
+                    && job.state == exhibitos_lifecycle::JobState::Completed;
+                println!("{}", serde_json::json!({
+                    "candidateStopped":stopped,"normalJob":&job,"state":&job.state,
+                    "observation":observation,"updateExecuted":false,
+                    "preflightVerified":false,"intent":store.intent()
+                }));
+                return Ok(());
+            }
+            #[cfg(windows)]
+            return Err("UPDATE_TRUST_PLATFORM_UNVERIFIED".into());
         }
         "verify-update-source-stopped" if a.len() == 8 && a[6] == "--external-writers-quiesced" => {
             let mut store = Store::open(profile, installation).map_err(code)?;
@@ -1895,5 +1943,65 @@ mod full_update_authority_cli_tests {
         }
         args.pop();
         assert!(full_update_authority_options(&args).is_err());
+    }
+}
+
+#[cfg(test)]
+mod registered_catalog_cli_tests {
+    use super::*;
+    #[test]
+    fn registered_catalog_is_a_paired_bounded_locator_never_a_success_flag() {
+        let mut args=vec![String::new();30];
+        assert!(!registered_catalog_options(&args).unwrap());
+        args.truncate(28);
+        args.extend(["--target-catalog".into(),"/private/catalog.json".into(),
+            "--target-catalog-sha256".into(),"a".repeat(64),
+            "--external-writers-quiesced".into(),"--apps-closed".into()]);
+        assert!(registered_catalog_options(&args).unwrap());
+        for n in [28,29,31,32,33] { assert!(registered_catalog_options(&args[..n]).is_err()); }
+        for (at,value) in [(28,"--preflight-verified"),(29,"relative"),(30,"--success"),(31,"bad-sha")] {
+            let mut bad=args.clone();bad[at]=value.into();assert!(registered_catalog_options(&bad).is_err());
+        }
+        let mut long=args.clone();long[29]=format!("/{}","a".repeat(4097));assert!(registered_catalog_options(&long).is_err());
+        args.push("--caller-verified".into());assert!(registered_catalog_options(&args).is_err());
+    }
+}
+
+#[cfg(test)]
+mod candidate_stop_cli_tests {
+    use super::*;
+    fn valid() -> Vec<String> {
+        vec!["exhibitos-update".into(), "stop-update-candidate".into(),
+            "--profile".into(), std::env::temp_dir().join("private-candidate-stop-fixture").to_string_lossy().into_owned(),
+            "--installation".into(), "default".into(),
+            "--external-writers-quiesced".into(), "--apps-closed".into()]
+    }
+    #[test]
+    fn candidate_stop_requires_exact_action_profile_and_acknowledgements() {
+        let args = valid();
+        assert!(candidate_stop_options(&args).is_ok());
+        for count in 0..args.len() {
+            assert!(candidate_stop_options(&args[..count]).is_err());
+        }
+        for index in [1, 2, 4, 6, 7] {
+            let mut changed = args.clone();
+            changed[index] = "--verified-success".into();
+            assert!(candidate_stop_options(&changed).is_err());
+        }
+        let mut relative = args.clone();
+        relative[3] = "relative-profile".into();
+        assert!(candidate_stop_options(&relative).is_err());
+        let mut no_installation = args;
+        no_installation[5].clear();
+        assert!(candidate_stop_options(&no_installation).is_err());
+    }
+    #[test]
+    fn candidate_stop_refuses_caller_target_paths_source_and_success_overrides() {
+        let args = valid();
+        for flag in ["--candidate-id", "--candidate-path", "--root", "--source", "--command", "--candidate-stopped", "--health-receipt", "--preflight-verified"] {
+            let mut changed = args.clone();
+            changed.splice(7..7, [flag.into(), "untrusted".into()]);
+            assert!(candidate_stop_options(&changed).is_err());
+        }
     }
 }

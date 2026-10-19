@@ -59,7 +59,7 @@ pub(super) fn authenticated_files(
     compare(source, &manifest)
 }
 /// Only call after exact authenticated raw manifest binding. No caller success flags.
-pub(super) fn compare(root: &Path, manifest: &Value) -> Result<Vec<DeploymentFileProof>> {
+pub(crate) fn compare(root: &Path, manifest: &Value) -> Result<Vec<DeploymentFileProof>> {
     let files = manifest["files"]
         .as_array()
         .ok_or_else(|| err("UPDATE_SOURCE_DEPLOYMENT_INVALID"))?;

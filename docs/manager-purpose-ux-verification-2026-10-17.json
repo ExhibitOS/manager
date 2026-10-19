@@ -1,0 +1,137 @@
+{
+  "status": "IMPLEMENTED_BROWSER_VERIFIED_NATIVE_QUALIFICATION_PENDING",
+  "updated_at": "2026-10-17T15:40:33.127062+00:00",
+  "tasks": [
+    "T08-01",
+    "T08-03",
+    "related existing T08 backup/update/recovery and T10 Pages/Render flows"
+  ],
+  "base_commit": "cfba5a247e972a2a07db590ad45c72342923aa23",
+  "source_sha256": {
+    "src/App.tsx": "1a8160b1f8b52b776c2226b1bae15021ebe43ac12898736bed465c3165fd1d04",
+    "src/style.css": "7a6ee8cfcd4ce88c3b401fa058f0cdef1172962ee0f20885d6f51060d13d21df",
+    "src/UpdateStatus.tsx": "722c081434dc18cd8b04451f55bd99b24141f4aab593f3dd20160c4c630b919a",
+    "src/MaintenanceCancellation.tsx": "a25c7acd91bfe28a02165e3983e84059325472c1d7f5e03541d440f9ad249e5d",
+    "src/browser/appearance.spec.ts": "d64ba3a7feb393dd515d1431f8262658b3d256cee7b35a51e47e49e5a03d1c14",
+    "src/browser/backup-creation.spec.ts": "4f1e1624027bbb2029e81f21f833e13b55a9446a9f5ed57bff944a7d08bb3474",
+    "src/browser/backup-restoration.spec.ts": "0d7b50a2b7e8490b42737e8e9d85c709d05fb0b77b2bdce9dfd6b9957718a2fd",
+    "src/browser/backup-verification.spec.ts": "c50713c932e0b92c7546b4e3577a4583b047c9f2b0c92e5f0f82c2d36594ef35",
+    "src/browser/deployment-wizard.spec.ts": "3e97b4b722b513872a4c131dcf4cd3fe9be1767455cebcf988516c8b5fe8dec1",
+    "src/browser/helper-reconciliation.spec.ts": "7a77beeaf9d4ba96255c20030013334feae41bf949f353fbef24d4d86a190c73",
+    "src/browser/hosted-deployment.spec.ts": "34e60c53f8888fcaf712246b07a0fab33cdacd72d11ff09db54cd115a4d73a3a",
+    "src/browser/installation-selection.spec.ts": "fa88331c9279c74e3e09de89f44cc1fd6739ff94d931c79433792fa879b33fe6",
+    "src/browser/lifecycle-progress.spec.ts": "741943fc4e3a03eb04092001da421ae705c0498cd290651732ea65ac2be62542",
+    "src/browser/local-publication.spec.ts": "a8211ae3e1030b4f41fc1ca19c9cafefdbc94f637484991e7cc1a415635fe512",
+    "src/browser/maintenance-cancellation.spec.ts": "799aeb73d42a9637f9e41da2f74990a738414ee15e8d88cd6a082dbf4c693361",
+    "src/browser/maintenance-retry.spec.ts": "c5cdcb4e2b4b830dc23a580b0734a64fa8982588d79c4fc1d7dde78cf4c60b5f",
+    "src/browser/manager.spec.ts": "8c211434b01e7ab83ed4efe3bd6c6bbbd89b3438bb5a912b62d3ce3a38ce10e5",
+    "src/browser/remote-deployment.spec.ts": "ab535301c9ee8de1e3acbedad84d03c1ac0cc0cddd3cd66d8cd4a6328499f8cf",
+    "src/browser/retry-diagnosis.spec.ts": "b3cd36b5af9b85405859e59172d33446e6598b29fbe3e8f422c6f9d0680b22d8",
+    "src/browser/status-ux.spec.ts": "28b73dff7bca9b61e3e0379131839455fac6fdee2cce0a1ec8f5872e46ea09cd",
+    "src/browser/studio-setup.spec.ts": "fce3460c5b1febd5242538c7c7005f5cfe27270991ae35b6bf2152e0b0677e85",
+    "src/browser/update-application.spec.ts": "396d3d53b968739fce98300e1af056821b8fd95ffd767988270837551737fd37",
+    "src/browser/update-rollback.spec.ts": "5484e82f0a942b0559a1d02c4fb1a2f09051fff06cc133fd3e5bc0ffd16df765",
+    "src/browser/windows-profile-path.spec.ts": "dffcb3c6d90051e3809a000de05c1c52b0c8560f89297f054ff9cb0ff9c14aee",
+    "docs/desktop.md": "21c9cb5c218922b86c12e029b3b4c1c890b1bee66453a04b71832a0a31fd9e4d",
+    "docs/images/manager-simple-2026-10-17.png": "22ad93b4d99d1158dcb2714e5caf72e91753fe338ac209590d41cae1db52bca6"
+  },
+  "implementation": [
+    "Simple presentation defaults to Studio/current exhibition; purpose navigation exposes existing backup/restore, updates, history and publication panels.",
+    "Advanced exposes the same mounted components and their manual controls/diagnostics, not separate settings or execution logic.",
+    "Navigation/mode changes retain existing input and job state; location hashes and named focus targets preserve keyboard navigation.",
+    "Real alerts, progress and enum-derived recovery/uncertain states override presentation hiding. Completion notice is global, not lost in hidden history.",
+    "Existing installer/start/stop/restart/readiness adapters and all protection guards are preserved.",
+    "Cloudflare/Render UI first mounts on explicit publication/advanced entry and stays mounted afterward; plain local first use issues no hosted connected/resume IPC. First entry reads existing deployment work; it does not retry, cancel or create resources.",
+    "Technical package/server versions, detailed service list, manual install/start and preserved server deployment tools are selectively exposed; ordinary viewing/stop/restart remain available."
+  ],
+  "verification": [
+    {
+      "command": "npm run typecheck",
+      "result": "PASS"
+    },
+    {
+      "command": "npm run lint",
+      "result": "PASS"
+    },
+    {
+      "command": "npm run test:browser",
+      "result": "150 PASS;16 fixture/scenario failures; all 166 ran across desktop/narrow, 1 worker",
+      "scope": "Actual Chromium interaction using synthetic IPC; no native engine/cloud mutation",
+      "seconds_approx": 324
+    },
+    {
+      "command": "npm run test:browser -- --last-failed",
+      "result": "16/16 PASS after documented fixture/scenario corrections",
+      "seconds": 10.1,
+      "coverage": "All initially failing cases passed; prior 150 unchanged assertion passes reused rather than rerun."
+    },
+    {
+      "command": "npm run test:browser -- src/browser/studio-setup.spec.ts src/browser/hosted-deployment.spec.ts",
+      "result": "18/18 PASS",
+      "seconds": 11.8,
+      "scope": "After explicit lazy cloud initialization; both configured viewports. Default local hosted reads zero and repeated entry retains first component lifetime."
+    },
+    {
+      "command": "npm run build",
+      "result": "PASS",
+      "scope": "Final TypeScript/Vite frontend only; 37 modules; 157ms Vite; no native app build"
+    },
+    {
+      "command": "npm run test:browser -- src/browser/studio-setup.spec.ts src/browser/appearance.spec.ts",
+      "result": "12/12 PASS",
+      "seconds": 10.1,
+      "scope": "Final default flow/copy/focus, same inputs, light/dark contrast, actual focus and sticky long-form navigation; both projects plus explicit widths."
+    },
+    {
+      "command": "git diff --check",
+      "result": "PASS"
+    }
+  ],
+  "failure_resolution": [
+    {
+      "case": "Backup history synthetic mutation count",
+      "reason": "Independent read-only hosted resume/connection queries were omitted and counted as writes.",
+      "fix": "Added explicit empty-history/false replies; original zero mutation assertion unchanged."
+    },
+    {
+      "case": "Override/profile-unverified synthetic fixture crashes page",
+      "reason": "Catch-all [] for unknown IPC supplied an invalid hosted resume object.",
+      "fix": "Explicit hosted resume null/connected false matching native no-history contract; original local write-refusal assertions unchanged."
+    },
+    {
+      "case": "Rollback recovery auto-visible in simple view then checks hidden manual start",
+      "fix": "Assert simple enum-derived recovery visibility first, then explicitly open advanced before original disabled-start assertion."
+    },
+    {
+      "case": "Windows canonical path lifecycle call counter",
+      "reason": "Independent provider history reads were logged as local-installation authority calls.",
+      "fix": "Handle only those known provider reads before the local counter; original all remaining calls equal manager_installations assertion retained."
+    },
+    {
+      "case": "Old sticky/navigation test requires scrolling hidden/short simple history",
+      "fix": "Select purpose before scrolling and exercise sticky long-form assertion in advanced; simple purpose focus checked separately."
+    },
+    {
+      "case": "Actual completion feedback hidden with history; hash target not focusable",
+      "fix": "Move existing notice to global status and give actual purpose targets names/tabIndex; browser assertions verify display and focus."
+    }
+  ],
+  "visual_artifact": {
+    "path": "docs/images/manager-simple-2026-10-17.png",
+    "input": "Synthetic ready local installation with no actual key/token/user data",
+    "review": "Viewed generated screenshot: default primary Studio action and current status; other purpose panels hidden; no text overflow in explicit width checks. Not a native macOS screenshot."
+  },
+  "not_verified": [
+    "Actual updated native Mac application and user-keyboard/VoiceOver operation.",
+    "Developer-tool-free first install, actual engine/VM/verified runtime preparation, real Studio editing/save and stop/reopen.",
+    "Developer ID signing/notarization and App Store product installation.",
+    "OS-level Keychain dialog absence: proven scope is absence of Cloudflare/Render frontend IPC reads before relevant entry, not every native profile credential operation."
+  ],
+  "preservation": "No product task/GUI-wide release completion promotion; no original data, keys, backups, native installation, engine or remote provider mutated by this UI work. Parallel native/runtime and hosted-client changes are excluded from this commit.",
+  "integration_parent": "1a7627a7ba5893ce8dbb0e586bd5b4c03358880d",
+  "parallel_foundation_commits": {
+    "runtime_preparation": "da134bdd7f84867280dacd7c76a51487b10de016",
+    "hosted_resume_validation": "1a7627a7ba5893ce8dbb0e586bd5b4c03358880d"
+  },
+  "integration_scope": "Frontend report is applied after these parallel commits; their Rust/runtime/hosted validations remain separately owned evidence, not rerun or claimed by this report."
+}

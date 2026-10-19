@@ -1,0 +1,86 @@
+{
+  "date": "2026-10-16",
+  "scope": "Apply Capture visual philosophy to existing Manager UI; no lifecycle, native permission, consent or data-contract changes; main completion Goal stays paused.",
+  "research": {
+    "skills": [
+      "apple-design",
+      "review-hig-compliance"
+    ],
+    "references": [
+      "accessibility.md > Vision (contrast and non-color state)",
+      "layout.md > Visual hierarchy",
+      "typography.md",
+      "color.md",
+      "designing-for-macos.md",
+      "buttons.md",
+      "dark-mode.md",
+      "settings.md",
+      "cross-platform.md > Desktop (Tauri/Electron)"
+    ],
+    "interpretation": "Tauri web controls use semantic CSS and native select/keyboard behavior. This is not a replacement with SwiftUI/AppKit and does not claim native macOS menu integration."
+  },
+  "findings_fixed": [
+    "Hard-coded green colors and light-only forms replaced with shared Capture teal and semantic light/dark tokens.",
+    "Deployment preparation preceded daily exhibition controls; preparation now follows core operation and recovery sections.",
+    "Long page lacked direct task access; anchor navigation exposes exhibition, backup/restore, update, job history and deployment preparation without remounting work modules.",
+    "Long OEX instructions moved into a details disclosure; the original OEX action and permission guard remain visible.",
+    "Long-window task navigation now stays sticky; desktop and narrow anchor/focus clearance prevents headings and skip-link targets from hiding beneath the menu."
+  ],
+  "design": {
+    "accent_light": "#005F59",
+    "accent_dark": "#75DFD3",
+    "font": "System UI stack, existing responsive headings, body and supporting text",
+    "spacing": "8/12/16/24/32px semantic tokens; shared card padding24/16 and radius24",
+    "appearance": "Header > 화면 모드: system/light/dark. Defaults to system; only explicit selection is stored under exhibitos.manager.appearance; live OS appearance changes observed in system mode. Restricted storage still applies current window selection.",
+    "motion": "No new animation; existing reduced-motion support preserved."
+  },
+  "preservation": {
+    "actions": "Existing React action callbacks, Rust core, invocation API, disabled/active guard expressions and all lifecycle consent contents unchanged. All stateful work panels remain mounted.",
+    "data": "No server, engine, key, backup, actual installation, container, VM or user-data operation executed.",
+    "storage": "No lifecycle path or secret persisted by the new preference; existing empty-storage operation checks retained."
+  },
+  "verification": {
+    "typecheck": "PASS",
+    "lint": "PASS",
+    "production_build": "PASS",
+    "unit_tests": 46,
+    "browser_regression": "Initial presentation change: full run140/142 passed; two stale home-heading assertions corrected and final6/6 focused run passed. Follow-up sticky-navigation CSS: relevant appearance/contrast/navigation6/6 passed; no full suite repeat.",
+    "browser_environment": "Playwright Chromium desktop1120x900 and narrow640x850, additional overflow/44px control checks at320/640/1120; synthetic IPC fixtures only.",
+    "visual_review": "Observed final top-level/backup light/dark and sticky320/640 screenshots; no linked heading or control obscured by the task menu.",
+    "artifacts": "/Volumes/ExhibitSSD/ExhibitOS/.local/verification/manager-consistent-design",
+    "logs": [
+      "/private/tmp/manager-ux-browser.log",
+      "/private/tmp/manager-ux-final-browser.log"
+    ],
+    "limits": [
+      "No rebuilt/launched native Tauri app in this bounded task.",
+      "No actual engine action, encrypted backup/restore or signed update performed.",
+      "No manual VoiceOver spoken output observation."
+    ],
+    "focused_browser_tests": 6,
+    "contrast": "Both palettes: body/surface, secondary/canvas, primary button, warning text/background ratios >=4.5:1.",
+    "sticky_navigation": {
+      "tests_passed": 6,
+      "widths": [
+        320,
+        640,
+        1120
+      ],
+      "coverage": [
+        "Navigation stays within the viewport after deep scroll",
+        "Every task link keeps destination heading below menu",
+        "Skip link retains keyboard focus below sticky menu",
+        "No horizontal document overflow"
+      ],
+      "logs": [
+        "/private/tmp/manager-ux-sticky-browser.log",
+        "/private/tmp/manager-ux-sticky-static.log"
+      ],
+      "screenshots": [
+        "sticky-320.png",
+        "sticky-640.png"
+      ],
+      "static": "PASS typecheck, lint, diff-check"
+    }
+  }
+}

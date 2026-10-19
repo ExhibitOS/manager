@@ -181,13 +181,17 @@ fn check_mount_layout(app: &Value, db: &Value) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(any(windows, test))]
+fn windows_linux_engine(info: &Value) -> Result<()> {
+    if info["OSType"] != "linux" || info["OperatingSystem"] != "Docker Desktop" {
+        return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
+    }
+    Ok(())
+}
 pub(super) fn observe(
     source: &LifecycleService,
     plan: &crate::update::Plan,
 ) -> Result<SourceStoppedReceipt> {
-    if cfg!(windows) {
-        return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
-    }
     if !source.root.join("installed.json").exists() {
         return Err(err("UPDATE_SOURCE_NOT_INSTALLED"));
     }
@@ -207,6 +211,21 @@ pub(super) fn observe(
     let engine = source.engine(&m, false)?;
     if engine != "docker" {
         return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
+    }
+    #[cfg(windows)]
+    {
+        let output = run(
+            &engine,
+            &["info".into(), "--format".into(), "{{json .}}".into()],
+            None,
+            30,
+        )?;
+        if output.len() > 256 * 1024 {
+            return Err(err("ENGINE_OUTPUT_LIMIT"));
+        }
+        let info: Value =
+            serde_json::from_slice(&output).map_err(|_| err("ENGINE_OUTPUT_INVALID"))?;
+        windows_linux_engine(&info)?;
     }
     source.ensure_backup_helpers_idle(&engine)?;
     source.validate_compose(&m, &engine)?;
@@ -433,7 +452,8 @@ mod tests {
         {
             let mut args = vec![
                 "create".into(),
-                "--pull".into(), "never".into(),
+                "--pull".into(),
+                "never".into(),
                 "--network".into(),
                 "none".into(),
                 "--entrypoint".into(),
@@ -442,11 +462,7 @@ mod tests {
             for mount in mounts {
                 args.extend(["--mount".into(), mount]);
             }
-            let selected_image = if index == 0 {
-                platform.as_str()
-            } else {
-                image
-            };
+            let selected_image = if index == 0 { platform.as_str() } else { image };
             args.extend([selected_image.into(), "300".into()]);
             ids.push(String::from_utf8(call(&args)).unwrap().trim().to_owned());
         }
@@ -537,7 +553,8 @@ mod tests {
             );
             let id = String::from_utf8(call(&[
                 "create",
-                "--pull", "never",
+                "--pull",
+                "never",
                 "--network",
                 "none",
                 "--tmpfs",
@@ -580,6 +597,30 @@ mod tests {
         call(&["volume", "rm", &name]);
         if let Err(payload) = result {
             std::panic::resume_unwind(payload);
+        }
+    }
+}
+
+#[cfg(test)]
+mod windows_engine_tests {
+    use super::*;
+    #[test]
+    fn windows_source_observation_requires_actual_desktop_linux_engine() {
+        assert!(
+            windows_linux_engine(
+                &serde_json::json!({"OSType":"linux","OperatingSystem":"Docker Desktop"})
+            )
+            .is_ok()
+        );
+        for info in [
+            serde_json::json!({"OSType":"windows","OperatingSystem":"Docker Desktop"}),
+            serde_json::json!({"OSType":"linux","OperatingSystem":"foreign remote daemon"}),
+            serde_json::json!({"OSType":"linux"}),
+        ] {
+            assert_eq!(
+                windows_linux_engine(&info).unwrap_err().code,
+                "BACKUP_PLATFORM_UNVERIFIED"
+            );
         }
     }
 }

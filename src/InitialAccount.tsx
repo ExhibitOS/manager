@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+import {useState} from 'react';
+import type {FormEvent} from 'react';
+import {validInitialPassword,validInitialSubject,type InitialAccountInput} from './initial-account';
+export function InitialAccount({onSubmit,onCancel}:{onSubmit:(input:InitialAccountInput)=>void;onCancel:()=>void}){
+ const [subject,setSubject]=useState(''),[password,setPassword]=useState(''),[confirmation,setConfirmation]=useState(''),[error,setError]=useState('');
+ function submit(event:FormEvent){event.preventDefault();if(!validInitialSubject(subject)){setError('계정은 영문·숫자로 시작하고 영문·숫자·밑줄·마침표·@·하이픈으로 3–128자 입력하세요.');return;}if(!validInitialPassword(password)){setError('비밀번호는 12–1024바이트로 입력하세요. 줄바꿈이나 제어 문자는 사용할 수 없어요.');return;}if(password!==confirmation){setError('두 비밀번호가 다릅니다. 다시 확인하세요.');return;}const input={subject,password};setPassword('');setConfirmation('');onSubmit(input);}
+ return <form onSubmit={submit} aria-label="처음 사용할 계정 설정"><h3>처음 사용할 계정을 정하세요</h3><p>이 컴퓨터의 작품 관리·서버 저장에 사용할 계정이에요. 클라우드 가입은 필요 없어요. 기존 설치의 계정은 바꾸지 않아요.</p><label>계정<input autoFocus name="initial-subject" autoComplete="username" value={subject} onChange={e=>setSubject(e.target.value)} required minLength={3} maxLength={128}/></label><label>비밀번호<input name="initial-password" type="password" autoComplete="new-password" value={password} onChange={e=>setPassword(e.target.value)} required maxLength={1024}/></label><label>비밀번호 확인<input name="initial-confirmation" type="password" autoComplete="new-password" value={confirmation} onChange={e=>setConfirmation(e.target.value)} required maxLength={1024}/></label><p className="note">비밀번호는 이 설치의 비공개 설정에 보관해요. Studio에서 같은 비밀번호로 로그인하세요.</p>{error&&<p role="alert">{error}</p>}<div className="actions"><button className="primary" type="submit">계정 설정하고 계속</button><button type="button" onClick={()=>{setPassword('');setConfirmation('');onCancel();}}>취소</button></div></form>;
+}

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-hosted-open-url"
+description = "Enables the manager_hosted_open_url command without any pre-configured scope."
+commands.allow = ["manager_hosted_open_url"]
+
+[[permission]]
+identifier = "deny-manager-hosted-open-url"
+description = "Denies the manager_hosted_open_url command without any pre-configured scope."
+commands.deny = ["manager_hosted_open_url"]

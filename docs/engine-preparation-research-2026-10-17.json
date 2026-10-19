@@ -1,0 +1,88 @@
+{
+  "date": "2026-10-17",
+  "status": "READ_ONLY_RESEARCH_NO_PRODUCT_EDIT_NO_INSTALL",
+  "managerSource": "0a87506a16bae99c0d5d4418e5f4eda5f8634d48",
+  "tasks": [
+    "T08-01",
+    "T08-03"
+  ],
+  "baseline": {
+    "tasks": "/Volumes/ExhibitSSD/ExhibitOS/operations/docs/implementation/tasks.json",
+    "state": "/Volumes/ExhibitSSD/ExhibitOS/operations/docs/implementation/state.json",
+    "followup": "/Volumes/ExhibitSSD/ExhibitOS/operations/docs/implementation/evidence/2026-10-17-manager-distribution-independence-followup.json",
+    "currentState": "MANAGER_NATIVE_FIRST_ACCOUNT_FLOW_VERIFIED; no-engine official preparation remains",
+    "existingResponsibility": "T08-01 engine detection, runtime lifecycle and recoverable novice guidance; registered followup adds official minimal engine preparation. T08-03 package/source/instructions linkage. Preserve original acceptance that Platform is not Docker-Desktop-only."
+  },
+  "currentCode": {
+    "ui": "src/App.tsx engine-list and refresh only; no installer/download/start-engine control",
+    "probe": "crates/lifecycle/src/lib.rs probe_engine: Docker major>=24 or Podman>=5, Compose>=2, version+info+compose availability; existing guards remain",
+    "finderPaths": "engine_executable checks standard PATH plus /usr/local/bin, /opt/homebrew/bin and /Applications/Docker.app/Contents/Resources/bin",
+    "runtime": "src-tauri/platform-runtime/generated/manifest.json preferredEngine=docker; existing installed engine must not silently switch"
+  },
+  "candidates": [
+    {
+      "provider": "Docker Desktop",
+      "officialPath": "Official macOS DMG, then Applications app and first-run license; current prepared runtime is Docker-specific",
+      "license": "Docker Subscription Service Agreement. Free eligibility is conditional (personal/education/noncommercial OSS and qualifying small business); other professional/government use can require paid subscription. Never infer paid authorization. User accepts vendor terms directly; do not pass --accept-license automatically.",
+      "automation": "Official desktop CLI offers start/status. Modern default setup documented as nonprivileged; OS-specific approvals or organization policy may still require user action. Manager must detect actual readiness rather than app launched.",
+      "candidateVersion": "4.95.0",
+      "releaseDate": "2026-10-12",
+      "architecture": "arm64 only for current investigated Mac scope",
+      "fixedUrl": "https://desktop.docker.com/mac/main/arm64/242831/Docker.dmg",
+      "sha256": "7857222d3c009d787e7f8347b12e24bfee44e49a68cf455cb4b612991d2492c1",
+      "headerObservation": {
+        "method": "HEAD",
+        "status": 200,
+        "contentLength": 589939097,
+        "bodyRead": false
+      },
+      "qualification": "metadata only; not downloaded, code-signature checked, installed or functionally qualified"
+    },
+    {
+      "provider": "Podman Desktop / Podman",
+      "license": "Official source Apache-2.0 for Podman Desktop; component notices remain independent. No new provider chosen.",
+      "officialPath": "Recommended DMG onboarding handles Podman engine package, machine creation and Compose; documented system Installer password may be required. Homebrew mixing is specifically discouraged by official macOS docs.",
+      "reasonNotSmallestForCurrentArtifact": "Current generated bundle is pinned to Docker and engine-produced identity rules. Automatically installing Podman would not make this particular bundle ready; do not replace/reset existing Homebrew/VM/engine. Preserve current Podman discovery and already-qualified matching-bundle path."
+    }
+  ],
+  "recommendedMinimum": [
+    "Reuse any existing engine and matching installation first; no installer unless the user explicitly selects preparation and no matching ready engine exists.",
+    "For the current Docker bundle, present one Docker Desktop official preparation action with clear conditional license eligibility and official terms. If paid eligibility is required, stop without charge or automatic subscription; retain existing Podman path.",
+    "Use a fixed version/architecture/URL/size/SHA pin, bounded staging download and existing job/progress/retry records. Distinguish download, verification, official installer/user action, engine starting and connected readiness. Unknown total or OS approval wait stays indeterminate.",
+    "Verify bytes and macOS signature/Gatekeeper acceptance before launching the official installer. Never redistribute vendor installer inside Manager without confirmed rights, never remove quarantine, collect admin password, accept license automatically, overwrite an existing Docker app or reset VM/data.",
+    "Open the verified vendor DMG/official installer and use official macOS installation path. Required OS authorization and vendor license decisions stay in system/vendor UI. The exact automated Applications installation API versus required official drag/drop step must be proven before claiming fully automatic install.",
+    "Start only the fixed detected official app/official desktop start command after explicit preparation; resume existing detect/info/compose probe until actual availability. App restart observes saved preparation state and actual installation rather than rerunning install. Do not auto-start engine on every Manager launch.",
+    "Keep current Studio chain and optional Capture/Processing independence. No extra account, provider, support environment, task or release gate."
+  ],
+  "implementationBoundary": {
+    "frontend": "Existing engine preparation area in App; focused presentation module and typed selected/native client, same simple/advanced state",
+    "native": "Closed fixed-provider/version preparation command and resource metadata; public OS open/install mechanisms, no generic shell/URL/program execution API",
+    "lifecycle": "Reuse current engine detection/readiness, existing managed job/locking/storage/retry ownership; add only preparation steps needed by T08 workflow",
+    "notInThisResearch": [
+      "No code modifications",
+      "No system install or download body saved",
+      "No engine/VM start, stop, reset or deletion",
+      "No credentials, original data or existing profile access",
+      "No new dependency or provider",
+      "No heavy build"
+    ]
+  },
+  "necessaryExistingChecks": [
+    "No-engine versus existing matching engine behavior",
+    "Invalid/incomplete download, signature/hash failure, cancellation and app restart reuse",
+    "OS approval/license prompt and actual installed-app/engine/Compose detection on isolated Mac",
+    "First-time no-dev-tools Manager -> install/start -> Studio chain; existing data unchanged",
+    "Conditional free license behavior and no paid action; preserve existing Podman support"
+  ],
+  "remainingExternalEvidence": "Current host already has engines; clean no-engine macOS installer/OS approval and actual free-eligible vendor onboarding not executed. Metadata/plan is not implementation or installation success.",
+  "sources": [
+    "https://docs.docker.com/desktop/setup/install/mac-install/",
+    "https://docs.docker.com/subscription-billing/desktop-license/",
+    "https://docs.docker.com/desktop/release-notes/",
+    "https://desktop.docker.com/mac/main/arm64/242831/checksums.txt",
+    "https://docs.docker.com/desktop/features/desktop-cli/",
+    "https://podman-desktop.io/docs/installation/macos-install",
+    "https://podman-desktop.io/docs/compose/setting-up-compose",
+    "https://raw.githubusercontent.com/podman-desktop/podman-desktop/main/LICENSE"
+  ]
+}

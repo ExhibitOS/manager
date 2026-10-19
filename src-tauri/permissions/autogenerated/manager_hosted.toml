@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-hosted"
+description = "Enables the manager_hosted command without any pre-configured scope."
+commands.allow = ["manager_hosted"]
+
+[[permission]]
+identifier = "deny-manager-hosted"
+description = "Denies the manager_hosted command without any pre-configured scope."
+commands.deny = ["manager_hosted"]

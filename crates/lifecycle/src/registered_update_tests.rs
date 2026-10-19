@@ -3,9 +3,10 @@
 use super::*;
 use crate::{execution_reference as refs, update_execution_handoff as handoff};
 use serde_json::Value;
-fn registered_fixture() -> (PathBuf, String, u64, String) {
+fn registered_fixture() -> (PathBuf, String, u64, String) { registered_fixture_mode(false) }
+fn registered_fixture_mode(changed: bool) -> (PathBuf, String, u64, String) {
     let (profile, key, policy, mut release) = tests::fixture();
-    release.artifact.schema_sha256 = "a".repeat(64);
+    release.artifact.schema_sha256 = if changed { "f".repeat(64) } else { "a".repeat(64) };
     let envelope = tests::seal(&key, &release);
     let mut store = Store::provision(&profile, "default", policy, 10).unwrap();
     let mut verified = store.verify_for_preparation(&envelope, 20).unwrap();
@@ -15,7 +16,7 @@ fn registered_fixture() -> (PathBuf, String, u64, String) {
     let mut plan = tests::plan();
     plan.source_instance = uuid::Uuid::new_v4().to_string();
     plan.target_instance = uuid::Uuid::new_v4().to_string();
-    plan.target_schema = plan.source_schema.clone();
+    plan.target_schema = release.artifact.schema_sha256.clone();
     let installation = plan.source_instance.clone();
     store
         .prepare_update(&envelope, &verified, plan, 20)
@@ -32,7 +33,7 @@ fn registered_fixture() -> (PathBuf, String, u64, String) {
         }],
     };
     crate::installations::save(&profile, &registry, None).unwrap();
-    let (_, registryBytes) = crate::installations::load(&profile).unwrap().unwrap();
+    let (_, registry_bytes) = crate::installations::load(&profile).unwrap().unwrap();
     drop(
         crate::private_options()
             .open(profile.join("operation.lock"))
@@ -49,7 +50,7 @@ fn registered_fixture() -> (PathBuf, String, u64, String) {
         scope: "default".into(),
         operation_id: "update-1".into(),
         generation,
-        registry_sha256: crate::digest(&registryBytes),
+        registry_sha256: crate::digest(&registry_bytes),
         artifact: external.join("runtime.tar"),
         artifact_sha256: crate::digest(b"fixture"),
         artifact_bytes: 7,
@@ -63,6 +64,8 @@ fn registered_fixture() -> (PathBuf, String, u64, String) {
         key_file: external.join("unused-key"),
         qualification_destination: external.join("old-qualification"),
         qualification_sha256: "b".repeat(64),
+        target_catalog: None,
+        target_catalog_sha256: None,
         created_at: 20,
     };
     crate::write_private_new(
@@ -155,9 +158,9 @@ fn registered_update_helper_waits_for_app_close_then_requires_real_requalificati
     )
     .unwrap();
     let session = crate::profile_backup::session_lock(&profile, false).unwrap();
-    let childProfile = profile.clone();
-    let childId = request.id.clone();
-    let helper = std::thread::spawn(move || handoff::execute(&childProfile, &childId));
+    let child_profile = profile.clone();
+    let child_id = request.id.clone();
+    let helper = std::thread::spawn(move || handoff::execute(&child_profile, &child_id));
     std::thread::sleep(std::time::Duration::from_millis(150));
     assert_eq!(
         handoff::latest(&profile, &installation)
@@ -239,9 +242,9 @@ fn registered_update_duplicate_helper_cannot_publish_outcome_while_owner_waits()
     )
     .unwrap();
     let session = crate::profile_backup::session_lock(&profile, false).unwrap();
-    let firstProfile = profile.clone();
-    let firstId = request.id.clone();
-    let owner = std::thread::spawn(move || handoff::execute(&firstProfile, &firstId));
+    let first_profile = profile.clone();
+    let first_id = request.id.clone();
+    let owner = std::thread::spawn(move || handoff::execute(&first_profile, &first_id));
     let root = profile.join("update-apply-handoffs");
     let claim = root.join(format!("{}.claim.json", request.id));
     let outcome = root.join(format!("{}.outcome.json", request.id));
@@ -253,12 +256,12 @@ fn registered_update_duplicate_helper_cannot_publish_outcome_while_owner_waits()
         claim.exists(),
         "helper must own the request before waiting for app close"
     );
-    let originalClaim = fs::read(&claim).unwrap();
+    let original_claim = fs::read(&claim).unwrap();
     let (send, receive) = std::sync::mpsc::channel();
-    let secondProfile = profile.clone();
-    let secondId = request.id.clone();
+    let second_profile = profile.clone();
+    let second_id = request.id.clone();
     let duplicate = std::thread::spawn(move || {
-        send.send(handoff::execute(&secondProfile, &secondId).map_err(|e| e.code))
+        send.send(handoff::execute(&second_profile, &second_id).map_err(|e| e.code))
             .unwrap();
     });
     let rejected = receive
@@ -266,7 +269,7 @@ fn registered_update_duplicate_helper_cannot_publish_outcome_while_owner_waits()
         .expect("competing helper must not enter the anchor wait/timeout path");
     assert_eq!(rejected.unwrap_err(), "UPDATE_HANDOFF_ALREADY_CLAIMED");
     assert!(!outcome.exists());
-    assert_eq!(fs::read(&claim).unwrap(), originalClaim);
+    assert_eq!(fs::read(&claim).unwrap(), original_claim);
     assert_eq!(
         inspect_update_status(&profile, "default")
             .unwrap()
@@ -290,9 +293,46 @@ fn registered_update_duplicate_helper_cannot_publish_outcome_while_owner_waits()
             .state,
         "failed"
     );
-    assert_eq!(fs::read(claim).unwrap(), originalClaim);
+    assert_eq!(fs::read(claim).unwrap(), original_claim);
     assert_eq!(
         crate::installations::load(&profile).unwrap().unwrap().1,
         bytes
     );
+}
+
+#[test]
+fn registered_migrated_reference_pair_is_optional_closed_bounded_and_requalified() {
+    let (profile, installation, generation, id) = registered_fixture_mode(true);
+    let (_, registry) = crate::installations::load(&profile).unwrap().unwrap();
+    let path = profile.join("update-execution-references").join(format!("{id}.json"));
+    let original: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert!(handoff::prepare(&profile, &installation, "default", &registry, input(&id, generation)).is_err());
+    assert!(!profile.join("update-apply-handoffs").exists());
+    let mut record = original.clone();
+    record["targetCatalog"] = serde_json::json!(profile.parent().unwrap().join("catalog.json"));
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    assert!(refs::load(&profile, &id).is_err());
+    record["targetCatalogSha256"] = serde_json::json!("a".repeat(64));
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    let summary = refs::list(&profile, &installation, "default", &registry).unwrap();
+    assert!(summary[0].changed_schema);
+    assert_eq!(summary[0].migration_inputs_recorded, Some(true));
+    let wire = serde_json::to_value(&summary[0]).unwrap();
+    assert!(wire.get("targetCatalog").is_none());assert!(wire.get("targetCatalogSha256").is_none());
+    let request = handoff::prepare(&profile, &installation, "default", &registry, input(&id, generation)).unwrap();
+    // Locator metadata cannot replace missing actual key/source/Engine proof.
+    assert!(handoff::execute(&profile, &request.id).is_err());
+    assert_eq!(inspect_update_status(&profile, "default").unwrap().stage, Some(crate::update::Stage::Prepared));
+    assert_eq!(crate::installations::load(&profile).unwrap().unwrap().1, registry);
+    for (field, bad) in [("targetCatalog", serde_json::json!("relative.json")),
+                         ("targetCatalog", serde_json::json!(format!("/{}", "a".repeat(4097)))),
+                         ("targetCatalogSha256", serde_json::json!("not-a-sha")),
+                         ("targetCatalogSha256", Value::Null)] {
+        let mut invalid=record.clone();invalid[field]=bad;
+        fs::write(&path,serde_json::to_vec(&invalid).unwrap()).unwrap();
+        assert!(refs::load(&profile,&id).is_err());
+    }
+    let mut invalid=record;invalid["unexpectedSuccess"]=serde_json::json!(true);
+    fs::write(&path,serde_json::to_vec(&invalid).unwrap()).unwrap();
+    assert!(refs::load(&profile,&id).is_err());
 }

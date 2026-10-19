@@ -1,25 +1,41 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Authenticated chunk sink; its private staging tree is never a published proof.
 use super::*;
+#[cfg(windows)]
+use crate::windows_private::{HostDirectory, HostFile};
 use std::io::Write;
+#[cfg(not(windows))]
+type ExtractionFile = File;
+#[cfg(windows)]
+type ExtractionFile = HostFile;
+#[cfg(windows)]
+type WindowsExtraction = (Inventory, Vec<u8>, BTreeMap<String, HostDirectory>, BTreeMap<String, HostFile>);
 
 pub(super) struct Extraction {
     profile: PathBuf,
+    #[cfg(not(windows))]
     recovered: PathBuf,
     prefix: Vec<u8>,
     manifest_len: Option<usize>,
     manifest: Vec<u8>,
     inventory: Option<Inventory>,
     next: usize,
-    output: Option<File>,
+    output: Option<ExtractionFile>,
+    #[cfg(windows)]
+    directories: BTreeMap<String, HostDirectory>,
+    #[cfg(windows)]
+    files: BTreeMap<String, HostFile>,
     remaining: u64,
     hash: Sha256,
     require_reference_clones: bool,
 }
 impl Extraction {
     pub(super) fn new(profile: &Path, recovered: &Path) -> Self {
+        #[cfg(windows)]
+        let _ = recovered;
         Self {
             profile: profile.into(),
+            #[cfg(not(windows))]
             recovered: recovered.into(),
             prefix: Vec::new(),
             manifest_len: None,
@@ -27,11 +43,22 @@ impl Extraction {
             inventory: None,
             next: 0,
             output: None,
+            #[cfg(windows)]
+            directories: BTreeMap::new(),
+            #[cfg(windows)]
+            files: BTreeMap::new(),
             remaining: 0,
             hash: Sha256::new(),
             require_reference_clones: false,
         }
     }
+    #[cfg(windows)]
+    pub(super) fn new_windows(profile: &Path, recovered: HostDirectory) -> Self {
+        let mut sink = Self::new(profile, recovered.path());
+        sink.directories.insert(String::new(), recovered);
+        sink
+    }
+    #[cfg(any(not(windows), test))]
     pub(super) fn require_reference_clones(&mut self) {
         self.require_reference_clones = true;
     }
@@ -42,32 +69,70 @@ impl Extraction {
                 return Ok(());
             };
             if e.kind == "directory" {
+                #[cfg(not(windows))]
                 installations::new_directory(&self.recovered.join(&e.path))?;
+                #[cfg(windows)]
+                {
+                    let (parent, name) = windows_parent(&self.directories, &e.path)?;
+                    let directory = parent.create_directory(name)?;
+                    self.directories.insert(e.path.clone(), directory);
+                }
                 self.next += 1;
                 continue;
             }
             if let Some(original) = m.content_references.get(&e.path) {
-                let original = self.recovered.join(original);
-                let target = self.recovered.join(&e.path);
-                let mut input = file(&original)?;
-                let before = input.metadata().map_err(|_| fail())?;
-                let copied =
-                    copy_reference(&mut input, &target, e.bytes, self.require_reference_clones)?;
-                if copied != e.bytes
-                    || !unchanged(&before, &input.metadata().map_err(|_| fail())?)
-                    || !unchanged(
-                        &before,
-                        &fs::symlink_metadata(&original).map_err(|_| fail())?,
-                    )
-                    || hash(&target)? != (e.bytes, e.sha256.clone().ok_or_else(fail)?)
+                #[cfg(not(windows))]
                 {
-                    return Err(fail());
+                    let original = self.recovered.join(original);
+                    let target = self.recovered.join(&e.path);
+                    let mut input = file(&original)?;
+                    let before = input.metadata().map_err(|_| fail())?;
+                    let copied = copy_reference(
+                        &mut input,
+                        &target,
+                        e.bytes,
+                        self.require_reference_clones,
+                    )?;
+                    if copied != e.bytes
+                        || !unchanged(&before, &input.metadata().map_err(|_| fail())?)
+                        || !unchanged(
+                            &before,
+                            &fs::symlink_metadata(&original).map_err(|_| fail())?,
+                        )
+                        || hash(&target)? != (e.bytes, e.sha256.clone().ok_or_else(fail)?)
+                    {
+                        return Err(fail());
+                    }
+                }
+                #[cfg(windows)]
+                {
+                    let input = self.files.get_mut(original).ok_or_else(fail)?;
+                    input
+                        .seek(std::io::SeekFrom::Start(0))
+                        .map_err(|_| fail())?;
+                    let (target_parent, target_name) = windows_parent(&self.directories, &e.path)?;
+                    let output = windows_dense_reference(
+                        input,
+                        target_parent,
+                        target_name,
+                        e,
+                        self.require_reference_clones,
+                    )?;
+                    self.files.insert(e.path.clone(), output);
                 }
                 self.next += 1;
                 continue;
             }
             if self.output.is_none() {
-                self.output = Some(private_new(&self.recovered.join(&e.path))?);
+                #[cfg(not(windows))]
+                {
+                    self.output = Some(private_new(&self.recovered.join(&e.path))?);
+                }
+                #[cfg(windows)]
+                {
+                    let (parent, name) = windows_parent(&self.directories, &e.path)?;
+                    self.output = Some(parent.create_file(name)?);
+                }
                 self.remaining = e.bytes;
                 self.hash = Sha256::new();
             }
@@ -77,11 +142,15 @@ impl Extraction {
             if Some(format!("{:x}", self.hash.clone().finalize())) != e.sha256 {
                 return Err(fail());
             }
-            self.output
-                .take()
-                .ok_or_else(fail)?
-                .sync_all()
-                .map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
+            let output = self.output.take().ok_or_else(fail)?;
+            output.sync_all().map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
+            #[cfg(windows)]
+            {
+                output.check()?;
+                // Retain NEW authority; native permissions are restored only after
+                // authenticated EOF and after every parent has its original ACL.
+                self.files.insert(e.path.clone(), output);
+            }
             self.next += 1;
         }
     }
@@ -109,7 +178,10 @@ impl Extraction {
             }
             let m: Inventory = serde_json::from_slice(&self.manifest).map_err(|_| fail())?;
             validate_inventory(&m, &self.profile)?;
+            #[cfg(not(windows))]
             installations::new_directory(&self.recovered)?;
+            #[cfg(windows)]
+            self.directories.get("").ok_or_else(fail)?.check()?;
             self.inventory = Some(m);
             self.advance()?;
         }
@@ -132,6 +204,7 @@ impl Extraction {
         }
         Ok(())
     }
+    #[cfg(not(windows))]
     pub(super) fn finish(mut self) -> Result<(Inventory, Vec<u8>)> {
         self.advance()?;
         let m = self.inventory.take().ok_or_else(fail)?;
@@ -139,6 +212,43 @@ impl Extraction {
             return Err(fail());
         }
         Ok((m, self.manifest))
+    }
+    #[cfg(windows)]
+    pub(super) fn finish_windows(
+        mut self,
+    ) -> Result<WindowsExtraction> {
+        self.advance()?;
+        let m = self.inventory.take().ok_or_else(fail)?;
+        if self.next != m.items.len() || self.remaining != 0 || self.output.is_some() {
+            return Err(fail());
+        }
+        // Called only after the authenticated stream's final frame and EOF.
+        // Restore inherited ACLs from root to descendants, then files. Retain
+        // every NEW object authority for the caller's full final census.
+        let directory = self.directories.get("").ok_or_else(fail)?;
+        let permissions = m.root_windows_permissions.as_ref().ok_or_else(fail)?;
+        directory.apply_permissions(permissions)?;
+        if directory.permissions()? != *permissions {
+            return Err(fail());
+        }
+        // The validated sorted paths place every parent before its descendants.
+        for entry in m.items.iter().filter(|item| item.kind == "directory") {
+            let directory = self.directories.get(&entry.path).ok_or_else(fail)?;
+            let permissions = entry.windows_permissions.as_ref().ok_or_else(fail)?;
+            directory.apply_permissions(permissions)?;
+            if directory.permissions()? != *permissions {
+                return Err(fail());
+            }
+        }
+        for entry in m.items.iter().filter(|item| item.kind == "file") {
+            let file = self.files.get(&entry.path).ok_or_else(fail)?;
+            let permissions = entry.windows_permissions.as_ref().ok_or_else(fail)?;
+            file.apply_permissions(permissions)?;
+            if file.permissions()? != *permissions {
+                return Err(fail());
+            }
+        }
+        Ok((m, self.manifest, self.directories, self.files))
     }
 }
 impl Write for Extraction {
@@ -155,6 +265,7 @@ impl Write for Extraction {
 /// A reference is still independently hash-checked by the authenticated sink.
 /// macOS may share immutable extents, never an inode or a mutable file handle.
 /// Unsupported filesystems retain the bounded dense path and expanded budget.
+#[cfg(not(windows))]
 fn copy_reference(input: &mut File, target: &Path, bytes: u64, require_clone: bool) -> Result<u64> {
     #[cfg(target_os = "macos")]
     if clone_reference(input, target)? {
@@ -163,6 +274,7 @@ fn copy_reference(input: &mut File, target: &Path, bytes: u64, require_clone: bo
     dense_reference(input, target, bytes, require_clone)
 }
 
+#[cfg(not(windows))]
 fn dense_reference(
     input: &mut File,
     target: &Path,
@@ -292,6 +404,310 @@ mod required_clone_tests {
         assert_eq!(
             fs::read(&source).unwrap(),
             b"preserved authenticated source"
+        );
+    }
+}
+
+#[cfg(windows)]
+fn windows_parent<'a>(
+    directories: &'a BTreeMap<String, HostDirectory>,
+    relative: &'a str,
+) -> Result<(&'a HostDirectory, &'a str)> {
+    if !safe_path(relative) {
+        return Err(fail());
+    }
+    let (parent, name) = relative.rsplit_once('/').unwrap_or(("", relative));
+    Ok((directories.get(parent).ok_or_else(fail)?, name))
+}
+
+#[cfg(windows)]
+fn windows_dense_reference(
+    input: &mut HostFile,
+    parent: &HostDirectory,
+    name: &str,
+    entry: &Item,
+    require_clone: bool,
+) -> Result<HostFile> {
+    if require_clone {
+        return Err(err("HOST_REFERENCE_CLONE_REQUIRED"));
+    }
+    input.check()?;
+    let before = input.metadata()?;
+    if before.len() != entry.bytes {
+        return Err(fail());
+    }
+    let mut output = parent.create_file(name)?;
+    let copied = std::io::copy(
+        &mut std::io::Read::by_ref(input).take(entry.bytes + 1),
+        &mut output,
+    )
+    .map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
+    output.sync_all().map_err(|_| err("HOST_WRITE_UNCERTAIN"))?;
+    input.check()?;
+    if copied != entry.bytes || !unchanged(&before, &input.metadata()?) {
+        return Err(fail());
+    }
+    // Read the independently created NEW file through its owned handle. Closing
+    // and reopening would discard the only authority allowed to restore its ACL.
+    output
+        .seek(std::io::SeekFrom::Start(0))
+        .map_err(|_| fail())?;
+    let metadata = output.metadata()?;
+    let mut hasher = Sha256::new();
+    let mut count = 0u64;
+    let mut buffer = [0u8; 65536];
+    loop {
+        output.check()?;
+        let length = output.read(&mut buffer).map_err(|_| fail())?;
+        if length == 0 {
+            break;
+        }
+        count += length as u64;
+        if count > entry.bytes {
+            return Err(fail());
+        }
+        hasher.update(&buffer[..length]);
+    }
+    output.check()?;
+    if count != entry.bytes
+        || !unchanged(&metadata, &output.metadata()?)
+        || Some(format!("{:x}", hasher.finalize())) != entry.sha256
+    {
+        return Err(fail());
+    }
+    Ok(output)
+}
+
+#[cfg(all(test, windows))]
+mod windows_stream_tests {
+    use super::*;
+
+    fn fixture() -> (HostDirectory, Inventory, Vec<u8>, Vec<u8>) {
+        let path = std::env::temp_dir().join(format!("host-stream-{}", Uuid::new_v4()));
+        let initial = crate::windows_private::PrivateDirectory::create(&path).unwrap();
+        let path = initial.path().to_owned();
+        drop(initial);
+        let base = HostDirectory::inspect(&path).unwrap();
+        let source = base.create_directory("source").unwrap();
+        let assets = source.create_directory("assets").unwrap();
+        let registry = b"synthetic installation registry";
+        let mut registry_file = source.create_file("installation-selection.json").unwrap();
+        registry_file.write_all(registry).unwrap();
+        registry_file.sync_all().unwrap();
+        let registry_permissions = registry_file.permissions().unwrap();
+        drop(registry_file);
+        let bytes = vec![0x57; 65537];
+        let mut master = assets.create_file("master.bin").unwrap();
+        master.write_all(&bytes).unwrap();
+        master.sync_all().unwrap();
+        drop(master);
+        drop(assets);
+        drop(source);
+        for (target, arguments) in [
+            (
+                base.path().join("source/assets"),
+                vec!["/grant", "*S-1-1-0:(OI)(CI)R"],
+            ),
+            (
+                base.path().join("source/assets/master.bin"),
+                vec!["/inheritance:e"],
+            ),
+        ] {
+            let status = crate::process_window::background_command("icacls.exe")
+                .arg(target)
+                .args(arguments)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        let source = base.child_directory("source").unwrap();
+        let assets = source.child_directory("assets").unwrap();
+        let inherited = assets.child_file("master.bin").unwrap();
+        let file_permissions = inherited.permissions().unwrap();
+        assert!(
+            file_permissions.security_descriptor.contains("S-1-1-0")
+                || file_permissions.security_descriptor.contains("WD")
+        );
+        drop(inherited);
+        let manifest = Inventory {
+            format: 4,
+            id: Uuid::new_v4().to_string(),
+            scope: "host-profile".into(),
+            source_profile_sha256: digest(source.path().to_string_lossy().as_bytes()),
+            registry_sha256: digest(registry),
+            total_bytes: 2 * bytes.len() as u64 + registry.len() as u64,
+            external_volumes_saved: false,
+            host_writer_quiescence: "operator-acknowledged".into(),
+            excluded_locks: Vec::new(),
+            items: vec![
+                Item {
+                    path: "assets".into(),
+                    kind: "directory".into(),
+                    mode: 0,
+                    bytes: 0,
+                    sha256: None,
+                    windows_permissions: Some(assets.permissions().unwrap()),
+                },
+                Item {
+                    path: "assets/master.bin".into(),
+                    kind: "file".into(),
+                    mode: 0,
+                    bytes: bytes.len() as u64,
+                    sha256: Some(digest(&bytes)),
+                    windows_permissions: Some(file_permissions.clone()),
+                },
+                Item {
+                    path: "assets/reference.bin".into(),
+                    kind: "file".into(),
+                    mode: 0,
+                    bytes: bytes.len() as u64,
+                    sha256: Some(digest(&bytes)),
+                    windows_permissions: Some(file_permissions),
+                },
+                Item {
+                    path: "installation-selection.json".into(),
+                    kind: "file".into(),
+                    mode: 0,
+                    bytes: registry.len() as u64,
+                    sha256: Some(digest(registry)),
+                    windows_permissions: Some(registry_permissions),
+                },
+            ],
+            content_references: BTreeMap::from([(
+                "assets/reference.bin".into(),
+                "assets/master.bin".into(),
+            )]),
+            root_windows_permissions: Some(source.permissions().unwrap()),
+        };
+        let encoded = serde_json::to_vec(&manifest).unwrap();
+        let mut payload = (encoded.len() as u64).to_be_bytes().to_vec();
+        payload.extend_from_slice(&encoded);
+        payload.extend_from_slice(&bytes);
+        payload.extend_from_slice(registry);
+        (base, manifest, payload, bytes)
+    }
+
+    fn seal(payload: &[u8]) -> Vec<u8> {
+        let mut ciphertext = Vec::new();
+        crate::maintenance_stream::seal_compact(
+            &mut Cursor::new(payload),
+            &mut ciphertext,
+            &[37; 32],
+            CONTEXT,
+            DATA_LIMIT,
+        )
+        .unwrap();
+        ciphertext
+    }
+
+    #[test]
+    fn windows_authenticated_sink_restores_dense_independent_bytes_and_permissions() {
+        let (base, expected, payload, original) = fixture();
+        let source = base.path().join("source");
+        let recovered = base.create_directory("recovered").unwrap();
+        let mut sink = Extraction::new_windows(&source, recovered);
+        let ciphertext = seal(&payload);
+        crate::maintenance_stream::open(
+            &mut Cursor::new(&ciphertext),
+            &mut sink,
+            &[37; 32],
+            CONTEXT,
+            DATA_LIMIT,
+        )
+        .unwrap();
+        let (actual, encoded, guards, mut files) = sink.finish_windows().unwrap();
+        assert_eq!(actual.items, expected.items);
+        assert_eq!(encoded, serde_json::to_vec(&expected).unwrap());
+        assert_eq!(
+            guards[""].permissions().unwrap(),
+            expected.root_windows_permissions.unwrap()
+        );
+        let assets = &guards["assets"];
+        for name in ["master.bin", "reference.bin"] {
+            let file = files.get_mut(&format!("assets/{name}")).unwrap();
+            file.seek(std::io::SeekFrom::Start(0)).unwrap();
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, original);
+            assert_eq!(
+                file.permissions().unwrap(),
+                expected.items[1].windows_permissions.clone().unwrap()
+            );
+        }
+        // Final byte/permission census completed; release NEW writer/delete handles.
+        drop(files);
+        fs::write(
+            assets.path().join("reference.bin"),
+            b"independent candidate change",
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(assets.path().join("master.bin")).unwrap(),
+            original
+        );
+        assert_eq!(
+            fs::read(source.join("assets/master.bin")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn windows_authenticated_sink_rejects_trailing_ciphertext_and_preserves_staging() {
+        let (base, _, payload, original) = fixture();
+        let source = base.path().join("source");
+        let recovered = base.create_directory("failed-recovered").unwrap();
+        let path = recovered.path().to_owned();
+        let mut sink = Extraction::new_windows(&source, recovered);
+        let mut ciphertext = seal(&payload);
+        ciphertext.push(0x41);
+        assert!(
+            crate::maintenance_stream::open(
+                &mut Cursor::new(&ciphertext),
+                &mut sink,
+                &[37; 32],
+                CONTEXT,
+                DATA_LIMIT,
+            )
+            .is_err()
+        );
+        drop(sink);
+        assert!(path.join("assets/master.bin").is_file());
+        assert_eq!(
+            fs::read(source.join("assets/master.bin")).unwrap(),
+            original
+        );
+        assert!(!base.path().join("published").exists());
+    }
+
+    #[test]
+    fn windows_sink_refuses_existing_destination_and_required_clone_without_replacement() {
+        let (base, _, payload, original) = fixture();
+        let source = base.path().join("source");
+        let recovered = base.create_directory("collision-recovered").unwrap();
+        let existing = recovered.create_directory("assets").unwrap();
+        let mut sentinel = existing.create_file("sentinel.bin").unwrap();
+        sentinel.write_all(b"preserved existing candidate").unwrap();
+        sentinel.sync_all().unwrap();
+        drop(sentinel);
+        let mut sink = Extraction::new_windows(&source, recovered);
+        assert!(sink.write_all(&payload).is_err());
+        assert_eq!(
+            fs::read(existing.path().join("sentinel.bin")).unwrap(),
+            b"preserved existing candidate"
+        );
+        drop(sink);
+        let recovered = base.create_directory("clone-required-recovered").unwrap();
+        let path = recovered.path().to_owned();
+        let mut sink = Extraction::new_windows(&source, recovered);
+        sink.require_reference_clones();
+        assert!(sink.write_all(&payload).is_err());
+        assert!(path.join("assets/master.bin").exists());
+        assert!(!path.join("assets/reference.bin").exists());
+        assert_eq!(
+            fs::read(source.join("assets/master.bin")).unwrap(),
+            original
         );
     }
 }

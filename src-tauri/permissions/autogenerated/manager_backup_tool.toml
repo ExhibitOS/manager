@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-backup-tool"
+description = "Enables the manager_backup_tool command without any pre-configured scope."
+commands.allow = ["manager_backup_tool"]
+
+[[permission]]
+identifier = "deny-manager-backup-tool"
+description = "Denies the manager_backup_tool command without any pre-configured scope."
+commands.deny = ["manager_backup_tool"]

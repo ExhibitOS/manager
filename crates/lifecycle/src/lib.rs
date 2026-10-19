@@ -1,15 +1,33 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Trusted-bundle desktop lifecycle. No shell, arbitrary compose paths or destructive volume removal.
 pub mod backup_creation;
+pub mod hosted_backup;
+pub mod hosted_restoration;
+#[cfg(not(windows))]
+pub mod external_restoration;
 mod cached_install;
+mod backup_key;
+pub mod backup_export;
+mod runtime_prepare;
 pub mod cancellation;
 pub mod helper_reconciliation;
 pub mod installation_backup;
 pub mod installations;
+pub mod initial_account;
+pub mod engine_preparation;
 pub mod maintenance;
+#[cfg(not(windows))]
+pub mod maintenance_source;
+#[cfg(not(windows))]
+pub mod update_preparation_source;
+#[cfg(unix)]
+pub mod update_preparation;
+#[cfg(unix)]
+mod update_preparation_inputs;
 mod maintenance_stream;
 mod process_window;
 pub mod profile_backup;
+pub mod publication_source;
 pub mod restoration;
 mod restoration_auxiliary;
 pub mod retry;
@@ -301,6 +319,8 @@ fn err(code: &str) -> LifecycleError {
         "RUNTIME_MISSING" => "컨테이너 실행 도구를 설치한 후 다시 시도하세요.",
         "ENGINE_UNAVAILABLE" => "컨테이너 실행 도구를 시작한 후 다시 시도하세요.",
         "COMPOSE_UNAVAILABLE" => "Compose 실행 도구를 설치하거나 설정한 후 다시 시도하세요.",
+        "UPDATE_PREPARATION_START_REQUIRED" => "백업 확인을 위해 서버가 켜져 있어야 합니다. Manager에서 서버 시작을 누른 뒤 업데이트 자료를 다시 확인하세요. 현재 전시와 백업은 변경하지 않았습니다.",
+        "UPDATE_PLAN_SOURCE_INVALID" => "업데이트 준비에 사용할 백업 정보를 확인하지 못했습니다. 원본과 백업을 보존하고 선택한 사본을 다시 확인하세요.",
         "ENGINE_TIMEOUT" => "실행 도구의 응답이 늦습니다. 상태를 확인한 후 다시 시도하세요.",
         "ENGINE_OUTPUT_INVALID" | "ENGINE_OUTPUT_LIMIT" => {
             "실행 도구의 응답을 확인하지 못했습니다. 실행 도구를 확인한 후 다시 시도하세요."
@@ -410,14 +430,19 @@ fn version_major(value: &str) -> Option<u32> {
     if value.is_empty() || value.len() > 64 {
         return None;
     }
-    let valid_suffix = |s: &str| {
+    // Engine CLI distribution build metadata may contain Debian/Ubuntu tildes.
+    // Prerelease identifiers retain the existing strict grammar.
+    let valid_suffix = |s: &str, allow_tilde: bool| {
         !s.is_empty()
             && s.split('.').all(|part| {
-                !part.is_empty() && part.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+                !part.is_empty()
+                    && part.bytes().all(|c| {
+                        c.is_ascii_alphanumeric() || c == b'-' || allow_tilde && c == b'~'
+                    })
             })
     };
     let without_build = if let Some((core, build)) = value.split_once('+') {
-        if !valid_suffix(build) {
+        if !valid_suffix(build, true) {
             return None;
         }
         core
@@ -425,7 +450,7 @@ fn version_major(value: &str) -> Option<u32> {
         value
     };
     let core = if let Some((core, pre)) = without_build.split_once('-') {
-        if !valid_suffix(pre) {
+        if !valid_suffix(pre, false) {
             return None;
         }
         core
@@ -754,14 +779,52 @@ fn run_observed_inputs(
     seconds: u64,
     input: Option<File>,
     extra: Option<File>,
+    observe: impl FnMut() -> Result<()>,
+) -> Result<Vec<u8>> {
+    run_observed_stream(binary, args, cwd, seconds, (input, extra), None, observe)
+}
+fn run_observed_stream(
+    binary: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    seconds: u64,
+    files: (Option<File>, Option<File>),
+    streamed: Option<(Box<dyn Read + Send>, u64)>,
+    observe: impl FnMut() -> Result<()>,
+) -> Result<Vec<u8>> {
+    run_observed_stream_environment(binary, args, cwd, seconds, ObservedInputs { files, streamed }, false, observe)
+}
+struct ObservedInputs {
+    files: (Option<File>, Option<File>),
+    streamed: Option<(Box<dyn Read + Send>, u64)>,
+}
+fn run_observed_stream_environment(
+    binary: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    seconds: u64,
+    inputs: ObservedInputs,
+    private_environment: bool,
     mut observe: impl FnMut() -> Result<()>,
 ) -> Result<Vec<u8>> {
+    let ObservedInputs { files: (input, extra), streamed } = inputs;
+    if streamed.is_some() && input.is_some() {
+        return Err(err("ENGINE_INPUT_INVALID"));
+    }
+    if streamed.as_ref().is_some_and(|(_, limit)| *limit == 0) {
+        return Err(err("ENGINE_INPUT_INVALID"));
+    }
+    let has_stream = streamed.is_some();
     let executable = if matches!(binary, "docker" | "podman") {
         engine_executable(binary).ok_or_else(|| err("RUNTIME_MISSING"))?
     } else {
         PathBuf::from(binary)
     };
     let mut command = process_window::background_command(executable);
+    if private_environment {
+        command.env_clear().env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+    }
+    if binary == "docker" { local_network::pin_command(&mut command)?; }
     if matches!(binary, "docker" | "podman") {
         let mut paths: Vec<PathBuf> =
             std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
@@ -778,7 +841,11 @@ fn run_observed_inputs(
     }
     command
         .args(args)
-        .stdin(input.map(Stdio::from).unwrap_or_else(Stdio::null))
+        .stdin(if has_stream {
+            Stdio::piped()
+        } else {
+            input.map(Stdio::from).unwrap_or_else(Stdio::null)
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(dir) = cwd {
@@ -810,6 +877,42 @@ fn run_observed_inputs(
             err("ENGINE_PERMISSION")
         }
     })?;
+    // The producer is a bounded, finite protected reader; it must verify its
+    // retained source identity on EOF. No payload enters argv or diagnostics.
+    let input_result = streamed.map(|(mut source, limit)| {
+        let mut sink = child.stdin.take().unwrap();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = (|| -> Result<()> {
+                let mut written = 0u64;
+                let mut buffer = [0u8; 65536];
+                loop {
+                    let wanted = (limit.saturating_sub(written).saturating_add(1))
+                        .min(buffer.len() as u64) as usize;
+                    let n = source
+                        .read(&mut buffer[..wanted])
+                        .map_err(|_| err("ENGINE_INPUT_FAILED"))?;
+                    if n == 0 {
+                        break;
+                    }
+                    written = written
+                        .checked_add(n as u64)
+                        .ok_or_else(|| err("ENGINE_INPUT_LIMIT"))?;
+                    if written > limit {
+                        return Err(err("ENGINE_INPUT_LIMIT"));
+                    }
+                    sink.write_all(&buffer[..n])
+                        .map_err(|_| err("ENGINE_INPUT_FAILED"))?;
+                }
+                sink.flush().map_err(|_| err("ENGINE_INPUT_FAILED"))?;
+                Ok(())
+            })();
+            drop(sink);
+            let _ = tx.send(result);
+        });
+        rx
+    });
+    let mut input_done = !has_stream;
     let (tx, rx) = mpsc::channel();
     for (index, mut stream) in [
         Box::new(child.stdout.take().unwrap()) as Box<dyn Read + Send>,
@@ -841,6 +944,22 @@ fn run_observed_inputs(
     drop(tx);
     let deadline = Instant::now() + Duration::from_secs(seconds);
     let status = loop {
+        if !input_done {
+            match input_result.as_ref().unwrap().try_recv() {
+                Ok(Ok(())) => input_done = true,
+                Ok(Err(error)) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(err("ENGINE_INPUT_FAILED"));
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
         match child.try_wait() {
             Ok(Some(s)) => break s,
             Ok(None) => {
@@ -859,6 +978,13 @@ fn run_observed_inputs(
             Err(_) => return Err(err("ENGINE_OPERATION_FAILED")),
         }
     };
+    if !input_done {
+        input_result
+            .as_ref()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_| err("ENGINE_INPUT_FAILED"))??;
+    }
     let a = rx
         .recv_timeout(Duration::from_secs(2))
         .map_err(|_| err("ENGINE_TIMEOUT"))?;
@@ -869,6 +995,9 @@ fn run_observed_inputs(
         return Err(err("ENGINE_OUTPUT_LIMIT"));
     }
     if !status.success() {
+        if private_environment {
+            return Err(hosted_backup::runner_error(if a.0 == 0 { &a.1 } else { &b.1 }));
+        }
         let text = format!(
             "{} {}",
             String::from_utf8_lossy(&a.1),
@@ -1019,6 +1148,10 @@ impl LifecycleService {
         drop(service.lock()?);
         service.recover_jobs()?;
         service.recover_backup_jobs()?;
+        service.recover_hosted_backups()?;
+        service.recover_hosted_restore_checks()?;
+        #[cfg(not(windows))]
+        service.recover_external_restore_checks()?;
         service.recover_restoration()?;
         service.recover_helper_reconciliations()?;
         service.recover_maintenance_cancellation()?;
@@ -1277,6 +1410,21 @@ impl LifecycleService {
         });
         write_json(&self.root, "events.json", &events)
     }
+    /// Read only fixed, prepared maintenance metadata; full payload checks remain at use.
+    pub fn bundled_maintenance_image(&self,source:&Path)->Result<Option<String>>{runtime_prepare::maintenance_image(source)}
+    /// Explicit native recovery preparation; cached immutable IDs avoid repeated tar hashing.
+    pub fn prepare_bundled_maintenance(&self,source:&Path,image:&str)->Result<()> {
+        let _guard=self.lock()?;
+        runtime_prepare::ensure_maintenance(source,image,|args,seconds|run("docker",args,None,seconds))
+    }
+
+    /// Stage fixed application resources only into a missing bundle; existing data is never replaced.
+    pub fn prepare_bundled_runtime(&self, source: &Path) -> Result<()> {
+        let _lock = self.lock()?;
+        #[cfg(any(unix, windows))]
+        signed_release::trust::lifecycle_writer::admit(&self.root, &Action::Install)?;
+        runtime_prepare::prepare(&self.root, source)
+    }
     pub fn install(&self) -> Result<Job> {
         self.execute(Action::Install)
     }
@@ -1313,8 +1461,19 @@ impl LifecycleService {
         cached_images_only: bool,
         expected_retry: Option<(&str, u32)>,
     ) -> Result<Job> {
-        let _lock = self.lock()?;
-        #[cfg(unix)]
+        let guard = self.lock()?;
+        self.execute_with_retained_operation_guard(action, cached_images_only, expected_retry, &guard)
+    }
+    /// Common existing job body; its caller retains the original operation lock.
+    /// Ordinary execute admission and ordering are intentionally unchanged.
+    fn execute_with_retained_operation_guard(
+        &self,
+        action: Action,
+        cached_images_only: bool,
+        expected_retry: Option<(&str, u32)>,
+        _guard: &OperationGuard,
+    ) -> Result<Job> {
+        #[cfg(any(unix, windows))]
         signed_release::trust::lifecycle_writer::admit(&self.root, &action)?;
         let mut jobs = self.job_history()?;
         if let Some((expected_id, expected_attempt)) = expected_retry {
@@ -1406,6 +1565,17 @@ impl LifecycleService {
         jobs[index] = job.clone();
         write_json(&self.root, "jobs.json", &jobs)?;
         Ok(job)
+    }
+    /// Native-only candidate preparation retains the same typed lock from its
+    /// receipt/ownership admission through the normal Stop job and observation.
+    #[cfg(not(windows))]
+    pub(crate) fn stop_with_retained_guard(&self, guard: &OperationGuard) -> Result<Job> {
+        installations::private_directory(&self.root)?;
+        self.check_restoration_guard(guard)?;
+        let result = self.execute_with_retained_operation_guard(Action::Stop, false, None, guard);
+        self.check_restoration_guard(guard)?;
+        installations::private_directory(&self.root)?;
+        result
     }
     fn operation(&self, action: &Action) -> Result<()> {
         self.operation_with_image_policy(action, false)
@@ -1838,6 +2008,55 @@ mod tests {
         assert!(retry.error_code.is_some());
         assert_eq!(recovered.jobs().unwrap().len(), 2);
     }
+    #[cfg(not(windows))]
+    fn canonical_retained_stop_fixture() -> LifecycleService {
+        let service = LifecycleService::new(root()).unwrap();
+        LifecycleService::bound_existing(fs::canonicalize(&service.root).unwrap()).unwrap()
+    }
+    #[test]
+    #[cfg(not(windows))]
+    fn retained_stop_rejects_wrong_root_and_replaced_operation_file_before_job() {
+        for replaced in [false, true] {
+            let service = canonical_retained_stop_fixture();
+            let guard = service.lock().unwrap();
+            let other = canonical_retained_stop_fixture();
+            let selected = if replaced {
+                fs::rename(
+                    service.root.join("operation.lock"),
+                    service.root.join("retained-operation.lock"),
+                )
+                .unwrap();
+                write_private_new(&service.root, "operation.lock", b"replacement", 64).unwrap();
+                &service
+            } else {
+                &other
+            };
+            assert_eq!(
+                selected.stop_with_retained_guard(&guard).unwrap_err().code,
+                "UPDATE_FENCE_UNAVAILABLE"
+            );
+            assert!(service.jobs().unwrap().is_empty());
+            assert!(other.jobs().unwrap().is_empty());
+        }
+    }
+    #[test]
+    #[cfg(not(windows))]
+    fn retained_stop_reuses_normal_failed_job_and_keeps_original_lock_alive() {
+        let ordinary = canonical_retained_stop_fixture();
+        let expected = ordinary.execute(Action::Stop).unwrap();
+        let retained = canonical_retained_stop_fixture();
+        let guard = retained.lock().unwrap();
+        let actual = retained.stop_with_retained_guard(&guard).unwrap();
+        // Missing bundle fails before any engine action in both existing paths.
+        assert_eq!(actual.action, expected.action);
+        assert_eq!(actual.state, expected.state);
+        assert_eq!(actual.state, JobState::Failed);
+        assert_eq!(actual.error_code, expected.error_code);
+        assert_eq!(retained.jobs().unwrap().len(), 1);
+        assert_eq!(retained.lock().err().unwrap().code, "BUSY");
+        drop(guard);
+        assert!(retained.lock().is_ok());
+    }
     #[test]
     fn active_cross_process_lock_is_never_interrupted() {
         let p = root();
@@ -1959,6 +2178,50 @@ mod detection_tests {
             assert!(p.error_code.is_none());
             assert_eq!(p.compose_version.as_deref(), Some("5.5.1"));
         }
+    }
+    #[test]
+    fn ubuntu_packaged_compose_build_metadata_remains_available() {
+        // Actual Ubuntu 24.04 Docker/Compose CLI output from native qualification.
+        let compose = "2.40.3+ds1-0ubuntu1~24.04.1";
+        assert_eq!(version_major(compose), Some(2));
+        let p = probe_engine("docker", |args| {
+            Ok(match args[0].as_str() {
+                "version" => b"{\"Client\":{\"Version\":\"29.1.3\"}}".to_vec(),
+                "compose" => format!("{compose}\n").into_bytes(),
+                _ => b"{}".to_vec(),
+            })
+        });
+        assert!(p.installed);
+        assert!(p.available);
+        assert!(p.error_code.is_none());
+        assert_eq!(p.engine_version.as_deref(), Some("29.1.3"));
+        assert_eq!(p.compose_version.as_deref(), Some(compose));
+    }
+    #[test]
+    fn distribution_build_metadata_does_not_relax_core_prerelease_or_output_bounds() {
+        let too_long = format!("2.40.3+{}", "a".repeat(58));
+        for text in [
+            "2.40", "2.40.3.1", "2..3", "4294967296.40.3", "2.4294967296.3",
+            "2.40.4294967296", "2~1.40.3", "2.40.3-", "2.40.3-dev~1+build",
+            "2.40.3-dev..1+build", "2.40.3+", "2.40.3+ds1..ubuntu",
+            "2.40.3+ds1-0ubuntu1~24.04.1+extra", "2.40.3+ds1\0ubuntu",
+            "2.40.3+ds1\tubuntu", "2.40.3+ds1\rubuntu", "2.40.3+ds1\nubuntu",
+            too_long.as_str(),
+        ] {
+            assert!(version_major(text).is_none());
+            let p = probe_engine("docker", |args| {
+                Ok(match args[0].as_str() {
+                    "version" => b"{\"Client\":{\"Version\":\"29.1.3\"}}".to_vec(),
+                    "compose" => text.as_bytes().to_vec(),
+                    _ => b"{}".to_vec(),
+                })
+            });
+            assert!(p.installed);
+            assert!(!p.available);
+            assert_eq!(p.error_code.as_deref(), Some("ENGINE_OUTPUT_INVALID"));
+            assert!(p.compose_version.is_none());
+        }
+        assert_eq!(version_major("2.40.3-dev.1+ds1-0ubuntu1~24.04.1"), Some(2));
     }
     #[test]
     fn stopped_version_or_info_is_unavailable_not_upgrade() {
@@ -2098,3 +2361,110 @@ mod engine_failure_tests;
 mod local_network;
 mod restoration_network;
 pub use local_network::{ExplicitLocalNetwork, choose_explicit_local_network};
+#[cfg(target_os="macos")]
+pub use local_network::enable_native_docker_transport;
+
+#[cfg(all(test, unix))]
+mod bounded_input_transport_tests {
+    use super::*;
+    #[test]
+    fn protected_input_roundtrip_and_limit_never_claim_partial_success() {
+        let bytes = vec![0x5a; 65537];
+        let got = run_observed_stream(
+            "/bin/cat",
+            &[],
+            None,
+            5,
+            (None, None),
+            Some((
+                Box::new(std::io::Cursor::new(bytes.clone())),
+                bytes.len() as u64,
+            )),
+            || Ok(()),
+        )
+        .unwrap();
+        assert_eq!(got, bytes);
+        let error = run_observed_stream(
+            "/bin/cat",
+            &[],
+            None,
+            5,
+            (None, None),
+            Some((Box::new(std::io::Cursor::new(bytes)), 65536)),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "ENGINE_INPUT_LIMIT");
+    }
+    struct FailedFinalCheck(bool);
+    impl Read for FailedFinalCheck {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.0 {
+                return Err(std::io::Error::other("synthetic identity change"));
+            }
+            self.0 = true;
+            buf[0] = 7;
+            Ok(1)
+        }
+    }
+    #[test]
+    fn source_final_check_failure_and_early_exit_are_not_completion() {
+        let error = run_observed_stream(
+            "/bin/cat",
+            &[],
+            None,
+            5,
+            (None, None),
+            Some((Box::new(FailedFinalCheck(false)), 1024)),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "ENGINE_INPUT_FAILED");
+        let error = run_observed_stream(
+            "/usr/bin/true",
+            &[],
+            None,
+            5,
+            (None, None),
+            Some((
+                Box::new(std::io::Cursor::new(vec![1; 1024 * 1024])),
+                1024 * 1024,
+            )),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "ENGINE_INPUT_FAILED");
+    }
+    #[test]
+    fn blocked_stdin_obeys_original_timeout_and_observer() {
+        for cancel in [false, true] {
+            let error = run_observed_stream(
+                "/bin/sleep",
+                &["5".into()],
+                None,
+                0,
+                (None, None),
+                Some((
+                    Box::new(std::io::Cursor::new(vec![1; 1024 * 1024])),
+                    1024 * 1024,
+                )),
+                || {
+                    if cancel {
+                        Err(err("CANCELLED"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.code,
+                if cancel {
+                    "CANCELLED"
+                } else {
+                    "ENGINE_TIMEOUT"
+                }
+            );
+        }
+    }
+}

@@ -7,6 +7,7 @@ test('synthetic space promotion preserves old space, fences requests and clears 
   let context={selectionToken:'45678901-1234-1234-1234-123456789012',activeId:old,mode:'managed',installations:[{id:old,kind:'default',createdAt:1,path:'/private/tmp/synthetic-profile/local-runtime',available:true}],errorCode:null};
   const calls:{cmd:string;args:Record<string,unknown>}[]=[];
   Object.assign(window,{isTauri:true,__selectionCalls:calls,__TAURI_INTERNALS__:{invoke:async(cmd:string,args:Record<string,unknown>={})=>{
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    calls.push({cmd,args});if(cmd==='manager_maintenance_context')return null;
    if(cmd==='manager_maintenance_retries')return [];
    if(cmd==='manager_helper_reconciliations')return [];
@@ -21,9 +22,11 @@ test('synthetic space promotion preserves old space, fences requests and clears 
    throw Error('Unexpected synthetic command');
   }}});
  });
- await page.goto('/');const region=page.getByRole('region',{name:'관리 공간 선택'}),ack=region.getByRole('checkbox');
+ await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const region=page.getByRole('region',{name:'관리 공간 선택'}),ack=region.getByRole('checkbox');
  const create=region.getByRole('button',{name:'새 복원 공간 만들고 선택'});await expect(create).toBeDisabled();await expect(ack).toBeEnabled();
- const key=page.locator('#restoration-key');await key.fill('/private/synthetic-external-key');await ack.check();await create.click();
+ const key=page.locator('#restoration-key');
+ // Manual paths remain optional; open the actual disclosure before editing.
+ await key.locator('..').getByText('경로 직접 입력',{exact:true}).click();await key.fill('/private/synthetic-external-key');await ack.check();await create.click();
  await expect(region.getByText('현재: 복원 공간',{exact:false})).toBeVisible();await expect(key).toHaveValue('');await expect(ack).not.toBeChecked();
  await region.getByRole('combobox').selectOption('56789012-1234-1234-1234-123456789012');await ack.check();await region.getByRole('button',{name:'선택한 공간 사용'}).click();await expect(region.getByText('현재: 기존 관리 공간',{exact:false})).toBeVisible();
  const calls=await page.evaluate(()=>(window as unknown as {__selectionCalls:{cmd:string;args:Record<string,unknown>}[]}).__selectionCalls);
@@ -36,6 +39,8 @@ for(const mode of ['override','platform-unverified','managed-missing'] as const)
  await page.addInitScript(({mode})=>{
   const id='56789012-1234-1234-1234-123456789012';
   Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
+   if(cmd==='manager_hosted_resume')return null;
+   if(cmd==='manager_hosted_connected')return false;
    if(cmd==='manager_maintenance_context')return null;
    if(cmd==='manager_maintenance_retries')return [];
    if(cmd==='manager_helper_reconciliations')return [];
@@ -45,7 +50,7 @@ for(const mode of ['override','platform-unverified','managed-missing'] as const)
    return [];
   }}});
  },{mode});
- await page.goto('/');const region=page.getByRole('region',{name:'관리 공간 선택'}),ack=region.getByRole('checkbox'),create=region.getByRole('button',{name:'새 복원 공간 만들고 선택'});
+ await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const region=page.getByRole('region',{name:'관리 공간 선택'}),ack=region.getByRole('checkbox'),create=region.getByRole('button',{name:'새 복원 공간 만들고 선택'});
  if(mode==='managed-missing'){await expect(ack).toBeEnabled();await ack.check();await expect(create).toBeEnabled();await expect(page.getByRole('button',{name:'전시 설치',exact:true})).toBeDisabled();}
  else{await expect(ack).toBeDisabled();await expect(create).toBeDisabled();}
 });

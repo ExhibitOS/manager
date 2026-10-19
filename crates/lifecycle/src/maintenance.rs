@@ -42,6 +42,18 @@ pub(crate) fn input_path(path: &Path, directory: bool) -> Result<()> {
             return Err(err("BACKUP_PRIVATE_PERMISSIONS"));
         }
     }
+    #[cfg(windows)]
+    {
+        if directory {
+            crate::windows_private::HostDirectory::inspect(path)?.check_private()?;
+        } else {
+            let file = crate::windows_private::HostFile::open(path)?;
+            file.check_private()?;
+            if file.metadata()?.len() != 32 {
+                return Err(err("BACKUP_PATH_INVALID"));
+            }
+        }
+    }
     Ok(())
 }
 fn receipt(
@@ -83,12 +95,50 @@ impl LifecycleService {
         source: &Path,
     ) -> Result<VerificationReceipt> {
         let _lock = self.lock()?;
-        if cfg!(windows) {
-            return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
-        }
         if !image.strip_prefix("sha256:").is_some_and(hash_valid) {
             return Err(err("BACKUP_IMAGE_INVALID"));
         }
+        #[cfg(windows)]
+        {
+            let key = native_input_path(key, false)?;
+            let source = native_input_path(source, true)?;
+            self.verify_backup_windows(image, &key, &source)
+        }
+        #[cfg(not(windows))]
+        {
+        if !image.strip_prefix("sha256:").is_some_and(hash_valid) {
+            return Err(err("BACKUP_IMAGE_INVALID"));
+        }
+        self.verification_inputs(key,source)?;
+        let manifest = self.manifest()?;
+        let installed: BundleManifest = read_json(&self.root.join("installed.json"))?;
+        if serde_json::to_value(installed).ok() != serde_json::to_value(&manifest).ok() {
+            return Err(err("BUNDLE_CHANGED"));
+        }
+        let engine = self.engine(&manifest, false)?;
+        self.verify_backup_with_backend(image,key,source,|args,seconds|run(&engine,args,None,seconds))
+        }
+    }
+    /// A new Mac authenticates external bytes using only this app's declared helper.
+    /// Profile storage is distinct from the still-empty installation destination.
+    #[cfg(target_os="macos")]
+    pub(crate) fn verify_external_backup_uninstalled(&self,resources:&Path,image:&str,key:&Path,source:&Path)->Result<VerificationReceipt>{
+        let _lock=self.lock()?;
+        self.verify_external_backup_with(resources,image,key,source,||self.detect(),|args,seconds|run("docker",args,None,seconds))
+    }
+    #[cfg(all(not(windows),any(target_os="macos",test)))]
+    fn verify_external_backup_with(&self,resources:&Path,image:&str,key:&Path,source:&Path,detect:impl FnOnce()->Result<Vec<EngineProbe>>,mut backend:impl FnMut(&[String],u64)->Result<Vec<u8>>)->Result<VerificationReceipt>{
+        self.verification_inputs(key,source)?;
+        if self.bundled_maintenance_image(resources)?.as_deref()!=Some(image){return Err(err("BACKUP_IMAGE_INVALID"));}
+        // The bundled maintenance importer is Docker-only. Never prepare in one
+        // engine and inspect/run in another or change an installed engine pin.
+        let engine=choose_engine(&detect()?,Some("docker"))?;
+        if engine!="docker"{return Err(err("STATE_INVALID"));}
+        runtime_prepare::ensure_maintenance(resources,image,&mut backend)?;
+        self.verify_backup_with_backend(image,key,source,backend)
+    }
+    #[cfg(not(windows))]
+    fn verification_inputs(&self,key:&Path,source:&Path)->Result<()>{
         input_path(&self.root, true)?;
         input_path(key, false)?;
         input_path(source, true)?;
@@ -98,16 +148,13 @@ impl LifecycleService {
         {
             return Err(err("BACKUP_PATH_OVERLAP"));
         }
-        let manifest = self.manifest()?;
-        let installed: BundleManifest = read_json(&self.root.join("installed.json"))?;
-        if serde_json::to_value(installed).ok() != serde_json::to_value(&manifest).ok() {
-            return Err(err("BUNDLE_CHANGED"));
-        }
-        let engine = self.engine(&manifest, false)?;
-        let inspected: Value = serde_json::from_slice(&run(
-            &engine,
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    fn verify_backup_with_backend(&self,image:&str,key:&Path,source:&Path,mut backend:impl FnMut(&[String],u64)->Result<Vec<u8>>)->Result<VerificationReceipt>{
+        self.verification_inputs(key,source)?;
+        let inspected: Value = serde_json::from_slice(&backend(
             &["image".into(), "inspect".into(), image.into()],
-            None,
             15,
         )?)
         .map_err(|_| err("IMAGE_INTEGRITY"))?;
@@ -117,6 +164,7 @@ impl LifecycleService {
         {
             return Err(err("IMAGE_INTEGRITY"));
         }
+        let source_snapshot=super::maintenance_source::SourceSnapshot::capture(source)?;
         let id = Uuid::new_v4().to_string();
         let workspace = self.root.join(format!("backup-verification-{id}"));
         fs::create_dir(&workspace).map_err(|_| err("STATE_UNAVAILABLE"))?;
@@ -179,27 +227,20 @@ impl LifecycleService {
             "--destination".into(),
             "/backup-workspace/plaintext".into(),
         ]);
-        let output = run(&engine, &args, None, 3600);
+        let output = backend(&args, 3600);
         if output.is_err() {
             // A killed engine CLI may leave its child container alive. Remove only our exact label.
-            if let Ok(bytes) = run(
-                &engine,
+            if let Ok(bytes) = backend(
                 &[
                     "inspect".into(),
                     "--format".into(),
                     "{{index .Config.Labels \"com.exhibitos.verification\"}}".into(),
                     container.clone(),
                 ],
-                None,
                 15,
             ) && String::from_utf8(bytes).is_ok_and(|value| value.trim() == id)
             {
-                let _ = run(
-                    &engine,
-                    &["rm".into(), "--force".into(), container],
-                    None,
-                    30,
-                );
+                let _ = backend(&["rm".into(), "--force".into(), container],30);
             }
         }
         let outcome = output.and_then(|value| {
@@ -220,7 +261,9 @@ impl LifecycleService {
             if bytes.len() > 16 * 1024 * 1024 {
                 return Err(err("BACKUP_RESULT_INVALID"));
             }
-            receipt(&value, &id, image, &digest(&bytes))
+            let receipt=receipt(&value, &id, image, &digest(&bytes))?;
+            source_snapshot.preserve(&workspace,&receipt)?;
+            Ok(receipt)
         });
         match outcome {
             Ok(value) => {
@@ -238,9 +281,319 @@ impl LifecycleService {
         }
     }
 }
+#[cfg(windows)]
+impl LifecycleService {
+    fn verify_backup_windows(
+        &self,
+        image: &str,
+        key: &Path,
+        source: &Path,
+    ) -> Result<VerificationReceipt> {
+        use crate::backup_creation::windows_cipher_transport as transport;
+        if !image.strip_prefix("sha256:").is_some_and(hash_valid) {
+            return Err(err("BACKUP_IMAGE_INVALID"));
+        }
+        input_path(&self.root, true)?;
+        input_path(key, false)?;
+        input_path(source, true)?;
+        if key.starts_with(source)
+            || source.starts_with(&self.root)
+            || self.root.starts_with(source)
+        {
+            return Err(err("BACKUP_PATH_OVERLAP"));
+        }
+        let key_guard = crate::windows_private::HostFile::open(key)?;
+        key_guard.check_private()?;
+        let source_guard = crate::windows_private::HostDirectory::inspect(source)?;
+        source_guard.check_private()?;
+        let manifest = self.manifest()?;
+        let installed: BundleManifest = read_json(&self.root.join("installed.json"))?;
+        if serde_json::to_value(installed).ok() != serde_json::to_value(&manifest).ok() {
+            return Err(err("BUNDLE_CHANGED"));
+        }
+        let engine = self.engine(&manifest, false)?;
+        if engine != "docker" {
+            return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
+        }
+        let info = backup_creation::inspected(
+            &engine,
+            &["info".into(), "--format".into(), "{{json .}}".into()],
+        )?;
+        if info["OperatingSystem"] != "Docker Desktop" || info["OSType"] != "linux" {
+            return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
+        }
+        backup_creation::local_image(&engine, image)?;
+        let (input, limit) = transport::archive_inputs(&self.root, key, source)?;
+        let id = Uuid::new_v4().to_string();
+        let workspace = self.root.join(format!("backup-verification-{id}"));
+        let _workspace_guard = restoration::directory(&workspace)?;
+        let volume = format!("exhibitos-verify-work-{id}");
+        let container = format!("exhibitos-verify-{id}");
+        run(
+            &engine,
+            &[
+                "volume".into(),
+                "create".into(),
+                "--label".into(),
+                format!("com.exhibitos.verification={id}"),
+                volume.clone(),
+            ],
+            None,
+            30,
+        )?;
+        let check_volume = || -> Result<()> {
+            let observed = backup_creation::inspected(
+                &engine,
+                &["volume".into(), "inspect".into(), volume.clone()],
+            )?;
+            if observed["Name"] != volume
+                || observed["Driver"] != "local"
+                || observed["Labels"]["com.exhibitos.verification"] != id
+                || !(observed["Options"].is_null()
+                    || observed["Options"]
+                        .as_object()
+                        .is_some_and(|o| o.is_empty()))
+            {
+                return Err(err("OWNERSHIP_CONFLICT"));
+            }
+            Ok(())
+        };
+        check_volume()?;
+        write_json(
+            &workspace,
+            "work.json",
+            &serde_json::json!({"format":1,"id":id,"image":image,"volume":volume,"container":container,"createdAt":now()}),
+        )?;
+        let script = transport::bootstrap_archive(
+            r#"
+import {main} from './scripts/service-backup.mjs';
+import {open,lstat} from 'node:fs/promises';
+import {constants} from 'node:fs';
+import {createHash} from 'node:crypto';
+const result=await main(['verify','--key-file','/key','--source','/archive','--destination','/work/plaintext']);
+const path='/work/plaintext/manifest.json',file=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+let manifestHash;
+try{
+ const before=await file.stat({bigint:true});
+ if(!before.isFile()||before.nlink!==1n||before.size>16777216n)throw Error('BACKUP_RESULT_INVALID');
+ const hash=createHash('sha256');let count=0;
+ for await(const chunk of file.createReadStream({autoClose:false})){count+=chunk.length;if(count>16777216)throw Error('BACKUP_RESULT_INVALID');hash.update(chunk);}
+ const after=await file.stat({bigint:true}),named=await lstat(path,{bigint:true});
+ if(BigInt(count)!==before.size||before.dev!==after.dev||before.ino!==after.ino||before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs||before.mode!==after.mode||before.uid!==after.uid||before.gid!==after.gid||after.nlink!==1n||named.isSymbolicLink()||named.dev!==after.dev||named.ino!==after.ino)throw Error('BACKUP_RESULT_INVALID');
+ manifestHash=hash.digest('hex');
+}finally{await file.close();}
+console.log(JSON.stringify({operation:result.operation,files:result.files,manifestHash}));
+"#,
+        );
+        let args: Vec<String> = [
+            "run",
+            "--pull",
+            "never",
+            "--interactive",
+            "--name",
+            &container,
+            "--label",
+            &format!("com.exhibitos.verification={id}"),
+            "--network",
+            "none",
+            "--user",
+            "0:0",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges:true",
+            "--pids-limit",
+            "128",
+            "--memory",
+            "1536m",
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,size=256m,mode=1777",
+            "--mount",
+            &format!("type=volume,source={volume},target=/work"),
+            "--entrypoint",
+            "node",
+            image,
+            "--input-type=module",
+            "-e",
+            &script,
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let output = run_observed_stream(
+            &engine,
+            &args,
+            None,
+            3600,
+            (None, None),
+            Some((input, limit)),
+            || Ok(()),
+        );
+        if output.is_err()
+            && let Ok(helper) =
+                backup_creation::inspected(&engine, &["inspect".into(), container.clone()])
+            && helper["Name"] == format!("/{container}")
+                    && helper["Config"]["Labels"]["com.exhibitos.verification"] == id
+                    && helper["Image"] == image
+                    && helper["Mounts"].as_array().is_some_and(|m| {
+                        m.iter().any(|m| {
+                            m["Type"] == "volume"
+                                && m["Name"] == volume
+                                && m["Destination"] == "/work"
+                        })
+                    })
+                {
+                    let _ = run(
+                        &engine,
+                        &[
+                            "stop".into(),
+                            "--time".into(),
+                            "30".into(),
+                            container.clone(),
+                        ],
+                        None,
+                        60,
+                    );
+        }
+        let outcome = output.and_then(|bytes| {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct NativeOutput {
+                operation: String,
+                files: u64,
+                manifest_hash: String,
+            }
+            let result: NativeOutput =
+                serde_json::from_slice(&bytes).map_err(|_| err("BACKUP_RESULT_INVALID"))?;
+            let output = serde_json::to_vec(
+                &serde_json::json!({"operation":result.operation,"files":result.files}),
+            )
+            .map_err(|_| err("BACKUP_RESULT_INVALID"))?;
+            check_volume()?;
+            key_guard.check_private()?;
+            source_guard.check_private()?;
+            let helper = backup_creation::inspected(&engine, &["inspect".into(), container])?;
+            if helper["Name"] != format!("/exhibitos-verify-{id}")
+                || helper["Config"]["Labels"]["com.exhibitos.verification"] != id
+                || helper["Image"] != image
+                || helper["State"]["Running"] != false
+                || helper["State"]["ExitCode"] != 0
+                || !helper["Mounts"].as_array().is_some_and(|m| {
+                    m.iter().any(|m| {
+                        m["Type"] == "volume" && m["Name"] == volume && m["Destination"] == "/work"
+                    })
+                })
+            {
+                return Err(err("OWNERSHIP_CONFLICT"));
+            }
+            receipt(&output, &id, image, &result.manifest_hash)
+        });
+        match outcome {
+            Ok(value) => {
+                write_json(&workspace, "receipt.json", &value)?;
+                Ok(value)
+            }
+            Err(_) => {
+                write_json(
+                    &workspace,
+                    "failed.json",
+                    &serde_json::json!({"id":id,"operation":"verification-failed","at":now()}),
+                )?;
+                Err(err("BACKUP_VERIFICATION_FAILED"))
+            }
+        }
+    }
+}
+
+/// Resolve ordinary Windows drive spelling only after native lexical ancestor
+/// checks. A junction/alias must not silently become a different accepted input.
+#[cfg(windows)]
+pub(crate) fn native_input_path(path: &Path, directory: bool) -> Result<PathBuf> {
+    let text = path.to_str().ok_or_else(|| err("BACKUP_PATH_INVALID"))?;
+    if !path.is_absolute()
+        || text.len() > 2048
+        || text.chars().any(|c| c.is_control() || c == ',')
+        || path
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+    {
+        return Err(err("BACKUP_PATH_INVALID"));
+    }
+    if directory {
+        let root = crate::windows_private::PrivateDirectory::inspect(path)?;
+        root.check()?;
+        Ok(root.path().to_owned())
+    } else {
+        let parent = crate::windows_private::ParentDirectory::inspect(
+            path.parent().ok_or_else(|| err("BACKUP_PATH_INVALID"))?,
+        )?;
+        let canonical = parent
+            .path()
+            .join(path.file_name().ok_or_else(|| err("BACKUP_PATH_INVALID"))?);
+        let file = crate::windows_private::HostFile::open(&canonical)?;
+        file.check_private()?;
+        if file.metadata()?.len() != 32 {
+            return Err(err("BACKUP_PATH_INVALID"));
+        }
+        parent.check()?;
+        Ok(canonical)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(unix,target_os="macos"))]
+    #[test]
+    fn external_archive_preinstall_authentication_is_profile_private_and_engine_bound(){
+        use std::os::unix::fs::PermissionsExt;
+        let base=std::env::temp_dir().join(format!("external-verify-{}",Uuid::new_v4()));
+        fs::create_dir(&base).unwrap();let base=fs::canonicalize(base).unwrap();
+        let profile=LifecycleService::new(base.join("profile")).unwrap();
+        let selected=LifecycleService::new(profile.root.join("fresh-installation")).unwrap();
+        let source=base.join("archive");fs::create_dir(&source).unwrap();fs::set_permissions(&source,fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(source.join("manifest.gcm"),b"unchanged encrypted fixture").unwrap();
+        fs::create_dir(source.join("files")).unwrap();for name in ["complete.json","writing.json","files/00000000.gcm"]{write_private_new(&source,name,b"synthetic",1024).unwrap();}fs::set_permissions(source.join("files"),fs::Permissions::from_mode(0o700)).unwrap();fs::set_permissions(source.join("manifest.gcm"),fs::Permissions::from_mode(0o600)).unwrap();
+        let key=base.join("backup.key");write_private_new(&base,"backup.key",&[7u8;32],32).unwrap();
+        let resources=base.join("resources");fs::create_dir(&resources).unwrap();
+        let image=format!("sha256:{}","b".repeat(64));let payload=b"synthetic helper archive";
+        let compose=br#"{"name":"exhibitos-synthetic","services":{"platform":{"labels":{"com.exhibitos.bundle":"synthetic","com.exhibitos.project":"exhibitos-synthetic"}}},"volumes":{"objects":{"labels":{"com.exhibitos.bundle":"synthetic","com.exhibitos.project":"exhibitos-synthetic"}}},"networks":{}}"#;
+        let manifest=serde_json::to_vec(&serde_json::json!({"schemaVersion":"1.0.0-draft.1","bundleId":"synthetic","version":"0.1.0","protocolVersion":"1","composeSha256":digest(compose),"projectName":"exhibitos-synthetic","services":["platform"],"images":[{"reference":image,"archive":{"path":"maintenance-image.tar","sha256":digest(payload),"bytes":payload.len()}}],"ports":[13200],"openUrl":"http://127.0.0.1:13200","readinessUrl":"http://127.0.0.1:13200/api/v1/readiness","minimumFreeBytes":1})).unwrap();
+        fs::write(resources.join("manifest.json"),&manifest).unwrap();fs::write(resources.join("compose.yaml"),compose).unwrap();fs::write(resources.join("maintenance-image.tar"),payload).unwrap();
+        let architecture=if cfg!(target_arch="aarch64"){"arm64"}else{"x86_64"};
+        fs::write(resources.join("prepared.json"),serde_json::to_vec(&serde_json::json!({"format":"exhibitos-manager-platform-runtime-v1","version":"0.1.0","architecture":architecture,"platformCommit":"a".repeat(40),"files":{"manifest.json":{"bytes":manifest.len(),"sha256":digest(&manifest)},"compose.yaml":{"bytes":compose.len(),"sha256":digest(compose)},"maintenance-image.tar":{"bytes":payload.len(),"sha256":digest(payload)}}})).unwrap()).unwrap();
+        let probe=|available|Ok(vec![EngineProbe{kind:"docker".into(),installed:true,available,engine_version:Some("29.0.0".into()),compose_version:Some("2.0.0".into()),error_code:None,guidance:None}]);
+        assert_eq!(profile.verify_external_backup_with(&resources,&format!("sha256:{}","c".repeat(64)),&key,&source,||panic!("untrusted image must not probe"),|_,_|panic!("untrusted image must not run")).unwrap_err().code,"BACKUP_IMAGE_INVALID");
+        assert_eq!(profile.verify_external_backup_with(&resources,&image,&key,&source,||probe(false),|_,_|panic!("unavailable engine must not run")).unwrap_err().code,"ENGINE_UNAVAILABLE");
+        let mut calls=Vec::new();
+        let result=profile.verify_external_backup_with(&resources,&image,&key,&source,||probe(true),|args,_|{
+            calls.push(args[0].clone());
+            if args[0]=="image"&&args[1]=="ls"{return Ok(format!("{image}\n").into_bytes());}
+            if args[0]=="image"{return Ok(serde_json::to_vec(&serde_json::json!([{"Id":image}])).unwrap());}
+            assert_eq!(args[0],"run");assert!(args.windows(2).any(|p|p==["--network","none"]));
+            assert!(args.iter().any(|p|p==&format!("type=bind,source={},target=/backup-source,readonly",source.display())));
+            let mount=args.iter().find(|p|p.ends_with(",target=/backup-workspace")).unwrap();
+            let workspace=PathBuf::from(mount.strip_prefix("type=bind,source=").unwrap().strip_suffix(",target=/backup-workspace").unwrap());
+            assert_eq!(workspace.parent(),Some(profile.root.as_path()));
+            fs::create_dir(workspace.join("plaintext")).unwrap();write_private_new(&workspace.join("plaintext"),"manifest.json",&serde_json::to_vec(&serde_json::json!({"schemaVersion":"1.0.0-draft.1","kind":"service-backup","id":"c30e227b-e771-43dc-b315-023e0469d4d2","files":[{"path":"files/00000000.gcm"}]})).unwrap(),4096).unwrap();
+            Ok(br#"{"operation":"verified","files":1}"#.to_vec())
+        }).unwrap();
+        assert_eq!(result.operation,"verified");assert_eq!(calls,vec!["image","image","run"]);
+        assert!(fs::read_dir(&selected.root).unwrap().all(|entry|entry.unwrap().file_name()=="operation.lock"));
+        // Existing preparation, not a relaxed fresh-root admission, still accepts the target.
+        runtime_prepare::prepare(&selected.root,&resources).unwrap();
+        assert!(selected.root.join("bundle/manifest.json").is_file());assert!(!selected.root.join("installed.json").exists());
+        assert_eq!(fs::read(source.join("manifest.gcm")).unwrap(),b"unchanged encrypted fixture");assert_eq!(fs::read(&key).unwrap(),[7u8;32]);
+        for _ in 0..2{
+            assert_eq!(profile.verify_external_backup_with(&resources,&image,&key,&source,||probe(true),|args,_|{
+                if args[0]=="image"&&args[1]=="ls"{Ok(format!("{image}\n").into_bytes())}else if args[0]=="image"{Ok(serde_json::to_vec(&serde_json::json!([{"Id":image}])).unwrap())}else{Err(err("ENGINE_OPERATION_FAILED"))}
+            }).unwrap_err().code,"BACKUP_VERIFICATION_FAILED");
+        }
+        let failed=fs::read_dir(&profile.root).unwrap().filter_map(|e|{let p=e.unwrap().path();p.join("failed.json").is_file().then_some(p)}).collect::<Vec<_>>();assert_eq!(failed.len(),2);
+        assert!(profile.root.join(format!("backup-verification-{}/receipt.json",result.id)).is_file());
+        assert_eq!(fs::read(source.join("manifest.gcm")).unwrap(),b"unchanged encrypted fixture");
+    }
     #[test]
     fn receipt_accepts_only_exact_safe_success_and_never_repeats_raw_output() {
         assert_eq!(
@@ -277,11 +630,7 @@ mod tests {
                 .verify_backup("image:latest", &root, &root)
                 .unwrap_err()
                 .code,
-            if cfg!(windows) {
-                "BACKUP_PLATFORM_UNVERIFIED"
-            } else {
-                "BACKUP_IMAGE_INVALID"
-            }
+            "BACKUP_IMAGE_INVALID"
         );
         assert!(input_path(Path::new("relative"), true).is_err());
         #[cfg(unix)]

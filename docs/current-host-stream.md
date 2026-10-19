@@ -80,3 +80,9 @@ EXHIBITOS_ROLLBACK_TEST_CLI="$PWD/target/release/exhibitos-update" \
 macOS에서 `exhibitos-profile --profile /absolute/private/profile extract-host-clone-only /absolute/private/key.bin /absolute/private/host.bin /absolute/private/new-extraction --extract-only`를 사용하면 인증된 전체 호스트 사본을 새 비활성 공간으로 추출합니다. 모든 원본 payload를 복원하고 중복 참조는 독립 inode의 파일시스템 clone으로만 만듭니다. clone을 지원하지 않거나 실패하면 일반 복사로 전환하지 않습니다. 다른 운영체제는 입력을 읽거나 후보를 만들기 전에 거부합니다.
 
 전체 파일 수·논리 용량·참조 관계·hash·권한·최종 인증 검사는 그대로 유지됩니다. 공간 계산은 인증된 고유 payload와 manifest 항목 metadata를 사용하며, 실행 전 별도 여유 공간을 확보해야 합니다. 기존 `extract-host`의 일반 복사 fallback과 전체 확장 용량 계산은 유지됩니다. 실패 후보는 보존하고 재사용하지 않습니다. 이 명령은 실제 데이터/신뢰 이력 활성화, 서비스 복원, health 또는 업데이트 완료를 뜻하지 않습니다.
+
+## Native runtime-control records during current-profile comparison
+
+Registered execution references and app-closed apply/cancel/rollback requests, claims and outcomes are written after the full host checkpoint. Current-profile comparison separately validates only these four fixed namespaces, bounded to the existing private native record schemas, UUID filenames and record/byte limits. They are not restored service/configuration or trust authority. Their differences do not invalidate the service snapshot. No caller-controlled exclusions are accepted. Other additions, removals, byte or permission changes still fail.
+
+Every archived payload and hash, including any historical control records, remains authenticated; extraction remains an exact original copy. Saved references or handoff records do not grant execution: the original consumer still checks the current authority, operation/generation, registry/reference digest, app-close fence, atomic claim and fresh full runtime qualification.

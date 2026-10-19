@@ -584,3 +584,12 @@ After final source/target/trust/provenance checks, this invocation retires only 
 `verify-restored-candidate-recovery` takes the same arguments as the candidate configuration command. It retains the same current trust/source/target locks and authenticated provenance throughout: fresh candidate physical copy + DB/blob logical inventory, complete configuration/image observation, a second physical copy + fresh DB/blob logical inventory, then host configuration/key/image mappings and common Engine/root/trust/provenance rechecks. Both logical inventories must match the authenticated plan; physical copies must match system identifier, bytes/layout/content and clean PostgreSQL identity. Only two new DB copies are generated. Reserve16GiB cumulatively (4GiB copies,2GiB image exports,4GiB growth/headroom,6GiB floor) before any copy; validate the external export parent first.
 
 Fresh image exports remain available until every phase succeeds, then the existing strict retirement mechanism writes the small image receipt and removes only these new exports. Failed outputs and DB snapshots remain under existing retention policy. No historical receipt or caller success flag is accepted as current evidence. `currentTrustUnchanged` describes the checked retained session, not a recovered authority. `preflightVerified` and `updateExecuted` remain false: release freshness, complete current source/recovery archive binding, Applying authorization, full fresh restoration, migration/health/rollback/crash and native durability are still required.
+
+
+## Native GUI 준비에 사용할 인증된 원본 입력
+
+Unix native의 `LifecycleService::authenticate_update_plan_source`는 기존 백업 검증을 실제로 실행한 뒤, 보존된 archive와 인증 manifest·inventory·이미지 목록 및 현재 설치의 다섯 설정 파일을 결속한다. 플랫폼 이미지의 역할은 manifest 배열 순서가 아니라 현재 검증된 Compose 설정에서 확인한다. 느린 관측 뒤에는 원본과 인증 입력을 다시 검사한다. 결과는 역직렬화하거나 외부에서 생성할 수 없는 계획 재료이며 업데이트 실행 허가가 아니다. 기존 서명·호환성·후보 복원·전체 원본 재검증과 적용 승인은 그대로 필요하다.
+
+입력 archive는 기존 verifier의 경로 겹침 방지를 만족해야 한다. 설치 내부의 백업은 기존 `InstallationController::export_backup`으로 설치 밖의 별도 비공개 사본을 만든 뒤 그 사본을 사용한다. 원래 백업을 옮기거나 겹침 검사를 생략하지 않는다. GUI 준비 작업은 이 자동 단계를 재사용해야 하며 사용자에게 해시·설치 ID를 직접 입력하게 해서는 안 된다.
+
+이 API 연결만으로 GUI 준비가 완성된 것은 아니다. 현재 화면은 등록된 실행 참조를 소비하며, 공식 릴리스·신뢰 정책의 제공, 앱 종료 후 고정 helper의 준비 작업과 재실행 상태 표시는 별도 연결·실제 검증이 남아 있다. 개발용 fixture와 실제 배포판 검증도 구분한다.

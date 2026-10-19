@@ -1,0 +1,112 @@
+{
+  "date": "2026-10-17",
+  "status": "IMPLEMENTED_LOCAL_CHECKS_PASSED_NATIVE_FRESH_LOGIN_NOT_RUN",
+  "managerBaseCommit": "6eddc0f",
+  "platformBaseCommit": "99ae38d44106a276f2675f4118a7ea4d498d4e9a",
+  "taskResponsibility": [
+    "T08-01",
+    "T02-02",
+    "T02-04"
+  ],
+  "changes": [
+    "First user-started install asks for user-chosen local subject and masked password with confirmation, not cloud signup.",
+    "Context returns only required/existing and nonsecret tenant/subject; stored password is never returned through general IPC.",
+    "Only new missing-env and missing-installed state may create private initial account configuration; existing credentials are never rotated.",
+    "New ADMIN_PASSWORD uses a literal double-quoted dotenv subset with escaped backslash, quote and dollar; existing raw generated credentials remain readable.",
+    "Backup validates decoded password byte policy while retaining original bytes; restoration compares the same resolved Compose model including config dollar serialization.",
+    "Readiness-guarded Studio URL carries validated nonsecret tenant/subject only; hint read failure preserves ordinary Studio open.",
+    "Platform shares one validated loopback context parser for CMS field prefill and Studio login link; ordinary independent login and all server checks remain.",
+    "Tauri command is registered in command manifest and the existing bundled-main-window capability."
+  ],
+  "checks": {
+    "managerTypecheck": "PASS",
+    "managerLint": "PASS",
+    "managerFrontendBuild": "PASS",
+    "managerUnit": {
+      "passed": 38,
+      "scope": "lifecycle, initial-account, studio-setup"
+    },
+    "managerBrowser": {
+      "passed": 20,
+      "workers": 1,
+      "projects": [
+        "desktop",
+        "narrow"
+      ],
+      "scope": "setup6 + initial-account4 + lifecycle-progress10",
+      "kind": "synthetic IPC; no native install or DB"
+    },
+    "platformContextUnit": {
+      "passed": 3
+    },
+    "platformWebTypecheck": "PASS",
+    "platformChangedFileLint": "PASS",
+    "rustInitialAccount": {
+      "passed": 7,
+      "includes": "six focused policies + explicitly run installed Compose config qualification"
+    },
+    "actualComposeParser": {
+      "version": "5.5.1",
+      "cases": 9,
+      "operation": "docker compose config --format json only, no container operations",
+      "values": "synthetic only; no secret values recorded",
+      "serialization": "Docker Compose config.go replaces dollar with double-dollar in output; comparison removes that output escape only"
+    },
+    "backupLiteral": {
+      "passed": 1,
+      "includes": "original env bytes retained and 1024-byte password with encoded length above 1024"
+    },
+    "restorationRemapping": {
+      "passed": 1,
+      "includes": "legacy/raw + literal decode, port remap preserves all other bytes, mismatching password rejected"
+    },
+    "desktopCargoCheck": "PASS",
+    "independentSourceReview": "previous literal/command permission/optional hint blockers resolved; no further concrete blocker found"
+  },
+  "correctedValidationAttempts": [
+    "New browser fixture initially omitted the required default /local-runtime path suffix; parser correctly rejected it. Fixture corrected without weakening assertions; four affected cases passed.",
+    "Initial core success fixture omitted compose.yaml/accurate compose hash; manifest validation correctly rejected it. Fixed valid synthetic fixture, then seven focused tests passed.",
+    "New backup regression initially landed in Windows-only module, so observed zero tests; moved to Unix module and observed one test pass."
+  ],
+  "limitations": [
+    "Actual fresh native user account creation -> server bootstrap -> CMS login has not been performed for this source.",
+    "Previous native installation evidence used older source56a0512; it ended at ENGINE_NETWORK_CAPACITY and cannot prove this new account path.",
+    "Runtime bundle must be regenerated from the new Platform source before native integrated GUI qualification.",
+    "No full actual encrypted backup/restore, notarized installer, Store action or remote deployment was run for this change.",
+    "Older auto-generated unknown passwords are not revealed or rotated; existing installation login/recovery remains separate.",
+    "Existing eight non-snake-case Rust test warnings remain; no new fatal build warning."
+  ],
+  "sources": [
+    "https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/",
+    "https://raw.githubusercontent.com/docker/compose/main/cmd/compose/config.go",
+    "https://raw.githubusercontent.com/compose-spec/compose-go/main/dotenv/parser.go"
+  ],
+  "sourceHashes": {
+    "crates/lifecycle/src/initial_account.rs": "350baa42744ad7f7892a00bc56e7fb2fa152e6bbd507c106bcf752e3d9935547",
+    "crates/lifecycle/src/lib.rs": "e2b24195d2e2df5ba6b569a79b8f4ae84b2082b592582fcfbd08e8f280c6aa0f",
+    "crates/lifecycle/src/publication_source.rs": "ae50da4fb3f43f18476262a7be7398ff60a94db81c1004258a72ad2bc9ed74fb",
+    "crates/lifecycle/src/installation_backup.rs": "b7a7243ed31586cb72b0dd062a771b7d5fbfd7626008561d643838bcb6a4c395",
+    "crates/lifecycle/src/restoration.rs": "5f4b1883153c8674e7949259309221f62af795b65248cc3fd1f7f28a552facb6",
+    "src-tauri/src/lib.rs": "a39887f777e6e823361d80bdb58f19500c5941a35565843d59403d403185bb14",
+    "src-tauri/build.rs": "7c9f1e5317321fd3a13cbee4e6939353da83597a5ecbe6ddd3a271a532ff96f2",
+    "src-tauri/capabilities/manager-local.json": "3b22efcaffd8fbfa7671af0f636bf9b35c14546f11b6cea5c9402277d24b69ea",
+    "src-tauri/permissions/autogenerated/manager_initial_account_context.toml": "dfd92dc4fda3fa67e4ec2efb5925d0678bd45ddb64db9265fc0cb72ebd5f019d",
+    "src/App.tsx": "a6ed3e686f4b76ea40f537f21247653659ccb49cfd51b877663076e1a8feadce",
+    "src/lifecycle.ts": "8904a35777b0091b6ac3103cf2ea872d05db8b95f5a2fb4de40bb2ee65eec469",
+    "src/studio-setup.ts": "8bda11cc860a698aa2ef1067567141bf0efeb79b910cedae2e442546a6e0a949",
+    "src/InitialAccount.tsx": "6c4d0e26d8753498d4eb79a96beaa4c1ac318746c428e506342237ebf4fddbd4",
+    "src/initial-account.ts": "5ae6f9ea6edb675929868e13d626c83aa38ac16571363940f5dba85d264af8bd",
+    "src/initial-account.test.ts": "64bbc4e332e2ef595cb53e4157ece4ceb4cba8f71fcfa1c9f56fa4719d84bdfc",
+    "src/browser/initial-account.spec.ts": "1f0c742ec93c8a6dffc51370fd17987d0776746bf836e5f4dc7c355fea07e53b",
+    "src/browser/lifecycle-progress.spec.ts": "20e48005fc994a495d940ce1c1e38f32c658e9c34e74d27e8dbb15621c4ca961",
+    "src/browser/studio-setup.spec.ts": "9b39a1e07e39f60d6bc21a60b24a64c737b7447696e8ed0a6ef850cd68792302",
+    "docs/desktop.md": "abd757d64a56af344141973bc0fb397c378cbf2c8d9211d7145323a5087a8ef2"
+  },
+  "platformSourceHashes": {
+    "apps/web/src/Cms.tsx": "2ecf0f8e163701a67c0095001dcb2c37f4edaa0a14ef9da831469bb423705114",
+    "apps/web/src/Studio.tsx": "a9c4a10d7d3a31f259f57014dbdbbd82648351f0a352e1c54adde6089da204e8",
+    "apps/web/src/local-login-context.ts": "d8d1ae7082738142ed4b40845b08be2cae1317b202e8c537254f543db30a0bcb",
+    "apps/web/src/local-login-context.test.ts": "9be63c0bab141d28ab133d51ba55ee5b7ee2b909baa0126c82423510c027b366"
+  },
+  "platformCommit": "66d06fb8c24179c18bc8bdc4f3ffe1b1ff39a4a4"
+}

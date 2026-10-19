@@ -1,0 +1,127 @@
+// SPDX-License-Identifier: Apache-2.0
+// Fixed native-only recovery runner. No renderer-selected commands/scripts/env.
+import {spawn} from 'node:child_process';
+import {lstat,realpath,open,mkdir} from 'node:fs/promises';
+import {constants} from 'node:fs';
+import {createHash} from 'node:crypto';
+import {isAbsolute,resolve,dirname,join,relative} from 'node:path';
+import {pathToFileURL} from 'node:url';
+import {withRenderRecoveryConnection,validateRecoveryConfiguration,inspectStaticBundle} from '../vendor/deployment/src/pages-render.mjs';
+import {boundedJSON} from '../vendor/deployment/src/bounded-json.mjs';
+const fail=code=>{throw Error(code);};
+const uuid=v=>typeof v==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v);
+const safeCodes=new Set(['HOSTED_TOKEN_REQUIRED','HOSTED_TOKEN_INVALID','HOSTED_PERMISSION_REQUIRED','HOSTED_PAID_PLAN_REFUSED','HOSTED_RATE_LIMITED','HOSTED_CONNECTION_FAILED','HOSTED_REDIRECT_REFUSED','HOSTED_RESPONSE_INVALID','HOSTED_REMOTE_REJECTED','HOSTED_RESOURCE_CONFLICT','HOSTED_RECOVERY_REQUEST','HOSTED_RECOVERY_CONFIGURATION_REQUIRED','HOSTED_RECOVERY_CONFIGURATION_CHANGED','HOSTED_RECOVERY_NETWORK_REQUIRED','HOSTED_RECOVERY_DATABASE_EXPIRED','HOSTED_RECOVERY_WRITERS_ACTIVE','HOSTED_RECOVERY_CONNECTION_INVALID','HOSTED_RECOVERY_TLS_REQUIRED','HOSTED_RECOVERY_OPERATOR_REQUIRED','HOSTED_RECOVERY_EXECUTION_FAILED','HOSTED_RECOVERY_SOURCE_CHANGED','HOSTED_RECOVERY_RESULT_INVALID','HOSTED_BACKUP_REQUEST_INVALID','HOSTED_BACKUP_OUTPUT_CHANGED','HOSTED_BACKUP_HELPER_FAILED','HOSTED_BACKUP_RESULT_INVALID']);
+export function validateRecoveryInput(input){
+ if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).sort().join(',')!=='confirmExternalWritersStopped,execution,expectedConfiguration,request,sourceCidr,tokens'||input.confirmExternalWritersStopped!==true||typeof input.sourceCidr!=='string'||input.sourceCidr.length>64||!input.tokens||Object.keys(input.tokens).join(',')!=='render'||typeof input.tokens.render!=='string'||input.tokens.render.length<1||input.tokens.render.length>8192)fail('HOSTED_BACKUP_REQUEST_INVALID');
+ validateRecoveryConfiguration(input.expectedConfiguration);
+ const e=input.execution;if(!e||typeof e!=='object'||Object.keys(e).sort().join(',')!=='dockerEndpoint,dockerPath,helperName,image,jobBudgetBytes,jobId,keyBase64,maxDumpBytes,outputPath,workVolume'||!uuid(e.jobId)||e.helperName!=='exhibitos-hosted-backup-'+e.jobId||e.workVolume!=='exhibitos-hosted-backup-work-'+e.jobId||!/^sha256:[a-f0-9]{64}$/.test(e.image)||typeof e.keyBase64!=='string')fail('HOSTED_BACKUP_REQUEST_INVALID');
+ if(!Number.isSafeInteger(e.jobBudgetBytes)||e.jobBudgetBytes<4*1024*1024)fail('HOSTED_BACKUP_REQUEST_INVALID');
+ if(!Number.isSafeInteger(e.maxDumpBytes)||e.maxDumpBytes<1024*1024||e.maxDumpBytes>32*1024*1024*1024)fail('HOSTED_BACKUP_REQUEST_INVALID');
+ const key=Buffer.from(e.keyBase64,'base64');try{if(key.length!==32||key.toString('base64')!==e.keyBase64)fail('HOSTED_BACKUP_REQUEST_INVALID');}finally{key.fill(0);}
+ for(const path of [e.outputPath,e.dockerPath])if(typeof path!=='string'||path.length>4096||!isAbsolute(path)||resolve(path)!==path||/[\x00-\x1f\x7f,]/.test(path))fail('HOSTED_BACKUP_REQUEST_INVALID');
+ if(typeof e.dockerEndpoint!=='string'||!e.dockerEndpoint.startsWith('unix:///')||e.dockerEndpoint.length>4096||/[\x00-\x20\x7f?#]/.test(e.dockerEndpoint)||resolve(e.dockerEndpoint.slice(7))!==e.dockerEndpoint.slice(7))fail('HOSTED_BACKUP_REQUEST_INVALID');
+ return input;
+}
+export function helperCommand(e){
+ return {command:e.dockerPath,args:['run','--pull=never','--name',e.helperName,'--label','com.exhibitos.hosted-backup='+e.jobId,'--network','bridge','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','128','--memory','1536m','--user','0:0','--env','TMPDIR=/work','--tmpfs','/tmp:rw,nosuid,nodev,size=256m,mode=1777','--tmpfs','/run/exhibitos:rw,nosuid,nodev,size=1m,mode=0700','--tmpfs','/var/lib/postgresql:rw,nosuid,nodev,size=1m,mode=0700','--mount','type=volume,source='+e.workVolume+',target=/work,volume-nocopy','--mount','type=bind,source='+e.outputPath+',target=/output','-i','--entrypoint','node',e.image,'--disable-proto=throw','--no-warnings','scripts/remote-backup-entry.mjs'],env:{PATH:'/usr/bin:/bin:/usr/sbin:/sbin',DOCKER_HOST:e.dockerEndpoint}};
+}
+async function outputPin(path){const named=await lstat(path,{bigint:true});if(!named.isDirectory()||named.isSymbolicLink()||(named.mode&0o077n)!==0n||await realpath(path)!==path)fail('HOSTED_BACKUP_OUTPUT_CHANGED');return {dev:named.dev,ino:named.ino,mode:named.mode,uid:named.uid};}
+const samePin=(a,b)=>['dev','ino','mode','uid'].every(k=>a[k]===b[k]);
+async function executeHelper(execution,connection,spawner=spawn){
+ const command=helperCommand(execution),child=spawner(command.command,command.args,{env:command.env,stdio:['pipe','pipe','pipe']});
+ let size=0,errorSize=0,failed=false;const chunks=[];let input=Buffer.from(JSON.stringify({databaseURL:connection.url,keyBase64:execution.keyBase64,maxDumpBytes:execution.maxDumpBytes,jobBudgetBytes:execution.jobBudgetBytes,expectedAuthority:validateRecoveryConfiguration(connection.expectedConfiguration)}));
+ return new Promise((resolve,reject)=>{
+  const refuse=()=>{failed=true;};
+  child.stdout.on('data',chunk=>{size+=chunk.length;if(size>262144)refuse();else chunks.push(chunk);});
+  child.stderr.on('data',chunk=>{errorSize+=chunk.length;if(errorSize>4096)refuse();});
+  child.stdin.on('error',refuse);child.on('error',()=>{input.fill(0);reject(Error('HOSTED_BACKUP_HELPER_FAILED'));});
+  child.stdin.end(input,()=>{input.fill(0);input=Buffer.alloc(0);});
+  child.once('close',(code,signal)=>{input.fill(0);if(failed||code!==0||signal){reject(Error('HOSTED_BACKUP_HELPER_FAILED'));return;}try{const value=boundedJSON(Buffer.concat(chunks).toString('utf8'),262144);if(value?.errorCode)fail('HOSTED_BACKUP_HELPER_FAILED');resolve(value);}catch{reject(Error('HOSTED_BACKUP_RESULT_INVALID'));}finally{for(const chunk of chunks)chunk.fill(0);}});
+ });
+}
+export async function runHostedRecovery(input,dependencies={}){
+ try{
+  input=validateRecoveryInput(input);const e=input.execution,pin=await outputPin(e.outputPath);
+  // This acknowledgement is native-created from the same retained job/action.
+  // It is not accepted as public renderer/remote operation input. Suspension and
+  // resource binding are still independently observed by the provider bridge.
+  const result=await (dependencies.bridge??withRenderRecoveryConnection)(input.request,{tokens:input.tokens,sourceCidr:input.sourceCidr,expectedConfiguration:input.expectedConfiguration,...(dependencies.fetch?{fetch:dependencies.fetch}:{}),confirmExternalWritersStopped:async()=>input.confirmExternalWritersStopped===true},async connection=>{
+   if(!samePin(pin,await outputPin(e.outputPath)))fail('HOSTED_BACKUP_OUTPUT_CHANGED');
+   const result=await (dependencies.executeHelper??((execution,value)=>executeHelper(execution,value,dependencies.spawn??spawn)))(e,{...connection,expectedConfiguration:input.expectedConfiguration});
+   if(!samePin(pin,await outputPin(e.outputPath)))fail('HOSTED_BACKUP_OUTPUT_CHANGED');return result;
+  });
+  return result;
+ }catch(error){const code=safeCodes.has(error?.message)?error.message:'HOSTED_BACKUP_HELPER_FAILED';throw Error(code);}
+ finally{if(input?.tokens)input.tokens.render='';if(input?.execution)input.execution.keyBase64='';if(Array.isArray(input?.expectedConfiguration?.envVars))for(const e of input.expectedConfiguration.envVars)if(e&&['ADMIN_PASSWORD','FREEZE_SIGNING_KEY_BASE64'].includes(e.key))e.value='';}
+}
+const publicationCodes=new Set(['HOSTED_PUBLICATION_REQUEST_INVALID','HOSTED_PUBLICATION_SOURCE_CHANGED','HOSTED_PUBLICATION_DESTINATION_CONFLICT','HOSTED_PUBLICATION_COPY_FAILED','HOSTED_PUBLICATION_BUDGET_EXCEEDED']);
+const publicationSHA=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
+const publicationPath=value=>typeof value==='string'&&value.length<=4096&&isAbsolute(value)&&resolve(value)===value&&!/[\x00-\x1f\x7f]/.test(value);
+const identity=(a,b)=>['dev','ino','mode','uid','nlink','size','mtimeNs','ctimeNs'].every(key=>a[key]===b[key]);
+async function publicationDirectories(path,privateRoot){
+ const paths=[];for(let current=path;;current=dirname(current)){paths.unshift(current);if(dirname(current)===current)break;}
+ const pins=[];
+ for(const current of paths){const stat=await lstat(current,{bigint:true});if(!stat.isDirectory()||stat.isSymbolicLink()||await realpath(current)!==current)fail('HOSTED_PUBLICATION_DESTINATION_CONFLICT');if(privateRoot&&(current===privateRoot||current.startsWith(privateRoot+'/'))&&((stat.mode&0o777n)!==0o700n||stat.uid!==BigInt(process.getuid())))fail('HOSTED_PUBLICATION_DESTINATION_CONFLICT');pins.push([current,stat]);}
+ return pins;
+}
+async function checkPublicationDirectories(pins){for(const [path,before] of pins){const after=await lstat(path,{bigint:true});if(!after.isDirectory()||after.isSymbolicLink()||['dev','ino','mode','uid'].some(key=>before[key]!==after[key])||await realpath(path)!==path)fail('HOSTED_PUBLICATION_DESTINATION_CONFLICT');}}
+async function publicationFile(path,maximum){
+ const handle=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+ try{const before=await handle.stat({bigint:true});if(!before.isFile()||before.nlink!==1n||before.size>BigInt(maximum))fail('HOSTED_PUBLICATION_SOURCE_CHANGED');const named=await lstat(path,{bigint:true});if(!identity(before,named))fail('HOSTED_PUBLICATION_SOURCE_CHANGED');return {handle,before};}catch(error){await handle.close();throw error;}
+}
+async function publicationDigest(path,maximum,collect=false){
+ const {handle,before}=await publicationFile(path,maximum);try{const hash=createHash('sha256'),buffer=Buffer.alloc(65536),chunks=[];let bytes=0;while(true){const {bytesRead}=await handle.read(buffer,0,buffer.length,null);if(!bytesRead)break;bytes+=bytesRead;if(bytes>maximum)fail('HOSTED_PUBLICATION_SOURCE_CHANGED');hash.update(buffer.subarray(0,bytesRead));if(collect)chunks.push(Buffer.from(buffer.subarray(0,bytesRead)));}if(BigInt(bytes)!==before.size||!identity(before,await handle.stat({bigint:true}))||!identity(before,await lstat(path,{bigint:true})))fail('HOSTED_PUBLICATION_SOURCE_CHANGED');return {bytes,sha256:hash.digest('hex'),...(collect?{data:Buffer.concat(chunks)}:{})};}finally{await handle.close();}
+}
+async function inspectPublication(input){
+ const preflight=await publicationDigest(join(input.sourcePath,'static-export-manifest.json'),8*1024*1024,true);
+ if(preflight.sha256!==input.expectedManifestSha256)fail('HOSTED_PUBLICATION_SOURCE_CHANGED');
+ const declared=JSON.parse(preflight.data);if(!Array.isArray(declared.files)||declared.files.length<2||declared.files.length>=20000)fail('HOSTED_PUBLICATION_SOURCE_CHANGED');
+ let declaredBytes=preflight.bytes;for(const file of declared.files){if(!Number.isSafeInteger(file?.bytes)||file.bytes<0||file.bytes>25*1024*1024)fail('HOSTED_PUBLICATION_SOURCE_CHANGED');declaredBytes+=file.bytes;if(!Number.isSafeInteger(declaredBytes)||declaredBytes>input.maxBytes)fail('HOSTED_PUBLICATION_BUDGET_EXCEEDED');}
+ const bundle=await inspectStaticBundle(input.sourcePath,{expectedManifestSha256:input.expectedManifestSha256});
+ if(bundle.publicationId!==input.publicationId||bundle.revisionSha256!==input.revisionSha256)fail('HOSTED_PUBLICATION_SOURCE_CHANGED');
+ const index=bundle.files.find(file=>file.path==='static-publication-index.json');if(!index||index.sha256!==input.indexSha256)fail('HOSTED_PUBLICATION_SOURCE_CHANGED');
+ const manifest=await publicationDigest(join(bundle.root,'static-export-manifest.json'),8*1024*1024);if(manifest.sha256!==input.expectedManifestSha256)fail('HOSTED_PUBLICATION_SOURCE_CHANGED');
+ const files=[...bundle.files,{path:'static-export-manifest.json',...manifest}];const bytes=bundle.bytes+manifest.bytes;
+ if(!Number.isSafeInteger(bytes)||bytes>input.maxBytes)fail('HOSTED_PUBLICATION_BUDGET_EXCEEDED');return {files,bytes};
+}
+/** Fixed local-only companion; no provider, DB, credential or archive operation. */
+export async function preserveHostedPublication(input,dependencies={}){
+ try{
+  if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).sort().join(',')!=='destinationPath,expectedManifestSha256,indexSha256,maxBytes,publicationId,revisionSha256,sourcePath'||![input.sourcePath,input.destinationPath].every(publicationPath)||![input.expectedManifestSha256,input.revisionSha256,input.indexSha256].every(publicationSHA)||typeof input.publicationId!=='string'||!input.publicationId.length||input.publicationId.length>128||/[\x00-\x1f\x7f]/.test(input.publicationId)||!Number.isSafeInteger(input.maxBytes)||input.maxBytes<1)fail('HOSTED_PUBLICATION_REQUEST_INVALID');
+  if(input.destinationPath===input.sourcePath||input.destinationPath.startsWith(input.sourcePath+'/')||input.sourcePath.startsWith(input.destinationPath+'/'))fail('HOSTED_PUBLICATION_DESTINATION_CONFLICT');
+  const parentPins=await publicationDirectories(dirname(input.destinationPath),dirname(input.destinationPath));
+  const result=(state,inspected)=>({operation:'publication-custody',state,files:inspected.files.length,bytes:inspected.bytes,manifestSha256:input.expectedManifestSha256,publicationId:input.publicationId,revisionSha256:input.revisionSha256,indexSha256:input.indexSha256});
+  let existing=false;try{await lstat(input.destinationPath);existing=true;}catch(error){if(error.code!=='ENOENT')throw error;}
+  if(existing){try{
+   const retainedPins=await publicationDirectories(input.destinationPath,dirname(input.destinationPath)),retained=await inspectPublication({...input,sourcePath:input.destinationPath});
+   for(const file of retained.files){const path=join(input.destinationPath,file.path),parents=await publicationDirectories(dirname(path),dirname(input.destinationPath)),observed=await publicationDigest(path,file.bytes),stat=await lstat(path,{bigint:true});if(observed.sha256!==file.sha256||observed.bytes!==file.bytes||(stat.mode&0o777n)!==0o600n||stat.uid!==BigInt(process.getuid()))fail('HOSTED_PUBLICATION_DESTINATION_CONFLICT');await checkPublicationDirectories(parents);}
+   await checkPublicationDirectories(retainedPins);await checkPublicationDirectories(parentPins);return result('reused',retained);
+  }catch{fail('HOSTED_PUBLICATION_DESTINATION_CONFLICT');}}
+  const sourcePins=await publicationDirectories(input.sourcePath),inspected=await inspectPublication(input);
+  await dependencies.afterInspect?.();await checkPublicationDirectories(sourcePins);await checkPublicationDirectories(parentPins);
+  await mkdir(input.destinationPath,{mode:0o700});const destinationPins=await publicationDirectories(input.destinationPath,dirname(input.destinationPath));
+  for(const file of inspected.files){
+   const source=join(input.sourcePath,file.path),destination=join(input.destinationPath,file.path);
+   const parents=relative(input.destinationPath,dirname(destination)).split('/').filter(Boolean);let directory=input.destinationPath;
+   for(const part of parents){directory=join(directory,part);try{await mkdir(directory,{mode:0o700});}catch(error){if(error.code!=='EEXIST')throw error;}}
+   const sourceParents=await publicationDirectories(dirname(source)),destinationParents=await publicationDirectories(dirname(destination),dirname(input.destinationPath));
+   await checkPublicationDirectories(sourcePins);await checkPublicationDirectories(parentPins);await checkPublicationDirectories(destinationPins);
+   const {handle,before}=await publicationFile(source,file.bytes);let output;
+   try{
+    if(before.size!==BigInt(file.bytes))fail('HOSTED_PUBLICATION_SOURCE_CHANGED');output=await open(destination,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
+    const hash=createHash('sha256'),buffer=Buffer.alloc(65536);let copied=0;
+    while(true){const {bytesRead}=await handle.read(buffer,0,buffer.length,null);if(!bytesRead)break;copied+=bytesRead;if(copied>file.bytes)fail('HOSTED_PUBLICATION_SOURCE_CHANGED');hash.update(buffer.subarray(0,bytesRead));let offset=0;while(offset<bytesRead){const {bytesWritten}=await (dependencies.write??((h,b,o,n)=>h.write(b,o,n,null)))(output,buffer,offset,bytesRead-offset);if(!Number.isSafeInteger(bytesWritten)||bytesWritten<1||bytesWritten>bytesRead-offset)fail('HOSTED_PUBLICATION_COPY_FAILED');offset+=bytesWritten;}}
+    await output.sync();if(copied!==file.bytes||hash.digest('hex')!==file.sha256||!identity(before,await handle.stat({bigint:true}))||!identity(before,await lstat(source,{bigint:true})))fail('HOSTED_PUBLICATION_SOURCE_CHANGED');
+   }finally{await handle.close();if(output)await output.close();}
+   const copied=await publicationDigest(destination,file.bytes);if(copied.bytes!==file.bytes||copied.sha256!==file.sha256)fail('HOSTED_PUBLICATION_COPY_FAILED');
+   const outputStat=await lstat(destination,{bigint:true});if((outputStat.mode&0o777n)!==0o600n||outputStat.uid!==BigInt(process.getuid()))fail('HOSTED_PUBLICATION_COPY_FAILED');
+   await dependencies.afterCopyFile?.(file.path);await checkPublicationDirectories(sourceParents);await checkPublicationDirectories(destinationParents);
+  }
+  await inspectPublication(input);await inspectPublication({...input,sourcePath:input.destinationPath});await checkPublicationDirectories(sourcePins);await checkPublicationDirectories(parentPins);await checkPublicationDirectories(destinationPins);
+  return result('copied',inspected);
+ }catch(error){if(publicationCodes.has(error?.message))throw error;if(/^HOSTED_STATIC_BUNDLE_/.test(error?.message))fail('HOSTED_PUBLICATION_SOURCE_CHANGED');fail('HOSTED_PUBLICATION_COPY_FAILED');}
+}
+export async function readRecoveryInput(stream){const chunks=[];let size=0;for await(const part of stream){const b=Buffer.from(part);size+=b.length;if(size>131072)fail('HOSTED_BACKUP_REQUEST_INVALID');chunks.push(b);}try{return boundedJSON(Buffer.concat(chunks).toString('utf8'),131072);}finally{for(const b of chunks)b.fill(0);}}
+if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){
+ try{if(process.argv.length!==2&&!(process.argv.length===3&&process.argv[2]==='--publication-custody'))fail('HOSTED_PUBLICATION_REQUEST_INVALID');const input=await readRecoveryInput(process.stdin);const result=process.argv[2]==='--publication-custody'?await preserveHostedPublication(input):await runHostedRecovery(input);process.stdout.write(JSON.stringify(result));}catch(error){const errorCode=publicationCodes.has(error?.message)||safeCodes.has(error?.message)?error.message:process.argv[2]==='--publication-custody'?'HOSTED_PUBLICATION_REQUEST_INVALID':'HOSTED_BACKUP_HELPER_FAILED';process.stdout.write(JSON.stringify({errorCode}));process.exitCode=1;}
+}

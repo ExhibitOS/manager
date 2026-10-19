@@ -196,3 +196,53 @@ fn rollback_handoff_waits_for_app_close_single_owner_and_never_claims_restore_su
     assert_eq!(fs::read(target).unwrap(), b"preserve-target");
     retire(&profile);
 }
+
+#[test]
+fn rollback_native_tool_preparation_requires_current_authorized_intent_and_leaves_reads_untouched() {
+    let (profile, _, generation) = fixture();
+    let controller = installations::InstallationController::new(profile.clone(), None).unwrap();
+    let selected = controller.context().unwrap();
+    // Invalid packaged metadata proves whether preparation was reached without invoking an engine.
+    let resources = profile.parent().unwrap().join("invalid-tool-resources");
+    fs::create_dir(&resources).unwrap();
+    fs::write(resources.join("prepared.json"), b"not packaged metadata").unwrap();
+    let token = &selected.selection_token;
+    assert!(controller.update_rollback_handoff_prepared(token, None, &resources).unwrap().1.is_none());
+    let mut unconsented = input(&profile, generation);
+    unconsented.external_writers_quiesced = false;
+    assert_eq!(controller.update_rollback_handoff_prepared(token, Some(unconsented), &resources).err().unwrap().code, "UPDATE_HANDOFF_CONSENT_REQUIRED");
+    let stale = input(&profile, generation + 1);
+    assert_eq!(controller.update_rollback_handoff_prepared(token, Some(stale), &resources).err().unwrap().code, "UPDATE_HANDOFF_AUTHORITY_CHANGED");
+    assert_eq!(controller.update_rollback_handoff_prepared(&uuid::Uuid::new_v4().to_string(), Some(input(&profile, generation)), &resources).err().unwrap().code, "INSTALLATION_SELECTION_CHANGED");
+    assert_eq!(controller.update_rollback_handoff_prepared(token, Some(input(&profile, generation)), &resources).err().unwrap().code, "PLATFORM_RUNTIME_INVALID");
+    assert!(!profile.join("update-rollback-handoffs").exists());
+    // Missing declaration preserves the existing explicitly selected custom-tool path.
+    fs::remove_file(resources.join("prepared.json")).unwrap();
+    let receipt = controller.update_rollback_handoff_prepared(token, Some(input(&profile, generation)), &resources).unwrap().1.unwrap();
+    assert_eq!(receipt.state, "awaiting-app-close");
+    drop(controller);
+    retire(&profile);
+}
+
+#[cfg(not(windows))]
+#[test]
+fn rollback_prepared_tool_waits_for_external_orphan_reconciliation_in_both_owners() {
+    for profile_owner in [true, false] {
+        let (profile, _, generation) = fixture();
+        let controller = installations::InstallationController::new(profile.clone(), None).unwrap();
+        let selected = controller.context().unwrap();
+        let current_root = controller.with_current(&selected.selection_token, |service| Ok(service.root.clone())).unwrap();
+        let owner = if profile_owner { &profile } else { &current_root };
+        let mut job = crate::external_restoration::fixture_job();
+        job.state = "interrupted".into();job.stage = "interrupted".into();job.error_code = Some("INTERRUPTED".into());
+        let folder = owner.join(format!("external-restoration-{}", job.id));
+        crate::restoration::directory(&folder).unwrap();
+        crate::write_json(&folder, "job.json", &job).unwrap();
+        let resources = profile.parent().unwrap().join("invalid-tool-resources");
+        fs::create_dir(&resources).unwrap();fs::write(resources.join("prepared.json"), b"not packaged metadata").unwrap();
+        assert!(controller.update_rollback_handoff_prepared(&selected.selection_token, None, &resources).unwrap().1.is_none());
+        assert_eq!(controller.update_rollback_handoff_prepared(&selected.selection_token, Some(input(&profile, generation)), &resources).err().unwrap().code, "CANCEL_RECOVERY_REQUIRED");
+        assert!(!profile.join("update-rollback-handoffs").exists());assert!(folder.join("job.json").is_file());
+        drop(controller);retire(&profile);
+    }
+}

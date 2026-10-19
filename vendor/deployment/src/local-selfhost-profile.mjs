@@ -4,7 +4,7 @@ import {boundedJSON} from './bounded-json.mjs';
 const fail=code=>{throw Object.assign(new Error(code),{code});};
 const closed=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===keys.sort().join(',');
 const uuid=v=>typeof v==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(v);
-const image=v=>typeof v==='string'&&v.length<=512&&/^[a-z0-9][a-z0-9./:_-]+@sha256:[a-f0-9]{64}$/.test(v);
+const image=v=>typeof v==='string'&&v.length<=512&&/^(?:sha256:|[a-z0-9][a-z0-9./:_-]+@sha256:)[a-f0-9]{64}$(?![\s\S])/.test(v)&&!/(?:^|@)sha256:0{64}$/.test(v);
 const hash=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 function utc(v){if(typeof v!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(v)||!Number.isFinite(Date.parse(v)))return false;return new Date(v).toISOString().replace('.000Z','Z')===v.replace('.000Z','Z');}
 /** Closed local subset of public OED v1, then exact two-service packaging contract. Hash approval never substitutes for document validity. */
