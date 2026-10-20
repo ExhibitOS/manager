@@ -108,7 +108,7 @@ mod native {
     fn query(provider: &str) -> Result<Owned, ()> {
         let backup=provider.strip_prefix("render-backup-key-").is_some_and(|id|id.len()==36&&id.bytes().enumerate().all(|(i,b)|if [8,13,18,23].contains(&i){b==b'-'}else{b.is_ascii_digit()||(b'a'..=b'f').contains(&b)}));
         let configuration=provider.strip_prefix("render-backup-configuration-").is_some_and(super::canonical_backup_uuid)||provider.strip_prefix("render-remote-configuration-").is_some_and(super::canonical_backup_uuid);
-        if !backup && !configuration && !matches!(provider, "cloudflare" | "render" | "hosted-work")
+        if !backup && !configuration && !matches!(provider, "cloudflare" | "render" | "hosted-work" | "render-recovery-source")
             && !(provider.starts_with("render-runtime-")
                 && provider.len() == 79
                 && provider[15..].bytes().all(|b| b.is_ascii_hexdigit()))
