@@ -58,10 +58,11 @@ export function App(){
  const [retryJobs,setRetryJobs]=useState<MaintenanceRetry[]>([]),[retryError,setRetryError]=useState<ManagerError|null>(null);
  useEffect(()=>{setInitialAccountRequest(null);},[installation?.selectionToken]);
  const live=useRef(true),working=useRef(false),refreshing=useRef(false),refreshDone=useRef<Promise<void>>(Promise.resolve()),statusGeneration=useRef(0),observedSelection=useRef<string|null>(null);
- const refresh=useCallback(async()=>{
+ const refresh=useCallback(async(background=false)=>{
   if(!client.native||refreshing.current)return;
   const generation=statusGeneration.current;
-  refreshing.current=true;if(live.current)setLoading(true);
+  // A same-selection background read keeps established controls usable.
+  refreshing.current=true;if(live.current&&(!background||observedSelection.current===null))setLoading(true);
   let finishRefresh:(()=>void)|undefined;
   refreshDone.current=new Promise<void>(resolve=>{finishRefresh=resolve;});
   try{
@@ -69,7 +70,7 @@ export function App(){
    try{const selected=await client.installations();selectedToken=selected.selectionToken;selectedId=selected.activeId;if(live.current&&generation===statusGeneration.current){
     // A known snapshot belongs only to its selected installation. A different
     // selection must gather its own status and maintenance observations.
-    if(observedSelection.current!==selected.selectionToken){observedSelection.current=selected.selectionToken;setStatus(null);setRestoration(null);setBackupJobs([]);setReconciliationJobs([]);setRetryJobs([]);}
+    if(observedSelection.current!==selected.selectionToken){setLoading(true);observedSelection.current=selected.selectionToken;setStatus(null);setRestoration(null);setBackupJobs([]);setReconciliationJobs([]);setRetryJobs([]);}
     setInstallation(selected);setInstallationError(null);
    }}
    catch(e){if(live.current&&generation===statusGeneration.current){setInstallation(null);setInstallationError(managerError(e));}throw e;}
@@ -90,7 +91,7 @@ export function App(){
    refreshing.current=false;if(live.current)setLoading(false);finishRefresh?.();
   }
  },[]);
- useEffect(()=>{live.current=true;let timer:ReturnType<typeof setTimeout>;const poll=async()=>{if(!working.current)await refresh();if(live.current)timer=setTimeout(()=>void poll(),3000);};void poll();return()=>{live.current=false;clearTimeout(timer);};},[refresh]);
+ useEffect(()=>{live.current=true;let timer:ReturnType<typeof setTimeout>;const poll=async()=>{if(!working.current)await refresh(true);if(live.current)timer=setTimeout(()=>void poll(),3000);};void poll();return()=>{live.current=false;clearTimeout(timer);};},[refresh]);
  async function operation(action:'install'|Action,initialAccount?:InitialAccountInput,expectedSelection?:string){
   if(working.current||!client.native)return;
   working.current=true;setBusy(true);setPendingAction(action);setLifecycleFeedback('');setError(null);setNotice(`${actionLabel(action)} 작업을 진행합니다. 창을 닫아도 저장된 작업 기록은 남습니다.`);
