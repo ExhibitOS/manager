@@ -35,25 +35,37 @@ fn file_pin(root:&Path,name:&str)->Result<FilePin>{
  Ok(FilePin{path:name.into(),dev:m.dev(),ino:m.ino(),bytes:m.len(),mode:m.mode(),uid:m.uid(),mtime:m.mtime(),mtime_nsec:m.mtime_nsec(),ctime:m.ctime(),ctime_nsec:m.ctime_nsec()})
 }
 fn cipher_name(name:&[u8])->bool{name.len()==12&&name.ends_with(b".gcm")&&name[..8].iter().all(u8::is_ascii_digit)}
-fn names(root:&Path)->Result<Vec<String>>{
- let mut top=fs::read_dir(root).map_err(|_|invalid())?.take(5).map(|e|e.map_err(|_|invalid()).and_then(|e|e.file_name().into_string().map_err(|_|invalid()))).collect::<Result<Vec<_>>>()?;top.sort();
+// Finder metadata is not authenticated backup content. Its optional presence and
+// identity are held only for the current observation, never the durable source link.
+fn finder_pin(root:&Path)->Result<Option<FilePin>>{
+ let path=root.join(".DS_Store");
+ match fs::symlink_metadata(&path){Ok(_)=>{},Err(e) if e.kind()==std::io::ErrorKind::NotFound=>return Ok(None),Err(_)=>return Err(invalid())}
+ let file=OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW|libc::O_NONBLOCK).open(&path).map_err(|_|invalid())?;
+ let m=file.metadata().map_err(|_|invalid())?;let named=fs::symlink_metadata(&path).map_err(|_|invalid())?;
+ if !m.is_file()||named.is_symlink()||m.nlink()!=1||m.mode()&0o7133!=0||m.uid()!=unsafe{libc::geteuid()}||m.len()>1024*1024||m.dev()!=named.dev()||m.ino()!=named.ino()||m.size()!=named.size()||m.mode()!=named.mode()||m.uid()!=named.uid()||m.nlink()!=named.nlink()||m.mtime()!=named.mtime()||m.mtime_nsec()!=named.mtime_nsec()||m.ctime()!=named.ctime()||m.ctime_nsec()!=named.ctime_nsec(){return Err(invalid());}
+ Ok(Some(FilePin{path:".DS_Store".into(),dev:m.dev(),ino:m.ino(),bytes:m.len(),mode:m.mode(),uid:m.uid(),mtime:m.mtime(),mtime_nsec:m.mtime_nsec(),ctime:m.ctime(),ctime_nsec:m.ctime_nsec()}))
+}
+fn names(root:&Path)->Result<(Vec<String>,bool)>{
+ let mut top=fs::read_dir(root).map_err(|_|invalid())?.take(6).map(|e|e.map_err(|_|invalid()).and_then(|e|e.file_name().into_string().map_err(|_|invalid()))).collect::<Result<Vec<_>>>()?;top.sort();
+ let finder=top.first().is_some_and(|name|name==".DS_Store");if finder{top.remove(0);}
  if top!=["complete.json","files","manifest.gcm","writing.json"]{return Err(invalid());}
  let mut files=Vec::new();for entry in fs::read_dir(root.join("files")).map_err(|_|invalid())?{if files.len()>=MAX_FILES{return Err(invalid());}let name=entry.map_err(|_|invalid())?.file_name().into_string().map_err(|_|invalid())?;
   if !cipher_name(name.as_bytes()){return Err(invalid());}files.push(format!("files/{name}"));}
- if files.is_empty(){return Err(invalid());}files.sort();let mut all=vec!["complete.json".into(),"manifest.gcm".into(),"writing.json".into()];all.extend(files);Ok(all)
+ if files.is_empty(){return Err(invalid());}files.sort();let mut all=vec!["complete.json".into(),"manifest.gcm".into(),"writing.json".into()];all.extend(files);Ok((all,finder))
 }
-pub(crate) struct SourceSnapshot{root:PathBuf,pins:Vec<FilePin>,directories:Vec<DirectoryPin>,directory_pins:Vec<(u64,u64,u32,u32)>}
+pub(crate) struct SourceSnapshot{root:PathBuf,pins:Vec<FilePin>,finder:Option<FilePin>,directories:Vec<DirectoryPin>,directory_pins:Vec<(u64,u64,u32,u32)>}
 impl SourceSnapshot{
  pub(crate) fn capture(root:&Path)->Result<Self>{
   super::maintenance::input_path(root,true)?;super::maintenance::input_path(&root.join("files"),true)?;
   let mut directories=root.ancestors().map(DirectoryPin::open).collect::<Result<Vec<_>>>()?;directories.push(DirectoryPin::open(&root.join("files"))?);
-  let paths=names(root)?;let pins=paths.iter().map(|name|file_pin(root,name)).collect::<Result<Vec<_>>>()?;
+  let (paths,has_finder)=names(root)?;let finder=finder_pin(root)?;if has_finder!=finder.is_some(){return Err(invalid());}let pins=paths.iter().map(|name|file_pin(root,name)).collect::<Result<Vec<_>>>()?;
   let directory_pins=[root,root.join("files").as_path()].iter().map(|path|{let m=fs::symlink_metadata(path).map_err(|_|invalid())?;Ok((m.dev(),m.ino(),m.mode(),m.uid()))}).collect::<Result<Vec<_>>>()?;
-  let snapshot=Self{root:root.into(),pins,directories,directory_pins};snapshot.check()?;Ok(snapshot)
+  let snapshot=Self{root:root.into(),pins,finder,directories,directory_pins};snapshot.check()?;Ok(snapshot)
  }
  fn check(&self)->Result<()>{for directory in &self.directories{directory.check()?;}
   for (path,pin) in [self.root.clone(),self.root.join("files")].iter().zip(&self.directory_pins){let m=fs::symlink_metadata(path).map_err(|_|invalid())?;if (m.dev(),m.ino(),m.mode(),m.uid())!=*pin{return Err(invalid());}}
-  if names(&self.root)?!=self.pins.iter().map(|p|p.path.clone()).collect::<Vec<_>>(){return Err(invalid());}
+  let (paths,has_finder)=names(&self.root)?;
+  if paths!=self.pins.iter().map(|p|p.path.clone()).collect::<Vec<_>>()||has_finder!=self.finder.is_some()||finder_pin(&self.root)?!=self.finder{return Err(invalid());}
   for pin in &self.pins{if &file_pin(&self.root,&pin.path)?!=pin{return Err(invalid());}}Ok(())
  }
  pub(crate) fn preserve(&self,workspace:&Path,receipt:&VerificationReceipt)->Result<()>{
@@ -157,5 +169,50 @@ mod tests{
  #[test]
  fn verification_source_refuses_capture_churn_or_failed_metadata_custody(){
   let(_service,source,workspace,receipt)=fixture();let snapshot=SourceSnapshot::capture(&source).unwrap();write_private_new(&source.join("files"),"00000001.gcm",b"extra",4096).unwrap();assert!(snapshot.preserve(&workspace,&receipt).is_err());assert!(!workspace.join("source.json").exists());assert!(!workspace.join("receipt.json").exists());
+ }
+ fn finder(source:&Path){let path=source.join(".DS_Store");fs::write(&path,b"synthetic Finder metadata").unwrap();fs::set_permissions(path,fs::Permissions::from_mode(0o644)).unwrap();}
+ #[test]
+ fn finder_metadata_is_optional_transient_and_not_authenticated_source_content(){
+  for present in [false,true]{
+   let(service,source,workspace,receipt)=fixture();if present{finder(&source);}
+   let snapshot=SourceSnapshot::capture(&source).unwrap();assert_eq!(snapshot.finder.is_some(),present);assert_eq!(snapshot.pins.len(),4);
+   snapshot.preserve(&workspace,&receipt).unwrap();write_json(&workspace,"receipt.json",&receipt).unwrap();
+   let bytes=fs::read(workspace.join("source.json")).unwrap();assert!(!String::from_utf8(bytes).unwrap().contains(".DS_Store"));
+   // Later normal Finder changes do not change the authenticated durable link.
+   if present{fs::write(source.join(".DS_Store"),b"later Finder metadata").unwrap();}else{finder(&source);}
+   assert!(service.verification_source(&receipt.id).is_ok());
+   fs::remove_file(source.join(".DS_Store")).unwrap();assert!(service.verification_source(&receipt.id).is_ok());
+  }
+ }
+ #[test]
+ fn finder_metadata_never_allows_other_names_unsafe_types_or_permissions(){
+  for mode in ["unknown","unknown-with-finder","nested","symlink","hardlink","fifo","oversize","directory","executable","group-write","other-write","special"]{
+   let(_service,source,_workspace,_receipt)=fixture();let path=source.join(".DS_Store");
+   match mode{
+    "unknown"|"unknown-with-finder"=>{if mode=="unknown-with-finder"{finder(&source);}write_private_new(&source,".localized",b"unknown",4096).unwrap();},
+    "nested"=>finder(&source.join("files")),
+    "symlink"=>symlink(source.join("manifest.gcm"),&path).unwrap(),
+    "hardlink"=>fs::hard_link(source.join("manifest.gcm"),&path).unwrap(),
+    "fifo"=>{let name=std::ffi::CString::new(path.to_str().unwrap()).unwrap();assert_eq!(unsafe{libc::mkfifo(name.as_ptr(),0o600)},0);},
+    "directory"=>fs::create_dir(&path).unwrap(),
+    "oversize"=>{finder(&source);OpenOptions::new().write(true).open(&path).unwrap().set_len(1024*1024+1).unwrap();},
+    _=>{finder(&source);let permissions=match mode{"executable"=>0o744,"group-write"=>0o664,"other-write"=>0o646,_=>0o1644};fs::set_permissions(&path,fs::Permissions::from_mode(permissions)).unwrap();},
+   }
+   assert!(SourceSnapshot::capture(&source).is_err(),"{mode}");
+  }
+ }
+ #[test]
+ fn finder_metadata_churn_during_observation_refuses_without_publishing_source(){
+  for mode in ["appearance","disappearance","mutation","replacement","permissions"]{
+   let(_service,source,workspace,receipt)=fixture();if mode!="appearance"{finder(&source);}let snapshot=SourceSnapshot::capture(&source).unwrap();let path=source.join(".DS_Store");
+   match mode{
+    "appearance"=>finder(&source),
+    "disappearance"=>fs::remove_file(&path).unwrap(),
+    "mutation"=>fs::write(&path,b"changed Finder metadata").unwrap(),
+    "replacement"=>{fs::rename(&path,source.with_extension("retained-finder")).unwrap();finder(&source);},
+    _=>fs::set_permissions(&path,fs::Permissions::from_mode(0o600)).unwrap(),
+   }
+   assert!(snapshot.preserve(&workspace,&receipt).is_err(),"{mode}");assert!(!workspace.join("source.json").exists());
+  }
  }
 }
