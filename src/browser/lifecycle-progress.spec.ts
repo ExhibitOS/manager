@@ -5,7 +5,8 @@ for(const action of ['install','start','stop','restart','failure'] as const)test
  await page.addInitScript(({action})=>{
   const installed=action!=='install',ready=action==='stop'||action==='restart';
   const status={installed,bundleId:'synthetic',version:'0.1.0',state:ready?'running':'stopped',services:[],readiness:{ready,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
-  Object.assign(window,{isTauri:true,__finishOperation:null,__operationCount:0,__TAURI_INTERNALS__:{invoke:async(cmd:string)=>{
+  Object.assign(window,{isTauri:true,__finishOperation:null,__operationCount:0,__TAURI_INTERNALS__:{invoke:async(cmd:string,args?:{input?:{action?:string}})=>{
+   if(cmd==='manager_external_restore'&&args?.input?.action==='context')return {sources:[],checks:[]};
    if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
    if(cmd==='manager_hosted_resume')return null;
    if(cmd==='manager_hosted_connected')return false;
@@ -43,4 +44,47 @@ for(const action of ['install','start','stop','restart','failure'] as const)test
  await expect(progress).toHaveCount(0);
  await expect(feedback).toContainText(action==='failure'?'완료하지 못했습니다':'작업이 완료됐습니다');
  if(action==='failure')await expect(feedback).toContainText('ENGINE_PERMISSION');
+});
+
+// A pre-action status is an immutable observation, not the mutable server fixture.
+test('completed stop supersedes a held old poll and obtains a fresh status',async({page})=>{
+ await page.addInitScript(()=>{
+  const status={installed:true,bundleId:'synthetic-refresh-owner',version:'0.1.0',state:'running',services:[],readiness:{ready:true,version:null,protocolVersion:null,errorCode:null},storage:{usedBytes:null,freeBytes:10000000000,minimumFreeBytes:0},activeJob:null};
+  let holdNext=false,release:()=>void=()=>{},held=false,writerCompleted=false,freshReads=0;
+  const writes:string[]=[];
+  Object.assign(window,{isTauri:true,__lifecycleRefresh:{hold(){holdNext=true;},release(){release();},get held(){return held;},get writerCompleted(){return writerCompleted;},get freshReads(){return freshReads;},writes},__TAURI_INTERNALS__:{invoke:async(cmd:string,args?:{action?:string;input?:{action?:string}})=>{
+   if(cmd==='manager_external_restore'&&args?.input?.action==='context')return {sources:[],checks:[]};
+   if(cmd==='manager_update_preparation_startup')return {controllerBlocked:false,canOpenManager:false,job:null};
+   if(cmd==='manager_installations')return {selectionToken:'45678901-1234-1234-1234-123456789012',activeId:'56789012-1234-1234-1234-123456789012',mode:'managed',installations:[{id:'56789012-1234-1234-1234-123456789012',kind:'default',createdAt:1,path:'/private/tmp/synthetic-refresh-owner/local-runtime',available:true}],errorCode:null};
+   if(cmd==='manager_status'){
+    const observed=structuredClone(status);
+    if(writerCompleted)freshReads++;
+    if(holdNext){holdNext=false;held=true;await new Promise<void>(resolve=>{release=resolve;});}
+    return observed;
+   }
+   if(cmd==='manager_action'){
+    if(args?.action!=='stop')throw Error('Only the explicit synthetic stop is allowed');
+    writes.push('stop');status.state='stopped';status.readiness.ready=false;writerCompleted=true;
+    return {id:'synthetic-refresh-owner',action:'stop',state:'completed',attempt:1,progress:100,createdAt:1,updatedAt:2,errorCode:null,guidance:null};
+   }
+   if(cmd==='manager_detect')return [{kind:'docker',installed:true,available:true,engineVersion:'synthetic',composeVersion:'synthetic',errorCode:null,guidance:null}];
+   if(cmd==='manager_update_status')return {installationId:'56789012-1234-1234-1234-123456789012',authorityPresent:false,generation:null,stage:null,operationId:null,failure:null,changedSchema:false,writeUncertain:false};
+   if(['manager_jobs','manager_logs','manager_backup_jobs','manager_helper_reconciliations','manager_maintenance_retries'].includes(cmd))return [];
+   if(cmd==='manager_restoration_context')return {fresh:false,job:null,receipt:null};
+   if(['manager_hosted_resume','manager_update_cancel','manager_maintenance_context','manager_backup_tool'].includes(cmd))return null;
+   if(cmd==='manager_hosted_connected')return false;
+   throw Error('Unexpected synthetic lifecycle command');
+  }}});
+ });
+ await page.goto('/');await page.getByRole('button',{name:'고급 설정',exact:true}).click();const controls=page.getByRole('region',{name:'전시 설치와 실행'}),stop=controls.getByRole('button',{name:'정지',exact:true}),state=page.getByRole('region',{name:'실제 전시 상태'}),open=state.getByRole('button',{name:'전시 열기',exact:true});
+ await expect(stop).toBeEnabled();await expect(open).toBeEnabled();
+ await page.evaluate(()=>(window as unknown as {__lifecycleRefresh:{hold:()=>void}}).__lifecycleRefresh.hold());
+ await expect.poll(()=>page.evaluate(()=>(window as unknown as {__lifecycleRefresh:{held:boolean}}).__lifecycleRefresh.held),{timeout:6000}).toBe(true);
+ await expect(stop).toBeEnabled();await stop.click();
+ await expect.poll(()=>page.evaluate(()=>(window as unknown as {__lifecycleRefresh:{writerCompleted:boolean}}).__lifecycleRefresh.writerCompleted)).toBe(true);
+ await page.evaluate(()=>(window as unknown as {__lifecycleRefresh:{release:()=>void}}).__lifecycleRefresh.release());
+ // This must be action-owned, not the next automatic poll three seconds later.
+ await expect.poll(()=>page.evaluate(()=>(window as unknown as {__lifecycleRefresh:{freshReads:number}}).__lifecycleRefresh.freshReads),{timeout:1000}).toBeGreaterThan(0);
+ await expect(controls.getByRole('status')).toContainText('정지 작업이 완료됐습니다');await expect(open).toBeDisabled();await expect(state.locator('dt').filter({hasText:'서버 준비'}).locator('..')).toContainText('아직 준비되지 않음');
+ expect(await page.evaluate(()=>(window as unknown as {__lifecycleRefresh:{writes:string[]}}).__lifecycleRefresh.writes)).toEqual(['stop']);
 });
