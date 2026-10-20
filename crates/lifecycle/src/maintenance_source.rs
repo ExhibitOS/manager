@@ -62,7 +62,7 @@ impl SourceSnapshot{
   let directory_pins=[root,root.join("files").as_path()].iter().map(|path|{let m=fs::symlink_metadata(path).map_err(|_|invalid())?;Ok((m.dev(),m.ino(),m.mode(),m.uid()))}).collect::<Result<Vec<_>>>()?;
   let snapshot=Self{root:root.into(),pins,finder,directories,directory_pins};snapshot.check()?;Ok(snapshot)
  }
- fn check(&self)->Result<()>{for directory in &self.directories{directory.check()?;}
+ pub(crate) fn check(&self)->Result<()>{for directory in &self.directories{directory.check()?;}
   for (path,pin) in [self.root.clone(),self.root.join("files")].iter().zip(&self.directory_pins){let m=fs::symlink_metadata(path).map_err(|_|invalid())?;if (m.dev(),m.ino(),m.mode(),m.uid())!=*pin{return Err(invalid());}}
   let (paths,has_finder)=names(&self.root)?;
   if paths!=self.pins.iter().map(|p|p.path.clone()).collect::<Vec<_>>()||has_finder!=self.finder.is_some()||finder_pin(&self.root)?!=self.finder{return Err(invalid());}
