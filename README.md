@@ -5,24 +5,29 @@
 > 1차 출시 범위(2026-10-15 사용자 변경)는 Mac Manager의 설치·실행·백업·복원·업데이트·롤백입니다. 기존 Windows/Linux 구현과 결과는 보존하되 해당 native 배포는 후속이며 1차 필수 검사가 아닙니다. 서버 Ubuntu 단일 운영 profile과 사용자 앱 OS 지원을 구분합니다. Mac 실제 설치·복구 검증과 원본 보존 조건은 유지합니다.
 
 로컬 전시 서버의 설치·시작·정지·재시작·상태와 작업 기록을 관리하는
-Tauri2/Rust 데스크톱 앱의 개발 구현입니다. Windows Docker 기본 설치·시작·정지·재시작·API 연결과 진행 표시를 실제 사용자 환경에서 확인했습니다. 전체 Windows 복구·업데이트·설치 프로그램 검증,
-macOS 서명·공증과 배포용 설치 프로그램은 완료되지 않았습니다. 앱의 실제 복원 GUI 조작·취소/재개,
-업데이트 적용·원래 전시 전체 복원과 취소·재시도 화면은 소스에 연결돼 있으나 실제 네이티브 GUI와 전체 signed apply·rollback 검증은 남아 있습니다. 기존 cloud wizard는 보존하며 1차 출시 범위의 필수 경로가 아닙니다.
+Tauri2/Rust 데스크톱 앱입니다. 검증된 macOS 개발용 ad-hoc 패키지에서 로컬
+백업 생성·인증·새 설치 전체 복원과 관련 결과 화면을 확인했습니다. 격리 환경의
+서명된 변경 스키마 업데이트는 실제 CLI로 적용했고, 네이티브 복원 경로로 원래
+전시 전체 롤백과 복원 이력 재열기를 확인했습니다. 이 결과는 해당 소스·입력의
+검증 범위이며 전체 등록 GUI·공식 배포 수락을 뜻하지 않습니다. Developer ID
+서명·공증·배포 설치 프로그램·clean-user 검증과 실제 cloud 전체 복구는 남아 있습니다.
+Windows Docker의 기본 설치·시작·정지·재시작·API 연결·진행 표시는 실제 환경에서
+확인했으며, 전체 Windows 복구·업데이트·설치 프로그램은 별도입니다. 기존 cloud
+wizard는 보존하며 1차 출시 범위의 필수 경로가 아닙니다.
 [설치된 전시의 백업 생성](docs/backup-creation.md)은 개발 CLI에서 Docker 기반
 설치의 DB·작품·서명 설정·설치 파일·images를 암호화·인증하며 전시 writer를 정지 상태로 둡니다.
-로컬 앱 창의 생성 화면에 같은 adapter를 연결했으며 실제 네이티브 GUI 조작과
-Windows/Podman 검증은 남아 있습니다. [새 설치 복원 CLI](docs/backup-restoration.md)는
+로컬 앱 창의 생성 화면에 같은 adapter를 연결했으며 위 macOS 개발판 검증 범위와 Windows/Podman 검증은 구분합니다. [새 설치 복원 CLI](docs/backup-restoration.md)는
 암호화 사본의 DB·작품·서명 설정·이미지를 원본과 분리된 새 Docker 설치에 복구하고
-전시 readiness를 확인하는 개발 경로입니다. 로컬 앱 복원 화면도 같은 코어에 연결했으며 실제 GUI 조작·취소/재개·cold engine과
+전시 readiness를 확인하는 개발 경로입니다. 로컬 앱 복원 화면도 같은 코어에 연결했으며 전체 GUI·취소/재개 수락·cold engine과
 전체 frozen corpus qualification은 별도 조건입니다. 개발 CLI와 백업 검증 화면의
 [암호화 백업 인증 검증](docs/backup-verification.md)은 네트워크 없이 실제 유지보수
-이미지를 실행하며 새 비공개 작업 공간에만 복호화합니다. 로컬 앱 창에 검증 화면을 연결했으며 실제 네이티브 GUI 조작 검증은 아직 남아 있습니다. 엔진 실행과 분리된
+이미지를 실행하며 새 비공개 작업 공간에만 복호화합니다. 로컬 앱 창의 사본 인증도 위 macOS 개발판 검증에 포함하며, 전체 GUI 수락은 별도입니다. 엔진 실행과 분리된
 [업데이트 안전 판정 코어](docs/update-safety.md)는 검증 결과를 입력받아 실패와
 중단 복구를 판정하며, 실제 업데이트·서명·복원 기능을 실행하지 않습니다.
 
 [영구 업데이트 기록](docs/update-intent.md)은 서명·실제 아티팩트 검증을 연결하고
 준비·적용·health·복원·롤백 상태와 중단 복구를 private 저널에 저장합니다.
-실제 업데이트 실행 어댑터와 운영 환경의 전체 복원 검증은 아직 남아 있습니다.
+실제 적용·롤백의 검증 범위는 위 설명을 따르며, 운영 cloud의 전체 복원과 공식 배포 수락은 별도입니다.
 
 [설치 설정 보존](docs/installation-backup.md)은 기존 설치·환경 파일을 암호화 서비스 백업에 포함하기 위한 private 준비 기능이며 전체 백업 완료가 아닙니다.
 
@@ -67,8 +72,8 @@ OS app-data/지정 개발 경로에 보존합니다. 정지는 volume을 삭제�
 Manager 소유 코드·설정·문서는 [Apache-2.0](LICENSE)입니다. 실행하는 Platform은
 AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를 보존합니다.
 외부 라이브러리와 작품은 각각 원래 권리를 유지합니다. 이 라이선스는 상표나
-사용자 작품의 display/export 권한을 부여하지 않습니다. 현재 저장소는 비공개이며
-공개 여부는 source/권리/secret/독립 build 검토 후 결정합니다.
+사용자 작품의 display/export 권한을 부여하지 않습니다. 이 저장소는 공개입니다. 공개 전송에는 source/권리/secret/독립 build 검토를 유지하며,
+비공개 Capture·operations 자료와 원본·자격정보를 포함하지 않습니다.
 
 관리 공간 전환과 보존·복구 경계는 [관리 공간 선택](docs/installation-selection.md)을 참조하세요.
 
