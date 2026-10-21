@@ -674,7 +674,7 @@ fn recovery_source_from_work(work: &Work)->Result<exhibitos_lifecycle::hosted_ba
     source.validate()?;Ok(source)
 }
 const RECOVERY_BINDING_ACCOUNT:&str="render-recovery-source";
-#[derive(Deserialize,Serialize)]
+#[derive(Clone,PartialEq,Deserialize,Serialize)]
 #[serde(deny_unknown_fields,rename_all="camelCase")]
 struct RecoveryBinding { version:u8,source:exhibitos_lifecycle::hosted_backup::Source,project_name:String,origin:String }
 impl RecoveryBinding {
@@ -710,8 +710,25 @@ fn connected_binding(request:&Request,response:&serde_json::Value)->Result<Recov
     if response["provider"]!="render"||response["action"]!="connect-existing"||response["state"]!="ready"||response["serviceId"]!=source.service_id||response["postgresId"]!=source.postgres_id||response["projectName"].as_str()!=request.project_name.as_deref(){return Err(refused("HOSTED_RESPONSE_INVALID"));}
     let binding=RecoveryBinding{version:1,source,project_name:request.project_name.clone().ok_or_else(||refused("HOSTED_REQUEST_INVALID"))?,origin:response["url"].as_str().ok_or_else(||refused("HOSTED_RESPONSE_INVALID"))?.into()};binding.validate()?;Ok(binding)
 }
-fn persist_recovery_binding(request:&Request,response:&serde_json::Value,store:impl FnOnce(&str,&[u8])->Result<(),()>)->Result<(),LifecycleError>{
+fn recovery_binding_for_request(request:&Request,load:impl FnOnce()->Result<Option<RecoveryBinding>,LifecycleError>)->Result<Option<RecoveryBinding>,LifecycleError>{
+    let existing=load()?;
+    if let Some(binding)=existing.as_ref() {
+        binding.validate()?;
+        if request.workspace_id.as_deref()!=Some(binding.source.workspace_id.as_str())
+            || request.service_id.as_deref()!=Some(binding.source.service_id.as_str())
+            || request.postgres_id.as_deref()!=Some(binding.source.postgres_id.as_str())
+            || request.project_name.as_deref()!=Some(binding.project_name.as_str()) {
+            return Err(refused("HOSTED_RECOVERY_SOURCE_CHANGED"));
+        }
+    }
+    Ok(existing)
+}
+fn persist_recovery_binding(request:&Request,response:&serde_json::Value,expected:Option<&RecoveryBinding>,load:impl FnOnce()->Result<Option<RecoveryBinding>,LifecycleError>,store:impl FnOnce(&str,&[u8])->Result<(),()>)->Result<(),LifecycleError>{
     let binding=connected_binding(request,response)?;
+    let current=load()?;
+    if current.as_ref()!=expected || current.as_ref().is_some_and(|value|value!=&binding){return Err(refused("HOSTED_RECOVERY_SOURCE_CHANGED"));}
+    // An identical connection is idempotent; retain its original Keychain bytes.
+    if current.is_some(){return Ok(());}
     let mut bytes=serde_json::to_vec(&binding).map_err(|_|refused("HOSTED_WORK_INVALID"))?;
     let result=store(RECOVERY_BINDING_ACCOUNT,&bytes);bytes.fill(0);
     result.map_err(|_|refused("HOSTED_KEYCHAIN_STORE_FAILED"))
@@ -925,10 +942,11 @@ pub fn execute(
         return Err(refused("HOSTED_REQUEST_INVALID"));
     }
     let _busy = hold_operation()?;
-    if matches!(request.action,Action::ConnectExisting) {
+    let recovery_binding_before=if matches!(request.action,Action::ConnectExisting) {
         if !matches!(request.provider,Provider::Render)||request.account_id.is_some()||request.source_path.is_some()||request.deployment_id.is_some()||request.static_only==Some(true){return Err(refused("HOSTED_REQUEST_INVALID"));}
         let source=exhibitos_lifecycle::hosted_backup::Source{workspace_id:request.workspace_id.clone().ok_or_else(||refused("HOSTED_REQUEST_INVALID"))?,service_id:request.service_id.clone().ok_or_else(||refused("HOSTED_REQUEST_INVALID"))?,postgres_id:request.postgres_id.clone().ok_or_else(||refused("HOSTED_REQUEST_INVALID"))?};source.validate()?;
-    }
+        recovery_binding_for_request(&request,load_recovery_binding)?
+    }else{None};
     let manifest: serde_json::Value =
         serde_json::from_str(option_env!("EXHIBITOS_REMOTE_RUNTIME_MANIFEST").unwrap_or("{}"))
             .map_err(|_| refused("HOSTED_RUNTIME_UNAVAILABLE"))?;
@@ -1172,7 +1190,7 @@ pub fn execute(
         }
     }
     if matches!(request.action,Action::ConnectExisting){
-        persist_recovery_binding(&request,&response,super::hosted_keychain::store)?;
+        persist_recovery_binding(&request,&response,recovery_binding_before.as_ref(),load_recovery_binding,super::hosted_keychain::store)?;
     }
     if (writing || matches!(request.action, Action::Reconcile | Action::Status))
         && let Some(mut work) = load_work()? {
@@ -1437,8 +1455,8 @@ mod tests {
     fn reconnect_binding_loads_only_original_account_and_never_attaches_static_work(){
         let request:Request=serde_json::from_value(serde_json::json!({"provider":"render","action":"connect-existing","workspaceId":"tea-fixture","serviceId":"srv-fixture","postgresId":"dpg-fixture","projectName":"original-project"})).unwrap();
         let response=serde_json::json!({"provider":"render","action":"connect-existing","state":"ready","serviceId":"srv-fixture","postgresId":"dpg-fixture","projectName":"original-project","url":"https://show-a.onrender.com"});
-        persist_recovery_binding(&request,&response,|account,bytes|{assert_eq!(account,"render-recovery-source");let metadata:serde_json::Value=serde_json::from_slice(bytes).unwrap();assert!(metadata.get("publication").is_none());assert!(metadata.get("envVars").is_none());Ok(())}).unwrap();
-        assert_eq!(persist_recovery_binding(&request,&response,|_,_|Err(())).unwrap_err().code,"HOSTED_KEYCHAIN_STORE_FAILED");
+        persist_recovery_binding(&request,&response,None,||Ok(None),|account,bytes|{assert_eq!(account,"render-recovery-source");let metadata:serde_json::Value=serde_json::from_slice(bytes).unwrap();assert!(metadata.get("publication").is_none());assert!(metadata.get("envVars").is_none());Ok(())}).unwrap();
+        assert_eq!(persist_recovery_binding(&request,&response,None,||Ok(None),|_,_|Err(())).unwrap_err().code,"HOSTED_KEYCHAIN_STORE_FAILED");
         let binding=connected_binding(&request,&response).unwrap();let bytes=serde_json::to_vec(&binding).unwrap();
         assert!(!String::from_utf8(bytes).unwrap().contains("envVars"));
         let context=binding_context(binding,|account|{assert_eq!(account,runtime_account("tea-fixture","original-project"));Ok(serde_json::to_vec(&saved_configuration_fixture()).unwrap())}).unwrap();
@@ -1450,9 +1468,42 @@ mod tests {
         let mut valid=response.clone();valid["expiresAt"]="2028-02-29T00:00:00.000Z".into();assert!(connected_binding(&request,&valid).is_ok());
         let encoded=serde_json::to_vec(&connected_binding(&request,&response).unwrap()).unwrap();assert!(decode_recovery_binding(&encoded).is_ok());
         for bytes in [b"{}".to_vec(),b"not-json".to_vec(),vec![b' ';4097]]{assert!(decode_recovery_binding(&bytes).is_err());}
-        let mut invalid=response.clone();invalid["extra"]="unexpected".into();assert!(persist_recovery_binding(&request,&invalid,|_,_|panic!("invalid observation must not persist or touch Work")).is_err());
+        let mut invalid=response.clone();invalid["extra"]="unexpected".into();assert!(persist_recovery_binding(&request,&invalid,None,||panic!("invalid response must not read binding"),|_,_|panic!("invalid observation must not persist or touch Work")).is_err());
         assert!(binding_context(connected_binding(&request,&response).unwrap(),|_|Err(())).is_err());
         let mut changed=connected_binding(&request,&response).unwrap();changed.project_name="../wrong".into();assert!(binding_context(changed,|_|panic!("invalid binding must not load config or fall back to Work")).is_err());
+    }
+    #[test]
+    fn reconnect_binding_rejects_other_sources_and_unreadable_metadata_before_provider_work(){
+        let raw=serde_json::json!({"provider":"render","action":"connect-existing","workspaceId":"tea-fixture","serviceId":"srv-fixture","postgresId":"dpg-fixture","projectName":"original-project"});
+        let request:Request=serde_json::from_value(raw.clone()).unwrap();
+        let response=serde_json::json!({"provider":"render","action":"connect-existing","state":"ready","serviceId":"srv-fixture","postgresId":"dpg-fixture","projectName":"original-project","url":"https://show-a.onrender.com"});
+        let existing=connected_binding(&request,&response).unwrap();
+        assert!(recovery_binding_for_request(&request,||Ok(None)).unwrap().is_none());
+        assert!(recovery_binding_for_request(&request,||Ok(Some(existing.clone()))).unwrap().is_some());
+        for (field,value) in [("workspaceId","tea-other"),("serviceId","srv-other"),("postgresId","dpg-other"),("projectName","other-project")] {
+            let mut changed=raw.clone();changed[field]=value.into();let other:Request=serde_json::from_value(changed).unwrap();
+            assert_eq!(recovery_binding_for_request(&other,||Ok(Some(existing.clone()))).err().unwrap().code,"HOSTED_RECOVERY_SOURCE_CHANGED");
+        }
+        assert_eq!(recovery_binding_for_request(&request,||Err(refused("HOSTED_WORK_UNAVAILABLE"))).err().unwrap().code,"HOSTED_WORK_UNAVAILABLE");
+        assert_eq!(recovery_binding_for_request(&request,||decode_recovery_binding(b"{}").map(Some)).err().unwrap().code,"HOSTED_WORK_INVALID");
+    }
+    #[test]
+    fn reconnect_binding_final_read_preserves_existing_identity_and_refuses_changes(){
+        let request:Request=serde_json::from_value(serde_json::json!({"provider":"render","action":"connect-existing","workspaceId":"tea-fixture","serviceId":"srv-fixture","postgresId":"dpg-fixture","projectName":"original-project"})).unwrap();
+        let response=serde_json::json!({"provider":"render","action":"connect-existing","state":"ready","serviceId":"srv-fixture","postgresId":"dpg-fixture","projectName":"original-project","url":"https://show-a.onrender.com"});
+        let existing=connected_binding(&request,&response).unwrap();
+        persist_recovery_binding(&request,&response,Some(&existing),||Ok(Some(existing.clone())),|_,_|panic!("same source must retain existing bytes without a write")).unwrap();
+        for (expected,current) in [(None,Some(existing.clone())),(Some(&existing),None)] {
+            assert_eq!(persist_recovery_binding(&request,&response,expected,||Ok(current),|_,_|panic!("changed binding must not be overwritten")).unwrap_err().code,"HOSTED_RECOVERY_SOURCE_CHANGED");
+        }
+        let mut other=existing.clone();other.origin="https://other.onrender.com".into();
+        assert_eq!(persist_recovery_binding(&request,&response,Some(&existing),||Ok(Some(other.clone())),|_,_|panic!("changed origin must not be overwritten")).unwrap_err().code,"HOSTED_RECOVERY_SOURCE_CHANGED");
+        assert_eq!(persist_recovery_binding(&request,&response,Some(&other),||Ok(Some(other.clone())),|_,_|panic!("response must match the entire existing identity including origin")).unwrap_err().code,"HOSTED_RECOVERY_SOURCE_CHANGED");
+        assert_eq!(persist_recovery_binding(&request,&response,None,||Err(refused("HOSTED_WORK_UNAVAILABLE")),|_,_|panic!("read failure must not store")).unwrap_err().code,"HOSTED_WORK_UNAVAILABLE");
+        assert_eq!(persist_recovery_binding(&request,&response,None,||decode_recovery_binding(b"{}").map(Some),|_,_|panic!("corruption must not store")).unwrap_err().code,"HOSTED_WORK_INVALID");
+        // The production add-only Keychain write refuses an entry created after
+        // the final read. There is no update/delete fallback on that refusal.
+        assert_eq!(persist_recovery_binding(&request,&response,None,||Ok(None),|_,_|Err(())).unwrap_err().code,"HOSTED_KEYCHAIN_STORE_FAILED");
     }
     #[test]
     fn recovery_loads_exact_original_configuration_without_static_pin_invention() {
