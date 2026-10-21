@@ -65,8 +65,9 @@ export function UpdateStatusPanel({native,selectionToken,active,onActivity,tool}
   }catch(e){if(live.current&&epoch.current===run){setError(managerError(e));onActivity(false);}}
   finally{if(live.current&&epoch.current===run){working.current=false;setPending(false);}}
  }
+ const failureIsHistory=status?.stage==='rolled_back';
  const recovery=status?.stage==='recovery_required'||status?.stage==='restoring'||status?.stage==='awaiting_rollback_health';
- return <section className="panel" aria-label="업데이트 상태" data-needs-attention={recovery||status?.stage==='applying'||status?.stage==='awaiting_health'||!!status?.failure||!!status?.writeUncertain||pending||!!application&&application.state!=='updated'||!!rollbackReceipt&&rollbackReceipt.state!=='rolled-back'||!!cancellation&&cancellation.state!=='cancelled'}>
+ return <section className="panel" aria-label="업데이트 상태" data-needs-attention={recovery||status?.stage==='applying'||status?.stage==='awaiting_health'||!!status?.failure&&!failureIsHistory||!!status?.writeUncertain||pending||!!application&&application.state!=='updated'||!!rollbackReceipt&&rollbackReceipt.state!=='rolled-back'||!!cancellation&&cancellation.state!=='cancelled'}>
   <h2>업데이트와 복원 상태</h2><p>선택한 관리 공간의 업데이트 기록을 확인합니다. 기록 확인만으로 전시를 변경하지 않습니다.</p>
   <button disabled={!native||active||pending} onClick={()=>void refresh()}>{pending?`${requestKind} 응답 대기 중…`:'업데이트 상태 확인'}</button>
   <div role="status" aria-live="polite">{pending&&<p>{requestKind==='조회'?'저장된 업데이트 상태를 확인하고 있습니다.':`${requestKind} 요청을 확인하고 있습니다. 앱 종료가 필요한 요청은 다음 실행에서 실제 결과를 확인하세요.`}</p>}{status&&<>
@@ -74,7 +75,7 @@ export function UpdateStatusPanel({native,selectionToken,active,onActivity,tool}
    <details><summary>업데이트 기록 정보</summary>{status.operationId&&<p>작업 ID: {status.operationId}</p>}{status.generation!==null&&<p>기록 번호: {status.generation}</p>}</details>
    <p>저장된 완료 기록은 현재 서버의 정상 응답을 대신하지 않습니다. 상단의 서버 준비 상태를 함께 확인하세요.</p>
    {recovery&&<p>기존 전시·백업·키·복원 후보를 보존하세요. 원래 전체 백업 복원과 응답 확인이 필요합니다.</p>}
-   {status.failure&&<p>완료하지 못한 작업: {({update_failed:'업데이트 적용',health_failed:'전시 응답 확인',restore_failed:'원래 전시 복원',interrupted:'작업 중단'})[status.failure]}. 자동 재실행하지 말고 보존한 기록을 확인하세요.</p>}
+   {status.failure&&<p>{failureIsHistory?'이전 실패 기록: ':'완료하지 못한 작업: '}{({update_failed:'업데이트 적용',health_failed:'전시 응답 확인',restore_failed:'원래 전시 복원',interrupted:'작업 중단'})[status.failure]}. {failureIsHistory?'복원 전 실패 이력으로 보존합니다.':'자동 재실행하지 말고 보존한 기록을 확인하세요.'}</p>}
    {status.writeUncertain&&<p>기록 완료 여부를 확인할 수 없습니다. 이전 기록과 후보를 보존하세요.</p>}
   </>}</div>
   {error&&<div role="alert"><p>업데이트 요청을 완료하지 못했습니다. 확인 코드: {error.code}</p><p>원래 데이터·권한·후보를 유지하고 다른 작업이 종료된 뒤 상태를 확인하세요.</p></div>}
