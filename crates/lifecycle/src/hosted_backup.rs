@@ -151,6 +151,15 @@ pub fn job_budget(available: u64) -> Result<u64> {
     }
     Ok(usable)
 }
+/// A requested cap can only reduce the available-space budget. This bounds the
+/// complete job, including objects, rather than just the SQL dump stream.
+pub fn bounded_job_budget(available: u64, requested: Option<u64>) -> Result<u64> {
+    if requested.is_some_and(|value| !(4 * 1024 * 1024..=9_007_199_254_740_991).contains(&value)) {
+        return Err(err("HOSTED_RECOVERY_REQUEST"));
+    }
+    let available_budget = job_budget(available)?;
+    Ok(requested.map_or(available_budget, |value| value.min(available_budget)))
+}
 struct SecretInput(std::io::Cursor<Vec<u8>>);
 impl Read for SecretInput {
     fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
@@ -410,6 +419,7 @@ impl LifecycleService {
     pub fn create_hosted_backup(
         &self,
         source: Source,
+        requested_job_budget: Option<u64>,
         image: &str,
         node: &Path,
         runner: &Path,
@@ -432,8 +442,8 @@ impl LifecycleService {
             }
         }
         let available = fs2::available_space(&self.root).map_err(|_| err("STORAGE_UNAVAILABLE"))?;
-        let max_dump_bytes = dump_budget(available)?;
-        let job_budget_bytes = job_budget(available)?;
+        let job_budget_bytes = bounded_job_budget(available, requested_job_budget)?;
+        let max_dump_bytes = (job_budget_bytes / 4).min(32 * 1024 * 1024 * 1024);
         let observed: Value = serde_json::from_slice(&run(
             "docker",
             &["image".into(), "inspect".into(), image.into()],
@@ -978,6 +988,22 @@ mod tests {
         let available = 14 * 1024 * 1024 * 1024;
         assert!(4 * dump_budget(available).unwrap() + floor + 64 * 1024 * 1024 <= available);
         // Dump allowance alone does not establish the separate object-copy budget.
+    }
+    #[test]
+    fn requested_job_cap_bounds_objects_and_dump_without_bypassing_floor() {
+        let gib = 1024 * 1024 * 1024;
+        let floor = 6 * gib + 64 * 1024 * 1024;
+        assert_eq!(bounded_job_budget(100 * gib, None).unwrap(), job_budget(100 * gib).unwrap());
+        assert_eq!(bounded_job_budget(100 * gib, Some(8 * gib)).unwrap(), 8 * gib);
+        assert_eq!(bounded_job_budget(floor + 4 * 1024 * 1024, Some(8 * gib)).unwrap(), 4 * 1024 * 1024);
+        assert!(bounded_job_budget(floor, Some(8 * gib)).is_err());
+        for invalid in [0, 4 * 1024 * 1024 - 1, 9_007_199_254_740_992, u64::MAX] {
+            assert_eq!(bounded_job_budget(100 * gib, Some(invalid)).unwrap_err().code, "HOSTED_RECOVERY_REQUEST");
+        }
+        let budget = bounded_job_budget(100 * gib, Some(8 * gib)).unwrap();
+        // The unchanged runner receives this whole-job cap, so its object-aware
+        // four-copy calculation cannot inherit the much larger profile budget.
+        assert_eq!(budget / 4, 2 * gib);
     }
     #[test]
     fn private_runner_errors_are_fixed_codes_only() {
