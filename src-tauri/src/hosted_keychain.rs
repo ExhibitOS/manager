@@ -195,6 +195,12 @@ mod native {
         if data.0.is_null() {
             return Err(());
         }
+        if provider == "render-recovery-source" {
+            // A competing Manager may add a binding after the final read.
+            // Duplicate is refusal, never an update of an existing source.
+            unsafe { set(&query, kSecValueData, data.0); }
+            return if unsafe { SecItemAdd(query.0, ptr::null_mut()) } == 0 { Ok(()) } else { Err(()) };
+        }
         let changes = dictionary()?;
         unsafe {
             set(&changes, kSecValueData, data.0);
