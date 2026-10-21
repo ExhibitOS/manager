@@ -372,8 +372,25 @@ fn original_rollback_authority_matches(
 }
 
 // Optional remote intent binding. Legacy local callers retain the original contract.
+// Changed-schema execution also requires exact current authority, never a saved
+// registration result or a caller-provided success flag.
+fn executed_catalog_options(args: &[String]) -> Result<bool, &'static str> {
+    if args.get(28).map(String::as_str) != Some("--target-catalog") {
+        return Ok(false);
+    }
+    if args.len() != 38
+        || args[30] != "--target-catalog-sha256"
+        || !Path::new(&args[29]).is_absolute() || args[29].len() > 4096
+        || args[31].len() != 64
+        || !args[31].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("UPDATE_USAGE");
+    }
+    Ok(true)
+}
 fn full_update_authority_options(args: &[String]) -> Result<Option<(&str, u64)>, &'static str> {
-    if ![30, 34].contains(&args.len())
+    let catalog = executed_catalog_options(args)?;
+    if !(if catalog { args.len() == 38 } else { [30, 34].contains(&args.len()) })
         || args[1] != "execute-full-update"
         || args.last().map(String::as_str) != Some("--apps-closed")
     {
@@ -386,21 +403,22 @@ fn full_update_authority_options(args: &[String]) -> Result<Option<(&str, u64)>,
             Err("UPDATE_USAGE")
         };
     }
-    if args[28] != "--operation-id"
-        || args[30] != "--expected-generation"
-        || args[32] != "--external-writers-quiesced"
+    let offset = if catalog { 32 } else { 28 };
+    if args[offset] != "--operation-id"
+        || args[offset + 2] != "--expected-generation"
+        || args[offset + 4] != "--external-writers-quiesced"
     {
         return Err("UPDATE_USAGE");
     }
-    let operation = uuid::Uuid::parse_str(&args[29]).map_err(|_| "UPDATE_USAGE")?;
-    if operation.is_nil() || operation.hyphenated().to_string() != args[29] {
+    let operation = uuid::Uuid::parse_str(&args[offset + 1]).map_err(|_| "UPDATE_USAGE")?;
+    if operation.is_nil() || operation.hyphenated().to_string() != args[offset + 1] {
         return Err("UPDATE_USAGE");
     }
-    let generation = args[31].parse::<u64>().map_err(|_| "UPDATE_USAGE")?;
-    if generation == 0 || generation.to_string() != args[31] {
+    let generation = args[offset + 3].parse::<u64>().map_err(|_| "UPDATE_USAGE")?;
+    if generation == 0 || generation.to_string() != args[offset + 3] {
         return Err("UPDATE_USAGE");
     }
-    Ok(Some((args[29].as_str(), generation)))
+    Ok(Some((args[offset + 1].as_str(), generation)))
 }
 fn full_update_authority_matches(
     expected: Option<(&str, u64)>,
@@ -773,8 +791,10 @@ fn run() -> Result<(), String> {
     ) {
         let execute = a[1] == "execute-full-update";
         let register = a[1] == "register-full-update-reference";
+        let executed_catalog = execute && executed_catalog_options(&a).map_err(str::to_owned)?;
         let migrated = a[1] == "qualify-migrated-full-recovery-runtime"
-            || (register && registered_catalog_options(&a).map_err(str::to_owned)?);
+            || (register && registered_catalog_options(&a).map_err(str::to_owned)?)
+            || executed_catalog;
         let full = a[1] == "qualify-full-recovery-runtime" || execute || register || migrated;
         let expected_authority = if execute {
             full_update_authority_options(&a).map_err(str::to_owned)?
@@ -782,7 +802,9 @@ fn run() -> Result<(), String> {
             None
         };
         if a.len()
-            != if migrated || (execute && expected_authority.is_some()) {
+            != if executed_catalog {
+                38
+            } else if migrated || (execute && expected_authority.is_some()) {
                 34
             } else if full {
                 30
@@ -801,7 +823,9 @@ fn run() -> Result<(), String> {
             || a[24] != "--pair-binding"
             || full && a[26] != "--host-extraction"
             || migrated && (a[28] != "--target-catalog" || a[30] != "--target-catalog-sha256")
-            || a[if migrated || execute && expected_authority.is_some() {
+            || a[if executed_catalog {
+                36
+            } else if migrated || execute && expected_authority.is_some() {
                 32
             } else if full {
                 28
@@ -1889,6 +1913,47 @@ mod migrated_runtime_cli_tests {
 #[cfg(test)]
 mod full_update_authority_cli_tests {
     use super::*;
+    #[test]
+    fn migrated_execution_requires_catalog_and_exact_authority_together() {
+        let id = "70000000-0000-4000-8000-000000000002";
+        let mut args = vec![String::new(); 28];
+        args[1] = "execute-full-update".into();
+        args.extend([
+            "--target-catalog".into(), "/private/catalog.json".into(),
+            "--target-catalog-sha256".into(), "a".repeat(64),
+            "--operation-id".into(), id.into(),
+            "--expected-generation".into(), "53".into(),
+            "--external-writers-quiesced".into(), "--apps-closed".into(),
+        ]);
+        assert!(executed_catalog_options(&args).unwrap());
+        let expected = full_update_authority_options(&args).unwrap();
+        assert_eq!(expected, Some((id, 53)));
+        assert!(full_update_authority_matches(expected, 53, Some(id), true));
+        assert!(!full_update_authority_matches(expected, 54, Some(id), true));
+        assert!(!full_update_authority_matches(expected, 53, Some("other"), true));
+        assert!(!full_update_authority_matches(expected, 53, Some(id), false));
+        for n in 0..args.len() {
+            assert!(full_update_authority_options(&args[..n]).is_err());
+        }
+        for (at, value) in [
+            (28, "--preflight-verified"), (29, "relative"),
+            (30, "--success"), (31, "bad-sha"),
+            (32, "--target-catalog"), (33, "00000000-0000-0000-0000-000000000000"),
+            (34, "--wrong"), (35, "0"), (35, "053"),
+            (35, "18446744073709551616"), (36, "--wrong"), (37, "--wrong"),
+        ] {
+            let mut bad = args.clone(); bad[at] = value.into();
+            assert!(full_update_authority_options(&bad).is_err());
+        }
+        let mut oversized = args.clone(); oversized[29] = format!("/{}", "a".repeat(4097));
+        assert!(full_update_authority_options(&oversized).is_err());
+        let mut uppercase = args.clone(); uppercase[31] = "A".repeat(64);
+        assert!(full_update_authority_options(&uppercase).is_err());
+        let mut no_authority = args.clone(); no_authority.drain(32..36);
+        assert!(full_update_authority_options(&no_authority).is_err());
+        args.push("--caller-verified".into());
+        assert!(full_update_authority_options(&args).is_err());
+    }
     #[test]
     fn remote_full_update_requires_canonical_pair_and_exact_prepared_authority() {
         let mut args = vec![String::new(); 30];

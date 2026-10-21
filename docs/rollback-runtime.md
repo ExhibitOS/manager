@@ -24,9 +24,19 @@ Windows returns `UPDATE_TRUST_PLATFORM_UNVERIFIED`. Actual Windows/native GUI an
 
 ## Current update migration boundary
 
-Changed-schema execution now requires a signed-plan-compatible target catalog recorded with its SHA-256 in the existing private execution reference. `register-full-update-reference` accepts the existing `--host-extraction` followed by the optional paired `--target-catalog PATH --target-catalog-sha256 SHA` before its existing writer/app-close acknowledgements. This is a locator, not execution authority. Old same-schema references keep their existing wire format; a missing catalog on a changed-schema reference still refuses with `UPDATE_RUNTIME_MIGRATION_UNQUALIFIED`. The GUI receives only an optional `migrationInputsRecorded: true` capability, never catalog paths.
+Changed-schema execution requires a signed-plan-compatible target catalog. The registered-reference path records the catalog and its SHA-256 in the existing private execution reference; the direct CLI path supplies the same catalog as a held input below. `register-full-update-reference` accepts the existing `--host-extraction` followed by the optional paired `--target-catalog PATH --target-catalog-sha256 SHA` before its existing writer/app-close acknowledgements. This is a locator, not execution authority. Old same-schema references keep their existing wire format; a missing catalog on a changed-schema reference still refuses with `UPDATE_RUNTIME_MIGRATION_UNQUALIFIED`. The GUI receives only an optional `migrationInputsRecorded: true` capability, never catalog paths.
 
 Application revalidates the original signed artifact, host/trust checkpoint pair, source data and full recovery inputs, then qualifies the real target migration using the retained catalog. Before the consuming journal transition, its live descriptor/schema and digest must match the plan and qualified OCI receipt; the existing complete recheck remains. Stored qualification output cannot replace this live permit. Missing OCI catalog binding retains its refusal test and unchanged authority/selection assertions.
+
+The app-closed `execute-full-update` CLI can also supply the paired
+`--target-catalog PATH --target-catalog-sha256 SHA` immediately after
+`--host-extraction PATH`. This mode additionally requires
+`--operation-id UUID --expected-generation N` before the existing writer/app-close
+acknowledgements. Both are checked against the current Prepared authority before
+staging. It uses the same fresh migrated `OwnedPreflight` qualification and
+consuming apply/activation path; an earlier registration is only a locator.
+The original same-schema command forms remain unchanged. CLI wiring and focused
+input tests do not themselves establish actual migration or native GUI success.
 
 This implementation and focused synthetic regression are not actual changed-schema migration, interruption, cold/crash or full rollback acceptance. Those source-bound real runtime checks remain required, including preservation of original business/blob/configuration and recovery after failed migration. Do not use an old consumed fixture or a passing parser/GUI test as that proof.
 
