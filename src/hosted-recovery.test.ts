@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import {describe,it,expect} from 'vitest';
-import {parseHostedRecovery} from './hosted-recovery';
+import {hostedBackupBudgetBytes,parseHostedRecovery} from './hosted-recovery';
 const id='00000000-0000-4000-8000-000000000001';
 const source={workspaceId:'tea-fixture',serviceId:'srv-fixture',postgresId:'dpg-fixture'};
 const job={id,source,image:`sha256:${'a'.repeat(64)}`,jobBudgetBytes:64*1024**3,state:'completed',stage:'completed',errorCode:null,createdAt:1,updatedAt:2,receipt:{provider:'render',action:'local-encrypted-backup',operation:'created-and-verified',...source,backupId:id,files:1,authenticatedManifestSha256:'b'.repeat(64)}};
@@ -122,4 +122,11 @@ describe('remote recovery native response boundaries',()=>{
   expect(()=>parseHostedRecovery({...remoteContext,remoteRestores:[{...remoteOperation,target:{...remoteOperation.target,password:'synthetic-secret'}}]})).toThrow('MANAGER_PROTOCOL');
   expect(()=>parseHostedRecovery({...remoteContext,remoteRestores:[{...remoteOperation,source:{...source,token:'synthetic-secret'}}]})).toThrow('MANAGER_PROTOCOL');
  });
+});
+
+it('accepts only optional whole-GiB backup budgets with safe byte conversion',()=>{
+ expect(hostedBackupBudgetBytes('')).toBeUndefined();expect(hostedBackupBudgetBytes('  ')).toBeUndefined();
+ expect(hostedBackupBudgetBytes('1')).toBe(1024**3);expect(hostedBackupBudgetBytes('8')).toBe(8*1024**3);
+ expect(hostedBackupBudgetBytes('8388607')).toBe(8388607*1024**3);
+ for(const value of ['0','-1','1.5','1e3','NaN','Infinity','8388608','9007199254740993'])expect(hostedBackupBudgetBytes(value)).toBeNull();
 });

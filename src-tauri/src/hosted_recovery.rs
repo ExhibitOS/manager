@@ -45,6 +45,8 @@ pub struct Input {
     #[serde(default)]
     pub expected_source: Option<Source>,
     #[serde(default)]
+    pub job_budget_bytes: Option<u64>,
+    #[serde(default)]
     pub target_postgres_id: Option<String>,
     #[serde(default)]
     pub operation_id: Option<String>,
@@ -224,6 +226,10 @@ pub fn operation(
     if !cfg!(target_os = "macos") {
         return Err(failure("HOSTED_PLATFORM_UNSUPPORTED"));
     }
+    if input.job_budget_bytes.is_some_and(|value| !matches!(input.action, Action::Create)
+        || !(4 * 1024 * 1024..=9_007_199_254_740_991).contains(&value)) {
+        return Err(failure("HOSTED_RECOVERY_REQUEST"));
+    }
     match input.action {
         Action::Jobs => Ok(Context {
             source: None,
@@ -394,7 +400,7 @@ pub fn operation(
                 let request = serde_json::to_value(&source)
                     .map_err(|_| failure("HOSTED_RECOVERY_REQUEST"))?;
                 let mut copy_plan=None;
-                let job=service.create_hosted_backup(source.clone(),&image,&resources.join("remote-runtime/generated/node"),&resources.join("scripts/hosted-recovery-runner.mjs"),|execution|{
+                let job=service.create_hosted_backup(source.clone(),input.job_budget_bytes,&image,&resources.join("remote-runtime/generated/node"),&resources.join("scripts/hosted-recovery-runner.mjs"),|execution|{
      // This UUID and source belong to the already journalled native job.
      // Neither item is overwritten or deleted if the other step fails.
      preserve_original_configuration(&execution.job_id,&source,&expected_configuration,super::hosted_keychain::add_backup_only)?;

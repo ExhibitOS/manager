@@ -8,7 +8,14 @@ export type HostedPublicationSaved=HostedPublicationCopy&{path:string|null};
 export type HostedRemoteTarget={sourceJobId:string;workspaceId:string;postgresId:string;name:string};
 export type HostedRemoteRestore={id:string;sourceJobId:string;source:HostedBackupSource;target:{workspaceId:string;postgresId:string|null;createRequested:boolean};expectedBackupId:string;expectedManifestSha256:string;expectedFiles:number;sourceJobSha256:string;targetIdentitySha256:string|null;state:'prepared'|'dispatched'|'verified'|'recovery-required'|'connecting'|'connected'|'connection-restored'|'connection-recovery-required';errorCode:string|null};
 export type HostedRecoveryContext={remoteTargets:HostedRemoteTarget[];remoteRestores:HostedRemoteRestore[];publicationSaved:HostedPublicationSaved|null;publicationCopies:HostedPublicationCopy[];source:HostedBackupSource|null;jobs:HostedBackupJob[];restoreChecks:HostedRestoreCheck[];keySaved:boolean;archiveSaved:{jobId:string;backupId:string;path:string;files:number;bytes:number}|null};
-export type HostedRecoveryInput={action:'context'|'jobs'|'create'|'export-key'|'export-archive'|'check-restore'|'remote-targets'|'remote-restore'|'remote-connect';sourceCidr?:string;confirmExternalWritersStopped?:boolean;jobId?:string;targetPostgresId?:string;operationId?:string;createNewTarget?:boolean;confirmServiceConnection?:boolean;expectedSource?:HostedBackupSource};
+export type HostedRecoveryInput={action:'context'|'jobs'|'create'|'export-key'|'export-archive'|'check-restore'|'remote-targets'|'remote-restore'|'remote-connect';sourceCidr?:string;confirmExternalWritersStopped?:boolean;jobId?:string;targetPostgresId?:string;operationId?:string;createNewTarget?:boolean;confirmServiceConnection?:boolean;expectedSource?:HostedBackupSource;jobBudgetBytes?:number};
+// Blank keeps native automatic budgeting; null is an invalid user limit.
+export function hostedBackupBudgetBytes(value:string):number|undefined|null{
+ const text=value.trim();if(!text)return undefined;
+ if(!/^\d+$/.test(text))return null;
+ const gib=Number(text),bytes=gib*1024**3;
+ return Number.isSafeInteger(gib)&&gib>=1&&Number.isSafeInteger(bytes)?bytes:null;
+}
 const object=(v:unknown):v is Record<string,unknown>=>!!v&&typeof v==='object'&&!Array.isArray(v);
 const keys=(v:Record<string,unknown>,fields:string[])=>Object.keys(v).sort().join(',')===[...fields].sort().join(',');
 const uuid=(v:unknown):v is string=>typeof v==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v);
