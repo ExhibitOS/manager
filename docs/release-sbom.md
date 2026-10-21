@@ -1,8 +1,10 @@
 # Manager release SBOM
 
-The original release deliverable requires a dependency SBOM tied to the actual
-artifact. A lockfile, a successful scanner exit, or an empty BOM does not establish
-that requirement. These development results do not qualify production signing,
+The release deliverable includes a dependency SBOM, source/build provenance and
+review of their bindings to the actual artifact. A lockfile, successful scanner
+exit or empty BOM alone does not establish those bindings. Coverage and the scope
+of each observation must be reported accurately; a perfect all-shipped dependency
+graph is not a separate release acceptance gate. These development results do not qualify production signing,
 notarization, a vulnerability assessment or another build.
 
 ## Observed development artifact
@@ -77,16 +79,80 @@ an artifact BOM while asserting installed membership.
 
 ## Remaining release coverage
 
-The observed empty App BOM exposes a concrete original release requirement
-that remains incomplete: a build-bound delivered dependency graph for the
-linked Rust/frontend binary and bundled Node components. The separate source
-BOM and actual Node versions provide inputs for that graph, but do not prove
-its completeness. A later selected release must bind its generated dependency
-metadata to its actual build and include the vendored Node and public Deployment
-resources. This does not introduce an additional support environment or relax
-the original SBOM requirement.
+The empty App scan records incomplete scanner coverage of compiled dependencies.
+The source BOM and observed bundled runtime versions remain useful, separately
+scoped evidence. Build-produced metadata and inventories can improve their link
+to the selected artifact without claiming that every linked symbol or shipped
+byte has been attributed to a dependency. Rust build dependencies, frontend
+rendered modules, bundled packages and OS libraries need distinct coverage
+statements. This does not add a standalone graph-completeness or signing gate.
 
 Authoritative tool coverage:
 [Trivy Rust package and auditable binary coverage](https://trivy.dev/docs/latest/coverage/language/rust/),
 [Trivy filesystem scanning](https://trivy.dev/docs/latest/target/filesystem/),
 [Trivy SBOM generation](https://trivy.dev/docs/latest/supply-chain/sbom/).
+
+
+## Pinned Python notice supplement
+
+The update-runtime selector preserves the original `20261013` CPython archive
+pin and `PYTHON.json`. That archive declares `licenses/LICENSE.zlib-ng.txt` for
+its zlib extension but omits that file. The upstream metadata generator matches
+both zlib and zlib-ng by library name `z`; the selected metadata describes a
+system link. This is not evidence that a zlib-ng implementation is bundled.
+
+The generator now supplies only that exact missing notice from
+`python/cpython-source-deps`, tag `zlib-ng-2.2.4`, commit
+`a502e047655c31db29601def76ad6539acacf43d`. Its unmodified `LICENSE.md` is
+867 bytes, SHA256
+`6c9f0d975b41afaa34d22f55bb8986ce69e5cb7ad327cb2b28820cd425edf5ee`.
+The source descriptor and verbatim copyright/terms are retained under
+`scripts/update-runtime-notices/`. No generator network fetch is performed.
+
+Before writing a fresh runtime, the generator checks the exact descriptor and
+notice bytes, rejects any change to the archive's unique missing-license set,
+and checks every declared license path against its selected `notices/` file.
+Existing notice bytes and original metadata remain unchanged. The discrepancy
+record distinguishes the original omission from this explicit supplement and
+records the path, origin, byte count and SHA256 of each declared notice.
+Unknown missing paths, empty or changed notices and altered metadata are refused.
+
+The runtime remains `private-validation-only`. This notice delivery correction
+does not establish legal clearance, a complete artifact SBOM, linked dependency
+membership, public redistribution qualification, signing or notarization. Existing
+generated runtimes and sealed Apps are not rewritten by a source change. Tiny
+synthetic tar/selection regressions exercise the mapping and refusal boundaries;
+no full archive extraction or Python execution is required for those checks.
+
+Upstream evidence:
+[release dependency metadata](https://github.com/astral-sh/python-build-standalone/blob/20261013/pythonbuild/downloads.json),
+[license annotation generator](https://github.com/astral-sh/python-build-standalone/blob/20261013/pythonbuild/utils.py#L513-L549),
+[exact supplemental notice](https://github.com/python/cpython-source-deps/blob/a502e047655c31db29601def76ad6539acacf43d/LICENSE.md).
+
+
+## Frontend emitted-module provenance
+
+The Vite/Rolldown build hook emits `frontend-provenance.json` beside the actual
+frontend outputs. It records chunk byte hashes, static/dynamic chunk imports,
+positive rendered-length modules, exact npm package/version and installed
+package.json/lock-entry hashes, and safe relative local-source hashes. Build-tool
+bindings and recognized generated helpers are separate. Zero-rendered modules
+are counted without claiming delivered membership. CSS and other assets have
+separate byte inventories; their source package membership is not inferred.
+
+Unknown npm ownership, unsupported virtual/query identifiers, external imports
+and unsafe or inconsistent inputs refuse this instrumentation rather than emit
+misleading provenance. The deterministic bounded report excludes its own bytes.
+A final write hook verifies the observed output set and its actual written hashes.
+No absolute module paths, raw source code or arbitrary query values are emitted.
+
+This is frontend build evidence, not Rust/C/native/Node/Python coverage or proof
+that a module executes. A selected Manager build can bind the unchanged frontend
+report/output inventory before and after compilation to its source/build receipt
+and actual packaged executable. Tauri may compress embedded assets, so raw JSON
+or JavaScript string presence in the executable is not assumed. Existing release
+SBOM and supply-chain review retain their accurately stated scopes.
+
+Focused helper/hook checks: `node --test scripts/frontend-provenance.test.mjs`.
+Actual frontend/native artifact validation is recorded separately from synthetic
+hook checks; this source change alone does not qualify signing or publication.

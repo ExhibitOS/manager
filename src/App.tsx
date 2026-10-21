@@ -57,17 +57,20 @@ export function App(){
  const [reconciliationJobs,setReconciliationJobs]=useState<ReconciliationJob[]>([]),[reconciliationError,setReconciliationError]=useState<ManagerError|null>(null);
  const [retryJobs,setRetryJobs]=useState<MaintenanceRetry[]>([]),[retryError,setRetryError]=useState<ManagerError|null>(null);
  useEffect(()=>{setInitialAccountRequest(null);},[installation?.selectionToken]);
- const live=useRef(true),working=useRef(false),refreshing=useRef(false),statusGeneration=useRef(0),observedSelection=useRef<string|null>(null);
- const refresh=useCallback(async()=>{
+ const live=useRef(true),working=useRef(false),refreshing=useRef(false),refreshDone=useRef<Promise<void>>(Promise.resolve()),statusGeneration=useRef(0),observedSelection=useRef<string|null>(null);
+ const refresh=useCallback(async(background=false)=>{
   if(!client.native||refreshing.current)return;
   const generation=statusGeneration.current;
-  refreshing.current=true;if(live.current)setLoading(true);
+  // A same-selection background read keeps established controls usable.
+  refreshing.current=true;if(live.current&&(!background||observedSelection.current===null))setLoading(true);
+  let finishRefresh:(()=>void)|undefined;
+  refreshDone.current=new Promise<void>(resolve=>{finishRefresh=resolve;});
   try{
    let selectedToken:string|null=null,selectedId:string|null=null;
    try{const selected=await client.installations();selectedToken=selected.selectionToken;selectedId=selected.activeId;if(live.current&&generation===statusGeneration.current){
     // A known snapshot belongs only to its selected installation. A different
     // selection must gather its own status and maintenance observations.
-    if(observedSelection.current!==selected.selectionToken){observedSelection.current=selected.selectionToken;setStatus(null);setRestoration(null);setBackupJobs([]);setReconciliationJobs([]);setRetryJobs([]);}
+    if(observedSelection.current!==selected.selectionToken){setLoading(true);observedSelection.current=selected.selectionToken;setStatus(null);setRestoration(null);setBackupJobs([]);setReconciliationJobs([]);setRetryJobs([]);}
     setInstallation(selected);setInstallationError(null);
    }}
    catch(e){if(live.current&&generation===statusGeneration.current){setInstallation(null);setInstallationError(managerError(e));}throw e;}
@@ -85,11 +88,39 @@ export function App(){
    catch(e){if(live.current&&generation===statusGeneration.current)setReconciliationError(managerError(e));}
    try{const saved=await client.maintenanceRetries();if(live.current&&generation===statusGeneration.current){setRetryJobs(saved);setRetryError(null);}}
    catch(e){if(live.current&&generation===statusGeneration.current)setRetryError(managerError(e));}
-   refreshing.current=false;if(live.current)setLoading(false);
+   refreshing.current=false;if(live.current)setLoading(false);finishRefresh?.();
   }
  },[]);
- useEffect(()=>{live.current=true;let timer:ReturnType<typeof setTimeout>;const poll=async()=>{if(!working.current)await refresh();if(live.current)timer=setTimeout(()=>void poll(),3000);};void poll();return()=>{live.current=false;clearTimeout(timer);};},[refresh]);
- async function operation(action:'install'|Action,initialAccount?:InitialAccountInput,expectedSelection?:string){if(working.current||!client.native)return;working.current=true;setBusy(true);setPendingAction(action);setLifecycleFeedback('');setError(null);setNotice(`${actionLabel(action)} 작업을 진행합니다. 창을 닫아도 저장된 작업 기록은 남습니다.`);try{if(action==='install'){const selected=await client.installations();if(expectedSelection&&selected.selectionToken!==expectedSelection)throw {code:'INSTALLATION_CHANGED',guidance:'선택한 전시가 바뀌어 계정 설정을 멈췄어요. 현재 전시에서 다시 시작하세요.'};if(!initialAccount&&(await client.initialAccountContext()).state==='required'){setInitialAccountRequest({action:'install',selectionToken:selected.selectionToken});return;}}const result=action==='install'?await client.install(initialAccount):await client.action(action);if(!live.current)return;if(result.state==='failed'||result.state==='interrupted'){setError({code:result.errorCode??'JOB_FAILED',guidance:result.guidance??'작업 기록을 확인하고 다시 시도하세요.'});setLifecycleFeedback(`${actionLabel(action)} 작업을 완료하지 못했습니다. 확인 코드: ${result.errorCode??'JOB_FAILED'}`);}else {const feedback=result.state==='completed'?`${actionLabel(action)} 작업이 완료됐습니다.`:'진행 중인 작업 기록을 확인합니다.';setNotice(feedback);setLifecycleFeedback(feedback);}await refresh();}catch(e){if(live.current){const failure=managerError(e);setError(failure);setLifecycleFeedback(`${actionLabel(action)} 작업을 완료하지 못했습니다. 확인 코드: ${failure.code}`);}}finally{working.current=false;if(live.current){setBusy(false);setPendingAction(null);}}}
+ useEffect(()=>{live.current=true;let timer:ReturnType<typeof setTimeout>;const poll=async()=>{if(!working.current)await refresh(true);if(live.current)timer=setTimeout(()=>void poll(),3000);};void poll();return()=>{live.current=false;clearTimeout(timer);};},[refresh]);
+ async function operation(action:'install'|Action,initialAccount?:InitialAccountInput,expectedSelection?:string){
+  if(working.current||!client.native)return;
+  working.current=true;setBusy(true);setPendingAction(action);setLifecycleFeedback('');setError(null);setNotice(`${actionLabel(action)} 작업을 진행합니다. 창을 닫아도 저장된 작업 기록은 남습니다.`);
+  let writerStarted=false;
+  try{
+   if(action==='install'){
+    const selected=await client.installations();
+    if(expectedSelection&&selected.selectionToken!==expectedSelection)throw {code:'INSTALLATION_CHANGED',guidance:'선택한 전시가 바뀌어 계정 설정을 멈췄어요. 현재 전시에서 다시 시작하세요.'};
+    if(!initialAccount&&(await client.initialAccountContext()).state==='required'){setInitialAccountRequest({action:'install',selectionToken:selected.selectionToken});return;}
+   }
+   // A writer supersedes cached observations, including an already pending poll.
+   statusGeneration.current++;setStatus(null);writerStarted=true;
+   const result=action==='install'?await client.install(initialAccount):await client.action(action);
+   if(!live.current)return;
+   if(result.state==='failed'||result.state==='interrupted'){
+    setError({code:result.errorCode??'JOB_FAILED',guidance:result.guidance??'작업 기록을 확인하고 다시 시도하세요.'});setLifecycleFeedback(`${actionLabel(action)} 작업을 완료하지 못했습니다. 확인 코드: ${result.errorCode??'JOB_FAILED'}`);
+   }else{
+    const feedback=result.state==='completed'?`${actionLabel(action)} 작업이 완료됐습니다.`:'진행 중인 작업 기록을 확인합니다.';setNotice(feedback);setLifecycleFeedback(feedback);
+   }
+  }catch(e){if(live.current){const failure=managerError(e);setError(failure);setLifecycleFeedback(`${actionLabel(action)} 작업을 완료하지 못했습니다. 확인 코드: ${failure.code}`);}}
+  finally{
+   try{
+    if(writerStarted&&live.current){
+     // Do not let refresh's busy-read guard skip the writer's fresh observation.
+     await refreshDone.current;if(live.current)await refresh();
+    }
+   }finally{working.current=false;if(live.current){setBusy(false);setPendingAction(null);}}
+  }
+ }
  async function verifyBackup(input:VerificationInput){
   if(working.current||!client.native)throw {code:'BUSY',guidance:'진행 중인 작업이 끝날 때까지 기다려 주세요.'};
   working.current=true;setBusy(true);setError(null);setNotice('백업 사본의 인증을 확인하고 있습니다.');

@@ -151,6 +151,15 @@ pub fn job_budget(available: u64) -> Result<u64> {
     }
     Ok(usable)
 }
+/// A requested cap can only reduce the available-space budget. This bounds the
+/// complete job, including objects, rather than just the SQL dump stream.
+pub fn bounded_job_budget(available: u64, requested: Option<u64>) -> Result<u64> {
+    if requested.is_some_and(|value| !(4 * 1024 * 1024..=9_007_199_254_740_991).contains(&value)) {
+        return Err(err("HOSTED_RECOVERY_REQUEST"));
+    }
+    let available_budget = job_budget(available)?;
+    Ok(requested.map_or(available_budget, |value| value.min(available_budget)))
+}
 struct SecretInput(std::io::Cursor<Vec<u8>>);
 impl Read for SecretInput {
     fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
@@ -298,6 +307,9 @@ impl LifecycleService {
         let relative = format!("hosted-backup-{id}/output/archive");
         let archive = self.root.join(&relative);
         maintenance::input_path(&archive, true)?;
+        #[cfg(unix)]
+        let snapshot = super::maintenance_source::SourceSnapshot::capture(&archive)
+            .map_err(|_| err("BACKUP_SOURCE_INVALID"))?;
         let mut root_names = std::collections::BTreeSet::new();
         let mut total = 0u64;
         for entry in fs::read_dir(&archive).map_err(|_| err("BACKUP_SOURCE_INVALID"))? {
@@ -306,6 +318,12 @@ impl LifecycleService {
                 .file_name()
                 .into_string()
                 .map_err(|_| err("BACKUP_SOURCE_INVALID"))?;
+            // Only the snapshot's bounded, private-owner Finder sidecar is
+            // transient metadata; it never contributes ciphertext or budget.
+            #[cfg(unix)]
+            if name == ".DS_Store" {
+                continue;
+            }
             if !["complete.json", "writing.json", "manifest.gcm", "files"].contains(&name.as_str())
                 || !root_names.insert(name.clone())
             {
@@ -372,6 +390,8 @@ impl LifecycleService {
         if count == 0 {
             return Err(err("BACKUP_SOURCE_INVALID"));
         }
+        #[cfg(unix)]
+        snapshot.check().map_err(|_| err("BACKUP_SOURCE_INVALID"))?;
         Ok(count)
     }
     /// Existing private hosted-job workspace, only for native companion metadata.
@@ -399,6 +419,7 @@ impl LifecycleService {
     pub fn create_hosted_backup(
         &self,
         source: Source,
+        requested_job_budget: Option<u64>,
         image: &str,
         node: &Path,
         runner: &Path,
@@ -421,8 +442,8 @@ impl LifecycleService {
             }
         }
         let available = fs2::available_space(&self.root).map_err(|_| err("STORAGE_UNAVAILABLE"))?;
-        let max_dump_bytes = dump_budget(available)?;
-        let job_budget_bytes = job_budget(available)?;
+        let job_budget_bytes = bounded_job_budget(available, requested_job_budget)?;
+        let max_dump_bytes = (job_budget_bytes / 4).min(32 * 1024 * 1024 * 1024);
         let observed: Value = serde_json::from_slice(&run(
             "docker",
             &["image".into(), "inspect".into(), image.into()],
@@ -778,6 +799,69 @@ fn validate_helper(job: &Job, value: &Value, output: &Path, cid: &str, desktop: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    fn archive_fixture() -> (LifecycleService, String, PathBuf, u64) {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("hosted-archive-{}", Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let service = LifecycleService::new(root).unwrap();
+        let id = Uuid::new_v4().to_string();
+        let archive = service.root.join(format!("hosted-backup-{id}/output/archive"));
+        fs::create_dir_all(archive.join("files")).unwrap();
+        for directory in [archive.clone(), archive.join("files")] {
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        for name in ["complete.json", "writing.json", "manifest.gcm", "files/00000000.gcm"] {
+            write_private_new(&archive, name, b"synthetic ciphertext", 4096).unwrap();
+        }
+        (service, id, archive, 4 * b"synthetic ciphertext".len() as u64)
+    }
+    #[cfg(unix)]
+    #[test]
+    fn hosted_archive_allows_only_safe_top_level_finder_metadata_without_charging_cipher_budget() {
+        use std::os::unix::fs::PermissionsExt;
+        let (service, id, archive, bytes) = archive_fixture();
+        assert_eq!(service.validate_hosted_archive(&id, bytes).unwrap(), 1);
+        fs::write(archive.join(".DS_Store"), vec![0; 1024]).unwrap();
+        fs::set_permissions(archive.join(".DS_Store"), fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(service.validate_hosted_archive(&id, bytes).unwrap(), 1);
+        assert!(service.validate_hosted_archive(&id, bytes - 1).is_err());
+        fs::write(archive.join("files/.DS_Store"), b"not ciphertext").unwrap();
+        assert!(service.validate_hosted_archive(&id, bytes + 4096).is_err());
+        fs::remove_dir_all(&service.root).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn hosted_archive_refuses_finder_links_directories_oversize_and_unsafe_permissions() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        for invalid in ["symlink", "hardlink", "directory", "oversize", "writable", "executable", "unknown"] {
+            let (service, id, archive, bytes) = archive_fixture();
+            let finder = archive.join(".DS_Store");
+            match invalid {
+                "symlink" => symlink(archive.join("complete.json"), &finder).unwrap(),
+                "hardlink" => {
+                    write_private_new(&service.root, "finder-target", b"synthetic metadata", 4096).unwrap();
+                    fs::hard_link(service.root.join("finder-target"), &finder).unwrap();
+                }
+                "directory" => fs::create_dir(&finder).unwrap(),
+                "unknown" => fs::write(archive.join(".DS_Store.extra"), b"unknown").unwrap(),
+                _ => {
+                    fs::write(&finder, b"synthetic Finder metadata").unwrap();
+                    fs::set_permissions(&finder, fs::Permissions::from_mode(match invalid {
+                        "writable" => 0o666,
+                        "executable" => 0o744,
+                        _ => 0o644,
+                    })).unwrap();
+                    if invalid == "oversize" {
+                        OpenOptions::new().write(true).open(&finder).unwrap().set_len(1024 * 1024 + 1).unwrap();
+                    }
+                }
+            }
+            assert!(service.validate_hosted_archive(&id, bytes + 2 * 1024 * 1024).is_err(), "{invalid}");
+            fs::remove_dir_all(&service.root).unwrap();
+        }
+    }
     fn source() -> Source {
         Source {
             workspace_id: "tea-synthetic".into(),
@@ -904,6 +988,22 @@ mod tests {
         let available = 14 * 1024 * 1024 * 1024;
         assert!(4 * dump_budget(available).unwrap() + floor + 64 * 1024 * 1024 <= available);
         // Dump allowance alone does not establish the separate object-copy budget.
+    }
+    #[test]
+    fn requested_job_cap_bounds_objects_and_dump_without_bypassing_floor() {
+        let gib = 1024 * 1024 * 1024;
+        let floor = 6 * gib + 64 * 1024 * 1024;
+        assert_eq!(bounded_job_budget(100 * gib, None).unwrap(), job_budget(100 * gib).unwrap());
+        assert_eq!(bounded_job_budget(100 * gib, Some(8 * gib)).unwrap(), 8 * gib);
+        assert_eq!(bounded_job_budget(floor + 4 * 1024 * 1024, Some(8 * gib)).unwrap(), 4 * 1024 * 1024);
+        assert!(bounded_job_budget(floor, Some(8 * gib)).is_err());
+        for invalid in [0, 4 * 1024 * 1024 - 1, 9_007_199_254_740_992, u64::MAX] {
+            assert_eq!(bounded_job_budget(100 * gib, Some(invalid)).unwrap_err().code, "HOSTED_RECOVERY_REQUEST");
+        }
+        let budget = bounded_job_budget(100 * gib, Some(8 * gib)).unwrap();
+        // The unchanged runner receives this whole-job cap, so its object-aware
+        // four-copy calculation cannot inherit the much larger profile budget.
+        assert_eq!(budget / 4, 2 * gib);
     }
     #[test]
     fn private_runner_errors_are_fixed_codes_only() {
