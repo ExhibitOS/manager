@@ -19,7 +19,7 @@ async function fixture(t,value=manifest){
 async function cliFixture(t){
  const repo=await fixture(t);
  await mkdir(join(repo,'scripts/update-runtime-notices'),{recursive:true});
- for(const name of ['build-desktop.mjs','update-runtime-distribution.mjs','prepare-update-runtime.mjs','update-runtime-archive.mjs','update-runtime-notices/distribution-files.json','update-runtime-notices/DISTRIBUTION.txt']){
+ for(const name of ['build-desktop.mjs','official-runtime-guard.mjs','official-mac-distribution.mjs','update-runtime-distribution.mjs','prepare-update-runtime.mjs','update-runtime-archive.mjs','update-runtime-notices/distribution-files.json','update-runtime-notices/DISTRIBUTION.txt']){
   await writeFile(join(repo,'scripts',name),await readFile(new URL(name,import.meta.url)));
  }
  return join(repo,'scripts/build-desktop.mjs');
@@ -145,4 +145,15 @@ test('official runtime signing is explicitly admitted between remote preparation
  await buildDesktop({repo,environment:{...official,APPLE_PASSWORD:'synthetic-never-forwarded'},officialPlan:p,executeOfficial:true},hooks);
  assert.deepEqual(events,['remote','nested-sign-and-finalize','compile','bind-built-output']);events.length=0;
  await assert.rejects(buildDesktop({repo,environment:official,officialPlan:p,executeOfficial:true},{...hooks,prepareOfficial:async()=>{throw Error('synthetic sign failure');}}),/synthetic sign failure/);assert.deepEqual(events,['remote']);
+});
+
+test('actual desktop CLI with an explicit qualified plan exits without circular module evaluation or commands',async t=>{
+ const cli=await cliFixture(t),repo=resolve(cli,'../..');
+ const qualified={format:manifest.format,version:1,platform:'darwin-arm64',pythonVersion:'3.11.17',executable:'python/bin/python3.11',selection:'full-stdlib-no-static-embedding-v1',source:SOURCE,redistribution:QUALIFIED_REDISTRIBUTION,files:DISTRIBUTION_FILES};
+ await writeFile(join(repo,'src-tauri/update-runtime/generated/manifest.json'),JSON.stringify(qualified));
+ const planPath=join(repo,'official-plan.json');
+ await writeFile(planPath,JSON.stringify({version:1,sourceCommit:'a'.repeat(40),sourceTree:'b'.repeat(40),identitySha1:'C'.repeat(40),teamId:'123456789A',notaryProfile:'synthetic-unused',workDir:repo+'-official-output',appPath:repo+'-target/ExhibitOS Manager.app'}));
+ const result=spawnSync(process.execPath,[cli,'--plan','--official-runtime-plan',planPath],{cwd:repo,env:{PATH:'/usr/bin:/bin'},encoding:'utf8',timeout:5000});
+ assert.equal(result.error,undefined);assert.equal(result.status,0,result.stderr);assert.equal(result.stderr,'');
+ const report=JSON.parse(result.stdout);assert.equal(report.buildExecuted,false);assert.equal(report.commandsStarted,0);assert.equal(report.commandsCompleted,0);assert.equal(report.productionSigned,false);assert.equal(report.notarized,false);
 });
