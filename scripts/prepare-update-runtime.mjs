@@ -7,6 +7,7 @@ import {zstdDecompressSync} from 'node:zlib';
 import {resolve,dirname,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {inspectTar,selectRuntime} from './update-runtime-archive.mjs';
+import {qualifyRuntimeSelection,QUALIFIED_REDISTRIBUTION} from './update-runtime-distribution.mjs';
 export const SOURCE=Object.freeze({release:'20261013',archiveName:'cpython-3.11.17+20261013-aarch64-apple-darwin-pgo+lto-full.tar.zst',url:'https://github.com/astral-sh/python-build-standalone/releases/download/20261013/cpython-3.11.17%2B20261013-aarch64-apple-darwin-pgo%2Blto-full.tar.zst',sha256:'4e2b20716a080e9141ea80029dabbdc9457e20760f3fd3b16a17abd48ea6bf4a',bytes:42796019});
 // Independent notice supplement for this exact upstream declaration, not an assertion
 // that zlib-ng is linked or that the runtime is publicly qualified.
@@ -43,7 +44,7 @@ export function completeRuntimeNotices(tree,selected,notice,descriptor){
   if(!Buffer.isBuffer(actual)||!actual.length||!actual.toString('utf8').trim()||!actual.equals(expected))refuse('NOTICE_CORRESPONDENCE_CHANGED');
   correspondence.push({licensePath,selectedPath,bytes:actual.length,sha256:hash(actual),origin:supplemented?'explicit-upstream-supplement':'unchanged-archive'});
  }
- return{selected:resolved,discrepancy:{status:'upstream-missing-notice-explicitly-supplemented-private-validation-only',upstreamRelease:SOURCE.release,declaredMissing:missing,declaredMissingInOriginalArchive:missing,supplement:{selectedPath:supplementPath,source:NOTICE_SOURCE},declaredNoticeFiles:correspondence,metadataPreserved:true,limitation:'The original archive omits a declared notice. The exact upstream notice is supplied separately without claiming which library is linked, legal clearance or public runtime qualification.'}};
+ return{selected:resolved,discrepancy:{status:'upstream-missing-notice-explicitly-supplemented',upstreamRelease:SOURCE.release,declaredMissing:missing,declaredMissingInOriginalArchive:missing,supplement:{selectedPath:supplementPath,source:NOTICE_SOURCE},declaredNoticeFiles:correspondence,metadataPreserved:true,limitation:'The original archive omits a declared notice. The exact upstream notice is supplied separately without claiming which library is linked, legal clearance or public runtime qualification.'}};
 }
 export async function prepareUpdateRuntime({archive,output}){
  if(process.platform!=='darwin'||process.arch!=='arm64')refuse('HOST_UNSUPPORTED');
@@ -57,11 +58,12 @@ export async function prepareUpdateRuntime({archive,output}){
  if(metadata.target_triple!=='aarch64-apple-darwin'||metadata.python_version!=='3.11.17'||metadata.apple_sdk_deployment_target!=='11.0')refuse('METADATA_MISMATCH');
  const notice=readFileSync(new URL('./update-runtime-notices/LICENSE.zlib-ng.txt',import.meta.url));
  const descriptor=JSON.parse(readFileSync(new URL('./update-runtime-notices/source.json',import.meta.url),'utf8'));
- const {selected,discrepancy}=completeRuntimeNotices(tree,originalSelection,notice,descriptor);
+ const completed=completeRuntimeNotices(tree,originalSelection,notice,descriptor);
+ const selected=qualifyRuntimeSelection(completed.selected),discrepancy=completed.discrepancy;
  selected.set('metadata/license-discrepancy.json',{data:Buffer.from(JSON.stringify(discrepancy,null,2)+'\n'),mode:0o644});
  let sum=0;for(const v of selected.values())sum+=v.data.length;if(sum>128*1024**2)refuse('OUTPUT_LIMIT');await mkdir(output,{mode:0o700});const files={};
  try{for(const [name,v]of [...selected].sort(([a],[b])=>a<b?-1:a>b?1:0)){const p=join(output,name);await mkdir(dirname(p),{recursive:true,mode:0o755});await writeFile(p,v.data,{flag:'wx',mode:v.mode});await chmod(p,v.mode);files[name]={sha256:hash(v.data),bytes:v.data.length,mode:v.mode};}
- const manifest={format:'exhibitos-manager-update-runtime-v1',version:1,platform:'darwin-arm64',pythonVersion:'3.11.17',executable:'python/bin/python3.11',selection:'full-stdlib-no-static-embedding-v1',source:SOURCE,redistribution:'private-validation-only',files};await writeFile(join(output,'manifest.json'),JSON.stringify(manifest)+'\n',{flag:'wx',mode:0o644});await chmod(join(output,'manifest.json'),0o644);
+ const manifest={format:'exhibitos-manager-update-runtime-v1',version:1,platform:'darwin-arm64',pythonVersion:'3.11.17',executable:'python/bin/python3.11',selection:'full-stdlib-no-static-embedding-v1',source:SOURCE,redistribution:QUALIFIED_REDISTRIBUTION,files};await writeFile(join(output,'manifest.json'),JSON.stringify(manifest)+'\n',{flag:'wx',mode:0o644});await chmod(join(output,'manifest.json'),0o644);
  return{prepared:true,output,networkAcquisition:false,pythonExecuted:false,signatureChanged:false,bytes:sum,files:Object.keys(files).length,manifestSha256:hash(Buffer.from(JSON.stringify(manifest)+'\n')),redistribution:manifest.redistribution};
  }catch(e){throw Error('UPDATE_RUNTIME_PARTIAL_OUTPUT_PRESERVED',{cause:e});}
 }

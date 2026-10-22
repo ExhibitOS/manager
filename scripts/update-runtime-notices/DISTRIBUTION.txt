@@ -1,0 +1,43 @@
+ExhibitOS Manager: bundled Python runtime distribution notices
+
+Runtime: Astral python-build-standalone 20261013, CPython 3.11.17,
+aarch64-apple-darwin, pgo+lto, full archive.
+Upstream archive: cpython-3.11.17+20261013-aarch64-apple-darwin-pgo+lto-full.tar.zst
+SHA256: 4e2b20716a080e9141ea80029dabbdc9457e20760f3fd3b16a17abd48ea6bf4a
+Source: https://github.com/astral-sh/python-build-standalone/releases/tag/20261013
+Python terms: notices/LICENSE.cpython.txt (PSF, CNRI and historical notices).
+
+Packaging changes made by ExhibitOS:
+The existing selector retains the install tree and standard library, relocates
+PYTHON.json and all archive license files, resolves archive aliases to regular
+files, omits duplicate python/python3 aliases, libpython3.11.a and the static
+embedding config directory, and normalizes file modes to 0644/0755. It copies
+the selected file contents from the checksum-pinned archive; it does not patch
+Python source or executable contents. Later distribution code signatures, if
+applied, are separate changes and are not covered by that byte-copy statement.
+This summary, an inventory and the original metadata accompany the selection.
+
+The archive declares 15 distinct license paths. Its missing zlib-ng notice is
+supplemented from python/cpython-source-deps commit
+a502e047655c31db29601def76ad6539acacf43d, LICENSE.md (zlib-ng-2.2.4):
+https://github.com/python/cpython-source-deps/blob/a502e047655c31db29601def76ad6539acacf43d/LICENSE.md
+The original omission and exact correspondence remain recorded in
+metadata/license-discrepancy.json. All 20 archive/supplement notice files are
+retained unchanged. Extra archive notices do not establish linked membership.
+
+Declared licenses: Python/PSF and CNRI, bzip2, MIT (libffi/Expat), X11
+(ncurses), BSD-2-Clause (mpdecimal), Apache-2.0 and OpenSSL/SSLeay,
+0BSD (liblzma), SQLite public-domain dedication, TCL, BSD-3-Clause
+(libuuid/libedit), and Zlib (zlib/zlib-ng). Their full terms and copyrights
+are provided in notices/. No endorsement by their authors is claimed.
+
+This product includes software developed by the OpenSSL Project for use in
+the OpenSSL Toolkit (http://www.openssl.org/).
+This product includes cryptographic software written by Eric Young
+(eay@cryptsoft.com). This product includes software written by Tim Hudson
+(tjh@cryptsoft.com). Advertising that mentions OpenSSL features/use must
+retain the applicable acknowledgments; the license names are not endorsements.
+
+Qualification is limited to delivery of the license/attribution materials for
+this fixed selection. It is not a Developer ID signature, Apple notarization,
+Gatekeeper, vulnerability assessment or clean-user installation result.

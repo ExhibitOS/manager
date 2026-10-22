@@ -3,6 +3,8 @@ import {spawnSync} from 'node:child_process';
 import {constants} from 'node:fs';
 import {lstat,open,readFile,realpath} from 'node:fs/promises';
 import {dirname,join,resolve} from 'node:path';
+import {QUALIFIED_REDISTRIBUTION,matchesDistributionFiles} from './update-runtime-distribution.mjs';
+import {SOURCE} from './prepare-update-runtime.mjs';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 
 const fail=code=>{throw Error(code);};
@@ -38,10 +40,13 @@ async function guardedManifest(repo){
    data=data.subarray(0,count);
   }finally{await handle.close();}
   let manifest;try{manifest=JSON.parse(data);}catch{fail('DESKTOP_RELEASE_RUNTIME_UNRECOGNIZED');}
-  if(manifest?.format!=='exhibitos-manager-update-runtime-v1'||manifest.version!==1||manifest.redistribution!=='private-validation-only')fail('DESKTOP_RELEASE_RUNTIME_UNRECOGNIZED');
-  // This is the only existing producer/native-consumer contract. Relabelling
-  // it "public" cannot qualify rights or create an official release runtime.
-  fail('DESKTOP_PRIVATE_RUNTIME_OFFICIAL_RELEASE_REFUSED');
+  if(manifest?.format!=='exhibitos-manager-update-runtime-v1'||manifest.version!==1)fail('DESKTOP_RELEASE_RUNTIME_UNRECOGNIZED');
+  if(manifest.redistribution==='private-validation-only')fail('DESKTOP_PRIVATE_RUNTIME_OFFICIAL_RELEASE_REFUSED');
+  if(Object.keys(manifest).sort().join(',')!=='executable,files,format,platform,pythonVersion,redistribution,selection,source,version'||manifest.redistribution!==QUALIFIED_REDISTRIBUTION||manifest.platform!=='darwin-arm64'||manifest.pythonVersion!=='3.11.17'||manifest.executable!=='python/bin/python3.11'||manifest.selection!=='full-stdlib-no-static-embedding-v1'||!manifest.source||Object.keys(manifest.source).sort().join(',')!==Object.keys(SOURCE).sort().join(',')||Object.entries(SOURCE).some(([k,v])=>manifest.source[k]!==v)||!matchesDistributionFiles(manifest.files))fail('DESKTOP_RELEASE_RUNTIME_UNRECOGNIZED');
+  // This prebuild check admits only the fixed producer contract. The native
+  // consumer still binds its compiled manifest and verifies every physical byte,
+  // path, mode and identity before using Python; this is not signature evidence.
+  return;
  }catch(error){if(error.code==='ENOENT')fail('DESKTOP_RELEASE_RUNTIME_MISSING');if(/^DESKTOP_[A-Z_]+$/.test(error.message))throw error;fail('DESKTOP_RELEASE_RUNTIME_UNSAFE');}
 }
 export function desktopFailure(error){
@@ -53,7 +58,13 @@ export async function buildDesktop({repo,environment=process.env,planOnly=false,
  try{
   repo=resolve(repo);
   let config;try{config=JSON.parse(await readFile(join(repo,'src-tauri/tauri.conf.json'),'utf8'));}catch{fail('DESKTOP_CONFIG_INVALID');}
-  if(officialIntent(environment,config,args))await guardedManifest(repo);
+  if(officialIntent(environment,config,args)){
+   await guardedManifest(repo);
+   const separator=args.indexOf('--'),tauriArgs=separator<0?args:args.slice(0,separator);
+   // An arbitrary config override can replace the qualified resource mapping.
+   // Qualification of the source config does not qualify an unread overlay.
+   if(hasValue(environment.TAURI_CONFIG)||tauriArgs.some(arg=>arg==='--config'||arg.startsWith('--config=')||/^-[vd]*c/.test(arg)))fail('DESKTOP_RELEASE_CONFIG_UNRECOGNIZED');
+  }
   const commands=[{executable:process.platform==='win32'?'npm.cmd':'npm',args:['run','remote:prepare'],shell:process.platform==='win32'},{executable:process.execPath,args:[join(repo,'node_modules/@tauri-apps/cli/tauri.js'),'build','--bundles','app',...args],shell:false}];
   if(!planOnly)for(const [index,command] of commands.entries()){
    progress.phase=index===0?'remote-prepare':'tauri-build';

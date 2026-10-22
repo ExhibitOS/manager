@@ -6,6 +6,8 @@ import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {buildDesktop,officialIntent,desktopFailure} from './build-desktop.mjs';
+import {QUALIFIED_REDISTRIBUTION,DISTRIBUTION_FILES} from './update-runtime-distribution.mjs';
+import {SOURCE} from './prepare-update-runtime.mjs';
 const manifest={format:'exhibitos-manager-update-runtime-v1',version:1,redistribution:'private-validation-only'};
 const official={APPLE_SIGNING_IDENTITY:'Developer ID Application: Synthetic unused identity'};
 async function fixture(t,value=manifest){
@@ -13,6 +15,14 @@ async function fixture(t,value=manifest){
  await mkdir(join(repo,'src-tauri/update-runtime/generated'),{recursive:true});await writeFile(join(repo,'src-tauri/tauri.conf.json'),'{}');
  if(value!==null)await writeFile(join(repo,'src-tauri/update-runtime/generated/manifest.json'),typeof value==='string'?value:JSON.stringify(value));
  return repo;
+}
+async function cliFixture(t){
+ const repo=await fixture(t);
+ await mkdir(join(repo,'scripts/update-runtime-notices'),{recursive:true});
+ for(const name of ['build-desktop.mjs','update-runtime-distribution.mjs','prepare-update-runtime.mjs','update-runtime-archive.mjs','update-runtime-notices/distribution-files.json','update-runtime-notices/DISTRIBUTION.txt']){
+  await writeFile(join(repo,'scripts',name),await readFile(new URL(name,import.meta.url)));
+ }
+ return join(repo,'scripts/build-desktop.mjs');
 }
 test('local default, adhoc and named Apple Development keep the existing two commands',async t=>{
  const repo=await fixture(t,null);
@@ -51,8 +61,9 @@ test('symlink parent/file, hardlink and oversized descriptor refuse without muta
   let calls=0;await assert.rejects(buildDesktop({repo,environment:official},{runCommand:()=>calls++}),kind==='oversized'?/DESKTOP_RELEASE_RUNTIME_TOO_LARGE/:/DESKTOP_RELEASE_RUNTIME_UNSAFE/);assert.equal(calls,0);assert.equal(await readFile(external,'utf8'),JSON.stringify(manifest));
  }
 });
-test('actual desktop CLI refuses official intent before remote prepare and hides credential values',()=>{
- const secret='synthetic-must-not-be-logged',result=spawnSync(process.execPath,[resolve('scripts/build-desktop.mjs'),'--plan'],{encoding:'utf8',env:{...process.env,APPLE_SIGNING_IDENTITY:official.APPLE_SIGNING_IDENTITY,APPLE_PASSWORD:secret},timeout:10000});
+test('actual desktop CLI refuses official intent before remote prepare and hides credential values',async t=>{
+ const cli=await cliFixture(t);
+ const secret='synthetic-must-not-be-logged',result=spawnSync(process.execPath,[cli,'--plan'],{encoding:'utf8',env:{...process.env,APPLE_SIGNING_IDENTITY:official.APPLE_SIGNING_IDENTITY,APPLE_PASSWORD:secret},timeout:10000});
  assert.equal(result.status,1);const report=JSON.parse(result.stderr);assert.equal(report.code,'DESKTOP_PRIVATE_RUNTIME_OFFICIAL_RELEASE_REFUSED');assert.equal(report.buildExecuted,false);assert.equal(result.stdout,'');assert.equal(result.stderr.includes(secret),false);assert.equal(result.stderr.includes(official.APPLE_SIGNING_IDENTITY),false);
 });
 
@@ -73,8 +84,9 @@ test('failure reports distinguish prebuild, preparation and Tauri command execut
  }
  try{await buildDesktop({repo,environment:official});assert.fail('expected private refusal');}catch(error){const report=desktopFailure(error);assert.equal(report.buildExecuted,false);assert.equal(report.commandsStarted,0);assert.equal(report.phase,'prebuild');}
 });
-test('actual desktop CLI config override refuses before remote preparation and does not print its value',()=>{
- const value='synthetic-config-value-must-not-be-logged',result=spawnSync(process.execPath,[resolve('scripts/build-desktop.mjs'),'--plan','--config='+value],{encoding:'utf8',env:{...process.env,APPLE_SIGNING_IDENTITY:'-'},timeout:10000});
+test('actual desktop CLI config override refuses before remote preparation and does not print its value',async t=>{
+ const cli=await cliFixture(t);
+ const value='synthetic-config-value-must-not-be-logged',result=spawnSync(process.execPath,[cli,'--plan','--config='+value],{encoding:'utf8',env:{...process.env,APPLE_SIGNING_IDENTITY:'-'},timeout:10000});
  assert.equal(result.status,1);const report=JSON.parse(result.stderr);assert.equal(report.code,'DESKTOP_PRIVATE_RUNTIME_OFFICIAL_RELEASE_REFUSED');assert.equal(report.commandsStarted,0);assert.equal(result.stderr.includes(value),false);assert.equal(result.stdout,'');
 });
 test('Cargo config after the literal separator remains local and forwards unchanged',async t=>{
@@ -97,5 +109,17 @@ test('supported verbose/debug short clusters classify config before preparation 
  for(const args of [['-rcsynthetic'],['-tcsynthetic'],['-fcsynthetic'],['-bcsynthetic'],['--','-vcsynthetic.json']]){
   const commands=[];await buildDesktop({repo,environment:{},args},{runCommand:async command=>commands.push(command)});
   assert.equal(commands.length,2);assert.deepEqual(commands[1].args.slice(4),args);
+ }
+});
+
+test('fixed notice-qualified manifest admits official build intent without claiming signed release',async t=>{
+ const qualified={format:manifest.format,version:1,platform:'darwin-arm64',pythonVersion:'3.11.17',executable:'python/bin/python3.11',selection:'full-stdlib-no-static-embedding-v1',source:SOURCE,redistribution:QUALIFIED_REDISTRIBUTION,files:DISTRIBUTION_FILES};
+ const repo=await fixture(t,qualified),commands=[];
+ const result=await buildDesktop({repo,environment:official},{runCommand:async command=>commands.push(command)});
+ assert.equal(commands.length,2);assert.equal(result.productionSigned,false);assert.equal(result.notarized,false);
+ for(const options of [{environment:{...official,TAURI_CONFIG:'synthetic'}},{environment:official,args:['--config=synthetic']}]){let calls=0;await assert.rejects(buildDesktop({repo,...options},{runCommand:()=>calls++}),/DESKTOP_RELEASE_CONFIG_UNRECOGNIZED/);assert.equal(calls,0);}
+ for(const change of [v=>delete v.files['notices/LICENSE.bdb.txt'],v=>v.files['notices/LICENSE.zlib-ng.txt'].sha256='0'.repeat(64),v=>v.files['metadata/PYTHON.json'].bytes++,v=>v.source.sha256='0'.repeat(64),v=>v.extra=true,v=>v.redistribution='public']){
+  const invalid=structuredClone(qualified);change(invalid);await writeFile(join(repo,'src-tauri/update-runtime/generated/manifest.json'),JSON.stringify(invalid));
+  let calls=0;await assert.rejects(buildDesktop({repo,environment:official},{runCommand:()=>calls++}),/DESKTOP_RELEASE_RUNTIME_UNRECOGNIZED/);assert.equal(calls,0);
  }
 });
