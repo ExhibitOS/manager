@@ -23,7 +23,7 @@
     "test:receipt": "node --test scripts/verification-receipt.test.mjs",
     "installer:plan": "node scripts/build-installer.mjs --plan",
     "installer:prototype": "node scripts/build-installer.mjs --build",
-    "test:installer": "node --test scripts/build-installer.test.mjs scripts/build-desktop.test.mjs",
+    "test:installer": "node --test scripts/build-installer.test.mjs scripts/build-desktop.test.mjs scripts/official-mac-distribution.test.mjs",
     "remote:prepare": "node scripts/prepare-remote-runtime.mjs"
   },
   "dependencies": {

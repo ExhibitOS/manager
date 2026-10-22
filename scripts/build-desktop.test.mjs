@@ -112,14 +112,37 @@ test('supported verbose/debug short clusters classify config before preparation 
  }
 });
 
-test('fixed notice-qualified manifest admits official build intent without claiming signed release',async t=>{
+test('fixed notice-qualified manifest admits read-only official intent without claiming signed release',async t=>{
  const qualified={format:manifest.format,version:1,platform:'darwin-arm64',pythonVersion:'3.11.17',executable:'python/bin/python3.11',selection:'full-stdlib-no-static-embedding-v1',source:SOURCE,redistribution:QUALIFIED_REDISTRIBUTION,files:DISTRIBUTION_FILES};
  const repo=await fixture(t,qualified),commands=[];
- const result=await buildDesktop({repo,environment:official},{runCommand:async command=>commands.push(command)});
- assert.equal(commands.length,2);assert.equal(result.productionSigned,false);assert.equal(result.notarized,false);
+ const result=await buildDesktop({repo,environment:official,planOnly:true},{runCommand:async command=>commands.push(command)});
+ assert.equal(commands.length,0);assert.equal(result.buildExecuted,false);assert.equal(result.productionSigned,false);assert.equal(result.notarized,false);
  for(const options of [{environment:{...official,TAURI_CONFIG:'synthetic'}},{environment:official,args:['--config=synthetic']}]){let calls=0;await assert.rejects(buildDesktop({repo,...options},{runCommand:()=>calls++}),/DESKTOP_RELEASE_CONFIG_UNRECOGNIZED/);assert.equal(calls,0);}
  for(const change of [v=>delete v.files['notices/LICENSE.bdb.txt'],v=>v.files['notices/LICENSE.zlib-ng.txt'].sha256='0'.repeat(64),v=>v.files['metadata/PYTHON.json'].bytes++,v=>v.source.sha256='0'.repeat(64),v=>v.extra=true,v=>v.redistribution='public']){
   const invalid=structuredClone(qualified);change(invalid);await writeFile(join(repo,'src-tauri/update-runtime/generated/manifest.json'),JSON.stringify(invalid));
   let calls=0;await assert.rejects(buildDesktop({repo,environment:official},{runCommand:()=>calls++}),/DESKTOP_RELEASE_RUNTIME_UNRECOGNIZED/);assert.equal(calls,0);
  }
+});
+
+test('qualified runtime refuses executable official intent without a reviewed plan before any command',async t=>{
+ const qualified={format:manifest.format,version:1,platform:'darwin-arm64',pythonVersion:'3.11.17',executable:'python/bin/python3.11',selection:'full-stdlib-no-static-embedding-v1',source:SOURCE,redistribution:QUALIFIED_REDISTRIBUTION,files:DISTRIBUTION_FILES};
+ const repo=await fixture(t,qualified);let calls=0;
+ for(const environment of [official,{APPLE_PASSWORD:'synthetic-unused'}])for(const executeOfficial of [false,true]){
+  await assert.rejects(buildDesktop({repo,environment,executeOfficial},{runCommand:()=>calls++}),/DESKTOP_OFFICIAL_EXECUTION_REQUIRED/);assert.equal(calls,0);
+ }
+ await writeFile(join(repo,'src-tauri/tauri.conf.json'),JSON.stringify({bundle:{macOS:{signingIdentity:official.APPLE_SIGNING_IDENTITY}}}));
+ for(const executeOfficial of [false,true]){
+  await assert.rejects(buildDesktop({repo,environment:{},executeOfficial},{runCommand:()=>calls++}),/DESKTOP_OFFICIAL_EXECUTION_REQUIRED/);assert.equal(calls,0);
+ }
+});
+
+test('official runtime signing is explicitly admitted between remote preparation and native compile, then binds output',async t=>{
+ const qualified={format:manifest.format,version:1,platform:'darwin-arm64',pythonVersion:'3.11.17',executable:'python/bin/python3.11',selection:'full-stdlib-no-static-embedding-v1',source:SOURCE,redistribution:QUALIFIED_REDISTRIBUTION,files:DISTRIBUTION_FILES};
+ const repo=await fixture(t,qualified),events=[];
+ const p={version:1,sourceCommit:'a'.repeat(40),sourceTree:'b'.repeat(40),identitySha1:'C'.repeat(40),teamId:'123456789A',notaryProfile:'synthetic-reference',workDir:repo+'-official-output',appPath:repo+'-app/ExhibitOS Manager.app'};
+ const hooks={runCommand:async(command,options)=>{events.push(command.args.includes('remote:prepare')?'remote':'compile');assert.equal(options.env.APPLE_SIGNING_IDENTITY,'-');assert.equal(options.env.APPLE_PASSWORD,undefined);},prepareOfficial:async()=>events.push('nested-sign-and-finalize'),recordOfficial:async()=>events.push('bind-built-output')};
+ await assert.rejects(buildDesktop({repo,environment:official,officialPlan:p},hooks),/DESKTOP_OFFICIAL_EXECUTION_REQUIRED/);assert.deepEqual(events,[]);
+ await buildDesktop({repo,environment:{...official,APPLE_PASSWORD:'synthetic-never-forwarded'},officialPlan:p,executeOfficial:true},hooks);
+ assert.deepEqual(events,['remote','nested-sign-and-finalize','compile','bind-built-output']);events.length=0;
+ await assert.rejects(buildDesktop({repo,environment:official,officialPlan:p,executeOfficial:true},{...hooks,prepareOfficial:async()=>{throw Error('synthetic sign failure');}}),/synthetic sign failure/);assert.deepEqual(events,['remote']);
 });
