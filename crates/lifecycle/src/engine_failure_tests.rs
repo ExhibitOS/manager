@@ -80,6 +80,44 @@ fn engine_failure_native_success_keeps_stdout_separate_from_stderr() {
     let actual = run(fixture().to_str().unwrap(), &["success".into()], None, 5).unwrap();
     assert_eq!(actual, b"exact-output");
 }
+
+#[cfg(unix)]
+#[test]
+fn engine_failure_actual_os_permission_denial_has_safe_recovery_guidance() {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+
+    let root = std::env::temp_dir().join(format!("exhibitos-permission-{}", Uuid::new_v4()));
+    fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+    let denied = root.join("non-executable-empty-fixture");
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o000)
+        .open(&denied)
+        .unwrap();
+    let before = fs::symlink_metadata(&denied).unwrap();
+    assert!(before.is_file());
+    assert_eq!(before.len(), 0);
+    assert_eq!(before.permissions().mode() & 0o777, 0);
+
+    // No fixture code can execute: the OS rejects this empty, non-executable file.
+    let refused = std::process::Command::new(&denied).spawn().unwrap_err();
+    assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
+    assert_eq!(refused.raw_os_error(), Some(libc::EACCES));
+    let error = run(denied.to_str().unwrap(), &[], None, 1).unwrap_err();
+    assert_eq!(error.code, "ENGINE_PERMISSION");
+    assert_eq!(error.guidance, err("ENGINE_PERMISSION").guidance);
+    assert!(error.guidance.contains("권한"));
+    assert!(error.guidance.contains("다시 시도"));
+    let serialized = serde_json::to_string(&error).unwrap();
+    assert!(!serialized.contains(root.to_str().unwrap()));
+    assert!(!serialized.contains("non-executable-empty-fixture"));
+    assert_eq!(fs::symlink_metadata(&denied).unwrap().len(), 0);
+
+    // Preserve a failed synthetic probe; remove only this owned probe on success.
+    fs::remove_file(&denied).unwrap();
+    fs::remove_dir(&root).unwrap();
+}
 #[test]
 fn engine_failure_native_timeout_waits_and_missing_tool_are_distinct() {
     let error = run(fixture().to_str().unwrap(), &["timeout".into()], None, 1).unwrap_err();
