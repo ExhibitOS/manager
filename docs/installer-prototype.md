@@ -59,3 +59,59 @@ if ($LASTEXITCODE -ne 0) { throw "Installer build failed; preserve the receipt a
 기존 `desktop:build -- --debug -- --locked` 같은 Tauri/Cargo 인자는 순서 그대로 전달합니다. 첫 literal `--` 이전의 Tauri `--config`, `-c`, `--config=…` override는 별도 구성의 서명·runtime 변경을 사전 분류할 수 없으므로 공식 의도로 검사합니다. 오류 JSON은 값 없이 `phase`, `commandsStarted`, `commandsCompleted`, `buildExecuted`로 준비 전 거부와 실제 명령 시작 뒤 실패를 구분합니다.
 
 인증서 import 경계는 설치된 pinned Tauri2.12.1 CHANGELOG의 `APPLE_CERTIFICATE` identity 추론 항목과 같은 CLI binary의 `APPLE_CERTIFICATE_PASSWORD` 상수에 근거합니다. `createUpdaterArtifacts: "v1Compatible"`도 같은 버전의 config schema에 있는 실제 updater 요청으로 처리합니다. 이 검사는 인증서를 열거나 import하지 않습니다.
+
+
+## 명시적인 macOS 공식 배포 단계
+
+`scripts/official-mac-distribution.mjs`는 Mac arm64 Manager의 계획·서명·공증
+단계를 제공합니다. 구현과 mock 검사는 실제 Developer ID/공증·설치 수락이
+아닙니다. 기존 로컬 개발 서명 도구와 분리하며, 기존 자격 보유는 실행 승인으로
+간주하지 않습니다. 현재 Node의 hardened-runtime 실제 실행은 미검증입니다.
+
+계획 JSON에는 정확히 `version: 1`, 검토한 `sourceCommit`/`sourceTree`, 기존
+Developer ID Application 인증서의 `identitySha1`(대문자40자리), `teamId`, 기존
+`notaryProfile` 참조명, 새 절대경로 `workDir`, 실제 빌드될 `appPath`를 지정합니다.
+암호·인증서 내용·API key·새 자격 등록은 입력하지 않습니다. source는 clean이어야
+하며 workDir는 repository와 원본 app 밖의 새 경로여야 합니다. 먼저 실행 없는
+계획을 검토하고 해당 산출물·기존 identity·Apple 제출을 승인합니다.
+
+```sh
+node scripts/official-mac-distribution.mjs plan /absolute/reviewed-plan.json
+node scripts/build-desktop.mjs --plan --official-runtime-plan /absolute/reviewed-plan.json --ci -- --locked --offline --jobs 1
+```
+
+승인 후 공식 실행에는 별도 flag가 필요합니다. 준비는 기존 remote 준비 뒤,
+최종 Cargo 컴파일 전에 고정 Node/Python Mach-O만 서명합니다. 원래 실행 파일과
+두 manifest는 workDir에 먼저 보존합니다. Node에만 arm64의 `allow-jit` 후보를
+적용하며 native/Python에는 blanket 예외를 추가하지 않습니다. 서명으로 바뀐
+파일 hash·크기와 최종 manifests를 native에 포함하고 Tauri 중간 포장은 ad-hoc으로
+유지합니다. 기존 private/unknown runtime 및 config overlay 거절은 유지합니다.
+
+```sh
+node scripts/build-desktop.mjs --official-runtime-plan /absolute/reviewed-plan.json --execute-official-distribution --ci -- --locked --offline --jobs 1
+node scripts/official-mac-distribution.mjs finish /absolute/reviewed-plan.json --execute-official-distribution
+node scripts/official-mac-distribution.mjs notarize /absolute/reviewed-plan.json --execute-official-distribution
+```
+
+finish는 같은 완료 빌드 호출이 고정한 app inventory와 최종 resource manifests의
+바이트 결속을 확인하고 원본 app을 복사한 뒤 outer 서명·DMG 제작·readonly mount
+동일성을 검사합니다. source app과 내부 resource를 사후에 바꾸지 않습니다.
+모든 서명은 secure timestamp를 요청하므로 이 단계도 네트워크와 기존 자격
+접근의 명시 승인 범위에 속합니다. get-task-allow 및 임의 Node 예외를 넣지 않습니다.
+
+첫 notarize 호출은 최종 DMG를 제출하고 UUID를 저장합니다. 이후 같은 명령은
+같은 UUID를 조회하며 Accepted/Invalid 결과의 로그를 보존합니다. Accepted 뒤에만
+DMG staple/validate·Gatekeeper·최종 checksum을 기록합니다. 응답 불명확·동시 실행·
+입력 변경은 자동 재전송하지 않습니다. `submission-uncertain`/`staple-uncertain` 또는
+남은 lock은 실제 상태를 확인한 뒤 해당 작업만 조정해야 하며 무조건 삭제하거나
+새 제출로 덮지 않습니다. 실패 부분 파일과 원래 입력은 보존합니다.
+
+이 경로는 DMG ticket을 붙입니다. 별도의 app ticket 첨부나 준비 전 offline 설치,
+clean-user 설치/업데이트, 실제 hardened Node/Python 동작을 통과로 표시하지 않습니다.
+등록된 설치·실행·업데이트/오프라인 수락은 해당 산출물에서 별도로 확인합니다.
+
+Node24.21의 [V8 Darwin allocator](https://github.com/nodejs/node/blob/v24.21.0/deps/v8/src/base/platform/platform-posix.cc)는 MAP_JIT를 사용합니다.
+[upstream entitlement 파일](https://github.com/nodejs/node/blob/v24.21.0/tools/osx-entitlements.plist)은
+디버깅 권한도 포함하므로 그대로 배포용으로 복사하지 않습니다.
+[Apple 공증 조건](https://developer.apple.com/documentation/security/resolving-common-notarization-issues)과
+[비동기 제출·로그 절차](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow)를 따릅니다.
