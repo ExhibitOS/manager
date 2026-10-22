@@ -27,7 +27,9 @@ async function regular(path,max=1024**3){
 }
 async function directory(path){if(await realpath(path)!==path||!(await lstat(path)).isDirectory())fail('OFFICIAL_DIRECTORY_UNSAFE');}
 async function json(path){return JSON.parse((await regular(path,4*1024**2)).bytes);}
-async function save(path,value,mode=0o600){const tmp=path+'.next';await writeFile(tmp,JSON.stringify(value,null,2)+'\n',{flag:'wx',mode});await rename(tmp,path);}
+async function save(path,value,mode=0o600,compact=false){const tmp=path+'.next';await writeFile(tmp,JSON.stringify(value,null,compact?0:2)+'\n',{flag:'wx',mode});await rename(tmp,path);}
+// build.rs transports this descriptor through the single-line cargo:rustc-env protocol.
+export async function saveRemoteRuntimeManifest(path,value){await save(path,value,0o600,true);}
 function command(executable,args){return new Promise((yes,no)=>{const child=spawn(executable,args,{env:{PATH:'/usr/bin:/bin:/usr/sbin:/sbin',DEVELOPER_DIR:'/Applications/Xcode.app/Contents/Developer',...(process.env.HOME?{HOME:process.env.HOME}:{})},stdio:['ignore','pipe','pipe']});let bytes=0,out='',err='';const timer=setTimeout(()=>{child.kill('SIGTERM');no(Error('OFFICIAL_COMMAND_UNCERTAIN'));},900000);for(const [pipe,key]of [[child.stdout,'out'],[child.stderr,'err']])pipe.on('data',data=>{bytes+=data.length;if(bytes>4*1024**2){child.kill('SIGTERM');no(Error('OFFICIAL_OUTPUT_BOUND'));}if(key==='out')out+=data;else err+=data;});child.on('error',()=>{clearTimeout(timer);no(Error('OFFICIAL_COMMAND_FAILED'));});child.on('close',code=>{clearTimeout(timer);if(code!==0)no(Error('OFFICIAL_COMMAND_FAILED'));else yes(args[0]==='notarytool'&&args.includes('--output-format')?out:out+err);});});}
 async function gitSource(repo,p,run){for(const [args,expected]of [[['rev-parse','HEAD'],p.sourceCommit],[['rev-parse','HEAD^{tree}'],p.sourceTree],[['status','--porcelain=v1','--untracked-files=all'],'']])if((await run('/usr/bin/git',['-C',repo,...args])).trim()!==expected)fail('OFFICIAL_SOURCE_CHANGED');}
 export async function resourceInventory(root){
@@ -61,7 +63,7 @@ export async function prepareOfficialRuntime(p,{repo=repoRoot,run=command,host=p
   for(const path of [join(update,'manifest.json'),join(remote,'manifest.json'),...tasks.map(t=>t.path)]){const index=s.signedFiles.length,original=join(p.workDir,'originals',String(index)),before=await regular(path);await writeFile(original,before.bytes,{flag:'wx',mode:0o600});if(sha((await regular(path)).bytes)!==sha(before.bytes))fail('OFFICIAL_RUNTIME_CHANGED');s.signedFiles.push({path,original,before:sha(before.bytes),beforeMode:before.mode});await save(state,s);}
   await signNestedRuntime(tasks,p,{repo,run,checkpoint:async(path,after)=>{s.signedFiles.find(v=>v.path===path).after=after;await save(state,s);}});
   for(const [name,entry]of Object.entries(u.files)){const f=await regular(join(update,name));entry.sha256=sha(f.bytes);entry.bytes=f.bytes.length;entry.mode=f.mode;}
-  if(!matchesDistributionFiles(u.files))fail('OFFICIAL_NOTICE_CHANGED');r.nodeSha256=sha((await regular(node)).bytes);await save(join(update,'manifest.json'),u,0o644);await save(join(remote,'manifest.json'),r);
+  if(!matchesDistributionFiles(u.files))fail('OFFICIAL_NOTICE_CHANGED');r.nodeSha256=sha((await regular(node)).bytes);await save(join(update,'manifest.json'),u,0o644);await saveRemoteRuntimeManifest(join(remote,'manifest.json'),r);
   s.state='runtime-prepared';s.manifests={update:sha((await regular(join(update,'manifest.json'))).bytes),remote:sha((await regular(join(remote,'manifest.json'))).bytes)};s.resourceFiles={update:await resourceInventory(update),remote:await resourceInventory(remote)};await save(state,s);return {state:s.state,operation:state};
  }catch(error){s.state='preparation-failed';s.code=/^OFFICIAL_/.test(error.message)?error.message:'OFFICIAL_PREPARATION_FAILED';await save(state,s);throw Error(s.code);}
 }
