@@ -4,7 +4,7 @@ import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {lstat,realpath,open,writeFile,mkdir,rename,cp,statfs,readdir,unlink} from 'node:fs/promises';
 import {constants} from 'node:fs';
-import {assertOfficialRuntime} from './build-desktop.mjs';
+import {assertOfficialRuntime} from './official-runtime-guard.mjs';
 import {dirname,join,resolve,isAbsolute} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {matchesDistributionFiles,QUALIFIED_REDISTRIBUTION} from './update-runtime-distribution.mjs';
