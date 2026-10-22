@@ -45,6 +45,30 @@ struct Manifest {
     redistribution: String,
     files: BTreeMap<String, Entry>,
 }
+
+fn qualified_distribution(manifest: &Manifest) -> bool {
+    if manifest.redistribution != "pinned-notices-qualified-v1" {
+        return false;
+    }
+    let Ok(pins) = serde_json::from_str::<BTreeMap<String, Entry>>(include_str!(
+        "../../scripts/update-runtime-notices/distribution-files.json"
+    )) else {
+        return false;
+    };
+    let actual: BTreeSet<_> = manifest
+        .files
+        .keys()
+        .filter(|n| n.starts_with("notices/"))
+        .collect();
+    let expected: BTreeSet<_> = pins.keys().filter(|n| n.starts_with("notices/")).collect();
+    actual == expected
+        && pins.iter().all(|(name, pin)| {
+            manifest.files.get(name).is_some_and(|entry| {
+                entry.sha256 == pin.sha256 && entry.bytes == pin.bytes && entry.mode == pin.mode
+            })
+        })
+}
+
 fn failure(code: &str) -> LifecycleError {
     LifecycleError { code: code.into(), guidance: "이 설치 파일의 업데이트 검증 도구를 확인하지 못했어요. 현재 전시와 백업은 유지됩니다. 검증된 Manager 설치 파일을 사용해 주세요.".into() }
 }
@@ -289,7 +313,8 @@ fn verify_manifest(resources: &Path, compiled: &str) -> Result<VerifiedPython, L
         || manifest.python_version != "3.11.17"
         || manifest.executable != EXECUTABLE
         || manifest.selection != "full-stdlib-no-static-embedding-v1"
-        || manifest.redistribution != "private-validation-only"
+        || !(manifest.redistribution == "private-validation-only"
+            || qualified_distribution(&manifest))
         || manifest.source.release != "20261013"
         || manifest.source.sha256 != ARCHIVE
         || manifest.source.bytes != 42_796_019
@@ -442,6 +467,8 @@ mod tests {
         }
     }
     fn fixture() -> Fixture {
+        static NEXT_FIXTURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = NEXT_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -449,7 +476,7 @@ mod tests {
         let resources = fs::canonicalize(std::env::temp_dir())
             .unwrap()
             .join(format!(
-                "exhibitos-python-resource-test-{}-{nonce}",
+                "exhibitos-python-resource-test-{}-{nonce}-{sequence}",
                 std::process::id()
             ));
         fs::create_dir(&resources).unwrap();
@@ -486,6 +513,41 @@ mod tests {
             resources,
             compiled,
         }
+    }
+    #[test]
+    fn qualified_distribution_requires_every_pinned_notice_and_original_metadata() {
+        let f = fixture();
+        let mut value: serde_json::Value = serde_json::from_str(&f.compiled).unwrap();
+        value["redistribution"] = serde_json::json!("pinned-notices-qualified-v1");
+        let pins: serde_json::Value = serde_json::from_str(include_str!(
+            "../../scripts/update-runtime-notices/distribution-files.json"
+        ))
+        .unwrap();
+        for (name, entry) in pins.as_object().unwrap() {
+            value["files"][name] = entry.clone();
+        }
+        let manifest: Manifest = serde_json::from_value(value.clone()).unwrap();
+        assert!(qualified_distribution(&manifest));
+        for name in [
+            "notices/LICENSE.zlib-ng.txt",
+            "metadata/PYTHON.json",
+            "notices/DISTRIBUTION.txt",
+        ] {
+            let mut changed = value.clone();
+            changed["files"].as_object_mut().unwrap().remove(name);
+            assert!(!qualified_distribution(
+                &serde_json::from_value(changed).unwrap()
+            ));
+            let mut changed = value.clone();
+            changed["files"][name]["sha256"] = serde_json::json!("0".repeat(64));
+            assert!(!qualified_distribution(
+                &serde_json::from_value(changed).unwrap()
+            ));
+        }
+        value["redistribution"] = serde_json::json!("public");
+        assert!(!qualified_distribution(
+            &serde_json::from_value(value).unwrap()
+        ));
     }
     #[test]
     fn exact_initial_tree_hash_and_later_metadata_are_bound() {

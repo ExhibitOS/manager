@@ -3,6 +3,7 @@ import test from 'node:test';import assert from 'node:assert/strict';
 import {inspectTar,selectRuntime,safeName} from './update-runtime-archive.mjs';
 import {SOURCE,NOTICE_SOURCE,completeRuntimeNotices,prepareUpdateRuntime} from './prepare-update-runtime.mjs';
 import {readFileSync} from 'node:fs';
+import {DISTRIBUTION_FILES,DISTRIBUTION_NOTICE,matchesDistributionFiles,qualifyRuntimeSelection} from './update-runtime-distribution.mjs';
 import {createHash} from 'node:crypto';
 function archive(rows){const parts=[];for(const row of rows){const data=Buffer.from(row.data??''),h=Buffer.alloc(512);h.write(row.name);h.write('0000755\0',100);h.write('0000000\0',108);h.write('0000000\0',116);h.write(data.length.toString(8).padStart(11,'0')+'\0',124);h.fill(32,148,156);h[156]=(row.type??'0').charCodeAt();if(row.link)h.write(row.link,157);h.write('ustar\0',257);const sum=h.reduce((a,b)=>a+b,0);h.write(sum.toString(8).padStart(6,'0')+'\0 ',148);parts.push(h,data,Buffer.alloc((512-data.length%512)%512));}return Buffer.concat([...parts,Buffer.alloc(1024)]);}
 const core=[{name:'python/PYTHON.json',data:'{}'},{name:'python/licenses/LICENSE.cpython.txt',data:'synthetic notice'},{name:'python/install/bin/python3.11',data:'synthetic executable'},{name:'python/install/lib/python3.11/encodings/__init__.py',data:'synthetic stdlib'}];
@@ -27,7 +28,7 @@ test('exact commit-pinned upstream notice is delivered and every declared path m
  assert.equal(result.discrepancy.metadataPreserved,true);
  assert.equal(result.discrepancy.declaredNoticeFiles.length,2);
  for(const entry of result.discrepancy.declaredNoticeFiles){const bytes=result.selected.get(entry.selectedPath).data;assert.equal(bytes.length,entry.bytes);assert.equal(createHash('sha256').update(bytes).digest('hex'),entry.sha256);}
- assert.match(result.discrepancy.status,/private-validation-only/);
+ assert.equal(result.discrepancy.status,'upstream-missing-notice-explicitly-supplemented');
 });
 test('changed, empty or substituted supplement and changed upstream descriptor are refused without changing selection',()=>{
  for(const bytes of [Buffer.alloc(0),Buffer.from(' '),Buffer.from(notice.toString().replace('1995-2024','1995-2025'))]){
@@ -58,4 +59,14 @@ test('unsafe or malformed declared license paths do not become supplemental allo
  for(const paths of [null,[],['licenses/../bad'],['licenses//bad'],['licenses/./bad'],['licenses/bad\\name'],['licenses/bad\0name']]){
   const {tree,selected}=noticeFixture({license_paths:paths});assert.throws(()=>completeRuntimeNotices(tree,selected,notice,descriptor),/LICENSE_METADATA_UNSAFE/);
  }
+});
+
+test('qualification is bound to exact original metadata and every preserved notice, not a public label',()=>{
+ assert.equal(matchesDistributionFiles(DISTRIBUTION_FILES),true);
+ assert.equal(Object.keys(DISTRIBUTION_FILES).filter(name=>name.startsWith('notices/LICENSE.')).length,20);
+ assert.equal(createHash('sha256').update(DISTRIBUTION_NOTICE).digest('hex'),DISTRIBUTION_FILES['notices/DISTRIBUTION.txt'].sha256);
+ for(const mutate of [v=>delete v['notices/LICENSE.zlib-ng.txt'],v=>v['notices/LICENSE.bdb.txt'].bytes++,v=>v['metadata/PYTHON.json'].sha256='0'.repeat(64),v=>v['notices/extra.txt']={bytes:1,mode:420,sha256:'0'.repeat(64)}]){
+  const changed=structuredClone(DISTRIBUTION_FILES);mutate(changed);assert.equal(matchesDistributionFiles(changed),false);
+ }
+ const {selected}=noticeFixture();assert.throws(()=>qualifyRuntimeSelection(selected),/DISTRIBUTION_CHANGED/);assert.equal(selected.has('notices/DISTRIBUTION.txt'),false);
 });

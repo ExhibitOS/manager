@@ -117,10 +117,11 @@ record distinguishes the original omission from this explicit supplement and
 records the path, origin, byte count and SHA256 of each declared notice.
 Unknown missing paths, empty or changed notices and altered metadata are refused.
 
-The runtime remains `private-validation-only`. This notice delivery correction
-does not establish legal clearance, a complete artifact SBOM, linked dependency
-membership, public redistribution qualification, signing or notarization. Existing
-generated runtimes and sealed Apps are not rewritten by a source change. Tiny
+The originally generated runtime remains `private-validation-only`; its recorded
+results and sealed Apps are not rewritten by this source change. The notice
+supplement alone does not establish linked dependency membership, an exhaustive
+artifact SBOM, signing or notarization. The fixed distribution qualification
+below is a separate producer/consumer contract. Tiny
 synthetic tar/selection regressions exercise the mapping and refusal boundaries;
 no full archive extraction or Python execution is required for those checks.
 
@@ -156,3 +157,49 @@ SBOM and supply-chain review retain their accurately stated scopes.
 Focused helper/hook checks: `node --test scripts/frontend-provenance.test.mjs`.
 Actual frontend/native artifact validation is recorded separately from synthetic
 hook checks; this source change alone does not qualify signing or publication.
+
+## Fixed runtime distribution qualification
+
+The current producer can emit `pinned-notices-qualified-v1` for the same fixed
+archive. `scripts/update-runtime-notices/distribution-files.json` pins the exact
+original `PYTHON.json`, all 20 preserved license files (19 archive notices plus
+the explicit supplement), and `DISTRIBUTION.txt`, by SHA256, byte count and mode.
+The producer checks their actual selected bytes. A changed/missing/extra notice
+or changed metadata cannot inherit qualification. Existing archive checksum,
+selection, path, expansion/size and no-host-Python guards remain in force.
+
+The declarations cover Python/PSF and CNRI, bzip2, MIT, X11, BSD-2/3-Clause,
+Apache-2.0 and OpenSSL/SSLeay, 0BSD, SQLite's public-domain dedication, TCL and
+Zlib. Their texts permit redistribution subject to the retained conditions;
+the fixed metadata declares no GPL/LGPL/AGPL component. `DISTRIBUTION.txt`
+provides the packaging change summary, provenance and OpenSSL/Eric Young
+attribution, while retaining the complete original terms. Relevant advertising
+must preserve the applicable OpenSSL acknowledgments and avoid endorsement.
+The Python change-summary condition is in the retained Python license;
+[Python's terms](https://docs.python.org/3.11/license.html),
+[Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) and the
+[OpenSSL/SSLeay terms](https://github.com/openssl/openssl/blob/OpenSSL_1_1_1w/LICENSE)
+provide the upstream basis.
+
+Extra archive notices are retained without inferring linked membership. In
+particular, Berkeley DB's source-availability condition is not waived: its
+notice is extra to the declared set; the fixed metadata declares no BDB link,
+`_dbm` has no such link and its observed Mach-O dependency is system libSystem.
+The declared readline provider is system libedit/ncurses, not GNU readline;
+liblzma is declared 0BSD. This bounded audit does not assert a universal linked
+component graph or transfer other dependencies to these licenses.
+
+The native consumer accepts the old private contract unchanged or the new fixed
+qualification with every pinned entry, then retains the compiled-manifest and
+all-file hash/size/mode/path/identity verification before using Python. Old
+consumers reject the new value; regenerate the runtime and build the matching
+consumer together. The desktop prebuild guard admits official signing intent
+only for the exact qualified source/notice manifest contract; arbitrary
+`public`/`approved` labels, unknown metadata and older private resources still
+refuse. Unread Tauri configuration overlays remain refused even with a qualified
+source runtime, since they can replace the qualified resource mapping. That guard is a prebuild admission, not an on-disk byte verifier or
+Apple approval: the native verifier supplies the artifact byte checks.
+
+This source qualification does not generate or sign a package. Existing
+Developer ID/notarization/stapling/Gatekeeper, checksum/source binding and clean
+user install/update/offline acceptance remain separate release requirements.
