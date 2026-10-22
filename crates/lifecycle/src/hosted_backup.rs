@@ -416,6 +416,8 @@ impl LifecycleService {
     /// Trusted native caller supplies fixed pinned Node/runner paths and private input.
     /// Paths/keys/binaries are never accepted on a renderer recovery request.
     #[cfg(target_os = "macos")]
+    // Keep source/budget, pinned executables and input/resource checks explicit at this boundary.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_hosted_backup(
         &self,
         source: Source,
