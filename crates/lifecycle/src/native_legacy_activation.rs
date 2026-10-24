@@ -7,7 +7,8 @@ fn owner_required() -> LifecycleError {
     err("NATIVE_LEGACY_ORIGINAL_WRITER_REQUIRED")
 }
 fn positive_stopped(status: &crate::Status, expected: &[String]) -> bool {
-    status.installed
+    !expected.is_empty()
+        && status.installed
         && status.state == "stopped"
         && !status.readiness.ready
         && status.active_job.is_none()
@@ -275,9 +276,17 @@ impl AppliedSchema<'_> {
             crate::write_private_new(&config, "freeze-signing-key.json", &key_bytes.0, 8192)?;
             sync(&config)?;
         }
+        let (installed_key, installed_key_pin) =
+            super::super::super::codec::private_read(&target_key, 8192)?;
+        if installed_key.0 != key_bytes.0 {
+            return Err(changed());
+        }
         original.check()?;
         candidate.check()?;
         key_pin.check()?;
+        if cancellation.load(Ordering::SeqCst) {
+            return Err(err("NATIVE_CANCELLED"));
+        }
         crate::write_json(&candidate.job, "activated.json", &receipt)?;
         sync(&candidate.job)?;
         // Keep the pending marker on every preceding error/ambiguity/cancel.
@@ -286,6 +295,10 @@ impl AppliedSchema<'_> {
             return Err(changed());
         }
         marker_pin.check()?;
+        installed_key_pin.check()?;
+        if cancellation.load(Ordering::SeqCst) {
+            return Err(err("NATIVE_CANCELLED"));
+        }
         fs::remove_file(candidate.service.root.join(MARKER)).map_err(|_| changed())?;
         sync(&candidate.service.root)?;
         Ok(receipt)
@@ -340,6 +353,7 @@ mod tests {
         value = status();
         value.services.clear();
         assert!(!positive_stopped(&value, &expected));
+        assert!(!positive_stopped(&value, &[]));
         value = status();
         value.services[1].state = "running".into();
         assert!(!positive_stopped(&value, &expected));
