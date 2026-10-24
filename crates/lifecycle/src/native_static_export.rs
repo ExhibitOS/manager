@@ -194,7 +194,7 @@ impl InstallationController {
             ))
         })
     }
-    fn read_static_export(&self, token: &str) -> Result<Option<Status>> {
+    pub(super) fn read_static_export(&self, token: &str) -> Result<Option<Status>> {
         let (root, name, identity) = self.static_export_location(token)?;
         let profile = self.profile.as_ref().ok_or_else(bad)?;
         let _lock = profile_lock(profile)?;

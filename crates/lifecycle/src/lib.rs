@@ -28,6 +28,8 @@ pub mod native_host;
 pub mod native_personal;
 pub mod initial_account;
 pub mod publication_source;
+pub mod hosted_runtime_file;
+pub mod static_publication_source;
 mod backup_key;
 pub mod maintenance;
 mod maintenance_stream;

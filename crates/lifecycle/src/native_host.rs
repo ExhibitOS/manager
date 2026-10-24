@@ -50,6 +50,7 @@ pub struct Host {
     state: Arc<Mutex<State>>,
     worker: Option<thread::JoinHandle<()>>,
     exporter: super::installations::native_static_export::Exporter,
+    hoster: super::installations::native_hosting::Hoster,
 }
 enum Work {
     Prepare(Option<InitialAccountInput>),
@@ -63,6 +64,7 @@ impl Host {
     pub fn new(controller: Arc<InstallationController>, resources: PathBuf) -> Self {
         Self {
             exporter: super::installations::native_static_export::Exporter::new(controller.clone()),
+            hoster: super::installations::native_hosting::Hoster::new(controller.clone()),
             controller,
             resources,
             state: Arc::new(Mutex::new(State {
@@ -94,7 +96,7 @@ impl Host {
                 .state
                 .lock()
                 .map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
-            if state.busy || self.exporter.active() {
+            if state.busy || self.exporter.active() || self.hoster.active() {
                 return Err(err("BUSY"));
             }
             if let Some(session) = state.session.as_mut() {
@@ -501,16 +503,23 @@ impl Host {
         {
             return Err(err("BUSY"));
         }
-        if self.exporter.active()
+        if (self.exporter.active() || self.hoster.active())
             && matches!(
                 &request.command,
                 UiCommand::NativePrepare { .. }
                     | UiCommand::NativeStart { .. }
                     | UiCommand::NativeBackup { .. }
                     | UiCommand::NativeMaintenance { .. }
+                    | UiCommand::StaticExport { .. }
             )
         {
             return Err(err("BUSY"));
+        }
+        if let UiCommand::NativeHosting { selection_token, hosting } = request.command {
+            if self.exporter.active() { return Err(err("BUSY")); }
+            let payload = Arc::new(Payload::open(&self.resources)?);
+            return serde_json::to_value(self.hoster.start(selection_token, hosting, payload)?)
+                .map_err(|_| err("STATE_INVALID"));
         }
         if let UiCommand::NativePrepare {
             selection_token, ..
@@ -559,6 +568,20 @@ impl Host {
             };
         }
         match &request.command {
+            UiCommand::NativeHostingReview { selection_token } => {
+                return serde_json::to_value(self.hoster.review(selection_token)?)
+                    .map_err(|_| err("STATE_INVALID"));
+            }
+            UiCommand::NativeHostingStatus { selection_token } => {
+                return serde_json::to_value(self.hoster.status(selection_token)?)
+                    .map_err(|_| err("STATE_INVALID"));
+            }
+            UiCommand::NativeHostingCancel { selection_token } => {
+                self.hoster.status(selection_token)?;
+                self.hoster.cancel();
+                return serde_json::to_value(self.hoster.status(selection_token)?)
+                    .map_err(|_| err("STATE_INVALID"));
+            }
             UiCommand::StaticExportStatus { selection_token } => {
                 return serde_json::to_value(self.exporter.status(selection_token)?)
                     .map_err(|_| err("STATE_INVALID"));
@@ -601,7 +624,7 @@ impl Host {
                 )?)
                 .map_err(|_| err("STATE_INVALID"));
             }
-            UiCommand::NativeStop { .. } => self.exporter.cancel(),
+            UiCommand::NativeStop { .. } => { self.exporter.cancel(); self.hoster.cancel(); },
             _ => {}
         }
         if let UiCommand::NativeAuthoringSession { selection_token } = &request.command {
@@ -648,6 +671,7 @@ impl Host {
     }
     pub fn shutdown(&mut self) {
         self.exporter.cancel();
+        self.hoster.shutdown();
         if let Ok(mut state) = self.state.lock() {
             state.stop_requested = true;
             if let Some(cancel) = &state.cancel {
