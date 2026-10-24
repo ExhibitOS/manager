@@ -1,11 +1,34 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Trusted-bundle desktop lifecycle. No shell, arbitrary compose paths or destructive volume removal.
 pub mod backup_creation;
+pub mod hosted_backup;
+pub mod hosted_restoration;
+#[cfg(not(windows))]
+pub mod external_restoration;
+pub mod backup_export;
+mod runtime_prepare;
+#[cfg(not(windows))]
+pub mod maintenance_source;
 mod cached_install;
 pub mod cancellation;
 pub mod helper_reconciliation;
 pub mod installation_backup;
 pub mod installations;
+#[cfg(target_os = "macos")]
+pub mod native_payload;
+#[cfg(target_os = "macos")]
+mod native_signed_admission;
+#[cfg(target_os = "macos")]
+pub mod native_installation;
+#[cfg(target_os = "macos")]
+pub mod native_runtime;
+#[cfg(target_os = "macos")]
+pub mod native_host;
+#[cfg(target_os = "macos")]
+pub mod native_personal;
+pub mod initial_account;
+pub mod publication_source;
+mod backup_key;
 pub mod maintenance;
 mod maintenance_stream;
 mod process_window;
@@ -754,14 +777,52 @@ fn run_observed_inputs(
     seconds: u64,
     input: Option<File>,
     extra: Option<File>,
+    observe: impl FnMut() -> Result<()>,
+) -> Result<Vec<u8>> {
+    run_observed_stream(binary, args, cwd, seconds, (input, extra), None, observe)
+}
+fn run_observed_stream(
+    binary: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    seconds: u64,
+    files: (Option<File>, Option<File>),
+    streamed: Option<(Box<dyn Read + Send>, u64)>,
+    observe: impl FnMut() -> Result<()>,
+) -> Result<Vec<u8>> {
+    run_observed_stream_environment(binary, args, cwd, seconds, ObservedInputs { files, streamed }, false, observe)
+}
+struct ObservedInputs {
+    files: (Option<File>, Option<File>),
+    streamed: Option<(Box<dyn Read + Send>, u64)>,
+}
+fn run_observed_stream_environment(
+    binary: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    seconds: u64,
+    inputs: ObservedInputs,
+    private_environment: bool,
     mut observe: impl FnMut() -> Result<()>,
 ) -> Result<Vec<u8>> {
+    let ObservedInputs { files: (input, extra), streamed } = inputs;
+    if streamed.is_some() && input.is_some() {
+        return Err(err("ENGINE_INPUT_INVALID"));
+    }
+    if streamed.as_ref().is_some_and(|(_, limit)| *limit == 0) {
+        return Err(err("ENGINE_INPUT_INVALID"));
+    }
+    let has_stream = streamed.is_some();
     let executable = if matches!(binary, "docker" | "podman") {
         engine_executable(binary).ok_or_else(|| err("RUNTIME_MISSING"))?
     } else {
         PathBuf::from(binary)
     };
     let mut command = process_window::background_command(executable);
+    if private_environment {
+        command.env_clear().env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+    }
+    if binary == "docker" { local_network::pin_command(&mut command)?; }
     if matches!(binary, "docker" | "podman") {
         let mut paths: Vec<PathBuf> =
             std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
@@ -778,7 +839,11 @@ fn run_observed_inputs(
     }
     command
         .args(args)
-        .stdin(input.map(Stdio::from).unwrap_or_else(Stdio::null))
+        .stdin(if has_stream {
+            Stdio::piped()
+        } else {
+            input.map(Stdio::from).unwrap_or_else(Stdio::null)
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(dir) = cwd {
@@ -810,6 +875,42 @@ fn run_observed_inputs(
             err("ENGINE_PERMISSION")
         }
     })?;
+    // The producer is a bounded, finite protected reader; it must verify its
+    // retained source identity on EOF. No payload enters argv or diagnostics.
+    let input_result = streamed.map(|(mut source, limit)| {
+        let mut sink = child.stdin.take().unwrap();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = (|| -> Result<()> {
+                let mut written = 0u64;
+                let mut buffer = [0u8; 65536];
+                loop {
+                    let wanted = (limit.saturating_sub(written).saturating_add(1))
+                        .min(buffer.len() as u64) as usize;
+                    let n = source
+                        .read(&mut buffer[..wanted])
+                        .map_err(|_| err("ENGINE_INPUT_FAILED"))?;
+                    if n == 0 {
+                        break;
+                    }
+                    written = written
+                        .checked_add(n as u64)
+                        .ok_or_else(|| err("ENGINE_INPUT_LIMIT"))?;
+                    if written > limit {
+                        return Err(err("ENGINE_INPUT_LIMIT"));
+                    }
+                    sink.write_all(&buffer[..n])
+                        .map_err(|_| err("ENGINE_INPUT_FAILED"))?;
+                }
+                sink.flush().map_err(|_| err("ENGINE_INPUT_FAILED"))?;
+                Ok(())
+            })();
+            drop(sink);
+            let _ = tx.send(result);
+        });
+        rx
+    });
+    let mut input_done = !has_stream;
     let (tx, rx) = mpsc::channel();
     for (index, mut stream) in [
         Box::new(child.stdout.take().unwrap()) as Box<dyn Read + Send>,
@@ -841,6 +942,22 @@ fn run_observed_inputs(
     drop(tx);
     let deadline = Instant::now() + Duration::from_secs(seconds);
     let status = loop {
+        if !input_done {
+            match input_result.as_ref().unwrap().try_recv() {
+                Ok(Ok(())) => input_done = true,
+                Ok(Err(error)) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(err("ENGINE_INPUT_FAILED"));
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
         match child.try_wait() {
             Ok(Some(s)) => break s,
             Ok(None) => {
@@ -859,6 +976,13 @@ fn run_observed_inputs(
             Err(_) => return Err(err("ENGINE_OPERATION_FAILED")),
         }
     };
+    if !input_done {
+        input_result
+            .as_ref()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_| err("ENGINE_INPUT_FAILED"))??;
+    }
     let a = rx
         .recv_timeout(Duration::from_secs(2))
         .map_err(|_| err("ENGINE_TIMEOUT"))?;
@@ -869,6 +993,9 @@ fn run_observed_inputs(
         return Err(err("ENGINE_OUTPUT_LIMIT"));
     }
     if !status.success() {
+        if private_environment {
+            return Err(hosted_backup::runner_error(if a.0 == 0 { &a.1 } else { &b.1 }));
+        }
         let text = format!(
             "{} {}",
             String::from_utf8_lossy(&a.1),
@@ -922,8 +1049,11 @@ fn loopback_url(input: &str, ports: &[u16]) -> Result<(SocketAddr, String)> {
     Ok((SocketAddr::from(([127, 0, 0, 1], port)), path))
 }
 fn readiness(m: &BundleManifest) -> Readiness {
+    readiness_target(&m.readiness_url, &m.ports, &m.schema_version, &m.protocol_version, &m.version)
+}
+fn readiness_target(url: &str, ports: &[u16], schema: &str, protocol: &str, version: &str) -> Readiness {
     let attempt = (|| -> Result<Readiness> {
-        let (address, path) = loopback_url(&m.readiness_url, &m.ports)?;
+        let (address, path) = loopback_url(url, ports)?;
         let mut socket = TcpStream::connect_timeout(&address, Duration::from_secs(2))
             .map_err(|_| err("READINESS_UNAVAILABLE"))?;
         socket
@@ -953,9 +1083,9 @@ fn readiness(m: &BundleManifest) -> Readiness {
             .split_once("\r\n\r\n")
             .ok_or_else(|| err("READINESS_INVALID"))?;
         let v: Value = serde_json::from_str(body).map_err(|_| err("READINESS_INVALID"))?;
-        if v["schemaVersion"] != m.schema_version
-            || v["protocolVersion"] != m.protocol_version
-            || v["platformVersion"] != m.version
+        if v["schemaVersion"] != schema
+            || v["protocolVersion"] != protocol
+            || v["platformVersion"] != version
         {
             return Err(err("VERSION_MISMATCH"));
         }
@@ -973,8 +1103,8 @@ fn readiness(m: &BundleManifest) -> Readiness {
         });
         Ok(Readiness {
             ready: v["ready"] == true && service_ready,
-            version: Some(m.version.clone()),
-            protocol_version: Some(m.protocol_version.clone()),
+            version: Some(version.into()),
+            protocol_version: Some(protocol.into()),
             error_code: None,
         })
     })();
@@ -990,6 +1120,7 @@ pub struct LifecycleService {
     root_guard: windows_private::PrivateDirectory,
 }
 impl LifecycleService {
+    pub fn bundled_maintenance_image(&self,source:&Path)->Result<Option<String>>{runtime_prepare::maintenance_image(source)}
     pub fn new(root: PathBuf) -> Result<Self> {
         if !root.is_absolute() {
             return Err(err("STATE_INVALID"));
@@ -1019,6 +1150,10 @@ impl LifecycleService {
         drop(service.lock()?);
         service.recover_jobs()?;
         service.recover_backup_jobs()?;
+        service.recover_hosted_backups()?;
+        service.recover_hosted_restore_checks()?;
+        #[cfg(not(windows))]
+        service.recover_external_restore_checks()?;
         service.recover_restoration()?;
         service.recover_helper_reconciliations()?;
         service.recover_maintenance_cancellation()?;

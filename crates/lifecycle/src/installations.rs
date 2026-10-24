@@ -4,6 +4,33 @@ use super::installation_backup::source_bytes;
 use super::*;
 use std::sync::RwLock;
 
+/// Native macOS presentation state and its bounded IPC adapter. Uses this same
+/// controller/session so switching presentation modes never opens a second writer.
+#[path = "native_ui.rs"]
+pub mod native_ui;
+#[cfg(target_os = "macos")]
+#[path = "native_document.rs"]
+pub mod native_document;
+#[cfg(target_os = "macos")]
+#[path = "native_upload.rs"]
+pub mod native_upload;
+#[cfg(target_os = "macos")]
+#[path = "native_publication.rs"]
+pub mod native_publication;
+#[cfg(target_os = "macos")]
+#[path = "native_static_export.rs"]
+pub mod native_static_export;
+#[cfg(target_os = "macos")]
+#[path = "native_backup.rs"]
+pub mod native_backup;
+#[cfg(target_os = "macos")]
+#[path = "native_restore.rs"]
+pub mod native_restore;
+#[cfg(target_os = "macos")]
+#[path = "native_maintenance.rs"]
+pub mod native_maintenance;
+
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Entry {
@@ -276,6 +303,21 @@ impl Drop for DestinationLease<'_> {
     }
 }
 impl InstallationController {
+    /// Pins the profile operation lock across admission and mutation. A precheck alone is not atomic.
+    pub fn with_current_mutation<T>(&self,token:&str,task:impl FnOnce(&LifecycleService)->Result<T>)->Result<T>{self.with_current(token,|service|{
+        let _profile=if let Some(profile)=&self.profile{if profile.root!=service.root{Some(profile.lock()?)}else{None}}else{None};
+        #[cfg(not(windows))]
+        {if let Some(profile)=&self.profile{profile.ensure_external_archive_reconciled()?;}service.ensure_external_archive_reconciled()?;}
+        task(service)
+    })}
+    /// Explicit user save only; no key bytes cross IPC. Selection is held throughout creation.
+    pub fn create_backup_key(&self, token:&str, path:&Path)->Result<()> {
+        self.with_current(token, |service| {
+            let _operation=service.lock()?;
+            let protected=self.profile.as_ref().map(|profile|profile.root.as_path()).unwrap_or(service.root.as_path());
+            super::backup_key::create(path,protected,&service.root)
+        })
+    }
     pub fn new(profile: PathBuf, override_root: Option<PathBuf>) -> Result<Self> {
         if let Some(path) = override_root {
             return Self::pinned(path, "override");
