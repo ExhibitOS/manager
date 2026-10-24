@@ -17,6 +17,7 @@ use std::{
 mod codec;
 pub(crate) use codec::authenticate;
 pub(crate) use codec::inspection_resources;
+pub(crate) use codec::schema_resources;
 #[path = "native_legacy_stage.rs"]
 mod stage;
 pub(crate) use stage::Candidate;

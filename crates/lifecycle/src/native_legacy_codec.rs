@@ -156,6 +156,20 @@ pub(crate) fn inspection_resources(payload: &Payload) -> Result<(PathBuf, Vec<Pi
     }
     Ok((root.join("scripts/native-legacy-inspect.mjs"), pins))
 }
+pub(crate) fn schema_resources(payload: &Payload) -> Result<(PathBuf, Vec<Pin>)> {
+    let (inspector, mut pins) = inspection_resources(payload)?;
+    let root = inspector.parent().and_then(Path::parent).ok_or_else(invalid)?;
+    let path = root.join("scripts/native-legacy-apply.mjs");
+    if fs::canonicalize(&path).map_err(|_| invalid())? != path {
+        return Err(invalid());
+    }
+    let (bytes, pin) = crate::hosted_runtime_file::bounded(&path, 2 * 1024 * 1024)?;
+    if bytes != include_bytes!("../../../scripts/native-legacy-apply.mjs") {
+        return Err(err("NATIVE_LEGACY_SCHEMA_UNAVAILABLE"));
+    }
+    pins.push(pin);
+    Ok((path, pins))
+}
 struct OwnedChild(Child);
 impl std::ops::Deref for OwnedChild {
     type Target = Child;
