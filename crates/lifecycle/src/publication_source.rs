@@ -24,7 +24,7 @@ impl Drop for PrivateBytes {
         self.0.fill(0);
     }
 }
-fn parse(bytes: &[u8], origin: String) -> Result<LocalPublicationCredentials, LifecycleError> {
+pub(crate) fn parse(bytes: &[u8], origin: String) -> Result<LocalPublicationCredentials, LifecycleError> {
     let text = std::str::from_utf8(bytes).map_err(|_| err("LOCAL_CMS_CREDENTIALS_INVALID"))?;
     let mut values = std::collections::BTreeMap::new();
     for line in text.lines() {

@@ -17,13 +17,13 @@ pub struct VerificationSource{
  pub verification_id:String,pub backup_id:String,pub image:String,pub authenticated_manifest_sha256:String,pub files:u64,pub source_path:PathBuf,
  pins:Vec<FilePin>,directory_pins:Vec<(u64,u64,u32,u32)>,
 }
-struct DirectoryPin{file:File,path:PathBuf}
+pub(crate) struct DirectoryPin{file:File,path:PathBuf}
 impl DirectoryPin{
- fn open(path:&Path)->Result<Self>{
+ pub(crate) fn open(path:&Path)->Result<Self>{
   let file=OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW|libc::O_DIRECTORY|libc::O_NONBLOCK).open(path).map_err(|_|invalid())?;
   let pin=Self{file,path:path.into()};pin.check()?;Ok(pin)
  }
- fn check(&self)->Result<()>{let held=self.file.metadata().map_err(|_|invalid())?;let named=fs::symlink_metadata(&self.path).map_err(|_|invalid())?;
+ pub(crate) fn check(&self)->Result<()>{let held=self.file.metadata().map_err(|_|invalid())?;let named=fs::symlink_metadata(&self.path).map_err(|_|invalid())?;
   if !held.is_dir()||named.is_symlink()||held.dev()!=named.dev()||held.ino()!=named.ino()||fs::canonicalize(&self.path).ok().as_deref()!=Some(self.path.as_path()){return Err(invalid());}Ok(())
  }
 }
@@ -55,6 +55,10 @@ fn names(root:&Path)->Result<(Vec<String>,bool)>{
 }
 pub(crate) struct SourceSnapshot{root:PathBuf,pins:Vec<FilePin>,finder:Option<FilePin>,directories:Vec<DirectoryPin>,directory_pins:Vec<(u64,u64,u32,u32)>}
 impl SourceSnapshot{
+ pub(crate) fn bounded_cipher_bytes(&self)->Result<u64>{
+  self.check()?;
+  self.pins.iter().try_fold(0u64,|total,pin|total.checked_add(pin.bytes).ok_or_else(invalid))
+ }
  pub(crate) fn capture(root:&Path)->Result<Self>{
   super::maintenance::input_path(root,true)?;super::maintenance::input_path(&root.join("files"),true)?;
   let mut directories=root.ancestors().map(DirectoryPin::open).collect::<Result<Vec<_>>>()?;directories.push(DirectoryPin::open(&root.join("files"))?);

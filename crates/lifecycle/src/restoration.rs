@@ -165,19 +165,46 @@ pub(crate) fn fresh_root(root: &Path) -> Result<()> {
     directory.check()?;
     Ok(())
 }
+/// Existing two runtime images, optionally followed by the fixed, unused maintenance archive.
+/// Restored archives keep their existing index-based path rather than introducing a new format.
+pub(crate) fn supported_recovery_images(manifest: &BundleManifest) -> bool {
+    if manifest.images.len() == 2 {
+        return true;
+    }
+    if manifest.images.len() != 3 {
+        return false;
+    }
+    let extra = &manifest.images[2];
+    extra
+        .reference
+        .strip_prefix("sha256:")
+        .is_some_and(hash_valid)
+        && !manifest.images[..2]
+            .iter()
+            .any(|image| image.reference == extra.reference)
+        && extra.archive.as_ref().is_some_and(|archive| {
+            matches!(
+                archive.path.as_str(),
+                "maintenance-image.tar" | "image-2.tar"
+            ) && archive.bytes > 0
+                && archive.bytes <= 2 * 1024 * 1024 * 1024
+                && hash_valid(&archive.sha256)
+        })
+}
 pub(crate) fn preserved_images(
     bytes: &[u8],
     original: &BundleManifest,
 ) -> Result<Vec<PreservedImage>> {
     let images: Vec<PreservedImage> =
         serde_json::from_slice(bytes).map_err(|_| err("RESTORE_LAYOUT_UNSUPPORTED"))?;
-    if images.len() != 2
+    if images.len() != original.images.len()
+        || !supported_recovery_images(original)
         || images
             .iter()
             .map(|i| i.bytes)
             .try_fold(0u64, u64::checked_add)
             .is_none_or(|n| n > 2 * 1024 * 1024 * 1024)
-        || original.images.len() != 2
+        || images.len() == 3 && images[2].content_id != original.images[2].reference
         || images.iter().enumerate().any(|(index, image)| {
             image.reference != original.images[index].reference
                 || !image
@@ -1338,5 +1365,38 @@ mod tests {
         };
         write_json(&service.root, "restoration.json", &job).unwrap();
         assert!(service.restoration_status().is_err());
+    }
+    #[test]
+    fn fixed_maintenance_inventory_keeps_exact_identity_and_two_image_compatibility() {
+        let mut manifest = crate::tests::manifest_for_detection();
+        manifest.images = vec![
+            Image {
+                reference: format!("sha256:{}", "a".repeat(64)),
+                archive: None,
+            },
+            Image {
+                reference: format!("sha256:{}", "b".repeat(64)),
+                archive: None,
+            },
+            Image {
+                reference: format!("sha256:{}", "c".repeat(64)),
+                archive: Some(Archive {
+                    path: "maintenance-image.tar".into(),
+                    sha256: "d".repeat(64),
+                    bytes: 1,
+                }),
+            },
+        ];
+        let mut inventory: Vec<Value> = manifest.images.iter().enumerate().map(|(index,image)| serde_json::json!({"reference":image.reference,"contentId":image.reference,"archive":format!("images/image-{index}.tar"),"bytes":1,"sha256":"e".repeat(64)})).collect();
+        let encoded = serde_json::to_vec(&inventory).unwrap();
+        assert!(preserved_images(&encoded, &manifest).is_ok());
+        inventory[2]["contentId"] = format!("sha256:{}", "f".repeat(64)).into();
+        assert!(preserved_images(&serde_json::to_vec(&inventory).unwrap(), &manifest).is_err());
+        manifest.images[2].archive.as_mut().unwrap().path = "arbitrary-extra.tar".into();
+        assert!(preserved_images(&encoded, &manifest).is_err());
+        manifest.images.pop();
+        assert!(preserved_images(&encoded, &manifest).is_err());
+        inventory.pop();
+        assert!(preserved_images(&serde_json::to_vec(&inventory).unwrap(), &manifest).is_ok());
     }
 }

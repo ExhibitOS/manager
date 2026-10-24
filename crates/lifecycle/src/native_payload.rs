@@ -267,6 +267,12 @@ impl Payload {
             manifest_sha256: digest(&bytes),
         })
     }
+    /// Fresh byte admission before a migration writes or runs maintenance tools.
+    pub(crate) fn recheck(&self) -> Result<()> {
+        let current = Self::open(&self.root)?;
+        if current.manifest_sha256 != self.manifest_sha256 { return Err(invalid()); }
+        Ok(())
+    }
     pub fn context(&self) -> Context {
         Context {
             state: "bytes_verified".into(),
@@ -279,6 +285,26 @@ impl Payload {
     }
     pub fn node(&self) -> PathBuf {
         self.root.join(&self.manifest.entry.node)
+    }
+    /// Fixed codec-only resources, rechecked against this admitted manifest and
+    /// held across authentication. No arbitrary module or executable selection.
+    pub(crate) fn legacy_codec_pins(&self) -> Result<Vec<crate::hosted_runtime_file::Pin>> {
+        let mut pins = Vec::new();
+        for (name, executable, limit) in [
+            (self.manifest.entry.node.as_str(), true, 160 * 1024 * 1024),
+            ("platform/packages/storage/dist/service-backup.js", false, 2 * 1024 * 1024),
+            ("platform/packages/storage/dist/service-inventory.js", false, 2 * 1024 * 1024),
+            ("platform/packages/storage/dist/encrypted-files.js", false, 2 * 1024 * 1024),
+        ] {
+            let item = self.manifest.files.iter().find(|f| f.path == name && f.link.is_none() && f.executable == Some(executable))
+                .ok_or_else(|| err("NATIVE_LEGACY_CODEC_UNAVAILABLE"))?;
+            let path = self.root.join(name);
+            if fs::canonicalize(&path).map_err(|_| invalid())? != path { return Err(invalid()); }
+            let (bytes, pin) = crate::hosted_runtime_file::bounded(&path, limit)?;
+            if item.bytes != Some(bytes.len() as u64) || item.sha256.as_deref() != Some(digest(&bytes).as_str()) { return Err(invalid()); }
+            pins.push(pin);
+        }
+        Ok(pins)
     }
     pub fn backup_resources(&self) -> Result<BackupResources> {
         for (name, executable) in [

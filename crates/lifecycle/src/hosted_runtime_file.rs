@@ -33,6 +33,10 @@ fn same(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
     }
 }
 impl Pin {
+    pub(crate) fn duplicate_file(&self) -> Result<std::fs::File, LifecycleError> {
+        self.check()?;
+        self.file.try_clone().map_err(|_| refused("REMOTE_RUNTIME_UNAVAILABLE"))
+    }
     pub fn check(&self) -> Result<(), LifecycleError> {
         let named =
             std::fs::symlink_metadata(&self.path).map_err(|_| refused("REMOTE_RUNTIME_CHANGED"))?;

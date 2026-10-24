@@ -875,7 +875,8 @@ impl Session {
         self.start_owned(false)
     }
     fn start_owned(&mut self, services: bool) -> Result<Context> {
-        if services && exists(&self.service.root.join("native-restore-current.json"))? {
+        if services && (exists(&self.service.root.join("native-restore-current.json"))?
+            || exists(&self.service.root.join("native-legacy-migration-current.json"))?) {
             return Err(err("NATIVE_RESTORE_ACTIVATION_REQUIRED"));
         }
         if self.any_owned() {
@@ -972,7 +973,8 @@ impl Session {
         }
     }
     pub fn backup_available(&self) -> Result<()> {
-        if exists(&self.service.root.join("native-restore-current.json"))? {
+        if exists(&self.service.root.join("native-restore-current.json"))?
+            || exists(&self.service.root.join("native-legacy-migration-current.json"))? {
             return Err(err("NATIVE_RESTORE_PENDING"));
         }
         self.maintenance_available()
@@ -1067,6 +1069,58 @@ impl Session {
     }
     pub(crate) fn maintenance_payload(&self) -> Arc<Payload> {
         self.payload.clone()
+    }
+    /// Fixed rollback-only legacy schema inspector, never an arbitrary script.
+    pub(crate) fn inspect_legacy_schema(&mut self, input: &[u8]) -> Result<Value> {
+        if self.status()?.state != "database_ready"
+            || self.guard.is_none()
+            || self.node.is_some()
+            || self.auxiliary.is_some()
+            || input.len() > 16384
+        {
+            return Err(err("NATIVE_NOT_READY"));
+        }
+        self.payload.recheck()?;
+        let (script, pins) = crate::native_legacy_migration::inspection_resources(&self.payload)?;
+        let database = self
+            .environment
+            .0
+            .get("DATABASE_URL")
+            .ok_or_else(|| err("NATIVE_CONFIGURATION_INVALID"))?
+            .clone();
+        self.maintenance_space = vec![self.service.root.clone()];
+        let result = self.auxiliary_timed(
+            self.payload.node(),
+            vec![script.to_string_lossy().into_owned()],
+            vec![
+                ("DATABASE_URL", database),
+                (
+                    "BLOB_ROOT",
+                    self.service
+                        .root
+                        .join("blobs")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+            ],
+            Some(input),
+            Duration::from_secs(3600),
+        );
+        self.maintenance_space.clear();
+        for pin in pins {
+            pin.check()?;
+        }
+        self.payload.recheck()?;
+        match result {
+            Ok((0, mut bytes)) => {
+                let value = serde_json::from_slice(&bytes)
+                    .map_err(|_| err("NATIVE_LEGACY_INSPECTION_FAILED"));
+                bytes.fill(0);
+                value
+            }
+            Err(error) => Err(error),
+            _ => Err(err("NATIVE_LEGACY_INSPECTION_FAILED")),
+        }
     }
     /// Closed maintenance entry, callable only while this Session owns the PG
     /// and root fence and has reaped every application writer. Credentials are

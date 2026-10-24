@@ -24,7 +24,7 @@ impl Default for Ports {
     }
 }
 impl Ports {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if [self.web, self.api, self.database]
             .iter()
             .any(|p| *p < 1024)
