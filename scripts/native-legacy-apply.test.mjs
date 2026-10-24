@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {deriveFixedTarget,schemaRequest} from './native-legacy-apply.mjs';
+import {deriveFixedTarget,commitFixedTarget,schemaRequest} from './native-legacy-apply.mjs';
 
 const digest='a'.repeat(64),lastHash='cef351fc481576cac99f8b9653e6343b505b38f079d0f0789bf00367d2d69fab';
 const canonical=value=>JSON.stringify(value,(_k,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort()):v);
@@ -51,4 +51,20 @@ for(const [name,options] of Object.entries({nonempty:{nonempty:true},unknownMigr
 }
 test('failed rollback discards the client and cannot yield a capability',async()=>{
  const f=fixture({rollbackFailure:true});await assert.rejects(deriveFixedTarget(f.client,f.context));assert.deepEqual(f.calls.at(-1),{release:true});
+});
+test('commit uses a fresh original inventory check and the freshly derived schema',async()=>{
+ const first=fixture({applied:false}),derived=await deriveFixedTarget(first.client,first.context);
+ const f=fixture({applied:false});await commitFixedTarget(f.client,f.context,derived.targetSchemaSha256);
+ assert.equal(f.calls.filter(c=>c.sql==='COMMIT').length,1);assert(!f.calls.some(c=>c.sql==='ROLLBACK'));assert.deepEqual(f.calls.at(-1),{release:false});
+});
+test('commit original-state mismatch never submits COMMIT',async()=>{
+ const f=fixture({applied:false,alterOriginal:true});await assert.rejects(commitFixedTarget(f.client,f.context,digest));
+ assert(!f.calls.some(c=>c.sql==='COMMIT'));assert.equal(f.calls.at(-2).sql,'ROLLBACK');
+});
+test('commit acknowledgment loss remains an error even when cleanup succeeds',async()=>{
+ const first=fixture({applied:false}),derived=await deriveFixedTarget(first.client,first.context);
+ const f=fixture({applied:false}),query=f.client.query.bind(f.client);
+ f.client.query=async(sql,args)=>{if(sql==='COMMIT'){f.calls.push({sql});throw Error('commit outcome unknown');}return query(sql,args);};
+ await assert.rejects(commitFixedTarget(f.client,f.context,derived.targetSchemaSha256),/commit outcome unknown/);
+ assert.equal(f.calls.filter(c=>c.sql==='COMMIT').length,1);assert.equal(f.calls.at(-2).sql,'ROLLBACK');assert.deepEqual(f.calls.at(-1),{release:false});
 });

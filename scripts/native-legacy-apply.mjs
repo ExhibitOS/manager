@@ -61,6 +61,29 @@ export async function deriveFixedTarget(client,{manifest,catalog,directory,store
  }
 }
 
+// Separate from recovery: only a freshly derived original-state inspection may
+// reach this call. An error returned by COMMIT never becomes an "unapplied"
+// result; the caller must keep the candidate blocked and reconcile afresh.
+export async function commitFixedTarget(client,{manifest,catalog,directory,store,collect,migrate,canonical,systemIdentifier},targetSchemaSha256){
+ let transaction=false,broken=false;
+ try{
+  await client.query('BEGIN');transaction=true;
+  if((await client.query('SELECT pg_try_advisory_xact_lock(82002) AS locked')).rows[0]?.locked!==true)fail();
+  await client.query('SELECT pg_advisory_xact_lock(82001)');
+  const identity=(await client.query('SELECT system_identifier::text AS system,current_database() AS database FROM pg_control_system()')).rows[0];
+  if(identity?.system!==systemIdentifier||identity.database!==manifest.sourceIdentity.database||systemIdentifier===manifest.sourceIdentity.systemIdentifier)fail();
+  const original=await collect(client,store,{migrationCatalog:catalog.slice(0,15)});
+  if(original.issues.length||comparable(original,canonical)!==comparable(manifest.inventory,canonical))fail();
+  await migrate(client,directory);
+  const target=await collect(client,store,{migrationDirectory:directory});
+  if(target.issues.length||schema(target,canonical)!==targetSchemaSha256)fail();
+  await client.query('COMMIT');transaction=false;
+ }finally{
+  if(transaction)await client.query('ROLLBACK').catch(()=>{broken=true;});
+  client.release(broken);if(broken)fail();
+ }
+}
+
 async function run(request){
  const runtime=new URL('../../native-runtime/',import.meta.url);
  if(hash(await readFile(new URL('manifest.json',runtime)))!==request.payloadSha256)fail();
@@ -94,25 +117,7 @@ async function run(request){
    // request NEVER replays an uncommitted application automatically.
    await verifyRestoredInventory(options);
    if(request.operation==='apply'){
-    const client=await pool.connect();let transaction=false,broken=false;
-    try{
-     await client.query('BEGIN');transaction=true;
-     if((await client.query('SELECT pg_try_advisory_xact_lock(82002) AS locked')).rows[0]?.locked!==true)fail();
-     await client.query('SELECT pg_advisory_xact_lock(82001)');
-     const identity=(await client.query('SELECT system_identifier::text AS system,current_database() AS database FROM pg_control_system()')).rows[0];
-     if(identity?.system!==request.systemIdentifier||identity.database!==manifest.sourceIdentity.database)fail();
-     const original=await collectServiceInventory(client,store,{migrationCatalog:catalog.slice(0,15)});
-     if(original.issues.length||comparable(original,inventoryCanonical)!==comparable(manifest.inventory,inventoryCanonical))fail();
-     await migrateInTransaction(client,directory);
-     const target=await collectServiceInventory(client,store,{migrationDirectory:directory});
-     if(target.issues.length||schema(target,inventoryCanonical)!==derived.targetSchemaSha256)fail();
-     // If COMMIT reports an error its outcome remains unknown. Rust retains
-     // the marker/intent and a fresh authenticated reconcile must observe it.
-     await client.query('COMMIT');transaction=false;
-    }finally{
-     if(transaction)await client.query('ROLLBACK').catch(()=>{broken=true;});
-     client.release(broken);if(broken)fail();
-    }
+    await commitFixedTarget(await pool.connect(),context,derived.targetSchemaSha256);
    }
   }else if(request.operation==='apply')fail();
   const applied=derived.applied||request.operation==='apply';
