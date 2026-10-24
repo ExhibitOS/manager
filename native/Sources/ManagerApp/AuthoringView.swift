@@ -32,6 +32,9 @@ final class AuthoringModel: ObservableObject {
     private var readTransfer: (() async throws -> NativeUploadState)?
     private var writeTransfer: ((NativeUploadState) async throws -> NativeUploadState)?
     private var importPoll: Task<Void, Never>?
+    private var importPollID: UUID?
+    private var importStatusGeneration = UUID()
+    private var pollingImportStatus = false
     private var original = ArtworkMetadata()
     private var api: AuthoringAPI?
     var exhibitionAPI: AuthoringAPI? { session == nil ? nil : api }
@@ -47,8 +50,9 @@ final class AuthoringModel: ObservableObject {
         guard let configuration, let tenant = configuration.tenantId else { return }
         let next = "\(tenant):\(configuration.ports.web)"
         guard next != scope else { return }
+        importStatusGeneration = UUID()
         guard !busy, !dirty else { api = nil; session = nil; failure = AuthoringFailure("LOCAL_SCOPE_CHANGED"); return }
-        importPoll?.cancel(); importPoll = nil
+        importPoll?.cancel(); importPoll = nil; importPollID = nil
         transfer = nil; importJob = nil; importFile = nil; assetId = ""
         readTransfer = nil; writeTransfer = nil
         scope = next; session = nil; artworks = []; artists = []; selected = nil; editing = false
@@ -58,6 +62,7 @@ final class AuthoringModel: ObservableObject {
     }
     private func action(_ work: () async throws -> Void) async {
         guard !busy, available, api != nil else { return }
+        importStatusGeneration = UUID()
         busy = true; failure = nil; notice = ""
         defer { busy = false }
         do { try await work() }
@@ -253,15 +258,46 @@ extension AuthoringModel {
     }
     private func scheduleImportPoll() {
         guard importPoll == nil, shouldPollImport else { return }
+        let owner = UUID()
+        importPollID = owner
         importPoll = Task { [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }
                 guard let self, self.available, self.session != nil else { break }
                 if self.busy { continue }
-                await self.refreshImport()
+                await self.pollImportStatus()
                 if !self.shouldPollImport || self.failure != nil { break }
             }
-            self?.importPoll = nil
+            if self?.importPollID == owner { self?.importPoll = nil; self?.importPollID = nil }
+        }
+    }
+    private func pollImportStatus() async {
+        guard !busy, !pollingImportStatus, available, let api, let session,
+              let id = transfer?.jobId else { return }
+        pollingImportStatus = true
+        defer { pollingImportStatus = false }
+        let generation = importStatusGeneration
+        let currentScope = scope
+        func current() -> Bool {
+            generation == importStatusGeneration && currentScope == scope && !busy && available
+                && transfer?.jobId == id && self.session?.tenantId == session.tenantId
+                && self.session?.userId == session.userId && !Task.isCancelled
+        }
+        do {
+            let observed = try await api.importJob(id)
+            guard current() else { return }
+            importJob = observed
+            if observed.state == "approved", let selected, selected.id == transfer?.intent?.artworkId {
+                let fresh = try await api.artwork(selected.id)
+                guard current(), self.selected?.id == selected.id,
+                      self.selected?.revision == selected.revision, fresh.revision == selected.revision else { return }
+                self.selected = fresh
+                if let asset = observed.assetId { assetId = asset }
+            }
+        } catch {
+            guard current() else { return }
+            failure = error as? AuthoringFailure ?? AuthoringFailure((error as? BridgeFailure)?.code ?? "CONNECTION_FAILED")
+            if failure?.status == 401 { self.session = nil }
         }
     }
     private var shouldPollImport: Bool {
