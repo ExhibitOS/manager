@@ -30,6 +30,8 @@ pub mod initial_account;
 pub mod publication_source;
 pub mod hosted_runtime_file;
 pub mod static_publication_source;
+#[cfg(target_os = "macos")]
+pub(crate) mod native_legacy_migration;
 mod backup_key;
 pub mod maintenance;
 mod maintenance_stream;

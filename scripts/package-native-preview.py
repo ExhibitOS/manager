@@ -46,6 +46,16 @@ if args.runtime_payload:
         target = hosting / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_root / name, target)
+    migration = contents / 'Resources/native-migration'
+    for name in ['scripts/native-legacy-verify.mjs',
+                 'scripts/native-legacy-inspect.mjs',
+                 'vendor/platform/migrations.mjs', 'vendor/platform/migrations.ts',
+                 'vendor/platform/LICENSE', 'vendor/platform/native-migration-source.json',
+                 'vendor/deployment/src/bounded-json.mjs',
+                 'vendor/deployment/LICENSE', 'vendor/deployment/source.json']:
+        target = migration / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_root / name, target)
 metadata = dict(CFBundleIdentifier='org.exhibitos.manager', CFBundleName='ExhibitOS Manager',
                 CFBundleDisplayName='ExhibitOS Manager', CFBundleExecutable='ExhibitOSManager',
                 CFBundlePackageType='APPL', CFBundleVersion='1', CFBundleShortVersionString='0.1.0',

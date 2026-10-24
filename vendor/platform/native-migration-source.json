@@ -1,0 +1,18 @@
+{
+  "repository": "https://github.com/ExhibitOS/platform",
+  "baseCommit": "f6bbeab2f17207a6534ce3a36ff398ce53a4bdd4",
+  "source": "packages/storage/src/migrations.ts",
+  "sourceState": "reviewed extraction merged upstream in PR89",
+  "license": "AGPL-3.0-or-later",
+  "compiledWith": {
+    "node": "24.21.0",
+    "command": "tsc -p packages/storage/tsconfig.json --outDir <isolated-output>"
+  },
+  "files": {
+    "migrations.mjs": "ac9c5e10225f8930722eb120148dd40befddf0ab08d2dde4ce682a6cd830dfa1",
+    "migrations.ts": "f19f23cea7597f94c642aed3c20a6c8926b8000cf884ceb26fc504bbd301980e",
+    "LICENSE": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0"
+  },
+  "commit": "3d69b93da85de03a5292c3b98938da5c0dbe0d11",
+  "pullRequest": "https://github.com/ExhibitOS/platform/pull/89"
+}
