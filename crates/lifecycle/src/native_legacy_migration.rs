@@ -93,6 +93,8 @@ struct ParsedConfiguration {
     credentials: publication_source::LocalPublicationCredentials,
     freeze_signing_key: Secret,
     configuration_sha256: BTreeMap<String, String>,
+    images: Vec<crate::restoration::PreservedImage>,
+    signing_record: crate::source_configuration::NativeConfigurationProof,
 }
 fn parse_configuration(
     authenticated_manifest_bytes: &[u8],
@@ -192,7 +194,9 @@ fn parse_configuration(
     {
         return Err(invalid());
     }
-    crate::restoration::preserved_images(read("manager-image-inventory.json")?, &manifest)?;
+    let images =
+        crate::restoration::preserved_images(read("manager-image-inventory.json")?, &manifest)?;
+    let signing_record = crate::source_configuration::expected(authenticated_manifest_bytes)?;
     let environment = read("manager-runtime.env")?;
     installation_backup::environment_valid(environment, &manifest)?;
     // Preserve the authenticated declared address verbatim. A port or hostname
@@ -221,6 +225,8 @@ fn parse_configuration(
         credentials,
         freeze_signing_key: Secret(read("freeze-signing-key.json")?.to_vec()),
         configuration_sha256: hashes,
+        images,
+        signing_record,
     })
 }
 

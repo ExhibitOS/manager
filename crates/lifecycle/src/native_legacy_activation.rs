@@ -22,18 +22,79 @@ fn positive_stopped(status: &crate::Status, expected: &[String]) -> bool {
                 == 1
         })
 }
+// Select only images already authenticated in the archive and still declared by
+// the byte-pinned installed compose. Never accept an operator-supplied helper.
+fn bound_images(
+    manifest: &BundleManifest,
+    images: &[crate::restoration::PreservedImage],
+    compose: &serde_json::Value,
+) -> Result<(String, String)> {
+    let runtime = compose["services"]["platform"]["image"]
+        .as_str()
+        .ok_or_else(owner_required)?;
+    let runtime_image = images
+        .iter()
+        .filter(|i| i.reference == runtime)
+        .collect::<Vec<_>>();
+    let maintenance = manifest
+        .images
+        .iter()
+        .filter(|i| {
+            i.archive
+                .as_ref()
+                .is_some_and(|a| a.path == "maintenance-image.tar")
+        })
+        .collect::<Vec<_>>();
+    if runtime_image.len() != 1 || maintenance.len() != 1 {
+        return Err(owner_required());
+    }
+    let maintenance = &maintenance[0].reference;
+    if !maintenance.strip_prefix("sha256:").is_some_and(hash_valid)
+        || images
+            .iter()
+            .filter(|i| &i.reference == maintenance && &i.content_id == maintenance)
+            .count()
+            != 1
+    {
+        return Err(owner_required());
+    }
+    let runtime = runtime_image[0]
+        .content_id
+        .strip_prefix("sha256:")
+        .filter(|v| hash_valid(v))
+        .ok_or_else(owner_required)?;
+    Ok((runtime.into(), maintenance.clone()))
+}
+fn same_source(
+    a: &crate::source_stopped::SourceStoppedReceipt,
+    b: &crate::source_stopped::SourceStoppedReceipt,
+) -> bool {
+    a.source_instance == b.source_instance
+        && a.bundle_id == b.bundle_id
+        && a.platform_container == b.platform_container
+        && a.database_container == b.database_container
+        && a.runtime_image_sha256 == b.runtime_image_sha256
+        && a.blob_volume == b.blob_volume
+        && a.configuration_volume == b.configuration_volume
+        && a.database_volume == b.database_volume
+}
 /// This proof is local/cooperative ownership, not a claim that unrelated external
 /// programs cannot write. The existing original-root lock stays held through
 /// activation. An unavailable conditional legacy adapter never becomes success.
-struct OriginalWriter {
+struct OriginalWriter<'a> {
     service: LifecycleService,
     _guard: crate::OperationGuard,
     root: DirectoryPin,
     pins: Vec<Pin>,
     services: Vec<String>,
+    runtime_image: String,
+    maintenance_image: String,
+    signing_record: &'a crate::source_configuration::NativeConfigurationProof,
+    identity: crate::source_stopped::SourceStoppedReceipt,
+    volume: serde_json::Value,
 }
-impl OriginalWriter {
-    fn capture(candidate: &Candidate) -> Result<Self> {
+impl<'a> OriginalWriter<'a> {
+    fn capture(candidate: &'a Candidate) -> Result<Self> {
         candidate.check()?;
         let original = candidate
             .source
@@ -65,7 +126,6 @@ impl OriginalWriter {
             ("installed.json", "manager-installed.json"),
             ("engine.json", "manager-engine.json"),
             ("runtime.env", "manager-runtime.env"),
-            ("config/freeze-signing-key.json", "freeze-signing-key.json"),
         ] {
             let path = original.join(current);
             if fs::canonicalize(&path).map_err(|_| owner_required())? != path {
@@ -77,7 +137,7 @@ impl OriginalWriter {
                 .configuration_sha256
                 .get(archived)
                 .ok_or_else(owner_required)?;
-            let pin = if matches!(current, "runtime.env" | "config/freeze-signing-key.json") {
+            let pin = if current == "runtime.env" {
                 let (bytes, pin) = super::super::super::codec::private_read(&path, 1024 * 1024)
                     .map_err(|_| owner_required())?;
                 if &crate::digest(&bytes.0) != expected {
@@ -100,12 +160,42 @@ impl OriginalWriter {
         {
             return Err(owner_required());
         }
+        service
+            .validate_compose(&manifest, "docker")
+            .map_err(|_| owner_required())?;
+        let compose: serde_json::Value = serde_json::from_slice(&crate::run(
+            "docker",
+            &crate::compose_args(&manifest, &["config", "--format", "json"]),
+            Some(&original.join("bundle")),
+            30,
+        )?)
+        .map_err(|_| owner_required())?;
+        let (runtime_image, maintenance_image) =
+            bound_images(&manifest, &candidate.source.configuration.images, &compose)?;
+        let identity = crate::source_stopped::observe_installed(
+            &service,
+            &manifest.bundle_id,
+            &runtime_image,
+        )?;
+        let volume = crate::backup_creation::inspected(
+            "docker",
+            &[
+                "volume".into(),
+                "inspect".into(),
+                identity.configuration_volume.clone(),
+            ],
+        )?;
         let value = Self {
             service,
             _guard: guard,
             root,
             pins,
             services: manifest.services,
+            runtime_image,
+            maintenance_image,
+            signing_record: &candidate.source.configuration.signing_record,
+            identity,
+            volume,
         };
         value.check()?;
         candidate.check()?;
@@ -123,6 +213,46 @@ impl OriginalWriter {
             &self.services,
         ) {
             return Err(owner_required());
+        }
+        let before = crate::source_stopped::observe_installed(
+            &self.service,
+            &self.identity.source_instance,
+            &self.runtime_image,
+        )?;
+        if !same_source(&self.identity, &before) {
+            return Err(owner_required());
+        }
+        let volume = || {
+            crate::backup_creation::inspected(
+                "docker",
+                &[
+                    "volume".into(),
+                    "inspect".into(),
+                    self.identity.configuration_volume.clone(),
+                ],
+            )
+        };
+        if volume()? != self.volume {
+            return Err(owner_required());
+        }
+        // Existing helper: read-only volume mount, fixed local image, private
+        // stable file metadata/hash, bounded output and owned normal cleanup.
+        crate::source_configuration::observe(
+            &self.maintenance_image,
+            &self.identity.configuration_volume,
+            self.signing_record,
+        )?;
+        let after = crate::source_stopped::observe_installed(
+            &self.service,
+            &self.identity.source_instance,
+            &self.runtime_image,
+        )?;
+        if !same_source(&self.identity, &after) || volume()? != self.volume {
+            return Err(owner_required());
+        }
+        self.root.check()?;
+        for pin in &self.pins {
+            pin.check()?;
         }
         Ok(())
     }
@@ -334,6 +464,79 @@ mod tests {
                 minimum_free_bytes: 0,
             },
             active_job: None,
+        }
+    }
+    #[test]
+    fn original_configuration_images_require_authenticated_exact_bindings() {
+        let runtime = format!("sha256:{}", "a".repeat(64));
+        let helper = format!("sha256:{}", "b".repeat(64));
+        let mut manifest: BundleManifest = serde_json::from_value(serde_json::json!({
+            "schemaVersion":"1.0.0-draft.1", "bundleId":"synthetic", "version":"test",
+            "protocolVersion":"1", "composeSha256":"c".repeat(64), "projectName":"synthetic",
+            "services":["platform","database"], "images":[
+                {"reference":runtime,"archive":null},
+                {"reference":helper,"archive":{"path":"maintenance-image.tar","sha256":"d".repeat(64),"bytes":1}}
+            ], "ports":[13200], "openUrl":"http://127.0.0.1:13200", "readinessUrl":"http://127.0.0.1:13200/api/v1/readiness", "minimumFreeBytes":1
+        })).unwrap();
+        let mut images = vec![
+            crate::restoration::PreservedImage {
+                reference: runtime.clone(),
+                content_id: runtime.clone(),
+                archive: "images/runtime.tar".into(),
+                bytes: 1,
+                sha256: "e".repeat(64),
+            },
+            crate::restoration::PreservedImage {
+                reference: helper.clone(),
+                content_id: helper.clone(),
+                archive: "images/helper.tar".into(),
+                bytes: 1,
+                sha256: "f".repeat(64),
+            },
+        ];
+        let compose = serde_json::json!({"services":{"platform":{"image":runtime}}});
+        assert_eq!(
+            bound_images(&manifest, &images, &compose).unwrap(),
+            ("a".repeat(64), helper)
+        );
+        assert!(bound_images(&manifest, &images, &serde_json::json!({})).is_err());
+        images[1].content_id = format!("sha256:{}", "0".repeat(64));
+        assert!(bound_images(&manifest, &images, &compose).is_err());
+        images[1].content_id = images[1].reference.clone();
+        manifest.images[1].archive = None;
+        assert!(bound_images(&manifest, &images, &compose).is_err());
+    }
+    #[test]
+    fn original_configuration_identity_cannot_switch_volume_container_or_image() {
+        let make = || crate::source_stopped::SourceStoppedReceipt {
+            source_instance: "original".into(),
+            bundle_id: "bundle".into(),
+            platform_container: "app".into(),
+            database_container: "db".into(),
+            runtime_image_sha256: "a".repeat(64),
+            blob_volume: "blobs".into(),
+            configuration_volume: "config".into(),
+            database_volume: "database".into(),
+            observed_at: 1,
+        };
+        let original = make();
+        let mut observed = make();
+        observed.observed_at = 2;
+        assert!(same_source(&original, &observed));
+        for field in [
+            "configuration_volume",
+            "platform_container",
+            "runtime_image_sha256",
+            "bundle_id",
+        ] {
+            let mut observed = make();
+            match field {
+                "configuration_volume" => observed.configuration_volume = "other".into(),
+                "platform_container" => observed.platform_container = "other".into(),
+                "runtime_image_sha256" => observed.runtime_image_sha256 = "b".repeat(64),
+                _ => observed.bundle_id = "other".into(),
+            }
+            assert!(!same_source(&original, &observed));
         }
     }
     #[test]

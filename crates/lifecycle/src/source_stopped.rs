@@ -185,6 +185,16 @@ pub(super) fn observe(
     source: &LifecycleService,
     plan: &crate::update::Plan,
 ) -> Result<SourceStoppedReceipt> {
+    observe_installed(source, &plan.source_instance, &plan.source_image)
+}
+/// Shared direct Engine observation; callers retain their existing owner lock.
+/// This performs no installation/start/stop and cannot infer a stopped source
+/// from a missing daemon or installation.
+pub(super) fn observe_installed(
+    source: &LifecycleService,
+    source_instance: &str,
+    source_image: &str,
+) -> Result<SourceStoppedReceipt> {
     if cfg!(windows) {
         return Err(err("BACKUP_PLATFORM_UNVERIFIED"));
     }
@@ -219,8 +229,8 @@ pub(super) fn observe(
     if !stopped(&app) || !stopped(&db) {
         return Err(err("UPDATE_SOURCE_NOT_STOPPED"));
     }
-    let expected = format!("sha256:{}", plan.source_image);
-    if !hash_valid(&plan.source_image) || app["Image"] != expected {
+    let expected = format!("sha256:{source_image}");
+    if !hash_valid(source_image) || app["Image"] != expected {
         return Err(err("UPDATE_SOURCE_IMAGE_MISMATCH"));
     }
     check_mount_layout(&app, &db)?;
@@ -248,11 +258,11 @@ pub(super) fn observe(
     }
     observe_volume_users(&engine, &app, &db)?;
     Ok(SourceStoppedReceipt {
-        source_instance: plan.source_instance.clone(),
+        source_instance: source_instance.into(),
         bundle_id: m.bundle_id,
         platform_container,
         database_container,
-        runtime_image_sha256: plan.source_image.clone(),
+        runtime_image_sha256: source_image.into(),
         blob_volume: blobs,
         configuration_volume: configuration,
         database_volume: database,
