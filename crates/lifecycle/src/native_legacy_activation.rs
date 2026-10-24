@@ -478,6 +478,73 @@ mod tests {
         }
     }
     #[test]
+    #[ignore = "Requires the retained real archive, authenticated same016 candidate, fixed capsule and exclusive runtime slot; never applies schema or activates"]
+    fn actual_authenticated_same_candidate_cancel_and_original_owner_probe() {
+        let input = |name| {
+            let path = PathBuf::from(std::env::var_os(name).expect("explicit owned fixture input"));
+            assert!(path.is_absolute() && fs::canonicalize(&path).unwrap() == path);
+            path
+        };
+        let payload = Arc::new(Payload::open(&input("EXHIBITOS_LEGACY_TEST_PAYLOAD")).unwrap());
+        let workspace = input("EXHIBITOS_LEGACY_TEST_WORKSPACE");
+        private_directory(&workspace).unwrap();
+        assert_eq!(fs::read_dir(&workspace).unwrap().count(), 0);
+        let target = input("EXHIBITOS_LEGACY_INSPECTION_TEST_TARGET");
+        let marker_before = fs::read(target.join(MARKER)).unwrap();
+        assert!(!target.join("config/freeze-signing-key.json").exists());
+        let source = crate::native_legacy_migration::authenticate(
+            &payload,
+            &input("EXHIBITOS_LEGACY_TEST_ARCHIVE"),
+            &input("EXHIBITOS_LEGACY_TEST_KEY"),
+            &workspace,
+            Some(&input("EXHIBITOS_LEGACY_TEST_ORIGINAL")),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let candidate = source.resume_candidate(payload, target.clone()).unwrap();
+        let staged_before = fs::read(candidate.job.join("staged.json")).unwrap();
+        let database_before = fs::read(candidate.job.join("database.json")).unwrap();
+        let environment_before = candidate.intent.environment_sha256.clone();
+        // Reuse the already-applied016 candidate. There is deliberately no
+        // inspect/apply/restore call or journal-issued capability in this test.
+        let applied = candidate
+            .recover_schema(|_| {})
+            .unwrap()
+            .expect("existing actual016 candidate must reconcile");
+        let schema = applied.summary().unwrap();
+        let cancelled = applied
+            .activate(|flag| flag.store(true, Ordering::SeqCst))
+            .err()
+            .expect("published cancellation must refuse before owner observation");
+        assert_eq!(cancelled.code, "NATIVE_CANCELLED");
+        assert!(fs::read(target.join(MARKER)).unwrap() == marker_before);
+        assert!(!target.join("config/freeze-signing-key.json").exists());
+        // Observe the real conditional legacy owner only. Even an unexpectedly
+        // positive proof is dropped; it must never activate a zero-grant fixture.
+        let owner = match OriginalWriter::capture(&candidate) {
+            Ok(proof) => {
+                proof.check().unwrap();
+                drop(proof);
+                serde_json::json!({"state":"positive-readonly-proof-dropped","activationExecuted":false})
+            }
+            Err(error) => {
+                serde_json::json!({"state":"refused","code":error.code,"activationExecuted":false})
+            }
+        };
+        candidate.check().unwrap();
+        assert!(fs::read(candidate.job.join("staged.json")).unwrap() == staged_before);
+        assert!(fs::read(candidate.job.join("database.json")).unwrap() == database_before);
+        assert!(candidate.intent.environment_sha256 == environment_before);
+        assert!(fs::read(target.join(MARKER)).unwrap() == marker_before);
+        assert!(!target.join("config/freeze-signing-key.json").exists());
+        crate::write_json(
+            &workspace,
+            "authority-cancel-owner-probe.json",
+            &serde_json::json!({"scope":"ACTUAL_SAME016_CANCEL_AND_READONLY_OWNER_PROBE_NOT_ACTIVATION_OR_FULL_RECOVERY","schema":schema,"cancelCode":cancelled.code,"owner":owner,"markerUnchanged":true,"activeSigningNotInstalled":true,"stagedAttemptDatabaseAndEnvironmentUnchanged":true,"schemaApplyExecuted":false,"activationExecuted":false,"nonzeroFreezeAcceptance":false}),
+        )
+        .unwrap();
+    }
+    #[test]
     fn original_configuration_images_require_authenticated_exact_bindings() {
         let runtime = format!("sha256:{}", "a".repeat(64));
         let helper = format!("sha256:{}", "b".repeat(64));
