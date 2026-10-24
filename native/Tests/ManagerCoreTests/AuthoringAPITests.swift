@@ -4,6 +4,32 @@ import XCTest
 
 @MainActor
 final class AuthoringAPITests: XCTestCase {
+    func testUnknownArtworkDepthRemainsAbsentAcrossMetadataRoundTrip() throws {
+        var metadata = ArtworkMetadata()
+        metadata.dimensions.width = 0.934
+        metadata.dimensions.height = 0.732
+        XCTAssertNil(metadata.dimensions.depth)
+        let bytes = try JSONEncoder().encode(metadata)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+        let dimensions = try XCTUnwrap(object["dimensions"] as? [String: Any])
+        XCTAssertNil(dimensions["depth"])
+        XCTAssertEqual(try JSONDecoder().decode(ArtworkMetadata.self, from: bytes), metadata)
+    }
+    func testKnownArtworkDepthIsPreservedUntilExplicitlyCleared() throws {
+        var metadata = ArtworkMetadata()
+        metadata.dimensions.depth = 0.25
+        let saved = try JSONDecoder().decode(ArtworkMetadata.self, from: JSONEncoder().encode(metadata))
+        XCTAssertEqual(saved.dimensions.depth, 0.25)
+        var cleared = saved
+        cleared.dimensions.depth = nil
+        let bytes = try JSONEncoder().encode(cleared)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+        let dimensions = try XCTUnwrap(object["dimensions"] as? [String: Any])
+        XCTAssertNil(dimensions["depth"])
+        XCTAssertEqual(try JSONDecoder().decode(ArtworkMetadata.self, from: bytes), cleared)
+        XCTAssertEqual(cleared.dimensions.width, saved.dimensions.width)
+        XCTAssertEqual(cleared.dimensions.height, saved.dimensions.height)
+    }
     func testRejectsForeignScopeBeforeAnyConnection() {
         XCTAssertThrowsError(try AuthoringAPI(port: 80, tenantId: UUID().uuidString))
         XCTAssertThrowsError(try AuthoringAPI(port: 13200, tenantId: "../foreign"))
