@@ -86,7 +86,7 @@ struct NativeStaticExportView: View {
                     Text("파일 \(receipt.files)개 · \(ByteCountFormatter.string(fromByteCount: Int64(receipt.bytes), countStyle: .file))")
                     Text(receipt.output).textSelection(.enabled)
                     Button("Finder에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: receipt.output)]) }
-                    Text("이 폴더는 아직 호스팅에 업로드되지 않았습니다.").foregroundStyle(.secondary)
+                    Text("인터넷 공개 결과는 아래 온라인 공개에서 확인하세요.").foregroundStyle(.secondary)
                     DisclosureGroup("확인한 저장본") { Text(receipt.publicationId).textSelection(.enabled); Text(receipt.manifestSha256).textSelection(.enabled) }
                 } else if !value.running {
                     Text(value.state == "cancelled" ? "파일 저장을 중단했습니다." : "파일 저장을 완료하지 못했습니다.")

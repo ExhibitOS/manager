@@ -21,6 +21,9 @@ pub mod native_publication;
 #[path = "native_static_export.rs"]
 pub mod native_static_export;
 #[cfg(target_os = "macos")]
+#[path = "native_hosting.rs"]
+pub mod native_hosting;
+#[cfg(target_os = "macos")]
 #[path = "native_backup.rs"]
 pub mod native_backup;
 #[cfg(target_os = "macos")]

@@ -21,17 +21,18 @@ final class ManagerModel: ObservableObject {
     @Published private(set) var exhibitions = ExhibitionModel()
     @Published private(set) var publication = PublicationModel()
     @Published private(set) var staticExport = StaticExportModel()
+    @Published private(set) var hosting = HostingModel()
     @Published private(set) var maintenanceNotice = ""
     @Published private(set) var backupLocation: URL?
     var pendingRestoration: Bool { native?.restoration.map { $0.state != "activated" } == true }
-    var canMaintain: Bool { !busy && !runtimeBusy && !quitting && !hasUnsavedAuthoring && !authoring.busy && !exhibitions.busy && !publication.busy && !staticExport.running && context != nil }
+    var canMaintain: Bool { !busy && !runtimeBusy && !quitting && !hasUnsavedAuthoring && !authoring.busy && !exhibitions.busy && !publication.busy && !staticExport.running && !hosting.running && !hosting.busy && context != nil }
     var hasUnsavedAuthoring: Bool { authoring.dirty || exhibitions.dirty }
     private var bridge: NativeBridge?
     private var pollTask: Task<Void, Never>?
     private var authoringConnection: Task<Void, Never>?
     private var startAfterPrepare = false
     private var serviceRequested = false
-    var mayHaveServices: Bool { serviceRequested || native?.needsShutdown == true || staticExport.running }
+    var mayHaveServices: Bool { serviceRequested || native?.needsShutdown == true || staticExport.running || hosting.running || hosting.busy }
     var runtimeBusy: Bool { native?.busy == true }
     var finalizingRestoration: Bool { runtimeBusy && native?.operation == "activating_restore" }
     var ready: Bool { native?.runtime?.readiness.ready == true }
@@ -113,6 +114,7 @@ final class ManagerModel: ObservableObject {
     private func bindStaticExport() async {
         guard native?.configuration?.kind == "personal", let bridge, let context else { return }
         await staticExport.connect(read: { try await bridge.staticExportStatus(context) }, start: { id,output in try await bridge.startStaticExport(context, publicationId: id, output: output) }, cancel: { try await bridge.cancelStaticExport(context) })
+        await hosting.connect(read: { try await bridge.hostingStatus(context) }, inspect: { try await bridge.hostingReview(context) }, accounts: { token in try await bridge.hostingAccounts(context, token: token) }, deploy: { token, account, review, rights, cost in try await bridge.deployStatic(context, token: token, accountId: account, review: review, rightsConfirmed: rights, costConfirmed: cost) }, reconcile: { token in try await bridge.reconcileHosting(context, token: token) }, cancel: { try await bridge.cancelHosting(context) })
     }
     func prepareAndStart() async {
         guard canStart, let bridge, let context else { return }
@@ -162,6 +164,7 @@ final class ManagerModel: ObservableObject {
     private func replaceWorkspaceModels() {
         authoring = AuthoringModel(); exhibitions = ExhibitionModel()
         publication = PublicationModel(); staticExport = StaticExportModel()
+        hosting = HostingModel()
     }
     func makeBackup(key: URL, destination: URL) async {
         guard canMaintain, !pendingRestoration, let bridge, let context else { return }
@@ -263,6 +266,8 @@ final class ManagerModel: ObservableObject {
         await presentationSave?.value
         guard !presentationPending else { failure = BridgeFailure("NATIVE_SAVE_FAILED"); return false }
         guard let bridge, let context else { return !serviceRequested }
+        while hosting.busy { try? await Task.sleep(for: .milliseconds(100)) }
+        guard await hosting.cancelAndWait() else { failure = BridgeFailure("HOSTED_OPERATION_UNCERTAIN"); return false }
         guard await staticExport.cancelAndWait() else { failure = BridgeFailure("NATIVE_STATIC_STOP_PENDING"); return false }
         do {
             native = try await bridge.stop(context)
@@ -463,7 +468,7 @@ struct ManagerView: View {
             NativeOEXExportControls(model: model.exhibitions, ready: model.ready, showFeedback: true)
                 .task(id: model.ready) { if model.ready { await model.connectPersonalAuthoring() } }
         case .publish:
-            NativePublicationView(model: model.publication, source: model.exhibitions, staticExport: model.staticExport, ready: model.ready, connect: { await model.connectPersonalAuthoring() })
+            NativePublicationView(model: model.publication, source: model.exhibitions, staticExport: model.staticExport, hosting: model.hosting, ready: model.ready, connect: { await model.connectPersonalAuthoring() })
         }
         if !model.jobs.isEmpty {
             GroupBox("작업 기록") {

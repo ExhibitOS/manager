@@ -116,6 +116,14 @@ pub struct Request {
 
 pub enum Command {
     #[cfg(target_os = "macos")]
+    NativeHosting { selection_token: String, hosting: super::native_hosting::Input },
+    #[cfg(target_os = "macos")]
+    NativeHostingStatus { selection_token: String },
+    #[cfg(target_os = "macos")]
+    NativeHostingReview { selection_token: String },
+    #[cfg(target_os = "macos")]
+    NativeHostingCancel { selection_token: String },
+    #[cfg(target_os = "macos")]
     NativeMaintenance {
         selection_token: String,
         maintenance: super::native_maintenance::Input,
@@ -211,6 +219,8 @@ struct WireRequest {
     id: u64,
     command: String,
     #[cfg(target_os = "macos")]
+    hosting: Option<super::native_hosting::Input>,
+    #[cfg(target_os = "macos")]
     maintenance: Option<super::native_maintenance::Input>,
     state: Option<Presentation>,
     selection_token: Option<String>,
@@ -230,6 +240,21 @@ struct WireRequest {
 impl TryFrom<WireRequest> for Request {
     type Error = &'static str;
     fn try_from(wire: WireRequest) -> std::result::Result<Self, Self::Error> {
+        #[cfg(target_os = "macos")]
+        if matches!(wire.command.as_str(), "native_hosting" | "native_hosting_status" | "native_hosting_review" | "native_hosting_cancel") {
+            if wire.maintenance.is_some() || wire.state.is_some() || wire.account.is_some() || wire.transfer.is_some() || wire.document.is_some() || wire.publication.is_some() || wire.export.is_some() || wire.backup.is_some() { return Err("NATIVE_PROTOCOL_INVALID"); }
+            let selection_token = wire.selection_token.ok_or("NATIVE_PROTOCOL_INVALID")?;
+            let command = match (wire.command.as_str(), wire.hosting) {
+                ("native_hosting", Some(hosting)) => Command::NativeHosting { selection_token, hosting },
+                ("native_hosting_status", None) => Command::NativeHostingStatus { selection_token },
+                ("native_hosting_review", None) => Command::NativeHostingReview { selection_token },
+                ("native_hosting_cancel", None) => Command::NativeHostingCancel { selection_token },
+                _ => return Err("NATIVE_PROTOCOL_INVALID"),
+            };
+            return Ok(Self { version: wire.version, id: wire.id, command });
+        }
+        #[cfg(target_os = "macos")]
+        if wire.hosting.is_some() { return Err("NATIVE_PROTOCOL_INVALID"); }
         #[cfg(target_os = "macos")]
         if wire.command == "native_maintenance" {
             if wire.state.is_some()
@@ -515,6 +540,10 @@ impl Request {
             } => serde_json::to_value(controller.save_native_upload(&selection_token, *transfer)?),
             #[cfg(target_os = "macos")]
             Command::NativeAuthoringSession { .. }
+            | Command::NativeHosting { .. }
+            | Command::NativeHostingStatus { .. }
+            | Command::NativeHostingReview { .. }
+            | Command::NativeHostingCancel { .. }
             | Command::NativeMaintenance { .. }
             | Command::NativeBackup { .. }
             | Command::StaticExport { .. }

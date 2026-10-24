@@ -89,6 +89,14 @@ public struct BridgeFailure: Error, LocalizedError, Sendable {
     public init(_ code: String) { self.code = code }
     public var errorDescription: String? {
         switch code {
+        case "NATIVE_HOSTING_RECONCILE_REQUIRED": "이전 공개 작업의 배포 상태부터 다시 확인하세요."
+        case "NATIVE_HOSTING_UNAVAILABLE": "이 앱에는 온라인 공개 도구가 없습니다. 검증된 최신 앱을 설치하세요."
+        case "HOSTED_KEYCHAIN_UNAVAILABLE": "macOS 키체인 접근을 확인하세요. 저장된 토큰은 그대로 보관됩니다."
+        case "HOSTED_KEYCHAIN_STORE_FAILED": "토큰을 키체인에 저장하지 못했습니다. macOS 접근 허용을 확인하세요."
+        case "HOSTED_TOKEN_INVALID", "HOSTED_TOKEN_REQUIRED": "Cloudflare 토큰과 필요한 권한을 확인하세요."
+        case "HOSTED_PUBLIC_CONTENT_MISMATCH", "HOSTED_PUBLIC_CONTENT_UNAVAILABLE": "공개 주소에서 전시 파일을 아직 확인하지 못했습니다. 업로드를 반복하지 말고 배포 상태를 다시 확인하세요."
+        case "HOSTED_PERMISSION_REQUIRED": "공개할 계정과 전시·비용 확인 항목을 확인하세요."
+        case "HOSTED_OPERATION_UNCERTAIN", "HOSTED_RESULT_UNCERTAIN": "배포 결과를 확인해야 합니다. 같은 작업의 배포 상태를 다시 확인하세요."
         case "NATIVE_STATIC_OUTPUT_EXISTS": "이미 같은 위치에 파일이 있습니다. 기존 파일을 보관하고 다른 위치를 선택하세요."
         case "NATIVE_STATIC_OUTPUT_INVALID": "저장 위치를 사용할 수 없습니다. 접근할 수 있는 폴더를 선택하세요."
         case "NATIVE_STATIC_EXPORT_UNAVAILABLE": "이 앱에는 정적 전시 저장 도구가 없습니다. 검증된 최신 앱을 설치하세요."
@@ -192,6 +200,24 @@ public actor NativeBridge {
     }
     public func cancelStaticExport(_ context: Context) throws -> NativeStaticExportStatus? {
         try request("static_export_cancel", fields: ["selection_token": context.selectionToken])
+    }
+    public func hostingStatus(_ context: Context) throws -> NativeHostingStatus {
+        try request("native_hosting_status", fields: ["selection_token": context.selectionToken])
+    }
+    public func hostingReview(_ context: Context) throws -> NativeHostingReview {
+        try request("native_hosting_review", fields: ["selection_token": context.selectionToken])
+    }
+    public func hostingAccounts(_ context: Context, token: String) throws -> NativeHostingStatus {
+        try request("native_hosting", fields: ["selection_token": context.selectionToken, "hosting": ["action": "accounts", "token": token]])
+    }
+    public func deployStatic(_ context: Context, token: String, accountId: String, review: NativeHostingReview, rightsConfirmed: Bool, costConfirmed: Bool) throws -> NativeHostingStatus {
+        try request("native_hosting", fields: ["selection_token": context.selectionToken, "hosting": ["action": "deploy", "token": token, "account_id": accountId, "publication_id": review.source.publicationId, "expected_manifest_sha256": review.source.manifestSha256, "rights_confirmed": rightsConfirmed, "cost_confirmed": costConfirmed]])
+    }
+    public func reconcileHosting(_ context: Context, token: String) throws -> NativeHostingStatus {
+        try request("native_hosting", fields: ["selection_token": context.selectionToken, "hosting": ["action": "reconcile", "token": token]])
+    }
+    public func cancelHosting(_ context: Context) throws -> NativeHostingStatus {
+        try request("native_hosting_cancel", fields: ["selection_token": context.selectionToken])
     }
     public func savePublicationState(_ context: Context, state: NativePublicationState) throws -> NativePublicationState {
         let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(state))

@@ -99,6 +99,7 @@ struct NativePublicationView: View {
     @ObservedObject var model: PublicationModel
     @ObservedObject var source: ExhibitionModel
     @ObservedObject var staticExport: StaticExportModel
+    @ObservedObject var hosting: HostingModel
     let ready: Bool
     let connect: () async -> Void
     var body: some View {
@@ -134,7 +135,7 @@ struct NativePublicationView: View {
                 let matches = source.draft?.id == completed.sourceExhibitionId && source.state?.etag == completed.sourceEtag && !source.dirty
                 Label(matches ? (completed.publication.status == "published" ? "이 Mac의 공개용 저장본 준비 완료" : "준비 해제됨") : "다른 저장본의 준비 기록", systemImage: "doc.badge.checkmark")
                 if !matches { Text("현재 편집 내용은 위의 확인 버튼으로 다시 확인하세요.").foregroundStyle(.secondary) }
-                Text("호스팅 업로드와 인터넷 공개 URL은 아직 확인되지 않았습니다.").foregroundStyle(.secondary)
+                Text("인터넷 공개 결과는 아래 온라인 공개에서 확인하세요.").foregroundStyle(.secondary)
                 DisclosureGroup("저장본 식별 정보") { Text(completed.publication.publicationId).textSelection(.enabled); Text(completed.publication.revisionSha256).textSelection(.enabled) }
                 Button("준비 상태 다시 확인") { Task { await model.refresh() } }.disabled(!ready || model.busy)
             }
@@ -143,7 +144,10 @@ struct NativePublicationView: View {
             if !model.notice.isEmpty { Text(model.notice).foregroundStyle(.secondary) }
             NativeStaticExportView(model: staticExport, completed: model.state?.completed.flatMap { completed in
                 source.draft?.id == completed.sourceExhibitionId && source.state?.etag == completed.sourceEtag && !source.dirty ? completed : nil
-            }, ready: ready && !model.busy)
+            }, ready: ready && !model.busy && !hosting.running && !hosting.busy)
+            NativeHostingView(model: hosting, receipt: staticExport.status?.receipt.flatMap { receipt in
+                model.state?.completed?.publication.publicationId == receipt.publicationId && source.draft?.id == model.state?.completed?.sourceExhibitionId && source.state?.etag == model.state?.completed?.sourceEtag && !source.dirty ? receipt : nil
+            }, available: !model.busy && (ready || hosting.status?.work != nil))
         }.task(id: ready) { if ready { await connect() } }
     }
 }

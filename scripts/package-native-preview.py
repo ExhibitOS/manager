@@ -32,6 +32,20 @@ if args.runtime_payload:
     assert manifest['mode'] == 'local-validation' and not manifest['redistributionQualified'], 'Only unqualified validation payloads belong in this preview producer'
     (contents / 'Resources').mkdir()
     shutil.copytree(args.runtime_payload, contents / 'Resources/native-runtime', symlinks=True)
+    # Fixed Manager-owned public provider code; the helper checks the same
+    # source bytes compiled into it before any credential-bearing execution.
+    source_root = Path(__file__).resolve().parent.parent
+    hosting = contents / 'Resources/native-hosting'
+    for name in ['scripts/native-hosting-runner.mjs',
+                 'vendor/deployment/src/pages-render.mjs',
+                 'vendor/deployment/src/pages-asset-hash.mjs',
+                 'vendor/deployment/src/pages-render-worker.mjs',
+                 'vendor/deployment/src/bounded-json.mjs',
+                 'vendor/deployment/LICENSE',
+                 'vendor/deployment/native-hosting-source.json']:
+        target = hosting / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_root / name, target)
 metadata = dict(CFBundleIdentifier='org.exhibitos.manager', CFBundleName='ExhibitOS Manager',
                 CFBundleDisplayName='ExhibitOS Manager', CFBundleExecutable='ExhibitOSManager',
                 CFBundlePackageType='APPL', CFBundleVersion='1', CFBundleShortVersionString='0.1.0',
