@@ -70,12 +70,17 @@ pub use current_recovery_runtime::{OwnedPreflight, ReadyCandidate, StartedUpdate
 #[path = "source_stopped.rs"]
 mod source_stopped;
 pub use source_stopped::SourceStoppedReceipt;
+pub(crate) use source_stopped::observe_installed as legacy_stopped_observe;
 #[path = "source_deployment.rs"]
 mod source_deployment;
 pub use source_deployment::SourceDeploymentReceipt;
 #[path = "source_configuration.rs"]
 mod source_configuration;
 pub use source_configuration::NativeConfigurationReceipt;
+pub(crate) use source_configuration::{
+    NativeConfigurationProof as LegacyConfigurationProof, expected as legacy_configuration_expected,
+    observe as legacy_configuration_observe,
+};
 #[path = "source_images.rs"]
 mod source_images;
 pub use source_images::SourceImageReceipt;

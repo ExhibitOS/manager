@@ -20,7 +20,7 @@ pub struct NativeConfigurationReceipt {
     pub file: NativeConfigurationProof,
     pub observed_at: u64,
 }
-pub(super) fn expected(manifest: &[u8]) -> Result<NativeConfigurationProof> {
+pub(crate) fn expected(manifest: &[u8]) -> Result<NativeConfigurationProof> {
     let v: Value =
         serde_json::from_slice(manifest).map_err(|_| err("UPDATE_SOURCE_CONFIGURATION_INVALID"))?;
     let files = v["files"]
@@ -69,7 +69,7 @@ const first=await observe(),second=await observe();
 if(JSON.stringify(first)!==JSON.stringify(second)||JSON.stringify((await readdir('/configuration')).sort())!==JSON.stringify(['freeze-signing-key.json']))throw Error('SOURCE_CONFIGURATION_CHANGED');
 console.log(JSON.stringify(first));
 "#;
-pub(super) fn observe(
+pub(crate) fn observe(
     image: &str,
     volume: &str,
     expected: &NativeConfigurationProof,

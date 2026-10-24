@@ -190,7 +190,7 @@ pub(super) fn observe(
 /// Shared direct Engine observation; callers retain their existing owner lock.
 /// This performs no installation/start/stop and cannot infer a stopped source
 /// from a missing daemon or installation.
-pub(super) fn observe_installed(
+pub(crate) fn observe_installed(
     source: &LifecycleService,
     source_instance: &str,
     source_image: &str,

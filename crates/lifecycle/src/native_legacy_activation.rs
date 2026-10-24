@@ -66,8 +66,8 @@ fn bound_images(
     Ok((runtime.into(), maintenance.clone()))
 }
 fn same_source(
-    a: &crate::source_stopped::SourceStoppedReceipt,
-    b: &crate::source_stopped::SourceStoppedReceipt,
+    a: &crate::signed_release::trust::SourceStoppedReceipt,
+    b: &crate::signed_release::trust::SourceStoppedReceipt,
 ) -> bool {
     a.source_instance == b.source_instance
         && a.bundle_id == b.bundle_id
@@ -89,8 +89,8 @@ struct OriginalWriter<'a> {
     services: Vec<String>,
     runtime_image: String,
     maintenance_image: String,
-    signing_record: &'a crate::source_configuration::NativeConfigurationProof,
-    identity: crate::source_stopped::SourceStoppedReceipt,
+    signing_record: &'a crate::signed_release::trust::LegacyConfigurationProof,
+    identity: crate::signed_release::trust::SourceStoppedReceipt,
     volume: serde_json::Value,
 }
 impl<'a> OriginalWriter<'a> {
@@ -172,7 +172,7 @@ impl<'a> OriginalWriter<'a> {
         .map_err(|_| owner_required())?;
         let (runtime_image, maintenance_image) =
             bound_images(&manifest, &candidate.source.configuration.images, &compose)?;
-        let identity = crate::source_stopped::observe_installed(
+        let identity = crate::signed_release::trust::legacy_stopped_observe(
             &service,
             &manifest.bundle_id,
             &runtime_image,
@@ -214,7 +214,7 @@ impl<'a> OriginalWriter<'a> {
         ) {
             return Err(owner_required());
         }
-        let before = crate::source_stopped::observe_installed(
+        let before = crate::signed_release::trust::legacy_stopped_observe(
             &self.service,
             &self.identity.source_instance,
             &self.runtime_image,
@@ -237,12 +237,12 @@ impl<'a> OriginalWriter<'a> {
         }
         // Existing helper: read-only volume mount, fixed local image, private
         // stable file metadata/hash, bounded output and owned normal cleanup.
-        crate::source_configuration::observe(
+        crate::signed_release::trust::legacy_configuration_observe(
             &self.maintenance_image,
             &self.identity.configuration_volume,
             self.signing_record,
         )?;
-        let after = crate::source_stopped::observe_installed(
+        let after = crate::signed_release::trust::legacy_stopped_observe(
             &self.service,
             &self.identity.source_instance,
             &self.runtime_image,
@@ -519,7 +519,7 @@ mod tests {
     }
     #[test]
     fn original_configuration_identity_cannot_switch_volume_container_or_image() {
-        let make = || crate::source_stopped::SourceStoppedReceipt {
+        let make = || crate::signed_release::trust::SourceStoppedReceipt {
             source_instance: "original".into(),
             bundle_id: "bundle".into(),
             platform_container: "app".into(),
