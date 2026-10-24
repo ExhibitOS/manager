@@ -18,7 +18,7 @@ fn uuid(id: &str) -> bool {
 }
 fn valid(v: &MaintenanceContext) -> Result<()> {
     if !uuid(&v.id)
-        || !["backup", "restoration"].contains(&v.kind.as_str())
+        || !["backup", "restoration", "hosted-backup", "hosted-restoration", "external-restoration"].contains(&v.kind.as_str())
         || ![
             "running",
             "requested",
@@ -192,7 +192,7 @@ impl LifecycleService {
         if !preserve {
             return Err(err("CANCEL_ACK_REQUIRED"));
         }
-        if !uuid(id) || !["backup", "restoration"].contains(&kind) {
+        if !uuid(id) || !["backup", "restoration", "hosted-backup", "hosted-restoration", "external-restoration"].contains(&kind) {
             return Err(err("CANCEL_INPUT_INVALID"));
         }
         if self.read_maintenance()?.is_none() {
@@ -211,13 +211,29 @@ impl LifecycleService {
             Err(e) => return Err(e),
             Ok(_) => return Err(err("CANCEL_TARGET_INVALID")),
         }
-        let path = if kind == "backup" {
+        let path = if kind=="external-restoration" {format!("external-restoration-{id}/job.json")}else if kind == "hosted-restoration" {
+            format!("hosted-restoration-{id}/job.json")
+        } else if kind == "hosted-backup" {
+            format!("hosted-backup-{id}/job.json")
+        } else if kind == "backup" {
             format!("backup-creation-{id}/job.json")
         } else {
             "restoration.json".into()
         };
         let bytes = source_bytes(&self.root, &path, 16 * 1024, true)?;
-        let (job_id, state, stage, error, created, updated) = if kind == "backup" {
+        #[cfg(not(windows))]
+        let external=if kind=="external-restoration"{let j:super::external_restoration::ExternalCheckJob=serde_json::from_slice(&bytes).map_err(|_|err("STATE_INVALID"))?;j.validate()?;Some((j.id,j.state,j.stage,j.error_code,j.created_at,j.updated_at))}else{None};
+        #[cfg(windows)]
+        let external:Option<(String,String,String,Option<String>,u64,u64)>=None;
+        let (job_id, state, stage, error, created, updated) = if let Some(external)=external{external}else if kind == "hosted-restoration" {
+            let job: hosted_restoration::CheckJob = serde_json::from_slice(&bytes).map_err(|_| err("STATE_INVALID"))?;
+            job.validate()?;
+            (job.id, job.state, job.stage, job.error_code, job.created_at, job.updated_at)
+        } else if kind == "hosted-backup" {
+            let job: hosted_backup::Job = serde_json::from_slice(&bytes).map_err(|_| err("STATE_INVALID"))?;
+            job.validate()?;
+            (job.id, job.state, job.stage, job.error_code, job.created_at, job.updated_at)
+        } else if kind == "backup" {
             let j: backup_creation::BackupCreationJob =
                 serde_json::from_slice(&bytes).map_err(|_| err("STATE_INVALID"))?;
             if j.operation != "create" {
@@ -338,6 +354,14 @@ impl LifecycleService {
         Ok(())
     }
     fn confirm_maintenance_stop(&self, kind: &str, id: &str) -> Result<()> {
+        #[cfg(not(windows))]
+        if kind=="external-restoration"{return self.stop_owned_external_restore(id);}
+        if kind == "hosted-restoration" {
+            return self.stop_owned_hosted_restore(id);
+        }
+        if kind == "hosted-backup" {
+            return self.stop_owned_hosted_backup(id);
+        }
         let nonce = Uuid::new_v4().to_string();
         self.reconcile_helper_engine(kind, id, &nonce, |args| run("docker", args, None, 60))?;
         self.stop_cancelled_candidate(kind)
@@ -352,15 +376,38 @@ impl LifecycleService {
     }
     /// Only interrupt attach after the owned daemon helper is observed running and stopped.
     /// Absence/created before launch completion cannot prove cancellation; keep waiting.
+    #[cfg(not(windows))]
     pub(crate) fn run_maintenance_helper(
         &self,
         kind: &str,
         id: &str,
         args: &[String],
     ) -> Result<Vec<u8>> {
+        self.run_maintenance_helper_input(kind, id, args, None)
+    }
+    /// Stream bounded protected inputs without exposing their contents in argv.
+    /// Reader implementations must be finite and validate retained inputs at EOF.
+    #[cfg(windows)]
+    pub(crate) fn run_maintenance_helper_with_input(
+        &self,
+        kind: &str,
+        id: &str,
+        args: &[String],
+        input: Box<dyn Read + Send>,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>> {
+        self.run_maintenance_helper_input(kind, id, args, Some((input, max_bytes)))
+    }
+    fn run_maintenance_helper_input(
+        &self,
+        kind: &str,
+        id: &str,
+        args: &[String],
+        input: Option<(Box<dyn Read + Send>, u64)>,
+    ) -> Result<Vec<u8>> {
         self.maintenance_checkpoint(kind, id)?;
         let mut next = Instant::now();
-        let result = run_observed("docker", args, None, 3600, || {
+        let result = run_observed_stream("docker", args, None, 3600, (None, None), input, || {
             if Instant::now() < next {
                 return Ok(());
             }

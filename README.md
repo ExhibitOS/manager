@@ -1,6 +1,14 @@
 # ExhibitOS Manager
 
-로컬 전시 서버의 설치·시작·정지·재시작·상태와 작업 기록을 관리하는
+저장소별 역할·빌드 경계의 기준은 [Platform 아키텍처 정본](https://github.com/ExhibitOS/platform/blob/main/docs/architecture.md#repository-roles-build-boundaries)입니다. 앱 조작 UI와 서버·공용 렌더러의 책임을 구분합니다.
+
+## 사용자 앱과 개발 소스
+
+현재 SwiftUI/AppKit 개발 후보는 통합 제작 조작과 앱이 관리하는 서비스 실행을 연결합니다. 사용자가 Docker·개발 도구·터미널을 설치하지 않는 방향이며, 아래 개발자 빌드 요구를 사용자 설치 조건으로 적용하지 않습니다. 합성 데이터의 native 저장·재열기·OEX와 정적 출력 경로는 한정 검증됐지만 native GUI/접근성·실제 공개 URL·이전 설치 호환·최종 서명 배포물과 깨끗한 사용자 설치는 별도입니다. 소스 개발은 [native/README.md](native/README.md)를 참조하세요. 아직 검증되지 않은 공식 설치 파일이나 다운로드 절차를 제공하지 않습니다.
+
+## 기존 Tauri·컨테이너 경로의 검증 이력
+
+아래는 로컬 전시 서버의 설치·시작·정지·재시작·상태와 작업 기록을 관리하는
 Tauri2/Rust 데스크톱 앱의 개발 구현입니다. Windows Docker 기본 설치·시작·정지·재시작·API 연결과 진행 표시를 실제 사용자 환경에서 확인했습니다. 전체 Windows 복구·업데이트·설치 프로그램 검증,
 macOS 서명·공증과 배포용 설치 프로그램은 완료되지 않았습니다. 앱의 실제 복원 GUI 조작·취소/재개,
 업데이트·rollback과 cloud wizard는 후속 작업입니다.
@@ -30,6 +38,8 @@ bundle을 별도 프로세스로 실행하며 공개 lifecycle readiness protoco
 
 ## 개발
 
+아래 명령은 기존 React/Vite·Tauri 경로입니다. `npm run build`나 `desktop:build`를 SwiftUI 앱 빌드로 안내하지 않습니다. native 소스 진입점과 로컬 검증 앱 조립의 한계는 [native 개발 안내](native/README.md)를 따릅니다.
+
 Node24.21.0/npm11.19.0, Rust1.99.0 (`rust-toolchain.toml`)을 사용합니다.
 macOS 네이티브 빌드는 Xcode compiler/SDK가 필요합니다.
 
@@ -42,7 +52,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 npm run desktop:build
 ```
 
-macOS 개발 앱 경로는 `target/release/bundle/macos/ExhibitOS Manager.app`입니다.
+이 Tauri 경로의 macOS 개발 앱은 `target/release/bundle/macos/ExhibitOS Manager.app`입니다.
 `npm run desktop:dev`로 개발 앱을 시작합니다. Docker 또는 Podman과 Compose가
 별도로 필요하며 설치 여부뿐 아니라 daemon 연결을 검사합니다. 버전과 해시가
 검증된 runtime bundle이 준비되기 전에는 서버 설치를 성공으로 표시하지 않습니다.
@@ -63,8 +73,8 @@ OS app-data/지정 개발 경로에 보존합니다. 정지는 volume을 삭제�
 Manager 소유 코드·설정·문서는 [Apache-2.0](LICENSE)입니다. 실행하는 Platform은
 AGPL-3.0-or-later이며 별도 이미지의 원문 LICENSE/third-party 고지를 보존합니다.
 외부 라이브러리와 작품은 각각 원래 권리를 유지합니다. 이 라이선스는 상표나
-사용자 작품의 display/export 권한을 부여하지 않습니다. 현재 저장소는 비공개이며
-공개 여부는 source/권리/secret/독립 build 검토 후 결정합니다.
+사용자 작품의 display/export 권한을 부여하지 않습니다. 이 저장소는 공개입니다. 공개 전송에는 source/권리/secret/독립 build 검토를 유지하며,
+비공개 Capture·operations 자료와 원본·자격정보를 포함하지 않습니다.
 
 관리 공간 전환과 보존·복구 경계는 [관리 공간 선택](docs/installation-selection.md)을 참조하세요.
 
