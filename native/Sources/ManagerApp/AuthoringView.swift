@@ -388,7 +388,7 @@ struct NativeAuthoringView: View {
                 TextField("제작 연도 (선택)", text: $model.creationYearText)
                 TextField("가로 (m)", value: $model.draft.dimensions.width, format: .number)
                 TextField("세로 (m)", value: $model.draft.dimensions.height, format: .number)
-                TextField("깊이 (m)", value: Binding(get: { model.draft.dimensions.depth ?? 0.01 }, set: { model.draft.dimensions.depth = $0 }), format: .number)
+                TextField("깊이 (m, 선택)", value: $model.draft.dimensions.depth, format: .number)
             }
             Section("권리와 표시") {
                 TextField("권리자", text: $model.draft.rights.holder)

@@ -31,7 +31,7 @@ public struct ArtworkSummary: Decodable, Sendable, Identifiable {
 public struct ArtworkMetadata: Codable, Equatable, Sendable {
     public struct Dimensions: Codable, Equatable, Sendable {
         public var width = 1.0, height = 1.0
-        public var depth: Double? = 0.01
+        public var depth: Double?
         public var unit = "m"
     }
     public struct Rights: Codable, Equatable, Sendable {
