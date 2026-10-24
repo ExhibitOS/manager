@@ -279,7 +279,6 @@ impl AppliedSchema<'_> {
     ) -> Result<ActivationReceipt> {
         self.summary()?;
         let candidate = self.candidate;
-        let original = OriginalWriter::capture(candidate)?;
         let (staged, staged_pin) = read::<Staged>(&candidate.job.join("staged.json"))?;
         let (database, database_pin) = read::<Database>(&candidate.job.join("database.json"))?;
         let signing = crate::digest(&candidate.source.configuration.freeze_signing_key.0);
@@ -302,7 +301,18 @@ impl AppliedSchema<'_> {
         )?;
         let cancellation = session.cancellation();
         publish_cancel(cancellation.clone());
+        // Publish cancellation before the conditional Docker observer can run a
+        // bounded helper. Its owned cleanup still completes normally on cancel.
+        let original = if cancellation.load(Ordering::SeqCst) {
+            Err(err("NATIVE_CANCELLED"))
+        } else {
+            OriginalWriter::capture(candidate)
+        };
         let result = (|| {
+            let original = original.as_ref().map_err(Clone::clone)?;
+            if cancellation.load(Ordering::SeqCst) {
+                return Err(err("NATIVE_CANCELLED"));
+            }
             original.check()?;
             session.start_database_only_cancellable()?;
             let system = session.maintenance_system_identifier()?;
@@ -377,6 +387,7 @@ impl AppliedSchema<'_> {
             }
         }
         let receipt = result?;
+        let original = original?;
         if cancellation.load(Ordering::SeqCst) {
             return Err(err("NATIVE_CANCELLED"));
         }
