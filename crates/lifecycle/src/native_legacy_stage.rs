@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Legacy-only candidate staging. No selection change, source writer handoff,
-//! schema upgrade, service activation or authority/origin rewrite occurs here.
+//! Legacy candidate staging and fixed schema capability boundaries. No selection
+//! change, source writer handoff, service activation or origin rewrite occurs here.
 use super::*;
+#[path = "native_legacy_apply.rs"]
+mod application;
+pub(crate) use application::AppliedSchema;
 use crate::{
     LifecycleService,
     hosted_runtime_file::Pin,

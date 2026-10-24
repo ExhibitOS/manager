@@ -17,7 +17,7 @@ export function inspectionRequest(value){
  if(typeof value.manifestPath!=='string'||resolve(value.manifestPath)!==value.manifestPath||!hex(value.manifestSha256)||!hex(value.payloadSha256)||typeof value.systemIdentifier!=='string'||!/^[1-9][0-9]{0,19}$/.test(value.systemIdentifier)||BigInt(value.systemIdentifier)>18446744073709551615n)fail();
  return {...value};
 }
-async function privateManifest(path){
+export async function privateManifest(path){
  if(await realpath(path)!==path)fail();
  const file=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
  try{

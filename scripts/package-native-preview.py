@@ -49,6 +49,7 @@ if args.runtime_payload:
     migration = contents / 'Resources/native-migration'
     for name in ['scripts/native-legacy-verify.mjs',
                  'scripts/native-legacy-inspect.mjs',
+                 'scripts/native-legacy-apply.mjs',
                  'vendor/platform/migrations.mjs', 'vendor/platform/migrations.ts',
                  'vendor/platform/LICENSE', 'vendor/platform/native-migration-source.json',
                  'vendor/deployment/src/bounded-json.mjs',
