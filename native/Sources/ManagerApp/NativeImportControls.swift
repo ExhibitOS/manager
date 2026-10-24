@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import SwiftUI
+import AppKit
 import ManagerCore
 
 struct NativeImportControls: View {
@@ -63,10 +64,64 @@ struct NativeImportControls: View {
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).disabled(model.busy || !ready)
           }
+          Section("선택 도구 · Processing") {
+            OptionalProcessingControls()
+          }
         }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true)
         .onChange(of: model.assetId) { _, _ in model.approvalAcknowledged = false }
     }
     private func stateTitle(_ state: String) -> String {
         switch state { case "uploading": "파일 전송 대기"; case "queued": "파일 검사 대기"; case "processing": "파일 검사 중"; case "approved": "파일 검사 완료"; case "failed": "파일 검사 실패"; case "cancelled": "파일 검사 중단됨"; default: "검사 상태 확인 필요" }
+    }
+}
+
+@MainActor
+private struct OptionalProcessingControls: View {
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var found = false
+    @State private var opening = false
+    @State private var notice = ""
+    private let bundleIdentifier = "org.exhibitos.processing"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Processing 없이도 외부 GLB·PNG 파일로 작품을 만들 수 있습니다.")
+            Text("iPhone Capture의 EXCP 파일은 Mac으로 옮겨 Processing에서 열고, 내보낸 GLB를 위에서 선택하세요.").foregroundStyle(.secondary)
+            Text(notice).foregroundStyle(.secondary)
+            HStack {
+                Button("Processing 다시 찾기", systemImage: "magnifyingglass") { refresh() }
+                Button(opening ? "Processing 여는 중…" : "Processing 열기", systemImage: "arrow.up.forward.app") {
+                    Task { await open() }
+                }.disabled(!found || opening)
+            }.disabled(opening)
+        }
+        .onAppear { refresh() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active && !opening { refresh() }
+        }
+    }
+
+    private func applicationURL() -> URL? {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier),
+              Bundle(url: url)?.bundleIdentifier == bundleIdentifier else { return nil }
+        return url
+    }
+
+    private func refresh() {
+        found = applicationURL() != nil
+        notice = found ? "이 Mac에서 Processing을 찾았습니다. 필요할 때 직접 열 수 있습니다." : "이 Mac에서 Processing을 찾지 못했습니다. 설치한 뒤 다시 찾거나, 위에서 GLB·PNG 파일을 선택하세요."
+    }
+
+    private func open() async {
+        guard !opening else { return }
+        guard let url = applicationURL() else { refresh(); return }
+        opening = true
+        defer { opening = false }
+        do {
+            _ = try await NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+            notice = "Processing을 열었습니다. 작업을 마치면 내보낸 GLB를 여기서 선택하세요."
+        } catch {
+            notice = "Processing을 열지 못했습니다. Finder에서 앱의 실행 권한과 macOS 안내를 확인한 뒤 다시 시도하세요. GLB·PNG 파일은 계속 선택할 수 있습니다."
+        }
     }
 }
