@@ -13,9 +13,15 @@ final class ManagerModel: ObservableObject {
     @Published private(set) var native: NativeHostStatus?
     @Published var accountSubject = ""
     @Published var accountPassword = ""
-    @Published private(set) var quitting = false
+    @Published private(set) var quitting = false {
+        didSet { if quitting { statusGeneration = UUID() } }
+    }
     @Published private(set) var jobs: [Job] = []
-    @Published private(set) var busy = false
+    @Published private(set) var busy = false {
+        didSet { if busy { statusGeneration = UUID() } }
+    }
+    private var statusGeneration = UUID()
+    private var pollingStatus = false
     @Published private(set) var failure: BridgeFailure?
     @Published private(set) var authoring = AuthoringModel()
     @Published private(set) var exhibitions = ExhibitionModel()
@@ -241,22 +247,32 @@ final class ManagerModel: ObservableObject {
     }
 
     private func pollRuntime() async {
-        guard let bridge, let context, !busy else { return }
-        // Background host work does not disable mode or navigation. Only this
-        // short pipe exchange is serialized with other presentation writes.
-        busy = true
-        defer { busy = false }
+        guard let bridge, let context, !busy, !quitting, !pollingStatus else { return }
+        // Passive observations must not move content or toggle action controls.
+        // NativeBridge serializes the pipe; the ticket rejects observations
+        // superseded by a foreground operation while the actor was awaiting I/O.
+        pollingStatus = true
+        defer { pollingStatus = false }
+        let generation = statusGeneration
         do {
-            native = try await bridge.nativeStatus(context)
+            let observed = try await bridge.nativeStatus(context)
+            guard generation == statusGeneration, !busy, !quitting else { return }
+            native = observed
             if native?.busy == false {
                 if let code = native?.errorCode { failure = BridgeFailure(code); startAfterPrepare = false }
                 if startAfterPrepare && native?.configuration != nil && !quitting {
                     startAfterPrepare = false; serviceRequested = true
-                    native = try await bridge.start(context)
+                    busy = true
+                    defer { busy = false }
+                    do { native = try await bridge.start(context) }
+                    catch { failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_CONNECTION_FAILED") }
                 }
                 if native?.needsShutdown == false { serviceRequested = false }
             }
-        } catch { failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_CONNECTION_FAILED") }
+        } catch {
+            guard generation == statusGeneration, !busy, !quitting else { return }
+            failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_CONNECTION_FAILED")
+        }
     }
 
     func stopForQuit() async -> Bool {
