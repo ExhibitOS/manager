@@ -50,6 +50,8 @@ if args.runtime_payload:
     for name in ['scripts/native-legacy-verify.mjs',
                  'scripts/native-legacy-inspect.mjs',
                  'scripts/native-legacy-apply.mjs',
+                 'scripts/native-legacy-activation-check.mjs',
+                 'vendor/platform/freeze-signature.mjs', 'vendor/platform/freeze-signature.ts',
                  'vendor/platform/migrations.mjs', 'vendor/platform/migrations.ts',
                  'vendor/platform/LICENSE', 'vendor/platform/native-migration-source.json',
                  'vendor/deployment/src/bounded-json.mjs',

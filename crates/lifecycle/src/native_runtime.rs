@@ -1072,12 +1072,15 @@ impl Session {
     }
     /// Fixed rollback-only legacy schema inspector, never an arbitrary script.
     pub(crate) fn inspect_legacy_schema(&mut self, input: &[u8]) -> Result<Value> {
-        self.legacy_schema_tool(input, false)
+        self.legacy_schema_tool(input, 0)
     }
     pub(crate) fn apply_legacy_schema(&mut self, input: &[u8]) -> Result<Value> {
-        self.legacy_schema_tool(input, true)
+        self.legacy_schema_tool(input, 1)
     }
-    fn legacy_schema_tool(&mut self, input: &[u8], application: bool) -> Result<Value> {
+    pub(crate) fn check_legacy_activation(&mut self, input: &[u8]) -> Result<Value> {
+        self.legacy_schema_tool(input, 2)
+    }
+    fn legacy_schema_tool(&mut self, input: &[u8], kind: u8) -> Result<Value> {
         if self.status()?.state != "database_ready"
             || self.guard.is_none()
             || self.node.is_some()
@@ -1087,10 +1090,11 @@ impl Session {
             return Err(err("NATIVE_NOT_READY"));
         }
         self.payload.recheck()?;
-        let (script, pins) = if application {
-            crate::native_legacy_migration::schema_resources(&self.payload)?
-        } else {
-            crate::native_legacy_migration::inspection_resources(&self.payload)?
+        let (script, pins) = match kind {
+            0 => crate::native_legacy_migration::inspection_resources(&self.payload)?,
+            1 => crate::native_legacy_migration::schema_resources(&self.payload)?,
+            2 => crate::native_legacy_migration::activation_resources(&self.payload)?,
+            _ => return Err(err("NATIVE_LEGACY_OPERATION_INVALID")),
         };
         let database = self
             .environment

@@ -15,6 +15,7 @@ use std::{
 };
 #[path = "native_legacy_codec.rs"]
 mod codec;
+pub(crate) use codec::activation_resources;
 pub(crate) use codec::authenticate;
 pub(crate) use codec::inspection_resources;
 pub(crate) use codec::schema_resources;
