@@ -21,8 +21,23 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var catalogImages: [String: NSImage] = [:]
     @Published private(set) var catalogPreviewFailures: Set<String> = []
     private var catalogImageOrder: [String] = []
+    private var catalogThumbnailTail: Task<Void, Never>?
+    private var catalogThumbnailTailId: UUID?
     func catalogImageKey(_ entry: ArtworkCatalogEntry) -> String { entry.id + ":" + String(entry.revision) }
     func loadCatalogImage(_ entry: ArtworkCatalogEntry) async {
+        let previous = catalogThumbnailTail, jobId = UUID(), access = viewportAccessID
+        // Visible cards share one request lane; they cannot overfill the shared producer's bounded queue.
+        let job = Task { [weak self] in
+            await previous?.value
+            guard !Task.isCancelled, let self, self.viewportAccessID == access,
+                  self.library.contains(where: { $0.id == entry.id && $0.revision == entry.revision }) else { return }
+            await self.loadCatalogImageSerial(entry)
+        }
+        catalogThumbnailTail = job; catalogThumbnailTailId = jobId
+        await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
+        if catalogThumbnailTailId == jobId { catalogThumbnailTail = nil; catalogThumbnailTailId = nil }
+    }
+    private func loadCatalogImageSerial(_ entry: ArtworkCatalogEntry) async {
         let key = catalogImageKey(entry), access = viewportAccessID
         guard catalogImages[key] == nil, viewportController.thumbnailSupported else { return }
         do {
