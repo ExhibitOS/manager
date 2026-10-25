@@ -6,7 +6,7 @@ final class ArtworkCatalogTests: XCTestCase {
     private func artwork(kind: String, title: String) -> DocumentValue {
         let id = UUID().uuidString.lowercased(), asset = UUID().uuidString.lowercased()
         return .object(["id": .string(id), "kind": .string("artwork"), "artworkType": .string(kind), "revisionId": .string(UUID().uuidString.lowercased()), "primaryAssetId": .string(asset),
-            "assets": .array([.object(["id": .string(asset), "mime": .string(kind == "painting" ? "image/png" : "model/gltf-binary")])]),
+            "assets": .array([.object(["id": .string(asset), "mime": .string(kind == "image" || kind == "painting" ? "image/png" : "model/gltf-binary")])]),
             "metadata": .object(["title": .string(title), "artist": .string("합성 작가")]), "dimensions": .object(["width": .number(0.934), "height": .number(0.732)]),
             "extensions": .object(["org.exhibitos.studio/cms": .object(["artworkId": .string(id), "revision": .integer(1)])])])
     }
@@ -15,7 +15,7 @@ final class ArtworkCatalogTests: XCTestCase {
     }
     func testSourceFiltersAndMultipleInstanceSelectionDoNotMutateDraftOrTrueDimensions() throws {
         var draft = try NativeExhibitionDraft.new()
-        let painting = artwork(kind: "painting", title: "밀밭"), sculpture = artwork(kind: "sculpture", title: "조각")
+        let painting = artwork(kind: "image", title: "밀밭"), sculpture = artwork(kind: "sculpture", title: "조각")
         let room = try XCTUnwrap(draft.rooms.first?["id"].string)
         try draft.addApprovedArtwork(sculpture, roomId: room, position: [0,1,0])
         try draft.addApprovedArtwork(sculpture, roomId: room, position: [2,1,0])
@@ -27,6 +27,10 @@ final class ArtworkCatalogTests: XCTestCase {
         XCTAssertNil(draft.catalogSourceID(for: id), "A source ID must never masquerade as a placement instance")
         XCTAssertEqual(draft.catalogPlacementIDs(for: painting["id"].string!), [])
         let image = ArtworkCatalogEntry(id: painting["id"].string!, revision: 1, artwork: painting)
+        XCTAssertEqual(image.typeLabel, "회화", "Approved CMS PNG snapshots use artworkType image")
+        XCTAssertEqual(image.primaryMime, "image/png")
+        let legacyPainting = ArtworkCatalogEntry(id: UUID().uuidString, revision: 1, artwork: artwork(kind: "painting", title: "기존 회화"))
+        XCTAssertTrue(legacyPainting.matches(query: "", filter: .painting, in: draft))
         let object = ArtworkCatalogEntry(id: id, revision: 1, artwork: sculpture)
         XCTAssertTrue(image.matches(query: "합성", filter: .unplaced, in: draft))
         XCTAssertTrue(image.matches(query: "밀밭", filter: .painting, in: draft))

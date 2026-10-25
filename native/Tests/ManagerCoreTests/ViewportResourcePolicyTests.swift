@@ -4,6 +4,39 @@ import WebKit
 @testable import ManagerCore
 @MainActor
 final class ViewportResourcePolicyTests: XCTestCase {
+    func testCatalogReadRoutesStayPinnedToExactOriginTenantAndArtworkPaths() async throws {
+        let tenant = UUID().uuidString.lowercased(), artwork = UUID().uuidString.lowercased()
+        let origin = "http://127.0.0.1:13200"
+        let encoded = try ViewportResourcePolicy.encodedRules(origin: origin, tenantId: tenant)
+        let store = WKContentRuleListStore.default()!, identifier = "ExhibitOSCatalogRules-" + UUID().uuidString
+        let compiled = try await store.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: encoded)
+        XCTAssertNotNil(compiled)
+        try await store.removeContentRuleList(forIdentifier: identifier)
+        let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [[String: Any]])
+        XCTAssertEqual((rules.first?["action"] as? [String: String])?["type"], "block")
+        func allows(_ url: String) throws -> Bool {
+            var allowed = false
+            for rule in rules {
+                let trigger = try XCTUnwrap(rule["trigger"] as? [String: Any])
+                let pattern = try XCTUnwrap(trigger["url-filter"] as? String)
+                let expression = try NSRegularExpression(pattern: pattern)
+                if expression.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil {
+                    allowed = (rule["action"] as? [String: String])?["type"] == "ignore-previous-rules"
+                }
+            }
+            return allowed
+        }
+        let path = "/api/v1/tenants/\(tenant)/cms/artworks/\(artwork)"
+        for suffix in ["", "/display", "/preview?expectedRevision=1"] {
+            XCTAssertTrue(try allows(origin + path + suffix), suffix)
+            XCTAssertFalse(try allows("http://127.0.0.1:13201" + path + suffix))
+            XCTAssertFalse(try allows("https://attacker.invalid" + path + suffix))
+            XCTAssertFalse(try allows(origin + path.replacingOccurrences(of: tenant, with: UUID().uuidString.lowercased()) + suffix))
+        }
+        for denied in [path + "?extra=1", path + "/display?extra=1", path + "/revisions", path + "/display/export", "/api/v1/tenants/\(tenant)/cms/artworks", "/api/v1/tenants/\(tenant)/cms/artists/\(artwork)"] {
+            XCTAssertFalse(try allows(origin + denied), denied)
+        }
+    }
     func testJSONWirePreservesIndependentEmptyDocumentCollectionsInActualWebKit() async throws {
         let web = WKWebView(frame: .zero)
         let json = "{\"surfaces\":[],\"openings\":[],\"lights\":[],\"placements\":[]}"

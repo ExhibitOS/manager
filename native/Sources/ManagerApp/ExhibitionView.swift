@@ -52,6 +52,10 @@ final class ExhibitionModel: ObservableObject {
         } catch {
             guard !Task.isCancelled, viewportAccessID == access else { return }
             catalogPreviewFailures.insert(key)
+            // Keep the first bounded rejection without a redraw/retry loop.
+            if !viewportController.diagnostic.hasPrefix("THUMBNAIL ·") {
+                viewportController.diagnose("THUMBNAIL", error)
+            }
         }
     }
     var canSelectCatalog: Bool { !busy && !pending && !formDirty && !positionDirty && !architectureDirty && !architectureApplying }

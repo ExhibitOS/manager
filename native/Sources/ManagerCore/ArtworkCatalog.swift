@@ -13,7 +13,8 @@ public struct ArtworkCatalogEntry: Identifiable, Equatable, Sendable {
     public var title: String { artwork["metadata"]["title"].string ?? "제목 없는 작품" }
     public var artist: String { artwork["metadata"]["artist"].string ?? "작가 미상" }
     public var kind: String { artwork["artworkType"].string ?? "" }
-    public var typeLabel: String { kind == "painting" ? "회화" : kind == "sculpture" ? "조각" : "작품" }
+    private var isPainting: Bool { kind == "image" || kind == "painting" }
+    public var typeLabel: String { isPainting ? "회화" : kind == "sculpture" ? "조각" : "작품" }
     public var dimensions: [Double] { ["width", "height", "depth"].compactMap { artwork["dimensions"][$0].double } }
     public var primaryMime: String? {
         artwork["assets"].items?.first { $0["id"].string == artwork["primaryAssetId"].string }?["mime"].string
@@ -24,7 +25,7 @@ public struct ArtworkCatalogEntry: Identifiable, Equatable, Sendable {
         guard matchesText else { return false }
         switch filter {
         case .all: return true
-        case .painting: return kind == "painting"
+        case .painting: return isPainting
         case .sculpture: return kind == "sculpture"
         case .unplaced: return draft.catalogPlacementIDs(for: id).isEmpty
         }
