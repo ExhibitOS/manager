@@ -28,9 +28,9 @@ final class ExhibitionModel: ObservableObject {
         do {
             let data = try await viewportController.thumbnail(artworkId: entry.id, revision: entry.revision)
             try Task.checkCancellation()
-            guard viewportAccessID == access, library.contains(where: { $0.id == entry.id && $0.revision == entry.revision }),
-                  let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
-                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil), image.width <= 256, image.height <= 256 else { return }
+            guard viewportAccessID == access, library.contains(where: { $0.id == entry.id && $0.revision == entry.revision }) else { return }
+            guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil), image.width <= 256, image.height <= 256 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
             if catalogImageOrder.count >= 64, let oldest = catalogImageOrder.first { catalogImages.removeValue(forKey: oldest); catalogImageOrder.removeFirst() }
             catalogImages[key] = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
             catalogImageOrder.removeAll { $0 == key }; catalogImageOrder.append(key); catalogPreviewFailures.remove(key)

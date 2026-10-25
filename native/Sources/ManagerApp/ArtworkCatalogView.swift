@@ -34,7 +34,7 @@ struct ArtworkCatalogView: View {
                         Button("배치 추가", systemImage: "plus") { model.prepareCatalogPlacement() }
                             .disabled(!ready || !model.canSelectCatalog || model.immutable)
                         Button("선택한 배치 찾기", systemImage: "scope") { Task { await controller.findSelection() } }
-                            .disabled(!ready || !model.canSelectCatalog || model.viewportSelection?.kind != "placement" || !controller.findSelectionSupported || model.viewportPresentation == .plan)
+                            .disabled(!ready || !model.canSelectCatalog || model.immutable || model.viewportSelection?.kind != "placement" || !controller.findSelectionSupported || model.viewportPresentation == .plan)
                             .help(controller.findSelectionSupported ? "선택한 배치가 보이도록 시점을 맞춥니다. 원본과 배치 위치는 바뀌지 않습니다." : "이 실행 환경에서는 찾기를 사용할 수 없습니다.")
                     }
                     Spacer(minLength: 0)
