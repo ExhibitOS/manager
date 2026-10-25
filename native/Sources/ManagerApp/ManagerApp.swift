@@ -376,7 +376,7 @@ struct ManagerApp: App {
                 }
             }
             CommandMenu("보기") {
-                Button("초보자 모드") { model.change(mode: .beginner) }
+                Button("일반 모드") { model.change(mode: .beginner) }
                 Button("전문가 모드") { model.change(mode: .expert) }
             }
         }
@@ -430,8 +430,8 @@ struct ManagerView: View {
         .toolbar {
             ToolbarItem {
                 Picker("사용 모드", selection: Binding(get: { model.presentation?.mode ?? .beginner }, set: { mode in model.change(mode: mode) })) {
-                    Text("초보자").tag(Mode.beginner)
-                    Text("전문가").tag(Mode.expert)
+                    Text("일반 모드").tag(Mode.beginner)
+                    Text("전문가 모드").tag(Mode.expert)
                 }.disabled(model.quitting || model.presentation == nil).help("같은 전시와 작업을 두 모드에서 사용합니다.")
             }
             ToolbarItem { Button("다시 확인", systemImage: "arrow.clockwise") { Task { await model.refresh() } }.disabled(model.busy) }
@@ -526,10 +526,10 @@ struct ManagerView: View {
     }
 }
 
-#Preview("초보자 · Light") {
+#Preview("일반 모드 · Light") {
     ManagerView(model: ManagerModel(preview: Presentation())).preferredColorScheme(.light)
 }
-#Preview("전문가 · Dark") {
+#Preview("전문가 모드 · Dark") {
     ManagerView(model: ManagerModel(preview: Presentation(mode: .expert))).preferredColorScheme(.dark)
 }
 #Preview("200% · 좁은 창") {
