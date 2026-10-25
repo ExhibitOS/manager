@@ -526,6 +526,15 @@ struct NativeExhibitionView: View {
                         Text("관람객이 전시에 들어가기 전에 전시 제목과 이 소개를 봅니다.").foregroundStyle(.secondary)
                         TextField("작가", text: $model.entrance.artist)
                         TextField("전시 소개", text: $model.entrance.introduction, axis: .vertical).lineLimit(3...8)
+                        DisclosureGroup("입장권 글과 연출") {
+                            TextField("입장권 제목", text: $model.entrance.ticketTitle)
+                            TextField("입장권 안내", text: $model.entrance.ticketDetail, axis: .vertical).lineLimit(2...4)
+                            Text("비워 두면 전시 제목과 작가를 표시합니다.").foregroundStyle(.secondary)
+                            Toggle("입장권 움직임", isOn: $model.entrance.ticketAnimation)
+                            Toggle("표지 펼치기", isOn: $model.entrance.coverUnfold)
+                            Toggle("문 열기 연출", isOn: $model.entrance.doorEffect)
+                            Text("각 연출은 따로 켜거나 끌 수 있습니다. 관람자의 동작 줄이기 설정이 우선합니다.").foregroundStyle(.secondary)
+                        }
                         Picker("표지 이미지", selection: Binding<String?>(get: { model.entrance.imageAssetId?.lowercased() }, set: { model.entrance.imageAssetId = $0 })) {
                             Text("제목과 소개만 표시").tag(nil as String?)
                             ForEach(draft.viewerEntranceImageChoices()) { image in
