@@ -255,3 +255,7 @@ mod tests {
         fs::remove_dir_all(profile.parent().unwrap()).unwrap();
     }
 }
+
+#[path = "native_target_observation.rs"]
+mod target_observation;
+pub use target_observation::{NativeObservedPlanBoundary, NativeObservedPlanReceipt, NativeTargetObservation, NativeTargetObservationReceipt};

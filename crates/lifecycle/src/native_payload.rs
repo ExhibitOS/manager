@@ -369,3 +369,110 @@ impl Payload {
         self.root.join(&self.manifest.entry.initdb)
     }
 }
+
+/// Byte-qualified native migration inputs. This is not an observed schema or an
+/// update permit; only the fixed target observer consumes it.
+pub(crate) struct TargetInventoryResources {
+    pub(crate) platform_root: PathBuf,
+    pub(crate) migrations: Vec<u8>,
+    pub(crate) migrations_sha256: String,
+    pins: Vec<crate::hosted_runtime_file::Pin>,
+}
+impl TargetInventoryResources {
+    pub(crate) fn recheck(&self) -> Result<()> {
+        for pin in &self.pins {
+            pin.check()?;
+        }
+        Ok(())
+    }
+}
+impl Payload {
+    pub(crate) fn target_inventory_resources(&self) -> Result<TargetInventoryResources> {
+        self.recheck()?;
+        let mut pins = self.legacy_codec_pins()?;
+        for name in [
+            "platform/packages/storage/dist/index.js",
+            "platform/packages/storage/dist/blobs.js",
+        ] {
+            let item = self
+                .manifest
+                .files
+                .iter()
+                .find(|v| v.path == name && v.link.is_none() && v.executable == Some(false))
+                .ok_or_else(invalid)?;
+            let path = self.root.join(name);
+            if fs::canonicalize(&path).map_err(|_| invalid())? != path {
+                return Err(invalid());
+            }
+            let (bytes, pin) = crate::hosted_runtime_file::bounded(&path, 2 * 1024 * 1024)?;
+            if item.bytes != Some(bytes.len() as u64)
+                || item.sha256.as_deref() != Some(digest(&bytes).as_str())
+            {
+                return Err(invalid());
+            }
+            pins.push(pin);
+        }
+        #[derive(Serialize)]
+        struct Migration {
+            name: String,
+            sha256: String,
+        }
+        let prefix = "platform/database/migrations/";
+        let mut rows = std::collections::BTreeMap::new();
+        let mut total = 0u64;
+        for item in &self.manifest.files {
+            let Some(name) = item.path.strip_prefix(prefix) else {
+                continue;
+            };
+            if !name.as_bytes().first().is_some_and(u8::is_ascii_digit) || !name.ends_with(".sql") {
+                continue;
+            }
+            if name.len() > 256
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+                || item.link.is_some()
+                || item.executable != Some(false)
+            {
+                return Err(invalid());
+            }
+            let path = self.root.join(&item.path);
+            if fs::canonicalize(&path).map_err(|_| invalid())? != path {
+                return Err(invalid());
+            }
+            let (bytes, pin) = crate::hosted_runtime_file::bounded(&path, 2 * 1024 * 1024)?;
+            total = total
+                .checked_add(bytes.len() as u64)
+                .filter(|n| *n <= 32 * 1024 * 1024)
+                .ok_or_else(invalid)?;
+            let hash = digest(&bytes);
+            if item.bytes != Some(bytes.len() as u64)
+                || item.sha256.as_deref() != Some(hash.as_str())
+                || rows.insert(name.to_owned(), hash).is_some()
+            {
+                return Err(invalid());
+            }
+            pins.push(pin);
+        }
+        if rows.is_empty() || rows.len() > 10000 {
+            return Err(invalid());
+        }
+        let rows: Vec<_> = rows
+            .into_iter()
+            .map(|(name, sha256)| Migration { name, sha256 })
+            .collect();
+        let migrations = serde_json::to_vec(&rows).map_err(|_| invalid())?;
+        if migrations.len() > 65536 {
+            return Err(invalid());
+        }
+        let resources = TargetInventoryResources {
+            platform_root: self.root.join("platform"),
+            migrations_sha256: digest(&migrations),
+            migrations,
+            pins,
+        };
+        resources.recheck()?;
+        self.recheck()?;
+        Ok(resources)
+    }
+}

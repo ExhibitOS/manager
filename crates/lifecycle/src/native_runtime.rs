@@ -158,6 +158,7 @@ struct Current {
 
 pub struct Session {
     service: LifecycleService,
+    observation_root: crate::maintenance_source::DirectoryPin,
     payload: Arc<Payload>,
     ports: Ports,
     environment: Environment,
@@ -217,6 +218,7 @@ impl Session {
         let environment = Environment(service.native_start_environment(&payload, ports)?);
         Ok(Self {
             service: LifecycleService::bound_existing(service.root.clone())?,
+            observation_root: crate::maintenance_source::DirectoryPin::open(&service.root)?,
             payload,
             ports,
             environment,
@@ -1350,6 +1352,128 @@ impl Drop for Session {
             let _ = self.stop();
             if self.any_owned() {
                 thread::sleep(Duration::from_secs(1));
+            }
+        }
+    }
+}
+
+impl Session {
+    pub(crate) fn target_observation_root(&self) -> &Path {
+        &self.service.root
+    }
+    pub(crate) fn check_native_observation_fence(&self) -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        self.observation_root.check()?;
+        let held = self
+            .guard
+            .as_ref()
+            .ok_or_else(|| err("NATIVE_NOT_READY"))?
+            .metadata()
+            .map_err(|_| err("NATIVE_TARGET_SELECTION_INVALID"))?;
+        let named = fs::symlink_metadata(self.service.root.join("operation.lock"))
+            .map_err(|_| err("NATIVE_TARGET_SELECTION_INVALID"))?;
+        if !held.is_file()
+            || named.is_symlink()
+            || held.dev() != named.dev()
+            || held.ino() != named.ino()
+            || held.nlink() != 1
+            || held.uid() != unsafe { libc::geteuid() }
+            || held.mode() & 0o777 != 0o600
+        {
+            return Err(err("NATIVE_TARGET_SELECTION_INVALID"));
+        }
+        Ok(())
+    }
+    /// A fixed read-only worker, under the existing native session/root fence.
+    /// It never runs application bootstrap, migrations, restore or a caller script.
+    pub(crate) fn observe_target_inventory(
+        &mut self,
+        manifest: &[u8],
+        manifest_sha256: &str,
+        target_schema: &str,
+    ) -> Result<Value> {
+        if manifest.is_empty()
+            || manifest.len() > 16 * 1024 * 1024
+            || digest(manifest) != manifest_sha256
+            || !hash_valid(target_schema)
+            || self.status()?.state != "database_ready"
+            || self.guard.is_none()
+            || self.node.is_some()
+            || self.auxiliary.is_some()
+        {
+            return Err(err("NATIVE_NOT_READY"));
+        }
+        self.check_native_observation_fence()?;
+        self.backup_source_current()?;
+        let resources = self.payload.target_inventory_resources()?;
+        let system = self.maintenance_system_identifier()?;
+        let database = self
+            .environment
+            .0
+            .get("DATABASE_URL")
+            .ok_or_else(|| err("NATIVE_CONFIGURATION_INVALID"))?
+            .clone();
+        self.maintenance_space = vec![self.service.root.clone()];
+        let result = self.auxiliary_timed(
+            self.payload.node(),
+            vec![
+                "--max-old-space-size=256".into(),
+                "--input-type=module".into(),
+                "-e".into(),
+                include_str!("native_target_inventory.mjs").into(),
+                resources.platform_root.to_string_lossy().into_owned(),
+                manifest_sha256.into(),
+                target_schema.into(),
+                system,
+                String::from_utf8(resources.migrations.clone())
+                    .map_err(|_| err("NATIVE_TARGET_INPUT_INVALID"))?,
+                resources.migrations_sha256.clone(),
+            ],
+            vec![
+                ("DATABASE_URL", database),
+                (
+                    "BLOB_ROOT",
+                    self.service
+                        .root
+                        .join("blobs")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+            ],
+            Some(manifest),
+            Duration::from_secs(3600),
+        );
+        self.maintenance_space.clear();
+        match result {
+            Ok((0, mut bytes)) => {
+                resources.recheck()?;
+                self.payload.recheck()?;
+                self.check_native_observation_fence()?;
+                self.backup_source_current()?;
+                if bytes.len() > 16384 {
+                    bytes.fill(0);
+                    return Err(err("NATIVE_TARGET_RESULT_INVALID"));
+                }
+                let value =
+                    serde_json::from_slice(&bytes).map_err(|_| err("NATIVE_TARGET_RESULT_INVALID"));
+                bytes.fill(0);
+                value
+            }
+            other => {
+                // A cancellation/timeout is not permission to release a running
+                // maintenance child. Reuse the existing normal owned drain.
+                while self.any_owned() {
+                    self.stop()?;
+                    if self.any_owned() {
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                }
+                resources.recheck()?;
+                self.payload.recheck()?;
+                match other {
+                    Err(e) => Err(e),
+                    _ => Err(err("NATIVE_TARGET_OBSERVATION_FAILED")),
+                }
             }
         }
     }
