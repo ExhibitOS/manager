@@ -30,6 +30,16 @@ Rust helper explicitly. The validation-profile Info key is recognized only in
 debug builds. Use an isolated profile for validation and retain original apps.
 Release delivery/signing is a separate existing distribution pipeline.
 
+The native packager copies the approved Manager icon and integrated Studio/CMS
+marks from `native/Resources/Brand` into the app's existing Resources directory.
+`CFBundleIconFile` names `manager.icns`; the existing screen header uses the
+Manager PNG and Studio/CMS SVGs at 32 points or larger through AppKit. The small
+system sidebar symbols remain available. Attribution and license copies accompany
+these resources, including the rounded MDI floor-plan modification notice. No
+external font or brand-generation tool is required by the app. Existing bundles
+acquire these assets only when a subsequent package includes them; source changes
+alone do not establish package, GUI or distribution qualification.
+
 An optional `--runtime-payload /absolute/newly-produced-runtime` embeds the
 Platform producer's local validation payload under `Contents/Resources/native-runtime`.
 The helper's closed `runtime_payload` query resolves that fixed app-relative path,
