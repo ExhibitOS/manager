@@ -145,6 +145,7 @@ pub struct StagedNativeArtifact {
     inner: artifact::StagedArtifact,
     payload_sha256: String,
     key_id: String,
+    source_schema_sha256: String,
 }
 
 #[cfg(target_os = "macos")]
@@ -159,6 +160,7 @@ pub fn stage(
         inner,
         payload_sha256: release.payload_sha256.clone(),
         key_id: release.key_id.clone(),
+        source_schema_sha256: release.source_schema_sha256.clone(),
     })
 }
 
@@ -169,7 +171,10 @@ impl StagedNativeArtifact {
         now: u64,
     ) -> Result<(), Error> {
         release.artifact_verified = false;
-        if self.payload_sha256 != release.payload_sha256 || self.key_id != release.key_id {
+        if self.payload_sha256 != release.payload_sha256
+            || self.key_id != release.key_id
+            || self.source_schema_sha256 != release.source_schema_sha256
+        {
             return Err(Error::ArtifactMismatch);
         }
         self.inner.reverify_bound(release, now)
@@ -393,6 +398,29 @@ mod tests {
         );
         assert!(!verified.artifact_verified);
         // Only this small synthetic source and copies are removed.
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn staged_native_artifact_cannot_switch_its_pinned_source_schema_policy() {
+        use std::os::unix::fs::PermissionsExt;
+        let (key, policy, mut release) = fixture();
+        release.source_schemas.push("d".repeat(64));
+        let envelope = seal(&key, &release);
+        let root = private_directory();
+        let input = root.join(&release.artifact.name);
+        std::fs::write(&input, b"fixture").unwrap();
+        std::fs::set_permissions(&input, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut original = verify(&envelope, &policy, 150).unwrap();
+        let mut staged = stage(&mut original, &input, &root, 150).unwrap();
+        let mut changed_policy = policy;
+        changed_policy.source_schema_sha256 = "d".repeat(64);
+        let mut changed = verify(&envelope, &changed_policy, 150).unwrap();
+        assert_eq!(
+            staged.reverify(&mut changed, 150).unwrap_err(),
+            Error::ArtifactMismatch
+        );
+        assert!(!changed.artifact_verified);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
