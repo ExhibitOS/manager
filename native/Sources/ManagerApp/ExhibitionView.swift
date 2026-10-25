@@ -162,7 +162,14 @@ final class ExhibitionModel: ObservableObject {
     var canExport: Bool { !busy && !placingArtwork && !dirty && state?.etag != nil && draft != nil }
     var dirty: Bool { state?.dirty == true || formDirty || positionDirty || architectureDirty || architectureApplying }
     func connect(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession, read: @escaping () async throws -> NativeDocumentState, write: @escaping (NativeDocumentState) async throws -> NativeDocumentState) async {
-        guard !busy else { return }
+        // An owned begin/commit (including its store write) must finish before
+        // credentials or store closures can change. A stable ghost can cancel
+        // against its OLD connection, then reconnect through normal initialization.
+        guard !busy, !placementApplying else { return }
+        await cancelVisualArtworkPlacement()
+        // Cancellation awaits the old renderer. Another owned operation may
+        // have started in the meantime; never replace its account/store binding.
+        guard !busy, !placingArtwork else { return }
         if let old = self.session, old.tenantId != session.tenantId || old.userId != session.userId {
             guard !dirty else { self.api = nil; viewportCredentials = nil; failure = AuthoringFailure("DRAFT_ACCOUNT_MISMATCH"); return }
             state = nil; items = []; library = []; comparison = nil; exportedURL = nil; exportedSHA256 = nil; catalogArtworkId = ""; catalogStatus = ""
