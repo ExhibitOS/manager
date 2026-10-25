@@ -15,6 +15,7 @@ public enum NativeGeometryAction: Sendable {
     case whiteCube(roomId: String), addRoom(name: String), addLight(roomId: String)
     case installation(InstallationCommand)
     case architecture(ArchitectureCommand)
+    case surfaceMaterial(SurfaceMaterialCommand)
     public func encodedValue(in draft: NativeExhibitionDraft? = nil, selected: ViewportSelection? = nil) throws -> DocumentValue {
         switch self {
         case .whiteCube(let id): return .object(["type":.string("white-cube"),"roomId":.string(id)])
@@ -22,6 +23,9 @@ public enum NativeGeometryAction: Sendable {
         case .addLight(let id): return .object(["type":.string("add-light"),"roomId":.string(id)])
         case .installation(let command): return try command.encodedValue()
         case .architecture(let command):
+            guard let draft else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+            return try command.encodedValue(in: draft, selected: selected)
+        case .surfaceMaterial(let command):
             guard let draft else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
             return try command.encodedValue(in: draft, selected: selected)
         }

@@ -35,7 +35,7 @@ final class ExhibitionModel: ObservableObject {
     private var installationBaseline = InstallationFormBuffer(settings: nil)
     let viewportController = NativeViewportController()
     var installationDirty: Bool { installation != installationBaseline }
-    var viewportDraft: NativeExhibitionDraft? { installationDirty ? (installationPreview ?? draft) : draft }
+    var viewportDraft: NativeExhibitionDraft? { surfaceMaterialPreview?.displayDraft ?? (installationDirty ? (installationPreview ?? draft) : draft) }
     @Published var x = 0.0
     @Published var y = 1.0
     @Published var z = 0.0
@@ -50,8 +50,24 @@ final class ExhibitionModel: ObservableObject {
     private var architectureBaseline: ArchitectureFormBuffer?
     @Published private(set) var architectureStatus = ""
     @Published private(set) var architectureApplying = false
-    var architectureDirty: Bool { architecture != architectureBaseline }
-    var canApplyArchitecture: Bool { !busy && !pending && !immutable && !formDirty && !positionDirty && !architectureApplying && architectureDirty && viewportController.connected }
+    var architectureGeometryDirty: Bool { architecture != architectureBaseline }
+    var architectureDirty: Bool { architectureGeometryDirty || surfaceMaterialDirty }
+    @Published var surfaceMaterial: SurfaceMaterialFormBuffer? { didSet { surfaceMaterialPreview = nil; surfaceMaterialStatus = "" } }
+    private var surfaceMaterialBaseline: SurfaceMaterialFormBuffer?
+    @Published private var surfaceMaterialPreview: SurfaceMaterialPreview?
+    private var surfaceMaterialPreviewAccessID: UUID?
+    @Published private(set) var surfaceMaterialStatus = ""
+    var surfaceMaterialDirty: Bool { surfaceMaterial != surfaceMaterialBaseline }
+    var surfaceMaterialPreviewing: Bool { surfaceMaterialPreview != nil }
+    var canPreviewSurfaceMaterial: Bool { !busy && !pending && !immutable && !formDirty && !positionDirty && !architectureGeometryDirty && !architectureApplying && surfaceMaterialDirty && !surfaceMaterialPreviewing && viewportController.connected }
+    var canApplySurfaceMaterial: Bool {
+        guard !busy, !pending, !immutable, !formDirty, !positionDirty, !architectureGeometryDirty, !architectureApplying,
+              viewportController.connected, surfaceMaterialPreviewAccessID == viewportAccessID,
+              let preview = surfaceMaterialPreview, preview.base == draft,
+              preview.command.selection == viewportSelection, let fields = surfaceMaterial else { return false }
+        return (try? fields.command()) == preview.command
+    }
+    var canApplyArchitecture: Bool { !busy && !pending && !immutable && !formDirty && !positionDirty && !architectureApplying && architectureGeometryDirty && !surfaceMaterialDirty && viewportController.connected }
     @Published private(set) var viewportAccessID = UUID()
     private(set) var viewportCredentials: LocalAuthoringSession?
     @Published private var past: [NativeExhibitionDraft] = []
@@ -85,7 +101,7 @@ final class ExhibitionModel: ObservableObject {
         self.api = api; self.session = session
         let accessChanged = viewportCredentials?.token != credentials.token || viewportCredentials?.origin != credentials.origin
         viewportCredentials = credentials
-        if accessChanged { viewportAccessID = UUID() }
+        if accessChanged { viewportAccessID = UUID(); surfaceMaterialPreview = nil }
         self.read = read; self.write = write
         await work {
             if state == nil {
@@ -135,7 +151,7 @@ final class ExhibitionModel: ObservableObject {
     }
     func acceptArchitectureCandidate(_ candidate: DocumentValue, base: NativeExhibitionDraft, command: ArchitectureCommand) async {
         await work {
-            guard !immutable, !pending, !formDirty, !positionDirty, architectureApplying,
+            guard !immutable, !pending, !formDirty, !positionDirty, !surfaceMaterialDirty, architectureApplying,
                   draft == base, try architecture?.command() == command,
                   var value = state, var next = draft else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             try next.acceptArchitectureGeometry(candidate, command: command, selected: viewportSelection); value.draft = next
@@ -143,7 +159,48 @@ final class ExhibitionModel: ObservableObject {
             notice = "공간 변경을 이 Mac에 보관했습니다. 실행 취소로 되돌릴 수 있으며 전시 저장은 별도로 진행합니다."
         }
     }
+    private func syncSurfaceMaterial() {
+        surfaceMaterialPreview = nil; surfaceMaterialPreviewAccessID = nil
+        surfaceMaterial = nil; surfaceMaterialBaseline = nil; surfaceMaterialStatus = ""
+        guard let draft, let selection = viewportSelection, selection.kind == "surface" else { return }
+        do {
+            let fields = try SurfaceMaterialFormBuffer(draft: draft, selection: selection)
+            surfaceMaterial = fields; surfaceMaterialBaseline = fields
+        } catch { surfaceMaterialStatus = "이 표면의 재질 설정은 현재 편집할 수 없습니다. 저장된 설정은 유지됩니다." }
+    }
+    func discardSurfaceMaterial() { guard !architectureApplying, !busy, !pending else { return }; syncSurfaceMaterial() }
+    func previewSurfaceMaterial() async {
+        guard canPreviewSurfaceMaterial, let fields = surfaceMaterial, let draft else { return }
+        do {
+            let command = try fields.command()
+            _ = try command.encodedValue(in: draft, selected: viewportSelection)
+            architectureApplying = true
+            defer { architectureApplying = false }
+            await viewportController.perform(.surfaceMaterial(command), model: self)
+        } catch { failure = error as? AuthoringFailure ?? AuthoringFailure("SURFACE_MATERIAL_INVALID") }
+    }
+    func acceptSurfaceMaterialPreview(_ candidate: DocumentValue, base: NativeExhibitionDraft, command: SurfaceMaterialCommand) async {
+        await work {
+            guard !immutable, !pending, !formDirty, !positionDirty, !architectureGeometryDirty, architectureApplying,
+                  draft == base, try surfaceMaterial?.command() == command else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            surfaceMaterialPreview = try SurfaceMaterialPreview(candidate: candidate, base: base, command: command, selected: viewportSelection)
+            surfaceMaterialPreviewAccessID = viewportAccessID
+            surfaceMaterialStatus = "재질을 미리 보고 있습니다. 적용하면 이 Mac에 보관되며 취소하면 원래 표시로 돌아갑니다."
+        }
+    }
+    func applySurfaceMaterial() async {
+        guard canApplySurfaceMaterial else { return }
+        await work {
+            guard !immutable, !pending, !formDirty, !positionDirty, !architectureGeometryDirty, !architectureApplying,
+                  surfaceMaterialPreviewAccessID == viewportAccessID, let preview = surfaceMaterialPreview,
+                  let fields = surfaceMaterial, let draft, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            value.draft = try preview.apply(to: draft, selected: viewportSelection, command: fields.command())
+            try await persist(value); syncFields()
+            notice = "재질 변경을 이 Mac에 보관했습니다. 실행 취소로 되돌릴 수 있으며 전시 저장은 별도로 진행합니다."
+        }
+    }
     func syncArchitecture() {
+        syncSurfaceMaterial()
         guard let draft, let selection = viewportSelection, ["room", "surface", "opening"].contains(selection.kind) else {
             architecture = nil; architectureBaseline = nil; architectureStatus = ""; return
         }

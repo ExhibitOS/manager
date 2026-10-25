@@ -59,19 +59,20 @@ struct ArchitectureSettingsView: View {
                             TextField("높이 위치 · m", text: field(\.y))
                             TextField("깊이 위치 · m", text: field(\.z))
                         }
-                    }.disabled(!editable)
+                    }.disabled(!editable || model.surfaceMaterialDirty)
                     if fields.selection.kind == "room" {
                         Text("공간의 기준 치수만 바뀝니다. 벽과 작품은 자동으로 늘어나거나 이동하지 않습니다.").foregroundStyle(.secondary)
                     }
                     HStack {
                         Button("공간 변경 적용") { Task { await model.applyArchitecture() } }.disabled(!ready || !model.canApplyArchitecture)
-                        Button("입력 취소") { model.discardArchitecture() }.disabled(!model.architectureDirty || model.architectureApplying)
+                        Button("입력 취소") { model.discardArchitecture() }.disabled(!model.architectureGeometryDirty || model.architectureApplying)
                     }
-                    if model.architectureDirty { Text("적용하거나 입력을 취소한 뒤 다른 대상을 선택하세요. 적용 전 입력은 아직 보관되지 않았습니다.").foregroundStyle(.secondary) }
+                    if model.architectureGeometryDirty { Text("적용하거나 입력을 취소한 뒤 다른 대상을 선택하세요. 적용 전 입력은 아직 보관되지 않았습니다.").foregroundStyle(.secondary) }
                     Text("회전·배율·연결 정보와 재질은 현재 설정을 유지합니다. 적용한 변경은 되돌리기로 취소할 수 있습니다.").foregroundStyle(.secondary)
                 }
                 if !model.architectureStatus.isEmpty { Text(model.architectureStatus).foregroundStyle(.secondary) }
             }
+            SurfaceMaterialSettingsView(model: model, ready: ready)
         }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true)
     }
 }

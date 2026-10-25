@@ -81,8 +81,9 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch code {
         case "ARCHITECTURE_FIELDS_INVALID": return "공간 이름·크기·위치를 확인하세요. 크기는 0보다 큰 값, 위치는 숫자로 입력하세요."
+        case "SURFACE_MATERIAL_INVALID": return "색상과 재질 값을 확인하세요. 색상 코드는 #rrggbb, 거칠기와 금속성은 0부터 1까지 입력하세요. 입력과 기존 설정은 유지됩니다."
         case "ARCHITECTURE_SELECTION_CHANGED": return "선택한 대상이 바뀌었습니다. 입력을 취소한 뒤 대상을 다시 선택하세요."
-        case "ARCHITECTURE_APPLY_REQUIRED": return "공간 변경을 적용하거나 입력을 취소한 뒤 전시를 저장하세요."
+        case "ARCHITECTURE_APPLY_REQUIRED": return "공간·재질 변경을 적용하거나 입력을 취소한 뒤 전시를 저장하세요."
         case "FILE_SIZE_INVALID": return "파일은 1바이트에서 32 MiB까지 지원합니다."
         case "FILE_FORMAT_UNSUPPORTED": return "GLB 또는 PNG 파일을 선택하세요."
         case "FILE_CHANGED": return "읽는 동안 파일이 바뀌었습니다. 저장을 마친 뒤 다시 선택하세요."
