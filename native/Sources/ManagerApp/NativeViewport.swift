@@ -27,10 +27,12 @@ final class NativeViewportController: ObservableObject {
         do {
             let (candidate, base) = try await action(command)
             if case .installation(let installation) = command { await model.acceptInstallationCandidate(candidate, base: base, command: installation) }
+            else if case .architecture(let architecture) = command { await model.acceptArchitectureCandidate(candidate, base: base, command: architecture) }
             else { await model.acceptViewportCandidate(candidate, base: base) }
         }
         catch {
             message = "이 조작을 적용하지 못했습니다. 현재 전시와 선택을 확인하세요."
+            if case .architecture = command { message = "이 공간 편집을 적용하지 못했습니다. 입력은 유지되며 기존 전시는 바뀌지 않았습니다." }
             if case .installation = command,
                let detail = (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String,
                let reason = InstallationCommandReason.fromJavaScriptMessage(detail) { message = reason.explanation }
@@ -174,7 +176,7 @@ struct NativeViewport: NSViewRepresentable {
             controller.action = { [weak self] command in
                 guard let self, self.active, self.controller.owner == self.epoch, let web = self.web, let frame = self.latest, self.prepared, self.sent == frame.sequence, !frame.disabled else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
                 let generation = self.generation
-                let value = String(decoding: try JSONEncoder().encode(command.encodedValue()), as: UTF8.self)
+                let value = String(decoding: try JSONEncoder().encode(command.encodedValue(in: frame.draft, selected: frame.selection)), as: UTF8.self)
                 let candidate = try await web.callAsyncJavaScript("try { return window.exhibitosViewport.action(JSON.parse(actionJSON)); } catch (error) { if (error.code === 'INVALID_GEOMETRY' && Array.isArray(error.issues)) { const codes = error.issues.slice(0, 1).map(issue => issue.code + '_' + String(issue.path).replace(/[^a-zA-Z0-9_]/g, '_').toUpperCase() + '_' + (/^[a-zA-Z]{1,30}$/.test(issue.message) ? issue.message.toUpperCase() : '')).filter(code => /^[A-Z0-9_]{1,150}$/.test(code)); throw new Error('INVALID_GEOMETRY_' + codes.join('_')); } throw error; }", arguments: ["actionJSON":value], in: nil, contentWorld: .page)
                 guard self.active, self.controller.owner == self.epoch, self.generation == generation, self.latest?.sequence == frame.sequence, let candidate, JSONSerialization.isValidJSONObject(candidate) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 let bytes = try JSONSerialization.data(withJSONObject: candidate)
@@ -227,6 +229,7 @@ struct NativeViewportArea: View {
                     .help("벽·바닥 너머 작품을 확인합니다. 저장한 재질은 바뀌지 않습니다.")
                 NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.busy || model.pending || model.formDirty || model.positionDirty, controller: controller, onSelect: { model.selectViewport($0) }, onCandidate: { candidate, base in Task { await model.acceptViewportCandidate(candidate, base: base) } })
                     .id(identity.uuidString + model.viewportAccessID.uuidString).frame(minHeight: 360, idealHeight: 440).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .allowsHitTesting(!model.architectureDirty && !model.architectureApplying)
                 Text("불러온 작품 \(controller.loaded)개 · 불러오지 못한 작품 \(controller.failed)개").foregroundStyle(.secondary)
                 Text(controller.message).foregroundStyle(.secondary)
                 if !controller.diagnostic.isEmpty { DisclosureGroup("3D 연결 상세") { Text(controller.diagnostic).textSelection(.enabled) } }
@@ -235,7 +238,7 @@ struct NativeViewportArea: View {
                         Button("벽과 바닥 만들기") { Task { await controller.perform(.whiteCube(roomId: model.roomId), model: model) } }
                         Button("공간 추가") { Task { await controller.perform(.addRoom(name: "새 공간"), model: model) } }
                         Button("조명 추가") { Task { await controller.perform(.addLight(roomId: model.roomId), model: model) } }
-                    }.disabled(!controller.connected || model.busy || model.pending || model.formDirty || model.positionDirty)
+                    }.disabled(!controller.connected || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying)
                     Text("숫자 입력은 이 Mac에 보관한 뒤 3D에 반영됩니다. 3D 변경도 이 Mac에 보관하며, 전시 저장과 공개는 별도로 진행합니다.").foregroundStyle(.secondary)
                 }
             } else { Text("전시를 열고 로컬 제작을 시작하면 3D를 볼 수 있습니다.").foregroundStyle(.secondary) }

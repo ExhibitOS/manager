@@ -14,12 +14,16 @@ public struct ViewportSelection: Codable, Equatable, Sendable {
 public enum NativeGeometryAction: Sendable {
     case whiteCube(roomId: String), addRoom(name: String), addLight(roomId: String)
     case installation(InstallationCommand)
-    public func encodedValue() throws -> DocumentValue {
+    case architecture(ArchitectureCommand)
+    public func encodedValue(in draft: NativeExhibitionDraft? = nil, selected: ViewportSelection? = nil) throws -> DocumentValue {
         switch self {
-        case .whiteCube(let id): .object(["type":.string("white-cube"),"roomId":.string(id)])
-        case .addRoom(let name): .object(["type":.string("add-room"),"name":.string(name)])
-        case .addLight(let id): .object(["type":.string("add-light"),"roomId":.string(id)])
-        case .installation(let command): try command.encodedValue()
+        case .whiteCube(let id): return .object(["type":.string("white-cube"),"roomId":.string(id)])
+        case .addRoom(let name): return .object(["type":.string("add-room"),"name":.string(name)])
+        case .addLight(let id): return .object(["type":.string("add-light"),"roomId":.string(id)])
+        case .installation(let command): return try command.encodedValue()
+        case .architecture(let command):
+            guard let draft else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+            return try command.encodedValue(in: draft, selected: selected)
         }
     }
 }
