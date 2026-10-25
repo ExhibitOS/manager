@@ -34,6 +34,8 @@ pub struct RestorationReceipt {
 #[path = "restoration_binding.rs"]
 mod binding;
 pub(crate) use binding::RestorationBinding;
+#[cfg(target_os = "macos")]
+pub(crate) use binding::{schema_fingerprint, inventory_fingerprint};
 pub use binding::RestorationProof;
 struct RestorationRoute<'a> {
     retry: Option<super::retry::RetryLink<'a>>,

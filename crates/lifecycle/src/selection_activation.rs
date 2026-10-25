@@ -892,6 +892,27 @@ mod tests {
         assert!(super::super::authority_selection::resolve_selected_scope(&p, &registry).is_err());
         fs::remove_dir_all(p.parent().unwrap()).unwrap();
     }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_source_selection_follows_completed_source_in_retained_authority_namespace() {
+        for scope in ["default", SOURCE] {
+            let (p, mut store, health) = fixture_scope(scope);
+            let activation = prepare(&store, &health);
+            activation.publish_selection(&store).unwrap();
+            store.observe_health(&health.operation_id, store.current.generation, health.clone(), 23).unwrap();
+            activation.complete(&store).unwrap();
+            let (selected, _) = installations::load(&p).unwrap().unwrap();
+            let entry = selected.installations.iter().find(|entry| entry.id == TARGET).unwrap();
+            let root = installations::root(&p, entry);
+            let profile = crate::LifecycleService::bound_existing(p.clone()).unwrap();
+            let guard = installations::profile_lock(&profile).unwrap();
+            assert_eq!(store.installation, scope);
+            store.check_native_source_selection(&p, TARGET, &root).unwrap();
+            assert!(store.check_native_source_selection(&p, SOURCE, &p.join("local-runtime")).is_err());
+            drop(guard); drop(activation); drop(store);
+            fs::remove_dir_all(p.parent().unwrap()).unwrap();
+        }
+    }
     #[test]
     fn activation_selection_complete_preserves_original_and_same_authority_namespace() {
         let (p, mut store, health) = fixture();
