@@ -2,6 +2,8 @@
 //! Fixed additive schema application. Neither a journal nor a caller-supplied
 //! target hash can issue this capability, and it does not activate services.
 use super::*;
+#[path = "native_legacy_activation.rs"]
+mod activation;
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

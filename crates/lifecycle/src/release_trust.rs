@@ -69,6 +69,10 @@ pub use trust_checkpoint::binding::{
 pub use trust_checkpoint::{HostTrustReceipt, MissingHostRecoveryReceipt, TrustCheckpointReceipt};
 #[path = "owned_execution.rs"]
 mod owned_execution;
+pub(crate) use owned_execution::{
+    LegacyConfigurationProof, SourceStoppedReceipt, legacy_configuration_expected,
+    legacy_configuration_observe, legacy_stopped_observe,
+};
 #[cfg(unix)]
 #[path = "rollback_registration.rs"]
 mod rollback_registration;

@@ -158,7 +158,10 @@ pub(crate) fn inspection_resources(payload: &Payload) -> Result<(PathBuf, Vec<Pi
 }
 pub(crate) fn schema_resources(payload: &Payload) -> Result<(PathBuf, Vec<Pin>)> {
     let (inspector, mut pins) = inspection_resources(payload)?;
-    let root = inspector.parent().and_then(Path::parent).ok_or_else(invalid)?;
+    let root = inspector
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(invalid)?;
     let path = root.join("scripts/native-legacy-apply.mjs");
     if fs::canonicalize(&path).map_err(|_| invalid())? != path {
         return Err(invalid());
@@ -169,6 +172,38 @@ pub(crate) fn schema_resources(payload: &Payload) -> Result<(PathBuf, Vec<Pin>)>
     }
     pins.push(pin);
     Ok((path, pins))
+}
+pub(crate) fn activation_resources(payload: &Payload) -> Result<(PathBuf, Vec<Pin>)> {
+    let (schema, mut pins) = schema_resources(payload)?;
+    let root = schema.parent().and_then(Path::parent).ok_or_else(invalid)?;
+    for (name, expected) in [
+        (
+            "scripts/native-legacy-activation-check.mjs",
+            include_bytes!("../../../scripts/native-legacy-activation-check.mjs").as_slice(),
+        ),
+        (
+            "vendor/platform/freeze-signature.mjs",
+            include_bytes!("../../../vendor/platform/freeze-signature.mjs").as_slice(),
+        ),
+        (
+            "vendor/platform/freeze-signature.ts",
+            include_bytes!("../../../vendor/platform/freeze-signature.ts").as_slice(),
+        ),
+    ] {
+        let path = root.join(name);
+        if fs::canonicalize(&path).map_err(|_| invalid())? != path {
+            return Err(invalid());
+        }
+        let (bytes, pin) = crate::hosted_runtime_file::bounded(&path, 2 * 1024 * 1024)?;
+        if bytes != expected {
+            return Err(err("NATIVE_LEGACY_ACTIVATION_UNAVAILABLE"));
+        }
+        pins.push(pin);
+    }
+    Ok((
+        root.join("scripts/native-legacy-activation-check.mjs"),
+        pins,
+    ))
 }
 struct OwnedChild(Child);
 impl std::ops::Deref for OwnedChild {

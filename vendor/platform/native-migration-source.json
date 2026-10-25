@@ -14,5 +14,20 @@
     "LICENSE": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0"
   },
   "commit": "3d69b93da85de03a5292c3b98938da5c0dbe0d11",
-  "pullRequest": "https://github.com/ExhibitOS/platform/pull/89"
+  "pullRequest": "https://github.com/ExhibitOS/platform/pull/89",
+  "freezeSignature": {
+    "commit": "3d69b93da85de03a5292c3b98938da5c0dbe0d11",
+    "pullRequest": "https://github.com/ExhibitOS/platform/pull/89",
+    "operation": "Exact public verifyFreezeSignature and freezeCanonical/ApiError/sha256 runtime dependency excerpts; type-only erasure, no algorithm changes",
+    "upstreamFiles": {
+      "apps/api/src/freeze.ts": "a5b534cf774f102cd1edae81aa7970c1a0f501d3242666cae3c51d2085c3d4ca",
+      "packages/studio-contract/src/freeze.ts": "31789a3e7c66445059036a332222ed99a1b9c9dd53f4e43a6c592caaa5f2a12e",
+      "apps/api/src/auth.ts": "8621bdd98916d073239ecc132aad63d2d70d47ef9da27710dd43b59427b7555c",
+      "packages/storage/src/blobs.ts": "2db7fda66b8c0d58cdf40625a59c86af00bf5f750c94e3a4072a5063571abdfc"
+    },
+    "files": {
+      "freeze-signature.ts": "985e3e7857a1dd8dbc58cb8399179bf9c214023c1ab6f7199ab050b8d1bc9001",
+      "freeze-signature.mjs": "cc93136db139f4210f86d06d10435d42979730bae874613193d357ca3e8bd1a5"
+    }
+  }
 }
