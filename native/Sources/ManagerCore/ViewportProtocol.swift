@@ -38,6 +38,9 @@ public enum ViewportPresentation: String, Codable, Hashable, Sendable {
 public struct ViewportAcceptance: Decodable, Sendable {
     public let accepted: Bool
     public let presentations: [ViewportPresentation]?
+    public let capabilities: [String]?
+    public var supportsArtworkThumbnail: Bool { accepted && capabilities?.contains("artwork-thumbnail-v1") == true }
+    public var supportsFindSelection: Bool { accepted && capabilities?.contains("find-selection-v1") == true }
     public var supportsPlan: Bool {
         accepted && presentations?.contains(.threeD) == true && presentations?.contains(.plan) == true
     }
