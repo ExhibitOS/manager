@@ -33,4 +33,33 @@ final class ViewportProtocolTests: XCTestCase {
         XCTAssertFalse(ViewportSelection(kind: "placement", id: draft.rooms[0]["id"].string!).belongs(to: draft))
         XCTAssertFalse(ViewportSelection(kind: "arbitrary", id: UUID().uuidString).belongs(to: draft))
     }
+    func testPlanPresentationAddsOnlyItsBoundedOptionalField() throws {
+        let draft = try NativeExhibitionDraft.new()
+        let selection = ViewportSelection(kind: "room", id: draft.rooms[0]["id"].string!)
+        let epoch = UUID().uuidString, tenant = UUID().uuidString, principal = UUID().uuidString
+        func encoded(_ presentation: ViewportPresentation) throws -> [String: Any] {
+            let frame = ViewportFrame(epoch: epoch, sequence: 7, tenantId: tenant, principalId: principal,
+                draft: draft, selection: selection, mode: "dimensions", view: "front", disabled: true,
+                cameraSequence: 9, transparent: false, presentation: presentation)
+            return try JSONSerialization.jsonObject(with: JSONEncoder().encode(frame)) as! [String: Any]
+        }
+        let scene = try encoded(.threeD)
+        var plan = try encoded(.plan)
+        XCTAssertEqual(scene.count, 12)
+        XCTAssertNil(scene["presentation"])
+        XCTAssertEqual(plan.removeValue(forKey: "presentation") as? String, "plan")
+        XCTAssertEqual(try JSONSerialization.data(withJSONObject: scene, options: .sortedKeys),
+                       try JSONSerialization.data(withJSONObject: plan, options: .sortedKeys))
+    }
+    func testPlanCapabilityRequiresExplicitAcceptedSupportAndKeepsLegacyCompatible() throws {
+        func response(_ text: String) throws -> ViewportAcceptance {
+            try JSONDecoder().decode(ViewportAcceptance.self, from: Data(text.utf8))
+        }
+        XCTAssertFalse(try response(#"{"accepted":true}"#).supportsPlan)
+        XCTAssertFalse(try response(#"{"accepted":false,"presentations":["3d","plan"]}"#).supportsPlan)
+        XCTAssertFalse(try response(#"{"accepted":true,"presentations":["3d"]}"#).supportsPlan)
+        XCTAssertTrue(try response(#"{"accepted":true,"presentations":["3d","plan"]}"#).supportsPlan)
+        XCTAssertThrowsError(try response(#"{"accepted":true,"presentations":["arbitrary"]}"#))
+    }
+
 }

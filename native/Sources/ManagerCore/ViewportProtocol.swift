@@ -31,6 +31,17 @@ public enum NativeGeometryAction: Sendable {
         }
     }
 }
+/// Display capability only; it grants no editing or account authority.
+public enum ViewportPresentation: String, Codable, Hashable, Sendable {
+    case threeD = "3d", plan = "plan"
+}
+public struct ViewportAcceptance: Decodable, Sendable {
+    public let accepted: Bool
+    public let presentations: [ViewportPresentation]?
+    public var supportsPlan: Bool {
+        accepted && presentations?.contains(.threeD) == true && presentations?.contains(.plan) == true
+    }
+}
 public struct ViewportFrame: Encodable, Sendable {
     public let version = 1
     public let epoch: String
@@ -44,14 +55,16 @@ public struct ViewportFrame: Encodable, Sendable {
     public let cameraSequence: Int
     public let transparent: Bool
     public let disabled: Bool
-    public init(epoch: String, sequence: Int, tenantId: String, principalId: String, draft: NativeExhibitionDraft, selection: ViewportSelection?, mode: String, view: String, disabled: Bool, cameraSequence: Int = 0, transparent: Bool = true) {
-        self.epoch = epoch; self.sequence = sequence; self.tenantId = tenantId; self.principalId = principalId; self.draft = draft; self.selection = selection; self.mode = mode; self.view = view; self.disabled = disabled; self.cameraSequence = cameraSequence; self.transparent = transparent
+    public let presentation: ViewportPresentation
+    public init(epoch: String, sequence: Int, tenantId: String, principalId: String, draft: NativeExhibitionDraft, selection: ViewportSelection?, mode: String, view: String, disabled: Bool, cameraSequence: Int = 0, transparent: Bool = true, presentation: ViewportPresentation = .threeD) {
+        self.epoch = epoch; self.sequence = sequence; self.tenantId = tenantId; self.principalId = principalId; self.draft = draft; self.selection = selection; self.mode = mode; self.view = view; self.disabled = disabled; self.cameraSequence = cameraSequence; self.transparent = transparent; self.presentation = presentation
     }
-    private enum CodingKeys: String, CodingKey { case version, epoch, sequence, tenantId, principalId, draft, selection, mode, view, disabled, cameraSequence, transparent }
+    private enum CodingKeys: String, CodingKey { case version, epoch, sequence, tenantId, principalId, draft, selection, mode, view, disabled, cameraSequence, transparent, presentation }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(version, forKey: .version); try c.encode(epoch, forKey: .epoch); try c.encode(sequence, forKey: .sequence); try c.encode(tenantId, forKey: .tenantId); try c.encode(principalId, forKey: .principalId); try c.encode(draft, forKey: .draft)
         if let selection { try c.encode(selection, forKey: .selection) } else { try c.encodeNil(forKey: .selection) }
+        if presentation == .plan { try c.encode(presentation, forKey: .presentation) }
         try c.encode(mode, forKey: .mode); try c.encode(view, forKey: .view); try c.encode(disabled, forKey: .disabled); try c.encode(cameraSequence, forKey: .cameraSequence); try c.encode(transparent, forKey: .transparent)
     }
 }
