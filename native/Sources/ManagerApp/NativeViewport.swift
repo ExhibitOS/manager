@@ -8,6 +8,20 @@ import ManagerCore
 final class NativeViewportController: ObservableObject {
     @Published var connected = false
     @Published fileprivate(set) var planSupported = false
+    @Published fileprivate(set) var thumbnailSupported = false
+    @Published fileprivate(set) var findSelectionSupported = false
+    @Published fileprivate(set) var acceptedSequence = 0
+    fileprivate var thumbnailAction: ((String, Int) async throws -> Data)?
+    fileprivate var findSelectionAction: (() async throws -> Void)?
+    func thumbnail(artworkId: String, revision: Int) async throws -> Data {
+        guard connected, thumbnailSupported, let thumbnailAction else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+        return try await thumbnailAction(artworkId, revision)
+    }
+    func findSelection() async {
+        guard connected, findSelectionSupported, let findSelectionAction else { return }
+        do { try await findSelectionAction(); message = "선택한 배치가 보이도록 시점을 맞췄습니다." }
+        catch { message = "선택한 배치를 찾지 못했습니다. 선택과 기존 시점은 유지됩니다."; diagnose("FIND", error) }
+    }
     @Published var rendering = false
     @Published var loaded = 0
     @Published var failed = 0
@@ -99,7 +113,7 @@ struct NativeViewport: NSViewRepresentable {
         init(_ parent: NativeViewport) { self.parent = parent; super.init(); parent.controller.owner = epoch }
         func invalidate() {
             active = false; generation = UUID(); sendTask?.cancel()
-            if controller.owner == epoch { controller.action = nil; controller.connected = false; controller.planSupported = false }
+            if controller.owner == epoch { controller.action = nil; controller.thumbnailAction = nil; controller.findSelectionAction = nil; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0 }
         }
         private var page: URL? { URL(string: parent.credentials.origin + "/native-viewport.html") }
         private func isPage(_ url: URL?) -> Bool { url == page && url?.user == nil && url?.password == nil }
@@ -107,13 +121,13 @@ struct NativeViewport: NSViewRepresentable {
             parent = value
             guard let page, page.scheme == "http", page.host == "127.0.0.1", let port = page.port, port >= 1024, UUID(uuidString: value.credentials.tenantId) != nil, UUID(uuidString: value.credentials.principalId) != nil else { return }
             if let installedToken, installedToken != value.credentials.token {
-                prepared = false; controller.connected = false; controller.planSupported = false; web?.stopLoading(); return
+                prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0; web?.stopLoading(); return
             }
             if installedToken == nil {
                 installedToken = value.credentials.token
                 generation = UUID(); sequence = 0; sent = 0; fingerprint = nil; prepared = false
                 sendTask?.cancel(); sendTask = nil
-                controller.connected = false; controller.rendering = false; controller.planSupported = false
+                controller.connected = false; controller.rendering = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0
                 let installGeneration = generation
                 Task { await install(page: page, generation: installGeneration) }
             }
@@ -160,7 +174,7 @@ struct NativeViewport: NSViewRepresentable {
             return .allow
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { prepared = false; controller.connected = false; controller.planSupported = false; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 전시는 유지됩니다. 3D 다시 열기를 선택하세요." }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 전시는 유지됩니다. 3D 다시 열기를 선택하세요." }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { controller.message = "3D 화면을 열지 못했습니다. 로컬 제작 상태를 확인하세요."; controller.diagnose("PAGE_LOAD", error) }
         private func schedule() {
             guard active, controller.owner == epoch, prepared, sendTask == nil, let web else { return }
@@ -180,9 +194,41 @@ struct NativeViewport: NSViewRepresentable {
                         guard let response, JSONSerialization.isValidJSONObject(response),
                               let acceptance = try? JSONDecoder().decode(ViewportAcceptance.self, from: JSONSerialization.data(withJSONObject: response)), acceptance.accepted else { throw BridgeFailure("VIEWPORT_ACCEPT_INVALID") }
                         self.controller.planSupported = acceptance.supportsPlan
+                        self.controller.thumbnailSupported = acceptance.supportsArtworkThumbnail
+                        self.controller.findSelectionSupported = acceptance.supportsFindSelection
+                        self.controller.acceptedSequence = frame.sequence
                         self.sent = frame.sequence; self.controller.connected = self.sent == self.sequence; self.controller.diagnostic = ""
                     } catch { if self.generation == generation { self.controller.connected = false; self.controller.message = "전시를 3D에 표시하지 못했습니다. 저장한 전시와 연결을 확인하세요."; self.controller.diagnose("FRAME", error) }; break }
                 }
+            }
+            controller.thumbnailAction = { [weak self] artworkId, revision in
+                guard let self, self.active, self.controller.owner == self.epoch, self.controller.thumbnailSupported,
+                      let web = self.web, let frame = self.latest, self.prepared, self.sent == frame.sequence,
+                      !frame.disabled, !self.parent.interactionDisabled else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+                let generation = self.generation
+                let request = try ViewportThumbnailRequest(frame: frame, artworkId: artworkId, expectedRevision: revision)
+                let value = String(decoding: try JSONEncoder().encode(request), as: UTF8.self)
+                let response = try await web.callAsyncJavaScript("if (typeof window.exhibitosViewport?.thumbnail !== 'function') throw new Error('CATALOG_PREVIEW_UNAVAILABLE'); return await window.exhibitosViewport.thumbnail(JSON.parse(requestJSON));", arguments: ["requestJSON": value], in: nil, contentWorld: .page)
+                try Task.checkCancellation()
+                guard self.active, self.controller.owner == self.epoch, self.generation == generation, self.latest?.sequence == frame.sequence, !self.parent.interactionDisabled,
+                      let fields = response as? [String: Any], let png = fields["pngBase64"] as? String, png.utf8.count <= 699_052,
+                      JSONSerialization.isValidJSONObject(fields) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                let bytes = try JSONSerialization.data(withJSONObject: fields)
+                guard bytes.count <= 710_000 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+                return try JSONDecoder().decode(ViewportThumbnailReply.self, from: bytes).pngData(matching: request)
+            }
+            controller.findSelectionAction = { [weak self] in
+                guard let self, self.active, self.controller.owner == self.epoch, self.controller.findSelectionSupported,
+                      let web = self.web, let frame = self.latest, self.prepared, self.sent == frame.sequence,
+                      !frame.disabled, !self.parent.interactionDisabled else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+                let generation = self.generation, request = try ViewportFindSelectionRequest(frame: frame)
+                let value = String(decoding: try JSONEncoder().encode(request), as: UTF8.self)
+                let response = try await web.callAsyncJavaScript("if (typeof window.exhibitosViewport?.findSelection !== 'function') throw new Error('VIEWPORT_NOT_READY'); return await window.exhibitosViewport.findSelection(JSON.parse(requestJSON));", arguments: ["requestJSON": value], in: nil, contentWorld: .page)
+                try Task.checkCancellation()
+                guard self.active, self.controller.owner == self.epoch, self.generation == generation, self.latest?.sequence == frame.sequence, !self.parent.interactionDisabled,
+                      let response, JSONSerialization.isValidJSONObject(response) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                let bytes = try JSONSerialization.data(withJSONObject: response)
+                guard bytes.count <= 2048, try JSONDecoder().decode(ViewportFindSelectionReply.self, from: bytes).matches(request) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             }
             controller.action = { [weak self] command in
                 guard let self, self.active, self.controller.owner == self.epoch, let web = self.web, let frame = self.latest, self.prepared, self.sent == frame.sequence, !frame.disabled else { throw AuthoringFailure("VIEWPORT_NOT_READY") }

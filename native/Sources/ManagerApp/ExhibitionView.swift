@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import SwiftUI
 import AppKit
+import ImageIO
 import UniformTypeIdentifiers
 import ManagerCore
 
@@ -9,6 +10,42 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var state: NativeDocumentState?
     @Published private(set) var items: [NativeExhibitionSummary] = []
     @Published private(set) var library: [ArtworkSummary] = []
+    @Published private(set) var catalogEntries: [String: ArtworkCatalogEntry] = [:]
+    @Published private(set) var catalogFailures: Set<String> = []
+    @Published var catalogQuery = ""
+    @Published var catalogFilter = ArtworkCatalogFilter.all
+    @Published private(set) var catalogArtworkId = ""
+    @Published private(set) var catalogStatus = ""
+    @Published private(set) var libraryCursor: String?
+    private var catalogTask: Task<Void, Never>?
+    @Published private(set) var catalogImages: [String: NSImage] = [:]
+    @Published private(set) var catalogPreviewFailures: Set<String> = []
+    private var catalogImageOrder: [String] = []
+    func catalogImageKey(_ entry: ArtworkCatalogEntry) -> String { entry.id + ":" + String(entry.revision) }
+    func loadCatalogImage(_ entry: ArtworkCatalogEntry) async {
+        let key = catalogImageKey(entry), access = viewportAccessID
+        guard catalogImages[key] == nil, viewportController.thumbnailSupported else { return }
+        do {
+            let data = try await viewportController.thumbnail(artworkId: entry.id, revision: entry.revision)
+            try Task.checkCancellation()
+            guard viewportAccessID == access, library.contains(where: { $0.id == entry.id && $0.revision == entry.revision }),
+                  let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil), image.width <= 256, image.height <= 256 else { return }
+            if catalogImageOrder.count >= 64, let oldest = catalogImageOrder.first { catalogImages.removeValue(forKey: oldest); catalogImageOrder.removeFirst() }
+            catalogImages[key] = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+            catalogImageOrder.removeAll { $0 == key }; catalogImageOrder.append(key); catalogPreviewFailures.remove(key)
+        } catch {
+            guard !Task.isCancelled, viewportAccessID == access else { return }
+            catalogPreviewFailures.insert(key)
+        }
+    }
+    var canSelectCatalog: Bool { !busy && !pending && !formDirty && !positionDirty && !architectureDirty && !architectureApplying }
+    var visibleCatalog: [ArtworkCatalogEntry] {
+        guard let draft else { return [] }
+        return library.map { row in
+            catalogEntries[row.id] ?? ArtworkCatalogEntry(id: row.id, revision: row.revision, artwork: .object(["metadata": .object(["title": .string(row.title)])]))
+        }.filter { $0.matches(query: catalogQuery, filter: catalogFilter, in: draft) }
+    }
     @Published private(set) var comparison: NativeStudioResponse?
     @Published private(set) var immutable = false
     @Published private(set) var busy = false
@@ -97,12 +134,12 @@ final class ExhibitionModel: ObservableObject {
         guard !busy else { return }
         if let old = self.session, old.tenantId != session.tenantId || old.userId != session.userId {
             guard !dirty else { self.api = nil; viewportCredentials = nil; failure = AuthoringFailure("DRAFT_ACCOUNT_MISMATCH"); return }
-            state = nil; items = []; library = []; comparison = nil; exportedURL = nil; exportedSHA256 = nil
+            state = nil; items = []; library = []; comparison = nil; exportedURL = nil; exportedSHA256 = nil; catalogArtworkId = ""; catalogStatus = ""
         }
         self.api = api; self.session = session
         let accessChanged = viewportCredentials?.token != credentials.token || viewportCredentials?.origin != credentials.origin
         viewportCredentials = credentials
-        if accessChanged { viewportAccessID = UUID(); surfaceMaterialPreview = nil }
+        if accessChanged { viewportAccessID = UUID(); surfaceMaterialPreview = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
         self.read = read; self.write = write
         await work {
             if state == nil {
@@ -283,6 +320,7 @@ final class ExhibitionModel: ObservableObject {
             selectPlacement()
         }
         viewportSelection = selection
+        if selection.kind != "placement" { catalogArtworkId = "" }
         syncArchitecture()
     }
     private func list(more: Bool = false) async throws {
@@ -290,7 +328,72 @@ final class ExhibitionModel: ObservableObject {
         let page = try await api.exhibitions(query: query, cursor: more ? cursor : nil)
         if more { items += page.items.filter { row in !items.contains(where: { $0.id == row.id }) } } else { items = page.items }
         cursor = page.nextCursor
-        library = try await api.artworks().items.filter { $0.approvedRevision == $0.revision }
+        let artworks = try await api.artworks()
+        library = artworks.items.filter { $0.approvedRevision == $0.revision }
+        libraryCursor = artworks.nextCursor
+        refreshCatalogMetadata()
+    }
+    private func refreshCatalogMetadata() {
+        catalogTask?.cancel()
+        let current = Dictionary(uniqueKeysWithValues: library.map { ($0.id, $0.revision) })
+        catalogEntries = catalogEntries.filter { current[$0.key] == $0.value.revision }
+        catalogFailures = []
+        // Reuse the exact approved snapshots already present in this draft.
+        for artwork in draft?.artworks ?? [] {
+            guard let id = (artwork["extensions"]["org.exhibitos.studio/cms"]["artworkId"].string ?? artwork["id"].string)?.lowercased(),
+                  let revision = artwork["extensions"]["org.exhibitos.studio/cms"]["revision"].integer,
+                  current[id] == Int(revision) else { continue }
+            catalogEntries[id] = ArtworkCatalogEntry(id: id, revision: Int(revision), artwork: artwork)
+        }
+        let access = viewportAccessID, rows = library
+        catalogTask = Task { [weak self] in
+            guard let self, let api = self.api else { return }
+            for row in rows {
+                guard !Task.isCancelled, self.viewportAccessID == access else { return }
+                if self.catalogEntries[row.id] != nil { continue }
+                do {
+                    let approved = try await api.studioArtwork(row.id)
+                    guard !Task.isCancelled, self.viewportAccessID == access else { return }
+                    guard approved.artwork["extensions"]["org.exhibitos.studio/cms"]["revision"].integer == Int64(row.revision) else { throw AuthoringFailure("ARTWORK_SCOPE_CHANGED") }
+                    self.catalogEntries[row.id] = ArtworkCatalogEntry(id: row.id, revision: row.revision, artwork: approved.artwork)
+                } catch {
+                    guard !Task.isCancelled, self.viewportAccessID == access else { return }
+                    self.catalogFailures.insert(row.id)
+                }
+            }
+        }
+    }
+    func retryCatalogMetadata() { refreshCatalogMetadata() }
+    func loadMoreCatalog() async {
+        await work {
+            guard let api, let libraryCursor else { return }
+            let page = try await api.artworks(cursor: libraryCursor)
+            library += page.items.filter { row in row.approvedRevision == row.revision && !library.contains(where: { $0.id == row.id }) }
+            self.libraryCursor = page.nextCursor
+            refreshCatalogMetadata()
+        }
+    }
+    func selectCatalog(_ id: String) {
+        guard canSelectCatalog, library.contains(where: { $0.id == id }), let draft else { return }
+        catalogArtworkId = id
+        if let placement = draft.catalogPlacement(for: id, preferring: placementId) {
+            selectViewport(ViewportSelection(kind: "placement", id: placement))
+            catalogStatus = "공간에 배치한 작품을 선택했습니다. 시점은 그대로 유지됩니다."
+        } else {
+            placementId = ""; viewportSelection = nil; syncInstallation(); syncArchitecture()
+            catalogStatus = "아직 배치하지 않은 원본 작품입니다. 배치할 위치를 선택할 수 있습니다."
+        }
+    }
+    func prepareCatalogPlacement() {
+        guard canSelectCatalog, !immutable, !catalogArtworkId.isEmpty else { return }
+        placementId = ""; viewportSelection = nil; syncInstallation(); syncArchitecture()
+        artworkId = catalogArtworkId
+        catalogStatus = "배치할 작품을 골랐습니다. 위치를 확인한 뒤 배치하세요. 원본 작품은 바뀌지 않습니다."
+    }
+    func cancelCatalogPlacement() {
+        guard !busy, !pending else { return }
+        artworkId = ""
+        catalogStatus = "새 배치 선택을 취소했습니다. 원본 작품과 기존 배치는 그대로입니다."
     }
     func refresh(more: Bool = false) async { await work { try await list(more: more) } }
     func new() async {
@@ -442,7 +545,7 @@ final class ExhibitionModel: ObservableObject {
         selectRoom()
         if draft?.placements.contains(where: { $0["id"].string == placementId }) != true { placementId = draft?.placements.first?["id"].string ?? "" }
         selectPlacement()
-        if let selected, let draft, selected.belongs(to: draft) { viewportSelection = selected }
+        if let selected, let draft, selected.belongs(to: draft) { viewportSelection = selected; if selected.kind != "placement" { catalogArtworkId = "" } }
         syncArchitecture()
     }
     func selectRoom() {
@@ -465,6 +568,7 @@ final class ExhibitionModel: ObservableObject {
     func selectPlacement() {
         guard let p = draft?.placements.first(where: { $0["id"].string == placementId }), let values = p["transform"]["position"].items, values.count == 3 else { syncInstallation(); return }
         viewportSelection = ViewportSelection(kind: "placement", id: placementId)
+        catalogArtworkId = draft?.catalogSourceID(for: placementId) ?? ""
         x = values[0].double ?? 0; y = values[1].double ?? 0; z = values[2].double ?? 0
         syncInstallation()
         syncArchitecture()
@@ -510,6 +614,7 @@ struct NativeExhibitionView: View {
             if model.cursor != nil { Button("전시 더 보기") { Task { await model.refresh(more: true) } }.disabled(!ready || model.busy) }
             if let draft = model.draft {
                 NativeViewportArea(model: model, ready: ready, editable: !model.immutable, controller: model.viewportController)
+                ArtworkCatalogView(model: model, controller: model.viewportController, ready: ready)
                 if model.immutable { Text("공개용 저장본은 보관됩니다. 변경하려면 사본을 만드세요."); Button("복제해서 편집") { Task { await model.copyForEditing() } }.disabled(!ready || model.busy || model.pending) }
                 HStack {
                     Button("되돌리기") { Task { await model.undo() } }.disabled(!model.canUndo || !ready)
@@ -553,10 +658,7 @@ struct NativeExhibitionView: View {
                         if !model.entranceEditable { Text("이 시작 화면의 설정을 읽을 수 없습니다. 원래 설정은 보관됩니다.").foregroundStyle(.secondary) }
                     }.disabled(!model.entranceEditable)
                     Section("승인한 작품 배치") {
-                        Picker("추가할 작품", selection: $model.artworkId) {
-                            Text("작품 선택").tag("")
-                            ForEach(model.library) { Text($0.title).tag($0.id) }
-                        }
+                        Text(model.artworkId.isEmpty ? "카탈로그에서 원본 작품을 고른 뒤 배치를 선택하세요." : "배치할 작품: " + (model.library.first(where: { $0.id == model.artworkId })?.title ?? "작품"))
                         TextField("위치 X (m)", value: $model.x, format: .number)
                         TextField("위치 Y (m)", value: $model.y, format: .number)
                         TextField("위치 Z (m)", value: $model.z, format: .number)
@@ -565,7 +667,7 @@ struct NativeExhibitionView: View {
                             Text("배치 선택").tag("")
                             ForEach(draft.placements.indices, id: \.self) { index in
                                 let placement = draft.placements[index]
-                                Text(draft.artworks.first(where: { $0["revisionId"] == placement["artworkRevisionId"] })?["metadata"]["title"].string ?? "작품").tag(placement["id"].string ?? "")
+                                Text("배치 \(index + 1) · " + (draft.artworks.first(where: { $0["revisionId"] == placement["artworkRevisionId"] })?["metadata"]["title"].string ?? "작품")).tag(placement["id"].string ?? "")
                             }
                         }
                         .disabled(model.positionDirty || model.formDirty)
