@@ -10,9 +10,15 @@ final class NativeViewportController: ObservableObject {
     @Published fileprivate(set) var planSupported = false
     @Published fileprivate(set) var thumbnailSupported = false
     @Published fileprivate(set) var findSelectionSupported = false
+    @Published fileprivate(set) var placementSupported = false
     @Published fileprivate(set) var acceptedSequence = 0
     fileprivate var thumbnailAction: ((String, Int) async throws -> Data)?
     fileprivate var findSelectionAction: (() async throws -> Void)?
+    fileprivate var placementAction: ((ArtworkPlacementIntent, ViewportPlacementPhase, ViewportPlacementTarget?) async throws -> DocumentValue?)?
+    func placement(_ intent: ArtworkPlacementIntent, phase: ViewportPlacementPhase, target: ViewportPlacementTarget? = nil) async throws -> DocumentValue? {
+        guard connected, placementSupported, let placementAction else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+        return try await placementAction(intent, phase, target)
+    }
     func thumbnail(artworkId: String, revision: Int) async throws -> Data {
         guard connected, thumbnailSupported, let thumbnailAction else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
         return try await thumbnailAction(artworkId, revision)
@@ -38,7 +44,7 @@ final class NativeViewportController: ObservableObject {
     fileprivate var owner: String?
     fileprivate var action: ((NativeGeometryAction) async throws -> (DocumentValue, NativeExhibitionDraft))?
     func perform(_ command: NativeGeometryAction, model: ExhibitionModel) async {
-        guard let action, connected else { return }
+        guard !model.placingArtwork, let action, connected else { return }
         do {
             let (candidate, base) = try await action(command)
             if case .installation(let installation) = command { await model.acceptInstallationCandidate(candidate, base: base, command: installation) }
@@ -72,6 +78,8 @@ struct NativeViewport: NSViewRepresentable {
     @ObservedObject var controller: NativeViewportController
     let onSelect: (ViewportSelection) -> Void
     let onCandidate: (DocumentValue, NativeExhibitionDraft) -> Void
+    let onPlacementTarget: (DocumentValue) -> Void
+    let onPlacementCancel: (String) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: NSViewRepresentableContext<NativeViewport>) -> WKWebView {
         let configuration = WKWebViewConfiguration()
@@ -109,11 +117,19 @@ struct NativeViewport: NSViewRepresentable {
         private var installedToken: String?
         private var prepared = false
         private var latest: ViewportFrame?
+        private var placementIntent: ArtworkPlacementIntent?
         var sendTask: Task<Void, Never>?
         init(_ parent: NativeViewport) { self.parent = parent; super.init(); parent.controller.owner = epoch }
         func invalidate() {
+            endPlacement()
             active = false; generation = UUID(); sendTask?.cancel()
-            if controller.owner == epoch { controller.action = nil; controller.thumbnailAction = nil; controller.findSelectionAction = nil; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0 }
+            if controller.owner == epoch { controller.action = nil; controller.thumbnailAction = nil; controller.findSelectionAction = nil; controller.placementAction = nil; controller.placementSupported = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0 }
+        }
+        private func endPlacement() {
+            guard let intent = placementIntent else { return }
+            placementIntent = nil
+            let notify = parent.onPlacementCancel
+            Task { @MainActor in notify(intent.requestId) }
         }
         private var page: URL? { URL(string: parent.credentials.origin + "/native-viewport.html") }
         private func isPage(_ url: URL?) -> Bool { url == page && url?.user == nil && url?.password == nil }
@@ -121,6 +137,7 @@ struct NativeViewport: NSViewRepresentable {
             parent = value
             guard let page, page.scheme == "http", page.host == "127.0.0.1", let port = page.port, port >= 1024, UUID(uuidString: value.credentials.tenantId) != nil, UUID(uuidString: value.credentials.principalId) != nil else { return }
             if let installedToken, installedToken != value.credentials.token {
+                endPlacement(); controller.placementSupported = false
                 prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0; web?.stopLoading(); return
             }
             if installedToken == nil {
@@ -137,6 +154,9 @@ struct NativeViewport: NSViewRepresentable {
             guard let bytes = try? encoder.encode(probe) else { return }
             let hash = Data(SHA256.hash(data: bytes))
             guard hash != fingerprint else { return }
+            // Status-only rerenders dedupe above. A genuinely different frame
+            // invalidates the transient operation before any late callback.
+            endPlacement()
             fingerprint = hash; sequence += 1
             latest = ViewportFrame(epoch: epoch, sequence: sequence, tenantId: value.credentials.tenantId, principalId: value.credentials.principalId, draft: value.draft, selection: selection, mode: value.mode, view: value.view, disabled: value.disabled, cameraSequence: value.cameraSequence, transparent: value.transparent, presentation: controller.planSupported ? value.presentation : .threeD)
             schedule()
@@ -174,7 +194,7 @@ struct NativeViewport: NSViewRepresentable {
             return .allow
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 전시는 유지됩니다. 3D 다시 열기를 선택하세요." }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.placementSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 전시는 유지됩니다. 3D 다시 열기를 선택하세요." }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { controller.message = "3D 화면을 열지 못했습니다. 로컬 제작 상태를 확인하세요."; controller.diagnose("PAGE_LOAD", error) }
         private func schedule() {
             guard active, controller.owner == epoch, prepared, sendTask == nil, let web else { return }
@@ -196,9 +216,50 @@ struct NativeViewport: NSViewRepresentable {
                         self.controller.planSupported = acceptance.supportsPlan
                         self.controller.thumbnailSupported = acceptance.supportsArtworkThumbnail
                         self.controller.findSelectionSupported = acceptance.supportsFindSelection
+                        self.controller.placementSupported = acceptance.supportsArtworkPlacement
                         self.controller.acceptedSequence = frame.sequence
                         self.sent = frame.sequence; self.controller.connected = self.sent == self.sequence; self.controller.diagnostic = ""
                     } catch { if self.generation == generation { self.controller.connected = false; self.controller.message = "전시를 3D에 표시하지 못했습니다. 저장한 전시와 연결을 확인하세요."; self.controller.diagnose("FRAME", error) }; break }
+                }
+            }
+            controller.placementAction = { [weak self] intent, phase, target in
+                guard let self, self.active, self.controller.owner == self.epoch, self.controller.placementSupported,
+                      let web = self.web, let frame = self.latest, self.prepared, self.sent == frame.sequence,
+                      !frame.disabled, frame.draft == intent.base else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                let request = try ViewportPlacementRequest(frame: frame, intent: intent, phase: phase, target: target)
+                if phase == .begin {
+                    guard self.placementIntent == nil else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+                    self.placementIntent = intent
+                } else {
+                    guard self.placementIntent?.requestId == intent.requestId else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                }
+                let generation = self.generation
+                if phase == .cancel { self.placementIntent = nil }
+                do {
+                    let json = String(decoding: try JSONEncoder().encode(request.value), as: UTF8.self)
+                    let response = try await web.callAsyncJavaScript("if (typeof window.exhibitosViewport?.placement !== 'function') throw new Error('VIEWPORT_NOT_READY'); return await window.exhibitosViewport.placement(JSON.parse(requestJSON));", arguments: ["requestJSON": json], in: nil, contentWorld: .page)
+                    try Task.checkCancellation()
+                    guard self.active, self.controller.owner == self.epoch, self.generation == generation, self.latest?.sequence == frame.sequence,
+                          phase == .cancel || self.placementIntent?.requestId == intent.requestId,
+                          let response, JSONSerialization.isValidJSONObject(response) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                    let bytes = try JSONSerialization.data(withJSONObject: response)
+                    guard bytes.count <= 16384 else { throw AuthoringFailure("PLACEMENT_TARGET_INVALID") }
+                    let placement = try request.checkedReply(JSONDecoder().decode(DocumentValue.self, from: bytes))
+                    if phase == .commit { self.placementIntent = nil }
+                    return placement
+                } catch {
+                    if phase != .cancel, self.placementIntent?.requestId == intent.requestId {
+                        // An invalid/lost acknowledgement must not leave a ghost
+                        // after native refuses the operation. A changed frame
+                        // already invalidates its own web operation.
+                        if self.generation == generation, self.latest?.sequence == frame.sequence,
+                           let cancel = try? ViewportPlacementRequest(frame: frame, intent: intent, phase: .cancel),
+                           let bytes = try? JSONEncoder().encode(cancel.value) {
+                            _ = try? await web.callAsyncJavaScript("return await window.exhibitosViewport?.placement(JSON.parse(requestJSON));", arguments: ["requestJSON": String(decoding: bytes, as: UTF8.self)], in: nil, contentWorld: .page)
+                        }
+                        self.endPlacement()
+                    }
+                    throw error
                 }
             }
             controller.thumbnailAction = { [weak self] artworkId, revision in
@@ -247,10 +308,19 @@ struct NativeViewport: NSViewRepresentable {
                   JSONSerialization.isValidJSONObject(message.body), let bytes = try? JSONSerialization.data(withJSONObject: message.body), bytes.count <= 1_100_000,
                   let envelope = try? JSONDecoder().decode(Envelope.self, from: bytes), envelope.version == 1, envelope.epoch == epoch, envelope.sequence == sequence, let frame = latest else { return }
             switch envelope.type {
+            case "placement-target":
+                guard !frame.disabled, let intent = placementIntent,
+                      (try? ViewportPlacementTarget(value: envelope.body, intent: intent)) != nil else { return }
+                parent.onPlacementTarget(envelope.body)
+            case "placement-cancel":
+                guard let intent = placementIntent, case .object(let body) = envelope.body,
+                      Set(body.keys) == Set(["placementRequestId", "reason"]), envelope.body["placementRequestId"].string == intent.requestId,
+                      let reason = envelope.body["reason"].string, reason.utf8.count <= 160 else { return }
+                endPlacement()
             case "selection":
-                guard !frame.disabled, !parent.interactionDisabled, let selection = try? JSONDecoder().decode(ViewportSelection.self, from: JSONEncoder().encode(envelope.body)), selection.belongs(to: frame.draft) else { return }
+                guard placementIntent == nil, !frame.disabled, !parent.interactionDisabled, let selection = try? JSONDecoder().decode(ViewportSelection.self, from: JSONEncoder().encode(envelope.body)), selection.belongs(to: frame.draft) else { return }
                 parent.onSelect(selection)
-            case "candidate": guard !frame.disabled, !parent.interactionDisabled else { return }; parent.onCandidate(envelope.body, frame.draft)
+            case "candidate": guard placementIntent == nil, !frame.disabled, !parent.interactionDisabled else { return }; parent.onCandidate(envelope.body, frame.draft)
             case "status":
                 guard let report = try? JSONDecoder().decode(Report.self, from: JSONEncoder().encode(envelope.body)), report.loaded >= 0, report.failed >= 0, report.message.count <= 2048 else { return }
                 controller.rendering = report.ready; controller.loaded = report.loaded; controller.failed = report.failed
@@ -279,7 +349,7 @@ struct NativeViewportArea: View {
                     Text("3D 공간").tag(ViewportPresentation.threeD)
                     Text("2D 평면").tag(ViewportPresentation.plan).disabled(!controller.planSupported)
                 }.pickerStyle(.segmented)
-                    .disabled(!controller.connected || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying)
+                    .disabled(!controller.connected || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.placingArtwork)
                     .accessibilityHint("같은 전시와 선택을 유지하며 편집 화면을 전환합니다.")
                 if !controller.planSupported { Text("이 제작 서비스는 3D 화면을 제공합니다. 2D 평면 지원 연결을 확인하세요.").foregroundStyle(.secondary) }
                 HStack {
@@ -290,12 +360,13 @@ struct NativeViewportArea: View {
                         Picker("편집 조작", selection: $model.viewportMode) { Text("이동").tag("translate"); Text("회전").tag("rotate"); Text("크기").tag("dimensions") }
                     }
                     Button("편집 화면 다시 열기") { identity = UUID() }
-                }
+                }.disabled(model.placingArtwork)
                 Toggle("공간을 투명하게 보기", isOn: $model.viewportTransparent)
+                    .disabled(model.placingArtwork)
                     .help("벽·바닥 너머 작품을 확인합니다. 저장한 재질은 바뀌지 않습니다.")
-                NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.busy || model.pending || model.formDirty || model.positionDirty || model.surfaceMaterialPreviewing, interactionDisabled: !editable || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing, controller: controller, onSelect: { model.selectViewport($0) }, onCandidate: { candidate, base in Task { await model.acceptViewportCandidate(candidate, base: base) } })
+                NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.busy || model.pending || model.formDirty || model.positionDirty || model.surfaceMaterialPreviewing, interactionDisabled: !editable || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.placingArtwork, controller: controller, onSelect: { model.selectViewport($0) }, onCandidate: { candidate, base in Task { await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
                     .id(identity.uuidString + model.viewportAccessID.uuidString).frame(minHeight: 360, idealHeight: 440).clipShape(RoundedRectangle(cornerRadius: 8))
-                    .allowsHitTesting(!model.architectureDirty && !model.architectureApplying)
+                    .allowsHitTesting(!model.architectureDirty && !model.architectureApplying && !model.placementApplying)
                     .disabled(model.architectureDirty || model.architectureApplying)
                 Text("불러온 작품 \(controller.loaded)개 · 불러오지 못한 작품 \(controller.failed)개").foregroundStyle(.secondary)
                 Text(controller.message).foregroundStyle(.secondary)
@@ -305,7 +376,7 @@ struct NativeViewportArea: View {
                         Button("벽과 바닥 만들기") { Task { await controller.perform(.whiteCube(roomId: model.roomId), model: model) } }
                         Button("공간 추가") { Task { await controller.perform(.addRoom(name: "새 공간"), model: model) } }
                         Button("조명 추가") { Task { await controller.perform(.addLight(roomId: model.roomId), model: model) } }
-                    }.disabled(!controller.connected || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying)
+                    }.disabled(!controller.connected || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.placingArtwork)
                     Text("숫자 입력은 이 Mac에 보관한 뒤 3D에 반영됩니다. 3D 변경도 이 Mac에 보관하며, 전시 저장과 공개는 별도로 진행합니다.").foregroundStyle(.secondary)
                 }
             } else { Text("전시를 열고 로컬 제작을 시작하면 3D를 볼 수 있습니다.").foregroundStyle(.secondary) }

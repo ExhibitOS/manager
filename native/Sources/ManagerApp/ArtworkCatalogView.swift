@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import SwiftUI
+import AppKit
 import ManagerCore
 
 struct ArtworkCatalogView: View {
@@ -31,7 +32,10 @@ struct ArtworkCatalogView: View {
                 HStack(spacing: 12) {
                     if !model.catalogArtworkId.isEmpty {
                         Text("원본 작품 선택").font(.caption).foregroundStyle(.secondary)
-                        Button("배치 추가", systemImage: "plus") { model.prepareCatalogPlacement() }
+                        Button("3D에서 배치", systemImage: "plus.viewfinder") { Task { await model.beginVisualArtworkPlacement() } }
+                            .disabled(!ready || !model.canPlaceVisually)
+                            .help(controller.placementSupported ? "벽이나 바닥을 클릭해 미리 보고 명시적으로 배치합니다." : "이 실행 환경에서는 숫자로 배치할 수 있습니다.")
+                        Button("숫자로 배치", systemImage: "number") { model.prepareCatalogPlacement() }
                             .disabled(!ready || !model.canSelectCatalog || model.immutable)
                         Button("선택한 배치 찾기", systemImage: "scope") { Task { await controller.findSelection() } }
                             .disabled(!ready || !model.canSelectCatalog || model.immutable || model.viewportSelection?.kind != "placement" || !controller.findSelectionSupported || model.viewportPresentation == .plan)
@@ -46,14 +50,26 @@ struct ArtworkCatalogView: View {
                         Button("정보 다시 확인") { model.retryCatalogMetadata() }.disabled(!ready || model.busy)
                     }
                 }
-                if !model.artworkId.isEmpty {
+                if let intent = model.artworkPlacement {
+                    HStack {
+                        Label(intent.targetKind == .wall ? "벽에 배치 미리보기" : "바닥에 배치 미리보기", systemImage: "viewfinder")
+                        if model.placementApplying { ProgressView().controlSize(.small).accessibilityLabel("배치를 확인하고 있습니다") }
+                        Spacer(minLength: 0)
+                        Button("취소") { Task { await model.cancelVisualArtworkPlacement() } }
+                            .disabled(model.placementApplying)
+                        Button("여기에 배치") { Task { await model.commitVisualArtworkPlacement() } }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(model.placementApplying || model.artworkPlacementTarget?.valid != true)
+                            .accessibilityHint("미리 보는 위치에 작품 한 개를 추가합니다. 되돌리기로 취소할 수 있습니다.")
+                    }
+                } else if !model.artworkId.isEmpty {
                     HStack {
                         Text("배치할 위치를 확인하세요.").foregroundStyle(.secondary)
                         Button("배치 선택 취소") { model.cancelCatalogPlacement() }
                     }
                 }
                 if !model.catalogStatus.isEmpty { Text(model.catalogStatus).font(.callout).foregroundStyle(.secondary) }
-                if !model.canSelectCatalog { Text("미적용 입력은 보존됩니다. 적용하거나 취소한 뒤 다른 작품을 고르세요.").font(.callout).foregroundStyle(.secondary) }
+                if !model.canSelectCatalog && !model.placingArtwork { Text("미적용 입력은 보존됩니다. 적용하거나 취소한 뒤 다른 작품을 고르세요.").font(.callout).foregroundStyle(.secondary) }
             }.padding(.top, 8)
         } label: {
             Label("작품 카탈로그", systemImage: "square.grid.2x2")
@@ -62,6 +78,12 @@ struct ArtworkCatalogView: View {
         .padding(12)
         .background(.background, in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor)))
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            Task { await model.cancelVisualArtworkPlacement() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
+            Task { await model.cancelVisualArtworkPlacement() }
+        }
     }
     private var search: some View {
         TextField("작품명·작가 검색", text: $model.catalogQuery).textFieldStyle(.roundedBorder).frame(minWidth: 180)

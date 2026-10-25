@@ -16,6 +16,12 @@ final class ExhibitionModel: ObservableObject {
     @Published var catalogFilter = ArtworkCatalogFilter.all
     @Published private(set) var catalogArtworkId = ""
     @Published private(set) var catalogStatus = ""
+    @Published private(set) var artworkPlacement: ArtworkPlacementIntent?
+    @Published private(set) var artworkPlacementTarget: ViewportPlacementTarget?
+    @Published private(set) var placementApplying = false
+    private var placementAttempt: UUID?
+    var placingArtwork: Bool { artworkPlacement != nil || placementApplying }
+    var canPlaceVisually: Bool { canSelectCatalog && !immutable && viewportPresentation == .threeD && viewportController.connected && viewportController.placementSupported && catalogEntries[catalogArtworkId] != nil }
     @Published private(set) var libraryCursor: String?
     private var catalogTask: Task<Void, Never>?
     @Published private(set) var catalogImages: [String: NSImage] = [:]
@@ -58,7 +64,7 @@ final class ExhibitionModel: ObservableObject {
             }
         }
     }
-    var canSelectCatalog: Bool { !busy && !pending && !formDirty && !positionDirty && !architectureDirty && !architectureApplying }
+    var canSelectCatalog: Bool { !busy && !pending && !formDirty && !positionDirty && !architectureDirty && !architectureApplying && !placingArtwork }
     var visibleCatalog: [ArtworkCatalogEntry] {
         guard let draft else { return [] }
         return library.map { row in
@@ -106,7 +112,7 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var viewportView = "isometric"
     @Published private(set) var viewportCameraSequence = 0
     @Published var viewportTransparent = true
-    func requestViewportView(_ view: String) { viewportView = view; viewportCameraSequence += 1 }
+    func requestViewportView(_ view: String) { guard !placingArtwork else { return }; viewportView = view; viewportCameraSequence += 1 }
     @Published var viewportSelection: ViewportSelection?
     @Published var architecture: ArchitectureFormBuffer?
     private var architectureBaseline: ArchitectureFormBuffer?
@@ -134,8 +140,8 @@ final class ExhibitionModel: ObservableObject {
     private(set) var viewportCredentials: LocalAuthoringSession?
     @Published private var past: [NativeExhibitionDraft] = []
     @Published private var future: [NativeExhibitionDraft] = []
-    var canUndo: Bool { !immutable && !past.isEmpty && !pending && !busy && !formDirty && !positionDirty && !architectureDirty && !architectureApplying }
-    var canRedo: Bool { !immutable && !future.isEmpty && !pending && !busy && !formDirty && !positionDirty && !architectureDirty && !architectureApplying }
+    var canUndo: Bool { !immutable && !past.isEmpty && !pending && !busy && !formDirty && !positionDirty && !architectureDirty && !architectureApplying && !placingArtwork }
+    var canRedo: Bool { !immutable && !future.isEmpty && !pending && !busy && !formDirty && !positionDirty && !architectureDirty && !architectureApplying && !placingArtwork }
     private var api: AuthoringAPI?
     private var session: AuthoringSession?
     private var read: (() async throws -> NativeDocumentState)?
@@ -153,7 +159,7 @@ final class ExhibitionModel: ObservableObject {
         if let p = draft?.placements.first(where: { $0["id"].string == placementId }), let position = p["transform"]["position"].items, position.count == 3 { return x != position[0].double || y != position[1].double || z != position[2].double }
         return !artworkId.isEmpty
     }
-    var canExport: Bool { !busy && !dirty && state?.etag != nil && draft != nil }
+    var canExport: Bool { !busy && !placingArtwork && !dirty && state?.etag != nil && draft != nil }
     var dirty: Bool { state?.dirty == true || formDirty || positionDirty || architectureDirty || architectureApplying }
     func connect(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession, read: @escaping () async throws -> NativeDocumentState, write: @escaping (NativeDocumentState) async throws -> NativeDocumentState) async {
         guard !busy else { return }
@@ -179,7 +185,7 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     private func work(_ body: () async throws -> Void) async {
-        guard !busy, api != nil, session != nil else { return }
+        guard !busy, !placingArtwork, api != nil, session != nil else { return }
         busy = true; failure = nil; notice = ""
         defer { busy = false }
         do { try await body() }
@@ -336,7 +342,7 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     func selectViewport(_ selection: ViewportSelection) {
-        guard !busy, !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, let draft, selection.belongs(to: draft) else { return }
+        guard !placingArtwork, !busy, !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, let draft, selection.belongs(to: draft) else { return }
         if let room = roomForSelection(selection, draft: draft), room != roomId { roomId = room; selectRoom() }
         if selection.kind == "room" { roomId = selection.id; selectRoom() }
         if selection.kind == "placement" {
@@ -414,6 +420,75 @@ final class ExhibitionModel: ObservableObject {
         placementId = ""; viewportSelection = nil; syncInstallation(); syncArchitecture()
         artworkId = catalogArtworkId
         catalogStatus = "배치할 작품을 골랐습니다. 위치를 확인한 뒤 배치하세요. 원본 작품은 바뀌지 않습니다."
+    }
+    func beginVisualArtworkPlacement() async {
+        guard canPlaceVisually, let api, let credentials = viewportCredentials, let base = draft,
+              let entry = catalogEntries[catalogArtworkId] else { return }
+        let access = viewportAccessID, room = roomId, attempt = UUID()
+        placementAttempt = attempt; placementApplying = true; failure = nil
+        catalogStatus = "승인한 작품을 확인하고 있습니다."
+        defer { if placementAttempt == attempt { placementAttempt = nil }; placementApplying = false }
+        do {
+            let approved = try await api.studioArtwork(entry.id)
+            guard placementAttempt == attempt, viewportAccessID == access, draft == base, roomId == room, catalogArtworkId == entry.id,
+                  !immutable, !pending, !formDirty, !positionDirty, !architectureDirty else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            let intent = try ArtworkPlacementIntent(artworkId: entry.id, expectedRevision: entry.revision, tenantId: credentials.tenantId, artwork: approved.artwork, roomId: room, base: base)
+            artworkPlacement = intent; artworkPlacementTarget = nil
+            _ = try await viewportController.placement(intent, phase: .begin)
+            guard artworkPlacement?.requestId == intent.requestId else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            catalogStatus = intent.targetKind == .wall ? "3D 공간의 벽을 클릭해 미리 본 뒤 ‘여기에 배치’를 선택하세요." : "3D 공간의 바닥을 클릭해 미리 본 뒤 ‘여기에 배치’를 선택하세요."
+        } catch {
+            artworkPlacement = nil; artworkPlacementTarget = nil
+            catalogStatus = "3D 배치를 시작하지 못했습니다. 기존 선택과 입력은 유지됩니다. 숫자로도 배치할 수 있습니다."
+            viewportController.diagnose("PLACE", error)
+        }
+    }
+    func receivePlacementTarget(_ value: DocumentValue) {
+        guard let intent = artworkPlacement, draft == intent.base,
+              let target = try? ViewportPlacementTarget(value: value, intent: intent) else { return }
+        artworkPlacementTarget = target
+        catalogStatus = target.valid ? "이 위치를 미리 보고 있습니다. ‘여기에 배치’를 선택하면 전시에 추가합니다." : "여기에 배치할 수 없습니다. 선택한 공간의 다른 벽이나 바닥을 클릭하세요."
+    }
+    func placementCancelled(_ requestId: String) {
+        guard artworkPlacement?.requestId == requestId else { return }
+        placementAttempt = nil
+        artworkPlacement = nil; artworkPlacementTarget = nil
+        catalogStatus = "배치 미리보기를 취소했습니다. 기존 선택과 입력은 유지됩니다."
+    }
+    func cancelVisualArtworkPlacement() async {
+        guard placingArtwork else { return }
+        placementAttempt = nil
+        guard let intent = artworkPlacement else { catalogStatus = "배치 준비를 취소했습니다. 기존 선택과 입력은 유지됩니다."; return }
+        placementCancelled(intent.requestId)
+        _ = try? await viewportController.placement(intent, phase: .cancel)
+    }
+    func commitVisualArtworkPlacement() async {
+        guard !placementApplying, !busy, !pending, !immutable, !formDirty, !positionDirty, !architectureDirty,
+              let intent = artworkPlacement, let target = artworkPlacementTarget, target.valid,
+              let api, draft == intent.base else { return }
+        let access = viewportAccessID, attempt = UUID()
+        placementAttempt = attempt; placementApplying = true; failure = nil
+        defer { if placementAttempt == attempt { placementAttempt = nil }; placementApplying = false }
+        do {
+            let approved = try await api.studioArtwork(intent.artworkId)
+            guard placementAttempt == attempt, approved.artwork == intent.artwork, viewportAccessID == access, draft == intent.base,
+                  artworkPlacement?.requestId == intent.requestId, artworkPlacementTarget == target,
+                  roomId == intent.roomId, !immutable, !pending, !formDirty, !positionDirty, !architectureDirty,
+                  let placement = try await viewportController.placement(intent, phase: .commit, target: target),
+                  placementAttempt == attempt, artworkPlacement?.requestId == intent.requestId, artworkPlacementTarget == target,
+                  viewportAccessID == access, let current = draft, current == intent.base,
+                  let surface = target.surfaceId, let offset = target.offset, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            value.draft = try intent.applying(placement, surfaceId: surface, offset: offset, to: current)
+            try await persist(value)
+            artworkPlacement = nil; artworkPlacementTarget = nil
+            placementId = intent.placementId; viewportSelection = ViewportSelection(kind: "placement", id: intent.placementId)
+            syncFields()
+            catalogStatus = "작품을 이 Mac에 배치했습니다. 되돌리기로 취소하거나 전시 저장을 진행하세요."
+        } catch {
+            await cancelVisualArtworkPlacement()
+            catalogStatus = "이 위치에 배치하지 못했습니다. 현재 전시와 입력은 유지됩니다. 위치를 다시 선택하세요."
+            viewportController.diagnose("PLACE", error)
+        }
     }
     func cancelPositionInput() {
         guard !busy, !pending else { return }
@@ -707,7 +782,7 @@ struct NativeExhibitionView: View {
                         Button("선택한 배치 위치 적용") { Task { await model.movePlacement() } }.disabled(model.placementId.isEmpty)
                         Text("공간 \(draft.rooms.count)개 · 작품 배치 \(draft.placements.count)개").foregroundStyle(.secondary)
                     }
-                }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true).disabled(!ready || model.busy || model.pending || model.immutable || model.architectureDirty || model.architectureApplying)
+                }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true).disabled(!ready || model.busy || model.pending || model.immutable || model.architectureDirty || model.architectureApplying || model.placingArtwork)
                 ArchitectureSettingsView(model: model, ready: ready)
                 if !model.placementId.isEmpty {
                     InstallationSettingsView(buffer: $model.installation, placementId: model.placementId, dirty: model.installationDirty,

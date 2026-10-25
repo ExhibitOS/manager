@@ -106,19 +106,31 @@ public struct NativeExhibitionDraft: Codable, Equatable, Sendable {
         var c = candidate; c["rooms"] = .array(rows); try change(c)
     }
     public mutating func addApprovedArtwork(_ artwork: DocumentValue, roomId: String, position: [Double]) throws {
+        var pose = Self.identity; pose["position"] = .vector(position)
+        try addApprovedArtwork(artwork, roomId: roomId, placementId: UUID().uuidString.lowercased(), transform: pose)
+    }
+    /// The same approved-add mutation serves numeric and explicit visual placement.
+    /// A visual proposal supplies only the pinned placement identity and unit pose.
+    public mutating func addApprovedArtwork(_ artwork: DocumentValue, roomId: String, placementId: String, transform: DocumentValue) throws {
         guard let revision = artwork["revisionId"].string, UUID(uuidString: revision) != nil,
               let asset = artwork["primaryAssetId"].string, UUID(uuidString: asset) != nil,
-              artwork["kind"].string == "artwork", rooms.contains(where: { $0["id"].string == roomId }), position.count == 3, position.allSatisfy({ $0.isFinite && abs($0) <= 1_000_000 }) else { throw AuthoringFailure("PLACEMENT_INVALID") }
+              artwork["kind"].string == "artwork", rooms.contains(where: { $0["id"].string == roomId }),
+              UUID(uuidString: placementId) != nil, !placements.contains(where: { $0["id"].string?.lowercased() == placementId.lowercased() }),
+              case .object(let fields) = transform, Set(fields.keys) == Set(["position", "rotation", "scale"]),
+              let position = transform["position"].items, position.count == 3,
+              position.allSatisfy({ $0.double.map { $0.isFinite && abs($0) <= 1_000_000 } == true }),
+              let rotation = transform["rotation"].items, rotation.count == 4,
+              rotation.allSatisfy({ $0.double.map { $0.isFinite && abs($0) <= 1 } == true }),
+              abs(rotation.reduce(0) { $0 + pow($1.double!, 2) } - 1) <= 1e-6,
+              transform["scale"] == .vector([1, 1, 1]) else { throw AuthoringFailure("PLACEMENT_INVALID") }
         var c = candidate, inventory = artworks
         if let old = inventory.first(where: { $0["revisionId"].string == revision }) {
             guard old == artwork else { throw AuthoringFailure("ARTWORK_REVISION_CHANGED") }
         } else { inventory.append(artwork) }
-        var pose = Self.identity; pose["position"] = .vector(position)
-        let placementId = UUID().uuidString.lowercased()
         let description = artwork["metadata"]["description"].string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let alternative = description.isEmpty ? (artwork["metadata"]["title"].string ?? "작품") : description
         var rows = placements
-        rows.append(.object(["id": .string(placementId), "roomId": .string(roomId), "artworkRevisionId": .string(revision), "assetId": .string(asset), "transform": pose]))
+        rows.append(.object(["id": .string(placementId), "roomId": .string(roomId), "artworkRevisionId": .string(revision), "assetId": .string(asset), "transform": transform]))
         var descriptions = c["accessibility"]["artworkDescriptions"].items ?? []
         descriptions.append(.object(["placementId": .string(placementId), "text": .string(alternative)]))
         c["accessibility"]["artworkDescriptions"] = .array(descriptions)
