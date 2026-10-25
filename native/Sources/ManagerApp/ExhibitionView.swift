@@ -40,6 +40,7 @@ final class ExhibitionModel: ObservableObject {
     @Published var y = 1.0
     @Published var z = 0.0
     @Published private(set) var cursor: String?
+    @Published var viewportPresentation: ViewportPresentation = .threeD
     @Published var viewportMode = "translate"
     @Published private(set) var viewportView = "isometric"
     @Published private(set) var viewportCameraSequence = 0
