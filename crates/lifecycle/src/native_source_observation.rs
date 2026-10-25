@@ -75,6 +75,40 @@ impl NativeSourceObservation {
     }
 }
 impl Store {
+    /// The caller retains the existing profile operation lock through both
+    /// registry/history checks and the source observation. Authority namespaces
+    /// deliberately outlive the UUID of the currently selected source.
+    pub(super) fn check_native_source_selection(
+        &self,
+        profile: &Path,
+        id: &str,
+        root: &Path,
+    ) -> crate::Result<()> {
+        if profile != self.profile {
+            return Err(crate::err("NATIVE_SOURCE_OBSERVATION_STALE"));
+        }
+        let (registry, _) = installations::load(profile)?
+            .ok_or_else(|| crate::err("UPDATE_SOURCE_UNREGISTERED"))?;
+        let bound = self.bound_source_id(&registry)?;
+        if bound != registry.active_id || bound != id {
+            return Err(crate::err("NATIVE_SOURCE_OBSERVATION_STALE"));
+        }
+        let entry = registry
+            .installations
+            .iter()
+            .find(|entry| entry.id == bound)
+            .ok_or_else(|| crate::err("UPDATE_SOURCE_UNREGISTERED"))?;
+        if installations::root(profile, entry) != root {
+            return Err(crate::err("NATIVE_SOURCE_OBSERVATION_STALE"));
+        }
+        installations::private_directory(root)?;
+        if fs::canonicalize(root).map_err(|_| crate::err("NATIVE_SOURCE_OBSERVATION_STALE"))?
+            != root
+        {
+            return Err(crate::err("NATIVE_SOURCE_OBSERVATION_STALE"));
+        }
+        Ok(())
+    }
     /// No caller-supplied observation/hash can construct the source capability.
     /// The same Store/profile/installation and staged signed target admission
     /// must remain current on both sides of the native database observation.
@@ -86,10 +120,11 @@ impl Store {
         now: u64,
     ) -> Result<NativeSourceObservation, Error> {
         self.recheck_native_admission(target, now)?;
-        if source.scope() != (self.profile.as_path(), self.installation.as_str()) {
-            return Err(Error::TrustStalePolicy);
-        }
-        let evidence = source.observe(session).map_err(|_| Error::PlanMismatch)?;
+        let evidence = source
+            .observe(session, |profile, id, root| {
+                self.check_native_source_selection(profile, id, root)
+            })
+            .map_err(|_| Error::PlanMismatch)?;
         if evidence.schema_sha256 != target.release.source_schema_sha256 {
             return Err(Error::PlanMismatch);
         }
@@ -110,14 +145,14 @@ impl Store {
     ) -> Result<(), Error> {
         observed.verified = false;
         self.recheck_native_admission(target, now)?;
-        if !observed.authority.matches(self, target)
-            || observed.source.scope() != (self.profile.as_path(), self.installation.as_str())
-        {
+        if !observed.authority.matches(self, target) {
             return Err(Error::TrustStalePolicy);
         }
         let current = observed
             .source
-            .observe(session)
+            .observe(session, |profile, id, root| {
+                self.check_native_source_selection(profile, id, root)
+            })
             .map_err(|_| Error::PlanMismatch)?;
         if current != observed.evidence
             || current.schema_sha256 != target.release.source_schema_sha256
@@ -133,6 +168,67 @@ impl Store {
 #[cfg(all(test, debug_assertions))]
 mod tests {
     use super::*;
+    #[test]
+    fn native_source_selection_resolves_default_and_refuses_changed_or_foreign_sources() {
+        let (profile, store, payload, envelope, staged) =
+            super::super::native_admission_tests::fixture();
+        let source = uuid::Uuid::new_v4().to_string();
+        let other = uuid::Uuid::new_v4().to_string();
+        let root = profile.join("local-runtime");
+        installations::new_directory(&root).unwrap();
+        let mut registry = installations::Registry {
+            format: 1,
+            active_id: source.clone(),
+            installations: vec![
+                installations::Entry {
+                    id: source.clone(),
+                    kind: "default".into(),
+                    created_at: 0,
+                },
+                installations::Entry {
+                    id: other.clone(),
+                    kind: "recovery".into(),
+                    created_at: 1,
+                },
+            ],
+        };
+        installations::save(&profile, &registry, None).unwrap();
+        let service = crate::LifecycleService::bound_existing(profile.clone()).unwrap();
+        let guard = installations::profile_lock(&service).unwrap();
+        assert_eq!(store.installation, "default");
+        store
+            .check_native_source_selection(&profile, &source, &root)
+            .unwrap();
+        assert!(
+            store
+                .check_native_source_selection(&profile, &other, &root)
+                .is_err()
+        );
+        assert!(
+            store
+                .check_native_source_selection(&profile, &source, &profile)
+                .is_err()
+        );
+        assert!(
+            store
+                .check_native_source_selection(profile.parent().unwrap(), &source, &root)
+                .is_err()
+        );
+        let (_, bytes) = installations::load(&profile).unwrap().unwrap();
+        registry.active_id = other;
+        installations::save(&profile, &registry, Some(&bytes)).unwrap();
+        assert!(
+            store
+                .check_native_source_selection(&profile, &source, &root)
+                .is_err()
+        );
+        drop(guard);
+        drop(staged);
+        drop(payload);
+        drop(envelope);
+        drop(store);
+        fs::remove_dir_all(profile.parent().unwrap()).unwrap();
+    }
     #[test]
     fn native_source_authority_cannot_follow_new_scope_epoch_or_target_declaration() {
         let (profile, store, payload, envelope, staged) =

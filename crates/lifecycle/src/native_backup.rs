@@ -122,9 +122,6 @@ impl AuthenticatedNativeBackup {
     pub fn receipt(&self) -> &Receipt {
         &self.receipt
     }
-    pub(crate) fn scope(&self) -> (&Path, &str) {
-        (&self.profile_root, &self.installation_id)
-    }
     pub(crate) fn source_manifest(&self) -> String {
         self.payload.context().manifest_sha256
     }
@@ -171,9 +168,10 @@ impl AuthenticatedNativeBackup {
     }
     /// Re-observe through the existing fixed app-contained native backup tool.
     /// It owns the database fence, reads twice, and never invokes Docker.
-    pub(crate) fn observe(&self, session: &mut Session) -> Result<NativeSourceEvidence> {
+    pub(crate) fn observe(&self, session: &mut Session, mut check_selection: impl FnMut(&Path, &str, &Path) -> Result<()>) -> Result<NativeSourceEvidence> {
         let profile = LifecycleService::bound_existing(self.profile_root.clone())?;
         let _profile = profile_lock(&profile)?;
+        check_selection(&self.profile_root, &self.installation_id, &self.source_root)?;
         self.check(session)?;
         let observed = session.backup_tool(
             vec![
@@ -190,6 +188,7 @@ impl AuthenticatedNativeBackup {
             &self.scratch,
         )?;
         self.check(session)?;
+        check_selection(&self.profile_root, &self.installation_id, &self.source_root)?;
         let evidence = source_evidence(&self.manifest, &observed)?;
         if evidence != self.evidence {
             return Err(err("NATIVE_SOURCE_OBSERVATION_STALE"));
