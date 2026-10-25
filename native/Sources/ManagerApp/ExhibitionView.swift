@@ -46,12 +46,18 @@ final class ExhibitionModel: ObservableObject {
     @Published var viewportTransparent = true
     func requestViewportView(_ view: String) { viewportView = view; viewportCameraSequence += 1 }
     @Published var viewportSelection: ViewportSelection?
+    @Published var architecture: ArchitectureFormBuffer?
+    private var architectureBaseline: ArchitectureFormBuffer?
+    @Published private(set) var architectureStatus = ""
+    @Published private(set) var architectureApplying = false
+    var architectureDirty: Bool { architecture != architectureBaseline }
+    var canApplyArchitecture: Bool { !busy && !pending && !immutable && !formDirty && !positionDirty && !architectureApplying && architectureDirty && viewportController.connected }
     @Published private(set) var viewportAccessID = UUID()
     private(set) var viewportCredentials: LocalAuthoringSession?
     @Published private var past: [NativeExhibitionDraft] = []
     @Published private var future: [NativeExhibitionDraft] = []
-    var canUndo: Bool { !immutable && !past.isEmpty && !pending && !busy && !formDirty && !positionDirty }
-    var canRedo: Bool { !immutable && !future.isEmpty && !pending && !busy && !formDirty && !positionDirty }
+    var canUndo: Bool { !immutable && !past.isEmpty && !pending && !busy && !formDirty && !positionDirty && !architectureDirty && !architectureApplying }
+    var canRedo: Bool { !immutable && !future.isEmpty && !pending && !busy && !formDirty && !positionDirty && !architectureDirty && !architectureApplying }
     private var api: AuthoringAPI?
     private var session: AuthoringSession?
     private var read: (() async throws -> NativeDocumentState)?
@@ -69,7 +75,7 @@ final class ExhibitionModel: ObservableObject {
         return !artworkId.isEmpty
     }
     var canExport: Bool { !busy && !dirty && state?.etag != nil && draft != nil }
-    var dirty: Bool { state?.dirty == true || formDirty || positionDirty }
+    var dirty: Bool { state?.dirty == true || formDirty || positionDirty || architectureDirty || architectureApplying }
     func connect(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession, read: @escaping () async throws -> NativeDocumentState, write: @escaping (NativeDocumentState) async throws -> NativeDocumentState) async {
         guard !busy else { return }
         if let old = self.session, old.tenantId != session.tenantId || old.userId != session.userId {
@@ -112,7 +118,7 @@ final class ExhibitionModel: ObservableObject {
     }
     func acceptViewportCandidate(_ candidate: DocumentValue, base: NativeExhibitionDraft) async {
         await work {
-            guard !immutable, !pending, !formDirty, !positionDirty, draft == base, var value = state, var next = draft else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            guard !immutable, !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, draft == base, var value = state, var next = draft else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             try next.acceptGeometry(candidate); value.draft = next
             try await persist(value); syncFields()
             notice = "3D 변경을 이 Mac에 보관했습니다. 전시 저장은 별도로 진행하세요."
@@ -120,12 +126,45 @@ final class ExhibitionModel: ObservableObject {
     }
     func acceptInstallationCandidate(_ candidate: DocumentValue, base: NativeExhibitionDraft, command: InstallationCommand) async {
         await work {
-            guard !immutable, !pending, !formDirty, !positionDirty, draft == base,
+            guard !immutable, !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, draft == base,
                   command.placementId.lowercased() == placementId.lowercased(), var value = state, var next = draft else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             try next.acceptInstallationTranslation(candidate, placementId: placementId, axes: command.translationAxes)
             value.draft = next; try await persist(value); syncFields()
             notice = "작품 위치를 이 Mac에 보관했습니다. 실행 취소로 되돌릴 수 있습니다."
         }
+    }
+    func acceptArchitectureCandidate(_ candidate: DocumentValue, base: NativeExhibitionDraft, command: ArchitectureCommand) async {
+        await work {
+            guard !immutable, !pending, !formDirty, !positionDirty, architectureApplying,
+                  draft == base, try architecture?.command() == command,
+                  var value = state, var next = draft else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            try next.acceptArchitectureGeometry(candidate, command: command, selected: viewportSelection); value.draft = next
+            try await persist(value); syncFields()
+            notice = "공간 변경을 이 Mac에 보관했습니다. 실행 취소로 되돌릴 수 있으며 전시 저장은 별도로 진행합니다."
+        }
+    }
+    func syncArchitecture() {
+        guard let draft, let selection = viewportSelection, ["room", "surface", "opening"].contains(selection.kind) else {
+            architecture = nil; architectureBaseline = nil; architectureStatus = ""; return
+        }
+        do {
+            let fields = try ArchitectureFormBuffer(draft: draft, selection: selection)
+            architecture = fields; architectureBaseline = fields; architectureStatus = ""
+        } catch {
+            architecture = nil; architectureBaseline = nil
+            architectureStatus = "선택한 공간 정보를 읽지 못했습니다. 저장된 설정은 유지됩니다."
+        }
+    }
+    func discardArchitecture() { guard !architectureApplying else { return }; syncArchitecture() }
+    func applyArchitecture() async {
+        guard canApplyArchitecture, let fields = architecture, let draft else { return }
+        do {
+            let command = try fields.command()
+            _ = try command.encodedValue(in: draft, selected: viewportSelection)
+            architectureApplying = true
+            defer { architectureApplying = false }
+            await viewportController.perform(.architecture(command), model: self)
+        } catch { failure = error as? AuthoringFailure ?? AuthoringFailure("ARCHITECTURE_FIELDS_INVALID") }
     }
     private func refreshInstallationPreview() {
         guard installationEditable, var preview = draft, !placementId.isEmpty else { installationPreview = nil; return }
@@ -162,7 +201,7 @@ final class ExhibitionModel: ObservableObject {
     }
     func undo() async {
         await work {
-            guard !immutable, !pending, !formDirty, !positionDirty, let previous = past.last, let current = draft, var value = state else { return }
+            guard !immutable, !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, let previous = past.last, let current = draft, var value = state else { return }
             var next = current; try next.replaceCandidate(previous.candidate); value.draft = next
             try await persist(value, recordUndo: false); past.removeLast(); future.append(current); syncFields()
             notice = "이전 편집으로 되돌렸습니다. 전시 저장본은 바꾸지 않았습니다."
@@ -170,14 +209,15 @@ final class ExhibitionModel: ObservableObject {
     }
     func redo() async {
         await work {
-            guard !immutable, !pending, !formDirty, !positionDirty, let previous = future.last, let current = draft, var value = state else { return }
+            guard !immutable, !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, let previous = future.last, let current = draft, var value = state else { return }
             var next = current; try next.replaceCandidate(previous.candidate); value.draft = next
             try await persist(value, recordUndo: false); future.removeLast(); past.append(current); syncFields()
             notice = "편집을 다시 적용했습니다."
         }
     }
     func selectViewport(_ selection: ViewportSelection) {
-        guard !busy, !pending, !formDirty, !positionDirty, let draft, selection.belongs(to: draft) else { return }
+        guard !busy, !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, let draft, selection.belongs(to: draft) else { return }
+        if let room = roomForSelection(selection, draft: draft), room != roomId { roomId = room; selectRoom() }
         if selection.kind == "room" { roomId = selection.id; selectRoom() }
         if selection.kind == "placement" {
             placementId = selection.id
@@ -185,6 +225,7 @@ final class ExhibitionModel: ObservableObject {
             selectPlacement()
         }
         viewportSelection = selection
+        syncArchitecture()
     }
     private func list(more: Bool = false) async throws {
         guard let api else { return }
@@ -213,6 +254,7 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     private func appliedFields() throws -> NativeExhibitionDraft {
+        guard !architectureDirty, !architectureApplying else { throw AuthoringFailure("ARCHITECTURE_APPLY_REQUIRED") }
         guard var draft else { throw AuthoringFailure("EXHIBITION_REQUIRED") }
         if title != draft.title { try draft.rename(title) }
         if entranceEditable, try draft.viewerEntranceSettings() != entrance { try draft.setViewerEntrance(entrance) }
@@ -328,6 +370,7 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     func syncFields() {
+        let selected = viewportSelection
         title = draft?.title ?? ""
         do {
             entrance = try draft?.viewerEntranceSettings() ?? ViewerEntranceSettings()
@@ -341,17 +384,32 @@ final class ExhibitionModel: ObservableObject {
         selectRoom()
         if draft?.placements.contains(where: { $0["id"].string == placementId }) != true { placementId = draft?.placements.first?["id"].string ?? "" }
         selectPlacement()
+        if let selected, let draft, selected.belongs(to: draft) { viewportSelection = selected }
+        syncArchitecture()
     }
     func selectRoom() {
         guard let room = draft?.rooms.first(where: { $0["id"].string == roomId }) else { return }
-        if viewportSelection?.kind != "placement" || draft?.placements.first(where: { $0["id"].string == viewportSelection?.id })?["roomId"].string != roomId { viewportSelection = ViewportSelection(kind: "room", id: roomId) }
+        if let draft, viewportSelection.flatMap({ roomForSelection($0, draft: draft) }) != roomId { viewportSelection = ViewportSelection(kind: "room", id: roomId) }
         roomName = room["name"].string ?? ""; width = room["dimensions"]["width"].double ?? 12; height = room["dimensions"]["height"].double ?? 4; depth = room["dimensions"]["depth"].double ?? 8
+        syncArchitecture()
+    }
+    private func roomForSelection(_ selection: ViewportSelection, draft: NativeExhibitionDraft) -> String? {
+        switch selection.kind {
+        case "room": return selection.id
+        case "placement": return draft.placements.first(where: { $0["id"].string == selection.id })?["roomId"].string
+        case "surface": return draft.candidate["surfaces"].items?.first(where: { $0["id"].string == selection.id })?["roomId"].string
+        case "opening":
+            guard let wall = draft.candidate["openings"].items?.first(where: { $0["id"].string == selection.id })?["surfaceId"].string else { return nil }
+            return draft.candidate["surfaces"].items?.first(where: { $0["id"].string == wall })?["roomId"].string
+        default: return nil
+        }
     }
     func selectPlacement() {
         guard let p = draft?.placements.first(where: { $0["id"].string == placementId }), let values = p["transform"]["position"].items, values.count == 3 else { syncInstallation(); return }
         viewportSelection = ViewportSelection(kind: "placement", id: placementId)
         x = values[0].double ?? 0; y = values[1].double ?? 0; z = values[2].double ?? 0
         syncInstallation()
+        syncArchitecture()
     }
 }
 
@@ -404,11 +462,7 @@ struct NativeExhibitionView: View {
                         TextField("전시 제목", text: $model.title)
                         Picker("공간", selection: $model.roomId) {
                             ForEach(draft.rooms.indices, id: \.self) { index in Text(draft.rooms[index]["name"].string ?? "공간").tag(draft.rooms[index]["id"].string ?? "") }
-                        }.disabled(model.formDirty)
-                        TextField("공간 이름", text: $model.roomName)
-                        TextField("공간 가로 (m)", value: $model.width, format: .number)
-                        TextField("공간 높이 (m)", value: $model.height, format: .number)
-                        TextField("공간 깊이 (m)", value: $model.depth, format: .number)
+                        }.disabled(model.formDirty || model.architectureDirty || model.architectureApplying)
                     }
                     Section("관람 시작 화면") {
                         Text("관람객이 전시에 들어가기 전에 전시 제목과 이 소개를 봅니다.").foregroundStyle(.secondary)
@@ -451,10 +505,11 @@ struct NativeExhibitionView: View {
                         Button("선택한 배치 위치 적용") { Task { await model.movePlacement() } }.disabled(model.placementId.isEmpty)
                         Text("공간 \(draft.rooms.count)개 · 작품 배치 \(draft.placements.count)개").foregroundStyle(.secondary)
                     }
-                }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true).disabled(!ready || model.busy || model.pending || model.immutable)
+                }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true).disabled(!ready || model.busy || model.pending || model.immutable || model.architectureDirty || model.architectureApplying)
+                ArchitectureSettingsView(model: model, ready: ready)
                 if !model.placementId.isEmpty {
                     InstallationSettingsView(buffer: $model.installation, placementId: model.placementId, dirty: model.installationDirty,
-                        editable: ready && !model.busy && !model.pending && !model.immutable && model.installationEditable,
+                        editable: ready && !model.busy && !model.pending && !model.immutable && model.installationEditable && !model.architectureDirty && !model.architectureApplying,
                         viewport: model.viewportController, canAlign: !model.formDirty && !model.positionDirty,
                         status: model.installationStatus, floors: installationSurfaces(kind: "floor"), walls: installationSurfaces(kind: "wall"),
                         apply: { Task { await model.applyInstallation() } }, discard: { model.discardInstallation() }, reset: { model.resetInstallation() },
