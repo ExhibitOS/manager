@@ -171,6 +171,9 @@ impl AuthenticatedNativeBackup {
     pub(crate) fn observe(&self, session: &mut Session, mut check_selection: impl FnMut(&Path, &str, &Path) -> Result<()>) -> Result<NativeSourceEvidence> {
         let profile = LifecycleService::bound_existing(self.profile_root.clone())?;
         let _profile = profile_lock(&profile)?;
+        self.observe_locked(session, &mut check_selection)
+    }
+    fn observe_locked(&self, session: &mut Session, check_selection: &mut impl FnMut(&Path, &str, &Path) -> Result<()>) -> Result<NativeSourceEvidence> {
         check_selection(&self.profile_root, &self.installation_id, &self.source_root)?;
         self.check(session)?;
         let observed = session.backup_tool(
@@ -617,3 +620,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[path = "native_target_inventory.rs"]
+mod target_inventory;
+pub(crate) use target_inventory::NativeTargetEvidence;
