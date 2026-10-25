@@ -1051,6 +1051,84 @@ impl Store {
         }
         super::verify(envelope, self.policy(), now)
     }
+    /// Uses this same retained authority, policy, revoked keys and durable
+    /// sequence/time floors. Native proof never enters the OCI intent path.
+    #[cfg(target_os = "macos")]
+    pub fn verify_native(
+        &self,
+        envelope: &[u8],
+        now: u64,
+    ) -> Result<super::native::VerifiedNativeRelease, Error> {
+        self.check_root()?;
+        if now < self.current.observed_at {
+            return Err(Error::TrustClockRollback);
+        }
+        super::native::verify(envelope, self.policy(), now)
+    }
+    /// Read-only admission only. No trust floor, profile, runtime, plan, backup
+    /// or workspace binding is written, and no schema observation is invented.
+    #[cfg(target_os = "macos")]
+    pub fn admit_native_payload(
+        &self,
+        envelope: &[u8],
+        mut staged: super::native::StagedNativeArtifact,
+        payload: std::sync::Arc<crate::native_payload::Payload>,
+        now: u64,
+    ) -> Result<super::native::AdmittedNativePayload, Error> {
+        if self.current.intent.is_some() {
+            return Err(Error::TrustOperationBusy);
+        }
+        let mut release = self.verify_native(envelope, now)?;
+        staged.reverify(&mut release, now)?;
+        payload.recheck().map_err(|_| Error::ArtifactMismatch)?;
+        if payload.context().manifest_sha256 != release.release.artifact.native_manifest_sha256 {
+            return Err(Error::ArtifactMismatch);
+        }
+        Ok(super::native::AdmittedNativePayload {
+            envelope: envelope.into(),
+            release,
+            staged,
+            payload,
+            scope: self.scope.clone(),
+            generation: self.current.generation,
+            policy_generation: self.current.policy_generation,
+            authority_sha256: self.current_sha256.clone(),
+            admitted: true,
+        })
+    }
+    /// A retained result cannot outlive its authority generation, policy/time,
+    /// staged-file identity or selected Payload bytes. Failure clears admission.
+    #[cfg(target_os = "macos")]
+    pub fn recheck_native_admission(
+        &self,
+        admission: &mut super::native::AdmittedNativePayload,
+        now: u64,
+    ) -> Result<(), Error> {
+        admission.admitted = false;
+        super::artifact::StageVerification::reset_artifact(&mut admission.release);
+        self.check_root()?;
+        if admission.scope != self.scope
+            || admission.generation != self.current.generation
+            || admission.policy_generation != self.current.policy_generation
+            || admission.authority_sha256 != self.current_sha256
+        {
+            return Err(Error::TrustStalePolicy);
+        }
+        let mut fresh = self.verify_native(&admission.envelope, now)?;
+        admission.staged.reverify(&mut fresh, now)?;
+        admission
+            .payload
+            .recheck()
+            .map_err(|_| Error::ArtifactMismatch)?;
+        if admission.payload.context().manifest_sha256
+            != fresh.release.artifact.native_manifest_sha256
+        {
+            return Err(Error::ArtifactMismatch);
+        }
+        admission.release = fresh;
+        admission.admitted = true;
+        Ok(())
+    }
     pub fn intent(&self) -> Option<&UpdateIntent> {
         self.current.intent.as_ref()
     }
@@ -2159,3 +2237,7 @@ mod registered_update_tests;
 #[cfg(all(test, unix))]
 #[path = "rollback_handoff_tests.rs"]
 mod rollback_handoff_tests;
+
+#[cfg(all(test, target_os = "macos", debug_assertions))]
+#[path = "signed_release_native_trust_tests.rs"]
+mod native_admission_tests;

@@ -7,6 +7,32 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Private shared staging interface; it cannot convert native proof into OCI proof.
+pub(crate) trait StageVerification {
+    fn artifact_name(&self) -> &str;
+    fn artifact_bytes(&self) -> u64;
+    fn reset_artifact(&mut self);
+    fn valid_time(&self, now: u64) -> Result<(), Error>;
+    fn verify_file(&mut self, file: &mut File) -> Result<(), Error>;
+}
+impl StageVerification for VerifiedRelease {
+    fn artifact_name(&self) -> &str {
+        &self.release.artifact.name
+    }
+    fn artifact_bytes(&self) -> u64 {
+        self.release.artifact.bytes
+    }
+    fn reset_artifact(&mut self) {
+        self.artifact_verified = false;
+    }
+    fn valid_time(&self, now: u64) -> Result<(), Error> {
+        valid_time(self, now)
+    }
+    fn verify_file(&mut self, file: &mut File) -> Result<(), Error> {
+        self.verify_artifact(file)
+    }
+}
+
 /// Verify an existing Windows artifact through one retained NTFS read guard.
 /// This is diagnostic input verification only: no staging, import or activation.
 #[cfg(windows)]
@@ -102,19 +128,26 @@ impl StagedArtifact {
     }
     /// Recheck the retained read-only handle and path. Does not recheck trust policy.
     pub fn reverify(&mut self, release: &mut VerifiedRelease, now: u64) -> Result<(), Error> {
-        release.artifact_verified = false;
-        valid_time(release, now)?;
+        self.reverify_bound(release, now)
+    }
+    pub(crate) fn reverify_bound(
+        &mut self,
+        release: &mut impl StageVerification,
+        now: u64,
+    ) -> Result<(), Error> {
+        release.reset_artifact();
+        release.valid_time(now)?;
         self.check()?;
         self.file
             .seek(SeekFrom::Start(0))
             .map_err(|_| Error::ArtifactUnavailable)?;
-        release.verify_artifact(&mut self.file)?;
+        release.verify_file(&mut self.file)?;
         if let Err(error) = self.check() {
-            release.artifact_verified = false;
+            release.reset_artifact();
             return Err(error);
         }
         self.file.seek(SeekFrom::Start(0)).map_err(|_| {
-            release.artifact_verified = false;
+            release.reset_artifact();
             Error::ArtifactUnavailable
         })?;
         Ok(())
@@ -180,9 +213,18 @@ pub fn stage(
     parent: &Path,
     now: u64,
 ) -> Result<StagedArtifact, Error> {
+    stage_bound(v, source, parent, now)
+}
+#[cfg(unix)]
+pub(crate) fn stage_bound(
+    v: &mut impl StageVerification,
+    source: &Path,
+    parent: &Path,
+    now: u64,
+) -> Result<StagedArtifact, Error> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-    v.artifact_verified = false;
-    valid_time(v, now)?;
+    v.reset_artifact();
+    v.valid_time(now)?;
     if !parent.is_absolute()
         || parent
             .canonicalize()
@@ -195,16 +237,13 @@ pub fn stage(
     if !pm.is_dir() || pm.uid() != unsafe { libc::geteuid() } || pm.mode() & 0o777 != 0o700 {
         return Err(Error::ArtifactUnavailable);
     }
-    if source.file_name().and_then(|n| n.to_str()) != Some(v.release.artifact.name.as_str()) {
+    if source.file_name().and_then(|n| n.to_str()) != Some(v.artifact_name()) {
         return Err(Error::ArtifactMismatch);
     }
     // Development staging stays within the qualified archive and host disk bounds.
-    if v.release.artifact.bytes > 2 * 1024 * 1024 * 1024
+    if v.artifact_bytes() > 2 * 1024 * 1024 * 1024
         || fs2::available_space(parent).map_err(|_| Error::ArtifactUnavailable)?
-            < v.release
-                .artifact
-                .bytes
-                .saturating_add(2 * 1024 * 1024 * 1024)
+            < v.artifact_bytes().saturating_add(2 * 1024 * 1024 * 1024)
     {
         return Err(Error::ArtifactUnavailable);
     }
@@ -218,7 +257,7 @@ pub fn stage(
         || before.nlink() != 1
         || before.uid() != unsafe { libc::geteuid() }
         || before.mode() & 0o077 != 0
-        || before.len() != v.release.artifact.bytes
+        || before.len() != v.artifact_bytes()
     {
         return Err(Error::ArtifactMismatch);
     }
@@ -239,7 +278,7 @@ pub fn stage(
     {
         return Err(Error::ArtifactUnavailable);
     }
-    let path = directory.join(&v.release.artifact.name);
+    let path = directory.join(v.artifact_name());
     let mut out = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -258,12 +297,12 @@ pub fn stage(
         }
         count = count
             .checked_add(n as u64)
-            .filter(|n| *n <= v.release.artifact.bytes)
+            .filter(|n| *n <= v.artifact_bytes())
             .ok_or(Error::ArtifactMismatch)?;
         out.write_all(&buffer[..n])
             .map_err(|_| Error::ArtifactUnavailable)?;
     }
-    if count != v.release.artifact.bytes
+    if count != v.artifact_bytes()
         || !same(
             &before,
             &input.metadata().map_err(|_| Error::ArtifactUnavailable)?,
@@ -320,7 +359,7 @@ pub fn stage(
         path,
         identity,
     };
-    staged.reverify(v, now)?;
+    staged.reverify_bound(v, now)?;
     Ok(staged)
 }
 /// Windows owner-only staging with retained NTFS input and output fences.
