@@ -29,6 +29,174 @@ pub struct SourceMap {
     pub manifest_sha256: String,
     pub journal_names: BTreeMap<String, String>,
 }
+/// Authenticated native backup identity retained in memory, never an execution
+/// permit. The encrypted archive digest is distinct from the plaintext manifest
+/// digest used by the existing inventory observer.
+///
+/// ```compile_fail
+/// use exhibitos_lifecycle::installations::native_backup::AuthenticatedNativeBackup;
+/// let forged: AuthenticatedNativeBackup = serde_json::from_str("{}").unwrap();
+/// ```
+pub struct AuthenticatedNativeBackup {
+    receipt: Receipt,
+    profile_root: PathBuf,
+    installation_id: String,
+    source_root: PathBuf,
+    payload: std::sync::Arc<crate::native_payload::Payload>,
+    sources: Vec<Source>,
+    config_directory: ConfigurationDirectory,
+    verified: PathBuf,
+    scratch: PathBuf,
+    budget: u64,
+    manifest: Vec<u8>,
+    evidence: NativeSourceEvidence,
+    archive: PathBuf,
+    complete_sha256: String,
+    pins: Vec<crate::hosted_runtime_file::Pin>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeSourceEvidence {
+    pub(crate) backup_id: String,
+    pub(crate) manifest_sha256: String,
+    pub(crate) inventory_sha256: String,
+    pub(crate) schema_sha256: String,
+    pub(crate) system_identifier: String,
+}
+fn source_evidence(manifest: &[u8], observed: &Value) -> Result<NativeSourceEvidence> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Observed {
+        operation: String,
+        backup_id: String,
+        authenticated_manifest_sha256: String,
+        inventory_sha256: String,
+        schema_sha256: String,
+        observed_at: String,
+        current_inventory_verified: bool,
+        configuration_verified: bool,
+        preflight_verified: bool,
+        update_executed: bool,
+    }
+    let observed: Observed = serde_json::from_value(observed.clone())
+        .map_err(|_| err("NATIVE_SOURCE_OBSERVATION_INVALID"))?;
+    let value: Value =
+        serde_json::from_slice(manifest).map_err(|_| err("NATIVE_SOURCE_OBSERVATION_INVALID"))?;
+    let system = value["sourceIdentity"]["systemIdentifier"]
+        .as_str()
+        .filter(|s| {
+            !s.starts_with('0')
+                && s.len() <= 20
+                && s.bytes().all(|b| b.is_ascii_digit())
+                && s.parse::<u64>().is_ok()
+        })
+        .ok_or_else(|| err("NATIVE_SOURCE_OBSERVATION_INVALID"))?;
+    let evidence = NativeSourceEvidence {
+        backup_id: value["id"]
+            .as_str()
+            .filter(|s| uuid(s))
+            .ok_or_else(|| err("NATIVE_SOURCE_OBSERVATION_INVALID"))?
+            .into(),
+        manifest_sha256: digest(manifest),
+        inventory_sha256: crate::restoration::inventory_fingerprint(&value["inventory"])?,
+        schema_sha256: crate::restoration::schema_fingerprint(&value["inventory"])?,
+        system_identifier: system.into(),
+    };
+    if observed.operation != "source-inventory-matched"
+        || observed.backup_id != evidence.backup_id
+        || observed.authenticated_manifest_sha256 != evidence.manifest_sha256
+        || observed.inventory_sha256 != evidence.inventory_sha256
+        || observed.schema_sha256 != evidence.schema_sha256
+        || observed.observed_at.is_empty()
+        || observed.observed_at.len() > 128
+        || observed.observed_at.chars().any(char::is_control)
+        || !observed.current_inventory_verified
+        || observed.configuration_verified
+        || observed.preflight_verified
+        || observed.update_executed
+    {
+        return Err(err("NATIVE_SOURCE_OBSERVATION_INVALID"));
+    }
+    Ok(evidence)
+}
+impl AuthenticatedNativeBackup {
+    pub fn receipt(&self) -> &Receipt {
+        &self.receipt
+    }
+    pub(crate) fn scope(&self) -> (&Path, &str) {
+        (&self.profile_root, &self.installation_id)
+    }
+    pub(crate) fn source_manifest(&self) -> String {
+        self.payload.context().manifest_sha256
+    }
+    fn check(&self, session: &Session) -> Result<()> {
+        for root in [&self.archive, &self.verified, &self.scratch] {
+            private_directory(root)?;
+            if fs::canonicalize(root).map_err(|_| err("NATIVE_SOURCE_OBSERVATION_STALE"))? != *root {
+                return Err(err("NATIVE_SOURCE_OBSERVATION_STALE"));
+            }
+        }
+        for pin in &self.pins { pin.check()?; }
+        self.payload.recheck()?;
+        if !session.matches_native_source(&self.source_root, &self.source_manifest()) {
+            return Err(err("NATIVE_SOURCE_OBSERVATION_STALE"));
+        }
+        session.backup_available()?;
+        session.backup_source_current()?;
+        for source in &self.sources {
+            source.check()?;
+        }
+        self.config_directory.check()?;
+        if installation_backup::source_bytes(
+            &self.verified,
+            "manifest.json",
+            16 * 1024 * 1024,
+            true,
+        )? != self.manifest
+            || digest(&installation_backup::source_bytes(
+                &self.archive,
+                "complete.json",
+                65536,
+                true,
+            )?) != self.complete_sha256
+            || digest(&installation_backup::source_bytes(
+                &self.archive,
+                "manifest.gcm",
+                17 * 1024 * 1024,
+                true,
+            )?) != self.receipt.manifest_sha256
+        {
+            return Err(err("NATIVE_SOURCE_OBSERVATION_STALE"));
+        }
+        Ok(())
+    }
+    /// Re-observe through the existing fixed app-contained native backup tool.
+    /// It owns the database fence, reads twice, and never invokes Docker.
+    pub(crate) fn observe(&self, session: &mut Session) -> Result<NativeSourceEvidence> {
+        let profile = LifecycleService::bound_existing(self.profile_root.clone())?;
+        let _profile = profile_lock(&profile)?;
+        self.check(session)?;
+        let observed = session.backup_tool(
+            vec![
+                "check-source-inventory".into(),
+                "--manifest-file".into(),
+                text(&self.verified.join("manifest.json"))?,
+                "--manifest-sha256".into(),
+                self.evidence.manifest_sha256.clone(),
+                "--quiesced".into(),
+            ],
+            "{}".into(),
+            "{}".into(),
+            self.budget,
+            &self.scratch,
+        )?;
+        self.check(session)?;
+        let evidence = source_evidence(&self.manifest, &observed)?;
+        if evidence != self.evidence {
+            return Err(err("NATIVE_SOURCE_OBSERVATION_STALE"));
+        }
+        Ok(evidence)
+    }
+}
 pub(crate) struct Secret(pub(crate) Vec<u8>);
 impl Drop for Secret {
     fn drop(&mut self) {
@@ -165,15 +333,28 @@ impl Source {
     }
 }
 impl InstallationController {
+    pub fn create_native_backup(&self, token: &str, session: &mut Session, input: Input) -> Result<Receipt> {
+        self.capture_native_backup(token, session, input).map(|capture| capture.receipt)
+    }
+    /// Same authenticated backup pipeline. This opaque result can be observed
+    /// for an update source, but never deserialized from a receipt or caller hash.
+    pub fn capture_native_update_source(&self, token: &str, session: &mut Session, input: Input) -> Result<AuthenticatedNativeBackup> {
+        self.capture_native_backup(token, session, input)
+    }
     /// Synchronous core only. Host/GUI must first stop its exporter and prevent
     /// new HTTP authoring commands. The profile lock excludes journal writes and
     /// selection changes for the whole snapshot/codec/verification operation.
-    pub fn create_native_backup(
+    fn capture_native_backup(
         &self,
         token: &str,
         session: &mut Session,
         input: Input,
-    ) -> Result<Receipt> {
+    ) -> Result<AuthenticatedNativeBackup> {
+        let installation_id = {
+            let current = self.current.try_read().map_err(|_| err("BUSY"))?;
+            if current.token != token { return Err(err("INSTALLATION_SELECTION_CHANGED")); }
+            current.entry.id.clone()
+        };
         self.with_current(token, |service| {
             if !session.belongs_to(service) { return Err(err("NATIVE_OTHER_INSTALLATION_ACTIVE")); }
             session.backup_available()?;
@@ -204,7 +385,7 @@ impl InstallationController {
             new_directory(&directory)?;
             let scratch = directory.join("scratch"); new_directory(&scratch)?;
             write_json(&directory, "job.json", &serde_json::json!({"format":1,"id":id,"state":"preparing"}))?;
-            let result: Result<Receipt> = (|| {
+            let result: Result<AuthenticatedNativeBackup> = (|| {
                 let mut sources = Vec::new();
                 let mut configuration = BTreeMap::new();
                 let mut deployment = BTreeMap::new();
@@ -251,21 +432,40 @@ impl InstallationController {
                 let created = session.backup_tool(args, config_json.clone(), deployment_json.clone(), budget, &scratch)?;
                 let backup_id = created["backupId"].as_str().filter(|v| uuid(v)).ok_or_else(|| err("NATIVE_BACKUP_FAILED"))?.to_string();
                 let verified = directory.join("verified");
+                let (complete_bytes, complete_pin) = crate::hosted_runtime_file::bounded(&input.destination.join("complete.json"), 65536)?;
+                let (cipher_bytes, cipher_pin) = crate::hosted_runtime_file::bounded(&input.destination.join("manifest.gcm"), 17*1024*1024)?;
+                let cipher_sha256 = digest(&cipher_bytes); drop(cipher_bytes);
                 session.backup_tool(vec!["verify".into(),"--key-file".into(),text(&input.key_file)?,"--source".into(),text(&input.destination)?,"--destination".into(),text(&verified)?], config_json.clone(), deployment_json.clone(), budget, &scratch)?;
                 let manifest = installation_backup::source_bytes(&verified, "manifest.json", 16*1024*1024, true)?;
+                complete_pin.check()?; cipher_pin.check()?;
+                let (retained_manifest, manifest_pin) = crate::hosted_runtime_file::bounded(&verified.join("manifest.json"), 16*1024*1024)?;
+                if retained_manifest != manifest { return Err(err("NATIVE_SOURCE_OBSERVATION_STALE")); }
                 let manifest_sha = digest(&manifest);
+                let mut source_observation = None;
                 for command in ["check-source-inventory", "check-source-configuration"] {
-                    session.backup_tool(vec![command.into(),"--manifest-file".into(),text(&verified.join("manifest.json"))?,"--manifest-sha256".into(),manifest_sha.clone(),"--quiesced".into()], config_json.clone(), deployment_json.clone(), budget, &scratch)?;
+                    let observation = session.backup_tool(vec![command.into(),"--manifest-file".into(),text(&verified.join("manifest.json"))?,"--manifest-sha256".into(),manifest_sha.clone(),"--quiesced".into()], config_json.clone(), deployment_json.clone(), budget, &scratch)?;
+                    if command == "check-source-inventory" { source_observation = Some(observation); }
                 }
                 for source in &sources { source.check()?; }
                 config_directory.check()?;
                 session.backup_source_current()?;
                 let complete: Value = serde_json::from_slice(&installation_backup::source_bytes(&input.destination,"complete.json",65536,true)?).map_err(|_| err("NATIVE_BACKUP_FAILED"))?;
                 let hash = complete["manifestSha256"].as_str().filter(|v| hash_valid(v)).ok_or_else(|| err("NATIVE_BACKUP_FAILED"))?;
-                if complete["id"].as_str() != Some(&backup_id) { return Err(err("NATIVE_BACKUP_FAILED")); }
+                if complete["id"].as_str() != Some(&backup_id) || hash != cipher_sha256
+                    || digest(&complete_bytes) != digest(&installation_backup::source_bytes(&input.destination,"complete.json",65536,true)?)
+                { return Err(err("NATIVE_BACKUP_FAILED")); }
+                for pin in [&complete_pin, &cipher_pin, &manifest_pin] { pin.check()?; }
                 let receipt = Receipt {id:id.clone(),backup_id,manifest_sha256:hash.into(),state:"completed".into()};
+                let evidence = source_evidence(&manifest, source_observation.as_ref().ok_or_else(|| err("NATIVE_SOURCE_OBSERVATION_INVALID"))?)?;
+                if evidence.backup_id != receipt.backup_id { return Err(err("NATIVE_SOURCE_OBSERVATION_INVALID")); }
                 write_json(&directory,"result.json",&receipt)?;
-                Ok(receipt)
+                Ok(AuthenticatedNativeBackup {
+                    receipt, profile_root: profile.root.clone(), installation_id,
+                    source_root: service.root.clone(), payload: session.maintenance_payload(),
+                    sources, config_directory, verified, scratch, budget,
+                    manifest, evidence, archive: input.destination.clone(), complete_sha256: digest(&complete_bytes),
+                    pins: vec![complete_pin, cipher_pin, manifest_pin],
+                })
             })();
             if let Err(error) = &result {
                 write_json(&directory,"job.json",&serde_json::json!({"format":1,"id":id,"state":"failed","errorCode":error.code}))?;
@@ -278,6 +478,58 @@ impl InstallationController {
 mod tests {
     use super::*;
     use std::os::unix::{fs::PermissionsExt, fs::symlink};
+    fn source_observation_fixture() -> (Vec<u8>, Value) {
+        let id = Uuid::new_v4().to_string();
+        let inventory = serde_json::json!({"schemaVersion":"1.0.0-draft.1","schemaDigest":"a".repeat(64),"migrations":[{"name":"001.sql","sha256":"b".repeat(64)}]});
+        let manifest = serde_json::to_vec(&serde_json::json!({"id":id,"sourceIdentity":{"systemIdentifier":"123456"},"inventory":inventory})).unwrap();
+        let observed = serde_json::json!({"operation":"source-inventory-matched","backupId":id,"authenticatedManifestSha256":digest(&manifest),"inventorySha256":crate::restoration::inventory_fingerprint(&inventory).unwrap(),"schemaSha256":crate::restoration::schema_fingerprint(&inventory).unwrap(),"observedAt":"2026-10-25T00:00:00Z","currentInventoryVerified":true,"configurationVerified":false,"preflightVerified":false,"updateExecuted":false});
+        (manifest, observed)
+    }
+    #[test]
+    fn native_source_observation_uses_authenticated_plaintext_not_cipher_receipt_hash() {
+        let (manifest, observed) = source_observation_fixture();
+        let evidence = source_evidence(&manifest, &observed).unwrap();
+        assert_eq!(evidence.manifest_sha256, digest(&manifest));
+        assert_eq!(evidence.system_identifier, "123456");
+        let mut cipher_instead = observed;
+        cipher_instead["authenticatedManifestSha256"] = Value::String("f".repeat(64));
+        assert!(source_evidence(&manifest, &cipher_instead).is_err());
+    }
+    #[test]
+    fn native_source_observation_refuses_foreign_schema_inventory_and_success_flags() {
+        let (manifest, observed) = source_observation_fixture();
+        for (field, value) in [
+            ("backupId", Value::String(Uuid::new_v4().to_string())),
+            ("schemaSha256", Value::String("f".repeat(64))),
+            ("inventorySha256", Value::String("f".repeat(64))),
+            ("currentInventoryVerified", Value::Bool(false)),
+            ("configurationVerified", Value::Bool(true)),
+            ("preflightVerified", Value::Bool(true)),
+            ("updateExecuted", Value::Bool(true)),
+            (
+                "operation",
+                Value::String("restored-inventory-matched".into()),
+            ),
+        ] {
+            let mut wrong = observed.clone();
+            wrong[field] = value;
+            assert!(source_evidence(&manifest, &wrong).is_err(), "{field}");
+        }
+        let mut added = observed.clone();
+        added["targetSchemaObserved"] = Value::Bool(true);
+        assert!(source_evidence(&manifest, &added).is_err());
+    }
+    #[test]
+    fn native_source_observation_rejects_changed_authenticated_manifest_bytes() {
+        let (manifest, observed) = source_observation_fixture();
+        let mut changed: Value = serde_json::from_slice(&manifest).unwrap();
+        changed["inventory"]["migrations"][0]["sha256"] = Value::String("c".repeat(64));
+        assert!(source_evidence(&serde_json::to_vec(&changed).unwrap(), &observed).is_err());
+        for id in ["0", "01", "+1", "-1", "18446744073709551616"] {
+            changed["sourceIdentity"]["systemIdentifier"] = Value::String(id.into());
+            assert!(source_evidence(&serde_json::to_vec(&changed).unwrap(), &observed).is_err());
+        }
+    }
     #[test]
     fn resource_budget_keeps_floor_on_both_filesystems() {
         let gib = 1024u64 * 1024 * 1024;

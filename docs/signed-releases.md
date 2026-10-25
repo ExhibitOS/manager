@@ -177,3 +177,26 @@ original file's SHA256. Tauri resource configuration includes this directory;
 packaged artifact byte verification must accompany the next native build. Existing
 profile-crypto notices remain unchanged. New signatures/keys/archives never belong
 in source unless they are explicitly synthetic public test fixtures.
+
+### Native source inventory observation
+
+`InstallationController::capture_native_update_source` uses the existing native
+backup creation/authentication and source-inventory check to retain an opaque
+`AuthenticatedNativeBackup`. Serialized backup receipts or caller-supplied hashes
+cannot create this handle. The encrypted archive manifest digest and authenticated
+plaintext manifest digest are separate identities.
+
+`Store::observe_native_source` and `recheck_native_source` use that handle and the
+owned, quiesced native Session's fixed maintenance entry to re-observe the source
+inventory, without Docker. They reuse the existing physical schema digest,
+schema version and ordered migration checksums. The result binds the source
+profile/installation, authenticated backup, source Payload and current signed
+target admission/authority generation. Changed source files, backup bytes,
+selected Payload or authority refuse reuse. The ordinary backup receipt format
+and existing OCI release path are unchanged.
+
+This is source observation only. It does not independently observe the target
+schema, grant execution, change a workspace manifest pin, migrate data or perform
+rollback. The target publisher declaration remains distinct from observation.
+Independent target candidate observation and existing plan/journal/backup/retained
+old-payload integration remain required before a native update transition.

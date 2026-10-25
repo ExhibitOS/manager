@@ -36,7 +36,7 @@ fn payload(parent: &Path) -> (PathBuf, Arc<Payload>) {
     (root, admitted)
 }
 
-fn fixture() -> (
+pub(super) fn fixture() -> (
     PathBuf,
     Store,
     Arc<Payload>,

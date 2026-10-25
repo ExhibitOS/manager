@@ -1067,6 +1067,9 @@ impl Session {
         }
         Ok(())
     }
+    pub(crate) fn matches_native_source(&self, root: &Path, manifest_sha256: &str) -> bool {
+        self.service.root == root && self.payload.context().manifest_sha256 == manifest_sha256
+    }
     pub(crate) fn maintenance_payload(&self) -> Arc<Payload> {
         self.payload.clone()
     }

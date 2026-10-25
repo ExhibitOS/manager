@@ -16,6 +16,11 @@ mod windows_root;
 #[cfg(unix)]
 #[path = "lifecycle_writer.rs"]
 pub(crate) mod lifecycle_writer;
+#[cfg(target_os = "macos")]
+#[path = "native_source_observation.rs"]
+mod native_source_observation;
+#[cfg(target_os = "macos")]
+pub use native_source_observation::{NativeSourceObservation, NativeSourceObservationReceipt};
 const MAX_RECORD: u64 = 96 * 1024;
 const MAX_RECORDS: usize = 4096;
 const MAX_REVOKED: usize = 256;
