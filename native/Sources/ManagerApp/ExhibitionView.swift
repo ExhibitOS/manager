@@ -425,8 +425,9 @@ final class ExhibitionModel: ObservableObject {
             notice = frozen ? "공개용 저장본을 열었습니다. 복제해서 편집할 수 있습니다." : "저장한 전시를 열었습니다."
         }
     }
-    private func appliedFields() throws -> NativeExhibitionDraft {
+    private func appliedFields(allowPosition: Bool = false) throws -> NativeExhibitionDraft {
         guard !architectureDirty, !architectureApplying else { throw AuthoringFailure("ARCHITECTURE_APPLY_REQUIRED") }
+        guard !positionDirty || allowPosition else { throw AuthoringFailure("PLACEMENT_APPLY_REQUIRED") }
         guard var draft else { throw AuthoringFailure("EXHIBITION_REQUIRED") }
         if title != draft.title { try draft.rename(title) }
         if entranceEditable, try draft.viewerEntranceSettings() != entrance { try draft.setViewerEntrance(entrance) }
@@ -473,7 +474,7 @@ final class ExhibitionModel: ObservableObject {
     func copyForEditing() async {
         await work {
             guard !pending, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
-            var current = try appliedFields()
+            var current = try appliedFields(allowPosition: true)
             if !placementId.isEmpty, current.placements.contains(where: { $0["id"].string == placementId }) { try current.movePlacement(placementId, position: [x,y,z]) }
             value.draft = try current.copyForEditing(); value.etag = nil; value.savedEditVersion = nil; value.pending = nil
             try await persist(value); immutable = false; comparison = nil; syncFields()
@@ -527,7 +528,7 @@ final class ExhibitionModel: ObservableObject {
         await work {
             guard !immutable, !pending, let api, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             let approved = try await api.studioArtwork(artworkId)
-            var next = try appliedFields()
+            var next = try appliedFields(allowPosition: true)
             try next.addApprovedArtwork(approved.artwork, roomId: roomId, position: [x, y, z])
             value.draft = next; try await persist(value); artworkId = ""; placementId = next.placements.last?["id"].string ?? ""; syncFields()
             notice = "승인한 작품을 전시에 배치하고 이 Mac에 보관했습니다."
@@ -536,7 +537,7 @@ final class ExhibitionModel: ObservableObject {
     func movePlacement() async {
         await work {
             guard !immutable, !pending, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
-            var next = try appliedFields(); try next.movePlacement(placementId, position: [x, y, z])
+            var next = try appliedFields(allowPosition: true); try next.movePlacement(placementId, position: [x, y, z])
             value.draft = next; try await persist(value); syncInstallation()
             notice = "작품 위치를 이 Mac에 보관했습니다."
         }
