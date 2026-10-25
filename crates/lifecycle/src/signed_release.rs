@@ -5,6 +5,9 @@
 pub mod artifact;
 #[path = "release_trust.rs"]
 pub mod trust;
+#[cfg(target_os = "macos")]
+#[path = "signed_release_native.rs"]
+pub mod native;
 use crate::update::{Plan, Preflight};
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -211,9 +214,9 @@ fn message(payload: &str) -> Vec<u8> {
 }
 impl Policy {
     fn keys(&self) -> Result<Vec<(String, VerifyingKey)>, Error> {
-        if self.format != 1
+        if !(self.format == 1 && target(&self.target)
+            || cfg!(target_os = "macos") && self.format == 2 && self.target == "macos-arm64")
             || !channel(&self.channel)
-            || !target(&self.target)
             || self.protocol_version != 1
             || hex::<32>(&self.source_schema_sha256).is_none()
             || self.public_keys.is_empty()
@@ -234,7 +237,7 @@ impl Policy {
         Ok(keys)
     }
 }
-pub fn verify(bytes: &[u8], policy: &Policy, now: u64) -> Result<VerifiedRelease, Error> {
+fn verified_envelope(bytes: &[u8], policy: &Policy) -> Result<Envelope, Error> {
     let keys = policy.keys()?;
     if bytes.is_empty() || bytes.len() > MAX_ENVELOPE {
         return Err(Error::InvalidEnvelope);
@@ -256,6 +259,14 @@ pub fn verify(bytes: &[u8], policy: &Policy, now: u64) -> Result<VerifiedRelease
     key.1
         .verify_strict(&message(&e.payload), &Signature::from_bytes(&sig))
         .map_err(|_| Error::InvalidSignature)?;
+    Ok(e)
+}
+pub fn verify(bytes: &[u8], policy: &Policy, now: u64) -> Result<VerifiedRelease, Error> {
+    // Format-1 consumers remain OCI-only even when a native policy is valid.
+    if policy.format != 1 {
+        return Err(Error::InvalidPolicy);
+    }
+    let e = verified_envelope(bytes, policy)?;
     let release: Release = serde_json::from_str(&e.payload).map_err(|_| Error::InvalidRelease)?;
     if release.format != 1
         || release.product != "ExhibitOS/runtime"
@@ -306,6 +317,28 @@ pub fn verify(bytes: &[u8], policy: &Policy, now: u64) -> Result<VerifiedRelease
         artifact_verified: false,
     })
 }
+fn verify_artifact_bytes(source: &mut impl Read, bytes: u64, sha256: &str) -> Result<(), Error> {
+    let mut h = Sha256::new();
+    let mut n = 0u64;
+    let mut b = [0u8; 65536];
+    loop {
+        let got = source
+            .read(&mut b)
+            .map_err(|_| Error::ArtifactUnavailable)?;
+        if got == 0 {
+            break;
+        }
+        n = n
+            .checked_add(got as u64)
+            .filter(|n| *n <= bytes)
+            .ok_or(Error::ArtifactMismatch)?;
+        h.update(&b[..got]);
+    }
+    if n != bytes || format!("{:x}", h.finalize()) != sha256 {
+        return Err(Error::ArtifactMismatch);
+    }
+    Ok(())
+}
 impl VerifiedRelease {
     pub fn release(&self) -> &Release {
         &self.release
@@ -315,27 +348,7 @@ impl VerifiedRelease {
     /// passing this check does not import or authenticate runtime bundle internals.
     pub fn verify_artifact(&mut self, source: &mut impl Read) -> Result<(), Error> {
         self.artifact_verified = false;
-        let mut h = Sha256::new();
-        let mut n = 0u64;
-        let mut b = [0u8; 65536];
-        loop {
-            let got = source
-                .read(&mut b)
-                .map_err(|_| Error::ArtifactUnavailable)?;
-            if got == 0 {
-                break;
-            }
-            n = n
-                .checked_add(got as u64)
-                .filter(|n| *n <= self.release.artifact.bytes)
-                .ok_or(Error::ArtifactMismatch)?;
-            h.update(&b[..got]);
-        }
-        if n != self.release.artifact.bytes
-            || format!("{:x}", h.finalize()) != self.release.artifact.sha256
-        {
-            return Err(Error::ArtifactMismatch);
-        }
+        verify_artifact_bytes(source, self.release.artifact.bytes, &self.release.artifact.sha256)?;
         self.artifact_verified = true;
         Ok(())
     }

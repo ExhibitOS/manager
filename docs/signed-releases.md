@@ -8,6 +8,49 @@ or claim backup restoration. The existing [update safety model](update-safety.md
 still requires independently verified compatibility, backup/restore, current source
 inventory, disk space and rollback evidence before execution.
 
+## Additive native artifact admission (format 2, macOS)
+
+The macOS library also accepts an explicitly separate native payload declaration.
+The existing format-1 CLI, OCI artifact and execution APIs retain their original
+types and semantics. They do not accept a native admission result.
+
+Native policy uses the same closed policy fields, with `format:2` and
+`target:"macos-arm64"`. Its signed payload has the format-1 release fields plus
+`kind:"native-payload"`, `format:2`, and the same exact policy target. The native
+artifact has exactly `name`, `bytes`, `sha256`, `nativeManifestSha256`, and
+`schemaSha256`; it has no `runtimeImageSha256`. The envelope remains format 1,
+using the existing signature domain, pinned key policy, protocol, sequence/time
+floors, expiry, size limits and strict parsing. Native policy never grants an OCI
+permit, and format-1 policy cannot admit the native payload.
+
+`Store::verify_native` reads the existing retained authority without creating or
+changing it. `native::stage` reuses the existing private staged-file guards and
+hash verification, retaining identity and the exact signed declaration.
+`Store::admit_native_payload` freshly rechecks those bytes and independently
+re-admits the selected `Payload`, requiring its exact manifest digest. The
+existing Payload admission still checks its target, file inventory and executable
+permissions, including official app admission where required; publisher flags
+cannot bypass it. Native release target naming does not rename the existing
+`darwin-arm64` payload manifest platform.
+
+The opaque result has no public constructor, deserializer or conversion to
+`VerifiedRelease`, `Preflight` or an OCI executor input. Rechecking binds the
+authority scope/generation/policy/record identity, time, staged-file identity and
+current payload bytes; a failure clears admission. These calls do not write trust
+floors, a profile, a workspace manifest/environment or an update journal, and do
+not launch or extract the artifact.
+
+The signed `schemaSha256` is only the authenticated publisher declaration. The
+receipt always reports `schemaObserved:false` and `executionPermitted:false`.
+Actual source inventory must later bind to an authenticated native backup and a
+current observation; target schema/inventory must be observed in a separate owned
+candidate using that byte-verified target payload. Reuse the existing
+`collectServiceInventory` and schema fingerprint rules (physical schema digest,
+schema version and every ordered migration name/checksum). The 15→16 legacy
+inspector is not that general observer. Until those adapters, the existing
+plan/journal/backup gates and retained old-payload fallback are connected and
+verified, no native update, manifest transition or image-only rollback is implied.
+
 ## Trust and release contract
 
 Policy JSON has exactly `format:1`, `channel` (`development` or `stable`), `target`
