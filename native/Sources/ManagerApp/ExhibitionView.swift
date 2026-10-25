@@ -73,9 +73,14 @@ final class ExhibitionModel: ObservableObject {
     let viewportController = NativeViewportController()
     var installationDirty: Bool { installation != installationBaseline }
     var viewportDraft: NativeExhibitionDraft? { surfaceMaterialPreview?.displayDraft ?? (installationDirty ? (installationPreview ?? draft) : draft) }
-    @Published var x = 0.0
-    @Published var y = 1.0
-    @Published var z = 0.0
+    @Published var positionXText = "0.0"
+    @Published var positionYText = "1.0"
+    @Published var positionZText = "0.0"
+    // The text is the single editable buffer, including incomplete numeric input.
+    private func positionNumber(_ text: String) -> Double { Double(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? .nan }
+    var x: Double { get { positionNumber(positionXText) } set { positionXText = String(newValue) } }
+    var y: Double { get { positionNumber(positionYText) } set { positionYText = String(newValue) } }
+    var z: Double { get { positionNumber(positionZText) } set { positionZText = String(newValue) } }
     @Published private(set) var cursor: String?
     @Published var viewportPresentation: ViewportPresentation = .threeD
     @Published var viewportMode = "translate"
@@ -125,6 +130,7 @@ final class ExhibitionModel: ObservableObject {
         return title != draft.title || entranceDirty || roomName != room["name"].string || width != room["dimensions"]["width"].double || height != room["dimensions"]["height"].double || depth != room["dimensions"]["depth"].double
     }
     var positionDirty: Bool {
+        guard [x, y, z].allSatisfy({ $0.isFinite }) else { return true }
         if let p = draft?.placements.first(where: { $0["id"].string == placementId }), let position = p["transform"]["position"].items, position.count == 3 { return x != position[0].double || y != position[1].double || z != position[2].double }
         return !artworkId.isEmpty
     }
@@ -335,7 +341,7 @@ final class ExhibitionModel: ObservableObject {
     }
     private func refreshCatalogMetadata() {
         catalogTask?.cancel()
-        let current = Dictionary(uniqueKeysWithValues: library.map { ($0.id, $0.revision) })
+        let current = Dictionary(library.map { ($0.id, $0.revision) }, uniquingKeysWith: { _, newer in newer })
         catalogEntries = catalogEntries.filter { current[$0.key] == $0.value.revision }
         catalogFailures = []
         // Reuse the exact approved snapshots already present in this draft.
@@ -389,6 +395,11 @@ final class ExhibitionModel: ObservableObject {
         placementId = ""; viewportSelection = nil; syncInstallation(); syncArchitecture()
         artworkId = catalogArtworkId
         catalogStatus = "배치할 작품을 골랐습니다. 위치를 확인한 뒤 배치하세요. 원본 작품은 바뀌지 않습니다."
+    }
+    func cancelPositionInput() {
+        guard !busy, !pending else { return }
+        if draft?.placements.contains(where: { $0["id"].string == placementId }) == true { selectPlacement() }
+        else { x = 0; y = 1; z = 0 }
     }
     func cancelCatalogPlacement() {
         guard !busy, !pending else { return }
@@ -659,9 +670,10 @@ struct NativeExhibitionView: View {
                     }.disabled(!model.entranceEditable)
                     Section("승인한 작품 배치") {
                         Text(model.artworkId.isEmpty ? "카탈로그에서 원본 작품을 고른 뒤 배치를 선택하세요." : "배치할 작품: " + (model.library.first(where: { $0.id == model.artworkId })?.title ?? "작품"))
-                        TextField("위치 X (m)", value: $model.x, format: .number)
-                        TextField("위치 Y (m)", value: $model.y, format: .number)
-                        TextField("위치 Z (m)", value: $model.z, format: .number)
+                        TextField("위치 X (m)", text: $model.positionXText)
+                        TextField("위치 Y (m)", text: $model.positionYText)
+                        TextField("위치 Z (m)", text: $model.positionZText)
+                        if model.positionDirty { Button("위치 입력 취소") { model.cancelPositionInput() } }
                         Button("선택한 작품 배치") { Task { await model.addArtwork() } }.disabled(model.artworkId.isEmpty)
                         Picker("배치한 작품", selection: $model.placementId) {
                             Text("배치 선택").tag("")
