@@ -28,11 +28,13 @@ final class NativeViewportController: ObservableObject {
             let (candidate, base) = try await action(command)
             if case .installation(let installation) = command { await model.acceptInstallationCandidate(candidate, base: base, command: installation) }
             else if case .architecture(let architecture) = command { await model.acceptArchitectureCandidate(candidate, base: base, command: architecture) }
+            else if case .surfaceMaterial(let material) = command { await model.acceptSurfaceMaterialPreview(candidate, base: base, command: material) }
             else { await model.acceptViewportCandidate(candidate, base: base) }
         }
         catch {
             message = "이 조작을 적용하지 못했습니다. 현재 전시와 선택을 확인하세요."
             if case .architecture = command { message = "이 공간 편집을 적용하지 못했습니다. 입력은 유지되며 기존 전시는 바뀌지 않았습니다." }
+            if case .surfaceMaterial = command { message = "재질을 미리 보지 못했습니다. 입력과 원래 재질은 유지됩니다." }
             if case .installation = command,
                let detail = (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String,
                let reason = InstallationCommandReason.fromJavaScriptMessage(detail) { message = reason.explanation }
@@ -227,7 +229,7 @@ struct NativeViewportArea: View {
                 }
                 Toggle("공간을 투명하게 보기", isOn: $model.viewportTransparent)
                     .help("벽·바닥 너머 작품을 확인합니다. 저장한 재질은 바뀌지 않습니다.")
-                NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.busy || model.pending || model.formDirty || model.positionDirty, controller: controller, onSelect: { model.selectViewport($0) }, onCandidate: { candidate, base in Task { await model.acceptViewportCandidate(candidate, base: base) } })
+                NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.busy || model.pending || model.formDirty || model.positionDirty || model.surfaceMaterialPreviewing, controller: controller, onSelect: { model.selectViewport($0) }, onCandidate: { candidate, base in Task { await model.acceptViewportCandidate(candidate, base: base) } })
                     .id(identity.uuidString + model.viewportAccessID.uuidString).frame(minHeight: 360, idealHeight: 440).clipShape(RoundedRectangle(cornerRadius: 8))
                     .allowsHitTesting(!model.architectureDirty && !model.architectureApplying)
                 Text("불러온 작품 \(controller.loaded)개 · 불러오지 못한 작품 \(controller.failed)개").foregroundStyle(.secondary)
