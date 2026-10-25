@@ -104,6 +104,7 @@ public struct BridgeFailure: Error, LocalizedError, Sendable {
         case "NATIVE_STATIC_EXPORT_FAILED", "NATIVE_STATIC_EXPORT_INVALID": "전시 파일을 완성하지 못했습니다. 기존 파일을 보관하고 새 폴더에 다시 저장하세요."
         case "PROFILE_BUSY", "MANAGER_PROFILE_BUSY": "다른 Manager가 열려 있습니다. 해당 앱을 닫은 뒤 다시 확인하세요."
         case "NATIVE_HELPER_MISSING": "앱의 실행 파일을 찾을 수 없습니다. 앱을 다시 설치하세요."
+        case "NATIVE_RUNTIME_PAYLOAD_INVALID": "로컬 제작 실행 패키지가 없거나 올바르지 않습니다. 제작 데이터와 백업을 삭제하지 말고 검증된 Manager 앱을 다시 설치하세요."
         case "NATIVE_UI_STATE_CHANGED": "설정이 바뀌었습니다. 다시 확인한 뒤 선택하세요."
         case "INITIAL_ACCOUNT_INVALID": "계정 형식과 비밀번호를 확인하세요. 영문·숫자 등으로 계정을 만들고 12자 이상의 비밀번호를 입력하세요."
         case "NATIVE_MIGRATION_REQUIRED": "기존 설치를 찾았습니다. 데이터 이전을 마친 뒤 네이티브 제작을 시작할 수 있습니다."
