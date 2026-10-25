@@ -331,6 +331,25 @@ extension Step {
     }
 }
 
+/// Approved resources in the existing app bundle. The system sidebar symbols
+/// remain small; the brand roles appear at >=32pt in the existing screen header.
+@MainActor
+private enum NativeBrandImages {
+    private static func load(_ name: String, suffix: String, template: Bool) -> NSImage? {
+        guard let url = Bundle.main.url(forResource: name, withExtension: suffix, subdirectory: "Brand"),
+              let image = NSImage(contentsOf: url) else { return nil }
+        image.size = NSSize(width: 32, height: 32)
+        image.isTemplate = template
+        return image
+    }
+    private static let manager = load("manager", suffix: "png", template: false)
+    private static let studio = load("studio", suffix: "svg", template: true)
+    private static let cms = load("cms", suffix: "svg", template: true)
+    static func image(for step: Step?) -> NSImage? {
+        switch step { case .some(.prepare): manager; case .some(.create): cms; case .some(.select): studio; default: nil }
+    }
+}
+
 @MainActor
 final class ManagerDelegate: NSObject, NSApplicationDelegate {
     weak var model: ManagerModel?
@@ -409,7 +428,13 @@ struct ManagerView: View {
         } detail: {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    Text(model.presentation?.step.title ?? "전시 준비").font(.system(size: headingSize * scale, weight: .semibold)).accessibilityAddTraits(.isHeader)
+                    HStack(spacing: 12) {
+                        if let image = NativeBrandImages.image(for: model.presentation?.step) {
+                            Image(nsImage: image).resizable().renderingMode(image.isTemplate ? .template : .original).scaledToFit()
+                                .frame(width: 32 * scale, height: 32 * scale).accessibilityHidden(true)
+                        }
+                        Text(model.presentation?.step.title ?? "전시 준비").font(.system(size: headingSize * scale, weight: .semibold)).accessibilityAddTraits(.isHeader)
+                    }
                     if model.quitting { ProgressView(model.finalizingRestoration ? "복원 최종 확인을 마친 뒤 종료합니다…" : "로컬 작업을 정지한 뒤 종료합니다…") }
                     else if model.runtimeBusy { ProgressView(operationTitle) }
                     else if model.busy { ProgressView("확인 중…").accessibilityLabel("상태 확인 중") }
@@ -477,7 +502,7 @@ struct ManagerView: View {
         case .create:
             NativeAuthoringView(model: model.authoring, configuration: model.native?.configuration, ready: model.ready, connect: { await model.connectPersonalAuthoring() })
         case .select:
-            NativeExhibitionView(model: model.exhibitions, ready: model.ready, connect: { await model.connectPersonalAuthoring() })
+            NativeExhibitionView(model: model.exhibitions, ready: model.ready, mode: model.presentation?.mode ?? .beginner, connect: { await model.connectPersonalAuthoring() })
         case .preview:
             Text("공개 전에 현재 전시와 작품을 살펴보세요.").foregroundStyle(.secondary)
             NativeViewportArea(model: model.exhibitions, ready: model.ready, editable: false, controller: model.exhibitions.viewportController)

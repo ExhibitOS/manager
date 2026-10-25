@@ -16,6 +16,12 @@ final class ExhibitionModel: ObservableObject {
     @Published var catalogFilter = ArtworkCatalogFilter.all
     @Published private(set) var catalogArtworkId = ""
     @Published private(set) var catalogStatus = ""
+    @Published private(set) var artworkPlacement: ArtworkPlacementIntent?
+    @Published private(set) var artworkPlacementTarget: ViewportPlacementTarget?
+    @Published private(set) var placementApplying = false
+    private var placementAttempt: UUID?
+    var placingArtwork: Bool { artworkPlacement != nil || placementApplying }
+    var canPlaceVisually: Bool { canSelectCatalog && !immutable && viewportPresentation == .threeD && viewportController.connected && viewportController.placementSupported && catalogEntries[catalogArtworkId] != nil }
     @Published private(set) var libraryCursor: String?
     private var catalogTask: Task<Void, Never>?
     @Published private(set) var catalogImages: [String: NSImage] = [:]
@@ -58,7 +64,7 @@ final class ExhibitionModel: ObservableObject {
             }
         }
     }
-    var canSelectCatalog: Bool { !busy && !pending && !formDirty && !positionDirty && !architectureDirty && !architectureApplying }
+    var canSelectCatalog: Bool { !busy && !pending && !formDirty && !positionDirty && !architectureDirty && !architectureApplying && !placingArtwork }
     var visibleCatalog: [ArtworkCatalogEntry] {
         guard let draft else { return [] }
         return library.map { row in
@@ -106,7 +112,7 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var viewportView = "isometric"
     @Published private(set) var viewportCameraSequence = 0
     @Published var viewportTransparent = true
-    func requestViewportView(_ view: String) { viewportView = view; viewportCameraSequence += 1 }
+    func requestViewportView(_ view: String) { guard !placingArtwork else { return }; viewportView = view; viewportCameraSequence += 1 }
     @Published var viewportSelection: ViewportSelection?
     @Published var architecture: ArchitectureFormBuffer?
     private var architectureBaseline: ArchitectureFormBuffer?
@@ -134,8 +140,8 @@ final class ExhibitionModel: ObservableObject {
     private(set) var viewportCredentials: LocalAuthoringSession?
     @Published private var past: [NativeExhibitionDraft] = []
     @Published private var future: [NativeExhibitionDraft] = []
-    var canUndo: Bool { !immutable && !past.isEmpty && !pending && !busy && !formDirty && !positionDirty && !architectureDirty && !architectureApplying }
-    var canRedo: Bool { !immutable && !future.isEmpty && !pending && !busy && !formDirty && !positionDirty && !architectureDirty && !architectureApplying }
+    var canUndo: Bool { !immutable && !past.isEmpty && !pending && !busy && !formDirty && !positionDirty && !architectureDirty && !architectureApplying && !placingArtwork }
+    var canRedo: Bool { !immutable && !future.isEmpty && !pending && !busy && !formDirty && !positionDirty && !architectureDirty && !architectureApplying && !placingArtwork }
     private var api: AuthoringAPI?
     private var session: AuthoringSession?
     private var read: (() async throws -> NativeDocumentState)?
@@ -153,10 +159,17 @@ final class ExhibitionModel: ObservableObject {
         if let p = draft?.placements.first(where: { $0["id"].string == placementId }), let position = p["transform"]["position"].items, position.count == 3 { return x != position[0].double || y != position[1].double || z != position[2].double }
         return !artworkId.isEmpty
     }
-    var canExport: Bool { !busy && !dirty && state?.etag != nil && draft != nil }
+    var canExport: Bool { !busy && !placingArtwork && !dirty && state?.etag != nil && draft != nil }
     var dirty: Bool { state?.dirty == true || formDirty || positionDirty || architectureDirty || architectureApplying }
     func connect(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession, read: @escaping () async throws -> NativeDocumentState, write: @escaping (NativeDocumentState) async throws -> NativeDocumentState) async {
-        guard !busy else { return }
+        // An owned begin/commit (including its store write) must finish before
+        // credentials or store closures can change. A stable ghost can cancel
+        // against its OLD connection, then reconnect through normal initialization.
+        guard !busy, !placementApplying else { return }
+        await cancelVisualArtworkPlacement()
+        // Cancellation awaits the old renderer. Another owned operation may
+        // have started in the meantime; never replace its account/store binding.
+        guard !busy, !placingArtwork else { return }
         if let old = self.session, old.tenantId != session.tenantId || old.userId != session.userId {
             guard !dirty else { self.api = nil; viewportCredentials = nil; failure = AuthoringFailure("DRAFT_ACCOUNT_MISMATCH"); return }
             state = nil; items = []; library = []; comparison = nil; exportedURL = nil; exportedSHA256 = nil; catalogArtworkId = ""; catalogStatus = ""
@@ -179,7 +192,7 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     private func work(_ body: () async throws -> Void) async {
-        guard !busy, api != nil, session != nil else { return }
+        guard !busy, !placingArtwork, api != nil, session != nil else { return }
         busy = true; failure = nil; notice = ""
         defer { busy = false }
         do { try await body() }
@@ -336,7 +349,7 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     func selectViewport(_ selection: ViewportSelection) {
-        guard !busy, !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, let draft, selection.belongs(to: draft) else { return }
+        guard !placingArtwork, !busy, !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, let draft, selection.belongs(to: draft) else { return }
         if let room = roomForSelection(selection, draft: draft), room != roomId { roomId = room; selectRoom() }
         if selection.kind == "room" { roomId = selection.id; selectRoom() }
         if selection.kind == "placement" {
@@ -414,6 +427,75 @@ final class ExhibitionModel: ObservableObject {
         placementId = ""; viewportSelection = nil; syncInstallation(); syncArchitecture()
         artworkId = catalogArtworkId
         catalogStatus = "배치할 작품을 골랐습니다. 위치를 확인한 뒤 배치하세요. 원본 작품은 바뀌지 않습니다."
+    }
+    func beginVisualArtworkPlacement() async {
+        guard canPlaceVisually, let api, let credentials = viewportCredentials, let base = draft,
+              let entry = catalogEntries[catalogArtworkId] else { return }
+        let access = viewportAccessID, room = roomId, attempt = UUID()
+        placementAttempt = attempt; placementApplying = true; failure = nil
+        catalogStatus = "승인한 작품을 확인하고 있습니다."
+        defer { if placementAttempt == attempt { placementAttempt = nil }; placementApplying = false }
+        do {
+            let approved = try await api.studioArtwork(entry.id)
+            guard placementAttempt == attempt, viewportAccessID == access, draft == base, roomId == room, catalogArtworkId == entry.id,
+                  !immutable, !pending, !formDirty, !positionDirty, !architectureDirty else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            let intent = try ArtworkPlacementIntent(artworkId: entry.id, expectedRevision: entry.revision, tenantId: credentials.tenantId, artwork: approved.artwork, roomId: room, base: base)
+            artworkPlacement = intent; artworkPlacementTarget = nil
+            _ = try await viewportController.placement(intent, phase: .begin)
+            guard artworkPlacement?.requestId == intent.requestId else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            catalogStatus = intent.targetKind == .wall ? "3D 공간의 벽을 클릭해 미리 본 뒤 ‘여기에 배치’를 선택하세요." : "3D 공간의 바닥을 클릭해 미리 본 뒤 ‘여기에 배치’를 선택하세요."
+        } catch {
+            artworkPlacement = nil; artworkPlacementTarget = nil
+            catalogStatus = "3D 배치를 시작하지 못했습니다. 기존 선택과 입력은 유지됩니다. 숫자로도 배치할 수 있습니다."
+            viewportController.diagnose("PLACE", error)
+        }
+    }
+    func receivePlacementTarget(_ value: DocumentValue) {
+        guard let intent = artworkPlacement, draft == intent.base,
+              let target = try? ViewportPlacementTarget(value: value, intent: intent) else { return }
+        artworkPlacementTarget = target
+        catalogStatus = target.valid ? "이 위치를 미리 보고 있습니다. ‘여기에 배치’를 선택하면 전시에 추가합니다." : "여기에 배치할 수 없습니다. 선택한 공간의 다른 벽이나 바닥을 클릭하세요."
+    }
+    func placementCancelled(_ requestId: String) {
+        guard artworkPlacement?.requestId == requestId else { return }
+        placementAttempt = nil
+        artworkPlacement = nil; artworkPlacementTarget = nil
+        catalogStatus = "배치 미리보기를 취소했습니다. 기존 선택과 입력은 유지됩니다."
+    }
+    func cancelVisualArtworkPlacement() async {
+        guard placingArtwork else { return }
+        placementAttempt = nil
+        guard let intent = artworkPlacement else { catalogStatus = "배치 준비를 취소했습니다. 기존 선택과 입력은 유지됩니다."; return }
+        placementCancelled(intent.requestId)
+        _ = try? await viewportController.placement(intent, phase: .cancel)
+    }
+    func commitVisualArtworkPlacement() async {
+        guard !placementApplying, !busy, !pending, !immutable, !formDirty, !positionDirty, !architectureDirty,
+              let intent = artworkPlacement, let target = artworkPlacementTarget, target.valid,
+              let api, draft == intent.base else { return }
+        let access = viewportAccessID, attempt = UUID()
+        placementAttempt = attempt; placementApplying = true; failure = nil
+        defer { if placementAttempt == attempt { placementAttempt = nil }; placementApplying = false }
+        do {
+            let approved = try await api.studioArtwork(intent.artworkId)
+            guard placementAttempt == attempt, approved.artwork == intent.artwork, viewportAccessID == access, draft == intent.base,
+                  artworkPlacement?.requestId == intent.requestId, artworkPlacementTarget == target,
+                  roomId == intent.roomId, !immutable, !pending, !formDirty, !positionDirty, !architectureDirty,
+                  let placement = try await viewportController.placement(intent, phase: .commit, target: target),
+                  placementAttempt == attempt, artworkPlacement?.requestId == intent.requestId, artworkPlacementTarget == target,
+                  viewportAccessID == access, let current = draft, current == intent.base,
+                  let surface = target.surfaceId, let offset = target.offset, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            value.draft = try intent.applying(placement, surfaceId: surface, offset: offset, to: current)
+            try await persist(value)
+            artworkPlacement = nil; artworkPlacementTarget = nil
+            placementId = intent.placementId; viewportSelection = ViewportSelection(kind: "placement", id: intent.placementId)
+            syncFields()
+            catalogStatus = "작품을 이 Mac에 배치했습니다. 되돌리기로 취소하거나 전시 저장을 진행하세요."
+        } catch {
+            await cancelVisualArtworkPlacement()
+            catalogStatus = "이 위치에 배치하지 못했습니다. 현재 전시와 입력은 유지됩니다. 위치를 다시 선택하세요."
+            viewportController.diagnose("PLACE", error)
+        }
     }
     func cancelPositionInput() {
         guard !busy, !pending else { return }
@@ -610,19 +692,25 @@ final class ExhibitionModel: ObservableObject {
 struct NativeExhibitionView: View {
     @ObservedObject var model: ExhibitionModel
     let ready: Bool
+    let mode: Mode
     let connect: () async -> Void
     @State private var discardPrompt = false
     @State private var pendingOpen: String?
     @State private var pendingNew = false
     @State private var pendingAdopt = false
-    private func installationSurfaces(kind: String) -> [(id: String, name: String)] {
-        guard let draft = model.draft,
-              let room = draft.placements.first(where: { $0["id"].string == model.placementId })?["roomId"].string else { return [] }
-        return (draft.candidate["surfaces"].items ?? []).filter { $0["roomId"].string == room && $0["type"].string == kind }
-            .enumerated().compactMap { index, surface in
-                guard let id = surface["id"].string else { return nil }
-                return (id, (kind == "floor" ? "바닥 " : "벽 ") + String(index + 1))
-            }
+    @State private var inspectorVisible = true
+    @State private var inspectorInputs: [String: InstallationInspectorState] = [:]
+    private var hasSelectedPlacement: Bool {
+        guard let selected = model.viewportSelection, selected.kind == "placement", selected.id == model.placementId,
+              let draft = model.draft else { return false }
+        return selected.belongs(to: draft)
+    }
+    private var inspectorPresented: Binding<Bool> {
+        Binding(get: { inspectorVisible && hasSelectedPlacement }, set: { inspectorVisible = $0 })
+    }
+    private var selectedInputs: Binding<InstallationInspectorState> {
+        let key = [model.state?.tenantId ?? "", model.state?.principalId ?? "", model.draft?.id ?? "", model.placementId].joined(separator: ":")
+        return Binding(get: { inspectorInputs[key] ?? InstallationInspectorState() }, set: { inspectorInputs[key] = $0 })
     }
     private func requestOpen(_ id: String?) {
         guard !model.pending else { return }
@@ -651,6 +739,10 @@ struct NativeExhibitionView: View {
                 HStack {
                     Button("되돌리기") { Task { await model.undo() } }.disabled(!model.canUndo || !ready)
                     Button("다시 실행") { Task { await model.redo() } }.disabled(!model.canRedo || !ready)
+                    Spacer(minLength: 0)
+                    Button(inspectorPresented.wrappedValue ? "선택 속성 접기" : "선택 속성", systemImage: "sidebar.right") { inspectorVisible.toggle() }
+                        .disabled(!hasSelectedPlacement)
+                        .help("선택한 작품 배치의 속성을 오른쪽에 표시하거나 접습니다. 입력은 유지됩니다.")
                 }
                 Form {
                     Section("전시와 공간") {
@@ -690,12 +782,16 @@ struct NativeExhibitionView: View {
                         if !model.entranceEditable { Text("이 시작 화면의 설정을 읽을 수 없습니다. 원래 설정은 보관됩니다.").foregroundStyle(.secondary) }
                     }.disabled(!model.entranceEditable)
                     Section("승인한 작품 배치") {
-                        Text(model.artworkId.isEmpty ? "카탈로그에서 원본 작품을 고른 뒤 배치를 선택하세요." : "배치할 작품: " + (model.library.first(where: { $0.id == model.artworkId })?.title ?? "작품"))
-                        TextField("위치 X (m)", text: $model.positionXText)
-                        TextField("위치 Y (m)", text: $model.positionYText)
-                        TextField("위치 Z (m)", text: $model.positionZText)
-                        if model.positionDirty { Button("위치 입력 취소") { model.cancelPositionInput() } }
-                        Button("선택한 작품 배치") { Task { await model.addArtwork() } }.disabled(model.artworkId.isEmpty)
+                        if !model.artworkId.isEmpty {
+                            Text("배치할 작품: " + (model.library.first(where: { $0.id == model.artworkId })?.title ?? "작품"))
+                            TextField("위치 X (m)", text: $model.positionXText)
+                            TextField("위치 Y (m)", text: $model.positionYText)
+                            TextField("위치 Z (m)", text: $model.positionZText)
+                            if model.positionDirty { Button("위치 입력 취소") { model.cancelPositionInput() } }
+                            Button("선택한 작품 배치") { Task { await model.addArtwork() } }
+                        } else {
+                            Text("작품 목록이나 공간에서 배치를 고르세요. 위치와 설치 설정은 ‘선택 속성’에서 다듬습니다.").foregroundStyle(.secondary)
+                        }
                         Picker("배치한 작품", selection: $model.placementId) {
                             Text("배치 선택").tag("")
                             ForEach(draft.placements.indices, id: \.self) { index in
@@ -704,20 +800,10 @@ struct NativeExhibitionView: View {
                             }
                         }
                         .disabled(model.positionDirty || model.formDirty)
-                        Button("선택한 배치 위치 적용") { Task { await model.movePlacement() } }.disabled(model.placementId.isEmpty)
                         Text("공간 \(draft.rooms.count)개 · 작품 배치 \(draft.placements.count)개").foregroundStyle(.secondary)
                     }
-                }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true).disabled(!ready || model.busy || model.pending || model.immutable || model.architectureDirty || model.architectureApplying)
+                }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true).disabled(!ready || model.busy || model.pending || model.immutable || model.architectureDirty || model.architectureApplying || model.placingArtwork)
                 ArchitectureSettingsView(model: model, ready: ready)
-                if !model.placementId.isEmpty {
-                    InstallationSettingsView(buffer: $model.installation, placementId: model.placementId, dirty: model.installationDirty,
-                        editable: ready && !model.busy && !model.pending && !model.immutable && model.installationEditable && !model.architectureDirty && !model.architectureApplying,
-                        viewport: model.viewportController, canAlign: !model.formDirty && !model.positionDirty,
-                        status: model.installationStatus, floors: installationSurfaces(kind: "floor"), walls: installationSurfaces(kind: "wall"),
-                        apply: { Task { await model.applyInstallation() } }, discard: { model.discardInstallation() }, reset: { model.resetInstallation() },
-                        align: { command in Task { await model.viewportController.perform(.installation(command), model: model) } })
-                        .id(model.placementId)
-                }
                 HStack {
                     Button("입력 이 Mac에 보관") { Task { await model.keepLocal() } }.disabled(model.pending || model.immutable)
                     Button(model.pending ? "저장 응답 다시 확인" : "전시 저장") { Task { await model.save() } }.buttonStyle(.borderedProminent).disabled(model.immutable && !model.pending)
@@ -734,6 +820,10 @@ struct NativeExhibitionView: View {
             if let failure = model.failure { Text(failure.localizedDescription); DisclosureGroup("오류 상세") { Text(failure.code).textSelection(.enabled) } }
             if !model.notice.isEmpty { Text(model.notice).foregroundStyle(.secondary) }
             Button("작업 공간 다시 연결") { Task { await connect() } }.disabled(!ready || model.busy)
+        }
+        .inspector(isPresented: inspectorPresented) {
+            SelectedPlacementInspector(model: model, ready: ready, mode: mode, inputs: selectedInputs)
+                .id(model.placementId)
         }
         .task(id: ready) { if ready { await connect() } }
         .onChange(of: model.roomId) { _, _ in model.selectRoom() }

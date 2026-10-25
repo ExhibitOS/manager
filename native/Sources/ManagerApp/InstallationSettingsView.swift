@@ -6,6 +6,8 @@ import ManagerCore
 /// step; alignment is a separate explicit command after configuration is applied.
 struct InstallationSettingsView: View {
     @Binding var buffer: InstallationFormBuffer
+    @Binding var inspector: InstallationInspectorState
+    let mode: Mode
     let placementId: String
     let dirty: Bool
     let editable: Bool
@@ -18,12 +20,6 @@ struct InstallationSettingsView: View {
     let discard: () -> Void
     let reset: () -> Void
     let align: (InstallationCommand) -> Void
-    @State private var advancedPedestal = false
-    @State private var advancedFrame = false
-    @State private var floor = ""
-    @State private var wall = ""
-    @State private var installHeight = "1.5"
-    @State private var wallGap = "0.02"
 
     private func field(_ title: String, _ key: InstallationFormBuffer.Field, unit: String = "m") -> some View {
         HStack {
@@ -47,10 +43,23 @@ struct InstallationSettingsView: View {
             }
             TextField("색상 · #RRGGBB", text: frame ? $buffer.frameColor : $buffer.pedestalColor)
             Text("프리셋은 색과 표면 반사 기본값을 적용합니다.").font(.caption).foregroundStyle(.secondary)
-            DisclosureGroup("상세 재질", isExpanded: frame ? $advancedFrame : $advancedPedestal) {
-                field("거칠기 · 0–1", frame ? .frameRoughness : .pedestalRoughness, unit: "")
-                field("금속성 · 0–1", frame ? .frameMetalness : .pedestalMetalness, unit: "")
-            }
+            if mode == .expert { materialNumbers(frame: frame) }
+            else { DisclosureGroup("상세 재질", isExpanded: frame ? $inspector.advancedFrame : $inspector.advancedPedestal) {
+                materialNumbers(frame: frame)
+            } }
+        }
+    }
+    private func materialNumbers(frame: Bool) -> some View {
+        VStack(alignment: .leading) {
+            field("거칠기 · 0–1", frame ? .frameRoughness : .pedestalRoughness, unit: "")
+            field("금속성 · 0–1", frame ? .frameMetalness : .pedestalMetalness, unit: "")
+        }
+    }
+    private var pedestalPose: some View {
+        VStack(alignment: .leading) {
+            Text("받침 바닥 중심 위치 · 방 좌표").font(.caption)
+            field("X", .x); field("Y", .y); field("Z", .z)
+            field("회전 · −180–180", .yawDegrees, unit: "°")
         }
     }
     var body: some View {
@@ -69,9 +78,8 @@ struct InstallationSettingsView: View {
                             if buffer.pedestalKind == .box { field("폭", .width); field("깊이", .depth) }
                             else { field("지름", .diameter) }
                             field("높이", .height)
-                            Text("받침 바닥 중심 위치 · 방 좌표").font(.caption)
-                            field("X", .x); field("Y", .y); field("Z", .z)
-                            field("회전 · −180–180", .yawDegrees, unit: "°")
+                            if mode == .expert { pedestalPose }
+                            else { DisclosureGroup("받침의 위치와 회전", isExpanded: $inspector.pedestalPoseDetails) { pedestalPose } }
                             material(frame: false)
                             HStack {
                                 Button("작품 중앙 정렬") { align(.centerArtwork(placementId: placementId)) }
@@ -107,22 +115,24 @@ struct InstallationSettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 DisclosureGroup("설치 높이와 벽 간격") {
                     VStack(alignment: .leading) {
-                        Picker("기준 바닥", selection: $floor) {
+                        Picker("기준 바닥", selection: $inspector.floor) {
                             Text("작품 아래의 유일한 바닥").tag("")
+                            if !inspector.floor.isEmpty && !floors.contains(where: { $0.id == inspector.floor }) { Text("기준 바닥 다시 선택").tag(inspector.floor) }
                             ForEach(floors, id: \.id) { Text($0.name).tag($0.id) }
                         }
-                        TextField("작품 중심 높이 · m", text: $installHeight)
+                        TextField("작품 중심 높이 · m", text: $inspector.installHeight)
                         Button("설치 높이 적용") {
-                            if let height = number(installHeight) { align(.installHeight(placementId: placementId, height: height, floorSurfaceId: floor.isEmpty ? nil : floor)) }
-                        }.disabled(!viewport.connected || !canAlign || dirty || number(installHeight).map { !(0...10).contains($0) } != false)
-                        Picker("기준 벽", selection: $wall) {
+                            if let height = number(inspector.installHeight) { align(.installHeight(placementId: placementId, height: height, floorSurfaceId: inspector.floor.isEmpty ? nil : inspector.floor)) }
+                        }.disabled(!viewport.connected || !canAlign || dirty || (!inspector.floor.isEmpty && !floors.contains(where: { $0.id == inspector.floor })) || number(inspector.installHeight).map { !(0...10).contains($0) } != false)
+                        Picker("기준 벽", selection: $inspector.wall) {
                             Text("벽 선택 필요").tag("")
+                            if !inspector.wall.isEmpty && !walls.contains(where: { $0.id == inspector.wall }) { Text("기준 벽 다시 선택").tag(inspector.wall) }
                             ForEach(walls, id: \.id) { Text($0.name).tag($0.id) }
                         }
-                        TextField("벽과의 간격 · m", text: $wallGap)
+                        TextField("벽과의 간격 · m", text: $inspector.wallGap)
                         Button("벽 간격 적용") {
-                            if let gap = number(wallGap) { align(.wallGap(placementId: placementId, gap: gap, wallSurfaceId: wall)) }
-                        }.disabled(!viewport.connected || !canAlign || dirty || !walls.contains(where: { $0.id == wall }) || number(wallGap).map { !(0...1).contains($0) } != false)
+                            if let gap = number(inspector.wallGap) { align(.wallGap(placementId: placementId, gap: gap, wallSurfaceId: inspector.wall)) }
+                        }.disabled(!viewport.connected || !canAlign || dirty || !walls.contains(where: { $0.id == inspector.wall }) || number(inspector.wallGap).map { !(0...1).contains($0) } != false)
                         Text("높이는 작품 중심 기준입니다. 벽 간격은 선택한 벽과 평행한 작품에 적용됩니다.").font(.caption).foregroundStyle(.secondary)
                     }
                 }

@@ -41,6 +41,7 @@ public struct ViewportAcceptance: Decodable, Sendable {
     public let capabilities: [String]?
     public var supportsArtworkThumbnail: Bool { accepted && capabilities?.contains("artwork-thumbnail-v1") == true }
     public var supportsFindSelection: Bool { accepted && capabilities?.contains("find-selection-v1") == true }
+    public var supportsArtworkPlacement: Bool { accepted && capabilities?.contains("place-artwork-v1") == true }
     public var supportsPlan: Bool {
         accepted && presentations?.contains(.threeD) == true && presentations?.contains(.plan) == true
     }

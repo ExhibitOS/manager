@@ -1,0 +1,8 @@
+Studio inner glyph: floor-plan, Pictogrammers Material Design Icons.
+Source: https://github.com/Templarian/MaterialDesign/blob/master/svg/floor-plan.svg
+Icon: https://pictogrammers.com/library/mdi/icon/floor-plan/
+License: Apache-2.0; upstream license included as MDI-LICENSE.txt.
+Modified version: rounded corners and terminals, preserved wall/opening topology, scale/placement/colour adapted.
+ExhibitOS common frame and other glyphs are separate design studies.
+
+Wordmark: Manrope, SIL Open Font License 1.1 (license included). Outlined at weight650 with custom spacing. Original font remains a build input only, not required by deployed SVG.
