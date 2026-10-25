@@ -477,7 +477,7 @@ struct ManagerView: View {
         case .create:
             NativeAuthoringView(model: model.authoring, configuration: model.native?.configuration, ready: model.ready, connect: { await model.connectPersonalAuthoring() })
         case .select:
-            NativeExhibitionView(model: model.exhibitions, ready: model.ready, connect: { await model.connectPersonalAuthoring() })
+            NativeExhibitionView(model: model.exhibitions, ready: model.ready, mode: model.presentation?.mode ?? .beginner, connect: { await model.connectPersonalAuthoring() })
         case .preview:
             Text("공개 전에 현재 전시와 작품을 살펴보세요.").foregroundStyle(.secondary)
             NativeViewportArea(model: model.exhibitions, ready: model.ready, editable: false, controller: model.exhibitions.viewportController)

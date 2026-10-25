@@ -692,19 +692,25 @@ final class ExhibitionModel: ObservableObject {
 struct NativeExhibitionView: View {
     @ObservedObject var model: ExhibitionModel
     let ready: Bool
+    let mode: Mode
     let connect: () async -> Void
     @State private var discardPrompt = false
     @State private var pendingOpen: String?
     @State private var pendingNew = false
     @State private var pendingAdopt = false
-    private func installationSurfaces(kind: String) -> [(id: String, name: String)] {
-        guard let draft = model.draft,
-              let room = draft.placements.first(where: { $0["id"].string == model.placementId })?["roomId"].string else { return [] }
-        return (draft.candidate["surfaces"].items ?? []).filter { $0["roomId"].string == room && $0["type"].string == kind }
-            .enumerated().compactMap { index, surface in
-                guard let id = surface["id"].string else { return nil }
-                return (id, (kind == "floor" ? "바닥 " : "벽 ") + String(index + 1))
-            }
+    @State private var inspectorVisible = true
+    @State private var inspectorInputs: [String: InstallationInspectorState] = [:]
+    private var hasSelectedPlacement: Bool {
+        guard let selected = model.viewportSelection, selected.kind == "placement", selected.id == model.placementId,
+              let draft = model.draft else { return false }
+        return selected.belongs(to: draft)
+    }
+    private var inspectorPresented: Binding<Bool> {
+        Binding(get: { inspectorVisible && hasSelectedPlacement }, set: { inspectorVisible = $0 })
+    }
+    private var selectedInputs: Binding<InstallationInspectorState> {
+        let key = [model.state?.tenantId ?? "", model.state?.principalId ?? "", model.draft?.id ?? "", model.placementId].joined(separator: ":")
+        return Binding(get: { inspectorInputs[key] ?? InstallationInspectorState() }, set: { inspectorInputs[key] = $0 })
     }
     private func requestOpen(_ id: String?) {
         guard !model.pending else { return }
@@ -733,6 +739,10 @@ struct NativeExhibitionView: View {
                 HStack {
                     Button("되돌리기") { Task { await model.undo() } }.disabled(!model.canUndo || !ready)
                     Button("다시 실행") { Task { await model.redo() } }.disabled(!model.canRedo || !ready)
+                    Spacer(minLength: 0)
+                    Button(inspectorPresented.wrappedValue ? "선택 속성 접기" : "선택 속성", systemImage: "sidebar.right") { inspectorVisible.toggle() }
+                        .disabled(!hasSelectedPlacement)
+                        .help("선택한 작품 배치의 속성을 오른쪽에 표시하거나 접습니다. 입력은 유지됩니다.")
                 }
                 Form {
                     Section("전시와 공간") {
@@ -772,12 +782,16 @@ struct NativeExhibitionView: View {
                         if !model.entranceEditable { Text("이 시작 화면의 설정을 읽을 수 없습니다. 원래 설정은 보관됩니다.").foregroundStyle(.secondary) }
                     }.disabled(!model.entranceEditable)
                     Section("승인한 작품 배치") {
-                        Text(model.artworkId.isEmpty ? "카탈로그에서 원본 작품을 고른 뒤 배치를 선택하세요." : "배치할 작품: " + (model.library.first(where: { $0.id == model.artworkId })?.title ?? "작품"))
-                        TextField("위치 X (m)", text: $model.positionXText)
-                        TextField("위치 Y (m)", text: $model.positionYText)
-                        TextField("위치 Z (m)", text: $model.positionZText)
-                        if model.positionDirty { Button("위치 입력 취소") { model.cancelPositionInput() } }
-                        Button("선택한 작품 배치") { Task { await model.addArtwork() } }.disabled(model.artworkId.isEmpty)
+                        if !model.artworkId.isEmpty {
+                            Text("배치할 작품: " + (model.library.first(where: { $0.id == model.artworkId })?.title ?? "작품"))
+                            TextField("위치 X (m)", text: $model.positionXText)
+                            TextField("위치 Y (m)", text: $model.positionYText)
+                            TextField("위치 Z (m)", text: $model.positionZText)
+                            if model.positionDirty { Button("위치 입력 취소") { model.cancelPositionInput() } }
+                            Button("선택한 작품 배치") { Task { await model.addArtwork() } }
+                        } else {
+                            Text("작품 목록이나 공간에서 배치를 고르세요. 위치와 설치 설정은 ‘선택 속성’에서 다듬습니다.").foregroundStyle(.secondary)
+                        }
                         Picker("배치한 작품", selection: $model.placementId) {
                             Text("배치 선택").tag("")
                             ForEach(draft.placements.indices, id: \.self) { index in
@@ -786,20 +800,10 @@ struct NativeExhibitionView: View {
                             }
                         }
                         .disabled(model.positionDirty || model.formDirty)
-                        Button("선택한 배치 위치 적용") { Task { await model.movePlacement() } }.disabled(model.placementId.isEmpty)
                         Text("공간 \(draft.rooms.count)개 · 작품 배치 \(draft.placements.count)개").foregroundStyle(.secondary)
                     }
                 }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true).disabled(!ready || model.busy || model.pending || model.immutable || model.architectureDirty || model.architectureApplying || model.placingArtwork)
                 ArchitectureSettingsView(model: model, ready: ready)
-                if !model.placementId.isEmpty {
-                    InstallationSettingsView(buffer: $model.installation, placementId: model.placementId, dirty: model.installationDirty,
-                        editable: ready && !model.busy && !model.pending && !model.immutable && model.installationEditable && !model.architectureDirty && !model.architectureApplying,
-                        viewport: model.viewportController, canAlign: !model.formDirty && !model.positionDirty,
-                        status: model.installationStatus, floors: installationSurfaces(kind: "floor"), walls: installationSurfaces(kind: "wall"),
-                        apply: { Task { await model.applyInstallation() } }, discard: { model.discardInstallation() }, reset: { model.resetInstallation() },
-                        align: { command in Task { await model.viewportController.perform(.installation(command), model: model) } })
-                        .id(model.placementId)
-                }
                 HStack {
                     Button("입력 이 Mac에 보관") { Task { await model.keepLocal() } }.disabled(model.pending || model.immutable)
                     Button(model.pending ? "저장 응답 다시 확인" : "전시 저장") { Task { await model.save() } }.buttonStyle(.borderedProminent).disabled(model.immutable && !model.pending)
@@ -816,6 +820,10 @@ struct NativeExhibitionView: View {
             if let failure = model.failure { Text(failure.localizedDescription); DisclosureGroup("오류 상세") { Text(failure.code).textSelection(.enabled) } }
             if !model.notice.isEmpty { Text(model.notice).foregroundStyle(.secondary) }
             Button("작업 공간 다시 연결") { Task { await connect() } }.disabled(!ready || model.busy)
+        }
+        .inspector(isPresented: inspectorPresented) {
+            SelectedPlacementInspector(model: model, ready: ready, mode: mode, inputs: selectedInputs)
+                .id(model.placementId)
         }
         .task(id: ready) { if ready { await connect() } }
         .onChange(of: model.roomId) { _, _ in model.selectRoom() }
