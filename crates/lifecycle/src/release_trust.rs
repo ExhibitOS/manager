@@ -1348,6 +1348,11 @@ mod tests {
     pub(super) fn fixture() -> (PathBuf, SigningKey, Policy, Release) {
         let parent =
             std::env::temp_dir().join(format!("exhibitos-release-trust-{}", uuid::Uuid::new_v4()));
+        fixture_in(parent)
+    }
+    // Same isolated TEST authority, with an explicit owned fixture parent for
+    // the opt-in real native entry. Ordinary tests retain their existing root.
+    pub(super) fn fixture_in(parent: PathBuf) -> (PathBuf, SigningKey, Policy, Release) {
         let mut d = fs::DirBuilder::new();
         use std::os::unix::fs::DirBuilderExt;
         d.mode(0o700);

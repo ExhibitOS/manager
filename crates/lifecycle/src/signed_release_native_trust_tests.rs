@@ -178,3 +178,7 @@ fn different_fresh_payload_manifest_is_not_the_signed_selected_payload() {
     drop(store);
     fs::remove_dir_all(parent).unwrap();
 }
+
+// One explicit opt-in entry in this existing TEST authority/admission target.
+#[path = "native_r5_copy_actual_tests.rs"]
+mod r5_copy_actual;

@@ -501,14 +501,65 @@ const NATIVE_COPY_FILES: &[(&str, &str)] = &[
     ("platform/packages/storage/dist/service-inventory.d.ts", "eb224fb53f33180e9a648ece8d1dc649c97a9eb844bdc40e7ce72899f50d1cb6"),
     ("platform/packages/storage/dist/service-inventory.js", "03b60b30e0f840b6a3c1cd2b842330da43dcb65b5af16a16a5cd7b4996f5fc08"),
 ];
+// Separate immutable same-R5 data-copy recipe. Never a fallback migration or
+// production trust exception; every payload still requires ordinary admission.
+const NATIVE_R5_COPY_CATALOG: &str = "fcb2ce62fd3d9c5d86d5f37401a91161403981128b229426200e41091b47b8eb";
+const NATIVE_R5_COPY_ABSENT: &[&str] = &[
+    "platform/packages/storage/dist/migrations.d.ts",
+    "platform/packages/storage/dist/migrations.js",
+];
+const NATIVE_R5_COPY_FILES: &[(&str, &str)] = &[
+    ("platform/scripts/native-service-backup.mjs", "cd62e9e8c89f24ea4a002abcb70ac909ce5b25c80e7a4d5e4fd8f5fc95ba5d3b"),
+    ("platform/scripts/service-backup.mjs", "b14f6c7790539e689caed08189e3d695efb76a60b582800f1a363d2d415c42c4"),
+    ("platform/packages/storage/dist/blobs.d.ts", "5659727be1441d2e279212046be5eb2510c1ae12a48920278855f83c7e32ccf8"),
+    ("platform/packages/storage/dist/blobs.js", "f948f6c7f67737b009b032b2cdde3d34fbcc7148eeb851a5b146bd553e239d14"),
+    ("platform/packages/storage/dist/encrypted-files.d.ts", "f4cedc62afc12ed39a66ef945d1403a34e7e8804f794663e59c6db8a9ad91c66"),
+    ("platform/packages/storage/dist/encrypted-files.js", "c3b11cc821812240cf25f5c172eceac58c61d92c8de6ea4991fcefada44b5fb1"),
+    ("platform/packages/storage/dist/encrypted-streams.d.ts", "e3df95cc6dbcbafae693a0b46b22df410637b5580fa37d37d14ee51ff56541d9"),
+    ("platform/packages/storage/dist/encrypted-streams.js", "a9c334cf62ff714a6fa5c65d7a8d8a1671244925e1064881b5392c190a51e80c"),
+    ("platform/packages/storage/dist/index.d.ts", "392d195f251b6c1703a9bbaa5e2da6ba9ccc15b4021eb2c47e840810cf87b26e"),
+    ("platform/packages/storage/dist/index.js", "2eca15b6a7b9d9447d96818dfd3db2022e319ec6cf42350319945b5125932880"),
+    ("platform/packages/storage/dist/policy.d.ts", "75111683455b8e593182b5ba36d3108eb6e46ab3fa0a2aa183ce198f82d609c4"),
+    ("platform/packages/storage/dist/policy.js", "0e25c6ff27120c5fe330db5247736b0ddb3a712b25fc31ed830504a1cec17ff2"),
+    ("platform/packages/storage/dist/postgres-blobs.d.ts", "ddf6a4d338be38f936f2d97d6f8e0be6d6eaa734f696c8233cc589729318f59c"),
+    ("platform/packages/storage/dist/postgres-blobs.js", "dd9f83ef4f25bacce95d186d167ac8b7b38257f67ee0dedafc6d796af883b823"),
+    ("platform/packages/storage/dist/service-backup.d.ts", "eed00e0740aef0b293b205f395886d2e895753b465ab616b5a4e1d3f29026053"),
+    ("platform/packages/storage/dist/service-backup.js", "36d1462040133288fafd5b6ecdc0a33aa50567e05f777ee499718d30e329cf1c"),
+    ("platform/packages/storage/dist/service-inventory.d.ts", "eb224fb53f33180e9a648ece8d1dc649c97a9eb844bdc40e7ce72899f50d1cb6"),
+    ("platform/packages/storage/dist/service-inventory.js", "03b60b30e0f840b6a3c1cd2b842330da43dcb65b5af16a16a5cd7b4996f5fc08"),
+];
+const NATIVE_R5_COPY_TOOLS: &[(&str, u64, &str)] = &[
+    ("bin/node", 122129232, "e4b5a3af0e05c75de2eae013904145f40fe7fc2a6e6f17510128bf45cca4e79b"),
+    ("postgres/bin/postgres", 18295920, "c7d83df0d39322c406688d2149872ed38cbee96a694485c25f2ecf323e7818fc"),
+    ("postgres/bin/initdb", 424496, "4a274273db3b9663d5c3d69727ca5a7866830b580c8f6d6636a1adc9d5dc0c29"),
+    ("postgres/bin/pg_dump", 973712, "fe95f67530dfe79360a6c333d795c006ce8a5bcb07f233b4d3e38b789409b471"),
+    ("postgres/bin/pg_restore", 535504, "cdb1c919b3f37c89030b172f5f7c5b83319ca11b8a6a6f243b445a9b708301f9"),
+];
+fn copy_files_match(manifest: &Manifest, files: &[(&str, &str)]) -> bool {
+    files.iter().all(|(name, hash)| manifest.files.iter().any(|v| v.path == *name && v.link.is_none() && v.executable == Some(false) && v.sha256.as_deref() == Some(*hash)))
+}
+fn r5_copy_manifest_matches(manifest: &Manifest, catalog: &str) -> bool {
+    catalog == NATIVE_R5_COPY_CATALOG && copy_files_match(manifest, NATIVE_R5_COPY_FILES)
+        && !NATIVE_R5_COPY_ABSENT.iter().any(|name| manifest.files.iter().any(|v| v.path == *name))
+        && NATIVE_R5_COPY_TOOLS.iter().all(|(name, size, hash)| manifest.files.iter().any(|v| v.path == *name && v.link.is_none() && v.executable == Some(true) && v.bytes == Some(*size) && v.sha256.as_deref() == Some(*hash)))
+}
+fn check_copy_absence(paths: &[PathBuf]) -> Result<()> {
+    for path in paths {
+        if !matches!(fs::symlink_metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound) { return Err(err("NATIVE_TARGET_COPY_UNAVAILABLE")); }
+    }
+    Ok(())
+}
 pub(crate) struct NativeCopyResources {
     pub(crate) inventory: TargetInventoryResources,
     pub(crate) recipe_sha256: String,
+    pub(crate) recipe_name: &'static str,
+    absent: Vec<PathBuf>,
     pins: Vec<crate::hosted_runtime_file::Pin>,
 }
 impl NativeCopyResources {
     pub(crate) fn recheck(&self) -> Result<()> {
         self.inventory.recheck()?;
+        check_copy_absence(&self.absent)?;
         for pin in &self.pins { pin.check()?; }
         Ok(())
     }
@@ -518,8 +569,21 @@ impl Payload {
         self.recheck()?;
         self.backup_resources()?;
         let inventory = self.target_inventory_resources()?;
+        let current = copy_files_match(&self.manifest, NATIVE_COPY_FILES);
+        let (recipe_name, files, recipe_sha256) = if current {
+            ("authenticated-native-copy-v1", NATIVE_COPY_FILES, digest(&serde_json::to_vec(NATIVE_COPY_FILES).map_err(|_| invalid())?))
+        } else {
+            if !r5_copy_manifest_matches(&self.manifest, &inventory.migrations_sha256) { return Err(err("NATIVE_TARGET_COPY_UNAVAILABLE")); }
+            for name in NATIVE_R5_COPY_ABSENT {
+                if self.manifest.files.iter().any(|v| v.path == *name)
+                    || !matches!(fs::symlink_metadata(self.root.join(name)), Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+                    return Err(err("NATIVE_TARGET_COPY_UNAVAILABLE"));
+                }
+            }
+            ("authenticated-native-r5-copy-v1", NATIVE_R5_COPY_FILES, digest(&serde_json::to_vec(&("authenticated-native-r5-copy-v1", NATIVE_R5_COPY_FILES, NATIVE_R5_COPY_ABSENT, NATIVE_R5_COPY_CATALOG, NATIVE_R5_COPY_TOOLS)).map_err(|_| invalid())?))
+        };
         let mut pins = Vec::new();
-        for (name, expected) in NATIVE_COPY_FILES {
+        for (name, expected) in files {
             let entry = self.manifest.files.iter().find(|v| v.path == *name && v.link.is_none() && v.executable == Some(false)).ok_or_else(|| err("NATIVE_TARGET_COPY_UNAVAILABLE"))?;
             if entry.sha256.as_deref() != Some(*expected) { return Err(err("NATIVE_TARGET_COPY_UNAVAILABLE")); }
             let path = self.root.join(name);
@@ -528,7 +592,67 @@ impl Payload {
             if entry.bytes != Some(bytes.len() as u64) || digest(&bytes) != *expected { return Err(err("NATIVE_TARGET_COPY_UNAVAILABLE")); }
             pins.push(pin);
         }
-        let result = NativeCopyResources { inventory, recipe_sha256: digest(&serde_json::to_vec(NATIVE_COPY_FILES).map_err(|_| invalid())?), pins };
+        let mut absent = Vec::new();
+        if !current {
+            for (name, size, hash) in NATIVE_R5_COPY_TOOLS {
+                let entry = self.manifest.files.iter().find(|v| v.path == *name && v.link.is_none() && v.executable == Some(true) && v.bytes == Some(*size) && v.sha256.as_deref() == Some(*hash)).ok_or_else(|| err("NATIVE_TARGET_COPY_UNAVAILABLE"))?;
+                let path = self.root.join(&entry.path);
+                if fs::canonicalize(&path).map_err(|_| invalid())? != path { return Err(invalid()); }
+                let (bytes, pin) = crate::hosted_runtime_file::bounded(&path, 160 * 1024 * 1024)?;
+                if bytes.len() as u64 != *size || digest(&bytes) != *hash { return Err(err("NATIVE_TARGET_COPY_UNAVAILABLE")); }
+                pins.push(pin);
+            }
+            absent = NATIVE_R5_COPY_ABSENT.iter().map(|name| self.root.join(name)).collect();
+        }
+        let result = NativeCopyResources { inventory, recipe_sha256, recipe_name, absent, pins };
         result.recheck()?; Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod r5_copy_recipe_tests {
+    use super::*;
+    fn manifest() -> Manifest {
+        let mut files: Vec<_> = NATIVE_R5_COPY_FILES.iter().map(|(path, hash)| serde_json::json!({"path":path,"bytes":1,"sha256":hash,"executable":false})).collect();
+        files.extend(NATIVE_R5_COPY_TOOLS.iter().map(|(path, bytes, hash)| serde_json::json!({"path":path,"bytes":bytes,"sha256":hash,"executable":true})));
+        serde_json::from_value(serde_json::json!({"format":"exhibitos-native-runtime-v1","mode":"local-validation","platform":"darwin-arm64","nodeVersion":"24.21.0","postgresVersion":"18.6","platformVersion":"0.1.0","protocolVersion":"1","sourceCommit":"a".repeat(40),"producerSHA256":"a".repeat(64),"entry":{"node":"bin/node","script":"platform/scripts/local-runtime.mjs","postgres":"postgres/bin/postgres","initdb":"postgres/bin/initdb"},"files":files,"redistributionQualified":false,"officialSigned":false,"remaining":"Pure manifest dispatch negatives, not Payload/admission/actual execution"})).unwrap()
+    }
+    #[test]
+    fn r5_codec_change_and_cross_recipe_hybrid_are_refused() {
+        let mut m=manifest(); assert!(r5_copy_manifest_matches(&m,NATIVE_R5_COPY_CATALOG));
+        assert!(!copy_files_match(&m,NATIVE_COPY_FILES));
+        m.files[0].sha256=Some(NATIVE_COPY_FILES[0].1.into());
+        assert!(!r5_copy_manifest_matches(&m,NATIVE_R5_COPY_CATALOG));
+    }
+    #[test]
+    fn r5_missing_is_not_accepted_as_changed_or_added_module() {
+        let mut m=manifest(); let mut entry: Item=serde_json::from_value(serde_json::json!({"path":NATIVE_R5_COPY_ABSENT[0],"bytes":0,"sha256":"0".repeat(64),"executable":false})).unwrap();
+        m.files.push(entry); assert!(!r5_copy_manifest_matches(&m,NATIVE_R5_COPY_CATALOG));
+        m.files.pop(); entry=serde_json::from_value(serde_json::json!({"path":NATIVE_R5_COPY_ABSENT[1],"bytes":0,"sha256":"0".repeat(64),"executable":false})).unwrap();
+        m.files.push(entry); assert!(!r5_copy_manifest_matches(&m,NATIVE_R5_COPY_CATALOG));
+    }
+    #[test]
+    fn r5_tool_bytes_size_and_executable_identity_are_bound() {
+        for index in NATIVE_R5_COPY_FILES.len()..NATIVE_R5_COPY_FILES.len()+NATIVE_R5_COPY_TOOLS.len() {
+            let mut m=manifest(); m.files[index].bytes=Some(7); assert!(!r5_copy_manifest_matches(&m,NATIVE_R5_COPY_CATALOG));
+            let mut m=manifest(); m.files[index].sha256=Some("0".repeat(64)); assert!(!r5_copy_manifest_matches(&m,NATIVE_R5_COPY_CATALOG));
+            let mut m=manifest(); m.files[index].executable=Some(false); assert!(!r5_copy_manifest_matches(&m,NATIVE_R5_COPY_CATALOG));
+        }
+    }
+    #[test]
+    fn r5_undeclared_absent_path_becoming_present_invalidates_resources() {
+        let root=std::env::temp_dir().join(format!("exhibitos-r5-absence-{}",uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap(); let path=root.join("migrations.js");
+        check_copy_absence(std::slice::from_ref(&path)).unwrap();
+        fs::write(&path,b"new unlisted module").unwrap();
+        assert!(check_copy_absence(std::slice::from_ref(&path)).is_err());
+        fs::remove_file(path).unwrap(); fs::remove_dir(root).unwrap();
+    }
+    #[test]
+    fn r5_other_catalog_cannot_dispatch_same_codec_to_migration() {
+        let m=manifest(); assert!(!r5_copy_manifest_matches(&m,&"a".repeat(64)));
+        let current=digest(&serde_json::to_vec(NATIVE_COPY_FILES).unwrap());
+        let r5=digest(&serde_json::to_vec(&("authenticated-native-r5-copy-v1",NATIVE_R5_COPY_FILES,NATIVE_R5_COPY_ABSENT,NATIVE_R5_COPY_CATALOG,NATIVE_R5_COPY_TOOLS)).unwrap());
+        assert_ne!(current,r5,"The existing source-target recipe digest equality refuses cross-recipe pairs");
     }
 }
