@@ -211,6 +211,22 @@ promise that every in-progress keystroke survives an unexpected exit. The server
 list's query-admission tests passed; full cross-role/tenant HTTP acceptance remains
 separate from the tested personal-admin flow. This is not release qualification.
 
+The first native light inspector source adds list-based selection, existing
+point/spot/directional/area inputs, room-local position, linear-RGB color,
+renderer intensity, full beam angle in degrees and area size. General mode
+disclosures expose the same position/color fields as Expert mode. Text stays in
+the shared exhibition model when the inspector hides or the mode changes.
+Preview requires the optional `light-inspector-v1` request and the existing
+shared full validator; the old v1 frame selection and geometry action remain
+closed. Exact reply/base/input/account binding precedes local journal Apply and
+the existing Undo/Redo, server save and export paths. Opening unsupported data
+refuses editing rather than replacing its values with defaults. Units follow
+the existing producer; changing between different units uses its default input
+of100 rather than a photometric conversion. Fixture shapes, direct3D movement,
+aiming, Kelvin, calibrated illuminance and full lighting release acceptance are
+separate. Source and synthetic unit coverage do not establish actual GUI,
+save/reopen, OEX/Viewer/static consumer or distribution qualification.
+
 
 ### Shared 3D viewport development slice (2026-10-23)
 

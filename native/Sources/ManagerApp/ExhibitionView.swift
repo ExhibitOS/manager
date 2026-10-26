@@ -128,7 +128,7 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var lightStatus = ""
     var lightDirty: Bool { light != lightBaseline }
     var lightPreviewing: Bool { lightPreview != nil }
-    var canSelectLight: Bool { canSelectCatalog && !immutable }
+    var canSelectLight: Bool { canSelectCatalog }
     var canPreviewLight: Bool {
         !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !architectureApplying && lightDirty && !lightPreviewing && viewportController.connected && viewportController.lightInspectorSupported
     }
@@ -287,16 +287,24 @@ final class ExhibitionModel: ObservableObject {
     func previewLight() async {
         guard canPreviewLight, let fields = light, let base = draft else { return }
         let access = viewportAccessID, selected = selectedLightId
-        await work {
+        do {
             let command = try fields.command()
+            _ = try command.encodedLight(in: base, selectedLightId: selected)
             architectureApplying = true
             defer { architectureApplying = false }
+            // Busy is encoded as a disabled frame. Like surface preview, keep
+            // that frame stable while the shared validator owns this request.
             let preview = try await viewportController.lightInspector(command, selectedLightId: selected)
-            guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty, !surfaceMaterialDirty,
-                  viewportAccessID == access, draft == base, preview.base == base, selectedLightId == selected,
-                  try light?.command() == command else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
-            lightPreview = preview; lightPreviewAccessID = access
-            lightStatus = "확인한 조명을 미리 보고 있습니다. 적용하면 이 Mac에 보관하며 취소하면 원래 표시로 돌아갑니다."
+            await work {
+                guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty, !surfaceMaterialDirty,
+                      architectureApplying, viewportAccessID == access, draft == base, preview.base == base, selectedLightId == selected,
+                      try light?.command() == command else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                lightPreview = preview; lightPreviewAccessID = access
+                lightStatus = "확인한 조명을 미리 보고 있습니다. 적용하면 이 Mac에 보관하며 취소하면 원래 표시로 돌아갑니다."
+            }
+        } catch {
+            failure = error as? AuthoringFailure ?? AuthoringFailure("LIGHT_PREVIEW_FAILED")
+            viewportController.diagnose("LIGHT", error)
         }
     }
     func applyLight() async {
@@ -725,7 +733,7 @@ final class ExhibitionModel: ObservableObject {
         if draft?.rooms.contains(where: { $0["id"].string == roomId }) != true { roomId = draft?.rooms.first?["id"].string ?? "" }
         selectRoom()
         if draft?.placements.contains(where: { $0["id"].string == placementId }) != true { placementId = draft?.placements.first?["id"].string ?? "" }
-        selectPlacement()
+        selectPlacement(clearLightSelection: false)
         if let selected, let draft, selected.belongs(to: draft) { viewportSelection = selected; if selected.kind != "placement" { catalogArtworkId = "" } }
         syncArchitecture()
         if let draft, draft.candidate["lights"].items?.contains(where: { $0["id"].string == selectedLightId }) == true {
@@ -750,7 +758,11 @@ final class ExhibitionModel: ObservableObject {
         default: return nil
         }
     }
-    func selectPlacement() {
+    func selectPlacement(clearLightSelection: Bool = true) {
+        if clearLightSelection {
+            guard !lightDirty, !architectureApplying else { return }
+            selectedLightId = ""; syncLight()
+        }
         guard let p = draft?.placements.first(where: { $0["id"].string == placementId }), let values = p["transform"]["position"].items, values.count == 3 else { syncInstallation(); return }
         viewportSelection = ViewportSelection(kind: "placement", id: placementId)
         catalogArtworkId = draft?.catalogSourceID(for: placementId) ?? ""
@@ -777,7 +789,7 @@ struct NativeExhibitionView: View {
         return selected.belongs(to: draft)
     }
     private var inspectorPresented: Binding<Bool> {
-        Binding(get: { inspectorVisible && hasSelectedPlacement }, set: { inspectorVisible = $0 })
+        Binding(get: { inspectorVisible && (hasSelectedPlacement || !model.selectedLightId.isEmpty) }, set: { inspectorVisible = $0 })
     }
     private var selectedInputs: Binding<InstallationInspectorState> {
         let key = [model.state?.tenantId ?? "", model.state?.principalId ?? "", model.draft?.id ?? "", model.placementId].joined(separator: ":")
@@ -812,8 +824,8 @@ struct NativeExhibitionView: View {
                     Button("다시 실행") { Task { await model.redo() } }.disabled(!model.canRedo || !ready)
                     Spacer(minLength: 0)
                     Button(inspectorPresented.wrappedValue ? "선택 속성 접기" : "선택 속성", systemImage: "sidebar.right") { inspectorVisible.toggle() }
-                        .disabled(!hasSelectedPlacement)
-                        .help("선택한 작품 배치의 속성을 오른쪽에 표시하거나 접습니다. 입력은 유지됩니다.")
+                        .disabled(!hasSelectedPlacement && model.selectedLightId.isEmpty)
+                        .help("선택한 작품 배치나 조명의 속성을 오른쪽에 표시하거나 접습니다. 입력은 유지됩니다.")
                 }
                 Form {
                     Section("전시와 공간") {
@@ -893,9 +905,15 @@ struct NativeExhibitionView: View {
             Button("작업 공간 다시 연결") { Task { await connect() } }.disabled(!ready || model.busy)
         }
         .inspector(isPresented: inspectorPresented) {
-            SelectedPlacementInspector(model: model, ready: ready, mode: mode, inputs: selectedInputs)
-                .id(model.placementId)
+            if !model.selectedLightId.isEmpty {
+                SelectedLightInspector(model: model, controller: model.viewportController, ready: ready, mode: mode)
+                    .id(model.selectedLightId)
+            } else {
+                SelectedPlacementInspector(model: model, ready: ready, mode: mode, inputs: selectedInputs)
+                    .id(model.placementId)
+            }
         }
+        .onChange(of: model.selectedLightId) { _, id in if !id.isEmpty { inspectorVisible = true } }
         .task(id: ready) { if ready { await connect() } }
         .onChange(of: model.roomId) { _, _ in model.selectRoom() }
         .onChange(of: model.placementId) { _, _ in model.selectPlacement() }
