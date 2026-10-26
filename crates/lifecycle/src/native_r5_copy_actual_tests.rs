@@ -88,7 +88,14 @@ fn actual_r5_signed_admission_authenticated_inactive_copy() {
         if p!=profile || id!=source_id || r!=Path::new(&source_service_root) || registry.active_id!=source_id { return Err(crate::err("NATIVE_SOURCE_OBSERVATION_STALE")); } Ok(())
     }).unwrap();
     policy.format=2; policy.target="macos-arm64".into(); policy.source_schema_sha256=measured.schema_sha256.clone();
+    // Transfer the profile anchor from Controller to Store under the existing
+    // profile operation fence. Both DB Session/root fences remain held. Store
+    // requires an exclusive anchor; a live Controller owns a conflicting one.
+    let profile_service=crate::LifecycleService::bound_existing(profile.clone()).unwrap();
+    let handoff=profile_service.lock().unwrap();
+    drop(controller);
     let store=Store::provision(&profile,"default",policy,10).unwrap();
+    drop(handoff);
     let (source_envelope,source_staged)=release_for(&key,&store,&source_payload,&root,"source-native-runtime.tar",&measured.schema_sha256);
     let mut source_admitted=store.admit_native_payload(&source_envelope,source_staged,source_payload,20).unwrap();
     let (target_envelope,target_staged)=release_for(&key,&store,&target_payload,&root,"target-native-runtime.tar",&measured.schema_sha256);
@@ -101,7 +108,7 @@ fn actual_r5_signed_admission_authenticated_inactive_copy() {
     let prepared=store.prepare_native_target_copy(&mut admitted,&mut source,&mut source_session,&mut target_session,&target_id,&operation,20).unwrap();
     let receipt=serde_json::to_value(prepared.receipt()).unwrap(); assert_eq!(receipt["state"],"PreparedInactive");
     for flag in ["configurationVerified","preflightVerified","executionPermitted"] { assert_eq!(receipt[flag],false); assert_eq!(receipt["observation"][flag],false); }
-    assert_eq!(controller.context().unwrap().active_id,source_id);
+    assert_eq!(crate::installations::load(&profile).unwrap().unwrap().0.active_id,source_id);
     let intent: serde_json::Value=serde_json::from_slice(&fs::read(Path::new(&candidate).join(format!("native-target-preparation-{operation}/intent.json"))).unwrap()).unwrap();
     assert_eq!(intent["recipe"],"authenticated-native-r5-copy-v1"); assert_eq!(intent["state"],"PreparedInactive");
     // Persist only public outcome metadata; no keys, DB credentials, raw source
