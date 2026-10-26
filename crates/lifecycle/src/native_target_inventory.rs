@@ -61,6 +61,13 @@ impl AuthenticatedNativeBackup {
     ) -> Result<NativeTargetEvidence> {
         let profile = LifecycleService::bound_existing(self.profile_root.clone())?;
         let _profile = profile_lock(&profile)?;
+        self.observe_target_locked(source, target, target_schema, check_selection)
+    }
+    /// The same observer while the preparation adapter retains profile lock.
+    pub(super) fn observe_target_locked(
+        &self, source: &mut Session, target: &mut Session, target_schema: &str,
+        mut check_selection: impl FnMut(&Path, &str, &Path, &Path) -> Result<()>,
+    ) -> Result<NativeTargetEvidence> {
         let target_root = target.target_observation_root().to_owned();
         if [
             &self.source_root,
