@@ -166,6 +166,7 @@ struct CoverEntrySettingsView: View {
 
 struct CoverEntryPreviewControls: View {
     @ObservedObject var model: ExhibitionModel
+    @ObservedObject var viewport: NativeViewportController
     @Environment(\.accessibilityReduceMotion) private var reducedMotion
     let ready: Bool
     let mode: Mode
@@ -199,7 +200,7 @@ struct CoverEntryPreviewControls: View {
                         .help("진행 중인 준비를 취소하고 같은 입력·선택·실행 취소 이력으로 돌아갑니다.")
                 }
                 if model.entrancePreviewBusy { ProgressView().controlSize(.small) }
-                if !model.viewportController.entrancePreviewSupported {
+                if !viewport.entrancePreviewSupported {
                     Text("현재 연결은 표지 미리보기를 지원하지 않습니다. 저장된 설정과 편집 입력은 유지됩니다.").foregroundStyle(.secondary)
                 }
                 if !model.entrancePreviewStatus.isEmpty { Text(model.entrancePreviewStatus).foregroundStyle(.secondary) }
@@ -232,6 +233,6 @@ struct CoverEntryPreviewControls: View {
         Button("걸어보기") { model.previewEntrance(.walk, systemReducedMotion: reducedMotion) }.disabled(!available)
     }
     private var available: Bool {
-        ready && model.entranceEditable && model.viewportController.connected && model.viewportController.entrancePreviewSupported && !model.entrancePreviewBusy && !model.busy && !model.pending
+        ready && model.entranceEditable && viewport.connected && viewport.entrancePreviewSupported && !model.entrancePreviewBusy && !model.busy && !model.pending
     }
 }

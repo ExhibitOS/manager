@@ -1409,7 +1409,7 @@ struct NativeExhibitionView: View {
                         .disabled(!hasSelectedPlacement && model.selectedLightId.isEmpty && model.selectedBenchId.isEmpty && model.selectedPlaqueId.isEmpty)
                         .help("선택한 작품 배치·조명·벤치·명판의 속성을 오른쪽에 표시하거나 접습니다. 입력은 유지됩니다.")
                 }
-                CoverEntryPreviewControls(model: model, ready: ready, mode: mode)
+                CoverEntryPreviewControls(model: model, viewport: model.viewportController, ready: ready, mode: mode)
                 Form {
                     Section("전시와 공간") {
                         TextField("전시 제목", text: $model.title)
