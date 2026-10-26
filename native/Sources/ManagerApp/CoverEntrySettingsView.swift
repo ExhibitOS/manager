@@ -75,7 +75,6 @@ struct CoverEntrySettingsView: View {
                 Picker("모바일 연출", selection: choice("effects", "mobile")) {
                     Text("테마 기본값").tag(""); Text("간단하게").tag("simple"); Text("없음").tag("none")
                 }
-                Button("배치·연출을 이 테마 기본값으로") { model.coverEntry.resetLayoutAndEffects() }
                 Text("관람자의 동작 줄이기 설정이 우선합니다. 저장한 설정은 바뀌지 않습니다.").foregroundStyle(.secondary)
             }
             DisclosureGroup("언어별 글") {
