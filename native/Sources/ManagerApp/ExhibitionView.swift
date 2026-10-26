@@ -134,7 +134,7 @@ final class ExhibitionModel: ObservableObject {
     }
     var canApplyLight: Bool {
         guard !busy, !pending, !immutable, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
-              !surfaceMaterialDirty, !architectureApplying, viewportController.connected,
+              !surfaceMaterialDirty, !architectureApplying, viewportController.connected, viewportController.lightInspectorSupported,
               lightPreviewAccessID == viewportAccessID, let preview = lightPreview, preview.base == draft,
               selectedLightId == preview.command.lightId, let fields = light else { return false }
         return (try? fields.command()) == preview.command
@@ -184,7 +184,7 @@ final class ExhibitionModel: ObservableObject {
         // An owned begin/commit (including its store write) must finish before
         // credentials or store closures can change. A stable ghost can cancel
         // against its OLD connection, then reconnect through normal initialization.
-        guard !busy, !placementApplying else { return }
+        guard !busy, !placementApplying, !architectureApplying else { return }
         await cancelVisualArtworkPlacement()
         // Cancellation awaits the old renderer. Another owned operation may
         // have started in the meantime; never replace its account/store binding.
@@ -198,6 +198,9 @@ final class ExhibitionModel: ObservableObject {
         viewportCredentials = credentials
         if accessChanged { viewportAccessID = UUID(); surfaceMaterialPreview = nil; lightPreview = nil; lightPreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
         self.read = read; self.write = write
+        // Reconnecting may replace the native store closures even for the same
+        // account/origin. Keep text, but never apply a prior binding's preview.
+        lightPreview = nil; lightPreviewAccessID = nil
         await work {
             if state == nil {
                 let stored = try await read()

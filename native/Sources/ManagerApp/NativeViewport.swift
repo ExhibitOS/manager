@@ -241,7 +241,8 @@ struct NativeViewport: NSViewRepresentable {
                 let json = String(decoding: try JSONEncoder().encode(request.value), as: UTF8.self)
                 let response = try await web.callAsyncJavaScript("if (typeof window.exhibitosViewport?.lightInspector !== 'function') throw new Error('VIEWPORT_NOT_READY'); return await window.exhibitosViewport.lightInspector(JSON.parse(requestJSON));", arguments: ["requestJSON": json], in: nil, contentWorld: .page)
                 try Task.checkCancellation()
-                guard self.active, self.controller.owner == self.epoch, self.generation == generation,
+                guard self.active, self.prepared, self.controller.lightInspectorSupported, self.controller.connected,
+                      self.controller.owner == self.epoch, self.generation == generation,
                       self.latest?.sequence == frame.sequence, self.placementIntent == nil,
                       let response, JSONSerialization.isValidJSONObject(response) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 let bytes = try JSONSerialization.data(withJSONObject: response)
