@@ -220,6 +220,8 @@ struct CoverEntryPreviewControls: View {
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
         }
+        .onAppear { model.entranceSystemReducedMotion = reducedMotion }
+        .onChange(of: reducedMotion) { _, value in model.entranceSystemReducedMotion = value }
     }
     @ViewBuilder private var previewButtons: some View {
         Button("실제 테마 썸네일 불러오기") { model.previewEntrance(thumbnails: true, systemReducedMotion: reducedMotion) }

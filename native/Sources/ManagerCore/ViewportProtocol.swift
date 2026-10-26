@@ -64,14 +64,12 @@ public struct ViewportEntrancePreviewRequest: Sendable {
     public let value: DocumentValue
     public let action: EntrancePreviewAction
     public let device: EntrancePreviewDevice
-    public let theme: CoverEntryTheme
     public init(frame: ViewportFrame, action: EntrancePreviewAction, device: EntrancePreviewDevice, scenario: EntrancePreviewScenario, reducedMotion: Bool, theme: CoverEntryTheme? = nil, locale: String? = nil) throws {
         guard frame.sequence > 0, [frame.epoch, frame.tenantId, frame.principalId].allSatisfy({ UUID(uuidString: $0) != nil }) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
         if let locale {
             guard locale.utf16.count <= 35, locale.range(of: "^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$", options: .regularExpression) != nil else { throw AuthoringFailure("VIEWER_ENTRANCE_INVALID") }
         }
         self.frame = frame; self.action = action; self.device = device
-        self.theme = try theme ?? frame.draft.viewerEntranceSettings().design?.theme ?? .catalogue
         value = .object([
             "version": .integer(1), "epoch": .string(frame.epoch), "sequence": .integer(Int64(frame.sequence)),
             "tenantId": .string(frame.tenantId), "principalId": .string(frame.principalId), "requestId": .string(UUID().uuidString.lowercased()),
@@ -81,12 +79,12 @@ public struct ViewportEntrancePreviewRequest: Sendable {
     }
     public func checkedReply(_ reply: DocumentValue) throws -> ViewportEntrancePreviewReply {
         let binding: Set<String> = ["version", "epoch", "sequence", "tenantId", "principalId", "requestId"]
-        let extra: Set<String> = ["baseDraft", "theme", "device", "scenario", "reducedMotion", "status", "mode", "renderGeneration", "imageStatus", "viewport", "snapshotRect"]
+        let extra: Set<String> = ["baseDraft", "theme", "locale", "device", "scenario", "reducedMotion", "status", "mode", "renderGeneration", "imageStatus", "viewport", "snapshotRect"]
         guard case .object(let fields) = reply, Set(fields.keys) == binding.union(extra),
               try JSONEncoder().encode(reply).count <= 1_100_000 else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
         for key in binding { guard reply[key] == value[key] else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") } }
-        for key in ["device", "scenario", "reducedMotion"] { guard reply[key] == value[key] else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") } }
-        guard reply["baseDraft"] == frame.draft.document, reply["theme"].string == theme.rawValue, reply["status"].string == "ready",
+        for key in ["theme", "locale", "device", "scenario", "reducedMotion"] { guard reply[key] == value[key] else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") } }
+        guard reply["baseDraft"] == frame.draft.document, reply["status"].string == "ready",
               reply["mode"].string == (action == .close ? "editor" : action == .walk ? "walk" : "cover"),
               let renderGeneration = reply["renderGeneration"].integer, (1...9_007_199_254_740_991).contains(renderGeneration),
               ["absent", "ready", "failed"].contains(reply["imageStatus"].string ?? ""),
@@ -99,6 +97,12 @@ public struct ViewportEntrancePreviewRequest: Sendable {
               let x = rectangle["x"]?.double, let y = rectangle["y"]?.double, let w = rectangle["width"]?.double, let h = rectangle["height"]?.double,
               [x, y, w, h].allSatisfy({ $0.isFinite }), x >= 0, y >= 0, w > 0, h > 0, x + w <= width, y + h <= height else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
         return ViewportEntrancePreviewReply(value: reply, renderGeneration: renderGeneration, snapshotRect: CGRect(x: x, y: y, width: w, height: h))
+    }
+    /// A late result may only populate the currently requested preview context.
+    public func matchesContext(draft: NativeExhibitionDraft, device: EntrancePreviewDevice, scenario: EntrancePreviewScenario, reducedMotion: Bool, theme: CoverEntryTheme?, locale: String?) -> Bool {
+        guard frame.draft == draft, value["device"].string == device.rawValue,
+              value["scenario"].string == scenario.rawValue, value["reducedMotion"] == .bool(reducedMotion) else { return false }
+        return value["theme"] == (theme.map { .string($0.rawValue) } ?? .null) && value["locale"] == (locale.map { .string($0) } ?? .null)
     }
 }
 

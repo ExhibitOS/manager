@@ -13,6 +13,10 @@ struct NativeEntrancePreviewInput {
     let locale: String?
     let draft: NativeExhibitionDraft
 }
+struct NativeEntrancePreviewOutput {
+    let request: ViewportEntrancePreviewRequest
+    let png: Data?
+}
 
 @MainActor
 final class NativeViewportController: ObservableObject {
@@ -28,8 +32,8 @@ final class NativeViewportController: ObservableObject {
     @Published fileprivate(set) var plaqueInspectorSupported = false
     @Published fileprivate(set) var entrancePreviewSupported = false
     fileprivate var entranceAcceptedDraft: NativeExhibitionDraft?
-    fileprivate var entrancePreviewAction: ((NativeEntrancePreviewInput) async throws -> Data?)?
-    func entrancePreview(_ input: NativeEntrancePreviewInput) async throws -> Data? {
+    fileprivate var entrancePreviewAction: ((NativeEntrancePreviewInput) async throws -> NativeEntrancePreviewOutput)?
+    func entrancePreview(_ input: NativeEntrancePreviewInput) async throws -> NativeEntrancePreviewOutput {
         // The explicitly staged display draft must pass the ordinary frame
         // handshake before any preview request can name that frame.
         for _ in 0..<100 {
@@ -336,9 +340,9 @@ struct NativeViewport: NSViewRepresentable {
                 guard let width = reply.value["viewport"]["width"].double, let height = reply.value["viewport"]["height"].double,
                       abs(width - Double(web.bounds.width)) <= 0.5, abs(height - Double(web.bounds.height)) <= 0.5 else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 acceptedViewport = web.bounds.size
-                guard input.action == .thumbnail else { return nil }
+                guard input.action == .thumbnail else { return NativeEntrancePreviewOutput(request: request, png: nil) }
                 // A fallback layout is not proof of an actual space image.
-                if input.theme == .threshold, reply.value["imageStatus"].string != "ready" { return nil }
+                if input.theme == .threshold, reply.value["imageStatus"].string != "ready" { return NativeEntrancePreviewOutput(request: request, png: nil) }
                 guard reply.snapshotRect.height / reply.snapshotRect.width <= 4 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
                 let scale = web.window?.backingScaleFactor ?? 1
                 guard scale.isFinite, (1...4).contains(scale) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
@@ -351,7 +355,7 @@ struct NativeViewport: NSViewRepresentable {
                 try current(); try reply.recheck(decode(state), request: request)
                 guard let image = snapshot, let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff), bitmap.pixelsWide <= 258,
                       bitmap.pixelsHigh <= 1032, let png = bitmap.representation(using: .png, properties: [:]), png.count <= 1_048_576 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
-                return png
+                return NativeEntrancePreviewOutput(request: request, png: png)
             }
             controller.furnishingVisualsAction = { [weak self] command in
                 guard let self, self.active, self.controller.owner == self.epoch, self.controller.furnishingVisualsSupported,

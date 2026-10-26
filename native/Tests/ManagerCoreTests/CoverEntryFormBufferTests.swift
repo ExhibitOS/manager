@@ -10,8 +10,8 @@ final class CoverEntryFormBufferTests: XCTestCase {
     }
     private func previewReply(_ request: ViewportEntrancePreviewRequest) -> DocumentValue {
         var fields: [String: DocumentValue] = [:]
-        for key in ["version", "epoch", "sequence", "tenantId", "principalId", "requestId", "device", "scenario", "reducedMotion"] { fields[key] = request.value[key] }
-        fields["baseDraft"] = request.frame.draft.document; fields["theme"] = .string(request.theme.rawValue)
+        for key in ["version", "epoch", "sequence", "tenantId", "principalId", "requestId", "device", "scenario", "reducedMotion", "theme", "locale"] { fields[key] = request.value[key] }
+        fields["baseDraft"] = request.frame.draft.document
         fields["status"] = .string("ready"); fields["mode"] = .string("cover"); fields["renderGeneration"] = .integer(7)
         fields["imageStatus"] = .string("failed"); fields["viewport"] = .object(["width": .integer(360), "height": .integer(740)])
         fields["snapshotRect"] = .object(["x": .integer(0), "y": .integer(0), "width": .integer(360), "height": .integer(740)])
@@ -47,6 +47,38 @@ final class CoverEntryFormBufferTests: XCTestCase {
         XCTAssertThrowsError(try request.checkedReply(wrongMode))
         XCTAssertEqual(request.frame.draft, original)
         XCTAssertEqual(request.frame.draft.candidate["extensions"][ViewerEntranceSettings.namespace], .null)
+    }
+    func testLateThumbnailContextRejectsChangedOptionsAndDraft() throws {
+        let request = try previewRequest(), draft = request.frame.draft
+        func matches(_ draft: NativeExhibitionDraft, device: EntrancePreviewDevice = .mobile, scenario: EntrancePreviewScenario = .imageFailed,
+                     reduced: Bool = true, theme: CoverEntryTheme? = .poster, locale: String? = "ko-KR") -> Bool {
+            request.matchesContext(draft: draft, device: device, scenario: scenario, reducedMotion: reduced, theme: theme, locale: locale)
+        }
+        XCTAssertTrue(matches(draft))
+        XCTAssertFalse(matches(draft, device: .desktop))
+        XCTAssertFalse(matches(draft, scenario: .slow))
+        XCTAssertFalse(matches(draft, reduced: false))
+        XCTAssertFalse(matches(draft, theme: nil))
+        XCTAssertFalse(matches(draft, locale: "en-US"))
+        XCTAssertFalse(matches(draft, locale: nil))
+        XCTAssertFalse(matches(try NativeExhibitionDraft.new(title: "다른 전시")))
+    }
+    func testCloseRequiresEditorAckAndExactNullableThemeLocaleEcho() throws {
+        let original = try previewRequest()
+        let close = try ViewportEntrancePreviewRequest(frame: original.frame, action: .close, device: .mobile, scenario: .normal, reducedMotion: false)
+        var ready = previewReply(close); ready["mode"] = .string("editor")
+        XCTAssertEqual(ready["theme"], .null); XCTAssertEqual(ready["locale"], .null)
+        XCTAssertNoThrow(try close.checkedReply(ready))
+        var notClosed = ready; notClosed["mode"] = .string("cover")
+        XCTAssertThrowsError(try close.checkedReply(notClosed))
+        var resolvedInsteadOfEchoed = ready; resolvedInsteadOfEchoed["theme"] = .string("catalogue")
+        XCTAssertThrowsError(try close.checkedReply(resolvedInsteadOfEchoed))
+        var wrongLocale = ready; wrongLocale["locale"] = .string("ko-KR")
+        XCTAssertThrowsError(try close.checkedReply(wrongLocale))
+        if case .object(var missing) = ready {
+            missing.removeValue(forKey: "locale")
+            XCTAssertThrowsError(try close.checkedReply(.object(missing)))
+        }
     }
     func testSparseThemesRoundTripWithoutResolvingDefaultsOrChangingCandidate() throws {
         for theme in CoverEntryTheme.allCases {

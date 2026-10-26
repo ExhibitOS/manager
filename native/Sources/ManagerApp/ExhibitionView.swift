@@ -80,10 +80,10 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var exportedURL: URL?
     @Published private(set) var exportedSHA256: String?
     @Published var query = ""
-    @Published var title = "" { didSet { if oldValue != title { entranceThumbnails = [:] } } }
-    @Published var entrance = ViewerEntranceSettings() { didSet { entranceThumbnails = [:] } }
+    @Published var title = "" { didSet { if oldValue != title { invalidateEntranceThumbnails() } } }
+    @Published var entrance = ViewerEntranceSettings() { didSet { invalidateEntranceThumbnails() } }
     @Published var coverEntry = CoverEntryFormBuffer(design: nil) {
-        didSet { if Self.entranceThumbnailContent(oldValue) != Self.entranceThumbnailContent(coverEntry) { entranceThumbnails = [:] } }
+        didSet { if Self.entranceThumbnailContent(oldValue) != Self.entranceThumbnailContent(coverEntry) { invalidateEntranceThumbnails() } }
     }
     private static func entranceThumbnailContent(_ fields: CoverEntryFormBuffer) -> DocumentValue? {
         guard let design = try? fields.value(), case .object(var value) = design.raw else { return nil }
@@ -92,11 +92,18 @@ final class ExhibitionModel: ObservableObject {
         for key in ["theme", "layout", "effects"] { value.removeValue(forKey: key) }
         return .object(value)
     }
-    @Published var entrancePreviewDevice = EntrancePreviewDevice.desktop
-    @Published var entrancePreviewScenario = EntrancePreviewScenario.normal
-    @Published var entrancePreviewReducedMotion = false
-    @Published var entrancePreviewLocale = ""
+    @Published var entrancePreviewDevice = EntrancePreviewDevice.desktop { didSet { if oldValue != entrancePreviewDevice { invalidateEntranceThumbnails() } } }
+    @Published var entrancePreviewScenario = EntrancePreviewScenario.normal { didSet { if oldValue != entrancePreviewScenario { invalidateEntranceThumbnails() } } }
+    @Published var entrancePreviewReducedMotion = false { didSet { if oldValue != entrancePreviewReducedMotion { invalidateEntranceThumbnails() } } }
+    @Published var entrancePreviewLocale = "" { didSet { if oldValue != entrancePreviewLocale { invalidateEntranceThumbnails() } } }
+    @Published var entranceSystemReducedMotion = false { didSet { if oldValue != entranceSystemReducedMotion { invalidateEntranceThumbnails() } } }
     @Published private(set) var entranceThumbnails: [CoverEntryTheme: Data] = [:]
+    private var entranceThumbnailGeneration = UUID()
+    private func invalidateEntranceThumbnails() {
+        entranceThumbnailGeneration = UUID()
+        if !entranceThumbnails.isEmpty { entrancePreviewStatus = "" }
+        entranceThumbnails = [:]
+    }
     @Published private(set) var entrancePreviewStatus = ""
     @Published private(set) var entrancePreviewBusy = false
     @Published private(set) var entrancePreviewDraft: NativeExhibitionDraft?
@@ -119,7 +126,16 @@ final class ExhibitionModel: ObservableObject {
     private var installationBaseline = InstallationFormBuffer(settings: nil)
     let viewportController = NativeViewportController()
     var installationDirty: Bool { installation != installationBaseline }
-    var viewportDraft: NativeExhibitionDraft? { (entrancePreviewBase == draft ? entrancePreviewDraft : nil) ?? furnishingPreview?.displayDraft ?? spaceLightingPreview?.displayDraft ?? plaquePreview?.displayDraft ?? benchPreview?.displayDraft ?? lightPreview?.displayDraft ?? surfaceMaterialPreview?.displayDraft ?? (installationDirty ? (installationPreview ?? draft) : draft) }
+    var viewportDraft: NativeExhibitionDraft? {
+        if entrancePreviewBase == draft, let value = entrancePreviewDraft { return value }
+        if let value = furnishingPreview?.displayDraft { return value }
+        if let value = spaceLightingPreview?.displayDraft { return value }
+        if let value = plaquePreview?.displayDraft { return value }
+        if let value = benchPreview?.displayDraft { return value }
+        if let value = lightPreview?.displayDraft { return value }
+        if let value = surfaceMaterialPreview?.displayDraft { return value }
+        return installationDirty ? (installationPreview ?? draft) : draft
+    }
     @Published var positionXText = "0.0"
     @Published var positionYText = "1.0"
     @Published var positionZText = "0.0"
@@ -391,7 +407,7 @@ final class ExhibitionModel: ObservableObject {
         self.api = api; self.session = session
         let accessChanged = viewportCredentials?.token != credentials.token || viewportCredentials?.origin != credentials.origin
         viewportCredentials = credentials
-        if accessChanged { entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entrancePreviewBusy = false; entranceThumbnails = [:]; viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
+        if accessChanged { entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
         self.read = read; self.write = write
         // Reconnecting may replace the native store closures even for the same
         // account/origin. Keep text, but never apply a prior binding's preview.
@@ -413,8 +429,10 @@ final class ExhibitionModel: ObservableObject {
               !surfaceMaterialPreviewing, !lightPreviewing, !benchPreviewing, !plaquePreviewing, !furnishingPreviewing, !spaceLightingPreviewing,
               let base = draft else { return }
         do {
+            entranceSystemReducedMotion = systemReducedMotion
             let display = try entrancePreviewDraft ?? appliedFields()
             let access = viewportAccessID, generation = UUID()
+            let thumbnailGeneration = entranceThumbnailGeneration
             let device = entrancePreviewDevice, scenario = entrancePreviewScenario
             let reduced = systemReducedMotion || entrancePreviewReducedMotion
             let locale = entrancePreviewLocale.isEmpty ? nil : entrancePreviewLocale
@@ -423,10 +441,14 @@ final class ExhibitionModel: ObservableObject {
             entrancePreviewStatus = thumbnails ? "실제 표지 화면을 준비하고 있습니다." : "관람 미리보기를 준비하고 있습니다."
             entrancePreviewTask = Task { [weak self] in
                 guard let self else { return }
-                @MainActor func check() throws {
+                @MainActor func check(_ output: NativeEntrancePreviewOutput, theme: CoverEntryTheme? = nil) throws {
                     try Task.checkCancellation()
                     guard self.entrancePreviewGeneration == generation, self.viewportAccessID == access,
-                          self.draft == base, self.entrancePreviewDraft == display else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                          self.draft == base, self.entrancePreviewDraft == display,
+                          !thumbnails || self.entranceThumbnailGeneration == thumbnailGeneration,
+                          output.request.matchesContext(draft: display, device: self.entrancePreviewDevice, scenario: self.entrancePreviewScenario,
+                                                        reducedMotion: self.entranceSystemReducedMotion || self.entrancePreviewReducedMotion,
+                                                        theme: theme, locale: self.entrancePreviewLocale.isEmpty ? nil : self.entrancePreviewLocale) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 }
                 func input(_ action: EntrancePreviewAction, theme: CoverEntryTheme? = nil) -> NativeEntrancePreviewInput {
                     NativeEntrancePreviewInput(action: action, device: device, scenario: scenario, reducedMotion: reduced, theme: theme, locale: locale, draft: display)
@@ -434,17 +456,17 @@ final class ExhibitionModel: ObservableObject {
                 do {
                     if thumbnails {
                         for theme in CoverEntryTheme.allCases {
-                            let bytes = try await self.viewportController.entrancePreview(input(.thumbnail, theme: theme))
-                            try check()
-                            if let bytes { self.entranceThumbnails[theme] = bytes }
+                            let output = try await self.viewportController.entrancePreview(input(.thumbnail, theme: theme))
+                            try check(output, theme: theme)
+                            if let bytes = output.png { self.entranceThumbnails[theme] = bytes }
                         }
-                        _ = try await self.viewportController.entrancePreview(input(.close))
-                        try check()
+                        let output = try await self.viewportController.entrancePreview(input(.close))
+                        try check(output)
                         self.entrancePreviewDraft = nil; self.entrancePreviewBase = nil
                         self.entrancePreviewStatus = self.entranceThumbnails.count == 5 ? "같은 전시의 실제 표지 다섯 가지를 불러왔습니다." : "공간의 문턱은 확인된 공간 이미지가 필요합니다. 준비된 표지는 사용할 수 있습니다."
                     } else {
-                        _ = try await self.viewportController.entrancePreview(input(action))
-                        try check()
+                        let output = try await self.viewportController.entrancePreview(input(action))
+                        try check(output)
                         self.entrancePreviewStatus = action == .walk ? "같은 전시를 관람하고 있습니다. 편집 복귀로 입력과 시점을 이어갑니다." : "관람객에게 보이는 실제 표지입니다. 미리보기는 저장하지 않습니다."
                     }
                 } catch {
@@ -462,14 +484,22 @@ final class ExhibitionModel: ObservableObject {
         entrancePreviewTask?.cancel(); entrancePreviewGeneration = generation; entrancePreviewBusy = true
         entrancePreviewTask = Task { [weak self] in
             guard let self else { return }
-            if let display, self.viewportController.connected, self.viewportController.entrancePreviewSupported {
+            do {
+                guard let display else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 let input = NativeEntrancePreviewInput(action: .close, device: self.entrancePreviewDevice, scenario: self.entrancePreviewScenario,
-                                                      reducedMotion: self.entrancePreviewReducedMotion, theme: nil, locale: nil, draft: display)
-                _ = try? await self.viewportController.entrancePreview(input)
+                                                      reducedMotion: self.entranceSystemReducedMotion || self.entrancePreviewReducedMotion,
+                                                      theme: nil, locale: self.entrancePreviewLocale.isEmpty ? nil : self.entrancePreviewLocale, draft: display)
+                _ = try await self.viewportController.entrancePreview(input)
+            } catch {
+                if self.entrancePreviewGeneration == generation {
+                    self.entrancePreviewBusy = false; self.entrancePreviewTask = nil
+                    self.entrancePreviewStatus = "편집 복귀를 확인하지 못했습니다. 미리보기와 입력을 유지합니다. 연결을 확인한 뒤 편집 복귀를 다시 선택하세요."
+                    self.viewportController.diagnose("ENTRANCE_CLOSE", error)
+                }
+                return
             }
             guard self.entrancePreviewGeneration == generation else { return }
-            // A new ordinary frame also invalidates any failed/aborted host
-            // close; stale read-only callbacks cannot reach this generation.
+            // Unlock only after the current host acknowledged editor mode.
             self.entrancePreviewDraft = nil; self.entrancePreviewBase = nil; self.entrancePreviewBusy = false; self.entrancePreviewTask = nil
             self.entrancePreviewStatus = "편집으로 돌아왔습니다. 입력·선택·실행 취소 이력은 유지됩니다."
         }
