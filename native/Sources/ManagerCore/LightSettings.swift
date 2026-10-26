@@ -125,6 +125,9 @@ public struct LightFormBuffer: Equatable, Sendable {
         intensity = try text(row["intensity"])
         x = try text(position[0]); y = try text(position[1]); z = try text(position[2])
         originalBeamRadians = row["beamAngle"].double
+        if type == .spot {
+            guard let angle = originalBeamRadians, angle.isFinite else { throw LightCommand.invalid() }
+        }
         originalBeamDegrees = originalBeamRadians.map { String($0 * 180 / .pi) } ?? "45.0"
         beamDegrees = originalBeamDegrees
         width = type == .area ? try text(row["dimensions"]["width"]) : "1.0"

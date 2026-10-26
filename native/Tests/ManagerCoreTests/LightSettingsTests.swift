@@ -123,6 +123,11 @@ final class LightSettingsTests: XCTestCase {
     }
     func testUnsupportedExistingParametersAndAmbiguousIdsArePreservedAndRefused() throws {
         let draft = try fixture()
+        var malformed = draft, malformedCandidate = draft.candidate, malformedRows = malformedCandidate["lights"].items!
+        malformedRows[0]["beamAngle"] = .string("unsupported")
+        malformedCandidate["lights"] = .array(malformedRows); try malformed.replaceCandidate(malformedCandidate)
+        XCTAssertThrowsError(try LightFormBuffer(draft: malformed, selectedLightId: first))
+        XCTAssertEqual(malformed.candidate, malformedCandidate, "Never replace an unsupported stored angle with a default")
         for key in ["beamAngle", "unit", "roomId"] {
             var changed = draft, candidate = draft.candidate, rows = candidate["lights"].items!
             if case .object(var map) = rows[0] { map.removeValue(forKey: key); rows[0] = .object(map) }
