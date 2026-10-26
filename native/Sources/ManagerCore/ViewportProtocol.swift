@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
+import CoreGraphics
 
 public struct ViewportSelection: Codable, Equatable, Sendable {
     public let kind: String
