@@ -127,6 +127,7 @@ public struct CoverEntryFormBuffer: Equatable, Sendable {
     public var translations: [Translation]
     private var initialTranslations: [Translation]
     private var initialNumbers: [NumberField: String]
+    private var serializationNumbers: [NumberField: String]
     private var initialDesign: CoverEntryDesign?
     public init(design: CoverEntryDesign?) {
         self.design = design; initialDesign = design
@@ -137,7 +138,7 @@ public struct CoverEntryFormBuffer: Equatable, Sendable {
             else { value = design?.field(field.group, field.rawValue).double }
             fields[field] = value.map { String($0) } ?? ""
         }
-        numbers = fields; initialNumbers = fields
+        numbers = fields; initialNumbers = fields; serializationNumbers = fields
         translations = (design?.raw["translations"].items ?? []).map { Translation(fields: $0) }
         initialTranslations = translations
     }
@@ -152,7 +153,12 @@ public struct CoverEntryFormBuffer: Equatable, Sendable {
     }
     public mutating func resetLayoutAndEffects() {
         design?.resetLayoutAndEffects()
-        for field in NumberField.allCases where field.group != "image" { numbers[field] = "" }
+        for field in NumberField.allCases where field.group != "image" {
+            numbers[field] = ""
+            // Reset removed these authored fields. Subsequent text must be
+            // compared with that empty state, even if it equals the old value.
+            serializationNumbers[field] = ""
+        }
     }
     public func value() throws -> CoverEntryDesign? {
         var result = design
@@ -166,7 +172,7 @@ public struct CoverEntryFormBuffer: Equatable, Sendable {
             guard let n = Double(text), n.isFinite, text == text.trimmingCharacters(in: .whitespacesAndNewlines) else { throw AuthoringFailure("VIEWER_ENTRANCE_INVALID") }
             return n
         }
-        for field in NumberField.allCases where field != .focusX && field != .focusY && numbers[field] != initialNumbers[field] {
+        for field in NumberField.allCases where field != .focusX && field != .focusY && numbers[field] != serializationNumbers[field] {
             if result == nil { result = CoverEntryDesign(theme: .catalogue) }
             result?.set(field.group, field.rawValue, try parsed(field).map { .number($0) })
         }

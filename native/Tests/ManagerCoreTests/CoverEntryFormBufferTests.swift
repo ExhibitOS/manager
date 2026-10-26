@@ -77,6 +77,28 @@ final class CoverEntryFormBufferTests: XCTestCase {
         XCTAssertEqual(changed.raw["palette"], design.raw["palette"])
     }
 
+    func testResetThenRetypeOriginalNumberUsesVisibleValue() throws {
+        var saved = CoverEntryDesign(theme: .poster)
+        saved.set("layout", "margin", .number(12))
+        saved.set("effects", "strength", .number(0.25))
+        saved.set("image", "focus", .vector([0.25, 0.75]))
+        var fields = CoverEntryFormBuffer(design: saved)
+        let oldMargin = fields.numbers[.margin], oldStrength = fields.numbers[.strength]
+        fields.resetLayoutAndEffects()
+        XCTAssertEqual(try fields.value()?.raw["layout"], .null)
+        fields.numbers[.margin] = oldMargin
+        fields.numbers[.strength] = oldStrength
+        let result = try XCTUnwrap(fields.value())
+        XCTAssertEqual(result.raw["layout"]["margin"], .number(12))
+        XCTAssertEqual(result.raw["effects"]["strength"], .number(0.25))
+        XCTAssertEqual(result.raw["image"], saved.raw["image"])
+        XCTAssertEqual(fields.numbers[.margin], oldMargin)
+        // The same comparison rebase is required for explicit theme changes.
+        fields.selectTheme(.invitation)
+        fields.numbers[.margin] = oldMargin
+        XCTAssertEqual(try fields.value()?.raw["layout"]["margin"], .number(12))
+    }
+
     func testBoundariesThemeCompatibilityLocalesAndEscapedBudget() throws {
         func check(_ group: String?, _ field: String, _ value: DocumentValue, theme: CoverEntryTheme = .poster, accepted: Bool) {
             var design = CoverEntryDesign(theme: theme); design.set(group, field, value)
