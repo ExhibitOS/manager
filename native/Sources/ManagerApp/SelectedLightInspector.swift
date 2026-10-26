@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import SwiftUI
 import AppKit
+import CoreGraphics
 import ManagerCore
 
 extension NativeLightType {
@@ -56,7 +57,9 @@ struct SelectedLightInspector: View {
                   [r, g, b].allSatisfy({ $0.isFinite && (0...1).contains($0) }) else { return Color(nsColor: .controlBackgroundColor) }
             return Color(.sRGBLinear, red: r, green: g, blue: b, opacity: 1)
         }, set: { value in
-            guard let rgb = NSColor(value).usingColorSpace(.extendedLinearSRGB), var fields = model.light else { return }
+            guard let linear = CGColorSpace(name: CGColorSpace.extendedLinearSRGB),
+                  let space = NSColorSpace(cgColorSpace: linear),
+                  let rgb = NSColor(value).usingColorSpace(space), var fields = model.light else { return }
             fields.red = String(Double(min(1, max(0, rgb.redComponent))))
             fields.green = String(Double(min(1, max(0, rgb.greenComponent))))
             fields.blue = String(Double(min(1, max(0, rgb.blueComponent))))
