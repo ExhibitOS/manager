@@ -188,7 +188,7 @@ final class ExhibitionModel: ObservableObject {
         await cancelVisualArtworkPlacement()
         // Cancellation awaits the old renderer. Another owned operation may
         // have started in the meantime; never replace its account/store binding.
-        guard !busy, !placingArtwork else { return }
+        guard !busy, !placingArtwork, !architectureApplying else { return }
         if let old = self.session, old.tenantId != session.tenantId || old.userId != session.userId {
             guard !dirty else { self.api = nil; viewportCredentials = nil; failure = AuthoringFailure("DRAFT_ACCOUNT_MISMATCH"); return }
             state = nil; items = []; library = []; comparison = nil; exportedURL = nil; exportedSHA256 = nil; catalogArtworkId = ""; catalogStatus = ""
