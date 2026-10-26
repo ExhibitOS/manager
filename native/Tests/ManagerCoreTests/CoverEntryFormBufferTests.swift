@@ -3,6 +3,51 @@ import XCTest
 @testable import ManagerCore
 
 final class CoverEntryFormBufferTests: XCTestCase {
+    private func previewRequest() throws -> ViewportEntrancePreviewRequest {
+        let frame = ViewportFrame(epoch: UUID().uuidString, sequence: 2, tenantId: UUID().uuidString, principalId: UUID().uuidString,
+                                  draft: try NativeExhibitionDraft.new(), selection: nil, mode: "translate", view: "isometric", disabled: true)
+        return try ViewportEntrancePreviewRequest(frame: frame, action: .thumbnail, device: .mobile, scenario: .imageFailed, reducedMotion: true, theme: .poster, locale: "ko-KR")
+    }
+    private func previewReply(_ request: ViewportEntrancePreviewRequest) -> DocumentValue {
+        var fields: [String: DocumentValue] = [:]
+        for key in ["version", "epoch", "sequence", "tenantId", "principalId", "requestId", "device", "scenario", "reducedMotion"] { fields[key] = request.value[key] }
+        fields["baseDraft"] = request.frame.draft.document; fields["theme"] = .string(request.theme.rawValue)
+        fields["status"] = .string("ready"); fields["mode"] = .string("cover"); fields["renderGeneration"] = .integer(7)
+        fields["imageStatus"] = .string("failed"); fields["viewport"] = .object(["width": .integer(360), "height": .integer(740)])
+        fields["snapshotRect"] = .object(["x": .integer(0), "y": .integer(0), "width": .integer(360), "height": .integer(740)])
+        return .object(fields)
+    }
+    func testEntrancePreviewRejectsStaleBindingDraftGenerationAndCandidate() throws {
+        let request = try previewRequest(), response = previewReply(request)
+        let checked = try request.checkedReply(response)
+        XCTAssertNoThrow(try checked.recheck(response, request: request))
+        for key in ["epoch", "tenantId", "principalId", "requestId"] {
+            var stale = response; stale[key] = .string(UUID().uuidString)
+            XCTAssertThrowsError(try request.checkedReply(stale), key)
+        }
+        var stale = response; stale["baseDraft"]["candidate"]["title"] = .string("다른 전시")
+        XCTAssertThrowsError(try request.checkedReply(stale))
+        stale = response; stale["renderGeneration"] = .integer(8)
+        XCTAssertThrowsError(try checked.recheck(stale, request: request))
+        stale = response; stale["candidate"] = request.frame.draft.candidate
+        XCTAssertThrowsError(try request.checkedReply(stale))
+    }
+    func testEntrancePreviewSignalsAreReadOnlyAndRequireActualMobileViewport() throws {
+        let request = try previewRequest(), response = previewReply(request)
+        let original = request.frame.draft
+        XCTAssertTrue(request.frame.disabled) // Read-only preview never grants geometry editing.
+        XCTAssertEqual(request.value["scenario"], .string("image-failed"))
+        XCTAssertEqual(request.value["reducedMotion"], .bool(true))
+        XCTAssertEqual(try request.checkedReply(response).snapshotRect.width, 360)
+        var desktopWrapper = response; desktopWrapper["viewport"]["width"] = .integer(1024)
+        XCTAssertThrowsError(try request.checkedReply(desktopWrapper))
+        var overflow = response; overflow["snapshotRect"]["x"] = .integer(1)
+        XCTAssertThrowsError(try request.checkedReply(overflow))
+        var wrongMode = response; wrongMode["mode"] = .string("walk")
+        XCTAssertThrowsError(try request.checkedReply(wrongMode))
+        XCTAssertEqual(request.frame.draft, original)
+        XCTAssertEqual(request.frame.draft.candidate["extensions"][ViewerEntranceSettings.namespace], .null)
+    }
     func testSparseThemesRoundTripWithoutResolvingDefaultsOrChangingCandidate() throws {
         for theme in CoverEntryTheme.allCases {
             var draft = try NativeExhibitionDraft.new(title: "보관할 제목")
