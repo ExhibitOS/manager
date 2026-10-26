@@ -4,6 +4,54 @@
 use super::*;
 const MARKER: &str = "native-target-preparation-current.json";
 
+/// Preparation permits a fresh EMPTY config directory. If a signing key is
+/// already present, preserve and pin its identity AND bytes without exposing it.
+/// The source-backup ConfigurationDirectory contract is deliberately unchanged.
+struct CandidateConfiguration {
+    root: PathBuf,
+    directory: crate::maintenance_source::DirectoryPin,
+    files: Vec<(String, String, crate::hosted_runtime_file::Pin)>,
+}
+impl CandidateConfiguration {
+    fn names(root: &Path) -> Result<Vec<String>> {
+        let mut names = fs::read_dir(root).map_err(|_| err("NATIVE_TARGET_CONFIGURATION_CHANGED"))?
+            .take(3).map(|e| e.map_err(|_| err("NATIVE_TARGET_CONFIGURATION_CHANGED"))?
+                .file_name().into_string().map_err(|_| err("NATIVE_TARGET_CONFIGURATION_CHANGED")))
+            .collect::<Result<Vec<_>>>()?;
+        names.sort();
+        if !names.is_empty() && names != ["freeze-signing-key.json"] {
+            return Err(err("NATIVE_TARGET_CONFIGURATION_CHANGED"));
+        }
+        Ok(names)
+    }
+    fn capture(root: &Path) -> Result<Self> {
+        private_directory(root)?;
+        let directory = crate::maintenance_source::DirectoryPin::open(root)?;
+        let mut files = Vec::new();
+        for name in Self::names(root)? {
+            let original = Secret(installation_backup::source_bytes(root, &name, 65536, true)?);
+            let (bytes, pin) = crate::hosted_runtime_file::bounded(&root.join(&name), 65536)?;
+            let bytes = Secret(bytes);
+            if bytes.0 != original.0 { return Err(err("NATIVE_TARGET_CONFIGURATION_CHANGED")); }
+            files.push((name, digest(&bytes.0), pin));
+        }
+        let snapshot = Self {root: root.into(), directory, files};
+        snapshot.check()?; Ok(snapshot)
+    }
+    fn check(&self) -> Result<()> {
+        self.directory.check()?;
+        if Self::names(&self.root)? != self.files.iter().map(|(n,_,_)| n.clone()).collect::<Vec<_>>() {
+            return Err(err("NATIVE_TARGET_CONFIGURATION_CHANGED"));
+        }
+        for (name, hash, pin) in &self.files {
+            pin.check()?;
+            let bytes = Secret(installation_backup::source_bytes(&self.root, name, 65536, true)?);
+            if digest(&bytes.0) != *hash { return Err(err("NATIVE_TARGET_CONFIGURATION_CHANGED")); }
+            pin.check()?;
+        }
+        self.directory.check()
+    }
+}
 fn durable(root: &Path, name: &str, value: &Value) -> Result<()> {
     write_json(root, name, value)?;
     std::fs::File::open(root).and_then(|f| f.sync_all()).map_err(|_| err("NATIVE_TARGET_PREPARATION_UNCERTAIN"))
@@ -42,7 +90,7 @@ impl AuthenticatedNativeBackup {
         if !target.maintenance_empty_target()? { return Err(err("NATIVE_RESTORE_TARGET_NOT_EMPTY")); }
         let system = target.maintenance_system_identifier()?;
         if system == self.evidence.system_identifier { return Err(err("NATIVE_TARGET_SELECTION_INVALID")); }
-        let config = ConfigurationDirectory::capture(&root.join("config"))?;
+        let config = CandidateConfiguration::capture(&root.join("config"))?;
         let before = self.observe_locked(source, &mut |profile, id, source_root| check_selection(profile, id, source_root, &root))?;
         source_resources.recheck()?; target_resources.recheck()?;
         check_selection(&self.profile_root, &self.installation_id, &self.source_root, &root)?;
@@ -93,6 +141,31 @@ impl AuthenticatedNativeBackup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn config_root() -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("exhibitos-copy-config-{}",Uuid::new_v4()));
+        fs::create_dir(&root).unwrap(); fs::set_permissions(&root,fs::Permissions::from_mode(0o700)).unwrap(); root
+    }
+    #[test]
+    fn native_copy_empty_candidate_config_needs_no_generated_key() {
+        let root=config_root(); let snapshot=CandidateConfiguration::capture(&root).unwrap();
+        snapshot.check().unwrap(); assert_eq!(fs::read_dir(&root).unwrap().count(),0);
+        write_private_new(&root,"freeze-signing-key.json",b"synthetic newly added key",65536).unwrap();
+        assert!(snapshot.check().is_err()); fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn native_copy_candidate_existing_key_contents_and_identity_stay_pinned() {
+        let root=config_root(); let name="freeze-signing-key.json";
+        write_private_new(&root,name,b"synthetic-original",65536).unwrap();
+        let snapshot=CandidateConfiguration::capture(&root).unwrap(); snapshot.check().unwrap();
+        fs::write(root.join(name),b"synthetic-modified").unwrap();
+        assert!(snapshot.check().is_err(),"Same-length in-place key rewrite must refuse");
+        let snapshot=CandidateConfiguration::capture(&root).unwrap();
+        write_private_new(&root,"replacement",b"synthetic-modified",65536).unwrap();
+        fs::rename(root.join("replacement"),root.join(name)).unwrap();
+        assert!(snapshot.check().is_err(),"Byte-identical replacement at a name must refuse");
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn native_copy_catalog_keeps_order_and_byte_identity() {
         let source=serde_json::json!({"inventory":{"migrations":[{"name":"001.sql","sha256":"a".repeat(64)},{"name":"002.sql","sha256":"b".repeat(64)}]}});
