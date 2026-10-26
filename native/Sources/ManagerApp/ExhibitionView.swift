@@ -82,6 +82,7 @@ final class ExhibitionModel: ObservableObject {
     @Published var query = ""
     @Published var title = ""
     @Published var entrance = ViewerEntranceSettings()
+    @Published var coverEntry = CoverEntryFormBuffer(design: nil)
     @Published private(set) var entranceEditable = true
     @Published var roomId = ""
     @Published var roomName = ""
@@ -342,7 +343,7 @@ final class ExhibitionModel: ObservableObject {
     var pending: Bool { state?.pending != nil }
     var formDirty: Bool {
         guard let draft else { return false }
-        let entranceDirty = (entranceEditable && (try? draft.viewerEntranceSettings()) != entrance) || installationDirty
+        let entranceDirty = (entranceEditable && ((try? draft.viewerEntranceSettings()) != entrance || coverEntry.isDirty)) || installationDirty
         guard let room = draft.rooms.first(where: { $0["id"].string == roomId }) else { return title != draft.title || entranceDirty }
         return title != draft.title || entranceDirty || roomName != room["name"].string || width != room["dimensions"]["width"].double || height != room["dimensions"]["height"].double || depth != room["dimensions"]["depth"].double
     }
@@ -1003,7 +1004,11 @@ final class ExhibitionModel: ObservableObject {
         guard !positionDirty || allowPosition else { throw AuthoringFailure("PLACEMENT_APPLY_REQUIRED") }
         guard var draft else { throw AuthoringFailure("EXHIBITION_REQUIRED") }
         if title != draft.title { try draft.rename(title) }
-        if entranceEditable, try draft.viewerEntranceSettings() != entrance { try draft.setViewerEntrance(entrance) }
+        if entranceEditable {
+            var settings = entrance
+            settings.design = try coverEntry.value()
+            if try draft.viewerEntranceSettings() != settings { try draft.setViewerEntrance(settings) }
+        }
         if installationDirty, installationEditable { try draft.setInstallation(installation.value(), for: placementId) }
         if let room = draft.rooms.first(where: { $0["id"].string == roomId }), roomName != room["name"].string || width != room["dimensions"]["width"].double || height != room["dimensions"]["height"].double || depth != room["dimensions"]["depth"].double {
             try draft.updateRoom(roomId, name: roomName, width: width, height: height, depth: depth)
@@ -1013,7 +1018,7 @@ final class ExhibitionModel: ObservableObject {
     func keepLocal() async {
         await work {
             guard !immutable, !pending, var value = state else { throw AuthoringFailure(immutable ? "PUBLISHED_DRAFT_IMMUTABLE" : "EXHIBITION_PENDING") }
-            value.draft = try appliedFields(); try await persist(value); syncInstallation()
+            value.draft = try appliedFields(); try await persist(value); syncEntrance(); syncInstallation()
             notice = "현재 전시 입력을 이 Mac에 보관했습니다. 아직 전시 저장본에 반영하지 않았습니다."
         }
     }
@@ -1026,6 +1031,7 @@ final class ExhibitionModel: ObservableObject {
                 guard let draft = value.draft else { throw AuthoringFailure("EXHIBITION_REQUIRED") }
                 value.pending = .init(etag: value.etag, draft: draft)
                 try await persist(value) // durable exact intent BEFORE the request
+                syncEntrance()
             }
             guard let intent = state?.pending else { throw AuthoringFailure("EXHIBITION_PENDING") }
             let saved: NativeStudioResponse
@@ -1111,21 +1117,26 @@ final class ExhibitionModel: ObservableObject {
         await work {
             guard !immutable, !pending, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             var next = try appliedFields(allowPosition: true); try next.movePlacement(placementId, position: [x, y, z])
-            value.draft = next; try await persist(value); syncInstallation()
+            value.draft = next; try await persist(value); syncEntrance(); syncInstallation()
             notice = "작품 위치를 이 Mac에 보관했습니다."
+        }
+    }
+    private func syncEntrance() {
+        do {
+            entrance = try draft?.viewerEntranceSettings() ?? ViewerEntranceSettings()
+            coverEntry = CoverEntryFormBuffer(design: entrance.design)
+            entranceEditable = true
+        } catch {
+            entrance = ViewerEntranceSettings()
+            coverEntry = CoverEntryFormBuffer(design: nil)
+            entranceEditable = false
+            failure = error as? AuthoringFailure ?? AuthoringFailure("VIEWER_ENTRANCE_INVALID")
         }
     }
     func syncFields() {
         let selected = viewportSelection
         title = draft?.title ?? ""
-        do {
-            entrance = try draft?.viewerEntranceSettings() ?? ViewerEntranceSettings()
-            entranceEditable = true
-        } catch {
-            entrance = ViewerEntranceSettings()
-            entranceEditable = false
-            failure = error as? AuthoringFailure ?? AuthoringFailure("VIEWER_ENTRANCE_INVALID")
-        }
+        syncEntrance()
         if draft?.rooms.contains(where: { $0["id"].string == roomId }) != true { roomId = draft?.rooms.first?["id"].string ?? "" }
         selectRoom(clearPlaqueSelection: false)
         if draft?.placements.contains(where: { $0["id"].string == placementId }) != true { placementId = draft?.placements.first?["id"].string ?? "" }
@@ -1240,36 +1251,7 @@ struct NativeExhibitionView: View {
                             ForEach(draft.rooms.indices, id: \.self) { index in Text(draft.rooms[index]["name"].string ?? "공간").tag(draft.rooms[index]["id"].string ?? "") }
                         }.disabled(model.formDirty || model.architectureDirty || model.architectureApplying)
                     }
-                    Section("관람 시작 화면") {
-                        Text("관람객이 전시에 들어가기 전에 전시 제목과 이 소개를 봅니다.").foregroundStyle(.secondary)
-                        TextField("작가", text: $model.entrance.artist)
-                        TextField("전시 소개", text: $model.entrance.introduction, axis: .vertical).lineLimit(3...8)
-                        DisclosureGroup("입장권 글과 연출") {
-                            TextField("입장권 제목", text: $model.entrance.ticketTitle)
-                            TextField("입장권 안내", text: $model.entrance.ticketDetail, axis: .vertical).lineLimit(2...4)
-                            Text("비워 두면 전시 제목과 작가를 표시합니다.").foregroundStyle(.secondary)
-                            Toggle("입장권 움직임", isOn: $model.entrance.ticketAnimation)
-                            Toggle("표지 펼치기", isOn: $model.entrance.coverUnfold)
-                            Toggle("문 열기 연출", isOn: $model.entrance.doorEffect)
-                            Text("각 연출은 따로 켜거나 끌 수 있습니다. 관람자의 동작 줄이기 설정이 우선합니다.").foregroundStyle(.secondary)
-                        }
-                        Picker("표지 이미지", selection: Binding<String?>(get: { model.entrance.imageAssetId?.lowercased() }, set: { model.entrance.imageAssetId = $0 })) {
-                            Text("제목과 소개만 표시").tag(nil as String?)
-                            ForEach(draft.viewerEntranceImageChoices()) { image in
-                                Text(image.title).tag(Optional(image.id.lowercased()))
-                            }
-                        }
-                        if model.entrance.imageAssetId != nil {
-                            TextField("이미지 설명", text: $model.entrance.imageAlt, axis: .vertical).lineLimit(2...4)
-                            Picker("모바일 이미지 위치", selection: $model.entrance.mobilePosition) {
-                                Text("가운데").tag(ViewerEntranceSettings.MobilePosition.center)
-                                Text("위쪽").tag(ViewerEntranceSettings.MobilePosition.top)
-                                Text("아래쪽").tag(ViewerEntranceSettings.MobilePosition.bottom)
-                            }
-                            Text("작품 목록의 PNG 이미지를 사용합니다. 관람객이 이미지를 이해할 수 있도록 설명을 입력하세요.").foregroundStyle(.secondary)
-                        }
-                        if !model.entranceEditable { Text("이 시작 화면의 설정을 읽을 수 없습니다. 원래 설정은 보관됩니다.").foregroundStyle(.secondary) }
-                    }.disabled(!model.entranceEditable)
+                    CoverEntrySettingsView(model: model, mode: mode)
                     Section("승인한 작품 배치") {
                         if !model.artworkId.isEmpty {
                             Text("배치할 작품: " + (model.library.first(where: { $0.id == model.artworkId })?.title ?? "작품"))

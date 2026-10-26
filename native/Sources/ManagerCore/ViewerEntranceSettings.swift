@@ -53,14 +53,16 @@ public struct ViewerEntranceSettings: Equatable, Sendable {
     public var imageAssetId: String?
     public var imageAlt: String
     public var mobilePosition: MobilePosition
+    public var design: CoverEntryDesign?
 
-    public init(artist: String = "", introduction: String = "", imageAssetId: String? = nil, imageAlt: String = "", mobilePosition: MobilePosition = .center, presentation: Presentation? = nil) {
+    public init(artist: String = "", introduction: String = "", imageAssetId: String? = nil, imageAlt: String = "", mobilePosition: MobilePosition = .center, presentation: Presentation? = nil, design: CoverEntryDesign? = nil) {
         self.artist = artist
         self.introduction = introduction
         self.imageAssetId = imageAssetId
         self.imageAlt = imageAlt
         self.mobilePosition = mobilePosition
         self.presentation = presentation
+        self.design = design
     }
 
     public init(draft: NativeExhibitionDraft) throws {
@@ -70,6 +72,7 @@ public struct ViewerEntranceSettings: Equatable, Sendable {
         var keys: Set<String> = ["version", "artist", "introduction", "imageAlt", "mobilePosition"]
         if fields["imageAssetId"] != nil { keys.insert("imageAssetId") }
         if fields["presentation"] != nil { keys.insert("presentation") }
+        if fields["design"] != nil { keys.insert("design") }
         guard Set(fields.keys) == keys, fields["version"] == .integer(1),
               let artist = fields["artist"]?.string,
               let introduction = fields["introduction"]?.string,
@@ -89,6 +92,7 @@ public struct ViewerEntranceSettings: Equatable, Sendable {
             presentation = value
         }
         self.init(artist: artist, introduction: introduction, imageAssetId: fields["imageAssetId"]?.string, imageAlt: imageAlt, mobilePosition: position, presentation: presentation)
+        if let raw = fields["design"] { design = try CoverEntryDesign(raw: raw) }
         try validate(in: draft.candidate)
     }
 
@@ -120,6 +124,7 @@ public struct ViewerEntranceSettings: Equatable, Sendable {
     }
 
     private func validate(in candidate: DocumentValue) throws {
+        try design?.validate()
         // JavaScript's contract counts UTF-16 code units, not Swift graphemes.
         guard artist.utf16.count <= 512, introduction.utf16.count <= 4096, imageAlt.utf16.count <= 2048 else { throw Self.invalid() }
         if let presentation {
@@ -136,6 +141,7 @@ public struct ViewerEntranceSettings: Equatable, Sendable {
     private var value: DocumentValue {
         var fields: [String: DocumentValue] = ["version": .integer(1), "artist": .string(artist), "introduction": .string(introduction), "imageAlt": .string(imageAlt), "mobilePosition": .string(mobilePosition.rawValue)]
         if let imageAssetId { fields["imageAssetId"] = .string(imageAssetId) }
+        if let design { fields["design"] = design.raw }
         if let presentation {
             fields["presentation"] = .object([
                 "ticketTitle": .string(presentation.ticketTitle), "ticketDetail": .string(presentation.ticketDetail),
