@@ -13,12 +13,18 @@ final class NativeViewportController: ObservableObject {
     @Published fileprivate(set) var placementSupported = false
     @Published fileprivate(set) var lightInspectorSupported = false
     @Published fileprivate(set) var benchInspectorSupported = false
+    @Published fileprivate(set) var plaqueInspectorSupported = false
     @Published fileprivate(set) var acceptedSequence = 0
     fileprivate var thumbnailAction: ((String, Int) async throws -> Data)?
     fileprivate var findSelectionAction: (() async throws -> Void)?
     fileprivate var placementAction: ((ArtworkPlacementIntent, ViewportPlacementPhase, ViewportPlacementTarget?) async throws -> DocumentValue?)?
     fileprivate var lightInspectorAction: ((LightCommand, String) async throws -> LightPreview)?
     fileprivate var benchInspectorAction: ((BenchCommand, String) async throws -> BenchPreview)?
+    fileprivate var plaqueInspectorAction: ((PlaqueCommand, String) async throws -> PlaquePreview)?
+    func plaqueInspector(_ command: PlaqueCommand, selectedPlaqueId: String) async throws -> PlaquePreview {
+        guard connected, plaqueInspectorSupported, let plaqueInspectorAction else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+        return try await plaqueInspectorAction(command, selectedPlaqueId)
+    }
     func benchInspector(_ command: BenchCommand, selectedBenchId: String) async throws -> BenchPreview {
         guard connected, benchInspectorSupported, let benchInspectorAction else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
         return try await benchInspectorAction(command, selectedBenchId)
@@ -136,7 +142,7 @@ struct NativeViewport: NSViewRepresentable {
         func invalidate() {
             endPlacement()
             active = false; generation = UUID(); sendTask?.cancel()
-            if controller.owner == epoch { controller.lightInspectorAction = nil; controller.lightInspectorSupported = false; controller.benchInspectorAction = nil; controller.benchInspectorSupported = false }
+            if controller.owner == epoch { controller.lightInspectorAction = nil; controller.lightInspectorSupported = false; controller.benchInspectorAction = nil; controller.benchInspectorSupported = false; controller.plaqueInspectorAction = nil; controller.plaqueInspectorSupported = false }
             if controller.owner == epoch { controller.action = nil; controller.thumbnailAction = nil; controller.findSelectionAction = nil; controller.placementAction = nil; controller.placementSupported = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0 }
         }
         private func endPlacement() {
@@ -151,12 +157,12 @@ struct NativeViewport: NSViewRepresentable {
             parent = value
             guard let page, page.scheme == "http", page.host == "127.0.0.1", let port = page.port, port >= 1024, UUID(uuidString: value.credentials.tenantId) != nil, UUID(uuidString: value.credentials.principalId) != nil else { return }
             if let installedToken, installedToken != value.credentials.token {
-                controller.lightInspectorSupported = false; controller.benchInspectorSupported = false
+                controller.lightInspectorSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false
                 endPlacement(); controller.placementSupported = false
                 prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0; web?.stopLoading(); return
             }
             if installedToken == nil {
-                controller.lightInspectorSupported = false; controller.benchInspectorSupported = false
+                controller.lightInspectorSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false
                 installedToken = value.credentials.token
                 generation = UUID(); sequence = 0; sent = 0; fingerprint = nil; prepared = false
                 sendTask?.cancel(); sendTask = nil
@@ -235,6 +241,7 @@ struct NativeViewport: NSViewRepresentable {
                         self.controller.placementSupported = acceptance.supportsArtworkPlacement
                         self.controller.lightInspectorSupported = acceptance.supportsLightInspector
                         self.controller.benchInspectorSupported = acceptance.supportsBenchInspector
+                        self.controller.plaqueInspectorSupported = acceptance.supportsPlaqueInspector
                         self.controller.acceptedSequence = frame.sequence
                         self.sent = frame.sequence; self.controller.connected = self.sent == self.sequence; self.controller.diagnostic = ""
                     } catch { if self.generation == generation { self.controller.connected = false; self.controller.message = "전시를 3D에 표시하지 못했습니다. 저장한 전시와 연결을 확인하세요."; self.controller.diagnose("FRAME", error) }; break }
@@ -277,6 +284,25 @@ struct NativeViewport: NSViewRepresentable {
                 let bytes = try JSONSerialization.data(withJSONObject: response)
                 guard bytes.count <= 1_100_000 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
                 return try request.checkedReply(JSONDecoder().decode(DocumentValue.self, from: bytes), selectedBenchId: selectedBenchId)
+            }
+            controller.plaqueInspectorAction = { [weak self] command, selectedPlaqueId in
+                guard let self, self.active, self.controller.owner == self.epoch, self.controller.plaqueInspectorSupported,
+                      self.placementIntent == nil, !self.inspectorPending, let web = self.web, let frame = self.latest,
+                      self.prepared, self.sent == frame.sequence, !frame.disabled else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                let request = try PlaqueViewportRequest(frame: frame, command: command, selectedPlaqueId: selectedPlaqueId)
+                self.inspectorPending = true
+                defer { self.inspectorPending = false }
+                let generation = self.generation
+                let json = String(decoding: try JSONEncoder().encode(request.value), as: UTF8.self)
+                let response = try await web.callAsyncJavaScript("if (typeof window.exhibitosViewport?.plaqueInspector !== 'function') throw new Error('VIEWPORT_NOT_READY'); return await window.exhibitosViewport.plaqueInspector(JSON.parse(requestJSON));", arguments: ["requestJSON": json], in: nil, contentWorld: .page)
+                try Task.checkCancellation()
+                guard self.active, self.prepared, self.controller.plaqueInspectorSupported, self.controller.connected,
+                      self.controller.owner == self.epoch, self.generation == generation,
+                      self.latest?.sequence == frame.sequence, self.placementIntent == nil,
+                      let response, JSONSerialization.isValidJSONObject(response) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                let bytes = try JSONSerialization.data(withJSONObject: response)
+                guard bytes.count <= 1_100_000 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
+                return try request.checkedReply(JSONDecoder().decode(DocumentValue.self, from: bytes), selectedPlaqueId: selectedPlaqueId)
             }
             controller.placementAction = { [weak self] intent, phase, target in
                 guard let self, self.active, self.controller.owner == self.epoch, self.controller.placementSupported, !self.inspectorPending,
@@ -420,7 +446,7 @@ struct NativeViewportArea: View {
                 Toggle("공간을 투명하게 보기", isOn: $model.viewportTransparent)
                     .disabled(model.placingArtwork)
                     .help("벽·바닥 너머 작품을 확인합니다. 저장한 재질은 바뀌지 않습니다.")
-                NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.busy || model.pending || model.formDirty || model.positionDirty || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing, interactionDisabled: !editable || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.placingArtwork, controller: controller, onSelect: { model.selectViewport($0) }, onCandidate: { candidate, base in Task { await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
+                NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.busy || model.pending || model.formDirty || model.positionDirty || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing, interactionDisabled: !editable || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.placingArtwork, controller: controller, onSelect: { model.selectViewport($0) }, onCandidate: { candidate, base in Task { await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
                     .id(identity.uuidString + model.viewportAccessID.uuidString).frame(minHeight: 360, idealHeight: 440).clipShape(RoundedRectangle(cornerRadius: 8))
                     .allowsHitTesting(!model.architectureDirty && !model.architectureApplying && !model.placementApplying)
                     .disabled(model.architectureDirty || model.architectureApplying)
@@ -437,6 +463,7 @@ struct NativeViewportArea: View {
                 }
                 NativeLightPicker(model: model, ready: ready)
                 NativeBenchPicker(model: model, ready: ready)
+                NativePlaquePicker(model: model, ready: ready)
             } else { Text("전시를 열고 로컬 제작을 시작하면 3D를 볼 수 있습니다.").foregroundStyle(.secondary) }
         }
     }

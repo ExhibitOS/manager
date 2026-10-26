@@ -243,6 +243,19 @@ seated physics independently. The shared Viewer owns explicit Sit/Return and
 runtime clearance. Source/unit verification does not establish actual native
 GUI, saved-output consumption, seated operation or release acceptance.
 
+The native plaque producer references existing exhibition title/introduction,
+room name or a same-room artwork placement. It stores no copied prose, fonts,
+URIs or assets. List selection is independent of the strict v1 frame kinds.
+One model buffer holds source, visibility, size, position and quaternion text;
+General disclosures expose all Expert numeric fields and the same four facing
+presets. Hidden records stay validated and retained. The optional
+`plaque-inspector-v1` bridge uses full shared source/result validation and exact
+binding/delta checks before transient Preview and explicit Apply. One existing
+journal/history entry carries the change through normal save, reopen and
+exports. Removal changes only the plaque namespace and the existing template
+marker; original source text, artwork and unrelated rows/extensions are kept.
+Native GUI and saved-output/host continuity remain separate qualification.
+
 
 ### Shared 3D viewport development slice (2026-10-23)
 
