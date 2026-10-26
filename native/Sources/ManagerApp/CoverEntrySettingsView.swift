@@ -194,7 +194,7 @@ struct CoverEntryPreviewControls: View {
                     VStack(alignment: .leading) { previewButtons }
                 }
                 if model.entrancePreviewActive {
-                    Button("편집 복귀 · 준비 취소") { model.closeEntrancePreview() }
+                    Button(model.entranceHostRecovering ? "편집 복귀 확인" : "편집 복귀 · 준비 취소") { model.closeEntrancePreview() }
                         .keyboardShortcut(.cancelAction)
                         .help("진행 중인 준비를 취소하고 같은 입력·선택·실행 취소 이력으로 돌아갑니다.")
                 }

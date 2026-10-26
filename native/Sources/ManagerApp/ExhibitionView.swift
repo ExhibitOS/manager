@@ -107,10 +107,17 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var entrancePreviewStatus = ""
     @Published private(set) var entrancePreviewBusy = false
     @Published private(set) var entrancePreviewDraft: NativeExhibitionDraft?
+    @Published private(set) var entranceHostRecovering = false
+    private var entranceRecoveryEpoch: String?
     private var entrancePreviewBase: NativeExhibitionDraft?
     private var entrancePreviewTask: Task<Void, Never>?
     private var entrancePreviewGeneration = UUID()
     var entrancePreviewActive: Bool { entrancePreviewDraft != nil }
+    var canRecoverEntranceHost: Bool {
+        guard entrancePreviewActive, !busy, !pending, !placingArtwork, !architectureApplying else { return false }
+        if entranceHostRecovering { return !entrancePreviewBusy }
+        return !viewportController.connected || !entrancePreviewBusy
+    }
     @Published private(set) var entranceEditable = true
     @Published var roomId = ""
     @Published var roomName = ""
@@ -127,6 +134,7 @@ final class ExhibitionModel: ObservableObject {
     let viewportController = NativeViewportController()
     var installationDirty: Bool { installation != installationBaseline }
     var viewportDraft: NativeExhibitionDraft? {
+        if entranceHostRecovering { return draft }
         if entrancePreviewBase == draft, let value = entrancePreviewDraft { return value }
         if let value = furnishingPreview?.displayDraft { return value }
         if let value = spaceLightingPreview?.displayDraft { return value }
@@ -407,7 +415,7 @@ final class ExhibitionModel: ObservableObject {
         self.api = api; self.session = session
         let accessChanged = viewportCredentials?.token != credentials.token || viewportCredentials?.origin != credentials.origin
         viewportCredentials = credentials
-        if accessChanged { entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
+        if accessChanged { entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
         self.read = read; self.write = write
         // Reconnecting may replace the native store closures even for the same
         // account/origin. Keep text, but never apply a prior binding's preview.
@@ -480,6 +488,10 @@ final class ExhibitionModel: ObservableObject {
         } catch { entrancePreviewStatus = "표지 입력을 확인하세요. 숫자 범위와 이미지·언어 설정을 적용할 수 없습니다." }
     }
     func closeEntrancePreview() {
+        if entranceHostRecovering {
+            confirmEntranceHostRecovery()
+            return
+        }
         let display = entrancePreviewDraft, generation = UUID()
         entrancePreviewTask?.cancel(); entrancePreviewGeneration = generation; entrancePreviewBusy = true
         entrancePreviewTask = Task { [weak self] in
@@ -503,6 +515,42 @@ final class ExhibitionModel: ObservableObject {
             self.entrancePreviewDraft = nil; self.entrancePreviewBase = nil; self.entrancePreviewBusy = false; self.entrancePreviewTask = nil
             self.entrancePreviewStatus = "편집으로 돌아왔습니다. 입력·선택·실행 취소 이력은 유지됩니다."
         }
+    }
+    func recoverEntrancePreviewHost(reload: () -> Void) {
+        guard canRecoverEntranceHost, let base = draft, let previousEpoch = viewportController.hostEpoch,
+              let credentials = viewportCredentials else { return }
+        entrancePreviewTask?.cancel()
+        let generation = UUID(), access = viewportAccessID
+        entrancePreviewGeneration = generation; entranceRecoveryEpoch = previousEpoch
+        entranceHostRecovering = true; entrancePreviewBusy = true
+        invalidateEntranceThumbnails()
+        // Reuse the existing representable identity replacement. Its old
+        // coordinator invalidates its own epoch, nonce and callbacks. No app,
+        // service, model or authoring history is restarted or discarded.
+        reload()
+        entrancePreviewStatus = "같은 전시의 편집 화면을 다시 연결하고 있습니다. 입력은 유지됩니다."
+        entrancePreviewTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.viewportController.waitForOrdinaryRecovery(replacing: previousEpoch, draft: base,
+                                                                         tenantId: credentials.tenantId, principalId: credentials.principalId)
+                guard self.entrancePreviewGeneration == generation, self.viewportAccessID == access, self.draft == base else { return }
+                self.confirmEntranceHostRecovery()
+            } catch {
+                if self.entrancePreviewGeneration == generation {
+                    self.entrancePreviewBusy = false; self.entrancePreviewTask = nil
+                    self.entrancePreviewStatus = "새 편집 화면의 응답을 기다리고 있습니다. 연결을 확인한 뒤 편집 화면 다시 열기를 선택하세요. 입력과 미리보기 잠금은 유지됩니다."
+                }
+            }
+        }
+    }
+    func confirmEntranceHostRecovery() {
+        guard entranceHostRecovering, let previousEpoch = entranceRecoveryEpoch, let base = entrancePreviewBase, draft == base,
+              let credentials = viewportCredentials,
+              viewportController.ordinaryRecoveryReady(replacing: previousEpoch, draft: base, tenantId: credentials.tenantId, principalId: credentials.principalId) else { return }
+        entrancePreviewTask?.cancel(); entrancePreviewTask = nil; entrancePreviewGeneration = UUID()
+        entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false
+        entrancePreviewStatus = "편집 화면을 다시 연결했습니다. 입력·선택·실행 취소 이력과 마지막으로 선택한 보기는 유지됩니다."
     }
     private func work(_ body: () async throws -> Void) async {
         guard !entrancePreviewActive, !busy, !placingArtwork, api != nil, session != nil else { return }

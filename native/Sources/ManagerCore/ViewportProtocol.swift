@@ -132,6 +132,12 @@ public struct ViewportFrame: Encodable, Sendable {
     public init(epoch: String, sequence: Int, tenantId: String, principalId: String, draft: NativeExhibitionDraft, selection: ViewportSelection?, mode: String, view: String, disabled: Bool, cameraSequence: Int = 0, transparent: Bool = true, presentation: ViewportPresentation = .threeD) {
         self.epoch = epoch; self.sequence = sequence; self.tenantId = tenantId; self.principalId = principalId; self.draft = draft; self.selection = selection; self.mode = mode; self.view = view; self.disabled = disabled; self.cameraSequence = cameraSequence; self.transparent = transparent; self.presentation = presentation
     }
+    /// Used only with the controller's actually acknowledged frame. An old
+    /// epoch or a preview-only draft cannot acknowledge host restoration.
+    public func confirmsHostRecovery(replacing previousEpoch: String, ownerEpoch: String?, acceptedSequence: Int, expectedDraft: NativeExhibitionDraft, tenantId: String, principalId: String) -> Bool {
+        epoch != previousEpoch && epoch == ownerEpoch && UUID(uuidString: epoch) != nil && sequence > 0 && sequence == acceptedSequence
+        && self.tenantId == tenantId && self.principalId == principalId && draft == expectedDraft
+    }
     private enum CodingKeys: String, CodingKey { case version, epoch, sequence, tenantId, principalId, draft, selection, mode, view, disabled, cameraSequence, transparent, presentation }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)

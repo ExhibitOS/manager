@@ -80,6 +80,32 @@ final class CoverEntryFormBufferTests: XCTestCase {
             XCTAssertThrowsError(try close.checkedReply(.object(missing)))
         }
     }
+    func testDeadHostRecoveryRequiresNewEpochOrdinaryDraftAcknowledgement() throws {
+        let old = try previewRequest().frame, base = old.draft, newEpoch = UUID().uuidString
+        func frame(epoch: String, draft: NativeExhibitionDraft, tenant: String? = nil, principal: String? = nil) -> ViewportFrame {
+            ViewportFrame(epoch: epoch, sequence: 1, tenantId: tenant ?? old.tenantId, principalId: principal ?? old.principalId,
+                          draft: draft, selection: old.selection, mode: old.mode, view: old.view, disabled: true, cameraSequence: old.cameraSequence)
+        }
+        func confirms(_ frame: ViewportFrame, owner: String?, sequence: Int = 1) -> Bool {
+            frame.confirmsHostRecovery(replacing: old.epoch, ownerEpoch: owner, acceptedSequence: sequence,
+                                       expectedDraft: base, tenantId: old.tenantId, principalId: old.principalId)
+        }
+        let ordinary = frame(epoch: newEpoch, draft: base)
+        XCTAssertTrue(confirms(ordinary, owner: newEpoch))
+        XCTAssertFalse(confirms(old, owner: newEpoch, sequence: old.sequence)) // Late old-host ACK.
+        XCTAssertFalse(confirms(old, owner: old.epoch, sequence: old.sequence)) // Not recreated yet.
+        XCTAssertFalse(confirms(ordinary, owner: old.epoch))
+        XCTAssertFalse(confirms(ordinary, owner: newEpoch, sequence: 0))
+        XCTAssertFalse(confirms(frame(epoch: newEpoch, draft: base, tenant: UUID().uuidString), owner: newEpoch))
+        XCTAssertFalse(confirms(frame(epoch: newEpoch, draft: base, principal: UUID().uuidString), owner: newEpoch))
+        var display = base
+        var raw = try display.viewerEntranceSettings(); raw.introduction = "아직 적용하지 않은 소개"
+        try display.setViewerEntrance(raw)
+        XCTAssertFalse(confirms(frame(epoch: newEpoch, draft: display), owner: newEpoch))
+        XCTAssertEqual(ordinary.draft, base)
+        XCTAssertEqual(ordinary.view, old.view); XCTAssertEqual(ordinary.cameraSequence, old.cameraSequence)
+        XCTAssertEqual(raw.introduction, "아직 적용하지 않은 소개")
+    }
     func testSparseThemesRoundTripWithoutResolvingDefaultsOrChangingCandidate() throws {
         for theme in CoverEntryTheme.allCases {
             var draft = try NativeExhibitionDraft.new(title: "보관할 제목")
