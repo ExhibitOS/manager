@@ -106,5 +106,7 @@ final class CoverEntryFormBufferTests: XCTestCase {
         check(nil, "translations", .array([oversized]), accepted: false)
         let escaped = (0..<16).map { i in DocumentValue.object(["locale": .string("ko-\(10 + i)"), "introduction": .string(String(repeating: "\u{0001}", count: 4096))]) }
         check(nil, "translations", .array(escaped), accepted: false)
+        let unicode = (0..<16).map { i in DocumentValue.object(["locale": .string("ko-\(10 + i)"), "introduction": .string(String(repeating: "가", count: 4096))]) }
+        check(nil, "translations", .array(unicode), accepted: false)
     }
 }

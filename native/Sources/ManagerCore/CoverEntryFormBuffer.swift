@@ -106,7 +106,7 @@ public struct CoverEntryDesign: Equatable, Sendable {
         }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.withoutEscapingSlashes]
         let json = try encoder.encode(raw)
-        guard let text = String(data: json, encoding: .utf8), text.utf16.count <= 100 * 1024 else { throw invalid() }
+        guard json.count <= 100 * 1024 else { throw invalid() }
     }
 }
 
