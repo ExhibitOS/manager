@@ -2,6 +2,10 @@
 import SwiftUI
 import ManagerCore
 
+extension NativeSpaceLightingPreset {
+    var title: String { self == .calm ? "차분하게" : "밝게" }
+}
+
 struct SpaceLightingSettingsView: View {
     @ObservedObject var model: ExhibitionModel
     let ready: Bool
@@ -23,6 +27,15 @@ struct SpaceLightingSettingsView: View {
         Section("전시 조명") {
             if let fields = model.spaceLighting {
                 Group {
+                    HStack {
+                        ForEach(NativeSpaceLightingPreset.allCases, id: \.self) { preset in
+                            Button(preset.title) {
+                                guard var fields = model.spaceLighting else { return }
+                                fields.selectPreset(preset); model.spaceLighting = fields
+                            }
+                        }
+                    }
+                    LabeledContent("설정", value: fields.usesOverride ? (fields.preset?.title ?? "직접 설정") : "기존 표시 유지")
                     Toggle("기본 밝기 직접 설정", isOn: field(\.usesOverride, fallback: false))
                     if fields.usesOverride {
                         TextField("전시 기본 밝기 · 0–1", text: field(\.baselineIntensity, fallback: ""))

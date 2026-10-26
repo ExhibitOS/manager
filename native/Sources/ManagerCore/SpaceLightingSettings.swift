@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 
+/// Display-response mappings qualified by the shared D1 comparison. Selecting
+/// one is an explicit edit, never a load default or a persisted preset name.
+public enum NativeSpaceLightingPreset: String, CaseIterable, Sendable {
+    case calm, bright
+    fileprivate var baseline: String { self == .calm ? "0.15" : "0.2" }
+    fileprivate var reflection: String { self == .calm ? "0.2" : "0.45" }
+}
+
 /// Native text adapter and strict reply correspondence only. Full document and
 /// space-lighting admission belong to the shared Platform validator.
 public struct SpaceLightingFormBuffer: Equatable, Sendable {
@@ -19,6 +27,13 @@ public struct SpaceLightingFormBuffer: Equatable, Sendable {
         guard case .object(let fields) = value, Set(fields.keys) == Set(["version", "baselineIntensity", "reflectionIntensity"]), value["version"] == .integer(1),
               let baseline = value["baselineIntensity"].double, let reflection = value["reflectionIntensity"].double else { throw AuthoringFailure("SPACE_LIGHTING_INVALID") }
         usesOverride = true; baselineIntensity = String(baseline); reflectionIntensity = String(reflection)
+    }
+    public mutating func selectPreset(_ preset: NativeSpaceLightingPreset) {
+        usesOverride = true; baselineIntensity = preset.baseline; reflectionIntensity = preset.reflection
+    }
+    public var preset: NativeSpaceLightingPreset? {
+        guard usesOverride else { return nil }
+        return NativeSpaceLightingPreset.allCases.first { Double(baselineIntensity) == Double($0.baseline) && Double(reflectionIntensity) == Double($0.reflection) }
     }
     public func command() throws -> SpaceLightingCommand {
         if !usesOverride { return SpaceLightingCommand(settings: .null) }

@@ -69,6 +69,20 @@ final class SpaceLightingSettingsTests: XCTestCase {
         XCTAssertThrowsError(try preview.apply(to: changed, command: command))
         XCTAssertThrowsError(try preview.apply(to: base, command: explicit(base, baseline: "1")))
     }
+    func testQualifiedPresetsRequireExplicitEditAndPersistOnlyTheSameTwoValues() throws {
+        let base = try fixture(); var fields = try SpaceLightingFormBuffer(draft: base)
+        XCTAssertNil(fields.preset); XCTAssertFalse(fields.usesOverride)
+        fields.selectPreset(.calm)
+        XCTAssertEqual(fields.preset, .calm)
+        let calm = try fields.command().proposedCandidate(in: base)
+        XCTAssertEqual(calm["extensions"][namespace], .object(["version": .integer(1), "baselineIntensity": .number(0.15), "reflectionIntensity": .number(0.2)]))
+        fields.selectPreset(.bright)
+        XCTAssertEqual(fields.preset, .bright)
+        let bright = try fields.command().proposedCandidate(in: base)
+        XCTAssertEqual(bright["extensions"][namespace], .object(["version": .integer(1), "baselineIntensity": .number(0.2), "reflectionIntensity": .number(0.45)]))
+        fields.baselineIntensity = "-"; XCTAssertNil(fields.preset); XCTAssertThrowsError(try fields.command())
+        XCTAssertEqual(base.candidate["extensions"][namespace], .null)
+    }
     func testBoundReplyAndCapabilityDoNotWidenStrictV1() throws {
         let base = try fixture(), command = try explicit(base)
         let frame = ViewportFrame(epoch: UUID().uuidString, sequence: 7, tenantId: UUID().uuidString, principalId: UUID().uuidString, draft: base, selection: nil, mode: "translate", view: "isometric", disabled: false)

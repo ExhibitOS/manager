@@ -343,11 +343,15 @@ contract remains limited to its original light-row change.
 General and Expert share the same model-owned raw input and baseline value;
 Expert also exposes reflection directly. General can disclose the same reflection
 field. Existing unset documents retain their previous rendering until an explicit
-edit. Both values must be entered when creating an override; no numerical preset
-or legacy-to-new default mapping is assumed. Unsetting submits `settings:null`.
+edit. Both values must be entered when creating an override or selected through an
+explicit preset button. The shared D1 comparison qualified calm (0.15/0.2) and
+bright (0.2/0.45) baseline/reflection mappings; these are display-response
+conveniences, not photometry or human visual acceptance. Preset names are derived
+from the same two values, never persisted. No legacy-to-new default mapping is
+assumed. Unsetting submits `settings:null`.
 Transient preview and cancel preserve the saved document, and the existing one-item
 history restores the original namespace absence and template provenance.
 
 This native source does not establish shared runtime capability, renderer changes,
-GUI, OEX/static acceptance, presets, mobile performance or visual quality. Those
+GUI, OEX/static acceptance, mobile performance or visual quality. Those
 boundaries require the matching shared implementation and scoped actual evidence.
