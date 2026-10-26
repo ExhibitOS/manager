@@ -81,6 +81,9 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch code {
         case "ARCHITECTURE_FIELDS_INVALID": return "공간 이름·크기·위치를 확인하세요. 크기는 0보다 큰 값, 위치는 숫자로 입력하세요."
+        case "FURNISHING_FIELDS_INVALID": return "받침의 위치·회전·비례 크기를 확인하세요. 위치는 미터, 회전은 −180–180도, 비율은 0.1–4입니다. 입력과 기존 전시는 유지됩니다."
+        case "FURNISHING_INVALID", "FURNISHING_CATALOG_INVALID": return "현재 지원하는 받침 정보를 확인하지 못했습니다. 기존 받침과 입력은 유지됩니다."
+        case "FURNISHING_PREVIEW_FAILED": return "받침을 미리 보지 못했습니다. 받침 전체가 공간 안에 들어가는 위치와 크기를 확인하세요. 기존 전시와 입력은 유지됩니다."
         case "LIGHT_FIELDS_INVALID": return "조명 입력을 확인하세요. 밝기는 0–1000000, 선형 RGB는 0–1, 빔 전체각은 0보다 크고 90도 이하, 면광원 크기는 0.01–100m입니다. 입력과 기존 설정은 유지됩니다."
         case "LIGHT_SELECTION_CHANGED": return "선택한 조명을 다시 확인하세요. 현재 입력과 저장된 설정은 유지됩니다."
         case "LIGHT_PREVIEW_FAILED": return "조명 미리보기를 확인하지 못했습니다. 조명이 속한 공간 안의 위치와 입력, 로컬 제작 연결을 확인하세요. 입력과 저장된 설정은 유지됩니다."
@@ -194,6 +197,10 @@ public actor AuthoringAPI {
                   studio.etag.hasPrefix("\"studio-r\(studio.revision)-"), http.value(forHTTPHeaderField: "ETag") == studio.etag else { throw AuthoringFailure("ETAG_INVALID") }
         }
         return result
+    }
+    public func furnishings() async throws -> Bool {
+        let value: DocumentValue = try await request("/api/v1/tenants/\(tenant)/studio/furnishings")
+        return try FurnishingCatalog.checkedCatalog(value)
     }
     public func connect(_ credentials: LocalAuthoringSession) async throws -> AuthoringSession {
         guard !authenticationBusy, activeRequests == 0 else { throw AuthoringFailure("AUTH_BUSY") }
