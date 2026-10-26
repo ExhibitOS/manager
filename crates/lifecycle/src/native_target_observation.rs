@@ -91,6 +91,40 @@ impl NativeObservedPlanBoundary {
         &self.receipt
     }
 }
+/// Successful same-catalog data preparation, never an activation/update permit.
+/// A receipt or interrupted candidate journal cannot reconstruct this object.
+///
+/// ```compile_fail
+/// use exhibitos_lifecycle::signed_release::trust::NativeTargetPreparation;
+/// let forged: NativeTargetPreparation = serde_json::from_str("{}").unwrap();
+/// ```
+pub struct NativeTargetPreparation {
+    operation_id: String,
+    observation: NativeTargetObservation,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTargetPreparationReceipt<'a> {
+    operation: &'static str,
+    operation_id: &'a str,
+    state: &'static str,
+    observation: NativeTargetObservationReceipt<'a>,
+    configuration_verified: bool,
+    preflight_verified: bool,
+    execution_permitted: bool,
+}
+impl NativeTargetPreparation {
+    pub fn receipt(&self) -> NativeTargetPreparationReceipt<'_> {
+        NativeTargetPreparationReceipt {
+            operation: "native-target-copy-prepared", operation_id: &self.operation_id,
+            state: "PreparedInactive", observation: self.observation.receipt(),
+            configuration_verified: false, preflight_verified: false, execution_permitted: false,
+        }
+    }
+    /// The existing plan binder MUST re-observe this capability with both held
+    /// sessions/current authority. This getter grants no execution permission.
+    pub fn target_observation(&mut self) -> &mut NativeTargetObservation { &mut self.observation }
+}
 impl Store {
     /// Invoked by the existing authenticated backup pipeline while its profile
     /// operation lock is retained. The authority namespace is not a source UUID.
@@ -126,6 +160,40 @@ impl Store {
             return Err(crate::err("NATIVE_TARGET_SELECTION_INVALID"));
         }
         Ok(())
+    }
+    /// Additive authenticated-native-copy-v1 only. Ordinary exact-payload
+    /// native restore, OCI update intents/reducers and activation are unchanged.
+    pub fn prepare_native_target_copy(
+        &self, admitted: &mut AdmittedNativePayload, source: &mut NativeSourceObservation,
+        source_session: &mut Session, target_session: &mut Session, target_id: &str,
+        operation_id: &str, now: u64,
+    ) -> crate::Result<NativeTargetPreparation> {
+        source.verified = false;
+        self.recheck_native_admission(admitted,now).map_err(|e| crate::err(e.code()))?;
+        if !source.authority.matches(self,admitted) { return Err(crate::err("UPDATE_POLICY_STALE")); }
+        let operation = uuid::Uuid::parse_str(operation_id).map_err(|_| crate::err("UPDATE_PLAN_MISMATCH"))?.to_string();
+        if self.used_operations.contains(&operation) || self.used_instances.contains(target_id)
+            || source.evidence.schema_sha256 != admitted.release.release.artifact.schema_sha256
+            || source.evidence.schema_sha256 != admitted.release.source_schema_sha256 { return Err(crate::err("NATIVE_TARGET_COPY_CATALOG_UNSUPPORTED")); }
+        let root=target_session.target_observation_root().to_owned();
+        let manifest=admitted.payload.context().manifest_sha256;
+        if manifest==source.source.source_manifest() || !target_session.matches_native_source(&root,&manifest) { return Err(crate::err("UPDATE_PLAN_MISMATCH")); }
+        let root_pin=DirectoryPin::open(&root)?;
+        let authority=serde_json::json!({"scope":self.scope,"generation":self.current.generation,"policyGeneration":self.current.policy_generation,"recordSha256":self.current_sha256,"signedReleasePayloadSha256":admitted.release.payload_sha256,"signedArtifactSha256":admitted.release.release.artifact.sha256});
+        let source_authority=&source.authority;
+        let evidence=source.source.prepare_target_copy(source_session,target_session,&admitted.release.release.artifact.schema_sha256.clone(),&operation,authority,|profile,id,source_root,target_root| {
+            self.recheck_native_admission(admitted,now).map_err(|e|crate::err(e.code()))?;
+            if !source_authority.matches(self,admitted) || target_root!=root.as_path() { return Err(crate::err("UPDATE_POLICY_STALE")); }
+            self.check_native_target_selection(profile,id,source_root,target_id,target_root)
+        })?;
+        root_pin.check()?;
+        self.recheck_native_admission(admitted,now).map_err(|e|crate::err(e.code()))?;
+        if !source.authority.matches(self,admitted) || !target_session.matches_native_source(&root,&manifest)
+            || evidence.backup_id!=source.evidence.backup_id || evidence.authenticated_manifest_sha256!=source.evidence.manifest_sha256
+            || evidence.source_inventory_sha256!=source.evidence.inventory_sha256 || evidence.source_schema_sha256!=source.evidence.schema_sha256 { return Err(crate::err("UPDATE_PLAN_MISMATCH")); }
+        source.verified=true;
+        let observation=NativeTargetObservation {source_instance:self.bound_source_id(&installations::load(&self.profile)?.ok_or_else(||crate::err("UPDATE_SOURCE_UNREGISTERED"))?.0)?,target_instance:target_id.into(),root,root_pin,target_manifest_sha256:manifest,evidence,authority:SourceAuthority::capture(self,admitted),verified:true};
+        Ok(NativeTargetPreparation {operation_id:operation,observation})
     }
     pub fn observe_native_target(
         &self,

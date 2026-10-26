@@ -878,6 +878,7 @@ impl Session {
     }
     fn start_owned(&mut self, services: bool) -> Result<Context> {
         if services && (exists(&self.service.root.join("native-restore-current.json"))?
+            || exists(&self.service.root.join("native-target-preparation-current.json"))?
             || exists(&self.service.root.join("native-legacy-migration-current.json"))?) {
             return Err(err("NATIVE_RESTORE_ACTIVATION_REQUIRED"));
         }
@@ -976,6 +977,7 @@ impl Session {
     }
     pub fn backup_available(&self) -> Result<()> {
         if exists(&self.service.root.join("native-restore-current.json"))?
+            || exists(&self.service.root.join("native-target-preparation-current.json"))?
             || exists(&self.service.root.join("native-legacy-migration-current.json"))? {
             return Err(err("NATIVE_RESTORE_PENDING"));
         }

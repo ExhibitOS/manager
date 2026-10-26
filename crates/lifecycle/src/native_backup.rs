@@ -51,6 +51,7 @@ pub struct AuthenticatedNativeBackup {
     manifest: Vec<u8>,
     evidence: NativeSourceEvidence,
     archive: PathBuf,
+    key_file: PathBuf,
     complete_sha256: String,
     pins: Vec<crate::hosted_runtime_file::Pin>,
 }
@@ -379,7 +380,10 @@ impl InstallationController {
             let key_name = input.key_file.file_name().and_then(|v| v.to_str()).ok_or_else(|| err("NATIVE_BACKUP_PATH_INVALID"))?;
             let key = Secret(installation_backup::source_bytes(parent, key_name, 32, true)?);
             if key.0.len() != 32 { return Err(err("BACKUP_KEY_INVALID")); }
-            drop(key);
+            let (retained_key, key_pin) = crate::hosted_runtime_file::bounded(&input.key_file, 32)?;
+            let retained_key = Secret(retained_key);
+            if retained_key.0 != key.0 { return Err(err("BACKUP_KEY_INVALID")); }
+            drop(retained_key); drop(key);
             // No snapshot is taken until the actual owned API/worker is reaped.
             session.quiesce_for_backup()?;
             let id = Uuid::new_v4().to_string();
@@ -456,7 +460,7 @@ impl InstallationController {
                 if complete["id"].as_str() != Some(&backup_id) || hash != cipher_sha256
                     || digest(&complete_bytes) != digest(&installation_backup::source_bytes(&input.destination,"complete.json",65536,true)?)
                 { return Err(err("NATIVE_BACKUP_FAILED")); }
-                for pin in [&complete_pin, &cipher_pin, &manifest_pin] { pin.check()?; }
+                for pin in [&complete_pin, &cipher_pin, &manifest_pin, &key_pin] { pin.check()?; }
                 let receipt = Receipt {id:id.clone(),backup_id,manifest_sha256:hash.into(),state:"completed".into()};
                 let evidence = source_evidence(&manifest, source_observation.as_ref().ok_or_else(|| err("NATIVE_SOURCE_OBSERVATION_INVALID"))?)?;
                 if evidence.backup_id != receipt.backup_id { return Err(err("NATIVE_SOURCE_OBSERVATION_INVALID")); }
@@ -466,7 +470,8 @@ impl InstallationController {
                     source_root: service.root.clone(), payload: session.maintenance_payload(),
                     sources, config_directory, verified, scratch, budget,
                     manifest, evidence, archive: input.destination.clone(), complete_sha256: digest(&complete_bytes),
-                    pins: vec![complete_pin, cipher_pin, manifest_pin],
+                    key_file: input.key_file.clone(),
+                    pins: vec![complete_pin, cipher_pin, manifest_pin, key_pin],
                 })
             })();
             if let Err(error) = &result {
@@ -624,3 +629,6 @@ mod tests {
 #[path = "native_target_inventory.rs"]
 mod target_inventory;
 pub(crate) use target_inventory::NativeTargetEvidence;
+
+#[path = "native_target_copy.rs"]
+mod target_copy;

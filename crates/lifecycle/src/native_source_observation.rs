@@ -258,4 +258,4 @@ mod tests {
 
 #[path = "native_target_observation.rs"]
 mod target_observation;
-pub use target_observation::{NativeObservedPlanBoundary, NativeObservedPlanReceipt, NativeTargetObservation, NativeTargetObservationReceipt};
+pub use target_observation::{NativeObservedPlanBoundary, NativeObservedPlanReceipt, NativeTargetObservation, NativeTargetObservationReceipt, NativeTargetPreparation, NativeTargetPreparationReceipt};
