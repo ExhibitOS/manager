@@ -44,7 +44,7 @@ final class PlaqueSettingsTests: XCTestCase {
     }
     func testSetPreservesUnselectedHiddenRowOriginalsAndQuaternionBits() throws {
         var draft = try fixture(), first = try fields(draft)
-        first.rotationX = String(sin(.pi/8)); first.rotationW = String(cos(.pi/8))
+        first.rotationX = String(sin(Double.pi/8)); first.rotationW = String(cos(Double.pi/8))
         draft = try adding(first, to: draft)
         var hidden = try fields(draft); hidden.sourceKind = .room; hidden.visible = false
         draft = try adding(hidden, to: draft)
