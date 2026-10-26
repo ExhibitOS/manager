@@ -25,8 +25,8 @@ public struct InstallationSettings: Equatable, Sendable {
         public static func == (lhs: Self, rhs: Self) -> Bool {
             lhs.preset == rhs.preset && lhs.color.lowercased() == rhs.color.lowercased() && lhs.roughness == rhs.roughness && lhs.metalness == rhs.metalness
         }
-        fileprivate var value: DocumentValue { .object(["preset": .string(preset.rawValue), "color": .string(color), "roughness": .number(roughness), "metalness": .number(metalness)]) }
-        fileprivate func validate(frame: Bool) throws {
+        var value: DocumentValue { .object(["preset": .string(preset.rawValue), "color": .string(color), "roughness": .number(roughness), "metalness": .number(metalness)]) }
+        func validate(frame: Bool) throws {
             guard InstallationSettings.color(color), InstallationSettings.bounded(roughness, 0...1), InstallationSettings.bounded(metalness, 0...1), !frame || preset != .stone else { throw InstallationSettings.invalid() }
         }
     }
@@ -98,7 +98,7 @@ public struct InstallationSettings: Equatable, Sendable {
     private static func object(_ value: DocumentValue) throws -> [String: DocumentValue] { guard case .object(let fields) = value else { throw invalid() }; return fields }
     private static func object(_ value: DocumentValue, keys: Set<String>) throws -> [String: DocumentValue] { let fields = try object(value); guard Set(fields.keys) == keys else { throw invalid() }; return fields }
     private static func number(_ value: DocumentValue?) throws -> Double { guard let number = value?.double, number.isFinite else { throw invalid() }; return number }
-    private static func readMaterial(_ value: DocumentValue, frame: Bool) throws -> Material {
+    static func readMaterial(_ value: DocumentValue, frame: Bool) throws -> Material {
         let v = try object(value, keys: ["preset", "color", "roughness", "metalness"])
         guard let raw = v["preset"]?.string, let preset = Preset(rawValue: raw), let color = v["color"]?.string else { throw invalid() }
         let material = Material(preset: preset, color: color, roughness: try number(v["roughness"]), metalness: try number(v["metalness"]))

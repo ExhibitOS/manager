@@ -12,11 +12,17 @@ final class NativeViewportController: ObservableObject {
     @Published fileprivate(set) var findSelectionSupported = false
     @Published fileprivate(set) var placementSupported = false
     @Published fileprivate(set) var lightInspectorSupported = false
+    @Published fileprivate(set) var benchInspectorSupported = false
     @Published fileprivate(set) var acceptedSequence = 0
     fileprivate var thumbnailAction: ((String, Int) async throws -> Data)?
     fileprivate var findSelectionAction: (() async throws -> Void)?
     fileprivate var placementAction: ((ArtworkPlacementIntent, ViewportPlacementPhase, ViewportPlacementTarget?) async throws -> DocumentValue?)?
     fileprivate var lightInspectorAction: ((LightCommand, String) async throws -> LightPreview)?
+    fileprivate var benchInspectorAction: ((BenchCommand, String) async throws -> BenchPreview)?
+    func benchInspector(_ command: BenchCommand, selectedBenchId: String) async throws -> BenchPreview {
+        guard connected, benchInspectorSupported, let benchInspectorAction else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+        return try await benchInspectorAction(command, selectedBenchId)
+    }
     func lightInspector(_ command: LightCommand, selectedLightId: String) async throws -> LightPreview {
         guard connected, lightInspectorSupported, let lightInspectorAction else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
         return try await lightInspectorAction(command, selectedLightId)
@@ -124,12 +130,13 @@ struct NativeViewport: NSViewRepresentable {
         private var prepared = false
         private var latest: ViewportFrame?
         private var placementIntent: ArtworkPlacementIntent?
+        private var inspectorPending = false
         var sendTask: Task<Void, Never>?
         init(_ parent: NativeViewport) { self.parent = parent; super.init(); parent.controller.owner = epoch }
         func invalidate() {
             endPlacement()
             active = false; generation = UUID(); sendTask?.cancel()
-            if controller.owner == epoch { controller.lightInspectorAction = nil; controller.lightInspectorSupported = false }
+            if controller.owner == epoch { controller.lightInspectorAction = nil; controller.lightInspectorSupported = false; controller.benchInspectorAction = nil; controller.benchInspectorSupported = false }
             if controller.owner == epoch { controller.action = nil; controller.thumbnailAction = nil; controller.findSelectionAction = nil; controller.placementAction = nil; controller.placementSupported = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0 }
         }
         private func endPlacement() {
@@ -144,12 +151,12 @@ struct NativeViewport: NSViewRepresentable {
             parent = value
             guard let page, page.scheme == "http", page.host == "127.0.0.1", let port = page.port, port >= 1024, UUID(uuidString: value.credentials.tenantId) != nil, UUID(uuidString: value.credentials.principalId) != nil else { return }
             if let installedToken, installedToken != value.credentials.token {
-                controller.lightInspectorSupported = false
+                controller.lightInspectorSupported = false; controller.benchInspectorSupported = false
                 endPlacement(); controller.placementSupported = false
                 prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0; web?.stopLoading(); return
             }
             if installedToken == nil {
-                controller.lightInspectorSupported = false
+                controller.lightInspectorSupported = false; controller.benchInspectorSupported = false
                 installedToken = value.credentials.token
                 generation = UUID(); sequence = 0; sent = 0; fingerprint = nil; prepared = false
                 sendTask?.cancel(); sendTask = nil
@@ -227,6 +234,7 @@ struct NativeViewport: NSViewRepresentable {
                         self.controller.findSelectionSupported = acceptance.supportsFindSelection
                         self.controller.placementSupported = acceptance.supportsArtworkPlacement
                         self.controller.lightInspectorSupported = acceptance.supportsLightInspector
+                        self.controller.benchInspectorSupported = acceptance.supportsBenchInspector
                         self.controller.acceptedSequence = frame.sequence
                         self.sent = frame.sequence; self.controller.connected = self.sent == self.sequence; self.controller.diagnostic = ""
                     } catch { if self.generation == generation { self.controller.connected = false; self.controller.message = "전시를 3D에 표시하지 못했습니다. 저장한 전시와 연결을 확인하세요."; self.controller.diagnose("FRAME", error) }; break }
@@ -234,9 +242,11 @@ struct NativeViewport: NSViewRepresentable {
             }
             controller.lightInspectorAction = { [weak self] command, selectedLightId in
                 guard let self, self.active, self.controller.owner == self.epoch, self.controller.lightInspectorSupported,
-                      self.placementIntent == nil, let web = self.web, let frame = self.latest,
+                      self.placementIntent == nil, !self.inspectorPending, let web = self.web, let frame = self.latest,
                       self.prepared, self.sent == frame.sequence, !frame.disabled else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 let request = try LightViewportRequest(frame: frame, command: command, selectedLightId: selectedLightId)
+                self.inspectorPending = true
+                defer { self.inspectorPending = false }
                 let generation = self.generation
                 let json = String(decoding: try JSONEncoder().encode(request.value), as: UTF8.self)
                 let response = try await web.callAsyncJavaScript("if (typeof window.exhibitosViewport?.lightInspector !== 'function') throw new Error('VIEWPORT_NOT_READY'); return await window.exhibitosViewport.lightInspector(JSON.parse(requestJSON));", arguments: ["requestJSON": json], in: nil, contentWorld: .page)
@@ -249,8 +259,27 @@ struct NativeViewport: NSViewRepresentable {
                 guard bytes.count <= 1_100_000 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
                 return try request.checkedReply(JSONDecoder().decode(DocumentValue.self, from: bytes), selectedLightId: selectedLightId)
             }
+            controller.benchInspectorAction = { [weak self] command, selectedBenchId in
+                guard let self, self.active, self.controller.owner == self.epoch, self.controller.benchInspectorSupported,
+                      self.placementIntent == nil, !self.inspectorPending, let web = self.web, let frame = self.latest,
+                      self.prepared, self.sent == frame.sequence, !frame.disabled else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                let request = try BenchViewportRequest(frame: frame, command: command, selectedBenchId: selectedBenchId)
+                self.inspectorPending = true
+                defer { self.inspectorPending = false }
+                let generation = self.generation
+                let json = String(decoding: try JSONEncoder().encode(request.value), as: UTF8.self)
+                let response = try await web.callAsyncJavaScript("if (typeof window.exhibitosViewport?.benchInspector !== 'function') throw new Error('VIEWPORT_NOT_READY'); return await window.exhibitosViewport.benchInspector(JSON.parse(requestJSON));", arguments: ["requestJSON": json], in: nil, contentWorld: .page)
+                try Task.checkCancellation()
+                guard self.active, self.prepared, self.controller.benchInspectorSupported, self.controller.connected,
+                      self.controller.owner == self.epoch, self.generation == generation,
+                      self.latest?.sequence == frame.sequence, self.placementIntent == nil,
+                      let response, JSONSerialization.isValidJSONObject(response) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                let bytes = try JSONSerialization.data(withJSONObject: response)
+                guard bytes.count <= 1_100_000 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
+                return try request.checkedReply(JSONDecoder().decode(DocumentValue.self, from: bytes), selectedBenchId: selectedBenchId)
+            }
             controller.placementAction = { [weak self] intent, phase, target in
-                guard let self, self.active, self.controller.owner == self.epoch, self.controller.placementSupported,
+                guard let self, self.active, self.controller.owner == self.epoch, self.controller.placementSupported, !self.inspectorPending,
                       let web = self.web, let frame = self.latest, self.prepared, self.sent == frame.sequence,
                       !frame.disabled, frame.draft == intent.base else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 let request = try ViewportPlacementRequest(frame: frame, intent: intent, phase: phase, target: target)
@@ -319,7 +348,7 @@ struct NativeViewport: NSViewRepresentable {
                 guard bytes.count <= 2048, try JSONDecoder().decode(ViewportFindSelectionReply.self, from: bytes).matches(request) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             }
             controller.action = { [weak self] command in
-                guard let self, self.active, self.controller.owner == self.epoch, let web = self.web, let frame = self.latest, self.prepared, self.sent == frame.sequence, !frame.disabled else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+                guard let self, self.active, self.controller.owner == self.epoch, !self.inspectorPending, self.placementIntent == nil, let web = self.web, let frame = self.latest, self.prepared, self.sent == frame.sequence, !frame.disabled else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
                 let generation = self.generation
                 let value = String(decoding: try JSONEncoder().encode(command.encodedValue(in: frame.draft, selected: frame.selection)), as: UTF8.self)
                 let candidate = try await web.callAsyncJavaScript("try { return window.exhibitosViewport.action(JSON.parse(actionJSON)); } catch (error) { if (error.code === 'INVALID_GEOMETRY' && Array.isArray(error.issues)) { const codes = error.issues.slice(0, 1).map(issue => issue.code + '_' + String(issue.path).replace(/[^a-zA-Z0-9_]/g, '_').toUpperCase() + '_' + (/^[a-zA-Z]{1,30}$/.test(issue.message) ? issue.message.toUpperCase() : '')).filter(code => /^[A-Z0-9_]{1,150}$/.test(code)); throw new Error('INVALID_GEOMETRY_' + codes.join('_')); } throw error; }", arguments: ["actionJSON":value], in: nil, contentWorld: .page)
@@ -391,7 +420,7 @@ struct NativeViewportArea: View {
                 Toggle("공간을 투명하게 보기", isOn: $model.viewportTransparent)
                     .disabled(model.placingArtwork)
                     .help("벽·바닥 너머 작품을 확인합니다. 저장한 재질은 바뀌지 않습니다.")
-                NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.busy || model.pending || model.formDirty || model.positionDirty || model.surfaceMaterialPreviewing || model.lightPreviewing, interactionDisabled: !editable || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.placingArtwork, controller: controller, onSelect: { model.selectViewport($0) }, onCandidate: { candidate, base in Task { await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
+                NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.busy || model.pending || model.formDirty || model.positionDirty || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing, interactionDisabled: !editable || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.placingArtwork, controller: controller, onSelect: { model.selectViewport($0) }, onCandidate: { candidate, base in Task { await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
                     .id(identity.uuidString + model.viewportAccessID.uuidString).frame(minHeight: 360, idealHeight: 440).clipShape(RoundedRectangle(cornerRadius: 8))
                     .allowsHitTesting(!model.architectureDirty && !model.architectureApplying && !model.placementApplying)
                     .disabled(model.architectureDirty || model.architectureApplying)
@@ -407,6 +436,7 @@ struct NativeViewportArea: View {
                     Text("숫자 입력은 이 Mac에 보관한 뒤 3D에 반영됩니다. 3D 변경도 이 Mac에 보관하며, 전시 저장과 공개는 별도로 진행합니다.").foregroundStyle(.secondary)
                 }
                 NativeLightPicker(model: model, ready: ready)
+                NativeBenchPicker(model: model, ready: ready)
             } else { Text("전시를 열고 로컬 제작을 시작하면 3D를 볼 수 있습니다.").foregroundStyle(.secondary) }
         }
     }

@@ -6,7 +6,7 @@ import ManagerCore
 struct SurfaceMaterialSettingsView: View {
     @ObservedObject var model: ExhibitionModel
     let ready: Bool
-    private var editable: Bool { ready && !model.busy && !model.pending && !model.immutable && !model.formDirty && !model.positionDirty && !model.architectureGeometryDirty && !model.lightDirty && !model.architectureApplying }
+    private var editable: Bool { ready && !model.busy && !model.pending && !model.immutable && !model.formDirty && !model.positionDirty && !model.architectureGeometryDirty && !model.lightDirty && !model.benchDirty && !model.architectureApplying }
     private func field<Value>(_ key: WritableKeyPath<SurfaceMaterialFormBuffer, Value>, fallback: Value) -> Binding<Value> {
         Binding(get: { model.surfaceMaterial?[keyPath: key] ?? fallback }, set: { value in
             guard var fields = model.surfaceMaterial else { return }

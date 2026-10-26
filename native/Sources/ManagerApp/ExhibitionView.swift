@@ -97,7 +97,7 @@ final class ExhibitionModel: ObservableObject {
     private var installationBaseline = InstallationFormBuffer(settings: nil)
     let viewportController = NativeViewportController()
     var installationDirty: Bool { installation != installationBaseline }
-    var viewportDraft: NativeExhibitionDraft? { lightPreview?.displayDraft ?? surfaceMaterialPreview?.displayDraft ?? (installationDirty ? (installationPreview ?? draft) : draft) }
+    var viewportDraft: NativeExhibitionDraft? { benchPreview?.displayDraft ?? lightPreview?.displayDraft ?? surfaceMaterialPreview?.displayDraft ?? (installationDirty ? (installationPreview ?? draft) : draft) }
     @Published var positionXText = "0.0"
     @Published var positionYText = "1.0"
     @Published var positionZText = "0.0"
@@ -119,7 +119,7 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var architectureStatus = ""
     @Published private(set) var architectureApplying = false
     var architectureGeometryDirty: Bool { architecture != architectureBaseline }
-    var architectureDirty: Bool { architectureGeometryDirty || surfaceMaterialDirty || lightDirty }
+    var architectureDirty: Bool { architectureGeometryDirty || surfaceMaterialDirty || lightDirty || benchDirty }
     @Published private(set) var selectedLightId = ""
     @Published var light: LightFormBuffer? { didSet { lightPreview = nil; lightPreviewAccessID = nil; lightStatus = "" } }
     private var lightBaseline: LightFormBuffer?
@@ -130,14 +130,41 @@ final class ExhibitionModel: ObservableObject {
     var lightPreviewing: Bool { lightPreview != nil }
     var canSelectLight: Bool { canSelectCatalog }
     var canPreviewLight: Bool {
-        !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !architectureApplying && lightDirty && !lightPreviewing && viewportController.connected && viewportController.lightInspectorSupported
+        !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !benchDirty && !architectureApplying && lightDirty && !lightPreviewing && viewportController.connected && viewportController.lightInspectorSupported
     }
     var canApplyLight: Bool {
         guard !busy, !pending, !immutable, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
-              !surfaceMaterialDirty, !architectureApplying, viewportController.connected, viewportController.lightInspectorSupported,
+              !surfaceMaterialDirty, !benchDirty, !architectureApplying, viewportController.connected, viewportController.lightInspectorSupported,
               lightPreviewAccessID == viewportAccessID, let preview = lightPreview, preview.base == draft,
               selectedLightId == preview.command.lightId, let fields = light else { return false }
         return (try? fields.command()) == preview.command
+    }
+    @Published private(set) var selectedBenchId = ""
+    @Published var bench: BenchFormBuffer? { didSet { benchPreview = nil; benchPreviewAccessID = nil; benchStatus = "" } }
+    private var benchBaseline: BenchFormBuffer?
+    @Published private(set) var benchAdding = false
+    @Published private(set) var benchRemoving = false
+    @Published private var benchPreview: BenchPreview?
+    private var benchPreviewAccessID: UUID?
+    @Published private(set) var benchStatus = ""
+    var benchDirty: Bool { benchAdding || benchRemoving || bench != benchBaseline }
+    var benchPreviewing: Bool { benchPreview != nil }
+    var benches: [BenchSettings] { guard let draft else { return [] }; return (try? BenchSettings.list(in: draft)) ?? [] }
+    var benchMetadataEditable: Bool {
+        guard let draft else { return false }
+        do { _ = try BenchSettings.list(in: draft); _ = try BenchViewpoint.list(in: draft); return true } catch { return false }
+    }
+    var canEditBench: Bool {
+        !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !architectureApplying && viewportController.connected && viewportController.benchInspectorSupported && benchMetadataEditable
+    }
+    var canAddBench: Bool { canEditBench && !benchDirty && benches.count < 32 && draft?.rooms.contains(where: { $0["id"].string == roomId }) == true }
+    var canSelectBench: Bool { canSelectCatalog }
+    var canPreviewBench: Bool { canEditBench && benchDirty && !benchPreviewing }
+    var canRemoveBench: Bool { canEditBench && !benchDirty && !selectedBenchId.isEmpty && !benchAdding }
+    var canApplyBench: Bool {
+        guard canEditBench, benchPreviewAccessID == viewportAccessID, let preview = benchPreview,
+              preview.base == draft, selectedBenchId == preview.command.benchId else { return false }
+        return (try? currentBenchCommand()) == preview.command
     }
     @Published var surfaceMaterial: SurfaceMaterialFormBuffer? { didSet { surfaceMaterialPreview = nil; surfaceMaterialStatus = "" } }
     private var surfaceMaterialBaseline: SurfaceMaterialFormBuffer?
@@ -146,15 +173,15 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var surfaceMaterialStatus = ""
     var surfaceMaterialDirty: Bool { surfaceMaterial != surfaceMaterialBaseline }
     var surfaceMaterialPreviewing: Bool { surfaceMaterialPreview != nil }
-    var canPreviewSurfaceMaterial: Bool { !busy && !pending && !immutable && !formDirty && !positionDirty && !architectureGeometryDirty && !lightDirty && !architectureApplying && surfaceMaterialDirty && !surfaceMaterialPreviewing && viewportController.connected }
+    var canPreviewSurfaceMaterial: Bool { !busy && !pending && !immutable && !formDirty && !positionDirty && !architectureGeometryDirty && !lightDirty && !benchDirty && !architectureApplying && surfaceMaterialDirty && !surfaceMaterialPreviewing && viewportController.connected }
     var canApplySurfaceMaterial: Bool {
-        guard !busy, !pending, !immutable, !formDirty, !positionDirty, !architectureGeometryDirty, !lightDirty, !architectureApplying,
+        guard !busy, !pending, !immutable, !formDirty, !positionDirty, !architectureGeometryDirty, !lightDirty, !benchDirty, !architectureApplying,
               viewportController.connected, surfaceMaterialPreviewAccessID == viewportAccessID,
               let preview = surfaceMaterialPreview, preview.base == draft,
               preview.command.selection == viewportSelection, let fields = surfaceMaterial else { return false }
         return (try? fields.command()) == preview.command
     }
-    var canApplyArchitecture: Bool { !busy && !pending && !immutable && !formDirty && !positionDirty && !architectureApplying && architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && viewportController.connected }
+    var canApplyArchitecture: Bool { !busy && !pending && !immutable && !formDirty && !positionDirty && !architectureApplying && architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !benchDirty && viewportController.connected }
     @Published private(set) var viewportAccessID = UUID()
     private(set) var viewportCredentials: LocalAuthoringSession?
     @Published private var past: [NativeExhibitionDraft] = []
@@ -196,11 +223,11 @@ final class ExhibitionModel: ObservableObject {
         self.api = api; self.session = session
         let accessChanged = viewportCredentials?.token != credentials.token || viewportCredentials?.origin != credentials.origin
         viewportCredentials = credentials
-        if accessChanged { viewportAccessID = UUID(); surfaceMaterialPreview = nil; lightPreview = nil; lightPreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
+        if accessChanged { viewportAccessID = UUID(); surfaceMaterialPreview = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
         self.read = read; self.write = write
         // Reconnecting may replace the native store closures even for the same
         // account/origin. Keep text, but never apply a prior binding's preview.
-        lightPreview = nil; lightPreviewAccessID = nil
+        lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil
         await work {
             if state == nil {
                 let stored = try await read()
@@ -224,7 +251,7 @@ final class ExhibitionModel: ObservableObject {
         guard let write else { throw AuthoringFailure("EXHIBITION_STORE_REQUIRED") }
         let old = state?.draft
         state = try await write(value)
-        if old?.id != value.draft?.id { past = []; future = []; viewportSelection = nil; selectedLightId = ""; exportedURL = nil; exportedSHA256 = nil }
+        if old?.id != value.draft?.id { past = []; future = []; viewportSelection = nil; selectedLightId = ""; selectedBenchId = ""; exportedURL = nil; exportedSHA256 = nil }
         else if recordUndo, let old, old.candidate != value.draft?.candidate {
             past.append(old); future = []
             while past.count > 30 || past.reduce(0, { $0 + ((try? JSONEncoder().encode($1).count) ?? 1_048_576) }) > 8 * 1024 * 1024 { past.removeFirst() }
@@ -249,7 +276,7 @@ final class ExhibitionModel: ObservableObject {
     }
     func acceptArchitectureCandidate(_ candidate: DocumentValue, base: NativeExhibitionDraft, command: ArchitectureCommand) async {
         await work {
-            guard !immutable, !pending, !formDirty, !positionDirty, !surfaceMaterialDirty, !lightDirty, architectureApplying,
+            guard !immutable, !pending, !formDirty, !positionDirty, !surfaceMaterialDirty, !lightDirty, !benchDirty, architectureApplying,
                   draft == base, try architecture?.command() == command,
                   var value = state, var next = draft else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             try next.acceptArchitectureGeometry(candidate, command: command, selected: viewportSelection); value.draft = next
@@ -266,6 +293,87 @@ final class ExhibitionModel: ObservableObject {
             surfaceMaterial = fields; surfaceMaterialBaseline = fields
         } catch { surfaceMaterialStatus = "이 표면의 재질 설정은 현재 편집할 수 없습니다. 저장된 설정은 유지됩니다." }
     }
+    private func syncBench() {
+        benchAdding = false; benchRemoving = false
+        bench = nil; benchBaseline = nil; benchStatus = ""
+        guard let draft, !selectedBenchId.isEmpty else { return }
+        do {
+            let fields = try BenchFormBuffer(draft: draft, benchId: selectedBenchId)
+            bench = fields; benchBaseline = fields
+        } catch { benchStatus = "이 벤치의 설정은 현재 편집할 수 없습니다. 저장된 설정은 유지됩니다." }
+    }
+    private func clearBenchSelection() { selectedBenchId = ""; syncBench() }
+    func selectBench(_ id: String) {
+        guard canSelectBench, id.isEmpty || benches.contains(where: { $0.id == id }) else { return }
+        selectedBenchId = id
+        if !id.isEmpty { selectedLightId = ""; syncLight(); viewportSelection = nil; catalogArtworkId = ""; syncArchitecture() }
+        syncBench()
+    }
+    func beginBench() {
+        guard canAddBench else { return }
+        do {
+            let fields = try BenchFormBuffer(roomId: roomId)
+            selectedLightId = ""; syncLight(); viewportSelection = nil; catalogArtworkId = ""; syncArchitecture()
+            selectedBenchId = fields.id; benchAdding = true; benchRemoving = false
+            benchBaseline = nil; bench = fields
+        } catch { failure = error as? AuthoringFailure ?? AuthoringFailure("BENCH_FIELDS_INVALID") }
+    }
+    private func currentBenchCommand() throws -> BenchCommand {
+        if benchRemoving { return .remove(id: selectedBenchId) }
+        guard let bench, bench.id == selectedBenchId else { throw AuthoringFailure("BENCH_SELECTION_CHANGED") }
+        let settings = try bench.settings(), viewpoint = try bench.newViewpoint()
+        return benchAdding ? .add(settings, viewpoint: viewpoint) : .set(settings, viewpoint: viewpoint)
+    }
+    func matchBenchViewpoint() {
+        guard canEditBench, !benchRemoving, var fields = bench else { return }
+        do { try fields.matchNewViewpointToBench(); bench = fields }
+        catch { failure = error as? AuthoringFailure ?? AuthoringFailure("BENCH_FIELDS_INVALID") }
+    }
+    func discardBench() {
+        guard !busy, !pending, !architectureApplying, !placingArtwork else { return }
+        if benchAdding { selectedBenchId = "" }
+        syncBench()
+    }
+    func previewBenchRemoval() async {
+        guard canRemoveBench else { return }
+        benchRemoving = true
+        await previewBench()
+    }
+    func previewBench() async {
+        guard canPreviewBench, let base = draft else { return }
+        let access = viewportAccessID, selected = selectedBenchId, fields = bench
+        do {
+            let command = try currentBenchCommand()
+            _ = try command.proposedCandidate(in: base, selectedBenchId: selected)
+            architectureApplying = true
+            defer { architectureApplying = false }
+            // Preserve the enabled source frame during shared authenticated
+            // validation. Busy would replace it with a disabled frame.
+            let preview = try await viewportController.benchInspector(command, selectedBenchId: selected)
+            await work {
+                guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
+                      !surfaceMaterialDirty, !lightDirty, architectureApplying, viewportAccessID == access,
+                      draft == base, preview.base == base, selectedBenchId == selected, bench == fields,
+                      try currentBenchCommand() == command else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                benchPreview = preview; benchPreviewAccessID = access
+                benchStatus = benchRemoving ? "벤치를 뺀 상태를 미리 보고 있습니다. 적용 전 저장 내용은 바뀌지 않습니다." : "확인한 벤치를 미리 보고 있습니다. 적용 전 저장 내용은 바뀌지 않습니다."
+            }
+        } catch {
+            failure = error as? AuthoringFailure ?? AuthoringFailure("BENCH_PREVIEW_FAILED")
+            viewportController.diagnose("BENCH", error)
+        }
+    }
+    func applyBench() async {
+        guard canApplyBench else { return }
+        await work {
+            guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
+                  !surfaceMaterialDirty, !lightDirty, !architectureApplying, benchPreviewAccessID == viewportAccessID,
+                  let preview = benchPreview, let draft, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            value.draft = try preview.apply(to: draft, selectedBenchId: selectedBenchId, command: currentBenchCommand())
+            try await persist(value); syncFields()
+            notice = "벤치 변경을 이 Mac에 보관했습니다. 되돌리기로 취소할 수 있으며 전시 저장은 별도로 진행합니다."
+        }
+    }
     private func syncLight() {
         light = nil; lightBaseline = nil; lightStatus = ""
         guard let draft, !selectedLightId.isEmpty else { return }
@@ -277,6 +385,7 @@ final class ExhibitionModel: ObservableObject {
     func selectLight(_ id: String) {
         guard canSelectLight, let draft,
               id.isEmpty || draft.candidate["lights"].items?.contains(where: { $0["id"].string == id }) == true else { return }
+        clearBenchSelection()
         selectedLightId = id
         // Native list selection is independent of the strict-v1 viewport kind.
         // Never send kind:"light" to an existing receiver.
@@ -299,7 +408,7 @@ final class ExhibitionModel: ObservableObject {
             // that frame stable while the shared validator owns this request.
             let preview = try await viewportController.lightInspector(command, selectedLightId: selected)
             await work {
-                guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty, !surfaceMaterialDirty,
+                guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty, !surfaceMaterialDirty, !benchDirty,
                       architectureApplying, viewportAccessID == access, draft == base, preview.base == base, selectedLightId == selected,
                       try light?.command() == command else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 lightPreview = preview; lightPreviewAccessID = access
@@ -314,7 +423,7 @@ final class ExhibitionModel: ObservableObject {
         guard canApplyLight else { return }
         await work {
             guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
-                  !surfaceMaterialDirty, !architectureApplying, lightPreviewAccessID == viewportAccessID,
+                  !surfaceMaterialDirty, !benchDirty, !architectureApplying, lightPreviewAccessID == viewportAccessID,
                   let preview = lightPreview, let fields = light, let draft, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             value.draft = try preview.apply(to: draft, selectedLightId: selectedLightId, command: fields.command())
             try await persist(value); syncFields()
@@ -334,7 +443,7 @@ final class ExhibitionModel: ObservableObject {
     }
     func acceptSurfaceMaterialPreview(_ candidate: DocumentValue, base: NativeExhibitionDraft, command: SurfaceMaterialCommand) async {
         await work {
-            guard !immutable, !pending, !formDirty, !positionDirty, !architectureGeometryDirty, !lightDirty, architectureApplying,
+            guard !immutable, !pending, !formDirty, !positionDirty, !architectureGeometryDirty, !lightDirty, !benchDirty, architectureApplying,
                   draft == base, try surfaceMaterial?.command() == command else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             surfaceMaterialPreview = try SurfaceMaterialPreview(candidate: candidate, base: base, command: command, selected: viewportSelection)
             surfaceMaterialPreviewAccessID = viewportAccessID
@@ -344,7 +453,7 @@ final class ExhibitionModel: ObservableObject {
     func applySurfaceMaterial() async {
         guard canApplySurfaceMaterial else { return }
         await work {
-            guard !immutable, !pending, !formDirty, !positionDirty, !architectureGeometryDirty, !lightDirty, !architectureApplying,
+            guard !immutable, !pending, !formDirty, !positionDirty, !architectureGeometryDirty, !lightDirty, !benchDirty, !architectureApplying,
                   surfaceMaterialPreviewAccessID == viewportAccessID, let preview = surfaceMaterialPreview,
                   let fields = surfaceMaterial, let draft, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             value.draft = try preview.apply(to: draft, selected: viewportSelection, command: fields.command())
@@ -427,7 +536,7 @@ final class ExhibitionModel: ObservableObject {
     }
     func selectViewport(_ selection: ViewportSelection) {
         guard !placingArtwork, !busy, !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, let draft, selection.belongs(to: draft) else { return }
-        selectedLightId = ""; syncLight()
+        selectedLightId = ""; syncLight(); clearBenchSelection()
         if let room = roomForSelection(selection, draft: draft), room != roomId { roomId = room; selectRoom() }
         if selection.kind == "room" { roomId = selection.id; selectRoom() }
         if selection.kind == "placement" {
@@ -743,6 +852,10 @@ final class ExhibitionModel: ObservableObject {
             viewportSelection = nil; syncArchitecture()
         } else { selectedLightId = "" }
         syncLight()
+        if benches.contains(where: { $0.id == selectedBenchId }) {
+            viewportSelection = nil; syncArchitecture()
+        } else { selectedBenchId = "" }
+        syncBench()
     }
     func selectRoom() {
         guard let room = draft?.rooms.first(where: { $0["id"].string == roomId }) else { return }
@@ -763,8 +876,8 @@ final class ExhibitionModel: ObservableObject {
     }
     func selectPlacement(clearLightSelection: Bool = true) {
         if clearLightSelection {
-            guard !lightDirty, !architectureApplying else { return }
-            selectedLightId = ""; syncLight()
+            guard !lightDirty, !benchDirty, !architectureApplying else { return }
+            selectedLightId = ""; syncLight(); clearBenchSelection()
         }
         guard let p = draft?.placements.first(where: { $0["id"].string == placementId }), let values = p["transform"]["position"].items, values.count == 3 else { syncInstallation(); return }
         viewportSelection = ViewportSelection(kind: "placement", id: placementId)
@@ -792,7 +905,7 @@ struct NativeExhibitionView: View {
         return selected.belongs(to: draft)
     }
     private var inspectorPresented: Binding<Bool> {
-        Binding(get: { inspectorVisible && (hasSelectedPlacement || !model.selectedLightId.isEmpty) }, set: { inspectorVisible = $0 })
+        Binding(get: { inspectorVisible && (hasSelectedPlacement || !model.selectedLightId.isEmpty || !model.selectedBenchId.isEmpty) }, set: { inspectorVisible = $0 })
     }
     private var selectedInputs: Binding<InstallationInspectorState> {
         let key = [model.state?.tenantId ?? "", model.state?.principalId ?? "", model.draft?.id ?? "", model.placementId].joined(separator: ":")
@@ -827,8 +940,8 @@ struct NativeExhibitionView: View {
                     Button("다시 실행") { Task { await model.redo() } }.disabled(!model.canRedo || !ready)
                     Spacer(minLength: 0)
                     Button(inspectorPresented.wrappedValue ? "선택 속성 접기" : "선택 속성", systemImage: "sidebar.right") { inspectorVisible.toggle() }
-                        .disabled(!hasSelectedPlacement && model.selectedLightId.isEmpty)
-                        .help("선택한 작품 배치나 조명의 속성을 오른쪽에 표시하거나 접습니다. 입력은 유지됩니다.")
+                        .disabled(!hasSelectedPlacement && model.selectedLightId.isEmpty && model.selectedBenchId.isEmpty)
+                        .help("선택한 작품 배치·조명·벤치의 속성을 오른쪽에 표시하거나 접습니다. 입력은 유지됩니다.")
                 }
                 Form {
                     Section("전시와 공간") {
@@ -908,7 +1021,10 @@ struct NativeExhibitionView: View {
             Button("작업 공간 다시 연결") { Task { await connect() } }.disabled(!ready || model.busy)
         }
         .inspector(isPresented: inspectorPresented) {
-            if !model.selectedLightId.isEmpty {
+            if !model.selectedBenchId.isEmpty {
+                SelectedBenchInspector(model: model, controller: model.viewportController, ready: ready, mode: mode)
+                    .id(model.selectedBenchId)
+            } else if !model.selectedLightId.isEmpty {
                 SelectedLightInspector(model: model, controller: model.viewportController, ready: ready, mode: mode)
                     .id(model.selectedLightId)
             } else {
@@ -916,6 +1032,7 @@ struct NativeExhibitionView: View {
                     .id(model.placementId)
             }
         }
+        .onChange(of: model.selectedBenchId) { _, id in if !id.isEmpty { inspectorVisible = true } }
         .onChange(of: model.selectedLightId) { _, id in if !id.isEmpty { inspectorVisible = true } }
         .task(id: ready) { if ready { await connect() } }
         .onChange(of: model.roomId) { _, _ in model.selectRoom() }
