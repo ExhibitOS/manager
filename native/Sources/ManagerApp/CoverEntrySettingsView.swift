@@ -97,6 +97,14 @@ struct CoverEntrySettingsView: View {
     private func effectTitle(_ effect: String) -> String {
         ["none": "없음", "fold": "접힌 표지 펼치기", "mask": "포스터 드러내기", "fade": "천천히 나타내기", "card": "초대장 열기", "tear": "입장권 자르기", "press": "누르기", "confirm": "입장 확인", "doors": "문 열기", "panels": "패널 열기"][effect] ?? effect
     }
+    private var hasPresetOverrides: Bool {
+        for group in ["layout", "effects"] {
+            if case .object(let fields)? = model.coverEntry.design?.raw[group], !fields.isEmpty { return true }
+        }
+        return [.copyRatio, .margin, .titleScale, .strength, .speed].contains { (field: CoverEntryFormBuffer.NumberField) in
+            !(model.coverEntry.numbers[field] ?? "").isEmpty
+        }
+    }
     var body: some View {
         Section("표지·입장") {
             Picker("테마·기본 배치·연출 적용", selection: Binding(get: { model.coverEntry.design?.theme.rawValue ?? "" }, set: { value in
@@ -106,6 +114,10 @@ struct CoverEntrySettingsView: View {
                 ForEach(CoverEntryTheme.allCases, id: \.self) { Text($0.title).tag($0.rawValue) }
             }
             Text("테마를 고르면 배치와 연출이 해당 테마의 기본값으로 바뀝니다. 글·이미지·입장권·언어별 글은 유지됩니다.").foregroundStyle(.secondary)
+            if hasPresetOverrides {
+                Text("사용자 설정 적용 중").foregroundStyle(.secondary)
+                Button("배치·연출을 이 테마 기본값으로") { model.coverEntry.resetLayoutAndEffects() }
+            }
             TextField("작가", text: $model.entrance.artist)
             TextField("전시 소개", text: $model.entrance.introduction, axis: .vertical).lineLimit(3...8)
             Picker("표지 이미지", selection: Binding<String?>(get: { model.entrance.imageAssetId?.lowercased() }, set: { model.entrance.imageAssetId = $0 })) {
