@@ -43,6 +43,7 @@ public struct ViewportAcceptance: Decodable, Sendable {
     public var supportsFindSelection: Bool { accepted && capabilities?.contains("find-selection-v1") == true }
     public var supportsArtworkPlacement: Bool { accepted && capabilities?.contains("place-artwork-v1") == true }
     public var supportsLightInspector: Bool { accepted && capabilities?.contains("light-inspector-v1") == true }
+    public var supportsBenchInspector: Bool { accepted && capabilities?.contains("bench-inspector-v1") == true }
     public var supportsPlan: Bool {
         accepted && presentations?.contains(.threeD) == true && presentations?.contains(.plan) == true
     }

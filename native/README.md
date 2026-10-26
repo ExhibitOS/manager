@@ -227,6 +227,22 @@ aiming, Kelvin, calibrated illuminance and full lighting release acceptance are
 separate. Source and synthetic unit coverage do not establish actual GUI,
 save/reopen, OEX/Viewer/static consumer or distribution qualification.
 
+The native bench producer uses the optional `bench-inspector-v1` bridge with
+list-based selection independent of the strict v1 frame selection/action kinds.
+Slab/backed benches expose room-local position, yaw in degrees, seat dimensions,
+and the existing InstallationMaterial (sRGB hex and PBR factors). General mode
+disclosures expose every Expert numeric field from the same model buffer. A new
+bench can atomically create one fresh standard Presentation viewpoint even in an
+empty exhibition. Editing a camera creates a fresh viewpoint and relinks the
+bench; existing/shared viewpoints are preserved. Removal retains the camera.
+Full shared validation and exact source/result/account/input binding precede
+Preview, explicit Apply and one existing journal/history entry. Cancel discards
+only this form's uncommitted preview. Save, reopen and outputs use the existing
+exhibition paths; native code does not remap public/OEX identities or implement
+seated physics independently. The shared Viewer owns explicit Sit/Return and
+runtime clearance. Source/unit verification does not establish actual native
+GUI, saved-output consumption, seated operation or release acceptance.
+
 
 ### Shared 3D viewport development slice (2026-10-23)
 
