@@ -47,8 +47,10 @@ struct FurnishingCatalogView: View {
                             .accessibilityHint("선택한 작품 배치의 받침 외형을 고릅니다. 미리보기와 적용 전에는 전시가 바뀌지 않습니다.")
                             .task(id: model.viewportAccessID) { await model.loadFurnishingImage() }
                     } else if model.furnishingCatalogReady { Text("검색 결과가 없습니다.").foregroundStyle(.secondary) }
-                    if !model.furnishingCatalogStatus.isEmpty {
-                        Text(model.furnishingCatalogStatus).font(.callout).foregroundStyle(.secondary)
+                    // A cancelled/stale prior view task may settle without a
+                    // status. Keep explicit recovery available in that state.
+                    if !model.furnishingCatalogReady {
+                        Text(model.furnishingCatalogStatus.isEmpty ? "비품 목록을 확인하고 있습니다. 표시되지 않으면 다시 확인하세요." : model.furnishingCatalogStatus).font(.callout).foregroundStyle(.secondary)
                         Button("비품 목록 다시 확인") { Task { await model.retryFurnishingCatalog() } }.disabled(!ready || model.busy || model.architectureApplying)
                     }
                     if let fields = model.furnishing {
