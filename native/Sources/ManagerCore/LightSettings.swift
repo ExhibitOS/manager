@@ -77,6 +77,13 @@ public struct LightCommand: Equatable, Sendable {
         }
         return (index, .object(fields))
     }
+    /// Existing set-light payload inside the separately negotiated envelope.
+    /// It must never be passed to the strict v1 ordinary geometry action.
+    public func encodedLight(in draft: NativeExhibitionDraft, selectedLightId: String?) throws -> DocumentValue {
+        let (_, row) = try replacement(in: draft, selectedLightId: selectedLightId)
+        guard case .object(var fields) = row else { throw Self.invalid() }
+        fields.removeValue(forKey: "id"); return .object(fields)
+    }
     /// Local typed proposal only. A caller must obtain shared validation before
     /// preview/apply; this method neither persists nor contacts a service.
     public func proposedCandidate(in draft: NativeExhibitionDraft, selectedLightId: String?) throws -> DocumentValue {
