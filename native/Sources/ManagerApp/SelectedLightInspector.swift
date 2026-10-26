@@ -40,7 +40,7 @@ struct SelectedLightInspector: View {
     @State private var positionDetails = false
     @State private var colorDetails = false
     private var editable: Bool {
-        ready && controller.connected && controller.lightInspectorSupported && !model.busy && !model.pending && !model.immutable && !model.placingArtwork && !model.formDirty && !model.positionDirty && !model.architectureGeometryDirty && !model.surfaceMaterialDirty && !model.benchDirty && !model.plaqueDirty && !model.architectureApplying
+        ready && controller.connected && controller.lightInspectorSupported && !model.busy && !model.pending && !model.immutable && !model.placingArtwork && !model.formDirty && !model.positionDirty && !model.architectureGeometryDirty && !model.surfaceMaterialDirty && !model.benchDirty && !model.plaqueDirty && !model.spaceLightingDirty && !model.architectureApplying
     }
     private var selected: DocumentValue? {
         model.draft?.candidate["lights"].items?.first { $0["id"].string == model.selectedLightId }

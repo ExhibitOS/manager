@@ -330,3 +330,24 @@ public-contract/GLB-byte verification. Expert r22 observation crashed SkyCompute
 isolated the GUI test. Expert/full accessibility remains unqualified. All owned PG/Node
 runs stopped normally. Output-location/hash feedback is memory-only; static publication,
 full mode/relaunch/recovery and final release/distribution acceptance remain incomplete.
+
+
+## Optional exhibition lighting settings (pending shared runtime)
+
+The native `space-settings-v1` adapter edits the shared, exhibition-wide
+`org.exhibitos.studio/space-lighting` namespace through the negotiated
+`window.exhibitosViewport.spaceSettings` command. It is disabled when the shared
+viewport does not advertise that capability. The existing `light-inspector-v1`
+contract remains limited to its original light-row change.
+
+General and Expert share the same model-owned raw input and baseline value;
+Expert also exposes reflection directly. General can disclose the same reflection
+field. Existing unset documents retain their previous rendering until an explicit
+edit. Both values must be entered when creating an override; no numerical preset
+or legacy-to-new default mapping is assumed. Unsetting submits `settings:null`.
+Transient preview and cancel preserve the saved document, and the existing one-item
+history restores the original namespace absence and template provenance.
+
+This native source does not establish shared runtime capability, renderer changes,
+GUI, OEX/static acceptance, presets, mobile performance or visual quality. Those
+boundaries require the matching shared implementation and scoped actual evidence.

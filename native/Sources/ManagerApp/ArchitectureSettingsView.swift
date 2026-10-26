@@ -25,7 +25,7 @@ struct ArchitectureSettingsView: View {
             }
         }
     }
-    private var editable: Bool { ready && !model.busy && !model.pending && !model.immutable && !model.formDirty && !model.positionDirty && !model.lightDirty && !model.plaqueDirty && !model.architectureApplying }
+    private var editable: Bool { ready && !model.busy && !model.pending && !model.immutable && !model.formDirty && !model.positionDirty && !model.lightDirty && !model.plaqueDirty && !model.spaceLightingDirty && !model.architectureApplying }
     private func field(_ key: WritableKeyPath<ArchitectureFormBuffer, String>) -> Binding<String> {
         Binding(get: { model.architecture?[keyPath: key] ?? "" }, set: { value in
             guard var fields = model.architecture else { return }
