@@ -97,7 +97,7 @@ final class ExhibitionModel: ObservableObject {
     private var installationBaseline = InstallationFormBuffer(settings: nil)
     let viewportController = NativeViewportController()
     var installationDirty: Bool { installation != installationBaseline }
-    var viewportDraft: NativeExhibitionDraft? { spaceLightingPreview?.displayDraft ?? plaquePreview?.displayDraft ?? benchPreview?.displayDraft ?? lightPreview?.displayDraft ?? surfaceMaterialPreview?.displayDraft ?? (installationDirty ? (installationPreview ?? draft) : draft) }
+    var viewportDraft: NativeExhibitionDraft? { furnishingPreview?.displayDraft ?? spaceLightingPreview?.displayDraft ?? plaquePreview?.displayDraft ?? benchPreview?.displayDraft ?? lightPreview?.displayDraft ?? surfaceMaterialPreview?.displayDraft ?? (installationDirty ? (installationPreview ?? draft) : draft) }
     @Published var positionXText = "0.0"
     @Published var positionYText = "1.0"
     @Published var positionZText = "0.0"
@@ -119,7 +119,109 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var architectureStatus = ""
     @Published private(set) var architectureApplying = false
     var architectureGeometryDirty: Bool { architecture != architectureBaseline }
-    var architectureDirty: Bool { architectureGeometryDirty || surfaceMaterialDirty || lightDirty || benchDirty || plaqueDirty || spaceLightingDirty }
+    var architectureDirty: Bool { architectureGeometryDirty || surfaceMaterialDirty || lightDirty || benchDirty || plaqueDirty || spaceLightingDirty || furnishingDirty }
+    @Published var furnishing: FurnishingFormBuffer? { didSet { furnishingPreview = nil; furnishingPreviewAccessID = nil; furnishingStatus = "" } }
+    private var furnishingBaseline: FurnishingFormBuffer?
+    @Published private var furnishingPreview: FurnishingPreview?
+    private var furnishingPreviewAccessID: UUID?
+    @Published private(set) var furnishingStatus = ""
+    @Published private(set) var furnishingCatalogReady = false
+    @Published private(set) var furnishingCatalogStatus = ""
+    @Published private(set) var furnishingImage: NSImage?
+    @Published var furnishingQuery = ""
+    @Published var furnishingCategory = "pedestal"
+    private var furnishingCatalogAccessID: UUID?
+    private var furnishingCatalogLoading = false
+    private var furnishingImageAttempted = false
+    var furnishingDirty: Bool { furnishing != furnishingBaseline }
+    var furnishingPreviewing: Bool { furnishingPreview != nil }
+    var selectedHasFurnishing: Bool { draft.map { FurnishingCatalog.hasVisual(in: $0, hostId: placementId) } ?? false }
+    var canEditFurnishing: Bool {
+        !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !benchDirty && !plaqueDirty && !spaceLightingDirty && !architectureApplying && viewportController.connected && viewportController.furnishingVisualsSupported && furnishingCatalogReady && furnishing != nil
+    }
+    var canPreviewFurnishing: Bool { canEditFurnishing && furnishingDirty && !furnishingPreviewing && (furnishing?.selected == true || selectedHasFurnishing) }
+    var canApplyFurnishing: Bool {
+        guard canEditFurnishing, furnishingPreviewAccessID == viewportAccessID, let preview = furnishingPreview, preview.base == draft else { return false }
+        return (try? furnishing?.command(hostId: placementId)) == preview.command
+    }
+    private func syncFurnishing() {
+        furnishing = nil; furnishingBaseline = nil; furnishingStatus = ""
+        guard let draft, !placementId.isEmpty else { return }
+        do {
+            let fields = try FurnishingFormBuffer(draft: draft, hostId: placementId)
+            furnishing = fields; furnishingBaseline = fields
+        } catch { furnishingStatus = "이 배치의 비품 설정을 읽지 못했습니다. 원래 설정은 유지됩니다." }
+    }
+    func discardFurnishing() {
+        guard !busy, !pending, !architectureApplying, !placingArtwork else { return }
+        syncFurnishing()
+    }
+    func loadFurnishingCatalog() async {
+        guard viewportController.connected, viewportController.furnishingVisualsSupported, !furnishingCatalogLoading, furnishingCatalogAccessID != viewportAccessID, let api else { return }
+        furnishingCatalogLoading = true
+        defer { furnishingCatalogLoading = false }
+        let access = viewportAccessID
+        do {
+            let available = try await api.furnishings()
+            try Task.checkCancellation()
+            guard access == viewportAccessID, viewportController.connected, viewportController.furnishingVisualsSupported else { return }
+            furnishingCatalogReady = available; furnishingCatalogAccessID = access
+            furnishingCatalogStatus = available ? "" : "지금 사용할 수 있는 비품이 없습니다."
+        } catch {
+            guard !Task.isCancelled, access == viewportAccessID else { return }
+            furnishingCatalogAccessID = access
+            furnishingCatalogStatus = "비품 목록을 읽지 못했습니다. 연결을 확인한 뒤 다시 확인하세요."
+        }
+    }
+    func retryFurnishingCatalog() async { furnishingCatalogAccessID = nil; await loadFurnishingCatalog() }
+    func loadFurnishingImage() async {
+        guard furnishingCatalogReady, furnishingImage == nil, !furnishingImageAttempted, viewportController.connected else { return }
+        furnishingImageAttempted = true
+        let previous = catalogThumbnailTail, jobId = UUID(), access = viewportAccessID
+        let job = Task { [weak self] in
+            await previous?.value
+            guard !Task.isCancelled, let self, access == self.viewportAccessID else { return }
+            do {
+                let data = try await self.viewportController.furnishingThumbnail()
+                try Task.checkCancellation()
+                guard access == self.viewportAccessID, self.furnishingCatalogReady else { return }
+                guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+                      let image = CGImageSourceCreateImageAtIndex(source, 0, nil), image.width == 256, image.height == 256 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+                self.furnishingImage = NSImage(cgImage: image, size: NSSize(width: 256, height: 256))
+            } catch {
+                guard !Task.isCancelled, access == self.viewportAccessID else { return }
+                self.viewportController.diagnose("FURNISHING_THUMBNAIL", error)
+            }
+        }
+        catalogThumbnailTail = job; catalogThumbnailTailId = jobId
+        await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
+        if catalogThumbnailTailId == jobId { catalogThumbnailTail = nil; catalogThumbnailTailId = nil }
+    }
+    func previewFurnishing() async {
+        guard canPreviewFurnishing, let base = draft, let fields = furnishing else { return }
+        let access = viewportAccessID, host = placementId
+        do {
+            let command = try fields.command(hostId: host)
+            architectureApplying = true
+            defer { architectureApplying = false }
+            let preview = try await viewportController.furnishingVisuals(command)
+            await work {
+                guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty, !surfaceMaterialDirty, !lightDirty, !benchDirty, !plaqueDirty, !spaceLightingDirty,
+                      architectureApplying, access == viewportAccessID, host == placementId, base == draft, preview.base == base, furnishing == fields else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                furnishingPreview = preview; furnishingPreviewAccessID = access
+                furnishingStatus = command.pose == nil ? "받침 외형을 뺀 상태입니다. 기존 보수적 받침은 남습니다. 적용 전에는 저장되지 않습니다." : "받침을 미리 보고 있습니다. 적용하면 선택한 배치에 보관합니다. 작품 위치는 바뀌지 않습니다."
+            }
+        } catch { failure = error as? AuthoringFailure ?? AuthoringFailure("FURNISHING_PREVIEW_FAILED"); viewportController.diagnose("FURNISHING", error) }
+    }
+    func applyFurnishing() async {
+        guard canApplyFurnishing else { return }
+        await work {
+            guard !pending, !immutable, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty, !surfaceMaterialDirty, !lightDirty, !benchDirty, !plaqueDirty, !spaceLightingDirty, !architectureApplying, furnishingPreviewAccessID == viewportAccessID, viewportController.connected, viewportController.furnishingVisualsSupported, let preview = furnishingPreview, let fields = furnishing, let draft, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            value.draft = try preview.apply(to: draft, command: fields.command(hostId: placementId))
+            try await persist(value); syncFields()
+            notice = "받침 변경을 이 Mac에 보관했습니다. 한 번의 되돌리기로 복원할 수 있으며 전시 저장은 별도로 진행합니다."
+        }
+    }
     @Published var spaceLighting: SpaceLightingFormBuffer? { didSet { spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; spaceLightingStatus = "" } }
     private var spaceLightingBaseline: SpaceLightingFormBuffer?
     @Published private var spaceLightingPreview: SpaceLightingPreview?
@@ -150,11 +252,11 @@ final class ExhibitionModel: ObservableObject {
     var lightPreviewing: Bool { lightPreview != nil }
     var canSelectLight: Bool { canSelectCatalog }
     var canPreviewLight: Bool {
-        !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !benchDirty && !plaqueDirty && !spaceLightingDirty && !architectureApplying && lightDirty && !lightPreviewing && viewportController.connected && viewportController.lightInspectorSupported
+        !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !benchDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && !architectureApplying && lightDirty && !lightPreviewing && viewportController.connected && viewportController.lightInspectorSupported
     }
     var canApplyLight: Bool {
         guard !busy, !pending, !immutable, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
-              !surfaceMaterialDirty, !benchDirty, !plaqueDirty, !spaceLightingDirty, !architectureApplying, viewportController.connected, viewportController.lightInspectorSupported,
+              !surfaceMaterialDirty, !benchDirty, !plaqueDirty, !furnishingDirty && !spaceLightingDirty, !architectureApplying, viewportController.connected, viewportController.lightInspectorSupported,
               lightPreviewAccessID == viewportAccessID, let preview = lightPreview, preview.base == draft,
               selectedLightId == preview.command.lightId, let fields = light else { return false }
         return (try? fields.command()) == preview.command
@@ -175,12 +277,12 @@ final class ExhibitionModel: ObservableObject {
         do { _ = try BenchSettings.list(in: draft); _ = try BenchViewpoint.list(in: draft); return true } catch { return false }
     }
     var canEditBench: Bool {
-        !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !plaqueDirty && !spaceLightingDirty && !architectureApplying && viewportController.connected && viewportController.benchInspectorSupported && benchMetadataEditable
+        !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && !architectureApplying && viewportController.connected && viewportController.benchInspectorSupported && benchMetadataEditable
     }
-    var canAddBench: Bool { canEditBench && !benchDirty && !plaqueDirty && !spaceLightingDirty && benches.count < 32 && draft?.rooms.contains(where: { $0["id"].string == roomId }) == true }
+    var canAddBench: Bool { canEditBench && !benchDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && benches.count < 32 && draft?.rooms.contains(where: { $0["id"].string == roomId }) == true }
     var canSelectBench: Bool { canSelectCatalog }
     var canPreviewBench: Bool { canEditBench && benchDirty && !benchPreviewing }
-    var canRemoveBench: Bool { canEditBench && !benchDirty && !plaqueDirty && !spaceLightingDirty && !selectedBenchId.isEmpty && !benchAdding }
+    var canRemoveBench: Bool { canEditBench && !benchDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && !selectedBenchId.isEmpty && !benchAdding }
     var canApplyBench: Bool {
         guard canEditBench, benchPreviewAccessID == viewportAccessID, let preview = benchPreview,
               preview.base == draft, selectedBenchId == preview.command.benchId else { return false }
@@ -199,12 +301,12 @@ final class ExhibitionModel: ObservableObject {
     var plaques: [PlaqueSettings] { guard let draft else { return [] }; return (try? PlaqueSettings.list(in: draft)) ?? [] }
     var plaqueMetadataEditable: Bool { guard let draft else { return false }; return (try? PlaqueSettings.list(in: draft)) != nil }
     var canEditPlaque: Bool {
-        !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !benchDirty && !architectureApplying && viewportController.connected && !spaceLightingDirty && viewportController.plaqueInspectorSupported && plaqueMetadataEditable
+        !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !benchDirty && !architectureApplying && viewportController.connected && !furnishingDirty && !spaceLightingDirty && viewportController.plaqueInspectorSupported && plaqueMetadataEditable
     }
-    var canAddPlaque: Bool { canEditPlaque && !plaqueDirty && !spaceLightingDirty && plaques.count < 32 && draft?.rooms.contains(where: { $0["id"].string == roomId }) == true }
+    var canAddPlaque: Bool { canEditPlaque && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && plaques.count < 32 && draft?.rooms.contains(where: { $0["id"].string == roomId }) == true }
     var canSelectPlaque: Bool { canSelectCatalog }
     var canPreviewPlaque: Bool { canEditPlaque && plaqueDirty && !plaquePreviewing }
-    var canRemovePlaque: Bool { canEditPlaque && !plaqueDirty && !spaceLightingDirty && !selectedPlaqueId.isEmpty && !plaqueAdding }
+    var canRemovePlaque: Bool { canEditPlaque && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && !selectedPlaqueId.isEmpty && !plaqueAdding }
     var canApplyPlaque: Bool {
         guard canEditPlaque, plaquePreviewAccessID == viewportAccessID, let preview = plaquePreview,
               preview.base == draft, selectedPlaqueId == preview.command.plaqueId else { return false }
@@ -217,15 +319,15 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var surfaceMaterialStatus = ""
     var surfaceMaterialDirty: Bool { surfaceMaterial != surfaceMaterialBaseline }
     var surfaceMaterialPreviewing: Bool { surfaceMaterialPreview != nil }
-    var canPreviewSurfaceMaterial: Bool { !busy && !pending && !immutable && !formDirty && !positionDirty && !architectureGeometryDirty && !lightDirty && !benchDirty && !plaqueDirty && !spaceLightingDirty && !architectureApplying && surfaceMaterialDirty && !surfaceMaterialPreviewing && viewportController.connected }
+    var canPreviewSurfaceMaterial: Bool { !busy && !pending && !immutable && !formDirty && !positionDirty && !architectureGeometryDirty && !lightDirty && !benchDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && !architectureApplying && surfaceMaterialDirty && !surfaceMaterialPreviewing && viewportController.connected }
     var canApplySurfaceMaterial: Bool {
-        guard !busy, !pending, !immutable, !formDirty, !positionDirty, !architectureGeometryDirty, !lightDirty, !benchDirty, !plaqueDirty, !spaceLightingDirty, !architectureApplying,
+        guard !busy, !pending, !immutable, !formDirty, !positionDirty, !architectureGeometryDirty, !lightDirty, !benchDirty, !plaqueDirty, !furnishingDirty && !spaceLightingDirty, !architectureApplying,
               viewportController.connected, surfaceMaterialPreviewAccessID == viewportAccessID,
               let preview = surfaceMaterialPreview, preview.base == draft,
               preview.command.selection == viewportSelection, let fields = surfaceMaterial else { return false }
         return (try? fields.command()) == preview.command
     }
-    var canApplyArchitecture: Bool { !busy && !pending && !immutable && !formDirty && !positionDirty && !architectureApplying && architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !benchDirty && !plaqueDirty && !spaceLightingDirty && viewportController.connected }
+    var canApplyArchitecture: Bool { !busy && !pending && !immutable && !formDirty && !positionDirty && !architectureApplying && architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !benchDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && viewportController.connected }
     @Published private(set) var viewportAccessID = UUID()
     private(set) var viewportCredentials: LocalAuthoringSession?
     @Published private var past: [NativeExhibitionDraft] = []
@@ -267,11 +369,11 @@ final class ExhibitionModel: ObservableObject {
         self.api = api; self.session = session
         let accessChanged = viewportCredentials?.token != credentials.token || viewportCredentials?.origin != credentials.origin
         viewportCredentials = credentials
-        if accessChanged { viewportAccessID = UUID(); surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
+        if accessChanged { viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
         self.read = read; self.write = write
         // Reconnecting may replace the native store closures even for the same
         // account/origin. Keep text, but never apply a prior binding's preview.
-        spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil
+        furnishingPreview = nil; furnishingPreviewAccessID = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil
         await work {
             if state == nil {
                 let stored = try await read()
@@ -320,7 +422,7 @@ final class ExhibitionModel: ObservableObject {
     }
     func acceptArchitectureCandidate(_ candidate: DocumentValue, base: NativeExhibitionDraft, command: ArchitectureCommand) async {
         await work {
-            guard !immutable, !pending, !formDirty, !positionDirty, !surfaceMaterialDirty, !lightDirty, !benchDirty, !plaqueDirty, !spaceLightingDirty, architectureApplying,
+            guard !immutable, !pending, !formDirty, !positionDirty, !surfaceMaterialDirty, !lightDirty, !benchDirty, !plaqueDirty, !furnishingDirty && !spaceLightingDirty, architectureApplying,
                   draft == base, try architecture?.command() == command,
                   var value = state, var next = draft else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             try next.acceptArchitectureGeometry(candidate, command: command, selected: viewportSelection); value.draft = next
@@ -408,7 +510,7 @@ final class ExhibitionModel: ObservableObject {
             let preview = try await viewportController.plaqueInspector(command, selectedPlaqueId: selected)
             await work {
                 guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
-                      !surfaceMaterialDirty, !lightDirty, !benchDirty, !spaceLightingDirty, architectureApplying, viewportAccessID == access,
+                      !surfaceMaterialDirty, !lightDirty, !benchDirty, !furnishingDirty && !spaceLightingDirty, architectureApplying, viewportAccessID == access,
                       draft == base, preview.base == base, selectedPlaqueId == selected, plaque == fields,
                       try currentPlaqueCommand() == command else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 plaquePreview = preview; plaquePreviewAccessID = access
@@ -423,7 +525,7 @@ final class ExhibitionModel: ObservableObject {
         guard canApplyPlaque else { return }
         await work {
             guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
-                  !surfaceMaterialDirty, !lightDirty, !benchDirty, !spaceLightingDirty, !architectureApplying, plaquePreviewAccessID == viewportAccessID,
+                  !surfaceMaterialDirty, !lightDirty, !benchDirty, !furnishingDirty && !spaceLightingDirty, !architectureApplying, plaquePreviewAccessID == viewportAccessID,
                   let preview = plaquePreview, let draft, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             value.draft = try preview.apply(to: draft, selectedPlaqueId: selectedPlaqueId, command: currentPlaqueCommand())
             try await persist(value); syncFields()
@@ -491,7 +593,7 @@ final class ExhibitionModel: ObservableObject {
             let preview = try await viewportController.benchInspector(command, selectedBenchId: selected)
             await work {
                 guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
-                      !surfaceMaterialDirty, !lightDirty, !plaqueDirty, !spaceLightingDirty, architectureApplying, viewportAccessID == access,
+                      !surfaceMaterialDirty, !lightDirty, !plaqueDirty, !furnishingDirty && !spaceLightingDirty, architectureApplying, viewportAccessID == access,
                       draft == base, preview.base == base, selectedBenchId == selected, bench == fields,
                       try currentBenchCommand() == command else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 benchPreview = preview; benchPreviewAccessID = access
@@ -506,7 +608,7 @@ final class ExhibitionModel: ObservableObject {
         guard canApplyBench else { return }
         await work {
             guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
-                  !surfaceMaterialDirty, !lightDirty, !plaqueDirty, !spaceLightingDirty, !architectureApplying, benchPreviewAccessID == viewportAccessID,
+                  !surfaceMaterialDirty, !lightDirty, !plaqueDirty, !furnishingDirty && !spaceLightingDirty, !architectureApplying, benchPreviewAccessID == viewportAccessID,
                   let preview = benchPreview, let draft, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             value.draft = try preview.apply(to: draft, selectedBenchId: selectedBenchId, command: currentBenchCommand())
             try await persist(value); syncFields()
@@ -589,7 +691,7 @@ final class ExhibitionModel: ObservableObject {
             // that frame stable while the shared validator owns this request.
             let preview = try await viewportController.lightInspector(command, selectedLightId: selected)
             await work {
-                guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty, !surfaceMaterialDirty, !benchDirty, !plaqueDirty, !spaceLightingDirty,
+                guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty, !surfaceMaterialDirty, !benchDirty, !plaqueDirty, !furnishingDirty && !spaceLightingDirty,
                       architectureApplying, viewportAccessID == access, draft == base, preview.base == base, selectedLightId == selected,
                       try light?.command() == command else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 lightPreview = preview; lightPreviewAccessID = access
@@ -604,7 +706,7 @@ final class ExhibitionModel: ObservableObject {
         guard canApplyLight else { return }
         await work {
             guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
-                  !surfaceMaterialDirty, !benchDirty, !plaqueDirty, !spaceLightingDirty, !architectureApplying, lightPreviewAccessID == viewportAccessID,
+                  !surfaceMaterialDirty, !benchDirty, !plaqueDirty, !furnishingDirty && !spaceLightingDirty, !architectureApplying, lightPreviewAccessID == viewportAccessID,
                   let preview = lightPreview, let fields = light, let draft, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             value.draft = try preview.apply(to: draft, selectedLightId: selectedLightId, command: fields.command())
             try await persist(value); syncFields()
@@ -624,7 +726,7 @@ final class ExhibitionModel: ObservableObject {
     }
     func acceptSurfaceMaterialPreview(_ candidate: DocumentValue, base: NativeExhibitionDraft, command: SurfaceMaterialCommand) async {
         await work {
-            guard !immutable, !pending, !formDirty, !positionDirty, !architectureGeometryDirty, !lightDirty, !benchDirty, !plaqueDirty, !spaceLightingDirty, architectureApplying,
+            guard !immutable, !pending, !formDirty, !positionDirty, !architectureGeometryDirty, !lightDirty, !benchDirty, !plaqueDirty, !furnishingDirty && !spaceLightingDirty, architectureApplying,
                   draft == base, try surfaceMaterial?.command() == command else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             surfaceMaterialPreview = try SurfaceMaterialPreview(candidate: candidate, base: base, command: command, selected: viewportSelection)
             surfaceMaterialPreviewAccessID = viewportAccessID
@@ -634,7 +736,7 @@ final class ExhibitionModel: ObservableObject {
     func applySurfaceMaterial() async {
         guard canApplySurfaceMaterial else { return }
         await work {
-            guard !immutable, !pending, !formDirty, !positionDirty, !architectureGeometryDirty, !lightDirty, !benchDirty, !plaqueDirty, !spaceLightingDirty, !architectureApplying,
+            guard !immutable, !pending, !formDirty, !positionDirty, !architectureGeometryDirty, !lightDirty, !benchDirty, !plaqueDirty, !furnishingDirty && !spaceLightingDirty, !architectureApplying,
                   surfaceMaterialPreviewAccessID == viewportAccessID, let preview = surfaceMaterialPreview,
                   let fields = surfaceMaterial, let draft, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             value.draft = try preview.apply(to: draft, selected: viewportSelection, command: fields.command())
@@ -677,10 +779,11 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     private func syncInstallation() {
+        syncFurnishing()
         installationPreview = nil
         do {
             let settings = try draft.flatMap { value in placementId.isEmpty ? nil : try value.installationSettings(for: placementId) }
-            installationEditable = !placementId.isEmpty
+            installationEditable = !placementId.isEmpty && !selectedHasFurnishing
             installationBaseline = InstallationFormBuffer(settings: settings)
             installation = installationBaseline
             installationStatus = ""
@@ -693,7 +796,7 @@ final class ExhibitionModel: ObservableObject {
     func resetInstallation() { installation = InstallationFormBuffer(settings: nil) }
     func applyInstallation() async {
         await work {
-            guard !immutable, !pending, installationEditable, !placementId.isEmpty, var value = state, var next = draft else { throw AuthoringFailure("EXHIBITION_PENDING") }
+            guard !immutable, !pending, !furnishingDirty, !architectureApplying, !selectedHasFurnishing, installationEditable, !placementId.isEmpty, var value = state, var next = draft else { throw AuthoringFailure("EXHIBITION_PENDING") }
             try next.setInstallation(installation.value(), for: placementId)
             value.draft = next; try await persist(value); syncInstallation()
             notice = "설정 적용을 이 Mac에 보관했습니다. 전시 저장은 별도로 진행하세요."
@@ -1044,7 +1147,7 @@ final class ExhibitionModel: ObservableObject {
         syncPlaque()
     }
     func selectRoom(clearPlaqueSelection: Bool = true) {
-        if clearPlaqueSelection && !plaqueDirty && !spaceLightingDirty { self.clearPlaqueSelection() }
+        if clearPlaqueSelection && !plaqueDirty && !furnishingDirty && !spaceLightingDirty { self.clearPlaqueSelection() }
         guard let room = draft?.rooms.first(where: { $0["id"].string == roomId }) else { return }
         if let draft, viewportSelection.flatMap({ roomForSelection($0, draft: draft) }) != roomId { viewportSelection = ViewportSelection(kind: "room", id: roomId) }
         roomName = room["name"].string ?? ""; width = room["dimensions"]["width"].double ?? 12; height = room["dimensions"]["height"].double ?? 4; depth = room["dimensions"]["depth"].double ?? 8
@@ -1063,7 +1166,7 @@ final class ExhibitionModel: ObservableObject {
     }
     func selectPlacement(clearLightSelection: Bool = true) {
         if clearLightSelection {
-            guard !lightDirty, !benchDirty, !plaqueDirty, !spaceLightingDirty, !architectureApplying else { return }
+            guard !lightDirty, !benchDirty, !plaqueDirty, !furnishingDirty && !spaceLightingDirty, !architectureApplying else { return }
             selectedLightId = ""; syncLight(); clearBenchSelection(); clearPlaqueSelection()
         }
         guard let p = draft?.placements.first(where: { $0["id"].string == placementId }), let values = p["transform"]["position"].items, values.count == 3 else { syncInstallation(); return }

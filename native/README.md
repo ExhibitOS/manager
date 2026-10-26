@@ -355,3 +355,27 @@ history restores the original namespace absence and template provenance.
 This native source does not establish shared runtime capability, renderer changes,
 GUI, OEX/static acceptance, mobile performance or visual quality. Those
 boundaries require the matching shared implementation and scoped actual evidence.
+
+### Optional furnishing catalog (source integration)
+
+`furnishing-visuals-v1` adds one protected catalog entry, the CC0 canted display
+pedestal, to an existing selected artwork placement. The native inspector keeps
+position, angle and uniform scale as raw text shared by General and Expert modes.
+Browsing does not edit the exhibition. An explicit shared `furnishingVisuals`
+preview is checked for its exact request binding and permitted delta before Apply
+creates one existing native history entry. Removing the visual keeps its legacy
+conservative box; Undo restores the prior namespace, including absence.
+
+Catalog metadata is checked against the immutable source/version/hash/rights.
+`furnishingThumbnail` has its own catalog/hash identity and bounded 256px PNG;
+artwork thumbnail and import authority are unchanged. Full GLB, room/world hull,
+support, OEX/static inventory and rights admission remain with Platform. The
+native adapter does not advertise support, ship a new renderer or generate asset
+quality tiers. A runtime without the negotiated capability retains the legacy
+editor. The selected visual locks legacy pedestal configuration until removal;
+existing separate center/on-top actions use shared measured support. Chair/bench
+visuals and automatic artwork movement are unsupported in this slice.
+
+Source tests cover correspondence and raw input only. Matching qualified runtime
+artifacts and native save/reopen/output/consumer actual evidence are required
+before claiming this feature complete.

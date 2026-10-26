@@ -86,6 +86,7 @@ struct SelectedPlacementInspector: View {
                     if mode == .expert { GroupBox("정확한 위치") { positionFields.padding(4) } }
                     else { DisclosureGroup("위치를 숫자로 다듬기", isExpanded: $inputs.positionDetails) { positionFields.padding(.top, 6) } }
                     if model.positionDirty { Text("위치 입력을 적용하거나 취소한 뒤 다른 배치를 선택하세요.").font(.caption).foregroundStyle(.secondary) }
+                    FurnishingCatalogView(model: model, viewport: model.viewportController, ready: ready, mode: mode)
                     InstallationSettingsView(buffer: $model.installation, inspector: $inputs, mode: mode, placementId: model.placementId, dirty: model.installationDirty,
                         editable: editable && model.installationEditable, viewport: model.viewportController, canAlign: !model.formDirty && !model.positionDirty,
                         status: model.installationStatus, floors: surfaces("floor", placement: selected.placement), walls: surfaces("wall", placement: selected.placement),
