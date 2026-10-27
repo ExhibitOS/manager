@@ -93,6 +93,16 @@ final class NativeImagePreparationTests: XCTestCase {
         let receipt = try XCTUnwrap(JSONSerialization.jsonObject(with: result.preparationReceipt) as? [String: Any])
         XCTAssertEqual(receipt["originalStored"] as? Bool, false); XCTAssertEqual(receipt["consumerAdmitted"] as? Bool, false)
         XCTAssertEqual(original.data, bytes)
+        if let path = ProcessInfo.processInfo.environment["EXHIBITOS_NATIVE_PREPARATION_EVIDENCE"] {
+            let root = URL(fileURLWithPath: path, isDirectory: true)
+            guard !FileManager.default.fileExists(atPath: root.path) else { throw AuthoringFailure("TEST_OUTPUT_EXISTS") }
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            try bytes.write(to: root.appendingPathComponent("synthetic-native-original.jpg"), options: .withoutOverwriting)
+            try result.png.write(to: root.appendingPathComponent("synthetic-native-derived.png"), options: .withoutOverwriting)
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            try encoder.encode(result.derived).write(to: root.appendingPathComponent("native-derived-descriptor.json"), options: .withoutOverwriting)
+            try result.preparationReceipt.write(to: root.appendingPathComponent("native-preparation-receipt.json"), options: .withoutOverwriting)
+        }
     }
     func testBaseAndNormalPreserveDecodedCodesAndOnlyBaseTagsSRGB() throws {
         let bytes = try jpeg()
