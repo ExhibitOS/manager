@@ -31,6 +31,8 @@ final class AuthoringModel: ObservableObject {
     @Published var assetId = ""
     private var readTransfer: (() async throws -> NativeUploadState)?
     private var writeTransfer: ((NativeUploadState) async throws -> NativeUploadState)?
+    private let importTransfer = NativeImportTransfer()
+    private var importRead: Task<ImportFileSnapshot, Error>?
     private var importPoll: Task<Void, Never>?
     private var importPollID: UUID?
     private var importStatusGeneration = UUID()
@@ -66,6 +68,9 @@ final class AuthoringModel: ObservableObject {
         busy = true; failure = nil; notice = ""
         defer { busy = false }
         do { try await work() }
+        catch is CancellationError {
+            notice = "파일 전송을 정지했습니다. 저장한 요청과 이미 받은 원본은 유지됩니다."
+        }
         catch {
             failure = error as? AuthoringFailure ?? AuthoringFailure((error as? BridgeFailure)?.code ?? "CONNECTION_FAILED")
             if failure?.status == 401 { session = nil }
@@ -182,7 +187,11 @@ extension AuthoringModel {
         }
         guard response == .OK, let url = panel.url else { return }
         await action {
-            let snapshot = try await ImportFileSnapshot.load(url)
+            let read = Task { try await ImportFileSnapshot.load(url) }
+            importRead = read
+            defer { importRead = nil }
+            let snapshot = try await withTaskCancellationHandler { try await read.value } onCancel: { read.cancel() }
+            try Task.checkCancellation()
             if let intent = transfer?.intent, !snapshot.matches(intent) { throw AuthoringFailure("IMPORT_INTENT_CHANGED") }
             importFile = snapshot
             if draft.title.isEmpty && selected == nil { draft.title = url.deletingPathExtension().lastPathComponent }
@@ -191,21 +200,10 @@ extension AuthoringModel {
     }
     func uploadImportFile() async {
         await action {
-            guard let api, let selected, !metadataDirty, let file = importFile, var state = transfer else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
+            guard let api, let selected, !metadataDirty, let file = importFile, let state = transfer else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
             let intent = NativeImportIntent(artworkId: selected.id, idempotencyKey: state.intent?.idempotencyKey ?? UUID().uuidString.lowercased(), mime: file.mime, sha256: file.sha256, bytes: file.data.count, scaleMeters: importScale, rights: draft.rights)
             if let previous = state.intent, previous != intent { throw AuthoringFailure("IMPORT_INTENT_CHANGED") }
-            if state.intent == nil {
-                state.intent = intent; state.fileName = file.name; state.jobId = nil
-                try await persistImport(state) // before POST, including uncertain responses
-            }
-            let job = try await api.createImport(intent)
-            importJob = job
-            guard var saved = transfer else { throw AuthoringFailure("IMPORT_STORE_REQUIRED") }
-            saved.jobId = job.id; try await persistImport(saved)
-            if job.state == "uploading" {
-                try await api.uploadImport(job.id, bytes: file.data)
-                importJob = try await api.importAction(job.id, action: .complete)
-            }
+            importJob = try await continueImport(intent: intent, file: file, api: api)
             approvalAcknowledged = false
             notice = "파일을 비공개로 검사하고 있습니다. 검사 상태와 작품 승인은 아래에서 확인하세요."
             scheduleImportPoll()
@@ -213,12 +211,40 @@ extension AuthoringModel {
     }
     func recoverImport() async {
         await action {
-            guard let api, var state = transfer, let intent = state.intent else { return }
-            let job = try await api.createImport(intent)
-            importJob = job; state.jobId = job.id; try await persistImport(state)
-            notice = "저장한 요청과 같은 파일 검사를 찾았습니다. 현재 상태에 맞게 계속하세요."
+            guard let api, let intent = transfer?.intent else { return }
+            importJob = try await continueImport(intent: intent, file: nil, api: api)
+            notice = "저장한 요청과 서버가 받은 원본으로 파일 검사를 계속합니다."
             scheduleImportPoll()
         }
+    }
+    private func continueImport(intent: NativeImportIntent, file: ImportFileSnapshot?, api: AuthoringAPI) async throws -> NativeImportJob {
+        let generation = importStatusGeneration, currentScope = scope
+        let tenant = session?.tenantId, principal = session?.userId
+        @MainActor func current() -> Bool {
+            generation == importStatusGeneration && currentScope == scope && available
+                && session?.tenantId == tenant && session?.userId == principal
+                && (transfer?.intent == nil || transfer?.intent == intent)
+        }
+        return try await importTransfer.run(intent: intent, jobID: transfer?.jobId, file: file, transport: api,
+            persistIntent: { [self] in
+                guard current(), var state = transfer else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+                if state.intent == nil {
+                    guard let file else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
+                    state.intent = intent; state.fileName = file.name; state.jobId = nil
+                    try await persistImport(state) // before POST, including uncertain responses
+                }
+            }, persistJob: { [self] job in
+                guard current(), var state = transfer, state.intent == intent else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+                state.jobId = job.id
+                try await persistImport(state)
+                guard current() else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+                importJob = job
+            }, isCurrent: current)
+    }
+    func cancelImportAndWait() async {
+        importStatusGeneration = UUID()
+        if let read = importRead { read.cancel(); _ = await read.result }
+        await importTransfer.cancelAndWait()
     }
     func changeImport(_ change: NativeImportAction) async {
         await action {
@@ -278,7 +304,7 @@ extension AuthoringModel {
         defer { pollingImportStatus = false }
         let generation = importStatusGeneration
         let currentScope = scope
-        func current() -> Bool {
+        @MainActor func current() -> Bool {
             generation == importStatusGeneration && currentScope == scope && !busy && available
                 && transfer?.jobId == id && self.session?.tenantId == session.tenantId
                 && self.session?.userId == session.userId && !Task.isCancelled

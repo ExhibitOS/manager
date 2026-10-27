@@ -149,6 +149,7 @@ final class ManagerModel: ObservableObject {
         guard !busy, let bridge, let context else { return }
         busy = true; failure = nil; startAfterPrepare = false
         defer { busy = false }
+        await authoring.cancelImportAndWait()
         do { native = try await bridge.stop(context); schedulePoll() }
         catch { failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_CONNECTION_FAILED") }
     }
@@ -285,6 +286,7 @@ final class ManagerModel: ObservableObject {
         quitting = true; startAfterPrepare = false
         defer { quitting = false }
         while busy { try? await Task.sleep(for: .milliseconds(100)) }
+        await authoring.cancelImportAndWait()
         await presentationSave?.value
         guard !presentationPending else { failure = BridgeFailure("NATIVE_SAVE_FAILED"); return false }
         guard let bridge, let context else { return !serviceRequested }
