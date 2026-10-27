@@ -102,13 +102,8 @@ struct SelectedLightInspector: View {
                                 TextField("광원 가로 · m", text: field(\.width))
                                 TextField("광원 세로 · m", text: field(\.height))
                             }
-                            if mode == .expert {
-                                GroupBox("정확한 위치") { positionFields.padding(4) }
-                                GroupBox("색상 수치") { colorFields.padding(4) }
-                            } else {
-                                DisclosureGroup("위치를 숫자로 다듬기", isExpanded: $positionDetails) { positionFields.padding(.top, 6) }
-                                DisclosureGroup("색상 수치", isExpanded: $colorDetails) { colorFields.padding(.top, 6) }
-                            }
+                            DisclosureGroup("위치를 숫자로 다듬기", isExpanded: $positionDetails) { positionFields.padding(.top, 6) }
+                            DisclosureGroup("색상 수치", isExpanded: $colorDetails) { colorFields.padding(.top, 6) }
                         }.textFieldStyle(.roundedBorder).disabled(!editable)
                         if mode == .expert { LabeledContent("저장 단위", value: fields.type.unit) }
                         Text("밝기와 색상은 화면 표현을 위한 입력입니다. 실제 조도 측정값은 아닙니다.").font(.caption).foregroundStyle(.secondary)

@@ -92,8 +92,7 @@ struct SelectedBenchInspector: View {
             Text("벤치를 적용할 때 새 시점도 함께 만듭니다. 기존 시점은 그대로 남습니다.").font(.caption).foregroundStyle(.secondary)
             Button("벤치 기준으로 시점 맞추기") { model.matchBenchViewpoint() }
                 .help("눈을 좌석 위로 맞추고 벤치 방향을 바라보게 합니다. 미리보기에서 확인한 뒤 적용하세요.")
-            if mode == .expert { GroupBox("감상 시점 수치") { cameraFields.padding(4) } }
-            else { DisclosureGroup("감상 시점 다듬기", isExpanded: $cameraDetails) { cameraFields.padding(.top, 6) } }
+            DisclosureGroup("감상 시점 다듬기", isExpanded: $cameraDetails) { cameraFields.padding(.top, 6) }
         } else {
             let views = model.draft.flatMap { try? BenchViewpoint.list(in: $0) } ?? []
             Picker("기존 감상 시점", selection: field(\.viewpointId, fallback: "")) {
@@ -127,13 +126,8 @@ struct SelectedBenchInspector: View {
                         })) { ForEach(InstallationSettings.Preset.allCases, id: \.self) { Text(presetName($0)).tag($0) } }
                         Text("프리셋은 색상·거칠기·금속성의 기본값을 함께 적용합니다.").font(.caption).foregroundStyle(.secondary)
                         ColorPicker("벤치 색상", selection: color, supportsOpacity: false)
-                        if mode == .expert {
-                            GroupBox("위치와 방향") { positionFields.padding(4) }
-                            GroupBox("재질 수치") { materialFields.padding(4) }
-                        } else {
-                            DisclosureGroup("위치와 방향", isExpanded: $positionDetails) { positionFields.padding(.top, 6) }
-                            DisclosureGroup("재질 수치", isExpanded: $materialDetails) { materialFields.padding(.top, 6) }
-                        }
+                        DisclosureGroup("위치와 방향", isExpanded: $positionDetails) { positionFields.padding(.top, 6) }
+                        DisclosureGroup("재질 수치", isExpanded: $materialDetails) { materialFields.padding(.top, 6) }
                         Divider()
                         Text("앉아서 보는 시점").font(.headline)
                         viewpoint(fields)

@@ -416,13 +416,14 @@ struct ManagerApp: App {
 
 struct ManagerView: View {
     @ObservedObject var model: ManagerModel
+    @State private var navigationVisibility = NavigationSplitViewVisibility.automatic
     @FocusState private var accountField: AccountField?
     private enum AccountField { case subject, password }
     @ScaledMetric(relativeTo: .body) private var bodySize = 13.0
     @ScaledMetric(relativeTo: .title2) private var headingSize = 24.0
     private var scale: CGFloat { CGFloat(model.presentation?.textScale ?? 100) / 100 }
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $navigationVisibility) {
             List(selection: Binding<Step?>(get: { model.presentation?.step }, set: { step in
                 if let step { model.change(step: step) }
             })) {
@@ -430,6 +431,7 @@ struct ManagerView: View {
             }.disabled(model.quitting || model.presentation == nil)
                 .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 320)
         } detail: {
+            ZStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     HStack(spacing: 12) {
@@ -454,8 +456,46 @@ struct ManagerView: View {
                     Spacer(minLength: 0)
                 }.font(.system(size: bodySize * scale)).padding(28).frame(maxWidth: 800, alignment: .leading)
             }
+            .opacity(workbenchActive ? 0 : 1)
+            .allowsHitTesting(!workbenchActive)
+            .accessibilityHidden(workbenchActive)
+            NativeExhibitionView(model: model.exhibitions, controller: model.exhibitions.viewportController,
+                                 ready: model.ready, mode: model.presentation?.mode ?? .beginner,
+                                 connect: { await model.connectPersonalAuthoring() }, active: workbenchActive,
+                                 readOnly: model.presentation?.step == .preview,
+                                 connectionAllowed: !model.busy && !model.quitting,
+                                 edit: { model.change(step: .select) }, publish: { model.change(step: .publish) })
+                .opacity(workbenchActive ? 1 : 0)
+                .allowsHitTesting(workbenchActive && !model.quitting)
+                .accessibilityHidden(!workbenchActive)
+                .font(.system(size: bodySize * scale))
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if workbenchActive {
+                    if model.quitting || model.runtimeBusy || model.busy {
+                        ProgressView(model.quitting ? "로컬 작업을 정지하고 있습니다…" : model.runtimeBusy ? operationTitle : "작업 공간을 연결하고 있습니다…")
+                            .controlSize(.small).padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if let failure = model.failure {
+                        HStack {
+                            Label(failure.localizedDescription, systemImage: "exclamationmark.triangle")
+                            Button("작업 공간 다시 연결") { Task { await model.connectPersonalAuthoring() } }.disabled(!model.ready || model.busy || model.quitting)
+                        }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
         }
         .frame(minWidth: 680, minHeight: 480)
+        .background {
+            GeometryReader { geometry in
+                Color.clear.onChange(of: geometry.size.width, initial: true) { _, width in
+                    if width < 900 && workbenchActive { navigationVisibility = .detailOnly }
+                }
+                .onChange(of: workbenchActive) { _, active in
+                    if active && geometry.size.width < 900 { navigationVisibility = .detailOnly }
+                }
+            }
+        }
         .toolbar {
             ToolbarItem {
                 Picker("사용 모드", selection: Binding(get: { model.presentation?.mode ?? .beginner }, set: { mode in model.change(mode: mode) })) {
@@ -466,6 +506,7 @@ struct ManagerView: View {
             ToolbarItem { Button("다시 확인", systemImage: "arrow.clockwise") { Task { await model.refresh() } }.disabled(model.busy) }
         }
     }
+    private var workbenchActive: Bool { model.presentation?.step == .select || model.presentation?.step == .preview }
     @ViewBuilder private var content: some View {
         switch model.presentation?.step ?? .prepare {
         case .prepare:
@@ -505,13 +546,8 @@ struct ManagerView: View {
             NativeMaintenanceView(model: model)
         case .create:
             NativeAuthoringView(model: model.authoring, configuration: model.native?.configuration, ready: model.ready, connect: { await model.connectPersonalAuthoring() })
-        case .select:
-            NativeExhibitionView(model: model.exhibitions, ready: model.ready, mode: model.presentation?.mode ?? .beginner, connect: { await model.connectPersonalAuthoring() })
-        case .preview:
-            Text("공개 전에 현재 전시와 작품을 살펴보세요.").foregroundStyle(.secondary)
-            NativeViewportArea(model: model.exhibitions, ready: model.ready, editable: false, controller: model.exhibitions.viewportController)
-            NativeOEXExportControls(model: model.exhibitions, ready: model.ready, showFeedback: true)
-                .task(id: model.ready) { if model.ready { await model.connectPersonalAuthoring() } }
+        case .select, .preview:
+            EmptyView() // The same mounted workbench above owns both purposes.
         case .publish:
             NativePublicationView(model: model.publication, source: model.exhibitions, staticExport: model.staticExport, hosting: model.hosting, ready: model.ready, connect: { await model.connectPersonalAuthoring() })
         }

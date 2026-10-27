@@ -112,13 +112,8 @@ struct SelectedPlaqueInspector: View {
                                 }
                             }
                         }
-                        if mode == .expert {
-                            GroupBox("위치") { positionFields.padding(4) }
-                            GroupBox("방향 수치") { rotationFields.padding(4) }
-                        } else {
-                            DisclosureGroup("위치 다듬기", isExpanded: $positionDetails) { positionFields.padding(.top, 6) }
-                            DisclosureGroup("방향 수치", isExpanded: $rotationDetails) { rotationFields.padding(.top, 6) }
-                        }
+                        DisclosureGroup("위치 다듬기", isExpanded: $positionDetails) { positionFields.padding(.top, 6) }
+                        DisclosureGroup("방향 수치", isExpanded: $rotationDetails) { rotationFields.padding(.top, 6) }
                     }.textFieldStyle(.roundedBorder).disabled(!editable)
                     Text("명판 전체가 공간 안에 있어야 합니다. 미리보기에서 위치·방향을 확인하고 적용하세요.").font(.caption).foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 8) {

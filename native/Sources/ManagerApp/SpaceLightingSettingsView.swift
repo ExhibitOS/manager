@@ -40,8 +40,7 @@ struct SpaceLightingSettingsView: View {
                     if fields.usesOverride {
                         TextField("전시 기본 밝기 · 0–1", text: field(\.baselineIntensity, fallback: ""))
                         Text("전시 전체의 약한 기본광을 조절합니다. 개별 조명과 채광은 별도로 설정합니다.").font(.caption).foregroundStyle(.secondary)
-                        if mode == .expert { reflection }
-                        else { DisclosureGroup("환경 반사", isExpanded: $reflectionDetails) { reflection } }
+                        DisclosureGroup("환경 반사", isExpanded: $reflectionDetails) { reflection }
                         if fields.baselineIntensity.isEmpty || fields.reflectionIntensity.isEmpty {
                             Text("처음 설정할 때는 기본 밝기와 환경 반사를 모두 입력하세요. 자동으로 값을 지정하지 않습니다.").font(.caption).foregroundStyle(.secondary)
                         }
