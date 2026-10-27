@@ -220,7 +220,7 @@ extension AuthoringModel {
     private func continueImport(intent: NativeImportIntent, file: ImportFileSnapshot?, api: AuthoringAPI) async throws -> NativeImportJob {
         let generation = importStatusGeneration, currentScope = scope
         let tenant = session?.tenantId, principal = session?.userId
-        func current() -> Bool {
+        @MainActor func current() -> Bool {
             generation == importStatusGeneration && currentScope == scope && available
                 && session?.tenantId == tenant && session?.userId == principal
                 && (transfer?.intent == nil || transfer?.intent == intent)
@@ -304,7 +304,7 @@ extension AuthoringModel {
         defer { pollingImportStatus = false }
         let generation = importStatusGeneration
         let currentScope = scope
-        func current() -> Bool {
+        @MainActor func current() -> Bool {
             generation == importStatusGeneration && currentScope == scope && !busy && available
                 && transfer?.jobId == id && self.session?.tenantId == session.tenantId
                 && self.session?.userId == session.userId && !Task.isCancelled

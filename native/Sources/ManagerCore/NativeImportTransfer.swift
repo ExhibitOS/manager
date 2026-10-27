@@ -29,7 +29,7 @@ public final class NativeImportTransfer {
         let id = UUID()
         operationID = id
         let owned = Task { @MainActor [weak self] in
-            func check() throws {
+            @MainActor func check() throws {
                 try Task.checkCancellation()
                 guard self?.operationID == id, isCurrent() else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
             }
