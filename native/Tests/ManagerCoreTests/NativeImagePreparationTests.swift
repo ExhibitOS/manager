@@ -94,7 +94,11 @@ final class NativeImagePreparationTests: XCTestCase {
         }
     }
     func testNearestCentrePreservesRawChannelsWithoutFlipOrNormalization() throws {
-        let original = Data((0..<8).flatMap { n in [UInt8(n * 10 + 1), UInt8(n * 10 + 2), UInt8(n * 10 + 3)] })
+        var original = Data()
+        for n in 0..<8 {
+            let base = UInt8(n * 10)
+            original.append(contentsOf: [base + 1, base + 2, base + 3])
+        }
         // 4×2 -> 2×1 selects source centres (1,1) and (3,1), indices5 and7.
         let sampled = try Prep.resample(original, sourceWidth: 4, sourceHeight: 2, width: 2, height: 1, isCurrent: { true })
         XCTAssertEqual(sampled, Data([51,52,53,71,72,73]))
