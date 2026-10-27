@@ -209,7 +209,7 @@ mod tests {
     use super::*;
     fn fixture() -> Value {
         serde_json::json!({"format":1,"revision":0,"workspaceId":Uuid::new_v4().to_string(),"tenantId":Uuid::new_v4().to_string(),"principalId":Uuid::new_v4().to_string(),
-            "intent":{"artworkId":Uuid::new_v4().to_string(),"idempotencyKey":Uuid::new_v4().to_string(),"mime":"image/png","sha256":"a".repeat(64),"bytes":100,"scaleMeters":1,"rights":{}},"jobId":null,"fileName":"synthetic.png"})
+            "intent":{"artworkId":Uuid::new_v4().to_string(),"idempotencyKey":Uuid::new_v4().to_string(),"mime":"image/png","sha256":"a".repeat(64),"bytes":100,"scaleMeters":1.0,"rights":{}},"jobId":null,"fileName":"synthetic.png"})
     }
     fn derived() -> Value {
         let canonical = br#"{"colourMeaning":"srgb-assumed","role":"baseColor","sampling":"nearest-centre","version":1}"#;
