@@ -100,6 +100,8 @@ impl NativeObservedPlanBoundary {
 /// ```
 pub struct NativeTargetPreparation {
     operation_id: String,
+    // Original generated copy attempt, retained only in this opaque capability.
+    attempt_id: String,
     observation: NativeTargetObservation,
 }
 #[derive(Serialize)]
@@ -181,7 +183,7 @@ impl Store {
         let root_pin=DirectoryPin::open(&root)?;
         let authority=serde_json::json!({"scope":self.scope,"generation":self.current.generation,"policyGeneration":self.current.policy_generation,"recordSha256":self.current_sha256,"signedReleasePayloadSha256":admitted.release.payload_sha256,"signedArtifactSha256":admitted.release.release.artifact.sha256});
         let source_authority=&source.authority;
-        let evidence=source.source.prepare_target_copy(source_session,target_session,&admitted.release.release.artifact.schema_sha256.clone(),&operation,authority,|profile,id,source_root,target_root| {
+        let (evidence,attempt_id)=source.source.prepare_target_copy(source_session,target_session,&admitted.release.release.artifact.schema_sha256.clone(),&operation,authority,|profile,id,source_root,target_root| {
             self.recheck_native_admission(admitted,now).map_err(|e|crate::err(e.code()))?;
             if !source_authority.matches(self,admitted) || target_root!=root.as_path() { return Err(crate::err("UPDATE_POLICY_STALE")); }
             self.check_native_target_selection(profile,id,source_root,target_id,target_root)
@@ -193,7 +195,7 @@ impl Store {
             || evidence.source_inventory_sha256!=source.evidence.inventory_sha256 || evidence.source_schema_sha256!=source.evidence.schema_sha256 { return Err(crate::err("UPDATE_PLAN_MISMATCH")); }
         source.verified=true;
         let observation=NativeTargetObservation {source_instance:self.bound_source_id(&installations::load(&self.profile)?.ok_or_else(||crate::err("UPDATE_SOURCE_UNREGISTERED"))?.0)?,target_instance:target_id.into(),root,root_pin,target_manifest_sha256:manifest,evidence,authority:SourceAuthority::capture(self,admitted),verified:true};
-        Ok(NativeTargetPreparation {operation_id:operation,observation})
+        Ok(NativeTargetPreparation {operation_id:operation,attempt_id,observation})
     }
     pub fn observe_native_target(
         &self,
@@ -504,7 +506,7 @@ impl Store {
         if self.used_operations.contains(&operation) || self.used_instances.contains(&target_id) { return Err(crate::err("UPDATE_PLAN_MISMATCH")); }
         let authority = serde_json::json!({"scope":self.scope,"generation":self.current.generation,"policyGeneration":self.current.policy_generation,"recordSha256":self.current_sha256,"signedReleasePayloadSha256":admitted.release.payload_sha256,"signedArtifactSha256":admitted.release.release.artifact.sha256});
         let source_authority = source.authority.clone();
-        let configuration = source.source.plan_target_configuration(source_session, target_session, &operation, &expected, &authority, |profile, id, source_root, target_root| {
+        let configuration = source.source.plan_target_configuration(source_session, target_session, &operation, &preparation.attempt_id, &expected, &authority, |profile, id, source_root, target_root| {
             self.recheck_native_admission(admitted, now).map_err(|e| crate::err(e.code()))?;
             if !source_authority.matches(self, admitted) || target_root != root.as_path() { return Err(crate::err("UPDATE_POLICY_STALE")); }
             self.check_native_target_selection(profile, id, source_root, &target_id, target_root)

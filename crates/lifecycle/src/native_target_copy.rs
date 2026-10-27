@@ -67,7 +67,7 @@ impl AuthenticatedNativeBackup {
         &self, source: &mut Session, target: &mut Session, target_schema: &str,
         operation: &str, authority: Value,
         mut check_selection: impl FnMut(&Path, &str, &Path, &Path) -> Result<()>,
-    ) -> Result<NativeTargetEvidence> {
+    ) -> Result<(NativeTargetEvidence, String)> {
         let profile = LifecycleService::bound_existing(self.profile_root.clone())?;
         let _profile = profile_lock(&profile)?;
         let root = target.target_observation_root().to_owned();
@@ -124,7 +124,9 @@ impl AuthenticatedNativeBackup {
             source.check_native_observation_fence()?; target.check_native_observation_fence()?;
             check_selection(&self.profile_root,&self.installation_id,&self.source_root,&root)?;
             intent["state"] = Value::String("PreparedInactive".into()); durable(&directory,"intent.json",&intent)?;
-            Ok(evidence)
+            // The generated attempt leaves this function in memory, never by
+            // rereading the mutable candidate marker or intent.
+            Ok((evidence, attempt.clone()))
         })();
         if let Err(error) = &result {
             // backup_tool drains owned writers before returning any failure.
@@ -183,7 +185,7 @@ impl AuthenticatedNativeBackup {
     /// persisted marker is compared with that capability, never replayed as one.
     pub(crate) fn plan_target_configuration(
         &self, source: &mut Session, target: &mut Session, operation: &str,
-        expected: &NativeTargetEvidence, authority: &Value,
+        expected_attempt: &str, expected: &NativeTargetEvidence, authority: &Value,
         mut check_selection: impl FnMut(&Path, &str, &Path, &Path) -> Result<()>,
     ) -> Result<super::super::native_restore::ReboundConfigurationPlan> {
         let profile = LifecycleService::bound_existing(self.profile_root.clone())?;
@@ -220,7 +222,7 @@ impl AuthenticatedNativeBackup {
         let directory_pin = crate::maintenance_source::DirectoryPin::open(&directory)?;
         let (intent, intent_pin) = read(&directory, "intent.json")?;
         if marker["format"] != 1 || marker["operationId"] != operation
-            || !marker["attemptId"].as_str().is_some_and(uuid)
+            || !uuid(expected_attempt) || marker["attemptId"].as_str() != Some(expected_attempt)
             || intent["format"] != 1 || intent["state"] != "PreparedInactive"
             || intent["operationId"] != operation || intent["attemptId"] != marker["attemptId"]
             || intent["sourceRoot"].as_str() != self.source_root.to_str()
