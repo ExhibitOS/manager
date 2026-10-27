@@ -96,7 +96,7 @@ public struct SurfaceMaterialTextureBinding: Equatable, Sendable {
         try self.init(catalogId: id, repeatMeters: repeats.compactMap(\.double), rotation: rotation, normalScale: normal)
     }
     public var value: DocumentValue {
-        .object(["pack": .object(["id": .string(catalogId), "version": .integer(catalogVersion)]),
+        .object(["pack": .object(["id": .string(catalogId), "version": .integer(Int64(catalogVersion))]),
                  "repeatMeters": .vector(repeatMeters), "rotation": .number(rotation), "normalScale": .number(normalScale)])
     }
     public static func recommendedRepeat(for id: String) throws -> Double {
