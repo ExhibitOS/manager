@@ -132,7 +132,7 @@ struct NativeExhibitionView: View {
             ControlGroup {
                 Button { Task { if controller.editingContextActive { await model.undo() } } } label: { Label("되돌리기", systemImage: "arrow.uturn.backward") }.disabled(!ready || readOnly || !model.canUndo)
                 Button { Task { if controller.editingContextActive { await model.redo() } } } label: { Label("다시 실행", systemImage: "arrow.uturn.forward") }.disabled(!ready || readOnly || !model.canRedo)
-            }.labelStyle(.iconOnly)
+            }.labelStyle(.iconOnly).fixedSize()
             if coverPurpose || readOnly || model.entrancePreviewActive {
                 Button { returnToScene() } label: { Label("편집으로", systemImage: "arrow.backward") }
                     .labelStyle(.iconOnly).help("편집으로 돌아가기")
@@ -187,12 +187,12 @@ struct NativeExhibitionView: View {
             if model.busy && !model.exporting { ProgressView("전시를 확인하고 있습니다…").controlSize(.small) }
             if let failure = model.failure {
                 HStack(alignment: .top) {
-                    Label(failure.localizedDescription, systemImage: "exclamationmark.triangle")
+                    Label(failure.code == "PLACEMENT_INVALID" ? "위치 X·Y·Z에 올바른 미터 값을 입력하거나 위치 입력을 취소하세요." : failure.localizedDescription, systemImage: "exclamationmark.triangle")
                     DisclosureGroup("오류 상세") { Text(failure.code).textSelection(.enabled) }
                 }
             } else if !model.notice.isEmpty && !model.dirty { Text(model.notice).foregroundStyle(.secondary).lineLimit(1) }
             if model.entrancePreviewActive && !model.entrancePreviewStatus.isEmpty { Text(model.entrancePreviewStatus).foregroundStyle(.secondary).lineLimit(2) }
-            if !ready || model.failure != nil || model.entranceHostRecovering || !controller.diagnostic.isEmpty {
+            if !ready || (model.failure != nil && model.failure?.code != "PLACEMENT_INVALID") || model.entranceHostRecovering || !controller.diagnostic.isEmpty {
                 Button("작업 공간 다시 연결") { Task { await connect() } }.disabled(!ready || model.busy)
             }
         }.font(.callout).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 6)

@@ -49,7 +49,7 @@ struct SpaceLightingSettingsView: View {
                         Text("적용하면 직접 설정한 두 값을 해제하고 기존 조명 표시를 사용합니다.").font(.caption).foregroundStyle(.secondary)
                     }
                 }.disabled(!ready || !model.canEditSpaceLighting)
-                HStack {
+                VStack(alignment: .leading, spacing: 8) {
                     Button("전시 조명 미리보기") { Task { await model.previewSpaceLighting() } }.disabled(!ready || !model.canPreviewSpaceLighting)
                     Button("전시 조명 적용") { Task { await model.applySpaceLighting() } }.disabled(!ready || !model.canApplySpaceLighting)
                     Button("전시 조명 입력 취소") { model.discardSpaceLighting() }.disabled(!model.spaceLightingDirty || model.busy || model.pending || model.architectureApplying)

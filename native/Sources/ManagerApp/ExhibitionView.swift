@@ -1196,6 +1196,7 @@ final class ExhibitionModel: ObservableObject {
         if let values = draft?.placements.first(where: { $0["id"].string == placementId })?["transform"]["position"].items, values.count == 3 {
             x = values[0].double ?? 0; y = values[1].double ?? 0; z = values[2].double ?? 0
         } else { x = 0; y = 1; z = 0 }
+        if failure?.code == "PLACEMENT_INVALID" { failure = nil }
     }
     func cancelCatalogPlacement() {
         guard !busy, !pending else { return }

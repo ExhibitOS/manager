@@ -41,7 +41,7 @@ struct SurfaceMaterialSettingsView: View {
                     } else {
                         Text("표면 지정값을 사용하지 않고 기존 기본 재질로 표시합니다.").foregroundStyle(.secondary)
                     }
-                    HStack {
+                    VStack(alignment: .leading, spacing: 8) {
                         Button("재질 미리보기") { Task { await model.previewSurfaceMaterial() } }.disabled(!ready || !model.canPreviewSurfaceMaterial)
                         Button("재질 적용") { Task { await model.applySurfaceMaterial() } }.disabled(!ready || !model.canApplySurfaceMaterial)
                         Button("재질 입력 취소") { model.discardSurfaceMaterial() }.disabled(!model.surfaceMaterialDirty || model.architectureApplying || model.busy)
