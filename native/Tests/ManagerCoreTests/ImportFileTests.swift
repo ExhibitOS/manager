@@ -18,6 +18,17 @@ final class ImportFileTests: XCTestCase {
         try Data("changed".utf8).write(to: source)
         XCTAssertTrue(snapshot.data == Data("abc".utf8))
     }
+    func testJPEGRequiresExplicitRecipeOptInAndKeepsOriginalBytes() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).JpEg")
+        let original = Data("synthetic JPEG transport bytes; reader does not decode".utf8)
+        try original.write(to: url); defer { try? FileManager.default.removeItem(at: url) }
+        do { _ = try await ImportFileSnapshot.load(url); XCTFail("Legacy/default chooser must not enable JPEG") }
+        catch let error as AuthoringFailure { XCTAssertEqual(error.code, "FILE_FORMAT_UNSUPPORTED") }
+        let held = try await ImportFileSnapshot.load(url, allowJPEG: true)
+        try Data("source changed later".utf8).write(to: url)
+        XCTAssertEqual(held.mime, "image/jpeg"); XCTAssertEqual(held.data, original)
+        XCTAssertEqual(held.sha256, nativeImportSHA256(original))
+    }
     func testRejectsSymlinkFIFOEmptyUnsupportedAndOversizeWithoutReading() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)

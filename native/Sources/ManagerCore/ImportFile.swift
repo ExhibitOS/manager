@@ -22,20 +22,23 @@ public struct ImportFileSnapshot: Sendable {
     public let sha256: String
     public let data: Data
 
-    public static func load(_ url: URL) async throws -> Self {
-        let worker = Task.detached(priority: .userInitiated) { try read(url) }
+    public static func load(_ url: URL, allowJPEG: Bool = false) async throws -> Self {
+        let worker = Task.detached(priority: .userInitiated) { try read(url, allowJPEG: allowJPEG) }
         return try await withTaskCancellationHandler {
             let snapshot = try await worker.value
             try Task.checkCancellation()
             return snapshot
         } onCancel: { worker.cancel() }
     }
-    private static func read(_ url: URL) throws -> Self {
+    private static func read(_ url: URL, allowJPEG: Bool) throws -> Self {
         guard url.isFileURL else { throw AuthoringFailure("FILE_LOCAL_REQUIRED") }
         let mime: String
         switch url.pathExtension.lowercased() {
         case "glb": mime = "model/gltf-binary"
         case "png": mime = "image/png"
+        case "jpg", "jpeg":
+            guard allowJPEG else { throw AuthoringFailure("FILE_FORMAT_UNSUPPORTED") }
+            mime = "image/jpeg"
         default: throw AuthoringFailure("FILE_FORMAT_UNSUPPORTED")
         }
         let access = url.startAccessingSecurityScopedResource()

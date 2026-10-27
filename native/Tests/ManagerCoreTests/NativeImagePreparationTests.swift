@@ -81,6 +81,19 @@ final class NativeImagePreparationTests: XCTestCase {
         }
         return names
     }
+    func testPreparedStandaloneJPEGKeepsOriginalAndDerivedBindingsDistinct() async throws {
+        let bytes = try jpeg()
+        let original = ImportFileSnapshot(name: "synthetic.jpg", mime: "image/jpeg", sha256: hash(bytes), data: bytes)
+        let result = try await NativePreparedJPEG.prepare(original: original, operationID: "typed-import", generation: "generation-2", isCurrent: { true })
+        XCTAssertEqual(result.originalSHA256, original.sha256); XCTAssertTrue(result.derived.valid)
+        XCTAssertNotEqual(result.derived.sha256, original.sha256)
+        XCTAssertEqual(result.derived.mime, "image/png"); XCTAssertEqual(result.derived.sha256, hash(result.png))
+        XCTAssertEqual(result.derived.recipe.settingsSha256, hash(NativePreparedJPEG.settingsBytes))
+        XCTAssertEqual(result.derived.recipe.sourcePixelsSha256, result.derived.recipe.outputPixelsSha256)
+        let receipt = try XCTUnwrap(JSONSerialization.jsonObject(with: result.preparationReceipt) as? [String: Any])
+        XCTAssertEqual(receipt["originalStored"] as? Bool, false); XCTAssertEqual(receipt["consumerAdmitted"] as? Bool, false)
+        XCTAssertEqual(original.data, bytes)
+    }
     func testBaseAndNormalPreserveDecodedCodesAndOnlyBaseTagsSRGB() throws {
         let bytes = try jpeg()
         let candidate = try Prep.prepareSynchronously(sources: [source(bytes), source(bytes, role: .normal, index: 1)],
