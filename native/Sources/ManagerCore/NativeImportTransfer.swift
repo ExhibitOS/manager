@@ -76,7 +76,21 @@ public final class NativeImportTransfer {
         }
         task = owned
         defer { if operationID == id { task = nil; operationID = nil } }
-        return try await withTaskCancellationHandler { try await owned.value } onCancel: { owned.cancel() }
+        @MainActor func checkCaller() throws {
+            try Task.checkCancellation()
+            guard !owned.isCancelled else { throw CancellationError() }
+            guard operationID == id, isCurrent() else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+        }
+        return try await withTaskCancellationHandler {
+            do {
+                let result = try await owned.value
+                try checkCaller()
+                return result
+            } catch {
+                try checkCaller()
+                throw error
+            }
+        } onCancel: { owned.cancel() }
     }
 
     private static func valid(_ job: NativeImportJob, derived: Bool) -> Bool {

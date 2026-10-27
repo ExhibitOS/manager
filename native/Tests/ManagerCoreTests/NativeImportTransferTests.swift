@@ -101,6 +101,19 @@ final class NativeImportTransferTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(NativeImportIntent.self, from: JSONEncoder().encode(old)), old)
         XCTAssertEqual(try NativeImportDerivedRecipe.recipeSHA256(colourMeaning: "srgb-assumed"), "afeac275ed5461cada4c1e9e4f169d69fe3a89fd3a4fc06f9f0d582ed48aebe0")
     }
+    func testCallerBoundaryRejectsLateStateAndErrorAfterOwnedTaskCompletion() async throws {
+        for errorPath in [false, true] {
+            let transport = ImportTransportFixture(), input = intent()
+            await transport.configure(code: errorPath ? "UPLOAD_INTEGRITY" : nil, state: errorPath ? "uploading" : "failed")
+            var checks = 0
+            do {
+                _ = try await NativeImportTransfer().run(intent: input, jobID: nil, file: nil, transport: transport,
+                    persistJob: { _ in }, isCurrent: { checks += 1; return checks < 5 })
+                XCTFail("Superseded caller must not accept the completed child state")
+            } catch let error as AuthoringFailure { XCTAssertEqual(error.code, "IMPORT_CONTEXT_CHANGED") }
+            let (calls, _) = await transport.observed(); XCTAssertEqual(calls.count, errorPath ? 2 : 1)
+        }
+    }
     func testResumeUsesSameIntentAndDurableServerOriginalWithoutLocalFile() async throws {
         let transport = ImportTransportFixture(), transfer = NativeImportTransfer(), input = intent()
         var persisted: String?
