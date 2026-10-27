@@ -289,7 +289,8 @@ impl Session {
         // The server owns revocation/expiry/current membership policy.
         let _old = self.local_authority.take();
         let result = self.auxiliary_timed(self.payload.node(), vec![script.to_string_lossy().into()],
-            vec![("DATABASE_URL", database), ("EXHIBITOS_RUNTIME_MODE", "native".into()), ("EXHIBITOS_AUTHORING_MODE", "personal".into())], Some(&bytes), Duration::from_secs(15));
+            vec![("DATABASE_URL", database), ("EXHIBITOS_RUNTIME_MODE", "native".into()), ("EXHIBITOS_AUTHORING_MODE", "personal".into()),
+                 ("TENANT_ID", next.tenant_id.clone())], Some(&bytes), Duration::from_secs(15));
         bytes.fill(0);
         let (code, receipt) = result.map_err(|_| err("NATIVE_AUTHORING_RENEWAL_UNCERTAIN"))?;
         self.observation_root.check()?;
