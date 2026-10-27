@@ -109,6 +109,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "OEX_PROFILE_INVALID", "OEX_EXTENSION_UNSUPPORTED", "OEX_LEGAL_NOTICE_INVALID", "OEX_INVALID": return "현재 전시에 OEX로 내보낼 수 없는 정보가 있습니다. 전시와 작품 정보를 확인하세요."
         case "OEX_RESPONSE_INVALID": return "내보내기 파일을 확인하지 못했습니다. 저장하지 않았습니다. 다시 시도하세요."
         case "EXPORT_WRITE_FAILED": return "파일을 저장하지 못했습니다. 저장 위치와 여유 공간을 확인하고 다시 시도하세요."
+        case "IMPORT_DERIVED_REQUIRED": return "같은 JPEG 원본을 다시 선택해 변환 파일을 준비하세요. 저장한 요청은 유지됩니다."
         case "IMPORT_CONTEXT_CHANGED": return "작업 공간이나 파일 검사 요청이 바뀌었습니다. 저장한 요청을 다시 확인하세요."
         case "IMPORT_INTENT_CHANGED": return "이전 검사 요청과 파일 또는 권리 입력이 다릅니다. 이전 요청을 완료하거나 취소한 뒤 새 검사를 시작하세요."
         case "IMPORT_FILE_REQUIRED": return "이전 요청과 같은 파일을 다시 선택하세요. 저장한 요청은 유지됩니다."
@@ -369,7 +370,8 @@ public actor AuthoringAPI {
     public func createImport(_ input: NativeImportIntent) async throws -> NativeImportJob {
         guard input.bytes > 0, input.bytes <= 32 * 1024 * 1024,
               input.scaleMeters.isFinite, input.scaleMeters > 0, input.scaleMeters <= 1_000_000,
-              ["model/gltf-binary", "image/png"].contains(input.mime),
+              ((["model/gltf-binary", "image/png"].contains(input.mime) && input.derived == nil)
+                || (input.mime == "image/jpeg" && input.derived?.valid == true)),
               input.sha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil,
               UUID(uuidString: input.idempotencyKey) != nil else { throw AuthoringFailure("IMPORT_INPUT_INVALID") }
         _ = try identifier(input.artworkId)
@@ -379,6 +381,12 @@ public actor AuthoringAPI {
         guard !bytes.isEmpty, bytes.count <= 32 * 1024 * 1024 else { throw AuthoringFailure("IMPORT_SIZE_INVALID") }
         struct Received: Decodable, Sendable { let received: Int }
         let value: Received = try await request("/api/v1/tenants/\(tenant)/imports/" + identifier(id) + "/bytes", method: "PUT", body: bytes, contentType: "application/octet-stream")
+        guard value.received == bytes.count else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
+    }
+    public func uploadDerivedImport(_ id: String, bytes: Data) async throws {
+        guard !bytes.isEmpty, bytes.count <= 8_388_608 else { throw AuthoringFailure("IMPORT_SIZE_INVALID") }
+        struct Received: Decodable, Sendable { let received: Int }
+        let value: Received = try await request("/api/v1/tenants/\(tenant)/imports/" + identifier(id) + "/derived-bytes", method: "PUT", body: bytes, contentType: "application/octet-stream")
         guard value.received == bytes.count else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
     }
     public func importAction(_ id: String, action: NativeImportAction) async throws -> NativeImportJob {
@@ -400,6 +408,7 @@ public struct NativeImportJob: Decodable, Sendable {
     public let errorCode: String?
     public let assetId: String?
     public let retryAt: String?
+    public let originalAssetId: String?
     public var terminal: Bool { ["approved", "cancelled"].contains(state) }
     public var canRetry: Bool {
         guard state == "failed", attempts < 5 else { return false }
@@ -419,7 +428,8 @@ public struct NativeImportIntent: Codable, Equatable, Sendable {
     public let bytes: Int
     public let scaleMeters: Double
     public let rights: ArtworkMetadata.Rights
-    public init(artworkId: String, idempotencyKey: String = UUID().uuidString.lowercased(), mime: String, sha256: String, bytes: Int, scaleMeters: Double, rights: ArtworkMetadata.Rights) {
-        self.artworkId = artworkId; self.idempotencyKey = idempotencyKey; self.mime = mime; self.sha256 = sha256; self.bytes = bytes; self.scaleMeters = scaleMeters; self.rights = rights
+    public let derived: NativeImportDerived?
+    public init(artworkId: String, idempotencyKey: String = UUID().uuidString.lowercased(), mime: String, sha256: String, bytes: Int, scaleMeters: Double, rights: ArtworkMetadata.Rights, derived: NativeImportDerived? = nil) {
+        self.artworkId = artworkId; self.idempotencyKey = idempotencyKey; self.mime = mime; self.sha256 = sha256; self.bytes = bytes; self.scaleMeters = scaleMeters; self.rights = rights; self.derived = derived
     }
 }

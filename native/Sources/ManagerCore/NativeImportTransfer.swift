@@ -6,6 +6,7 @@ import Foundation
 public protocol NativeImportTransport: Sendable {
     func createImport(_ input: NativeImportIntent) async throws -> NativeImportJob
     func uploadImport(_ id: String, bytes: Data) async throws
+    func uploadDerivedImport(_ id: String, bytes: Data) async throws
     func importAction(_ id: String, action: NativeImportAction) async throws -> NativeImportJob
 }
 extension AuthoringAPI: NativeImportTransport {}
@@ -19,7 +20,7 @@ public final class NativeImportTransfer {
     public private(set) var operationID: UUID?
     public init() {}
 
-    public func run(intent: NativeImportIntent, jobID: String?, file: ImportFileSnapshot?,
+    public func run(intent: NativeImportIntent, jobID: String?, file: ImportFileSnapshot?, derived: NativePreparedJPEG? = nil,
                     transport: any NativeImportTransport,
                     persistIntent: @escaping @MainActor () async throws -> Void = {},
                     persistJob: @escaping @MainActor (NativeImportJob) async throws -> Void,
@@ -34,12 +35,19 @@ public final class NativeImportTransfer {
                 guard self?.operationID == id, isCurrent() else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
             }
             try check()
-            if let file, !file.matches(intent) { throw AuthoringFailure("IMPORT_INTENT_CHANGED") }
+            if let file {
+                guard file.matches(intent) else { throw AuthoringFailure("IMPORT_INTENT_CHANGED") }
+                if let descriptor = intent.derived {
+                    guard intent.mime == "image/jpeg", descriptor.valid, let derived,
+                          derived.originalSHA256 == intent.sha256, derived.derived == descriptor,
+                          derived.png.count == descriptor.bytes, nativeImportSHA256(derived.png) == descriptor.sha256 else { throw AuthoringFailure("IMPORT_DERIVED_REQUIRED") }
+                } else if derived != nil || intent.mime == "image/jpeg" { throw AuthoringFailure("IMPORT_INTENT_CHANGED") }
+            }
             try await persistIntent()
             try check()
             let created = try await transport.createImport(intent)
             try check()
-            guard Self.valid(created),
+            guard Self.valid(created, derived: intent.derived != nil),
                   jobID.map({ $0.lowercased() == created.id.lowercased() }) ?? true else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
             try await persistJob(created) // durable same-intent binding before sending any bytes
             try check()
@@ -47,6 +55,10 @@ public final class NativeImportTransfer {
             if let file {
                 try await transport.uploadImport(created.id, bytes: file.data)
                 try check()
+                if let derived {
+                    try await transport.uploadDerivedImport(created.id, bytes: derived.png)
+                    try check()
+                }
             }
             // When recovering without a local selection, reuse already received
             // original bytes. Missing/corrupt bytes must not start a new job or
@@ -58,19 +70,35 @@ public final class NativeImportTransfer {
                 throw AuthoringFailure("IMPORT_FILE_REQUIRED")
             }
             try check()
-            guard Self.valid(completed), completed.state != "uploading",
+            guard Self.valid(completed, derived: intent.derived != nil), completed.state != "uploading",
                   completed.id.lowercased() == created.id.lowercased() else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
             return completed
         }
         task = owned
         defer { if operationID == id { task = nil; operationID = nil } }
-        return try await withTaskCancellationHandler { try await owned.value } onCancel: { owned.cancel() }
+        @MainActor func checkCaller() throws {
+            try Task.checkCancellation()
+            guard !owned.isCancelled else { throw CancellationError() }
+            guard operationID == id, isCurrent() else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+        }
+        return try await withTaskCancellationHandler {
+            do {
+                let result = try await owned.value
+                try checkCaller()
+                return result
+            } catch {
+                try checkCaller()
+                throw error
+            }
+        } onCancel: { owned.cancel() }
     }
 
-    private static func valid(_ job: NativeImportJob) -> Bool {
+    private static func valid(_ job: NativeImportJob, derived: Bool) -> Bool {
         UUID(uuidString: job.id) != nil
             && ["uploading", "queued", "processing", "approved", "failed", "cancelled"].contains(job.state)
-            && (job.state != "approved" || job.assetId.flatMap(UUID.init(uuidString:)) != nil)
+            && (job.originalAssetId == nil || job.originalAssetId.flatMap(UUID.init(uuidString:)) != nil)
+            && (job.state != "approved" || (job.assetId.flatMap(UUID.init(uuidString:)) != nil
+                && (!derived || (job.originalAssetId.flatMap(UUID.init(uuidString:)) != nil && job.originalAssetId?.lowercased() != job.assetId?.lowercased()))))
     }
 
     /// Cancellation requests are cooperative. Retain and await the actual owned
