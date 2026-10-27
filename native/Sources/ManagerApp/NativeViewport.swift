@@ -215,6 +215,7 @@ struct NativeViewport: NSViewRepresentable {
         var sendTask: Task<Void, Never>?
         init(_ parent: NativeViewport) { self.parent = parent; super.init(); parent.controller.owner = epoch }
         func invalidate() {
+            guard active else { return }
             endPlacement()
             entranceOperation = nil
             if controller.owner == epoch { controller.entrancePreviewAction = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil }
@@ -231,13 +232,16 @@ struct NativeViewport: NSViewRepresentable {
         private var page: URL? { URL(string: parent.credentials.origin + "/native-viewport.html") }
         private func isPage(_ url: URL?) -> Bool { url == page && url?.user == nil && url?.password == nil }
         func update(_ value: NativeViewport) {
+            guard active else { return }
             parent = value
             guard let page, page.scheme == "http", page.host == "127.0.0.1", let port = page.port, port >= 1024, UUID(uuidString: value.credentials.tenantId) != nil, UUID(uuidString: value.credentials.principalId) != nil else { return }
             if let installedToken, installedToken != value.credentials.token {
-                entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil
-                controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.lightInspectorSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false
-                endPlacement(); controller.placementSupported = false
-                prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0; web?.stopLoading(); return
+                // A renewed session requires the existing new-coordinator identity.
+                // Revoke this page once; repeated published resets during a SwiftUI
+                // update would prevent that replacement from being mounted.
+                invalidate()
+                web?.stopLoading()
+                return
             }
             if installedToken == nil {
                 entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil
