@@ -144,6 +144,7 @@ final class ExhibitionModel: ObservableObject {
         if let value = benchPreview?.displayDraft { return value }
         if let value = lightPreview?.displayDraft { return value }
         if let value = surfaceMaterialPreview?.displayDraft { return value }
+        if let value = surfaceMaterialTexturePreview?.displayDraft { return value }
         return installationDirty ? (installationPreview ?? draft) : draft
     }
     @Published var positionXText = "0.0"
@@ -360,20 +361,43 @@ final class ExhibitionModel: ObservableObject {
               preview.base == draft, selectedPlaqueId == preview.command.plaqueId else { return false }
         return (try? currentPlaqueCommand()) == preview.command
     }
-    @Published var surfaceMaterial: SurfaceMaterialFormBuffer? { didSet { surfaceMaterialPreview = nil; surfaceMaterialStatus = "" } }
+    @Published var surfaceMaterial: SurfaceMaterialFormBuffer? { didSet { clearSurfaceMaterialPreview() } }
     private var surfaceMaterialBaseline: SurfaceMaterialFormBuffer?
+    @Published var surfaceMaterialTexture: SurfaceMaterialTextureFormBuffer? { didSet { clearSurfaceMaterialPreview() } }
+    private var surfaceMaterialTextureBaseline: SurfaceMaterialTextureFormBuffer?
     @Published private var surfaceMaterialPreview: SurfaceMaterialPreview?
+    @Published private var surfaceMaterialTexturePreview: SurfaceMaterialTexturePreview?
     private var surfaceMaterialPreviewAccessID: UUID?
     @Published private(set) var surfaceMaterialStatus = ""
-    var surfaceMaterialDirty: Bool { surfaceMaterial != surfaceMaterialBaseline }
-    var surfaceMaterialPreviewing: Bool { surfaceMaterialPreview != nil }
-    var canPreviewSurfaceMaterial: Bool { !busy && !pending && !immutable && !formDirty && !positionDirty && !architectureGeometryDirty && !lightDirty && !benchDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && !architectureApplying && surfaceMaterialDirty && !surfaceMaterialPreviewing && viewportController.connected }
+    @Published private(set) var surfaceMaterialCatalog: NativeSurfaceMaterialCatalog?
+    @Published private(set) var surfaceMaterialCatalogLoading = false
+    @Published private(set) var surfaceMaterialCatalogStatus = ""
+    private var surfaceMaterialCatalogAccessID: UUID?
+    private var surfaceMaterialCatalogRequestID: UUID?
+    private var surfaceMaterialTextureDirty: Bool { surfaceMaterialTexture != surfaceMaterialTextureBaseline }
+    var surfaceMaterialDirty: Bool { surfaceMaterial != surfaceMaterialBaseline || surfaceMaterialTextureDirty }
+    var surfaceMaterialPreviewing: Bool { surfaceMaterialPreview != nil || surfaceMaterialTexturePreview != nil }
+    var surfaceMaterialTexturesSupported: Bool { viewportController.connected && viewportController.surfaceMaterialTexturesSupported && surfaceMaterialTexture != nil }
+    private var surfaceMaterialRuntimeSupported: Bool { (surfaceMaterialTextureBaseline?.catalogId == nil && !surfaceMaterialTextureDirty) || surfaceMaterialTexturesSupported }
+    var canEditSurfaceMaterial: Bool { !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !lightDirty && !benchDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && !architectureApplying && viewportController.editingContextActive && viewportController.connected && surfaceMaterialRuntimeSupported }
+    var canPreviewSurfaceMaterial: Bool { canEditSurfaceMaterial && surfaceMaterialDirty && !surfaceMaterialPreviewing }
     var canApplySurfaceMaterial: Bool {
         guard !busy, !pending, !immutable, !formDirty, !positionDirty, !architectureGeometryDirty, !lightDirty, !benchDirty, !plaqueDirty, !furnishingDirty && !spaceLightingDirty, !architectureApplying,
-              viewportController.connected, surfaceMaterialPreviewAccessID == viewportAccessID,
-              let preview = surfaceMaterialPreview, preview.base == draft,
+              !placingArtwork, viewportController.editingContextActive, viewportController.connected, surfaceMaterialRuntimeSupported,
+              surfaceMaterialPreviewAccessID == viewportAccessID else { return false }
+        if let preview = surfaceMaterialTexturePreview {
+            return surfaceMaterialTexturesSupported && preview.base == draft && preview.command.selection == viewportSelection && (try? currentSurfaceMaterialTextureCommand()) == preview.command
+        }
+        guard !surfaceMaterialTextureDirty, let preview = surfaceMaterialPreview, preview.base == draft,
               preview.command.selection == viewportSelection, let fields = surfaceMaterial else { return false }
         return (try? fields.command()) == preview.command
+    }
+    private func clearSurfaceMaterialPreview() {
+        surfaceMaterialPreview = nil; surfaceMaterialTexturePreview = nil; surfaceMaterialPreviewAccessID = nil; surfaceMaterialStatus = ""
+    }
+    private func currentSurfaceMaterialTextureCommand() throws -> SurfaceMaterialTextureCommand {
+        guard let fields = surfaceMaterial, let texture = surfaceMaterialTexture else { throw AuthoringFailure("SURFACE_MATERIAL_TEXTURE_INVALID") }
+        return .init(surfaceId: fields.surfaceId, material: try fields.command().material, texture: try texture.binding())
     }
     var canApplyArchitecture: Bool { !busy && !pending && !immutable && !formDirty && !positionDirty && !architectureApplying && architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !benchDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && viewportController.connected }
     @Published private(set) var viewportAccessID = UUID()
@@ -427,6 +451,8 @@ final class ExhibitionModel: ObservableObject {
         self.read = read; self.write = write
         // Reconnecting may replace the native store closures even for the same
         // account/origin. Keep text, but never apply a prior binding's preview.
+        clearSurfaceMaterialPreview()
+        if accessChanged { surfaceMaterialCatalog = nil; surfaceMaterialCatalogAccessID = nil; surfaceMaterialCatalogRequestID = nil; surfaceMaterialCatalogLoading = false; surfaceMaterialCatalogStatus = "" }
         furnishingPreview = nil; furnishingPreviewAccessID = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil
         await work {
             if state == nil {
@@ -654,13 +680,54 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     private func syncSurfaceMaterial() {
-        surfaceMaterialPreview = nil; surfaceMaterialPreviewAccessID = nil
+        clearSurfaceMaterialPreview()
         surfaceMaterial = nil; surfaceMaterialBaseline = nil; surfaceMaterialStatus = ""
+        surfaceMaterialTexture = nil; surfaceMaterialTextureBaseline = nil
         guard let draft, let selection = viewportSelection, selection.kind == "surface" else { return }
         do {
             let fields = try SurfaceMaterialFormBuffer(draft: draft, selection: selection)
             surfaceMaterial = fields; surfaceMaterialBaseline = fields
+            if let surface = draft.candidate["surfaces"].items?.first(where: { $0["id"].string == selection.id }),
+               ["wall", "ceiling"].contains(surface["type"].string ?? "") {
+                let texture = try SurfaceMaterialTextureFormBuffer(draft: draft, selection: selection)
+                surfaceMaterialTexture = texture; surfaceMaterialTextureBaseline = texture
+            }
         } catch { surfaceMaterialStatus = "이 표면의 재질 설정은 현재 편집할 수 없습니다. 저장된 설정은 유지됩니다." }
+    }
+    func loadSurfaceMaterialCatalog() async {
+        guard surfaceMaterialTexturesSupported, !surfaceMaterialCatalogLoading,
+              surfaceMaterialCatalogAccessID != viewportAccessID, let api else { return }
+        let requestID = UUID()
+        surfaceMaterialCatalogRequestID = requestID
+        surfaceMaterialCatalogLoading = true
+        defer { if surfaceMaterialCatalogRequestID == requestID { surfaceMaterialCatalogLoading = false; surfaceMaterialCatalogRequestID = nil } }
+        let access = viewportAccessID
+        do {
+            let catalog = try await api.surfaceMaterials()
+            try Task.checkCancellation()
+            guard access == viewportAccessID, surfaceMaterialCatalogRequestID == requestID, surfaceMaterialTexturesSupported else { return }
+            surfaceMaterialCatalog = catalog; surfaceMaterialCatalogAccessID = access; surfaceMaterialCatalogStatus = ""
+        } catch {
+            guard !Task.isCancelled, access == viewportAccessID, surfaceMaterialCatalogRequestID == requestID else { return }
+            surfaceMaterialCatalogAccessID = access
+            surfaceMaterialCatalogStatus = "재질 목록을 읽지 못했습니다. 연결을 확인한 뒤 다시 불러오세요."
+        }
+    }
+    func retrySurfaceMaterialCatalog() async { surfaceMaterialCatalogAccessID = nil; await loadSurfaceMaterialCatalog() }
+    func selectSurfaceMaterial(_ id: String) {
+        guard canEditSurfaceMaterial, surfaceMaterialTexturesSupported, surfaceMaterialCatalogAccessID == viewportAccessID,
+              surfaceMaterialCatalog?.items.contains(where: { $0.id == id }) == true, var fields = surfaceMaterialTexture else { return }
+        do { try fields.select(id); surfaceMaterialTexture = fields }
+        catch { failure = error as? AuthoringFailure ?? AuthoringFailure("SURFACE_MATERIAL_TEXTURE_INVALID") }
+    }
+    func removeSurfaceMaterialTexture() {
+        guard canEditSurfaceMaterial, surfaceMaterialTexturesSupported, var fields = surfaceMaterialTexture else { return }
+        fields.remove(); surfaceMaterialTexture = fields
+    }
+    func resetSurfaceMaterialTextureValues() {
+        guard canEditSurfaceMaterial, surfaceMaterialTexturesSupported, var fields = surfaceMaterialTexture else { return }
+        do { try fields.useRecommendedValues(); surfaceMaterialTexture = fields }
+        catch { failure = error as? AuthoringFailure ?? AuthoringFailure("SURFACE_MATERIAL_TEXTURE_INVALID") }
     }
     func plaquePlacementTitle(_ id: String) -> String {
         guard let draft, let placement = draft.placements.first(where: { $0["id"].string?.lowercased() == id.lowercased() }),
@@ -940,18 +1007,32 @@ final class ExhibitionModel: ObservableObject {
     func previewSurfaceMaterial() async {
         guard canPreviewSurfaceMaterial, let fields = surfaceMaterial, let draft else { return }
         do {
-            let command = try fields.command()
-            _ = try command.encodedValue(in: draft, selected: viewportSelection)
+            let action: NativeGeometryAction
+            if surfaceMaterialTextureDirty { action = .surfaceMaterialTexture(try currentSurfaceMaterialTextureCommand()) }
+            else { action = .surfaceMaterial(try fields.command()) }
+            _ = try action.encodedValue(in: draft, selected: viewportSelection)
             architectureApplying = true
             defer { architectureApplying = false }
-            await viewportController.perform(.surfaceMaterial(command), model: self)
+            await viewportController.perform(action, model: self)
         } catch { failure = error as? AuthoringFailure ?? AuthoringFailure("SURFACE_MATERIAL_INVALID") }
     }
     func acceptSurfaceMaterialPreview(_ candidate: DocumentValue, base: NativeExhibitionDraft, command: SurfaceMaterialCommand) async {
         await work {
             guard !immutable, !pending, !formDirty, !positionDirty, !architectureGeometryDirty, !lightDirty, !benchDirty, !plaqueDirty, !furnishingDirty && !spaceLightingDirty, architectureApplying,
+                  viewportController.editingContextActive, surfaceMaterialRuntimeSupported, !surfaceMaterialTextureDirty,
                   draft == base, try surfaceMaterial?.command() == command else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             surfaceMaterialPreview = try SurfaceMaterialPreview(candidate: candidate, base: base, command: command, selected: viewportSelection)
+            surfaceMaterialPreviewAccessID = viewportAccessID
+            surfaceMaterialStatus = "재질을 미리 보고 있습니다. 적용하면 이 Mac에 보관되며 취소하면 원래 표시로 돌아갑니다."
+        }
+    }
+    func acceptSurfaceMaterialTexturePreview(_ candidate: DocumentValue, base: NativeExhibitionDraft, command: SurfaceMaterialTextureCommand) async {
+        await work {
+            guard !immutable, !pending, !formDirty, !positionDirty, !architectureGeometryDirty, !lightDirty, !benchDirty, !plaqueDirty,
+                  !furnishingDirty, !spaceLightingDirty, architectureApplying, viewportController.editingContextActive,
+                  surfaceMaterialTexturesSupported, draft == base,
+                  try currentSurfaceMaterialTextureCommand() == command else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            surfaceMaterialTexturePreview = try SurfaceMaterialTexturePreview(candidate: candidate, base: base, command: command, selected: viewportSelection)
             surfaceMaterialPreviewAccessID = viewportAccessID
             surfaceMaterialStatus = "재질을 미리 보고 있습니다. 적용하면 이 Mac에 보관되며 취소하면 원래 표시로 돌아갑니다."
         }
@@ -960,9 +1041,14 @@ final class ExhibitionModel: ObservableObject {
         guard canApplySurfaceMaterial else { return }
         await work {
             guard !immutable, !pending, !formDirty, !positionDirty, !architectureGeometryDirty, !lightDirty, !benchDirty, !plaqueDirty, !furnishingDirty && !spaceLightingDirty, !architectureApplying,
-                  surfaceMaterialPreviewAccessID == viewportAccessID, let preview = surfaceMaterialPreview,
+                  viewportController.editingContextActive, surfaceMaterialRuntimeSupported, surfaceMaterialPreviewAccessID == viewportAccessID,
                   let fields = surfaceMaterial, let draft, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
-            value.draft = try preview.apply(to: draft, selected: viewportSelection, command: fields.command())
+            if let preview = surfaceMaterialTexturePreview {
+                guard surfaceMaterialTexturesSupported else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                value.draft = try preview.apply(to: draft, selected: viewportSelection, command: currentSurfaceMaterialTextureCommand())
+            } else if let preview = surfaceMaterialPreview, !surfaceMaterialTextureDirty {
+                value.draft = try preview.apply(to: draft, selected: viewportSelection, command: fields.command())
+            } else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             try await persist(value); syncFields()
             notice = "재질 변경을 이 Mac에 보관했습니다. 실행 취소로 되돌릴 수 있으며 전시 저장은 별도로 진행합니다."
         }

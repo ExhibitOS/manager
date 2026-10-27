@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 
-/// Existing Platform StudioMaterials v1; no presets, textures or audio policy.
+/// Existing Platform StudioMaterials v1 scalar values.
 public struct SurfaceMaterial: Equatable, Sendable {
     public let color: String
     public let roughness: Double
@@ -13,7 +13,7 @@ public struct SurfaceMaterial: Equatable, Sendable {
         }
         self.color = color; self.roughness = roughness; self.metalness = metalness
     }
-    fileprivate init(value: DocumentValue) throws {
+    init(value: DocumentValue) throws {
         guard case .object(let fields) = value, Set(fields.keys) == Set(["color", "roughness", "metalness"]),
               let color = fields["color"]?.string, let roughness = fields["roughness"]?.double,
               let metalness = fields["metalness"]?.double else { throw AuthoringFailure("SURFACE_MATERIAL_INVALID") }
@@ -30,12 +30,13 @@ public struct SurfaceMaterialCommand: Equatable, Sendable {
     public var selection: ViewportSelection { .init(kind: "surface", id: surfaceId) }
 
     /// Refuse unsupported known metadata rather than silently discarding it.
-    fileprivate static func assignments(in draft: NativeExhibitionDraft) throws -> [String: DocumentValue] {
+    static func namespaceFields(in draft: NativeExhibitionDraft) throws -> [String: DocumentValue]? {
         guard case .object(let candidate) = draft.candidate else { throw AuthoringFailure("SURFACE_MATERIAL_INVALID") }
-        guard let rawExtensions = candidate["extensions"] else { return [:] }
+        guard let rawExtensions = candidate["extensions"] else { return nil }
         guard case .object(let extensions) = rawExtensions else { throw AuthoringFailure("SURFACE_MATERIAL_INVALID") }
-        guard let raw = extensions[namespace] else { return [:] }
-        guard case .object(let fields) = raw, Set(fields.keys) == Set(["version", "surfaces"]),
+        guard let raw = extensions[namespace] else { return nil }
+        guard case .object(let fields) = raw,
+              Set(fields.keys) == Set(["version", "surfaces"]) || Set(fields.keys) == Set(["version", "surfaces", "surfaceTextures"]),
               fields["version"] == .integer(1), case .object(let entries) = fields["surfaces"], entries.count <= 64,
               try JSONEncoder().encode(raw).count <= 16_384 else { throw AuthoringFailure("SURFACE_MATERIAL_INVALID") }
         let known = Set((draft.candidate["surfaces"].items ?? []).compactMap { $0["id"].string?.lowercased() })
@@ -44,6 +45,14 @@ public struct SurfaceMaterialCommand: Equatable, Sendable {
             guard UUID(uuidString: id) != nil, known.contains(id.lowercased()), seen.insert(id.lowercased()).inserted else { throw AuthoringFailure("SURFACE_MATERIAL_INVALID") }
             _ = try SurfaceMaterial(value: value)
         }
+        if let textures = fields["surfaceTextures"] {
+            let bindings = try SurfaceMaterialTextureBinding.assignments(textures, in: draft)
+            guard seen.union(bindings.keys.map { $0.lowercased() }).count <= 64 else { throw AuthoringFailure("SURFACE_MATERIAL_INVALID") }
+        }
+        return fields
+    }
+    static func assignments(in draft: NativeExhibitionDraft) throws -> [String: DocumentValue] {
+        guard let fields = try namespaceFields(in: draft), case .object(let entries) = fields["surfaces"] ?? .null else { return [:] }
         return entries
     }
     private func requireSelection(_ selected: ViewportSelection?, in draft: NativeExhibitionDraft) throws {
@@ -62,14 +71,20 @@ public struct SurfaceMaterialCommand: Equatable, Sendable {
         guard entries.count <= 64 else { throw AuthoringFailure("SURFACE_MATERIAL_INVALID") }
         var candidate = draft.candidate
         if candidate["extensions"] == .null { candidate["extensions"] = .object([:]) }
-        candidate["extensions"][Self.namespace] = .object(["version": .integer(1), "surfaces": .object(entries)])
-        guard try JSONEncoder().encode(candidate["extensions"][Self.namespace]).count <= 16_384 else { throw AuthoringFailure("SURFACE_MATERIAL_INVALID") }
+        var fields = try Self.namespaceFields(in: draft) ?? ["version": .integer(1)]
+        fields["surfaces"] = .object(entries)
+        candidate["extensions"][Self.namespace] = .object(fields)
+        var checked = draft; try checked.replaceCandidate(candidate)
+        _ = try Self.namespaceFields(in: checked)
+        try Self.markTemplateModified(in: &candidate)
+        return candidate
+    }
+    static func markTemplateModified(in candidate: inout DocumentValue) throws {
         let template = "org.exhibitos.studio/template"
         if candidate["extensions"][template] != .null {
             guard case .object = candidate["extensions"][template], case .bool = candidate["extensions"][template]["modified"] else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
             candidate["extensions"][template]["modified"] = .bool(true)
         }
-        return candidate
     }
     public func checkProposal(_ candidate: DocumentValue, base: NativeExhibitionDraft, selected: ViewportSelection?) throws {
         guard try candidate == expectedCandidate(in: base, selected: selected) else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
@@ -106,8 +121,14 @@ public struct SurfaceMaterialFormBuffer: Equatable, Sendable {
         let entries = try SurfaceMaterialCommand.assignments(in: draft)
         let value = entries.first { $0.key.lowercased() == selection.id.lowercased() }?.value
         let material = try value.map { try SurfaceMaterial(value: $0) }
+        let metadata = try SurfaceMaterialCommand.namespaceFields(in: draft)
+        let textured: Bool
+        if case .object(let textures) = metadata?["surfaceTextures"] {
+            textured = textures.keys.contains(where: { $0.lowercased() == selection.id.lowercased() })
+        } else { textured = false }
         surfaceId = selection.id; usesOverride = value != nil
-        color = material?.color ?? "#f4f1e8"; roughness = String(material?.roughness ?? 0.8); metalness = String(material?.metalness ?? 0)
+        color = material?.color ?? (textured ? "#ffffff" : "#f4f1e8")
+        roughness = String(material?.roughness ?? (textured ? 1 : 0.8)); metalness = String(material?.metalness ?? 0)
     }
     public func command() throws -> SurfaceMaterialCommand {
         var value: SurfaceMaterial?

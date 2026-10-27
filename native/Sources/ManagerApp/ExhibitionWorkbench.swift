@@ -220,7 +220,7 @@ struct NativeExhibitionView: View {
                 else if !model.selectedBenchId.isEmpty { SelectedBenchInspector(model: model, controller: model.viewportController, ready: ready, mode: mode).id(model.selectedBenchId) }
                 else if !model.selectedLightId.isEmpty { SelectedLightInspector(model: model, controller: model.viewportController, ready: ready, mode: mode).id(model.selectedLightId) }
                 else if hasSelectedPlacement { SelectedPlacementInspector(model: model, ready: ready, mode: mode, inputs: selectedInputs).id(model.placementId) }
-                else { ScrollView { ArchitectureSettingsView(model: model, ready: ready).padding(4) } }
+                else { ScrollView { ArchitectureSettingsView(model: model, ready: ready, mode: mode).padding(4) } }
             }
         case .lighting:
             ScrollView {
