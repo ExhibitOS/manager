@@ -9,17 +9,21 @@ private actor ImportTransportFixture: NativeImportTransport {
     var derivedUploaded: Data?
     var completionCode: String?
     var createdState = "uploading"
+    var assetID: String?
+    var originalAssetID: String?
     var createHook: (@Sendable () async -> Void)?
     var uploadHook: (@Sendable () async -> Void)?
     func configure(code: String? = nil, state: String = "uploading",
                    create: (@Sendable () async -> Void)? = nil,
-                   upload: (@Sendable () async -> Void)? = nil) {
+                   upload: (@Sendable () async -> Void)? = nil, assetID: String? = nil, originalAssetID: String? = nil) {
         completionCode = code; createdState = state; createHook = create; uploadHook = upload
+        self.assetID = assetID; self.originalAssetID = originalAssetID
     }
     func job(_ state: String) throws -> NativeImportJob {
-        try JSONDecoder().decode(NativeImportJob.self, from: JSONSerialization.data(withJSONObject: [
-            "id": id, "state": state, "progress": 10, "attempts": 0
-        ]))
+        var value: [String: Any] = ["id": id, "state": state, "progress": 10, "attempts": 0]
+        if let assetID { value["assetId"] = assetID }
+        if let originalAssetID { value["originalAssetId"] = originalAssetID }
+        return try JSONDecoder().decode(NativeImportJob.self, from: JSONSerialization.data(withJSONObject: value))
     }
     func createImport(_ input: NativeImportIntent) async throws -> NativeImportJob {
         calls.append("create:\(input.idempotencyKey)")
@@ -100,6 +104,27 @@ final class NativeImportTransferTests: XCTestCase {
         XCTAssertNil(object["derived"])
         XCTAssertEqual(try JSONDecoder().decode(NativeImportIntent.self, from: JSONEncoder().encode(old)), old)
         XCTAssertEqual(try NativeImportDerivedRecipe.recipeSHA256(colourMeaning: "srgb-assumed"), "afeac275ed5461cada4c1e9e4f169d69fe3a89fd3a4fc06f9f0d582ed48aebe0")
+    }
+    func testDerivedApprovedReceiptRequiresDistinctOriginalAndOutputIDs() async throws {
+        let recipe = NativeImportDerivedRecipe(version: 1, role: "baseColor", sampling: "nearest-centre", colourMeaning: "srgb-assumed",
+            recipeSha256: try NativeImportDerivedRecipe.recipeSHA256(colourMeaning: "srgb-assumed"), settingsSha256: String(repeating: "b", count: 64),
+            sourcePixelsSha256: String(repeating: "c", count: 64), outputPixelsSha256: String(repeating: "d", count: 64), toolVersion: "test/1/macOS-27.0.1")
+        let descriptor = NativeImportDerived(mime: "image/png", bytes: 100, sha256: String(repeating: "e", count: 64), recipe: recipe)
+        let input = NativeImportIntent(artworkId: UUID().uuidString, mime: "image/jpeg", sha256: String(repeating: "a", count: 64),
+            bytes: 200, scaleMeters: 1, rights: ArtworkMetadata().rights, derived: descriptor)
+        let outputID = UUID().uuidString, distinctID = UUID().uuidString
+        for originalID in [nil, outputID, distinctID] {
+            let transport = ImportTransportFixture()
+            await transport.configure(state: "approved", assetID: outputID, originalAssetID: originalID)
+            var persisted = false
+            do {
+                let result = try await NativeImportTransfer().run(intent: input, jobID: nil, file: nil, transport: transport,
+                    persistJob: { _ in persisted = true }, isCurrent: { true })
+                XCTAssertEqual(originalID, distinctID); XCTAssertEqual(result.assetId, outputID)
+                XCTAssertEqual(result.originalAssetId, distinctID)
+            } catch let error as AuthoringFailure { XCTAssertNotEqual(originalID, distinctID); XCTAssertEqual(error.code, "IMPORT_RECEIPT_INVALID") }
+            XCTAssertEqual(persisted, originalID == distinctID)
+        }
     }
     func testCallerBoundaryRejectsLateStateAndErrorAfterOwnedTaskCompletion() async throws {
         for errorPath in [false, true] {
