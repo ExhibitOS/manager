@@ -181,7 +181,7 @@ struct NativeViewport: NSViewRepresentable {
         web.navigationDelegate = context.coordinator; web.uiDelegate = context.coordinator
         web.allowsBackForwardNavigationGestures = false; web.allowsLinkPreview = false
         web.setAccessibilityLabel("전시 편집 화면")
-        context.coordinator.web = web
+        context.coordinator.attach(web)
         context.coordinator.update(self)
         return web
     }
@@ -213,7 +213,12 @@ struct NativeViewport: NSViewRepresentable {
         private var inspectorPending = false
         private var entranceOperation: UUID?
         var sendTask: Task<Void, Never>?
-        init(_ parent: NativeViewport) { self.parent = parent; super.init(); parent.controller.owner = epoch }
+        init(_ parent: NativeViewport) { self.parent = parent; super.init() }
+        func attach(_ web: WKWebView) {
+            // A coordinator owns the controller only once its actual view exists.
+            self.web = web
+            controller.owner = epoch
+        }
         func invalidate() {
             guard active else { return }
             endPlacement()
@@ -292,7 +297,7 @@ struct NativeViewport: NSViewRepresentable {
             } catch { if self.generation == generation { controller.message = "3D 화면 연결을 준비하지 못했습니다. 작업 공간을 다시 연결하세요."; controller.diagnose(stage, error) } }
         }
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            guard webView === web, isPage(webView.url) else { return }
+            guard active, controller.owner == epoch, webView === web, isPage(webView.url) else { return }
             prepared = true; schedule()
         }
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
@@ -304,7 +309,11 @@ struct NativeViewport: NSViewRepresentable {
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.lightInspectorSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
-        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { controller.message = "3D 화면을 열지 못했습니다. 로컬 제작 상태를 확인하세요."; controller.diagnose("PAGE_LOAD", error) }
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            guard active, controller.owner == epoch, webView === web else { return }
+            controller.message = "3D 화면을 열지 못했습니다. 로컬 제작 상태를 확인하세요."
+            controller.diagnose("PAGE_LOAD", error)
+        }
         private func schedule() {
             guard active, controller.owner == epoch, prepared, sendTask == nil, let web else { return }
             let generation = generation
@@ -698,9 +707,17 @@ struct NativeViewportArea: View {
             }
         }
     }
+    private func rendererIdentity(_ credentials: LocalAuthoringSession) -> String {
+        // The view and its identity must use the same credential snapshot. The
+        // model access UUID fences other tasks but is published separately.
+        // Only a one-way digest enters SwiftUI identity; never the bearer token.
+        let fields = [credentials.origin, credentials.tenantId.lowercased(), credentials.principalId.lowercased(), credentials.token]
+        let digest = SHA256.hash(data: Data(fields.joined(separator: "\0").utf8))
+        return identity.uuidString + digest.map { String(format: "%02x", $0) }.joined()
+    }
     private func renderer(credentials: LocalAuthoringSession, draft: NativeExhibitionDraft) -> some View {
         NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing, interactionDisabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.placingArtwork, controller: controller, onSelect: { if controller.editingContextActive { model.selectViewport($0) } }, onCandidate: { candidate, base in let context = controller.editingContextGeneration; Task { guard controller.editingContextActive, controller.editingContextGeneration == context else { return }; await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
-            .id(identity.uuidString + model.viewportAccessID.uuidString)
+            .id(rendererIdentity(credentials))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .allowsHitTesting(!model.architectureDirty && !model.architectureApplying && !model.placementApplying)
             .disabled(model.architectureDirty || model.architectureApplying)
