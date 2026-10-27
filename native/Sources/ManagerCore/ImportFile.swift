@@ -24,7 +24,11 @@ public struct ImportFileSnapshot: Sendable {
 
     public static func load(_ url: URL) async throws -> Self {
         let worker = Task.detached(priority: .userInitiated) { try read(url) }
-        return try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+        return try await withTaskCancellationHandler {
+            let snapshot = try await worker.value
+            try Task.checkCancellation()
+            return snapshot
+        } onCancel: { worker.cancel() }
     }
     private static func read(_ url: URL) throws -> Self {
         guard url.isFileURL else { throw AuthoringFailure("FILE_LOCAL_REQUIRED") }

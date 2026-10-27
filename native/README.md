@@ -147,9 +147,20 @@ source changes during reading, and holds immutable bytes only in Swift memory.
 Before creating a server import, the private helper durably saves the exact
 intent, hash, length, scale, rights and idempotency key. The record is bound to
 the selected personal workspace and principal, revision checked, and contains
-neither source paths nor session secrets. After relaunch the user reselects the
-same bytes to resume an incomplete upload. An uncertain create response can be
-recovered explicitly with the same request. No new request is silently invented.
+neither source paths nor session secrets. Recovery reuses that exact intent and
+job. If the original upload already reached the server, the existing completion
+API rechecks its durable quarantine bytes and resumes validation without local
+file reselection. Missing bytes request the same original; integrity errors stay
+visible. No new request, derivative, retry or asset is silently invented.
+
+The native transfer owns and drains its local task across intent persistence,
+create, upload and completion. Scope/generation checks reject stale results;
+service stop and quit cancel and await the owned transfer and source reader.
+A server cancellation response is not proof its worker has drained. Registration
+still belongs to the existing server validation/lease/rights transaction, and
+artwork approval remains a separate explicit action. This supports the same
+uploaded GLB/PNG bytes; original custody for future derived formats and a native
+conversion producer remain open. No side vault or backup format is added.
 
 Existing authenticated import APIs perform binary upload, validation, status,
 retry/cancel and revision-bound artwork approval. A separate acknowledgement
