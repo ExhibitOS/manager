@@ -632,3 +632,5 @@ pub(crate) use target_inventory::NativeTargetEvidence;
 
 #[path = "native_target_copy.rs"]
 mod target_copy;
+
+pub(crate) use target_copy::CandidateConfiguration;
