@@ -159,11 +159,24 @@ pub(crate) fn plan_rebound_configuration(
     {
         return Err(bad());
     }
-    for (logical, name) in &map.journal_names {
-        if journal(source_root, logical)? != *name || exists(profile, &journal(&root, logical)?)? {
+    // Keep the ordinary restore's closed empty-destination rule even when a
+    // particular journal was absent from the authenticated source archive.
+    for logical in [
+        "document.json",
+        "upload.json",
+        "publication.json",
+        "static-export.json",
+    ] {
+        let name = journal(&root, logical)?;
+        if exists(profile, &name)? {
             return Err(err("NATIVE_TARGET_CONFIGURATION_CHANGED"));
         }
-        absent.push((profile.to_owned(), journal(&root, logical)?));
+        absent.push((profile.to_owned(), name));
+    }
+    for (logical, name) in &map.journal_names {
+        if journal(source_root, logical)? != *name {
+            return Err(err("NATIVE_TARGET_CONFIGURATION_CHANGED"));
+        }
     }
     let original_env = authenticated_file(
         &manifest,
