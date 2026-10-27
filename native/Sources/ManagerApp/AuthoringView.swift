@@ -35,10 +35,10 @@ final class AuthoringModel: ObservableObject {
     private var importRead: Task<ImportFileSnapshot, Error>?
     private var imagePreparation: Task<NativePreparedJPEG, Error>?
     private var imagePreparationScope: NativeImagePreparationScope?
-    // Enable only after the paired public API/helper/runtime has real custody
-    // and atomic registration evidence. There is no legacy derived-only path.
-    private static let jpegImportsEnabled = false
-    var importFormats: String { Self.jpegImportsEnabled ? "GLB·PNG·JPEG" : "GLB·PNG" }
+    // The native schema-21 packet has real original/derived custody evidence.
+    // Other runtime manifests keep the existing PNG/GLB chooser and contract.
+    @Published private(set) var jpegImportsEnabled = false
+    var importFormats: String { jpegImportsEnabled ? "GLB·PNG·JPEG" : "GLB·PNG" }
     var jpegOriginalStored: Bool {
         guard transfer?.intent?.mime == "image/jpeg", transfer?.intent?.derived?.valid == true,
               let job = importJob, job.state == "approved", transfer?.jobId?.lowercased() == job.id.lowercased(),
@@ -62,6 +62,7 @@ final class AuthoringModel: ObservableObject {
 
     func configure(_ configuration: NativeConfiguration?, ready: Bool) {
         available = ready
+        jpegImportsEnabled = ready && configuration?.manifestSha256 == "74b08c7899d74ad989bbb61e47fc86fe9fa25c8853ab27ce57e9135c4932e96a"
         if !ready { imagePreparationScope?.invalidate(); imagePreparation?.cancel() }
         guard let configuration, let tenant = configuration.tenantId else { return }
         let next = "\(tenant):\(configuration.ports.web)"
@@ -193,16 +194,16 @@ extension AuthoringModel {
         guard !busy, available, session != nil else { return }
         let panel = NSOpenPanel()
         panel.title = "작품 파일 가져오기"
-        panel.message = Self.jpegImportsEnabled ? "GLB·PNG·JPEG 파일을 선택하세요. 최대 32 MiB이며 JPEG 원본을 유지하고 전시용 PNG를 준비합니다." : "GLB 또는 PNG 파일을 선택하세요. 최대 32 MiB를 지원합니다."
+        panel.message = jpegImportsEnabled ? "GLB·PNG·JPEG 파일을 선택하세요. 최대 32 MiB이며 JPEG 원본을 유지하고 전시용 PNG를 준비합니다." : "GLB 또는 PNG 파일을 선택하세요. 최대 32 MiB를 지원합니다."
         panel.canChooseDirectories = false; panel.canChooseFiles = true; panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [UTType(filenameExtension: "glb") ?? .data, .png] + (Self.jpegImportsEnabled ? [.jpeg] : [])
+        panel.allowedContentTypes = [UTType(filenameExtension: "glb") ?? .data, .png] + (jpegImportsEnabled ? [.jpeg] : [])
         guard let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.identifier?.rawValue == "manager" }) else { return }
         let response = await withCheckedContinuation { continuation in
             panel.beginSheetModal(for: window) { continuation.resume(returning: $0) }
         }
         guard response == .OK, let url = panel.url else { return }
         await action {
-            let read = Task { try await ImportFileSnapshot.load(url, allowJPEG: Self.jpegImportsEnabled) }
+            let read = Task { try await ImportFileSnapshot.load(url, allowJPEG: jpegImportsEnabled) }
             importRead = read
             defer { importRead = nil }
             let snapshot = try await withTaskCancellationHandler { try await read.value } onCancel: { read.cancel() }
@@ -221,7 +222,7 @@ extension AuthoringModel {
             let requestKey = state.intent?.idempotencyKey ?? UUID().uuidString.lowercased()
             let derived: NativePreparedJPEG?
             if file.mime == "image/jpeg" {
-                guard Self.jpegImportsEnabled else { throw AuthoringFailure("JPEG_IMPORT_UNAVAILABLE") }
+                guard jpegImportsEnabled else { throw AuthoringFailure("JPEG_IMPORT_UNAVAILABLE") }
                 notice = "JPEG 파일을 준비하고 있습니다. 선택한 원본은 변경하지 않습니다."
                 derived = try await prepareJPEG(file, operationID: requestKey)
             } else { derived = nil }
