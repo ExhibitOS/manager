@@ -6,6 +6,12 @@ import ImageIO
 import UniformTypeIdentifiers
 @testable import ManagerCore
 
+private final class ImageCurrentnessCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func check() -> Bool { lock.lock(); defer { lock.unlock() }; count += 1; return count < 3 }
+}
+
 private final class ImagePreparationGate: @unchecked Sendable {
     private let condition = NSCondition()
     private var entered = false, released = false
@@ -139,6 +145,24 @@ final class NativeImagePreparationTests: XCTestCase {
         XCTAssertThrowsError(try Prep.prepareSynchronously(sources: [source(bytes), source(bytes, index: 1)], binding: binding(), settingsBytes: settings, isCurrent: { true })) { XCTAssertEqual($0 as? Prep.Failure, .limits) }
         let changed = settings + Data(" ".utf8)
         XCTAssertThrowsError(try Prep.prepareSynchronously(sources: [source(bytes)], binding: binding(), settingsBytes: changed, isCurrent: { true })) { XCTAssertEqual($0 as? Prep.Failure, .binding) }
+    }
+    func testRGBAOKeepsAuthoredChannelsWithoutGrayConversion() throws {
+        let bytes = try jpeg()
+        let result = try Prep.prepareSynchronously(sources: [source(bytes, role: .occlusion)],
+            binding: binding(), settingsBytes: settings, isCurrent: { true })
+        XCTAssertFalse(result.images[0].report.grayExpandedToRGB)
+        XCTAssertEqual(result.images[0].report.sourceChannels, 3)
+        XCTAssertEqual(result.images[0].report.sourceRGB8SHA256, result.images[0].report.outputRGB8SHA256)
+    }
+    func testAsyncErrorBoundaryRechecksCurrentnessAfterDetachedFailure() async {
+        let counter = ImageCurrentnessCounter()
+        do {
+            // Two worker checks admit the binding then preserve the limits error.
+            // Supersession at the third, parent check must override that failure.
+            _ = try await Prep.prepare(sources: [], binding: binding(), settingsBytes: settings, isCurrent: { counter.check() })
+            XCTFail("Stale failure must not be accepted")
+        } catch let error as Prep.Failure { XCTAssertEqual(error, .cancelledOrStale) }
+        catch { XCTFail("Unexpected error") }
     }
     func testStalenessPrecedesUnsupportedError() {
         XCTAssertThrowsError(try Prep.prepareSynchronously(sources: [], binding: binding(), settingsBytes: Data(), isCurrent: { false })) {

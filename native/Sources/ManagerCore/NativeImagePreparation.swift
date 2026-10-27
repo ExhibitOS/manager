@@ -105,9 +105,14 @@ public enum NativeImagePreparation {
             try prepareSynchronously(sources: sources, binding: binding, settingsBytes: settingsBytes, isCurrent: isCurrent)
         }
         return try await withTaskCancellationHandler {
-            let candidate = try await worker.value
-            try check(isCurrent)
-            return candidate
+            do {
+                let candidate = try await worker.value
+                try check(isCurrent)
+                return candidate
+            } catch {
+                try check(isCurrent) // parent cancellation/currentness also takes precedence after worker failure
+                throw error
+            }
         } onCancel: { worker.cancel() }
     }
     public static func prepareSynchronously(sources: [Source], binding: Binding, settingsBytes: Data,
@@ -204,9 +209,9 @@ public enum NativeImagePreparation {
         guard let image = CGImageSourceCreateImageAtIndex(source, 0, options),
               image.width == w.intValue, image.height == h.intValue else { throw Failure.unsupportedJPEG }
         try check(isCurrent)
-        return try pixels(image, allowGray: input.role == .occlusion, requireEqualRGB: input.role == .occlusion, isCurrent: isCurrent)
+        return try pixels(image, allowGray: input.role == .occlusion, isCurrent: isCurrent)
     }
-    private static func pixels(_ image: CGImage, allowGray: Bool, requireEqualRGB: Bool = false, isCurrent: @Sendable () -> Bool) throws -> Pixels {
+    private static func pixels(_ image: CGImage, allowGray: Bool, isCurrent: @Sendable () -> Bool) throws -> Pixels {
         let gray = image.colorSpace?.model == .monochrome
         guard image.bitsPerComponent == 8, !image.bitmapInfo.contains(.floatComponents), image.decode == nil,
               (image.colorSpace?.model == .rgb && [24, 32].contains(image.bitsPerPixel)) || (allowGray && gray && image.bitsPerPixel == 8),
@@ -237,7 +242,6 @@ public enum NativeImagePreparation {
                 if gray { rgb.append(contentsOf: [row[x], row[x], row[x]]) }
                 else {
                     let values = offsets.map { row[x * storageChannels + $0] }
-                    if requireEqualRGB && !(values[0] == values[1] && values[1] == values[2]) { throw Failure.unsupportedPixels }
                     rgb.append(contentsOf: values)
                 }
             }
