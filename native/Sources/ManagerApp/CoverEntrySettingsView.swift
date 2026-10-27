@@ -170,7 +170,71 @@ struct CoverEntryPreviewControls: View {
     @Environment(\.accessibilityReduceMotion) private var reducedMotion
     let ready: Bool
     let mode: Mode
+    var compact = false
+    var editable = true
     var body: some View {
+        Group {
+            if compact { compactControls }
+            else { fullControls }
+        }
+        .onAppear { model.entranceSystemReducedMotion = reducedMotion }
+        .onChange(of: reducedMotion) { _, value in model.entranceSystemReducedMotion = value }
+    }
+    private var compactControls: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { previewEnvironment; previewButtons }
+                VStack(alignment: .leading, spacing: 6) { previewEnvironment; HStack { previewButtons } }
+            }
+            if model.entrancePreviewActive {
+                Button(model.entranceHostRecovering ? "편집 복귀 확인" : "준비 취소·편집 복귀") { model.closeEntrancePreview() }
+                    .disabled(model.entrancePreviewBusy && model.entranceHostRecovering)
+            }
+            if model.entrancePreviewBusy { ProgressView("미리보기 준비 중…").controlSize(.small) }
+            if !viewport.entrancePreviewSupported { Text("현재 연결은 표지 미리보기를 지원하지 않습니다. 입력은 유지됩니다.").font(.caption).foregroundStyle(.secondary) }
+            if !model.entranceThumbnails.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(CoverEntryTheme.allCases, id: \.self) { theme in
+                            if let data = model.entranceThumbnails[theme], let image = NSImage(data: data) {
+                                Button { model.coverEntry.selectTheme(theme) } label: {
+                                    VStack(spacing: 2) {
+                                        Image(nsImage: image).resizable().scaledToFit().frame(width: 100, height: 54).accessibilityHidden(true)
+                                        Text(theme.title).font(.caption)
+                                    }
+                                }.disabled(!editable || model.entrancePreviewActive || model.busy || model.pending || model.immutable)
+                                    .help("이 테마와 기본 배치·연출을 적용합니다. 글·이미지·입장권은 유지됩니다.")
+                            }
+                        }
+                    }
+                }.frame(height: 76)
+            }
+            if !model.entrancePreviewStatus.isEmpty { Text(model.entrancePreviewStatus).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+        }.controlSize(.small)
+    }
+    private var previewEnvironment: some View {
+        HStack(spacing: 8) {
+            Picker("미리보기 화면", selection: $model.entrancePreviewDevice) {
+                Text("데스크톱").tag(EntrancePreviewDevice.desktop)
+                Text("모바일").tag(EntrancePreviewDevice.mobile)
+            }.labelsHidden().fixedSize().disabled(model.entrancePreviewBusy || model.entrancePreviewActive)
+            if mode == .expert {
+                Menu("관람 환경") {
+                    Picker("상황 확인", selection: $model.entrancePreviewScenario) {
+                        Text("일반").tag(EntrancePreviewScenario.normal)
+                        Text("느린 로딩").tag(EntrancePreviewScenario.slow)
+                        Text("이미지 실패").tag(EntrancePreviewScenario.imageFailed)
+                    }
+                    Toggle("동작 줄이기 확인", isOn: $model.entrancePreviewReducedMotion)
+                    Picker("미리보기 언어", selection: $model.entrancePreviewLocale) {
+                        Text("관람 환경에 맞추기").tag("")
+                        ForEach(Array(Set(model.coverEntry.translations.compactMap { $0.fields["locale"].string }.filter { !$0.isEmpty })).sorted(), id: \.self) { Text($0).tag($0) }
+                    }
+                }.disabled(model.entrancePreviewBusy || model.entrancePreviewActive)
+            }
+        }
+    }
+    private var fullControls: some View {
         GroupBox("표지·입장 미리보기") {
             VStack(alignment: .leading, spacing: 12) {
                 Picker("화면", selection: $model.entrancePreviewDevice) {
@@ -213,7 +277,7 @@ struct CoverEntryPreviewControls: View {
                                         Image(nsImage: image).resizable().scaledToFit().frame(height: 120).accessibilityHidden(true)
                                         Text(theme.title)
                                     }
-                                }.disabled(model.entrancePreviewActive || model.busy || model.pending || model.immutable)
+                                }.disabled(!editable || model.entrancePreviewActive || model.busy || model.pending || model.immutable)
                                     .help("이 테마와 기본 배치·연출을 적용합니다. 글·이미지·입장권은 유지됩니다.")
                             }
                         }
@@ -225,7 +289,7 @@ struct CoverEntryPreviewControls: View {
         .onChange(of: reducedMotion) { _, value in model.entranceSystemReducedMotion = value }
     }
     @ViewBuilder private var previewButtons: some View {
-        Button("실제 테마 썸네일 불러오기") { model.previewEntrance(thumbnails: true, systemReducedMotion: reducedMotion) }
+        Button(compact ? "테마 보기" : "실제 테마 썸네일 불러오기") { model.previewEntrance(thumbnails: true, systemReducedMotion: reducedMotion) }
             .disabled(!available || model.entrancePreviewActive)
         Button(model.entrancePreviewActive ? "처음부터 재생" : "표지 미리보기") {
             model.previewEntrance(model.entrancePreviewActive ? .replay : .show, systemReducedMotion: reducedMotion)

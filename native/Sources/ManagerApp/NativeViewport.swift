@@ -20,6 +20,12 @@ struct NativeEntrancePreviewOutput {
 
 @MainActor
 final class NativeViewportController: ObservableObject {
+    // Synchronously updated by native navigation, before a delayed WK frame or
+    // queued candidate callback can act on the former editing purpose.
+    private(set) var editingContextGeneration = UUID()
+    @Published var editingContextActive = true {
+        didSet { if oldValue != editingContextActive { editingContextGeneration = UUID() } }
+    }
     @Published var connected = false
     @Published fileprivate(set) var planSupported = false
     @Published fileprivate(set) var thumbnailSupported = false
@@ -123,9 +129,11 @@ final class NativeViewportController: ObservableObject {
     fileprivate var owner: String?
     fileprivate var action: ((NativeGeometryAction) async throws -> (DocumentValue, NativeExhibitionDraft))?
     func perform(_ command: NativeGeometryAction, model: ExhibitionModel) async {
-        guard !model.placingArtwork, let action, connected else { return }
+        guard editingContextActive, !model.placingArtwork, let action, connected else { return }
+        let contextGeneration = editingContextGeneration
         do {
             let (candidate, base) = try await action(command)
+            guard editingContextActive, editingContextGeneration == contextGeneration else { return }
             if case .installation(let installation) = command { await model.acceptInstallationCandidate(candidate, base: base, command: installation) }
             else if case .architecture(let architecture) = command { await model.acceptArchitectureCandidate(candidate, base: base, command: architecture) }
             else if case .surfaceMaterial(let material) = command { await model.acceptSurfaceMaterialPreview(candidate, base: base, command: material) }
@@ -194,6 +202,7 @@ struct NativeViewport: NSViewRepresentable {
         private var sequence = 0
         private var sent = 0
         private var fingerprint: Data?
+        private var editingContextGeneration: UUID?
         private var installedToken: String?
         private var prepared = false
         private var latest: ViewportFrame?
@@ -242,7 +251,9 @@ struct NativeViewport: NSViewRepresentable {
             let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
             guard let bytes = try? encoder.encode(probe) else { return }
             let hash = Data(SHA256.hash(data: bytes))
-            guard hash != fingerprint else { return }
+            let contextChanged = editingContextGeneration != controller.editingContextGeneration
+            editingContextGeneration = controller.editingContextGeneration
+            guard hash != fingerprint || contextChanged else { return }
             // Status-only rerenders dedupe above. A genuinely different frame
             // invalidates the transient operation before any late callback.
             endPlacement()
@@ -572,7 +583,7 @@ struct NativeViewport: NSViewRepresentable {
                   let envelope = try? JSONDecoder().decode(Envelope.self, from: bytes), envelope.version == 1, envelope.epoch == epoch, envelope.sequence == sequence, let frame = latest else { return }
             switch envelope.type {
             case "placement-target":
-                guard !frame.disabled, let intent = placementIntent,
+                guard controller.editingContextActive, editingContextGeneration == controller.editingContextGeneration, !frame.disabled, let intent = placementIntent,
                       (try? ViewportPlacementTarget(value: envelope.body, intent: intent)) != nil else { return }
                 parent.onPlacementTarget(envelope.body)
             case "placement-cancel":
@@ -581,9 +592,9 @@ struct NativeViewport: NSViewRepresentable {
                       let reason = envelope.body["reason"].string, reason.utf8.count <= 160 else { return }
                 endPlacement()
             case "selection":
-                guard placementIntent == nil, !frame.disabled, !parent.interactionDisabled, let selection = try? JSONDecoder().decode(ViewportSelection.self, from: JSONEncoder().encode(envelope.body)), selection.belongs(to: frame.draft) else { return }
+                guard controller.editingContextActive, editingContextGeneration == controller.editingContextGeneration, placementIntent == nil, !frame.disabled, !parent.interactionDisabled, let selection = try? JSONDecoder().decode(ViewportSelection.self, from: JSONEncoder().encode(envelope.body)), selection.belongs(to: frame.draft) else { return }
                 parent.onSelect(selection)
-            case "candidate": guard placementIntent == nil, !frame.disabled, !parent.interactionDisabled else { return }; parent.onCandidate(envelope.body, frame.draft)
+            case "candidate": guard controller.editingContextActive, editingContextGeneration == controller.editingContextGeneration, placementIntent == nil, !frame.disabled, !parent.interactionDisabled else { return }; parent.onCandidate(envelope.body, frame.draft)
             case "status":
                 guard let report = try? JSONDecoder().decode(Report.self, from: JSONEncoder().encode(envelope.body)), report.loaded >= 0, report.failed >= 0, report.message.count <= 2048 else { return }
                 controller.rendering = report.ready; controller.loaded = report.loaded; controller.failed = report.failed
@@ -602,10 +613,12 @@ struct NativeViewportArea: View {
     let ready: Bool
     var editable = true
     @ObservedObject var controller: NativeViewportController
+    var workbench = false
     @State private var identity = UUID()
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let credentials = model.viewportCredentials, let draft = model.viewportDraft, ready {
+                if workbench { workbenchViewTools } else {
                 Picker("편집 화면", selection: Binding(get: { controller.planSupported ? model.viewportPresentation : .threeD }, set: { value in
                     if value == .threeD || controller.planSupported { model.viewportPresentation = value }
                 })) {
@@ -631,21 +644,17 @@ struct NativeViewportArea: View {
                 Toggle("공간을 투명하게 보기", isOn: $model.viewportTransparent)
                     .disabled(model.placingArtwork || model.entrancePreviewActive)
                     .help("벽·바닥 너머 작품을 확인합니다. 저장한 재질은 바뀌지 않습니다.")
-                GeometryReader { geometry in
-                    ScrollView(.horizontal) {
-                        NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing, interactionDisabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.placingArtwork, controller: controller, onSelect: { model.selectViewport($0) }, onCandidate: { candidate, base in Task { await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
-                            .id(identity.uuidString + model.viewportAccessID.uuidString)
-                            .frame(width: model.entrancePreviewActive ? (model.entrancePreviewDevice == .mobile ? 360 : 1024) : max(1, geometry.size.width), height: model.entrancePreviewActive ? 740 : 440)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                            .allowsHitTesting(!model.architectureDirty && !model.architectureApplying && !model.placementApplying)
-                            .disabled(model.architectureDirty || model.architectureApplying)
-                    }
-                }.frame(height: model.entrancePreviewActive ? 740 : 440)
-                Text("불러온 작품 \(controller.loaded)개 · 불러오지 못한 작품 \(controller.failed)개").foregroundStyle(.secondary)
-                Text(controller.message).foregroundStyle(.secondary)
+                }
+                viewportSurface(credentials: credentials, draft: draft)
+                    .frame(height: workbench ? nil : (model.entrancePreviewActive ? 740 : 440))
+                    .frame(minHeight: workbench ? 120 : nil, maxHeight: workbench ? .infinity : (model.entrancePreviewActive ? 740 : 440))
+                if !workbench { Text("불러온 작품 \(controller.loaded)개 · 불러오지 못한 작품 \(controller.failed)개").foregroundStyle(.secondary) }
+                Text(workbench ? "작품 \(controller.loaded)개 · 불러오기 실패 \(controller.failed)개 · " + controller.message : controller.message).foregroundStyle(.secondary)
+                    .font(workbench ? .caption : .body).lineLimit(workbench ? 2 : nil).padding(.horizontal, workbench ? 12 : 0)
                     .onChange(of: controller.acceptedSequence) { _, _ in model.confirmEntranceHostRecovery() }
                     .onChange(of: controller.connected) { _, _ in model.confirmEntranceHostRecovery() }
                 if !controller.diagnostic.isEmpty { DisclosureGroup("3D 연결 상세") { Text(controller.diagnostic).textSelection(.enabled) } }
+                if !workbench {
                 if editable {
                     HStack {
                         Button("벽과 바닥 만들기") { Task { await controller.perform(.whiteCube(roomId: model.roomId), model: model) } }
@@ -657,7 +666,73 @@ struct NativeViewportArea: View {
                 NativeLightPicker(model: model, ready: ready).disabled(model.entrancePreviewActive)
                 NativeBenchPicker(model: model, ready: ready).disabled(model.entrancePreviewActive)
                 NativePlaquePicker(model: model, ready: ready).disabled(model.entrancePreviewActive)
+                }
             } else { Text("전시를 열고 로컬 제작을 시작하면 3D를 볼 수 있습니다.").foregroundStyle(.secondary) }
         }
     }
+    private func viewportSurface(credentials: LocalAuthoringSession, draft: NativeExhibitionDraft) -> some View {
+        GeometryReader { geometry in
+            let width = model.entrancePreviewActive ? (model.entrancePreviewDevice == .mobile ? 360.0 : 1024.0) : max(1, geometry.size.width)
+            let height = model.entrancePreviewActive ? 740.0 : max(1, workbench ? geometry.size.height : 440)
+            let fit = workbench && model.entrancePreviewActive ? min(1, geometry.size.width / width, geometry.size.height / height) : 1
+            if workbench {
+                ZStack {
+                    renderer(credentials: credentials, draft: draft)
+                        .frame(width: width, height: height)
+                        .scaleEffect(fit, anchor: .topLeading)
+                        .frame(width: width * fit, height: height * fit, alignment: .topLeading)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
+            } else {
+                ScrollView(.horizontal) { renderer(credentials: credentials, draft: draft).frame(width: width, height: height) }
+            }
+        }
+    }
+    private func renderer(credentials: LocalAuthoringSession, draft: NativeExhibitionDraft) -> some View {
+        NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing, interactionDisabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.placingArtwork, controller: controller, onSelect: { if controller.editingContextActive { model.selectViewport($0) } }, onCandidate: { candidate, base in let context = controller.editingContextGeneration; Task { guard controller.editingContextActive, controller.editingContextGeneration == context else { return }; await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
+            .id(identity.uuidString + model.viewportAccessID.uuidString)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .allowsHitTesting(!model.architectureDirty && !model.architectureApplying && !model.placementApplying)
+            .disabled(model.architectureDirty || model.architectureApplying)
+    }
+    private var workbenchViewTools: some View {
+        HStack(spacing: 8) {
+            Picker("편집 화면", selection: Binding(get: { controller.planSupported ? model.viewportPresentation : .threeD }, set: { value in
+                if value == .threeD || controller.planSupported { model.viewportPresentation = value }
+            })) {
+                Text("3D 공간").tag(ViewportPresentation.threeD)
+                Text("2D 평면").tag(ViewportPresentation.plan).disabled(!controller.planSupported)
+            }.pickerStyle(.segmented).frame(maxWidth: 220)
+                .disabled(model.entrancePreviewActive || !controller.connected || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.placingArtwork)
+                .accessibilityHint("같은 전시와 선택을 유지하며 편집 화면을 전환합니다.")
+            if editable {
+                Picker("편집 조작", selection: $model.viewportMode) { Text("이동").tag("translate"); Text("회전").tag("rotate"); Text("크기").tag("dimensions") }
+                    .labelsHidden().fixedSize().disabled(model.placingArtwork || model.entrancePreviewActive)
+            }
+            Spacer(minLength: 0)
+            Menu {
+                Button("전체 공간") { model.requestViewportView("isometric") }.disabled(model.placingArtwork || model.entrancePreviewActive || (controller.planSupported && model.viewportPresentation == .plan))
+                Button("위에서 보기") { model.requestViewportView("top") }.disabled(model.placingArtwork || model.entrancePreviewActive || (controller.planSupported && model.viewportPresentation == .plan))
+                Button("정면 보기") { model.requestViewportView("front") }.disabled(model.placingArtwork || model.entrancePreviewActive || (controller.planSupported && model.viewportPresentation == .plan))
+                Toggle("공간을 투명하게 보기", isOn: $model.viewportTransparent).disabled(model.placingArtwork || model.entrancePreviewActive)
+                Divider()
+                Button("편집 화면 다시 열기") {
+                    if model.entrancePreviewActive { model.recoverEntrancePreviewHost { identity = UUID() } }
+                    else { identity = UUID() }
+                }.disabled(model.entrancePreviewActive ? !model.canRecoverEntranceHost : (model.placingArtwork || model.busy || model.pending || model.architectureApplying))
+            } label: { Label("보기", systemImage: "eye") }
+                .menuStyle(.borderlessButton).fixedSize()
+            if editable {
+                Menu {
+                    Button("벽과 바닥 만들기") { Task { await controller.perform(.whiteCube(roomId: model.roomId), model: model) } }
+                    Button("공간 추가") { Task { await controller.perform(.addRoom(name: "새 공간"), model: model) } }
+                    Button("조명 추가") { Task { await controller.perform(.addLight(roomId: model.roomId), model: model) } }
+                    Button("벤치 추가") { model.beginBench() }.disabled(!model.canAddBench)
+                    Button("명판 추가") { model.beginPlaque() }.disabled(!model.canAddPlaque)
+                } label: { Label("추가", systemImage: "plus") }
+                    .menuStyle(.borderlessButton).fixedSize()
+                    .disabled(model.entrancePreviewActive || !controller.connected || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.placingArtwork)
+            }
+        }.controlSize(.small).padding(.horizontal, 12).padding(.top, 8)
+    }
+
 }

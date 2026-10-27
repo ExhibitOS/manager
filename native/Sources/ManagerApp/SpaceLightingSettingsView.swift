@@ -40,8 +40,7 @@ struct SpaceLightingSettingsView: View {
                     if fields.usesOverride {
                         TextField("전시 기본 밝기 · 0–1", text: field(\.baselineIntensity, fallback: ""))
                         Text("전시 전체의 약한 기본광을 조절합니다. 개별 조명과 채광은 별도로 설정합니다.").font(.caption).foregroundStyle(.secondary)
-                        if mode == .expert { reflection }
-                        else { DisclosureGroup("환경 반사", isExpanded: $reflectionDetails) { reflection } }
+                        DisclosureGroup("환경 반사", isExpanded: $reflectionDetails) { reflection }
                         if fields.baselineIntensity.isEmpty || fields.reflectionIntensity.isEmpty {
                             Text("처음 설정할 때는 기본 밝기와 환경 반사를 모두 입력하세요. 자동으로 값을 지정하지 않습니다.").font(.caption).foregroundStyle(.secondary)
                         }
@@ -50,7 +49,7 @@ struct SpaceLightingSettingsView: View {
                         Text("적용하면 직접 설정한 두 값을 해제하고 기존 조명 표시를 사용합니다.").font(.caption).foregroundStyle(.secondary)
                     }
                 }.disabled(!ready || !model.canEditSpaceLighting)
-                HStack {
+                VStack(alignment: .leading, spacing: 8) {
                     Button("전시 조명 미리보기") { Task { await model.previewSpaceLighting() } }.disabled(!ready || !model.canPreviewSpaceLighting)
                     Button("전시 조명 적용") { Task { await model.applySpaceLighting() } }.disabled(!ready || !model.canApplySpaceLighting)
                     Button("전시 조명 입력 취소") { model.discardSpaceLighting() }.disabled(!model.spaceLightingDirty || model.busy || model.pending || model.architectureApplying)

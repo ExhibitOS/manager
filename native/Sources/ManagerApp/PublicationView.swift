@@ -140,7 +140,11 @@ struct NativePublicationView: View {
                 Button("준비 상태 다시 확인") { Task { await model.refresh() } }.disabled(!ready || model.busy)
             }
             if model.busy { ProgressView("공개용 저장본을 확인하고 있습니다…") }
-            if let failure = model.failure { Text(failure.localizedDescription); DisclosureGroup("오류 상세") { Text(failure.code).textSelection(.enabled) } }
+            if let failure = model.failure {
+                Text(failure.localizedDescription)
+                DisclosureGroup("오류 상세") { Text(failure.code).textSelection(.enabled) }
+                Button("작업 공간 다시 연결") { Task { await connect() } }.disabled(!ready || model.busy)
+            }
             if !model.notice.isEmpty { Text(model.notice).foregroundStyle(.secondary) }
             NativeStaticExportView(model: staticExport, completed: model.state?.completed.flatMap { completed in
                 source.draft?.id == completed.sourceExhibitionId && source.state?.etag == completed.sourceEtag && !source.dirty ? completed : nil
@@ -148,6 +152,6 @@ struct NativePublicationView: View {
             NativeHostingView(model: hosting, receipt: staticExport.status?.receipt.flatMap { receipt in
                 model.state?.completed?.publication.publicationId == receipt.publicationId && source.draft?.id == model.state?.completed?.sourceExhibitionId && source.state?.etag == model.state?.completed?.sourceEtag && !source.dirty ? receipt : nil
             }, available: !model.busy && (ready || hosting.status?.work != nil))
-        }.task(id: ready) { if ready { await connect() } }
+        }.task(id: ready) { if ready && source.viewportCredentials == nil { await connect() } }
     }
 }
