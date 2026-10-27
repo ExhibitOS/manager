@@ -6,6 +6,7 @@ private actor ImportTransportFixture: NativeImportTransport {
     let id = UUID().uuidString.lowercased()
     var calls: [String] = []
     var uploaded: Data?
+    var derivedUploaded: Data?
     var completionCode: String?
     var createdState = "uploading"
     var createHook: (@Sendable () async -> Void)?
@@ -29,12 +30,14 @@ private actor ImportTransportFixture: NativeImportTransport {
         calls.append("upload"); uploaded = bytes
         await uploadHook?()
     }
+    func uploadDerivedImport(_ id: String, bytes: Data) async throws { calls.append("derived-upload"); derivedUploaded = bytes }
     func importAction(_ id: String, action: NativeImportAction) async throws -> NativeImportJob {
         calls.append(action.rawValue)
         if let completionCode { throw AuthoringFailure(completionCode, status: 409) }
         return try job("queued")
     }
     func observed() -> ([String], Data?) { (calls, uploaded) }
+    func observedDerived() -> Data? { derivedUploaded }
 }
 
 private actor ImportDrainGate {
@@ -62,6 +65,41 @@ final class NativeImportTransferTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).glb")
         try Data("abc".utf8).write(to: url)
         return (url, try await ImportFileSnapshot.load(url))
+    }
+    func testDerivedTransportKeepsOriginalAndPNGHashesAndUploadOrderDistinct() async throws {
+        // Transport-only fixture: ImageIO preparation and server PNG validation
+        // have separate real-byte tests. These acknowledgements are not custody.
+        let original = Data("original JPEG transport fixture".utf8), png = Data("derived PNG transport fixture".utf8)
+        let source = ImportFileSnapshot(name: "source.jpg", mime: "image/jpeg", sha256: nativeImportSHA256(original), data: original)
+        let recipe = NativeImportDerivedRecipe(version: 1, role: "baseColor", sampling: "nearest-centre", colourMeaning: "srgb-assumed",
+            recipeSha256: try NativeImportDerivedRecipe.recipeSHA256(colourMeaning: "srgb-assumed"), settingsSha256: String(repeating: "b", count: 64),
+            sourcePixelsSha256: String(repeating: "c", count: 64), outputPixelsSha256: String(repeating: "d", count: 64), toolVersion: "test/1/macOS-27.0.1")
+        let descriptor = NativeImportDerived(mime: "image/png", bytes: png.count, sha256: nativeImportSHA256(png), recipe: recipe)
+        let prepared = NativePreparedJPEG(originalSHA256: source.sha256, png: png, derived: descriptor, preparationReceipt: Data())
+        let input = NativeImportIntent(artworkId: UUID().uuidString, mime: source.mime, sha256: source.sha256,
+            bytes: source.data.count, scaleMeters: 1, rights: ArtworkMetadata().rights, derived: descriptor)
+        for candidate in [prepared, NativePreparedJPEG(originalSHA256: source.sha256, png: Data("wrong".utf8), derived: descriptor, preparationReceipt: Data())] {
+            let transport = ImportTransportFixture()
+            do {
+                let result = try await NativeImportTransfer().run(intent: input, jobID: nil, file: source, derived: candidate, transport: transport,
+                    persistJob: { _ in }, isCurrent: { true })
+                XCTAssertEqual(candidate.png, png); XCTAssertEqual(result.state, "queued"); XCTAssertNil(result.assetId)
+                let (calls, bytes) = await transport.observed()
+                let derivedBytes = await transport.observedDerived()
+                XCTAssertEqual(bytes, original); XCTAssertEqual(derivedBytes, png)
+                XCTAssertEqual(calls, ["create:\(input.idempotencyKey)", "upload", "derived-upload", "complete"])
+            } catch let error as AuthoringFailure {
+                XCTAssertNotEqual(candidate.png, png); XCTAssertEqual(error.code, "IMPORT_DERIVED_REQUIRED")
+                let (calls, _) = await transport.observed(); XCTAssertEqual(calls, [])
+            }
+        }
+    }
+    func testIntentEncodingPreservesLegacyAndCanonicalDerivedProvenance() throws {
+        let old = intent()
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as? [String: Any])
+        XCTAssertNil(object["derived"])
+        XCTAssertEqual(try JSONDecoder().decode(NativeImportIntent.self, from: JSONEncoder().encode(old)), old)
+        XCTAssertEqual(try NativeImportDerivedRecipe.recipeSHA256(colourMeaning: "srgb-assumed"), "afeac275ed5461cada4c1e9e4f169d69fe3a89fd3a4fc06f9f0d582ed48aebe0")
     }
     func testResumeUsesSameIntentAndDurableServerOriginalWithoutLocalFile() async throws {
         let transport = ImportTransportFixture(), transfer = NativeImportTransfer(), input = intent()
