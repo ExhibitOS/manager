@@ -40,6 +40,25 @@ impl Drop for LocalAuthority {
         }
     }
 }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalSessionRenewal<'a> {
+    format: u32,
+    workspace_id: &'a str,
+    tenant_id: &'a str,
+    principal_id: &'a str,
+    owner_uid: u32,
+    previous_session_token: &'a str,
+    session_token: &'a str,
+    csrf_token: &'a str,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LocalSessionRenewalReceipt {
+    workspace_id: String,
+    tenant_id: String,
+    principal_id: String,
+}
 fn local_token() -> Result<String> {
     let mut bytes = [0u8; 32];
     if unsafe { libc::getentropy(bytes.as_mut_ptr().cast(), bytes.len()) } != 0 {
@@ -244,6 +263,45 @@ impl Session {
         if self.status()?.state != "ready" {
             return Err(err("NATIVE_NOT_READY"));
         }
+        if self.auxiliary.is_some() { return Err(err("NATIVE_OPERATION_ACTIVE")); }
+        self.observation_root.check()?;
+        let identity = self.service.personal_identity()?;
+        let old = self.local_authority.as_ref().ok_or_else(|| err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
+        if identity != (old.workspace_id.clone(), old.tenant_id.clone(), old.principal_id.clone())
+            || old.owner_uid != unsafe { libc::geteuid() }
+        { return Err(err("NATIVE_PERSONAL_OWNER_MISMATCH")); }
+        let script = self.payload.authoring_session_script()?;
+        let database = self.environment.0.get("DATABASE_URL").ok_or_else(|| err("NATIVE_CONFIGURATION_INVALID"))?.clone();
+        let next = LocalAuthority {
+            format: 1, workspace_id: old.workspace_id.clone(), tenant_id: old.tenant_id.clone(),
+            principal_id: old.principal_id.clone(), owner_uid: old.owner_uid,
+            session_token: local_token()?, csrf_token: local_token()?,
+        };
+        let input = LocalSessionRenewal {
+            format: 1, workspace_id: &old.workspace_id, tenant_id: &old.tenant_id, principal_id: &old.principal_id,
+            owner_uid: old.owner_uid, previous_session_token: &old.session_token,
+            session_token: &next.session_token, csrf_token: &next.csrf_token,
+        };
+        let mut bytes = serde_json::to_vec(&input).map_err(|_| err("STATE_INVALID"))?;
+        if bytes.len() > 4096 { bytes.fill(0); return Err(err("NATIVE_AUTHORING_RENEWAL_INVALID")); }
+        // Once issuance starts, an ambiguous child/commit result must not emit
+        // either credential or retry by reviving the old (possibly revoked) row.
+        // The server owns revocation/expiry/current membership policy.
+        let _old = self.local_authority.take();
+        let result = self.auxiliary_timed(self.payload.node(), vec![script.to_string_lossy().into()],
+            vec![("DATABASE_URL", database), ("EXHIBITOS_RUNTIME_MODE", "native".into()), ("EXHIBITOS_AUTHORING_MODE", "personal".into()),
+                 ("TENANT_ID", next.tenant_id.clone())], Some(&bytes), Duration::from_secs(15));
+        bytes.fill(0);
+        let (code, receipt) = result.map_err(|_| err("NATIVE_AUTHORING_RENEWAL_UNCERTAIN"))?;
+        self.observation_root.check()?;
+        if self.service.personal_identity()? != identity { return Err(err("NATIVE_PERSONAL_OWNER_MISMATCH")); }
+        self.payload.recheck()?;
+        let receipt: LocalSessionRenewalReceipt = serde_json::from_slice(&receipt)
+            .map_err(|_| err("NATIVE_AUTHORING_RENEWAL_UNCERTAIN"))?;
+        if code != 0 || receipt.workspace_id != next.workspace_id || receipt.tenant_id != next.tenant_id || receipt.principal_id != next.principal_id {
+            return Err(err("NATIVE_AUTHORING_RENEWAL_UNCERTAIN"));
+        }
+        self.local_authority = Some(next);
         let a = self
             .local_authority
             .as_ref()

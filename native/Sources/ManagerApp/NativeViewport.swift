@@ -4,6 +4,20 @@ import WebKit
 import CryptoKit
 import ManagerCore
 
+struct NativeEntrancePreviewInput {
+    let action: EntrancePreviewAction
+    let device: EntrancePreviewDevice
+    let scenario: EntrancePreviewScenario
+    let reducedMotion: Bool
+    let theme: CoverEntryTheme?
+    let locale: String?
+    let draft: NativeExhibitionDraft
+}
+struct NativeEntrancePreviewOutput {
+    let request: ViewportEntrancePreviewRequest
+    let png: Data?
+}
+
 @MainActor
 final class NativeViewportController: ObservableObject {
     @Published var connected = false
@@ -16,6 +30,36 @@ final class NativeViewportController: ObservableObject {
     @Published fileprivate(set) var lightInspectorSupported = false
     @Published fileprivate(set) var benchInspectorSupported = false
     @Published fileprivate(set) var plaqueInspectorSupported = false
+    @Published fileprivate(set) var entrancePreviewSupported = false
+    fileprivate var acknowledgedFrame: ViewportFrame?
+    var hostEpoch: String? { owner }
+    func ordinaryRecoveryReady(replacing previousEpoch: String, draft: NativeExhibitionDraft, tenantId: String, principalId: String) -> Bool {
+        guard connected, let acknowledgedFrame else { return false }
+        return acknowledgedFrame.confirmsHostRecovery(replacing: previousEpoch, ownerEpoch: owner, acceptedSequence: acceptedSequence,
+                                                     expectedDraft: draft, tenantId: tenantId, principalId: principalId)
+    }
+    func waitForOrdinaryRecovery(replacing previousEpoch: String, draft: NativeExhibitionDraft, tenantId: String, principalId: String) async throws {
+        for _ in 0..<100 {
+            try Task.checkCancellation()
+            if ordinaryRecoveryReady(replacing: previousEpoch, draft: draft, tenantId: tenantId, principalId: principalId) { return }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw AuthoringFailure("VIEWPORT_FRAME_STALE")
+    }
+    fileprivate var entrancePreviewAction: ((NativeEntrancePreviewInput) async throws -> NativeEntrancePreviewOutput)?
+    func entrancePreview(_ input: NativeEntrancePreviewInput) async throws -> NativeEntrancePreviewOutput {
+        // The explicitly staged display draft must pass the ordinary frame
+        // handshake before any preview request can name that frame.
+        for _ in 0..<100 {
+            try Task.checkCancellation()
+            if connected, acknowledgedFrame?.disabled == true, acknowledgedFrame?.draft == input.draft {
+                guard entrancePreviewSupported, let entrancePreviewAction else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+                return try await entrancePreviewAction(input)
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw AuthoringFailure("VIEWPORT_FRAME_STALE")
+    }
     @Published fileprivate(set) var acceptedSequence = 0
     fileprivate var thumbnailAction: ((String, Int) async throws -> Data)?
     fileprivate var findSelectionAction: (() async throws -> Void)?
@@ -71,7 +115,7 @@ final class NativeViewportController: ObservableObject {
     func diagnose(_ stage: String, _ error: Error) {
         let e = error as NSError
         let domain = e.domain.range(of: "^[A-Za-z0-9_.-]{1,80}$", options: .regularExpression) == nil ? "WebKit" : e.domain
-        let detail = (e.userInfo["WKJavaScriptExceptionMessage"] as? String)?.replacingOccurrences(of: "Error: ", with: "") ?? ""
+        let detail = (error as? AuthoringFailure)?.code ?? (e.userInfo["WKJavaScriptExceptionMessage"] as? String)?.replacingOccurrences(of: "Error: ", with: "") ?? ""
         let known = ["crypto.randomUUID", "structuredClone", "INVALID_GEOMETRY", "VIEWPORT_COMMAND_DENIED", "VIEWPORT_NOT_READY", "func2"].filter { detail.contains($0) }.joined(separator: ",")
         let code = detail.range(of: "^[A-Z0-9_]{1,180}$", options: .regularExpression) == nil ? "" : " · " + detail
         diagnostic = "\(stage) · \(domain) · \(e.code)" + code + (known.isEmpty ? "" : " · " + known)
@@ -122,6 +166,7 @@ struct NativeViewport: NSViewRepresentable {
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.userContentController.add(context.coordinator, name: "exhibitosViewport")
         let web = WKWebView(frame: .zero, configuration: configuration)
+        web.pageZoom = 1 // Snapshot CSS pixels map one-to-one to native points.
         web.navigationDelegate = context.coordinator; web.uiDelegate = context.coordinator
         web.allowsBackForwardNavigationGestures = false; web.allowsLinkPreview = false
         web.setAccessibilityLabel("전시 편집 화면")
@@ -154,10 +199,13 @@ struct NativeViewport: NSViewRepresentable {
         private var latest: ViewportFrame?
         private var placementIntent: ArtworkPlacementIntent?
         private var inspectorPending = false
+        private var entranceOperation: UUID?
         var sendTask: Task<Void, Never>?
         init(_ parent: NativeViewport) { self.parent = parent; super.init(); parent.controller.owner = epoch }
         func invalidate() {
             endPlacement()
+            entranceOperation = nil
+            if controller.owner == epoch { controller.entrancePreviewAction = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil }
             active = false; generation = UUID(); sendTask?.cancel()
             if controller.owner == epoch { controller.furnishingVisualsAction = nil; controller.furnishingThumbnailAction = nil; controller.spaceSettingsAction = nil; controller.lightInspectorAction = nil; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.lightInspectorSupported = false; controller.benchInspectorAction = nil; controller.benchInspectorSupported = false; controller.plaqueInspectorAction = nil; controller.plaqueInspectorSupported = false }
             if controller.owner == epoch { controller.action = nil; controller.thumbnailAction = nil; controller.findSelectionAction = nil; controller.placementAction = nil; controller.placementSupported = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0 }
@@ -174,11 +222,13 @@ struct NativeViewport: NSViewRepresentable {
             parent = value
             guard let page, page.scheme == "http", page.host == "127.0.0.1", let port = page.port, port >= 1024, UUID(uuidString: value.credentials.tenantId) != nil, UUID(uuidString: value.credentials.principalId) != nil else { return }
             if let installedToken, installedToken != value.credentials.token {
+                entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil
                 controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.lightInspectorSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false
                 endPlacement(); controller.placementSupported = false
                 prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0; web?.stopLoading(); return
             }
             if installedToken == nil {
+                entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil
                 controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.lightInspectorSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false
                 installedToken = value.credentials.token
                 generation = UUID(); sequence = 0; sent = 0; fingerprint = nil; prepared = false
@@ -196,7 +246,9 @@ struct NativeViewport: NSViewRepresentable {
             // Status-only rerenders dedupe above. A genuinely different frame
             // invalidates the transient operation before any late callback.
             endPlacement()
+            entranceOperation = nil
             fingerprint = hash; sequence += 1
+            controller.connected = false
             latest = ViewportFrame(epoch: epoch, sequence: sequence, tenantId: value.credentials.tenantId, principalId: value.credentials.principalId, draft: value.draft, selection: selection, mode: value.mode, view: value.view, disabled: value.disabled, cameraSequence: value.cameraSequence, transparent: value.transparent, presentation: controller.planSupported ? value.presentation : .threeD)
             schedule()
         }
@@ -233,7 +285,7 @@ struct NativeViewport: NSViewRepresentable {
             return .allow
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.lightInspectorSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 전시는 유지됩니다. 3D 다시 열기를 선택하세요." }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.lightInspectorSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { controller.message = "3D 화면을 열지 못했습니다. 로컬 제작 상태를 확인하세요."; controller.diagnose("PAGE_LOAD", error) }
         private func schedule() {
             guard active, controller.owner == epoch, prepared, sendTask == nil, let web else { return }
@@ -249,7 +301,7 @@ struct NativeViewport: NSViewRepresentable {
                         // gives every document collection its own JS array, as the wire format requires.
                         let value = String(decoding: bytes, as: UTF8.self)
                         let response = try await web.callAsyncJavaScript("const deadline = Date.now() + 10000; while (!window.exhibitosViewport && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25)); if (!window.exhibitosViewport) throw new Error('VIEWPORT_ENTRY_UNAVAILABLE'); return await window.exhibitosViewport.accept(JSON.parse(frameJSON))", arguments: ["frameJSON":value], in: nil, contentWorld: .page)
-                        guard self.generation == generation else { return }
+                        guard self.active, !Task.isCancelled, self.controller.owner == self.epoch, self.generation == generation else { return }
                         guard let response, JSONSerialization.isValidJSONObject(response),
                               let acceptance = try? JSONDecoder().decode(ViewportAcceptance.self, from: JSONSerialization.data(withJSONObject: response)), acceptance.accepted else { throw BridgeFailure("VIEWPORT_ACCEPT_INVALID") }
                         self.controller.planSupported = acceptance.supportsPlan
@@ -261,10 +313,64 @@ struct NativeViewport: NSViewRepresentable {
                         self.controller.lightInspectorSupported = acceptance.supportsLightInspector
                         self.controller.benchInspectorSupported = acceptance.supportsBenchInspector
                         self.controller.plaqueInspectorSupported = acceptance.supportsPlaqueInspector
+                        self.controller.entrancePreviewSupported = acceptance.supportsEntrancePreview
+                        self.controller.acknowledgedFrame = frame
                         self.controller.acceptedSequence = frame.sequence
                         self.sent = frame.sequence; self.controller.connected = self.sent == self.sequence; self.controller.diagnostic = ""
                     } catch { if self.generation == generation { self.controller.connected = false; self.controller.message = "전시를 3D에 표시하지 못했습니다. 저장한 전시와 연결을 확인하세요."; self.controller.diagnose("FRAME", error) }; break }
                 }
+            }
+            controller.entrancePreviewAction = { [weak self] input in
+                guard let self, self.active, self.prepared, self.controller.owner == self.epoch,
+                      self.controller.entrancePreviewSupported, self.placementIntent == nil, !self.inspectorPending,
+                      self.entranceOperation == nil || input.action == .close,
+                      let web = self.web, let frame = self.latest, self.sent == frame.sequence,
+                      frame.draft == input.draft, frame.disabled else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                let operation = UUID(), generation = self.generation
+                self.entranceOperation = operation
+                defer { if self.entranceOperation == operation { self.entranceOperation = nil } }
+                let request = try ViewportEntrancePreviewRequest(frame: frame, action: input.action, device: input.device, scenario: input.scenario,
+                                                               reducedMotion: input.reducedMotion, theme: input.theme, locale: input.locale)
+                let json = String(decoding: try JSONEncoder().encode(request.value), as: UTF8.self)
+                var acceptedViewport: CGSize?
+                var acceptedBackingScale: CGFloat?
+                @MainActor func current() throws {
+                    try Task.checkCancellation()
+                    guard self.active, self.prepared, self.controller.connected, self.controller.owner == self.epoch,
+                          self.controller.entrancePreviewSupported, self.generation == generation,
+                          self.entranceOperation == operation, self.latest?.sequence == frame.sequence,
+                          self.latest?.draft == input.draft, web.pageZoom == 1 else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                    if let acceptedViewport, web.bounds.size != acceptedViewport { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                    if let acceptedBackingScale, web.window?.backingScaleFactor != acceptedBackingScale { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                }
+                func decode(_ value: Any?) throws -> DocumentValue {
+                    guard let value, JSONSerialization.isValidJSONObject(value) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                    let data = try JSONSerialization.data(withJSONObject: value)
+                    guard data.count <= 1_100_000 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
+                    return try JSONDecoder().decode(DocumentValue.self, from: data)
+                }
+                let response = try await web.callAsyncJavaScript("if (typeof window.exhibitosViewport?.entrancePreview !== 'function') throw new Error('VIEWPORT_NOT_READY'); return await window.exhibitosViewport.entrancePreview(JSON.parse(requestJSON));", arguments: ["requestJSON": json], in: nil, contentWorld: .page)
+                try current()
+                let reply = try request.checkedReply(decode(response))
+                guard let width = reply.value["viewport"]["width"].double, let height = reply.value["viewport"]["height"].double,
+                      abs(width - Double(web.bounds.width)) <= 0.5, abs(height - Double(web.bounds.height)) <= 0.5 else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                acceptedViewport = web.bounds.size
+                guard input.action == .thumbnail else { return NativeEntrancePreviewOutput(request: request, png: nil) }
+                // A fallback layout is not proof of an actual space image.
+                if input.theme == .threshold, reply.value["imageStatus"].string != "ready" { return NativeEntrancePreviewOutput(request: request, png: nil) }
+                guard reply.snapshotRect.height / reply.snapshotRect.width <= 4 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+                let scale = web.window?.backingScaleFactor ?? 1
+                guard scale.isFinite, (1...4).contains(scale) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+                acceptedBackingScale = web.window?.backingScaleFactor
+                let config = WKSnapshotConfiguration(); config.rect = reply.snapshotRect
+                config.snapshotWidth = NSNumber(value: 256 / Double(scale)); config.afterScreenUpdates = true
+                let snapshot: NSImage? = try await web.takeSnapshot(configuration: config)
+                try current()
+                let state = try await web.callAsyncJavaScript("if (typeof window.exhibitosViewport?.entrancePreviewState !== 'function') throw new Error('VIEWPORT_NOT_READY'); return await window.exhibitosViewport.entrancePreviewState(JSON.parse(requestJSON));", arguments: ["requestJSON": json], in: nil, contentWorld: .page)
+                try current(); try reply.recheck(decode(state), request: request)
+                guard let image = snapshot, let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff), bitmap.pixelsWide <= 258,
+                      bitmap.pixelsHigh <= 1032, let png = bitmap.representation(using: .png, properties: [:]), png.count <= 1_048_576 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+                return NativeEntrancePreviewOutput(request: request, png: png)
             }
             controller.furnishingVisualsAction = { [weak self] command in
                 guard let self, self.active, self.controller.owner == self.epoch, self.controller.furnishingVisualsSupported,
@@ -506,7 +612,7 @@ struct NativeViewportArea: View {
                     Text("3D 공간").tag(ViewportPresentation.threeD)
                     Text("2D 평면").tag(ViewportPresentation.plan).disabled(!controller.planSupported)
                 }.pickerStyle(.segmented)
-                    .disabled(!controller.connected || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.placingArtwork)
+                    .disabled(model.entrancePreviewActive || !controller.connected || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.placingArtwork)
                     .accessibilityHint("같은 전시와 선택을 유지하며 편집 화면을 전환합니다.")
                 if !controller.planSupported { Text("이 제작 서비스는 3D 화면을 제공합니다. 2D 평면 지원 연결을 확인하세요.").foregroundStyle(.secondary) }
                 HStack {
@@ -516,29 +622,41 @@ struct NativeViewportArea: View {
                     if editable {
                         Picker("편집 조작", selection: $model.viewportMode) { Text("이동").tag("translate"); Text("회전").tag("rotate"); Text("크기").tag("dimensions") }
                     }
-                    Button("편집 화면 다시 열기") { identity = UUID() }
-                }.disabled(model.placingArtwork)
+                }.disabled(model.placingArtwork || model.entrancePreviewActive)
+                Button("편집 화면 다시 열기") {
+                    if model.entrancePreviewActive { model.recoverEntrancePreviewHost { identity = UUID() } }
+                    else { identity = UUID() }
+                }.disabled(model.entrancePreviewActive ? !model.canRecoverEntranceHost : (model.placingArtwork || model.busy || model.pending || model.architectureApplying))
+                    .help("이 편집 화면만 다시 만듭니다. 입력·선택·이력과 마지막으로 선택한 보기를 유지합니다.")
                 Toggle("공간을 투명하게 보기", isOn: $model.viewportTransparent)
-                    .disabled(model.placingArtwork)
+                    .disabled(model.placingArtwork || model.entrancePreviewActive)
                     .help("벽·바닥 너머 작품을 확인합니다. 저장한 재질은 바뀌지 않습니다.")
-                NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.busy || model.pending || model.formDirty || model.positionDirty || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing, interactionDisabled: !editable || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.placingArtwork, controller: controller, onSelect: { model.selectViewport($0) }, onCandidate: { candidate, base in Task { await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
-                    .id(identity.uuidString + model.viewportAccessID.uuidString).frame(minHeight: 360, idealHeight: 440).clipShape(RoundedRectangle(cornerRadius: 8))
-                    .allowsHitTesting(!model.architectureDirty && !model.architectureApplying && !model.placementApplying)
-                    .disabled(model.architectureDirty || model.architectureApplying)
+                GeometryReader { geometry in
+                    ScrollView(.horizontal) {
+                        NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing, interactionDisabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.placingArtwork, controller: controller, onSelect: { model.selectViewport($0) }, onCandidate: { candidate, base in Task { await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
+                            .id(identity.uuidString + model.viewportAccessID.uuidString)
+                            .frame(width: model.entrancePreviewActive ? (model.entrancePreviewDevice == .mobile ? 360 : 1024) : max(1, geometry.size.width), height: model.entrancePreviewActive ? 740 : 440)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .allowsHitTesting(!model.architectureDirty && !model.architectureApplying && !model.placementApplying)
+                            .disabled(model.architectureDirty || model.architectureApplying)
+                    }
+                }.frame(height: model.entrancePreviewActive ? 740 : 440)
                 Text("불러온 작품 \(controller.loaded)개 · 불러오지 못한 작품 \(controller.failed)개").foregroundStyle(.secondary)
                 Text(controller.message).foregroundStyle(.secondary)
+                    .onChange(of: controller.acceptedSequence) { _, _ in model.confirmEntranceHostRecovery() }
+                    .onChange(of: controller.connected) { _, _ in model.confirmEntranceHostRecovery() }
                 if !controller.diagnostic.isEmpty { DisclosureGroup("3D 연결 상세") { Text(controller.diagnostic).textSelection(.enabled) } }
                 if editable {
                     HStack {
                         Button("벽과 바닥 만들기") { Task { await controller.perform(.whiteCube(roomId: model.roomId), model: model) } }
                         Button("공간 추가") { Task { await controller.perform(.addRoom(name: "새 공간"), model: model) } }
                         Button("조명 추가") { Task { await controller.perform(.addLight(roomId: model.roomId), model: model) } }
-                    }.disabled(!controller.connected || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.placingArtwork)
+                    }.disabled(model.entrancePreviewActive || !controller.connected || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.placingArtwork)
                     Text("숫자 입력은 이 Mac에 보관한 뒤 3D에 반영됩니다. 3D 변경도 이 Mac에 보관하며, 전시 저장과 공개는 별도로 진행합니다.").foregroundStyle(.secondary)
                 }
-                NativeLightPicker(model: model, ready: ready)
-                NativeBenchPicker(model: model, ready: ready)
-                NativePlaquePicker(model: model, ready: ready)
+                NativeLightPicker(model: model, ready: ready).disabled(model.entrancePreviewActive)
+                NativeBenchPicker(model: model, ready: ready).disabled(model.entrancePreviewActive)
+                NativePlaquePicker(model: model, ready: ready).disabled(model.entrancePreviewActive)
             } else { Text("전시를 열고 로컬 제작을 시작하면 3D를 볼 수 있습니다.").foregroundStyle(.secondary) }
         }
     }

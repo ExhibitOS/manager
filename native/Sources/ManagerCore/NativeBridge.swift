@@ -83,6 +83,20 @@ public struct LocalAuthoringSession: Decodable, Sendable {
     public let principalId: String
     public let origin: String
     public let token: String
+    /// Rotation is admitted only for the already selected local authority.
+    /// A different account/origin or the same expired token cannot recover a host.
+    public func isRenewal(of previous: LocalAuthoringSession) -> Bool {
+        func canonicalToken(_ value: String) -> Bool {
+            guard value.range(of: "^[A-Za-z0-9_-]{43}$", options: .regularExpression) != nil,
+                  let bytes = Data(base64Encoded: value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/") + "="), bytes.count == 32 else { return false }
+            return bytes.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "") == value
+        }
+        return UUID(uuidString: tenantId) != nil && UUID(uuidString: principalId) != nil
+            && tenantId.lowercased() == previous.tenantId.lowercased()
+            && principalId.lowercased() == previous.principalId.lowercased()
+            && origin == previous.origin && token != previous.token
+            && canonicalToken(token) && canonicalToken(previous.token)
+    }
 }
 public struct BridgeFailure: Error, LocalizedError, Sendable {
     public let code: String
