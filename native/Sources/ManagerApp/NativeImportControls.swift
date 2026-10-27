@@ -21,7 +21,7 @@ struct NativeImportControls: View {
                     Text("다른 작품에 시작한 파일 검사가 있습니다.")
                     Button("검사 중인 작품 열기") { openArtwork(id) }
                 } else {
-                    Button(model.importFile == nil ? "GLB·PNG 파일 선택…" : "같은 파일 다시 선택…", systemImage: "doc.badge.plus") { Task { await model.chooseImportFile() } }
+                    Button(model.importFile == nil ? "\(model.importFormats) 파일 선택…" : "같은 파일 다시 선택…", systemImage: "doc.badge.plus") { Task { await model.chooseImportFile() } }
                     if let file = model.importFile { Text("\(file.name) · \(file.data.count.formatted())바이트").textSelection(.enabled) }
                     else if let name = model.transfer?.fileName { Text("저장한 요청: \(name)").textSelection(.enabled) }
                     TextField("파일 1단위의 길이 (m)", value: $model.importScale, format: .number).disabled(model.transfer?.intent != nil)
@@ -38,6 +38,7 @@ struct NativeImportControls: View {
                 }
                 if let job = model.importJob {
                     Label(stateTitle(job.state), systemImage: job.state == "approved" ? "checkmark.circle" : "doc.text.magnifyingglass")
+                    if model.jpegOriginalStored { Text("JPEG 원본과 전시용 PNG를 이 Mac에 보관했습니다.").foregroundStyle(.secondary) }
                     if ["queued", "processing"].contains(job.state) { ProgressView(value: Double(job.progress), total: 100).accessibilityLabel("파일 검사 진행") }
                     HStack {
                         Button("상태 다시 확인") { Task { await model.refreshImport() } }

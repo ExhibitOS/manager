@@ -33,6 +33,19 @@ final class AuthoringModel: ObservableObject {
     private var writeTransfer: ((NativeUploadState) async throws -> NativeUploadState)?
     private let importTransfer = NativeImportTransfer()
     private var importRead: Task<ImportFileSnapshot, Error>?
+    private var imagePreparation: Task<NativePreparedJPEG, Error>?
+    private var imagePreparationScope: NativeImagePreparationScope?
+    // Enable only after the paired public API/helper/runtime has real custody
+    // and atomic registration evidence. There is no legacy derived-only path.
+    private static let jpegImportsEnabled = false
+    var importFormats: String { Self.jpegImportsEnabled ? "GLB·PNG·JPEG" : "GLB·PNG" }
+    var jpegOriginalStored: Bool {
+        guard transfer?.intent?.mime == "image/jpeg", transfer?.intent?.derived?.valid == true,
+              let job = importJob, job.state == "approved", transfer?.jobId?.lowercased() == job.id.lowercased(),
+              let original = job.originalAssetId, let output = job.assetId,
+              UUID(uuidString: original) != nil, UUID(uuidString: output) != nil else { return false }
+        return original.lowercased() != output.lowercased()
+    }
     private var importPoll: Task<Void, Never>?
     private var importPollID: UUID?
     private var importStatusGeneration = UUID()
@@ -49,9 +62,11 @@ final class AuthoringModel: ObservableObject {
 
     func configure(_ configuration: NativeConfiguration?, ready: Bool) {
         available = ready
+        if !ready { imagePreparationScope?.invalidate(); imagePreparation?.cancel() }
         guard let configuration, let tenant = configuration.tenantId else { return }
         let next = "\(tenant):\(configuration.ports.web)"
         guard next != scope else { return }
+        imagePreparationScope?.invalidate(); imagePreparation?.cancel()
         importStatusGeneration = UUID()
         guard !busy, !dirty else { api = nil; session = nil; failure = AuthoringFailure("LOCAL_SCOPE_CHANGED"); return }
         importPoll?.cancel(); importPoll = nil; importPollID = nil
@@ -69,7 +84,7 @@ final class AuthoringModel: ObservableObject {
         defer { busy = false }
         do { try await work() }
         catch is CancellationError {
-            notice = "파일 전송을 정지했습니다. 저장한 요청과 이미 받은 원본은 유지됩니다."
+            notice = "파일 준비·전송을 정지했습니다. 저장한 요청과 이미 받은 원본은 유지됩니다."
         }
         catch {
             failure = error as? AuthoringFailure ?? AuthoringFailure((error as? BridgeFailure)?.code ?? "CONNECTION_FAILED")
@@ -178,16 +193,16 @@ extension AuthoringModel {
         guard !busy, available, session != nil else { return }
         let panel = NSOpenPanel()
         panel.title = "작품 파일 가져오기"
-        panel.message = "GLB 또는 PNG 파일을 선택하세요. 최대 32 MiB를 지원합니다."
+        panel.message = Self.jpegImportsEnabled ? "GLB·PNG·JPEG 파일을 선택하세요. 최대 32 MiB이며 JPEG 원본을 유지하고 전시용 PNG를 준비합니다." : "GLB 또는 PNG 파일을 선택하세요. 최대 32 MiB를 지원합니다."
         panel.canChooseDirectories = false; panel.canChooseFiles = true; panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [UTType(filenameExtension: "glb") ?? .data, .png]
+        panel.allowedContentTypes = [UTType(filenameExtension: "glb") ?? .data, .png] + (Self.jpegImportsEnabled ? [.jpeg] : [])
         guard let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.identifier?.rawValue == "manager" }) else { return }
         let response = await withCheckedContinuation { continuation in
             panel.beginSheetModal(for: window) { continuation.resume(returning: $0) }
         }
         guard response == .OK, let url = panel.url else { return }
         await action {
-            let read = Task { try await ImportFileSnapshot.load(url) }
+            let read = Task { try await ImportFileSnapshot.load(url, allowJPEG: Self.jpegImportsEnabled) }
             importRead = read
             defer { importRead = nil }
             let snapshot = try await withTaskCancellationHandler { try await read.value } onCancel: { read.cancel() }
@@ -201,23 +216,38 @@ extension AuthoringModel {
     func uploadImportFile() async {
         await action {
             guard let api, let selected, !metadataDirty, let file = importFile, let state = transfer else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
-            let intent = NativeImportIntent(artworkId: selected.id, idempotencyKey: state.intent?.idempotencyKey ?? UUID().uuidString.lowercased(), mime: file.mime, sha256: file.sha256, bytes: file.data.count, scaleMeters: importScale, rights: draft.rights)
+            let generation = importStatusGeneration, currentScope = scope
+            let rights = draft.rights, scale = importScale
+            let requestKey = state.intent?.idempotencyKey ?? UUID().uuidString.lowercased()
+            let derived: NativePreparedJPEG?
+            if file.mime == "image/jpeg" {
+                guard Self.jpegImportsEnabled else { throw AuthoringFailure("JPEG_IMPORT_UNAVAILABLE") }
+                notice = "JPEG 파일을 준비하고 있습니다. 선택한 원본은 변경하지 않습니다."
+                derived = try await prepareJPEG(file, operationID: requestKey)
+            } else { derived = nil }
+            guard generation == importStatusGeneration, currentScope == scope, available,
+                  self.selected?.id == selected.id, self.selected?.revision == selected.revision,
+                  !metadataDirty, draft.rights == rights, importScale == scale,
+                  transfer?.revision == state.revision, transfer?.workspaceId == state.workspaceId,
+                  importFile?.sha256 == file.sha256 else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+            let intent = NativeImportIntent(artworkId: selected.id, idempotencyKey: requestKey, mime: file.mime,
+                sha256: file.sha256, bytes: file.data.count, scaleMeters: scale, rights: rights, derived: derived?.derived)
             if let previous = state.intent, previous != intent { throw AuthoringFailure("IMPORT_INTENT_CHANGED") }
-            importJob = try await continueImport(intent: intent, file: file, api: api)
+            try await continueImport(intent: intent, file: file, derived: derived, api: api)
             approvalAcknowledged = false
-            notice = "파일을 비공개로 검사하고 있습니다. 검사 상태와 작품 승인은 아래에서 확인하세요."
+            notice = "파일 검사 요청을 확인했습니다. 현재 상태와 작품 승인은 아래에서 확인하세요."
             scheduleImportPoll()
         }
     }
     func recoverImport() async {
         await action {
             guard let api, let intent = transfer?.intent else { return }
-            importJob = try await continueImport(intent: intent, file: nil, api: api)
-            notice = "저장한 요청과 서버가 받은 원본으로 파일 검사를 계속합니다."
+            try await continueImport(intent: intent, file: nil, api: api)
+            notice = "같은 파일 검사 요청의 현재 상태를 확인했습니다."
             scheduleImportPoll()
         }
     }
-    private func continueImport(intent: NativeImportIntent, file: ImportFileSnapshot?, api: AuthoringAPI) async throws -> NativeImportJob {
+    private func continueImport(intent: NativeImportIntent, file: ImportFileSnapshot?, derived: NativePreparedJPEG? = nil, api: AuthoringAPI) async throws {
         let generation = importStatusGeneration, currentScope = scope
         let tenant = session?.tenantId, principal = session?.userId
         @MainActor func current() -> Bool {
@@ -225,7 +255,7 @@ extension AuthoringModel {
                 && session?.tenantId == tenant && session?.userId == principal
                 && (transfer?.intent == nil || transfer?.intent == intent)
         }
-        return try await importTransfer.run(intent: intent, jobID: transfer?.jobId, file: file, transport: api,
+        let result = try await importTransfer.run(intent: intent, jobID: transfer?.jobId, file: file, derived: derived, transport: api,
             persistIntent: { [self] in
                 guard current(), var state = transfer else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
                 if state.intent == nil {
@@ -240,9 +270,50 @@ extension AuthoringModel {
                 guard current() else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
                 importJob = job
             }, isCurrent: current)
+        try Task.checkCancellation()
+        guard current(), transfer?.intent == intent else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+        importJob = result
+    }
+    private func prepareJPEG(_ original: ImportFileSnapshot, operationID: String) async throws -> NativePreparedJPEG {
+        let generation = importStatusGeneration, currentScope = scope
+        let tenant = session?.tenantId, principal = session?.userId, workspace = transfer?.workspaceId
+        let ticket = NativeImagePreparationScope(operationID: operationID, generation: generation.uuidString.lowercased(), originalSHA256: original.sha256)
+        let owned = Task {
+            try await NativePreparedJPEG.prepare(original: original, operationID: ticket.operationID, generation: ticket.generation,
+                isCurrent: { ticket.isCurrent(operationID: operationID, generation: generation.uuidString.lowercased(), originalSHA256: original.sha256) })
+        }
+        imagePreparationScope = ticket; imagePreparation = owned
+        defer {
+            ticket.invalidate()
+            if imagePreparationScope === ticket { imagePreparationScope = nil; imagePreparation = nil }
+        }
+        @MainActor func current() -> Bool {
+            ticket.isCurrent(operationID: operationID, generation: generation.uuidString.lowercased(), originalSHA256: original.sha256)
+                && generation == importStatusGeneration && currentScope == scope && available
+                && tenant == session?.tenantId && principal == session?.userId && workspace == transfer?.workspaceId
+        }
+        do {
+            let result = try await withTaskCancellationHandler { try await owned.value } onCancel: { ticket.invalidate(); owned.cancel() }
+            try Task.checkCancellation()
+            guard current(), result.originalSHA256 == original.sha256 else { throw CancellationError() }
+            return result
+        } catch {
+            if Task.isCancelled || owned.isCancelled || !current() { throw CancellationError() }
+            if let failure = error as? NativeImagePreparation.Failure {
+                switch failure {
+                case .cancelledOrStale: throw CancellationError()
+                case .unsupportedJPEG, .unsupportedPixels: throw AuthoringFailure("JPEG_PROFILE_UNSUPPORTED")
+                case .limits: throw AuthoringFailure("JPEG_LIMIT")
+                default: throw AuthoringFailure("JPEG_PREPARATION_FAILED")
+                }
+            }
+            throw error
+        }
     }
     func cancelImportAndWait() async {
         importStatusGeneration = UUID()
+        imagePreparationScope?.invalidate()
+        if let owned = imagePreparation { owned.cancel(); _ = await owned.result }
         if let read = importRead { read.cancel(); _ = await read.result }
         await importTransfer.cancelAndWait()
     }
@@ -276,6 +347,9 @@ extension AuthoringModel {
         await action {
             guard let api, let selected, !metadataDirty, approvalAcknowledged,
                   selected.assets.contains(where: { $0.id == assetId && $0.state == "approved" }) else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+            if transfer?.intent?.derived != nil, transfer?.intent?.artworkId == selected.id, importJob?.assetId == assetId {
+                guard jpegOriginalStored else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
+            }
             let approved = try await api.approveArtwork(selected.id, revision: selected.revision, assetId: assetId)
             self.selected = approved
             approvalAcknowledged = false
@@ -380,7 +454,7 @@ struct NativeAuthoringView: View {
             }
             if model.busy { ProgressView("제작 내용을 확인하고 있습니다…") }
             if let failure = model.failure {
-                Text(failure.localizedDescription).foregroundStyle(.primary)
+                Text(NativeJPEGImportStatus.message(for: failure.code) ?? failure.localizedDescription).foregroundStyle(.primary)
                 DisclosureGroup("오류 상세") { Text(failure.code).textSelection(.enabled) }
                 if configuration?.kind == "personal", model.session != nil {
                     Button("작업 공간 다시 연결") { Task { await connect() } }.disabled(!ready || model.busy)
