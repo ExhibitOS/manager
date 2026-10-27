@@ -54,6 +54,7 @@ final class AuthoringModel: ObservableObject {
     private var api: AuthoringAPI?
     var exhibitionAPI: AuthoringAPI? { session == nil ? nil : api }
     private var scope: String?
+    private var runtimeManifestSHA256: String?
     private var editingUser: String?
     private var available = false
     var metadataDirty: Bool { editing && (draft != original || selected == nil || creationYearText != (original.creationYear.map(String.init) ?? "")) }
@@ -62,10 +63,15 @@ final class AuthoringModel: ObservableObject {
 
     func configure(_ configuration: NativeConfiguration?, ready: Bool) {
         available = ready
-        jpegImportsEnabled = ready && configuration?.manifestSha256 == "74b08c7899d74ad989bbb61e47fc86fe9fa25c8853ab27ce57e9135c4932e96a"
-        if !ready { imagePreparationScope?.invalidate(); imagePreparation?.cancel() }
+        let previousManifest = runtimeManifestSHA256
+        runtimeManifestSHA256 = configuration?.manifestSha256
+        jpegImportsEnabled = ready && runtimeManifestSHA256 == "74b08c7899d74ad989bbb61e47fc86fe9fa25c8853ab27ce57e9135c4932e96a"
+        if !ready || previousManifest != runtimeManifestSHA256 {
+            importStatusGeneration = UUID()
+            imagePreparationScope?.invalidate(); imagePreparation?.cancel()
+        }
         guard let configuration, let tenant = configuration.tenantId else { return }
-        let next = "\(tenant):\(configuration.ports.web)"
+        let next = "\(tenant):\(configuration.ports.web):\(configuration.manifestSha256)"
         guard next != scope else { return }
         imagePreparationScope?.invalidate(); imagePreparation?.cancel()
         importStatusGeneration = UUID()
@@ -217,7 +223,7 @@ extension AuthoringModel {
     func uploadImportFile() async {
         await action {
             guard let api, let selected, !metadataDirty, let file = importFile, let state = transfer else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
-            let generation = importStatusGeneration, currentScope = scope
+            let generation = importStatusGeneration, currentScope = scope, manifest = runtimeManifestSHA256
             let rights = draft.rights, scale = importScale
             let requestKey = state.intent?.idempotencyKey ?? UUID().uuidString.lowercased()
             let derived: NativePreparedJPEG?
@@ -227,6 +233,7 @@ extension AuthoringModel {
                 derived = try await prepareJPEG(file, operationID: requestKey)
             } else { derived = nil }
             guard generation == importStatusGeneration, currentScope == scope, available,
+                  file.mime != "image/jpeg" || (jpegImportsEnabled && manifest == runtimeManifestSHA256),
                   self.selected?.id == selected.id, self.selected?.revision == selected.revision,
                   !metadataDirty, draft.rights == rights, importScale == scale,
                   transfer?.revision == state.revision, transfer?.workspaceId == state.workspaceId,
@@ -249,10 +256,11 @@ extension AuthoringModel {
         }
     }
     private func continueImport(intent: NativeImportIntent, file: ImportFileSnapshot?, derived: NativePreparedJPEG? = nil, api: AuthoringAPI) async throws {
-        let generation = importStatusGeneration, currentScope = scope
+        let generation = importStatusGeneration, currentScope = scope, manifest = runtimeManifestSHA256
         let tenant = session?.tenantId, principal = session?.userId
         @MainActor func current() -> Bool {
             generation == importStatusGeneration && currentScope == scope && available
+                && (intent.mime != "image/jpeg" || (jpegImportsEnabled && manifest == runtimeManifestSHA256))
                 && session?.tenantId == tenant && session?.userId == principal
                 && (transfer?.intent == nil || transfer?.intent == intent)
         }
@@ -276,7 +284,8 @@ extension AuthoringModel {
         importJob = result
     }
     private func prepareJPEG(_ original: ImportFileSnapshot, operationID: String) async throws -> NativePreparedJPEG {
-        let generation = importStatusGeneration, currentScope = scope
+        guard jpegImportsEnabled else { throw AuthoringFailure("JPEG_IMPORT_UNAVAILABLE") }
+        let generation = importStatusGeneration, currentScope = scope, manifest = runtimeManifestSHA256
         let tenant = session?.tenantId, principal = session?.userId, workspace = transfer?.workspaceId
         let ticket = NativeImagePreparationScope(operationID: operationID, generation: generation.uuidString.lowercased(), originalSHA256: original.sha256)
         let owned = Task {
@@ -291,6 +300,7 @@ extension AuthoringModel {
         @MainActor func current() -> Bool {
             ticket.isCurrent(operationID: operationID, generation: generation.uuidString.lowercased(), originalSHA256: original.sha256)
                 && generation == importStatusGeneration && currentScope == scope && available
+                && jpegImportsEnabled && manifest == runtimeManifestSHA256
                 && tenant == session?.tenantId && principal == session?.userId && workspace == transfer?.workspaceId
         }
         do {
@@ -415,7 +425,7 @@ struct NativeAuthoringView: View {
     @State private var discardPrompt = false
     @State private var pendingId: String?
     @State private var pendingNew = false
-    private var scope: String { "\(configuration?.tenantId ?? ""):\(configuration?.ports.web ?? 0):\(ready)" }
+    private var scope: String { "\(configuration?.tenantId ?? ""):\(configuration?.ports.web ?? 0):\(configuration?.manifestSha256 ?? ""):\(ready)" }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             if !ready { Text("준비 화면에서 로컬 제작을 시작하세요.").foregroundStyle(.secondary) }
