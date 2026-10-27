@@ -356,12 +356,15 @@ struct NativeAuthoringView: View {
             if let failure = model.failure {
                 Text(failure.localizedDescription).foregroundStyle(.primary)
                 DisclosureGroup("오류 상세") { Text(failure.code).textSelection(.enabled) }
+                if configuration?.kind == "personal", model.session != nil {
+                    Button("작업 공간 다시 연결") { Task { await connect() } }.disabled(!ready || model.busy)
+                }
             }
             if !model.notice.isEmpty { Text(model.notice).foregroundStyle(.secondary) }
         }
         .onChange(of: model.draft) { _, _ in model.approvalAcknowledged = false }
         .onChange(of: model.creationYearText) { _, _ in model.approvalAcknowledged = false }
-        .task(id: scope) { model.configure(configuration, ready: ready); if ready && configuration?.kind == "personal" { await connect() } }
+        .task(id: scope) { model.configure(configuration, ready: ready); if ready && configuration?.kind == "personal" && model.session == nil { await connect() } }
         .confirmationDialog("저장하지 않은 입력을 버릴까요?", isPresented: $discardPrompt, titleVisibility: .visible) {
             Button("입력 버리기", role: .destructive) { performSelection() }
             Button("계속 편집", role: .cancel) {}

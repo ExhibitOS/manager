@@ -76,6 +76,7 @@ final class ManagerModel: ObservableObject {
             }
             guard let bridge else { throw BridgeFailure("NATIVE_HELPER_MISSING") }
             selection.refresh(try await bridge.presentation())
+            exhibitions.viewportController.editingContextActive = presentation?.step == .select
             savePresentation()
             let selected = try await bridge.context()
             context = selected
@@ -173,6 +174,7 @@ final class ManagerModel: ObservableObject {
     }
     private func replaceWorkspaceModels() {
         authoring = AuthoringModel(); exhibitions = ExhibitionModel()
+        exhibitions.viewportController.editingContextActive = presentation?.step == .select
         publication = PublicationModel(); staticExport = StaticExportModel()
         hosting = HostingModel()
     }
@@ -306,7 +308,10 @@ final class ManagerModel: ObservableObject {
         guard !quitting, bridge != nil else { return }
         // SwiftUI's selection binding and detail view change in the same turn.
         // Runtime work and disk persistence must not disable or revert navigation.
-        if selection.select(mode: mode, step: step, scale: scale) { savePresentation() }
+        if selection.select(mode: mode, step: step, scale: scale) {
+            exhibitions.viewportController.editingContextActive = presentation?.step == .select
+            savePresentation()
+        }
     }
     private func savePresentation() {
         guard presentationSave == nil, let bridge else { return }

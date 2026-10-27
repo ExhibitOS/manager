@@ -20,6 +20,12 @@ struct NativeEntrancePreviewOutput {
 
 @MainActor
 final class NativeViewportController: ObservableObject {
+    // Synchronously updated by native navigation, before a delayed WK frame or
+    // queued candidate callback can act on the former editing purpose.
+    private(set) var editingContextGeneration = UUID()
+    @Published var editingContextActive = true {
+        didSet { if oldValue != editingContextActive { editingContextGeneration = UUID() } }
+    }
     @Published var connected = false
     @Published fileprivate(set) var planSupported = false
     @Published fileprivate(set) var thumbnailSupported = false
@@ -123,9 +129,11 @@ final class NativeViewportController: ObservableObject {
     fileprivate var owner: String?
     fileprivate var action: ((NativeGeometryAction) async throws -> (DocumentValue, NativeExhibitionDraft))?
     func perform(_ command: NativeGeometryAction, model: ExhibitionModel) async {
-        guard !model.placingArtwork, let action, connected else { return }
+        guard editingContextActive, !model.placingArtwork, let action, connected else { return }
+        let contextGeneration = editingContextGeneration
         do {
             let (candidate, base) = try await action(command)
+            guard editingContextActive, editingContextGeneration == contextGeneration else { return }
             if case .installation(let installation) = command { await model.acceptInstallationCandidate(candidate, base: base, command: installation) }
             else if case .architecture(let architecture) = command { await model.acceptArchitectureCandidate(candidate, base: base, command: architecture) }
             else if case .surfaceMaterial(let material) = command { await model.acceptSurfaceMaterialPreview(candidate, base: base, command: material) }
@@ -194,6 +202,7 @@ struct NativeViewport: NSViewRepresentable {
         private var sequence = 0
         private var sent = 0
         private var fingerprint: Data?
+        private var editingContextGeneration: UUID?
         private var installedToken: String?
         private var prepared = false
         private var latest: ViewportFrame?
@@ -242,7 +251,9 @@ struct NativeViewport: NSViewRepresentable {
             let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
             guard let bytes = try? encoder.encode(probe) else { return }
             let hash = Data(SHA256.hash(data: bytes))
-            guard hash != fingerprint else { return }
+            let contextChanged = editingContextGeneration != controller.editingContextGeneration
+            editingContextGeneration = controller.editingContextGeneration
+            guard hash != fingerprint || contextChanged else { return }
             // Status-only rerenders dedupe above. A genuinely different frame
             // invalidates the transient operation before any late callback.
             endPlacement()
@@ -572,7 +583,7 @@ struct NativeViewport: NSViewRepresentable {
                   let envelope = try? JSONDecoder().decode(Envelope.self, from: bytes), envelope.version == 1, envelope.epoch == epoch, envelope.sequence == sequence, let frame = latest else { return }
             switch envelope.type {
             case "placement-target":
-                guard !frame.disabled, let intent = placementIntent,
+                guard controller.editingContextActive, editingContextGeneration == controller.editingContextGeneration, !frame.disabled, let intent = placementIntent,
                       (try? ViewportPlacementTarget(value: envelope.body, intent: intent)) != nil else { return }
                 parent.onPlacementTarget(envelope.body)
             case "placement-cancel":
@@ -581,9 +592,9 @@ struct NativeViewport: NSViewRepresentable {
                       let reason = envelope.body["reason"].string, reason.utf8.count <= 160 else { return }
                 endPlacement()
             case "selection":
-                guard placementIntent == nil, !frame.disabled, !parent.interactionDisabled, let selection = try? JSONDecoder().decode(ViewportSelection.self, from: JSONEncoder().encode(envelope.body)), selection.belongs(to: frame.draft) else { return }
+                guard controller.editingContextActive, editingContextGeneration == controller.editingContextGeneration, placementIntent == nil, !frame.disabled, !parent.interactionDisabled, let selection = try? JSONDecoder().decode(ViewportSelection.self, from: JSONEncoder().encode(envelope.body)), selection.belongs(to: frame.draft) else { return }
                 parent.onSelect(selection)
-            case "candidate": guard placementIntent == nil, !frame.disabled, !parent.interactionDisabled else { return }; parent.onCandidate(envelope.body, frame.draft)
+            case "candidate": guard controller.editingContextActive, editingContextGeneration == controller.editingContextGeneration, placementIntent == nil, !frame.disabled, !parent.interactionDisabled else { return }; parent.onCandidate(envelope.body, frame.draft)
             case "status":
                 guard let report = try? JSONDecoder().decode(Report.self, from: JSONEncoder().encode(envelope.body)), report.loaded >= 0, report.failed >= 0, report.message.count <= 2048 else { return }
                 controller.rendering = report.ready; controller.loaded = report.loaded; controller.failed = report.failed
@@ -661,8 +672,8 @@ struct NativeViewportArea: View {
     }
     private func viewportSurface(credentials: LocalAuthoringSession, draft: NativeExhibitionDraft) -> some View {
         GeometryReader { geometry in
-            let width = model.entrancePreviewActive ? (model.entrancePreviewDevice == .mobile ? 360.0 : (workbench ? max(768, geometry.size.width) : 1024.0)) : max(1, geometry.size.width)
-            let height = model.entrancePreviewActive ? (workbench && model.entrancePreviewDevice == .desktop ? max(480, geometry.size.height) : 740.0) : max(1, workbench ? geometry.size.height : 440)
+            let width = model.entrancePreviewActive ? (model.entrancePreviewDevice == .mobile ? 360.0 : 1024.0) : max(1, geometry.size.width)
+            let height = model.entrancePreviewActive ? 740.0 : max(1, workbench ? geometry.size.height : 440)
             let fit = workbench && model.entrancePreviewActive ? min(1, geometry.size.width / width, geometry.size.height / height) : 1
             if workbench {
                 ZStack {
@@ -677,7 +688,7 @@ struct NativeViewportArea: View {
         }
     }
     private func renderer(credentials: LocalAuthoringSession, draft: NativeExhibitionDraft) -> some View {
-        NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing, interactionDisabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.placingArtwork, controller: controller, onSelect: { model.selectViewport($0) }, onCandidate: { candidate, base in Task { await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
+        NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing, interactionDisabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.placingArtwork, controller: controller, onSelect: { if controller.editingContextActive { model.selectViewport($0) } }, onCandidate: { candidate, base in let context = controller.editingContextGeneration; Task { guard controller.editingContextActive, controller.editingContextGeneration == context else { return }; await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
             .id(identity.uuidString + model.viewportAccessID.uuidString)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .allowsHitTesting(!model.architectureDirty && !model.architectureApplying && !model.placementApplying)

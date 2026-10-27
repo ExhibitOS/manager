@@ -171,6 +171,7 @@ struct CoverEntryPreviewControls: View {
     let ready: Bool
     let mode: Mode
     var compact = false
+    var editable = true
     var body: some View {
         Group {
             if compact { compactControls }
@@ -201,7 +202,7 @@ struct CoverEntryPreviewControls: View {
                                         Image(nsImage: image).resizable().scaledToFit().frame(width: 100, height: 54).accessibilityHidden(true)
                                         Text(theme.title).font(.caption)
                                     }
-                                }.disabled(model.entrancePreviewActive || model.busy || model.pending || model.immutable)
+                                }.disabled(!editable || model.entrancePreviewActive || model.busy || model.pending || model.immutable)
                                     .help("이 테마와 기본 배치·연출을 적용합니다. 글·이미지·입장권은 유지됩니다.")
                             }
                         }
@@ -276,7 +277,7 @@ struct CoverEntryPreviewControls: View {
                                         Image(nsImage: image).resizable().scaledToFit().frame(height: 120).accessibilityHidden(true)
                                         Text(theme.title)
                                     }
-                                }.disabled(model.entrancePreviewActive || model.busy || model.pending || model.immutable)
+                                }.disabled(!editable || model.entrancePreviewActive || model.busy || model.pending || model.immutable)
                                     .help("이 테마와 기본 배치·연출을 적용합니다. 글·이미지·입장권은 유지됩니다.")
                             }
                         }
