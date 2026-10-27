@@ -109,12 +109,14 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var entrancePreviewDraft: NativeExhibitionDraft?
     @Published private(set) var entranceHostRecovering = false
     private var entranceRecoveryEpoch: String?
+    private var entrancePreviewEpoch: String?
+    private var entranceCredentialRenewalPending = false
     private var entrancePreviewBase: NativeExhibitionDraft?
     private var entrancePreviewTask: Task<Void, Never>?
     private var entrancePreviewGeneration = UUID()
     var entrancePreviewActive: Bool { entrancePreviewDraft != nil }
     var canRecoverEntranceHost: Bool {
-        guard entrancePreviewActive, !busy, !pending, !placingArtwork, !architectureApplying else { return false }
+        guard !entranceCredentialRenewalPending, entrancePreviewActive, !busy, !pending, !placingArtwork, !architectureApplying else { return false }
         if entranceHostRecovering { return !entrancePreviewBusy }
         return !viewportController.connected || !entrancePreviewBusy
     }
@@ -400,6 +402,12 @@ final class ExhibitionModel: ObservableObject {
     var canExport: Bool { !busy && !placingArtwork && !dirty && state?.etag != nil && draft != nil }
     var dirty: Bool { state?.dirty == true || formDirty || positionDirty || architectureDirty || architectureApplying }
     func connect(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession, read: @escaping () async throws -> NativeDocumentState, write: @escaping (NativeDocumentState) async throws -> NativeDocumentState) async {
+        // Explicit reconnect during a preview has a separate acknowledgement
+        // boundary. Never run the ordinary access-change reset on this path.
+        if entrancePreviewActive {
+            await reconnectEntranceAuthority(api: api, session: session, credentials: credentials, read: read, write: write)
+            return
+        }
         // An owned begin/commit (including its store write) must finish before
         // credentials or store closures can change. A stable ghost can cancel
         // against its OLD connection, then reconnect through normal initialization.
@@ -432,8 +440,55 @@ final class ExhibitionModel: ObservableObject {
             if let draft, state?.etag != nil { immutable = !(try await api.publications(exhibitionId: draft.id)).isEmpty } else { immutable = false }
         }
     }
+    func beginEntranceCredentialRenewal() -> Bool {
+        guard entrancePreviewActive else { return true }
+        guard !busy, !pending, !placingArtwork, !architectureApplying,
+              entrancePreviewBase == draft, viewportCredentials != nil,
+              let epoch = viewportController.hostEpoch ?? entranceRecoveryEpoch ?? entrancePreviewEpoch else { return false }
+        entrancePreviewTask?.cancel(); entrancePreviewTask = nil; entrancePreviewGeneration = UUID()
+        entranceRecoveryEpoch = epoch; entranceHostRecovering = true
+        entranceCredentialRenewalPending = true; entrancePreviewBusy = true
+        invalidateEntranceThumbnails()
+        entrancePreviewStatus = "같은 작업 공간의 연결을 갱신하고 있습니다. 입력과 편집 잠금은 유지됩니다."
+        return true
+    }
+    func entranceCredentialRenewalFailed() {
+        guard entrancePreviewActive, entranceCredentialRenewalPending else { return }
+        entrancePreviewBusy = false
+        entrancePreviewStatus = "작업 공간 연결을 갱신하지 못했습니다. 입력과 미리보기 잠금을 유지합니다. 작업 공간 다시 연결을 선택하세요."
+    }
+    private func reconnectEntranceAuthority(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession,
+                                            read: @escaping () async throws -> NativeDocumentState,
+                                            write: @escaping (NativeDocumentState) async throws -> NativeDocumentState) async {
+        guard entranceCredentialRenewalPending, !busy, !pending, !placingArtwork, !architectureApplying,
+              let old = viewportCredentials, credentials.isRenewal(of: old),
+              session.tenantId.lowercased() == old.tenantId.lowercased(), session.userId.lowercased() == old.principalId.lowercased(),
+              let base = draft, entrancePreviewBase == base, let previousEpoch = entranceRecoveryEpoch else {
+            entranceCredentialRenewalFailed()
+            return
+        }
+        self.api = api; self.session = session; self.read = read; self.write = write
+        viewportCredentials = credentials
+        viewportAccessID = UUID() // Same model/buffers/history; a new owned WK coordinator.
+        let access = viewportAccessID, generation = UUID()
+        entrancePreviewGeneration = generation; entranceCredentialRenewalPending = false
+        entrancePreviewTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.viewportController.waitForOrdinaryRecovery(replacing: previousEpoch, draft: base,
+                                                                         tenantId: credentials.tenantId, principalId: credentials.principalId)
+                guard self.entrancePreviewGeneration == generation, self.viewportAccessID == access, self.draft == base else { return }
+                self.confirmEntranceHostRecovery()
+            } catch {
+                if self.entrancePreviewGeneration == generation {
+                    self.entrancePreviewBusy = false; self.entrancePreviewTask = nil
+                    self.entrancePreviewStatus = "갱신한 연결의 편집 화면을 기다리고 있습니다. 입력과 잠금을 유지합니다. 작업 공간 다시 연결로 재시도하세요."
+                }
+            }
+        }
+    }
     func previewEntrance(_ action: EntrancePreviewAction = .show, thumbnails: Bool = false, systemReducedMotion: Bool) {
-        guard !busy, !pending, !placingArtwork, !architectureApplying, !entrancePreviewBusy, entranceEditable,
+        guard !entranceCredentialRenewalPending, !busy, !pending, !placingArtwork, !architectureApplying, !entrancePreviewBusy, entranceEditable,
               !surfaceMaterialPreviewing, !lightPreviewing, !benchPreviewing, !plaquePreviewing, !furnishingPreviewing, !spaceLightingPreviewing,
               let base = draft else { return }
         do {
@@ -445,6 +500,7 @@ final class ExhibitionModel: ObservableObject {
             let reduced = systemReducedMotion || entrancePreviewReducedMotion
             let locale = entrancePreviewLocale.isEmpty ? nil : entrancePreviewLocale
             entrancePreviewTask?.cancel(); entrancePreviewGeneration = generation
+            entrancePreviewEpoch = viewportController.hostEpoch
             entrancePreviewBase = base; entrancePreviewDraft = display; entrancePreviewBusy = true
             entrancePreviewStatus = thumbnails ? "실제 표지 화면을 준비하고 있습니다." : "관람 미리보기를 준비하고 있습니다."
             entrancePreviewTask = Task { [weak self] in
@@ -517,6 +573,7 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     func recoverEntrancePreviewHost(reload: () -> Void) {
+        guard !entranceCredentialRenewalPending else { return }
         guard canRecoverEntranceHost, let base = draft, let previousEpoch = viewportController.hostEpoch,
               let credentials = viewportCredentials else { return }
         entrancePreviewTask?.cancel()
@@ -545,7 +602,7 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     func confirmEntranceHostRecovery() {
-        guard entranceHostRecovering, let previousEpoch = entranceRecoveryEpoch, let base = entrancePreviewBase, draft == base,
+        guard !entranceCredentialRenewalPending, entranceHostRecovering, let previousEpoch = entranceRecoveryEpoch, let base = entrancePreviewBase, draft == base,
               let credentials = viewportCredentials,
               viewportController.ordinaryRecoveryReady(replacing: previousEpoch, draft: base, tenantId: credentials.tenantId, principalId: credentials.principalId) else { return }
         entrancePreviewTask?.cancel(); entrancePreviewTask = nil; entrancePreviewGeneration = UUID()

@@ -103,6 +103,7 @@ final class ManagerModel: ObservableObject {
     }
     private func connectPersonalAuthoringOwned() async {
         guard !busy, !quitting, ready, let bridge, let context else { return }
+        guard exhibitions.beginEntranceCredentialRenewal() else { return }
         busy = true
         defer { busy = false }
         do {
@@ -114,8 +115,11 @@ final class ManagerModel: ObservableObject {
             if let api = authoring.exhibitionAPI, let session = authoring.session {
                 await exhibitions.connect(api: api, session: session, credentials: credentials, read: { try await bridge.documentState(context) }, write: { state in try await bridge.saveDocumentState(context, state: state) })
                 await publication.connect(api: api, session: session, read: { try await bridge.publicationState(context) }, write: { state in try await bridge.savePublicationState(context, state: state) })
-            }
-        } catch { failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_CONNECTION_FAILED") }
+            } else { exhibitions.entranceCredentialRenewalFailed() }
+        } catch {
+            exhibitions.entranceCredentialRenewalFailed()
+            failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_CONNECTION_FAILED")
+        }
     }
     private func bindStaticExport() async {
         guard native?.configuration?.kind == "personal", let bridge, let context else { return }

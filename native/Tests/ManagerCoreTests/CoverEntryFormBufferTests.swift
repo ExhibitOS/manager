@@ -3,6 +3,21 @@ import XCTest
 @testable import ManagerCore
 
 final class CoverEntryFormBufferTests: XCTestCase {
+    func testCredentialRenewalRefusesOldTokenForeignIdentityAndNoncanonicalSecrets() throws {
+        let tenant = UUID().uuidString, principal = UUID().uuidString
+        let token: (UInt8) -> String = { byte in Data(repeating: byte, count: 32).base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "") }
+        func credentials(_ value: String, tenantId: String? = nil, principalId: String? = nil, origin: String = "http://127.0.0.1:13200") throws -> LocalAuthoringSession {
+            try JSONDecoder().decode(LocalAuthoringSession.self, from: JSONSerialization.data(withJSONObject: ["tenantId": tenantId ?? tenant, "principalId": principalId ?? principal, "origin": origin, "token": value]))
+        }
+        let old = try credentials(token(1)), renewed = try credentials(token(2))
+        XCTAssertTrue(renewed.isRenewal(of: old))
+        XCTAssertFalse(old.isRenewal(of: old))
+        XCTAssertFalse(try credentials(token(2), tenantId: UUID().uuidString).isRenewal(of: old))
+        XCTAssertFalse(try credentials(token(2), principalId: UUID().uuidString).isRenewal(of: old))
+        XCTAssertFalse(try credentials(token(2), origin: "http://127.0.0.1:13202").isRenewal(of: old))
+        XCTAssertFalse(try credentials(String(repeating: "_", count: 43)).isRenewal(of: old))
+        XCTAssertFalse(try credentials("expired").isRenewal(of: old))
+    }
     private func previewRequest() throws -> ViewportEntrancePreviewRequest {
         let frame = ViewportFrame(epoch: UUID().uuidString, sequence: 2, tenantId: UUID().uuidString, principalId: UUID().uuidString,
                                   draft: try NativeExhibitionDraft.new(), selection: nil, mode: "translate", view: "isometric", disabled: true)

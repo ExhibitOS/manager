@@ -362,6 +362,17 @@ impl Payload {
     pub fn script(&self) -> PathBuf {
         self.root.join(&self.manifest.entry.script)
     }
+    pub(crate) fn authoring_session_script(&self) -> Result<PathBuf> {
+        let name = "platform/scripts/native-workspace-session.mjs";
+        if !self.manifest.files.iter().any(|f| f.path == name && f.link.is_none() && f.executable == Some(false)) {
+            return Err(err("NATIVE_AUTHORING_RENEWAL_UNAVAILABLE"));
+        }
+        // The one-shot process imports the admitted API/storage modules too.
+        // Reuse the complete existing byte admission rather than accepting a
+        // caller-selected script or an independently copied dependency tree.
+        self.recheck()?;
+        Ok(self.root.join(name))
+    }
     pub fn postgres(&self) -> PathBuf {
         self.root.join(&self.manifest.entry.postgres)
     }
