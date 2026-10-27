@@ -1213,7 +1213,7 @@ final class ExhibitionModel: ObservableObject {
     }
     func open(_ id: String) async {
         await work {
-            guard !immutable, !pending, let api, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
+            guard !pending, let api, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             let saved = try await api.exhibition(id)
             let frozen = !(try await api.publications(exhibitionId: id)).isEmpty
             value.draft = saved.draft; value.etag = saved.etag; value.savedEditVersion = saved.draft.document["editVersion"].integer

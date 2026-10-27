@@ -52,7 +52,7 @@ final class NativeViewportController: ObservableObject {
         // handshake before any preview request can name that frame.
         for _ in 0..<100 {
             try Task.checkCancellation()
-            if connected, acknowledgedFrame?.draft == input.draft {
+            if connected, acknowledgedFrame?.disabled == true, acknowledgedFrame?.draft == input.draft {
                 guard entrancePreviewSupported, let entrancePreviewAction else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
                 return try await entrancePreviewAction(input)
             }
@@ -115,7 +115,7 @@ final class NativeViewportController: ObservableObject {
     func diagnose(_ stage: String, _ error: Error) {
         let e = error as NSError
         let domain = e.domain.range(of: "^[A-Za-z0-9_.-]{1,80}$", options: .regularExpression) == nil ? "WebKit" : e.domain
-        let detail = (e.userInfo["WKJavaScriptExceptionMessage"] as? String)?.replacingOccurrences(of: "Error: ", with: "") ?? ""
+        let detail = (error as? AuthoringFailure)?.code ?? (e.userInfo["WKJavaScriptExceptionMessage"] as? String)?.replacingOccurrences(of: "Error: ", with: "") ?? ""
         let known = ["crypto.randomUUID", "structuredClone", "INVALID_GEOMETRY", "VIEWPORT_COMMAND_DENIED", "VIEWPORT_NOT_READY", "func2"].filter { detail.contains($0) }.joined(separator: ",")
         let code = detail.range(of: "^[A-Z0-9_]{1,180}$", options: .regularExpression) == nil ? "" : " · " + detail
         diagnostic = "\(stage) · \(domain) · \(e.code)" + code + (known.isEmpty ? "" : " · " + known)
@@ -248,6 +248,7 @@ struct NativeViewport: NSViewRepresentable {
             endPlacement()
             entranceOperation = nil
             fingerprint = hash; sequence += 1
+            controller.connected = false
             latest = ViewportFrame(epoch: epoch, sequence: sequence, tenantId: value.credentials.tenantId, principalId: value.credentials.principalId, draft: value.draft, selection: selection, mode: value.mode, view: value.view, disabled: value.disabled, cameraSequence: value.cameraSequence, transparent: value.transparent, presentation: controller.planSupported ? value.presentation : .threeD)
             schedule()
         }
