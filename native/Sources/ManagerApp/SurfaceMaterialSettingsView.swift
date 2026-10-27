@@ -5,11 +5,19 @@ import ManagerCore
 
 struct SurfaceMaterialSettingsView: View {
     @ObservedObject var model: ExhibitionModel
+    @ObservedObject var viewport: NativeViewportController
     let ready: Bool
-    private var editable: Bool { ready && !model.busy && !model.pending && !model.immutable && !model.formDirty && !model.positionDirty && !model.architectureGeometryDirty && !model.lightDirty && !model.benchDirty && !model.plaqueDirty && !model.spaceLightingDirty && !model.architectureApplying }
+    let mode: Mode
+    private var editable: Bool { ready && model.canEditSurfaceMaterial }
+    private var texture: Binding<SurfaceMaterialTextureFormBuffer> {
+        Binding(get: { model.surfaceMaterialTexture ?? .init(binding: nil) }, set: { value in
+            guard editable, model.surfaceMaterialTexturesSupported else { return }
+            model.surfaceMaterialTexture = value
+        })
+    }
     private func field<Value>(_ key: WritableKeyPath<SurfaceMaterialFormBuffer, Value>, fallback: Value) -> Binding<Value> {
         Binding(get: { model.surfaceMaterial?[keyPath: key] ?? fallback }, set: { value in
-            guard var fields = model.surfaceMaterial else { return }
+            guard editable, var fields = model.surfaceMaterial else { return }
             fields[keyPath: key] = value; model.surfaceMaterial = fields
         })
     }
@@ -20,7 +28,7 @@ struct SurfaceMaterialSettingsView: View {
                   let rgb = UInt32(text.dropFirst(), radix: 16) else { return Color(nsColor: .controlBackgroundColor) }
             return Color(.sRGB, red: Double((rgb >> 16) & 255) / 255, green: Double((rgb >> 8) & 255) / 255, blue: Double(rgb & 255) / 255, opacity: 1)
         }, set: { value in
-            guard let rgb = NSColor(value).usingColorSpace(.sRGB), var fields = model.surfaceMaterial else { return }
+            guard editable, let rgb = NSColor(value).usingColorSpace(.sRGB), var fields = model.surfaceMaterial else { return }
             let components = [rgb.redComponent, rgb.greenComponent, rgb.blueComponent].map { Int((min(1, max(0, $0)) * 255).rounded()) }
             fields.color = String(format: "#%02x%02x%02x", components[0], components[1], components[2])
             model.surfaceMaterial = fields
@@ -30,6 +38,15 @@ struct SurfaceMaterialSettingsView: View {
         if model.viewportSelection?.kind == "surface" {
             Section("선택한 표면의 재질") {
                 if let fields = model.surfaceMaterial {
+                    if model.surfaceMaterialTexture != nil {
+                        SurfaceMaterialCatalogView(entries: model.surfaceMaterialCatalog?.items.map {
+                            .init(catalogId: $0.id, name: $0.name, recommendedRepeat: $0.texture.repeatMeters[0])
+                        } ?? [], images: [:], fields: texture, mode: mode, supported: model.surfaceMaterialTexturesSupported,
+                           editable: editable, loading: model.surfaceMaterialCatalogLoading, status: model.surfaceMaterialCatalogStatus,
+                           select: model.selectSurfaceMaterial, remove: model.removeSurfaceMaterialTexture,
+                           useRecommendedValues: model.resetSurfaceMaterialTextureValues,
+                           retry: { Task { await model.retrySurfaceMaterialCatalog() } })
+                    }
                     Toggle("이 표면에 재질 지정", isOn: field(\.usesOverride, fallback: false)).disabled(!editable)
                     if fields.usesOverride {
                         Group {
@@ -51,6 +68,9 @@ struct SurfaceMaterialSettingsView: View {
                     }
                 }
                 if !model.surfaceMaterialStatus.isEmpty { Text(model.surfaceMaterialStatus).foregroundStyle(.secondary) }
+            }
+            .task(id: "\(model.viewportAccessID)-\(ready)-\(viewport.connected)-\(viewport.surfaceMaterialTexturesSupported)-\(model.surfaceMaterial?.surfaceId ?? "")") {
+                if ready { await model.loadSurfaceMaterialCatalog() }
             }
         }
     }

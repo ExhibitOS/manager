@@ -5,6 +5,7 @@ import ManagerCore
 struct ArchitectureSettingsView: View {
     @ObservedObject var model: ExhibitionModel
     let ready: Bool
+    let mode: Mode
     private struct Target: Identifiable {
         let selection: ViewportSelection
         let title: String
@@ -72,7 +73,7 @@ struct ArchitectureSettingsView: View {
                 }
                 if !model.architectureStatus.isEmpty { Text(model.architectureStatus).foregroundStyle(.secondary) }
             }
-            SurfaceMaterialSettingsView(model: model, ready: ready)
+            SurfaceMaterialSettingsView(model: model, viewport: model.viewportController, ready: ready, mode: mode)
         }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true)
     }
 }

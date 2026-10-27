@@ -88,6 +88,8 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "LIGHT_SELECTION_CHANGED": return "선택한 조명을 다시 확인하세요. 현재 입력과 저장된 설정은 유지됩니다."
         case "LIGHT_PREVIEW_FAILED": return "조명 미리보기를 확인하지 못했습니다. 조명이 속한 공간 안의 위치와 입력, 로컬 제작 연결을 확인하세요. 입력과 저장된 설정은 유지됩니다."
         case "SURFACE_MATERIAL_INVALID": return "색상과 재질 값을 확인하세요. 색상 코드는 #rrggbb, 거칠기와 금속성은 0부터 1까지 입력하세요. 입력과 기존 설정은 유지됩니다."
+        case "SURFACE_MATERIAL_TEXTURE_INVALID": return "무늬 반복은 0.05–20 m, 회전은 −180–180도, 요철 강도는 0–2로 입력하세요. 입력과 기존 재질은 유지됩니다."
+        case "MATERIAL_CATALOG_INVALID": return "재질 목록을 확인하지 못했습니다. 기존 재질과 입력은 유지됩니다."
         case "ARCHITECTURE_SELECTION_CHANGED": return "선택한 대상이 바뀌었습니다. 입력을 취소한 뒤 대상을 다시 선택하세요."
         case "PLACEMENT_APPLY_REQUIRED": return "배치와 위치 입력을 먼저 적용하거나 취소하세요. 입력과 기존 전시는 그대로 유지됩니다."
         case "ARCHITECTURE_APPLY_REQUIRED": return "공간·재질 변경을 적용하거나 입력을 취소한 뒤 전시를 저장하세요."
@@ -201,6 +203,10 @@ public actor AuthoringAPI {
     public func furnishings() async throws -> Bool {
         let value: DocumentValue = try await request("/api/v1/tenants/\(tenant)/studio/furnishings")
         return try FurnishingCatalog.checkedCatalog(value)
+    }
+    public func surfaceMaterials() async throws -> NativeSurfaceMaterialCatalog {
+        let value: DocumentValue = try await request("/api/v1/tenants/\(tenant)/studio/materials")
+        return try NativeSurfaceMaterialCatalog(value: value, tenantId: tenant)
     }
     public func connect(_ credentials: LocalAuthoringSession) async throws -> AuthoringSession {
         guard !authenticationBusy, activeRequests == 0 else { throw AuthoringFailure("AUTH_BUSY") }

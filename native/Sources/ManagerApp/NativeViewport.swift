@@ -36,6 +36,7 @@ final class NativeViewportController: ObservableObject {
     @Published fileprivate(set) var lightInspectorSupported = false
     @Published fileprivate(set) var benchInspectorSupported = false
     @Published fileprivate(set) var plaqueInspectorSupported = false
+    @Published fileprivate(set) var surfaceMaterialTexturesSupported = false
     @Published fileprivate(set) var entrancePreviewSupported = false
     fileprivate var acknowledgedFrame: ViewportFrame?
     var hostEpoch: String? { owner }
@@ -137,12 +138,14 @@ final class NativeViewportController: ObservableObject {
             if case .installation(let installation) = command { await model.acceptInstallationCandidate(candidate, base: base, command: installation) }
             else if case .architecture(let architecture) = command { await model.acceptArchitectureCandidate(candidate, base: base, command: architecture) }
             else if case .surfaceMaterial(let material) = command { await model.acceptSurfaceMaterialPreview(candidate, base: base, command: material) }
+            else if case .surfaceMaterialTexture(let material) = command { await model.acceptSurfaceMaterialTexturePreview(candidate, base: base, command: material) }
             else { await model.acceptViewportCandidate(candidate, base: base) }
         }
         catch {
             message = "이 조작을 적용하지 못했습니다. 현재 전시와 선택을 확인하세요."
             if case .architecture = command { message = "이 공간 편집을 적용하지 못했습니다. 입력은 유지되며 기존 전시는 바뀌지 않았습니다." }
             if case .surfaceMaterial = command { message = "재질을 미리 보지 못했습니다. 입력과 원래 재질은 유지됩니다." }
+            if case .surfaceMaterialTexture = command { message = "재질을 미리 보지 못했습니다. 입력과 원래 재질은 유지됩니다." }
             if case .installation = command,
                let detail = (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String,
                let reason = InstallationCommandReason.fromJavaScriptMessage(detail) { message = reason.explanation }
@@ -216,7 +219,7 @@ struct NativeViewport: NSViewRepresentable {
             entranceOperation = nil
             if controller.owner == epoch { controller.entrancePreviewAction = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil }
             active = false; generation = UUID(); sendTask?.cancel()
-            if controller.owner == epoch { controller.furnishingVisualsAction = nil; controller.furnishingThumbnailAction = nil; controller.spaceSettingsAction = nil; controller.lightInspectorAction = nil; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.lightInspectorSupported = false; controller.benchInspectorAction = nil; controller.benchInspectorSupported = false; controller.plaqueInspectorAction = nil; controller.plaqueInspectorSupported = false }
+            if controller.owner == epoch { controller.furnishingVisualsAction = nil; controller.furnishingThumbnailAction = nil; controller.spaceSettingsAction = nil; controller.lightInspectorAction = nil; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.lightInspectorSupported = false; controller.benchInspectorAction = nil; controller.benchInspectorSupported = false; controller.plaqueInspectorAction = nil; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false }
             if controller.owner == epoch { controller.action = nil; controller.thumbnailAction = nil; controller.findSelectionAction = nil; controller.placementAction = nil; controller.placementSupported = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0 }
         }
         private func endPlacement() {
@@ -232,13 +235,13 @@ struct NativeViewport: NSViewRepresentable {
             guard let page, page.scheme == "http", page.host == "127.0.0.1", let port = page.port, port >= 1024, UUID(uuidString: value.credentials.tenantId) != nil, UUID(uuidString: value.credentials.principalId) != nil else { return }
             if let installedToken, installedToken != value.credentials.token {
                 entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil
-                controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.lightInspectorSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false
+                controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.lightInspectorSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false
                 endPlacement(); controller.placementSupported = false
                 prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0; web?.stopLoading(); return
             }
             if installedToken == nil {
                 entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil
-                controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.lightInspectorSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false
+                controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.lightInspectorSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false
                 installedToken = value.credentials.token
                 generation = UUID(); sequence = 0; sent = 0; fingerprint = nil; prepared = false
                 sendTask?.cancel(); sendTask = nil
@@ -324,6 +327,7 @@ struct NativeViewport: NSViewRepresentable {
                         self.controller.lightInspectorSupported = acceptance.supportsLightInspector
                         self.controller.benchInspectorSupported = acceptance.supportsBenchInspector
                         self.controller.plaqueInspectorSupported = acceptance.supportsPlaqueInspector
+                        self.controller.surfaceMaterialTexturesSupported = acceptance.supportsSurfaceMaterialTextures
                         self.controller.entrancePreviewSupported = acceptance.supportsEntrancePreview
                         self.controller.acknowledgedFrame = frame
                         self.controller.acceptedSequence = frame.sequence
@@ -567,6 +571,9 @@ struct NativeViewport: NSViewRepresentable {
             }
             controller.action = { [weak self] command in
                 guard let self, self.active, self.controller.owner == self.epoch, !self.inspectorPending, self.placementIntent == nil, let web = self.web, let frame = self.latest, self.prepared, self.sent == frame.sequence, !frame.disabled else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+                if case .surfaceMaterialTexture = command {
+                    guard self.controller.surfaceMaterialTexturesSupported else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+                }
                 let generation = self.generation
                 let value = String(decoding: try JSONEncoder().encode(command.encodedValue(in: frame.draft, selected: frame.selection)), as: UTF8.self)
                 let candidate = try await web.callAsyncJavaScript("try { return window.exhibitosViewport.action(JSON.parse(actionJSON)); } catch (error) { if (error.code === 'INVALID_GEOMETRY' && Array.isArray(error.issues)) { const codes = error.issues.slice(0, 1).map(issue => issue.code + '_' + String(issue.path).replace(/[^a-zA-Z0-9_]/g, '_').toUpperCase() + '_' + (/^[a-zA-Z]{1,30}$/.test(issue.message) ? issue.message.toUpperCase() : '')).filter(code => /^[A-Z0-9_]{1,150}$/.test(code)); throw new Error('INVALID_GEOMETRY_' + codes.join('_')); } throw error; }", arguments: ["actionJSON":value], in: nil, contentWorld: .page)

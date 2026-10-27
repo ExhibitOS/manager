@@ -17,6 +17,7 @@ public enum NativeGeometryAction: Sendable {
     case installation(InstallationCommand)
     case architecture(ArchitectureCommand)
     case surfaceMaterial(SurfaceMaterialCommand)
+    case surfaceMaterialTexture(SurfaceMaterialTextureCommand)
     public func encodedValue(in draft: NativeExhibitionDraft? = nil, selected: ViewportSelection? = nil) throws -> DocumentValue {
         switch self {
         case .whiteCube(let id): return .object(["type":.string("white-cube"),"roomId":.string(id)])
@@ -27,6 +28,9 @@ public enum NativeGeometryAction: Sendable {
             guard let draft else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
             return try command.encodedValue(in: draft, selected: selected)
         case .surfaceMaterial(let command):
+            guard let draft else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+            return try command.encodedValue(in: draft, selected: selected)
+        case .surfaceMaterialTexture(let command):
             guard let draft else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
             return try command.encodedValue(in: draft, selected: selected)
         }
@@ -48,6 +52,7 @@ public struct ViewportAcceptance: Decodable, Sendable {
     public var supportsLightInspector: Bool { accepted && capabilities?.contains("light-inspector-v1") == true }
     public var supportsBenchInspector: Bool { accepted && capabilities?.contains("bench-inspector-v1") == true }
     public var supportsPlaqueInspector: Bool { accepted && capabilities?.contains("plaque-inspector-v1") == true }
+    public var supportsSurfaceMaterialTextures: Bool { accepted && capabilities?.contains(SurfaceMaterialTextureBinding.capability) == true }
     public var supportsEntrancePreview: Bool { accepted && capabilities?.contains("entrance-preview-v1") == true }
     public var supportsPlan: Bool {
         accepted && presentations?.contains(.threeD) == true && presentations?.contains(.plan) == true
