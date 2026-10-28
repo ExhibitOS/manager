@@ -1158,3 +1158,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[path = "native_configuration_plan.rs"]
+mod configuration_plan;
+pub(crate) use configuration_plan::{ReboundConfigurationPlan, plan_rebound_configuration};

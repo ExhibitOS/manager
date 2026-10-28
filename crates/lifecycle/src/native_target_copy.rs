@@ -7,7 +7,7 @@ const MARKER: &str = "native-target-preparation-current.json";
 /// Preparation permits a fresh EMPTY config directory. If a signing key is
 /// already present, preserve and pin its identity AND bytes without exposing it.
 /// The source-backup ConfigurationDirectory contract is deliberately unchanged.
-struct CandidateConfiguration {
+pub(crate) struct CandidateConfiguration {
     root: PathBuf,
     directory: crate::maintenance_source::DirectoryPin,
     files: Vec<(String, String, crate::hosted_runtime_file::Pin)>,
@@ -24,7 +24,7 @@ impl CandidateConfiguration {
         }
         Ok(names)
     }
-    fn capture(root: &Path) -> Result<Self> {
+    pub(crate) fn capture(root: &Path) -> Result<Self> {
         private_directory(root)?;
         let directory = crate::maintenance_source::DirectoryPin::open(root)?;
         let mut files = Vec::new();
@@ -38,7 +38,7 @@ impl CandidateConfiguration {
         let snapshot = Self {root: root.into(), directory, files};
         snapshot.check()?; Ok(snapshot)
     }
-    fn check(&self) -> Result<()> {
+    pub(crate) fn check(&self) -> Result<()> {
         self.directory.check()?;
         if Self::names(&self.root)? != self.files.iter().map(|(n,_,_)| n.clone()).collect::<Vec<_>>() {
             return Err(err("NATIVE_TARGET_CONFIGURATION_CHANGED"));
@@ -67,7 +67,7 @@ impl AuthenticatedNativeBackup {
         &self, source: &mut Session, target: &mut Session, target_schema: &str,
         operation: &str, authority: Value,
         mut check_selection: impl FnMut(&Path, &str, &Path, &Path) -> Result<()>,
-    ) -> Result<NativeTargetEvidence> {
+    ) -> Result<(NativeTargetEvidence, String)> {
         let profile = LifecycleService::bound_existing(self.profile_root.clone())?;
         let _profile = profile_lock(&profile)?;
         let root = target.target_observation_root().to_owned();
@@ -124,7 +124,9 @@ impl AuthenticatedNativeBackup {
             source.check_native_observation_fence()?; target.check_native_observation_fence()?;
             check_selection(&self.profile_root,&self.installation_id,&self.source_root,&root)?;
             intent["state"] = Value::String("PreparedInactive".into()); durable(&directory,"intent.json",&intent)?;
-            Ok(evidence)
+            // The generated attempt leaves this function in memory, never by
+            // rereading the mutable candidate marker or intent.
+            Ok((evidence, attempt.clone()))
         })();
         if let Err(error) = &result {
             // backup_tool drains owned writers before returning any failure.
@@ -175,5 +177,84 @@ mod tests {
         let mut reordered=source; reordered["inventory"]["migrations"].as_array_mut().unwrap().reverse();
         assert_ne!(catalog,authenticated_catalog(&serde_json::to_vec(&reordered).unwrap()).unwrap());
         assert!(authenticated_catalog(b"{}").is_err());
+    }
+}
+
+impl AuthenticatedNativeBackup {
+    /// Read-only follow-on to the opaque PreparedInactive capability. The
+    /// persisted marker is compared with that capability, never replayed as one.
+    pub(crate) fn plan_target_configuration(
+        &self, source: &mut Session, target: &mut Session, operation: &str,
+        expected_attempt: &str, expected: &NativeTargetEvidence, authority: &Value,
+        mut check_selection: impl FnMut(&Path, &str, &Path, &Path) -> Result<()>,
+    ) -> Result<super::super::native_restore::ReboundConfigurationPlan> {
+        let profile = LifecycleService::bound_existing(self.profile_root.clone())?;
+        let _profile = profile_lock(&profile)?;
+        let root = target.target_observation_root().to_owned();
+        if [&self.source_root, &self.archive, &self.verified, &self.scratch].iter().any(|p| root.starts_with(p) || p.starts_with(&root)) { return Err(err("NATIVE_TARGET_SELECTION_INVALID")); }
+        source.check_native_observation_fence()?;
+        target.check_native_observation_fence()?;
+        check_selection(&self.profile_root, &self.installation_id, &self.source_root, &root)?;
+        self.check(source)?;
+        let source_resources = self.payload.native_copy_resources()?;
+        let target_payload = target.maintenance_payload();
+        let target_resources = target_payload.native_copy_resources()?;
+        let catalog = authenticated_catalog(&self.manifest)?;
+        if !uuid(operation) || catalog != source_resources.inventory.migrations
+            || catalog != target_resources.inventory.migrations
+            || source_resources.recipe_sha256 != target_resources.recipe_sha256
+            || expected.source_schema_sha256 != self.evidence.schema_sha256
+            || expected.target_schema_sha256 != self.evidence.schema_sha256 {
+            return Err(err("NATIVE_TARGET_COPY_CATALOG_UNSUPPORTED"));
+        }
+        let read = |directory: &Path, name: &str| -> Result<(Value, crate::hosted_runtime_file::Pin)> {
+            let private = Secret(installation_backup::source_bytes(directory, name, 65536, true)?);
+            let (bytes, pin) = crate::hosted_runtime_file::bounded(&directory.join(name), 65536)?;
+            let bytes = Secret(bytes);
+            if bytes.0 != private.0 { return Err(err("NATIVE_TARGET_CONFIGURATION_CHANGED")); }
+            let value = serde_json::from_slice(&bytes.0).map_err(|_| err("NATIVE_TARGET_CONFIGURATION_CHANGED"))?;
+            Ok((value, pin))
+        };
+        let root_pin = crate::maintenance_source::DirectoryPin::open(&root)?;
+        let (marker, marker_pin) = read(&root, MARKER)?;
+        let directory = root.join(format!("native-target-preparation-{operation}"));
+        private_directory(&directory)?;
+        let directory_pin = crate::maintenance_source::DirectoryPin::open(&directory)?;
+        let (intent, intent_pin) = read(&directory, "intent.json")?;
+        if marker["format"] != 1 || marker["operationId"] != operation
+            || !uuid(expected_attempt) || marker["attemptId"].as_str() != Some(expected_attempt)
+            || intent["format"] != 1 || intent["state"] != "PreparedInactive"
+            || intent["operationId"] != operation || intent["attemptId"] != marker["attemptId"]
+            || intent["sourceRoot"].as_str() != self.source_root.to_str()
+            || intent["targetRoot"].as_str() != root.to_str()
+            || intent["sourcePayloadManifestSha256"] != self.source_manifest()
+            || intent["targetPayloadManifestSha256"] != target_payload.context().manifest_sha256
+            || intent["backupId"] != expected.backup_id
+            || intent["authenticatedBackupManifestSha256"] != expected.authenticated_manifest_sha256
+            || intent["sourceInventorySha256"] != expected.source_inventory_sha256
+            || intent["targetSystemIdentifier"] != expected.target_system_identifier
+            || &intent["authority"] != authority
+            || intent["configurationVerified"] != false || intent["preflightVerified"] != false
+            || intent["executionPermitted"] != false { return Err(err("NATIVE_TARGET_CONFIGURATION_CHANGED")); }
+        // Verification retains numbered plaintext chunks, not configuration
+        // paths. Use the materialized archive from this held preparation only.
+        let restored = directory.join(format!("restored-{expected_attempt}"));
+        let plan = super::super::native_restore::plan_rebound_configuration(
+            &restored, &self.manifest, &self.source_root, &self.payload, target, &self.profile_root,
+        )?;
+        let fresh = self.observe_target_locked(source, target, &expected.target_schema_sha256, &mut check_selection)?;
+        if fresh != *expected { return Err(err("NATIVE_TARGET_RESULT_INVALID")); }
+        self.check(source)?;
+        source_resources.recheck()?;
+        target_resources.recheck()?;
+        plan.recheck()?;
+        marker_pin.check()?;
+        intent_pin.check()?;
+        directory_pin.check()?;
+        root_pin.check()?;
+        source.check_native_observation_fence()?;
+        target.check_native_observation_fence()?;
+        check_selection(&self.profile_root, &self.installation_id, &self.source_root, &root)?;
+        Ok(plan)
     }
 }

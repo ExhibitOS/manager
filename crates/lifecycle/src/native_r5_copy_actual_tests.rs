@@ -105,15 +105,59 @@ fn actual_r5_signed_admission_authenticated_inactive_copy() {
     let mut source=store.observe_native_source(&mut admitted,authenticated,&mut source_session,20).unwrap();
     let operation=uuid::Uuid::new_v4().to_string();
     eprintln!("R5_COPY_STEP=production-target-copy-path");
-    let prepared=store.prepare_native_target_copy(&mut admitted,&mut source,&mut source_session,&mut target_session,&target_id,&operation,20).unwrap();
+    let mut prepared=store.prepare_native_target_copy(&mut admitted,&mut source,&mut source_session,&mut target_session,&target_id,&operation,20).unwrap();
     let receipt=serde_json::to_value(prepared.receipt()).unwrap(); assert_eq!(receipt["state"],"PreparedInactive");
     for flag in ["configurationVerified","preflightVerified","executionPermitted"] { assert_eq!(receipt[flag],false); assert_eq!(receipt["observation"][flag],false); }
     assert_eq!(crate::installations::load(&profile).unwrap().unwrap().0.active_id,source_id);
     let intent: serde_json::Value=serde_json::from_slice(&fs::read(Path::new(&candidate).join(format!("native-target-preparation-{operation}/intent.json"))).unwrap()).unwrap();
     assert_eq!(intent["recipe"],"authenticated-native-r5-copy-v1"); assert_eq!(intent["state"],"PreparedInactive");
+    // Invoke the REAL planner while the adapter-issued capability and both
+    // owned database sessions are still alive. Never reconstruct it from JSON.
+    let source_root=Path::new(&source_service_root); let candidate_root=Path::new(&candidate);
+    let source_suffix=hash(source_service_root.as_bytes()); let target_suffix=hash(candidate.as_bytes());
+    let mut preserved=Vec::new();
+    for runtime in [source_root,candidate_root] {
+        for name in ["runtime.env","native-personal.json","config/freeze-signing-key.json"] {
+            let path=runtime.join(name); if path.is_file() { preserved.push((path.clone(),file_hash(&path))); }
+        }
+    }
+    let prefixes=["native-document-","native-upload-","native-publication-","native-static-export-"];
+    for prefix in prefixes {
+        let path=profile.join(format!("{prefix}{source_suffix}.json"));
+        if path.is_file() { preserved.push((path.clone(),file_hash(&path))); }
+        assert!(!profile.join(format!("{prefix}{target_suffix}.json")).exists());
+    }
+    let config_names=|| { let mut names:Vec<_>=fs::read_dir(candidate_root.join("config")).unwrap().map(|v|v.unwrap().file_name()).collect(); names.sort(); names };
+    let config_before=config_names();
+    eprintln!("R5_COPY_STEP=actual-in-memory-configuration-planner");
+    let planned=store.plan_native_target_configuration(&mut admitted,&mut source,&mut prepared,&mut source_session,&mut target_session,20).unwrap();
+    let planning_receipt=serde_json::to_value(planned.receipt()).unwrap();
+    assert_eq!(planning_receipt["state"],"ConfigurationPlannedInactive"); assert_eq!(planning_receipt["configurationPlanned"],true);
+    assert_eq!(planning_receipt["operationId"],operation);
+    assert_eq!(planning_receipt["configurationFileCount"].as_u64().unwrap(),3+preserved.iter().filter(|(p,_)|p.parent()==Some(profile.as_path())).count() as u64);
+    for flag in ["configurationVerified","preflightVerified","executionPermitted"] { assert_eq!(planning_receipt[flag],false); }
+    assert_eq!(config_names(),config_before);
+    for (path,before) in &preserved { assert_eq!(&file_hash(path),before); }
+    for prefix in prefixes { assert!(!profile.join(format!("{prefix}{target_suffix}.json")).exists()); }
+    assert_eq!(crate::installations::load(&profile).unwrap().unwrap().0.active_id,source_id);
+    // Self-consistent disk tampering still cannot replace the held attempt.
+    // Only these two control files in this NEW isolated fixture are changed;
+    // retain them as failed evidence, never clear/replay an inactive marker.
+    let marker_path=candidate_root.join("native-target-preparation-current.json");
+    let intent_path=candidate_root.join(format!("native-target-preparation-{operation}/intent.json"));
+    let mut marker:serde_json::Value=serde_json::from_slice(&fs::read(&marker_path).unwrap()).unwrap();
+    let mut changed_intent=intent.clone(); let changed_attempt=uuid::Uuid::new_v4().to_string();
+    marker["attemptId"]=serde_json::json!(changed_attempt); changed_intent["attemptId"]=marker["attemptId"].clone();
+    fs::write(&marker_path,serde_json::to_vec(&marker).unwrap()).unwrap(); fs::write(&intent_path,serde_json::to_vec(&changed_intent).unwrap()).unwrap();
+    let rejected=store.plan_native_target_configuration(&mut admitted,&mut source,&mut prepared,&mut source_session,&mut target_session,20).err().expect("Changed disk attempt must not replace the held adapter capability");
+    assert_eq!(rejected.code,"NATIVE_TARGET_CONFIGURATION_CHANGED");
+    assert_eq!(config_names(),config_before);
+    for (path,before) in &preserved { assert_eq!(&file_hash(path),before); }
+    for prefix in prefixes { assert!(!profile.join(format!("{prefix}{target_suffix}.json")).exists()); }
+    assert_eq!(crate::installations::load(&profile).unwrap().unwrap().0.active_id,source_id);
     // Persist only public outcome metadata; no keys, DB credentials, raw source
     // configuration or decrypted archive contents cross this boundary.
-    let result=serde_json::json!({"scope":"REAL_SIGNED_TEST_ADMISSION_AUTHENTICATED_R5_INACTIVE_DATA_COPY_ONLY","receipt":receipt,"sourceSelectionPreserved":true,"ordinaryActivationPermitted":false,"sourceOriginalsNotUsedAsRuntimeRoots":true});
+    let result=serde_json::json!({"scope":"REAL_SIGNED_TEST_ADMISSION_AUTHENTICATED_R5_INACTIVE_DATA_COPY_AND_CONFIGURATION_PLAN_ONLY","receipt":receipt,"planningReceipt":planning_receipt,"heldAttemptTamperRejected":true,"configurationAndSourceFilesUnchanged":true,"targetJournalsNotInstalled":true,"tamperedFixtureControlFilesRetained":true,"sourceSelectionPreserved":true,"ordinaryActivationPermitted":false,"sourceOriginalsNotUsedAsRuntimeRoots":true});
     fs::write(root.join("result.json"),serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     target_session.stop().unwrap(); source_session.stop().unwrap();
     assert_eq!(target_session.start().err().expect("Inactive marker must block service start").code,"NATIVE_RESTORE_ACTIVATION_REQUIRED");

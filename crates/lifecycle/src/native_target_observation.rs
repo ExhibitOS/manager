@@ -100,6 +100,8 @@ impl NativeObservedPlanBoundary {
 /// ```
 pub struct NativeTargetPreparation {
     operation_id: String,
+    // Original generated copy attempt, retained only in this opaque capability.
+    attempt_id: String,
     observation: NativeTargetObservation,
 }
 #[derive(Serialize)]
@@ -181,7 +183,7 @@ impl Store {
         let root_pin=DirectoryPin::open(&root)?;
         let authority=serde_json::json!({"scope":self.scope,"generation":self.current.generation,"policyGeneration":self.current.policy_generation,"recordSha256":self.current_sha256,"signedReleasePayloadSha256":admitted.release.payload_sha256,"signedArtifactSha256":admitted.release.release.artifact.sha256});
         let source_authority=&source.authority;
-        let evidence=source.source.prepare_target_copy(source_session,target_session,&admitted.release.release.artifact.schema_sha256.clone(),&operation,authority,|profile,id,source_root,target_root| {
+        let (evidence,attempt_id)=source.source.prepare_target_copy(source_session,target_session,&admitted.release.release.artifact.schema_sha256.clone(),&operation,authority,|profile,id,source_root,target_root| {
             self.recheck_native_admission(admitted,now).map_err(|e|crate::err(e.code()))?;
             if !source_authority.matches(self,admitted) || target_root!=root.as_path() { return Err(crate::err("UPDATE_POLICY_STALE")); }
             self.check_native_target_selection(profile,id,source_root,target_id,target_root)
@@ -193,7 +195,7 @@ impl Store {
             || evidence.source_inventory_sha256!=source.evidence.inventory_sha256 || evidence.source_schema_sha256!=source.evidence.schema_sha256 { return Err(crate::err("UPDATE_PLAN_MISMATCH")); }
         source.verified=true;
         let observation=NativeTargetObservation {source_instance:self.bound_source_id(&installations::load(&self.profile)?.ok_or_else(||crate::err("UPDATE_SOURCE_UNREGISTERED"))?.0)?,target_instance:target_id.into(),root,root_pin,target_manifest_sha256:manifest,evidence,authority:SourceAuthority::capture(self,admitted),verified:true};
-        Ok(NativeTargetPreparation {operation_id:operation,observation})
+        Ok(NativeTargetPreparation {operation_id:operation,attempt_id,observation})
     }
     pub fn observe_native_target(
         &self,
@@ -451,5 +453,76 @@ mod tests {
         drop(envelope);
         drop(store);
         fs::remove_dir_all(profile.parent().unwrap()).unwrap();
+    }
+}
+
+/// Private, in-memory configuration proposal after fresh authenticated target
+/// observation. Neither its receipt nor this type can activate a candidate.
+/// No Clone/Deserialize or public constructor; installed configuration and full
+/// update preflight remain unverified.
+///
+/// ```compile_fail
+/// use exhibitos_lifecycle::signed_release::trust::NativeTargetConfigurationPlan;
+/// let forged: NativeTargetConfigurationPlan = serde_json::from_str("{}").unwrap();
+/// ```
+pub struct NativeTargetConfigurationPlan {
+    receipt: NativeTargetConfigurationPlanReceipt,
+    _configuration: installations::native_restore::ReboundConfigurationPlan,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTargetConfigurationPlanReceipt {
+    format: u32,
+    operation: &'static str,
+    operation_id: String,
+    state: &'static str,
+    source_instance: String,
+    target_instance: String,
+    authenticated_backup_manifest_sha256: String,
+    source_payload_manifest_sha256: String,
+    target_payload_manifest_sha256: String,
+    configuration_file_count: usize,
+    configuration_planned: bool,
+    configuration_verified: bool,
+    preflight_verified: bool,
+    execution_permitted: bool,
+}
+impl NativeTargetConfigurationPlan {
+    pub fn receipt(&self) -> &NativeTargetConfigurationPlanReceipt { &self.receipt }
+}
+impl Store {
+    /// Builds a closed secret proposal without writing target/profile files or
+    /// invoking restore, schema changes, activation or an update execution path.
+    pub fn plan_native_target_configuration(
+        &self, admitted: &mut AdmittedNativePayload, source: &mut NativeSourceObservation,
+        preparation: &mut NativeTargetPreparation, source_session: &mut Session,
+        target_session: &mut Session, now: u64,
+    ) -> crate::Result<NativeTargetConfigurationPlan> {
+        self.recheck_native_target(admitted, source, &mut preparation.observation, source_session, target_session, now).map_err(|e| crate::err(e.code()))?;
+        let operation = preparation.operation_id.clone();
+        let target_id = preparation.observation.target_instance.clone();
+        let root = preparation.observation.root.clone();
+        let expected = preparation.observation.evidence.clone();
+        if self.used_operations.contains(&operation) || self.used_instances.contains(&target_id) { return Err(crate::err("UPDATE_PLAN_MISMATCH")); }
+        let authority = serde_json::json!({"scope":self.scope,"generation":self.current.generation,"policyGeneration":self.current.policy_generation,"recordSha256":self.current_sha256,"signedReleasePayloadSha256":admitted.release.payload_sha256,"signedArtifactSha256":admitted.release.release.artifact.sha256});
+        let source_authority = source.authority.clone();
+        let configuration = source.source.plan_target_configuration(source_session, target_session, &operation, &preparation.attempt_id, &expected, &authority, |profile, id, source_root, target_root| {
+            self.recheck_native_admission(admitted, now).map_err(|e| crate::err(e.code()))?;
+            if !source_authority.matches(self, admitted) || target_root != root.as_path() { return Err(crate::err("UPDATE_POLICY_STALE")); }
+            self.check_native_target_selection(profile, id, source_root, &target_id, target_root)
+        })?;
+        self.recheck_native_target(admitted, source, &mut preparation.observation, source_session, target_session, now).map_err(|e| crate::err(e.code()))?;
+        configuration.recheck()?;
+        if self.used_operations.contains(&operation) || self.used_instances.contains(&target_id)
+            || preparation.observation.root != root || preparation.observation.evidence != expected { return Err(crate::err("UPDATE_PLAN_MISMATCH")); }
+        let receipt = NativeTargetConfigurationPlanReceipt {
+            format: 1, operation: "native-target-configuration-planned", operation_id: operation,
+            state: "ConfigurationPlannedInactive", source_instance: preparation.observation.source_instance.clone(),
+            target_instance: target_id, authenticated_backup_manifest_sha256: expected.authenticated_manifest_sha256,
+            source_payload_manifest_sha256: source.source.source_manifest(), target_payload_manifest_sha256: admitted.payload.context().manifest_sha256,
+            configuration_file_count: configuration.file_count(), configuration_planned: true,
+            configuration_verified: false, preflight_verified: false, execution_permitted: false,
+        };
+        Ok(NativeTargetConfigurationPlan {receipt, _configuration: configuration})
     }
 }
