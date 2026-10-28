@@ -65,7 +65,8 @@ final class AuthoringModel: ObservableObject {
         available = ready
         let previousManifest = runtimeManifestSHA256
         runtimeManifestSHA256 = configuration?.manifestSha256
-        jpegImportsEnabled = ready && runtimeManifestSHA256 == "74b08c7899d74ad989bbb61e47fc86fe9fa25c8853ab27ce57e9135c4932e96a"
+        jpegImportsEnabled = ready && (runtimeManifestSHA256 == "74b08c7899d74ad989bbb61e47fc86fe9fa25c8853ab27ce57e9135c4932e96a"
+            || PublicationWatermarkRuntime.supports(manifestSHA256: runtimeManifestSHA256, ready: ready))
         if !ready || previousManifest != runtimeManifestSHA256 {
             importStatusGeneration = UUID()
             imagePreparationScope?.invalidate(); imagePreparation?.cancel()

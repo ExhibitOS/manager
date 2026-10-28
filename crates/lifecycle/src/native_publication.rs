@@ -12,6 +12,8 @@ pub struct Pending {
     pub save_request_id: String,
     pub snapshot_etag: Option<String>,
     pub publish_request_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_binding_sha256: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -30,6 +32,8 @@ pub struct Completed {
     pub snapshot_exhibition_id: String,
     pub publish_request_id: String,
     pub publication: Publication,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_binding_sha256: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -64,6 +68,7 @@ pub(crate) fn validate(s: &PublicationState) -> Result<()> {
             || !valid_etag(&p.source_etag)
             || !uuid(&p.save_request_id)
             || !uuid(&p.publish_request_id)
+            || p.plan_binding_sha256.as_ref().is_some_and(|v| !hash_valid(v))
             || p.snapshot_etag.as_ref().is_some_and(|v| !valid_etag(v))
             || !uuid(id)
             || id == p.source_exhibition_id
@@ -83,6 +88,7 @@ pub(crate) fn validate(s: &PublicationState) -> Result<()> {
             || !uuid(&c.snapshot_exhibition_id)
             || c.snapshot_exhibition_id == c.source_exhibition_id
             || !uuid(&c.publish_request_id)
+            || c.plan_binding_sha256.as_ref().is_some_and(|v| !hash_valid(v))
             || !uuid(&p.publication_id)
             || p.public_url != format!("/p/{}", p.publication_id)
             || !hash_valid(&p.revision_sha256)
@@ -193,5 +199,51 @@ impl InstallationController {
                 .map_err(|_| err("STATE_UNAVAILABLE"))?;
             Ok(state)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn publication_plan_binding_cold_legacy_and_bound_journals() {
+        let id = || Uuid::new_v4().to_string();
+        let source = id();
+        let snapshot = id();
+        let legacy = serde_json::json!({
+            "format":1,"revision":7,"workspaceId":id(),"tenantId":id(),"principalId":id(),
+            "pending":{
+                "sourceExhibitionId":source,"sourceEtag":format!("\"studio-r2-{}\"", "a".repeat(64)),
+                "snapshot":{"id":id(),"exhibitionId":snapshot,"kind":"exhibition-draft", "schemaVersion":"1.0.0-draft.1","editVersion":1,"candidate":{"id":snapshot}},
+                "saveRequestId":id(),"snapshotEtag":null,"publishRequestId":id()
+            },
+            "completed":null
+        });
+        let mut state: PublicationState = serde_json::from_value(legacy).unwrap();
+        validate(&state).unwrap();
+        assert!(state.pending.as_ref().unwrap().plan_binding_sha256.is_none());
+        assert!(serde_json::to_value(&state).unwrap()["pending"].get("planBindingSha256").is_none());
+        let old = state.pending.as_ref().unwrap().clone();
+        state.pending.as_mut().unwrap().plan_binding_sha256 = Some("b".repeat(64));
+        validate(&state).unwrap();
+        let reopened: PublicationState = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert!(reopened.pending == state.pending);
+        // The existing durable pending comparison includes the binding, so
+        // changing it cannot silently retain an earlier request identity.
+        assert!(reopened.pending.as_ref().unwrap() != &old);
+        state.pending.as_mut().unwrap().plan_binding_sha256 = Some("BAD".into());
+        assert!(validate(&state).is_err());
+        state.pending = None;
+        state.completed = Some(Completed {
+            source_exhibition_id: source, source_etag: format!("\"studio-r2-{}\"", "a".repeat(64)),
+            snapshot_exhibition_id: snapshot, publish_request_id:id(),plan_binding_sha256:Some("b".repeat(64)),
+            publication:Publication{publication_id:id(),public_url:String::new(),revision_sha256:"c".repeat(64),published_at:"2026-10-28T00:00:00Z".into(),status:"published".into()}
+        });
+        let completed = state.completed.as_mut().unwrap();
+        completed.publication.public_url = format!("/p/{}",completed.publication.publication_id);
+        validate(&state).unwrap();
+        state.completed.as_mut().unwrap().plan_binding_sha256 = Some("BAD".into());
+        assert!(validate(&state).is_err());
     }
 }

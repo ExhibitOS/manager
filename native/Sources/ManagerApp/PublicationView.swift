@@ -12,11 +12,33 @@ final class PublicationModel: ObservableObject {
     @Published private(set) var checkedId: String?
     @Published private(set) var reviewed: String?
     private var watermarkRuntimeAvailable = false
+    private var runtimeManifestSha256: String?
+    private var runtimeReady = false
+    private var runtimeGeneration = UUID()
+    private var checkedGeneration: UUID?
     func configureWatermarkRuntime(_ configuration: NativeConfiguration?, ready: Bool) {
-        watermarkRuntimeAvailable = PublicationWatermarkRuntime.supports(manifestSHA256: configuration?.manifestSha256, ready: ready)
+        let available = PublicationWatermarkRuntime.supports(manifestSHA256: configuration?.manifestSha256, ready: ready)
+        if runtimeManifestSha256 != configuration?.manifestSha256 || runtimeReady != ready || watermarkRuntimeAvailable != available {
+            runtimeGeneration = UUID(); report = nil; checkedId = nil; reviewed = nil; checkedGeneration = nil
+        }
+        runtimeManifestSha256 = configuration?.manifestSha256; runtimeReady = ready; watermarkRuntimeAvailable = available
     }
     private func requireWatermarkRuntime(_ draft: NativeExhibitionDraft) throws {
         if try draft.publicationWatermark() != nil, !watermarkRuntimeAvailable { throw AuthoringFailure("WATERMARK_RUNTIME_UNAVAILABLE") }
+    }
+    private func planBinding(_ draft: NativeExhibitionDraft, etag: String, sourceId: String? = nil) throws -> String? {
+        try requireWatermarkRuntime(draft)
+        guard runtimeReady else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
+        // The legacy flow retains its old history. Only an adopted watermark
+        // runtime emits the new optional journal field to its matching helper.
+        guard watermarkRuntimeAvailable else { return nil }
+        guard let runtimeManifestSha256 else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
+        return try nativePublicationPlanBinding(sourceExhibitionId: sourceId ?? draft.id, etag: etag, runtimeManifestSha256: runtimeManifestSha256, watermark: draft.publicationWatermark())
+    }
+    func completedMatches(_ completed: NativePublicationCompleted, source: ExhibitionModel) -> Bool {
+        guard !source.dirty, let draft = source.draft, let etag = source.state?.etag else { return false }
+        do { return completed.isReusable(sourceExhibitionId: draft.id, etag: etag, planBindingSha256: try planBinding(draft, etag: etag)) }
+        catch { return false }
     }
     private var api: AuthoringAPI?
     private var session: AuthoringSession?
@@ -24,7 +46,7 @@ final class PublicationModel: ObservableObject {
     private var write: ((NativePublicationState) async throws -> NativePublicationState)?
     func connect(api: AuthoringAPI, session: AuthoringSession, read: @escaping () async throws -> NativePublicationState, write: @escaping (NativePublicationState) async throws -> NativePublicationState) async {
         guard !busy else { return }
-        if self.session?.tenantId != session.tenantId || self.session?.userId != session.userId { state = nil; report = nil; checkedId = nil; reviewed = nil }
+        if self.session?.tenantId != session.tenantId || self.session?.userId != session.userId { state = nil; report = nil; checkedId = nil; reviewed = nil; checkedGeneration = nil }
         self.api = api; self.session = session; self.read = read; self.write = write
         await work { state = try checked(await read()) }
     }
@@ -50,27 +72,32 @@ final class PublicationModel: ObservableObject {
         await work {
             try requireWatermarkRuntime(draft)
             guard let api else { return }
+            let generation = runtimeGeneration
+            _ = try planBinding(draft, etag: etag)
             report = nil; reviewed = nil
             let value = try await api.publicationReady(exhibitionId: draft.id)
+            guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
             guard value.etag == etag else { throw AuthoringFailure("REMOTE_CONFLICT", status: 412) }
-            checkedId = draft.id; report = value
+            checkedId = draft.id; report = value; checkedGeneration = generation
             notice = value.status == "READY" ? "현재 저장본의 공개 준비 항목을 확인했습니다." : "전시와 작품에서 확인할 항목이 있습니다."
         }
     }
-    func isReviewed(_ draft: NativeExhibitionDraft, etag: String) -> Bool { reviewed == draft.id + etag }
+    func isReviewed(_ draft: NativeExhibitionDraft, etag: String) -> Bool { reviewed == draft.id + etag + runtimeGeneration.uuidString }
     func review(_ accepted: Bool, draft: NativeExhibitionDraft, etag: String) {
-        reviewed = accepted && checkedId == draft.id && report?.etag == etag && report?.status == "READY" ? draft.id + etag : nil
+        reviewed = accepted && checkedGeneration == runtimeGeneration && checkedId == draft.id && report?.etag == etag && report?.status == "READY" ? draft.id + etag + runtimeGeneration.uuidString : nil
     }
     func prepare(_ draft: NativeExhibitionDraft, etag: String) async {
         await work {
             try requireWatermarkRuntime(draft)
             guard isReviewed(draft, etag: etag), checkedId == draft.id, report?.etag == etag, report?.status == "READY", let read else { throw AuthoringFailure("PUBLICATION_REVIEW_REQUIRED") }
+            let generation = runtimeGeneration, binding = try planBinding(draft, etag: etag)
             state = try checked(await read())
+            guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
             guard state?.pending == nil, var value = state else { throw AuthoringFailure("PUBLICATION_PENDING") }
-            if let completed = value.completed, completed.sourceExhibitionId == draft.id, completed.sourceEtag == etag, completed.publication.status == "published" {
+            if let completed = value.completed, completed.isReusable(sourceExhibitionId: draft.id, etag: etag, planBindingSha256: binding) {
                 try await refreshCompleted(); return
             }
-            value.pending = try NativePublicationPending(source: draft, etag: etag)
+            value.pending = try NativePublicationPending(source: draft, etag: etag, planBindingSha256: binding)
             try await persist(value) // exact copy + BOTH request IDs BEFORE first POST
             try await finishPending()
         }
@@ -84,13 +111,18 @@ final class PublicationModel: ObservableObject {
     private func finishPending() async throws {
         guard let api, var value = state, var pending = value.pending else { throw AuthoringFailure("PUBLICATION_PENDING") }
         try requireWatermarkRuntime(pending.snapshot)
+        let generation = runtimeGeneration
+        try pending.requirePlanBinding(planBinding(pending.snapshot, etag: pending.sourceEtag, sourceId: pending.sourceExhibitionId))
         if pending.snapshotEtag == nil {
             let saved = try await api.saveExhibition(pending.snapshot, requestId: pending.saveRequestId, etag: nil)
+            guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
             pending.snapshotEtag = saved.etag; value.pending = pending; try await persist(value)
         }
         guard let snapshotEtag = pending.snapshotEtag else { throw AuthoringFailure("PUBLICATION_PENDING") }
+        guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
         try requireWatermarkRuntime(pending.snapshot)
         let publication = try await api.preparePublication(exhibitionId: pending.snapshot.id, etag: snapshotEtag, requestId: pending.publishRequestId)
+        guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
         guard var accepted = state, accepted.pending?.publishRequestId == pending.publishRequestId else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
         accepted.completed = NativePublicationCompleted(pending: pending, publication: publication); accepted.pending = nil
         try await persist(accepted)
@@ -148,8 +180,8 @@ struct NativePublicationView: View {
                 Button("보관한 준비 다시 확인") { Task { await model.retry() } }.disabled(!ready || model.busy)
             }
             if let completed = model.state?.completed {
-                let matches = source.draft?.id == completed.sourceExhibitionId && source.state?.etag == completed.sourceEtag && !source.dirty
-                Label(matches ? (completed.publication.status == "published" ? "이 Mac의 공개용 저장본 준비 완료" : "준비 해제됨") : "다른 저장본의 준비 기록", systemImage: "doc.badge.checkmark")
+                let matches = model.completedMatches(completed, source: source)
+                Label(matches ? (completed.publication.status == "published" ? "이 Mac의 공개용 저장본 준비 완료" : "준비 해제됨") : "이전 실행본·저장본의 준비 기록", systemImage: "doc.badge.checkmark")
                 if !matches { Text("현재 편집 내용은 위의 확인 버튼으로 다시 확인하세요.").foregroundStyle(.secondary) }
                 Text("인터넷 공개 결과는 아래 온라인 공개에서 확인하세요.").foregroundStyle(.secondary)
                 DisclosureGroup("저장본 식별 정보") { Text(completed.publication.publicationId).textSelection(.enabled); Text(completed.publication.revisionSha256).textSelection(.enabled) }
@@ -163,10 +195,12 @@ struct NativePublicationView: View {
             }
             if !model.notice.isEmpty { Text(model.notice).foregroundStyle(.secondary) }
             NativeStaticExportView(model: staticExport, completed: model.state?.completed.flatMap { completed in
-                source.draft?.id == completed.sourceExhibitionId && source.state?.etag == completed.sourceEtag && !source.dirty ? completed : nil
+                model.completedMatches(completed, source: source) ? completed : nil
             }, ready: ready && !model.busy && !hosting.running && !hosting.busy)
             NativeHostingView(model: hosting, receipt: staticExport.status?.receipt.flatMap { receipt in
-                model.state?.completed?.publication.publicationId == receipt.publicationId && source.draft?.id == model.state?.completed?.sourceExhibitionId && source.state?.etag == model.state?.completed?.sourceEtag && !source.dirty ? receipt : nil
+                model.state?.completed.flatMap { completed in
+                    completed.publication.publicationId == receipt.publicationId && model.completedMatches(completed, source: source) ? receipt : nil
+                }
             }, available: !model.busy && (ready || hosting.status?.work != nil))
         }.task(id: ready) { if ready && source.viewportCredentials == nil { await connect() } }
     }
