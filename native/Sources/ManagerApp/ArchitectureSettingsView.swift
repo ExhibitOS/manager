@@ -73,7 +73,12 @@ struct ArchitectureSettingsView: View {
                 }
                 if !model.architectureStatus.isEmpty { Text(model.architectureStatus).foregroundStyle(.secondary) }
             }
-            SurfaceMaterialSettingsView(model: model, viewport: model.viewportController, ready: ready, mode: mode)
+            if let selection = model.viewportSelection, selection.kind == "surface",
+               model.draft?.candidate["surfaces"].items?.contains(where: { $0["id"].string == selection.id && $0["type"].string == "floor" }) == true {
+                NativeFloorSettingsInspector(model: model, viewport: model.viewportController, ready: ready)
+            } else {
+                SurfaceMaterialSettingsView(model: model, viewport: model.viewportController, ready: ready, mode: mode)
+            }
         }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true)
     }
 }

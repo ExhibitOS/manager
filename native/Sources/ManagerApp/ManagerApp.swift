@@ -13,6 +13,7 @@ final class ManagerModel: ObservableObject {
     @Published private(set) var native: NativeHostStatus? {
         didSet {
             exhibitions.configurePublicationWatermark(native?.configuration, ready: ready)
+            exhibitions.configureFloorRuntime(native?.configuration, ready: ready)
             publication.configureWatermarkRuntime(native?.configuration, ready: ready)
             if oldValue?.runtime?.hasOwnedProcesses == true, native?.runtime?.hasOwnedProcesses == false,
                native?.needsShutdown == false, native?.busy == false,

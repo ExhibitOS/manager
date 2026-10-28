@@ -151,6 +151,49 @@ final class ExhibitionModel: ObservableObject {
     @Published private var installationPreview: NativeExhibitionDraft?
     private var installationBaseline = InstallationFormBuffer(settings: nil)
     let viewportController = NativeViewportController()
+    @Published var floorTargetKey = ""
+    @Published var floorPreset = FloorSettings.Preset.wood
+    @Published var floorScope = Set(FloorSettings.Field.allCases)
+    @Published var floor = FloorFormBuffer(settings: nil) { didSet { refreshFloorPreview() } }
+    @Published private(set) var floorEditable = false
+    @Published private(set) var floorStatus = ""
+    @Published private var floorPreview: NativeExhibitionDraft?
+    private var floorPreviewBase: NativeExhibitionDraft?
+    private var floorPreviewAccessID: UUID?
+    private var floorPreviewContext: UUID?
+    private var floorPreviewHostEpoch: String?
+    @Published private(set) var floorRuntimeAvailable = false
+    @Published private(set) var floorImages: [FloorSettings.Preset: NSImage] = [:]
+    private var floorImageAttempts = Set<FloorSettings.Preset>()
+    private var floorImagesLoading = false
+    private var floorBaseline = FloorFormBuffer(settings: nil)
+    var floorDirty: Bool { floor != floorBaseline }
+    var floorCanReset: Bool { floorBaseline.settings != nil && floor.settings?.preset == floorBaseline.settings?.preset && !floor.restoreLegacy }
+    var floorTargets: [FloorSettings.Target] { (try? draft.map { try FloorSettings.targets(in: $0.candidate) }) ?? [] }
+    var floorTarget: FloorSettings.Target? { floorTargets.first { $0.key == floorTargetKey } }
+    var floorCurrentValues: [FloorSettings.Field: DocumentValue] {
+        guard let draft, let target = floorTarget else { return [:] }
+        let legacySound = draft.candidate["extensions"]["org.exhibitos.viewer/experience"]["footsteps"].items?.first(where: { target.kind == .surface && $0["surfaceId"].string?.lowercased() == target.id.lowercased() })
+        if let settings = (try? floor.value(candidate: draft.candidate)) ?? floor.settings {
+            var values = (try? settings.effectiveAppearance(candidate: draft.candidate)) ?? [:]
+            values[.sound] = settings.value["sound"] == .null ? legacySound : settings.value["sound"]
+            return values
+        }
+        var values: [FloorSettings.Field: DocumentValue] = [:]
+        if target.kind == .surface {
+            if case .object(let materials) = draft.candidate["extensions"]["org.exhibitos.studio/materials"]["surfaces"],
+               let material = materials.first(where: { $0.key.lowercased() == target.id.lowercased() })?.value {
+                for field in [FloorSettings.Field.color, .roughness, .metalness] { values[field] = material[field.rawValue] }
+            }
+            values[.sound] = draft.candidate["extensions"]["org.exhibitos.viewer/experience"]["footsteps"].items?.first(where: { $0["surfaceId"].string?.lowercased() == target.id.lowercased() })
+        }
+        return values
+    }
+
+    var floorCustomized: Set<FloorSettings.Field> {
+        guard let draft, let floorTarget else { return [] }
+        return (try? FloorSettings.customizedFields(target: floorTarget, candidate: draft.candidate)) ?? Set(FloorSettings.Field.allCases)
+    }
     var installationDirty: Bool { installation != installationBaseline }
     var viewportDraft: NativeExhibitionDraft? {
         if entranceHostRecovering { return draft }
@@ -162,6 +205,7 @@ final class ExhibitionModel: ObservableObject {
         if let value = lightPreview?.displayDraft { return value }
         if let value = surfaceMaterialPreview?.displayDraft { return value }
         if let value = surfaceMaterialTexturePreview?.displayDraft { return value }
+        if floorDirty { return floorPreview ?? draft }
         return installationDirty ? (installationPreview ?? draft) : draft
     }
     @Published var positionXText = "0.0"
@@ -429,7 +473,8 @@ final class ExhibitionModel: ObservableObject {
     private var write: ((NativeDocumentState) async throws -> NativeDocumentState)?
     var draft: NativeExhibitionDraft? { state?.draft }
     var pending: Bool { state?.pending != nil }
-    var formDirty: Bool {
+    var formDirty: Bool { floorDirty || nonFloorFormDirty }
+    private var nonFloorFormDirty: Bool {
         guard let draft else { return false }
         let entranceDirty = (entranceEditable && ((try? draft.viewerEntranceSettings()) != entrance || coverEntry.isDirty)) || installationDirty || publicationWatermark.isDirty
         guard let room = draft.rooms.first(where: { $0["id"].string == roomId }) else { return title != draft.title || entranceDirty }
@@ -465,6 +510,8 @@ final class ExhibitionModel: ObservableObject {
         let accessChanged = viewportCredentials?.token != credentials.token || viewportCredentials?.origin != credentials.origin
         viewportCredentials = credentials
         if accessChanged { entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
+        floorPreviewAccessID = nil; floorPreviewContext = nil; floorPreviewHostEpoch = nil
+        if accessChanged { floorImages = [:]; floorImageAttempts = [] }
         self.read = read; self.write = write
         // Reconnecting may replace the native store closures even for the same
         // account/origin. Keep text, but never apply a prior binding's preview.
@@ -922,6 +969,104 @@ final class ExhibitionModel: ObservableObject {
             notice = "벤치 변경을 이 Mac에 보관했습니다. 되돌리기로 취소할 수 있으며 전시 저장은 별도로 진행합니다."
         }
     }
+    func configureFloorRuntime(_ configuration: NativeConfiguration?, ready: Bool) {
+        let available = NativeFloorRuntime.supports(manifestSHA256: configuration?.manifestSha256, ready: ready)
+        if floorRuntimeAvailable != available { floorRuntimeAvailable = available }
+        if !floorRuntimeAvailable { floorPreviewAccessID = nil; floorPreviewContext = nil; floorPreviewHostEpoch = nil }
+    }
+    var canEditFloor: Bool {
+        floorEditable && floorRuntimeAvailable && viewportController.connected && viewportController.editingContextActive
+        && !entrancePreviewActive && !busy && !pending && !immutable && !placingArtwork
+        && !nonFloorFormDirty && !positionDirty && !architectureDirty && !architectureApplying
+    }
+    var canApplyFloor: Bool {
+        guard canEditFloor, floorDirty, floorPreviewBase == draft, floorPreviewAccessID == viewportAccessID,
+              floorPreviewContext == viewportController.editingContextGeneration, floorPreviewHostEpoch == viewportController.hostEpoch,
+              let preview = floorPreview, let credentials = viewportCredentials, var next = draft, let target = floorTarget else { return false }
+        do {
+            try next.setFloor(floor.value(candidate: next.candidate), target: target)
+            return next.candidate == preview.candidate && viewportController.confirmsFloorPreview(preview, tenantId: credentials.tenantId, principalId: credentials.principalId)
+        } catch { return false }
+    }
+    private func syncFloor() {
+        floorPreview = nil; floorPreviewBase = nil; floorPreviewAccessID = nil; floorPreviewContext = nil; floorPreviewHostEpoch = nil
+        do {
+            if !floorTargets.contains(where: { $0.key == floorTargetKey }) { floorTargetKey = floorTargets.first?.key ?? "" }
+            let settings = try draft.flatMap { draft in try floorTarget.flatMap { try FloorSettings.read(from: draft, target: $0) } }
+            floorEditable = floorTarget != nil
+            floorBaseline = FloorFormBuffer(settings: settings); floor = floorBaseline; floorStatus = ""
+            floorPreset = settings?.preset ?? .wood
+            floorScope = Set(FloorSettings.Field.allCases).subtracting(floorCustomized)
+        } catch { floorEditable = false; floorStatus = "바닥 설정을 읽지 못했습니다. 원래 설정은 유지됩니다." }
+    }
+    func selectFloor(_ key: String) {
+        guard !entrancePreviewActive, !busy, !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, !placingArtwork,
+              floorTargets.contains(where: { $0.key == key }) else { return }
+        floorTargetKey = key; syncFloor()
+    }
+    private func refreshFloorPreview() {
+        floorPreviewAccessID = nil; floorPreviewContext = nil; floorPreviewHostEpoch = nil
+        guard floorDirty else { floorPreview = nil; floorPreviewBase = nil; floorStatus = ""; return }
+        guard floorEditable, floorRuntimeAvailable, let target = floorTarget, let base = draft, var next = draft else { return }
+        do {
+            try next.setFloor(floor.value(candidate: next.candidate), target: target)
+            floorPreview = next; floorPreviewBase = base; floorPreviewAccessID = viewportAccessID
+            floorPreviewContext = viewportController.editingContextGeneration; floorPreviewHostEpoch = viewportController.hostEpoch
+            floorStatus = "입력한 바닥 설정을 공간에 표시하고 있습니다. 화면을 확인한 뒤 적용하세요."
+        } catch { floorStatus = "입력을 확인하세요. 입력은 유지되며 마지막 유효 미리보기를 표시합니다." }
+    }
+    func previewFloor() { guard canEditFloor else { return }; refreshFloorPreview() }
+    func stageFloorPreset(_ preset: FloorSettings.Preset, fields: Set<FloorSettings.Field>) {
+        guard canEditFloor, !fields.isEmpty, let draft, let target = floorTarget else { return }
+        do {
+            let prior = try floor.settings.map { _ in try floor.value(candidate: draft.candidate) } ?? nil
+            try floor.stage(FloorSettings.applying(preset: preset, defaults: FloorSettings.defaults(preset), fields: fields,
+                target: target, prior: prior, candidate: draft.candidate), replacing: fields, candidate: draft.candidate)
+        } catch { floorStatus = "유효한 입력을 먼저 적용하거나 되돌린 뒤 재질을 선택하세요." }
+    }
+    func resetFloorField(_ field: FloorSettings.Field) {
+        guard canEditFloor, floorCanReset, let draft, let persisted = floorBaseline.settings else { return }
+        do { try floor.reset(field, to: persisted.preset, candidate: draft.candidate) }
+        catch { floorStatus = "현재 보관한 재질의 기본값을 적용하지 못했습니다. 다른 입력은 유지됩니다." }
+    }
+    func discardFloor() { guard !busy, !pending, !architectureApplying, !placingArtwork else { return }; syncFloor() }
+    func applyFloor() async {
+        guard canApplyFloor else { return }
+        await work {
+            guard !immutable, !pending, floorEditable, floorRuntimeAvailable, !nonFloorFormDirty, !positionDirty,
+                  !architectureDirty, !architectureApplying, floorPreviewBase == draft, floorPreviewAccessID == viewportAccessID,
+                  floorPreviewContext == viewportController.editingContextGeneration, floorPreviewHostEpoch == viewportController.hostEpoch,
+                  let target = floorTarget, let preview = floorPreview, let credentials = viewportCredentials,
+                  viewportController.editingContextActive, viewportController.confirmsFloorPreview(preview, tenantId: credentials.tenantId, principalId: credentials.principalId),
+                  var value = state, var next = draft else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            try next.setFloor(floor.value(candidate: next.candidate), target: target)
+            guard next.candidate == preview.candidate else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
+            value.draft = next; try await persist(value); syncFloor()
+            notice = "바닥 설정을 이 Mac에 보관했습니다. 실행 취소로 되돌리거나 전시를 저장하세요."
+        }
+    }
+    func loadFloorImages() async {
+        guard floorRuntimeAvailable, !floorImagesLoading, let api else { return }
+        let access = viewportAccessID
+        floorImagesLoading = true
+        defer { floorImagesLoading = false }
+        for preset in FloorSettings.Preset.allCases {
+            guard !Task.isCancelled, access == viewportAccessID, floorRuntimeAvailable else { return }
+            guard !floorImageAttempts.contains(preset) else { continue }
+            floorImageAttempts.insert(preset)
+            do {
+                let bytes = try await api.floorPreview(preset)
+                guard !Task.isCancelled, access == viewportAccessID, floorRuntimeAvailable else { return }
+                guard let source = CGImageSourceCreateWithData(bytes as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+                      let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                        kCGImageSourceThumbnailMaxPixelSize: 128, kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { throw AuthoringFailure("FLOOR_PREVIEW_INVALID") }
+                floorImages[preset] = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+            } catch {
+                if Task.isCancelled, access == viewportAccessID { floorImageAttempts.remove(preset) }
+                // A missing thumbnail never blocks a named material choice.
+            }
+        }
+    }
     private func syncSpaceLighting() {
         spaceLighting = nil; spaceLightingBaseline = nil; spaceLightingStatus = ""
         guard let draft else { return }
@@ -1155,6 +1300,9 @@ final class ExhibitionModel: ObservableObject {
             selectPlacement()
         }
         viewportSelection = selection
+        if selection.kind == "surface", draft.candidate["surfaces"].items?.contains(where: { $0["id"].string == selection.id && $0["type"].string == "floor" }) == true {
+            floorTargetKey = FloorSettings.Target(kind: .surface, id: selection.id).key; syncFloor()
+        }
         if selection.kind != "placement" { catalogArtworkId = "" }
         syncArchitecture()
     }
@@ -1326,6 +1474,7 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     private func appliedFields(allowPosition: Bool = false) throws -> NativeExhibitionDraft {
+        guard !floorDirty else { throw AuthoringFailure("FLOOR_APPLY_REQUIRED") }
         guard !architectureDirty, !architectureApplying else { throw AuthoringFailure("ARCHITECTURE_APPLY_REQUIRED") }
         guard !positionDirty || allowPosition else { throw AuthoringFailure("PLACEMENT_APPLY_REQUIRED") }
         guard var draft else { throw AuthoringFailure("EXHIBITION_REQUIRED") }
@@ -1480,6 +1629,7 @@ final class ExhibitionModel: ObservableObject {
         title = draft?.title ?? ""
         syncEntrance()
         syncPublicationWatermark()
+        syncFloor()
         if draft?.rooms.contains(where: { $0["id"].string == roomId }) != true { roomId = draft?.rooms.first?["id"].string ?? "" }
         selectRoom(clearPlaqueSelection: false)
         if draft?.placements.contains(where: { $0["id"].string == placementId }) != true { placementId = draft?.placements.first?["id"].string ?? "" }
