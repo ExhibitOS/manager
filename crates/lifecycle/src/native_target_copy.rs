@@ -236,8 +236,11 @@ impl AuthenticatedNativeBackup {
             || &intent["authority"] != authority
             || intent["configurationVerified"] != false || intent["preflightVerified"] != false
             || intent["executionPermitted"] != false { return Err(err("NATIVE_TARGET_CONFIGURATION_CHANGED")); }
+        // Verification retains numbered plaintext chunks, not configuration
+        // paths. Use the materialized archive from this held preparation only.
+        let restored = directory.join(format!("restored-{expected_attempt}"));
         let plan = super::super::native_restore::plan_rebound_configuration(
-            &self.verified, &self.manifest, &self.source_root, &self.payload, target, &self.profile_root,
+            &restored, &self.manifest, &self.source_root, &self.payload, target, &self.profile_root,
         )?;
         let fresh = self.observe_target_locked(source, target, &expected.target_schema_sha256, &mut check_selection)?;
         if fresh != *expected { return Err(err("NATIVE_TARGET_RESULT_INVALID")); }
