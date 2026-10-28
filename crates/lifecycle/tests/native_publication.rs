@@ -39,6 +39,7 @@ fn publication_copy_intent_is_private_immutable_revision_checked_and_scope_bound
         save_request_id: uuid::Uuid::new_v4().to_string(),
         snapshot_etag: None,
         publish_request_id: uuid::Uuid::new_v4().to_string(),
+        plan_binding_sha256: None,
     });
     let saved = c
         .save_native_publication(&context.selection_token, state)

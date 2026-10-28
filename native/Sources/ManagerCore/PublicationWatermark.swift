@@ -111,11 +111,10 @@ public struct PublicationWatermarkFormBuffer: Equatable, Sendable {
     }
 }
 
-/// The existing exact-manifest adoption boundary. Deliberately closed until the
-/// shared watermark runtime has a qualified immutable packet; runtime21 is not
-/// upgraded by a guessed API number or by editing a publication setting.
+/// Exact-manifest adoption of the qualified shared watermark packet. Schema21
+/// alone does not imply this feature or publication derivation policy.
 public enum PublicationWatermarkRuntime {
-    public static let qualifiedManifestSHA256: String? = nil
+    public static let qualifiedManifestSHA256: String? = "6473b883ca56779bffc5f5cddbab1aae62c56c10b3be47a948b461f3a45387c5"
     public static func supports(manifestSHA256: String?, ready: Bool) -> Bool {
         guard ready, let qualifiedManifestSHA256 else { return false }
         return manifestSHA256 == qualifiedManifestSHA256

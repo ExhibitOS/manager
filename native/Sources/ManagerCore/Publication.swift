@@ -29,20 +29,31 @@ public struct NativePublicationPending: Codable, Equatable, Sendable {
     public let sourceExhibitionId: String, sourceEtag: String
     public let snapshot: NativeExhibitionDraft
     public let saveRequestId: String, publishRequestId: String
+    public let planBindingSha256: String?
     public var snapshotEtag: String?
-    public init(source: NativeExhibitionDraft, etag: String) throws {
-        guard validPublicationETag(etag) else { throw AuthoringFailure("ETAG_INVALID") }
+    public init(source: NativeExhibitionDraft, etag: String, planBindingSha256: String? = nil) throws {
+        guard validPublicationETag(etag), validPublicationPlanBinding(planBindingSha256) else { throw AuthoringFailure("ETAG_INVALID") }
         sourceExhibitionId = source.id; sourceEtag = etag
+        self.planBindingSha256 = planBindingSha256
         snapshot = try source.copyForPublication()
         saveRequestId = UUID().uuidString.lowercased(); publishRequestId = UUID().uuidString.lowercased()
+    }
+    public func requirePlanBinding(_ expected: String?) throws {
+        guard validPublicationPlanBinding(planBindingSha256), validPublicationPlanBinding(expected), planBindingSha256 == expected else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
     }
 }
 public struct NativePublicationCompleted: Codable, Sendable {
     public let sourceExhibitionId: String, sourceEtag: String, snapshotExhibitionId: String, publishRequestId: String
     public var publication: NativePublication
+    public let planBindingSha256: String?
     public init(pending: NativePublicationPending, publication: NativePublication) {
         sourceExhibitionId = pending.sourceExhibitionId; sourceEtag = pending.sourceEtag
         snapshotExhibitionId = pending.snapshot.id; publishRequestId = pending.publishRequestId; self.publication = publication
+        planBindingSha256 = pending.planBindingSha256
+    }
+    public func isReusable(sourceExhibitionId: String, etag: String, planBindingSha256 expected: String?) -> Bool {
+        self.sourceExhibitionId == sourceExhibitionId && sourceEtag == etag && publication.status == "published"
+            && validPublicationPlanBinding(planBindingSha256) && validPublicationPlanBinding(expected) && planBindingSha256 == expected
     }
 }
 public struct NativePublicationState: Codable, Sendable {
@@ -53,6 +64,19 @@ public struct NativePublicationState: Codable, Sendable {
     public var completed: NativePublicationCompleted?
 }
 func validPublicationETag(_ value: String) -> Bool { value.range(of: #"^"studio-r[1-9][0-9]*-[a-f0-9]{64}"$"#, options: .regularExpression) != nil }
+func validPublicationPlanBinding(_ value: String?) -> Bool { value.map(nativeImportDigest) ?? true }
+
+/// Cache identity only, never an authorization or execution capability. The
+/// exact runtime artifact pins publication quality/derivation policy; there is
+/// no separate native quality selector. Normalize only effective watermark data.
+public func nativePublicationPlanBinding(sourceExhibitionId: String, etag: String, runtimeManifestSha256: String, watermark: PublicationWatermark?) throws -> String {
+    guard UUID(uuidString: sourceExhibitionId) != nil, validPublicationETag(etag), nativeImportDigest(runtimeManifestSha256) else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
+    let settings = watermark ?? PublicationWatermark(); try settings.validate()
+    let record: DocumentValue = .object(["version": .integer(1), "sourceExhibitionId": .string(sourceExhibitionId), "sourceEtag": .string(etag),
+        "runtimeManifestSha256": .string(runtimeManifestSha256), "effectiveWatermark": settings.value])
+    let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+    return nativeImportSHA256(try encoder.encode(record))
+}
 
 extension NativeExhibitionDraft {
     /// The existing publication API freezes its source exhibition. A separate
