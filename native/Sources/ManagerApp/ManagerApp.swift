@@ -124,7 +124,10 @@ final class ManagerModel: ObservableObject {
         defer { busy = false }
         do {
             await bindStaticExport()
-            authoring.configure(native?.configuration, ready: ready)
+            guard authoring.configure(native?.configuration, ready: ready) else {
+                exhibitions.entranceCredentialRenewalFailed()
+                return
+            }
             authoring.bindImportStore(read: { try await bridge.uploadState(context) }, save: { state in try await bridge.saveUploadState(context, state: state) })
             let credentials = try await bridge.authoringSession(context)
             await authoring.connect(credentials)

@@ -67,7 +67,8 @@ final class AuthoringModel: ObservableObject {
 
     var dirty: Bool { metadataDirty || (importFile != nil && transfer?.intent == nil) }
 
-    func configure(_ configuration: NativeConfiguration?, ready: Bool) {
+    @discardableResult
+    func configure(_ configuration: NativeConfiguration?, ready: Bool) -> Bool {
         let requestedScope = configuration.flatMap { configuration in
             configuration.tenantId.map { "\($0):\(configuration.ports.web):\(configuration.manifestSha256)" }
         }
@@ -78,7 +79,7 @@ final class AuthoringModel: ObservableObject {
             importStatusGeneration = UUID()
             imagePreparationScope?.invalidate(); imagePreparation?.cancel()
             failure = AuthoringFailure("IMPORT_DRAIN_PENDING")
-            return
+            return false
         }
         available = ready
         let previousManifest = runtimeManifestSHA256
@@ -90,19 +91,20 @@ final class AuthoringModel: ObservableObject {
             importStatusGeneration = UUID()
             imagePreparationScope?.invalidate(); imagePreparation?.cancel()
         }
-        guard let configuration, let tenant = configuration.tenantId else { return }
+        guard let configuration, let tenant = configuration.tenantId else { return false }
         let next = "\(tenant):\(configuration.ports.web):\(configuration.manifestSha256)"
-        guard next != scope else { return }
+        guard next != scope else { return available && api != nil }
         imagePreparationScope?.invalidate(); imagePreparation?.cancel()
         importStatusGeneration = UUID()
-        guard !busy, !dirty else { api = nil; session = nil; failure = AuthoringFailure("LOCAL_SCOPE_CHANGED"); return }
+        guard !busy, !dirty else { api = nil; session = nil; failure = AuthoringFailure("LOCAL_SCOPE_CHANGED"); return false }
         importPoll?.cancel(); importPoll = nil; importPollID = nil
         transfer = nil; importJob = nil; importFile = nil; assetId = ""
         readTransfer = nil; writeTransfer = nil
         scope = next; session = nil; artworks = []; artists = []; selected = nil; editing = false
         subject = configuration.subject ?? ""
         do { api = try AuthoringAPI(port: configuration.ports.web, tenantId: tenant) }
-        catch { failure = AuthoringFailure("LOCAL_SCOPE_INVALID") }
+        catch { failure = AuthoringFailure("LOCAL_SCOPE_INVALID"); return false }
+        return available
     }
     private func action(_ work: () async throws -> Void) async {
         guard !busy, available, api != nil else { return }
