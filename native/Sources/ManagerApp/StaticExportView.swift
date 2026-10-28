@@ -74,7 +74,7 @@ struct NativeStaticExportView: View {
         VStack(alignment: .leading, spacing: 12) {
             Divider()
             Text("정적 전시 파일 저장").font(.headline)
-            Text("호스팅에 올릴 Viewer와 표시용 작품 파일을 새 폴더에 저장합니다.").foregroundStyle(.secondary)
+            Text("호스팅에 올릴 Viewer와 감상용 작품 파일을 새 폴더에 저장합니다.").foregroundStyle(.secondary)
             if let completed, completed.publication.status == "published" {
                 Button("정적 전시 폴더 저장…") { Task { await model.chooseAndExport(completed) } }.disabled(!ready || model.running || model.choosing)
             } else { Text("먼저 위에서 공개용 저장본을 준비하세요.").foregroundStyle(.secondary) }

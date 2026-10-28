@@ -25,7 +25,7 @@ struct NativePublicationWatermarkView: View {
                         Text("배포 사본에 삽입").tag(PublicationWatermark.Mode.embedded)
                     }.pickerStyle(.menu).disabled(!editable)
                     if fields.mode == .none {
-                        Text("워터마크 없는 표시용 사본을 사용합니다.").foregroundStyle(.secondary)
+                        Text("워터마크 없이 감상용 파일을 사용합니다.").foregroundStyle(.secondary)
                     } else {
                         TextField(fields.mode == .overlay ? "화면에 표시할 문구" : "사본에 넣을 문구", text: $source.publicationWatermark.text,
                                   prompt: Text(fields.mode == .overlay ? "비우면 전시 제목과 작가" : "비우면 EXHIBITOS"))

@@ -39,22 +39,22 @@ struct NativeImportControls: View {
                 }
                 if let job = model.importJob {
                     Label(stateTitle(job.state), systemImage: job.state == "approved" ? "checkmark.circle" : "doc.text.magnifyingglass")
-                    if model.jpegOriginalStored { Text("JPEG 원본과 전시용 PNG를 이 Mac에 보관했습니다.").foregroundStyle(.secondary) }
+                    if model.jpegOriginalStored { Text("JPEG 원본과 감상용 PNG를 이 Mac에 보관했습니다.").foregroundStyle(.secondary) }
                     if let near = job.modelDerivation {
                         if !near.workerDrained, job.state == "cancelled" {
                             Text("파일 처리의 종료를 확인하고 있습니다.").foregroundStyle(.secondary)
                         } else if near.status == "pending" {
-                            Text("원본 파일을 검사하고 가벼운 표시 사본을 준비하고 있습니다.").foregroundStyle(.secondary)
+                            Text("원본 파일을 검사하고 감상용 파일을 준비하고 있습니다.").foregroundStyle(.secondary)
                         } else if near.status == "failed" {
-                            Text(job.state == "approved" ? "원본 가져오기는 완료했습니다. 가벼운 표시 사본은 준비하지 못했습니다." : "가벼운 표시 사본을 준비하지 못했습니다.").foregroundStyle(.secondary)
+                            Text(job.state == "approved" ? "원본 가져오기는 완료했습니다. 감상용 파일은 준비하지 못했습니다." : "감상용 파일이 준비되지 않았습니다. 검사 상태를 확인하세요.").foregroundStyle(.secondary)
                         } else {
-                            Text(model.modelOutputsCurrent ? "원본과 가벼운 표시 사본을 보관했습니다." : "표시 사본의 현재 저장 상태를 확인하세요.").foregroundStyle(.secondary)
+                            Text(model.modelOutputsCurrent ? "원본과 감상용 파일을 보관했습니다." : "감상용 파일의 현재 저장 상태를 확인하세요.").foregroundStyle(.secondary)
                         }
                         if mode == .expert {
-                            DisclosureGroup("표시 사본 비교") {
+                            DisclosureGroup("원본·감상용 파일 비교") {
                                 if let full = near.full { Text("원본 파일: \(full.bytes.formatted())바이트"); Text(full.sha256).textSelection(.enabled) }
-                                if let reduced = near.reduced { Text("표시 사본: \(reduced.bytes.formatted())바이트"); Text(reduced.sha256).textSelection(.enabled) }
-                                if model.modelOutputsCurrent { Text("형상을 유지하며 텍스처만 줄인 표시본입니다.") }
+                                if let reduced = near.reduced { Text("감상용 파일: \(reduced.bytes.formatted())바이트"); Text(reduced.sha256).textSelection(.enabled) }
+                                if model.modelOutputsCurrent { Text("형상을 유지하며 텍스처만 줄인 파일입니다.") }
                                 if let code = near.errorCode { Text(code).textSelection(.enabled) }
                             }
                         }
@@ -65,7 +65,7 @@ struct NativeImportControls: View {
                         if job.state == "uploading" { Button("받은 원본으로 검사 계속") { Task { await model.recoverImport() } } }
                         if job.state == "failed" { Button("검사 재시도") { Task { await model.changeImport(.retry) } }.disabled(!job.canRetry) }
                         if job.state == "approved", job.modelDerivation?.status == "failed" {
-                            Button("표시 사본 다시 준비") { Task { await model.changeImport(.retry) } }
+                            Button("감상용 파일 재시도") { Task { await model.changeImport(.retry) } }
                                 .disabled(!job.canRetry || !model.modelDerivationEnabled || model.modelWorkerPending)
                         }
                         if !job.terminal { Button("검사 중단") { Task { await model.changeImport(.cancel) } } }

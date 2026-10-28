@@ -358,7 +358,7 @@ final class ManagerModel: ObservableObject {
 
 extension Step {
     var title: String {
-        switch self { case .prepare: "준비"; case .create: "Studio 제작"; case .select: "전시 선택"; case .preview: "미리보기"; case .publish: "공개" }
+        switch self { case .prepare: "작업 환경"; case .create: "작품 관리"; case .select: "전시 편집"; case .preview: "전시 미리보기"; case .publish: "내보내기·공개" }
     }
     var symbol: String {
         switch self { case .prepare: "desktopcomputer"; case .create: "paintbrush"; case .select: "square.grid.2x2"; case .preview: "eye"; case .publish: "globe" }
@@ -417,7 +417,7 @@ struct ManagerApp: App {
         }
         .defaultSize(width: 960, height: 680)
         .commands {
-            CommandMenu("전시") {
+            CommandMenu("작업") {
                 Button("상태 다시 확인") { Task { await model.refresh() } }
                     .keyboardShortcut("r").disabled(model.busy)
                 Button("로컬 제작 시작") { Task { await model.prepareAndStart() } }.disabled(!model.canStart)
@@ -469,7 +469,7 @@ struct ManagerView: View {
                             Image(nsImage: image).resizable().renderingMode(image.isTemplate ? .template : .original).scaledToFit()
                                 .frame(width: 32 * scale, height: 32 * scale).accessibilityHidden(true)
                         }
-                        Text(model.presentation?.step.title ?? "전시 준비").font(.system(size: headingSize * scale, weight: .semibold)).accessibilityAddTraits(.isHeader)
+                        Text(model.presentation?.step.title ?? "작업 환경").font(.system(size: headingSize * scale, weight: .semibold)).accessibilityAddTraits(.isHeader)
                     }
                     if model.quitting { ProgressView(model.finalizingRestoration ? "복원 최종 확인을 마친 뒤 종료합니다…" : "로컬 작업을 정지한 뒤 종료합니다…") }
                     else if model.runtimeBusy { ProgressView(operationTitle) }
@@ -561,7 +561,7 @@ struct ManagerView: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(!model.canStart)
                 } else {
-                    Button("작품 만들기") { model.change(step: .create) }.buttonStyle(.borderedProminent)
+                    Button("작품 관리 열기") { model.change(step: .create) }.buttonStyle(.borderedProminent)
                 }
                 if model.canStop {
                     Button(model.runtimeBusy ? "작업 정지 요청" : "로컬 제작 정지") { Task { await model.stop() } }

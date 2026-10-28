@@ -229,7 +229,7 @@ extension AuthoringModel {
         guard !busy, available, session != nil else { return }
         let panel = NSOpenPanel()
         panel.title = "작품 파일 가져오기"
-        panel.message = jpegImportsEnabled ? "GLB·PNG·JPEG 파일을 선택하세요. 최대 32 MiB이며 JPEG 원본을 유지하고 전시용 PNG를 준비합니다." : "GLB 또는 PNG 파일을 선택하세요. 최대 32 MiB를 지원합니다."
+        panel.message = jpegImportsEnabled ? "GLB·PNG·JPEG 파일을 선택하세요. 최대 32 MiB이며 JPEG 원본을 유지하고 감상용 PNG를 준비합니다." : "GLB 또는 PNG 파일을 선택하세요. 최대 32 MiB를 지원합니다."
         panel.canChooseDirectories = false; panel.canChooseFiles = true; panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [UTType(filenameExtension: "glb") ?? .data, .png] + (jpegImportsEnabled ? [.jpeg] : [])
         guard let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.identifier?.rawValue == "manager" }) else { return }
@@ -495,7 +495,7 @@ struct NativeAuthoringView: View {
     private var scope: String { "\(configuration?.tenantId ?? ""):\(configuration?.ports.web ?? 0):\(configuration?.manifestSha256 ?? ""):\(ready)" }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if !ready { Text("준비 화면에서 로컬 제작을 시작하세요.").foregroundStyle(.secondary) }
+            if !ready { Text("작업 환경에서 로컬 제작을 시작하세요.").foregroundStyle(.secondary) }
             if model.session == nil {
                 if configuration?.kind == "personal" {
                     Text("이 Mac에 저장된 작품과 전시를 제작합니다.").foregroundStyle(.secondary)
@@ -596,7 +596,7 @@ struct NativeAuthoringView: View {
             }
             if let selected = model.selected {
                 Text("저장된 revision \(selected.revision) · 파일 \(selected.assets.count)개")
-                Text("변경하면 공개 승인이 해제되며 새 검토가 필요합니다.").foregroundStyle(.secondary)
+                Text("변경한 작품 버전은 정보·파일·권리를 다시 확인해 승인해야 합니다.").foregroundStyle(.secondary)
             }
             Button("작품 정보 저장") { Task { await model.save() } }.buttonStyle(.borderedProminent)
                 .disabled(model.draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.artistId.isEmpty || model.draft.rights.holder.isEmpty)
