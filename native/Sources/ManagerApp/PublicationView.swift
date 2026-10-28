@@ -153,7 +153,8 @@ final class PublicationModel: ObservableObject {
         let records = try await api.publications(exhibitionId: binding.completed.snapshotExhibitionId)
         guard generation == runtimeGeneration, let state else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
         guard let current = records.first(where: { $0.publicationId == binding.completed.publication.publicationId }) else { throw AuthoringFailure("PUBLICATION_RESPONSE_INVALID") }
-        try await persist(binding.replacingPublication(current, in: state))
+        let updated = try binding.replacingPublication(current, in: state)
+        if updated != state { try await persist(updated) }
         guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
         verifiedCompleted = self.state?.completed
         notice = current.status == "published" ? "이 Mac의 준비 저장본을 확인했습니다." : "이 준비 저장본이 해제되었습니다. 다시 확인한 뒤 새로 준비하세요."
