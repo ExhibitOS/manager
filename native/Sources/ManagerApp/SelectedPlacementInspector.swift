@@ -62,8 +62,8 @@ struct SelectedPlacementInspector: View {
                     Text("선택한 작품 배치").font(.headline).accessibilityAddTraits(.isHeader)
                     Text(selected.artwork["metadata"]["title"].string ?? "제목 없는 작품").font(.title3.weight(.semibold))
                     Text(selected.artwork["metadata"]["artist"].string ?? "작가 미상").foregroundStyle(.secondary)
-                    LabeledContent("원본 실측", value: sourceDimensions(selected.artwork))
-                    Text("이 속성은 선택한 배치에 적용됩니다. 작품 원본과 실측 치수는 유지됩니다.").font(.caption).foregroundStyle(.secondary)
+                    LabeledContent("기록된 크기", value: sourceDimensions(selected.artwork))
+                    Text("이 속성은 선택한 배치에 적용됩니다. 작품 원본과 기록된 크기는 유지됩니다.").font(.caption).foregroundStyle(.secondary)
                     Button("공간에서 찾기", systemImage: "scope") { Task { await model.viewportController.findSelection() } }
                         .disabled(!editable || !model.viewportController.findSelectionSupported || !model.canSelectCatalog || model.viewportPresentation == .plan)
                     GroupBox("높이 맞추기") {
@@ -97,7 +97,7 @@ struct SelectedPlacementInspector: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 LabeledContent("회전 · xyzw", value: vector(selected.placement["transform"]["rotation"]))
                                 LabeledContent("배치 배율", value: vector(selected.placement["transform"]["scale"]))
-                                Text("회전과 배율은 공간의 편집 조작에서 변경합니다. 원본 실측과 구분해 표시합니다.").font(.caption).foregroundStyle(.secondary)
+                                Text("회전과 배율은 공간의 편집 조작에서 변경합니다. 작품에 기록된 크기와 배치 배율은 별도로 표시합니다.").font(.caption).foregroundStyle(.secondary)
                                 Text("배치 ID · " + model.placementId).font(.caption).textSelection(.enabled)
                             }.padding(4)
                         }
