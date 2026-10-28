@@ -40,6 +40,10 @@ final class NativeViewportController: ObservableObject {
     @Published fileprivate(set) var entrancePreviewSupported = false
     fileprivate var acknowledgedFrame: ViewportFrame?
     var hostEpoch: String? { owner }
+    func confirmsFloorPreview(_ draft: NativeExhibitionDraft, tenantId: String, principalId: String) -> Bool {
+        connected && acknowledgedFrame?.confirmsFloorPreview(ownerEpoch: owner, acceptedSequence: acceptedSequence,
+            expectedDraft: draft, tenantId: tenantId, principalId: principalId) == true
+    }
     func ordinaryRecoveryReady(replacing previousEpoch: String, draft: NativeExhibitionDraft, tenantId: String, principalId: String) -> Bool {
         guard connected, let acknowledgedFrame else { return false }
         return acknowledgedFrame.confirmsHostRecovery(replacing: previousEpoch, ownerEpoch: owner, acceptedSequence: acceptedSequence,
