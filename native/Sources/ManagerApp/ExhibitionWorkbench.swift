@@ -30,7 +30,7 @@ struct NativeExhibitionView: View {
     @State private var inspectorInputs: [String: InstallationInspectorState] = [:]
 
     private enum InspectorScope: String, CaseIterable, Identifiable {
-        case selection, lighting, cover, exhibition, output
+        case selection, lighting, cover, exhibition, viewingPlan, output
         var id: Self { self }
         var title: String {
             switch self {
@@ -38,6 +38,7 @@ struct NativeExhibitionView: View {
             case .lighting: "전시 조명"
             case .cover: "표지·입장"
             case .exhibition: "전시 정보"
+            case .viewingPlan: "관람 순서"
             case .output: "저장·내보내기"
             }
         }
@@ -203,7 +204,7 @@ struct NativeExhibitionView: View {
                 ForEach(InspectorScope.allCases) { value in Text(value.title).tag(value) }
             }.padding(12)
             Divider()
-            inspectorContent.disabled(readOnly && scope != .output)
+            inspectorContent.disabled((readOnly && scope != .output) || (model.viewingPlanDirty && scope != .viewingPlan))
         }
     }
     @ViewBuilder private var inspectorContent: some View {
@@ -231,6 +232,8 @@ struct NativeExhibitionView: View {
             ScrollView { Form { CoverEntrySettingsView(model: model, mode: mode) }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true).disabled(formLocked) }
         case .exhibition:
             ScrollView { exhibitionForm.padding(4) }
+        case .viewingPlan:
+            ScrollView { ViewingPlanSettingsView(model: model, controller: controller, ready: ready) }
         case .output:
             ScrollView { outputControls.padding(12) }
         }

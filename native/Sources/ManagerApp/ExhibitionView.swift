@@ -185,7 +185,36 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var architectureStatus = ""
     @Published private(set) var architectureApplying = false
     var architectureGeometryDirty: Bool { architecture != architectureBaseline }
-    var architectureDirty: Bool { architectureGeometryDirty || surfaceMaterialDirty || lightDirty || benchDirty || plaqueDirty || spaceLightingDirty || furnishingDirty }
+    var architectureDirty: Bool { architectureGeometryDirty || surfaceMaterialDirty || lightDirty || benchDirty || plaqueDirty || spaceLightingDirty || furnishingDirty || viewingPlanDirty }
+    @Published var viewingPlan: ViewingPlanFormBuffer? {
+        didSet { viewingPlanPreview = nil; viewingPlanPreviewAccessID = nil; viewingPlanStatus = "" }
+    }
+    private var viewingPlanBaseline: ViewingPlanFormBuffer?
+    private var viewingPlanPreview: ViewingPlanPreview?
+    private var viewingPlanPreviewAccessID: UUID?
+    private var viewingPlanPreviewContext: UUID?
+    private var viewingPlanPreviewSequence: Int?
+    @Published private(set) var viewingPlanStatus = ""
+    var viewingPlanDirty: Bool { viewingPlan != viewingPlanBaseline }
+    var viewingPlanPreviewing: Bool { viewingPlanPreview != nil }
+    var canEditViewingPlan: Bool {
+        !entrancePreviewActive && !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty &&
+        !architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !benchDirty && !plaqueDirty &&
+        !spaceLightingDirty && !furnishingDirty && !architectureApplying && viewingPlan != nil &&
+        viewportController.editingContextActive && viewportController.connected && viewportController.viewingPlanSupported
+    }
+    var canPreviewViewingPlan: Bool {
+        guard canEditViewingPlan, viewingPlanDirty, !viewingPlanPreviewing, let draft,
+              let command = try? viewingPlan?.command(in: draft), let candidate = try? command.proposedCandidate(in: draft) else { return false }
+        return candidate != draft.candidate
+    }
+    var canApplyViewingPlan: Bool {
+        guard canEditViewingPlan, viewingPlanPreviewAccessID == viewportAccessID,
+              viewingPlanPreviewContext == viewportController.editingContextGeneration,
+              viewingPlanPreviewSequence == viewportController.acceptedSequence,
+              let preview = viewingPlanPreview, let draft, draft == preview.base else { return false }
+        return (try? viewingPlan?.command(in: draft)) == preview.command
+    }
     @Published var furnishing: FurnishingFormBuffer? { didSet { furnishingPreview = nil; furnishingPreviewAccessID = nil; furnishingStatus = "" } }
     private var furnishingBaseline: FurnishingFormBuffer?
     @Published private var furnishingPreview: FurnishingPreview?
@@ -466,6 +495,7 @@ final class ExhibitionModel: ObservableObject {
         viewportCredentials = credentials
         if accessChanged { entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
         self.read = read; self.write = write
+        viewingPlanPreview = nil; viewingPlanPreviewAccessID = nil; viewingPlanPreviewContext = nil; viewingPlanPreviewSequence = nil
         // Reconnecting may replace the native store closures even for the same
         // account/origin. Keep text, but never apply a prior binding's preview.
         clearSurfaceMaterialPreview()
@@ -652,8 +682,12 @@ final class ExhibitionModel: ObservableObject {
         entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false
         entrancePreviewStatus = "편집 화면을 다시 연결했습니다. 입력·선택·실행 취소 이력과 마지막으로 선택한 보기는 유지됩니다."
     }
-    private func work(_ body: () async throws -> Void) async {
+    private func work(allowViewingPlanInput: Bool = false, _ body: () async throws -> Void) async {
         guard !entrancePreviewActive, !busy, !placingArtwork, api != nil, session != nil else { return }
+        guard allowViewingPlanInput || !viewingPlanDirty else {
+            notice = "관람 계획 입력을 확인하고 적용하거나 취소한 뒤 진행하세요."
+            return
+        }
         busy = true; failure = nil; notice = ""
         defer { busy = false }
         do { try await body() }
@@ -920,6 +954,58 @@ final class ExhibitionModel: ObservableObject {
             value.draft = try preview.apply(to: draft, selectedBenchId: selectedBenchId, command: currentBenchCommand())
             try await persist(value); syncFields()
             notice = "벤치 변경을 이 Mac에 보관했습니다. 되돌리기로 취소할 수 있으며 전시 저장은 별도로 진행합니다."
+        }
+    }
+    private func syncViewingPlan() {
+        viewingPlan = nil; viewingPlanBaseline = nil
+        guard let draft else { return }
+        do {
+            let fields = try ViewingPlanFormBuffer(draft: draft)
+            viewingPlan = fields; viewingPlanBaseline = fields
+        } catch {
+            viewingPlanStatus = "이 전시의 관람 계획은 현재 편집할 수 없습니다. 저장된 정보는 유지됩니다."
+        }
+    }
+    func discardViewingPlan() {
+        guard !busy, !pending, !architectureApplying, !placingArtwork else { return }
+        syncViewingPlan()
+    }
+    func previewViewingPlan() async {
+        guard canPreviewViewingPlan, let fields = viewingPlan, let base = draft else { return }
+        let access = viewportAccessID, context = viewportController.editingContextGeneration
+        do {
+            let command = try fields.command(in: base)
+            architectureApplying = true
+            defer { architectureApplying = false }
+            let preview = try await viewportController.viewingPlan(command)
+            guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty,
+                  !architectureGeometryDirty, !surfaceMaterialDirty, !lightDirty, !benchDirty,
+                  !plaqueDirty, !spaceLightingDirty, !furnishingDirty,
+                  viewportAccessID == access, viewportController.editingContextActive,
+                  viewportController.editingContextGeneration == context, draft == base,
+                  preview.base == base, viewingPlan == fields else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            viewingPlanPreview = preview; viewingPlanPreviewAccessID = access
+            viewingPlanPreviewContext = context; viewingPlanPreviewSequence = viewportController.acceptedSequence
+            viewingPlanStatus = "관람 계획의 형식을 확인했습니다. 적용하면 이 Mac에 보관합니다. 관람 중 안전한 시점은 별도로 확인합니다."
+        } catch {
+            viewingPlanStatus = "관람 계획을 확인하지 못했습니다. 입력과 기존 전시는 유지됩니다. 연결과 시점 선택을 확인하세요."
+            viewportController.diagnose("VIEWING_PLAN", error)
+        }
+    }
+    func applyViewingPlan() async {
+        guard canApplyViewingPlan else { return }
+        await work(allowViewingPlanInput: true) {
+            guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty,
+                  !architectureGeometryDirty, !surfaceMaterialDirty, !lightDirty, !benchDirty,
+                  !plaqueDirty, !spaceLightingDirty, !furnishingDirty, !architectureApplying,
+                  viewportController.editingContextActive, viewportController.connected, viewportController.viewingPlanSupported,
+                  viewingPlanPreviewAccessID == viewportAccessID,
+                  viewingPlanPreviewContext == viewportController.editingContextGeneration,
+                  viewingPlanPreviewSequence == viewportController.acceptedSequence,
+                  let preview = viewingPlanPreview, let fields = viewingPlan, let draft, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            value.draft = try preview.apply(to: draft, command: fields.command(in: draft))
+            try await persist(value); syncFields()
+            notice = "관람 계획을 이 Mac에 보관했습니다. 실행 취소로 되돌릴 수 있으며 전시 저장은 별도로 진행합니다."
         }
     }
     private func syncSpaceLighting() {
@@ -1308,7 +1394,7 @@ final class ExhibitionModel: ObservableObject {
     }
     func refresh(more: Bool = false) async { await work { try await list(more: more) } }
     func new() async {
-        await work {
+        await work(allowViewingPlanInput: true) {
             guard !pending, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             value.draft = try NativeExhibitionDraft.new(); value.etag = nil; value.savedEditVersion = nil
             try await persist(value); immutable = false; comparison = nil; syncFields()
@@ -1316,7 +1402,7 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     func open(_ id: String) async {
-        await work {
+        await work(allowViewingPlanInput: true) {
             guard !pending, let api, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             let saved = try await api.exhibition(id)
             let frozen = !(try await api.publications(exhibitionId: id)).isEmpty
@@ -1427,7 +1513,7 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     func adoptComparison() async {
-        await work {
+        await work(allowViewingPlanInput: true) {
             guard !pending, let saved = comparison, let api, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             value.draft = saved.draft; value.etag = saved.etag; value.savedEditVersion = saved.draft.document["editVersion"].integer
             let frozen = !(try await api.publications(exhibitionId: saved.draft.id)).isEmpty
@@ -1491,6 +1577,7 @@ final class ExhibitionModel: ObservableObject {
         } else { selectedLightId = "" }
         syncLight()
         syncSpaceLighting()
+        syncViewingPlan()
         if benches.contains(where: { $0.id == selectedBenchId }) {
             viewportSelection = nil; syncArchitecture()
         } else { selectedBenchId = "" }
