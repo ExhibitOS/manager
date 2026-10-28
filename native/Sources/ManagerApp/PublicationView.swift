@@ -11,6 +11,7 @@ final class PublicationModel: ObservableObject {
     @Published private(set) var report: NativePublicationReady?
     @Published private(set) var checkedId: String?
     @Published private(set) var reviewed: String?
+    @Published private(set) var verifiedCompleted: NativePublicationCompleted?
     private var watermarkRuntimeAvailable = false
     private var runtimeManifestSha256: String?
     private var runtimeReady = false
@@ -20,6 +21,7 @@ final class PublicationModel: ObservableObject {
         let available = PublicationWatermarkRuntime.supports(manifestSHA256: configuration?.manifestSha256, ready: ready)
         if runtimeManifestSha256 != configuration?.manifestSha256 || runtimeReady != ready || watermarkRuntimeAvailable != available {
             runtimeGeneration = UUID(); report = nil; checkedId = nil; reviewed = nil; checkedGeneration = nil
+            verifiedCompleted = nil
         }
         runtimeManifestSha256 = configuration?.manifestSha256; runtimeReady = ready; watermarkRuntimeAvailable = available
     }
@@ -36,9 +38,17 @@ final class PublicationModel: ObservableObject {
         return try nativePublicationPlanBinding(sourceExhibitionId: sourceId ?? draft.id, etag: etag, runtimeManifestSha256: runtimeManifestSha256, watermark: draft.publicationWatermark())
     }
     func completedMatches(_ completed: NativePublicationCompleted, source: ExhibitionModel) -> Bool {
+        guard statusVerified(completed), completed.publication.status == "published" else { return false }
+        return completedRefersToSource(completed, source: source)
+    }
+    func statusVerified(_ completed: NativePublicationCompleted) -> Bool { verifiedCompleted == completed && state?.completed == completed }
+    func completedRefersToSource(_ completed: NativePublicationCompleted, source: ExhibitionModel) -> Bool {
         guard !source.dirty, let draft = source.draft, let etag = source.state?.etag else { return false }
-        do { return completed.isReusable(sourceExhibitionId: draft.id, etag: etag, planBindingSha256: try planBinding(draft, etag: etag)) }
+        do { return completed.refersToSource(sourceExhibitionId: draft.id, etag: etag, planBindingSha256: try planBinding(draft, etag: etag)) }
         catch { return false }
+    }
+    func canRelease(_ completed: NativePublicationCompleted, source: ExhibitionModel) -> Bool {
+        !busy && !source.busy && !source.pending && state?.pending == nil && completedMatches(completed, source: source)
     }
     private var api: AuthoringAPI?
     private var session: AuthoringSession?
@@ -48,7 +58,13 @@ final class PublicationModel: ObservableObject {
         guard !busy else { return }
         if self.session?.tenantId != session.tenantId || self.session?.userId != session.userId { state = nil; report = nil; checkedId = nil; reviewed = nil; checkedGeneration = nil }
         self.api = api; self.session = session; self.read = read; self.write = write
-        await work { state = try checked(await read()) }
+        verifiedCompleted = nil
+        await work {
+            let generation = runtimeGeneration
+            state = try checked(await read())
+            guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+            if state?.completed != nil && state?.pending == nil { try await refreshCompleted() }
+        }
     }
     private func checked(_ value: NativePublicationState) throws -> NativePublicationState {
         guard let session, value.tenantId.lowercased() == session.tenantId.lowercased(), value.principalId.lowercased() == session.userId.lowercased() else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
@@ -126,16 +142,46 @@ final class PublicationModel: ObservableObject {
         guard var accepted = state, accepted.pending?.publishRequestId == pending.publishRequestId else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
         accepted.completed = NativePublicationCompleted(pending: pending, publication: publication); accepted.pending = nil
         try await persist(accepted)
+        guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+        verifiedCompleted = state?.completed
         notice = "이 Mac에 공개용 저장본을 준비했습니다. 호스팅 배포는 별도로 진행합니다."
     }
     private func refreshCompleted() async throws {
-        guard let api, var value = state, var completed = value.completed else { throw AuthoringFailure("PUBLICATION_PENDING") }
-        let records = try await api.publications(exhibitionId: completed.snapshotExhibitionId)
-        guard let current = records.first(where: { $0.publicationId == completed.publication.publicationId && $0.revisionSha256 == completed.publication.revisionSha256 }) else { throw AuthoringFailure("PUBLICATION_RESPONSE_INVALID") }
-        completed.publication = current; value.completed = completed; try await persist(value)
+        guard let api, let original = state else { throw AuthoringFailure("PUBLICATION_PENDING") }
+        let binding = try NativePublicationStatusBinding(original), generation = runtimeGeneration
+        verifiedCompleted = nil
+        let records = try await api.publications(exhibitionId: binding.completed.snapshotExhibitionId)
+        guard generation == runtimeGeneration, let state else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+        guard let current = records.first(where: { $0.publicationId == binding.completed.publication.publicationId }) else { throw AuthoringFailure("PUBLICATION_RESPONSE_INVALID") }
+        try await persist(binding.replacingPublication(current, in: state))
+        guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+        verifiedCompleted = self.state?.completed
         notice = current.status == "published" ? "이 Mac의 준비 저장본을 확인했습니다." : "이 준비 저장본이 해제되었습니다. 다시 확인한 뒤 새로 준비하세요."
     }
     func refresh() async { await work { try await refreshCompleted() } }
+    func release(_ expected: NativePublicationCompleted, source: ExhibitionModel) async {
+        guard canRelease(expected, source: source) else { return }
+        await work {
+            guard let api, let read else { throw AuthoringFailure("PUBLICATION_STORE_REQUIRED") }
+            let generation = runtimeGeneration
+            state = try checked(await read())
+            guard generation == runtimeGeneration, let state, state.completed == expected, state.pending == nil,
+                  completedRefersToSource(expected, source: source) else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+            let binding = try NativePublicationStatusBinding(state)
+            verifiedCompleted = nil
+            do {
+                let response = try await api.unpublish(expected.publication)
+                guard generation == runtimeGeneration, let current = self.state else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+                try await persist(binding.replacingPublication(response, in: current))
+                guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+                verifiedCompleted = self.state?.completed
+                notice = "이 Mac의 공개용 저장본 준비를 해제했습니다. 제작 원본은 유지됩니다. 이미 내보낸 파일과 인터넷 배포는 별도로 중단하세요."
+            } catch {
+                notice = "준비 해제 결과를 확인하지 못했습니다. ‘준비 상태 다시 확인’으로 같은 저장본의 현재 상태를 확인하세요."
+                throw error
+            }
+        }
+    }
 }
 
 struct NativePublicationView: View {
@@ -147,6 +193,7 @@ struct NativePublicationView: View {
     let mode: Mode
     let preview: () -> Void
     let connect: () async -> Void
+    @State private var releaseCandidate: NativePublicationCompleted?
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("먼저 이 Mac에서 공개용 저장본을 준비합니다. 제작 중인 전시는 계속 편집할 수 있습니다.").foregroundStyle(.secondary)
@@ -180,12 +227,15 @@ struct NativePublicationView: View {
                 Button("보관한 준비 다시 확인") { Task { await model.retry() } }.disabled(!ready || model.busy)
             }
             if let completed = model.state?.completed {
-                let matches = model.completedMatches(completed, source: source)
-                Label(matches ? (completed.publication.status == "published" ? "이 Mac의 공개용 저장본 준비 완료" : "준비 해제됨") : "이전 실행본·저장본의 준비 기록", systemImage: "doc.badge.checkmark")
+                let matches = model.completedRefersToSource(completed, source: source)
+                Label(matches ? (model.statusVerified(completed) ? (completed.publication.status == "published" ? "이 Mac의 공개용 저장본 준비 완료" : "준비 해제됨") : "이 Mac의 준비 상태 확인 필요") : "이전 실행본·저장본의 준비 기록", systemImage: "doc.badge.checkmark")
                 if !matches { Text("현재 편집 내용은 위의 확인 버튼으로 다시 확인하세요.").foregroundStyle(.secondary) }
                 Text("인터넷 공개 결과는 아래 온라인 공개에서 확인하세요.").foregroundStyle(.secondary)
                 DisclosureGroup("저장본 식별 정보") { Text(completed.publication.publicationId).textSelection(.enabled); Text(completed.publication.revisionSha256).textSelection(.enabled) }
                 Button("준비 상태 다시 확인") { Task { await model.refresh() } }.disabled(!ready || model.busy)
+                Button("이 Mac의 준비 해제") { releaseCandidate = completed }
+                    .disabled(!ready || !model.canRelease(completed, source: source))
+                Text("준비 해제는 이 Mac의 저장본에만 적용됩니다. 이미 내보낸 파일과 인터넷 배포는 별도로 중단하세요.").font(.callout).foregroundStyle(.secondary)
             }
             if model.busy { ProgressView("공개용 저장본을 확인하고 있습니다…") }
             if let failure = model.failure {
@@ -203,5 +253,11 @@ struct NativePublicationView: View {
                 }
             }, available: !model.busy && (ready || hosting.status?.work != nil))
         }.task(id: ready) { if ready && source.viewportCredentials == nil { await connect() } }
+        .confirmationDialog("이 Mac의 공개용 저장본 준비를 해제할까요?", isPresented: Binding(get: { releaseCandidate != nil }, set: { if !$0 { releaseCandidate = nil } }), titleVisibility: .visible, presenting: releaseCandidate) { expected in
+            Button("이 Mac의 준비 해제", role: .destructive) { Task { await model.release(expected, source: source) } }
+            Button("취소", role: .cancel) {}
+        } message: { _ in
+            Text("현재 전시의 이 Mac 공개용 저장본 제공을 중단합니다. 제작 원본과 파일은 삭제하지 않습니다. 이미 내보낸 파일·정적 사이트·인터넷 배포는 바뀌지 않습니다.")
+        }
     }
 }
