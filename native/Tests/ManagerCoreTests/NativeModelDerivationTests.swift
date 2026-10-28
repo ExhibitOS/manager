@@ -88,6 +88,27 @@ final class NativeModelDerivationTests: XCTestCase {
         XCTAssertEqual(job.assetId, job.modelDerivation?.full?.assetId); XCTAssertNil(job.modelDerivation?.reduced)
         XCTAssertFalse(owner.hasPendingModelWorker)
         let calls = await fixture.observed(); XCTAssertEqual(calls, ["create"])
+        XCTAssertTrue(job.canRetry)
+        XCTAssertFalse(NativeImportJob(id: job.id, state: job.state, progress: job.progress, attempts: 5, errorCode: job.errorCode,
+            assetId: job.assetId, retryAt: nil, modelDerivation: job.modelDerivation).canRetry)
+        func changedReceipt(missingFull: Bool) throws -> NativeImportJob {
+            var object: [String: Any] = ["id": job.id, "state": "approved", "progress": 100, "attempts": 0,
+                "assetId": missingFull ? job.assetId! : UUID().uuidString.lowercased()]
+            var near: [String: Any] = ["operationID": value.modelDerivation!.operationID,
+                "generation": value.modelDerivation!.generation, "profileId": NativeModelDerivationProfile.id,
+                "status": "failed", "workerDrained": true, "errorCode": "UNSUPPORTED_MODEL_TEXTURE"]
+            if !missingFull {
+                near["fullAssetId"] = job.assetId!
+                near["full"] = ["assetId": job.assetId!, "sha256": value.sha256, "bytes": value.bytes, "reusedExactBytes": true]
+            }
+            object["modelDerivation"] = near
+            return try JSONDecoder().decode(NativeImportJob.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+        for missingFull in [true, false] {
+            let changed = try changedReceipt(missingFull: missingFull)
+            XCTAssertFalse(changed.modelDerivation!.matches(value, job: changed))
+            XCTAssertThrowsError(try owner.observe(changed, intent: value))
+        }
     }
     func testCancelWaitsForRealWorkerDrainBeforeReplacement() async throws {
         let gate = ModelDrainGate(), fixture = ModelImportFixture(gate: gate), owner = NativeImportTransfer(), value = intent()
@@ -126,15 +147,17 @@ final class NativeModelDerivationTests: XCTestCase {
         let fixture = ModelImportFixture(), value = intent()
         _ = try await fixture.createImport(value)
         let job = try await fixture.readyJob(), model = try XCTUnwrap(job.modelDerivation)
-        func artwork(changedHash: Bool) throws -> NativeArtwork {
+        XCTAssertFalse(job.canRetry)
+        func artwork(changedHash: Bool, revision: Int = 1) throws -> NativeArtwork {
             let metadata = try JSONSerialization.jsonObject(with: JSONEncoder().encode(ArtworkMetadata()))
             return try JSONDecoder().decode(NativeArtwork.self, from: JSONSerialization.data(withJSONObject: [
-                "id": value.artworkId, "artistId": UUID().uuidString.lowercased(), "revision": 1, "metadata": metadata, "archived": false,
+                "id": value.artworkId, "artistId": UUID().uuidString.lowercased(), "revision": revision, "metadata": metadata, "archived": false,
                 "assets": [model.full, model.reduced].compactMap { $0 }.map { ["id": $0.assetId, "mime": "model/gltf-binary", "state": "approved", "sha256": changedHash ? String(repeating: "c", count: 64) : $0.sha256, "bytes": $0.bytes] as [String: Any] }
             ]))
         }
         XCTAssertTrue(model.currentOutputs(in: try artwork(changedHash: false), intent: value, job: job))
         XCTAssertFalse(model.currentOutputs(in: try artwork(changedHash: true), intent: value, job: job))
+        XCTAssertFalse(model.currentOutputs(in: try artwork(changedHash: false, revision: 2), intent: value, job: job))
         XCTAssertFalse(model.matches(intent(), job: job))
     }
 }

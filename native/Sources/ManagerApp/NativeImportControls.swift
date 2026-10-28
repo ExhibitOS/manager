@@ -64,6 +64,10 @@ struct NativeImportControls: View {
                         Button("상태 다시 확인") { Task { await model.refreshImport() } }
                         if job.state == "uploading" { Button("받은 원본으로 검사 계속") { Task { await model.recoverImport() } } }
                         if job.state == "failed" { Button("검사 재시도") { Task { await model.changeImport(.retry) } }.disabled(!job.canRetry) }
+                        if job.state == "approved", job.modelDerivation?.status == "failed" {
+                            Button("표시 사본 다시 준비") { Task { await model.changeImport(.retry) } }
+                                .disabled(!job.canRetry || !model.modelDerivationEnabled || model.modelWorkerPending)
+                        }
                         if !job.terminal { Button("검사 중단") { Task { await model.changeImport(.cancel) } } }
                         if job.terminal { Button("다른 파일 검사 준비") { Task { await model.clearImport() } }.disabled(model.modelWorkerPending || job.modelDerivation?.workerDrained == false) }
                     }

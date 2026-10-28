@@ -68,6 +68,18 @@ final class AuthoringModel: ObservableObject {
     var dirty: Bool { metadataDirty || (importFile != nil && transfer?.intent == nil) }
 
     func configure(_ configuration: NativeConfiguration?, ready: Bool) {
+        let requestedScope = configuration.flatMap { configuration in
+            configuration.tenantId.map { "\($0):\(configuration.ports.web):\(configuration.manifestSha256)" }
+        }
+        if modelWorkerPending, requestedScope != scope {
+            // Keep the old durable intent, transport, manifest and polling
+            // context until that worker drains or its owning runtime stops.
+            available = false; modelDerivationEnabled = false; jpegImportsEnabled = false
+            importStatusGeneration = UUID()
+            imagePreparationScope?.invalidate(); imagePreparation?.cancel()
+            failure = AuthoringFailure("IMPORT_DRAIN_PENDING")
+            return
+        }
         available = ready
         let previousManifest = runtimeManifestSHA256
         runtimeManifestSHA256 = configuration?.manifestSha256
@@ -370,7 +382,8 @@ extension AuthoringModel {
                 importJob = observed
             } else {
                 if change == .retry, let intent = transfer?.intent, intent.modelDerivation != nil {
-                    guard job.modelDerivation?.workerDrained == true else { throw AuthoringFailure("IMPORT_DRAIN_PENDING") }
+                    guard modelDerivationEnabled else { throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE") }
+                    guard job.canRetry, job.modelDerivation?.workerDrained == true else { throw AuthoringFailure("IMPORT_DRAIN_PENDING") }
                     try importTransfer.restoreModel(intent: intent, jobID: job.id, transport: api)
                 }
                 let observed = try await api.importAction(job.id, action: change)

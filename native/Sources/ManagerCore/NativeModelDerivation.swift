@@ -78,6 +78,9 @@ public struct NativeModelDerivationStatus: Decodable, Equatable, Sendable {
         if let full {
             guard full.valid, full.assetId == fullAssetId, full.sha256 == intent.sha256, full.bytes == intent.bytes else { return false }
         }
+        if job.state == "approved" {
+            guard let full, full.reusedExactBytes == true, job.assetId == full.assetId else { return false }
+        }
         if status == "ready" {
             guard job.state == "approved", workerDrained, errorCode == nil,
                   let full, let reduced, reduced.valid, full.reusedExactBytes == true,
@@ -93,7 +96,8 @@ public struct NativeModelDerivationStatus: Decodable, Equatable, Sendable {
 
     public func currentOutputs(in artwork: NativeArtwork, intent: NativeImportIntent, job: NativeImportJob) -> Bool {
         guard matches(intent, job: job), status == "ready", workerDrained, artwork.id == intent.artworkId,
-              !artwork.archived, artwork.metadata?.rights == intent.rights, let full, let reduced else { return false }
+              !artwork.archived, artwork.revision == intent.modelDerivation?.artworkRevision,
+              artwork.metadata?.rights == intent.rights, let full, let reduced else { return false }
         return [full, reduced].allSatisfy { output in
             artwork.assets.contains { $0.id == output.assetId && $0.state == "approved" && $0.mime == "model/gltf-binary"
                 && $0.sha256 == output.sha256 && $0.bytes == Int64(output.bytes) }

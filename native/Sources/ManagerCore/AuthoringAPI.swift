@@ -425,7 +425,8 @@ public struct NativeImportJob: Decodable, Sendable {
     }
     public var terminal: Bool { ["approved", "cancelled"].contains(state) }
     public var canRetry: Bool {
-        guard state == "failed", attempts < 5 else { return false }
+        let optionalModelFailure = state == "approved" && modelDerivation?.status == "failed" && modelDerivation?.workerDrained == true
+        guard state == "failed" || optionalModelFailure, attempts < 5 else { return false }
         guard let retryAt else { return true }
         let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let date = formatter.date(from: retryAt) ?? ISO8601DateFormatter().date(from: retryAt)
