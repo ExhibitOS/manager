@@ -15,15 +15,22 @@ public struct PublicationWatermark: Equatable, Sendable {
     public var position: Position
     public var size: Int
     public var opacity: Double
+    // ECMAScript WhiteSpace + LineTerminator, as used by the shared String.trim.
+    // Foundation's general whitespace set differs (notably FEFF and U+0085).
+    private static let sharedTrimCharacters = CharacterSet(charactersIn:
+        "\u{0009}\u{000A}\u{000B}\u{000C}\u{000D}\u{0020}\u{00A0}\u{1680}" +
+        "\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200A}" +
+        "\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}\u{FEFF}")
+    private static func trimmedText(_ text: String) -> String { text.trimmingCharacters(in: sharedTrimCharacters) }
     public init(mode: Mode = .none, text: String = "", position: Position = .bottomRight, size: Int = 12, opacity: Double = 0.25) {
         self.mode = mode; self.text = text; self.position = position; self.size = size; self.opacity = opacity
     }
     public func validate() throws {
-        let label = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = Self.trimmedText(text)
         guard (8...24).contains(size), opacity.isFinite, (0.1...0.6).contains(opacity),
               text.isEmpty || !label.isEmpty,
-              label.unicodeScalars.count <= (mode == .embedded ? 80 : 160),
-              !label.unicodeScalars.contains(where: { $0.value <= 31 || (127...159).contains($0.value) }) else { throw Self.invalid() }
+              text.unicodeScalars.count <= (mode == .embedded ? 80 : 160),
+              !text.unicodeScalars.contains(where: { $0.value <= 31 || (127...159).contains($0.value) }) else { throw Self.invalid() }
         if mode == .embedded, !Self.supportsEmbeddedText(label) { throw AuthoringFailure("WATERMARK_TEXT_UNSUPPORTED") }
     }
     public static func supportsEmbeddedText(_ text: String) -> Bool {
@@ -41,13 +48,13 @@ public struct PublicationWatermark: Equatable, Sendable {
               fields["opacity"] == nil || fields["opacity"]?.double != nil else { throw Self.invalid() }
         self.init(mode: mode, text: value["text"].string ?? "", position: value["position"].string.flatMap(Position.init(rawValue:)) ?? .bottomRight,
                   size: value["size"].double.flatMap(Int.init(exactly:)) ?? 12, opacity: value["opacity"].double ?? 0.25)
-        if fields["text"] != nil, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw Self.invalid() }
+        if fields["text"] != nil, Self.trimmedText(text).isEmpty { throw Self.invalid() }
         try validate()
     }
     public var value: DocumentValue {
         var fields: [String: DocumentValue] = ["version": .integer(1), "mode": .string(mode.rawValue)]
         if mode != .none {
-            if !text.isEmpty { fields["text"] = .string(text.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            if !text.isEmpty { fields["text"] = .string(Self.trimmedText(text)) }
             fields["position"] = .string(position.rawValue); fields["size"] = .integer(Int64(size)); fields["opacity"] = .number(opacity)
         }
         return .object(fields)

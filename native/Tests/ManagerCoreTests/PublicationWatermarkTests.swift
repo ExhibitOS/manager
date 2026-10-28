@@ -45,12 +45,15 @@ final class PublicationWatermarkTests: XCTestCase {
         let text = String(repeating: "e\u{301}", count: 80) // 80 graphemes, 160 shared Unicode codepoints.
         try draft.setPublicationWatermark(.init(mode: .overlay, text: text))
         let saved = draft
-        for text in [text+"x", "앞\n뒤", "앞\u{85}뒤", "   "] {
+        for text in [text+"x", " "+text, text+" ", "\u{FEFF}", "\u{85}앞", "\n앞", "앞\n뒤", "앞\u{85}뒤", "   "] {
             XCTAssertThrowsError(try draft.setPublicationWatermark(.init(mode: .overlay, text: text)))
             XCTAssertEqual(draft, saved)
         }
         XCTAssertThrowsError(try PublicationWatermark(value: .object(["version": .integer(1), "mode": .string("overlay"), "text": .string("")])))
+        XCTAssertThrowsError(try PublicationWatermark(value: .object(["version": .integer(1), "mode": .string("overlay"), "text": .string("\u{FEFF}")])))
         try draft.setPublicationWatermark(.init(mode: .overlay, text: "  전시 · 작가  "))
+        XCTAssertEqual(try draft.publicationWatermark()?.text, "전시 · 작가")
+        try draft.setPublicationWatermark(.init(mode: .overlay, text: "\u{FEFF}전시 · 작가\u{FEFF}"))
         XCTAssertEqual(try draft.publicationWatermark()?.text, "전시 · 작가")
     }
 
