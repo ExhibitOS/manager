@@ -110,7 +110,7 @@ struct NativeExhibitionView: View {
         .onChange(of: model.selectedBenchId) { _, id in if !id.isEmpty { showSelection() } }
         .onChange(of: model.selectedLightId) { _, id in if !id.isEmpty { showSelection() } }
         .onChange(of: model.artworkId) { _, id in if !id.isEmpty { showSelection() } }
-        .onChange(of: model.viewportSelection) { _, value in if value != nil && !model.entrancePreviewActive { scope = .selection; inspectorVisible = true } }
+        .onChange(of: model.viewportSelection) { _, value in if value != nil && !model.entrancePreviewActive { showSelection() } }
         .onChange(of: model.draft?.id) { _, id in if id != nil { browserVisible = false } }
         .onChange(of: model.entrancePreviewActive) { _, value in if !value && returningToScene { returnToScene() } }
         .onChange(of: ready) { _, value in if !value { needsConnection = true } }
