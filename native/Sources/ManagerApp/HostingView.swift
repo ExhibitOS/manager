@@ -94,7 +94,7 @@ struct NativeHostingView: View {
         VStack(alignment: .leading, spacing: 12) {
             Divider()
             Text("온라인 공개").font(.headline)
-            Text("Cloudflare Pages에 표시용 전시 파일을 올립니다. 이 Mac의 제작 데이터와 원본 파일은 보관됩니다.").foregroundStyle(.secondary)
+            Text("Cloudflare Pages에 감상용 전시 파일을 올립니다. 이 Mac의 제작 데이터와 원본 파일은 보관됩니다.").foregroundStyle(.secondary)
             if model.credentialPresent != true || model.replacingToken {
                 SecureField("Cloudflare API 토큰", text: $model.tokenInput)
                     .textContentType(.password).accessibilityHint("토큰은 이 Mac의 키체인에 저장됩니다.")
@@ -117,8 +117,8 @@ struct NativeHostingView: View {
             }
             if let review = model.review, receipt?.manifestSha256 == review.source.manifestSha256 {
                 Text(review.info.title).font(.headline)
-                Text("공개 주소: \(review.expectedURL)").textSelection(.enabled)
-                Text("공개 파일 \(review.source.files - 1)개").foregroundStyle(.secondary)
+                Text("예정 공개 주소: \(review.expectedURL)").textSelection(.enabled)
+                Text("공개할 파일 \(review.source.files - 1)개").foregroundStyle(.secondary)
                 Toggle("선택한 계정과 전시 파일의 인터넷 공개 권리를 확인했습니다", isOn: $model.rightsConfirmed)
                 Toggle("무료 정적 배포만 사용하며 유료 기능을 추가하지 않는 것을 확인했습니다", isOn: $model.costConfirmed)
                 Text("공개 파일은 관람자의 브라우저에 전달되며 복사될 수 있습니다. 이 작업은 Render 서버나 데이터베이스를 만들지 않습니다.").foregroundStyle(.secondary)

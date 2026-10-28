@@ -150,7 +150,7 @@ struct NativePublicationView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("먼저 이 Mac에서 공개용 저장본을 준비합니다. 제작 중인 전시는 계속 편집할 수 있습니다.").foregroundStyle(.secondary)
-            if !ready { Text("준비 화면에서 로컬 제작을 시작하세요.") }
+            if !ready { Text("작업 환경에서 로컬 제작을 시작하세요.") }
             if source.draft != nil {
                 NativePublicationWatermarkView(source: source, mode: mode, ready: ready, preview: preview)
             }
@@ -173,7 +173,7 @@ struct NativePublicationView: View {
                             .disabled(!ready || model.busy || model.state?.pending != nil || !model.isReviewed(draft, etag: etag))
                     }
                 }
-            } else { Text("전시 선택에서 전시를 열고 저장하세요.") }
+            } else { Text("전시 편집에서 전시를 열고 저장하세요.") }
             if let pending = model.state?.pending {
                 Text("보관한 공개 준비 요청이 있습니다. 같은 요청으로 결과를 확인하세요.")
                 Text(pending.snapshot.title).font(.headline)

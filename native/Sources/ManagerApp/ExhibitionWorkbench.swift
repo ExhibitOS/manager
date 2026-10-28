@@ -171,7 +171,7 @@ struct NativeExhibitionView: View {
         VStack(alignment: .leading, spacing: 4) {
             if model.draft == nil {
                 HStack {
-                    Text(ready ? "전시를 열거나 새로 만드세요." : "준비 화면에서 로컬 제작을 시작하세요.")
+                    Text(ready ? "전시를 열거나 새로 만드세요." : "작업 환경에서 로컬 제작을 시작하세요.")
                     Button("전시 열기") { browserVisible = true }.disabled(!ready)
                     Button("새 전시") { requestOpen(nil) }.disabled(!ready || readOnly || model.busy)
                 }
@@ -280,9 +280,9 @@ struct NativeExhibitionView: View {
             Divider()
             NativeOEXExportControls(model: model, ready: ready)
             Divider()
-            Text("인터넷 공개").font(.headline)
-            Text("공개 화면에서 표시용 저장본과 정적 전시 파일을 준비합니다.").foregroundStyle(.secondary)
-            Button("공개 준비로 이동", systemImage: "globe") { publish() }.disabled(model.entrancePreviewActive || model.pending || model.busy)
+            Text("내보내기·공개").font(.headline)
+            Text("내보내기·공개 화면에서 공개용 저장본과 정적 전시 파일을 준비합니다.").foregroundStyle(.secondary)
+            Button("내보내기·공개로 이동", systemImage: "globe") { publish() }.disabled(model.entrancePreviewActive || model.pending || model.busy)
             Button("작업 공간 다시 연결") { Task { await connect() } }.disabled(!ready || model.busy)
         }
     }

@@ -26,7 +26,7 @@ struct NativeMaintenanceView: View {
                 }
                 if let restoration = model.native?.restoration {
                     if restoration.state == "activated" {
-                        Label("복원한 작업 공간을 확인했습니다. 준비 화면에서 로컬 제작을 시작하세요.", systemImage: "checkmark.circle")
+                        Label("복원한 작업 공간을 확인했습니다. 작업 환경에서 로컬 제작을 시작하세요.", systemImage: "checkmark.circle")
                     } else if restoration.state == "staged" {
                         Text("복원 후보를 준비했습니다. 원래 작업 공간은 그대로 보관됩니다.")
                         Button("복원한 작업 공간 사용") { confirmActivation = true }.disabled(!model.canMaintain)

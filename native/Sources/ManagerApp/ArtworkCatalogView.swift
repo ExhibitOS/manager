@@ -30,7 +30,7 @@ struct ArtworkCatalogView: View {
             }
             if expanded {
                 if model.library.isEmpty {
-                    Text("Studio 제작에서 작품을 가져오고 확인한 뒤 배치하세요.").foregroundStyle(.secondary)
+                    Text("작품 관리에서 작품 정보·파일·권리를 확인하고 승인한 뒤 배치하세요.").foregroundStyle(.secondary)
                 } else if model.visibleCatalog.isEmpty {
                     Text("조건에 맞는 작품이 없습니다. 검색어나 필터를 바꿔 보세요.").foregroundStyle(.secondary)
                 } else {
