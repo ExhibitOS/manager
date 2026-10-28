@@ -97,10 +97,11 @@ public struct BenchViewpoint: Equatable, Sendable {
     public var value: DocumentValue { .object(["id": .string(id), "name": .string(name), "roomId": .string(roomId), "position": .vector(position), "target": .vector(target), "fov": .number(fov)]) }
     public static func list(in draft: NativeExhibitionDraft) throws -> [Self] {
         guard let raw = try BenchSettings.extensionValue(BenchSettings.presentationNamespace, in: draft) else { return [] }
-        guard case .object(let fields) = raw, Set(fields.keys).isSubset(of: ["version", "viewpoints", "credits", "startCamera"]),
+        guard case .object(let fields) = raw, Set(fields.keys).isSubset(of: ["version", "viewpoints", "credits", "startCamera", "watermark"]),
               raw["version"] == .integer(1), let rows = raw["viewpoints"].items, rows.count <= 64,
               let credits = raw["credits"].string, credits.utf16.count <= 4096,
               try JSONEncoder().encode(raw).count <= 32_768 else { throw BenchSettings.invalid() }
+        if let watermark = fields["watermark"] { _ = try PublicationWatermark(value: watermark) }
         var seen = Set<String>()
         return try rows.map { value in
             let result = try Self(value: value)

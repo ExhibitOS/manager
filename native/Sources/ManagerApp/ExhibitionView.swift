@@ -80,6 +80,23 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var exportedURL: URL?
     @Published private(set) var exportedSHA256: String?
     @Published var query = ""
+    @Published var publicationWatermark = PublicationWatermarkFormBuffer()
+    @Published private(set) var publicationWatermarkReadable = true
+    @Published private(set) var publicationWatermarkRuntimeAvailable = false
+    @Published private(set) var publicationWatermarkStatus = ""
+    func configurePublicationWatermark(_ configuration: NativeConfiguration?, ready: Bool) {
+        let available = PublicationWatermarkRuntime.supports(manifestSHA256: configuration?.manifestSha256, ready: ready)
+        if publicationWatermarkRuntimeAvailable != available { publicationWatermarkRuntimeAvailable = available }
+        // A runtime change never discards text or silently turns it into a new setting.
+    }
+    var canEditPublicationWatermark: Bool {
+        publicationWatermarkRuntimeAvailable && publicationWatermarkReadable && draft != nil && !immutable && !busy && !pending && !placingArtwork && !architectureApplying && !entrancePreviewActive
+    }
+    var publicationWatermarkValid: Bool { (try? publicationWatermark.settings()) != nil }
+    func discardPublicationWatermark() {
+        guard !busy, !pending else { return }
+        syncPublicationWatermark()
+    }
     @Published var title = "" { didSet { if oldValue != title { invalidateEntranceThumbnails() } } }
     @Published var entrance = ViewerEntranceSettings() { didSet { invalidateEntranceThumbnails() } }
     @Published var coverEntry = CoverEntryFormBuffer(design: nil) {
@@ -414,7 +431,7 @@ final class ExhibitionModel: ObservableObject {
     var pending: Bool { state?.pending != nil }
     var formDirty: Bool {
         guard let draft else { return false }
-        let entranceDirty = (entranceEditable && ((try? draft.viewerEntranceSettings()) != entrance || coverEntry.isDirty)) || installationDirty
+        let entranceDirty = (entranceEditable && ((try? draft.viewerEntranceSettings()) != entrance || coverEntry.isDirty)) || installationDirty || publicationWatermark.isDirty
         guard let room = draft.rooms.first(where: { $0["id"].string == roomId }) else { return title != draft.title || entranceDirty }
         return title != draft.title || entranceDirty || roomName != room["name"].string || width != room["dimensions"]["width"].double || height != room["dimensions"]["height"].double || depth != room["dimensions"]["depth"].double
     }
@@ -1312,6 +1329,10 @@ final class ExhibitionModel: ObservableObject {
         guard !architectureDirty, !architectureApplying else { throw AuthoringFailure("ARCHITECTURE_APPLY_REQUIRED") }
         guard !positionDirty || allowPosition else { throw AuthoringFailure("PLACEMENT_APPLY_REQUIRED") }
         guard var draft else { throw AuthoringFailure("EXHIBITION_REQUIRED") }
+        if publicationWatermark.isDirty {
+            guard publicationWatermarkRuntimeAvailable, publicationWatermarkReadable else { throw AuthoringFailure("WATERMARK_RUNTIME_UNAVAILABLE") }
+            try draft.setPublicationWatermark(publicationWatermark.settings())
+        }
         if title != draft.title { try draft.rename(title) }
         if entranceEditable {
             var settings = entrance
@@ -1327,7 +1348,7 @@ final class ExhibitionModel: ObservableObject {
     func keepLocal() async {
         await work {
             guard !immutable, !pending, var value = state else { throw AuthoringFailure(immutable ? "PUBLISHED_DRAFT_IMMUTABLE" : "EXHIBITION_PENDING") }
-            value.draft = try appliedFields(); try await persist(value); syncEntrance(); syncInstallation()
+            value.draft = try appliedFields(); try await persist(value); syncEntrance(); syncInstallation(); syncPublicationWatermark()
             notice = "현재 전시 입력을 이 Mac에 보관했습니다. 아직 전시 저장본에 반영하지 않았습니다."
         }
     }
@@ -1341,8 +1362,10 @@ final class ExhibitionModel: ObservableObject {
                 value.pending = .init(etag: value.etag, draft: draft)
                 try await persist(value) // durable exact intent BEFORE the request
                 syncEntrance()
+                syncPublicationWatermark()
             }
             guard let intent = state?.pending else { throw AuthoringFailure("EXHIBITION_PENDING") }
+            if try intent.draft.publicationWatermark() != nil, !publicationWatermarkRuntimeAvailable { throw AuthoringFailure("WATERMARK_RUNTIME_UNAVAILABLE") }
             let saved: NativeStudioResponse
             do { saved = try await api.saveExhibition(intent.draft, requestId: intent.requestId, etag: intent.etag) }
             catch let error as AuthoringFailure {
@@ -1442,10 +1465,21 @@ final class ExhibitionModel: ObservableObject {
             failure = error as? AuthoringFailure ?? AuthoringFailure("VIEWER_ENTRANCE_INVALID")
         }
     }
+    private func syncPublicationWatermark() {
+        do {
+            publicationWatermark = PublicationWatermarkFormBuffer(settings: try draft?.publicationWatermark())
+            publicationWatermarkReadable = true; publicationWatermarkStatus = ""
+        } catch {
+            publicationWatermark = PublicationWatermarkFormBuffer()
+            publicationWatermarkReadable = false
+            publicationWatermarkStatus = "저장된 워터마크 설정을 이 실행본에서 해석하지 못했습니다. 원래 설정은 유지됩니다."
+        }
+    }
     func syncFields() {
         let selected = viewportSelection
         title = draft?.title ?? ""
         syncEntrance()
+        syncPublicationWatermark()
         if draft?.rooms.contains(where: { $0["id"].string == roomId }) != true { roomId = draft?.rooms.first?["id"].string ?? "" }
         selectRoom(clearPlaqueSelection: false)
         if draft?.placements.contains(where: { $0["id"].string == placementId }) != true { placementId = draft?.placements.first?["id"].string ?? "" }

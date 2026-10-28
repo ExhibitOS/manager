@@ -11,6 +11,13 @@ final class PublicationModel: ObservableObject {
     @Published private(set) var report: NativePublicationReady?
     @Published private(set) var checkedId: String?
     @Published private(set) var reviewed: String?
+    private var watermarkRuntimeAvailable = false
+    func configureWatermarkRuntime(_ configuration: NativeConfiguration?, ready: Bool) {
+        watermarkRuntimeAvailable = PublicationWatermarkRuntime.supports(manifestSHA256: configuration?.manifestSha256, ready: ready)
+    }
+    private func requireWatermarkRuntime(_ draft: NativeExhibitionDraft) throws {
+        if try draft.publicationWatermark() != nil, !watermarkRuntimeAvailable { throw AuthoringFailure("WATERMARK_RUNTIME_UNAVAILABLE") }
+    }
     private var api: AuthoringAPI?
     private var session: AuthoringSession?
     private var read: (() async throws -> NativePublicationState)?
@@ -41,6 +48,7 @@ final class PublicationModel: ObservableObject {
     }
     func check(_ draft: NativeExhibitionDraft, etag: String) async {
         await work {
+            try requireWatermarkRuntime(draft)
             guard let api else { return }
             report = nil; reviewed = nil
             let value = try await api.publicationReady(exhibitionId: draft.id)
@@ -55,6 +63,7 @@ final class PublicationModel: ObservableObject {
     }
     func prepare(_ draft: NativeExhibitionDraft, etag: String) async {
         await work {
+            try requireWatermarkRuntime(draft)
             guard isReviewed(draft, etag: etag), checkedId == draft.id, report?.etag == etag, report?.status == "READY", let read else { throw AuthoringFailure("PUBLICATION_REVIEW_REQUIRED") }
             state = try checked(await read())
             guard state?.pending == nil, var value = state else { throw AuthoringFailure("PUBLICATION_PENDING") }
@@ -74,11 +83,13 @@ final class PublicationModel: ObservableObject {
     }
     private func finishPending() async throws {
         guard let api, var value = state, var pending = value.pending else { throw AuthoringFailure("PUBLICATION_PENDING") }
+        try requireWatermarkRuntime(pending.snapshot)
         if pending.snapshotEtag == nil {
             let saved = try await api.saveExhibition(pending.snapshot, requestId: pending.saveRequestId, etag: nil)
             pending.snapshotEtag = saved.etag; value.pending = pending; try await persist(value)
         }
         guard let snapshotEtag = pending.snapshotEtag else { throw AuthoringFailure("PUBLICATION_PENDING") }
+        try requireWatermarkRuntime(pending.snapshot)
         let publication = try await api.preparePublication(exhibitionId: pending.snapshot.id, etag: snapshotEtag, requestId: pending.publishRequestId)
         guard var accepted = state, accepted.pending?.publishRequestId == pending.publishRequestId else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
         accepted.completed = NativePublicationCompleted(pending: pending, publication: publication); accepted.pending = nil
@@ -101,11 +112,16 @@ struct NativePublicationView: View {
     @ObservedObject var staticExport: StaticExportModel
     @ObservedObject var hosting: HostingModel
     let ready: Bool
+    let mode: Mode
+    let preview: () -> Void
     let connect: () async -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("먼저 이 Mac에서 공개용 저장본을 준비합니다. 제작 중인 전시는 계속 편집할 수 있습니다.").foregroundStyle(.secondary)
             if !ready { Text("준비 화면에서 로컬 제작을 시작하세요.") }
+            if source.draft != nil {
+                NativePublicationWatermarkView(source: source, mode: mode, ready: ready, preview: preview)
+            }
             if let draft = source.draft, let etag = source.state?.etag {
                 Text(draft.title).font(.headline)
                 if source.dirty { Text("현재 입력을 먼저 전시 저장본에 반영하세요.") }
