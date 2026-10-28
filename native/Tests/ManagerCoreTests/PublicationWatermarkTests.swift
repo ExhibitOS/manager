@@ -102,6 +102,7 @@ final class PublicationWatermarkTests: XCTestCase {
             XCTAssertEqual(changed, preserved)
         }
         XCTAssertFalse(PublicationWatermarkRuntime.supports(manifestSHA256: "74b08c7899d74ad989bbb61e47fc86fe9fa25c8853ab27ce57e9135c4932e96a", ready: true))
+        XCTAssertFalse(PublicationWatermarkRuntime.supports(manifestSHA256: "6473b883ca56779bffc5f5cddbab1aae62c56c10b3be47a948b461f3a45387c5", ready: true))
         XCTAssertFalse(PublicationWatermarkRuntime.supports(manifestSHA256: String(repeating: "f", count: 64), ready: true))
         XCTAssertFalse(PublicationWatermarkRuntime.supports(manifestSHA256: nil, ready: false))
         XCTAssertTrue(PublicationWatermarkRuntime.supports(manifestSHA256: PublicationWatermarkRuntime.qualifiedManifestSHA256, ready: true))
