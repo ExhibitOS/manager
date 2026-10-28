@@ -101,4 +101,27 @@ final class ViewingPlanSettingsTests: XCTestCase {
         XCTAssertThrowsError(try preview.apply(to: later, command: command))
         XCTAssertThrowsError(try preview.apply(to: base, command: ViewingPlanCommand(plan: nil)))
     }
+    func testSaveIntentAndPublicationCopiesRetainPlanReferencesAndExactRequestIdentity() throws {
+        var source = try fixture()
+        let raw = plan(orbit: .object(["minYaw": .number(-0.123456789012345), "maxYaw": .number(0.876543210987654)]))
+        let command = ViewingPlanCommand(plan: try ViewingPlanSettings(value: raw, in: source))
+        try source.replaceCandidate(command.proposedCandidate(in: source))
+        let original = source, etag = "\"studio-r2-" + String(repeating: "a", count: 64) + "\""
+        let intent = NativeDocumentState.Pending(etag: etag, draft: source)
+        let reopened = try JSONDecoder().decode(NativeDocumentState.Pending.self, from: JSONEncoder().encode(intent))
+        XCTAssertEqual(reopened.requestId, intent.requestId); XCTAssertEqual(reopened.etag, etag)
+        XCTAssertEqual(reopened.draft, source)
+        XCTAssertEqual(reopened.draft.candidate["extensions"][ns], raw)
+        let pending = try NativePublicationPending(source: source, etag: etag)
+        let restored = try JSONDecoder().decode(NativePublicationPending.self, from: JSONEncoder().encode(pending))
+        XCTAssertEqual(restored, pending, "Uncertain publication retries must reuse the exact snapshot and both request IDs")
+        for copy in [restored.snapshot, try source.copyForEditing()] {
+            XCTAssertNotEqual(copy.id, source.id)
+            XCTAssertNotEqual(copy.candidate["revisionId"], source.candidate["revisionId"])
+            XCTAssertEqual(copy.candidate["extensions"][ns], raw)
+            XCTAssertEqual(try ViewingPlanSettings.read(in: copy)?.value, raw)
+            for key in ["placements", "artworks", "rooms", "extensions"] { XCTAssertEqual(copy.candidate[key], source.candidate[key]) }
+        }
+        XCTAssertEqual(source, original, "Preparing a saved/publication copy never edits the authoring original")
+    }
 }
