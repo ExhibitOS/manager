@@ -79,6 +79,13 @@ final class NativeModelDerivationTests: XCTestCase {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
         XCTAssertNil(object["modelDerivation"]); XCTAssertNil(object["derived"])
         XCTAssertFalse(NativeModelDerivationProfile.supports(manifestSHA256: "d27fba8c86ba906dad85ce564458f3a71c9dfc567b4ec59682e023a5eff4de46", ready: true))
+        let qualified = "b2ce49e9703cadf7d22b73ec5dfd93622489a07c34721f9bbe2b9f6df17ee28e"
+        XCTAssertTrue(NativeModelDerivationProfile.supports(manifestSHA256: qualified, ready: true))
+        XCTAssertFalse(NativeModelDerivationProfile.supports(manifestSHA256: qualified, ready: false))
+        XCTAssertFalse(NativeModelDerivationProfile.supports(manifestSHA256: String(repeating: "f", count: 64), ready: true))
+        XCTAssertTrue(PublicationWatermarkRuntime.supports(manifestSHA256: qualified, ready: true))
+        XCTAssertFalse(PublicationWatermarkRuntime.supports(manifestSHA256: qualified, ready: false))
+        XCTAssertTrue(PublicationWatermarkRuntime.supports(manifestSHA256: PublicationWatermarkRuntime.qualifiedManifestSHA256, ready: true))
     }
     func testOptionalDerivationFailureRemainsApprovedOriginal() async throws {
         let fixture = ModelImportFixture(), owner = NativeImportTransfer(), value = intent()

@@ -9,7 +9,7 @@ public enum NativeModelDerivationProfile {
     public static let settingsSHA256 = "da9039b67435883255f723fd3b37b0fc395ba2acce3ab26706aeaa17d90f73bf"
     public static let tool = "ExhibitOS validation-worker"
     public static let toolVersion = "public-near-texture-v1"
-    public static let qualifiedManifestSHA256: String? = nil
+    public static let qualifiedManifestSHA256: String? = "b2ce49e9703cadf7d22b73ec5dfd93622489a07c34721f9bbe2b9f6df17ee28e"
     public static func supports(manifestSHA256: String?, ready: Bool) -> Bool {
         guard ready, let qualifiedManifestSHA256 else { return false }
         return manifestSHA256 == qualifiedManifestSHA256
