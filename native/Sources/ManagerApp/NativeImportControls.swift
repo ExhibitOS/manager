@@ -6,6 +6,7 @@ import ManagerCore
 struct NativeImportControls: View {
     @ObservedObject var model: AuthoringModel
     let ready: Bool
+    let mode: Mode
     let openArtwork: (String) -> Void
     private var belongs: Bool { model.transfer?.intent == nil || model.transfer?.intent?.artworkId == model.selected?.id }
     private var approvedAssets: [NativeArtwork.Asset] { model.selected?.assets.filter { $0.state == "approved" } ?? [] }
@@ -39,13 +40,36 @@ struct NativeImportControls: View {
                 if let job = model.importJob {
                     Label(stateTitle(job.state), systemImage: job.state == "approved" ? "checkmark.circle" : "doc.text.magnifyingglass")
                     if model.jpegOriginalStored { Text("JPEG 원본과 전시용 PNG를 이 Mac에 보관했습니다.").foregroundStyle(.secondary) }
+                    if let near = job.modelDerivation {
+                        if !near.workerDrained, job.state == "cancelled" {
+                            Text("파일 처리의 종료를 확인하고 있습니다.").foregroundStyle(.secondary)
+                        } else if near.status == "pending" {
+                            Text("원본 파일을 검사하고 가벼운 표시 사본을 준비하고 있습니다.").foregroundStyle(.secondary)
+                        } else if near.status == "failed" {
+                            Text(job.state == "approved" ? "원본 가져오기는 완료했습니다. 가벼운 표시 사본은 준비하지 못했습니다." : "가벼운 표시 사본을 준비하지 못했습니다.").foregroundStyle(.secondary)
+                        } else {
+                            Text(model.modelOutputsCurrent ? "원본과 가벼운 표시 사본을 보관했습니다." : "표시 사본의 현재 저장 상태를 확인하세요.").foregroundStyle(.secondary)
+                        }
+                        if mode == .expert {
+                            DisclosureGroup("표시 사본 비교") {
+                                if let full = near.full { Text("원본 파일: \(full.bytes.formatted())바이트"); Text(full.sha256).textSelection(.enabled) }
+                                if let reduced = near.reduced { Text("표시 사본: \(reduced.bytes.formatted())바이트"); Text(reduced.sha256).textSelection(.enabled) }
+                                if model.modelOutputsCurrent { Text("형상을 유지하며 텍스처만 줄인 표시본입니다.") }
+                                if let code = near.errorCode { Text(code).textSelection(.enabled) }
+                            }
+                        }
+                    }
                     if ["queued", "processing"].contains(job.state) { ProgressView(value: Double(job.progress), total: 100).accessibilityLabel("파일 검사 진행") }
                     HStack {
                         Button("상태 다시 확인") { Task { await model.refreshImport() } }
                         if job.state == "uploading" { Button("받은 원본으로 검사 계속") { Task { await model.recoverImport() } } }
                         if job.state == "failed" { Button("검사 재시도") { Task { await model.changeImport(.retry) } }.disabled(!job.canRetry) }
+                        if job.state == "approved", job.modelDerivation?.status == "failed" {
+                            Button("표시 사본 다시 준비") { Task { await model.changeImport(.retry) } }
+                                .disabled(!job.canRetry || !model.modelDerivationEnabled || model.modelWorkerPending)
+                        }
                         if !job.terminal { Button("검사 중단") { Task { await model.changeImport(.cancel) } } }
-                        if job.terminal { Button("다른 파일 검사 준비") { Task { await model.clearImport() } } }
+                        if job.terminal { Button("다른 파일 검사 준비") { Task { await model.clearImport() } }.disabled(model.modelWorkerPending || job.modelDerivation?.workerDrained == false) }
                     }
                     if let code = job.errorCode {
                         Text(code == "FORMAT_REJECTED" ? "지원하는 파일 형식인지 확인하세요. 다른 파일을 쓰려면 검사를 중단한 뒤 새 파일을 선택하세요." : "파일 검사를 마치지 못했습니다. 상태와 접근 권한을 확인하세요.").foregroundStyle(.secondary)

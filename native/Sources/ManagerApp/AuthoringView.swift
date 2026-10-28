@@ -38,6 +38,12 @@ final class AuthoringModel: ObservableObject {
     // The native schema-21 packet has real original/derived custody evidence.
     // Other runtime manifests keep the existing PNG/GLB chooser and contract.
     @Published private(set) var jpegImportsEnabled = false
+    @Published private(set) var modelDerivationEnabled = false
+    var modelWorkerPending: Bool { importTransfer.hasPendingModelWorker }
+    var modelOutputsCurrent: Bool {
+        guard let intent = transfer?.intent, let job = importJob, let selected else { return false }
+        return job.modelDerivation?.currentOutputs(in: selected, intent: intent, job: job) == true
+    }
     var importFormats: String { jpegImportsEnabled ? "GLB·PNG·JPEG" : "GLB·PNG" }
     var jpegOriginalStored: Bool {
         guard transfer?.intent?.mime == "image/jpeg", transfer?.intent?.derived?.valid == true,
@@ -61,29 +67,44 @@ final class AuthoringModel: ObservableObject {
 
     var dirty: Bool { metadataDirty || (importFile != nil && transfer?.intent == nil) }
 
-    func configure(_ configuration: NativeConfiguration?, ready: Bool) {
+    @discardableResult
+    func configure(_ configuration: NativeConfiguration?, ready: Bool) -> Bool {
+        let requestedScope = configuration.flatMap { configuration in
+            configuration.tenantId.map { "\($0):\(configuration.ports.web):\(configuration.manifestSha256)" }
+        }
+        if modelWorkerPending, requestedScope != scope {
+            // Keep the old durable intent, transport, manifest and polling
+            // context until that worker drains or its owning runtime stops.
+            available = false; modelDerivationEnabled = false; jpegImportsEnabled = false
+            importStatusGeneration = UUID()
+            imagePreparationScope?.invalidate(); imagePreparation?.cancel()
+            failure = AuthoringFailure("IMPORT_DRAIN_PENDING")
+            return false
+        }
         available = ready
         let previousManifest = runtimeManifestSHA256
         runtimeManifestSHA256 = configuration?.manifestSha256
+        modelDerivationEnabled = configuration?.kind == "personal" && NativeModelDerivationProfile.supports(manifestSHA256: runtimeManifestSHA256, ready: ready)
         jpegImportsEnabled = ready && (runtimeManifestSHA256 == "74b08c7899d74ad989bbb61e47fc86fe9fa25c8853ab27ce57e9135c4932e96a"
             || PublicationWatermarkRuntime.supports(manifestSHA256: runtimeManifestSHA256, ready: ready))
         if !ready || previousManifest != runtimeManifestSHA256 {
             importStatusGeneration = UUID()
             imagePreparationScope?.invalidate(); imagePreparation?.cancel()
         }
-        guard let configuration, let tenant = configuration.tenantId else { return }
+        guard let configuration, let tenant = configuration.tenantId else { return false }
         let next = "\(tenant):\(configuration.ports.web):\(configuration.manifestSha256)"
-        guard next != scope else { return }
+        guard next != scope else { return available && api != nil }
         imagePreparationScope?.invalidate(); imagePreparation?.cancel()
         importStatusGeneration = UUID()
-        guard !busy, !dirty else { api = nil; session = nil; failure = AuthoringFailure("LOCAL_SCOPE_CHANGED"); return }
+        guard !busy, !dirty else { api = nil; session = nil; failure = AuthoringFailure("LOCAL_SCOPE_CHANGED"); return false }
         importPoll?.cancel(); importPoll = nil; importPollID = nil
         transfer = nil; importJob = nil; importFile = nil; assetId = ""
         readTransfer = nil; writeTransfer = nil
         scope = next; session = nil; artworks = []; artists = []; selected = nil; editing = false
         subject = configuration.subject ?? ""
         do { api = try AuthoringAPI(port: configuration.ports.web, tenantId: tenant) }
-        catch { failure = AuthoringFailure("LOCAL_SCOPE_INVALID") }
+        catch { failure = AuthoringFailure("LOCAL_SCOPE_INVALID"); return false }
+        return available
     }
     private func action(_ work: () async throws -> Void) async {
         guard !busy, available, api != nil else { return }
@@ -190,7 +211,14 @@ extension AuthoringModel {
         if transfer == nil, let intent = state.intent { importScale = intent.scaleMeters }
         transfer = state
         importJob = nil
-        if let id = state.jobId, let api { importJob = try await api.importJob(id) }
+        if let intent = state.intent, intent.modelDerivation != nil, let api {
+            try importTransfer.restoreModel(intent: intent, jobID: state.jobId, transport: api)
+        }
+        if let id = state.jobId, let api {
+            let observed = try await api.importJob(id)
+            if let intent = state.intent { try importTransfer.observe(observed, intent: intent) }
+            importJob = observed
+        }
         scheduleImportPoll()
     }
     private func persistImport(_ state: NativeUploadState) async throws {
@@ -239,8 +267,14 @@ extension AuthoringModel {
                   !metadataDirty, draft.rights == rights, importScale == scale,
                   transfer?.revision == state.revision, transfer?.workspaceId == state.workspaceId,
                   importFile?.sha256 == file.sha256 else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+            let modelDerivation: NativeModelDerivationIntent?
+            if let previous = state.intent {
+                modelDerivation = previous.modelDerivation // same server generation on recovery
+            } else if file.mime == "model/gltf-binary", modelDerivationEnabled {
+                modelDerivation = NativeModelDerivationIntent(operationID: requestKey, generation: generation.uuidString.lowercased(), artworkRevision: selected.revision)
+            } else { modelDerivation = nil }
             let intent = NativeImportIntent(artworkId: selected.id, idempotencyKey: requestKey, mime: file.mime,
-                sha256: file.sha256, bytes: file.data.count, scaleMeters: scale, rights: rights, derived: derived?.derived)
+                sha256: file.sha256, bytes: file.data.count, scaleMeters: scale, rights: rights, derived: derived?.derived, modelDerivation: modelDerivation)
             if let previous = state.intent, previous != intent { throw AuthoringFailure("IMPORT_INTENT_CHANGED") }
             try await continueImport(intent: intent, file: file, derived: derived, api: api)
             approvalAcknowledged = false
@@ -257,11 +291,13 @@ extension AuthoringModel {
         }
     }
     private func continueImport(intent: NativeImportIntent, file: ImportFileSnapshot?, derived: NativePreparedJPEG? = nil, api: AuthoringAPI) async throws {
+        guard intent.modelDerivation == nil || modelDerivationEnabled else { throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE") }
         let generation = importStatusGeneration, currentScope = scope, manifest = runtimeManifestSHA256
         let tenant = session?.tenantId, principal = session?.userId
         @MainActor func current() -> Bool {
             generation == importStatusGeneration && currentScope == scope && available
                 && (intent.mime != "image/jpeg" || (jpegImportsEnabled && manifest == runtimeManifestSHA256))
+                && (intent.modelDerivation == nil || (modelDerivationEnabled && manifest == runtimeManifestSHA256))
                 && session?.tenantId == tenant && session?.userId == principal
                 && (transfer?.intent == nil || transfer?.intent == intent)
         }
@@ -328,18 +364,43 @@ extension AuthoringModel {
         if let owned = imagePreparation { owned.cancel(); _ = await owned.result }
         if let read = importRead { read.cancel(); _ = await read.result }
         await importTransfer.cancelAndWait()
+        if modelWorkerPending { failure = AuthoringFailure(importTransfer.modelDrainFailure ?? "IMPORT_DRAIN_PENDING") }
+    }
+    /// Only the owning native helper's real stopped/no-children boundary calls
+    /// this fallback. Native local-runtime close awaits its import worker.
+    func ownedImportRuntimeDidStop(manifestSHA256: String) async {
+        guard runtimeManifestSHA256 == manifestSHA256 else { return }
+        await importTransfer.ownedRuntimeDidStop()
+        if failure?.code == "IMPORT_DRAIN_PENDING" { failure = nil }
     }
     func changeImport(_ change: NativeImportAction) async {
         await action {
             guard let api, let job = importJob else { return }
-            importJob = try await api.importAction(job.id, action: change)
+            if change == .cancel, transfer?.intent?.modelDerivation != nil {
+                await importTransfer.cancelAndWait()
+                guard !modelWorkerPending else { throw AuthoringFailure("IMPORT_DRAIN_PENDING") }
+                let observed = try await api.importJob(job.id)
+                if let intent = transfer?.intent { try importTransfer.observe(observed, intent: intent) }
+                importJob = observed
+            } else {
+                if change == .retry, let intent = transfer?.intent, intent.modelDerivation != nil {
+                    guard modelDerivationEnabled else { throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE") }
+                    guard job.canRetry, job.modelDerivation?.workerDrained == true else { throw AuthoringFailure("IMPORT_DRAIN_PENDING") }
+                    try importTransfer.restoreModel(intent: intent, jobID: job.id, transport: api)
+                }
+                let observed = try await api.importAction(job.id, action: change)
+                if let intent = transfer?.intent { try importTransfer.observe(observed, intent: intent) }
+                importJob = observed
+            }
             scheduleImportPoll()
         }
     }
     func refreshImport() async {
         await action {
             guard let api, let id = transfer?.jobId else { return }
-            importJob = try await api.importJob(id)
+            let observed = try await api.importJob(id)
+            if let intent = transfer?.intent { try importTransfer.observe(observed, intent: intent) }
+            importJob = observed
             if importJob?.state == "approved", let selected, selected.id == transfer?.intent?.artworkId {
                 let fresh = try await api.artwork(selected.id)
                 if fresh.revision == selected.revision { self.selected = fresh; if let asset = importJob?.assetId { assetId = asset } }
@@ -349,7 +410,8 @@ extension AuthoringModel {
     }
     func clearImport() async {
         await action {
-            guard importJob?.terminal == true, var state = transfer else { throw AuthoringFailure("IMPORT_ACTIVE") }
+            guard importJob?.terminal == true, !modelWorkerPending,
+                  importJob?.modelDerivation?.workerDrained != false, var state = transfer else { throw AuthoringFailure("IMPORT_ACTIVE") }
             state.intent = nil; state.jobId = nil; state.fileName = nil
             try await persistImport(state)
             importJob = nil; importFile = nil; approvalAcknowledged = false
@@ -378,7 +440,7 @@ extension AuthoringModel {
                 guard let self, self.available, self.session != nil else { break }
                 if self.busy { continue }
                 await self.pollImportStatus()
-                if !self.shouldPollImport || self.failure != nil { break }
+                if !self.shouldPollImport || (self.failure != nil && self.failure?.code != "IMPORT_DRAIN_PENDING") { break }
             }
             if self?.importPollID == owner { self?.importPoll = nil; self?.importPollID = nil }
         }
@@ -398,7 +460,9 @@ extension AuthoringModel {
         do {
             let observed = try await api.importJob(id)
             guard current() else { return }
+            if let intent = transfer?.intent { try importTransfer.observe(observed, intent: intent) }
             importJob = observed
+            if !modelWorkerPending, failure?.code == "IMPORT_DRAIN_PENDING" { failure = nil }
             if observed.state == "approved", let selected, selected.id == transfer?.intent?.artworkId {
                 let fresh = try await api.artwork(selected.id)
                 guard current(), self.selected?.id == selected.id,
@@ -415,6 +479,7 @@ extension AuthoringModel {
     private var shouldPollImport: Bool {
         guard let job = importJob else { return false }
         return ["queued", "processing"].contains(job.state) || (job.state == "failed" && job.attempts < 5 && !job.canRetry)
+            || job.modelDerivation?.workerDrained == false || (job.state == "approved" && job.modelDerivation?.status == "pending")
     }
 }
 
@@ -422,6 +487,7 @@ struct NativeAuthoringView: View {
     @ObservedObject var model: AuthoringModel
     let configuration: NativeConfiguration?
     let ready: Bool
+    let mode: Mode
     let connect: () async -> Void
     @State private var discardPrompt = false
     @State private var pendingId: String?
@@ -462,7 +528,7 @@ struct NativeAuthoringView: View {
                     TextField("작가 소개", text: $model.artistBio, axis: .vertical)
                     Button("작가 추가") { Task { await model.createArtist() } }.disabled(model.artistName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.busy || !ready)
                 }
-                if model.editing { NativeImportControls(model: model, ready: ready, openArtwork: { select($0) }); editor }
+                if model.editing { NativeImportControls(model: model, ready: ready, mode: mode, openArtwork: { select($0) }); editor }
             }
             if model.busy { ProgressView("제작 내용을 확인하고 있습니다…") }
             if let failure = model.failure {

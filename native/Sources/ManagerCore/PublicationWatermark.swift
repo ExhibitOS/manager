@@ -117,7 +117,10 @@ public enum PublicationWatermarkRuntime {
     public static let qualifiedManifestSHA256: String? = "d27fba8c86ba906dad85ce564458f3a71c9dfc567b4ec59682e023a5eff4de46"
     public static func supports(manifestSHA256: String?, ready: Bool) -> Bool {
         guard ready, let qualifiedManifestSHA256 else { return false }
+        // The schema-022 packet preserves the qualified watermark/JPEG
+        // producer and consumer contracts while adding model derivation.
         return manifestSHA256 == qualifiedManifestSHA256
+            || manifestSHA256 == "b2ce49e9703cadf7d22b73ec5dfd93622489a07c34721f9bbe2b9f6df17ee28e"
     }
 }
 
