@@ -10,7 +10,12 @@ final class ManagerModel: ObservableObject {
     private var presentationSave: Task<Void, Never>?
     var presentationPending: Bool { selection.hasPendingSave }
     @Published private(set) var context: Context?
-    @Published private(set) var native: NativeHostStatus?
+    @Published private(set) var native: NativeHostStatus? {
+        didSet {
+            exhibitions.configurePublicationWatermark(native?.configuration, ready: ready)
+            publication.configureWatermarkRuntime(native?.configuration, ready: ready)
+        }
+    }
     @Published var accountSubject = ""
     @Published var accountPassword = ""
     @Published private(set) var quitting = false {
@@ -556,7 +561,7 @@ struct ManagerView: View {
         case .select, .preview:
             EmptyView() // The same mounted workbench above owns both purposes.
         case .publish:
-            NativePublicationView(model: model.publication, source: model.exhibitions, staticExport: model.staticExport, hosting: model.hosting, ready: model.ready, connect: { await model.connectPersonalAuthoring() })
+            NativePublicationView(model: model.publication, source: model.exhibitions, staticExport: model.staticExport, hosting: model.hosting, ready: model.ready, mode: model.presentation?.mode ?? .beginner, preview: { model.change(step: .preview) }, connect: { await model.connectPersonalAuthoring() })
         }
         if !model.jobs.isEmpty {
             GroupBox("작업 기록") {
