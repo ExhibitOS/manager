@@ -28,6 +28,10 @@ struct NativeFloorSettingsInspector: View {
             if !model.floorRuntimeAvailable {
                 Text("바닥 재질을 지원하는 제작 서비스를 준비하세요. 기존 설정과 입력은 유지됩니다.").font(.caption).foregroundStyle(.secondary)
             }
+            if model.floorDirty && !model.canEditFloor {
+                Button("바닥 입력 되돌리기") { model.discardFloor() }
+                    .disabled(model.busy || model.pending || model.architectureApplying || model.placingArtwork)
+            }
         }.task(id: "\(model.viewportAccessID)-\(model.floorRuntimeAvailable)") {
             if ready { await model.loadFloorImages() }
         }
