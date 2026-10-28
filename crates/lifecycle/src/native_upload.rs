@@ -15,6 +15,34 @@ pub struct Intent {
     pub rights: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derived: Option<Derived>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_derivation: Option<ModelDerivation>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelDerivation {
+    pub version: u32,
+    pub profile_id: String,
+    pub settings_sha256: String,
+    pub tool_version: String,
+    #[serde(rename = "operationID")]
+    pub operation_id: String,
+    pub generation: String,
+    pub artwork_revision: u32,
+}
+impl ModelDerivation {
+    fn valid(&self, intent: &Intent) -> bool {
+        self.version == 1
+            && self.profile_id == "exhibitos-near-texture-pair-v1"
+            && self.settings_sha256 == "da9039b67435883255f723fd3b37b0fc395ba2acce3ab26706aeaa17d90f73bf"
+            && self.tool_version == "public-near-texture-v1"
+            && self.operation_id == intent.idempotency_key
+            && uuid(&self.operation_id)
+            && uuid(&self.generation)
+            && self.artwork_revision > 0
+            && intent.mime == "model/gltf-binary"
+            && intent.derived.is_none()
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -107,6 +135,7 @@ pub(crate) fn validate(s: &Transfer) -> Result<()> {
                 _ => false,
             }
             || !hash_valid(&i.sha256)
+            || i.model_derivation.as_ref().is_some_and(|model| !model.valid(i))
             || i.bytes == 0
             || i.bytes > 32 * 1024 * 1024
             || !i.scale_meters.is_finite()
@@ -201,6 +230,56 @@ impl InstallationController {
                 .map_err(|_| err("STATE_UNAVAILABLE"))?;
             Ok(state)
         })
+    }
+}
+
+#[cfg(test)]
+mod model_derivation_tests {
+    use super::*;
+
+    #[test]
+    fn durable_optional_model_binding_keeps_legacy_and_jpeg_closed() {
+        let operation = Uuid::new_v4().to_string();
+        let mut value = serde_json::json!({
+            "format":1,"revision":1,"workspaceId":Uuid::new_v4().to_string(),
+            "tenantId":Uuid::new_v4().to_string(),"principalId":Uuid::new_v4().to_string(),
+            "jobId":null,"fileName":"synthetic.glb",
+            "intent":{"artworkId":Uuid::new_v4().to_string(),"idempotencyKey":operation,
+                "mime":"model/gltf-binary","sha256":"a".repeat(64),"bytes":1000,"scaleMeters":1,"rights":{}}
+        });
+        let legacy: Transfer = serde_json::from_value(value.clone()).unwrap();
+        validate(&legacy).unwrap();
+        assert!(serde_json::to_value(&legacy).unwrap()["intent"].get("modelDerivation").is_none());
+        value["intent"]["modelDerivation"] = serde_json::json!({
+            "version":1,"profileId":"exhibitos-near-texture-pair-v1",
+            "settingsSha256":"da9039b67435883255f723fd3b37b0fc395ba2acce3ab26706aeaa17d90f73bf",
+            "toolVersion":"public-near-texture-v1","operationID":operation,
+            "generation":Uuid::new_v4().to_string(),"artworkRevision":1
+        });
+        let state: Transfer = serde_json::from_value(value.clone()).unwrap();
+        validate(&state).unwrap();
+        let reopened: Transfer = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        validate(&reopened).unwrap();
+        assert_eq!(serde_json::to_value(&state).unwrap(), serde_json::to_value(&reopened).unwrap());
+        for (field, bad) in [
+            ("operationID", serde_json::json!(Uuid::new_v4().to_string())),
+            ("generation", serde_json::json!("unbound")),
+            ("artworkRevision", serde_json::json!(0)),
+            ("settingsSha256", serde_json::json!("b".repeat(64))),
+            ("toolVersion", serde_json::json!("private-MacOutput")),
+        ] {
+            let mut changed = value.clone();
+            changed["intent"]["modelDerivation"][field] = bad;
+            assert!(validate(&serde_json::from_value(changed).unwrap()).is_err());
+        }
+        let mut unknown = value.clone();
+        unknown["intent"]["modelDerivation"]["authority"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<Transfer>(unknown).is_err());
+        for mime in ["image/png", "image/jpeg"] {
+            let mut changed = value.clone();
+            changed["intent"]["mime"] = serde_json::json!(mime);
+            assert!(validate(&serde_json::from_value(changed).unwrap()).is_err());
+        }
     }
 }
 

@@ -115,6 +115,9 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "EXPORT_WRITE_FAILED": return "파일을 저장하지 못했습니다. 저장 위치와 여유 공간을 확인하고 다시 시도하세요."
         case "IMPORT_DERIVED_REQUIRED": return "같은 JPEG 원본을 다시 선택해 변환 파일을 준비하세요. 저장한 요청은 유지됩니다."
         case "IMPORT_CONTEXT_CHANGED": return "작업 공간이나 파일 검사 요청이 바뀌었습니다. 저장한 요청을 다시 확인하세요."
+        case "IMPORT_DRAIN_PENDING": return "작품 파일 처리의 종료를 아직 확인하지 못했습니다. 저장한 요청과 원본을 유지한 채 상태를 확인하거나 로컬 제작을 정상 정지하세요."
+        case "IMPORT_MODEL_BINDING_INVALID": return "표시 사본 요청의 파일·설정·작업 식별 정보가 일치하지 않습니다. 저장한 원본과 요청을 유지했습니다."
+        case "IMPORT_MODEL_UNAVAILABLE": return "이 실행본은 저장한 표시 사본 요청을 지원하지 않습니다. 원본과 요청을 보존했으니 지원 실행본에서 다시 확인하세요."
         case "IMPORT_INTENT_CHANGED": return "이전 검사 요청과 파일 또는 권리 입력이 다릅니다. 이전 요청을 완료하거나 취소한 뒤 새 검사를 시작하세요."
         case "IMPORT_FILE_REQUIRED": return "이전 요청과 같은 파일을 다시 선택하세요. 저장한 요청은 유지됩니다."
         default: break
@@ -376,6 +379,8 @@ public actor AuthoringAPI {
               input.scaleMeters.isFinite, input.scaleMeters > 0, input.scaleMeters <= 1_000_000,
               ((["model/gltf-binary", "image/png"].contains(input.mime) && input.derived == nil)
                 || (input.mime == "image/jpeg" && input.derived?.valid == true)),
+              input.modelDerivation == nil || (input.mime == "model/gltf-binary" && input.derived == nil
+                && input.modelDerivation?.valid == true && input.modelDerivation?.operationID == input.idempotencyKey),
               input.sha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil,
               UUID(uuidString: input.idempotencyKey) != nil else { throw AuthoringFailure("IMPORT_INPUT_INVALID") }
         _ = try identifier(input.artworkId)
@@ -413,6 +418,11 @@ public struct NativeImportJob: Decodable, Sendable {
     public let assetId: String?
     public let retryAt: String?
     public let originalAssetId: String?
+    public let modelDerivation: NativeModelDerivationStatus?
+    public init(id: String, state: String, progress: Int, attempts: Int, errorCode: String?, assetId: String?, retryAt: String?, originalAssetId: String? = nil, modelDerivation: NativeModelDerivationStatus? = nil) {
+        self.id = id; self.state = state; self.progress = progress; self.attempts = attempts; self.errorCode = errorCode
+        self.assetId = assetId; self.retryAt = retryAt; self.originalAssetId = originalAssetId; self.modelDerivation = modelDerivation
+    }
     public var terminal: Bool { ["approved", "cancelled"].contains(state) }
     public var canRetry: Bool {
         guard state == "failed", attempts < 5 else { return false }
@@ -433,7 +443,8 @@ public struct NativeImportIntent: Codable, Equatable, Sendable {
     public let scaleMeters: Double
     public let rights: ArtworkMetadata.Rights
     public let derived: NativeImportDerived?
-    public init(artworkId: String, idempotencyKey: String = UUID().uuidString.lowercased(), mime: String, sha256: String, bytes: Int, scaleMeters: Double, rights: ArtworkMetadata.Rights, derived: NativeImportDerived? = nil) {
-        self.artworkId = artworkId; self.idempotencyKey = idempotencyKey; self.mime = mime; self.sha256 = sha256; self.bytes = bytes; self.scaleMeters = scaleMeters; self.rights = rights; self.derived = derived
+    public let modelDerivation: NativeModelDerivationIntent?
+    public init(artworkId: String, idempotencyKey: String = UUID().uuidString.lowercased(), mime: String, sha256: String, bytes: Int, scaleMeters: Double, rights: ArtworkMetadata.Rights, derived: NativeImportDerived? = nil, modelDerivation: NativeModelDerivationIntent? = nil) {
+        self.artworkId = artworkId; self.idempotencyKey = idempotencyKey; self.mime = mime; self.sha256 = sha256; self.bytes = bytes; self.scaleMeters = scaleMeters; self.rights = rights; self.derived = derived; self.modelDerivation = modelDerivation
     }
 }

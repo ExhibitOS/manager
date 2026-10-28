@@ -14,6 +14,16 @@ final class ManagerModel: ObservableObject {
         didSet {
             exhibitions.configurePublicationWatermark(native?.configuration, ready: ready)
             publication.configureWatermarkRuntime(native?.configuration, ready: ready)
+            if oldValue?.runtime?.hasOwnedProcesses == true, native?.runtime?.hasOwnedProcesses == false,
+               native?.needsShutdown == false, native?.busy == false,
+               let manifest = native?.configuration?.manifestSha256, oldValue?.configuration?.manifestSha256 == manifest {
+                let stoppedAuthoring = authoring
+                Task { [weak self] in
+                    guard let self, self.authoring === stoppedAuthoring, self.native?.configuration?.manifestSha256 == manifest,
+                          self.native?.needsShutdown == false, self.native?.runtime?.hasOwnedProcesses == false else { return }
+                    await stoppedAuthoring.ownedImportRuntimeDidStop(manifestSHA256: manifest)
+                }
+            }
         }
     }
     @Published var accountSubject = ""
@@ -36,7 +46,7 @@ final class ManagerModel: ObservableObject {
     @Published private(set) var maintenanceNotice = ""
     @Published private(set) var backupLocation: URL?
     var pendingRestoration: Bool { native?.restoration.map { $0.state != "activated" } == true }
-    var canMaintain: Bool { !busy && !runtimeBusy && !quitting && !hasUnsavedAuthoring && !authoring.busy && !exhibitions.busy && !publication.busy && !staticExport.running && !hosting.running && !hosting.busy && context != nil }
+    var canMaintain: Bool { !busy && !runtimeBusy && !quitting && !hasUnsavedAuthoring && !authoring.busy && !authoring.modelWorkerPending && !exhibitions.busy && !publication.busy && !staticExport.running && !hosting.running && !hosting.busy && context != nil }
     var hasUnsavedAuthoring: Bool { authoring.dirty || exhibitions.dirty }
     private var bridge: NativeBridge?
     private var pollTask: Task<Void, Never>?
@@ -303,7 +313,12 @@ final class ManagerModel: ObservableObject {
             let deadline = ContinuousClock.now.advanced(by: .seconds(90))
             while ContinuousClock.now < deadline || finalizingRestoration {
                 native = try await bridge.nativeStatus(context)
-                if native?.needsShutdown == false { serviceRequested = false; return true }
+                if native?.needsShutdown == false {
+                    if let manifest = native?.configuration?.manifestSha256, native?.runtime?.hasOwnedProcesses == false {
+                        await authoring.ownedImportRuntimeDidStop(manifestSHA256: manifest)
+                    }
+                    serviceRequested = false; return true
+                }
                 try await Task.sleep(for: .milliseconds(250))
             }
             failure = BridgeFailure("NATIVE_STOP_PENDING")
@@ -557,7 +572,7 @@ struct ManagerView: View {
             }
             NativeMaintenanceView(model: model)
         case .create:
-            NativeAuthoringView(model: model.authoring, configuration: model.native?.configuration, ready: model.ready, connect: { await model.connectPersonalAuthoring() })
+            NativeAuthoringView(model: model.authoring, configuration: model.native?.configuration, ready: model.ready, mode: model.presentation?.mode ?? .beginner, connect: { await model.connectPersonalAuthoring() })
         case .select, .preview:
             EmptyView() // The same mounted workbench above owns both purposes.
         case .publish:
