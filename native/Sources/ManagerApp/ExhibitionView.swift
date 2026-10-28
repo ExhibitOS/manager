@@ -193,6 +193,7 @@ final class ExhibitionModel: ObservableObject {
     private var viewingPlanPreview: ViewingPlanPreview?
     private var viewingPlanPreviewAccessID: UUID?
     private var viewingPlanPreviewContext: UUID?
+    private var viewingPlanPreviewHostEpoch: String?
     private var viewingPlanPreviewSequence: Int?
     @Published private(set) var viewingPlanStatus = ""
     var viewingPlanDirty: Bool { viewingPlan != viewingPlanBaseline }
@@ -211,6 +212,7 @@ final class ExhibitionModel: ObservableObject {
     var canApplyViewingPlan: Bool {
         guard canEditViewingPlan, viewingPlanPreviewAccessID == viewportAccessID,
               viewingPlanPreviewContext == viewportController.editingContextGeneration,
+              viewingPlanPreviewHostEpoch == viewportController.hostEpoch,
               viewingPlanPreviewSequence == viewportController.acceptedSequence,
               let preview = viewingPlanPreview, let draft, draft == preview.base else { return false }
         return (try? viewingPlan?.command(in: draft)) == preview.command
@@ -495,7 +497,7 @@ final class ExhibitionModel: ObservableObject {
         viewportCredentials = credentials
         if accessChanged { entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
         self.read = read; self.write = write
-        viewingPlanPreview = nil; viewingPlanPreviewAccessID = nil; viewingPlanPreviewContext = nil; viewingPlanPreviewSequence = nil
+        viewingPlanPreview = nil; viewingPlanPreviewAccessID = nil; viewingPlanPreviewContext = nil; viewingPlanPreviewHostEpoch = nil; viewingPlanPreviewSequence = nil
         // Reconnecting may replace the native store closures even for the same
         // account/origin. Keep text, but never apply a prior binding's preview.
         clearSurfaceMaterialPreview()
@@ -971,7 +973,7 @@ final class ExhibitionModel: ObservableObject {
         syncViewingPlan()
     }
     func previewViewingPlan() async {
-        guard canPreviewViewingPlan, let fields = viewingPlan, let base = draft else { return }
+        guard canPreviewViewingPlan, let fields = viewingPlan, let base = draft, let hostEpoch = viewportController.hostEpoch else { return }
         let access = viewportAccessID, context = viewportController.editingContextGeneration
         do {
             let command = try fields.command(in: base)
@@ -982,10 +984,11 @@ final class ExhibitionModel: ObservableObject {
                   !architectureGeometryDirty, !surfaceMaterialDirty, !lightDirty, !benchDirty,
                   !plaqueDirty, !spaceLightingDirty, !furnishingDirty,
                   viewportAccessID == access, viewportController.editingContextActive,
-                  viewportController.editingContextGeneration == context, draft == base,
+                  viewportController.editingContextGeneration == context, viewportController.hostEpoch == hostEpoch, draft == base,
                   preview.base == base, viewingPlan == fields else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             viewingPlanPreview = preview; viewingPlanPreviewAccessID = access
             viewingPlanPreviewContext = context; viewingPlanPreviewSequence = viewportController.acceptedSequence
+            viewingPlanPreviewHostEpoch = hostEpoch
             viewingPlanStatus = "관람 계획의 형식을 확인했습니다. 적용하면 이 Mac에 보관합니다. 관람 중 안전한 시점은 별도로 확인합니다."
         } catch {
             viewingPlanStatus = "관람 계획을 확인하지 못했습니다. 입력과 기존 전시는 유지됩니다. 연결과 시점 선택을 확인하세요."
@@ -1001,6 +1004,7 @@ final class ExhibitionModel: ObservableObject {
                   viewportController.editingContextActive, viewportController.connected, viewportController.viewingPlanSupported,
                   viewingPlanPreviewAccessID == viewportAccessID,
                   viewingPlanPreviewContext == viewportController.editingContextGeneration,
+                  viewingPlanPreviewHostEpoch == viewportController.hostEpoch,
                   viewingPlanPreviewSequence == viewportController.acceptedSequence,
                   let preview = viewingPlanPreview, let fields = viewingPlan, let draft, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             value.draft = try preview.apply(to: draft, command: fields.command(in: draft))
