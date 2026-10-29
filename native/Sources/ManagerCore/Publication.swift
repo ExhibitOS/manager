@@ -48,6 +48,17 @@ public struct NativePublicationPending: Codable, Equatable, Sendable {
     public func requirePlanBinding(_ expected: String?) throws {
         guard validPublicationPlanBinding(planBindingSha256), validPublicationPlanBinding(expected), planBindingSha256 == expected else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
     }
+    /// Compare an authenticated GET result; never replay the uncertain POST or
+    /// replace its snapshot/request IDs. The caller retains generation and CAS.
+    public func confirmingSavedSnapshot(_ saved: NativeStudioResponse) throws -> Self {
+        guard snapshotEtag == nil else { throw AuthoringFailure("PUBLICATION_PENDING") }
+        guard saved.revision == 1, validPublicationETag(saved.etag),
+              saved.etag.hasPrefix("\"studio-r1-"), saved.draft == snapshot else {
+            throw AuthoringFailure("REMOTE_CONFLICT", status: 409)
+        }
+        var next = self; next.snapshotEtag = saved.etag
+        return next
+    }
 }
 public struct NativePublicationCompleted: Codable, Equatable, Sendable {
     public let sourceExhibitionId: String, sourceEtag: String, snapshotExhibitionId: String, publishRequestId: String
@@ -72,6 +83,26 @@ public struct NativePublicationState: Codable, Equatable, Sendable {
     public let workspaceId: String, tenantId: String, principalId: String
     public var pending: NativePublicationPending?
     public var completed: NativePublicationCompleted?
+}
+
+/// Local correspondence only. Authentication belongs to AuthoringAPI and the
+/// durable write still uses the helper's original scope/revision CAS.
+public struct NativePendingPublicationSnapshotBinding: Sendable {
+    private let original: NativePublicationState
+    private let generation: UUID
+    public init(_ state: NativePublicationState, generation: UUID) throws {
+        guard state.format == 1, let pending = state.pending, pending.snapshotEtag == nil else {
+            throw AuthoringFailure("PUBLICATION_PENDING")
+        }
+        original = state; self.generation = generation
+    }
+    public func accepting(_ saved: NativeStudioResponse, in current: NativePublicationState, generation: UUID) throws -> NativePublicationState {
+        guard current == original, generation == self.generation, let pending = current.pending else {
+            throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED")
+        }
+        var next = current; next.pending = try pending.confirmingSavedSnapshot(saved)
+        return next
+    }
 }
 
 /// A status reply may update only the exact retained preparation and journal

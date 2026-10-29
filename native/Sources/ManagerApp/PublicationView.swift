@@ -129,6 +129,26 @@ final class PublicationModel: ObservableObject {
             state = try checked(await read()); try await finishPending()
         }
     }
+    func comparePendingSnapshot() async {
+        await work {
+            guard let read, let api else { throw AuthoringFailure("PUBLICATION_STORE_REQUIRED") }
+            let generation = runtimeGeneration
+            let original = try checked(await read())
+            guard generation == runtimeGeneration, let pending = original.pending, pending.snapshotEtag == nil else {
+                throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED")
+            }
+            let binding = try NativePendingPublicationSnapshotBinding(original, generation: generation)
+            state = original
+            try requireWatermarkRuntime(pending.snapshot)
+            try pending.requirePlanBinding(planBinding(pending.snapshot, etag: pending.sourceEtag, sourceId: pending.sourceExhibitionId))
+            let saved = try await api.exhibition(pending.snapshot.id)
+            guard let current = state else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+            let accepted = try binding.accepting(saved, in: current, generation: runtimeGeneration)
+            try await persist(accepted)
+            guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+            notice = "보관한 내용과 저장된 사본이 정확히 같습니다. 같은 준비 작업을 계속할 수 있습니다."
+        }
+    }
     private func finishPending() async throws {
         guard let api, var value = state, var pending = value.pending else { throw AuthoringFailure("PUBLICATION_PENDING") }
         try requireWatermarkRuntime(pending.snapshot)
@@ -230,6 +250,10 @@ struct NativePublicationView: View {
             if let pending = model.state?.pending {
                 Text("보관한 공개 준비 요청이 있습니다. 같은 요청으로 결과를 확인하세요.")
                 Text(pending.snapshot.title).font(.headline)
+                if pending.snapshotEtag == nil {
+                    Button("저장된 사본과 비교") { Task { await model.comparePendingSnapshot() } }.disabled(!ready || model.busy)
+                    Text("기존 사본을 읽어 보관한 내용과 대조합니다. 새 저장 요청은 보내지 않습니다.").font(.caption).foregroundStyle(.secondary)
+                }
                 Button("보관한 준비 다시 확인") { Task { await model.retry() } }.disabled(!ready || model.busy)
             }
             if let completed = model.state?.completed {
