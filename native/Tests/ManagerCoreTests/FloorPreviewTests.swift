@@ -8,9 +8,10 @@ final class FloorPreviewTests: XCTestCase {
         let hash = "b2ce49e9703cadf7d22b73ec5dfd93622489a07c34721f9bbe2b9f6df17ee28e"
         XCTAssertTrue(NativeFloorRuntime.supports(manifestSHA256: hash, ready: true))
         XCTAssertFalse(NativeFloorRuntime.supports(manifestSHA256: hash, ready: false))
-        let interior = "7e823d9372aba3613fb8794f981c0f01cc97a420e3e82c388a783439bc933556"
+        let interior = "859525370a4599a465a502fff15d1cb26db3961ee11ac5bf0a6f64af070c355d"
         XCTAssertTrue(NativeFloorRuntime.supports(manifestSHA256: interior, ready: true))
         XCTAssertFalse(NativeFloorRuntime.supports(manifestSHA256: interior, ready: false))
+        XCTAssertFalse(NativeFloorRuntime.supports(manifestSHA256: "7e823d9372aba3613fb8794f981c0f01cc97a420e3e82c388a783439bc933556", ready: true), "Do not retain the incomplete proposal")
         XCTAssertFalse(NativeFloorRuntime.supports(manifestSHA256: String(repeating: "0", count: 64), ready: true))
         XCTAssertFalse(NativeFloorRuntime.supports(manifestSHA256: nil, ready: true))
         XCTAssertEqual(try FloorSettings.all(in: NativeExhibitionDraft.new().candidate), [])

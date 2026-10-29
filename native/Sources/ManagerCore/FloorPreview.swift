@@ -6,7 +6,7 @@ import Foundation
 public enum NativeFloorRuntime {
     public static func supports(manifestSHA256: String?, ready: Bool) -> Bool {
         ready && (manifestSHA256 == "b2ce49e9703cadf7d22b73ec5dfd93622489a07c34721f9bbe2b9f6df17ee28e"
-            || manifestSHA256 == "7e823d9372aba3613fb8794f981c0f01cc97a420e3e82c388a783439bc933556")
+            || manifestSHA256 == "859525370a4599a465a502fff15d1cb26db3961ee11ac5bf0a6f64af070c355d")
     }
 }
 
