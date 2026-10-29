@@ -225,8 +225,10 @@ impl Hoster {
                 let completed = publication.completed.ok_or_else(|| err("NATIVE_PUBLICATION_REQUIRED"))?;
                 if publication.pending.is_some() || completed.publication.publication_id != publication_id || source.publication_id != publication_id || completed.publication.status != "published" || source.revision_sha256 != completed.publication.revision_sha256 || expected_manifest_sha256 != source.manifest_sha256 { return Err(err("NATIVE_PUBLICATION_STATE_CHANGED")); }
                 let pin = static_publication_source::inspect(source.output.to_str().ok_or_else(bad)?)?;
-                let cache_policy = super::native_static_export::cache_policy_sha256(&source)?;
-                let record = Work { format: 1, id: Uuid::new_v4().to_string(), workspace_id: identity.0.clone(), tenant_id: identity.1.clone(), principal_id: identity.2.clone(), account_id: account, project_name: pin.info.project_name, source, static_cache_policy_sha256: Some(cache_policy), state: "running".into(), deployment_id: None, public_url: None, error_code: None };
+                // Older helpers reject the new Work field. Until rollback-safe
+                // journal versioning exists, new work must remain readable by
+                // them; retain Some handling above for any existing records.
+                let record = Work { format: 1, id: Uuid::new_v4().to_string(), workspace_id: identity.0.clone(), tenant_id: identity.1.clone(), principal_id: identity.2.clone(), account_id: account, project_name: pin.info.project_name, source, static_cache_policy_sha256: None, state: "running".into(), deployment_id: None, public_url: None, error_code: None };
                 record.verify_source()?;
                 self.controller.save_hosting_work(&token, &record)?;
                 (request_for(&record, "deploy-static"), secret, Some(record))
