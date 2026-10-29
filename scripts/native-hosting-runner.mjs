@@ -5,6 +5,7 @@ import {pathToFileURL} from 'node:url';
 import {resolve} from 'node:path';
 import {executeHosted,inspectStaticBundle} from '../vendor/deployment/src/pages-render.mjs';
 import {boundedJSON} from '../vendor/deployment/src/bounded-json.mjs';
+import {STATIC_DATA_CACHE_PROFILE} from '../vendor/deployment/src/pages-render-worker.mjs';
 
 const fail=code=>{throw Error(code);};
 const publicCodes=new Set(['HOSTED_PUBLIC_CONTENT_MISMATCH','HOSTED_PUBLIC_CONTENT_UNAVAILABLE','HOSTED_REQUEST_INVALID','HOSTED_TOKEN_INVALID','HOSTED_RESPONSE_INVALID','HOSTED_OPERATION_UNCERTAIN']);
@@ -14,7 +15,7 @@ export function nativeHostingFailure(error){
  const code=error?.code??error?.message;
  return publicCodes.has(code)||providerCodes.has(code)?code:'HOSTED_OPERATION_UNCERTAIN';
 }
-export async function verifyPublicStatic(bundle,result,fetch=globalThis.fetch){
+export async function verifyPublicStatic(bundle,result,fetch=globalThis.fetch,cacheProfile){
  if(result.provider!=='cloudflare'||result.state!=='ready'||typeof result.projectName!=='string'||!/^[a-z0-9](?:[a-z0-9-]{0,57}[a-z0-9])?$/.test(result.projectName)||result.url!==`https://${result.projectName}.pages.dev`)fail('HOSTED_RESPONSE_INVALID');
  let bytes=0;
  for(const file of bundle.files){
@@ -24,6 +25,10 @@ export async function verifyPublicStatic(bundle,result,fetch=globalThis.fetch){
   try{response=await fetch(result.url+'/'+file.path,{redirect:'manual',credentials:'omit',referrerPolicy:'no-referrer',cache:'no-store',headers:{'Cache-Control':'no-cache'},signal:AbortSignal.timeout(30000)});}
   catch{fail('HOSTED_PUBLIC_CONTENT_UNAVAILABLE');}
   if(response.status!==200||!response.body){await response.body?.cancel();fail('HOSTED_PUBLIC_CONTENT_UNAVAILABLE');}
+  if(cacheProfile===STATIC_DATA_CACHE_PROFILE&&bundle.cachePolicy.paths.includes(file.path)){
+   const directives=(response.headers.get('cache-control')??'').toLowerCase().split(',').map(v=>v.trim());
+   if(directives.length!==3||new Set(directives).size!==3||!directives.includes('public')||!directives.includes('max-age=86400')||!directives.includes('immutable')){await response.body.cancel();fail('HOSTED_PUBLIC_CONTENT_MISMATCH');}
+  }
   const reader=response.body.getReader(),digest=createHash('sha256');let count=0;
   try{
    for(;;){const {done,value}=await reader.read();if(done)break;count+=value.byteLength;if(count>file.bytes)fail('HOSTED_PUBLIC_CONTENT_MISMATCH');digest.update(value);}
@@ -35,16 +40,19 @@ export async function verifyPublicStatic(bundle,result,fetch=globalThis.fetch){
  return {manifestSha256:bundle.manifestSha256,files:bundle.files.length,bytes};
 }
 export async function runNativeHosting(request,tokens,options={}){
- if(!request||typeof request!=='object'||Array.isArray(request)||Object.keys(request).some(k=>!['provider','action','accountId','projectName','sourcePath','expectedManifestSha256','staticOnly'].includes(k))||request.provider!=='cloudflare'||request.staticOnly!==true||!['accounts','deploy-static','reconcile'].includes(request.action))fail('HOSTED_REQUEST_INVALID');
+ if(!request||typeof request!=='object'||Array.isArray(request)||Object.keys(request).some(k=>!['provider','action','accountId','projectName','sourcePath','expectedManifestSha256','staticOnly','staticCacheProfile','staticCachePolicySha256'].includes(k))||request.provider!=='cloudflare'||request.staticOnly!==true||!['accounts','deploy-static','reconcile'].includes(request.action))fail('HOSTED_REQUEST_INVALID');
+ if(request.staticCacheProfile!==undefined&&(request.staticCacheProfile!==STATIC_DATA_CACHE_PROFILE||typeof request.staticCachePolicySha256!=='string'||!/^[a-f0-9]{64}$/.test(request.staticCachePolicySha256)))fail('HOSTED_REQUEST_INVALID');
+ if(request.staticCacheProfile===undefined&&request.staticCachePolicySha256!==undefined)fail('HOSTED_REQUEST_INVALID');
  if(!tokens||Object.keys(tokens).join(',')!=='cloudflare'||typeof tokens.cloudflare!=='string'||!/^[!-~]{1,4096}$/.test(tokens.cloudflare))fail('HOSTED_TOKEN_INVALID');
  if(request.action==='accounts'&&Object.keys(request).some(k=>!['provider','action','staticOnly'].includes(k)))fail('HOSTED_REQUEST_INVALID');
  const bundle=request.action==='accounts'?null:await inspectStaticBundle(request.sourcePath,{expectedManifestSha256:request.expectedManifestSha256});
+ if(bundle&&request.staticCacheProfile!==undefined&&createHash('sha256').update(bundle.cachePolicy.headers).digest('hex')!==request.staticCachePolicySha256)fail('HOSTED_STATIC_BUNDLE_CHANGED');
  const result=await (options.execute??executeHosted)(request,{fetch:options.fetch??globalThis.fetch,tokens});
  if(!result||result.provider!=='cloudflare'||!['ready','deploying','uncertain','failed'].includes(result.state))fail('HOSTED_RESPONSE_INVALID');
  if(bundle&&result.state==='ready'){
   if(result.projectName!==request.projectName)fail('HOSTED_RESPONSE_INVALID');
   const current=await inspectStaticBundle(request.sourcePath,{expectedManifestSha256:bundle.manifestSha256});
-  result.verification=await verifyPublicStatic(current,result,options.fetch??globalThis.fetch);
+  result.verification=await verifyPublicStatic(current,result,options.fetch??globalThis.fetch,request.staticCacheProfile);
  }
  return result;
 }

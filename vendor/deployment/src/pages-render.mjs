@@ -3,7 +3,7 @@ import {readFile,lstat,readdir,realpath} from 'node:fs/promises';
 import {resolve,join,extname,isAbsolute} from 'node:path';
 import {createHash,createPrivateKey,createPublicKey} from 'node:crypto';
 import {pagesAssetHash} from './pages-asset-hash.mjs';
-import {pagesDeploymentIdentity,appendPagesProxy,dynamicPublicationHTML} from './pages-render-worker.mjs';
+import {pagesDeploymentIdentity,appendPagesProxy,dynamicPublicationHTML,pagesStaticCachePolicy,STATIC_DATA_CACHE_PROFILE} from './pages-render-worker.mjs';
 const CF='https://api.cloudflare.com/client/v4',RENDER='https://api.render.com/v1';
 const fail=code=>{throw Error(code);},sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const text=v=>typeof v==='string'&&v.length>0&&v.length<=128&&!/[\x00-\x1f\x7f]/.test(v);
@@ -62,7 +62,8 @@ export async function inspectStaticBundle(sourcePath,{expectedManifestSha256}={}
  for(const d of [projection.publication,...projection.assets])if(!files.some(f=>f.path===d.path&&f.bytes===d.bytes&&f.sha256===d.sha256))fail('HOSTED_STATIC_BUNDLE_INVALID');
  const publication=JSON.parse((await regular(join(root,projection.publication.path),25*1024*1024)).toString());if(publication.publication?.id!==receipt.publicationId||publication.publication?.status!=='published'||publication.publication?.revisionSha256!==receipt.revisionSha256)fail('HOSTED_STATIC_BUNDLE_INVALID');
  // The private local upload receipt itself is not a published asset.
- return {root,files,bytes:total,manifestSha256:sha(receiptBytes),publicationId:receipt.publicationId,revisionSha256:receipt.revisionSha256};
+ const cachePolicy=pagesStaticCachePolicy([projection.publication,...projection.assets]);
+ return {root,files,bytes:total,manifestSha256:sha(receiptBytes),publicationId:receipt.publicationId,revisionSha256:receipt.revisionSha256,cachePolicy};
  }catch(e){if(/^HOSTED_/.test(e.message))throw e;fail('HOSTED_STATIC_BUNDLE_INVALID');}
 }
 async function cfProject(api,accountId,projectName){const route=`/accounts/${accountId}/pages/projects/${projectName}`;let p=await api(route,{missing:true});if(!p){try{p=await api(`/accounts/${accountId}/pages/projects`,{method:'POST',body:{name:projectName,production_branch:'main'}});}catch(e){if(e.message!=='HOSTED_RESULT_UNCERTAIN')throw e;p=await api(route,{missing:true});if(!p)fail('HOSTED_RESULT_UNCERTAIN');}}if(p?.name!==projectName||p.source||(p.production_branch&&p.production_branch!=='main'))fail('HOSTED_PROJECT_CONFLICT');if(p.subdomain&&p.subdomain!==projectName+'.pages.dev')fail('HOSTED_CANONICAL_ORIGIN_CONFLICT');return p;}
@@ -96,9 +97,9 @@ async function cloudflare(request,options){const api=transport('cloudflare',opti
   return {...baseResult('cloudflare',action,'ready'),accounts:[...accounts.values()]};
  }
  if(!/^[a-f0-9]{32}$/.test(request.accountId)||!name(request.projectName))fail('HOSTED_REQUEST_INVALID');const route=`/accounts/${request.accountId}/pages/projects/${request.projectName}`,deployments=route+'/deployments';
- if(action==='reconcile'){if(!hex(request.expectedManifestSha256))fail('HOSTED_REQUEST_INVALID');const project=await api(route);if(project?.name!==request.projectName)fail('HOSTED_PROJECT_CONFLICT');const {hash}=pagesDeploymentIdentity(request.expectedManifestSha256,request),d=await findDeployment(api,deployments,hash);return d?observeDeployment(api,route,d,request.projectName,action):{...baseResult('cloudflare',action,'uncertain'),projectName:request.projectName,deploymentId:'pending-'+hash};}
+ if(action==='reconcile'){if(!hex(request.expectedManifestSha256))fail('HOSTED_REQUEST_INVALID');const {hash}=pagesDeploymentIdentity(request.expectedManifestSha256,request);if(request.staticCacheProfile!==undefined){const checked=await inspectStaticBundle(request.sourcePath,{expectedManifestSha256:request.expectedManifestSha256});if(sha(checked.cachePolicy.headers)!==request.staticCachePolicySha256)fail('HOSTED_STATIC_BUNDLE_CHANGED');}const project=await api(route);if(project?.name!==request.projectName)fail('HOSTED_PROJECT_CONFLICT');const d=await findDeployment(api,deployments,hash);return d?observeDeployment(api,route,d,request.projectName,action):{...baseResult('cloudflare',action,'uncertain'),projectName:request.projectName,deploymentId:'pending-'+hash};}
  if(action==='status'){if(/^pending-[a-f0-9]{40}$/.test(request.deploymentId)){const d=await findDeployment(api,deployments,request.deploymentId.slice(8));return d?observeDeployment(api,route,d,request.projectName,action):{...baseResult('cloudflare',action,'uncertain'),projectName:request.projectName,deploymentId:request.deploymentId};}if(!id(request.deploymentId))fail('HOSTED_REQUEST_INVALID');return observeDeployment(api,route,await api(deployments+'/'+request.deploymentId),request.projectName,action);}
- if(action!=='deploy-static')fail('HOSTED_REQUEST_INVALID');stage(options,'BUNDLE_VERIFY');const bundle=await inspectStaticBundle(request.sourcePath,{expectedManifestSha256:request.expectedManifestSha256});const {hash:contentHash,proxy}=pagesDeploymentIdentity(bundle.manifestSha256,request);const project=await cfProject(api,request.accountId,request.projectName),current=currentContent(project,contentHash);if(current)return deploymentProjection(current,request.projectName,action);
+ if(action!=='deploy-static')fail('HOSTED_REQUEST_INVALID');stage(options,'BUNDLE_VERIFY');const bundle=await inspectStaticBundle(request.sourcePath,{expectedManifestSha256:request.expectedManifestSha256});if(request.staticCacheProfile!==undefined&&sha(bundle.cachePolicy.headers)!==request.staticCachePolicySha256)fail('HOSTED_STATIC_BUNDLE_CHANGED');const {hash:contentHash,proxy}=pagesDeploymentIdentity(bundle.manifestSha256,request);const project=await cfProject(api,request.accountId,request.projectName),current=currentContent(project,contentHash);if(current)return deploymentProjection(current,request.projectName,action);
  const previous=await findDeployment(api,deployments,contentHash);
  if(previous){const observed=await observeDeployment(api,route,previous,request.projectName,action);if(['ready','deploying'].includes(observed.state))return observed;}
  // An explicit deploy retries terminal failure or republishes historical success through
@@ -111,6 +112,7 @@ async function cloudflare(request,options){const api=transport('cloudflare',opti
  for(const hash of new Set(missing)){const f=hashFiles.get(hash),bytes=await regular(join(bundle.root,f.path),25*1024*1024);if(sha(bytes)!==f.sha256)fail('HOSTED_STATIC_BUNDLE_CHANGED');await api('/pages/assets/upload',{method:'POST',bearer:jwt,body:[{key:hash,value:(f.generatedBytes??bytes).toString('base64'),metadata:{contentType:f.mime},base64:true}]});}
  await api('/pages/assets/upsert-hashes',{method:'POST',bearer:jwt,body:{hashes}});
  stage(options,'DEPLOY_FORM');const form=new FormData();form.set('manifest',JSON.stringify(manifest));form.set('branch','main');form.set('commit_hash',contentHash);form.set('commit_message','ExhibitOS approved static publication');if(proxy)await appendPagesProxy(form,proxy);
+ if(request.staticCacheProfile===STATIC_DATA_CACHE_PROFILE&&bundle.cachePolicy.headers)form.set('_headers',new File([bundle.cachePolicy.headers],'_headers',{type:'text/plain'}));
  let created;
  try{created=await api(deployments,{method:'POST',body:form});}catch(e){
   if(e.message!=='HOSTED_RESULT_UNCERTAIN')throw e;
