@@ -144,7 +144,10 @@ struct NativeHostingView: View {
                 DisclosureGroup("배포 식별 정보") { Text(work.projectName).textSelection(.enabled); Text(work.id).textSelection(.enabled); Text(work.source.manifestSha256).textSelection(.enabled) }
             }
             if let failure = model.failure { Text(failure.localizedDescription); DisclosureGroup("오류 상세") { Text(failure.code).textSelection(.enabled) } }
-            if let code = model.status?.errorCode { Text(BridgeFailure(code).localizedDescription); DisclosureGroup("배포 오류 상세") { Text(code).textSelection(.enabled) } }
+            if let code = model.status?.errorCode {
+                Text(code == "HOSTED_CACHE_POLICY_NOT_READY" ? "공개된 파일의 이전 확인 기록은 유지됩니다. 캐시 응답은 아직 확인되지 않았습니다." : BridgeFailure(code).localizedDescription)
+                DisclosureGroup("배포 오류 상세") { Text(code).textSelection(.enabled) }
+            }
         }
         .task(id: receipt?.manifestSha256) { await model.refreshReview(receipt) }
         .onChange(of: model.accountId) { _, _ in model.resetReview() }

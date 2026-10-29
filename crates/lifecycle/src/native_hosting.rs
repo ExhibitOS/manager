@@ -39,12 +39,38 @@ pub struct Status { pub running: bool, pub accounts: Vec<Account>, pub work: Opt
 #[serde(rename_all = "camelCase")]
 pub struct Review { pub source: super::native_static_export::Receipt, pub info: static_publication_source::SourceInfo }
 fn bad() -> LifecycleError { err("NATIVE_HOSTING_INVALID") }
+// Until the marker-aware provider path and live verification are qualified,
+// refuse marked artifacts rather than report legacy byte delivery as cache.
+fn admit_cache_binding(marker: Option<&str>, legacy_policy: Option<&str>) -> Result<()> {
+    if marker.is_some() && legacy_policy.is_some() { return Err(err("HOSTED_STATIC_BUNDLE_CHANGED")); }
+    if marker.is_some() { return Err(err("HOSTED_CACHE_POLICY_NOT_READY")); }
+    Ok(())
+}
+// Historical byte completion remains terminal. Cache readiness is a separate,
+// non-durable warning: marker intent alone cannot prove actual public headers.
+fn project_cache_warning(mut status: Status, marker: Result<Option<String>>) -> Status {
+    if status.error_code.is_none() {
+        status.error_code = match marker {
+            Ok(None) => None,
+            Ok(Some(_)) => Some("HOSTED_CACHE_POLICY_NOT_READY".into()),
+            Err(_) => Some("HOSTED_STATIC_BUNDLE_CHANGED".into()),
+        };
+    }
+    status
+}
+fn status_projection(status: Status) -> Status {
+    let marker = match &status.work {
+        Some(work) if work.state == "completed" => super::native_static_export::cache_marker_sha256(&work.source),
+        _ => Ok(None),
+    };
+    project_cache_warning(status, marker)
+}
 fn account_id(id: &str) -> bool { id.len() == 32 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) }
 fn project_name(name: &str) -> bool {
     (1..=59).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') && !name.starts_with('-') && !name.ends_with('-')
 }
 fn safe_code(code: &str) -> bool {
-    matches!(code, "HOSTED_PUBLIC_CONTENT_MISMATCH" | "HOSTED_PUBLIC_CONTENT_UNAVAILABLE" | "HOSTED_API_ORIGIN_INVALID" | "HOSTED_BUSY" | "HOSTED_CANONICAL_ORIGIN_CONFLICT" | "HOSTED_CONNECTION_FAILED" | "HOSTED_DEPLOYMENT_BRANCH_CONFLICT" | "HOSTED_OPERATION_UNCERTAIN" | "HOSTED_PAGINATION_LIMIT" | "HOSTED_PAID_PLAN_REFUSED" | "HOSTED_PERMISSION_REQUIRED" | "HOSTED_PROJECT_CONFLICT" | "HOSTED_RATE_LIMITED" | "HOSTED_REDIRECT_REFUSED" | "HOSTED_REMOTE_REJECTED" | "HOSTED_REQUEST_INVALID" | "HOSTED_RESOURCE_CONFLICT" | "HOSTED_RESPONSE_INVALID" | "HOSTED_RESULT_UNCERTAIN" | "HOSTED_SOURCE_INVALID" | "HOSTED_SOURCE_REQUIRED" | "HOSTED_STATIC_BUNDLE_CHANGED" | "HOSTED_STATIC_BUNDLE_INVALID" | "HOSTED_TOKEN_INVALID" | "HOSTED_TOKEN_REQUIRED" | "NATIVE_HOSTING_CANCELLED" | "NATIVE_HOSTING_UNAVAILABLE" | "NATIVE_HOSTING_INVALID")
+    matches!(code, "HOSTED_CACHE_POLICY_NOT_READY" | "HOSTED_CACHE_HEADERS_MISMATCH" | "HOSTED_PUBLIC_CONTENT_MISMATCH" | "HOSTED_PUBLIC_CONTENT_UNAVAILABLE" | "HOSTED_API_ORIGIN_INVALID" | "HOSTED_BUSY" | "HOSTED_CANONICAL_ORIGIN_CONFLICT" | "HOSTED_CONNECTION_FAILED" | "HOSTED_DEPLOYMENT_BRANCH_CONFLICT" | "HOSTED_OPERATION_UNCERTAIN" | "HOSTED_PAGINATION_LIMIT" | "HOSTED_PAID_PLAN_REFUSED" | "HOSTED_PERMISSION_REQUIRED" | "HOSTED_PROJECT_CONFLICT" | "HOSTED_RATE_LIMITED" | "HOSTED_REDIRECT_REFUSED" | "HOSTED_REMOTE_REJECTED" | "HOSTED_REQUEST_INVALID" | "HOSTED_RESOURCE_CONFLICT" | "HOSTED_RESPONSE_INVALID" | "HOSTED_RESULT_UNCERTAIN" | "HOSTED_SOURCE_INVALID" | "HOSTED_SOURCE_REQUIRED" | "HOSTED_STATIC_BUNDLE_CHANGED" | "HOSTED_STATIC_BUNDLE_INVALID" | "HOSTED_TOKEN_INVALID" | "HOSTED_TOKEN_REQUIRED" | "NATIVE_HOSTING_CANCELLED" | "NATIVE_HOSTING_UNAVAILABLE" | "NATIVE_HOSTING_INVALID")
 }
 impl Work {
     fn new_deployment(identity: &(String, String, String), account_id: String, project_name: String, source: super::native_static_export::Receipt) -> Self {
@@ -71,6 +97,8 @@ impl Work {
         let current = super::native_static_export::verify_output(&value)?;
         if let Some(expected) = &self.static_cache_policy_sha256
             && super::native_static_export::cache_policy_sha256(&current)? != *expected { return Err(err("HOSTED_STATIC_BUNDLE_CHANGED")); }
+        let marker = super::native_static_export::cache_marker_sha256(&current)?;
+        admit_cache_binding(marker.as_deref(), self.static_cache_policy_sha256.as_deref())?;
         if current.manifest_sha256 != self.source.manifest_sha256 || current.index_sha256 != self.source.index_sha256 || current.files != self.source.files || current.bytes != self.source.bytes { return Err(err("HOSTED_STATIC_BUNDLE_CHANGED")); }
         let pin = static_publication_source::inspect(self.source.output.to_str().ok_or_else(bad)?)?;
         if pin.sha256 != self.source.manifest_sha256 || pin.info.project_name != self.project_name || pin.info.publication_id != self.source.publication_id { return Err(err("HOSTED_STATIC_BUNDLE_CHANGED")); }
@@ -210,8 +238,8 @@ impl Hoster {
             return self.state.lock().map_err(|_| bad())?.clone().ok_or_else(bad);
         }
         if let Some(worker) = self.worker.take() { worker.join().map_err(|_| bad())?; }
-        if self.owner.as_ref() == Some(&identity) && let Some(value) = self.state.lock().map_err(|_| bad())?.clone() && !value.running { return Ok(value); }
-        Ok(Status { running: false, accounts: vec![], work: self.controller.hosting_work(token)?, error_code: None })
+        if self.owner.as_ref() == Some(&identity) && let Some(value) = self.state.lock().map_err(|_| bad())?.clone() && !value.running { return Ok(status_projection(value)); }
+        Ok(status_projection(Status { running: false, accounts: vec![], work: self.controller.hosting_work(token)?, error_code: None }))
     }
     pub fn start(&mut self, token: String, input: Input, payload: Arc<Payload>) -> Result<Status> {
         let previous = self.status(&token)?;
@@ -353,5 +381,22 @@ mod tests {
         assert_eq!(request_for(&recovered, "reconcile")["staticCachePolicySha256"], "e".repeat(64));
         work.static_cache_policy_sha256 = Some("INVALID".into());
         assert!(work.validate().is_err());
+    }
+    #[test]
+    fn cache_marker_gate_preserves_legacy_identity_without_enabling_marked_work() {
+        assert!(admit_cache_binding(None, None).is_ok());
+        assert!(admit_cache_binding(None, Some(&"a".repeat(64))).is_ok());
+        assert_eq!(admit_cache_binding(Some(&"b".repeat(64)), None).unwrap_err().code, "HOSTED_CACHE_POLICY_NOT_READY");
+        assert_eq!(admit_cache_binding(Some(&"b".repeat(64)), Some(&"a".repeat(64))).unwrap_err().code, "HOSTED_STATIC_BUNDLE_CHANGED");
+    }
+    #[test]
+    fn cache_marker_status_never_promotes_an_old_unverified_completion() {
+        let mut saved = work(); saved.state = "completed".into(); saved.deployment_id = Some("old".into()); saved.public_url = Some("https://synthetic-exhibition.pages.dev".into());
+        let status = Status { running:false, accounts:vec![], work:Some(saved.clone()), error_code:None };
+        let ordinary = project_cache_warning(status.clone(), Ok(None)); assert_eq!(ordinary.work.unwrap().state, "completed"); assert!(ordinary.error_code.is_none());
+        let marked = project_cache_warning(status, Ok(Some("a".repeat(64)))); assert_eq!(marked.work.unwrap().state, "completed"); assert_eq!(marked.error_code.as_deref(), Some("HOSTED_CACHE_POLICY_NOT_READY"));
+        let missing = status_projection(Status { running:false, accounts:vec![], work:Some(saved.clone()), error_code:None });
+        assert_eq!(missing.work.as_ref().unwrap().state, "completed"); assert_eq!(missing.error_code.as_deref(), Some("HOSTED_STATIC_BUNDLE_CHANGED"));
+        assert_eq!(saved.state, "completed"); assert!(saved.public_url.is_some());
     }
 }

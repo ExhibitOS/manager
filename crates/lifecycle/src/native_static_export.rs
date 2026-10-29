@@ -106,6 +106,22 @@ pub fn cache_policy_sha256(receipt: &Receipt) -> Result<String> {
 fn cache_headers(paths: BTreeSet<String>) -> String {
     paths.into_iter().take(100).map(|path| format!("/{path}\n  Cache-Control: public, max-age=86400, immutable\n")).collect::<Vec<_>>().join("\n")
 }
+/// A marker is an intent bound by the manifest, not evidence of public headers.
+/// The caller must first validate the complete output with verify_output.
+pub fn cache_marker_sha256(receipt: &Receipt) -> Result<Option<String>> {
+    let manifest_bytes = bounded(&receipt.output, "static-export-manifest.json", 8 * 1024 * 1024)?;
+    if digest(&manifest_bytes) != receipt.manifest_sha256 { return Err(bad()); }
+    let manifest: Manifest = serde_json::from_slice(&manifest_bytes).map_err(|_| bad())?;
+    let Some(entry) = manifest.files.iter().find(|f| f.path == "static-cache-policy.json") else { return Ok(None); };
+    let bytes = bounded(&receipt.output, "static-cache-policy.json", 1024)?;
+    if bytes.len() as u64 != entry.bytes || digest(&bytes) != entry.sha256 { return Err(bad()); }
+    let policy = cache_policy_sha256(receipt)?;
+    if !valid_cache_marker(&bytes, &receipt.index_sha256, &policy) { return Err(bad()); }
+    Ok(Some(policy))
+}
+fn valid_cache_marker(bytes: &[u8], index: &str, headers: &str) -> bool {
+    hash_valid(index) && hash_valid(headers) && bytes == format!("{{\"version\":1,\"profile\":\"exhibitos-static-cache-v1\",\"indexSha256\":\"{index}\",\"headersSha256\":\"{headers}\"}}").as_bytes()
+}
 #[cfg(test)]
 mod cache_policy_tests {
     use super::*;
@@ -118,6 +134,36 @@ mod cache_policy_tests {
         assert!(!headers.contains(&format!("/data/{:064x}.bin", 100)));
         assert!(headers.ends_with('\n'));
         assert!(cache_headers(BTreeSet::new()).is_empty());
+    }
+    #[test]
+    fn marker_is_canonical_and_binds_exact_index_and_policy() {
+        let index = "a".repeat(64); let policy = "b".repeat(64);
+        let marker = format!("{{\"version\":1,\"profile\":\"exhibitos-static-cache-v1\",\"indexSha256\":\"{index}\",\"headersSha256\":\"{policy}\"}}");
+        assert!(valid_cache_marker(marker.as_bytes(), &index, &policy));
+        assert!(!valid_cache_marker(format!("{marker}\n").as_bytes(), &index, &policy));
+        assert!(!valid_cache_marker(marker.as_bytes(), &"c".repeat(64), &policy));
+        assert!(!valid_cache_marker(marker.as_bytes(), &index, &"d".repeat(64)));
+        assert!(!valid_cache_marker(marker.replace("exhibitos-static-cache-v1", "static-data-sha256-24h-v1").as_bytes(), &index, &policy));
+    }
+    #[test]
+    fn marker_read_is_bound_to_manifest_and_verified_index() {
+        let root = std::env::temp_dir().join(format!("exhibitos-cache-marker-{}", Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let payload = b"synthetic publication"; let payload_hash = digest(payload);
+        let path = format!("data/{payload_hash}.json"); fs::create_dir(root.join("data")).unwrap();
+        fs::write(root.join(&path), payload).unwrap();
+        let index = serde_json::to_vec(&serde_json::json!({"version":1,"publication":{"path":path,"bytes":payload.len(),"sha256":payload_hash},"assets":[]})).unwrap();
+        let index_hash = digest(&index); fs::write(root.join("static-publication-index.json"), &index).unwrap();
+        let headers = format!("/{path}\n  Cache-Control: public, max-age=86400, immutable\n"); let policy = digest(headers.as_bytes());
+        let marker = format!("{{\"version\":1,\"profile\":\"exhibitos-static-cache-v1\",\"indexSha256\":\"{index_hash}\",\"headersSha256\":\"{policy}\"}}");
+        fs::write(root.join("static-cache-policy.json"), &marker).unwrap();
+        let manifest = serde_json::to_vec(&serde_json::json!({"format":"exhibitos-static-publication-v1","publicationId":Uuid::new_v4().to_string(),"revisionSha256":"a".repeat(64),"indexSha256":index_hash,"files":[{"path":path,"bytes":payload.len(),"sha256":payload_hash},{"path":"static-publication-index.json","bytes":index.len(),"sha256":index_hash},{"path":"static-cache-policy.json","bytes":marker.len(),"sha256":digest(marker.as_bytes())}]})).unwrap();
+        fs::write(root.join("static-export-manifest.json"), &manifest).unwrap();
+        let receipt = Receipt { publication_id: Uuid::new_v4().to_string(), revision_sha256:"a".repeat(64), index_sha256:index_hash, manifest_sha256:digest(&manifest), files:4, bytes:0, output:root.clone() };
+        assert_eq!(cache_marker_sha256(&receipt).unwrap(), Some(policy));
+        fs::write(root.join("static-cache-policy.json"), b"tampered").unwrap();
+        assert!(cache_marker_sha256(&receipt).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 }
 /// Full exact-file verification is also the crash/lost-result reconciliation.
