@@ -118,6 +118,14 @@ final class FloorSettingsTests: XCTestCase {
         XCTAssertFalse(try buffer.declareSoundResources(available: true, requiresQualifiedRuntime: false))
         XCTAssertFalse(NativeFloorAudioRuntime.supports(manifestSHA256: String(repeating: "a", count: 64), ready: true))
     }
+    func testFootstepCapabilityRequiresExactReadyRuntime() {
+        let qualified = "46c3d7ef193e21eb8185e707cf886832ccd4d7942667407453e939b2f72ce111"
+        XCTAssertTrue(NativeFloorAudioRuntime.supports(manifestSHA256: qualified, ready: true))
+        XCTAssertTrue(NativeFloorRuntime.supports(manifestSHA256: qualified, ready: true))
+        XCTAssertFalse(NativeFloorAudioRuntime.supports(manifestSHA256: qualified, ready: false))
+        XCTAssertFalse(NativeFloorAudioRuntime.supports(manifestSHA256: nil, ready: true))
+        XCTAssertFalse(NativeFloorAudioRuntime.supports(manifestSHA256: "b2ce49e9703cadf7d22b73ec5dfd93622489a07c34721f9bbe2b9f6df17ee28e", ready: true))
+    }
     func testRejectUnknownBoundsDuplicateTargetAndNonWavReference() throws {
         var (draft, target) = try fixture()
         let settings = try preset(.tile, draft: draft, target: target)
