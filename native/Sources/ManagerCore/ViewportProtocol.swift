@@ -50,6 +50,7 @@ public struct ViewportAcceptance: Decodable, Sendable {
     public var supportsFurnishingVisuals: Bool { accepted && capabilities?.contains("furnishing-visuals-v1") == true }
     public var supportsSpaceSettings: Bool { accepted && capabilities?.contains("space-settings-v1") == true }
     public var supportsLightInspector: Bool { accepted && capabilities?.contains("light-inspector-v1") == true }
+    public var supportsLightFixture: Bool { accepted && capabilities?.contains("light-fixture-aim-v1") == true }
     public var supportsBenchInspector: Bool { accepted && capabilities?.contains("bench-inspector-v1") == true }
     public var supportsPlaqueInspector: Bool { accepted && capabilities?.contains("plaque-inspector-v1") == true }
     public var supportsSurfaceMaterialTextures: Bool { accepted && capabilities?.contains(SurfaceMaterialTextureBinding.capability) == true }
