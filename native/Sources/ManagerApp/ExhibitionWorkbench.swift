@@ -30,7 +30,7 @@ struct NativeExhibitionView: View {
     @State private var inspectorInputs: [String: InstallationInspectorState] = [:]
 
     private enum InspectorScope: String, CaseIterable, Identifiable {
-        case selection, lighting, floor, cover, exhibition, output
+        case selection, lighting, floor, cover, exhibition, viewingPlan, output
         var id: Self { self }
         var title: String {
             switch self {
@@ -39,6 +39,7 @@ struct NativeExhibitionView: View {
             case .floor: "바닥 재질"
             case .cover: "표지·입장"
             case .exhibition: "전시 정보"
+            case .viewingPlan: "관람 순서"
             case .output: "저장·내보내기"
             }
         }
@@ -204,7 +205,7 @@ struct NativeExhibitionView: View {
                 ForEach(InspectorScope.allCases) { value in Text(value.title).tag(value) }
             }.padding(12)
             Divider()
-            inspectorContent.disabled(readOnly && scope != .output)
+            inspectorContent.disabled((readOnly && scope != .output) || ((model.viewingPlanDirty || model.viewingPointInput != nil) && scope != .viewingPlan))
         }
     }
     @ViewBuilder private var inspectorContent: some View {
@@ -232,6 +233,8 @@ struct NativeExhibitionView: View {
             ScrollView { Form { CoverEntrySettingsView(model: model, mode: mode) }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true).disabled(formLocked) }
         case .exhibition:
             ScrollView { exhibitionForm.padding(4) }
+        case .viewingPlan:
+            ScrollView { ViewingPlanSettingsView(model: model, controller: controller, ready: ready) }
         case .floor:
             ScrollView { NativeFloorSettingsInspector(model: model, viewport: controller, ready: ready).padding(12) }
         case .output:
