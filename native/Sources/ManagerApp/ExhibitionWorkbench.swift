@@ -86,7 +86,7 @@ struct NativeExhibitionView: View {
                 VStack(spacing: 0) {
                     // This node stays at the same structural position for all
                     // modes, purposes, sidebar and inspector presentations.
-                    NativeViewportArea(model: model, ready: ready, editable: active && !model.immutable && !readOnly, controller: controller, workbench: true)
+                    NativeViewportArea(model: model, ready: ready, editable: active && !model.immutable && !readOnly, controller: controller, workbench: true, mode: mode)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     if coverPurpose {
                         Divider()

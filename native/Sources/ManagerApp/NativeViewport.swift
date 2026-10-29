@@ -18,13 +18,22 @@ struct NativeEntrancePreviewOutput {
     let png: Data?
 }
 
+struct NativeDisplayReadoutInput {
+    let draft: NativeExhibitionDraft
+    let selection: ViewportSelection?
+    let view: String
+    let cameraSequence: Int
+    let transparent: Bool
+    let presentation: ViewportPresentation
+}
+
 @MainActor
 final class NativeViewportController: ObservableObject {
     // Synchronously updated by native navigation, before a delayed WK frame or
     // queued candidate callback can act on the former editing purpose.
     private(set) var editingContextGeneration = UUID()
     @Published var editingContextActive = true {
-        didSet { if oldValue != editingContextActive { editingContextGeneration = UUID() } }
+        didSet { if oldValue != editingContextActive { editingContextGeneration = UUID(); displayReadout = "" } }
     }
     @Published var connected = false
     @Published fileprivate(set) var planSupported = false
@@ -40,6 +49,25 @@ final class NativeViewportController: ObservableObject {
     @Published fileprivate(set) var surfaceMaterialTexturesSupported = false
     @Published fileprivate(set) var entrancePreviewSupported = false
     fileprivate var acknowledgedFrame: ViewportFrame?
+    @Published fileprivate(set) var displayReadout = ""
+    @Published private(set) var readingDisplay = false
+    fileprivate var displayReadoutAction: ((NativeDisplayReadoutInput) async throws -> String)?
+    func readDisplayStatus(_ input: NativeDisplayReadoutInput) async {
+        guard connected, editingContextActive, !readingDisplay, let displayReadoutAction else { return }
+        let context = editingContextGeneration, epoch = owner, accepted = acceptedSequence
+        readingDisplay = true; displayReadout = ""
+        defer { readingDisplay = false }
+        do {
+            let value = try await displayReadoutAction(input)
+            guard connected, editingContextActive, editingContextGeneration == context, owner == epoch,
+                  acceptedSequence == accepted, acknowledgedFrame?.draft == input.draft,
+                  acknowledgedFrame?.selection == input.selection else { return }
+            displayReadout = value
+        } catch {
+            guard editingContextActive, editingContextGeneration == context, owner == epoch else { return }
+            diagnose("DISPLAY_READ", error)
+        }
+    }
     var hostEpoch: String? { owner }
     func confirmsFloorPreview(_ draft: NativeExhibitionDraft, tenantId: String, principalId: String) -> Bool {
         connected && acknowledgedFrame?.confirmsFloorPreview(ownerEpoch: owner, acceptedSequence: acceptedSequence,
@@ -229,7 +257,7 @@ struct NativeViewport: NSViewRepresentable {
             guard active else { return }
             endPlacement()
             entranceOperation = nil
-            if controller.owner == epoch { controller.entrancePreviewAction = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil }
+            if controller.owner == epoch { controller.entrancePreviewAction = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }
             active = false; generation = UUID(); sendTask?.cancel()
             if controller.owner == epoch { controller.furnishingVisualsAction = nil; controller.furnishingThumbnailAction = nil; controller.spaceSettingsAction = nil; controller.lightInspectorAction = nil; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.benchInspectorAction = nil; controller.benchInspectorSupported = false; controller.plaqueInspectorAction = nil; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false }
             if controller.owner == epoch { controller.action = nil; controller.thumbnailAction = nil; controller.findSelectionAction = nil; controller.placementAction = nil; controller.placementSupported = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0 }
@@ -255,7 +283,7 @@ struct NativeViewport: NSViewRepresentable {
                 return
             }
             if installedToken == nil {
-                entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil
+                entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""
                 controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false
                 installedToken = value.credentials.token
                 generation = UUID(); sequence = 0; sent = 0; fingerprint = nil; prepared = false
@@ -277,6 +305,7 @@ struct NativeViewport: NSViewRepresentable {
             endPlacement()
             entranceOperation = nil
             fingerprint = hash; sequence += 1
+            if !controller.displayReadout.isEmpty { controller.displayReadout = "" }
             controller.connected = false
             latest = ViewportFrame(epoch: epoch, sequence: sequence, tenantId: value.credentials.tenantId, principalId: value.credentials.principalId, draft: value.draft, selection: selection, mode: value.mode, view: value.view, disabled: value.disabled, cameraSequence: value.cameraSequence, transparent: value.transparent, presentation: controller.planSupported ? value.presentation : .threeD)
             schedule()
@@ -314,7 +343,7 @@ struct NativeViewport: NSViewRepresentable {
             return .allow
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             guard active, controller.owner == epoch, webView === web else { return }
             controller.message = "3D 화면을 열지 못했습니다. 로컬 제작 상태를 확인하세요."
@@ -350,10 +379,84 @@ struct NativeViewport: NSViewRepresentable {
                         self.controller.surfaceMaterialTexturesSupported = acceptance.supportsSurfaceMaterialTextures
                         self.controller.entrancePreviewSupported = acceptance.supportsEntrancePreview
                         self.controller.acknowledgedFrame = frame
+                        self.controller.displayReadout = ""
                         self.controller.acceptedSequence = frame.sequence
                         self.sent = frame.sequence; self.controller.connected = self.sent == self.sequence; self.controller.diagnostic = ""
                     } catch { if self.generation == generation { self.controller.connected = false; self.controller.message = "전시를 3D에 표시하지 못했습니다. 저장한 전시와 연결을 확인하세요."; self.controller.diagnose("FRAME", error) }; break }
                 }
+            }
+            controller.displayReadoutAction = { [weak self] input in
+                guard let self, self.active, self.prepared, let web = self.web, let frame = self.latest,
+                      frame.draft == input.draft, frame.selection == input.selection,
+                      frame.view == input.view, frame.cameraSequence == input.cameraSequence,
+                      frame.transparent == input.transparent, frame.presentation == input.presentation,
+                      frame.presentation == .threeD else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                let generation = self.generation, context = self.controller.editingContextGeneration
+                @MainActor func current() throws {
+                    guard self.active, self.prepared, self.isPage(web.url), self.generation == generation,
+                          self.controller.owner == self.epoch, frame.epoch == self.epoch,
+                          self.controller.editingContextActive, self.controller.editingContextGeneration == context,
+                          self.controller.connected, self.sent == frame.sequence,
+                          self.controller.acceptedSequence == frame.sequence,
+                          self.controller.acknowledgedFrame?.epoch == frame.epoch,
+                          self.controller.acknowledgedFrame?.selection == input.selection,
+                          self.controller.acknowledgedFrame?.draft == input.draft,
+                          self.controller.acknowledgedFrame?.view == input.view,
+                          self.controller.acknowledgedFrame?.cameraSequence == input.cameraSequence,
+                          self.controller.acknowledgedFrame?.transparent == input.transparent,
+                          self.controller.acknowledgedFrame?.presentation == input.presentation,
+                          self.latest?.sequence == frame.sequence,
+                          self.parent.draft == input.draft, self.parent.selection == input.selection,
+                          self.parent.view == input.view, self.parent.cameraSequence == input.cameraSequence,
+                          (self.controller.planSupported ? self.parent.presentation : .threeD) == input.presentation,
+                          self.parent.credentials.tenantId == frame.tenantId, self.parent.credentials.principalId == frame.principalId,
+                          self.installedToken == self.parent.credentials.token, self.parent.disabled == frame.disabled,
+                          self.parent.transparent == input.transparent, self.entranceOperation == nil,
+                          self.placementIntent == nil, !self.inspectorPending else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                }
+                try current()
+                // One synchronous, read-only sample. These existing datasets
+                // report a last request/map admission, never live pose or appearance.
+                let script = """
+                const canvases = [...document.querySelectorAll('canvas[aria-label="전시 공간 3D 미리보기"]')].filter(c => {
+                  const r = c.getBoundingClientRect(); return c.isConnected && r.width > 0 && r.height > 0;
+                });
+                if (canvases.length !== 1) throw new Error('VIEWPORT_DISPLAY_CANVAS_UNAVAILABLE');
+                const c = canvases[0], result = {};
+                for (const key of ['floorView', 'cameraProjection', 'floorTextures']) {
+                  const value = c.dataset[key] ?? null;
+                  if (value !== null && value.length > 4096) throw new Error('VIEWPORT_DISPLAY_LIMIT');
+                  result[key] = value;
+                }
+                return result;
+                """
+                let response = try await web.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page)
+                try Task.checkCancellation(); try current()
+                guard let response, JSONSerialization.isValidJSONObject(response) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                let bytes = try JSONSerialization.data(withJSONObject: response)
+                guard bytes.count <= 16_384, case .object(let fields) = try JSONDecoder().decode(DocumentValue.self, from: bytes),
+                      Set(fields.keys) == Set(["floorView", "cameraProjection", "floorTextures"]) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                var datasets: [String: DocumentValue] = [:]
+                for (key, value) in fields {
+                    if value == .null { datasets[key] = .null; continue }
+                    guard let string = value.string, string.utf8.count <= 4096 else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                    let parsed = try JSONDecoder().decode(DocumentValue.self, from: Data(string.utf8))
+                    guard case .object = parsed else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                    datasets[key] = parsed
+                }
+                let selectedFloor = input.selection.flatMap { selection in
+                    selection.kind == "surface" && input.draft.candidate["surfaces"].items?.contains(where: { $0["id"].string == selection.id && $0["type"].string == "floor" }) == true ? selection.id : nil
+                }
+                let lastFloor = datasets["floorView"]?["surfaceId"].string
+                let match = selectedFloor != nil && lastFloor?.lowercased() == selectedFloor?.lowercased()
+                let selection: DocumentValue = frame.selection.map { .object(["kind": .string($0.kind), "id": .string($0.id)]) } ?? .null
+                let ack: DocumentValue = .object(["epoch": .string(frame.epoch), "sequence": .integer(Int64(frame.sequence)),
+                    "selection": selection, "view": .string(frame.view), "cameraSequence": .integer(Int64(frame.cameraSequence)),
+                    "transparent": .bool(frame.transparent), "presentation": .string(frame.presentation.rawValue)])
+                let value: DocumentValue = .object(["ack": ack, "canvas": .object(datasets),
+                    "lastFloorRequestMatchesSelection": .bool(match)])
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+                return String(decoding: try encoder.encode(value), as: UTF8.self)
             }
             controller.entrancePreviewAction = { [weak self] input in
                 guard let self, self.active, self.prepared, self.controller.owner == self.epoch,
@@ -646,6 +749,7 @@ struct NativeViewportArea: View {
     var editable = true
     @ObservedObject var controller: NativeViewportController
     var workbench = false
+    var mode: Mode = .beginner
     @State private var identity = UUID()
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -685,7 +789,25 @@ struct NativeViewportArea: View {
                     .font(workbench ? .caption : .body).lineLimit(workbench ? 2 : nil).padding(.horizontal, workbench ? 12 : 0)
                     .onChange(of: controller.acceptedSequence) { _, _ in model.confirmEntranceHostRecovery() }
                     .onChange(of: controller.connected) { _, _ in model.confirmEntranceHostRecovery() }
-                if !controller.diagnostic.isEmpty { DisclosureGroup("3D 연결 상세") { Text(controller.diagnostic).textSelection(.enabled) } }
+                if mode == .expert || !controller.diagnostic.isEmpty {
+                    DisclosureGroup("3D 연결 상세") {
+                        if !controller.diagnostic.isEmpty { Text(controller.diagnostic).textSelection(.enabled) }
+                        if mode == .expert {
+                            Button(controller.readingDisplay ? "표시 상태 확인 중…" : "표시 상태 확인") {
+                                let input = NativeDisplayReadoutInput(draft: draft, selection: model.viewportSelection,
+                                    view: model.viewportView, cameraSequence: model.viewportCameraSequence,
+                                    transparent: model.viewportTransparent,
+                                    presentation: controller.planSupported ? model.viewportPresentation : .threeD)
+                                Task { await controller.readDisplayStatus(input) }
+                            }.disabled(!controller.connected || !controller.editingContextActive || controller.readingDisplay || model.entrancePreviewActive)
+                            Text("요청·맵 상태 정보입니다. 현재 카메라 좌표나 외관 수락을 뜻하지 않습니다.").font(.caption).foregroundStyle(.secondary)
+                            ScrollView {
+                                Text(controller.displayReadout.isEmpty ? "현재 표시 상태를 확인하세요." : controller.displayReadout)
+                                    .font(.caption.monospaced()).textSelection(.enabled)
+                            }.frame(height: 120)
+                        }
+                    }
+                }
                 if !workbench {
                 if editable {
                     HStack {

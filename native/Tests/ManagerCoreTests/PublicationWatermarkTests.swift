@@ -107,5 +107,9 @@ final class PublicationWatermarkTests: XCTestCase {
         XCTAssertFalse(PublicationWatermarkRuntime.supports(manifestSHA256: nil, ready: false))
         XCTAssertTrue(PublicationWatermarkRuntime.supports(manifestSHA256: PublicationWatermarkRuntime.qualifiedManifestSHA256, ready: true))
         XCTAssertFalse(PublicationWatermarkRuntime.supports(manifestSHA256: PublicationWatermarkRuntime.qualifiedManifestSHA256, ready: false))
+        let interior = "859525370a4599a465a502fff15d1cb26db3961ee11ac5bf0a6f64af070c355d"
+        XCTAssertTrue(PublicationWatermarkRuntime.supports(manifestSHA256: interior, ready: true))
+        XCTAssertFalse(PublicationWatermarkRuntime.supports(manifestSHA256: interior, ready: false))
+        XCTAssertFalse(PublicationWatermarkRuntime.supports(manifestSHA256: "7e823d9372aba3613fb8794f981c0f01cc97a420e3e82c388a783439bc933556", ready: true), "Do not retain the incomplete proposal")
     }
 }
