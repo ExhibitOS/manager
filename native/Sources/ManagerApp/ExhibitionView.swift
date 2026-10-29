@@ -1743,9 +1743,20 @@ final class ExhibitionModel: ObservableObject {
     }
     func adoptComparison() async {
         await work(allowViewingPlanInput: true, allowViewingPointInput: true) {
-            guard !pending, let saved = comparison, let api, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
-            value.draft = saved.draft; value.etag = saved.etag; value.savedEditVersion = saved.draft.document["editVersion"].integer
+            guard !pending, let saved = comparison, let api, let original = state,
+                  original.draft?.id == saved.draft.id else { throw AuthoringFailure("EXHIBITION_PENDING") }
+            let access = viewportAccessID
             let frozen = !(try await api.publications(exhibitionId: saved.draft.id)).isEmpty
+            let current = try await api.exhibition(saved.draft.id)
+            try saved.requireSameComparison(current)
+            guard viewportAccessID == access, let valueBefore = state, valueBefore.revision == original.revision,
+                  valueBefore.draft == original.draft, valueBefore.etag == original.etag,
+                  valueBefore.pending == nil, comparison?.revision == saved.revision,
+                  comparison?.etag == saved.etag, comparison?.draft == saved.draft else {
+                throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
+            }
+            var value = valueBefore
+            value.draft = saved.draft; value.etag = saved.etag; value.savedEditVersion = saved.draft.document["editVersion"].integer
             try await persist(value); immutable = frozen; comparison = nil; syncFields()
             notice = "확인한 저장본으로 전환했습니다."
         }
