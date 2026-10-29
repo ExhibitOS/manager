@@ -2,8 +2,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
+import {mkdtemp,writeFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {verifyPublicStatic,runNativeHosting,nativeHostingFailure} from './native-hosting-runner.mjs';
 import {pagesStaticCachePolicy,pagesDeploymentIdentity,STATIC_DATA_CACHE_PROFILE} from '../vendor/deployment/src/pages-render-worker.mjs';
+import {executeHosted,inspectStaticBundle} from '../vendor/deployment/src/pages-render.mjs';
 const data=Buffer.from('synthetic approved public asset');
 const bundle={manifestSha256:'a'.repeat(64),files:[{path:'assets/synthetic.glb',bytes:data.length,sha256:createHash('sha256').update(data).digest('hex')}]};
 const ready={provider:'cloudflare',state:'ready',projectName:'exhibition-fixture',url:'https://exhibition-fixture.pages.dev'};
@@ -56,4 +60,19 @@ test('new cache profile requires actual public response headers as well as exact
  await assert.rejects(verifyPublicStatic(checked,ready,async()=>new Response(data),STATIC_DATA_CACHE_PROFILE),/HOSTED_PUBLIC_CONTENT_MISMATCH/);
  for(const value of ['public, max-age=86400, immutable, no-store','public, max-age=86400, immutable, private','public, max-age=86400, immutable, max-age=0','public, public, max-age=86400, immutable'])await assert.rejects(verifyPublicStatic(checked,ready,async()=>new Response(data,{headers:{'Cache-Control':value}}),STATIC_DATA_CACHE_PROFILE),/HOSTED_PUBLIC_CONTENT_MISMATCH/);
  await verifyPublicStatic(checked,ready,async()=>new Response(data,{headers:{'Cache-Control':'public, max-age=86400, immutable'}}),STATIC_DATA_CACHE_PROFILE);
+});
+test('profiled reconciliation uses only GET and never selects a legacy deployment',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'manager-cache-reconcile-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const sha=v=>createHash('sha256').update(v).digest('hex'),id='00000000-0000-4000-8000-000000000001',revision='b'.repeat(64);
+ const publication=JSON.stringify({publication:{id,status:'published',revisionSha256:revision}}),descriptor={path:'publication.json',bytes:Buffer.byteLength(publication),sha256:sha(publication)};
+ const index=JSON.stringify({version:1,publication:descriptor,assets:[]}),indexSha=sha(index),html=`<html><head><meta name="exhibitos-static-index" content="${indexSha}"></head></html>`;
+ const files={'publication.json':publication,'static-publication-index.json':index,'index.html':html};
+ for(const [path,bytes] of Object.entries(files))await writeFile(join(root,path),bytes);
+ const manifest={format:'exhibitos-static-publication-v1',publicationId:id,revisionSha256:revision,indexSha256:indexSha,files:Object.entries(files).map(([path,bytes])=>({path,bytes:Buffer.byteLength(bytes),sha256:sha(bytes)}))};
+ await writeFile(join(root,'static-export-manifest.json'),JSON.stringify(manifest));const bundle=await inspectStaticBundle(root);
+ const request={provider:'cloudflare',action:'reconcile',accountId:'a'.repeat(32),projectName:'exhibition-fixture',sourcePath:root,expectedManifestSha256:bundle.manifestSha256,staticOnly:true,staticCacheProfile:STATIC_DATA_CACHE_PROFILE,staticCachePolicySha256:sha(bundle.cachePolicy.headers)};
+ const legacy=bundle.manifestSha256.slice(0,40),profiled=pagesDeploymentIdentity(bundle.manifestSha256,request).hash;assert.notEqual(legacy,profiled);
+ let calls=0;const response=result=>new Response(JSON.stringify({success:true,result}),{headers:{'content-type':'application/json'}});
+ const fetch=async(url,init)=>{calls++;assert.equal(init.method,'GET');if(url.endsWith('/exhibition-fixture'))return response({name:'exhibition-fixture'});return response([{id:'legacy',deployment_trigger:{metadata:{commit_hash:legacy}},latest_stage:{status:'success'}}]);};
+ const result=await executeHosted(request,{tokens:{cloudflare:'synthetic-token'},fetch});assert.equal(result.state,'uncertain');assert.equal(result.deploymentId,'pending-'+profiled);assert.ok(calls>0);
 });
