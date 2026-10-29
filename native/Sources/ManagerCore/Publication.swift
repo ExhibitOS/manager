@@ -24,6 +24,13 @@ public struct NativePublication: Codable, Equatable, Sendable {
               formatter.date(from: publishedAt) != nil || ISO8601DateFormatter().date(from: publishedAt) != nil else { throw AuthoringFailure("PUBLICATION_RESPONSE_INVALID") }
         return self
     }
+    public func acceptingStatus(_ response: Self, requiredStatus: String? = nil) throws -> Self {
+        _ = try validated(); _ = try response.validated()
+        guard response.publicationId == publicationId, response.publicUrl == publicUrl,
+              response.revisionSha256 == revisionSha256, response.publishedAt == publishedAt,
+              requiredStatus.map({ response.status == $0 }) ?? true else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+        return response
+    }
 }
 public struct NativePublicationPending: Codable, Equatable, Sendable {
     public let sourceExhibitionId: String, sourceEtag: String
@@ -42,7 +49,7 @@ public struct NativePublicationPending: Codable, Equatable, Sendable {
         guard validPublicationPlanBinding(planBindingSha256), validPublicationPlanBinding(expected), planBindingSha256 == expected else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
     }
 }
-public struct NativePublicationCompleted: Codable, Sendable {
+public struct NativePublicationCompleted: Codable, Equatable, Sendable {
     public let sourceExhibitionId: String, sourceEtag: String, snapshotExhibitionId: String, publishRequestId: String
     public var publication: NativePublication
     public let planBindingSha256: String?
@@ -52,16 +59,38 @@ public struct NativePublicationCompleted: Codable, Sendable {
         planBindingSha256 = pending.planBindingSha256
     }
     public func isReusable(sourceExhibitionId: String, etag: String, planBindingSha256 expected: String?) -> Bool {
-        self.sourceExhibitionId == sourceExhibitionId && sourceEtag == etag && publication.status == "published"
+        publication.status == "published" && refersToSource(sourceExhibitionId: sourceExhibitionId, etag: etag, planBindingSha256: expected)
+    }
+    public func refersToSource(sourceExhibitionId: String, etag: String, planBindingSha256 expected: String?) -> Bool {
+        self.sourceExhibitionId == sourceExhibitionId && sourceEtag == etag
             && validPublicationPlanBinding(planBindingSha256) && validPublicationPlanBinding(expected) && planBindingSha256 == expected
     }
 }
-public struct NativePublicationState: Codable, Sendable {
+public struct NativePublicationState: Codable, Equatable, Sendable {
     public let format: Int
     public var revision: UInt64
     public let workspaceId: String, tenantId: String, principalId: String
     public var pending: NativePublicationPending?
     public var completed: NativePublicationCompleted?
+}
+
+/// A status reply may update only the exact retained preparation and journal
+/// revision that issued it. No new durable action or publication is invented.
+public struct NativePublicationStatusBinding: Sendable {
+    private let original: NativePublicationState
+    public let completed: NativePublicationCompleted
+    public init(_ state: NativePublicationState) throws {
+        guard state.format == 1, state.pending == nil, let completed = state.completed else { throw AuthoringFailure("PUBLICATION_PENDING") }
+        _ = try completed.publication.validated()
+        original = state; self.completed = completed
+    }
+    public func replacingPublication(_ response: NativePublication, in current: NativePublicationState) throws -> NativePublicationState {
+        guard current == original else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+        var value = current, changed = completed
+        changed.publication = try completed.publication.acceptingStatus(response)
+        value.completed = changed
+        return value
+    }
 }
 func validPublicationETag(_ value: String) -> Bool { value.range(of: #"^"studio-r[1-9][0-9]*-[a-f0-9]{64}"$"#, options: .regularExpression) != nil }
 func validPublicationPlanBinding(_ value: String?) -> Bool { value.map(nativeImportDigest) ?? true }

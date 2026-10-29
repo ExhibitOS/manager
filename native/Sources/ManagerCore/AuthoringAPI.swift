@@ -107,6 +107,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "WATERMARK_TEXT_UNSUPPORTED": return "사본 삽입은 지원하는 영문·숫자·기호 80자까지 사용합니다. 다른 언어는 화면 표시를 선택하세요."
         case "WATERMARK_RUNTIME_UNAVAILABLE": return "이 실행본은 새 워터마크 설정을 지원하지 않습니다. 입력과 저장 요청을 보존했습니다. 지원 실행본에서 다시 확인하세요."
         case "PUBLICATION_RESPONSE_INVALID": return "공개 준비 상태를 확인하지 못했습니다. 같은 요청으로 다시 확인하세요."
+        case "PUBLICATION_SCOPE_CHANGED", "PUBLICATION_STATUS_UNCONFIRMED": return "이 Mac의 준비 상태를 다시 확인하세요. 제작 중인 전시와 이전 기록은 유지됩니다."
         case "PUBLICATION_NOT_READY": return "공개 준비에 필요한 항목이 남아 있습니다. 작품의 승인·표시 권리와 전시 정보를 확인하세요."
         case "PUBLISHED_DRAFT_IMMUTABLE": return "이 공개용 저장본은 변경할 수 없습니다. 원래 제작 전시에서 편집하세요."
         case "OEX_LIMIT": return "내보내기 파일은 최대 64 MiB를 지원합니다. 전시의 작품 파일 크기를 확인하세요."
@@ -318,6 +319,12 @@ public actor AuthoringAPI {
         let result: Page = try await request(studioPrefix + "/exhibitions/" + identifier(exhibitionId) + "/publications")
         guard result.items.count <= 100 else { throw AuthoringFailure("PUBLICATION_RESPONSE_INVALID") }
         return try result.items.map { try $0.validated() }
+    }
+    public func unpublish(_ expected: NativePublication) async throws -> NativePublication {
+        _ = try expected.validated()
+        guard expected.status == "published" else { throw AuthoringFailure("PUBLICATION_STATUS_UNCONFIRMED") }
+        let result: NativePublication = try await request(studioPrefix + "/publications/" + identifier(expected.publicationId) + "/unpublish", method: "POST", body: Data("{}".utf8))
+        return try expected.acceptingStatus(result, requiredStatus: "unpublished")
     }
     /// Export only a saved exact revision through the existing rights/integrity gate.
     /// Bounded streaming prevents a malformed local response from allocating an unbounded archive.
