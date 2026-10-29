@@ -102,7 +102,10 @@ public struct PlaqueFormBuffer: Equatable, Sendable {
     }
     public func settings() throws -> PlaqueSettings {
         func number(_ text: String) throws -> Double {
-            guard let value = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)), value.isFinite else { throw PlaqueSettings.invalid() }; return value
+            // These are decimal measurements, not grouped numbers. Accept the
+            // two common decimal separators without modifying the raw field.
+            let decimal = text.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ",", with: ".")
+            guard let value = Double(decimal), value.isFinite else { throw PlaqueSettings.invalid() }; return value
         }
         let source: PlaqueSettings.Source
         switch sourceKind { case .exhibition: source = .exhibition; case .room: source = .room; case .artwork: source = .artwork(placementId: placementId) }

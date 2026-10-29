@@ -96,6 +96,19 @@ final class PlaqueSettingsTests: XCTestCase {
             XCTAssertEqual(sqrt(pose.rotation.reduce(0) { $0 + $1 * $1 }), 1, accuracy: 1e-15)
         }
     }
+    func testDecimalCommaPreservesRawInputAndExistingBounds() throws {
+        let draft = try fixture(); var input = try fields(draft)
+        input.width = "0,8"; input.height = "0,4"; input.x = "-0,25"
+        let parsed = try input.settings()
+        XCTAssertEqual(parsed.width, 0.8); XCTAssertEqual(parsed.height, 0.4)
+        XCTAssertEqual(parsed.position[0], -0.25); XCTAssertEqual(input.width, "0,8")
+        for text in ["-", "0,", "1,2,3", "1.2,3", "nan", "2,001"] {
+            input.width = text
+            // An incomplete trailing separator is valid Double syntax only if
+            // the numeric value meets the existing bounds; zero does not.
+            XCTAssertThrowsError(try input.settings()); XCTAssertEqual(input.width, text)
+        }
+    }
     func testReferenceAdmissionIsSameRoomCaseInsensitiveAndHiddenDoesNotBypassIt() throws {
         let draft = try fixture(); var input = try fields(draft)
         input.sourceKind = .artwork; input.placementId = try XCTUnwrap(draft.placements.first?["id"].string).uppercased()
