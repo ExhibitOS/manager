@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {mkdtemp,writeFile,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {verifyPublicStatic,runNativeHosting,nativeHostingFailure} from './native-hosting-runner.mjs';
@@ -75,4 +75,20 @@ test('profiled reconciliation uses only GET and never selects a legacy deploymen
  let calls=0;const response=result=>new Response(JSON.stringify({success:true,result}),{headers:{'content-type':'application/json'}});
  const fetch=async(url,init)=>{calls++;assert.equal(init.method,'GET');if(url.endsWith('/exhibition-fixture'))return response({name:'exhibition-fixture'});return response([{id:'legacy',deployment_trigger:{metadata:{commit_hash:legacy}},latest_stage:{status:'success'}}]);};
  const result=await executeHosted(request,{tokens:{cloudflare:'synthetic-token'},fetch});assert.equal(result.state,'uncertain');assert.equal(result.deploymentId,'pending-'+profiled);assert.ok(calls>0);
+});
+test('marked work stays gated; only explicit deploy repairs observed header mismatch',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'manager-cache-marker-'));t.after(()=>rm(root,{recursive:true,force:true}));await mkdir(join(root,'data'));
+ const sha=v=>createHash('sha256').update(v).digest('hex'),id='00000000-0000-4000-8000-000000000001',revision='b'.repeat(64);
+ const pub=JSON.stringify({publication:{id,status:'published',revisionSha256:revision}}),pubHash=sha(pub),path=`data/${pubHash}.json`,index=JSON.stringify({version:1,publication:{path,bytes:Buffer.byteLength(pub),sha256:pubHash},assets:[]}),indexHash=sha(index);
+ const headers=`/${path}\n  Cache-Control: public, max-age=86400, immutable\n`,marker=JSON.stringify({version:1,profile:'exhibitos-static-cache-v1',indexSha256:indexHash,headersSha256:sha(headers)});
+ const files={'index.html':`<html><head><meta name="exhibitos-static-index" content="${indexHash}"></head></html>`,'static-publication-index.json':index,[path]:pub,'static-cache-policy.json':marker};
+ for(const [name,bytes] of Object.entries(files))await writeFile(join(root,name),bytes);
+ const manifest={format:'exhibitos-static-publication-v1',publicationId:id,revisionSha256:revision,indexSha256:indexHash,files:Object.entries(files).map(([path,bytes])=>({path,bytes:Buffer.byteLength(bytes),sha256:sha(bytes)}))};await writeFile(join(root,'static-export-manifest.json'),JSON.stringify(manifest));
+ const request={provider:'cloudflare',action:'deploy-static',accountId:'a'.repeat(32),projectName:ready.projectName,sourcePath:root,expectedManifestSha256:sha(JSON.stringify(manifest)),staticOnly:true},tokens={cloudflare:'synthetic-token'};
+ let calls=0,repaired=false,corrupt=false;const execute=async(req,opts)=>{calls++;assert.equal(req.staticCacheMarkerEnabled,true);if(opts.markerRepair){assert.deepEqual(opts.markerRepair,{deploymentId:'old'});repaired=true;return {...ready,deploymentId:'new'};}return {...ready,deploymentId:'old',reusedCurrent:true};};
+ const fetch=async(url)=>{const name=new URL(url).pathname.slice(1),body=files[name];assert.notEqual(body,undefined);return new Response(corrupt&&name===path?'wrong':body,{headers:repaired&&name===path?{'cache-control':'public, max-age=86400, immutable'}:{}});};
+ await assert.rejects(runNativeHosting(request,tokens,{execute,fetch}),/HOSTED_CACHE_POLICY_NOT_READY/);assert.equal(calls,0);
+ await assert.rejects(runNativeHosting({...request,action:'reconcile'},tokens,{execute,fetch,markerDraft:true}),/HOSTED_CACHE_HEADERS_MISMATCH/);assert.equal(calls,1);
+ calls=0;corrupt=true;await assert.rejects(runNativeHosting(request,tokens,{execute,fetch,markerDraft:true}),/HOSTED_PUBLIC_CONTENT_MISMATCH/);assert.equal(calls,1);
+ calls=0;corrupt=false;const result=await runNativeHosting(request,tokens,{execute,fetch,markerDraft:true});assert.equal(calls,2);assert.equal(result.deploymentId,'new');assert.equal(result.verification.manifestSha256,request.expectedManifestSha256);
 });

@@ -63,10 +63,18 @@ export async function inspectStaticBundle(sourcePath,{expectedManifestSha256}={}
  const publication=JSON.parse((await regular(join(root,projection.publication.path),25*1024*1024)).toString());if(publication.publication?.id!==receipt.publicationId||publication.publication?.status!=='published'||publication.publication?.revisionSha256!==receipt.revisionSha256)fail('HOSTED_STATIC_BUNDLE_INVALID');
  // The private local upload receipt itself is not a published asset.
  const cachePolicy=pagesStaticCachePolicy([projection.publication,...projection.assets]);
- return {root,files,bytes:total,manifestSha256:sha(receiptBytes),publicationId:receipt.publicationId,revisionSha256:receipt.revisionSha256,cachePolicy};
+ const markerFile=files.find(f=>f.path==='static-cache-policy.json');let cacheMarker;
+ if(markerFile){
+  const markerBytes=await regular(join(root,markerFile.path),1024);
+  const expected=Buffer.from(JSON.stringify({version:1,profile:'exhibitos-static-cache-v1',indexSha256:receipt.indexSha256,headersSha256:sha(cachePolicy.headers)}));
+  if(markerBytes.length!==markerFile.bytes||sha(markerBytes)!==markerFile.sha256||!markerBytes.equals(expected))fail('HOSTED_STATIC_BUNDLE_INVALID');
+  cacheMarker={profile:STATIC_DATA_CACHE_PROFILE,headersSha256:sha(cachePolicy.headers)};
+ }
+ return {root,files,bytes:total,manifestSha256:sha(receiptBytes),publicationId:receipt.publicationId,revisionSha256:receipt.revisionSha256,cachePolicy,cacheMarker};
  }catch(e){if(/^HOSTED_/.test(e.message))throw e;fail('HOSTED_STATIC_BUNDLE_INVALID');}
 }
-async function cfProject(api,accountId,projectName){const route=`/accounts/${accountId}/pages/projects/${projectName}`;let p=await api(route,{missing:true});if(!p){try{p=await api(`/accounts/${accountId}/pages/projects`,{method:'POST',body:{name:projectName,production_branch:'main'}});}catch(e){if(e.message!=='HOSTED_RESULT_UNCERTAIN')throw e;p=await api(route,{missing:true});if(!p)fail('HOSTED_RESULT_UNCERTAIN');}}if(p?.name!==projectName||p.source||(p.production_branch&&p.production_branch!=='main'))fail('HOSTED_PROJECT_CONFLICT');if(p.subdomain&&p.subdomain!==projectName+'.pages.dev')fail('HOSTED_CANONICAL_ORIGIN_CONFLICT');return p;}
+function validateCFProject(p,projectName){if(p?.name!==projectName||p.source||(p.production_branch&&p.production_branch!=='main'))fail('HOSTED_PROJECT_CONFLICT');if(p.subdomain&&p.subdomain!==projectName+'.pages.dev')fail('HOSTED_CANONICAL_ORIGIN_CONFLICT');return p;}
+async function cfProject(api,accountId,projectName){const route=`/accounts/${accountId}/pages/projects/${projectName}`;let p=await api(route,{missing:true});if(!p){try{p=await api(`/accounts/${accountId}/pages/projects`,{method:'POST',body:{name:projectName,production_branch:'main'}});}catch(e){if(e.message!=='HOSTED_RESULT_UNCERTAIN')throw e;p=await api(route,{missing:true});if(!p)fail('HOSTED_RESULT_UNCERTAIN');}}return validateCFProject(p,projectName);}
 function deploymentProjection(d,projectName,action){if(!id(d?.id))fail('HOSTED_RESPONSE_INVALID');if(d.environment==='preview'||(d.deployment_trigger?.metadata?.branch&&d.deployment_trigger.metadata.branch!=='main'))fail('HOSTED_DEPLOYMENT_BRANCH_CONFLICT');const status=d.latest_stage?.status,state=status==='success'?'ready':['failure','canceled'].includes(status)?'failed':'deploying';const canonical='https://'+projectName+'.pages.dev',provided=publicURL(d.url,'pages.dev');const linked=provided&&(provided===canonical||new URL(provided).hostname.endsWith('.'+projectName+'.pages.dev'))||Array.isArray(d.aliases)&&d.aliases.some(a=>publicURL(a,'pages.dev')===canonical);return {...baseResult('cloudflare',action,state),projectName,deploymentId:d.id,...(linked?{url:canonical}:{})};}
 // Official Project.canonical_deployment identifies the most recent production deployment:
 // https://developers.cloudflare.com/api/resources/pages/subresources/projects/methods/get/
@@ -88,6 +96,13 @@ async function findDeployment(api,route,hash){
  }
  fail('HOSTED_PAGINATION_LIMIT');
 }
+function markerBinding(request,bundle){
+ if(request.staticCacheMarkerEnabled!==undefined && (request.staticCacheMarkerEnabled!==true||request.staticOnly!==true||request.staticCacheProfile!==undefined||request.staticCachePolicySha256!==undefined))fail('HOSTED_REQUEST_INVALID');
+ if(request.staticCacheMarkerEnabled===true&&!bundle.cacheMarker)fail('HOSTED_STATIC_BUNDLE_INVALID');
+ if(bundle.cacheMarker&&request.staticCacheProfile!==undefined)fail('HOSTED_STATIC_BUNDLE_INVALID');
+ if(bundle.cacheMarker&&request.staticCacheMarkerEnabled!==true)fail('HOSTED_CACHE_POLICY_NOT_READY');
+ return request.staticCacheMarkerEnabled===true;
+}
 async function cloudflare(request,options){const api=transport('cloudflare',options),action=request.action;
  if(action==='accounts'){
   const accounts=new Map();let fallback=false,complete=false;
@@ -97,11 +112,19 @@ async function cloudflare(request,options){const api=transport('cloudflare',opti
   return {...baseResult('cloudflare',action,'ready'),accounts:[...accounts.values()]};
  }
  if(!/^[a-f0-9]{32}$/.test(request.accountId)||!name(request.projectName))fail('HOSTED_REQUEST_INVALID');const route=`/accounts/${request.accountId}/pages/projects/${request.projectName}`,deployments=route+'/deployments';
- if(action==='reconcile'){if(!hex(request.expectedManifestSha256))fail('HOSTED_REQUEST_INVALID');const {hash}=pagesDeploymentIdentity(request.expectedManifestSha256,request);if(request.staticCacheProfile!==undefined){const checked=await inspectStaticBundle(request.sourcePath,{expectedManifestSha256:request.expectedManifestSha256});if(sha(checked.cachePolicy.headers)!==request.staticCachePolicySha256)fail('HOSTED_STATIC_BUNDLE_CHANGED');}const project=await api(route);if(project?.name!==request.projectName)fail('HOSTED_PROJECT_CONFLICT');const d=await findDeployment(api,deployments,hash);return d?observeDeployment(api,route,d,request.projectName,action):{...baseResult('cloudflare',action,'uncertain'),projectName:request.projectName,deploymentId:'pending-'+hash};}
+ if(action==='reconcile'){if(!hex(request.expectedManifestSha256))fail('HOSTED_REQUEST_INVALID');const {hash}=pagesDeploymentIdentity(request.expectedManifestSha256,request);if(request.staticCacheProfile!==undefined||request.staticCacheMarkerEnabled!==undefined){const checked=await inspectStaticBundle(request.sourcePath,{expectedManifestSha256:request.expectedManifestSha256});markerBinding(request,checked);if(request.staticCacheProfile!==undefined&&sha(checked.cachePolicy.headers)!==request.staticCachePolicySha256)fail('HOSTED_STATIC_BUNDLE_CHANGED');}const project=await api(route);if(project?.name!==request.projectName)fail('HOSTED_PROJECT_CONFLICT');const d=await findDeployment(api,deployments,hash);return d?observeDeployment(api,route,d,request.projectName,action):{...baseResult('cloudflare',action,'uncertain'),projectName:request.projectName,deploymentId:'pending-'+hash};}
  if(action==='status'){if(/^pending-[a-f0-9]{40}$/.test(request.deploymentId)){const d=await findDeployment(api,deployments,request.deploymentId.slice(8));return d?observeDeployment(api,route,d,request.projectName,action):{...baseResult('cloudflare',action,'uncertain'),projectName:request.projectName,deploymentId:request.deploymentId};}if(!id(request.deploymentId))fail('HOSTED_REQUEST_INVALID');return observeDeployment(api,route,await api(deployments+'/'+request.deploymentId),request.projectName,action);}
- if(action!=='deploy-static')fail('HOSTED_REQUEST_INVALID');stage(options,'BUNDLE_VERIFY');const bundle=await inspectStaticBundle(request.sourcePath,{expectedManifestSha256:request.expectedManifestSha256});if(request.staticCacheProfile!==undefined&&sha(bundle.cachePolicy.headers)!==request.staticCachePolicySha256)fail('HOSTED_STATIC_BUNDLE_CHANGED');const {hash:contentHash,proxy}=pagesDeploymentIdentity(bundle.manifestSha256,request);const project=await cfProject(api,request.accountId,request.projectName),current=currentContent(project,contentHash);if(current)return deploymentProjection(current,request.projectName,action);
+ if(action!=='deploy-static')fail('HOSTED_REQUEST_INVALID');stage(options,'BUNDLE_VERIFY');const bundle=await inspectStaticBundle(request.sourcePath,{expectedManifestSha256:request.expectedManifestSha256});const markerEnabled=markerBinding(request,bundle);if(request.staticCacheProfile!==undefined&&sha(bundle.cachePolicy.headers)!==request.staticCachePolicySha256)fail('HOSTED_STATIC_BUNDLE_CHANGED');const {hash:contentHash,proxy}=pagesDeploymentIdentity(bundle.manifestSha256,request);const repair=options.markerRepair;
+ if(repair!==undefined&&(!markerEnabled||!object(repair)||Object.keys(repair).join(',')!=='deploymentId'||!id(repair.deploymentId)))fail('HOSTED_OPERATION_UNCERTAIN');
+ // Repair is never allowed to recreate a missing or changed project.
+ const project=repair?validateCFProject(await api(route),request.projectName):await cfProject(api,request.accountId,request.projectName),current=currentContent(project,contentHash);
+ // This internal option is supplied only after the native caller observed exact
+ // public bytes but missing/contradictory headers during this explicit deploy.
+ if(repair!==undefined&&(!current||repair.deploymentId!==current.id))fail('HOSTED_OPERATION_UNCERTAIN');
+ if(current&&!repair)return {...deploymentProjection(current,request.projectName,action),...(markerEnabled?{reusedCurrent:true}:{})};
  const previous=await findDeployment(api,deployments,contentHash);
- if(previous){const observed=await observeDeployment(api,route,previous,request.projectName,action);if(['ready','deploying'].includes(observed.state))return observed;}
+ if(repair&&previous&&previous.id!==repair.deploymentId&&deploymentProjection(previous,request.projectName,action).state==='deploying')fail('HOSTED_OPERATION_UNCERTAIN');
+ if(previous&&!repair){const observed=await observeDeployment(api,route,previous,request.projectName,action);if(['ready','deploying'].includes(observed.state))return observed;}
  // An explicit deploy retries terminal failure or republishes historical success through
  // the existing exact Direct Upload manifest, branch=main, including the selected Worker mode.
  // https://developers.cloudflare.com/api/resources/pages/subresources/projects/subresources/deployments/methods/create/
@@ -112,11 +135,12 @@ async function cloudflare(request,options){const api=transport('cloudflare',opti
  for(const hash of new Set(missing)){const f=hashFiles.get(hash),bytes=await regular(join(bundle.root,f.path),25*1024*1024);if(sha(bytes)!==f.sha256)fail('HOSTED_STATIC_BUNDLE_CHANGED');await api('/pages/assets/upload',{method:'POST',bearer:jwt,body:[{key:hash,value:(f.generatedBytes??bytes).toString('base64'),metadata:{contentType:f.mime},base64:true}]});}
  await api('/pages/assets/upsert-hashes',{method:'POST',bearer:jwt,body:{hashes}});
  stage(options,'DEPLOY_FORM');const form=new FormData();form.set('manifest',JSON.stringify(manifest));form.set('branch','main');form.set('commit_hash',contentHash);form.set('commit_message','ExhibitOS approved static publication');if(proxy)await appendPagesProxy(form,proxy);
- if(request.staticCacheProfile===STATIC_DATA_CACHE_PROFILE&&bundle.cachePolicy.headers)form.set('_headers',new File([bundle.cachePolicy.headers],'_headers',{type:'text/plain'}));
+ if((request.staticCacheProfile===STATIC_DATA_CACHE_PROFILE||markerEnabled)&&bundle.cachePolicy.headers)form.set('_headers',new File([bundle.cachePolicy.headers],'_headers',{type:'text/plain'}));
+ if(repair){const latest=validateCFProject(await api(route),request.projectName),same=currentContent(latest,contentHash);if(same?.id!==repair.deploymentId)fail('HOSTED_OPERATION_UNCERTAIN');}
  let created;
  try{created=await api(deployments,{method:'POST',body:form});}catch(e){
   if(e.message!=='HOSTED_RESULT_UNCERTAIN')throw e;
-  try{const observedProject=await api(route),active=currentContent(observedProject,contentHash);if(observedProject?.name!==request.projectName)fail('HOSTED_PROJECT_CONFLICT');if(active)return deploymentProjection(active,request.projectName,action);const d=await findDeployment(api,deployments,contentHash);if(d&&d.id!==previous?.id)return await observeDeployment(api,route,d,request.projectName,action);}catch{}
+  try{const observedProject=await api(route),active=currentContent(observedProject,contentHash);if(observedProject?.name!==request.projectName)fail('HOSTED_PROJECT_CONFLICT');if(active&&(!repair||active.id!==repair.deploymentId))return deploymentProjection(active,request.projectName,action);const d=await findDeployment(api,deployments,contentHash);if(d&&d.id!==previous?.id&&(!repair||d.id!==repair.deploymentId))return await observeDeployment(api,route,d,request.projectName,action);}catch{}
   return {...baseResult('cloudflare',action,'uncertain'),projectName:request.projectName,deploymentId:'pending-'+contentHash};
  }
  return observeDeployment(api,route,created,request.projectName,action);

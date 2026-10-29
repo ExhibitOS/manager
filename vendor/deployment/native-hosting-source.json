@@ -1,8 +1,8 @@
 {
   "repository": "https://github.com/ExhibitOS/deployment",
-  "commit": "fc9b876c1707e259849cfc275e4eae5a9275804d",
+  "commit": "172464f4f9173ecc1c96ab64271bcefa341d1ad3",
   "files": {
-    "pages-render.mjs": "f1d2e795618986854e793f3848561fb60e9f31cb0b19ee5ed0535922cae80cb8",
+    "pages-render.mjs": "3925a49b0e2ef0cc89d81d5d20b7c92aa11babf9ccf66590f2c3e62a4fad666b",
     "pages-asset-hash.mjs": "c4da9c98ded29e23f37863d200a7c0d8139b9bbdecf6dd8cbc71b45e61967eae",
     "pages-render-worker.mjs": "6bd895ff81cd9768aaf70641ac3794b956d5e54c10e318d2996f0cd867b08144"
   }
