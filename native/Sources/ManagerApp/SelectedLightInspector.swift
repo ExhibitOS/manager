@@ -54,13 +54,17 @@ struct SelectedLightInspector: View {
     private func field(_ key: WritableKeyPath<LightFormBuffer, String>) -> Binding<String> {
         Binding(get: { model.light?[keyPath: key] ?? "" }, set: { value in
             guard var fields = model.light else { return }
-            fields[keyPath: key] = value; model.light = fields
+            fields[keyPath: key] = value
+            if key == \.red || key == \.green || key == \.blue { fields.colorMode = .direct }
+            model.light = fields
         })
     }
     private var color: Binding<Color> {
         Binding(get: {
-            guard let fields = model.light, let r = Double(fields.red), let g = Double(fields.green), let b = Double(fields.blue),
-                  [r, g, b].allSatisfy({ $0.isFinite && (0...1).contains($0) }) else { return Color(nsColor: .controlBackgroundColor) }
+            guard let fields = model.light else { return Color(nsColor: .controlBackgroundColor) }
+            let values = (try? fields.resolvedColor()) ?? [Double(fields.red) ?? .nan, Double(fields.green) ?? .nan, Double(fields.blue) ?? .nan]
+            let r = values[0], g = values[1], b = values[2]
+            guard [r, g, b].allSatisfy({ $0.isFinite && (0...1).contains($0) }) else { return Color(nsColor: .controlBackgroundColor) }
             return Color(.sRGBLinear, red: r, green: g, blue: b, opacity: 1)
         }, set: { value in
             guard let linear = CGColorSpace(name: CGColorSpace.extendedLinearSRGB),
@@ -69,6 +73,7 @@ struct SelectedLightInspector: View {
             fields.red = String(Double(min(1, max(0, rgb.redComponent))))
             fields.green = String(Double(min(1, max(0, rgb.greenComponent))))
             fields.blue = String(Double(min(1, max(0, rgb.blueComponent))))
+            fields.colorMode = .direct
             model.light = fields
         })
     }
@@ -116,7 +121,18 @@ struct SelectedLightInspector: View {
                             if !controller.lightFixtureSupported || !fields.fixtureEditable {
                                 Text("현재 연결이나 저장된 정보에서는 기구를 바꿀 수 없습니다. 기존 설정은 유지됩니다.").font(.caption).foregroundStyle(.secondary)
                             }
-                            ColorPicker("빛 색상", selection: color, supportsOpacity: false)
+                            Picker("색상 입력", selection: Binding(get: { fields.colorMode }, set: { value in
+                                guard var next = model.light else { return }; next.changeColorMode(value); model.light = next
+                            })) {
+                                Text("직접 색상").tag(NativeLightColorMode.direct)
+                                Text("색온도").tag(NativeLightColorMode.temperature)
+                            }.disabled(!controller.lightFixtureSupported || !fields.fixtureEditable)
+                            if fields.colorMode == .temperature {
+                                TextField("색온도 · K", text: field(\.kelvin))
+                                    .disabled(!controller.lightFixtureSupported || !fields.fixtureEditable)
+                                Text("1000–20000 K의 화면용 근사입니다. 값을 바꾸고 미리보기하면 색상과 함께 적용됩니다. 저장된 전시를 열 때는 색상을 다시 계산하지 않습니다.").font(.caption).foregroundStyle(.secondary)
+                            }
+                            ColorPicker("빛 색상", selection: color, supportsOpacity: false).disabled(fields.colorMode == .temperature)
                             TextField("밝기 · 렌더러 값", text: field(\.intensity))
                             if fields.type == .spot { TextField("빔 전체각 · °", text: field(\.beamDegrees)) }
                             if fields.type == .area {
@@ -124,7 +140,7 @@ struct SelectedLightInspector: View {
                                 TextField("광원 세로 · m", text: field(\.height))
                             }
                             DisclosureGroup("위치를 숫자로 다듬기", isExpanded: $positionDetails) { positionFields.padding(.top, 6) }
-                            DisclosureGroup("색상 수치", isExpanded: $colorDetails) { colorFields.padding(.top, 6) }
+                            DisclosureGroup("색상 수치", isExpanded: $colorDetails) { colorFields.padding(.top, 6).disabled(fields.colorMode == .temperature) }
                         }.textFieldStyle(.roundedBorder).disabled(!editable)
                         if mode == .expert { LabeledContent("저장 단위", value: fields.type.unit) }
                         Text("밝기와 색상은 화면 표현을 위한 입력입니다. 실제 조도 측정값은 아닙니다.").font(.caption).foregroundStyle(.secondary)

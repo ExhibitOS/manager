@@ -51,7 +51,10 @@ public enum NativeLightFixture: String, CaseIterable, Sendable {
         return value
     }
     func applying(to candidate: DocumentValue, base: NativeExhibitionDraft, lightId: String, type: NativeLightType) throws -> DocumentValue {
-        var settings = try settings(in: base, lightId: lightId, type: type)
+        try Self.applying(settings: settings(in: base, lightId: lightId, type: type), to: candidate, base: base, lightId: lightId)
+    }
+    static func applying(settings input: DocumentValue, to candidate: DocumentValue, base: NativeExhibitionDraft, lightId: String) throws -> DocumentValue {
+        var settings = input
         settings["lightId"] = .string(lightId)
         var rows = try Self.bindings(in: base)
         if let index = rows.firstIndex(where: { $0["lightId"].string?.lowercased() == lightId.lowercased() }) { rows[index] = settings }

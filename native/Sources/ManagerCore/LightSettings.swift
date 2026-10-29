@@ -20,13 +20,17 @@ public struct LightCommand: Equatable, Sendable {
     public let position: [Double] // Room-local metres.
     public let beamAngle: Double? // Full beam angle, radians in OES.
     public let areaSize: [Double]?
-    public let fixture: NativeLightFixture? // nil keeps the existing basic route/namespace unchanged.
+    public let fixture: NativeLightFixture? // nil keeps the existing fixture; explicit color intent may still use details.
+    public let colorIntent: LightColorIntent
+    public var usesLightDetails: Bool { fixture != nil || colorIntent != .preserve }
 
     public init(lightId: String, type: NativeLightType, color: [Double], intensity: Double,
-                position: [Double], beamAngle: Double? = nil, areaSize: [Double]? = nil, fixture: NativeLightFixture? = nil) {
+                position: [Double], beamAngle: Double? = nil, areaSize: [Double]? = nil, fixture: NativeLightFixture? = nil,
+                colorIntent: LightColorIntent = .preserve) {
         self.lightId = lightId; self.type = type; self.color = color; self.intensity = intensity
         self.position = position; self.beamAngle = beamAngle; self.areaSize = areaSize
         self.fixture = fixture
+        self.colorIntent = colorIntent
     }
     fileprivate static func invalid() -> AuthoringFailure { AuthoringFailure("LIGHT_FIELDS_INVALID") }
     fileprivate static func row(in draft: NativeExhibitionDraft, id: String, selectedLightId: String?) throws -> (Int, DocumentValue) {
@@ -58,6 +62,10 @@ public struct LightCommand: Equatable, Sendable {
                   areaSize.allSatisfy({ $0.isFinite && (0.01...100).contains($0) }) else { throw Self.invalid() }
         } else if areaSize != nil { throw Self.invalid() }
         guard fixture?.supports(type) != false else { throw Self.invalid() }
+        if case .temperature(let kelvin) = colorIntent {
+            let expected = try LightColorIntent.linearRGB(kelvin: kelvin)
+            guard zip(color, expected).allSatisfy({ abs($0.0 - $0.1) <= 1e-6 }) else { throw Self.invalid() }
+        }
 
         var row = original
         func set(_ key: String, _ value: DocumentValue) { if row[key] != value { row[key] = value } }
@@ -98,9 +106,26 @@ public struct LightCommand: Equatable, Sendable {
             guard case .object = candidate["extensions"][template], case .bool = candidate["extensions"][template]["modified"] else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
             candidate["extensions"][template]["modified"] = .bool(true)
         }
-        if let fixture { candidate = try fixture.applying(to: candidate, base: draft, lightId: lightId, type: type) }
+        if usesLightDetails {
+            candidate = try NativeLightFixture.applying(settings: detailsSettings(in: draft), to: candidate, base: draft, lightId: lightId)
+        }
         guard try JSONEncoder().encode(candidate).count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
         return candidate
+    }
+    /// Only the selected K intent changes; fixture/aim/range/softness and all
+    /// other light bindings remain exact. Future selected metadata refuses.
+    public func detailsSettings(in draft: NativeExhibitionDraft) throws -> DocumentValue {
+        let value = try fixture?.settings(in: draft, lightId: lightId, type: type)
+            ?? NativeLightFixture.settings(in: draft, lightId: lightId)
+        guard case .object(var fields) = value else { throw Self.invalid() }
+        switch colorIntent {
+        case .preserve: break
+        case .direct: fields.removeValue(forKey: "temperatureKelvin")
+        case .temperature(let kelvin):
+            _ = try LightColorIntent.linearRGB(kelvin: kelvin)
+            fields["temperatureKelvin"] = .number(kelvin)
+        }
+        return .object(fields)
     }
     /// Correspondence only, after the shared validator. Reject every unrelated
     /// change, including other lights, targets, poses, approved assets and rights.
@@ -114,6 +139,10 @@ public struct LightFormBuffer: Equatable, Sendable {
     public let lightId: String
     public var type: NativeLightType
     public var red: String, green: String, blue: String
+    public var colorMode: NativeLightColorMode
+    public var kelvin: String
+    private let originalTemperature: Double?
+    private let originalColor: [Double]
     public var intensity: String
     public var x: String, y: String, z: String
     public var beamDegrees: String
@@ -122,6 +151,11 @@ public struct LightFormBuffer: Equatable, Sendable {
     public let fixtureEditable: Bool
     private let originalFixture: NativeLightFixture
     public var fixtureChanged: Bool { fixture != originalFixture }
+    public var colorDetailsChanged: Bool {
+        colorMode == .direct ? originalTemperature != nil
+            : Double(kelvin.trimmingCharacters(in: .whitespacesAndNewlines)) != originalTemperature
+    }
+    public var detailsChanged: Bool { fixtureChanged || colorDetailsChanged }
     private let originalBeamRadians: Double?
     private let originalBeamDegrees: String
 
@@ -148,6 +182,12 @@ public struct LightFormBuffer: Equatable, Sendable {
         width = type == .area ? try text(row["dimensions"]["width"]) : "1.0"
         height = type == .area ? try text(row["dimensions"]["height"]) : "1.0"
         let settings = try? NativeLightFixture.settings(in: draft, lightId: selectedLightId)
+        originalTemperature = settings?["temperatureKelvin"].double
+        originalColor = try color.map { value in
+            guard let n = value.double, n.isFinite else { throw LightCommand.invalid() }; return n
+        }
+        colorMode = originalTemperature == nil ? .direct : .temperature
+        kelvin = originalTemperature.map { String($0) } ?? "4500.0"
         originalFixture = settings?["fixture"].string.flatMap(NativeLightFixture.init(rawValue:)) ?? .none
         fixture = originalFixture; fixtureEditable = settings != nil
         // Refuse unsupported existing data without normalizing or writing it.
@@ -159,21 +199,50 @@ public struct LightFormBuffer: Equatable, Sendable {
         if type.unit != value.unit { intensity = "100.0" }
         type = value
     }
+    public mutating func changeColorMode(_ value: NativeLightColorMode) {
+        guard colorMode != value else { return }
+        if value == .direct, let resolved = try? resolvedColor() {
+            red = String(resolved[0]); green = String(resolved[1]); blue = String(resolved[2])
+        }
+        colorMode = value
+    }
+    /// Color display and mode changes must not depend on a partially typed
+    /// brightness, beam, size or position. Those inputs remain untouched.
+    public func resolvedColor() throws -> [Double] { try colorValue().color }
+    private func colorValue() throws -> (color: [Double], intent: LightColorIntent) {
+        func number(_ value: String) throws -> Double {
+            guard let n = Double(value.trimmingCharacters(in: .whitespacesAndNewlines)), n.isFinite else { throw LightCommand.invalid() }; return n
+        }
+        if colorMode == .temperature {
+            guard fixtureEditable else { throw LightCommand.invalid() }
+            let temperature = try number(kelvin)
+            let rawColor = try? [number(red), number(green), number(blue)]
+            if temperature == originalTemperature, rawColor == originalColor {
+                return (originalColor, .preserve)
+            } else {
+                return (try LightColorIntent.linearRGB(kelvin: temperature), .temperature(temperature))
+            }
+        } else {
+            let rawColor = try [number(red), number(green), number(blue)]
+            return (rawColor, originalTemperature == nil ? .preserve : .direct)
+        }
+    }
     public func command() throws -> LightCommand {
         guard fixtureEditable || fixture == originalFixture else { throw LightCommand.invalid() }
         func number(_ value: String) throws -> Double {
             guard let n = Double(value.trimmingCharacters(in: .whitespacesAndNewlines)), n.isFinite else { throw LightCommand.invalid() }; return n
         }
+        let resolved = try colorValue()
         let beam: Double?
         if type == .spot {
             // Opening and applying unchanged settings must not round-trip a
             // stored radian value through a degree display and alter its bits.
             beam = beamDegrees == originalBeamDegrees && originalBeamRadians != nil ? originalBeamRadians : try number(beamDegrees) * .pi / 180
         } else { beam = nil }
-        return LightCommand(lightId: lightId, type: type, color: try [number(red), number(green), number(blue)],
+        return LightCommand(lightId: lightId, type: type, color: resolved.color,
                             intensity: try number(intensity), position: try [number(x), number(y), number(z)],
                             beamAngle: beam, areaSize: type == .area ? try [number(width), number(height)] : nil,
-                            fixture: fixtureEditable && fixture != originalFixture ? fixture : nil)
+                            fixture: fixtureEditable && fixture != originalFixture ? fixture : nil, colorIntent: resolved.intent)
     }
 }
 
