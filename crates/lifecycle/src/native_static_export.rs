@@ -77,6 +77,49 @@ fn safe_name(name: &str) -> bool {
 fn bounded(root: &Path, name: &str, limit: u64) -> Result<Vec<u8>> {
     installation_backup::source_bytes(root, name, limit, false).map_err(|_| bad())
 }
+/// Digest of the fixed Pages v1 control bytes. Call only with a receipt whose
+/// output has passed verify_output; the index and manifest are rechecked here.
+pub fn cache_policy_sha256(receipt: &Receipt) -> Result<String> {
+    let manifest_bytes = bounded(&receipt.output, "static-export-manifest.json", 8 * 1024 * 1024)?;
+    let index_bytes = bounded(&receipt.output, "static-publication-index.json", 1024 * 1024)?;
+    if digest(&manifest_bytes) != receipt.manifest_sha256 || digest(&index_bytes) != receipt.index_sha256 { return Err(bad()); }
+    let manifest: Manifest = serde_json::from_slice(&manifest_bytes).map_err(|_| bad())?;
+    let index: serde_json::Value = serde_json::from_slice(&index_bytes).map_err(|_| bad())?;
+    if index["version"] != 1 { return Err(bad()); }
+    let assets = index["assets"].as_array().ok_or_else(bad)?;
+    let publication = index.get("publication").ok_or_else(bad)?;
+    let files: std::collections::BTreeMap<_, _> = manifest.files.iter().map(|f| (f.path.as_str(), (f.sha256.as_str(), f.bytes))).collect();
+    let mut paths = BTreeSet::new();
+    for descriptor in std::iter::once(publication).chain(assets.iter()) {
+        let path = descriptor["path"].as_str().ok_or_else(bad)?;
+        let sha = descriptor["sha256"].as_str().ok_or_else(bad)?;
+        let size = descriptor["bytes"].as_u64().ok_or_else(bad)?;
+        if files.get(path) != Some(&(sha, size)) { return Err(bad()); }
+        if let Some(tail) = path.strip_prefix("data/") {
+            let digest_part = tail.strip_suffix(".bin").or_else(|| tail.strip_suffix(".json"));
+            if digest_part == Some(sha) && hash_valid(sha) { paths.insert(path.to_owned()); }
+        }
+    }
+    let headers = cache_headers(paths);
+    Ok(digest(headers.as_bytes()))
+}
+fn cache_headers(paths: BTreeSet<String>) -> String {
+    paths.into_iter().take(100).map(|path| format!("/{path}\n  Cache-Control: public, max-age=86400, immutable\n")).collect::<Vec<_>>().join("\n")
+}
+#[cfg(test)]
+mod cache_policy_tests {
+    use super::*;
+    #[test]
+    fn headers_match_fixed_profile_and_rule_limit() {
+        let paths = (0..102).rev().map(|i| format!("data/{i:064x}.bin")).collect();
+        let headers = cache_headers(paths);
+        assert_eq!(headers.lines().filter(|line| line.starts_with("/data/")).count(), 100);
+        assert!(headers.starts_with(&format!("/data/{:064x}.bin\n  Cache-Control: public, max-age=86400, immutable\n", 0)));
+        assert!(!headers.contains(&format!("/data/{:064x}.bin", 100)));
+        assert!(headers.ends_with('\n'));
+        assert!(cache_headers(BTreeSet::new()).is_empty());
+    }
+}
 /// Full exact-file verification is also the crash/lost-result reconciliation.
 /// A receipt alone, directory existence or successful exit is never sufficient.
 pub fn verify_output(status: &Status) -> Result<Receipt> {

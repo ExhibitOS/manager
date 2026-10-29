@@ -27,6 +27,8 @@ pub struct Work {
     pub workspace_id: String, pub tenant_id: String, pub principal_id: String,
     pub account_id: String, pub project_name: String,
     pub source: super::native_static_export::Receipt,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub static_cache_policy_sha256: Option<String>,
     pub state: String, pub deployment_id: Option<String>, pub public_url: Option<String>,
     pub error_code: Option<String>,
 }
@@ -52,6 +54,7 @@ impl Work {
             || !self.source.output.is_absolute() || self.source.files < 3 || self.source.files > 20_000 || self.source.bytes > 512 * 1024 * 1024
             || !matches!(self.state.as_str(), "running" | "uncertain" | "deploying" | "failed" | "completed")
             || self.error_code.as_ref().is_some_and(|c| !safe_code(c))
+            || self.static_cache_policy_sha256.as_ref().is_some_and(|s| !hash_valid(s))
             || self.deployment_id.as_ref().is_some_and(|s| s.is_empty() || s.len() > 128 || !s.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b)))
             || self.public_url.as_ref().is_some_and(|s| s != &format!("https://{}.pages.dev", self.project_name))
             || (self.state == "completed" && (self.public_url.is_none() || self.deployment_id.is_none())) { return Err(bad()); }
@@ -61,6 +64,8 @@ impl Work {
         self.validate()?;
         let value = super::native_static_export::Status { format: 1, job_id: self.id.clone(), workspace_id: self.workspace_id.clone(), tenant_id: self.tenant_id.clone(), principal_id: self.principal_id.clone(), publication_id: self.source.publication_id.clone(), revision_sha256: self.source.revision_sha256.clone(), output: self.source.output.clone(), state: "completed".into(), receipt: None, error_code: None };
         let current = super::native_static_export::verify_output(&value)?;
+        if let Some(expected) = &self.static_cache_policy_sha256
+            && super::native_static_export::cache_policy_sha256(&current)? != *expected { return Err(err("HOSTED_STATIC_BUNDLE_CHANGED")); }
         if current.manifest_sha256 != self.source.manifest_sha256 || current.index_sha256 != self.source.index_sha256 || current.files != self.source.files || current.bytes != self.source.bytes { return Err(err("HOSTED_STATIC_BUNDLE_CHANGED")); }
         let pin = static_publication_source::inspect(self.source.output.to_str().ok_or_else(bad)?)?;
         if pin.sha256 != self.source.manifest_sha256 || pin.info.project_name != self.project_name || pin.info.publication_id != self.source.publication_id { return Err(err("HOSTED_STATIC_BUNDLE_CHANGED")); }
@@ -220,7 +225,8 @@ impl Hoster {
                 let completed = publication.completed.ok_or_else(|| err("NATIVE_PUBLICATION_REQUIRED"))?;
                 if publication.pending.is_some() || completed.publication.publication_id != publication_id || source.publication_id != publication_id || completed.publication.status != "published" || source.revision_sha256 != completed.publication.revision_sha256 || expected_manifest_sha256 != source.manifest_sha256 { return Err(err("NATIVE_PUBLICATION_STATE_CHANGED")); }
                 let pin = static_publication_source::inspect(source.output.to_str().ok_or_else(bad)?)?;
-                let record = Work { format: 1, id: Uuid::new_v4().to_string(), workspace_id: identity.0.clone(), tenant_id: identity.1.clone(), principal_id: identity.2.clone(), account_id: account, project_name: pin.info.project_name, source, state: "running".into(), deployment_id: None, public_url: None, error_code: None };
+                let cache_policy = super::native_static_export::cache_policy_sha256(&source)?;
+                let record = Work { format: 1, id: Uuid::new_v4().to_string(), workspace_id: identity.0.clone(), tenant_id: identity.1.clone(), principal_id: identity.2.clone(), account_id: account, project_name: pin.info.project_name, source, static_cache_policy_sha256: Some(cache_policy), state: "running".into(), deployment_id: None, public_url: None, error_code: None };
                 record.verify_source()?;
                 self.controller.save_hosting_work(&token, &record)?;
                 (request_for(&record, "deploy-static"), secret, Some(record))
@@ -266,7 +272,14 @@ impl Hoster {
 }
 impl Drop for Hoster { fn drop(&mut self) { self.shutdown(); } }
 fn record_uncertain(work: &mut Option<Work>) { if let Some(record) = work { record.state = "uncertain".into(); record.public_url = None; record.error_code = Some("HOSTED_OPERATION_UNCERTAIN".into()); } }
-fn request_for(record: &Work, action: &str) -> Value { serde_json::json!({"provider":"cloudflare","action":action,"accountId":record.account_id,"projectName":record.project_name,"sourcePath":record.source.output,"expectedManifestSha256":record.source.manifest_sha256,"staticOnly":true}) }
+fn request_for(record: &Work, action: &str) -> Value {
+    let mut request = serde_json::json!({"provider":"cloudflare","action":action,"accountId":record.account_id,"projectName":record.project_name,"sourcePath":record.source.output,"expectedManifestSha256":record.source.manifest_sha256,"staticOnly":true});
+    if let Some(hash) = &record.static_cache_policy_sha256 {
+        request["staticCacheProfile"] = serde_json::json!("static-data-sha256-24h-v1");
+        request["staticCachePolicySha256"] = serde_json::json!(hash);
+    }
+    request
+}
 fn project_result(record: &mut Work, result: &Value) -> Result<()> {
     if result["provider"] != "cloudflare" || result["projectName"] != record.project_name { return Err(bad()); }
     record.deployment_id = result["deploymentId"].as_str().map(str::to_owned);
@@ -284,7 +297,7 @@ fn project_result(record: &mut Work, result: &Value) -> Result<()> {
 mod tests {
     use super::*;
     fn work() -> Work {
-        Work { format: 1, id: Uuid::new_v4().to_string(), workspace_id: Uuid::new_v4().to_string(), tenant_id: Uuid::new_v4().to_string(), principal_id: Uuid::new_v4().to_string(), account_id: "a".repeat(32), project_name: "synthetic-exhibition".into(), source: super::super::native_static_export::Receipt { publication_id: Uuid::new_v4().to_string(), revision_sha256: "b".repeat(64), index_sha256: "c".repeat(64), manifest_sha256: "d".repeat(64), files: 3, bytes: 4096, output: PathBuf::from("/synthetic/absent-publication") }, state: "running".into(), deployment_id: None, public_url: None, error_code: None }
+        Work { format: 1, id: Uuid::new_v4().to_string(), workspace_id: Uuid::new_v4().to_string(), tenant_id: Uuid::new_v4().to_string(), principal_id: Uuid::new_v4().to_string(), account_id: "a".repeat(32), project_name: "synthetic-exhibition".into(), source: super::super::native_static_export::Receipt { publication_id: Uuid::new_v4().to_string(), revision_sha256: "b".repeat(64), index_sha256: "c".repeat(64), manifest_sha256: "d".repeat(64), files: 3, bytes: 4096, output: PathBuf::from("/synthetic/absent-publication") }, static_cache_policy_sha256: None, state: "running".into(), deployment_id: None, public_url: None, error_code: None }
     }
     #[test]
     fn provider_ready_without_public_file_proof_never_completes() {
@@ -305,5 +318,20 @@ mod tests {
         for input in [serde_json::json!({"action":"deploy_api","token":"synthetic"}), serde_json::json!({"action":"accounts","token":"synthetic","provider":"render"}), serde_json::json!({"action":"reconcile","token":"synthetic","sourcePath":"/unreviewed"})] { assert!(serde_json::from_value::<Input>(input).is_err()); }
         assert!(safe_code("HOSTED_PUBLIC_CONTENT_MISMATCH"));
         for value in ["HOSTED_PRIVATE_TOKEN_VALUE", "HOSTED_PUBLIC_CONTENT_MISMATCH\nSQL", "/private/path"] { assert!(!safe_code(value)); }
+    }
+    #[test]
+    fn cache_policy_is_optional_for_legacy_work_and_pinned_for_new_work() {
+        let mut work = work();
+        let legacy = serde_json::to_value(&work).unwrap();
+        assert!(legacy.get("staticCachePolicySha256").is_none());
+        let request = request_for(&work, "reconcile");
+        assert!(request.get("staticCacheProfile").is_none());
+        work.static_cache_policy_sha256 = Some("e".repeat(64));
+        let request = request_for(&work, "reconcile");
+        assert_eq!(request["staticCacheProfile"], "static-data-sha256-24h-v1");
+        assert_eq!(request["staticCachePolicySha256"], "e".repeat(64));
+        assert!(work.validate().is_ok());
+        work.static_cache_policy_sha256 = Some("INVALID".into());
+        assert!(work.validate().is_err());
     }
 }
