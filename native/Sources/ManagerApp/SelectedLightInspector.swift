@@ -10,6 +10,12 @@ extension NativeLightType {
     }
 }
 
+extension NativeLightFixture {
+    var title: String {
+        switch self { case .none: "기구 없음"; case .spotCan: "스폿 캔"; case .disc: "원형 기구"; case .panel: "패널 기구" }
+    }
+}
+
 struct NativeLightPicker: View {
     @ObservedObject var model: ExhibitionModel
     let ready: Bool
@@ -95,6 +101,21 @@ struct SelectedLightInspector: View {
                                 guard var next = model.light else { return }; next.changeType(value); model.light = next
                             })) { ForEach(NativeLightType.allCases, id: \.self) { Text($0.title).tag($0) } }
                             Text("빛의 계산 방식을 선택합니다. 종류를 바꿔 단위가 달라지면 밝기는 기본값 100으로 바뀝니다.").font(.caption).foregroundStyle(.secondary)
+                            if fields.fixtureEditable {
+                                Picker("조명 기구", selection: Binding(get: { fields.fixture }, set: { value in
+                                    guard var next = model.light else { return }; next.fixture = value; model.light = next
+                                })) {
+                                    ForEach(NativeLightFixture.allCases, id: \.self) { fixture in
+                                        Text(fixture.title).tag(fixture).disabled(!fixture.supports(fields.type))
+                                    }
+                                }.disabled(!controller.lightFixtureSupported)
+                            } else {
+                                LabeledContent("조명 기구", value: "기존 설정 유지")
+                                }
+                            Text("기구 외형은 빛의 종류와 별개입니다. 스폿 캔은 스폿, 원형은 점광원, 패널은 면광원과 함께 사용합니다. 공간 안에 맞는지 미리보기에서 확인하세요.").font(.caption).foregroundStyle(.secondary)
+                            if !controller.lightFixtureSupported || !fields.fixtureEditable {
+                                Text("현재 연결이나 저장된 정보에서는 기구를 바꿀 수 없습니다. 기존 설정은 유지됩니다.").font(.caption).foregroundStyle(.secondary)
+                            }
                             ColorPicker("빛 색상", selection: color, supportsOpacity: false)
                             TextField("밝기 · 렌더러 값", text: field(\.intensity))
                             if fields.type == .spot { TextField("빔 전체각 · °", text: field(\.beamDegrees)) }

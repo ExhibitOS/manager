@@ -235,7 +235,13 @@ refuses editing rather than replacing its values with defaults. Units follow
 the existing producer; changing between different units uses its default input
 of100 rather than a photometric conversion. Fixture shapes, direct3D movement,
 aiming, Kelvin, calibrated illuminance and full lighting release acceptance are
-separate. Source and synthetic unit coverage do not establish actual GUI,
+separate. The fixture selector now uses the already optional
+`light-fixture-aim-v1` shared validator for none, spot can, disc and panel.
+It preserves existing aim, Kelvin intent, range, softness, other bindings and
+opaque base-light fields, and uses the same preview/Apply/Cancel/Undo/save paths.
+Only the shared validator admits generated geometry and room clearance. Missing
+capability or unsupported selected metadata keeps the existing fixture unchanged.
+This slice does not add aim/K editing or certify optics. Source and synthetic unit coverage do not establish actual GUI,
 save/reopen, OEX/Viewer/static consumer or distribution qualification.
 
 The native bench producer uses the optional `bench-inspector-v1` bridge with
