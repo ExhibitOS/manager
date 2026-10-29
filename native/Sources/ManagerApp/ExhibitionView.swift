@@ -463,14 +463,14 @@ final class ExhibitionModel: ObservableObject {
     var canSelectLight: Bool { canSelectCatalog }
     var canPreviewLight: Bool {
         !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !benchDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && !architectureApplying && lightDirty && !lightPreviewing && viewportController.connected && viewportController.lightInspectorSupported
-            && (light?.fixtureChanged != true || viewportController.lightFixtureSupported)
+            && (light?.detailsChanged != true || viewportController.lightFixtureSupported)
     }
     var canApplyLight: Bool {
         guard !busy, !pending, !immutable, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
               !surfaceMaterialDirty, !benchDirty, !plaqueDirty, !furnishingDirty && !spaceLightingDirty, !architectureApplying, viewportController.connected, viewportController.lightInspectorSupported,
               lightPreviewAccessID == viewportAccessID, let preview = lightPreview, preview.base == draft,
               selectedLightId == preview.command.lightId, let fields = light else { return false }
-        guard preview.command.fixture == nil || viewportController.lightFixtureSupported else { return false }
+        guard !preview.command.usesLightDetails || viewportController.lightFixtureSupported else { return false }
         return (try? fields.command()) == preview.command
     }
     @Published private(set) var selectedBenchId = ""

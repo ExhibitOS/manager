@@ -144,7 +144,7 @@ final class NativeViewportController: ObservableObject {
         return preview
     }
     func lightInspector(_ command: LightCommand, selectedLightId: String) async throws -> LightPreview {
-        guard connected, lightInspectorSupported, command.fixture == nil || lightFixtureSupported,
+        guard connected, lightInspectorSupported, !command.usesLightDetails || lightFixtureSupported,
               let lightInspectorAction else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
         return try await lightInspectorAction(command, selectedLightId)
     }
@@ -583,7 +583,7 @@ struct NativeViewport: NSViewRepresentable {
             }
             controller.lightInspectorAction = { [weak self] command, selectedLightId in
                 guard let self, self.active, self.controller.owner == self.epoch, self.controller.lightInspectorSupported,
-                      command.fixture == nil || self.controller.lightFixtureSupported,
+                      !command.usesLightDetails || self.controller.lightFixtureSupported,
                       self.placementIntent == nil, !self.inspectorPending, let web = self.web, let frame = self.latest,
                       self.prepared, self.sent == frame.sequence, !frame.disabled else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 let request = try LightViewportRequest(frame: frame, command: command, selectedLightId: selectedLightId)
@@ -591,13 +591,13 @@ struct NativeViewport: NSViewRepresentable {
                 defer { self.inspectorPending = false }
                 let generation = self.generation
                 let json = String(decoding: try JSONEncoder().encode(request.value), as: UTF8.self)
-                let script = command.fixture == nil
+                let script = !command.usesLightDetails
                     ? "if (typeof window.exhibitosViewport?.lightInspector !== 'function') throw new Error('VIEWPORT_NOT_READY'); return await window.exhibitosViewport.lightInspector(JSON.parse(requestJSON));"
                     : "if (typeof window.exhibitosViewport?.lightDetails !== 'function') throw new Error('VIEWPORT_NOT_READY'); return await window.exhibitosViewport.lightDetails(JSON.parse(requestJSON));"
                 let response = try await web.callAsyncJavaScript(script, arguments: ["requestJSON": json], in: nil, contentWorld: .page)
                 try Task.checkCancellation()
                 guard self.active, self.prepared, self.controller.lightInspectorSupported, self.controller.connected,
-                      command.fixture == nil || self.controller.lightFixtureSupported,
+                      !command.usesLightDetails || self.controller.lightFixtureSupported,
                       self.controller.owner == self.epoch, self.generation == generation,
                       self.latest?.sequence == frame.sequence, self.placementIntent == nil,
                       let response, JSONSerialization.isValidJSONObject(response) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }

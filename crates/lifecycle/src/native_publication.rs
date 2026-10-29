@@ -207,6 +207,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn publication_pending_float_payload_is_exact_across_wire_and_cold_retry() {
+        // Same 6500 K linear RGB sent by Swift as shortest JSON and by
+        // Foundation JSONSerialization as expanded decimals. Both must retain
+        // the original blue bit; a one-ULP change breaks immutable request IDs.
+        for input in [
+            "[1,0.9911020971138298,0.9559733532492861]",
+            "[1,0.99110209711382979,0.95597335324928612]",
+        ] {
+            let color: Value = serde_json::from_str(input).unwrap();
+            assert_eq!(color[2].as_f64().unwrap().to_bits(), 0x3fee97556e01b351);
+            let pending = Pending {
+                source_exhibition_id: Uuid::new_v4().to_string(),
+                source_etag: format!("\"studio-r7-{}\"", "a".repeat(64)),
+                snapshot: serde_json::json!({"candidate":{"lights":[{"color":color}],"opaque":{"keep":0.12345678901234568}}}),
+                save_request_id: Uuid::new_v4().to_string(),
+                snapshot_etag: None,
+                publish_request_id: Uuid::new_v4().to_string(),
+                plan_binding_sha256: Some("b".repeat(64)),
+            };
+            let request = |p: &Pending| serde_json::to_vec(&serde_json::json!({
+                "method":"POST", "input":{"draft":p.snapshot,"requestId":p.save_request_id}
+            })).unwrap();
+            let original = request(&pending);
+            let mut reopened = pending.clone();
+            for _ in 0..4 {
+                reopened = serde_json::from_slice(&serde_json::to_vec(&reopened).unwrap()).unwrap();
+                assert!(pending == reopened);
+                assert_eq!(request(&reopened), original);
+            }
+            let mut altered = reopened.clone();
+            altered.snapshot["candidate"]["lights"][0]["color"][2] = serde_json::json!(0.955973353249286_f64);
+            assert!(pending != altered, "The existing immutable-pending comparison still rejects a real bit change");
+        }
+    }
+
+    #[test]
     fn publication_plan_binding_cold_legacy_and_bound_journals() {
         let id = || Uuid::new_v4().to_string();
         let source = id();

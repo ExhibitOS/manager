@@ -13,11 +13,11 @@ public struct LightViewportRequest: Sendable {
         }
         var fields: [String: DocumentValue] = ["version": .integer(1), "epoch": .string(frame.epoch), "sequence": .integer(Int64(frame.sequence)),
                          "tenantId": .string(frame.tenantId), "principalId": .string(frame.principalId),
-                         "requestId": .string(UUID().uuidString.lowercased()), "type": .string(command.fixture == nil ? "set-light" : "set-light-details"),
+                         "requestId": .string(UUID().uuidString.lowercased()), "type": .string(command.usesLightDetails ? "set-light-details" : "set-light"),
                          "lightId": .string(command.lightId), "light": try command.encodedLight(in: frame.draft, selectedLightId: selectedLightId)]
-        if let fixture = command.fixture { fields["settings"] = try fixture.settings(in: frame.draft, lightId: command.lightId, type: command.type) }
+        if command.usesLightDetails { fields["settings"] = try command.detailsSettings(in: frame.draft) }
         value = .object(fields)
-        guard try JSONEncoder().encode(value).count <= (command.fixture == nil ? 1_100_000 : 65_536) else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
+        guard try JSONEncoder().encode(value).count <= (command.usesLightDetails ? 65_536 : 1_100_000) else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
         self.frame = frame; self.command = command
     }
     public func checkedReply(_ reply: DocumentValue, selectedLightId: String?) throws -> LightPreview {
