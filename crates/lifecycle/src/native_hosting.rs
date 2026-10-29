@@ -298,6 +298,14 @@ fn project_result(record: &mut Work, result: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    #[allow(dead_code)]
+    struct LegacyWork {
+        format: u32, id: String, workspace_id: String, tenant_id: String, principal_id: String,
+        account_id: String, project_name: String, source: super::super::native_static_export::Receipt,
+        state: String, deployment_id: Option<String>, public_url: Option<String>, error_code: Option<String>,
+    }
     fn work() -> Work {
         Work { format: 1, id: Uuid::new_v4().to_string(), workspace_id: Uuid::new_v4().to_string(), tenant_id: Uuid::new_v4().to_string(), principal_id: Uuid::new_v4().to_string(), account_id: "a".repeat(32), project_name: "synthetic-exhibition".into(), source: super::super::native_static_export::Receipt { publication_id: Uuid::new_v4().to_string(), revision_sha256: "b".repeat(64), index_sha256: "c".repeat(64), manifest_sha256: "d".repeat(64), files: 3, bytes: 4096, output: PathBuf::from("/synthetic/absent-publication") }, static_cache_policy_sha256: None, state: "running".into(), deployment_id: None, public_url: None, error_code: None }
     }
@@ -326,9 +334,11 @@ mod tests {
         let mut work = work();
         let legacy = serde_json::to_value(&work).unwrap();
         assert!(legacy.get("staticCachePolicySha256").is_none());
+        assert!(serde_json::from_value::<LegacyWork>(legacy).is_ok());
         let request = request_for(&work, "reconcile");
         assert!(request.get("staticCacheProfile").is_none());
         work.static_cache_policy_sha256 = Some("e".repeat(64));
+        assert!(serde_json::from_value::<LegacyWork>(serde_json::to_value(&work).unwrap()).is_err());
         let request = request_for(&work, "reconcile");
         assert_eq!(request["staticCacheProfile"], "static-data-sha256-24h-v1");
         assert_eq!(request["staticCachePolicySha256"], "e".repeat(64));
