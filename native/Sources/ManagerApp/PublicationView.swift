@@ -42,6 +42,10 @@ final class PublicationModel: ObservableObject {
         return completedRefersToSource(completed, source: source)
     }
     func statusVerified(_ completed: NativePublicationCompleted) -> Bool { verifiedCompleted == completed && state?.completed == completed }
+    var preparationStatusKnown: Bool {
+        guard let state else { return false }
+        return state.completed.map(statusVerified) ?? true
+    }
     func completedRefersToSource(_ completed: NativePublicationCompleted, source: ExhibitionModel) -> Bool {
         guard !source.dirty, let draft = source.draft, let etag = source.state?.etag else { return false }
         do { return completed.refersToSource(sourceExhibitionId: draft.id, etag: etag, planBindingSha256: try planBinding(draft, etag: etag)) }
@@ -110,6 +114,7 @@ final class PublicationModel: ObservableObject {
             state = try checked(await read())
             guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
             guard state?.pending == nil, var value = state else { throw AuthoringFailure("PUBLICATION_PENDING") }
+            guard preparationStatusKnown else { throw AuthoringFailure("PUBLICATION_STATUS_UNCONFIRMED") }
             if let completed = value.completed, completed.isReusable(sourceExhibitionId: draft.id, etag: etag, planBindingSha256: binding) {
                 try await refreshCompleted(); return
             }
@@ -218,7 +223,7 @@ struct NativePublicationView: View {
                         Toggle("작품을 표시할 권리를 확인했습니다", isOn: Binding(get: { model.isReviewed(draft, etag: etag) }, set: { model.review($0, draft: draft, etag: etag) }))
                         Text("인터넷에 배포하면 브라우저로 전달된 작품 파일은 복사될 수 있습니다. 호스팅 대상·공개 범위·비용은 배포 전에 따로 확인합니다.").foregroundStyle(.secondary)
                         Button("공개용 저장본 준비") { Task { await model.prepare(draft, etag: etag) } }
-                            .disabled(!ready || model.busy || model.state?.pending != nil || !model.isReviewed(draft, etag: etag))
+                            .disabled(!ready || model.busy || model.state?.pending != nil || !model.preparationStatusKnown || !model.isReviewed(draft, etag: etag))
                     }
                 }
             } else { Text("전시 편집에서 전시를 열고 저장하세요.") }
@@ -231,6 +236,7 @@ struct NativePublicationView: View {
                 let matches = model.completedRefersToSource(completed, source: source)
                 Label(matches ? (model.statusVerified(completed) ? (completed.publication.status == "published" ? "이 Mac의 공개용 저장본 준비 완료" : "준비 해제됨") : "이 Mac의 준비 상태 확인 필요") : "이전 실행본·저장본의 준비 기록", systemImage: "doc.badge.checkmark")
                 if !matches { Text("현재 편집 내용은 위의 확인 버튼으로 다시 확인하세요.").foregroundStyle(.secondary) }
+                if !model.statusVerified(completed) { Text("새 공개용 저장본을 준비하기 전에 이 기록의 준비 상태를 다시 확인하세요. 확인 전에는 이 기록을 유지합니다.").foregroundStyle(.secondary) }
                 Text("인터넷 공개 결과는 아래 온라인 공개에서 확인하세요.").foregroundStyle(.secondary)
                 DisclosureGroup("저장본 식별 정보") { Text(completed.publication.publicationId).textSelection(.enabled); Text(completed.publication.revisionSha256).textSelection(.enabled) }
                 Button("준비 상태 다시 확인") { Task { await model.refresh() } }.disabled(!ready || model.busy)
