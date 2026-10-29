@@ -198,6 +198,7 @@ final class ExhibitionModel: ObservableObject {
     var viewportDraft: NativeExhibitionDraft? {
         if entranceHostRecovering { return draft }
         if entrancePreviewBase == draft, let value = entrancePreviewDraft { return value }
+        if viewingPointInput != nil { return viewingPointPreview ?? draft }
         if let value = furnishingPreview?.displayDraft { return value }
         if let value = spaceLightingPreview?.displayDraft { return value }
         if let value = plaquePreview?.displayDraft { return value }
@@ -260,6 +261,74 @@ final class ExhibitionModel: ObservableObject {
               viewingPlanPreviewSequence == viewportController.acceptedSequence,
               let preview = viewingPlanPreview, let draft, draft == preview.base else { return false }
         return (try? viewingPlan?.command(in: draft)) == preview.command
+    }
+    @Published var viewingPointInput: ViewingPointFormBuffer? {
+        didSet { clearViewingPointPreview(); viewingPointStatus = "" }
+    }
+    private var viewingPointBase: NativeExhibitionDraft?
+    @Published private var viewingPointPreview: NativeExhibitionDraft?
+    private var viewingPointAccessID: UUID?
+    private var viewingPointContext: UUID?
+    private var viewingPointHostEpoch: String?
+    @Published private(set) var viewingPointStatus = ""
+    var canBeginViewingPoint: Bool {
+        canEditViewingPlan && !viewingPlanDirty && viewingPointInput == nil &&
+        (draft.flatMap { try? BenchViewpoint.list(in: $0).count }.map { $0 < 64 } ?? false)
+    }
+    var canEditViewingPoint: Bool {
+        viewingPointInput != nil && draft == viewingPointBase && !entrancePreviewActive && !busy && !pending && !immutable &&
+        !placingArtwork && !floorDirty && !nonFloorFormDirty && !positionDirty && !architectureDirty && !architectureApplying &&
+        viewportController.editingContextActive && viewportController.viewingPlanSupported
+    }
+    var canPreviewViewingPoint: Bool {
+        guard canEditViewingPoint, viewportController.connected, viewingPointPreview == nil, let fields = viewingPointInput, let draft else { return false }
+        return (try? fields.candidate(in: draft)) != nil
+    }
+    private var checkedViewingPointPreview: NativeExhibitionDraft? {
+        guard !immutable, !pending, !entrancePreviewActive, !placingArtwork, !floorDirty, !nonFloorFormDirty,
+              !positionDirty, !architectureDirty, !architectureApplying,
+              let base = viewingPointBase, draft == base, let fields = viewingPointInput,
+              let preview = viewingPointPreview, preview.candidate == (try? fields.candidate(in: base)),
+              viewingPointAccessID == viewportAccessID, viewingPointContext == viewportController.editingContextGeneration,
+              viewingPointHostEpoch == viewportController.hostEpoch, viewportController.editingContextActive,
+              viewportController.viewingPlanSupported, let credentials = viewportCredentials,
+              viewportController.confirmsMetadataPreview(preview, tenantId: credentials.tenantId, principalId: credentials.principalId) else { return nil }
+        return preview
+    }
+    var canApplyViewingPoint: Bool { canEditViewingPoint && checkedViewingPointPreview != nil }
+    private func clearViewingPointPreview() {
+        viewingPointPreview = nil; viewingPointAccessID = nil; viewingPointContext = nil; viewingPointHostEpoch = nil
+    }
+    private func resetViewingPointInput() {
+        viewingPointInput = nil; viewingPointBase = nil; clearViewingPointPreview()
+    }
+    func beginViewingPoint() {
+        guard canBeginViewingPoint, let draft, let room = draft.rooms.first(where: { $0["id"].string == roomId }) ?? draft.rooms.first,
+              let id = room["id"].string else { return }
+        do { viewingPointBase = draft; viewingPointInput = try ViewingPointFormBuffer(draft: draft, roomId: id) }
+        catch { viewingPointStatus = "감상 시점 입력을 열지 못했습니다. 기존 전시는 유지됩니다." }
+    }
+    func discardViewingPoint() {
+        guard !busy, !pending, !architectureApplying, !placingArtwork else { return }
+        resetViewingPointInput()
+    }
+    func previewViewingPoint() {
+        guard canPreviewViewingPoint, let fields = viewingPointInput, let base = viewingPointBase,
+              let epoch = viewportController.hostEpoch else { return }
+        do {
+            var preview = base; try preview.replaceCandidate(fields.candidate(in: base))
+            viewingPointAccessID = viewportAccessID; viewingPointContext = viewportController.editingContextGeneration
+            viewingPointHostEpoch = epoch; viewingPointPreview = preview
+            viewingPointStatus = "시점 형식을 확인하고 있습니다. 시점 추가가 활성화되면 보관할 수 있습니다. 관람 중 바닥·장애물 안전은 별도로 확인합니다."
+        } catch { viewingPointStatus = "이름·위치·방향·시야각을 확인하세요. 입력과 기존 시점은 유지됩니다." }
+    }
+    func applyViewingPoint() async {
+        guard canApplyViewingPoint else { return }
+        await work(allowViewingPointInput: true) {
+            guard let preview = checkedViewingPointPreview, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            value.draft = preview; try await persist(value); syncFields()
+            notice = "감상 시점을 이 Mac에 보관했습니다. 관람 순서에서 선택하고 전시를 저장하세요."
+        }
     }
     @Published var furnishing: FurnishingFormBuffer? { didSet { furnishingPreview = nil; furnishingPreviewAccessID = nil; furnishingStatus = "" } }
     private var furnishingBaseline: FurnishingFormBuffer?
@@ -506,7 +575,7 @@ final class ExhibitionModel: ObservableObject {
     private var write: ((NativeDocumentState) async throws -> NativeDocumentState)?
     var draft: NativeExhibitionDraft? { state?.draft }
     var pending: Bool { state?.pending != nil }
-    var formDirty: Bool { floorDirty || nonFloorFormDirty }
+    var formDirty: Bool { viewingPointInput != nil || floorDirty || nonFloorFormDirty }
     private var nonFloorFormDirty: Bool {
         guard let draft else { return false }
         let entranceDirty = (entranceEditable && ((try? draft.viewerEntranceSettings()) != entrance || coverEntry.isDirty)) || installationDirty || publicationWatermark.isDirty
@@ -547,6 +616,7 @@ final class ExhibitionModel: ObservableObject {
         if accessChanged { floorImages = [:]; floorImageAttempts = [] }
         self.read = read; self.write = write
         viewingPlanPreview = nil; viewingPlanPreviewAccessID = nil; viewingPlanPreviewContext = nil; viewingPlanPreviewHostEpoch = nil; viewingPlanPreviewSequence = nil
+        clearViewingPointPreview()
         // Reconnecting may replace the native store closures even for the same
         // account/origin. Keep text, but never apply a prior binding's preview.
         clearSurfaceMaterialPreview()
@@ -733,8 +803,12 @@ final class ExhibitionModel: ObservableObject {
         entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false
         entrancePreviewStatus = "편집 화면을 다시 연결했습니다. 입력·선택·실행 취소 이력과 마지막으로 선택한 보기는 유지됩니다."
     }
-    private func work(allowViewingPlanInput: Bool = false, _ body: () async throws -> Void) async {
+    private func work(allowViewingPlanInput: Bool = false, allowViewingPointInput: Bool = false, _ body: () async throws -> Void) async {
         guard !entrancePreviewActive, !busy, !placingArtwork, api != nil, session != nil else { return }
+        guard allowViewingPointInput || viewingPointInput == nil else {
+            notice = "감상 시점 입력을 추가하거나 취소한 뒤 진행하세요."
+            return
+        }
         guard allowViewingPlanInput || !viewingPlanDirty else {
             notice = "관람 계획 입력을 확인하고 적용하거나 취소한 뒤 진행하세요."
             return
@@ -1548,7 +1622,7 @@ final class ExhibitionModel: ObservableObject {
     }
     func refresh(more: Bool = false) async { await work { try await list(more: more) } }
     func new() async {
-        await work(allowViewingPlanInput: true) {
+        await work(allowViewingPlanInput: true, allowViewingPointInput: true) {
             guard !pending, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             value.draft = try NativeExhibitionDraft.new(); value.etag = nil; value.savedEditVersion = nil
             try await persist(value); immutable = false; comparison = nil; syncFields()
@@ -1556,7 +1630,7 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     func open(_ id: String) async {
-        await work(allowViewingPlanInput: true) {
+        await work(allowViewingPlanInput: true, allowViewingPointInput: true) {
             guard !pending, let api, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             let saved = try await api.exhibition(id)
             let frozen = !(try await api.publications(exhibitionId: id)).isEmpty
@@ -1668,7 +1742,7 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     func adoptComparison() async {
-        await work(allowViewingPlanInput: true) {
+        await work(allowViewingPlanInput: true, allowViewingPointInput: true) {
             guard !pending, let saved = comparison, let api, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             value.draft = saved.draft; value.etag = saved.etag; value.savedEditVersion = saved.draft.document["editVersion"].integer
             let frozen = !(try await api.publications(exhibitionId: saved.draft.id)).isEmpty
@@ -1717,6 +1791,7 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     func syncFields() {
+        resetViewingPointInput()
         let selected = viewportSelection
         title = draft?.title ?? ""
         syncEntrance()

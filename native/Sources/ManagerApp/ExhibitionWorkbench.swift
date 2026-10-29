@@ -205,7 +205,7 @@ struct NativeExhibitionView: View {
                 ForEach(InspectorScope.allCases) { value in Text(value.title).tag(value) }
             }.padding(12)
             Divider()
-            inspectorContent.disabled((readOnly && scope != .output) || (model.viewingPlanDirty && scope != .viewingPlan))
+            inspectorContent.disabled((readOnly && scope != .output) || ((model.viewingPlanDirty || model.viewingPointInput != nil) && scope != .viewingPlan))
         }
     }
     @ViewBuilder private var inspectorContent: some View {

@@ -71,6 +71,10 @@ final class NativeViewportController: ObservableObject {
     }
     var hostEpoch: String? { owner }
     func confirmsFloorPreview(_ draft: NativeExhibitionDraft, tenantId: String, principalId: String) -> Bool {
+        confirmsMetadataPreview(draft, tenantId: tenantId, principalId: principalId)
+    }
+    // The existing immutable disabled-frame identity check also fences metadata previews.
+    func confirmsMetadataPreview(_ draft: NativeExhibitionDraft, tenantId: String, principalId: String) -> Bool {
         connected && acknowledgedFrame?.confirmsFloorPreview(ownerEpoch: owner, acceptedSequence: acceptedSequence,
             expectedDraft: draft, tenantId: tenantId, principalId: principalId) == true
     }

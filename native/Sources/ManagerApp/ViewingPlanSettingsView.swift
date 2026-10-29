@@ -58,6 +58,49 @@ struct ViewingPlanSettingsView: View {
             }
         }.textFieldStyle(.roundedBorder)
     }
+    private func pointField(_ key: WritableKeyPath<ViewingPointFormBuffer, String>) -> Binding<String> {
+        Binding(get: { model.viewingPointInput?[keyPath: key] ?? "" }, set: { value in
+            guard ready, model.canEditViewingPoint, var fields = model.viewingPointInput else { return }
+            fields[keyPath: key] = value; model.viewingPointInput = fields
+        })
+    }
+    private func pointText(_ label: String, _ key: WritableKeyPath<ViewingPointFormBuffer, String>) -> some View {
+        TextField(label, text: pointField(key))
+    }
+    @ViewBuilder private var pointEditor: some View {
+        if model.viewingPointInput != nil {
+            Group {
+                pointText("시점 이름", \.name)
+                Picker("공간", selection: pointField(\.roomId)) {
+                    let rooms = model.draft?.rooms ?? []
+                    ForEach(rooms.indices, id: \.self) { index in
+                        if let id = rooms[index]["id"].string { Text(rooms[index]["name"].string ?? "공간").tag(id) }
+                    }
+                }
+                DisclosureGroup("위치와 바라보는 곳") {
+                    pointText("눈 위치 X · m", \.x)
+                    pointText("눈 높이 Y · m", \.y)
+                    pointText("눈 위치 Z · m", \.z)
+                    pointText("바라볼 위치 X · m", \.targetX)
+                    pointText("바라볼 높이 Y · m", \.targetY)
+                    pointText("바라볼 위치 Z · m", \.targetZ)
+                    pointText("시야각 · 10–120°", \.fov)
+                }
+            }.disabled(!ready || !model.canEditViewingPoint)
+            Text("기본 입력은 선택한 공간에서 서서 보는 높이와 방향입니다. 바닥·장애물에 맞지 않는 위치는 관람 중 거부됩니다. 기존 시점과 편집 화면의 보기는 바뀌지 않습니다.")
+                .font(.caption).foregroundStyle(.secondary)
+            if model.canEditViewingPoint && controller.connected && !model.canPreviewViewingPoint && !model.canApplyViewingPoint && model.viewingPointStatus.isEmpty {
+                Text("이름·공간 안의 눈 위치·서로 다른 바라볼 위치·시야각을 확인하세요.").font(.caption).foregroundStyle(.secondary)
+            }
+            Button("시점 형식 확인") { model.previewViewingPoint() }.disabled(!ready || !model.canPreviewViewingPoint)
+            Button("시점 추가") { Task { await model.applyViewingPoint() } }.disabled(!ready || !model.canApplyViewingPoint)
+            Button("시점 입력 취소") { model.discardViewingPoint() }.disabled(model.busy || model.pending || model.architectureApplying)
+        } else {
+            Button("감상 시점 추가", systemImage: "plus") { model.beginViewingPoint() }.disabled(!ready || !model.canBeginViewingPoint)
+            Text("벤치와 무관한 시점을 만들고 위의 관람 순서에서 선택합니다. 기존 시점은 덮어쓰지 않습니다.").font(.caption).foregroundStyle(.secondary)
+        }
+        if !model.viewingPointStatus.isEmpty { Text(model.viewingPointStatus).foregroundStyle(.secondary) }
+    }
     var body: some View {
         Form {
             Section("관람 순서") {
@@ -88,7 +131,7 @@ struct ViewingPlanSettingsView: View {
                     if !fields.usesPlan || fields.stops.isEmpty {
                         Text("지정한 순서가 없으면 기존 입장 방식과 작품 목록 순서를 사용합니다.").font(.caption).foregroundStyle(.secondary)
                     }
-                    if views.isEmpty { Text("연결할 감상 시점이 없습니다. 기존 감상 시점을 작성한 뒤 순서에 작품을 추가하세요.").font(.caption).foregroundStyle(.secondary) }
+                    if views.isEmpty { Text("연결할 감상 시점이 없습니다. 아래 감상 시점 추가에서 위치를 만든 뒤 작품을 추가하세요.").font(.caption).foregroundStyle(.secondary) }
                     Button("관람 계획 확인") { Task { await model.previewViewingPlan() } }.disabled(!ready || !model.canPreviewViewingPlan)
                     Button("관람 계획 적용") { Task { await model.applyViewingPlan() } }.disabled(!ready || !model.canApplyViewingPlan)
                     Button("관람 계획 입력 취소") { model.discardViewingPlan() }.disabled(!model.viewingPlanDirty || model.busy || model.pending || model.architectureApplying)
@@ -99,6 +142,7 @@ struct ViewingPlanSettingsView: View {
                 }
                 if !model.viewingPlanStatus.isEmpty { Text(model.viewingPlanStatus).foregroundStyle(.secondary) }
             }
+            Section("감상 시점") { pointEditor }
         }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true)
     }
 }
