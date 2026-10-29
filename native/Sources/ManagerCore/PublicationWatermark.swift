@@ -121,6 +121,7 @@ public enum PublicationWatermarkRuntime {
         // producer and consumer contracts while adding model derivation.
         return manifestSHA256 == qualifiedManifestSHA256
             || manifestSHA256 == "b2ce49e9703cadf7d22b73ec5dfd93622489a07c34721f9bbe2b9f6df17ee28e"
+            || manifestSHA256 == "859525370a4599a465a502fff15d1cb26db3961ee11ac5bf0a6f64af070c355d"
     }
 }
 

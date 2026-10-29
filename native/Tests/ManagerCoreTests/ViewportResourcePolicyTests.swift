@@ -22,7 +22,7 @@ final class ViewportResourcePolicyTests: XCTestCase {
         func allows(_ url: String) -> Bool {
             expressions.contains { $0.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil }
         }
-        let paths = [
+        let surfacePaths = [
             "surface-material-textures/museum-matte-paint/1/color-01fee8fd9374.png",
             "surface-material-textures/museum-matte-paint/1/normal-10246edc0ab3.png",
             "surface-material-textures/museum-matte-paint/1/roughness-b62c048f8819.png",
@@ -30,7 +30,24 @@ final class ViewportResourcePolicyTests: XCTestCase {
             "surface-material-textures/fine-lime-plaster/1/normal-36d7e70a9317.png",
             "surface-material-textures/fine-lime-plaster/1/roughness-bb774369bf82.png"
         ]
-        XCTAssertEqual(expressions.filter { $0.pattern.contains("surface") }.count, paths.count)
+        let floorPaths = [
+            "floor-textures/Carpet004/1/ao-cba7d7a73cc9.png",
+            "floor-textures/Carpet004/1/color-df90d6a3be6b.png",
+            "floor-textures/Carpet004/1/normal-gl-956a4ad49737.png",
+            "floor-textures/Carpet004/1/roughness-6a60aa6770e6.png",
+            "floor-textures/Marble006/1/color-d44e0a2b0402.png",
+            "floor-textures/Marble006/1/normal-gl-a61a93414470.png",
+            "floor-textures/Marble006/1/roughness-cd5898bc49d9.png",
+            "floor-textures/Tiles074/1/color-99d35940d5ae.png",
+            "floor-textures/Tiles074/1/normal-gl-89ad085427ad.png",
+            "floor-textures/Tiles074/1/roughness-538f7d7c0645.png",
+            "floor-textures/WoodFloor051/1/color-68bad517cc4a.png",
+            "floor-textures/WoodFloor051/1/normal-gl-23d13c247759.png",
+            "floor-textures/WoodFloor051/1/roughness-8c578dfb7c61.png"
+        ]
+        let paths = surfacePaths + floorPaths
+        XCTAssertEqual(expressions.filter { $0.pattern.contains("surface") }.count, surfacePaths.count)
+        XCTAssertEqual(expressions.filter { $0.pattern.contains("floor") }.count, floorPaths.count)
         for path in paths {
             XCTAssertTrue(allows(origin + "/" + path))
             for denied in [

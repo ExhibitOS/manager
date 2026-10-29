@@ -12,7 +12,10 @@ public enum NativeModelDerivationProfile {
     public static let qualifiedManifestSHA256: String? = "b2ce49e9703cadf7d22b73ec5dfd93622489a07c34721f9bbe2b9f6df17ee28e"
     public static func supports(manifestSHA256: String?, ready: Bool) -> Bool {
         guard ready, let qualifiedManifestSHA256 else { return false }
+        // The Basis-restored floor-interior successor preserves schema-022
+        // public worker recipe and API contract; retain the previous packet.
         return manifestSHA256 == qualifiedManifestSHA256
+            || manifestSHA256 == "859525370a4599a465a502fff15d1cb26db3961ee11ac5bf0a6f64af070c355d"
     }
 }
 
