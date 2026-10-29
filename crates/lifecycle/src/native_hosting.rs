@@ -47,6 +47,11 @@ fn safe_code(code: &str) -> bool {
     matches!(code, "HOSTED_PUBLIC_CONTENT_MISMATCH" | "HOSTED_PUBLIC_CONTENT_UNAVAILABLE" | "HOSTED_API_ORIGIN_INVALID" | "HOSTED_BUSY" | "HOSTED_CANONICAL_ORIGIN_CONFLICT" | "HOSTED_CONNECTION_FAILED" | "HOSTED_DEPLOYMENT_BRANCH_CONFLICT" | "HOSTED_OPERATION_UNCERTAIN" | "HOSTED_PAGINATION_LIMIT" | "HOSTED_PAID_PLAN_REFUSED" | "HOSTED_PERMISSION_REQUIRED" | "HOSTED_PROJECT_CONFLICT" | "HOSTED_RATE_LIMITED" | "HOSTED_REDIRECT_REFUSED" | "HOSTED_REMOTE_REJECTED" | "HOSTED_REQUEST_INVALID" | "HOSTED_RESOURCE_CONFLICT" | "HOSTED_RESPONSE_INVALID" | "HOSTED_RESULT_UNCERTAIN" | "HOSTED_SOURCE_INVALID" | "HOSTED_SOURCE_REQUIRED" | "HOSTED_STATIC_BUNDLE_CHANGED" | "HOSTED_STATIC_BUNDLE_INVALID" | "HOSTED_TOKEN_INVALID" | "HOSTED_TOKEN_REQUIRED" | "NATIVE_HOSTING_CANCELLED" | "NATIVE_HOSTING_UNAVAILABLE" | "NATIVE_HOSTING_INVALID")
 }
 impl Work {
+    fn new_deployment(identity: &(String, String, String), account_id: String, project_name: String, source: super::native_static_export::Receipt) -> Self {
+        // Older helpers reject the new Work field. New work remains readable
+        // until rollback-safe journal versioning is available.
+        Self { format: 1, id: Uuid::new_v4().to_string(), workspace_id: identity.0.clone(), tenant_id: identity.1.clone(), principal_id: identity.2.clone(), account_id, project_name, source, static_cache_policy_sha256: None, state: "running".into(), deployment_id: None, public_url: None, error_code: None }
+    }
     fn validate(&self) -> Result<()> {
         if self.format != 1 || !uuid(&self.id) || ![&self.workspace_id, &self.tenant_id, &self.principal_id, &self.source.publication_id].iter().all(|id| uuid(id))
             || !account_id(&self.account_id) || !project_name(&self.project_name)
@@ -225,8 +230,7 @@ impl Hoster {
                 let completed = publication.completed.ok_or_else(|| err("NATIVE_PUBLICATION_REQUIRED"))?;
                 if publication.pending.is_some() || completed.publication.publication_id != publication_id || source.publication_id != publication_id || completed.publication.status != "published" || source.revision_sha256 != completed.publication.revision_sha256 || expected_manifest_sha256 != source.manifest_sha256 { return Err(err("NATIVE_PUBLICATION_STATE_CHANGED")); }
                 let pin = static_publication_source::inspect(source.output.to_str().ok_or_else(bad)?)?;
-                let cache_policy = super::native_static_export::cache_policy_sha256(&source)?;
-                let record = Work { format: 1, id: Uuid::new_v4().to_string(), workspace_id: identity.0.clone(), tenant_id: identity.1.clone(), principal_id: identity.2.clone(), account_id: account, project_name: pin.info.project_name, source, static_cache_policy_sha256: Some(cache_policy), state: "running".into(), deployment_id: None, public_url: None, error_code: None };
+                let record = Work::new_deployment(&identity, account, pin.info.project_name, source);
                 record.verify_source()?;
                 self.controller.save_hosting_work(&token, &record)?;
                 (request_for(&record, "deploy-static"), secret, Some(record))
@@ -296,6 +300,14 @@ fn project_result(record: &mut Work, result: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    #[allow(dead_code)]
+    struct LegacyWork {
+        format: u32, id: String, workspace_id: String, tenant_id: String, principal_id: String,
+        account_id: String, project_name: String, source: super::super::native_static_export::Receipt,
+        state: String, deployment_id: Option<String>, public_url: Option<String>, error_code: Option<String>,
+    }
     fn work() -> Work {
         Work { format: 1, id: Uuid::new_v4().to_string(), workspace_id: Uuid::new_v4().to_string(), tenant_id: Uuid::new_v4().to_string(), principal_id: Uuid::new_v4().to_string(), account_id: "a".repeat(32), project_name: "synthetic-exhibition".into(), source: super::super::native_static_export::Receipt { publication_id: Uuid::new_v4().to_string(), revision_sha256: "b".repeat(64), index_sha256: "c".repeat(64), manifest_sha256: "d".repeat(64), files: 3, bytes: 4096, output: PathBuf::from("/synthetic/absent-publication") }, static_cache_policy_sha256: None, state: "running".into(), deployment_id: None, public_url: None, error_code: None }
     }
@@ -321,16 +333,24 @@ mod tests {
     }
     #[test]
     fn cache_policy_is_optional_for_legacy_work_and_pinned_for_new_work() {
-        let mut work = work();
+        let fixture = work();
+        let mut work = Work::new_deployment(&(fixture.workspace_id, fixture.tenant_id, fixture.principal_id), fixture.account_id, fixture.project_name, fixture.source);
         let legacy = serde_json::to_value(&work).unwrap();
         assert!(legacy.get("staticCachePolicySha256").is_none());
+        assert!(serde_json::from_value::<LegacyWork>(legacy).is_ok());
         let request = request_for(&work, "reconcile");
         assert!(request.get("staticCacheProfile").is_none());
         work.static_cache_policy_sha256 = Some("e".repeat(64));
+        assert!(serde_json::from_value::<LegacyWork>(serde_json::to_value(&work).unwrap()).is_err());
         let request = request_for(&work, "reconcile");
         assert_eq!(request["staticCacheProfile"], "static-data-sha256-24h-v1");
         assert_eq!(request["staticCachePolicySha256"], "e".repeat(64));
         assert!(work.validate().is_ok());
+        let mut recovered = Some(work.clone());
+        record_uncertain(&mut recovered);
+        let recovered = recovered.unwrap();
+        assert_eq!(recovered.state, "uncertain");
+        assert_eq!(request_for(&recovered, "reconcile")["staticCachePolicySha256"], "e".repeat(64));
         work.static_cache_policy_sha256 = Some("INVALID".into());
         assert!(work.validate().is_err());
     }
