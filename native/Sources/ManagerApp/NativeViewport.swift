@@ -392,7 +392,7 @@ struct NativeViewport: NSViewRepresentable {
                       frame.transparent == input.transparent, frame.presentation == input.presentation,
                       frame.presentation == .threeD else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 let generation = self.generation, context = self.controller.editingContextGeneration
-                func current() throws {
+                @MainActor func current() throws {
                     guard self.active, self.prepared, self.isPage(web.url), self.generation == generation,
                           self.controller.owner == self.epoch, frame.epoch == self.epoch,
                           self.controller.editingContextActive, self.controller.editingContextGeneration == context,
