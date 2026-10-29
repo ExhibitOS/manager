@@ -47,7 +47,7 @@ final class ManagerModel: ObservableObject {
     @Published private(set) var maintenanceNotice = ""
     @Published private(set) var backupLocation: URL?
     var pendingRestoration: Bool { native?.restoration.map { $0.state != "activated" } == true }
-    var canMaintain: Bool { !busy && !runtimeBusy && !quitting && !hasUnsavedAuthoring && !authoring.busy && !authoring.modelWorkerPending && !exhibitions.busy && !publication.busy && !staticExport.running && !hosting.running && !hosting.busy && context != nil }
+    var canMaintain: Bool { !busy && !runtimeBusy && !quitting && !hasUnsavedAuthoring && !authoring.busy && !authoring.modelWorkerPending && !exhibitions.busy && !exhibitions.oexImport.busy && !exhibitions.oexImport.hasPendingWork && !publication.busy && !staticExport.running && !hosting.running && !hosting.busy && context != nil }
     var hasUnsavedAuthoring: Bool { authoring.dirty || exhibitions.dirty }
     private var bridge: NativeBridge?
     private var pollTask: Task<Void, Never>?
@@ -64,7 +64,7 @@ final class ManagerModel: ObservableObject {
             && accountPassword.count >= 12 && accountPassword.utf8.count <= 1024
             && accountPassword.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) }
     }
-    var canStop: Bool { !busy && !quitting && !finalizingRestoration && (runtimeBusy || native?.runtime?.hasOwnedProcesses == true) }
+    var canStop: Bool { !busy && !quitting && !finalizingRestoration && !exhibitions.oexImport.busy && (runtimeBusy || native?.runtime?.hasOwnedProcesses == true) }
 
     init(preview: Presentation? = nil) { if let preview { selection.refresh(preview) } }
 
@@ -134,6 +134,7 @@ final class ManagerModel: ObservableObject {
             await authoring.connect(credentials)
             if let api = authoring.exhibitionAPI, let session = authoring.session {
                 await exhibitions.connect(api: api, session: session, credentials: credentials, read: { try await bridge.documentState(context) }, write: { state in try await bridge.saveDocumentState(context, state: state) })
+                await exhibitions.oexImport.connect(api: api, session: session, read: { try await bridge.oexImportState(context) }, save: { state in try await bridge.saveOEXImportState(context, state: state) })
                 await publication.connect(api: api, session: session, read: { try await bridge.publicationState(context) }, write: { state in try await bridge.savePublicationState(context, state: state) })
             } else { exhibitions.entranceCredentialRenewalFailed() }
         } catch {
@@ -165,7 +166,7 @@ final class ManagerModel: ObservableObject {
     }
 
     func stop() async {
-        guard !busy, let bridge, let context else { return }
+        guard !busy, !exhibitions.oexImport.busy, let bridge, let context else { return }
         busy = true; failure = nil; startAfterPrepare = false
         defer { busy = false }
         await authoring.cancelImportAndWait()
@@ -304,7 +305,7 @@ final class ManagerModel: ObservableObject {
     func stopForQuit() async -> Bool {
         quitting = true; startAfterPrepare = false
         defer { quitting = false }
-        while busy { try? await Task.sleep(for: .milliseconds(100)) }
+        while busy || exhibitions.oexImport.busy { try? await Task.sleep(for: .milliseconds(100)) }
         await authoring.cancelImportAndWait()
         await presentationSave?.value
         guard !presentationPending else { failure = BridgeFailure("NATIVE_SAVE_FAILED"); return false }

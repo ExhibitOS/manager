@@ -7,6 +7,7 @@ import ManagerCore
 
 @MainActor
 final class ExhibitionModel: ObservableObject {
+    let oexImport = OEXImportModel()
     @Published private(set) var state: NativeDocumentState?
     @Published private(set) var items: [NativeExhibitionSummary] = []
     @Published private(set) var library: [ArtworkSummary] = []

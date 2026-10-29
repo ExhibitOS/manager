@@ -190,6 +190,10 @@ pub enum Command {
         transfer: Box<super::native_upload::Transfer>,
     },
     #[cfg(target_os = "macos")]
+    OEXImportState { selection_token: String },
+    #[cfg(target_os = "macos")]
+    SaveOEXImportState { selection_token: String, transfer: Box<super::native_oex_import::Transfer> },
+    #[cfg(target_os = "macos")]
     NativePrepare {
         selection_token: String,
         account: Option<crate::initial_account::InitialAccountInput>,
@@ -229,6 +233,8 @@ struct WireRequest {
     #[cfg(target_os = "macos")]
     transfer: Option<super::native_upload::Transfer>,
     #[cfg(target_os = "macos")]
+    oex_import: Option<super::native_oex_import::Transfer>,
+    #[cfg(target_os = "macos")]
     document: Option<super::native_document::DocumentState>,
     #[cfg(target_os = "macos")]
     publication: Option<super::native_publication::PublicationState>,
@@ -240,6 +246,19 @@ struct WireRequest {
 impl TryFrom<WireRequest> for Request {
     type Error = &'static str;
     fn try_from(wire: WireRequest) -> std::result::Result<Self, Self::Error> {
+        #[cfg(target_os = "macos")]
+        if matches!(wire.command.as_str(), "oex_import_state" | "save_oex_import_state") {
+            if wire.hosting.is_some() || wire.maintenance.is_some() || wire.state.is_some() || wire.account.is_some() || wire.transfer.is_some() || wire.document.is_some() || wire.publication.is_some() || wire.export.is_some() || wire.backup.is_some() { return Err("NATIVE_PROTOCOL_INVALID"); }
+            let selection_token = wire.selection_token.ok_or("NATIVE_PROTOCOL_INVALID")?;
+            let command = match (wire.command.as_str(), wire.oex_import) {
+                ("oex_import_state", None) => Command::OEXImportState { selection_token },
+                ("save_oex_import_state", Some(transfer)) => Command::SaveOEXImportState { selection_token, transfer: Box::new(transfer) },
+                _ => return Err("NATIVE_PROTOCOL_INVALID"),
+            };
+            return Ok(Self { version: wire.version, id: wire.id, command });
+        }
+        #[cfg(target_os = "macos")]
+        if wire.oex_import.is_some() { return Err("NATIVE_PROTOCOL_INVALID"); }
         #[cfg(target_os = "macos")]
         if matches!(wire.command.as_str(), "native_hosting" | "native_hosting_status" | "native_hosting_review" | "native_hosting_cancel") {
             if wire.maintenance.is_some() || wire.state.is_some() || wire.account.is_some() || wire.transfer.is_some() || wire.document.is_some() || wire.publication.is_some() || wire.export.is_some() || wire.backup.is_some() { return Err("NATIVE_PROTOCOL_INVALID"); }
@@ -538,6 +557,10 @@ impl Request {
                 selection_token,
                 transfer,
             } => serde_json::to_value(controller.save_native_upload(&selection_token, *transfer)?),
+            #[cfg(target_os = "macos")]
+            Command::OEXImportState { selection_token } => serde_json::to_value(controller.native_oex_import(&selection_token)?),
+            #[cfg(target_os = "macos")]
+            Command::SaveOEXImportState { selection_token, transfer } => serde_json::to_value(controller.save_native_oex_import(&selection_token, *transfer)?),
             #[cfg(target_os = "macos")]
             Command::NativeAuthoringSession { .. }
             | Command::NativeHosting { .. }
