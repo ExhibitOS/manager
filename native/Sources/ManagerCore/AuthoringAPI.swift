@@ -80,6 +80,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
     public init(_ code: String, status: Int = 0) { self.code = code; self.status = status }
     public var errorDescription: String? {
         switch code {
+        case "EXHIBITION_COMPARISON_STALE": return "저장본이 비교 후 바뀌었습니다. 현재 입력은 유지됩니다. 저장본을 다시 비교하세요."
         case "ARCHITECTURE_FIELDS_INVALID": return "공간 이름·크기·위치를 확인하세요. 크기는 0보다 큰 값, 위치는 숫자로 입력하세요."
         case "FURNISHING_FIELDS_INVALID": return "받침의 위치·회전·비례 크기를 확인하세요. 위치는 미터, 회전은 −180–180도, 비율은 0.1–4입니다. 입력과 기존 전시는 유지됩니다."
         case "FURNISHING_INVALID", "FURNISHING_CATALOG_INVALID": return "현재 지원하는 받침 정보를 확인하지 못했습니다. 기존 받침과 입력은 유지됩니다."

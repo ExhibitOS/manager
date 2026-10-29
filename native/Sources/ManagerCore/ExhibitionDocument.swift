@@ -146,6 +146,14 @@ public struct NativeStudioResponse: Decodable, Sendable {
     public let revision: Int
     public let etag: String
     public let draft: NativeExhibitionDraft
+
+    /// A comparison is a user-reviewed value, not permission to silently adopt a
+    /// newer or different server response. The caller must re-read before use.
+    public func requireSameComparison(_ current: NativeStudioResponse) throws {
+        guard revision == current.revision, etag == current.etag, draft == current.draft else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE", status: 409)
+        }
+    }
 }
 public struct NativeExhibitionSummary: Decodable, Sendable, Identifiable {
     public let id: String

@@ -3,6 +3,25 @@ import XCTest
 @testable import ManagerCore
 
 final class ExhibitionDocumentTests: XCTestCase {
+    func testComparedSnapshotMustStillMatchBeforeAdoption() throws {
+        let draft = try NativeExhibitionDraft.new()
+        let reviewed = NativeStudioResponse(revision: 3, etag: "etag-3", draft: draft)
+        XCTAssertNoThrow(try reviewed.requireSameComparison(reviewed))
+        var changed = draft
+        try changed.rename("서버에서 변경된 제목")
+        let mismatches = [
+            NativeStudioResponse(revision: 4, etag: "etag-3", draft: draft),
+            NativeStudioResponse(revision: 3, etag: "etag-4", draft: draft),
+            NativeStudioResponse(revision: 3, etag: "etag-3", draft: changed),
+            NativeStudioResponse(revision: 3, etag: "etag-3", draft: try NativeExhibitionDraft.new()),
+        ]
+        for current in mismatches {
+            XCTAssertThrowsError(try reviewed.requireSameComparison(current)) { error in
+                XCTAssertEqual((error as? AuthoringFailure)?.code, "EXHIBITION_COMPARISON_STALE")
+            }
+        }
+        XCTAssertEqual(reviewed.draft, draft)
+    }
     func testNativeEditsPreserveOpaqueExtensionsApprovedArtworkAndPose() throws {
         var draft = try NativeExhibitionDraft.new()
         var document = draft.document
