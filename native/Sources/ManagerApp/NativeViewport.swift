@@ -749,7 +749,7 @@ struct NativeViewportArea: View {
     var editable = true
     @ObservedObject var controller: NativeViewportController
     var workbench = false
-    var mode: Mode = .general
+    var mode: Mode = .beginner
     @State private var identity = UUID()
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
