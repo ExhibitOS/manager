@@ -59,6 +59,19 @@ final class FloorSettingsTests: XCTestCase {
         XCTAssertEqual(audio.value["texturePack"]["id"], .string("WoodFloor051"))
         XCTAssertEqual(audio.value["repeatMeters"], .vector([1.8, 1.8]))
     }
+    func testTileAndMarbleAppearanceChangesPreserveUnselectedDefaultSound() throws {
+        let (draft, target) = try fixture()
+        for (old, next) in [(FloorSettings.Preset.tile, FloorSettings.Preset.marble), (.marble, .tile)] {
+            let prior = try preset(old, draft: draft, target: target)
+            let appearance = try FloorSettings.applying(preset: next, defaults: FloorSettings.defaults(next), fields: [.texturePack], target: target, prior: prior, candidate: draft.candidate)
+            XCTAssertEqual(appearance.preset, old)
+            XCTAssertEqual(appearance.value["sound"], prior.value["sound"])
+            XCTAssertEqual(appearance.value["texturePack"], FloorSettings.defaults(next)[.texturePack])
+            let audio = try FloorSettings.applying(preset: next, defaults: FloorSettings.defaults(next), fields: [.sound], target: target, prior: prior, candidate: draft.candidate)
+            XCTAssertEqual(audio.preset, next)
+            XCTAssertEqual(audio.value["sound"], FloorSettings.defaults(next)[.sound])
+        }
+    }
     func testRejectUnknownBoundsDuplicateTargetAndNonWavReference() throws {
         var (draft, target) = try fixture()
         let settings = try preset(.tile, draft: draft, target: target)

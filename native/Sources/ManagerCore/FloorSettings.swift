@@ -97,7 +97,7 @@ public struct FloorSettings: Equatable, Sendable {
         return try Self(value: next, candidate: candidate)
     }
     private static func soundFamily(_ preset: Preset) -> String {
-        preset == .marble || preset == .tile ? "stone" : preset.rawValue
+        preset.rawValue
     }
     private static func invalid() -> AuthoringFailure { AuthoringFailure("FLOOR_SETTINGS_INVALID") }
     private static func object(_ value: DocumentValue) throws -> [String: DocumentValue] {
