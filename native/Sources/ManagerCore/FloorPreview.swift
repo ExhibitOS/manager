@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 
+/// No runtime is admitted until its audio resource capability has been
+/// qualified against the exact immutable payload and real native flow.
+public enum NativeFloorAudioRuntime {
+    public static let qualifiedManifestSHA256: String? = nil
+    public static func supports(manifestSHA256: String?, ready: Bool) -> Bool {
+        guard ready, let qualifiedManifestSHA256 else { return false }
+        return manifestSHA256 == qualifiedManifestSHA256
+    }
+}
+
 /// Only exact qualified floor-containing runtimes are admitted here. This
 /// is metadata/byte availability, not a claim of visual or audio qualification.
 public enum NativeFloorRuntime {

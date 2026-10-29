@@ -197,12 +197,12 @@ public struct FloorSettings: Equatable, Sendable {
         }
         return fields
     }
-    public static func set(_ settings: Self?, target: Target, on draft: inout NativeExhibitionDraft) throws {
+    public static func set(_ settings: Self?, target: Target, on draft: inout NativeExhibitionDraft, declareDefaultSound: Bool = false) throws {
         guard let actual = try targets(in: draft.candidate).first(where: { $0.key == target.key }) else { throw invalid() }
         var rows = try all(in: draft.candidate).map(\.value)
         let index = rows.firstIndex { (try? Self.target($0["target"]).key) == target.key }
-        if index == nil && settings == nil { return }
-        if let index, settings?.value == rows[index] { return }
+        if index == nil && settings == nil && !declareDefaultSound { return }
+        if let index, settings?.value == rows[index], !declareDefaultSound { return }
         var encoded = settings?.value
         if encoded != nil {
             guard settings?.target.key == target.key else { throw invalid() }
@@ -214,6 +214,21 @@ public struct FloorSettings: Equatable, Sendable {
         var candidate = draft.candidate, extensions = try optionalObject(draft.candidate["extensions"])
         if rows.isEmpty { extensions.removeValue(forKey: namespace) }
         else { extensions[namespace] = .object(["version": .integer(1), "bindings": .array(rows)]) }
+        if declareDefaultSound {
+            guard let settings, settings.value["sound"]["mode"].string == "material-default" else { throw invalid() }
+            let key = "org.exhibitos.viewer/footstep-resources"
+            let allowed: Set<String> = ["carpet", "concrete", "marble", "tile", "wood"]
+            var families: [String] = []
+            if let existing = extensions[key] {
+                let value = try keys(existing, required: ["version", "families"])
+                guard value["version"]?.double == 1, let entries = value["families"]?.items else { throw invalid() }
+                families = entries.compactMap(\.string)
+                guard !families.isEmpty, families.count == entries.count, families.count <= 5,
+                      families == Array(Set(families)).sorted(), families.allSatisfy({ allowed.contains($0) }) else { throw invalid() }
+            }
+            if !families.contains(settings.preset.rawValue) { families.append(settings.preset.rawValue); families.sort() }
+            extensions[key] = .object(["version": .integer(1), "families": .array(families.map(DocumentValue.string))])
+        }
         candidate["extensions"] = .object(extensions)
         _ = try all(in: candidate)
         guard try JSONEncoder().encode(candidate).count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
@@ -222,5 +237,5 @@ public struct FloorSettings: Equatable, Sendable {
 }
 
 extension NativeExhibitionDraft {
-    public mutating func setFloor(_ settings: FloorSettings?, target: FloorSettings.Target) throws { try FloorSettings.set(settings, target: target, on: &self) }
+    public mutating func setFloor(_ settings: FloorSettings?, target: FloorSettings.Target, declareDefaultSound: Bool = false) throws { try FloorSettings.set(settings, target: target, on: &self, declareDefaultSound: declareDefaultSound) }
 }

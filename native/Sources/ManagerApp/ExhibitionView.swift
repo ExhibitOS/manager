@@ -154,7 +154,11 @@ final class ExhibitionModel: ObservableObject {
     @Published var floorTargetKey = ""
     @Published var floorPreset = FloorSettings.Preset.wood
     @Published var floorScope = Set(FloorSettings.Field.allCases)
-    @Published var floor = FloorFormBuffer(settings: nil) { didSet { refreshFloorPreview() } }
+    @Published var floor = FloorFormBuffer(settings: nil) { didSet {
+        if !floor.materialSoundChosen { floorAudioIntentBound = false }
+        else if floorAudioRuntimeAvailable && floor.soundChoiceRevision != oldValue.soundChoiceRevision { floorAudioIntentBound = true }
+        refreshFloorPreview()
+    } }
     @Published private(set) var floorEditable = false
     @Published private(set) var floorStatus = ""
     @Published private var floorPreview: NativeExhibitionDraft?
@@ -163,6 +167,8 @@ final class ExhibitionModel: ObservableObject {
     private var floorPreviewContext: UUID?
     private var floorPreviewHostEpoch: String?
     @Published private(set) var floorRuntimeAvailable = false
+    @Published private(set) var floorAudioRuntimeAvailable = false
+    private var floorAudioIntentBound = false
     @Published private(set) var floorImages: [FloorSettings.Preset: NSImage] = [:]
     private var floorImageAttempts = Set<FloorSettings.Preset>()
     private var floorImagesLoading = false
@@ -1138,6 +1144,11 @@ final class ExhibitionModel: ObservableObject {
     func configureFloorRuntime(_ configuration: NativeConfiguration?, ready: Bool) {
         let available = NativeFloorRuntime.supports(manifestSHA256: configuration?.manifestSha256, ready: ready)
         if floorRuntimeAvailable != available { floorRuntimeAvailable = available }
+        let audioAvailable = NativeFloorAudioRuntime.supports(manifestSHA256: configuration?.manifestSha256, ready: ready)
+        if floorAudioRuntimeAvailable != audioAvailable {
+            floorAudioRuntimeAvailable = audioAvailable
+            floorPreviewAccessID = nil; floorPreviewContext = nil; floorPreviewHostEpoch = nil
+        }
         if !floorRuntimeAvailable { floorPreviewAccessID = nil; floorPreviewContext = nil; floorPreviewHostEpoch = nil }
     }
     var canEditFloor: Bool {
@@ -1150,7 +1161,7 @@ final class ExhibitionModel: ObservableObject {
               floorPreviewContext == viewportController.editingContextGeneration, floorPreviewHostEpoch == viewportController.hostEpoch,
               let preview = floorPreview, let credentials = viewportCredentials, var next = draft, let target = floorTarget else { return false }
         do {
-            try next.setFloor(floor.value(candidate: next.candidate), target: target)
+            try setFloorCandidate(&next, target: target)
             return next.candidate == preview.candidate && viewportController.confirmsFloorPreview(preview, tenantId: credentials.tenantId, principalId: credentials.principalId)
         } catch { return false }
     }
@@ -1160,7 +1171,7 @@ final class ExhibitionModel: ObservableObject {
             if !floorTargets.contains(where: { $0.key == floorTargetKey }) { floorTargetKey = floorTargets.first?.key ?? "" }
             let settings = try draft.flatMap { draft in try floorTarget.flatMap { try FloorSettings.read(from: draft, target: $0) } }
             floorEditable = floorTarget != nil
-            floorBaseline = FloorFormBuffer(settings: settings); floor = floorBaseline; floorStatus = ""
+            floorAudioIntentBound = false; floorBaseline = FloorFormBuffer(settings: settings); floor = floorBaseline; floorStatus = ""
             floorPreset = settings?.preset ?? .wood
             floorScope = Set(FloorSettings.Field.allCases).subtracting(floorCustomized)
         } catch { floorEditable = false; floorStatus = "바닥 설정을 읽지 못했습니다. 원래 설정은 유지됩니다." }
@@ -1175,13 +1186,18 @@ final class ExhibitionModel: ObservableObject {
         guard floorDirty else { floorPreview = nil; floorPreviewBase = nil; floorStatus = ""; return }
         guard floorEditable, floorRuntimeAvailable, let target = floorTarget, let base = draft, var next = draft else { return }
         do {
-            try next.setFloor(floor.value(candidate: next.candidate), target: target)
+            try setFloorCandidate(&next, target: target)
             floorPreview = next; floorPreviewBase = base; floorPreviewAccessID = viewportAccessID
             floorPreviewContext = viewportController.editingContextGeneration; floorPreviewHostEpoch = viewportController.hostEpoch
             floorStatus = "입력한 바닥 설정을 공간에 표시하고 있습니다. 화면을 확인한 뒤 적용하세요."
         } catch { floorStatus = "입력을 확인하세요. 입력은 유지되며 마지막 유효 미리보기를 표시합니다." }
     }
     func previewFloor() { guard canEditFloor else { return }; refreshFloorPreview() }
+    private func setFloorCandidate(_ next: inout NativeExhibitionDraft, target: FloorSettings.Target) throws {
+        let settings = try floor.value(candidate: next.candidate)
+        let declare = try floor.declareSoundResources(available: floorAudioRuntimeAvailable, requiresQualifiedRuntime: floorAudioIntentBound)
+        try next.setFloor(settings, target: target, declareDefaultSound: declare)
+    }
     func stageFloorPreset(_ preset: FloorSettings.Preset, fields: Set<FloorSettings.Field>) {
         guard canEditFloor, !fields.isEmpty, let draft, let target = floorTarget else { return }
         do {
@@ -1205,7 +1221,7 @@ final class ExhibitionModel: ObservableObject {
                   let target = floorTarget, let preview = floorPreview, let credentials = viewportCredentials,
                   viewportController.editingContextActive, viewportController.confirmsFloorPreview(preview, tenantId: credentials.tenantId, principalId: credentials.principalId),
                   var value = state, var next = draft else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
-            try next.setFloor(floor.value(candidate: next.candidate), target: target)
+            try setFloorCandidate(&next, target: target)
             guard next.candidate == preview.candidate else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
             value.draft = next; try await persist(value); syncFloor()
             notice = "바닥 설정을 이 Mac에 보관했습니다. 실행 취소로 되돌리거나 전시를 저장하세요."

@@ -12,6 +12,9 @@ public struct FloorFormBuffer: Equatable, Sendable {
     public var soundMode: String?
     public var assetIds: [String]
     public var restoreLegacy = false
+    /// Transient explicit choice, never inferred from a previously saved sound.
+    public private(set) var materialSoundChosen = false
+    public private(set) var soundChoiceRevision: UInt64 = 0
     private var baselineNumbers: [Numeric: String]
     private var baselineColor: String
     private var baselineSoundMode: String?
@@ -51,6 +54,8 @@ public struct FloorFormBuffer: Equatable, Sendable {
         if !fields.contains(.sound) {
             soundMode = old.soundMode; assetIds = old.assetIds
         }
+        materialSoundChosen = fields.contains(.sound) ? soundMode == "material-default" : old.materialSoundChosen
+        soundChoiceRevision = fields.contains(.sound) ? old.soundChoiceRevision &+ 1 : old.soundChoiceRevision
         // Compare the next edit with the exact visible text at this staging
         // boundary, rather than the older persisted value or normalized text.
         baselineNumbers = numbers; baselineColor = color
@@ -60,14 +65,28 @@ public struct FloorFormBuffer: Equatable, Sendable {
         if let mode {
             guard ["material-default", "explicit", "none"].contains(mode) else { return }
             soundMode = mode
+            materialSoundChosen = mode == "material-default"
+            soundChoiceRevision &+= 1
             if (numbers[.gain] ?? "").isEmpty { numbers[.gain] = "1" }
         } else {
             // This choice exists only for a binding with absent sound. Discard
             // the temporary sound controls, preserving every appearance input.
             guard settings?.value["sound"] == .null else { return }
             soundMode = nil; assetIds = []; numbers[.gain] = ""
+            materialSoundChosen = false
+            soundChoiceRevision &+= 1
             baselineSoundMode = nil; baselineAssetIds = []; baselineNumbers[.gain] = ""
         }
+    }
+    /// A choice made while the qualified runtime was present must not silently
+    /// become a legacy sound if that capability disappears before Apply.
+    public func declareSoundResources(available: Bool, requiresQualifiedRuntime: Bool) throws -> Bool {
+        guard materialSoundChosen, !restoreLegacy, soundMode == "material-default" else { return false }
+        // A legacy choice made before capability was present does not opt in
+        // later merely because a different runtime became available.
+        guard requiresQualifiedRuntime else { return false }
+        guard available else { throw AuthoringFailure("FLOOR_AUDIO_RUNTIME_UNAVAILABLE") }
+        return true
     }
     /// Reset just the requested field to the persisted base preset, including
     /// an invalid intermediate value. Other raw input is never parsed or rebased.
@@ -84,6 +103,8 @@ public struct FloorFormBuffer: Equatable, Sendable {
         if field == .sound {
             soundMode = fresh.soundMode; baselineSoundMode = fresh.soundMode
             assetIds = fresh.assetIds; baselineAssetIds = fresh.assetIds
+            materialSoundChosen = soundMode == "material-default"
+            soundChoiceRevision &+= 1
         }
     }
     public func value(candidate: DocumentValue) throws -> FloorSettings? {
