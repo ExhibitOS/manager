@@ -20,11 +20,13 @@ public struct LightCommand: Equatable, Sendable {
     public let position: [Double] // Room-local metres.
     public let beamAngle: Double? // Full beam angle, radians in OES.
     public let areaSize: [Double]?
+    public let fixture: NativeLightFixture? // nil keeps the existing basic route/namespace unchanged.
 
     public init(lightId: String, type: NativeLightType, color: [Double], intensity: Double,
-                position: [Double], beamAngle: Double? = nil, areaSize: [Double]? = nil) {
+                position: [Double], beamAngle: Double? = nil, areaSize: [Double]? = nil, fixture: NativeLightFixture? = nil) {
         self.lightId = lightId; self.type = type; self.color = color; self.intensity = intensity
         self.position = position; self.beamAngle = beamAngle; self.areaSize = areaSize
+        self.fixture = fixture
     }
     fileprivate static func invalid() -> AuthoringFailure { AuthoringFailure("LIGHT_FIELDS_INVALID") }
     fileprivate static func row(in draft: NativeExhibitionDraft, id: String, selectedLightId: String?) throws -> (Int, DocumentValue) {
@@ -55,6 +57,7 @@ public struct LightCommand: Equatable, Sendable {
             guard let areaSize, areaSize.count == 2,
                   areaSize.allSatisfy({ $0.isFinite && (0.01...100).contains($0) }) else { throw Self.invalid() }
         } else if areaSize != nil { throw Self.invalid() }
+        guard fixture?.supports(type) != false else { throw Self.invalid() }
 
         var row = original
         func set(_ key: String, _ value: DocumentValue) { if row[key] != value { row[key] = value } }
@@ -95,6 +98,7 @@ public struct LightCommand: Equatable, Sendable {
             guard case .object = candidate["extensions"][template], case .bool = candidate["extensions"][template]["modified"] else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
             candidate["extensions"][template]["modified"] = .bool(true)
         }
+        if let fixture { candidate = try fixture.applying(to: candidate, base: draft, lightId: lightId, type: type) }
         guard try JSONEncoder().encode(candidate).count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
         return candidate
     }
@@ -114,6 +118,10 @@ public struct LightFormBuffer: Equatable, Sendable {
     public var x: String, y: String, z: String
     public var beamDegrees: String
     public var width: String, height: String
+    public var fixture: NativeLightFixture
+    public let fixtureEditable: Bool
+    private let originalFixture: NativeLightFixture
+    public var fixtureChanged: Bool { fixture != originalFixture }
     private let originalBeamRadians: Double?
     private let originalBeamDegrees: String
 
@@ -139,6 +147,9 @@ public struct LightFormBuffer: Equatable, Sendable {
         beamDegrees = originalBeamDegrees
         width = type == .area ? try text(row["dimensions"]["width"]) : "1.0"
         height = type == .area ? try text(row["dimensions"]["height"]) : "1.0"
+        let settings = try? NativeLightFixture.settings(in: draft, lightId: selectedLightId)
+        originalFixture = settings?["fixture"].string.flatMap(NativeLightFixture.init(rawValue:)) ?? .none
+        fixture = originalFixture; fixtureEditable = settings != nil
         // Refuse unsupported existing data without normalizing or writing it.
         _ = try command().proposedCandidate(in: draft, selectedLightId: selectedLightId)
     }
@@ -149,6 +160,7 @@ public struct LightFormBuffer: Equatable, Sendable {
         type = value
     }
     public func command() throws -> LightCommand {
+        guard fixtureEditable || fixture == originalFixture else { throw LightCommand.invalid() }
         func number(_ value: String) throws -> Double {
             guard let n = Double(value.trimmingCharacters(in: .whitespacesAndNewlines)), n.isFinite else { throw LightCommand.invalid() }; return n
         }
@@ -160,7 +172,8 @@ public struct LightFormBuffer: Equatable, Sendable {
         } else { beam = nil }
         return LightCommand(lightId: lightId, type: type, color: try [number(red), number(green), number(blue)],
                             intensity: try number(intensity), position: try [number(x), number(y), number(z)],
-                            beamAngle: beam, areaSize: type == .area ? try [number(width), number(height)] : nil)
+                            beamAngle: beam, areaSize: type == .area ? try [number(width), number(height)] : nil,
+                            fixture: fixtureEditable && fixture != originalFixture ? fixture : nil)
     }
 }
 

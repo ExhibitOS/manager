@@ -35,12 +35,17 @@ final class NativeViewportController: ObservableObject {
     @Published fileprivate(set) var spaceSettingsSupported = false
     @Published fileprivate(set) var viewingPlanSupported = false
     @Published fileprivate(set) var lightInspectorSupported = false
+    @Published fileprivate(set) var lightFixtureSupported = false
     @Published fileprivate(set) var benchInspectorSupported = false
     @Published fileprivate(set) var plaqueInspectorSupported = false
     @Published fileprivate(set) var surfaceMaterialTexturesSupported = false
     @Published fileprivate(set) var entrancePreviewSupported = false
     fileprivate var acknowledgedFrame: ViewportFrame?
     var hostEpoch: String? { owner }
+    func confirmsFloorPreview(_ draft: NativeExhibitionDraft, tenantId: String, principalId: String) -> Bool {
+        connected && acknowledgedFrame?.confirmsFloorPreview(ownerEpoch: owner, acceptedSequence: acceptedSequence,
+            expectedDraft: draft, tenantId: tenantId, principalId: principalId) == true
+    }
     func ordinaryRecoveryReady(replacing previousEpoch: String, draft: NativeExhibitionDraft, tenantId: String, principalId: String) -> Bool {
         guard connected, let acknowledgedFrame else { return false }
         return acknowledgedFrame.confirmsHostRecovery(replacing: previousEpoch, ownerEpoch: owner, acceptedSequence: acceptedSequence,
@@ -107,7 +112,8 @@ final class NativeViewportController: ObservableObject {
         return preview
     }
     func lightInspector(_ command: LightCommand, selectedLightId: String) async throws -> LightPreview {
-        guard connected, lightInspectorSupported, let lightInspectorAction else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+        guard connected, lightInspectorSupported, command.fixture == nil || lightFixtureSupported,
+              let lightInspectorAction else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
         return try await lightInspectorAction(command, selectedLightId)
     }
     func placement(_ intent: ArtworkPlacementIntent, phase: ViewportPlacementPhase, target: ViewportPlacementTarget? = nil) async throws -> DocumentValue? {
@@ -234,7 +240,7 @@ struct NativeViewport: NSViewRepresentable {
             entranceOperation = nil
             if controller.owner == epoch { controller.entrancePreviewAction = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil }
             active = false; generation = UUID(); sendTask?.cancel()
-            if controller.owner == epoch { controller.furnishingVisualsAction = nil; controller.furnishingThumbnailAction = nil; controller.spaceSettingsAction = nil; controller.viewingPlanAction = nil; controller.lightInspectorAction = nil; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.benchInspectorAction = nil; controller.benchInspectorSupported = false; controller.plaqueInspectorAction = nil; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false }
+            if controller.owner == epoch { controller.furnishingVisualsAction = nil; controller.furnishingThumbnailAction = nil; controller.spaceSettingsAction = nil; controller.viewingPlanAction = nil; controller.lightInspectorAction = nil; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.benchInspectorAction = nil; controller.benchInspectorSupported = false; controller.plaqueInspectorAction = nil; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false }
             if controller.owner == epoch { controller.action = nil; controller.thumbnailAction = nil; controller.findSelectionAction = nil; controller.placementAction = nil; controller.placementSupported = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0 }
         }
         private func endPlacement() {
@@ -259,7 +265,7 @@ struct NativeViewport: NSViewRepresentable {
             }
             if installedToken == nil {
                 entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil
-                controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false
+                controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false
                 installedToken = value.credentials.token
                 generation = UUID(); sequence = 0; sent = 0; fingerprint = nil; prepared = false
                 sendTask?.cancel(); sendTask = nil
@@ -317,7 +323,7 @@ struct NativeViewport: NSViewRepresentable {
             return .allow
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             guard active, controller.owner == epoch, webView === web else { return }
             controller.message = "3D 화면을 열지 못했습니다. 로컬 제작 상태를 확인하세요."
@@ -348,6 +354,7 @@ struct NativeViewport: NSViewRepresentable {
                         self.controller.spaceSettingsSupported = acceptance.supportsSpaceSettings
                         self.controller.viewingPlanSupported = acceptance.supportsViewingPlan
                         self.controller.lightInspectorSupported = acceptance.supportsLightInspector
+                        self.controller.lightFixtureSupported = acceptance.supportsLightFixture
                         self.controller.benchInspectorSupported = acceptance.supportsBenchInspector
                         self.controller.plaqueInspectorSupported = acceptance.supportsPlaqueInspector
                         self.controller.surfaceMaterialTexturesSupported = acceptance.supportsSurfaceMaterialTextures
@@ -469,6 +476,7 @@ struct NativeViewport: NSViewRepresentable {
             }
             controller.lightInspectorAction = { [weak self] command, selectedLightId in
                 guard let self, self.active, self.controller.owner == self.epoch, self.controller.lightInspectorSupported,
+                      command.fixture == nil || self.controller.lightFixtureSupported,
                       self.placementIntent == nil, !self.inspectorPending, let web = self.web, let frame = self.latest,
                       self.prepared, self.sent == frame.sequence, !frame.disabled else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 let request = try LightViewportRequest(frame: frame, command: command, selectedLightId: selectedLightId)
@@ -476,9 +484,13 @@ struct NativeViewport: NSViewRepresentable {
                 defer { self.inspectorPending = false }
                 let generation = self.generation
                 let json = String(decoding: try JSONEncoder().encode(request.value), as: UTF8.self)
-                let response = try await web.callAsyncJavaScript("if (typeof window.exhibitosViewport?.lightInspector !== 'function') throw new Error('VIEWPORT_NOT_READY'); return await window.exhibitosViewport.lightInspector(JSON.parse(requestJSON));", arguments: ["requestJSON": json], in: nil, contentWorld: .page)
+                let script = command.fixture == nil
+                    ? "if (typeof window.exhibitosViewport?.lightInspector !== 'function') throw new Error('VIEWPORT_NOT_READY'); return await window.exhibitosViewport.lightInspector(JSON.parse(requestJSON));"
+                    : "if (typeof window.exhibitosViewport?.lightDetails !== 'function') throw new Error('VIEWPORT_NOT_READY'); return await window.exhibitosViewport.lightDetails(JSON.parse(requestJSON));"
+                let response = try await web.callAsyncJavaScript(script, arguments: ["requestJSON": json], in: nil, contentWorld: .page)
                 try Task.checkCancellation()
                 guard self.active, self.prepared, self.controller.lightInspectorSupported, self.controller.connected,
+                      command.fixture == nil || self.controller.lightFixtureSupported,
                       self.controller.owner == self.epoch, self.generation == generation,
                       self.latest?.sequence == frame.sequence, self.placementIntent == nil,
                       let response, JSONSerialization.isValidJSONObject(response) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }

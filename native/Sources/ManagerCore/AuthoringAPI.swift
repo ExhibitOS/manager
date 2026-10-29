@@ -97,6 +97,8 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "FILE_FORMAT_UNSUPPORTED": return "GLB 또는 PNG 파일을 선택하세요."
         case "FILE_CHANGED": return "읽는 동안 파일이 바뀌었습니다. 저장을 마친 뒤 다시 선택하세요."
         case "FILE_READ_FAILED", "FILE_REGULAR_REQUIRED": return "파일을 읽을 수 없습니다. 파일 위치와 접근 권한을 확인하세요."
+        case "FLOOR_APPLY_REQUIRED": return "바닥 설정을 공간에서 확인한 뒤 적용하거나 입력을 되돌려 주세요."
+        case "FLOOR_SETTINGS_INVALID", "FLOOR_PRESET_REQUIRED": return "바닥 재질과 변경할 항목을 선택하고 입력 범위를 확인하세요."
         case "EXHIBITION_EXPORT_SAVE_REQUIRED": return "현재 입력을 전시 저장본에 반영한 뒤 내보내세요."
         case "VIEWER_ENTRANCE_INVALID": return "시작 화면의 작가·소개·이미지 설정을 확인하세요. 작가는 512자, 소개는 4,096자, 입장권 제목은 160자, 안내는 512자, 이미지 설명은 2,048자까지 지원하며, 표지는 전시에 포함한 8 MiB 이하 PNG와 설명이 필요합니다."
         case "PUBLICATION_REVIEW_REQUIRED": return "현재 저장본을 확인하고 작품의 표시 권리를 확인하세요."
@@ -105,6 +107,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "WATERMARK_TEXT_UNSUPPORTED": return "사본 삽입은 지원하는 영문·숫자·기호 80자까지 사용합니다. 다른 언어는 화면 표시를 선택하세요."
         case "WATERMARK_RUNTIME_UNAVAILABLE": return "이 실행본은 새 워터마크 설정을 지원하지 않습니다. 입력과 저장 요청을 보존했습니다. 지원 실행본에서 다시 확인하세요."
         case "PUBLICATION_RESPONSE_INVALID": return "공개 준비 상태를 확인하지 못했습니다. 같은 요청으로 다시 확인하세요."
+        case "PUBLICATION_SCOPE_CHANGED", "PUBLICATION_STATUS_UNCONFIRMED": return "이 Mac의 준비 상태를 다시 확인하세요. 제작 중인 전시와 이전 기록은 유지됩니다."
         case "PUBLICATION_NOT_READY": return "공개 준비에 필요한 항목이 남아 있습니다. 작품의 승인·표시 권리와 전시 정보를 확인하세요."
         case "PUBLISHED_DRAFT_IMMUTABLE": return "이 공개용 저장본은 변경할 수 없습니다. 원래 제작 전시에서 편집하세요."
         case "OEX_LIMIT": return "내보내기 파일은 최대 64 MiB를 지원합니다. 전시의 작품 파일 크기를 확인하세요."
@@ -317,8 +320,40 @@ public actor AuthoringAPI {
         guard result.items.count <= 100 else { throw AuthoringFailure("PUBLICATION_RESPONSE_INVALID") }
         return try result.items.map { try $0.validated() }
     }
+    public func unpublish(_ expected: NativePublication) async throws -> NativePublication {
+        _ = try expected.validated()
+        guard expected.status == "published" else { throw AuthoringFailure("PUBLICATION_STATUS_UNCONFIRMED") }
+        let result: NativePublication = try await request(studioPrefix + "/publications/" + identifier(expected.publicationId) + "/unpublish", method: "POST", body: Data("{}".utf8))
+        return try expected.acceptingStatus(result, requiredStatus: "unpublished")
+    }
     /// Export only a saved exact revision through the existing rights/integrity gate.
     /// Bounded streaming prevents a malformed local response from allocating an unbounded archive.
+    public func floorPreview(_ preset: FloorSettings.Preset) async throws -> Data {
+        guard !authenticationBusy, session != nil else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
+        let file = NativeFloorPreview.forPreset(preset), current = generation
+        let url = base.appendingPathComponent(file.path)
+        activeRequests += 1
+        defer { activeRequests -= 1 }
+        var request = URLRequest(url: url, timeoutInterval: 30)
+        request.setValue("image/png", forHTTPHeaderField: "Accept")
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        let (bytes, response) = try await transport.bytes(for: request)
+        defer { bytes.task.cancel() }
+        guard let http = response as? HTTPURLResponse, http.url == url, http.statusCode == 200,
+              http.mimeType?.lowercased() == "image/png",
+              http.value(forHTTPHeaderField: "Content-Encoding").map({ $0.lowercased() == "identity" }) ?? true,
+              http.expectedContentLength < 0 || http.expectedContentLength == Int64(file.bytes) else { throw AuthoringFailure("FLOOR_PREVIEW_INVALID") }
+        var data = Data(); data.reserveCapacity(file.bytes)
+        try await withTaskCancellationHandler {
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                guard data.count < file.bytes else { throw AuthoringFailure("FLOOR_PREVIEW_INVALID") }
+                data.append(byte)
+            }
+        } onCancel: { bytes.task.cancel() }
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return try file.check(data)
+    }
     public func exportOEX(exhibitionId: String, etag: String) async throws -> NativeOEXArchive {
         guard !authenticationBusy, let session else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
         guard etag.range(of: #"^"studio-r[1-9][0-9]*-[a-f0-9]{64}"$"#, options: .regularExpression) != nil else { throw AuthoringFailure("ETAG_INVALID") }

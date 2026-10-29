@@ -11,11 +11,13 @@ public struct LightViewportRequest: Sendable {
               [frame.epoch, frame.tenantId, frame.principalId].allSatisfy({ UUID(uuidString: $0) != nil }) else {
             throw AuthoringFailure("VIEWPORT_FRAME_STALE")
         }
-        value = .object(["version": .integer(1), "epoch": .string(frame.epoch), "sequence": .integer(Int64(frame.sequence)),
+        var fields: [String: DocumentValue] = ["version": .integer(1), "epoch": .string(frame.epoch), "sequence": .integer(Int64(frame.sequence)),
                          "tenantId": .string(frame.tenantId), "principalId": .string(frame.principalId),
-                         "requestId": .string(UUID().uuidString.lowercased()), "type": .string("set-light"),
-                         "lightId": .string(command.lightId), "light": try command.encodedLight(in: frame.draft, selectedLightId: selectedLightId)])
-        guard try JSONEncoder().encode(value).count <= 1_100_000 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
+                         "requestId": .string(UUID().uuidString.lowercased()), "type": .string(command.fixture == nil ? "set-light" : "set-light-details"),
+                         "lightId": .string(command.lightId), "light": try command.encodedLight(in: frame.draft, selectedLightId: selectedLightId)]
+        if let fixture = command.fixture { fields["settings"] = try fixture.settings(in: frame.draft, lightId: command.lightId, type: command.type) }
+        value = .object(fields)
+        guard try JSONEncoder().encode(value).count <= (command.fixture == nil ? 1_100_000 : 65_536) else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
         self.frame = frame; self.command = command
     }
     public func checkedReply(_ reply: DocumentValue, selectedLightId: String?) throws -> LightPreview {

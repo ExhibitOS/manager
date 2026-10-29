@@ -30,12 +30,13 @@ struct NativeExhibitionView: View {
     @State private var inspectorInputs: [String: InstallationInspectorState] = [:]
 
     private enum InspectorScope: String, CaseIterable, Identifiable {
-        case selection, lighting, cover, exhibition, viewingPlan, output
+        case selection, lighting, floor, cover, exhibition, viewingPlan, output
         var id: Self { self }
         var title: String {
             switch self {
             case .selection: "선택 속성"
             case .lighting: "전시 조명"
+            case .floor: "바닥 재질"
             case .cover: "표지·입장"
             case .exhibition: "전시 정보"
             case .viewingPlan: "관람 순서"
@@ -110,7 +111,7 @@ struct NativeExhibitionView: View {
         .onChange(of: model.selectedBenchId) { _, id in if !id.isEmpty { showSelection() } }
         .onChange(of: model.selectedLightId) { _, id in if !id.isEmpty { showSelection() } }
         .onChange(of: model.artworkId) { _, id in if !id.isEmpty { showSelection() } }
-        .onChange(of: model.viewportSelection) { _, value in if value != nil && !model.entrancePreviewActive { scope = .selection; inspectorVisible = true } }
+        .onChange(of: model.viewportSelection) { _, value in if value != nil && !model.entrancePreviewActive { showSelection() } }
         .onChange(of: model.draft?.id) { _, id in if id != nil { browserVisible = false } }
         .onChange(of: model.entrancePreviewActive) { _, value in if !value && returningToScene { returnToScene() } }
         .onChange(of: ready) { _, value in if !value { needsConnection = true } }
@@ -234,6 +235,8 @@ struct NativeExhibitionView: View {
             ScrollView { exhibitionForm.padding(4) }
         case .viewingPlan:
             ScrollView { ViewingPlanSettingsView(model: model, controller: controller, ready: ready) }
+        case .floor:
+            ScrollView { NativeFloorSettingsInspector(model: model, viewport: controller, ready: ready).padding(12) }
         case .output:
             ScrollView { outputControls.padding(12) }
         }
