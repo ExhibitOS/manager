@@ -12,6 +12,7 @@ struct FloorSettingsView: View {
     let currentValues: [FloorSettings.Field: DocumentValue]
     let dirty: Bool
     let canApply: Bool
+    let audioResourcesAvailable: Bool
     let images: [FloorSettings.Preset: NSImage]
     let preview: () -> Void
     let canReset: Bool
@@ -133,6 +134,11 @@ struct FloorSettingsView: View {
                             }))
                         }
                         if media.isEmpty { Text("이 전시에 선택 가능한 WAV가 없습니다.").font(.caption) }
+                    }
+                    if buffer.soundMode == "material-default" {
+                        Button("이 재질의 승인된 발소리 사용") { buffer.selectSoundMode("material-default") }
+                            .disabled(!audioResourcesAvailable)
+                        if !audioResourcesAvailable { Text("승인된 발소리를 지원하는 제작 서비스를 준비한 뒤 선택할 수 있습니다.").font(.caption).foregroundStyle(.secondary) }
                     }
                     if buffer.soundMode != nil { number("발소리 크기 · 0–1", .gain) }
                     resetButton(.sound)

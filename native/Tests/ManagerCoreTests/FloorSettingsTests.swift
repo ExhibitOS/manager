@@ -72,6 +72,52 @@ final class FloorSettingsTests: XCTestCase {
             XCTAssertEqual(audio.value["sound"], FloorSettings.defaults(next)[.sound])
         }
     }
+    func testExplicitDefaultSoundDeclaresOnlySelectedFamilyAndPreservesOtherData() throws {
+        var (draft, target) = try fixture()
+        let tile = try preset(.tile, draft: draft, target: target)
+        try draft.setFloor(tile, target: target)
+        let legacy = draft.candidate
+        XCTAssertEqual(legacy["extensions"]["org.exhibitos.viewer/footstep-resources"], .null)
+        try draft.setFloor(tile, target: target, declareDefaultSound: true)
+        let key = "org.exhibitos.viewer/footstep-resources"
+        XCTAssertEqual(draft.candidate["extensions"][key], .object(["version": .integer(1), "families": .array([.string("tile")])]))
+        XCTAssertEqual(draft.candidate["extensions"]["opaque.example/data"], legacy["extensions"]["opaque.example/data"])
+        let tileAgain = draft
+        try draft.setFloor(tile, target: target, declareDefaultSound: true)
+        XCTAssertEqual(draft, tileAgain)
+        let wood = try preset(.wood, draft: draft, target: target)
+        try draft.setFloor(wood, target: target, declareDefaultSound: true)
+        XCTAssertEqual(draft.candidate["extensions"][key]["families"], .array([.string("tile"), .string("wood")]))
+    }
+    func testFootstepDeclarationRejectsUnknownOrNonDefaultWithoutChangingDraft() throws {
+        var (draft, target) = try fixture()
+        let tile = try preset(.tile, draft: draft, target: target)
+        var bad = draft.candidate
+        bad["extensions"]["org.exhibitos.viewer/footstep-resources"] = .object(["version": .integer(1), "families": .array([.string("wood"), .string("tile")])])
+        try draft.replaceCandidate(bad); let original = draft
+        XCTAssertThrowsError(try draft.setFloor(tile, target: target, declareDefaultSound: true))
+        XCTAssertEqual(draft, original)
+        var none = tile.value; none["sound"] = .object(["mode": .string("none"), "gain": .number(1)])
+        let noneSettings = try FloorSettings(value: none, candidate: draft.candidate)
+        XCTAssertThrowsError(try draft.setFloor(noneSettings, target: target, declareDefaultSound: true))
+        XCTAssertEqual(draft, original)
+    }
+    func testFootstepOptInIsTransientAndExplicit() throws {
+        let (draft, target) = try fixture(); let tile = try preset(.tile, draft: draft, target: target)
+        var buffer = FloorFormBuffer(settings: tile)
+        XCTAssertFalse(buffer.materialSoundChosen)
+        buffer.selectSoundMode("material-default"); XCTAssertTrue(buffer.materialSoundChosen)
+        buffer.selectSoundMode("none"); XCTAssertFalse(buffer.materialSoundChosen)
+        let revision = buffer.soundChoiceRevision
+        try buffer.stage(tile, replacing: [.texturePack], candidate: draft.candidate); XCTAssertFalse(buffer.materialSoundChosen)
+        XCTAssertEqual(buffer.soundChoiceRevision, revision)
+        try buffer.stage(tile, replacing: [.sound], candidate: draft.candidate); XCTAssertTrue(buffer.materialSoundChosen); XCTAssertNotEqual(buffer.soundChoiceRevision, revision)
+        XCTAssertTrue(try buffer.declareSoundResources(available: true, requiresQualifiedRuntime: true))
+        XCTAssertThrowsError(try buffer.declareSoundResources(available: false, requiresQualifiedRuntime: true))
+        XCTAssertFalse(try buffer.declareSoundResources(available: false, requiresQualifiedRuntime: false))
+        XCTAssertFalse(try buffer.declareSoundResources(available: true, requiresQualifiedRuntime: false))
+        XCTAssertFalse(NativeFloorAudioRuntime.supports(manifestSHA256: String(repeating: "a", count: 64), ready: true))
+    }
     func testRejectUnknownBoundsDuplicateTargetAndNonWavReference() throws {
         var (draft, target) = try fixture()
         let settings = try preset(.tile, draft: draft, target: target)

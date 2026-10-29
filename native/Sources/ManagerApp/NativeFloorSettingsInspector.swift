@@ -17,7 +17,7 @@ struct NativeFloorSettingsInspector: View {
         VStack(alignment: .leading, spacing: 10) {
             FloorSettingsView(buffer: $model.floor, targets: targets, targetKey: model.floorTargetKey,
                 select: model.selectFloor, customized: model.floorCustomized, currentValues: model.floorCurrentValues,
-                dirty: model.floorDirty, canApply: ready && model.canApplyFloor, images: model.floorImages,
+                dirty: model.floorDirty, canApply: ready && model.canApplyFloor, audioResourcesAvailable: model.floorAudioRuntimeAvailable, images: model.floorImages,
                 preview: model.previewFloor, canReset: model.floorCanReset, editable: ready && model.canEditFloor,
                 inactive: model.floorTarget.flatMap { target in model.draft.map { !FloorSettings.isActive(target, in: $0.candidate) } } ?? false,
                 status: model.floorStatus,
