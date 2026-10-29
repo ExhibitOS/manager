@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 
-/// Only the existing qualified floor-containing runtime is admitted here. This
+/// Only exact qualified floor-containing runtimes are admitted here. This
 /// is metadata/byte availability, not a claim of visual or audio qualification.
 public enum NativeFloorRuntime {
     public static func supports(manifestSHA256: String?, ready: Bool) -> Bool {
-        ready && manifestSHA256 == "b2ce49e9703cadf7d22b73ec5dfd93622489a07c34721f9bbe2b9f6df17ee28e"
+        ready && (manifestSHA256 == "b2ce49e9703cadf7d22b73ec5dfd93622489a07c34721f9bbe2b9f6df17ee28e"
+            || manifestSHA256 == "7e823d9372aba3613fb8794f981c0f01cc97a420e3e82c388a783439bc933556")
     }
 }
 

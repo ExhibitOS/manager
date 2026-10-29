@@ -107,5 +107,8 @@ final class PublicationWatermarkTests: XCTestCase {
         XCTAssertFalse(PublicationWatermarkRuntime.supports(manifestSHA256: nil, ready: false))
         XCTAssertTrue(PublicationWatermarkRuntime.supports(manifestSHA256: PublicationWatermarkRuntime.qualifiedManifestSHA256, ready: true))
         XCTAssertFalse(PublicationWatermarkRuntime.supports(manifestSHA256: PublicationWatermarkRuntime.qualifiedManifestSHA256, ready: false))
+        let interior = "7e823d9372aba3613fb8794f981c0f01cc97a420e3e82c388a783439bc933556"
+        XCTAssertTrue(PublicationWatermarkRuntime.supports(manifestSHA256: interior, ready: true))
+        XCTAssertFalse(PublicationWatermarkRuntime.supports(manifestSHA256: interior, ready: false))
     }
 }

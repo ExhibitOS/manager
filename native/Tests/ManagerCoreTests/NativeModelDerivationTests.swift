@@ -82,6 +82,9 @@ final class NativeModelDerivationTests: XCTestCase {
         let qualified = "b2ce49e9703cadf7d22b73ec5dfd93622489a07c34721f9bbe2b9f6df17ee28e"
         XCTAssertTrue(NativeModelDerivationProfile.supports(manifestSHA256: qualified, ready: true))
         XCTAssertFalse(NativeModelDerivationProfile.supports(manifestSHA256: qualified, ready: false))
+        let interior = "7e823d9372aba3613fb8794f981c0f01cc97a420e3e82c388a783439bc933556"
+        XCTAssertTrue(NativeModelDerivationProfile.supports(manifestSHA256: interior, ready: true))
+        XCTAssertFalse(NativeModelDerivationProfile.supports(manifestSHA256: interior, ready: false))
         XCTAssertFalse(NativeModelDerivationProfile.supports(manifestSHA256: String(repeating: "f", count: 64), ready: true))
         XCTAssertTrue(PublicationWatermarkRuntime.supports(manifestSHA256: qualified, ready: true))
         XCTAssertFalse(PublicationWatermarkRuntime.supports(manifestSHA256: qualified, ready: false))
