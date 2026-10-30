@@ -468,6 +468,8 @@ mod tests {
 pub struct NativeTargetConfigurationPlan {
     receipt: NativeTargetConfigurationPlanReceipt,
     _configuration: installations::native_restore::ReboundConfigurationPlan,
+    _authority: SourceAuthority,
+    _attempt_id: String,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -489,6 +491,29 @@ pub struct NativeTargetConfigurationPlanReceipt {
 }
 impl NativeTargetConfigurationPlan {
     pub fn receipt(&self) -> &NativeTargetConfigurationPlanReceipt { &self.receipt }
+}
+/// A postcommit in-process capability. It cannot be deserialized or converted
+/// into preflight, file-publication, activation or execution authority.
+pub struct NativePublicationPermit {
+    receipt: NativePublicationPermitReceipt,
+    _plan: installations::native_restore::ReboundConfigurationPlan,
+    _staged: installations::native_restore::StagedNativeConfiguration,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativePublicationPermitReceipt {
+    operation_id: String,
+    state: &'static str,
+    authority_generation: u64,
+    authority_sha256: String,
+    configuration_manifest_sha256: String,
+    beforeimage_archive_sha256: String,
+    configuration_published: bool,
+    preflight_verified: bool,
+    execution_permitted: bool,
+}
+impl NativePublicationPermit {
+    pub fn receipt(&self) -> &NativePublicationPermitReceipt { &self.receipt }
 }
 impl Store {
     /// Builds a closed secret proposal without writing target/profile files or
@@ -523,6 +548,121 @@ impl Store {
             configuration_file_count: configuration.file_count(), configuration_planned: true,
             configuration_verified: false, preflight_verified: false, execution_permitted: false,
         };
-        Ok(NativeTargetConfigurationPlan {receipt, _configuration: configuration})
+        Ok(NativeTargetConfigurationPlan {receipt, _configuration: configuration,
+            _authority: SourceAuthority::capture(self, admitted), _attempt_id: preparation.attempt_id.clone()})
+    }
+
+    /// Commit a source-bound inactive publication intent. This stages only an
+    /// authenticated beforeimage archive and a private manifest; it never
+    /// replaces target configuration, starts services or permits execution.
+    pub fn begin_native_configuration_publication(
+        &mut self, admitted: &mut AdmittedNativePayload, source: &mut NativeSourceObservation,
+        preparation: &mut NativeTargetPreparation, held: NativeTargetConfigurationPlan,
+        source_session: &mut Session, target_session: &mut Session,
+    ) -> crate::Result<NativePublicationPermit> {
+        self.begin_native_configuration_publication_with_clock(admitted, source, preparation, held, source_session, target_session, &|| {
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs()).map_err(|_| crate::err("TRUST_CLOCK_ROLLBACK"))
+        })
+    }
+
+    fn begin_native_configuration_publication_with_clock(
+        &mut self, admitted: &mut AdmittedNativePayload, source: &mut NativeSourceObservation,
+        preparation: &mut NativeTargetPreparation, held: NativeTargetConfigurationPlan,
+        source_session: &mut Session, target_session: &mut Session, clock: &dyn Fn() -> crate::Result<u64>,
+    ) -> crate::Result<NativePublicationPermit> {
+        use std::cell::RefCell;
+        use super::super::native_publication_history::{NativePublicationBinding, NativePublicationState};
+        if self.current.intent.is_some() || self.current.native_publication.as_ref().is_some_and(|v| v.in_flight()) {
+            return Err(crate::err("TRUST_OPERATION_BUSY"));
+        }
+        self.recheck_native_target(admitted, source, &mut preparation.observation, source_session, target_session, clock()?).map_err(|e| crate::err(e.code()))?;
+        let operation = preparation.operation_id.clone();
+        let attempt = preparation.attempt_id.clone();
+        let target_id = preparation.observation.target_instance.clone();
+        let source_id = preparation.observation.source_instance.clone();
+        let target_root = preparation.observation.root.clone();
+        let source_root = source_session.target_observation_root().to_owned();
+        let expected = preparation.observation.evidence.clone();
+        if !held._authority.matches(self, admitted) || held._attempt_id != attempt
+            || held.receipt.operation_id != operation || held.receipt.target_instance != target_id
+            || held.receipt.source_instance != source_id || held.receipt.authenticated_backup_manifest_sha256 != expected.authenticated_manifest_sha256
+            || held.receipt.source_payload_manifest_sha256 != source.source.source_manifest()
+            || held.receipt.target_payload_manifest_sha256 != admitted.payload.context().manifest_sha256
+            || self.used_operations.contains(&operation) || self.used_instances.contains(&target_id) {
+            return Err(crate::err("UPDATE_PLAN_MISMATCH"));
+        }
+        held._configuration.recheck()?;
+        let authority = serde_json::json!({"scope":self.scope,"generation":self.current.generation,"policyGeneration":self.current.policy_generation,"recordSha256":self.current_sha256,"signedReleasePayloadSha256":admitted.release.payload_sha256,"signedArtifactSha256":admitted.release.release.artifact.sha256});
+        let source_authority = source.authority.clone();
+        let source_evidence = source.evidence.clone();
+        let source_manifest = source.source.source_manifest();
+        let store = RefCell::new(self);
+        let admission = RefCell::new(admitted);
+        let (fresh, (staged, binding, generation, head)) = source.source.with_target_configuration(
+            source_session, target_session, &operation, &attempt, &expected, &authority,
+            |profile, id, from, to| {
+                let store = store.borrow(); let mut admission = admission.borrow_mut();
+                store.recheck_native_admission(&mut admission, clock()?).map_err(|e| crate::err(e.code()))?;
+                if !source_authority.matches(&store, &admission) || to != target_root { return Err(crate::err("UPDATE_POLICY_STALE")); }
+                store.check_native_target_selection(profile, id, from, &target_id, to)
+            },
+            |fresh, profile, root, directory, key_file, revalidate| {
+                held._configuration.recheck()?;
+                if !held._configuration.matches(fresh) { return Err(crate::err("NATIVE_TARGET_CONFIGURATION_CHANGED")); }
+                let parent = key_file.parent().ok_or_else(|| crate::err("BACKUP_KEY_INVALID"))?;
+                let name = key_file.file_name().and_then(|v| v.to_str()).ok_or_else(|| crate::err("BACKUP_KEY_INVALID"))?;
+                let key = crate::installations::native_backup::Secret(crate::installation_backup::source_bytes(parent, name, 32, true)?);
+                let (bounded_key, key_pin) = crate::hosted_runtime_file::bounded(key_file, 32)?;
+                let bounded_key = crate::installations::native_backup::Secret(bounded_key);
+                if key.0.len() != 32 || key.0 != bounded_key.0 { return Err(crate::err("BACKUP_KEY_INVALID")); }
+                let staged = fresh.stage_beforeimages(profile, root, directory, &operation, &attempt, &key.0)?;
+                revalidate(true)?; held._configuration.recheck()?; staged.recheck()?; key_pin.check()?;
+                {
+                    let store = store.borrow(); let mut admission = admission.borrow_mut();
+                    store.recheck_native_admission(&mut admission, clock()?).map_err(|e| crate::err(e.code()))?;
+                    if !source_authority.matches(&store, &admission) || store.used_operations.contains(&operation) || store.used_instances.contains(&target_id) {
+                        return Err(crate::err("UPDATE_POLICY_STALE"));
+                    }
+                }
+                revalidate(true)?; held._configuration.recheck()?; staged.recheck()?; key_pin.check()?;
+                let mut store = store.borrow_mut(); let admission = admission.borrow_mut();
+                let now = clock()?;
+                let verified = store.verify_native(&admission.envelope, now).map_err(|e| crate::err(e.code()))?;
+                if verified.payload_sha256 != admission.release.payload_sha256 || !source_authority.matches(&store, &admission) {
+                    return Err(crate::err("UPDATE_POLICY_STALE"));
+                }
+                let binding = NativePublicationBinding {
+                    format: 1, operation_id: operation.clone(), attempt_id: attempt.clone(), source_instance: source_id.clone(), target_instance: target_id.clone(),
+                    source_root_sha256: hash(source_root.as_os_str().as_encoded_bytes()), target_root_sha256: hash(root.as_os_str().as_encoded_bytes()),
+                    source_payload_sha256: source_manifest.clone(), target_payload_sha256: admission.payload.context().manifest_sha256,
+                    release_payload_sha256: admission.release.payload_sha256.clone(), artifact_sha256: admission.release.release.artifact.sha256.clone(),
+                    backup_id: source_evidence.backup_id.clone(), backup_manifest_sha256: source_evidence.manifest_sha256.clone(), source_inventory_sha256: source_evidence.inventory_sha256.clone(),
+                    source_schema_sha256: source_evidence.schema_sha256.clone(), target_schema_sha256: expected.target_schema_sha256.clone(), target_migrations_sha256: expected.target_migrations_sha256.clone(),
+                    source_system_identifier: source_evidence.system_identifier.clone(), target_system_identifier: expected.target_system_identifier.clone(),
+                    configuration_manifest_sha256: staged.manifest_sha256.clone(), beforeimage_archive_sha256: staged.beforeimage_archive_sha256.clone(),
+                    authority_generation: store.current.generation, authority_sha256: store.current_sha256.clone(), policy_generation: store.current.policy_generation,
+                    state: NativePublicationState::Pending,
+                };
+                let mut next = store.current.clone(); next.update_event = None; next.native_publication = Some(binding.clone());
+                store.commit(next, now).map_err(|e| crate::err(e.code()))?;
+                // The old admission is now stale. Read back the actual durable
+                // record and retain only a new in-process, postcommit permit.
+                store.check_root().map_err(|e| crate::err(e.code()))?;
+                let bytes = read_record(&store.root.join(format!("{:020}.json", store.current.generation))).map_err(|e| crate::err(e.code()))?;
+                let recorded: Record = serde_json::from_slice(&bytes).map_err(|_| crate::err("TRUST_INVALID"))?;
+                if hash(&bytes) != store.current_sha256 || recorded.native_publication.as_ref() != Some(&binding) { return Err(crate::err("TRUST_WRITE_UNCERTAIN")); }
+                revalidate(false)?; held._configuration.recheck()?; staged.recheck()?; key_pin.check()?;
+                store.check_native_target_selection(profile, &source_id, &source_root, &target_id, root)?;
+                Ok((staged, binding, store.current.generation, store.current_sha256.clone()))
+            },
+        )?;
+        let receipt = NativePublicationPermitReceipt {
+            operation_id: operation, state: "PublicationIntentInactive", authority_generation: generation, authority_sha256: head,
+            configuration_manifest_sha256: binding.configuration_manifest_sha256,
+            beforeimage_archive_sha256: binding.beforeimage_archive_sha256,
+            configuration_published: false, preflight_verified: false, execution_permitted: false,
+        };
+        Ok(NativePublicationPermit { receipt, _plan: fresh, _staged: staged })
     }
 }

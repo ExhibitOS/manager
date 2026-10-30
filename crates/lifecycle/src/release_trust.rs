@@ -20,7 +20,7 @@ pub(crate) mod lifecycle_writer;
 #[path = "native_source_observation.rs"]
 mod native_source_observation;
 #[cfg(target_os = "macos")]
-pub use native_source_observation::{NativeSourceObservation, NativeSourceObservationReceipt, NativeObservedPlanBoundary, NativeObservedPlanReceipt, NativeTargetObservation, NativeTargetObservationReceipt, NativeTargetPreparation, NativeTargetPreparationReceipt, NativeTargetConfigurationPlan, NativeTargetConfigurationPlanReceipt};
+pub use native_source_observation::{NativeSourceObservation, NativeSourceObservationReceipt, NativeObservedPlanBoundary, NativeObservedPlanReceipt, NativeTargetObservation, NativeTargetObservationReceipt, NativeTargetPreparation, NativeTargetPreparationReceipt, NativeTargetConfigurationPlan, NativeTargetConfigurationPlanReceipt, NativePublicationPermit, NativePublicationPermitReceipt};
 const MAX_RECORD: u64 = 96 * 1024;
 const MAX_RECORDS: usize = 4096;
 const MAX_REVOKED: usize = 256;
@@ -1111,7 +1111,7 @@ impl Store {
         payload: std::sync::Arc<crate::native_payload::Payload>,
         now: u64,
     ) -> Result<super::native::AdmittedNativePayload, Error> {
-        if self.current.intent.is_some() {
+        if self.current.intent.is_some() || self.current.native_publication.as_ref().is_some_and(|v| v.in_flight()) {
             return Err(Error::TrustOperationBusy);
         }
         let mut release = self.verify_native(envelope, now)?;
