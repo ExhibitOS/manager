@@ -1744,6 +1744,23 @@ final class ExhibitionModel: ObservableObject {
             value.draft = saved.draft; value.etag = saved.etag; value.savedEditVersion = saved.draft.document["editVersion"].integer
             try await persist(value); immutable = frozen; comparison = nil; syncFields()
             notice = frozen ? "공개용 저장본을 열었습니다. 복제해서 편집할 수 있습니다." : "저장한 전시를 열었습니다."
+            // OEX import can add approved works after the last library fetch.
+            // Refresh only after the saved draft is safely opened; a catalogue
+            // failure must not undo or misreport that successful open.
+            let access = viewportAccessID
+            let refreshFailure = "작품 목록을 새로 확인하지 못했습니다. 전시 목록의 검색으로 다시 확인하세요."
+            do {
+                let artworks = try await api.artworks()
+                try Task.checkCancellation()
+                guard viewportAccessID == access, draft?.id == id, self.api === api else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+                library = artworks.items.filter { $0.approvedRevision == $0.revision }
+                libraryCursor = artworks.nextCursor
+                if catalogStatus == refreshFailure { catalogStatus = "" }
+                refreshCatalogMetadata()
+            } catch {
+                guard !Task.isCancelled, viewportAccessID == access, draft?.id == id, self.api === api else { return }
+                catalogStatus = refreshFailure
+            }
         }
     }
     private func appliedFields(allowPosition: Bool = false) throws -> NativeExhibitionDraft {
