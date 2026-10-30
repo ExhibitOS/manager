@@ -200,11 +200,27 @@ impl AuthenticatedBeforeimages {
             File::open(&self.path).and_then(|f| f.sync_all()).map_err(|_| bad())?;
             if self.is_before(profile, target, index)? { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
         }
+        self.sync_destination_parents(profile, target, &mut validate, |path| File::open(path).and_then(|f| f.sync_all()).map_err(|_| bad()))?;
         validate()?; self.recheck()?; self.check_inventory(profile, target)?;
         for index in 0..plan.files.len() {
             let c = &self.manifest.files[index];
             let same = c.before_sha256.as_deref() == Some(c.after_sha256.as_str()) && c.before_bytes == Some(c.after_bytes);
             if (!same && self.is_before(profile, target, index)?) || self.after_temporary(index)?.is_some() { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
+        }
+        Ok(())
+    }
+    fn sync_destination_parents(&self, profile: &Path, target: &Path,
+                                mut validate: impl FnMut() -> Result<()>,
+                                mut sync: impl FnMut(&Path) -> Result<()>) -> Result<()> {
+        for file in &self.manifest.files {
+            let root = if file.profile { profile } else { target };
+            let destination = root.join(&file.name);
+            let parent = destination.parent().ok_or_else(bad)?;
+            private_directory(parent)?;
+            let parent_pin = DirectoryPin::open(parent)?;
+            validate()?; self.recheck()?; parent_pin.check()?;
+            sync(parent)?;
+            parent_pin.check()?;
         }
         Ok(())
     }
@@ -253,6 +269,10 @@ impl AuthenticatedBeforeimages {
             File::open(parent).and_then(|f| f.sync_all()).map_err(|_| bad())?;
             if !self.is_before(profile, target, index)? { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
         }
+        // A previous interrupted repair may already have renamed or removed a
+        // file without syncing its parent. Sync every destination parent even
+        // when this attempt observed the desired BEFORE bytes and made no write.
+        self.sync_destination_parents(profile, target, &mut validate, |path| File::open(path).and_then(|f| f.sync_all()).map_err(|_| bad()))?;
         validate()?; self.recheck()?; self.check_inventory(profile, target)?;
         for index in 0..self.manifest.files.len() {
             if !self.is_before(profile, target, index)? { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
@@ -749,6 +769,10 @@ mod begin_stage_tests {
         assert!(opened.check_closed_destinations(&target, "native-installation.json").is_err());
         assert_eq!(opened.archive.entries[0].bytes.as_deref(), Some(b"old-env".as_slice()));
         assert!(opened.archive.entries[2].bytes.is_none());
+        let mut synced = Vec::new();
+        opened.sync_destination_parents(&profile, &target, || Ok(()), |p| { synced.push(p.to_owned()); Ok(()) }).unwrap();
+        assert_eq!(synced, vec![target.clone(), target.clone(), target.join("config")]);
+        assert!(opened.sync_destination_parents(&profile, &target, || Ok(()), |_| Err(bad())).is_err());
         assert!(open_beforeimages(&directory, &operation, &attempt, &[8u8; 32], &staged.manifest_sha256, &staged.beforeimage_archive_sha256).is_err());
         assert!(open_beforeimages(&directory, &operation, &Uuid::new_v4().to_string(), &key, &staged.manifest_sha256, &staged.beforeimage_archive_sha256).is_err());
         assert!(open_beforeimages(&directory, &operation, &attempt, &key, &"0".repeat(64), &staged.beforeimage_archive_sha256).is_err());

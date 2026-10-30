@@ -131,6 +131,12 @@ fn check_offline_guard(root: &Path, guard: &crate::OperationGuard) -> crate::Res
     }
     Ok(())
 }
+fn check_durable_head(store: &Store) -> crate::Result<()> {
+    store.check_root().map_err(|e| crate::err(e.code()))?;
+    let bytes = read_record(&store.root.join(format!("{:020}.json", store.current.generation))).map_err(|e| crate::err(e.code()))?;
+    if hash(&bytes) != store.current_sha256 { return Err(crate::err("TRUST_WRITE_UNCERTAIN")); }
+    Ok(())
+}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeTargetPreparationReceipt<'a> {
@@ -220,7 +226,7 @@ impl Store {
             &binding.configuration_manifest_sha256, &binding.beforeimage_archive_sha256)?;
         let owner = before.owner()?;
         let mut validate = || -> crate::Result<()> {
-            self.check_root().map_err(|e| crate::err(e.code()))?;
+            check_durable_head(self)?;
             if self.current_sha256 != head || self.current.native_publication.as_ref() != Some(&binding)
                 || !binding.current_predecessor(&self.current) { return Err(crate::err("UPDATE_POLICY_STALE")); }
             self.check_native_target_selection(&profile, &binding.source_instance, &source_root, &binding.target_instance, &target_root)?;
@@ -725,7 +731,7 @@ impl Store {
             &binding.operation_id, &binding.attempt_id, &expected, &authority,
             |profile, id, from, to| {
                 let store = store.borrow(); let mut admitted = admission.borrow_mut();
-                store.check_root().map_err(|e| crate::err(e.code()))?;
+                check_durable_head(&store)?;
                 if store.current_sha256 != head || store.current.native_publication.as_ref() != Some(&binding) || !binding.current_predecessor(&store.current)
                     || id != binding.source_instance || from != source_root || to != target_root
                     || admitted.scope != store.scope || admitted.generation != binding.authority_generation
