@@ -113,6 +113,7 @@ impl Log {
 struct Owned {
     child: Child,
     term_sent: bool,
+    term_delivered: bool,
     capture: Option<Arc<Mutex<Vec<u8>>>>,
     stdout_thread: Option<thread::JoinHandle<()>>,
 }
@@ -125,11 +126,11 @@ impl Owned {
                 .map_err(|_| err("NATIVE_PROCESS_UNAVAILABLE"))?
                 .is_none()
         {
-            if unsafe { libc::kill(self.child.id() as i32, libc::SIGTERM) } != 0
-                && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
-            {
+            let result = unsafe { libc::kill(self.child.id() as i32, libc::SIGTERM) };
+            if result != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
                 return Err(err("NATIVE_STOP_UNAVAILABLE"));
             }
+            self.term_delivered = result == 0;
             self.term_sent = true;
         }
         Ok(())
@@ -187,6 +188,7 @@ pub struct Session {
     auxiliary: Option<Owned>,
     log: Option<Arc<Log>>,
     node_started: Arc<AtomicBool>,
+    node_drain_requested: bool,
     job_id: Option<String>,
     run: Option<PathBuf>,
     state: String,
@@ -212,6 +214,11 @@ fn alive(pid: u32) -> bool {
     }
     (unsafe { libc::kill(pid as i32, 0) == 0 })
         || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+// A database-only maintenance session legitimately has no Node exit record.
+// If a service ran, disappearance alone does not prove its workers drained.
+fn clean_node_quiescence(service_expected: bool, drain_requested: bool, exits: &BTreeMap<String, i32>) -> bool {
+    !service_expected || (drain_requested && exits.get("node") == Some(&0))
 }
 fn exists(path: &Path) -> Result<bool> {
     match fs::symlink_metadata(path) {
@@ -283,6 +290,66 @@ mod interrupted_root_tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
+    fn node_drain_database_only_or_clean_exit_but_not_crash() {
+        let mut exits = BTreeMap::new();
+        assert!(clean_node_quiescence(false, false, &exits));
+        assert!(!clean_node_quiescence(true, true, &exits));
+        for (program, expected) in [("/usr/bin/true", true), ("/usr/bin/false", false)] {
+            let status = Command::new(program).status().unwrap();
+            exits.insert("node".into(), status.code().unwrap());
+            assert_eq!(clean_node_quiescence(true, true, &exits), expected);
+        }
+        exits.insert("node".into(), -libc::SIGTERM);
+        assert!(!clean_node_quiescence(true, true, &exits));
+        exits.insert("node".into(), 0);
+        assert!(!clean_node_quiescence(true, false, &exits));
+    }
+
+    #[test]
+    fn node_drain_delivered_signal_without_graceful_exit_refused() {
+        let child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let mut owned = Owned { child, term_sent: false, term_delivered: false, capture: None, stdout_thread: None };
+        if let Err(error) = owned.signal() {
+            let _ = owned.child.kill(); let _ = owned.child.wait();
+            panic!("owned signal failed: {}", error.code);
+        }
+        let mut code = None;
+        for _ in 0..100 {
+            code = owned.poll().unwrap();
+            if code.is_some() { break; }
+            thread::sleep(Duration::from_millis(10));
+        }
+        if code.is_none() { let _ = owned.child.kill(); let _ = owned.child.wait(); panic!("owned child did not exit"); }
+        assert!(owned.term_delivered);
+        let mut exits = BTreeMap::new();
+        exits.insert("node".into(), code.unwrap());
+        assert!(!clean_node_quiescence(true, owned.term_delivered, &exits));
+    }
+
+    #[test]
+    #[ignore = "Explicit isolated stopped native profile and verified runtime under the heavy guard only"]
+    fn node_drain_actual_owned_native_runtime() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_NATIVE_DRAIN_ROOT").expect("isolated test root required"));
+        let payload_path = PathBuf::from(std::env::var_os("EXHIBITOS_NATIVE_DRAIN_PAYLOAD").expect("verified test runtime required"));
+        assert!(!root.join("native-database/postmaster.pid").exists());
+        let service = LifecycleService::bound_existing(root).unwrap();
+        let payload = Arc::new(Payload::open(&payload_path).unwrap());
+        let prepared = service.native_prepared().unwrap().unwrap();
+        assert_eq!(prepared.manifest_sha256, payload.context().manifest_sha256);
+        let mut session = Session::new(&service, payload, prepared.ports).unwrap();
+        let started = session.start().unwrap();
+        assert_eq!(started.state, "ready");
+        let drained = session.quiesce_for_backup().unwrap();
+        assert_eq!(drained.state, "database_ready");
+        assert_eq!(drained.exits.get("node"), Some(&0));
+        assert!(drained.node_pid.is_none() && drained.postgres_pid.is_some());
+        let stopped = session.stop().unwrap();
+        assert_eq!(stopped.state, "stopped");
+        assert!(stopped.node_pid.is_none() && stopped.postgres_pid.is_none());
+        assert_eq!(stopped.exits.get("postgres"), Some(&0));
+    }
+
+    #[test]
     fn offline_guard_refuses_live_and_malformed_postmaster_without_environment() {
         let root = std::env::temp_dir().join(format!("native-offline-orphan-{}", Uuid::new_v4()));
         fs::create_dir(&root).unwrap();
@@ -329,6 +396,7 @@ impl Session {
             auxiliary: None,
             log: None,
             node_started: Arc::new(AtomicBool::new(false)),
+            node_drain_requested: false,
             job_id: None,
             run: None,
             state: "stopped".into(),
@@ -560,6 +628,7 @@ impl Session {
         Ok(Owned {
             child,
             term_sent: false,
+            term_delivered: false,
             capture,
             stdout_thread: Some(stdout_thread),
         })
@@ -1000,6 +1069,7 @@ impl Session {
         self.failure = None;
         self.exits.clear();
         self.node_started.store(false, Ordering::SeqCst);
+        self.node_drain_requested = false;
         self.state = "starting".into();
         self.record()?;
         write_json(
@@ -1033,6 +1103,9 @@ impl Session {
         {
             return Err(err("NATIVE_NOT_READY"));
         }
+        let service_expected = matches!(self.state.as_str(), "ready" | "unavailable")
+            || self.node.is_some()
+            || self.exits.contains_key("node");
         self.state = "quiescing".into();
         self.readiness = Readiness::default();
         self.local_authority = None;
@@ -1050,7 +1123,11 @@ impl Session {
             }
             if let Some(node) = self.node.as_mut() {
                 node.signal()?;
+                self.node_drain_requested |= node.term_delivered;
             } else {
+                if !clean_node_quiescence(service_expected, self.node_drain_requested, &self.exits) {
+                    return Err(err("NATIVE_QUIESCENCE_UNCONFIRMED"));
+                }
                 self.state = "database_ready".into();
                 self.record()?;
                 return Ok(self.snapshot());
