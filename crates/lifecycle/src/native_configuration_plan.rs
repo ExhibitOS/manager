@@ -21,6 +21,15 @@ impl ReboundConfigurationPlan {
     pub(crate) fn file_count(&self) -> usize {
         self.files.len()
     }
+    /// Compare private proposals without exposing bytes or making receipts an
+    /// authority. Both sets of source and candidate pins remain independently
+    /// live and must still pass their rechecks.
+    pub(crate) fn matches(&self, other: &Self) -> bool {
+        self.files.len() == other.files.len()
+            && self.files.iter().zip(&other.files).all(|(a, b)| {
+                a._profile == b._profile && a._name == b._name && a._bytes.0 == b._bytes.0
+            })
+    }
     pub(crate) fn recheck(&self) -> Result<()> {
         for directory in &self.directories {
             directory.check()?;

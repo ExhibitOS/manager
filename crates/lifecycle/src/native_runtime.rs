@@ -220,6 +220,88 @@ fn exists(path: &Path) -> Result<bool> {
         Err(_) => Err(err("NATIVE_JOURNAL_UNAVAILABLE")),
     }
 }
+/// Read-only orphan guard. Callers must hold the root operation fence; it does
+/// not inspect environment credentials, start a process, or confer authority.
+pub(crate) fn check_interrupted_root(root: &Path) -> Result<()> {
+    let pointer = root.join("native-current-run.json");
+    if exists(&pointer)? {
+        let current: Current = serde_json::from_slice(&installation_backup::source_bytes(
+            root,
+            "native-current-run.json",
+            4096,
+            true,
+        )?)
+        .map_err(|_| err("NATIVE_JOURNAL_INVALID"))?;
+        if current.format != 1
+            || Uuid::parse_str(&current.id)
+                .ok()
+                .is_none_or(|id| id.to_string() != current.id)
+        {
+            return Err(err("NATIVE_JOURNAL_INVALID"));
+        }
+        let relative = format!("native-runs/{}/state.json", current.id);
+        let prior: Context = serde_json::from_slice(&installation_backup::source_bytes(
+            root,
+            &relative,
+            8192,
+            true,
+        )?)
+        .map_err(|_| err("NATIVE_JOURNAL_INVALID"))?;
+        if prior.format != 1
+            || prior.job_id.as_deref() != Some(&current.id)
+            || [prior.postgres_pid, prior.node_pid, prior.auxiliary_pid]
+                .into_iter()
+                .flatten()
+                .any(alive)
+        {
+            return Err(err("NATIVE_RECOVERY_REQUIRED"));
+        }
+    }
+    let postmaster = root.join("native-database/postmaster.pid");
+    if exists(&postmaster)? {
+        let bytes = installation_backup::source_bytes(
+            root,
+            "native-database/postmaster.pid",
+            8192,
+            true,
+        )?;
+        let pid = std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(|s| s.lines().next())
+            .and_then(|s| s.parse::<u32>().ok())
+            .ok_or_else(|| err("NATIVE_RECOVERY_REQUIRED"))?;
+        if alive(pid) {
+            return Err(err("NATIVE_RECOVERY_REQUIRED"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod interrupted_root_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn offline_guard_refuses_live_and_malformed_postmaster_without_environment() {
+        let root = std::env::temp_dir().join(format!("native-offline-orphan-{}", Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let db = root.join("native-database");
+        fs::create_dir(&db).unwrap();
+        fs::set_permissions(&db, fs::Permissions::from_mode(0o700)).unwrap();
+        check_interrupted_root(&root).unwrap();
+        write_private_new(&db, "postmaster.pid", format!("{}\n", std::process::id()).as_bytes(), 8192).unwrap();
+        assert_eq!(check_interrupted_root(&root).unwrap_err().code, "NATIVE_RECOVERY_REQUIRED");
+        fs::write(db.join("postmaster.pid"), b"not-a-pid\n").unwrap();
+        assert_eq!(check_interrupted_root(&root).unwrap_err().code, "NATIVE_RECOVERY_REQUIRED");
+        fs::remove_file(db.join("postmaster.pid")).unwrap();
+        write_private_new(&root, "native-current-run.json", b"{}", 4096).unwrap();
+        assert_eq!(check_interrupted_root(&root).unwrap_err().code, "NATIVE_JOURNAL_INVALID");
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 impl Session {
     pub fn new(service: &LifecycleService, payload: Arc<Payload>, ports: Ports) -> Result<Self> {
         installations::private_directory(&service.root)?;
@@ -375,60 +457,6 @@ impl Session {
     }
     fn any_owned(&self) -> bool {
         self.postgres.is_some() || self.node.is_some() || self.auxiliary.is_some()
-    }
-    fn check_interrupted(&self) -> Result<()> {
-        let pointer = self.service.root.join("native-current-run.json");
-        if exists(&pointer)? {
-            let current: Current = serde_json::from_slice(&installation_backup::source_bytes(
-                &self.service.root,
-                "native-current-run.json",
-                4096,
-                true,
-            )?)
-            .map_err(|_| err("NATIVE_JOURNAL_INVALID"))?;
-            if current.format != 1
-                || Uuid::parse_str(&current.id)
-                    .ok()
-                    .is_none_or(|id| id.to_string() != current.id)
-            {
-                return Err(err("NATIVE_JOURNAL_INVALID"));
-            }
-            let relative = format!("native-runs/{}/state.json", current.id);
-            let prior: Context = serde_json::from_slice(&installation_backup::source_bytes(
-                &self.service.root,
-                &relative,
-                8192,
-                true,
-            )?)
-            .map_err(|_| err("NATIVE_JOURNAL_INVALID"))?;
-            if prior.format != 1
-                || prior.job_id.as_deref() != Some(&current.id)
-                || [prior.postgres_pid, prior.node_pid, prior.auxiliary_pid]
-                    .into_iter()
-                    .flatten()
-                    .any(alive)
-            {
-                return Err(err("NATIVE_RECOVERY_REQUIRED"));
-            }
-        }
-        let postmaster = self.service.root.join("native-database/postmaster.pid");
-        if exists(&postmaster)? {
-            let bytes = installation_backup::source_bytes(
-                &self.service.root,
-                "native-database/postmaster.pid",
-                8192,
-                true,
-            )?;
-            let pid = std::str::from_utf8(&bytes)
-                .ok()
-                .and_then(|s| s.lines().next())
-                .and_then(|s| s.parse::<u32>().ok())
-                .ok_or_else(|| err("NATIVE_RECOVERY_REQUIRED"))?;
-            if alive(pid) {
-                return Err(err("NATIVE_RECOVERY_REQUIRED"));
-            }
-        }
-        Ok(())
     }
     fn spawn(
         &self,
@@ -956,7 +984,7 @@ impl Session {
                 .native_start_environment(&self.payload, self.ports)?,
         );
         // Check before publishing a new current pointer, including orphaned jobs.
-        self.check_interrupted()?;
+        check_interrupted_root(&self.service.root)?;
         let parent = directory(&self.service.root, "native-runs")?;
         let id = Uuid::new_v4().to_string();
         let run = directory(&parent, &id)?;

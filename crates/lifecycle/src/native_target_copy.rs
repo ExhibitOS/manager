@@ -186,8 +186,20 @@ impl AuthenticatedNativeBackup {
     pub(crate) fn plan_target_configuration(
         &self, source: &mut Session, target: &mut Session, operation: &str,
         expected_attempt: &str, expected: &NativeTargetEvidence, authority: &Value,
-        mut check_selection: impl FnMut(&Path, &str, &Path, &Path) -> Result<()>,
+        check_selection: impl FnMut(&Path, &str, &Path, &Path) -> Result<()>,
     ) -> Result<super::super::native_restore::ReboundConfigurationPlan> {
+        self.with_target_configuration(source, target, operation, expected_attempt, expected, authority, check_selection, |plan| Ok(plan))
+    }
+
+    /// Run the final operation while the same profile and both session fences
+    /// that protected planning remain held. The callback receives the freshly
+    /// checked proposal, never a capability reconstructed from disk.
+    pub(crate) fn with_target_configuration<T>(
+        &self, source: &mut Session, target: &mut Session, operation: &str,
+        expected_attempt: &str, expected: &NativeTargetEvidence, authority: &Value,
+        mut check_selection: impl FnMut(&Path, &str, &Path, &Path) -> Result<()>,
+        finish: impl FnOnce(super::super::native_restore::ReboundConfigurationPlan) -> Result<T>,
+    ) -> Result<T> {
         let profile = LifecycleService::bound_existing(self.profile_root.clone())?;
         let _profile = profile_lock(&profile)?;
         let root = target.target_observation_root().to_owned();
@@ -255,6 +267,6 @@ impl AuthenticatedNativeBackup {
         source.check_native_observation_fence()?;
         target.check_native_observation_fence()?;
         check_selection(&self.profile_root, &self.installation_id, &self.source_root, &root)?;
-        Ok(plan)
+        finish(plan)
     }
 }

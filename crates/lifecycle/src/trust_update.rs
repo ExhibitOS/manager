@@ -126,6 +126,10 @@ fn new_intent<'a>(old: Option<&Record>, next: &'a Record) -> Option<&'a UpdateIn
         next.intent.as_ref()
     }
 }
+fn new_native_publication<'a>(old: Option<&Record>, next: &'a Record) -> Option<&'a native_publication_history::NativePublicationBinding> {
+    let next = next.native_publication.as_ref()?;
+    if old.and_then(|r| r.native_publication.as_ref()).is_some_and(|v| v.operation_id == next.operation_id) { None } else { Some(next) }
+}
 
 pub(super) fn validate_new_ids(
     old: Option<&Record>,
@@ -133,6 +137,10 @@ pub(super) fn validate_new_ids(
     operations: &BTreeSet<String>,
     instances: &BTreeSet<String>,
 ) -> Result<(), Error> {
+    if let Some(native) = new_native_publication(old, next)
+        && (operations.contains(&native.operation_id) || instances.contains(&native.target_instance)) {
+        return Err(Error::TrustIdentityReused);
+    }
     if let Some(intent) = new_intent(old, next) {
         let p = intent.update.plan();
         if operations.contains(&p.operation_id) || instances.contains(&p.target_instance) {
@@ -155,6 +163,11 @@ pub(super) fn remember_ids(
     operations: &mut BTreeSet<String>,
     instances: &mut BTreeSet<String>,
 ) {
+    if let Some(native) = new_native_publication(old, next) {
+        operations.insert(native.operation_id.clone());
+        instances.insert(native.source_instance.clone());
+        instances.insert(native.target_instance.clone());
+    }
     if let Some(intent) = new_intent(old, next) {
         let p = intent.update.plan();
         operations.insert(p.operation_id.clone());
