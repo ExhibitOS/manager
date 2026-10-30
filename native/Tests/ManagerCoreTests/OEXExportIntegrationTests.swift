@@ -31,10 +31,10 @@ final class OEXExportIntegrationTests: XCTestCase {
             let saved = try await api.exhibition(draft.id); XCTAssertEqual(saved.etag, etag); XCTAssertEqual(saved.draft, draft)
             let archive = try await api.exportOEX(exhibitionId: draft.id, etag: etag)
             try await archive.write(to: destination)
-            XCTAssertEqual(try Data(contentsOf: destination), archive.data)
+            XCTAssertEqual(try Data(contentsOf: destination), try Data(contentsOf: archive.fileURL))
             do { try await archive.write(to: destination.deletingLastPathComponent().appendingPathComponent("missing-parent/exhibition.oex")); XCTFail("Missing destination must preserve original output") }
             catch let error as AuthoringFailure { XCTAssertEqual(error.code, "EXPORT_WRITE_FAILED") }
-            XCTAssertEqual(try Data(contentsOf: destination), archive.data)
+            XCTAssertEqual(try Data(contentsOf: destination), try Data(contentsOf: archive.fileURL))
             let falseETag = "\"studio-r1-" + String(repeating: "0", count: 64) + "\""
             do { _ = try await api.exportOEX(exhibitionId: draft.id, etag: falseETag); XCTFail("A changed ETag must not export") }
             catch let error as AuthoringFailure { XCTAssertEqual(error.status, 412); XCTAssertEqual(error.code, "REMOTE_CONFLICT") }
@@ -62,7 +62,7 @@ final class OEXExportIntegrationTests: XCTestCase {
             catch let error as AuthoringFailure { XCTAssertEqual(error.status, 403); XCTAssertEqual(error.code, "RIGHTS_DENIED") }
             let unchanged = try await bridge.documentState(context); XCTAssertEqual(unchanged.draft, local.draft); XCTAssertEqual(unchanged.etag, etag)
             _ = try await bridge.stop(context); let stopped = try await idle(); try await bridge.close()
-            let receipt: [String:Any] = ["scope":"ACTUAL_NATIVE_OEX_API_AND_FILE_NOT_GUI_PASS", "sourceExhibition":draft.id, "sourceETag":etag, "archiveBytes":archive.data.count, "archiveSHA256":archive.sha256, "sourceGLBBytes":source.data.count, "sourceGLBSHA256":source.sha256, "staleETagStatus":412, "noExportRightsStatus":403, "sourceDocumentPreserved":true, "nodeExit":stopped.runtime?.exits["node"] ?? -999, "postgresExit":stopped.runtime?.exits["postgres"] ?? -999]
+            let receipt: [String:Any] = ["scope":"ACTUAL_NATIVE_OEX_API_AND_FILE_NOT_GUI_PASS", "sourceExhibition":draft.id, "sourceETag":etag, "archiveBytes":archive.count, "archiveSHA256":archive.sha256, "sourceGLBBytes":source.data.count, "sourceGLBSHA256":source.sha256, "staleETagStatus":412, "noExportRightsStatus":403, "sourceDocumentPreserved":true, "nodeExit":stopped.runtime?.exits["node"] ?? -999, "postgresExit":stopped.runtime?.exits["postgres"] ?? -999]
             try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted,.sortedKeys]).write(to: destination.deletingLastPathComponent().appendingPathComponent("native-oex-result.json"), options: .atomic)
         } catch { _ = try? await bridge.stop(context); _ = try? await idle(); try? await bridge.close(); throw error }
     }

@@ -5,7 +5,7 @@ public struct NativeOEXImportIntent: Codable, Equatable, Sendable {
     public let requestId: String
     public let sha256: String
     public let bytes: Int
-    public func matches(_ archive: NativeOEXArchive) -> Bool { bytes == archive.data.count && sha256 == archive.sha256 }
+    public func matches(_ archive: NativeOEXArchive) -> Bool { bytes == archive.count && sha256 == archive.sha256 }
 }
 public struct NativeOEXImportState: Codable, Sendable {
     public let format: Int
@@ -37,7 +37,7 @@ public enum NativeOEXImportTransfer {
         try check(); var saved = state
         if saved.intent == nil {
             guard let file else { throw AuthoringFailure("OEX_FILE_REQUIRED") }
-            saved.intent = NativeOEXImportIntent(requestId: UUID().uuidString.lowercased(), sha256: file.archive.sha256, bytes: file.archive.data.count)
+            saved.intent = NativeOEXImportIntent(requestId: UUID().uuidString.lowercased(), sha256: file.archive.sha256, bytes: file.archive.count)
             saved.fileName = file.name; saved = try await persist(saved); try check()
         }
         guard let intent = saved.intent else { throw AuthoringFailure("OEX_IMPORT_INVALID") }
