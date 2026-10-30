@@ -367,17 +367,18 @@ impl InstallationController {
         };
         self.with_current(token, |service| {
             if !session.belongs_to(service) { return Err(err("NATIVE_OTHER_INSTALLATION_ACTIVE")); }
-            session.backup_available()?;
-            session.backup_source_current()?;
             let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
             let _profile = profile_lock(profile)?;
             let prepared = service.native_prepared()?.ok_or_else(|| err("NATIVE_NOT_READY"))?;
             // Keep the established four-journal archive compatible with older
             // readers. An unfinished OEX request is never silently omitted.
             let oex_name = format!("native-oex-import-{}.json", digest(service.root.as_os_str().as_encoded_bytes()));
-            if let Some(bytes) = optional(&profile.root, &oex_name, 65536)? {
-                check_oex_backup_guard(&bytes.0, &service.personal_identity()?)?;
+            if let Some(bytes) = optional(&profile.root, &oex_name, 65536).map_err(|_| err("NATIVE_OEX_IMPORT_INVALID"))? {
+                let identity = service.personal_identity().map_err(|_| err("NATIVE_OEX_IMPORT_SCOPE_CHANGED"))?;
+                check_oex_backup_guard(&bytes.0, &identity)?;
             }
+            session.backup_available()?;
+            session.backup_source_current()?;
             absent_destination(&input.destination)?;
             let budget = resource_budget(
                 fs2::available_space(&service.root).map_err(|_| err("STORAGE_UNAVAILABLE"))?,

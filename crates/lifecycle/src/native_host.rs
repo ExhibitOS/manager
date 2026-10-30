@@ -292,6 +292,7 @@ impl Host {
                                 state.backup = None;
                                 state.session.take()
                             };
+                            let had_existing_session = existing.is_some();
                             let mut session = match existing {
                                 Some(s) => s,
                                 None => controller.with_current_mutation(&token, |service| {
@@ -326,7 +327,12 @@ impl Host {
                                 }
                                 controller.create_native_backup(&token, &mut session, input)
                             })();
-                            let stopped = session.stop();
+                            // Another controller may have saved an OEX intent
+                            // after host preflight. The core checks under the
+                            // profile lock before any quiesce. Preserve a
+                            // previously running session on this refusal.
+                            let preserve_existing = had_existing_session && result.as_ref().err().is_some_and(|e| matches!(e.code.as_str(), "NATIVE_OEX_IMPORT_PENDING" | "NATIVE_OEX_IMPORT_INVALID" | "NATIVE_OEX_IMPORT_SCOPE_CHANGED"));
+                            let stopped = if preserve_existing { Ok(()) } else { session.stop().map(|_| ()) };
                             let context = session.status()?;
                             let mut state =
                                 shared.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
@@ -646,7 +652,13 @@ impl Host {
             UiCommand::NativeBackup {
                 selection_token,
                 backup,
-            } => self.launch(selection_token, Work::Backup(backup))?,
+            } => {
+                // Reject an unfinished OEX request before the worker can take
+                // or stop the runtime. handle() is serialized; launch marks
+                // maintenance busy before any later journal write is accepted.
+                self.controller.ensure_no_pending_oex_import(&selection_token)?;
+                self.launch(selection_token, Work::Backup(backup))?
+            },
             UiCommand::NativePrepare {
                 selection_token,
                 account,

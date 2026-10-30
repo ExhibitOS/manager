@@ -45,6 +45,24 @@ impl InstallationController {
             let _lock = profile_lock(profile)?; Ok(self.oex_import_unlocked(service)?.1)
         })
     }
+    /// Host preflight runs before taking or stopping the owned runtime. The
+    /// host serializes requests and marks backup busy before accepting more
+    /// journal mutations; the backup core checks again under its snapshot lock.
+    pub fn ensure_no_pending_oex_import(&self, token: &str) -> Result<()> {
+        self.with_current(token, |service| {
+            let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
+            let _lock = profile_lock(profile)?;
+            let file = format!("native-oex-import-{}.json", digest(service.root.as_os_str().as_encoded_bytes()));
+            match fs::symlink_metadata(profile.root.join(&file)) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(_) => Err(err("STATE_UNAVAILABLE")),
+                Ok(_) => {
+                    let state = self.oex_import_unlocked(service)?.1;
+                    if state.intent.is_some() { Err(err("NATIVE_OEX_IMPORT_PENDING")) } else { Ok(()) }
+                }
+            }
+        })
+    }
     pub fn save_native_oex_import(&self, token: &str, mut state: Transfer) -> Result<Transfer> {
         self.with_current(token, |service| {
             let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
