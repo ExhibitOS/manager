@@ -40,7 +40,7 @@ fn disposition(update: &crate::update::Update, instance: &str) -> Option<bool> {
     }
     None
 }
-fn check_store(store: &Store, instance: &str) -> crate::Result<()> {
+pub(super) fn check_store(store: &Store, instance: &str) -> crate::Result<()> {
     // Re-read the complete chain, including terminal intents later cleared from
     // the head. A failed migrated target must stay fenced after successful rollback.
     let mut previous = "0".repeat(64);
@@ -57,6 +57,11 @@ fn check_store(store: &Store, instance: &str) -> crate::Result<()> {
             && let Some(blocked) = disposition(&intent.update, instance)
         {
             operations.insert(intent.update.plan().operation_id.clone(), blocked);
+        }
+        // Native candidates stay fenced even after generated configuration is
+        // restored; a separate future transition must explicitly release them.
+        if let Some(native) = &record.native_publication && native.target_instance == instance {
+            operations.insert(native.operation_id.clone(), true);
         }
         previous = hash(&bytes);
     }

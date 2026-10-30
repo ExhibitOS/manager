@@ -17,14 +17,15 @@ pub(crate) struct ReboundConfigurationPlan {
     target_root: PathBuf,
     files: Vec<ConfigurationFile>,
     pins: Vec<Pin>,
+    target_pins: Vec<Pin>,
     directories: Vec<DirectoryPin>,
     candidate_configuration: crate::installations::native_backup::CandidateConfiguration,
     absent: Vec<(PathBuf, String)>,
 }
 const BEFOREIMAGE_DOMAIN: &[u8] = b"ExhibitOS-native-publication-beforeimages-v1\0";
 const BEFOREIMAGE_LIMIT: usize = 1024 * 1024;
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ConfigurationCommitment {
     profile: bool,
     name: String,
@@ -48,6 +49,288 @@ struct BeforeimageArchive<'a> {
     attempt_id: &'a str,
     entries: Vec<BeforeimageEntry<'a>>,
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConfigurationManifest {
+    format: u8,
+    operation_id: String,
+    attempt_id: String,
+    files: Vec<ConfigurationCommitment>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OpenBeforeimageEntry {
+    profile: bool,
+    name: String,
+    bytes: Option<Vec<u8>>,
+}
+impl Drop for OpenBeforeimageEntry {
+    fn drop(&mut self) { if let Some(bytes) = &mut self.bytes { bytes.fill(0); } }
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OpenBeforeimageArchive {
+    format: u8,
+    operation_id: String,
+    attempt_id: String,
+    entries: Vec<OpenBeforeimageEntry>,
+}
+/// Authenticated bytes alone are not authority to alter a candidate. The
+/// caller must independently verify the retained trust binding and fencing.
+pub(crate) struct AuthenticatedBeforeimages {
+    manifest: ConfigurationManifest,
+    archive: OpenBeforeimageArchive,
+    path: PathBuf,
+    directory: DirectoryPin,
+    manifest_pin: Pin,
+    archive_pin: Pin,
+}
+impl AuthenticatedBeforeimages {
+    pub(crate) fn recheck(&self) -> Result<()> {
+        self.directory.check()?; self.manifest_pin.check()?; self.archive_pin.check()
+    }
+    /// Derive every permissible destination from the selected target, never
+    /// from a caller-supplied path. Journal beforeimages must be absent.
+    pub(crate) fn check_closed_destinations(&self, target: &Path, owner: &str) -> Result<()> {
+        if owner != "native-personal.json" && owner != "native-installation.json" { return Err(bad()); }
+        let expected = BTreeSet::from(["runtime.env", owner, "config/freeze-signing-key.json"]);
+        let mut roots = BTreeSet::new();
+        let journals = ["document.json", "upload.json", "oex-import.json", "publication.json", "static-export.json"]
+            .into_iter().map(|logical| journal(target, logical)).collect::<Result<BTreeSet<_>>>()?;
+        for file in &self.manifest.files {
+            if file.profile {
+                if !journals.contains(&file.name) || file.before_sha256.is_some() || file.before_bytes.is_some() { return Err(bad()); }
+            } else {
+                roots.insert(file.name.as_str());
+            }
+        }
+        if roots != expected { return Err(bad()); }
+        self.recheck()
+    }
+    pub(crate) fn owner(&self) -> Result<&'static str> {
+        let mut owners = self.manifest.files.iter().filter(|f| !f.profile && (f.name == "native-personal.json" || f.name == "native-installation.json"));
+        let owner = owners.next().ok_or_else(bad)?;
+        if owners.next().is_some() { return Err(bad()); }
+        match owner.name.as_str() { "native-personal.json" => Ok("native-personal.json"), "native-installation.json" => Ok("native-installation.json"), _ => Err(bad()) }
+    }
+    /// Classify every destination before the first mutation. Unexpected bytes,
+    /// links and unsafe file ownership fail closed; authenticated AFTER is not
+    /// confused with an arbitrary file having the same name.
+    fn is_before(&self, profile: &Path, target: &Path, index: usize) -> Result<bool> {
+        let file = &self.manifest.files[index];
+        let root = if file.profile { profile } else { target };
+        let current = if exists(root, &file.name)? {
+            let bytes = Secret(installation_backup::source_bytes(root, &file.name, 2_200_000, true)?);
+            Some((digest(&bytes.0), bytes.0.len() as u64))
+        } else { None };
+        let before = file.before_sha256.as_ref().zip(file.before_bytes).map(|(h,n)| (h.clone(),n));
+        if current == before { return Ok(true); }
+        if current == Some((file.after_sha256.clone(), file.after_bytes)) { return Ok(false); }
+        Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT"))
+    }
+    fn check_inventory(&self, profile: &Path, target: &Path) -> Result<()> {
+        for logical in ["document.json", "upload.json", "oex-import.json", "publication.json", "static-export.json"] {
+            let name = journal(target, logical)?;
+            if !self.manifest.files.iter().any(|f| f.profile && f.name == name) && exists(profile, &name)? {
+                return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT"));
+            }
+        }
+        let key_index = self.manifest.files.iter().position(|f| !f.profile && f.name == "config/freeze-signing-key.json").ok_or_else(bad)?;
+        let temp = format!(".native-publication-repair-{}-{key_index}", self.manifest.attempt_id);
+        let config = target.join("config"); private_directory(&config)?;
+        for entry in fs::read_dir(&config).map_err(|_| bad())? {
+            let name = entry.map_err(|_| bad())?.file_name().into_string().map_err(|_| bad())?;
+            if name != "freeze-signing-key.json" && name != temp { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
+        }
+        Ok(())
+    }
+    fn after_temporary(&self, index: usize) -> Result<Option<Pin>> {
+        let name = format!("after-{index}.tmp");
+        if !exists(&self.path, &name)? { return Ok(None); }
+        let file = &self.manifest.files[index];
+        let private = Secret(installation_backup::source_bytes(&self.path, &name, 2_200_000, true)?);
+        let (bytes, pin) = crate::hosted_runtime_file::bounded(&self.path.join(&name), 2_200_000)?;
+        let bytes = Secret(bytes);
+        if private.0 != bytes.0 || digest(&bytes.0) != file.after_sha256 || bytes.0.len() as u64 != file.after_bytes { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
+        Ok(Some(pin))
+    }
+    pub(crate) fn publish_afterimages(&self, plan: &ReboundConfigurationPlan, profile: &Path, target: &Path,
+                                     owner: &str, mut validate: impl FnMut() -> Result<()>) -> Result<()> {
+        self.check_closed_destinations(target, owner)?;
+        if plan.profile_root != profile || plan.target_root != target || plan.files.len() != self.manifest.files.len() { return Err(bad()); }
+        for (file, commitment) in plan.files.iter().zip(&self.manifest.files) {
+            if file._profile != commitment.profile || file._name != commitment.name || digest(&file._bytes.0) != commitment.after_sha256
+                || file._bytes.0.len() as u64 != commitment.after_bytes { return Err(bad()); }
+        }
+        validate()?; self.check_inventory(profile, target)?;
+        for index in 0..plan.files.len() {
+            if !self.is_before(profile, target, index)? || self.after_temporary(index)?.is_some() { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
+        }
+        for (index, file) in plan.files.iter().enumerate() {
+            validate()?; self.recheck()?; self.check_inventory(profile, target)?;
+            for other in 0..plan.files.len() {
+                let before = self.is_before(profile, target, other)?;
+                let c = &self.manifest.files[other];
+                let same = c.before_sha256.as_deref() == Some(c.after_sha256.as_str()) && c.before_bytes == Some(c.after_bytes);
+                if !same && before != (other >= index) { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
+            }
+            let c = &self.manifest.files[index];
+            if c.before_sha256.as_deref() == Some(c.after_sha256.as_str()) && c.before_bytes == Some(c.after_bytes) { continue; }
+            let root = if file._profile { profile } else { target };
+            let destination = root.join(&file._name);
+            let parent = destination.parent().ok_or_else(bad)?;
+            private_directory(parent)?;
+            let parent_pin = DirectoryPin::open(parent)?;
+            let previous = if exists(root, &file._name)? { Some(crate::hosted_runtime_file::bounded(&destination, 2_200_000)?.1) } else { None };
+            let temporary = format!("after-{index}.tmp");
+            write_private_new(&self.path, &temporary, &file._bytes.0, 2_200_000)?;
+            File::open(&self.path).and_then(|f| f.sync_all()).map_err(|_| bad())?;
+            let temp_pin = self.after_temporary(index)?.ok_or_else(bad)?;
+            validate()?; self.recheck()?; parent_pin.check()?; temp_pin.check()?;
+            if !self.is_before(profile, target, index)? { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
+            if let Some(pin) = previous {
+                pin.check()?; fs::rename(self.path.join(&temporary), &destination).map_err(|_| bad())?;
+            } else {
+                use std::os::unix::ffi::OsStrExt;
+                let from = std::ffi::CString::new(self.path.join(&temporary).as_os_str().as_bytes()).map_err(|_| bad())?;
+                let to = std::ffi::CString::new(destination.as_os_str().as_bytes()).map_err(|_| bad())?;
+                if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) } != 0 { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
+            }
+            File::open(parent).and_then(|f| f.sync_all()).map_err(|_| bad())?;
+            File::open(&self.path).and_then(|f| f.sync_all()).map_err(|_| bad())?;
+            if self.is_before(profile, target, index)? { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
+        }
+        self.sync_destination_parents(profile, target, &mut validate, |path| File::open(path).and_then(|f| f.sync_all()).map_err(|_| bad()))?;
+        validate()?; self.recheck()?; self.check_inventory(profile, target)?;
+        for index in 0..plan.files.len() {
+            let c = &self.manifest.files[index];
+            let same = c.before_sha256.as_deref() == Some(c.after_sha256.as_str()) && c.before_bytes == Some(c.after_bytes);
+            if (!same && self.is_before(profile, target, index)?) || self.after_temporary(index)?.is_some() { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
+        }
+        Ok(())
+    }
+    fn sync_destination_parents(&self, profile: &Path, target: &Path,
+                                mut validate: impl FnMut() -> Result<()>,
+                                mut sync: impl FnMut(&Path) -> Result<()>) -> Result<()> {
+        for file in &self.manifest.files {
+            let root = if file.profile { profile } else { target };
+            let destination = root.join(&file.name);
+            let parent = destination.parent().ok_or_else(bad)?;
+            private_directory(parent)?;
+            let parent_pin = DirectoryPin::open(parent)?;
+            validate()?; self.recheck()?; parent_pin.check()?;
+            sync(parent)?;
+            parent_pin.check()?;
+        }
+        Ok(())
+    }
+    /// Internal primitive only: caller supplies and retains all trust/profile/
+    /// raw-target fences, and must commit the terminal binding afterwards.
+    pub(crate) fn restore_beforeimages(&self, profile: &Path, target: &Path, owner: &str,
+                            mut validate: impl FnMut() -> Result<()>) -> Result<()> {
+        self.check_closed_destinations(target, owner)?;
+        validate()?; self.check_inventory(profile, target)?;
+        for (index, file) in self.manifest.files.iter().enumerate() {
+            self.after_temporary(index)?;
+            let before = self.is_before(profile, target, index)?;
+            let root = if file.profile { profile } else { target };
+            let parent = root.join(&file.name).parent().ok_or_else(bad)?.to_path_buf();
+            let temporary = format!(".native-publication-repair-{}-{index}", self.manifest.attempt_id);
+            if exists(&parent, &temporary)? {
+                if before || self.archive.entries[index].bytes.is_none() { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
+                let bytes = Secret(installation_backup::source_bytes(&parent, &temporary, 2_200_000, true)?);
+                if self.archive.entries[index].bytes.as_ref() != Some(&bytes.0) { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
+            }
+        }
+        for (index, (file, entry)) in self.manifest.files.iter().zip(&self.archive.entries).enumerate() {
+            validate()?; self.recheck()?;
+            if self.is_before(profile, target, index)? { continue; }
+            let root = if file.profile { profile } else { target };
+            let destination = root.join(&file.name);
+            let parent = destination.parent().ok_or_else(bad)?;
+            private_directory(parent)?;
+            let directory_pin = DirectoryPin::open(parent)?;
+            let (_, pin) = crate::hosted_runtime_file::bounded(&destination, 2_200_000)?;
+            if let Some(before) = &entry.bytes {
+                let temporary = format!(".native-publication-repair-{}-{index}", self.manifest.attempt_id);
+                if !exists(parent, &temporary)? { write_private_new(parent, &temporary, before, 2_200_000)?; }
+                let private = Secret(installation_backup::source_bytes(parent, &temporary, 2_200_000, true)?);
+                let (temp_bytes, temp_pin) = crate::hosted_runtime_file::bounded(&parent.join(&temporary), 2_200_000)?;
+                let temp_bytes = Secret(temp_bytes);
+                if private.0 != *before || temp_bytes.0 != *before { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
+                validate()?; self.recheck()?; directory_pin.check()?; pin.check()?; temp_pin.check()?;
+                if self.is_before(profile, target, index)? { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
+                fs::rename(parent.join(&temporary), &destination).map_err(|_| bad())?;
+            } else {
+                validate()?; self.recheck()?; directory_pin.check()?; pin.check()?;
+                if self.is_before(profile, target, index)? { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
+                fs::remove_file(&destination).map_err(|_| bad())?;
+            }
+            File::open(parent).and_then(|f| f.sync_all()).map_err(|_| bad())?;
+            if !self.is_before(profile, target, index)? { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
+        }
+        // A previous interrupted repair may already have renamed or removed a
+        // file without syncing its parent. Sync every destination parent even
+        // when this attempt observed the desired BEFORE bytes and made no write.
+        self.sync_destination_parents(profile, target, &mut validate, |path| File::open(path).and_then(|f| f.sync_all()).map_err(|_| bad()))?;
+        validate()?; self.recheck()?; self.check_inventory(profile, target)?;
+        for index in 0..self.manifest.files.len() {
+            if !self.is_before(profile, target, index)? { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
+            let file = &self.manifest.files[index]; let root = if file.profile { profile } else { target };
+            let parent = root.join(&file.name).parent().ok_or_else(bad)?.to_path_buf();
+            if exists(&parent, &format!(".native-publication-repair-{}-{index}", self.manifest.attempt_id))? { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
+            if let Some(pin) = self.after_temporary(index)? {
+                validate()?; self.recheck()?; pin.check()?;
+                fs::remove_file(self.path.join(format!("after-{index}.tmp"))).map_err(|_| bad())?;
+                File::open(&self.path).and_then(|f| f.sync_all()).map_err(|_| bad())?;
+            }
+        }
+        Ok(())
+    }
+}
+pub(crate) fn open_beforeimages(directory: &Path, operation: &str, attempt: &str, key: &[u8],
+                     manifest_hash: &str, archive_hash: &str) -> Result<AuthenticatedBeforeimages> {
+    if !uuid(operation) || !uuid(attempt) || operation == attempt || key.len() != 32
+        || !hash_valid(manifest_hash) || !hash_valid(archive_hash) { return Err(bad()); }
+    private_directory(directory)?;
+    let directory_pin = DirectoryPin::open(directory)?;
+    let read = |name: &str, limit: u64| -> Result<(Secret, Pin)> {
+        let private = Secret(installation_backup::source_bytes(directory, name, limit, true)?);
+        let (bytes, pin) = crate::hosted_runtime_file::bounded(&directory.join(name), limit)?;
+        let bytes = Secret(bytes);
+        if bytes.0 != private.0 { return Err(bad()); }
+        Ok((bytes, pin))
+    };
+    let (manifest_bytes, manifest_pin) = read("configuration.json", 65536)?;
+    let (ciphertext, archive_pin) = read("beforeimages.bin", (BEFOREIMAGE_LIMIT + 128) as u64)?;
+    if digest(&manifest_bytes.0) != manifest_hash || digest(&ciphertext.0) != archive_hash { return Err(bad()); }
+    let manifest: ConfigurationManifest = serde_json::from_slice(&manifest_bytes.0).map_err(|_| bad())?;
+    if manifest.format != 1 || manifest.operation_id != operation || manifest.attempt_id != attempt
+        || !(3..=7).contains(&manifest.files.len()) { return Err(bad()); }
+    let raw = &ciphertext.0;
+    if !raw.starts_with(BEFOREIMAGE_DOMAIN) || raw.len() < BEFOREIMAGE_DOMAIN.len() + 12 + 16 { return Err(bad()); }
+    let nonce_end = BEFOREIMAGE_DOMAIN.len() + 12;
+    let mut aad = BEFOREIMAGE_DOMAIN.to_vec(); aad.extend_from_slice(manifest_hash.as_bytes());
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| bad())?;
+    let plain = Secret(cipher.decrypt(Nonce::from_slice(&raw[BEFOREIMAGE_DOMAIN.len()..nonce_end]), CipherPayload { msg: &raw[nonce_end..], aad: &aad }).map_err(|_| bad())?);
+    if plain.0.len() > BEFOREIMAGE_LIMIT { return Err(bad()); }
+    let archive: OpenBeforeimageArchive = serde_json::from_slice(&plain.0).map_err(|_| bad())?;
+    if archive.format != 1 || archive.operation_id != operation || archive.attempt_id != attempt
+        || archive.entries.len() != manifest.files.len() { return Err(bad()); }
+    let mut names = BTreeSet::new();
+    for (commitment, entry) in manifest.files.iter().zip(&archive.entries) {
+        if commitment.profile != entry.profile || commitment.name != entry.name
+            || !names.insert((entry.profile, entry.name.as_str())) || entry.name.is_empty() || entry.name.len() > 240
+            || !Path::new(&entry.name).components().all(|c| matches!(c, std::path::Component::Normal(_)))
+            || !hash_valid(&commitment.after_sha256) || commitment.after_bytes == 0 || commitment.after_bytes > 2_200_000
+            || commitment.before_sha256.as_ref().is_some_and(|s| !hash_valid(s))
+            || commitment.before_sha256.as_deref() != entry.bytes.as_ref().map(|b| digest(b)).as_deref()
+            || commitment.before_bytes != entry.bytes.as_ref().map(|b| b.len() as u64)
+            || entry.bytes.as_ref().is_some_and(|b| b.len() > 65536) { return Err(bad()); }
+    }
+    let result = AuthenticatedBeforeimages { manifest, archive, path: directory.to_owned(), directory: directory_pin, manifest_pin, archive_pin };
+    result.recheck()?; Ok(result)
+}
 /// Held staged identities are evidence for a later trust commit, not authority
 /// to publish target files or reconstruct an operation after restart.
 pub(crate) struct StagedNativeConfiguration {
@@ -65,6 +348,21 @@ impl StagedNativeConfiguration {
     }
 }
 impl ReboundConfigurationPlan {
+    #[cfg(test)]
+    pub(crate) fn simulate_partial_for_test(&self, count: usize) -> Result<()> {
+        self.recheck()?;
+        if count == 0 || count >= self.files.len() { return Err(bad()); }
+        for file in self.files.iter().take(count) {
+            let root = if file._profile { &self.profile_root } else { &self.target_root };
+            let destination = root.join(&file._name);
+            let parent = destination.parent().ok_or_else(bad)?;
+            let temporary = format!(".synthetic-interruption-{}", Uuid::new_v4());
+            write_private_new(parent, &temporary, &file._bytes.0, 2_200_000)?;
+            fs::rename(parent.join(&temporary), &destination).map_err(|_| bad())?;
+            File::open(parent).and_then(|f| f.sync_all()).map_err(|_| bad())?;
+        }
+        Ok(())
+    }
     pub(crate) fn file_count(&self) -> usize {
         self.files.len()
     }
@@ -79,17 +377,22 @@ impl ReboundConfigurationPlan {
             })
     }
     pub(crate) fn recheck(&self) -> Result<()> {
-        for directory in &self.directories {
-            directory.check()?;
-        }
-        for pin in &self.pins {
-            pin.check()?;
-        }
+        self.recheck_source()?;
+        for pin in &self.target_pins { pin.check()?; }
         self.candidate_configuration.check()?;
         for (root, name) in &self.absent {
             if exists(root, name)? {
                 return Err(err("NATIVE_TARGET_CONFIGURATION_CHANGED"));
             }
+        }
+        Ok(())
+    }
+    pub(crate) fn recheck_source(&self) -> Result<()> {
+        for directory in &self.directories {
+            directory.check()?;
+        }
+        for pin in &self.pins {
+            pin.check()?;
         }
         Ok(())
     }
@@ -328,8 +631,9 @@ pub(crate) fn plan_rebound_configuration(
     {
         return Err(bad());
     }
-    let _target_env = pinned_secret(&root, "runtime.env", 8192, &mut pins)?;
-    let _target_owner = pinned_secret(&root, owner, 4096, &mut pins)?;
+    let mut target_pins = Vec::new();
+    let _target_env = pinned_secret(&root, "runtime.env", 8192, &mut target_pins)?;
+    let _target_owner = pinned_secret(&root, owner, 4096, &mut target_pins)?;
     let original_fields = Fields(source.native_start_environment(source_payload, old.ports)?);
     let target_fields = Fields(candidate.native_start_environment(&target_payload, new.ports)?);
     target.maintenance_owner(&old.kind, &original_fields.0)?;
@@ -417,7 +721,7 @@ pub(crate) fn plan_rebound_configuration(
         source_root: source_root.to_owned(),
         target_root: root,
         files,
-        pins,
+        pins, target_pins,
         directories,
         candidate_configuration,
         absent,
@@ -449,7 +753,7 @@ mod begin_stage_tests {
                 ConfigurationFile { _profile: false, _name: "runtime.env".into(), _bytes: Secret(b"new-env".to_vec()) },
                 ConfigurationFile { _profile: false, _name: "native-personal.json".into(), _bytes: Secret(b"new-owner".to_vec()) },
                 ConfigurationFile { _profile: false, _name: "config/freeze-signing-key.json".into(), _bytes: Secret(b"source-key".to_vec()) },
-            ], pins: vec![], directories: vec![DirectoryPin::open(&profile).unwrap(), DirectoryPin::open(&target).unwrap()],
+            ], pins: vec![], target_pins: vec![], directories: vec![DirectoryPin::open(&profile).unwrap(), DirectoryPin::open(&target).unwrap()],
             candidate_configuration: crate::installations::native_backup::CandidateConfiguration::capture(&target.join("config")).unwrap(), absent: vec![],
         };
         let key = [7u8; 32];
@@ -459,6 +763,19 @@ mod begin_stage_tests {
         assert_eq!(fs::read(target.join("native-personal.json")).unwrap(), b"old-owner");
         assert!(!target.join("config/freeze-signing-key.json").exists());
         let directory = parent.join(format!("publication-{attempt}"));
+        let opened = open_beforeimages(&directory, &operation, &attempt, &key, &staged.manifest_sha256, &staged.beforeimage_archive_sha256).unwrap();
+        assert_eq!(opened.manifest.files.len(), 3);
+        opened.check_closed_destinations(&target, "native-personal.json").unwrap();
+        assert!(opened.check_closed_destinations(&target, "native-installation.json").is_err());
+        assert_eq!(opened.archive.entries[0].bytes.as_deref(), Some(b"old-env".as_slice()));
+        assert!(opened.archive.entries[2].bytes.is_none());
+        let mut synced = Vec::new();
+        opened.sync_destination_parents(&profile, &target, || Ok(()), |p| { synced.push(p.to_owned()); Ok(()) }).unwrap();
+        assert_eq!(synced, vec![target.clone(), target.clone(), target.join("config")]);
+        assert!(opened.sync_destination_parents(&profile, &target, || Ok(()), |_| Err(bad())).is_err());
+        assert!(open_beforeimages(&directory, &operation, &attempt, &[8u8; 32], &staged.manifest_sha256, &staged.beforeimage_archive_sha256).is_err());
+        assert!(open_beforeimages(&directory, &operation, &Uuid::new_v4().to_string(), &key, &staged.manifest_sha256, &staged.beforeimage_archive_sha256).is_err());
+        assert!(open_beforeimages(&directory, &operation, &attempt, &key, &"0".repeat(64), &staged.beforeimage_archive_sha256).is_err());
         let raw = fs::read(directory.join("beforeimages.bin")).unwrap();
         let mut aad = BEFOREIMAGE_DOMAIN.to_vec(); aad.extend_from_slice(staged.manifest_sha256.as_bytes());
         let plaintext = Aes256Gcm::new_from_slice(&key).unwrap().decrypt(Nonce::from_slice(&raw[BEFOREIMAGE_DOMAIN.len()..BEFOREIMAGE_DOMAIN.len()+12]), CipherPayload { msg: &raw[BEFOREIMAGE_DOMAIN.len()+12..], aad: &aad }).unwrap();
@@ -468,8 +785,38 @@ mod begin_stage_tests {
         assert!(value["entries"][2]["bytes"].is_null());
         aad.push(0);
         assert!(Aes256Gcm::new_from_slice(&key).unwrap().decrypt(Nonce::from_slice(&raw[BEFOREIMAGE_DOMAIN.len()..BEFOREIMAGE_DOMAIN.len()+12]), CipherPayload { msg: &raw[BEFOREIMAGE_DOMAIN.len()+12..], aad: &aad }).is_err());
+        opened.publish_afterimages(&plan, &profile, &target, "native-personal.json", || Ok(())).unwrap();
+        assert_eq!(fs::read(target.join("runtime.env")).unwrap(), b"new-env");
+        assert_eq!(fs::read(target.join("native-personal.json")).unwrap(), b"new-owner");
+        assert_eq!(fs::read(target.join("config/freeze-signing-key.json")).unwrap(), b"source-key");
+        opened.restore_beforeimages(&profile, &target, "native-personal.json", || Ok(())).unwrap();
+        write_private_new(&directory, "after-0.tmp", b"unrecognized", 65536).unwrap();
+        assert!(opened.restore_beforeimages(&profile, &target, "native-personal.json", || Ok(())).is_err());
+        fs::remove_file(directory.join("after-0.tmp")).unwrap();
+        write_private_new(&directory, "after-0.tmp", b"new-env", 65536).unwrap();
+        opened.restore_beforeimages(&profile, &target, "native-personal.json", || Ok(())).unwrap();
+        assert!(!directory.join("after-0.tmp").exists());
+        fs::write(target.join("runtime.env"), b"new-env").unwrap();
+        fs::write(target.join("native-personal.json"), b"unexpected").unwrap();
+        write_private_new(&target.join("config"), "freeze-signing-key.json", b"source-key", 65536).unwrap();
+        write_private_new(&profile, &journal(&target, "upload.json").unwrap(), b"unexpected journal", 65536).unwrap();
+        assert!(opened.restore_beforeimages(&profile, &target, "native-personal.json", || Ok(())).is_err());
+        fs::remove_file(profile.join(journal(&target, "upload.json").unwrap())).unwrap();
+        write_private_new(&target.join("config"), "unexpected", b"unexpected", 65536).unwrap();
+        assert!(opened.restore_beforeimages(&profile, &target, "native-personal.json", || Ok(())).is_err());
+        fs::remove_file(target.join("config/unexpected")).unwrap();
+        assert!(opened.restore_beforeimages(&profile, &target, "native-personal.json", || Ok(())).is_err());
+        assert_eq!(fs::read(target.join("runtime.env")).unwrap(), b"new-env");
+        fs::write(target.join("native-personal.json"), b"new-owner").unwrap();
+        write_private_new(&target, &format!(".native-publication-repair-{attempt}-0"), b"old-env", 65536).unwrap();
+        opened.restore_beforeimages(&profile, &target, "native-personal.json", || Ok(())).unwrap();
+        assert_eq!(fs::read(target.join("runtime.env")).unwrap(), b"old-env");
+        assert_eq!(fs::read(target.join("native-personal.json")).unwrap(), b"old-owner");
+        assert!(!target.join("config/freeze-signing-key.json").exists());
+        opened.restore_beforeimages(&profile, &target, "native-personal.json", || Ok(())).unwrap();
         fs::write(directory.join("configuration.json"), b"changed").unwrap();
         assert!(staged.recheck().is_err());
+        assert!(opened.recheck().is_err());
         assert!(plan.stage_beforeimages(&profile, &target, &parent, &operation, &attempt, &key).is_err());
         fs::remove_dir_all(root).unwrap();
     }

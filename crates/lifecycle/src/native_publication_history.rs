@@ -121,6 +121,8 @@ mod tests {
         let mut wrong = next.clone(); wrong.policy.minimum_sequence += 1;
         assert!(store.commit(wrong, 20).is_err());
         store.commit(next, 20).unwrap();
+        assert!(super::super::lifecycle_writer::check_store(&store, &pending.source_instance).is_ok());
+        assert_eq!(super::super::lifecycle_writer::check_store(&store, &pending.target_instance).unwrap_err().code, "UPDATE_WRITER_BLOCKED");
         // An old deny-unknown reader cannot silently consume a native record.
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -143,6 +145,8 @@ mod tests {
         let mut restored = store.current.clone();
         restored.native_publication.as_mut().unwrap().state = NativePublicationState::RestoredGeneratedInactive;
         store.commit(restored, 22).unwrap();
+        assert!(super::super::lifecycle_writer::check_store(&store, &pending.source_instance).is_ok());
+        assert_eq!(super::super::lifecycle_writer::check_store(&store, &pending.target_instance).unwrap_err().code, "UPDATE_WRITER_BLOCKED");
         assert!(serde_json::from_value::<OldRecord>(serde_json::to_value(&store.current).unwrap()).is_err());
         drop(store);
         let mut store = Store::open(&profile, "default").unwrap();
