@@ -3,6 +3,24 @@ import XCTest
 @testable import ManagerCore
 
 final class SharedFurnishingCatalogTests: XCTestCase {
+    func testConstrainedHostScaleDerivesPoseAndRetainsInvalidRawInput() throws {
+        let light = "11111111-1111-4111-8111-111111111111", opening = "22222222-2222-4222-8222-222222222222"
+        var draft = try NativeExhibitionDraft.new(), candidate = draft.candidate
+        candidate["lights"] = .array([.object(["id": .string(light)])])
+        candidate["openings"] = .array([.object(["id": .string(opening), "offset": .vector([-4, -0.9])])])
+        try draft.replaceCandidate(candidate)
+        var spot = try SharedFurnishingFormBuffer(draft: draft, host: .light, hostId: light)
+        spot.selected = true; spot.scale = "0,95"
+        let spotPose = try XCTUnwrap(spot.command(locale: Locale(identifier: "de_DE")).pose)
+        XCTAssertEqual(spotPose.yaw, 0); XCTAssertEqual(spotPose.position[0], 0)
+        XCTAssertEqual(spotPose.position[1], 0.1425, accuracy: 1e-12); XCTAssertEqual(spotPose.position[2], 0.071725, accuracy: 1e-12)
+        var portal = try SharedFurnishingFormBuffer(draft: draft, host: .opening, hostId: opening)
+        portal.selected = true; portal.scale = "0.95"
+        let doorPose = try XCTUnwrap(portal.command(locale: Locale(identifier: "en_US")).pose)
+        XCTAssertEqual(doorPose.yaw, 0); XCTAssertEqual(doorPose.position[0], -4); XCTAssertEqual(doorPose.position[1], -1.945, accuracy: 1e-12); XCTAssertEqual(doorPose.position[2], 0)
+        portal.scale = "-"; XCTAssertThrowsError(try portal.command()); XCTAssertEqual(portal.scale, "-")
+        portal.selected = false; XCTAssertNil(try portal.command().pose)
+    }
     func testRuntimeCatalogAndClosedIdentityChecks() throws {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Fixtures/shared-furnishing-catalog-fixture.json")
         var value = try JSONDecoder().decode(DocumentValue.self, from: Data(contentsOf: fixture))
