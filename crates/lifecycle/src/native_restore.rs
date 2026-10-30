@@ -1165,4 +1165,4 @@ mod tests {
 
 #[path = "native_configuration_plan.rs"]
 mod configuration_plan;
-pub(crate) use configuration_plan::{ReboundConfigurationPlan, StagedNativeConfiguration, plan_rebound_configuration, open_beforeimages};
+pub(crate) use configuration_plan::{ReboundConfigurationPlan, StagedNativeConfiguration, PublishedConfigurationSnapshot, plan_rebound_configuration, open_beforeimages};

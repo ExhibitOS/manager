@@ -57,7 +57,15 @@ authenticated beforeimage archive and commits a pending binding. A separate
 guarded operation can publish that exact configuration to the inactive target;
 authenticated offline repair restores only its bound generated beforeimages and
 retains the inactive marker. Neither operation completes preflight, activates a
-target, permits execution or implements a native upgrade. Existing records omit
+target, permits execution or implements a native upgrade.
+
+An additive held publication result can recheck the exact published files,
+their identities and closed absence boundaries under the retained source and
+session fences. This is configuration observation only: it does not reobserve
+the target database or certify full preflight. A serialized receipt cannot
+recreate the in-process observation.
+
+Existing records omit
 the optional field and keep their existing serialization. Ordinary lifecycle
 writers remain blocked for the bound target even after repair; releasing that
 candidate requires a future explicit transition. A reader
