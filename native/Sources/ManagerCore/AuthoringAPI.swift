@@ -116,6 +116,10 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "OEX_SOURCE_CHANGED", "ASSET_INTEGRITY": return "저장한 전시와 현재 작품 파일 또는 승인 상태가 다릅니다. 작품을 확인한 뒤 전시를 다시 저장하세요."
         case "OEX_PROFILE_INVALID", "OEX_EXTENSION_UNSUPPORTED", "OEX_LEGAL_NOTICE_INVALID", "OEX_INVALID": return "현재 전시에 OEX로 내보낼 수 없는 정보가 있습니다. 전시와 작품 정보를 확인하세요."
         case "OEX_RESPONSE_INVALID": return "내보내기 파일을 확인하지 못했습니다. 저장하지 않았습니다. 다시 시도하세요."
+        case "OEX_FILE_REQUIRED": return "이 Mac의 OEX 파일을 선택하세요."
+        case "OEX_IMPORT_FILE_CHANGED": return "처음 선택한 OEX와 다른 파일입니다. 원래 파일을 다시 선택하세요."
+        case "OEX_IMPORT_SCOPE_CHANGED": return "작업 공간이 바뀌어 가져오기를 멈췄습니다. 원래 작업 공간에서 다시 확인하세요."
+        case "OEX_IMPORT_INVALID", "OEX_IMPORT_RESPONSE_INVALID": return "가져오기 상태를 확인하지 못했습니다. 원본 파일을 보관하고 다시 확인하세요."
         case "EXPORT_WRITE_FAILED": return "파일을 저장하지 못했습니다. 저장 위치와 여유 공간을 확인하고 다시 시도하세요."
         case "IMPORT_DERIVED_REQUIRED": return "같은 JPEG 원본을 다시 선택해 변환 파일을 준비하세요. 저장한 요청은 유지됩니다."
         case "IMPORT_CONTEXT_CHANGED": return "작업 공간이나 파일 검사 요청이 바뀌었습니다. 저장한 요청을 다시 확인하세요."
@@ -398,6 +402,31 @@ public actor AuthoringAPI {
         }
         guard http.expectedContentLength < 0 || Int64(data.count) == http.expectedContentLength else { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
         return try NativeOEXArchive(data: data)
+    }
+
+    /// Reuses the server's scoped OEX import and idempotent request ID. No
+    /// credentials, local file paths or archive bytes enter the native helper.
+    public func createOEXImport(requestId: String, bytes: Int, sha256: String) async throws -> NativeOEXImportJob {
+        struct Body: Encodable { let requestId: String; let bytes: Int; let sha256: String }
+        guard bytes > 0, bytes <= NativeOEXArchive.maximumBytes,
+              sha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw AuthoringFailure("OEX_IMPORT_INVALID") }
+        let body = Body(requestId: try identifier(requestId), bytes: bytes, sha256: sha256)
+        let job: NativeOEXImportJob = try await request("/api/v1/tenants/\(tenant)/oex/imports", method: "POST", body: encoded(body))
+        return try job.checked()
+    }
+    public func oexImportJob(_ id: String) async throws -> NativeOEXImportJob {
+        let job: NativeOEXImportJob = try await request("/api/v1/tenants/\(tenant)/oex/imports/\(identifier(id))")
+        return try job.checked()
+    }
+    public func uploadOEXImport(_ id: String, archive: NativeOEXArchive) async throws {
+        struct Receipt: Decodable { let received: Int }
+        let receipt: Receipt = try await request("/api/v1/tenants/\(tenant)/oex/imports/\(identifier(id))/bytes", method: "PUT", body: archive.data, contentType: "application/octet-stream", timeout: 120)
+        guard receipt.received == archive.data.count else { throw AuthoringFailure("OEX_IMPORT_RESPONSE_INVALID") }
+    }
+    public func oexImportAction(_ id: String, action: String) async throws -> NativeOEXImportJob {
+        guard ["complete", "retry", "cancel"].contains(action) else { throw AuthoringFailure("OEX_IMPORT_INVALID") }
+        let job: NativeOEXImportJob = try await request("/api/v1/tenants/\(tenant)/oex/imports/\(identifier(id))/\(action)", method: "POST", body: Data("{}".utf8))
+        return try job.checked()
     }
     public func studioArtwork(_ id: String) async throws -> NativeStudioArtwork {
         let id = try identifier(id)

@@ -164,6 +164,7 @@ pub(crate) fn plan_rebound_configuration(
     for logical in [
         "document.json",
         "upload.json",
+        "oex-import.json",
         "publication.json",
         "static-export.json",
     ] {

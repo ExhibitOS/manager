@@ -187,6 +187,7 @@ fn journal(source: &Path, logical: &str) -> Result<String> {
     let kind = match logical {
         "document.json" => "document",
         "upload.json" => "upload",
+        "oex-import.json" => "oex-import",
         "publication.json" => "publication",
         "static-export.json" => "static-export",
         _ => return Err(bad()),
@@ -540,6 +541,7 @@ impl InstallationController {
             for logical in [
                 "document.json",
                 "upload.json",
+                "oex-import.json",
                 "publication.json",
                 "static-export.json",
             ] {
@@ -1006,6 +1008,8 @@ mod tests {
         let target = root();
         let raw=serde_json::to_vec(&serde_json::json!({"format":1,"revision":0,"workspaceId":f.0["WORKSPACE_ID"],"tenantId":f.0["TENANT_ID"],"principalId":f.0["PRINCIPAL_ID"],"intent":null,"jobId":null,"fileName":null})).unwrap();
         assert_eq!(rebound_journal("upload.json", &raw, &f).unwrap(), raw);
+        assert!(rebound_journal("oex-import.json", &raw, &f).is_err());
+        assert_ne!(journal(&source, "oex-import.json").unwrap(), journal(&source, "upload.json").unwrap());
         assert_ne!(
             journal(&source, "upload.json").unwrap(),
             journal(&target, "upload.json").unwrap()

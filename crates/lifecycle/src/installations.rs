@@ -15,6 +15,9 @@ pub mod native_document;
 #[path = "native_upload.rs"]
 pub mod native_upload;
 #[cfg(target_os = "macos")]
+#[path = "native_oex_import.rs"]
+pub mod native_oex_import;
+#[cfg(target_os = "macos")]
 #[path = "native_publication.rs"]
 pub mod native_publication;
 #[cfg(target_os = "macos")]

@@ -114,7 +114,7 @@ struct NativeExhibitionView: View {
         .onChange(of: model.viewportSelection) { _, value in if value != nil && !model.entrancePreviewActive { showSelection() } }
         .onChange(of: model.draft?.id) { _, id in if id != nil { browserVisible = false } }
         .onChange(of: model.entrancePreviewActive) { _, value in if !value && returningToScene { returnToScene() } }
-        .onChange(of: ready) { _, value in if !value { needsConnection = true } }
+        .onChange(of: ready) { _, value in if !value { needsConnection = true; model.oexImport.invalidate() } }
         .task(id: ready && active && connectionAllowed) {
             if ready && active && connectionAllowed && needsConnection { needsConnection = false; await connect() }
         }
@@ -161,6 +161,7 @@ struct NativeExhibitionView: View {
                 Button { Task { await model.refresh() } } label: { Label("검색", systemImage: "magnifyingglass") }.labelStyle(.iconOnly)
             }.disabled(!ready || model.busy)
             Button("새 전시", systemImage: "plus") { requestOpen(nil) }.disabled(!ready || readOnly || model.busy || model.pending)
+            OEXImportControls(model: model.oexImport, ready: ready && active && !readOnly && !model.pending && !model.entrancePreviewActive, open: { requestOpen($0) })
             List(selection: Binding<String?>(get: { model.items.contains(where: { $0.id == model.draft?.id }) ? model.draft?.id : nil }, set: { if let id = $0 { requestOpen(id) } })) {
                 ForEach(model.items) { item in
                     VStack(alignment: .leading, spacing: 3) { Text(item.title).lineLimit(2); Text("저장본 \(item.revision)").font(.caption).foregroundStyle(.secondary) }.tag(item.id)

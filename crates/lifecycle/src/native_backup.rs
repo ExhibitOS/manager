@@ -303,6 +303,13 @@ fn optional(root: &Path, name: &str, limit: u64) -> Result<Option<Secret>> {
             .map(Some),
     }
 }
+fn check_oex_backup_guard(bytes: &[u8], identity: &(String, String, String)) -> Result<()> {
+    let state: native_oex_import::Transfer = serde_json::from_slice(bytes).map_err(|_| err("NATIVE_OEX_IMPORT_INVALID"))?;
+    native_oex_import::validate(&state)?;
+    if (&state.workspace_id, &state.tenant_id, &state.principal_id) != (&identity.0, &identity.1, &identity.2) { return Err(err("NATIVE_OEX_IMPORT_SCOPE_CHANGED")); }
+    if state.intent.is_some() { return Err(err("NATIVE_OEX_IMPORT_PENDING")); }
+    Ok(())
+}
 pub(crate) fn text(path: &Path) -> Result<String> {
     path.to_str()
         .filter(|v| v.len() <= 4096 && !v.chars().any(char::is_control))
@@ -360,11 +367,18 @@ impl InstallationController {
         };
         self.with_current(token, |service| {
             if !session.belongs_to(service) { return Err(err("NATIVE_OTHER_INSTALLATION_ACTIVE")); }
-            session.backup_available()?;
-            session.backup_source_current()?;
             let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
             let _profile = profile_lock(profile)?;
             let prepared = service.native_prepared()?.ok_or_else(|| err("NATIVE_NOT_READY"))?;
+            // Keep the established four-journal archive compatible with older
+            // readers. An unfinished OEX request is never silently omitted.
+            let oex_name = format!("native-oex-import-{}.json", digest(service.root.as_os_str().as_encoded_bytes()));
+            if let Some(bytes) = optional(&profile.root, &oex_name, 65536).map_err(|_| err("NATIVE_OEX_IMPORT_INVALID"))? {
+                let identity = service.personal_identity().map_err(|_| err("NATIVE_OEX_IMPORT_SCOPE_CHANGED"))?;
+                check_oex_backup_guard(&bytes.0, &identity)?;
+            }
+            session.backup_available()?;
+            session.backup_source_current()?;
             absent_destination(&input.destination)?;
             let budget = resource_budget(
                 fs2::available_space(&service.root).map_err(|_| err("STORAGE_UNAVAILABLE"))?,
@@ -484,6 +498,17 @@ impl InstallationController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn oex_pending_blocks_old_compatible_backup_and_empty_keeps_scope() {
+        let identity = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+        let mut state = serde_json::json!({"format":1,"revision":0,"workspaceId":identity.0,"tenantId":identity.1,"principalId":identity.2,"intent":null,"jobId":null,"fileName":null});
+        assert!(check_oex_backup_guard(&serde_json::to_vec(&state).unwrap(), &identity).is_ok());
+        state["intent"] = serde_json::json!({"requestId":Uuid::new_v4().to_string(),"sha256":"a".repeat(64),"bytes":123});
+        assert_eq!(check_oex_backup_guard(&serde_json::to_vec(&state).unwrap(), &identity).unwrap_err().code, "NATIVE_OEX_IMPORT_PENDING");
+        state["workspaceId"] = serde_json::json!(Uuid::new_v4().to_string());
+        assert_eq!(check_oex_backup_guard(&serde_json::to_vec(&state).unwrap(), &identity).unwrap_err().code, "NATIVE_OEX_IMPORT_SCOPE_CHANGED");
+        assert!(check_oex_backup_guard(b"{bad", &identity).is_err());
+    }
     use std::os::unix::{fs::PermissionsExt, fs::symlink};
     fn source_observation_fixture() -> (Vec<u8>, Value) {
         let id = Uuid::new_v4().to_string();
