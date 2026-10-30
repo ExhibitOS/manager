@@ -46,7 +46,7 @@ struct SelectedLightInspector: View {
     @State private var positionDetails = false
     @State private var colorDetails = false
     private var editable: Bool {
-        ready && controller.connected && controller.lightInspectorSupported && !model.busy && !model.pending && !model.immutable && !model.placingArtwork && !model.formDirty && !model.positionDirty && !model.architectureGeometryDirty && !model.surfaceMaterialDirty && !model.benchDirty && !model.plaqueDirty && !model.spaceLightingDirty && !model.architectureApplying
+        ready && controller.connected && controller.lightInspectorSupported && !model.busy && !model.pending && !model.immutable && !model.placingArtwork && !model.formDirty && !model.positionDirty && !model.architectureGeometryDirty && !model.surfaceMaterialDirty && !model.benchDirty && !model.plaqueDirty && !model.furnishingDirty && !model.spaceLightingDirty && !model.architectureApplying
     }
     private var selected: DocumentValue? {
         model.draft?.candidate["lights"].items?.first { $0["id"].string == model.selectedLightId }
@@ -154,6 +154,7 @@ struct SelectedLightInspector: View {
                     if !controller.lightInspectorSupported { Text("현재 연결에서는 조명을 확인할 수 있습니다. 편집 가능한 제작 서비스에 다시 연결하세요.").font(.caption).foregroundStyle(.secondary) }
                 } else { Text("조명 목록에서 대상을 선택하세요.").foregroundStyle(.secondary) }
                 if !model.lightStatus.isEmpty { Text(model.lightStatus).foregroundStyle(.secondary) }
+                SharedFurnishingCatalogView(model: model, viewport: controller, ready: ready)
             }.padding(16)
         }.inspectorColumnWidth(min: 280, ideal: 320, max: 420)
     }

@@ -146,6 +146,7 @@ struct SelectedBenchInspector: View {
                 }
                 if !controller.benchInspectorSupported { Text("벤치 편집을 지원하는 제작 서비스에 연결하세요. 저장된 설정은 유지됩니다.").font(.caption).foregroundStyle(.secondary) }
                 if !model.benchStatus.isEmpty { Text(model.benchStatus).foregroundStyle(.secondary) }
+                if !model.benchAdding { SharedFurnishingCatalogView(model: model, viewport: controller, ready: ready) }
             }.padding(16)
         }.inspectorColumnWidth(min: 280, ideal: 340, max: 440)
     }

@@ -207,6 +207,7 @@ final class ExhibitionModel: ObservableObject {
         if entrancePreviewBase == draft, let value = entrancePreviewDraft { return value }
         if viewingPointInput != nil { return viewingPointPreview ?? draft }
         if let value = furnishingPreview?.displayDraft { return value }
+        if let value = sharedFurnishingPreview?.displayDraft { return value }
         if let value = spaceLightingPreview?.displayDraft { return value }
         if let value = plaquePreview?.displayDraft { return value }
         if let value = benchPreview?.displayDraft { return value }
@@ -350,11 +351,15 @@ final class ExhibitionModel: ObservableObject {
     private var furnishingCatalogAccessID: UUID?
     private var furnishingCatalogLoading = false
     private var furnishingImageAttempted = false
-    var furnishingDirty: Bool { furnishing != furnishingBaseline }
-    var furnishingPreviewing: Bool { furnishingPreview != nil }
-    var selectedHasFurnishing: Bool { draft.map { FurnishingCatalog.hasVisual(in: $0, hostId: placementId) } ?? false }
+    var furnishingDirty: Bool { furnishing != furnishingBaseline || sharedFurnishing != sharedFurnishingBaseline }
+    var furnishingPreviewing: Bool { furnishingPreview != nil || sharedFurnishingPreview != nil }
+    var selectedHasFurnishing: Bool {
+        guard let draft, !placementId.isEmpty else { return false }
+        do { return try SharedFurnishingPreview.pose(in: draft, host: .pedestal, id: placementId) != nil }
+        catch { return FurnishingCatalog.hasVisual(in: draft, hostId: placementId) }
+    }
     var canEditFurnishing: Bool {
-        !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !benchDirty && !plaqueDirty && !spaceLightingDirty && !architectureApplying && viewportController.connected && viewportController.furnishingVisualsSupported && furnishingCatalogReady && furnishing != nil
+        !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !benchDirty && !plaqueDirty && !spaceLightingDirty && !architectureApplying && sharedFurnishing == sharedFurnishingBaseline && viewportController.connected && viewportController.furnishingVisualsSupported && furnishingCatalogReady && furnishing != nil
     }
     var canPreviewFurnishing: Bool { canEditFurnishing && furnishingDirty && !furnishingPreviewing && (furnishing?.selected == true || selectedHasFurnishing) }
     var canApplyFurnishing: Bool {
@@ -438,6 +443,87 @@ final class ExhibitionModel: ObservableObject {
             try await persist(value); syncFields()
             notice = "받침 변경을 이 Mac에 보관했습니다. 한 번의 되돌리기로 복원할 수 있으며 전시 저장은 별도로 진행합니다."
         }
+    }
+    @Published var sharedFurnishing: SharedFurnishingFormBuffer? { didSet { sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; sharedFurnishingStatus = "" } }
+    private var sharedFurnishingBaseline: SharedFurnishingFormBuffer?
+    @Published private var sharedFurnishingPreview: SharedFurnishingPreview?
+    private var sharedFurnishingPreviewAccessID: UUID?
+    @Published private(set) var sharedFurnishingStatus = ""
+    @Published private(set) var sharedFurnishingCatalogReady = false
+    private var sharedFurnishingCatalogAccessID: UUID?
+    private var sharedFurnishingCatalogLoading = false
+    var sharedFurnishingDirty: Bool { sharedFurnishing != sharedFurnishingBaseline }
+    var sharedFurnishingTarget: (SharedFurnishingCommand.Host, String)? {
+        if !selectedBenchId.isEmpty { return (.bench, selectedBenchId) }
+        if !selectedLightId.isEmpty { return (.light, selectedLightId) }
+        if let selection = viewportSelection, selection.kind == "opening" { return (.opening, selection.id) }
+        if let selection = viewportSelection, selection.kind == "placement" { return (.pedestal, selection.id) }
+        return nil
+    }
+    var canEditSharedFurnishing: Bool {
+        !entrancePreviewActive && !viewingPlanDirty && viewingPointInput == nil && !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !benchDirty && !plaqueDirty && !spaceLightingDirty && !architectureApplying && furnishing == furnishingBaseline && viewportController.editingContextActive && viewportController.connected && viewportController.sharedFurnishingVisualsSupported && sharedFurnishingCatalogReady && sharedFurnishingCatalogAccessID == viewportAccessID && sharedFurnishing != nil
+    }
+    var canPreviewSharedFurnishing: Bool { canEditSharedFurnishing && sharedFurnishing != sharedFurnishingBaseline && sharedFurnishingPreview == nil }
+    var canApplySharedFurnishing: Bool {
+        guard canEditSharedFurnishing, sharedFurnishingPreviewAccessID == viewportAccessID, let preview = sharedFurnishingPreview,
+              preview.base == draft, let form = sharedFurnishing, let target = sharedFurnishingTarget,
+              form.host == target.0, form.hostId == target.1 else { return false }
+        return (try? form.command()) == preview.command
+    }
+    func syncSharedFurnishing() {
+        guard !busy, !architectureApplying, sharedFurnishing == sharedFurnishingBaseline else { return }
+        sharedFurnishing = nil; sharedFurnishingBaseline = nil; sharedFurnishingStatus = ""
+        guard let draft, let target = sharedFurnishingTarget else { return }
+        do { let form = try SharedFurnishingFormBuffer(draft: draft, host: target.0, hostId: target.1); sharedFurnishing = form; sharedFurnishingBaseline = form }
+        catch { sharedFurnishingStatus = "비품 설정을 읽지 못했습니다. 기존 설정은 유지됩니다." }
+    }
+    func discardSharedFurnishing() {
+        guard !busy, !pending, !architectureApplying, !placingArtwork else { return }
+        sharedFurnishing = sharedFurnishingBaseline
+    }
+    func loadSharedFurnishingCatalog() async {
+        guard viewportController.connected, viewportController.sharedFurnishingVisualsSupported, !sharedFurnishingCatalogLoading,
+              sharedFurnishingCatalogAccessID != viewportAccessID, let api else { return }
+        sharedFurnishingCatalogLoading = true; defer { sharedFurnishingCatalogLoading = false }
+        let access = viewportAccessID
+        do {
+            _ = try await api.sharedFurnishings(); try Task.checkCancellation()
+            guard access == viewportAccessID, viewportController.connected, viewportController.sharedFurnishingVisualsSupported else { return }
+            sharedFurnishingCatalogReady = true; sharedFurnishingCatalogAccessID = access
+        } catch {
+            guard !Task.isCancelled, access == viewportAccessID else { return }
+            sharedFurnishingCatalogAccessID = access; sharedFurnishingStatus = "비품 목록을 확인하지 못했습니다. 기존 설정은 유지됩니다."
+        }
+    }
+    func retrySharedFurnishingCatalog() async { sharedFurnishingCatalogAccessID = nil; await loadSharedFurnishingCatalog() }
+    func previewSharedFurnishing() async {
+        guard canPreviewSharedFurnishing, let base = draft, let form = sharedFurnishing, let target = sharedFurnishingTarget,
+              target.0 == form.host, target.1 == form.hostId else { return }
+        let access = viewportAccessID
+        do {
+            let command = try form.command(); architectureApplying = true; defer { architectureApplying = false }
+            let selected = (target.0 == .bench || target.0 == .light) ? target.1 : nil
+            let preview = try await viewportController.sharedFurnishingVisuals(command, selectedInspectorId: selected)
+            await work {
+                guard architectureApplying, access == viewportAccessID, base == draft, preview.base == base, sharedFurnishing == form,
+                      let current = sharedFurnishingTarget, current.0 == target.0, current.1 == target.1,
+                      !pending, !immutable, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty, !surfaceMaterialDirty, !lightDirty, !benchDirty, !plaqueDirty, !spaceLightingDirty else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                sharedFurnishingPreview = preview; sharedFurnishingPreviewAccessID = access
+                sharedFurnishingStatus = "미리보기입니다. 적용 전에는 전시에 보관되지 않습니다."
+            }
+        } catch { failure = error as? AuthoringFailure ?? AuthoringFailure("FURNISHING_PREVIEW_FAILED"); viewportController.diagnose("FURNISHING_V2", error) }
+    }
+    func applySharedFurnishing() async {
+        guard canApplySharedFurnishing else { return }
+        await work {
+            guard let preview = sharedFurnishingPreview, let form = sharedFurnishing, let draft, var value = state,
+                  let target = sharedFurnishingTarget, target.0 == form.host, target.1 == form.hostId,
+                  sharedFurnishingPreviewAccessID == viewportAccessID, viewportController.connected, viewportController.sharedFurnishingVisualsSupported else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            value.draft = try preview.apply(to: draft, command: form.command()); try await persist(value)
+            sharedFurnishingBaseline = form; syncFields()
+            notice = "비품 변경을 이 Mac에 보관했습니다. 전시 저장은 별도로 진행합니다."
+        }
+        syncSharedFurnishing()
     }
     @Published var spaceLighting: SpaceLightingFormBuffer? { didSet { spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; spaceLightingStatus = "" } }
     private var spaceLightingBaseline: SpaceLightingFormBuffer?
@@ -618,7 +704,7 @@ final class ExhibitionModel: ObservableObject {
         self.api = api; self.session = session
         let accessChanged = viewportCredentials?.token != credentials.token || viewportCredentials?.origin != credentials.origin
         viewportCredentials = credentials
-        if accessChanged { entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
+        if accessChanged { sharedFurnishingCatalogReady = false; sharedFurnishingCatalogAccessID = nil; sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
         floorPreviewAccessID = nil; floorPreviewContext = nil; floorPreviewHostEpoch = nil
         if accessChanged { floorImages = [:]; floorImageAttempts = [] }
         self.read = read; self.write = write
@@ -628,7 +714,7 @@ final class ExhibitionModel: ObservableObject {
         // account/origin. Keep text, but never apply a prior binding's preview.
         clearSurfaceMaterialPreview()
         if accessChanged { surfaceMaterialCatalog = nil; surfaceMaterialCatalogAccessID = nil; surfaceMaterialCatalogRequestID = nil; surfaceMaterialCatalogLoading = false; surfaceMaterialCatalogStatus = "" }
-        furnishingPreview = nil; furnishingPreviewAccessID = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil
+        furnishingPreview = nil; furnishingPreviewAccessID = nil; sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil
         await work {
             if state == nil {
                 let stored = try await read()

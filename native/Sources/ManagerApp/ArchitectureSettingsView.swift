@@ -26,7 +26,7 @@ struct ArchitectureSettingsView: View {
             }
         }
     }
-    private var editable: Bool { ready && !model.busy && !model.pending && !model.immutable && !model.formDirty && !model.positionDirty && !model.lightDirty && !model.plaqueDirty && !model.spaceLightingDirty && !model.architectureApplying }
+    private var editable: Bool { ready && !model.busy && !model.pending && !model.immutable && !model.formDirty && !model.positionDirty && !model.lightDirty && !model.plaqueDirty && !model.furnishingDirty && !model.spaceLightingDirty && !model.architectureApplying }
     private func field(_ key: WritableKeyPath<ArchitectureFormBuffer, String>) -> Binding<String> {
         Binding(get: { model.architecture?[keyPath: key] ?? "" }, set: { value in
             guard var fields = model.architecture else { return }
@@ -73,6 +73,7 @@ struct ArchitectureSettingsView: View {
                 }
                 if !model.architectureStatus.isEmpty { Text(model.architectureStatus).foregroundStyle(.secondary) }
             }
+            if model.viewportSelection?.kind == "opening" { SharedFurnishingCatalogView(model: model, viewport: model.viewportController, ready: ready) }
             if let selection = model.viewportSelection, selection.kind == "surface",
                model.draft?.candidate["surfaces"].items?.contains(where: { $0["id"].string == selection.id && $0["type"].string == "floor" }) == true {
                 NativeFloorSettingsInspector(model: model, viewport: model.viewportController, ready: ready)
