@@ -5,7 +5,13 @@ const LIMIT: u64 = 65536;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Intent { pub request_id: String, pub sha256: String, pub bytes: u64 }
+pub struct Intent {
+    pub request_id: String, pub sha256: String, pub bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oex_format: Option<String>,
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Transfer {
@@ -17,7 +23,14 @@ pub(crate) fn validate(s: &Transfer) -> Result<()> {
         || s.job_id.as_ref().is_some_and(|v| !uuid(v))
         || s.file_name.as_ref().is_some_and(|v| v.is_empty() || v.len() > 1024 || v.chars().any(char::is_control) || v.contains('/') || v.contains('\\'))
         || (s.intent.is_none() && (s.job_id.is_some() || s.file_name.is_some()))
-        || s.intent.as_ref().is_some_and(|i| !uuid(&i.request_id) || !hash_valid(&i.sha256) || i.bytes == 0 || i.bytes > 64 * 1024 * 1024)
+        || s.intent.as_ref().is_some_and(|i| {
+            let limit = match (i.profile.as_deref(), i.oex_format.as_deref()) {
+                (None, None) => 64 * 1024 * 1024,
+                (Some("bounded-file-v1"), Some("1.0.0-draft.9")) => 512 * 1024 * 1024,
+                _ => return true,
+            };
+            !uuid(&i.request_id) || !hash_valid(&i.sha256) || i.bytes == 0 || i.bytes > limit
+        })
     { return Err(err("NATIVE_OEX_IMPORT_INVALID")); }
     Ok(())
 }
@@ -88,6 +101,19 @@ mod tests {
         validate(&serde_json::from_value(state.clone()).unwrap()).unwrap();
         for (pointer, value) in [("/intent/bytes", serde_json::json!(67_108_865u64)), ("/intent/requestId", serde_json::json!("bad")), ("/fileName", serde_json::json!("../private.oex"))] {
             let mut bad=state.clone(); *bad.pointer_mut(pointer).unwrap()=value;
+            assert!(validate(&serde_json::from_value(bad).unwrap()).is_err());
+        }
+        // Large journal metadata is valid only as the exact paired profile;
+        // old records keep their original cap and serialization shape.
+        let legacy: Transfer = serde_json::from_value(state.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&legacy).unwrap(), state);
+        let mut large = state.clone();
+        large["intent"]["bytes"] = serde_json::json!(64 * 1024 * 1024 + 1);
+        large["intent"]["profile"] = serde_json::json!("bounded-file-v1");
+        large["intent"]["oexFormat"] = serde_json::json!("1.0.0-draft.9");
+        validate(&serde_json::from_value(large.clone()).unwrap()).unwrap();
+        for (key, value) in [("profile", serde_json::json!(null)), ("oexFormat", serde_json::json!("1.0.0-draft.8")), ("bytes", serde_json::json!(536_870_913u64))] {
+            let mut bad=large.clone(); bad["intent"][key]=value;
             assert!(validate(&serde_json::from_value(bad).unwrap()).is_err());
         }
         let mut extra=state; extra["sourcePath"]=serde_json::json!("/tmp/private");

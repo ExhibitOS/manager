@@ -505,6 +505,13 @@ mod tests {
         assert!(check_oex_backup_guard(&serde_json::to_vec(&state).unwrap(), &identity).is_ok());
         state["intent"] = serde_json::json!({"requestId":Uuid::new_v4().to_string(),"sha256":"a".repeat(64),"bytes":123});
         assert_eq!(check_oex_backup_guard(&serde_json::to_vec(&state).unwrap(), &identity).unwrap_err().code, "NATIVE_OEX_IMPORT_PENDING");
+        state["intent"]["bytes"] = serde_json::json!(64 * 1024 * 1024 + 1);
+        state["intent"]["profile"] = serde_json::json!("bounded-file-v1");
+        state["intent"]["oexFormat"] = serde_json::json!("1.0.0-draft.9");
+        assert_eq!(check_oex_backup_guard(&serde_json::to_vec(&state).unwrap(), &identity).unwrap_err().code, "NATIVE_OEX_IMPORT_PENDING");
+        state["intent"]["oexFormat"] = serde_json::json!("1.0.0-draft.8");
+        assert_eq!(check_oex_backup_guard(&serde_json::to_vec(&state).unwrap(), &identity).unwrap_err().code, "NATIVE_OEX_IMPORT_INVALID");
+        state["intent"]["oexFormat"] = serde_json::json!("1.0.0-draft.9");
         state["workspaceId"] = serde_json::json!(Uuid::new_v4().to_string());
         assert_eq!(check_oex_backup_guard(&serde_json::to_vec(&state).unwrap(), &identity).unwrap_err().code, "NATIVE_OEX_IMPORT_SCOPE_CHANGED");
         assert!(check_oex_backup_guard(b"{bad", &identity).is_err());
