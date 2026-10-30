@@ -23,7 +23,11 @@ public enum NativeGeometryAction: Sendable {
         case .whiteCube(let id): return .object(["type":.string("white-cube"),"roomId":.string(id)])
         case .addRoom(let name): return .object(["type":.string("add-room"),"name":.string(name)])
         case .addLight(let id): return .object(["type":.string("add-light"),"roomId":.string(id)])
-        case .installation(let command): return try command.encodedValue()
+        case .installation(let command):
+            if case .alignOnVerifiedPlinth(let id) = command {
+                guard let draft, selected == ViewportSelection(kind: "placement", id: id), selected?.belongs(to: draft) == true else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            }
+            return try command.encodedValue()
         case .architecture(let command):
             guard let draft else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
             return try command.encodedValue(in: draft, selected: selected)
@@ -49,6 +53,7 @@ public struct ViewportAcceptance: Decodable, Sendable {
     public var supportsArtworkPlacement: Bool { accepted && capabilities?.contains("place-artwork-v1") == true }
     public var supportsFurnishingVisuals: Bool { accepted && capabilities?.contains("furnishing-visuals-v1") == true }
     public var supportsSharedFurnishingVisuals: Bool { accepted && capabilities?.contains("furnishing-visuals-v2") == true }
+    public var supportsPlinthEnvelopeAlign: Bool { accepted && capabilities?.contains("plinth-envelope-align-v1") == true }
     public var supportsSpaceSettings: Bool { accepted && capabilities?.contains("space-settings-v1") == true }
     public var supportsLightInspector: Bool { accepted && capabilities?.contains("light-inspector-v1") == true }
     public var supportsLightFixture: Bool { accepted && capabilities?.contains("light-fixture-aim-v1") == true }

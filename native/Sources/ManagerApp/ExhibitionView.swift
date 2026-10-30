@@ -933,6 +933,10 @@ final class ExhibitionModel: ObservableObject {
         await work {
             guard !immutable, !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, draft == base,
                   command.placementId.lowercased() == placementId.lowercased(), var value = state, var next = draft else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            if case .alignOnVerifiedPlinth(let id) = command {
+                guard viewportController.connected, viewportController.plinthEnvelopeAlignSupported,
+                      viewportSelection == ViewportSelection(kind: "placement", id: id), selectedHasFurnishing else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            }
             try next.acceptInstallationTranslation(candidate, placementId: placementId, axes: command.translationAxes)
             value.draft = next; try await persist(value); syncFields()
             notice = "작품 위치를 이 Mac에 보관했습니다. 실행 취소로 되돌릴 수 있습니다."
