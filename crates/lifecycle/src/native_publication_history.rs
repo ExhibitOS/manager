@@ -180,4 +180,25 @@ mod tests {
         }
         let root = profile.parent().unwrap().to_path_buf(); drop(store); fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn native_binding_survives_vault_commit_and_cold_open_without_execution() {
+        let (profile, _key, mut policy, _release) = super::super::tests::fixture();
+        let controller = crate::installations::InstallationController::new(profile.clone(), None).unwrap();
+        drop(controller);
+        policy.format = 2; policy.target = "macos-arm64".into();
+        let mut store = Store::provision(&profile, "default", policy, 10).unwrap();
+        let vault = profile.parent().unwrap().join("native-history-test-vault");
+        store.enroll_authority_recovery(&vault, 11).unwrap();
+        let pending = binding(&store);
+        let mut next = store.current.clone(); next.native_publication = Some(pending.clone());
+        store.commit(next, 20).unwrap();
+        let head = store.current_sha256.clone();
+        drop(store);
+        let store = Store::open(&profile, "default").unwrap();
+        assert_eq!(store.current_sha256, head);
+        assert_eq!(store.current.native_publication.as_ref(), Some(&pending));
+        assert!(store.used_operations.contains(&pending.operation_id));
+        assert!(store.used_instances.contains(&pending.target_instance));
+        let root = profile.parent().unwrap().to_path_buf(); drop(store); fs::remove_dir_all(root).unwrap();
+    }
 }

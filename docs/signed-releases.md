@@ -60,7 +60,8 @@ native record exists, including after its terminal record: do not rewrite histor
 or lower trust floors to make an older reader accept it. Retain the matching new
 reader and a separately verified original recovery baseline before any future
 workflow writes such a record. An intervening authority or policy generation
-invalidates the bound continuation; a future adapter must freshly revalidate it.
+invalidates the bound continuation. Resumption would require a separate explicit
+renewal transition and fresh revalidation; neither is provided by this schema.
 
 ## Trust and release contract
 
