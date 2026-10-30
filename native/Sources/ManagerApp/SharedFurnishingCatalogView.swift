@@ -42,7 +42,7 @@ struct SharedFurnishingCatalogView: View {
                         }
                         Button("비품 입력 취소") { model.discardSharedFurnishing() }.disabled(!model.sharedFurnishingDirty || model.busy || model.architectureApplying)
                     } else if !model.sharedFurnishingCatalogReady {
-                        Text("비품 목록을 확인하고 있습니다.").font(.caption).foregroundStyle(.secondary)
+                        if model.sharedFurnishingStatus.isEmpty { Text("비품 목록을 확인하고 있습니다.").font(.caption).foregroundStyle(.secondary) }
                         Button("비품 목록 다시 확인") { Task { await model.retrySharedFurnishingCatalog() } }.disabled(!ready || model.busy)
                     }
                     if !model.sharedFurnishingStatus.isEmpty { Text(model.sharedFurnishingStatus).font(.callout).foregroundStyle(.secondary) }

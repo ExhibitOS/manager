@@ -463,7 +463,7 @@ final class ExhibitionModel: ObservableObject {
     var canEditSharedFurnishing: Bool {
         !entrancePreviewActive && !viewingPlanDirty && viewingPointInput == nil && !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !benchDirty && !plaqueDirty && !spaceLightingDirty && !architectureApplying && furnishing == furnishingBaseline && viewportController.editingContextActive && viewportController.connected && viewportController.sharedFurnishingVisualsSupported && sharedFurnishingCatalogReady && sharedFurnishingCatalogAccessID == viewportAccessID && sharedFurnishing != nil
     }
-    var canPreviewSharedFurnishing: Bool { canEditSharedFurnishing && sharedFurnishing != sharedFurnishingBaseline && sharedFurnishingPreview == nil }
+    var canPreviewSharedFurnishing: Bool { canEditSharedFurnishing && sharedFurnishing != sharedFurnishingBaseline && sharedFurnishingPreview == nil && (sharedFurnishing?.selected == true || sharedFurnishingBaseline?.selected == true) }
     var canApplySharedFurnishing: Bool {
         guard canEditSharedFurnishing, sharedFurnishingPreviewAccessID == viewportAccessID, let preview = sharedFurnishingPreview,
               preview.base == draft, let form = sharedFurnishing, let target = sharedFurnishingTarget,
