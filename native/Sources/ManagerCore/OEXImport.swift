@@ -5,7 +5,20 @@ public struct NativeOEXImportIntent: Codable, Equatable, Sendable {
     public let requestId: String
     public let sha256: String
     public let bytes: Int
-    public func matches(_ archive: NativeOEXArchive) -> Bool { bytes == archive.count && sha256 == archive.sha256 }
+    public let profile: String?
+    public let oexFormat: String?
+    public init(requestId: String, sha256: String, bytes: Int, profile: String? = nil, oexFormat: String? = nil) {
+        self.requestId = requestId; self.sha256 = sha256; self.bytes = bytes
+        self.profile = profile; self.oexFormat = oexFormat
+    }
+    public var hasSupportedProfile: Bool {
+        switch (profile, oexFormat) {
+        case (nil, nil): return (1...64 * 1024 * 1024).contains(bytes)
+        case ("bounded-file-v1"?, "1.0.0-draft.9"?): return (1...512 * 1024 * 1024).contains(bytes)
+        default: return false
+        }
+    }
+    public func matches(_ archive: NativeOEXArchive) -> Bool { hasSupportedProfile && bytes == archive.count && sha256 == archive.sha256 }
 }
 public struct NativeOEXImportState: Codable, Sendable {
     public let format: Int
@@ -40,7 +53,9 @@ public enum NativeOEXImportTransfer {
             saved.intent = NativeOEXImportIntent(requestId: UUID().uuidString.lowercased(), sha256: file.archive.sha256, bytes: file.archive.count)
             saved.fileName = file.name; saved = try await persist(saved); try check()
         }
-        guard let intent = saved.intent else { throw AuthoringFailure("OEX_IMPORT_INVALID") }
+        guard let intent = saved.intent, intent.hasSupportedProfile else { throw AuthoringFailure("OEX_IMPORT_INVALID") }
+        // Large-profile transport is not enabled until capability and job binding are verified.
+        guard intent.profile == nil, intent.oexFormat == nil else { throw AuthoringFailure("OEX_IMPORT_PROFILE_UNAVAILABLE") }
         if let file, !intent.matches(file.archive) { throw AuthoringFailure("OEX_IMPORT_FILE_CHANGED") }
         // Once a job ID is durable, never POST again. A restored older server
         // may no longer contain that job; creating a replacement would mutate

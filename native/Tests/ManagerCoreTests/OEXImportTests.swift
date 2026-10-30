@@ -42,6 +42,18 @@ final class OEXImportTests: XCTestCase {
         do { _ = try await NativeOEXImportFile.load(link); XCTFail("final symlink must be refused") } catch {}
         do { _ = try await NativeOEXImportFile.load(root.appendingPathComponent("sample.png")); XCTFail("other extension must be refused") } catch {}
     }
+    func testDurableIntentSupportsOnlyExactProfileAndPreservesLegacyShape() throws {
+        let id = UUID().uuidString.lowercased(), hash = String(repeating: "a", count: 64)
+        let legacy = NativeOEXImportIntent(requestId: id, sha256: hash, bytes: 64 * 1024 * 1024)
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as! [String: Any]
+        XCTAssertEqual(Set(json.keys), Set(["requestId", "sha256", "bytes"]))
+        XCTAssertTrue(try JSONDecoder().decode(NativeOEXImportIntent.self, from: JSONEncoder().encode(legacy)).hasSupportedProfile)
+        XCTAssertTrue(NativeOEXImportIntent(requestId: id, sha256: hash, bytes: 512 * 1024 * 1024, profile: "bounded-file-v1", oexFormat: "1.0.0-draft.9").hasSupportedProfile)
+        XCTAssertFalse(NativeOEXImportIntent(requestId: id, sha256: hash, bytes: 64 * 1024 * 1024 + 1).hasSupportedProfile)
+        XCTAssertFalse(NativeOEXImportIntent(requestId: id, sha256: hash, bytes: 1, profile: "bounded-file-v1").hasSupportedProfile)
+        XCTAssertFalse(NativeOEXImportIntent(requestId: id, sha256: hash, bytes: 1, profile: "bounded-file-v1", oexFormat: "1.0.0-draft.8").hasSupportedProfile)
+        XCTAssertFalse(NativeOEXImportIntent(requestId: id, sha256: hash, bytes: 512 * 1024 * 1024 + 1, profile: "bounded-file-v1", oexFormat: "1.0.0-draft.9").hasSupportedProfile)
+    }
     func testJobRequiresBoundedStateAndValidCompletedExhibition() throws {
         let decoder = JSONDecoder()
         func job(_ json: String) throws -> NativeOEXImportJob { try decoder.decode(NativeOEXImportJob.self, from: Data(json.utf8)) }
@@ -50,6 +62,19 @@ final class OEXImportTests: XCTestCase {
         XCTAssertThrowsError(try job(#"{"id":"\#(id)","state":"complete","attempts":1,"result":null,"cleanupPending":false}"#).checked())
         XCTAssertThrowsError(try job(#"{"id":"\#(id)","state":"queued","attempts":1,"result":{"exhibitionId":"\#(exhibition)"},"cleanupPending":false}"#).checked())
         XCTAssertThrowsError(try job(#"{"id":"\#(id)","state":"unexpected","attempts":1,"result":null,"cleanupPending":false}"#).checked())
+    }
+    @MainActor
+    func testLargeProfileJournalCannotStartUnnegotiatedLegacyTransfer() async throws {
+        let id = UUID().uuidString.lowercased()
+        let archive = try NativeOEXArchive(data: Data([0x50, 0x4b, 0x03, 0x04] + Array(repeating: 0, count: 20)))
+        let intent = NativeOEXImportIntent(requestId: id, sha256: archive.sha256, bytes: archive.count, profile: "bounded-file-v1", oexFormat: "1.0.0-draft.9")
+        let state = NativeOEXImportState(format: 1, revision: 0, workspaceId: id, tenantId: id, principalId: id, intent: intent, jobId: nil, fileName: "sample.oex")
+        let transport = OEXMockTransport()
+        do {
+            _ = try await NativeOEXImportTransfer.run(state: state, file: NativeOEXImportFile(name: "sample.oex", archive: archive), transport: transport, persist: { $0 }, isCurrent: { true })
+            XCTFail("profile must not use legacy wire")
+        } catch let error as AuthoringFailure { XCTAssertEqual(error.code, "OEX_IMPORT_PROFILE_UNAVAILABLE") }
+        let requests = await transport.observedIDs(); XCTAssertTrue(requests.isEmpty)
     }
     @MainActor
     func testLostCreateReplyRetainsSameDurableRequestAndFileBinding() async throws {
