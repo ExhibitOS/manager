@@ -128,6 +128,14 @@ impl NativeTargetPreparation {
     pub fn target_observation(&mut self) -> &mut NativeTargetObservation { &mut self.observation }
 }
 impl Store {
+    #[cfg(test)]
+    pub(crate) fn begin_native_configuration_publication_test_clock(
+        &mut self, admitted: &mut AdmittedNativePayload, source: &mut NativeSourceObservation,
+        preparation: &mut NativeTargetPreparation, held: NativeTargetConfigurationPlan,
+        source_session: &mut Session, target_session: &mut Session, now: u64,
+    ) -> crate::Result<NativePublicationPermit> {
+        self.begin_native_configuration_publication_with_clock(admitted, source, preparation, held, source_session, target_session, &|| Ok(now))
+    }
     /// Invoked by the existing authenticated backup pipeline while its profile
     /// operation lock is retained. The authority namespace is not a source UUID.
     fn check_native_target_selection(

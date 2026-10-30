@@ -37,6 +37,15 @@ fn free_ports() -> Ports {
 #[test]
 #[ignore = "Explicit isolated R5 cold-copy fixture + global app/DB/heavy guards required"]
 fn actual_r5_signed_admission_authenticated_inactive_copy() {
+    exercise_r5(false);
+}
+
+#[test]
+#[ignore = "Explicit isolated R5 cold-copy fixture + global app/DB/heavy guards required"]
+fn actual_r5_begin_inactive_configuration_publication() {
+    exercise_r5(true);
+}
+fn exercise_r5(begin: bool) {
     let root=fs::canonicalize(std::env::var_os("EXHIBITOS_NATIVE_R5_COPY_ROOT").expect("Owned fixture root required")).unwrap();
     crate::installations::private_directory(&root).unwrap();
     let input: serde_json::Value=serde_json::from_slice(&fs::read(root.join("fixture-input.json")).unwrap()).unwrap();
@@ -50,7 +59,9 @@ fn actual_r5_signed_admission_authenticated_inactive_copy() {
     let target_root=root.join("target-runtime"); assert!(!target_root.exists()); copied(&root.join("source-runtime"),&target_root);
     // Distinct independently admitted target: a harmless HTML comment in this
     // NEW test copy only. No product version or executable codec/tool changes.
-    let relative="platform/apps/web/dist/index.html"; let html=target_root.join(relative);
+    // The frozen runtime binds index.html. The unused native viewport page is
+    // outside that inventory, so this distinct test target remains coherent.
+    let relative="platform/apps/web/dist/native-viewport.html"; let html=target_root.join(relative);
     let mut bytes=fs::read(&html).unwrap(); bytes.extend_from_slice(b"\n<!-- isolated R5 data-copy admission fixture -->\n"); fs::write(&html,&bytes).unwrap();
     let mut manifest: serde_json::Value=serde_json::from_slice(&fs::read(target_root.join("manifest.json")).unwrap()).unwrap();
     let entry=manifest["files"].as_array_mut().unwrap().iter_mut().find(|v|v["path"]==relative).unwrap();
@@ -94,7 +105,7 @@ fn actual_r5_signed_admission_authenticated_inactive_copy() {
     let profile_service=crate::LifecycleService::bound_existing(profile.clone()).unwrap();
     let handoff=profile_service.lock().unwrap();
     drop(controller);
-    let store=Store::provision(&profile,"default",policy,10).unwrap();
+    let mut store=Store::provision(&profile,"default",policy,10).unwrap();
     drop(handoff);
     let (source_envelope,source_staged)=release_for(&key,&store,&source_payload,&root,"source-native-runtime.tar",&measured.schema_sha256);
     let mut source_admitted=store.admit_native_payload(&source_envelope,source_staged,source_payload,20).unwrap();
@@ -140,6 +151,23 @@ fn actual_r5_signed_admission_authenticated_inactive_copy() {
     for (path,before) in &preserved { assert_eq!(&file_hash(path),before); }
     for prefix in prefixes { assert!(!profile.join(format!("{prefix}{target_suffix}.json")).exists()); }
     assert_eq!(crate::installations::load(&profile).unwrap().unwrap().0.active_id,source_id);
+    if begin {
+        eprintln!("R5_COPY_STEP=actual-inactive-publication-begin");
+        let permit=store.begin_native_configuration_publication_test_clock(&mut admitted,&mut source,&mut prepared,planned,&mut source_session,&mut target_session,20).unwrap();
+        let begin_receipt=serde_json::to_value(permit.receipt()).unwrap();
+        assert_eq!(begin_receipt["state"],"PublicationIntentInactive");
+        for flag in ["configurationPublished","preflightVerified","executionPermitted"] { assert_eq!(begin_receipt[flag],false); }
+        assert_eq!(config_names(),config_before);
+        for (path,before) in &preserved { assert_eq!(&file_hash(path),before); }
+        for prefix in prefixes { assert!(!profile.join(format!("{prefix}{target_suffix}.json")).exists()); }
+        assert_eq!(crate::installations::load(&profile).unwrap().unwrap().0.active_id,source_id);
+        fs::write(root.join("result.json"),serde_json::to_vec_pretty(&serde_json::json!({"scope":"REAL_SIGNED_TEST_R5_INACTIVE_PUBLICATION_BEGIN_ONLY","beginReceipt":begin_receipt,"configurationAndSourceFilesUnchanged":true,"sourceSelectionPreserved":true,"targetJournalsNotInstalled":true})).unwrap()).unwrap();
+        drop(permit); target_session.stop().unwrap(); source_session.stop().unwrap();
+        assert_eq!(target_session.start().err().expect("Inactive marker blocks start").code,"NATIVE_RESTORE_ACTIVATION_REQUIRED");
+        assert!(!candidate_root.join("native-database/postmaster.pid").exists());
+        assert!(!source_root.join("native-database/postmaster.pid").exists());
+        return;
+    }
     // Self-consistent disk tampering still cannot replace the held attempt.
     // Only these two control files in this NEW isolated fixture are changed;
     // retain them as failed evidence, never clear/replay an inactive marker.
