@@ -42,6 +42,7 @@ final class NativeViewportController: ObservableObject {
     @Published fileprivate(set) var placementSupported = false
     @Published fileprivate(set) var furnishingVisualsSupported = false
     @Published fileprivate(set) var sharedFurnishingVisualsSupported = false
+    @Published fileprivate(set) var plinthEnvelopeAlignSupported = false
     @Published fileprivate(set) var spaceSettingsSupported = false
     @Published fileprivate(set) var viewingPlanSupported = false
     @Published fileprivate(set) var lightInspectorSupported = false
@@ -184,6 +185,7 @@ final class NativeViewportController: ObservableObject {
     fileprivate var action: ((NativeGeometryAction) async throws -> (DocumentValue, NativeExhibitionDraft))?
     func perform(_ command: NativeGeometryAction, model: ExhibitionModel) async {
         guard editingContextActive, !model.placingArtwork, let action, connected else { return }
+        if case .installation(.alignOnVerifiedPlinth(_)) = command, !plinthEnvelopeAlignSupported { return }
         let contextGeneration = editingContextGeneration
         do {
             let (candidate, base) = try await action(command)
@@ -278,7 +280,7 @@ struct NativeViewport: NSViewRepresentable {
             entranceOperation = nil
             if controller.owner == epoch { controller.entrancePreviewAction = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }
             active = false; generation = UUID(); sendTask?.cancel()
-            if controller.owner == epoch { controller.sharedFurnishingVisualsAction = nil; controller.sharedFurnishingVisualsSupported = false }
+            if controller.owner == epoch { controller.sharedFurnishingVisualsAction = nil; controller.sharedFurnishingVisualsSupported = false; controller.plinthEnvelopeAlignSupported = false }
             if controller.owner == epoch { controller.furnishingVisualsAction = nil; controller.furnishingThumbnailAction = nil; controller.spaceSettingsAction = nil; controller.viewingPlanAction = nil; controller.lightInspectorAction = nil; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.benchInspectorAction = nil; controller.benchInspectorSupported = false; controller.plaqueInspectorAction = nil; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false }
             if controller.owner == epoch { controller.action = nil; controller.thumbnailAction = nil; controller.findSelectionAction = nil; controller.placementAction = nil; controller.placementSupported = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0 }
         }
@@ -303,7 +305,7 @@ struct NativeViewport: NSViewRepresentable {
                 return
             }
             if installedToken == nil {
-                controller.sharedFurnishingVisualsSupported = false
+                controller.sharedFurnishingVisualsSupported = false; controller.plinthEnvelopeAlignSupported = false
                 entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""
                 controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false
                 installedToken = value.credentials.token
@@ -364,7 +366,7 @@ struct NativeViewport: NSViewRepresentable {
             return .allow
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             guard active, controller.owner == epoch, webView === web else { return }
             controller.message = "3D 화면을 열지 못했습니다. 로컬 제작 상태를 확인하세요."
@@ -393,6 +395,7 @@ struct NativeViewport: NSViewRepresentable {
                         self.controller.placementSupported = acceptance.supportsArtworkPlacement
                         self.controller.furnishingVisualsSupported = acceptance.supportsFurnishingVisuals
                         self.controller.sharedFurnishingVisualsSupported = acceptance.supportsSharedFurnishingVisuals
+                        self.controller.plinthEnvelopeAlignSupported = acceptance.supportsPlinthEnvelopeAlign
                         self.controller.spaceSettingsSupported = acceptance.supportsSpaceSettings
                         self.controller.viewingPlanSupported = acceptance.supportsViewingPlan
                         self.controller.lightInspectorSupported = acceptance.supportsLightInspector
@@ -762,10 +765,16 @@ struct NativeViewport: NSViewRepresentable {
                 if case .surfaceMaterialTexture = command {
                     guard self.controller.surfaceMaterialTexturesSupported else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
                 }
+                if case .installation(.alignOnVerifiedPlinth(_)) = command {
+                    guard self.controller.plinthEnvelopeAlignSupported else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+                }
                 let generation = self.generation
                 let value = String(decoding: try JSONEncoder().encode(command.encodedValue(in: frame.draft, selected: frame.selection)), as: UTF8.self)
                 let candidate = try await web.callAsyncJavaScript("try { return window.exhibitosViewport.action(JSON.parse(actionJSON)); } catch (error) { if (error.code === 'INVALID_GEOMETRY' && Array.isArray(error.issues)) { const codes = error.issues.slice(0, 1).map(issue => issue.code + '_' + String(issue.path).replace(/[^a-zA-Z0-9_]/g, '_').toUpperCase() + '_' + (/^[a-zA-Z]{1,30}$/.test(issue.message) ? issue.message.toUpperCase() : '')).filter(code => /^[A-Z0-9_]{1,150}$/.test(code)); throw new Error('INVALID_GEOMETRY_' + codes.join('_')); } throw error; }", arguments: ["actionJSON":value], in: nil, contentWorld: .page)
                 guard self.active, self.controller.owner == self.epoch, self.generation == generation, self.latest?.sequence == frame.sequence, let candidate, JSONSerialization.isValidJSONObject(candidate) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                if case .installation(.alignOnVerifiedPlinth(_)) = command {
+                    guard self.controller.connected, self.controller.editingContextActive, self.controller.plinthEnvelopeAlignSupported else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                }
                 let bytes = try JSONSerialization.data(withJSONObject: candidate)
                 guard bytes.count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
                 return (try JSONDecoder().decode(DocumentValue.self, from: bytes), frame.draft)

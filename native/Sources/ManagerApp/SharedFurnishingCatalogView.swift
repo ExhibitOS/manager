@@ -44,6 +44,13 @@ struct SharedFurnishingCatalogView: View {
                             Button("비품 적용") { Task { await model.applySharedFurnishing() } }.disabled(!ready || !model.canApplySharedFurnishing)
                         }
                         Button("비품 입력 취소") { model.discardSharedFurnishing() }.disabled(!model.sharedFurnishingDirty || model.busy || model.architectureApplying)
+                        if target.0 == .pedestal, form.selected, model.selectedHasFurnishing {
+                            Button("크기를 확인하고 작품을 받침 위에 놓기") {
+                                Task { await viewport.perform(.installation(.alignOnVerifiedPlinth(placementId: target.1)), model: model) }
+                            }.disabled(!ready || !model.canSelectCatalog || model.immutable || !viewport.connected || !viewport.plinthEnvelopeAlignSupported)
+                            Text("작품의 크기 범위가 받침 영역에 들어오는지만 확인합니다. 실제 바닥 접촉과 안정성은 확인되지 않았습니다.").font(.caption).foregroundStyle(.secondary)
+                            if !viewport.plinthEnvelopeAlignSupported { Text("현재 연결에서는 이 배치 조작을 지원하지 않습니다.").font(.caption).foregroundStyle(.secondary) }
+                        }
                     } else if !model.sharedFurnishingCatalogReady {
                         if model.sharedFurnishingStatus.isEmpty { Text("비품 목록을 확인하고 있습니다.").font(.caption).foregroundStyle(.secondary) }
                         Button("비품 목록 다시 확인") { Task { await model.retrySharedFurnishingCatalog() } }.disabled(!ready || model.busy)

@@ -11,6 +11,8 @@ public enum InstallationCommandReason: String, CaseIterable, Sendable {
     case missingSelectedWall = "INSTALLATION_MISSING_SELECTED_WALL"
     case wallNotParallel = "INSTALLATION_WALL_NOT_PARALLEL"
     case limitsExceeded = "INSTALLATION_LIMITS_EXCEEDED"
+    case plinthUnsupported = "INSTALLATION_PLINTH_UNSUPPORTED"
+    case plinthOverhang = "INSTALLATION_PLINTH_OVERHANG"
     public static func fromJavaScriptMessage(_ message: String) -> Self? {
         guard message.utf8.count <= 180 else { return nil }
         let code = message.hasPrefix("Error: ") ? String(message.dropFirst(7)) : message
@@ -27,6 +29,8 @@ public enum InstallationCommandReason: String, CaseIterable, Sendable {
         case .missingSelectedWall: "간격을 맞출 기준 벽을 선택하세요."
         case .wallNotParallel: "작품이 선택한 벽과 평행해야 간격을 맞출 수 있습니다."
         case .limitsExceeded: "설치 치수나 위치가 지원 범위를 넘습니다. 입력과 작품 배치를 확인하세요."
+        case .plinthUnsupported: "선택한 작품과 받침의 크기 또는 변환을 확인할 수 없습니다. 기존 배치는 유지됩니다."
+        case .plinthOverhang: "작품의 확인된 크기 범위가 받침의 지지 영역을 벗어납니다. 기존 배치는 유지됩니다."
         }
     }
 }

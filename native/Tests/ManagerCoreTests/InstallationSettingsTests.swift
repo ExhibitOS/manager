@@ -6,6 +6,25 @@ final class InstallationSettingsTests: XCTestCase {
     private let first = "12345678-1234-1234-1234-123456789abc"
     private let second = "12345678-1234-1234-1234-123456789def"
     private let opaque: DocumentValue = .object(["literal": .string("12345678-1234-1234-1234-123456789abc"), "large": .integer(9_007_199_254_740_991)])
+    func testVerifiedPlinthCommandRequiresSelectedFrameAndIsSeparatelyNegotiated() throws {
+        let base = try draft(), selection = ViewportSelection(kind: "placement", id: first)
+        let command = InstallationCommand.alignOnVerifiedPlinth(placementId: first)
+        XCTAssertEqual(command.translationAxes, [0, 1, 2])
+        XCTAssertEqual(try NativeGeometryAction.installation(command).encodedValue(in: base, selected: selection), .object(["type": .string("installation-command"), "placementId": .string(first), "command": .string("align-on-verified-plinth")]))
+        XCTAssertThrowsError(try NativeGeometryAction.installation(command).encodedValue(in: base, selected: .init(kind: "placement", id: second)))
+        XCTAssertThrowsError(try NativeGeometryAction.installation(command).encodedValue(in: base, selected: nil))
+        let old = try JSONDecoder().decode(ViewportAcceptance.self, from: Data("{\"accepted\":true,\"capabilities\":[\"furnishing-visuals-v2\"]}".utf8))
+        let current = try JSONDecoder().decode(ViewportAcceptance.self, from: Data("{\"accepted\":true,\"capabilities\":[\"plinth-envelope-align-v1\"]}".utf8))
+        XCTAssertFalse(old.supportsPlinthEnvelopeAlign); XCTAssertTrue(current.supportsPlinthEnvelopeAlign)
+        var altered = base.candidate, rows = try XCTUnwrap(altered["placements"].items)
+        rows[0]["transform"]["position"] = .vector([4, 5, 6]); altered["placements"] = .array(rows)
+        var accepted = base; try accepted.acceptInstallationTranslation(altered, placementId: first, axes: command.translationAxes)
+        XCTAssertEqual(accepted.candidate["placements"].items?[0]["transform"]["position"], .vector([4, 5, 6]))
+        altered["title"] = .string("unexpected")
+        XCTAssertThrowsError(try accepted.acceptInstallationTranslation(altered, placementId: first, axes: command.translationAxes))
+        XCTAssertEqual(InstallationCommandReason.fromJavaScriptMessage("Error: INSTALLATION_PLINTH_OVERHANG"), .plinthOverhang)
+        XCTAssertEqual(InstallationCommandReason.fromJavaScriptMessage("Error: INSTALLATION_PLINTH_UNSUPPORTED"), .plinthUnsupported)
+    }
     private func draft() throws -> NativeExhibitionDraft {
         var draft = try NativeExhibitionDraft.new(title: "설치 설정")
         var value = draft.candidate
