@@ -58,7 +58,9 @@ guarded operation can publish that exact configuration to the inactive target;
 authenticated offline repair restores only its bound generated beforeimages and
 retains the inactive marker. Neither operation completes preflight, activates a
 target, permits execution or implements a native upgrade. Existing records omit
-the optional field and keep their existing serialization. A reader
+the optional field and keep their existing serialization. Ordinary lifecycle
+writers remain blocked for the bound target even after repair; releasing that
+candidate requires a future explicit transition. A reader
 built before this schema rejects a history once a
 native record exists, including after its terminal record: do not rewrite history
 or lower trust floors to make an older reader accept it. Retain the matching new
