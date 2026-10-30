@@ -40,6 +40,22 @@ struct Item {
     executable: Option<bool>,
     link: Option<String>,
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FreezeBudgetDescriptor {
+    schema_version: String,
+    version: String,
+    core_digest: String,
+    files: Vec<FreezeBudgetFile>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FreezeBudgetFile {
+    path: String,
+    bytes: u64,
+    sha256: String,
+    mime: String,
+}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Context {
@@ -73,6 +89,65 @@ fn relative_name(name: &str) -> bool {
         && Path::new(name)
             .components()
             .all(|c| matches!(c, Component::Normal(_)))
+}
+/// Bound the files actually consumed by Platform's loadFreezeRuntime rather
+/// than unrelated authoring assets in the same web directory. Platform still
+/// performs its own full descriptor, MIME, hash and 16 MiB validation.
+fn freeze_backup_runtime_bytes(manifest: &Manifest, descriptor: &[u8]) -> Result<u64> {
+    let value: FreezeBudgetDescriptor = serde_json::from_slice(descriptor).map_err(|_| invalid())?;
+    if value.schema_version != "1.0.0-draft.1" || value.version.trim().is_empty() || value.version.len() > 128
+        || !hash_valid(&value.core_digest) || value.files.len() < 3 || value.files.len() > 512 {
+        return Err(invalid());
+    }
+    let find = |name: &str| -> Result<&Item> {
+        let path = format!("platform/apps/web/dist/{name}");
+        manifest.files.iter().find(|v| v.path == path && v.link.is_none() && v.executable == Some(false)).ok_or_else(invalid)
+    };
+    let mut total = descriptor.len() as u64;
+    let sw = find("studio-sw.js")?;
+    total = total.checked_add(sw.bytes.ok_or_else(invalid)?).ok_or_else(|| err("NATIVE_BACKUP_RESOURCE_BUDGET"))?;
+    let mut seen = BTreeSet::new();
+    for file in &value.files {
+        if file.path.len() > 240 || !relative_name(&file.path) || matches!(file.path.as_str(), "freeze-runtime.json" | "studio-sw.js")
+            || !seen.insert(file.path.as_str()) || file.bytes == 0 || !hash_valid(&file.sha256) || file.mime.is_empty() {
+            return Err(invalid());
+        }
+        let item = find(&file.path)?;
+        if item.bytes != Some(file.bytes) || item.sha256.as_deref() != Some(file.sha256.as_str()) { return Err(invalid()); }
+        total = total.checked_add(file.bytes).ok_or_else(|| err("NATIVE_BACKUP_RESOURCE_BUDGET"))?;
+    }
+    if !["index.html", "THIRD_PARTY_NOTICES.txt", "offline-server.mjs"].iter().all(|n| seen.contains(n)) { return Err(invalid()); }
+    Ok(total)
+}
+
+#[cfg(test)]
+mod freeze_backup_budget_tests {
+    use super::*;
+
+    #[test]
+    fn budget_counts_only_descriptor_bound_runtime_and_rejects_mismatches() {
+        let hash = "a".repeat(64);
+        let paths = ["index.html", "THIRD_PARTY_NOTICES.txt", "offline-server.mjs"];
+        let files: Vec<_> = paths.iter().map(|p| serde_json::json!({"path":p,"bytes":10,"sha256":hash,"mime":"text/plain"})).collect();
+        let descriptor = serde_json::json!({"schemaVersion":"1.0.0-draft.1","version":"1","coreDigest":hash,"files":files});
+        let mut entries: Vec<_> = paths.iter().map(|p| serde_json::json!({"path":format!("platform/apps/web/dist/{p}"),"bytes":10,"sha256":hash,"executable":false})).collect();
+        entries.push(serde_json::json!({"path":"platform/apps/web/dist/studio-sw.js","bytes":5,"sha256":hash,"executable":false}));
+        // A large unrelated authoring asset is not loaded by the backup codec.
+        entries.push(serde_json::json!({"path":"platform/apps/web/dist/unrelated.png","bytes":40000000,"sha256":hash,"executable":false}));
+        let manifest: Manifest = serde_json::from_value(serde_json::json!({"format":"exhibitos-native-runtime-v1","mode":"local-validation","platform":"darwin-arm64","nodeVersion":"24.21.0","postgresVersion":"18.6","platformVersion":"0.1.0","protocolVersion":"1","sourceCommit":"b".repeat(40),"producerSHA256":hash,"entry":{"node":"bin/node","script":"platform/scripts/local-runtime.mjs","postgres":"postgres/bin/postgres","initdb":"postgres/bin/initdb"},"files":entries,"redistributionQualified":false,"officialSigned":false,"remaining":"synthetic"})).unwrap();
+        let bytes = serde_json::to_vec(&descriptor).unwrap();
+        assert_eq!(freeze_backup_runtime_bytes(&manifest, &bytes).unwrap(), bytes.len() as u64 + 35);
+        let mut changed = descriptor.clone();
+        changed["files"][0]["bytes"] = serde_json::json!(11);
+        assert!(freeze_backup_runtime_bytes(&manifest, &serde_json::to_vec(&changed).unwrap()).is_err());
+        let mut duplicate = descriptor.clone();
+        let first = duplicate["files"][0].clone();
+        duplicate["files"].as_array_mut().unwrap().push(first);
+        assert!(freeze_backup_runtime_bytes(&manifest, &serde_json::to_vec(&duplicate).unwrap()).is_err());
+        let mut escape = descriptor;
+        escape["files"][0]["path"] = serde_json::json!("../outside");
+        assert!(freeze_backup_runtime_bytes(&manifest, &serde_json::to_vec(&escape).unwrap()).is_err());
+    }
 }
 fn contained(root: &Path, relative: &str) -> Result<PathBuf> {
     if !relative_name(relative) {
@@ -329,14 +404,15 @@ impl Payload {
         })
     }
     pub(crate) fn backup_runtime_bytes(&self) -> Result<u64> {
-        self.manifest
-            .files
-            .iter()
-            .filter(|f| f.path.starts_with("platform/apps/web/dist/") && f.link.is_none())
-            .try_fold(0u64, |sum, file| {
-                sum.checked_add(file.bytes.unwrap_or(0))
-                    .ok_or_else(|| err("NATIVE_BACKUP_RESOURCE_BUDGET"))
-            })
+        let name = "platform/apps/web/dist/freeze-runtime.json";
+        let item = self.manifest.files.iter().find(|v| v.path == name && v.link.is_none() && v.executable == Some(false)).ok_or_else(invalid)?;
+        let path = self.root.join(name);
+        if fs::canonicalize(&path).map_err(|_| invalid())? != path { return Err(invalid()); }
+        let (bytes, pin) = crate::hosted_runtime_file::bounded(&path, 256 * 1024)?;
+        if item.bytes != Some(bytes.len() as u64) || item.sha256.as_deref() != Some(digest(&bytes).as_str()) { return Err(invalid()); }
+        let total = freeze_backup_runtime_bytes(&self.manifest, &bytes)?;
+        pin.check()?;
+        Ok(total)
     }
     pub fn static_export_resources(&self) -> Result<(PathBuf, PathBuf)> {
         for name in [
