@@ -5,6 +5,13 @@ import Darwin
 
 @MainActor
 final class ImportFileTests: XCTestCase {
+    func testStaticOutputAdvisoryAppliesOnlyToGLBOver25MiB() {
+        let cap = 25 * 1024 * 1024
+        XCTAssertFalse(ImportFileSnapshot.mayExceedStaticOutputLimit(mime: "model/gltf-binary", bytes: cap))
+        XCTAssertTrue(ImportFileSnapshot.mayExceedStaticOutputLimit(mime: "model/gltf-binary", bytes: cap + 1))
+        XCTAssertTrue(ImportFileSnapshot.mayExceedStaticOutputLimit(mime: "model/gltf-binary", bytes: ImportFileSnapshot.limit))
+        XCTAssertFalse(ImportFileSnapshot.mayExceedStaticOutputLimit(mime: "image/png", bytes: cap + 1))
+    }
     func testImmutableBoundedSnapshotWithUnicodeFilename() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)

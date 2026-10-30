@@ -17,6 +17,11 @@ public struct NativeUploadState: Codable, Sendable {
 /// following a final symlink; paths/bookmarks and file bytes never enter IPC.
 public struct ImportFileSnapshot: Sendable {
     public static let limit = 32 * 1024 * 1024
+    /// A selected source can be admitted even when a later static output may
+    /// exceed its per-file limit; publication may choose a different derivative.
+    public static func mayExceedStaticOutputLimit(mime: String, bytes: Int) -> Bool {
+        mime == "model/gltf-binary" && bytes > 25 * 1024 * 1024
+    }
     public let name: String
     public let mime: String
     public let sha256: String

@@ -23,7 +23,13 @@ struct NativeImportControls: View {
                     Button("검사 중인 작품 열기") { openArtwork(id) }
                 } else {
                     Button(model.importFile == nil ? "\(model.importFormats) 파일 선택…" : "같은 파일 다시 선택…", systemImage: "doc.badge.plus") { Task { await model.chooseImportFile() } }
-                    if let file = model.importFile { Text("\(file.name) · \(file.data.count.formatted())바이트").textSelection(.enabled) }
+                    if let file = model.importFile {
+                        Text("\(file.name) · \(file.data.count.formatted())바이트").textSelection(.enabled)
+                        if ImportFileSnapshot.mayExceedStaticOutputLimit(mime: file.mime, bytes: file.data.count) {
+                            Text("이 GLB는 25 MiB보다 큽니다. 정적 전시에 그대로 쓰이면 개별 파일 제한을 넘습니다. 다른 감상용 파일이 사용될 수 있으므로 실제 배포 파일을 확인하세요. 보존된 Processing 촬영 작업에서 웹 관람용 텍스처 사본을 새로 만들 수 있지만, 결과의 크기와 외관은 확인이 필요합니다. 25 MiB 이하 결과는 보장하지 않으며 외부 GLB의 자동 변환은 지원하지 않습니다.")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     else if let name = model.transfer?.fileName { Text("저장한 요청: \(name)").textSelection(.enabled) }
                     TextField("파일 1단위의 길이 (m)", value: $model.importScale, format: .number).disabled(model.transfer?.intent != nil)
                     if model.metadataDirty || model.selected == nil {
