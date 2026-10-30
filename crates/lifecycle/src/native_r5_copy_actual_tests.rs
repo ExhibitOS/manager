@@ -37,15 +37,25 @@ fn free_ports() -> Ports {
 #[test]
 #[ignore = "Explicit isolated R5 cold-copy fixture + global app/DB/heavy guards required"]
 fn actual_r5_signed_admission_authenticated_inactive_copy() {
-    exercise_r5(false);
+    exercise_r5(0);
 }
 
 #[test]
 #[ignore = "Explicit isolated R5 cold-copy fixture + global app/DB/heavy guards required"]
 fn actual_r5_begin_inactive_configuration_publication() {
-    exercise_r5(true);
+    exercise_r5(1);
 }
-fn exercise_r5(begin: bool) {
+#[test]
+#[ignore = "Explicit isolated R5 cold-copy fixture + global app/DB/heavy guards required"]
+fn actual_r5_torn_configuration_offline_repair() {
+    exercise_r5(2);
+}
+#[test]
+#[ignore = "Explicit isolated R5 cold-copy fixture + global app/DB/heavy guards required"]
+fn actual_r5_configuration_publish_and_offline_repair() {
+    exercise_r5(3);
+}
+fn exercise_r5(mode: u8) {
     let root=fs::canonicalize(std::env::var_os("EXHIBITOS_NATIVE_R5_COPY_ROOT").expect("Owned fixture root required")).unwrap();
     crate::installations::private_directory(&root).unwrap();
     let input: serde_json::Value=serde_json::from_slice(&fs::read(root.join("fixture-input.json")).unwrap()).unwrap();
@@ -91,7 +101,7 @@ fn exercise_r5(begin: bool) {
     source_session.start_database_only().unwrap(); target_session.start_database_only().unwrap();
     assert!(target_session.maintenance_empty_target().unwrap());
     eprintln!("R5_COPY_STEP=authenticated-synthetic-source");
-    let authenticated=controller.capture_native_update_source(&selected.selection_token,&mut source_session,crate::installations::native_backup::Input {key_file,destination:root.join("authenticated-backup")}).unwrap();
+    let authenticated=controller.capture_native_update_source(&selected.selection_token,&mut source_session,crate::installations::native_backup::Input {key_file:key_file.clone(),destination:root.join("authenticated-backup")}).unwrap();
     // Measure through the existing fixed authenticated observer to establish
     // the TEST feed's real schema declaration, then re-observe under authority.
     let measured=authenticated.observe(&mut source_session,|p,id,r| {
@@ -151,7 +161,7 @@ fn exercise_r5(begin: bool) {
     for (path,before) in &preserved { assert_eq!(&file_hash(path),before); }
     for prefix in prefixes { assert!(!profile.join(format!("{prefix}{target_suffix}.json")).exists()); }
     assert_eq!(crate::installations::load(&profile).unwrap().unwrap().0.active_id,source_id);
-    if begin {
+    if mode > 0 {
         eprintln!("R5_COPY_STEP=actual-inactive-publication-begin");
         let permit=store.begin_native_configuration_publication_test_clock(&mut admitted,&mut source,&mut prepared,planned,&mut source_session,&mut target_session,20).unwrap();
         let begin_receipt=serde_json::to_value(permit.receipt()).unwrap();
@@ -161,11 +171,49 @@ fn exercise_r5(begin: bool) {
         for (path,before) in &preserved { assert_eq!(&file_hash(path),before); }
         for prefix in prefixes { assert!(!profile.join(format!("{prefix}{target_suffix}.json")).exists()); }
         assert_eq!(crate::installations::load(&profile).unwrap().unwrap().0.active_id,source_id);
-        fs::write(root.join("result.json"),serde_json::to_vec_pretty(&serde_json::json!({"scope":"REAL_SIGNED_TEST_R5_INACTIVE_PUBLICATION_BEGIN_ONLY","beginReceipt":begin_receipt,"configurationAndSourceFilesUnchanged":true,"sourceSelectionPreserved":true,"targetJournalsNotInstalled":true})).unwrap()).unwrap();
-        drop(permit); target_session.stop().unwrap(); source_session.stop().unwrap();
+        if mode == 3 {
+            let published=store.publish_native_configuration_test_clock(&mut admitted,&mut source,&mut prepared,permit,&mut source_session,&mut target_session,20).unwrap();
+            let published=serde_json::to_value(published).unwrap();
+            assert_eq!(published["state"],"PublishedInactive");
+            assert_eq!(published["executionPermitted"],false); assert_eq!(published["preflightVerified"],false);
+            target_session.stop().unwrap(); source_session.stop().unwrap();
+            drop(target_session); drop(source_session);
+            let repair=store.repair_native_configuration_publication(&key_file).unwrap();
+            let repair_receipt=serde_json::to_value(repair).unwrap();
+            assert_eq!(repair_receipt["state"],"RestoredGeneratedInactive");
+            assert_eq!(repair_receipt["executionPermitted"],false);
+            for (path,before) in &preserved { assert_eq!(&file_hash(path),before); }
+            assert_eq!(config_names(),config_before);
+            for prefix in prefixes { assert!(!profile.join(format!("{prefix}{target_suffix}.json")).exists()); }
+            assert_eq!(crate::installations::load(&profile).unwrap().unwrap().0.active_id,source_id);
+            assert!(candidate_root.join("native-target-preparation-current.json").exists());
+            fs::write(root.join("result.json"),serde_json::to_vec_pretty(&serde_json::json!({"scope":"REAL_SIGNED_TEST_R5_INACTIVE_PUBLICATION_AND_OFFLINE_REPAIR_ONLY","beginReceipt":begin_receipt,"publishedReceipt":published,"repairReceipt":repair_receipt,"configurationAndSourceFilesUnchangedAfterRepair":true,"sourceSelectionPreserved":true,"targetJournalsNotInstalled":true,"inactiveMarkerRetained":true})).unwrap()).unwrap();
+            return;
+        }
+        target_session.stop().unwrap(); source_session.stop().unwrap();
         assert_eq!(target_session.start().err().expect("Inactive marker blocks start").code,"NATIVE_RESTORE_ACTIVATION_REQUIRED");
         assert!(!candidate_root.join("native-database/postmaster.pid").exists());
         assert!(!source_root.join("native-database/postmaster.pid").exists());
+        if mode == 2 {
+            drop(target_session); drop(source_session);
+            // A NEW fixture only: install just the first generated afterimage to
+            // emulate interruption between env and owner, then use raw guards.
+            permit.simulate_partial_for_test(1).unwrap();
+            drop(permit);
+            let repair=store.repair_native_configuration_publication(&key_file).unwrap();
+            let repair_receipt=serde_json::to_value(repair).unwrap();
+            assert_eq!(repair_receipt["state"],"RestoredGeneratedInactive");
+            assert_eq!(repair_receipt["executionPermitted"],false);
+            for (path,before) in &preserved { assert_eq!(&file_hash(path),before); }
+            assert_eq!(config_names(),config_before);
+            for prefix in prefixes { assert!(!profile.join(format!("{prefix}{target_suffix}.json")).exists()); }
+            assert_eq!(crate::installations::load(&profile).unwrap().unwrap().0.active_id,source_id);
+            assert!(candidate_root.join("native-target-preparation-current.json").exists());
+            fs::write(root.join("result.json"),serde_json::to_vec_pretty(&serde_json::json!({"scope":"REAL_SIGNED_TEST_R5_TORN_OFFLINE_REPAIR_ONLY","beginReceipt":begin_receipt,"repairReceipt":repair_receipt,"configurationAndSourceFilesUnchanged":true,"sourceSelectionPreserved":true,"targetJournalsNotInstalled":true,"inactiveMarkerRetained":true})).unwrap()).unwrap();
+        } else {
+            drop(permit);
+            fs::write(root.join("result.json"),serde_json::to_vec_pretty(&serde_json::json!({"scope":"REAL_SIGNED_TEST_R5_INACTIVE_PUBLICATION_BEGIN_ONLY","beginReceipt":begin_receipt,"configurationAndSourceFilesUnchanged":true,"sourceSelectionPreserved":true,"targetJournalsNotInstalled":true})).unwrap()).unwrap();
+        }
         return;
     }
     // Self-consistent disk tampering still cannot replace the held attempt.

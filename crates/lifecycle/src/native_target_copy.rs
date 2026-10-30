@@ -199,7 +199,7 @@ impl AuthenticatedNativeBackup {
         &self, source: &mut Session, target: &mut Session, operation: &str,
         expected_attempt: &str, expected: &NativeTargetEvidence, authority: &Value,
         mut check_selection: impl FnMut(&Path, &str, &Path, &Path) -> Result<()>,
-        finish: impl FnOnce(&super::super::native_restore::ReboundConfigurationPlan, &Path, &Path, &Path, &Path, &mut dyn FnMut(bool) -> Result<()>) -> Result<T>,
+        finish: impl FnOnce(&super::super::native_restore::ReboundConfigurationPlan, &Path, &Path, &Path, &Path, &mut dyn FnMut(bool, bool) -> Result<()>) -> Result<T>,
     ) -> Result<(super::super::native_restore::ReboundConfigurationPlan, T)> {
         let profile = LifecycleService::bound_existing(self.profile_root.clone())?;
         let _profile = profile_lock(&profile)?;
@@ -257,11 +257,11 @@ impl AuthenticatedNativeBackup {
         )?;
         let fresh = self.observe_target_locked(source, target, &expected.target_schema_sha256, &mut check_selection)?;
         if fresh != *expected { return Err(err("NATIVE_TARGET_RESULT_INVALID")); }
-        let mut revalidate = |selection: bool| -> Result<()> {
+        let mut revalidate = |selection: bool, target_unchanged: bool| -> Result<()> {
             self.check(source)?;
             source_resources.recheck()?;
             target_resources.recheck()?;
-            plan.recheck()?;
+            if target_unchanged { plan.recheck()?; } else { plan.recheck_source()?; }
             marker_pin.check()?;
             intent_pin.check()?;
             directory_pin.check()?;
@@ -271,7 +271,7 @@ impl AuthenticatedNativeBackup {
             if selection { check_selection(&self.profile_root, &self.installation_id, &self.source_root, &root)?; }
             Ok(())
         };
-        revalidate(true)?;
+        revalidate(true, true)?;
         let result = finish(&plan, &self.profile_root, &root, &directory, &self.key_file, &mut revalidate)?;
         drop(revalidate);
         Ok((plan, result))

@@ -20,7 +20,7 @@ pub(crate) mod lifecycle_writer;
 #[path = "native_source_observation.rs"]
 mod native_source_observation;
 #[cfg(target_os = "macos")]
-pub use native_source_observation::{NativeSourceObservation, NativeSourceObservationReceipt, NativeObservedPlanBoundary, NativeObservedPlanReceipt, NativeTargetObservation, NativeTargetObservationReceipt, NativeTargetPreparation, NativeTargetPreparationReceipt, NativeTargetConfigurationPlan, NativeTargetConfigurationPlanReceipt, NativePublicationPermit, NativePublicationPermitReceipt};
+pub use native_source_observation::{NativeSourceObservation, NativeSourceObservationReceipt, NativeObservedPlanBoundary, NativeObservedPlanReceipt, NativeTargetObservation, NativeTargetObservationReceipt, NativeTargetPreparation, NativeTargetPreparationReceipt, NativeTargetConfigurationPlan, NativeTargetConfigurationPlanReceipt, NativePublicationPermit, NativePublicationPermitReceipt, NativePublicationRepairReceipt, NativeConfigurationPublishedReceipt};
 const MAX_RECORD: u64 = 96 * 1024;
 const MAX_RECORDS: usize = 4096;
 const MAX_REVOKED: usize = 256;

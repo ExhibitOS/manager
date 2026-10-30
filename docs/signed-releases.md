@@ -53,9 +53,12 @@ verified, no native update, manifest transition or image-only rollback is implie
 
 The native publication history schema is a closed, versioned binding for an
 inactive-configuration operation. A source-bound begin operation stages an
-authenticated beforeimage archive and commits a pending binding; it does not
-publish configuration, repair, complete preflight or permit execution. Existing
-records omit the optional field and keep their existing serialization. A reader
+authenticated beforeimage archive and commits a pending binding. A separate
+guarded operation can publish that exact configuration to the inactive target;
+authenticated offline repair restores only its bound generated beforeimages and
+retains the inactive marker. Neither operation completes preflight, activates a
+target, permits execution or implements a native upgrade. Existing records omit
+the optional field and keep their existing serialization. A reader
 built before this schema rejects a history once a
 native record exists, including after its terminal record: do not rewrite history
 or lower trust floors to make an older reader accept it. Retain the matching new
