@@ -224,6 +224,10 @@ impl Store {
             || preparation.observation.source_instance != binding.source_instance || preparation.observation.target_instance != binding.target_instance
             || source.evidence.backup_id != binding.backup_id || source.evidence.manifest_sha256 != binding.backup_manifest_sha256
             || source.evidence.inventory_sha256 != binding.source_inventory_sha256 || source.evidence.schema_sha256 != binding.source_schema_sha256
+            || preparation.observation.evidence.backup_id != binding.backup_id
+            || preparation.observation.evidence.authenticated_manifest_sha256 != binding.backup_manifest_sha256
+            || preparation.observation.evidence.source_inventory_sha256 != binding.source_inventory_sha256
+            || preparation.observation.evidence.source_schema_sha256 != binding.source_schema_sha256
             || preparation.observation.evidence.target_schema_sha256 != binding.target_schema_sha256
             || preparation.observation.evidence.target_migrations_sha256 != binding.target_migrations_sha256
             || preparation.observation.evidence.target_system_identifier != binding.target_system_identifier {
@@ -231,6 +235,7 @@ impl Store {
         }
         let source_root = source_session.target_observation_root().to_owned();
         let target_root = preparation.observation.root.clone();
+        preparation.observation.root_pin.check()?;
         if hash(source_root.as_os_str().as_encoded_bytes()) != binding.source_root_sha256
             || hash(target_root.as_os_str().as_encoded_bytes()) != binding.target_root_sha256 { return Err(crate::err("UPDATE_PLAN_MISMATCH")); }
         let authority = serde_json::json!({"scope":self.scope,"generation":binding.authority_generation,"policyGeneration":binding.policy_generation,"recordSha256":binding.authority_sha256,"signedReleasePayloadSha256":binding.release_payload_sha256,"signedArtifactSha256":binding.artifact_sha256});
@@ -254,7 +259,7 @@ impl Store {
             },
             |_, _| { held._source.recheck_source()?; held._staged.recheck()?; held.snapshot.recheck() },
         )?;
-        held._source.recheck_source()?; held._staged.recheck()?; held.snapshot.recheck()?; check_durable_head(self)?;
+        preparation.observation.root_pin.check()?; held._source.recheck_source()?; held._staged.recheck()?; held.snapshot.recheck()?; check_durable_head(self)?;
         let now = clock()?;
         let admitted = admission.borrow();
         let verified = self.verify_native(&admitted.envelope, now).map_err(|e| crate::err(e.code()))?;
