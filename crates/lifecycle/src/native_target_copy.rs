@@ -63,6 +63,65 @@ fn authenticated_catalog(manifest: &[u8]) -> Result<Vec<u8>> {
     serde_json::to_vec(&rows).map_err(|_| err("NATIVE_TARGET_COPY_UNAVAILABLE"))
 }
 impl AuthenticatedNativeBackup {
+    /// Revalidate retained source and both physical session fences after the
+    /// target configuration changed. Does not restart a Session, observe a
+    /// database, reconstruct a permit from disk or write anything.
+    pub(crate) fn with_published_configuration<T>(
+        &self, source: &Session, target: &Session, operation: &str, attempt: &str,
+        expected: &NativeTargetEvidence, authority: &Value,
+        mut check_selection: impl FnMut(&Path, &str, &Path, &Path) -> Result<()>,
+        finish: impl FnOnce(&Path, &Path) -> Result<T>,
+    ) -> Result<T> {
+        let profile = LifecycleService::bound_existing(self.profile_root.clone())?;
+        let _profile = profile_lock(&profile)?;
+        let root = target.target_observation_root().to_owned();
+        source.check_native_observation_fence()?; target.check_native_observation_fence()?;
+        self.check(source)?;
+        let source_resources = self.payload.native_copy_resources()?;
+        let target_payload = target.maintenance_payload();
+        let target_resources = target_payload.native_copy_resources()?;
+        let catalog = authenticated_catalog(&self.manifest)?;
+        if !uuid(operation) || !uuid(attempt) || operation == attempt
+            || source_resources.recipe_sha256 != target_resources.recipe_sha256
+            || catalog != source_resources.inventory.migrations || catalog != target_resources.inventory.migrations
+            || target_resources.inventory.migrations_sha256 != expected.target_migrations_sha256
+            || expected.source_schema_sha256 != self.evidence.schema_sha256
+            || expected.target_schema_sha256 != self.evidence.schema_sha256 { return Err(err("NATIVE_TARGET_COPY_CATALOG_UNSUPPORTED")); }
+        check_selection(&self.profile_root, &self.installation_id, &self.source_root, &root)?;
+        let read = |directory: &Path, name: &str| -> Result<(Value, crate::hosted_runtime_file::Pin)> {
+            let private = Secret(installation_backup::source_bytes(directory, name, 65536, true)?);
+            let (bytes, pin) = crate::hosted_runtime_file::bounded(&directory.join(name), 65536)?;
+            let bytes = Secret(bytes);
+            if bytes.0 != private.0 { return Err(err("NATIVE_TARGET_CONFIGURATION_CHANGED")); }
+            Ok((serde_json::from_slice(&bytes.0).map_err(|_| err("NATIVE_TARGET_CONFIGURATION_CHANGED"))?, pin))
+        };
+        let root_pin = crate::maintenance_source::DirectoryPin::open(&root)?;
+        let directory = root.join(format!("native-target-preparation-{operation}"));
+        private_directory(&directory)?;
+        let directory_pin = crate::maintenance_source::DirectoryPin::open(&directory)?;
+        let (marker, marker_pin) = read(&root, MARKER)?;
+        let (intent, intent_pin) = read(&directory, "intent.json")?;
+        if marker["format"] != 1 || marker["operationId"] != operation || marker["attemptId"] != attempt
+            || intent["format"] != 1 || intent["state"] != "PreparedInactive"
+            || intent["operationId"] != operation || intent["attemptId"] != attempt
+            || intent["sourceRoot"].as_str() != self.source_root.to_str() || intent["targetRoot"].as_str() != root.to_str()
+            || intent["sourcePayloadManifestSha256"] != self.source_manifest()
+            || intent["targetPayloadManifestSha256"] != target_payload.context().manifest_sha256
+            || intent["backupId"] != expected.backup_id || intent["authenticatedBackupManifestSha256"] != expected.authenticated_manifest_sha256
+            || intent["sourceInventorySha256"] != expected.source_inventory_sha256 || intent["targetSystemIdentifier"] != expected.target_system_identifier
+            || &intent["authority"] != authority || intent["configurationVerified"] != false
+            || intent["preflightVerified"] != false || intent["executionPermitted"] != false { return Err(err("NATIVE_TARGET_CONFIGURATION_CHANGED")); }
+        let mut recheck = || -> Result<()> {
+            self.check(source)?; source_resources.recheck()?; target_resources.recheck()?;
+            source.check_native_observation_fence()?; target.check_native_observation_fence()?;
+            root_pin.check()?; directory_pin.check()?; marker_pin.check()?; intent_pin.check()?;
+            check_selection(&self.profile_root, &self.installation_id, &self.source_root, &root)
+        };
+        recheck()?;
+        let result = finish(&self.profile_root, &root)?;
+        recheck()?;
+        Ok(result)
+    }
     pub(crate) fn prepare_target_copy(
         &self, source: &mut Session, target: &mut Session, target_schema: &str,
         operation: &str, authority: Value,

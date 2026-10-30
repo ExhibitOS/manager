@@ -121,6 +121,32 @@ pub struct NativeConfigurationPublishedReceipt {
     preflight_verified: bool,
     execution_permitted: bool,
 }
+/// Private observation at the committed PublishedInactive head. It cannot be
+/// reconstructed from a receipt or converted into an execution permit.
+///
+/// ```compile_fail
+/// use exhibitos_lifecycle::signed_release::trust::NativePublishedConfiguration;
+/// let _: NativePublishedConfiguration = serde_json::from_str("{}").unwrap();
+/// ```
+pub struct NativePublishedConfiguration {
+    receipt: NativeConfigurationPublishedReceipt,
+    snapshot: installations::native_restore::PublishedConfigurationSnapshot,
+    _source: installations::native_restore::ReboundConfigurationPlan,
+    _staged: installations::native_restore::StagedNativeConfiguration,
+}
+impl NativePublishedConfiguration {
+    pub fn receipt(&self) -> &NativeConfigurationPublishedReceipt { &self.receipt }
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativePublishedConfigurationObservationReceipt {
+    operation_id: String,
+    authority_sha256: String,
+    configuration_verified: bool,
+    target_inventory_reobserved: bool,
+    preflight_verified: bool,
+    execution_permitted: bool,
+}
 fn check_offline_guard(root: &Path, guard: &crate::OperationGuard) -> crate::Result<()> {
     use std::os::unix::fs::MetadataExt;
     let held = guard.metadata().map_err(|_| crate::err("NATIVE_TARGET_SELECTION_INVALID"))?;
@@ -161,6 +187,81 @@ impl NativeTargetPreparation {
     pub fn target_observation(&mut self) -> &mut NativeTargetObservation { &mut self.observation }
 }
 impl Store {
+    /// Read-only recheck of a retained in-process publication observation.
+    /// The old target Session is not used as evidence of its post-change
+    /// environment or database inventory, and no authority is renewed.
+    pub fn observe_published_native_configuration(
+        &self, admitted: &mut AdmittedNativePayload, source: &NativeSourceObservation,
+        preparation: &NativeTargetPreparation, held: &NativePublishedConfiguration,
+        source_session: &Session, target_session: &Session,
+    ) -> crate::Result<NativePublishedConfigurationObservationReceipt> {
+        self.observe_published_native_configuration_with_clock(admitted, source, preparation, held, source_session, target_session,
+            &|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|v| v.as_secs()).map_err(|_| crate::err("TRUST_CLOCK_ROLLBACK")))
+    }
+    #[cfg(test)]
+    pub(crate) fn observe_published_native_configuration_test_clock(
+        &self, admitted: &mut AdmittedNativePayload, source: &NativeSourceObservation,
+        preparation: &NativeTargetPreparation, held: &NativePublishedConfiguration,
+        source_session: &Session, target_session: &Session, now: u64,
+    ) -> crate::Result<NativePublishedConfigurationObservationReceipt> {
+        self.observe_published_native_configuration_with_clock(admitted, source, preparation, held, source_session, target_session, &|| Ok(now))
+    }
+    fn observe_published_native_configuration_with_clock(
+        &self, admitted: &mut AdmittedNativePayload, source: &NativeSourceObservation,
+        preparation: &NativeTargetPreparation, held: &NativePublishedConfiguration,
+        source_session: &Session, target_session: &Session, clock: &dyn Fn() -> crate::Result<u64>,
+    ) -> crate::Result<NativePublishedConfigurationObservationReceipt> {
+        use std::cell::RefCell;
+        use super::super::native_publication_history::NativePublicationState;
+        let binding = self.current.native_publication.as_ref().filter(|b| b.state == NativePublicationState::PublishedInactive && b.current_predecessor(&self.current))
+            .ok_or_else(|| crate::err("UPDATE_POLICY_STALE"))?;
+        let head = &held.receipt.authority_sha256;
+        if self.current_sha256 != *head || held.receipt.operation_id != binding.operation_id
+            || preparation.operation_id != binding.operation_id || preparation.attempt_id != binding.attempt_id
+            || source.authority.scope != self.scope || source.authority.generation != binding.authority_generation
+            || source.authority.policy_generation != binding.policy_generation || source.authority.authority_sha256 != binding.authority_sha256
+            || source.authority.target_payload_sha256 != binding.release_payload_sha256 || source.authority.target_manifest_sha256 != binding.target_payload_sha256
+            || preparation.observation.source_instance != binding.source_instance || preparation.observation.target_instance != binding.target_instance
+            || source.evidence.backup_id != binding.backup_id || source.evidence.manifest_sha256 != binding.backup_manifest_sha256
+            || source.evidence.inventory_sha256 != binding.source_inventory_sha256 || source.evidence.schema_sha256 != binding.source_schema_sha256
+            || preparation.observation.evidence.target_schema_sha256 != binding.target_schema_sha256
+            || preparation.observation.evidence.target_migrations_sha256 != binding.target_migrations_sha256
+            || preparation.observation.evidence.target_system_identifier != binding.target_system_identifier {
+            return Err(crate::err("UPDATE_POLICY_STALE"));
+        }
+        let source_root = source_session.target_observation_root().to_owned();
+        let target_root = preparation.observation.root.clone();
+        if hash(source_root.as_os_str().as_encoded_bytes()) != binding.source_root_sha256
+            || hash(target_root.as_os_str().as_encoded_bytes()) != binding.target_root_sha256 { return Err(crate::err("UPDATE_PLAN_MISMATCH")); }
+        let authority = serde_json::json!({"scope":self.scope,"generation":binding.authority_generation,"policyGeneration":binding.policy_generation,"recordSha256":binding.authority_sha256,"signedReleasePayloadSha256":binding.release_payload_sha256,"signedArtifactSha256":binding.artifact_sha256});
+        let admission = RefCell::new(admitted);
+        source.source.with_published_configuration(source_session, target_session, &binding.operation_id, &binding.attempt_id,
+            &preparation.observation.evidence, &authority,
+            |profile, id, from, to| {
+                check_durable_head(self)?;
+                if self.current_sha256 != *head || self.current.native_publication.as_ref() != Some(binding)
+                    || !binding.current_predecessor(&self.current) || id != binding.source_instance || from != source_root || to != target_root { return Err(crate::err("UPDATE_POLICY_STALE")); }
+                let mut admitted = admission.borrow_mut();
+                if admitted.scope != self.scope || admitted.generation != binding.authority_generation
+                    || admitted.policy_generation != binding.policy_generation || admitted.authority_sha256 != binding.authority_sha256 { return Err(crate::err("UPDATE_POLICY_STALE")); }
+                let now = clock()?;
+                let mut verified = self.verify_native(&admitted.envelope, now).map_err(|e| crate::err(e.code()))?;
+                admitted.staged.reverify(&mut verified, now).map_err(|e| crate::err(e.code()))?;
+                admitted.payload.recheck().map_err(|_| crate::err("UPDATE_PLAN_MISMATCH"))?;
+                if verified.payload_sha256 != binding.release_payload_sha256 || verified.release.artifact.sha256 != binding.artifact_sha256
+                    || admitted.payload.context().manifest_sha256 != binding.target_payload_sha256 { return Err(crate::err("UPDATE_PLAN_MISMATCH")); }
+                self.check_native_target_selection(profile, id, from, &binding.target_instance, to)
+            },
+            |_, _| { held._source.recheck_source()?; held._staged.recheck()?; held.snapshot.recheck() },
+        )?;
+        held._source.recheck_source()?; held._staged.recheck()?; held.snapshot.recheck()?; check_durable_head(self)?;
+        let now = clock()?;
+        let admitted = admission.borrow();
+        let verified = self.verify_native(&admitted.envelope, now).map_err(|e| crate::err(e.code()))?;
+        if verified.payload_sha256 != binding.release_payload_sha256 { return Err(crate::err("UPDATE_POLICY_STALE")); }
+        Ok(NativePublishedConfigurationObservationReceipt { operation_id: binding.operation_id.clone(), authority_sha256: head.clone(),
+            configuration_verified: true, target_inventory_reobserved: false, preflight_verified: false, execution_permitted: false })
+    }
     /// Offline repair of an interrupted inactive publication. The supplied key
     /// must authenticate the archive already bound by this Store; disk markers
     /// and caller paths alone never confer repair authority.
@@ -691,21 +792,31 @@ impl Store {
         source_session: &mut Session, target_session: &mut Session,
     ) -> crate::Result<NativeConfigurationPublishedReceipt> {
         self.publish_native_configuration_with_clock(admitted, source, preparation, permit, source_session, target_session,
+            &|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|v| v.as_secs()).map_err(|_| crate::err("TRUST_CLOCK_ROLLBACK"))).map(|v| v.receipt)
+    }
+    /// Additive variant retaining a private configuration observation for the
+    /// same held operation. It conveys no preflight or execution permission.
+    pub fn publish_native_configuration_held(
+        &mut self, admitted: &mut AdmittedNativePayload, source: &mut NativeSourceObservation,
+        preparation: &mut NativeTargetPreparation, permit: NativePublicationPermit,
+        source_session: &mut Session, target_session: &mut Session,
+    ) -> crate::Result<NativePublishedConfiguration> {
+        self.publish_native_configuration_with_clock(admitted, source, preparation, permit, source_session, target_session,
             &|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|v| v.as_secs()).map_err(|_| crate::err("TRUST_CLOCK_ROLLBACK")))
     }
     #[cfg(test)]
-    pub(crate) fn publish_native_configuration_test_clock(
+    pub(crate) fn publish_native_configuration_held_test_clock(
         &mut self, admitted: &mut AdmittedNativePayload, source: &mut NativeSourceObservation,
         preparation: &mut NativeTargetPreparation, permit: NativePublicationPermit,
         source_session: &mut Session, target_session: &mut Session, now: u64,
-    ) -> crate::Result<NativeConfigurationPublishedReceipt> {
+    ) -> crate::Result<NativePublishedConfiguration> {
         self.publish_native_configuration_with_clock(admitted, source, preparation, permit, source_session, target_session, &|| Ok(now))
     }
     fn publish_native_configuration_with_clock(
         &mut self, admitted: &mut AdmittedNativePayload, source: &mut NativeSourceObservation,
         preparation: &mut NativeTargetPreparation, permit: NativePublicationPermit,
         source_session: &mut Session, target_session: &mut Session, clock: &dyn Fn() -> crate::Result<u64>,
-    ) -> crate::Result<NativeConfigurationPublishedReceipt> {
+    ) -> crate::Result<NativePublishedConfiguration> {
         use std::cell::RefCell;
         use super::super::native_publication_history::NativePublicationState;
         let binding = self.current.native_publication.clone().filter(|b| b.pending() && b.current_predecessor(&self.current))
@@ -727,7 +838,7 @@ impl Store {
         let authority = serde_json::json!({"scope":self.scope,"generation":binding.authority_generation,"policyGeneration":binding.policy_generation,"recordSha256":binding.authority_sha256,"signedReleasePayloadSha256":binding.release_payload_sha256,"signedArtifactSha256":binding.artifact_sha256});
         let expected = preparation.observation.evidence.clone();
         let store = RefCell::new(self); let admission = RefCell::new(admitted);
-        let (_, (published_head, operation)) = source.source.with_target_configuration(source_session, target_session,
+        let (_, (published_head, operation, snapshot)) = source.source.with_target_configuration(source_session, target_session,
             &binding.operation_id, &binding.attempt_id, &expected, &authority,
             |profile, id, from, to| {
                 let store = store.borrow(); let mut admitted = admission.borrow_mut();
@@ -760,7 +871,9 @@ impl Store {
                 before.publish_afterimages(&permit._plan, profile, root, owner, || {
                     revalidate(true, false)?; permit._plan.recheck_source()?; permit._staged.recheck()?; key_pin.check()
                 })?;
+                let snapshot = before.capture_published(profile, root, owner)?;
                 revalidate(true, false)?; permit._plan.recheck_source()?; permit._staged.recheck()?; key_pin.check()?;
+                snapshot.recheck()?;
                 let mut store = store.borrow_mut(); let admitted = admission.borrow();
                 let now = clock()?;
                 let fresh_release = store.verify_native(&admitted.envelope, now).map_err(|e| crate::err(e.code()))?;
@@ -773,10 +886,11 @@ impl Store {
                 let record: Record = serde_json::from_slice(&bytes).map_err(|_| crate::err("TRUST_INVALID"))?;
                 let mut published = binding.clone(); published.state = NativePublicationState::PublishedInactive;
                 if hash(&bytes) != store.current_sha256 || record.native_publication.as_ref() != Some(&published) { return Err(crate::err("TRUST_WRITE_UNCERTAIN")); }
-                revalidate(false, false)?; permit._plan.recheck_source()?; permit._staged.recheck()?; key_pin.check()?;
-                Ok((store.current_sha256.clone(), binding.operation_id.clone()))
+                revalidate(false, false)?; permit._plan.recheck_source()?; permit._staged.recheck()?; key_pin.check()?; snapshot.recheck()?;
+                Ok((store.current_sha256.clone(), binding.operation_id.clone(), snapshot))
             })?;
-        Ok(NativeConfigurationPublishedReceipt { operation_id: operation, state: "PublishedInactive", authority_sha256: published_head, preflight_verified: false, execution_permitted: false })
+        let receipt = NativeConfigurationPublishedReceipt { operation_id: operation, state: "PublishedInactive", authority_sha256: published_head, preflight_verified: false, execution_permitted: false };
+        Ok(NativePublishedConfiguration { receipt, snapshot, _source: permit._plan, _staged: permit._staged })
     }
 
     /// Commit a source-bound inactive publication intent. This stages only an

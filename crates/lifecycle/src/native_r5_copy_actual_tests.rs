@@ -172,10 +172,15 @@ fn exercise_r5(mode: u8) {
         for prefix in prefixes { assert!(!profile.join(format!("{prefix}{target_suffix}.json")).exists()); }
         assert_eq!(crate::installations::load(&profile).unwrap().unwrap().0.active_id,source_id);
         if mode == 3 {
-            let published=store.publish_native_configuration_test_clock(&mut admitted,&mut source,&mut prepared,permit,&mut source_session,&mut target_session,20).unwrap();
-            let published=serde_json::to_value(published).unwrap();
+            let held=store.publish_native_configuration_held_test_clock(&mut admitted,&mut source,&mut prepared,permit,&mut source_session,&mut target_session,20).unwrap();
+            let published=serde_json::to_value(held.receipt()).unwrap();
             assert_eq!(published["state"],"PublishedInactive");
             assert_eq!(published["executionPermitted"],false); assert_eq!(published["preflightVerified"],false);
+            let observation=store.observe_published_native_configuration_test_clock(&mut admitted,&source,&prepared,&held,&source_session,&target_session,20).unwrap();
+            let observation=serde_json::to_value(observation).unwrap();
+            assert_eq!(observation["configurationVerified"],true); assert_eq!(observation["targetInventoryReobserved"],false);
+            assert_eq!(observation["preflightVerified"],false); assert_eq!(observation["executionPermitted"],false);
+            drop(held);
             target_session.stop().unwrap(); source_session.stop().unwrap();
             drop(target_session); drop(source_session);
             let repair=store.repair_native_configuration_publication(&key_file).unwrap();
@@ -187,7 +192,7 @@ fn exercise_r5(mode: u8) {
             for prefix in prefixes { assert!(!profile.join(format!("{prefix}{target_suffix}.json")).exists()); }
             assert_eq!(crate::installations::load(&profile).unwrap().unwrap().0.active_id,source_id);
             assert!(candidate_root.join("native-target-preparation-current.json").exists());
-            fs::write(root.join("result.json"),serde_json::to_vec_pretty(&serde_json::json!({"scope":"REAL_SIGNED_TEST_R5_INACTIVE_PUBLICATION_AND_OFFLINE_REPAIR_ONLY","beginReceipt":begin_receipt,"publishedReceipt":published,"repairReceipt":repair_receipt,"configurationAndSourceFilesUnchangedAfterRepair":true,"sourceSelectionPreserved":true,"targetJournalsNotInstalled":true,"inactiveMarkerRetained":true})).unwrap()).unwrap();
+            fs::write(root.join("result.json"),serde_json::to_vec_pretty(&serde_json::json!({"scope":"REAL_SIGNED_TEST_R5_INACTIVE_PUBLICATION_CONFIG_OBSERVATION_AND_OFFLINE_REPAIR_ONLY","beginReceipt":begin_receipt,"publishedReceipt":published,"observationReceipt":observation,"repairReceipt":repair_receipt,"configurationAndSourceFilesUnchangedAfterRepair":true,"sourceSelectionPreserved":true,"targetJournalsNotInstalled":true,"inactiveMarkerRetained":true})).unwrap()).unwrap();
             return;
         }
         target_session.stop().unwrap(); source_session.stop().unwrap();

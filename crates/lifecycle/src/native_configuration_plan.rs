@@ -85,6 +85,31 @@ pub(crate) struct AuthenticatedBeforeimages {
     manifest_pin: Pin,
     archive_pin: Pin,
 }
+/// Pins the exact published configuration and its absence/inventory boundaries.
+/// This is an in-process observation, never an activation or execution permit.
+pub(crate) struct PublishedConfigurationSnapshot {
+    before: AuthenticatedBeforeimages,
+    profile: PathBuf,
+    target: PathBuf,
+    owner: &'static str,
+    pins: Vec<Pin>,
+}
+impl PublishedConfigurationSnapshot {
+    pub(crate) fn recheck(&self) -> Result<()> {
+        self.before.check_closed_destinations(&self.target, self.owner)?;
+        self.before.check_inventory(&self.profile, &self.target)?;
+        self.before.check_no_repair_temps(&self.profile, &self.target)?;
+        for (index, file) in self.before.manifest.files.iter().enumerate() {
+            self.pins[index].check()?;
+            let root = if file.profile { &self.profile } else { &self.target };
+            let bytes = Secret(installation_backup::source_bytes(root, &file.name, 2_200_000, true)?);
+            if bytes.0.len() as u64 != file.after_bytes || digest(&bytes.0) != file.after_sha256
+                || self.before.after_temporary(index)?.is_some() { return Err(err("NATIVE_TARGET_CONFIGURATION_CHANGED")); }
+            self.pins[index].check()?;
+        }
+        self.before.recheck()
+    }
+}
 impl AuthenticatedBeforeimages {
     pub(crate) fn recheck(&self) -> Result<()> {
         self.directory.check()?; self.manifest_pin.check()?; self.archive_pin.check()
@@ -112,6 +137,26 @@ impl AuthenticatedBeforeimages {
         let owner = owners.next().ok_or_else(bad)?;
         if owners.next().is_some() { return Err(bad()); }
         match owner.name.as_str() { "native-personal.json" => Ok("native-personal.json"), "native-installation.json" => Ok("native-installation.json"), _ => Err(bad()) }
+    }
+    pub(crate) fn capture_published(mut self, profile: &Path, target: &Path, owner: &'static str) -> Result<PublishedConfigurationSnapshot> {
+        self.check_closed_destinations(target, owner)?;
+        self.check_inventory(profile, target)?;
+        self.check_no_repair_temps(profile, target)?;
+        let mut pins = Vec::with_capacity(self.manifest.files.len());
+        for (index, file) in self.manifest.files.iter().enumerate() {
+            let root = if file.profile { profile } else { target };
+            let private = Secret(installation_backup::source_bytes(root, &file.name, 2_200_000, true)?);
+            let (bytes, pin) = crate::hosted_runtime_file::bounded(&root.join(&file.name), 2_200_000)?;
+            let bytes = Secret(bytes);
+            if private.0 != bytes.0 || bytes.0.len() as u64 != file.after_bytes || digest(&bytes.0) != file.after_sha256
+                || self.after_temporary(index)?.is_some() { return Err(err("NATIVE_TARGET_CONFIGURATION_CHANGED")); }
+            pins.push(pin);
+        }
+        // Rechecks need only commitments and pins; do not retain decrypted
+        // beforeimage secrets in a long-lived observation capability.
+        self.archive.entries.clear();
+        let snapshot = PublishedConfigurationSnapshot { before: self, profile: profile.to_owned(), target: target.to_owned(), owner, pins };
+        snapshot.recheck()?; Ok(snapshot)
     }
     /// Classify every destination before the first mutation. Unexpected bytes,
     /// links and unsafe file ownership fail closed; authenticated AFTER is not
@@ -141,6 +186,17 @@ impl AuthenticatedBeforeimages {
         for entry in fs::read_dir(&config).map_err(|_| bad())? {
             let name = entry.map_err(|_| bad())?.file_name().into_string().map_err(|_| bad())?;
             if name != "freeze-signing-key.json" && name != temp { return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT")); }
+        }
+        Ok(())
+    }
+    fn check_no_repair_temps(&self, profile: &Path, target: &Path) -> Result<()> {
+        for (index, file) in self.manifest.files.iter().enumerate() {
+            let root = if file.profile { profile } else { target };
+            let destination = root.join(&file.name);
+            let parent = destination.parent().ok_or_else(bad)?;
+            if exists(parent, &format!(".native-publication-repair-{}-{index}", self.manifest.attempt_id))? {
+                return Err(err("NATIVE_TARGET_CONFIGURATION_CHANGED"));
+            }
         }
         Ok(())
     }
@@ -789,6 +845,14 @@ mod begin_stage_tests {
         assert_eq!(fs::read(target.join("runtime.env")).unwrap(), b"new-env");
         assert_eq!(fs::read(target.join("native-personal.json")).unwrap(), b"new-owner");
         assert_eq!(fs::read(target.join("config/freeze-signing-key.json")).unwrap(), b"source-key");
+        let fresh = open_beforeimages(&directory, &operation, &attempt, &key, &staged.manifest_sha256, &staged.beforeimage_archive_sha256).unwrap();
+        let snapshot = fresh.capture_published(&profile, &target, "native-personal.json").unwrap();
+        snapshot.recheck().unwrap();
+        fs::write(target.join("runtime.env"), b"tampered").unwrap();
+        assert!(snapshot.recheck().is_err());
+        fs::write(target.join("runtime.env"), b"new-env").unwrap();
+        assert!(snapshot.recheck().is_err(), "same bytes cannot revive a changed held identity");
+        drop(snapshot);
         opened.restore_beforeimages(&profile, &target, "native-personal.json", || Ok(())).unwrap();
         write_private_new(&directory, "after-0.tmp", b"unrecognized", 65536).unwrap();
         assert!(opened.restore_beforeimages(&profile, &target, "native-personal.json", || Ok(())).is_err());
