@@ -150,9 +150,14 @@ public struct SharedFurnishingFormBuffer: Equatable, Sendable {
     public var selected: Bool
     public var x: String, y: String, z: String, yawDegrees: String, scale: String
     private let initialPose: FurnishingPose?, initialYaw: String
+    private let openingOffset: [Double]?
     public init(draft: NativeExhibitionDraft, host: SharedFurnishingCommand.Host, hostId: String) throws {
         let pose = try SharedFurnishingPreview.pose(in: draft, host: host, id: hostId)
         self.host = host; self.hostId = hostId; selected = pose != nil; initialPose = pose
+        if host == .opening, let row = draft.candidate["openings"].items?.first(where: { $0["id"].string == hostId }),
+           let values = row["offset"].items, values.count == 2, values.allSatisfy({ $0.double?.isFinite == true }) {
+            openingOffset = values.compactMap(\.double)
+        } else { openingOffset = nil }
         x = pose.map { String($0.position[0]) } ?? ""; y = pose.map { String($0.position[1]) } ?? ""; z = pose.map { String($0.position[2]) } ?? ""
         yawDegrees = pose.map { String($0.yaw * 180 / .pi) } ?? "0"; scale = pose.map { String($0.scale) } ?? "1"
         if pose == nil {
@@ -179,7 +184,21 @@ public struct SharedFurnishingFormBuffer: Equatable, Sendable {
             guard let value = Double(text), value.isFinite else { throw AuthoringFailure("FURNISHING_FIELDS_INVALID") }
             return value
         }
-        let yaw = yawDegrees == initialYaw && initialPose != nil ? initialPose!.yaw : try number(yawDegrees) * .pi / 180
-        return try .init(host: host, hostId: hostId, pose: FurnishingPose(position: [number(x), number(y), number(z)], yaw: yaw, scale: number(scale)))
+        let factor = try number(scale)
+        let position: [Double], yaw: Double
+        switch host {
+        case .light:
+            let aperture = try SharedFurnishingCatalog.descriptor("museum-track-spot")["functional"]["apertureCentre"].items?.compactMap(\.double)
+            guard let aperture, aperture.count == 3 else { throw AuthoringFailure("FURNISHING_INVALID") }
+            position = aperture.map { -$0 * factor }; yaw = 0
+        case .opening:
+            let height = try SharedFurnishingCatalog.descriptor("gallery-open-portal")["functional"]["clearOpening"]["height"].double
+            guard let offset = openingOffset, offset.count == 2, let height else { throw AuthoringFailure("FURNISHING_INVALID") }
+            position = [offset[0], offset[1] - height * factor / 2, 0]; yaw = 0
+        case .pedestal, .bench:
+            position = try [number(x), number(y), number(z)]
+            yaw = yawDegrees == initialYaw && initialPose != nil ? initialPose!.yaw : try number(yawDegrees) * .pi / 180
+        }
+        return try .init(host: host, hostId: hostId, pose: FurnishingPose(position: position, yaw: yaw, scale: factor))
     }
 }

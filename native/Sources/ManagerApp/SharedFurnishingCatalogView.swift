@@ -29,11 +29,14 @@ struct SharedFurnishingCatalogView: View {
                         Text("CC0 1.0 · 전시에 사용한 모델과 고지문을 함께 보관합니다.").font(.caption).foregroundStyle(.secondary)
                         if form.selected {
                             VStack(alignment: .leading, spacing: 8) {
-                            Text(target.0 == .light ? "조명 기준 좌표 · 미터" : target.0 == .opening ? "벽 기준 좌표 · 미터" : "공간 기준 좌표 · 미터").font(.caption).foregroundStyle(.secondary)
-                            TextField("가로 위치 X · m", text: field(\.x)); TextField("높이 Y · m", text: field(\.y)); TextField("깊이 Z · m", text: field(\.z))
-                            TextField("방향 · −180–180°", text: field(\.yawDegrees)); TextField("비례 크기 · 0.1–4", text: field(\.scale))
-                            if target.0 == .light { Text("스폿 조명에 연결합니다. 회전은 0°, X는 0, Y는 크기 × 0.15, Z는 크기 × 0.0755로 입력하세요.").font(.caption).foregroundStyle(.secondary) }
-                            if target.0 == .opening { Text("문의 벽 기준 위치에 맞춰 입력하세요. 연결된 문의 크기가 달라지면 적용되지 않습니다.").font(.caption).foregroundStyle(.secondary) }
+                            if target.0 == .pedestal || target.0 == .bench {
+                                Text("공간 기준 좌표 · 미터").font(.caption).foregroundStyle(.secondary)
+                                TextField("가로 위치 X · m", text: field(\.x)); TextField("높이 Y · m", text: field(\.y)); TextField("깊이 Z · m", text: field(\.z))
+                                TextField("방향 · −180–180°", text: field(\.yawDegrees))
+                            }
+                            TextField("비례 크기 · 0.1–4", text: field(\.scale))
+                            if target.0 == .light { Text("스폿 조명의 발광 위치에 맞춰 외형을 놓습니다.").font(.caption).foregroundStyle(.secondary) }
+                            if target.0 == .opening { Text("문의 위치에 맞춰 외형을 놓습니다. 연결된 문의 크기가 달라지면 적용되지 않습니다.").font(.caption).foregroundStyle(.secondary) }
                             }.disabled(!ready || !model.canEditSharedFurnishing)
                         }
                         HStack {
