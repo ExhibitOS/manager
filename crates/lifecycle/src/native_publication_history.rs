@@ -6,35 +6,35 @@ use super::*;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct NativePublicationBinding {
-    format: u8,
+    pub(super) format: u8,
     pub(super) operation_id: String,
-    attempt_id: String,
+    pub(super) attempt_id: String,
     pub(super) source_instance: String,
     pub(super) target_instance: String,
-    source_root_sha256: String,
-    target_root_sha256: String,
-    source_payload_sha256: String,
-    target_payload_sha256: String,
-    release_payload_sha256: String,
-    artifact_sha256: String,
-    backup_id: String,
-    backup_manifest_sha256: String,
-    source_inventory_sha256: String,
-    source_schema_sha256: String,
-    target_schema_sha256: String,
-    target_migrations_sha256: String,
-    source_system_identifier: String,
-    target_system_identifier: String,
-    configuration_manifest_sha256: String,
-    beforeimage_archive_sha256: String,
+    pub(super) source_root_sha256: String,
+    pub(super) target_root_sha256: String,
+    pub(super) source_payload_sha256: String,
+    pub(super) target_payload_sha256: String,
+    pub(super) release_payload_sha256: String,
+    pub(super) artifact_sha256: String,
+    pub(super) backup_id: String,
+    pub(super) backup_manifest_sha256: String,
+    pub(super) source_inventory_sha256: String,
+    pub(super) source_schema_sha256: String,
+    pub(super) target_schema_sha256: String,
+    pub(super) target_migrations_sha256: String,
+    pub(super) source_system_identifier: String,
+    pub(super) target_system_identifier: String,
+    pub(super) configuration_manifest_sha256: String,
+    pub(super) beforeimage_archive_sha256: String,
     pub(super) authority_generation: u64,
-    authority_sha256: String,
+    pub(super) authority_sha256: String,
     pub(super) policy_generation: u64,
-    state: NativePublicationState,
+    pub(super) state: NativePublicationState,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-enum NativePublicationState { Pending, PublishedInactive, RestoredGeneratedInactive }
+pub(super) enum NativePublicationState { Pending, PublishedInactive, RestoredGeneratedInactive }
 
 fn canonical_uuid(s: &str) -> bool {
     uuid::Uuid::parse_str(s).ok().is_some_and(|id| id.to_string() == s)

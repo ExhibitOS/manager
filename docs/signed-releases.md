@@ -51,14 +51,15 @@ inspector is not that general observer. Until those adapters, the existing
 plan/journal/backup gates and retained old-payload fallback are connected and
 verified, no native update, manifest transition or image-only rollback is implied.
 
-The native publication history schema is a closed, versioned binding for a
-future inactive-configuration operation; it is not a publication, repair,
-preflight or execution permit. Existing records omit the optional field and keep
-their existing serialization. There is currently no public operation that writes
-the native binding. A reader built before this schema rejects a history once a
+The native publication history schema is a closed, versioned binding for an
+inactive-configuration operation. A source-bound begin operation stages an
+authenticated beforeimage archive and commits a pending binding; it does not
+publish configuration, repair, complete preflight or permit execution. Existing
+records omit the optional field and keep their existing serialization. A reader
+built before this schema rejects a history once a
 native record exists, including after its terminal record: do not rewrite history
 or lower trust floors to make an older reader accept it. Retain the matching new
-reader and a separately verified original recovery baseline before any future
+reader and a separately verified original recovery baseline before any
 workflow writes such a record. An intervening authority or policy generation
 invalidates the bound continuation. Resumption would require a separate explicit
 renewal transition and fresh revalidation; neither is provided by this schema.

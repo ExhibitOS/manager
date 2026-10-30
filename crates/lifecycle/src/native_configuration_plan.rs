@@ -4,6 +4,7 @@
 use super::*;
 use crate::hosted_runtime_file::Pin;
 use crate::maintenance_source::DirectoryPin;
+use aes_gcm::{Aes256Gcm, Nonce, aead::{Aead, KeyInit, OsRng, Payload as CipherPayload, rand_core::RngCore}};
 
 struct ConfigurationFile {
     _profile: bool,
@@ -11,11 +12,57 @@ struct ConfigurationFile {
     _bytes: Secret,
 }
 pub(crate) struct ReboundConfigurationPlan {
+    profile_root: PathBuf,
+    source_root: PathBuf,
+    target_root: PathBuf,
     files: Vec<ConfigurationFile>,
     pins: Vec<Pin>,
     directories: Vec<DirectoryPin>,
     candidate_configuration: crate::installations::native_backup::CandidateConfiguration,
     absent: Vec<(PathBuf, String)>,
+}
+const BEFOREIMAGE_DOMAIN: &[u8] = b"ExhibitOS-native-publication-beforeimages-v1\0";
+const BEFOREIMAGE_LIMIT: usize = 1024 * 1024;
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigurationCommitment {
+    profile: bool,
+    name: String,
+    before_sha256: Option<String>,
+    before_bytes: Option<u64>,
+    after_sha256: String,
+    after_bytes: u64,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BeforeimageEntry<'a> {
+    profile: bool,
+    name: &'a str,
+    bytes: Option<&'a [u8]>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BeforeimageArchive<'a> {
+    format: u8,
+    operation_id: &'a str,
+    attempt_id: &'a str,
+    entries: Vec<BeforeimageEntry<'a>>,
+}
+/// Held staged identities are evidence for a later trust commit, not authority
+/// to publish target files or reconstruct an operation after restart.
+pub(crate) struct StagedNativeConfiguration {
+    pub(crate) manifest_sha256: String,
+    pub(crate) beforeimage_archive_sha256: String,
+    directory: DirectoryPin,
+    manifest: Pin,
+    archive: Pin,
+}
+impl StagedNativeConfiguration {
+    pub(crate) fn recheck(&self) -> Result<()> {
+        self.directory.check()?;
+        self.manifest.check()?;
+        self.archive.check()
+    }
 }
 impl ReboundConfigurationPlan {
     pub(crate) fn file_count(&self) -> usize {
@@ -25,7 +72,8 @@ impl ReboundConfigurationPlan {
     /// authority. Both sets of source and candidate pins remain independently
     /// live and must still pass their rechecks.
     pub(crate) fn matches(&self, other: &Self) -> bool {
-        self.files.len() == other.files.len()
+        self.profile_root == other.profile_root && self.source_root == other.source_root && self.target_root == other.target_root
+            && self.files.len() == other.files.len()
             && self.files.iter().zip(&other.files).all(|(a, b)| {
                 a._profile == b._profile && a._name == b._name && a._bytes.0 == b._bytes.0
             })
@@ -44,6 +92,64 @@ impl ReboundConfigurationPlan {
             }
         }
         Ok(())
+    }
+
+    /// Stage only under an already fenced inactive candidate. Caller retains
+    /// both Session fences and the profile fence, and revalidates authority
+    /// before and after this operation. No destination file is changed.
+    pub(crate) fn stage_beforeimages(&self, profile: &Path, target: &Path, directory: &Path,
+                                     operation: &str, attempt: &str, key: &[u8]) -> Result<StagedNativeConfiguration> {
+        if profile != self.profile_root || target != self.target_root || !uuid(operation) || !uuid(attempt) || operation == attempt || key.len() != 32
+            || directory != target.join(format!("native-target-preparation-{operation}"))
+            || self.files.len() < 3 || self.files.len() > 7 { return Err(bad()); }
+        private_directory(directory)?;
+        if fs::canonicalize(directory).ok().as_deref() != Some(directory) { return Err(bad()); }
+        self.recheck()?;
+        let mut commitments = Vec::with_capacity(self.files.len());
+        let mut previous = Vec::with_capacity(self.files.len());
+        let mut names = BTreeSet::new();
+        for file in &self.files {
+            if !names.insert((file._profile, file._name.clone())) { return Err(bad()); }
+            let root = if file._profile { profile } else { target };
+            let before = if exists(root, &file._name)? {
+                Some(Secret(installation_backup::source_bytes(root, &file._name, 65536, true)?))
+            } else { None };
+            if file._profile && before.is_some() { return Err(err("NATIVE_TARGET_CONFIGURATION_CHANGED")); }
+            commitments.push(ConfigurationCommitment {
+                profile: file._profile, name: file._name.clone(),
+                before_sha256: before.as_ref().map(|b| digest(&b.0)),
+                before_bytes: before.as_ref().map(|b| b.0.len() as u64),
+                after_sha256: digest(&file._bytes.0), after_bytes: file._bytes.0.len() as u64,
+            });
+            previous.push(before);
+        }
+        self.recheck()?;
+        let entries: Vec<_> = self.files.iter().zip(&previous).map(|(f, b)| BeforeimageEntry {
+            profile: f._profile, name: &f._name, bytes: b.as_ref().map(|v| v.0.as_slice()),
+        }).collect();
+        let manifest = serde_json::to_vec(&serde_json::json!({"format":1,"operationId":operation,"attemptId":attempt,"files":commitments})).map_err(|_| bad())?;
+        if manifest.len() > 65536 { return Err(bad()); }
+        let manifest_sha256 = digest(&manifest);
+        let mut aad = BEFOREIMAGE_DOMAIN.to_vec(); aad.extend_from_slice(manifest_sha256.as_bytes());
+        let mut plain = Secret(serde_json::to_vec(&BeforeimageArchive { format: 1, operation_id: operation, attempt_id: attempt, entries }).map_err(|_| bad())?);
+        if plain.0.len() > BEFOREIMAGE_LIMIT { return Err(bad()); }
+        let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| bad())?;
+        let mut nonce = [0u8; 12]; OsRng.fill_bytes(&mut nonce);
+        let encrypted = cipher.encrypt(Nonce::from_slice(&nonce), CipherPayload { msg: &plain.0, aad: &aad }).map_err(|_| bad())?;
+        plain.0.fill(0);
+        let mut archive = Vec::with_capacity(BEFOREIMAGE_DOMAIN.len() + nonce.len() + encrypted.len());
+        archive.extend_from_slice(BEFOREIMAGE_DOMAIN); archive.extend_from_slice(&nonce); archive.extend_from_slice(&encrypted);
+        let staged = directory.join(format!("publication-{attempt}"));
+        new_directory(&staged)?;
+        write_private_new(&staged, "configuration.json", &manifest, 65536)?;
+        write_private_new(&staged, "beforeimages.bin", &archive, BEFOREIMAGE_LIMIT + 128)?;
+        File::open(&staged).and_then(|f| f.sync_all()).map_err(|_| bad())?;
+        File::open(directory).and_then(|f| f.sync_all()).map_err(|_| bad())?;
+        let (manifest_check, manifest_pin) = crate::hosted_runtime_file::bounded(&staged.join("configuration.json"), 65536)?;
+        let (archive_check, archive_pin) = crate::hosted_runtime_file::bounded(&staged.join("beforeimages.bin"), (BEFOREIMAGE_LIMIT + 128) as u64)?;
+        if manifest_check != manifest || archive_check != archive { return Err(bad()); }
+        let staged = StagedNativeConfiguration { manifest_sha256, beforeimage_archive_sha256: digest(&archive), directory: DirectoryPin::open(&staged)?, manifest: manifest_pin, archive: archive_pin };
+        self.recheck()?; staged.recheck()?; Ok(staged)
     }
 }
 fn pinned_secret(root: &Path, name: &str, limit: u64, pins: &mut Vec<Pin>) -> Result<Secret> {
@@ -307,6 +413,9 @@ pub(crate) fn plan_rebound_configuration(
         });
     }
     let plan = ReboundConfigurationPlan {
+        profile_root: profile.to_owned(),
+        source_root: source_root.to_owned(),
+        target_root: root,
         files,
         pins,
         directories,
@@ -315,4 +424,53 @@ pub(crate) fn plan_rebound_configuration(
     };
     plan.recheck()?;
     Ok(plan)
+}
+
+#[cfg(test)]
+mod begin_stage_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use aes_gcm::aead::Aead;
+
+    #[test]
+    fn staged_beforeimages_are_authenticated_and_destinations_unchanged() {
+        let root = std::env::temp_dir().join(format!("native-publication-stage-{}", Uuid::new_v4()));
+        fs::create_dir(&root).unwrap(); fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let profile = root.join("profile"); let target = root.join("target");
+        new_directory(&profile).unwrap(); new_directory(&target).unwrap(); new_directory(&target.join("config")).unwrap();
+        write_private_new(&target, "runtime.env", b"old-env", 65536).unwrap();
+        write_private_new(&target, "native-personal.json", b"old-owner", 65536).unwrap();
+        let operation = Uuid::new_v4().to_string(); let attempt = Uuid::new_v4().to_string();
+        let parent = target.join(format!("native-target-preparation-{operation}")); new_directory(&parent).unwrap();
+        let plan = ReboundConfigurationPlan {
+            profile_root: profile.clone(), source_root: root.join("synthetic-source"), target_root: target.clone(),
+            files: vec![
+                ConfigurationFile { _profile: false, _name: "runtime.env".into(), _bytes: Secret(b"new-env".to_vec()) },
+                ConfigurationFile { _profile: false, _name: "native-personal.json".into(), _bytes: Secret(b"new-owner".to_vec()) },
+                ConfigurationFile { _profile: false, _name: "config/freeze-signing-key.json".into(), _bytes: Secret(b"source-key".to_vec()) },
+            ], pins: vec![], directories: vec![DirectoryPin::open(&profile).unwrap(), DirectoryPin::open(&target).unwrap()],
+            candidate_configuration: crate::installations::native_backup::CandidateConfiguration::capture(&target.join("config")).unwrap(), absent: vec![],
+        };
+        let key = [7u8; 32];
+        let staged = plan.stage_beforeimages(&profile, &target, &parent, &operation, &attempt, &key).unwrap();
+        staged.recheck().unwrap();
+        assert_eq!(fs::read(target.join("runtime.env")).unwrap(), b"old-env");
+        assert_eq!(fs::read(target.join("native-personal.json")).unwrap(), b"old-owner");
+        assert!(!target.join("config/freeze-signing-key.json").exists());
+        let directory = parent.join(format!("publication-{attempt}"));
+        let raw = fs::read(directory.join("beforeimages.bin")).unwrap();
+        let mut aad = BEFOREIMAGE_DOMAIN.to_vec(); aad.extend_from_slice(staged.manifest_sha256.as_bytes());
+        let plaintext = Aes256Gcm::new_from_slice(&key).unwrap().decrypt(Nonce::from_slice(&raw[BEFOREIMAGE_DOMAIN.len()..BEFOREIMAGE_DOMAIN.len()+12]), CipherPayload { msg: &raw[BEFOREIMAGE_DOMAIN.len()+12..], aad: &aad }).unwrap();
+        let value: Value = serde_json::from_slice(&plaintext).unwrap();
+        assert_eq!(value["operationId"], operation); assert_eq!(value["attemptId"], attempt);
+        assert_eq!(value["entries"][0]["bytes"], serde_json::json!(b"old-env".to_vec()));
+        assert!(value["entries"][2]["bytes"].is_null());
+        aad.push(0);
+        assert!(Aes256Gcm::new_from_slice(&key).unwrap().decrypt(Nonce::from_slice(&raw[BEFOREIMAGE_DOMAIN.len()..BEFOREIMAGE_DOMAIN.len()+12]), CipherPayload { msg: &raw[BEFOREIMAGE_DOMAIN.len()+12..], aad: &aad }).is_err());
+        fs::write(directory.join("configuration.json"), b"changed").unwrap();
+        assert!(staged.recheck().is_err());
+        assert!(plan.stage_beforeimages(&profile, &target, &parent, &operation, &attempt, &key).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 }

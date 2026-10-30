@@ -188,7 +188,8 @@ impl AuthenticatedNativeBackup {
         expected_attempt: &str, expected: &NativeTargetEvidence, authority: &Value,
         check_selection: impl FnMut(&Path, &str, &Path, &Path) -> Result<()>,
     ) -> Result<super::super::native_restore::ReboundConfigurationPlan> {
-        self.with_target_configuration(source, target, operation, expected_attempt, expected, authority, check_selection, |plan| Ok(plan))
+        let (plan, ()) = self.with_target_configuration(source, target, operation, expected_attempt, expected, authority, check_selection, |_, _, _, _, _, _| Ok(()))?;
+        Ok(plan)
     }
 
     /// Run the final operation while the same profile and both session fences
@@ -198,8 +199,8 @@ impl AuthenticatedNativeBackup {
         &self, source: &mut Session, target: &mut Session, operation: &str,
         expected_attempt: &str, expected: &NativeTargetEvidence, authority: &Value,
         mut check_selection: impl FnMut(&Path, &str, &Path, &Path) -> Result<()>,
-        finish: impl FnOnce(super::super::native_restore::ReboundConfigurationPlan) -> Result<T>,
-    ) -> Result<T> {
+        finish: impl FnOnce(&super::super::native_restore::ReboundConfigurationPlan, &Path, &Path, &Path, &Path, &mut dyn FnMut(bool) -> Result<()>) -> Result<T>,
+    ) -> Result<(super::super::native_restore::ReboundConfigurationPlan, T)> {
         let profile = LifecycleService::bound_existing(self.profile_root.clone())?;
         let _profile = profile_lock(&profile)?;
         let root = target.target_observation_root().to_owned();
@@ -256,17 +257,23 @@ impl AuthenticatedNativeBackup {
         )?;
         let fresh = self.observe_target_locked(source, target, &expected.target_schema_sha256, &mut check_selection)?;
         if fresh != *expected { return Err(err("NATIVE_TARGET_RESULT_INVALID")); }
-        self.check(source)?;
-        source_resources.recheck()?;
-        target_resources.recheck()?;
-        plan.recheck()?;
-        marker_pin.check()?;
-        intent_pin.check()?;
-        directory_pin.check()?;
-        root_pin.check()?;
-        source.check_native_observation_fence()?;
-        target.check_native_observation_fence()?;
-        check_selection(&self.profile_root, &self.installation_id, &self.source_root, &root)?;
-        finish(plan)
+        let mut revalidate = |selection: bool| -> Result<()> {
+            self.check(source)?;
+            source_resources.recheck()?;
+            target_resources.recheck()?;
+            plan.recheck()?;
+            marker_pin.check()?;
+            intent_pin.check()?;
+            directory_pin.check()?;
+            root_pin.check()?;
+            source.check_native_observation_fence()?;
+            target.check_native_observation_fence()?;
+            if selection { check_selection(&self.profile_root, &self.installation_id, &self.source_root, &root)?; }
+            Ok(())
+        };
+        revalidate(true)?;
+        let result = finish(&plan, &self.profile_root, &root, &directory, &self.key_file, &mut revalidate)?;
+        drop(revalidate);
+        Ok((plan, result))
     }
 }
