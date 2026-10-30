@@ -33,7 +33,10 @@ final class OEXImportTests: XCTestCase {
         try bytes.write(to: file)
         let snapshot = try await NativeOEXImportFile.load(file)
         XCTAssertEqual(snapshot.name, "sample.oex")
-        XCTAssertEqual(snapshot.archive.data, bytes)
+        XCTAssertEqual(try Data(contentsOf: snapshot.archive.fileURL), bytes)
+        try Data(repeating: 9, count: bytes.count).write(to: file)
+        XCTAssertEqual(try Data(contentsOf: snapshot.archive.fileURL), bytes, "the selected snapshot is independent of subsequent source edits")
+        XCTAssertEqual(snapshot.archive.count, bytes.count)
         let link = root.appendingPathComponent("link.oex")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
         do { _ = try await NativeOEXImportFile.load(link); XCTFail("final symlink must be refused") } catch {}

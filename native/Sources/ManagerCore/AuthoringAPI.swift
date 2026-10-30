@@ -179,7 +179,7 @@ public actor AuthoringAPI {
         return id.uuidString.lowercased()
     }
     private func encoded<T: Encodable>(_ body: T) throws -> Data { try JSONEncoder().encode(body) }
-    private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, timeout: TimeInterval = 15) async throws -> T {
+    private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, bodyFile: URL? = nil, bodyLength: Int? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, timeout: TimeInterval = 15) async throws -> T {
         guard !(authenticated && authenticationBusy && path != "/api/v1/auth/logout") else { throw AuthoringFailure("AUTH_BUSY") }
         activeRequests += 1
         defer { activeRequests -= 1 }
@@ -188,18 +188,25 @@ public actor AuthoringAPI {
         guard let url = URL(string: path, relativeTo: base)?.absoluteURL, url.host == "127.0.0.1", url.port == base.port, url.scheme == "http", url.user == nil, url.password == nil else { throw AuthoringFailure("LOCAL_SCOPE_INVALID") }
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = method; request.httpBody = body
+        if let bodyFile {
+            guard body == nil, let bodyLength, bodyLength > 0, let stream = InputStream(url: bodyFile) else { throw AuthoringFailure("OEX_IMPORT_INVALID") }
+            request.httpBodyStream = stream
+            request.setValue(String(bodyLength), forHTTPHeaderField: "Content-Length")
+        }
         if let ifMatch {
             guard ifMatch.range(of: #"^"studio-r[1-9][0-9]*-[a-f0-9]{64}"$"#, options: .regularExpression) != nil else { throw AuthoringFailure("ETAG_INVALID") }
             request.setValue(ifMatch, forHTTPHeaderField: "If-Match")
         }
         request.setValue(base.absoluteString, forHTTPHeaderField: "Origin")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if body != nil { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
+        if body != nil || bodyFile != nil { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
         if method != "GET", authenticated, let session { request.setValue(session.csrfToken, forHTTPHeaderField: "x-csrf-token") }
         let (bytes, response) = try await transport.bytes(for: request)
+        defer { bytes.task.cancel() }
         guard let http = response as? HTTPURLResponse, http.url == url else { throw AuthoringFailure("RESPONSE_INVALID") }
         var data = Data()
         for try await byte in bytes {
+            try Task.checkCancellation()
             guard data.count < 2 * 1024 * 1024 else { throw AuthoringFailure("RESPONSE_LIMIT") }
             data.append(byte)
         }
@@ -389,23 +396,32 @@ public actor AuthoringAPI {
             guard http.mimeType?.lowercased() == NativeOEXArchive.mime,
                   http.value(forHTTPHeaderField: "Content-Encoding").map({ $0.lowercased() == "identity" }) ?? true else { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
         }
-        var data = Data()
-        if http.expectedContentLength > 0 { data.reserveCapacity(Int(http.expectedContentLength)) }
-        try await withTaskCancellationHandler {
+        if !success {
+            var data = Data()
             for try await byte in bytes {
                 try Task.checkCancellation()
-                guard data.count < limit else { throw AuthoringFailure(success ? "OEX_LIMIT" : "RESPONSE_LIMIT") }
+                guard data.count < limit else { throw AuthoringFailure("RESPONSE_LIMIT") }
                 data.append(byte)
             }
-        } onCancel: { bytes.task.cancel() }
-        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
-        guard success else {
+            guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
             let code = (try? JSONDecoder().decode(APIErrorEnvelope.self, from: data).code) ?? "REQUEST_FAILED"
             if http.statusCode == 401 { generation &+= 1; clear() }
             throw AuthoringFailure(code.range(of: "^[A-Z0-9_]{1,80}$", options: .regularExpression) == nil ? "REQUEST_FAILED" : code, status: http.statusCode)
         }
-        guard http.expectedContentLength < 0 || Int64(data.count) == http.expectedContentLength else { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
-        return try NativeOEXArchive(data: data)
+        let writer = try OEXArchiveWriter()
+        var chunk = Data(); chunk.reserveCapacity(256 * 1024)
+        try await withTaskCancellationHandler {
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                guard writer.count + chunk.count < limit else { throw AuthoringFailure("OEX_LIMIT") }
+                chunk.append(byte)
+                if chunk.count == 256 * 1024 { try writer.append(chunk); chunk.removeAll(keepingCapacity: true) }
+            }
+            if !chunk.isEmpty { try writer.append(chunk) }
+        } onCancel: { bytes.task.cancel() }
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard http.expectedContentLength < 0 || Int64(writer.count) == http.expectedContentLength else { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
+        return try writer.finish()
     }
 
     /// Reuses the server's scoped OEX import and idempotent request ID. No
@@ -424,8 +440,8 @@ public actor AuthoringAPI {
     }
     public func uploadOEXImport(_ id: String, archive: NativeOEXArchive) async throws {
         struct Receipt: Decodable { let received: Int }
-        let receipt: Receipt = try await request("/api/v1/tenants/\(tenant)/oex/imports/\(identifier(id))/bytes", method: "PUT", body: archive.data, contentType: "application/octet-stream", timeout: 120)
-        guard receipt.received == archive.data.count else { throw AuthoringFailure("OEX_IMPORT_RESPONSE_INVALID") }
+        let receipt: Receipt = try await request("/api/v1/tenants/\(tenant)/oex/imports/\(identifier(id))/bytes", method: "PUT", bodyFile: archive.fileURL, bodyLength: archive.count, contentType: "application/octet-stream", timeout: 120)
+        guard receipt.received == archive.count else { throw AuthoringFailure("OEX_IMPORT_RESPONSE_INVALID") }
     }
     public func oexImportAction(_ id: String, action: String) async throws -> NativeOEXImportJob {
         guard ["complete", "retry", "cancel"].contains(action) else { throw AuthoringFailure("OEX_IMPORT_INVALID") }

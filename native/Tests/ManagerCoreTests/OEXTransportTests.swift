@@ -13,6 +13,9 @@ final class OEXTransportTests: XCTestCase {
         import http from 'node:http';
         const [tenant,user]=process.argv.slice(2),csrf='owned-oex-wire-csrf',token='a'.repeat(43),limit=64*1024*1024,mime='application/vnd.exhibitos.oex+zip';
         const server=http.createServer((req,res)=>{
+          if(req.url===`/api/v1/tenants/${tenant}/oex/imports/00000000-0000-4000-8000-000000000010/bytes` && req.method==='PUT'){
+            let chunks=[]; req.on('data',c=>chunks.push(c)); req.on('end',()=>{let data=Buffer.concat(chunks);if(req.headers.origin!=='http://127.0.0.1:'+server.address().port||req.headers['x-csrf-token']!==csrf||!req.headers.cookie?.includes('exhibitos_local_session='+token)||req.headers['content-type']!=='application/octet-stream'||req.headers['content-length']!==String(data.length)||!data.equals(Buffer.concat([Buffer.from([80,75,3,4]),Buffer.alloc(22)]))){res.writeHead(400);res.end('{}');return;}res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({received:data.length}));});return;
+          }
           req.resume();
           if(req.url==='/api/v1/auth/session'){
             res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({tenantId:tenant,userId:user,role:'admin',csrfToken:csrf,expiresAt:new Date(Date.now()+3600000).toISOString()}));return;
@@ -47,7 +50,15 @@ final class OEXTransportTests: XCTestCase {
         let port = try XCTUnwrap(UInt16(String(decoding: portData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)))
         let api = try AuthoringAPI(port: port, tenantId: tenant)
         _ = try await api.connect(LocalAuthoringSession(tenantId: tenant, principalId: user, origin: "http://127.0.0.1:\(port)", token: String(repeating: "a", count: 43)))
+        let sample = try NativeOEXArchive(data: Data([80,75,3,4] + Array(repeating: 0, count: 22)))
+        try await api.uploadOEXImport("00000000-0000-4000-8000-000000000010", archive: sample)
         let etag = "\"studio-r1-" + String(repeating: "0", count: 64) + "\""
+        let output = try await api.exportOEX(exhibitionId: "00000000-0000-4000-8000-000000000005", etag: etag)
+        let destination = directory.appendingPathComponent("output.oex")
+        try Data("existing".utf8).write(to: destination)
+        try await output.write(to: destination)
+        XCTAssertEqual(try Data(contentsOf: destination), Data([80,75,3,4] + Array(repeating: 0, count: 22)))
+        XCTAssertEqual(output.count, 26)
         for (suffix,code) in [("1","OEX_LIMIT"),("2","OEX_RESPONSE_INVALID"),("3","REQUEST_FAILED"),("4","OEX_LIMIT")] {
             let id = "00000000-0000-4000-8000-00000000000" + suffix
             do { _ = try await api.exportOEX(exhibitionId: id, etag: etag); XCTFail("Invalid binary response must fail: \(suffix)") }

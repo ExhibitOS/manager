@@ -52,7 +52,7 @@ final class OEXImportIntegrationTests: XCTestCase {
             let id = try XCTUnwrap(job.result?.exhibitionId), reopened = try await api.exhibition(id)
             XCTAssertEqual(reopened.draft.id.lowercased(), id.lowercased())
             let output = try await api.exportOEX(exhibitionId: id, etag: reopened.etag)
-            XCTAssertGreaterThan(output.data.count, 22)
+            XCTAssertGreaterThan(output.count, 22)
             _ = try await bridge.stop(context); let stopped = try await idle()
             XCTAssertFalse(stopped.needsShutdown)
             XCTAssertEqual(stopped.runtime?.exits["postgres"], 0); XCTAssertEqual(stopped.runtime?.exits["node"], 0)
