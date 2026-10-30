@@ -221,6 +221,10 @@ public actor AuthoringAPI {
         let value: DocumentValue = try await request("/api/v1/tenants/\(tenant)/studio/furnishings")
         return try FurnishingCatalog.checkedCatalog(value)
     }
+    public func sharedFurnishings() async throws -> [DocumentValue] {
+        let value: DocumentValue = try await request("/api/v1/tenants/\(tenant)/studio/furnishings")
+        return try SharedFurnishingCatalog.checkedCatalog(value)
+    }
     public func surfaceMaterials() async throws -> NativeSurfaceMaterialCatalog {
         let value: DocumentValue = try await request("/api/v1/tenants/\(tenant)/studio/materials")
         return try NativeSurfaceMaterialCatalog(value: value, tenantId: tenant)

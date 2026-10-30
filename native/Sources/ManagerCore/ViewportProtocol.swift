@@ -48,6 +48,7 @@ public struct ViewportAcceptance: Decodable, Sendable {
     public var supportsFindSelection: Bool { accepted && capabilities?.contains("find-selection-v1") == true }
     public var supportsArtworkPlacement: Bool { accepted && capabilities?.contains("place-artwork-v1") == true }
     public var supportsFurnishingVisuals: Bool { accepted && capabilities?.contains("furnishing-visuals-v1") == true }
+    public var supportsSharedFurnishingVisuals: Bool { accepted && capabilities?.contains("furnishing-visuals-v2") == true }
     public var supportsSpaceSettings: Bool { accepted && capabilities?.contains("space-settings-v1") == true }
     public var supportsLightInspector: Bool { accepted && capabilities?.contains("light-inspector-v1") == true }
     public var supportsLightFixture: Bool { accepted && capabilities?.contains("light-fixture-aim-v1") == true }
