@@ -51,6 +51,17 @@ inspector is not that general observer. Until those adapters, the existing
 plan/journal/backup gates and retained old-payload fallback are connected and
 verified, no native update, manifest transition or image-only rollback is implied.
 
+The native publication history schema is a closed, versioned binding for a
+future inactive-configuration operation; it is not a publication, repair,
+preflight or execution permit. Existing records omit the optional field and keep
+their existing serialization. There is currently no public operation that writes
+the native binding. A reader built before this schema rejects a history once a
+native record exists, including after its terminal record: do not rewrite history
+or lower trust floors to make an older reader accept it. Retain the matching new
+reader and a separately verified original recovery baseline before any future
+workflow writes such a record. An intervening authority or policy generation
+invalidates the bound continuation; a future adapter must freshly revalidate it.
+
 ## Trust and release contract
 
 Policy JSON has exactly `format:1`, `channel` (`development` or `stable`), `target`

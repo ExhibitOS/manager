@@ -51,7 +51,11 @@ struct Record {
     update_event: Option<UpdateEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     recovery_binding: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_publication: Option<native_publication_history::NativePublicationBinding>,
 }
+#[path = "native_publication_history.rs"]
+mod native_publication_history;
 #[cfg(unix)]
 #[path = "authority_recovery_vault.rs"]
 mod authority_recovery_vault;
@@ -382,6 +386,13 @@ fn keys(p: &Policy) -> Result<Vec<String>, Error> {
 }
 fn valid_record(r: &Record, scope: &str) -> Result<(), Error> {
     let ids = keys(&r.policy)?;
+    if let Some(native) = &r.native_publication {
+        native.validate()?;
+        if r.policy.format != 2 || r.policy.target != "macos-arm64" || r.generation == 1 || native.authority_generation >= r.generation
+            || native.policy_generation > r.policy_generation || native.in_flight() && r.intent.is_some() {
+            return Err(invalid());
+        }
+    }
     if r.recovery_binding
         .as_ref()
         .is_some_and(|h| hex::<32>(h).is_none())
@@ -443,6 +454,25 @@ fn transition(old: &Record, next: &Record) -> Result<(), Error> {
             .any(|id| !next.revoked_keys.contains(id))
     {
         return Err(Error::TrustRollback);
+    }
+    if old.native_publication != next.native_publication {
+        let allowed = match (&old.native_publication, &next.native_publication) {
+            (None, Some(value)) => value.starts_after(old, next),
+            (Some(previous), Some(value)) if previous.operation_id == value.operation_id => previous.current_predecessor(old) && value.completes(previous),
+            (Some(previous), Some(value)) => !previous.in_flight() && value.starts_after(old, next),
+            _ => false,
+        };
+        if !allowed || old.intent.is_some() { return Err(invalid()); }
+        // Native binding is its own closed transition. It cannot change OCI
+        // intent, policy, revocations, accepted releases or recovery authority.
+        let mut expected = old.clone();
+        expected.generation = next.generation;
+        expected.previous_sha256 = next.previous_sha256.clone();
+        expected.observed_at = next.observed_at;
+        expected.native_publication = next.native_publication.clone();
+        expected.update_event = None;
+        if serde_json::to_vec(&expected).map_err(|_| invalid())? != serde_json::to_vec(next).map_err(|_| invalid())? { return Err(invalid()); }
+        return Ok(());
     }
     if old.recovery_binding != next.recovery_binding {
         if old.recovery_binding.is_some() || next.recovery_binding.is_none() {
@@ -718,6 +748,7 @@ impl Store {
             intent: None,
             update_event: None,
             recovery_binding: None,
+            native_publication: None,
         };
         valid_record(&r, &scope)?;
         let h = write(&root, &r)?;
