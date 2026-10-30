@@ -211,6 +211,7 @@ impl Host {
         let controller = self.controller.clone();
         let resources = self.resources.clone();
         self.worker = Some(thread::spawn(move || {
+            let mut preserved_backup = false;
             // A panic still drops the owned Session (which contains its children)
             // before surfacing a static host error; no child handle is abandoned.
             let result =
@@ -321,8 +322,10 @@ impl Host {
                                 cancel.store(state.stop_requested, Ordering::SeqCst);
                                 state.cancel = Some(cancel);
                             }
+                            let mut started_database = false;
                             let result = (|| {
                                 if session.status()?.postgres_pid.is_none() {
+                                    started_database = true;
                                     session.start_database_only_cancellable()?;
                                 }
                                 controller.create_native_backup(&token, &mut session, input)
@@ -331,7 +334,8 @@ impl Host {
                             // after host preflight. The core checks under the
                             // profile lock before any quiesce. Preserve a
                             // previously running session on this refusal.
-                            let preserve_existing = had_existing_session && result.as_ref().err().is_some_and(|e| matches!(e.code.as_str(), "NATIVE_OEX_IMPORT_PENDING" | "NATIVE_OEX_IMPORT_INVALID" | "NATIVE_OEX_IMPORT_SCOPE_CHANGED"));
+                            let preserve_existing = had_existing_session && !started_database && result.as_ref().err().is_some_and(|e| matches!(e.code.as_str(), "NATIVE_OEX_IMPORT_PENDING" | "NATIVE_OEX_IMPORT_INVALID" | "NATIVE_OEX_IMPORT_SCOPE_CHANGED"));
+                            preserved_backup = preserve_existing;
                             let stopped = if preserve_existing { Ok(()) } else { session.stop().map(|_| ()) };
                             let context = session.status()?;
                             let mut state =
@@ -440,6 +444,30 @@ impl Host {
                     Ok(())
                 }));
             if let Ok(mut state) = shared.lock() {
+                // Atomically decide whether a Stop accepted during backup must
+                // stop a session preserved after an OEX refusal. Once idle is
+                // published, a later Stop launches its own worker instead.
+                if preserved_backup && state.stop_requested
+                    && let Some(mut session) = state.session.take()
+                {
+                    drop(state);
+                    let stopped = session.stop();
+                    let context = session.status();
+                    let Ok(mut state) = shared.lock() else { return };
+                    let status_error = match context {
+                        Ok(context) => { state.runtime = Some(context); None }
+                        Err(error) => { state.runtime = None; Some(error.code) }
+                    };
+                    state.session = Some(session);
+                    state.busy = false;
+                    state.operation = "idle".into();
+                    state.error = stopped.err().map(|e| e.code).or(status_error).or_else(|| match result {
+                        Ok(Ok(())) => None,
+                        Ok(Err(error)) => Some(error.code),
+                        Err(_) => Some("NATIVE_HOST_UNAVAILABLE".into()),
+                    });
+                    return;
+                }
                 state.busy = false;
                 state.operation = "idle".into();
                 state.error = match result {
