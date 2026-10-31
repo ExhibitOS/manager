@@ -184,6 +184,8 @@ struct NativeExhibitionView: View {
                 HStack { Text("공개용 저장본").foregroundStyle(.secondary); Button("복제해서 편집") { Task { if controller.editingContextActive { await model.copyForEditing() } } }.disabled(!ready || readOnly || model.busy) }
             } else if model.dirty {
                 Text("아직 저장하지 않은 입력이 있습니다.").foregroundStyle(.secondary)
+            } else if model.reusablePublicationId != nil {
+                Text("편집 초안은 저장해도 공개본을 바꾸지 않습니다.").foregroundStyle(.secondary)
             } else if model.notice.isEmpty {
                 Text("전시 저장됨").foregroundStyle(.secondary)
             }

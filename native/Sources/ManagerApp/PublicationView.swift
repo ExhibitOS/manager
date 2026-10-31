@@ -106,7 +106,7 @@ final class PublicationModel: ObservableObject {
     func review(_ accepted: Bool, draft: NativeExhibitionDraft, etag: String) {
         reviewed = accepted && checkedGeneration == runtimeGeneration && checkedId == draft.id && report?.etag == etag && report?.status == "READY" ? draft.id + etag + runtimeGeneration.uuidString : nil
     }
-    func prepare(_ draft: NativeExhibitionDraft, etag: String) async {
+    func prepare(_ draft: NativeExhibitionDraft, etag: String, source: ExhibitionModel) async {
         await work {
             try requireWatermarkRuntime(draft)
             guard isReviewed(draft, etag: etag), checkedId == draft.id, report?.etag == etag, report?.status == "READY", let read else { throw AuthoringFailure("PUBLICATION_REVIEW_REQUIRED") }
@@ -118,8 +118,18 @@ final class PublicationModel: ObservableObject {
             if let completed = value.completed, completed.isReusable(sourceExhibitionId: draft.id, etag: etag, planBindingSha256: binding) {
                 try await refreshCompleted(); return
             }
-            value.pending = try NativePublicationPending(source: draft, etag: etag, planBindingSha256: binding)
-            try await persist(value) // exact copy + BOTH request IDs BEFORE first POST
+            guard !source.dirty, source.draft == draft, source.state?.etag == etag else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
+            if let reusablePublicationId = source.reusablePublicationId {
+                guard let api else { throw AuthoringFailure("PUBLICATION_PENDING") }
+                let lookup = try await api.reusableEditingDraft(publicationId: reusablePublicationId)
+                guard generation == runtimeGeneration, state?.revision == value.revision, state?.pending == nil,
+                      lookup.authoringExhibitionId.lowercased() == draft.id.lowercased(), lookup.etag == etag, lookup.draft == draft,
+                      !source.dirty, source.draft == draft, source.state?.etag == etag, source.reusablePublicationId == reusablePublicationId else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
+                value.pending = try NativePublicationPending(reusableSource: draft, etag: etag, capabilityPublicationId: reusablePublicationId, planBindingSha256: binding)
+            } else {
+                value.pending = try NativePublicationPending(source: draft, etag: etag, planBindingSha256: binding)
+            }
+            try await persist(value) // exact intent and request ID BEFORE first POST
             try await finishPending()
         }
     }
@@ -154,7 +164,9 @@ final class PublicationModel: ObservableObject {
         try requireWatermarkRuntime(pending.snapshot)
         let generation = runtimeGeneration
         try pending.requirePlanBinding(planBinding(pending.snapshot, etag: pending.sourceEtag, sourceId: pending.sourceExhibitionId))
+        guard pending.mode == nil || (pending.mode == "reusable-draft-v1" && pending.snapshotEtag == pending.sourceEtag && pending.capabilityPublicationId != nil) else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
         if pending.snapshotEtag == nil {
+            try Task.checkCancellation()
             let saved = try await api.saveExhibition(pending.snapshot, requestId: pending.saveRequestId, etag: nil)
             guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
             pending.snapshotEtag = saved.etag; value.pending = pending; try await persist(value)
@@ -162,14 +174,26 @@ final class PublicationModel: ObservableObject {
         guard let snapshotEtag = pending.snapshotEtag else { throw AuthoringFailure("PUBLICATION_PENDING") }
         guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
         try requireWatermarkRuntime(pending.snapshot)
-        let publication = try await api.preparePublication(exhibitionId: pending.snapshot.id, etag: snapshotEtag, requestId: pending.publishRequestId)
+        let publication: NativePublication
+        if pending.mode == "reusable-draft-v1" {
+            guard let capabilityPublicationId = pending.capabilityPublicationId, pending.sourceExhibitionId == pending.snapshot.id, pending.sourceEtag == snapshotEtag else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+            // Confirm this runtime still supports the same server anchor.
+            // The server checks the exact request receipt before ETag, so the
+            // same POST can recover a lost response even if the draft advanced.
+            let binding = try await api.reusableEditingDraft(publicationId: capabilityPublicationId)
+            guard generation == runtimeGeneration, state?.pending == pending,
+                  binding.authoringExhibitionId.lowercased() == pending.sourceExhibitionId.lowercased() else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+        } else if pending.mode != nil { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+        try Task.checkCancellation()
+        publication = try await api.preparePublication(exhibitionId: pending.snapshot.id, etag: snapshotEtag, requestId: pending.publishRequestId)
+        try Task.checkCancellation()
         guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
         guard var accepted = state, accepted.pending?.publishRequestId == pending.publishRequestId else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
         accepted.completed = NativePublicationCompleted(pending: pending, publication: publication); accepted.pending = nil
         try await persist(accepted)
         guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
         verifiedCompleted = state?.completed
-        notice = "이 Mac에 공개용 저장본을 준비했습니다. 호스팅 배포는 별도로 진행합니다."
+        notice = publication.status == "published" ? "이 Mac에 공개용 저장본을 준비했습니다. 호스팅 배포는 별도로 진행합니다." : "이 준비 저장본이 해제되었습니다. 다시 확인한 뒤 새로 준비하세요."
     }
     private func refreshCompleted() async throws {
         guard let api, let original = state else { throw AuthoringFailure("PUBLICATION_PENDING") }
@@ -242,7 +266,7 @@ struct NativePublicationView: View {
                     if report.status == "READY" {
                         Toggle("작품을 표시할 권리를 확인했습니다", isOn: Binding(get: { model.isReviewed(draft, etag: etag) }, set: { model.review($0, draft: draft, etag: etag) }))
                         Text("인터넷에 배포하면 브라우저로 전달된 작품 파일은 복사될 수 있습니다. 호스팅 대상·공개 범위·비용은 배포 전에 따로 확인합니다.").foregroundStyle(.secondary)
-                        Button("공개용 저장본 준비") { Task { await model.prepare(draft, etag: etag) } }
+                        Button("공개용 저장본 준비") { Task { await model.prepare(draft, etag: etag, source: source) } }
                             .disabled(!ready || model.busy || model.state?.pending != nil || !model.preparationStatusKnown || !model.isReviewed(draft, etag: etag))
                     }
                 }

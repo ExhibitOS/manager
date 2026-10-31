@@ -6,6 +6,10 @@ const LIMIT: u64 = 2_200_000;
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Pending {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_publication_id: Option<String>,
     pub source_exhibition_id: String,
     pub source_etag: String,
     pub snapshot: Value,
@@ -27,6 +31,8 @@ pub struct Publication {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Completed {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
     pub source_exhibition_id: String,
     pub source_etag: String,
     pub snapshot_exhibition_id: String,
@@ -64,29 +70,33 @@ pub(crate) fn validate(s: &PublicationState) -> Result<()> {
     }
     if let Some(p) = &s.pending {
         let id = p.snapshot["exhibitionId"].as_str().unwrap_or("");
-        if !uuid(&p.source_exhibition_id)
+        let direct = p.mode.as_deref() == Some("reusable-draft-v1");
+        if (p.mode.is_some() && !direct)
+            || (direct && (!p.capability_publication_id.as_deref().is_some_and(uuid) || id != p.source_exhibition_id || p.snapshot_etag.as_deref() != Some(p.source_etag.as_str()) || !p.snapshot["editVersion"].as_u64().is_some_and(|v| v > 0 && v <= 2_147_483_647)))
+            || (!direct && (p.capability_publication_id.is_some() || id == p.source_exhibition_id || p.snapshot["editVersion"] != 1))
+            || !uuid(&p.source_exhibition_id)
             || !valid_etag(&p.source_etag)
             || !uuid(&p.save_request_id)
             || !uuid(&p.publish_request_id)
             || p.plan_binding_sha256.as_ref().is_some_and(|v| !hash_valid(v))
             || p.snapshot_etag.as_ref().is_some_and(|v| !valid_etag(v))
             || !uuid(id)
-            || id == p.source_exhibition_id
             || !uuid(p.snapshot["id"].as_str().unwrap_or(""))
             || p.snapshot["kind"] != "exhibition-draft"
             || p.snapshot["schemaVersion"] != "1.0.0-draft.1"
             || p.snapshot["candidate"]["id"] != id
-            || p.snapshot["editVersion"] != 1
         {
             return Err(bad());
         }
     }
     if let Some(c) = &s.completed {
         let p = &c.publication;
-        if !uuid(&c.source_exhibition_id)
+        let direct = c.mode.as_deref() == Some("reusable-draft-v1");
+        if (c.mode.is_some() && !direct)
+            || (direct != (c.snapshot_exhibition_id == c.source_exhibition_id))
+            || !uuid(&c.source_exhibition_id)
             || !valid_etag(&c.source_etag)
             || !uuid(&c.snapshot_exhibition_id)
-            || c.snapshot_exhibition_id == c.source_exhibition_id
             || !uuid(&c.publish_request_id)
             || c.plan_binding_sha256.as_ref().is_some_and(|v| !hash_valid(v))
             || !uuid(&p.publication_id)
@@ -207,6 +217,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn direct_publication_journal_binds_same_draft_and_exact_etag() {
+        let id = || Uuid::new_v4().to_string();
+        let source = id(); let etag = format!("\"studio-r2-{}\"", "a".repeat(64));
+        let wire = serde_json::json!({"format":1,"revision":0,"workspaceId":id(),"tenantId":id(),"principalId":id(),
+            "pending":{"mode":"reusable-draft-v1","capabilityPublicationId":id(),"sourceExhibitionId":source,"sourceEtag":etag,
+                "snapshot":{"id":id(),"exhibitionId":source,"kind":"exhibition-draft","schemaVersion":"1.0.0-draft.1","editVersion":2,"candidate":{"id":source}},
+                "saveRequestId":id(),"snapshotEtag":etag,"publishRequestId":id()},"completed":null});
+        let state: PublicationState = serde_json::from_value(wire.clone()).unwrap(); validate(&state).unwrap();
+        let round: PublicationState = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert!(state.pending == round.pending);
+        for (key,value) in [("mode",serde_json::json!("unknown")),("capabilityPublicationId",serde_json::json!(null)),("snapshotEtag",serde_json::json!(null)),("sourceEtag",serde_json::json!(format!("\"studio-r3-{}\"","a".repeat(64))))] {
+            let mut changed=wire.clone(); changed["pending"][key]=value;
+            assert!(validate(&serde_json::from_value(changed).unwrap()).is_err());
+        }
+        let mut changed=wire.clone();changed["pending"]["mode"]=serde_json::Value::Null;
+        assert!(validate(&serde_json::from_value(changed).unwrap()).is_err());
+        let mut completed=wire.clone(); completed["pending"]=serde_json::Value::Null;
+        let publication=id();completed["completed"]=serde_json::json!({"mode":"reusable-draft-v1","sourceExhibitionId":source,"sourceEtag":etag,"snapshotExhibitionId":source,"publishRequestId":id(),"publication":{"publicationId":publication,"publicUrl":format!("/p/{publication}"),"revisionSha256":"c".repeat(64),"publishedAt":"2026-10-30T00:00:00Z","status":"unpublished"}});
+        validate(&serde_json::from_value(completed.clone()).unwrap()).unwrap();
+        completed["completed"]["mode"]=serde_json::Value::Null;
+        assert!(validate(&serde_json::from_value(completed).unwrap()).is_err());
+    }
+
+    #[test]
     fn publication_pending_float_payload_is_exact_across_wire_and_cold_retry() {
         // Same 6500 K linear RGB sent by Swift as shortest JSON and by
         // Foundation JSONSerialization as expanded decimals. Both must retain
@@ -218,6 +252,7 @@ mod tests {
             let color: Value = serde_json::from_str(input).unwrap();
             assert_eq!(color[2].as_f64().unwrap().to_bits(), 0x3fee97556e01b351);
             let pending = Pending {
+                mode: None, capability_publication_id: None,
                 source_exhibition_id: Uuid::new_v4().to_string(),
                 source_etag: format!("\"studio-r7-{}\"", "a".repeat(64)),
                 snapshot: serde_json::json!({"candidate":{"lights":[{"color":color}],"opaque":{"keep":0.12345678901234568}}}),
@@ -272,6 +307,7 @@ mod tests {
         assert!(validate(&state).is_err());
         state.pending = None;
         state.completed = Some(Completed {
+            mode: None,
             source_exhibition_id: source, source_etag: format!("\"studio-r2-{}\"", "a".repeat(64)),
             snapshot_exhibition_id: snapshot, publish_request_id:id(),plan_binding_sha256:Some("b".repeat(64)),
             publication:Publication{publication_id:id(),public_url:String::new(),revision_sha256:"c".repeat(64),published_at:"2026-10-28T00:00:00Z".into(),status:"published".into()}

@@ -33,6 +33,8 @@ public struct NativePublication: Codable, Equatable, Sendable {
     }
 }
 public struct NativePublicationPending: Codable, Equatable, Sendable {
+    public let mode: String?
+    public let capabilityPublicationId: String?
     public let sourceExhibitionId: String, sourceEtag: String
     public let snapshot: NativeExhibitionDraft
     public let saveRequestId: String, publishRequestId: String
@@ -40,9 +42,18 @@ public struct NativePublicationPending: Codable, Equatable, Sendable {
     public var snapshotEtag: String?
     public init(source: NativeExhibitionDraft, etag: String, planBindingSha256: String? = nil) throws {
         guard validPublicationETag(etag), validPublicationPlanBinding(planBindingSha256) else { throw AuthoringFailure("ETAG_INVALID") }
-        sourceExhibitionId = source.id; sourceEtag = etag
+        mode = nil; capabilityPublicationId = nil; sourceExhibitionId = source.id; sourceEtag = etag
         self.planBindingSha256 = planBindingSha256
         snapshot = try source.copyForPublication()
+        saveRequestId = UUID().uuidString.lowercased(); publishRequestId = UUID().uuidString.lowercased()
+    }
+    /// Reuse the already saved authoring row only after a validated server
+    /// capability. No snapshot creation or scoped-asset rebinding occurs.
+    public init(reusableSource source: NativeExhibitionDraft, etag: String, capabilityPublicationId: String, planBindingSha256: String? = nil) throws {
+        guard UUID(uuidString: capabilityPublicationId) != nil, validPublicationETag(etag), validPublicationPlanBinding(planBindingSha256),
+              source.document["editVersion"].integer.map({ $0 > 0 && $0 <= 2_147_483_647 }) == true else { throw AuthoringFailure("ETAG_INVALID") }
+        mode = "reusable-draft-v1"; self.capabilityPublicationId = capabilityPublicationId; sourceExhibitionId = source.id; sourceEtag = etag
+        self.planBindingSha256 = planBindingSha256; snapshot = source; snapshotEtag = etag
         saveRequestId = UUID().uuidString.lowercased(); publishRequestId = UUID().uuidString.lowercased()
     }
     public func requirePlanBinding(_ expected: String?) throws {
@@ -51,7 +62,7 @@ public struct NativePublicationPending: Codable, Equatable, Sendable {
     /// Compare an authenticated GET result; never replay the uncertain POST or
     /// replace its snapshot/request IDs. The caller retains generation and CAS.
     public func confirmingSavedSnapshot(_ saved: NativeStudioResponse) throws -> Self {
-        guard snapshotEtag == nil else { throw AuthoringFailure("PUBLICATION_PENDING") }
+        guard mode == nil, snapshotEtag == nil else { throw AuthoringFailure("PUBLICATION_PENDING") }
         guard saved.revision == 1, validPublicationETag(saved.etag),
               saved.etag.hasPrefix("\"studio-r1-"), saved.draft == snapshot else {
             throw AuthoringFailure("REMOTE_CONFLICT", status: 409)
@@ -61,11 +72,12 @@ public struct NativePublicationPending: Codable, Equatable, Sendable {
     }
 }
 public struct NativePublicationCompleted: Codable, Equatable, Sendable {
+    public let mode: String?
     public let sourceExhibitionId: String, sourceEtag: String, snapshotExhibitionId: String, publishRequestId: String
     public var publication: NativePublication
     public let planBindingSha256: String?
     public init(pending: NativePublicationPending, publication: NativePublication) {
-        sourceExhibitionId = pending.sourceExhibitionId; sourceEtag = pending.sourceEtag
+        mode = pending.mode; sourceExhibitionId = pending.sourceExhibitionId; sourceEtag = pending.sourceEtag
         snapshotExhibitionId = pending.snapshot.id; publishRequestId = pending.publishRequestId; self.publication = publication
         planBindingSha256 = pending.planBindingSha256
     }
