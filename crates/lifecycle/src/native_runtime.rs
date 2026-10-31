@@ -290,6 +290,34 @@ mod interrupted_root_tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
+    #[ignore = "requires the verified isolated native payload and shared heavy admission"]
+    fn terminal_record_failure_keeps_fence_and_status_retries() {
+        struct RestoreMode(PathBuf);
+        impl Drop for RestoreMode { fn drop(&mut self) { let _ = fs::set_permissions(&self.0,fs::Permissions::from_mode(0o700)); } }
+        let payload_path=PathBuf::from(std::env::var_os("EXHIBITOS_TEST_PAYLOAD").expect("payload required"));
+        let payload=Arc::new(Payload::open(&payload_path).unwrap());
+        let base=std::env::temp_dir().join(format!("native-terminal-record-{}",Uuid::new_v4()));
+        fs::create_dir(&base).unwrap();fs::set_permissions(&base,fs::Permissions::from_mode(0o700)).unwrap();
+        let root=fs::canonicalize(base).unwrap();let service=LifecycleService::new(root.clone()).unwrap();
+        service.prepare_native_personal(&payload,Ports::default()).unwrap();
+        for via_status in [false,true] {
+            let mut session=Session::new(&service,payload.clone(),Ports::default()).unwrap();
+            let run=root.join(format!("terminal-test-{}",Uuid::new_v4()));fs::create_dir(&run).unwrap();fs::set_permissions(&run,fs::Permissions::from_mode(0o700)).unwrap();
+            let _restore=RestoreMode(run.clone());
+            session.run=Some(run.clone());session.job_id=Some(Uuid::new_v4().to_string());
+            session.local_authority=Some(LocalAuthority{format:1,workspace_id:Uuid::new_v4().to_string(),tenant_id:Uuid::new_v4().to_string(),principal_id:Uuid::new_v4().to_string(),owner_uid:unsafe{libc::geteuid()},session_token:"synthetic-session".into(),csrf_token:"synthetic-csrf".into()});
+            if via_status {session.state="stopping".into();}
+            fs::set_permissions(&run,fs::Permissions::from_mode(0o500)).unwrap();
+            let result=if via_status {session.status()} else {session.stop()};
+            assert!(result.is_err());assert_eq!(session.state,"stopping");assert!(session.guard.is_some());assert!(session.local_authority.is_some());assert_eq!(service.lock().err().unwrap().code,"BUSY");
+            fs::set_permissions(&run,fs::Permissions::from_mode(0o700)).unwrap();
+            let terminal=session.status().unwrap();assert_eq!(terminal.state,"stopped");assert!(session.guard.is_none());assert!(session.local_authority.is_none());
+            let persisted:Context=serde_json::from_slice(&fs::read(run.join("state.json")).unwrap()).unwrap();assert_eq!(persisted.state,"stopped");
+            assert!(service.lock().is_ok());drop(session);
+        }
+        println!("isolated_record_failure_root={} payload_manifest_sha256={} both_paths=PASS",root.display(),payload.context().manifest_sha256);
+    }
+    #[test]
     fn node_drain_database_only_or_clean_exit_but_not_crash() {
         let mut exits = BTreeMap::new();
         assert!(clean_node_quiescence(false, false, &exits));
@@ -1439,10 +1467,12 @@ impl Session {
                     "stopped"
                 }
                 .into();
-                let record = self.record();
+                if let Err(error) = self.record() {
+                    self.state = "stopping".into();
+                    return Err(error);
+                }
                 self.guard = None;
                 self.local_authority = None;
-                record?;
                 return Ok(self.snapshot());
             }
             if changed {
@@ -1472,10 +1502,12 @@ impl Session {
                     "stopped"
                 }
                 .into();
-                let recorded = self.record();
+                if let Err(error) = self.record() {
+                    self.state = "stopping".into();
+                    return Err(error);
+                }
                 self.guard = None;
                 self.local_authority = None;
-                recorded?;
             }
             return Ok(self.snapshot());
         }
