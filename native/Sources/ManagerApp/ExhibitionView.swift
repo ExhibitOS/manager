@@ -74,6 +74,7 @@ final class ExhibitionModel: ObservableObject {
     }
     @Published private(set) var comparison: NativeStudioResponse?
     @Published private(set) var immutable = false
+    @Published private(set) var reusablePublicationId: String?
     @Published private(set) var busy = false
     @Published private(set) var failure: AuthoringFailure?
     @Published private(set) var notice = ""
@@ -699,9 +700,13 @@ final class ExhibitionModel: ObservableObject {
         guard !busy, !placingArtwork, !architectureApplying else { return }
         if let old = self.session, old.tenantId != session.tenantId || old.userId != session.userId {
             guard !dirty else { self.api = nil; viewportCredentials = nil; failure = AuthoringFailure("DRAFT_ACCOUNT_MISMATCH"); return }
-            state = nil; items = []; library = []; comparison = nil; exportedURL = nil; exportedSHA256 = nil; catalogArtworkId = ""; catalogStatus = ""
+            state = nil; reusablePublicationId = nil; items = []; library = []; comparison = nil; exportedURL = nil; exportedSHA256 = nil; catalogArtworkId = ""; catalogStatus = ""
         }
         self.api = api; self.session = session
+        // Capability is tied to the current runtime; fail closed until its
+        // authenticated lookup succeeds, retaining the local document.
+        reusablePublicationId = nil
+        if state?.etag != nil { immutable = true }
         let accessChanged = viewportCredentials?.token != credentials.token || viewportCredentials?.origin != credentials.origin
         viewportCredentials = credentials
         if accessChanged { sharedFurnishingCatalogReady = false; sharedFurnishingCatalogAccessID = nil; sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
@@ -719,12 +724,16 @@ final class ExhibitionModel: ObservableObject {
             if state == nil {
                 let stored = try await read()
                 guard stored.tenantId.lowercased() == session.tenantId.lowercased(), stored.principalId.lowercased() == session.userId.lowercased() else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
-                state = stored; syncFields()
+                state = stored
+                // The persisted document may be a published snapshot. Lock it
+                // before any later list/capability request can fail.
+                if stored.etag != nil { immutable = true; reusablePublicationId = nil }
+                syncFields()
                 if stored.pending != nil { notice = "저장 요청의 응답을 확인해야 합니다. 같은 요청으로 다시 확인하세요." }
                 else if stored.dirty { notice = "이 Mac에 보관한 미완료 전시를 복원했습니다." }
             }
             try await list()
-            if let draft, state?.etag != nil { immutable = !(try await api.publications(exhibitionId: draft.id)).isEmpty } else { immutable = false }
+            if let draft, state?.etag != nil { let access = try await publishedEditingAccess(draft.id, api: api); immutable = access.immutable; reusablePublicationId = access.publicationId } else { immutable = false; reusablePublicationId = nil }
         }
     }
     func beginEntranceCredentialRenewal() -> Bool {
@@ -1732,18 +1741,32 @@ final class ExhibitionModel: ObservableObject {
         await work(allowViewingPlanInput: true, allowViewingPointInput: true) {
             guard !pending, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             value.draft = try NativeExhibitionDraft.new(); value.etag = nil; value.savedEditVersion = nil
-            try await persist(value); immutable = false; comparison = nil; syncFields()
+            try await persist(value); immutable = false; reusablePublicationId = nil; comparison = nil; syncFields()
             notice = "새 전시를 이 Mac에 보관했습니다. 공간과 작품을 구성한 뒤 전시를 저장하세요."
+        }
+    }
+    /// Publication identity is resolved only by the authenticated server; an
+    /// older runtime keeps the existing read-only behavior.
+    private func publishedEditingAccess(_ id: String, api: AuthoringAPI, expected: NativeStudioResponse? = nil) async throws -> (immutable: Bool, publicationId: String?) {
+        let records = try await api.publications(exhibitionId: id)
+        guard let selected = records.first else { return (false, nil) }
+        do {
+            let response = try await api.reusableEditingDraft(publicationId: selected.publicationId)
+            guard response.authoringExhibitionId.lowercased() == id.lowercased() else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+            if let expected, (response.revision != expected.revision || response.etag != expected.etag || response.draft != expected.draft) { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE", status: 409) }
+            return (false, selected.publicationId)
+        } catch let error as AuthoringFailure where error.status == 404 {
+            return (true, nil)
         }
     }
     func open(_ id: String) async {
         await work(allowViewingPlanInput: true, allowViewingPointInput: true) {
             guard !pending, let api, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             let saved = try await api.exhibition(id)
-            let frozen = !(try await api.publications(exhibitionId: id)).isEmpty
+            let editingAccess = try await publishedEditingAccess(id, api: api, expected: saved)
             value.draft = saved.draft; value.etag = saved.etag; value.savedEditVersion = saved.draft.document["editVersion"].integer
-            try await persist(value); immutable = frozen; comparison = nil; syncFields()
-            notice = frozen ? "공개용 저장본을 열었습니다. 복제해서 편집할 수 있습니다." : "저장한 전시를 열었습니다."
+            try await persist(value); immutable = editingAccess.immutable; reusablePublicationId = editingAccess.publicationId; comparison = nil; syncFields()
+            notice = editingAccess.immutable ? "이 공개용 저장본은 현재 런타임에서 읽기 전용입니다." : editingAccess.publicationId != nil ? "공개된 전시의 편집 초안을 열었습니다. 저장해도 공개본은 바뀌지 않습니다." : "저장한 전시를 열었습니다."
             // OEX import can add approved works after the last library fetch.
             // Refresh only after the saved draft is safely opened; a catalogue
             // failure must not undo or misreport that successful open.
@@ -1827,7 +1850,7 @@ final class ExhibitionModel: ObservableObject {
             var current = try appliedFields(allowPosition: true)
             if !placementId.isEmpty, current.placements.contains(where: { $0["id"].string == placementId }) { try current.movePlacement(placementId, position: [x,y,z]) }
             value.draft = try current.copyForEditing(); value.etag = nil; value.savedEditVersion = nil; value.pending = nil
-            try await persist(value); immutable = false; comparison = nil; syncFields()
+            try await persist(value); immutable = false; reusablePublicationId = nil; comparison = nil; syncFields()
             notice = "편집할 사본을 이 Mac에 보관했습니다. 원래 공개용 저장본은 유지됩니다."
         }
     }
@@ -1870,7 +1893,7 @@ final class ExhibitionModel: ObservableObject {
             guard !pending, let saved = comparison, let api, let original = state,
                   original.draft?.id == saved.draft.id else { throw AuthoringFailure("EXHIBITION_PENDING") }
             let access = viewportAccessID
-            let frozen = !(try await api.publications(exhibitionId: saved.draft.id)).isEmpty
+            let editingAccess = try await publishedEditingAccess(saved.draft.id, api: api)
             let current = try await api.exhibition(saved.draft.id)
             try saved.requireSameComparison(current)
             guard viewportAccessID == access, let valueBefore = state, valueBefore.revision == original.revision,
@@ -1881,7 +1904,7 @@ final class ExhibitionModel: ObservableObject {
             }
             var value = valueBefore
             value.draft = saved.draft; value.etag = saved.etag; value.savedEditVersion = saved.draft.document["editVersion"].integer
-            try await persist(value); immutable = frozen; comparison = nil; syncFields()
+            try await persist(value); immutable = editingAccess.immutable; reusablePublicationId = editingAccess.publicationId; comparison = nil; syncFields()
             notice = "확인한 저장본으로 전환했습니다."
         }
     }

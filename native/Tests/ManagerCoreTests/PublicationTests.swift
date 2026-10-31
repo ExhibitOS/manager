@@ -78,4 +78,22 @@ final class PublicationTests: XCTestCase {
             XCTAssertThrowsError(try binding.accepting(response, in: foreign, generation: generation))
         }
     }
+    func testReusableDraftIntentRetainsExactIdentityAndRequestAcrossRestart() throws {
+        let draft = try NativeExhibitionDraft.new(), etag = "\"studio-r2-" + String(repeating: "a", count: 64) + "\""
+        let pending = try NativePublicationPending(reusableSource: draft, etag: etag, capabilityPublicationId: UUID().uuidString.lowercased())
+        XCTAssertEqual(pending.mode, "reusable-draft-v1")
+        XCTAssertEqual(pending.snapshot, draft)
+        XCTAssertEqual(pending.sourceExhibitionId, draft.id)
+        XCTAssertEqual(pending.snapshotEtag, etag)
+        let round = try JSONDecoder().decode(NativePublicationPending.self, from: JSONEncoder().encode(pending))
+        XCTAssertEqual(round, pending)
+        let id = UUID().uuidString.lowercased()
+        let withdrawn = NativePublication(publicationId: id, publicUrl: "/p/" + id, revisionSha256: String(repeating: "c", count: 64), publishedAt: "2026-10-30T00:00:00Z", status: "unpublished")
+        let completed = NativePublicationCompleted(pending: round, publication: withdrawn)
+        XCTAssertEqual(completed.mode, "reusable-draft-v1")
+        XCTAssertEqual(completed.sourceExhibitionId, completed.snapshotExhibitionId)
+        XCTAssertFalse(completed.isReusable(sourceExhibitionId: draft.id, etag: etag, planBindingSha256: nil))
+        XCTAssertThrowsError(try pending.confirmingSavedSnapshot(NativeStudioResponse(revision: 1, etag: etag, draft: draft)))
+    }
+
 }

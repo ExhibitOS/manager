@@ -223,6 +223,9 @@ public actor AuthoringAPI {
                   studio.etag.range(of: #"^"studio-r[1-9][0-9]*-[a-f0-9]{64}"$"#, options: .regularExpression) != nil,
                   studio.etag.hasPrefix("\"studio-r\(studio.revision)-"), http.value(forHTTPHeaderField: "ETag") == studio.etag else { throw AuthoringFailure("ETAG_INVALID") }
         }
+        if let editing = result as? NativeReusableEditingDraft {
+            guard http.value(forHTTPHeaderField: "ETag") == editing.etag else { throw AuthoringFailure("ETAG_INVALID") }
+        }
         return result
     }
     public func furnishings() async throws -> Bool {
@@ -310,6 +313,13 @@ public actor AuthoringAPI {
         let value: NativeStudioResponse = try await request(studioPrefix + "/exhibitions/" + identifier(id))
         guard value.draft.id.lowercased() == id.lowercased() else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
         return value
+    }
+    /// A read-only lookup; a 404 from an older runtime remains unsupported and
+    /// never falls back to silently creating a copy.
+    public func reusableEditingDraft(publicationId: String) async throws -> NativeReusableEditingDraft {
+        let id = try identifier(publicationId)
+        let value: NativeReusableEditingDraft = try await request(studioPrefix + "/publications/" + id + "/editing-draft")
+        return try value.validated(expectedPublicationId: id)
     }
     /// Keep the same draft/requestId/ETag after uncertain replies; a conflict
     /// requires comparison. This client never obtains a fresh ETag then retries.
