@@ -18,6 +18,36 @@ struct Personal {
     manifest_sha256: String,
     environment_sha256: String,
 }
+
+#[cfg(test)]
+mod selected_guard_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn guard_is_bound_to_exact_private_root() {
+        let parent = std::env::temp_dir().join(format!("exhibitos-selected-guard-{}", Uuid::new_v4()));
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        let parent = fs::canonicalize(parent).unwrap();
+        let first = parent.join("first");
+        let second = parent.join("second");
+        for path in [&first, &second] {
+            fs::create_dir(path).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let a = LifecycleService::bound_existing(first.clone()).unwrap();
+        let b = LifecycleService::bound_existing(second.clone()).unwrap();
+        let guard_a = a.lock().unwrap();
+        let guard_b = b.lock().unwrap();
+        assert!(a.check_prepare_guard(&guard_a).is_ok());
+        assert!(b.check_prepare_guard(&guard_b).is_ok());
+        assert!(a.check_prepare_guard(&guard_b).is_err());
+        assert!(b.check_prepare_guard(&guard_a).is_err());
+        assert!(fs::read_dir(first).unwrap().all(|entry| entry.unwrap().file_name() == "operation.lock"));
+        assert!(fs::read_dir(second).unwrap().all(|entry| entry.unwrap().file_name() == "operation.lock"));
+    }
+}
 struct Bytes(Vec<u8>);
 impl Drop for Bytes {
     fn drop(&mut self) {
@@ -151,6 +181,27 @@ impl LifecycleService {
     }
     pub fn prepare_native_personal(&self, payload: &Payload, ports: Ports) -> Result<Context> {
         let _lock = self.lock()?;
+        self.prepare_native_personal_impl(payload, ports)
+    }
+    /// Caller retains the existing root guard throughout preparation.
+    pub(super) fn prepare_native_personal_locked(&self, payload: &Payload, ports: Ports, guard: &OperationGuard) -> Result<Context> {
+        self.check_prepare_guard(guard)?;
+        self.prepare_native_personal_impl(payload, ports)
+    }
+    fn check_prepare_guard(&self, guard: &OperationGuard) -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        installations::private_directory(&self.root)?;
+        let held = guard.metadata().map_err(|_| err("NATIVE_TARGET_SELECTION_INVALID"))?;
+        let named = fs::symlink_metadata(self.root.join("operation.lock"))
+            .map_err(|_| err("NATIVE_TARGET_SELECTION_INVALID"))?;
+        if !held.is_file() || named.is_symlink() || held.uid() != unsafe { libc::geteuid() }
+            || held.mode() & 0o777 != 0o600 || held.nlink() != 1
+            || (held.dev(), held.ino()) != (named.dev(), named.ino()) {
+            return Err(err("NATIVE_TARGET_SELECTION_INVALID"));
+        }
+        Ok(())
+    }
+    fn prepare_native_personal_impl(&self, payload: &Payload, ports: Ports) -> Result<Context> {
         signed_release::trust::lifecycle_writer::admit(&self.root, &Action::Install)?;
         if [ports.web, ports.api, ports.database]
             .iter()

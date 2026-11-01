@@ -397,11 +397,68 @@ mod interrupted_root_tests {
     }
 }
 
+fn check_selected_empty_root(service: &LifecycleService, guard: &OperationGuard,
+                             root_pin: &crate::maintenance_source::DirectoryPin) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    installations::private_directory(&service.root)?;
+    root_pin.check_path(&service.root)?;
+    let held = guard.metadata().map_err(|_| err("NATIVE_TARGET_SELECTION_INVALID"))?;
+    let named = fs::symlink_metadata(service.root.join("operation.lock"))
+        .map_err(|_| err("NATIVE_TARGET_SELECTION_INVALID"))?;
+    if !held.is_file() || named.is_symlink() || held.uid() != unsafe { libc::geteuid() }
+        || held.mode() & 0o777 != 0o600 || held.nlink() != 1
+        || (held.dev(), held.ino()) != (named.dev(), named.ino()) {
+        return Err(err("NATIVE_TARGET_SELECTION_INVALID"));
+    }
+    for entry in fs::read_dir(&service.root).map_err(|_| err("NATIVE_TARGET_SELECTION_INVALID"))? {
+        if entry.map_err(|_| err("NATIVE_TARGET_SELECTION_INVALID"))?.file_name()
+            != std::ffi::OsStr::new("operation.lock") {
+            return Err(err("NATIVE_OEX_FRESH_ROOT_REQUIRED"));
+        }
+    }
+    root_pin.check_path(&service.root)
+}
+
+#[cfg(test)]
+mod selected_empty_root_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn empty_root_check_refuses_existing_data_without_changing_it() {
+        let root = std::env::temp_dir().join(format!("exhibitos-selected-empty-{}", Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let service = LifecycleService::bound_existing(root.clone()).unwrap();
+        let pin = crate::maintenance_source::DirectoryPin::open(&root).unwrap();
+        let guard = service.lock().unwrap();
+        assert!(check_selected_empty_root(&service, &guard, &pin).is_ok());
+        let marker = root.join("existing-data");
+        fs::write(&marker, b"preserve").unwrap();
+        assert!(check_selected_empty_root(&service, &guard, &pin).is_err());
+        assert_eq!(fs::read(marker).unwrap(), b"preserve");
+    }
+}
+
 impl Session {
     pub fn new(service: &LifecycleService, payload: Arc<Payload>, ports: Ports) -> Result<Self> {
         installations::private_directory(&service.root)?;
         let guard = service.lock()?;
         Self::new_with_guard(service, payload, ports, guard)
+    }
+    /// Unconnected primitive only: the opaque proof must be minted by the
+    /// future atomic creation/selection transaction after owner admission.
+    /// An empty path or a reselected existing workspace cannot mint it.
+    #[allow(dead_code)]
+    fn prepare_selected_empty(proof: installations::NewSelectedRoot, payload: Arc<Payload>, ports: Ports) -> Result<Self> {
+        let (service, guard, root_pin) = proof.into_parts();
+        check_selected_empty_root(&service, &guard, &root_pin)?;
+        service.prepare_native_personal_locked(&payload, ports, &guard)?;
+        root_pin.check_path(&service.root)?;
+        let session = Self::new_with_guard(&service, payload, ports, guard)?;
+        session.check_native_observation_fence()?;
+        Ok(session)
     }
     pub(crate) fn new_with_guard(
         service: &LifecycleService,

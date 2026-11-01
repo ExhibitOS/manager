@@ -21,6 +21,22 @@ pub mod native_oex_import;
 #[allow(dead_code)]
 #[path = "native_oex_pending.rs"]
 mod native_oex_pending;
+/// An opaque, one-use proof reserved for a future atomic new-workspace
+/// creation/selection transaction. There is intentionally no constructor yet.
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+pub(crate) struct NewSelectedRoot {
+    service: LifecycleService,
+    guard: OperationGuard,
+    root_pin: crate::maintenance_source::DirectoryPin,
+}
+#[cfg(target_os = "macos")]
+impl NewSelectedRoot {
+    #[allow(dead_code)]
+    pub(crate) fn into_parts(self) -> (LifecycleService, OperationGuard, crate::maintenance_source::DirectoryPin) {
+        (self.service, self.guard, self.root_pin)
+    }
+}
 #[cfg(target_os = "macos")]
 #[path = "native_publication.rs"]
 pub mod native_publication;
