@@ -18,6 +18,13 @@ public struct NativeOEXImportIntent: Codable, Equatable, Sendable {
         default: return false
         }
     }
+    /// Large-profile records must never enter legacy mutation or retry paths.
+    public var permitsLegacyJobMutation: Bool {
+        profile == nil && oexFormat == nil && hasSupportedProfile
+            && UUID(uuidString: requestId)?.uuidString.lowercased() == requestId
+            && sha256.utf8.count == 64
+            && sha256.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
     public func matches(_ archive: NativeOEXArchive) -> Bool { hasSupportedProfile && bytes == archive.count && sha256 == archive.sha256 }
 }
 public struct NativeOEXImportState: Codable, Sendable {
@@ -31,6 +38,16 @@ public struct NativeOEXImportState: Codable, Sendable {
     public var fileName: String?
 }
 
+/// A creation request may have committed, or its returned job could not be
+/// durably recorded. Preserve the intent; this is not permission to retry.
+public struct NativeBoundedOEXUncertain: Error, Sendable {
+    public let workspaceId: String
+    public let tenantId: String
+    public let principalId: String
+    public let requestId: String
+    public let jobId: String?
+}
+
 public protocol NativeOEXImportTransport: Sendable {
     func createOEXImport(requestId: String, bytes: Int, sha256: String) async throws -> NativeOEXImportJob
     func oexImportJob(_ id: String) async throws -> NativeOEXImportJob
@@ -39,10 +56,69 @@ public protocol NativeOEXImportTransport: Sendable {
 }
 extension AuthoringAPI: NativeOEXImportTransport {}
 
+/// Selected bounded transport remains unusable without a separately admitted
+/// live owner; the protocol permits focused failure and cancellation checks.
+public protocol NativeBoundedOEXTransport: Sendable {
+    func createBoundedOEXImport(requestId: String, archive: NativeOEXArchive) async throws -> NativeBoundedOEXJob
+    func uploadBoundedOEXImport(_ id: String, archive: NativeOEXArchive) async throws
+    func queueBoundedOEXImport(_ id: String) async throws -> NativeBoundedOEXJob
+}
+extension AuthoringAPI: NativeBoundedOEXTransport {}
+
 /// One durable request ID is saved before the first network mutation; retries
 /// never manufacture a new job or use a different selected archive.
 @MainActor
 public enum NativeOEXImportTransfer {
+    /// Selected fresh runtime only. Saves the exact bounded intent before
+    /// private selection or HTTP; the caller retains the same file and Session.
+    /// Errors preserve the journal and are never retried/rearmed here.
+    public static func runBoundedOnce(state: NativeOEXImportState, file: NativeOEXImportFile,
+                                      api: any NativeBoundedOEXTransport,
+                                      persist: @escaping @MainActor (NativeOEXImportState) async throws -> NativeOEXImportState,
+                                      select: @escaping @MainActor () async throws -> Void,
+                                      isCurrent: @escaping @MainActor () -> Bool) async throws -> (NativeOEXImportState, NativeBoundedOEXJob) {
+        func check() throws { try Task.checkCancellation(); guard isCurrent() else { throw AuthoringFailure("OEX_IMPORT_SCOPE_CHANGED") } }
+        try check()
+        guard state.format == 1, state.revision < UInt64.max - 1,
+              state.intent == nil, state.jobId == nil else { throw AuthoringFailure("OEX_IMPORT_PROFILE_UNAVAILABLE") }
+        var saved = state
+        let intent = NativeOEXImportIntent(requestId: UUID().uuidString.lowercased(), sha256: file.archive.sha256, bytes: file.archive.count,
+                                           profile: "bounded-file-v1", oexFormat: "1.0.0-draft.9")
+        guard intent.matches(file.archive) else { throw AuthoringFailure("OEX_IMPORT_FILE_CHANGED") }
+        saved.intent = intent; saved.fileName = file.name
+        saved = try await persist(saved); try check()
+        guard saved.format == state.format, saved.revision == state.revision + 1,
+              saved.workspaceId == state.workspaceId, saved.tenantId == state.tenantId, saved.principalId == state.principalId,
+              saved.intent == intent, saved.jobId == nil, saved.fileName == file.name else { throw AuthoringFailure("OEX_IMPORT_SCOPE_CHANGED") }
+        try await select(); try check()
+        let created: NativeBoundedOEXJob
+        do {
+            created = try await api.createBoundedOEXImport(requestId: intent.requestId, archive: file.archive)
+        } catch {
+            throw NativeBoundedOEXUncertain(workspaceId: state.workspaceId, tenantId: state.tenantId,
+                                            principalId: state.principalId, requestId: intent.requestId, jobId: nil)
+        }
+        let uncertain = NativeBoundedOEXUncertain(workspaceId: state.workspaceId, tenantId: state.tenantId,
+                                                   principalId: state.principalId, requestId: intent.requestId, jobId: created.id)
+        // The persist closure is bound to the original selection token and
+        // uses the journal revision check. Try it even if UI scope changed;
+        // a changed token must reject rather than redirecting the write.
+        let priorRevision = saved.revision
+        saved.jobId = created.id
+        // Persist the known server job even when the initiating task was
+        // cancelled. The captured writer still uses the original selection
+        // token and revision CAS; it cannot redirect into another workspace.
+        let pending = saved
+        let persistence = Task { @MainActor in try await persist(pending) }
+        do { saved = try await persistence.value } catch { throw uncertain }
+        guard saved.format == state.format, saved.revision == priorRevision + 1,
+              saved.workspaceId == state.workspaceId, saved.tenantId == state.tenantId, saved.principalId == state.principalId,
+              saved.intent == intent, saved.jobId == created.id, saved.fileName == file.name else { throw uncertain }
+        try check()
+        try await api.uploadBoundedOEXImport(created.id, archive: file.archive); try check()
+        let queued = try await api.queueBoundedOEXImport(created.id); try check()
+        return (saved, queued)
+    }
     public static func run(state: NativeOEXImportState, file: NativeOEXImportFile?, transport: any NativeOEXImportTransport,
                            persist: @escaping @MainActor (NativeOEXImportState) async throws -> NativeOEXImportState,
                            isCurrent: @escaping @MainActor () -> Bool) async throws -> (NativeOEXImportState, NativeOEXImportJob) {

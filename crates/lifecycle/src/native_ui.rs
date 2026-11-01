@@ -207,6 +207,14 @@ pub enum Command {
         selection_token: String,
     },
     #[cfg(target_os = "macos")]
+    NativeOexSelect { selection_token: String },
+    #[cfg(target_os = "macos")]
+    NativeOexRun { selection_token: String },
+    #[cfg(target_os = "macos")]
+    NativeOexSaveAuthorize { selection_token: String, observation: crate::native_host::OexSaveObservation },
+    #[cfg(target_os = "macos")]
+    NativeOexSaveObserved { selection_token: String, observation: crate::native_host::OexSaveObservation },
+    #[cfg(target_os = "macos")]
     NativeStatus {
         selection_token: String,
     },
@@ -242,10 +250,26 @@ struct WireRequest {
     export: Option<super::native_static_export::Input>,
     #[cfg(target_os = "macos")]
     backup: Option<super::native_backup::Input>,
+    #[cfg(target_os = "macos")]
+    oex_save: Option<crate::native_host::OexSaveObservation>,
 }
 impl TryFrom<WireRequest> for Request {
     type Error = &'static str;
     fn try_from(wire: WireRequest) -> std::result::Result<Self, Self::Error> {
+        #[cfg(target_os = "macos")]
+        if matches!(wire.command.as_str(), "native_oex_save_observed" | "native_oex_save_authorize") {
+            if wire.state.is_some() || wire.account.is_some() || wire.transfer.is_some() || wire.oex_import.is_some()
+                || wire.document.is_some() || wire.publication.is_some() || wire.export.is_some() || wire.backup.is_some()
+                || wire.hosting.is_some() || wire.maintenance.is_some() { return Err("NATIVE_PROTOCOL_INVALID"); }
+            let selection_token = wire.selection_token.ok_or("NATIVE_PROTOCOL_INVALID")?;
+            let observation = wire.oex_save.ok_or("NATIVE_PROTOCOL_INVALID")?;
+            let command = if wire.command == "native_oex_save_authorize" {
+                Command::NativeOexSaveAuthorize { selection_token, observation }
+            } else { Command::NativeOexSaveObserved { selection_token, observation } };
+            return Ok(Self { version: wire.version, id: wire.id, command });
+        }
+        #[cfg(target_os = "macos")]
+        if wire.oex_save.is_some() { return Err("NATIVE_PROTOCOL_INVALID"); }
         #[cfg(target_os = "macos")]
         if matches!(wire.command.as_str(), "oex_import_state" | "save_oex_import_state") {
             if wire.hosting.is_some() || wire.maintenance.is_some() || wire.state.is_some() || wire.account.is_some() || wire.transfer.is_some() || wire.document.is_some() || wire.publication.is_some() || wire.export.is_some() || wire.backup.is_some() { return Err("NATIVE_PROTOCOL_INVALID"); }
@@ -443,6 +467,8 @@ impl TryFrom<WireRequest> for Request {
             wire.command.as_str(),
             "native_prepare"
                 | "native_start"
+                | "native_oex_select"
+                | "native_oex_run"
                 | "native_status"
                 | "native_stop"
                 | "native_authoring_session"
@@ -460,6 +486,8 @@ impl TryFrom<WireRequest> for Request {
                     Command::NativeAuthoringSession { selection_token }
                 }
                 ("native_start", None) => Command::NativeStart { selection_token },
+                ("native_oex_select", None) => Command::NativeOexSelect { selection_token },
+                ("native_oex_run", None) => Command::NativeOexRun { selection_token },
                 ("native_status", None) => Command::NativeStatus { selection_token },
                 ("native_stop", None) => Command::NativeStop { selection_token },
                 _ => return Err("NATIVE_PROTOCOL_INVALID"),
@@ -574,6 +602,10 @@ impl Request {
             | Command::StaticExportCancel { .. }
             | Command::NativePrepare { .. }
             | Command::NativeStart { .. }
+            | Command::NativeOexSelect { .. }
+            | Command::NativeOexRun { .. }
+            | Command::NativeOexSaveAuthorize { .. }
+            | Command::NativeOexSaveObserved { .. }
             | Command::NativeStatus { .. }
             | Command::NativeStop { .. } => return Err(err("NATIVE_HOST_REQUIRED")),
         };

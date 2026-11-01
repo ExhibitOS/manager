@@ -65,6 +65,12 @@ public struct NativeRuntime: Decodable, Sendable {
     public let logTruncated: Bool
     public var hasOwnedProcesses: Bool { postgresPid != nil || nodePid != nil || auxiliaryPid != nil }
 }
+public struct NativeOEXSaveOffer: Decodable, Sendable {
+    public let attemptId: String
+    public let exhibitionId: String
+    public let etag: String
+    public let requestId: String
+}
 public struct NativeHostStatus: Decodable, Sendable {
     public struct Backup: Decodable, Sendable { public let id: String, backupId: String, manifestSha256: String, state: String }
     public struct Restoration: Decodable, Sendable { public let id: String, state: String; public let backupId: String? }
@@ -76,6 +82,8 @@ public struct NativeHostStatus: Decodable, Sendable {
     public let errorCode: String?
     public let backup: Backup?
     public let restoration: Restoration?
+    public let selectedOex: Bool?
+    public let oexSaveOffer: NativeOEXSaveOffer?
     public var needsShutdown: Bool { busy || runtime?.hasOwnedProcesses == true }
 }
 public struct LocalAuthoringSession: Decodable, Sendable {
@@ -152,7 +160,7 @@ public actor NativeBridge {
     private var sequence: UInt64 = 0
     private var buffered = Data()
 
-    public init(helper: URL, profile: URL) throws {
+    public init(helper: URL, profile: URL, freshSelectedOEX: Bool = false) throws {
         guard helper.isFileURL, profile.isFileURL,
               FileManager.default.isExecutableFile(atPath: helper.path) else {
             throw BridgeFailure("NATIVE_HELPER_MISSING")
@@ -160,7 +168,7 @@ public actor NativeBridge {
         let process = Process()
         let incoming = Pipe(), outgoing = Pipe()
         process.executableURL = helper
-        process.arguments = ["--profile", profile.path]
+        process.arguments = ["--profile", profile.path] + (freshSelectedOEX ? ["--fresh-selected-oex"] : [])
         // Legacy status may inspect system-installed engines, but never inherits
         // development PATH, credential environment, or a development checkout.
         process.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": NSHomeDirectory(), "LANG": "en_US.UTF-8"]
@@ -270,6 +278,20 @@ public actor NativeBridge {
     }
     public func start(_ context: Context) throws -> NativeHostStatus {
         try request("native_start", fields: ["selection_token": context.selectionToken])
+    }
+    public func selectBoundedOEX(_ context: Context) throws {
+        let _: DocumentValue = try request("native_oex_select", fields: ["selection_token": context.selectionToken])
+    }
+    public func runBoundedOEX(_ context: Context) throws -> NativeHostStatus {
+        try request("native_oex_run", fields: ["selection_token": context.selectionToken])
+    }
+    public func authorizeBoundedOEXSave(_ context: Context, offer: NativeOEXSaveOffer) throws {
+        let _: DocumentValue = try request("native_oex_save_authorize", fields: ["selection_token": context.selectionToken,
+            "oex_save": ["attemptId": offer.attemptId, "exhibitionId": offer.exhibitionId, "requestId": offer.requestId, "etag": offer.etag]])
+    }
+    public func reportBoundedOEXSave(_ context: Context, offer: NativeOEXSaveOffer, etag: String) throws {
+        let _: DocumentValue = try request("native_oex_save_observed", fields: ["selection_token": context.selectionToken,
+            "oex_save": ["attemptId": offer.attemptId, "exhibitionId": offer.exhibitionId, "requestId": offer.requestId, "etag": etag]])
     }
     public func stop(_ context: Context) throws -> NativeHostStatus {
         try request("native_stop", fields: ["selection_token": context.selectionToken])

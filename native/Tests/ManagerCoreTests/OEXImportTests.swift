@@ -23,7 +23,86 @@ private actor OEXMockTransport: NativeOEXImportTransport {
     func observedIDs() -> [String] { ids }
 }
 
+private actor BoundedOEXMock: NativeBoundedOEXTransport {
+    enum Behavior { case loseCreate, created, cancelAfterCreate }
+    let behavior: Behavior
+    let jobId = UUID().uuidString.lowercased()
+    private var requests = 0
+    private var uploads = 0
+    init(_ behavior: Behavior) { self.behavior = behavior }
+    func createBoundedOEXImport(requestId: String, archive: NativeOEXArchive) async throws -> NativeBoundedOEXJob {
+        requests += 1
+        if case .loseCreate = behavior { throw AuthoringFailure("REQUEST_FAILED") }
+        if case .cancelAfterCreate = behavior { withUnsafeCurrentTask { $0?.cancel() } }
+        return NativeBoundedOEXJob(id: jobId, state: "uploading")
+    }
+    func uploadBoundedOEXImport(_ id: String, archive: NativeOEXArchive) async throws { uploads += 1 }
+    func queueBoundedOEXImport(_ id: String) async throws -> NativeBoundedOEXJob { NativeBoundedOEXJob(id: jobId, state: "queued") }
+    func observed() -> (Int, Int) { (requests, uploads) }
+}
+
 final class OEXImportTests: XCTestCase {
+    @MainActor
+    func testSelectedCreateFailureAndCancellationPreserveIntentWithoutRetry() async throws {
+        let id = UUID().uuidString.lowercased()
+        let empty = NativeOEXImportState(format: 1, revision: 0, workspaceId: id, tenantId: id, principalId: id, intent: nil, jobId: nil, fileName: nil)
+        let archive = try NativeOEXArchive(data: Data([0x50, 0x4b, 0x03, 0x04] + Array(repeating: 0, count: 20)))
+        let file = NativeOEXImportFile(name: "synthetic.oex", archive: archive)
+        var durable = empty
+        let lost = BoundedOEXMock(.loseCreate)
+        let persist: @MainActor (NativeOEXImportState) async throws -> NativeOEXImportState = { value in
+            var next = value; next.revision += 1; durable = next; return next
+        }
+        do {
+            _ = try await NativeOEXImportTransfer.runBoundedOnce(state: empty, file: file, api: lost, persist: persist, select: {}, isCurrent: { true })
+            XCTFail("lost creation reply must be uncertain")
+        } catch let error as NativeBoundedOEXUncertain { XCTAssertNil(error.jobId); XCTAssertEqual(error.requestId, durable.intent?.requestId) }
+        XCTAssertNotNil(durable.intent); XCTAssertNil(durable.jobId)
+        do {
+            _ = try await NativeOEXImportTransfer.runBoundedOnce(state: durable, file: file, api: lost, persist: persist, select: {}, isCurrent: { true })
+            XCTFail("durable uncertain intent must not create a second job")
+        } catch {}
+        let lostCalls = await lost.observed(); XCTAssertEqual(lostCalls.0, 1); XCTAssertEqual(lostCalls.1, 0)
+
+        var retained = empty
+        let created = BoundedOEXMock(.created)
+        let createdId = await created.jobId
+        var writes = 0
+        let failSecond: @MainActor (NativeOEXImportState) async throws -> NativeOEXImportState = { value in
+            writes += 1; if writes == 2 { throw AuthoringFailure("STATE_UNAVAILABLE") }
+            var next = value; next.revision += 1; retained = next; return next
+        }
+        do {
+            _ = try await NativeOEXImportTransfer.runBoundedOnce(state: empty, file: file, api: created, persist: failSecond, select: {}, isCurrent: { true })
+            XCTFail("failed job journal write must remain uncertain")
+        } catch let error as NativeBoundedOEXUncertain { XCTAssertEqual(error.jobId, createdId); XCTAssertEqual(error.requestId, retained.intent?.requestId) }
+        let createdCalls = await created.observed(); XCTAssertEqual(createdCalls.0, 1); XCTAssertEqual(createdCalls.1, 0)
+        XCTAssertNotNil(retained.intent); XCTAssertNil(retained.jobId)
+
+        var cancelledState = empty
+        let cancelled = BoundedOEXMock(.created)
+        let task = Task { @MainActor in
+            try await NativeOEXImportTransfer.runBoundedOnce(state: empty, file: file, api: cancelled, persist: { value in
+                var next = value; next.revision += 1; cancelledState = next; return next
+            }, select: { withUnsafeCurrentTask { $0?.cancel() } }, isCurrent: { true })
+        }
+        do { _ = try await task.value; XCTFail("cancelled selected operation must stop before create") } catch is CancellationError {}
+        XCTAssertNotNil(cancelledState.intent); XCTAssertNil(cancelledState.jobId)
+        let cancelledCalls = await cancelled.observed(); XCTAssertEqual(cancelledCalls.0, 0); XCTAssertEqual(cancelledCalls.1, 0)
+
+        var afterResponse = empty
+        let responseCancelled = BoundedOEXMock(.cancelAfterCreate)
+        let responseId = await responseCancelled.jobId
+        let afterTask = Task { @MainActor in
+            try await NativeOEXImportTransfer.runBoundedOnce(state: empty, file: file, api: responseCancelled, persist: { value in
+                try Task.checkCancellation()
+                var next = value; next.revision += 1; afterResponse = next; return next
+            }, select: {}, isCurrent: { true })
+        }
+        do { _ = try await afterTask.value; XCTFail("cancelled operation must stop after recording returned job") } catch is CancellationError {}
+        XCTAssertNotNil(afterResponse.intent); XCTAssertEqual(afterResponse.jobId, responseId)
+        let afterCalls = await responseCancelled.observed(); XCTAssertEqual(afterCalls.0, 1); XCTAssertEqual(afterCalls.1, 0)
+    }
     func testBoundedChunksPreserveOrderAndRejectChangedSnapshot() throws {
         let limit = 16 * 1024 * 1024
         var bytes = Data(repeating: 0x31, count: limit + 7)

@@ -90,6 +90,69 @@ impl InstallationController {
             Ok(state)
         })
     }
+    /// Retain terminal proof before changing either pending document or fence.
+    /// An exact same-session retry recognizes completed intermediate steps;
+    /// a partial or conflicting receipt remains preserved and requires review.
+    pub(crate) fn finish_selected_oex(
+        &self, token: &str, expected: &Transfer, offer: &crate::native_host::OexSaveOffer,
+        saved_etag: &str, proposed: &super::native_document::DocumentState,
+    ) -> Result<super::native_document::DocumentState> {
+        self.with_current(token, |service| {
+            let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
+            let _lock = profile_lock(profile)?;
+            let (file, current) = self.oex_import_unlocked(service)?;
+            if expected.intent.is_none() || expected.job_id.is_none()
+                || !uuid(&offer.attempt_id) || !uuid(&offer.request_id) || !uuid(&offer.exhibition_id) {
+                return Err(err("NATIVE_OEX_IMPORT_SCOPE_CHANGED"));
+            }
+            let mut cleared = expected.clone();
+            cleared.revision = cleared.revision.checked_add(1).ok_or_else(|| err("NATIVE_OEX_IMPORT_INVALID"))?;
+            cleared.intent = None; cleared.job_id = None; cleared.file_name = None;
+            let current_bytes = serde_json::to_vec(&current).map_err(|_| err("STATE_INVALID"))?;
+            let expected_bytes = serde_json::to_vec(expected).map_err(|_| err("STATE_INVALID"))?;
+            let cleared_bytes = serde_json::to_vec(&cleared).map_err(|_| err("STATE_INVALID"))?;
+            if current_bytes != expected_bytes && current_bytes != cleared_bytes { return Err(err("NATIVE_OEX_IMPORT_SCOPE_CHANGED")); }
+            super::native_document::validate(proposed)?;
+            let saved_draft = proposed.draft.as_ref().ok_or_else(|| err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
+            if proposed.pending.is_some() || proposed.etag.as_deref() != Some(saved_etag)
+                || proposed.workspace_id != expected.workspace_id || proposed.tenant_id != expected.tenant_id
+                || proposed.principal_id != expected.principal_id
+                || saved_draft.get("editVersion").and_then(Value::as_u64) != proposed.saved_edit_version
+                || saved_draft.get("exhibitionId").and_then(Value::as_str) != Some(offer.exhibition_id.as_str()) {
+                return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));
+            }
+            let (document_file, document) = self.document_unlocked(service)?;
+            let mut saved = proposed.clone();
+            saved.revision = saved.revision.checked_add(1).ok_or_else(|| err("NATIVE_DOCUMENT_INVALID"))?;
+            let document_bytes = serde_json::to_vec(&document).map_err(|_| err("STATE_INVALID"))?;
+            let saved_bytes = serde_json::to_vec(&saved).map_err(|_| err("STATE_INVALID"))?;
+            let pending = document.pending.as_ref();
+            let before = document.revision == proposed.revision && pending.is_some_and(|p|
+                p.request_id == offer.request_id && p.etag.as_deref() == Some(offer.etag.as_str())
+                && &p.draft == saved_draft && document.draft.as_ref() == Some(saved_draft))
+                && document.workspace_id == proposed.workspace_id && document.tenant_id == proposed.tenant_id
+                && document.principal_id == proposed.principal_id;
+            if !before && document_bytes != saved_bytes { return Err(err("NATIVE_OEX_WORKER_UNCERTAIN")); }
+            if current_bytes == cleared_bytes && document_bytes != saved_bytes { return Err(err("NATIVE_OEX_WORKER_UNCERTAIN")); }
+            let receipt = serde_json::json!({"format":1,"workspaceId":expected.workspace_id,
+                "jobId":expected.job_id,"attemptId":offer.attempt_id,"importRequestId":expected.intent.as_ref().map(|i| &i.request_id),
+                "saveRequestId":offer.request_id,"exhibitionId":offer.exhibition_id,"oldETag":offer.etag,
+                "savedETag":saved_etag,"draftSHA256":digest(&serde_json::to_vec(saved_draft).map_err(|_| err("STATE_INVALID"))?)});
+            let receipt_bytes = serde_json::to_vec(&receipt).map_err(|_| err("STATE_INVALID"))?;
+            let receipt_name = format!("native-oex-complete-{}-{}.json", digest(service.root.as_os_str().as_encoded_bytes()), offer.attempt_id);
+            match fs::symlink_metadata(profile.root.join(&receipt_name)) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => write_private_new(&profile.root, &receipt_name, &receipt_bytes, 65536)?,
+                Ok(_) if installation_backup::source_bytes(&profile.root, &receipt_name, 65536, true)? == receipt_bytes => {},
+                _ => return Err(err("NATIVE_OEX_WORKER_UNCERTAIN")),
+            }
+            File::open(&profile.root).and_then(|f| f.sync_all()).map_err(|_| err("STATE_UNAVAILABLE"))?;
+            if before { write_json(&profile.root, &document_file, &saved)?;
+                File::open(&profile.root).and_then(|f| f.sync_all()).map_err(|_| err("STATE_UNAVAILABLE"))?; }
+            if current_bytes == expected_bytes { write_json(&profile.root, &file, &cleared)?;
+                File::open(&profile.root).and_then(|f| f.sync_all()).map_err(|_| err("STATE_UNAVAILABLE"))?; }
+            Ok(saved)
+        })
+    }
 }
 
 #[cfg(test)]

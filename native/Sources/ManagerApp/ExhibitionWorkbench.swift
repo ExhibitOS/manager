@@ -8,7 +8,9 @@ import ManagerCore
 struct NativeExhibitionView: View {
     @ObservedObject var model: ExhibitionModel
     @ObservedObject var controller: NativeViewportController
+    @ObservedObject var oexImport: OEXImportModel
     let ready: Bool
+    var freshOEXOperationActive = false
     let mode: Mode
     let connect: () async -> Void
     var active = true
@@ -114,9 +116,11 @@ struct NativeExhibitionView: View {
         .onChange(of: model.viewportSelection) { _, value in if value != nil && !model.entrancePreviewActive { showSelection() } }
         .onChange(of: model.draft?.id) { _, id in if id != nil { browserVisible = false } }
         .onChange(of: model.entrancePreviewActive) { _, value in if !value && returningToScene { returnToScene() } }
-        .onChange(of: ready) { _, value in if !value { needsConnection = true; model.oexImport.invalidate() } }
-        .task(id: ready && active && connectionAllowed) {
-            if ready && active && connectionAllowed && needsConnection { needsConnection = false; await connect() }
+        .onChange(of: oexScopeInterrupted(ready: ready, freshOperation: freshOEXOperationActive, importBusy: oexImport.busy)) { _, interrupted in
+            if interrupted { needsConnection = true; oexImport.invalidate() }
+        }
+        .task(id: ready && active && connectionAllowed && !oexImport.busy) {
+            if ready && active && connectionAllowed && !oexImport.busy && needsConnection { needsConnection = false; await connect() }
         }
         .onChange(of: model.roomId) { _, _ in model.selectRoom() }
         .onChange(of: model.placementId) { _, _ in model.selectPlacement() }
