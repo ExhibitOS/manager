@@ -177,6 +177,8 @@ final class AuthoringModel: ObservableObject {
     func save() async {
         await action {
             guard let api else { return }
+            if let selected, let intent = transfer?.intent, intent.derived?.recipe.colourConversion != nil,
+               selected.id.lowercased() == intent.artworkId.lowercased() { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
             if creationYearText.isEmpty { draft.creationYear = nil }
             else if let year = Int(creationYearText), (1...9999).contains(year) { draft.creationYear = year }
             else { throw AuthoringFailure("CREATION_YEAR_INVALID", status: 400) }
@@ -376,6 +378,7 @@ extension AuthoringModel {
     func changeImport(_ change: NativeImportAction) async {
         await action {
             guard let api, let job = importJob else { return }
+            guard transfer?.intent?.derived?.recipe.colourConversion == nil else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
             if change == .cancel, transfer?.intent?.modelDerivation != nil {
                 await importTransfer.cancelAndWait()
                 guard !modelWorkerPending else { throw AuthoringFailure("IMPORT_DRAIN_PENDING") }
@@ -410,6 +413,7 @@ extension AuthoringModel {
     }
     func clearImport() async {
         await action {
+            guard transfer?.intent?.derived?.recipe.colourConversion == nil else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
             guard importJob?.terminal == true, !modelWorkerPending,
                   importJob?.modelDerivation?.workerDrained != false, var state = transfer else { throw AuthoringFailure("IMPORT_ACTIVE") }
             state.intent = nil; state.jobId = nil; state.fileName = nil
@@ -421,6 +425,9 @@ extension AuthoringModel {
         await action {
             guard let api, let selected, !metadataDirty, approvalAcknowledged,
                   selected.assets.contains(where: { $0.id == assetId && $0.state == "approved" }) else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+            if transfer?.intent?.artworkId.lowercased() == selected.id.lowercased(), transfer?.intent?.derived?.recipe.colourConversion != nil {
+                throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE")
+            }
             if transfer?.intent?.derived != nil, transfer?.intent?.artworkId == selected.id, importJob?.assetId == assetId {
                 guard jpegOriginalStored else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
             }

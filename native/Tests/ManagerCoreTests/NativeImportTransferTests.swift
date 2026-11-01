@@ -60,6 +60,48 @@ private actor ImportDrainGate {
 
 @MainActor
 final class NativeImportTransferTests: XCTestCase {
+    func testRecoveredICCIntentDoesNotMutateWithoutAdmission() async throws {
+        var recipe = NativeImportDerivedRecipe(version: 1, role: "baseColor", sampling: "nearest-centre", colourMeaning: "srgb",
+            recipeSha256: try NativeImportDerivedRecipe.recipeSHA256(colourMeaning: "srgb"), settingsSha256: String(repeating: "b", count: 64),
+            sourcePixelsSha256: String(repeating: "c", count: 64), outputPixelsSha256: String(repeating: "d", count: 64), toolVersion: "test-v2")
+        recipe.colourConversion = .init(version: 1, algorithm: NativeImagePreparation.iccAlgorithm, sourceIccSha256: String(repeating: "e", count: 64))
+        let descriptor = NativeImportDerived(mime: "image/png", bytes: 20, sha256: String(repeating: "f", count: 64), recipe: recipe)
+        let input = NativeImportIntent(artworkId: UUID().uuidString.lowercased(), mime: "image/jpeg", sha256: String(repeating: "a", count: 64),
+            bytes: 30, scaleMeters: 1, rights: ArtworkMetadata().rights, derived: descriptor)
+        let fixture = ImportTransportFixture(), transfer = NativeImportTransfer()
+        let recipeJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(recipe))
+        let readback: [String: Any] = ["provenance": "client-declared", "originalSha256": input.sha256,
+                                      "derivedSha256": descriptor.sha256, "recipe": recipeJSON]
+        let status = try JSONDecoder().decode(NativeImagePreparationStatus.self, from: JSONSerialization.data(withJSONObject: readback))
+        XCTAssertTrue(status.matches(input))
+        var changed = readback; changed["originalSha256"] = String(repeating: "0", count: 64)
+        XCTAssertFalse(try JSONDecoder().decode(NativeImagePreparationStatus.self, from: JSONSerialization.data(withJSONObject: changed)).matches(input))
+        changed = readback; changed["provenance"] = "server-certified"
+        XCTAssertFalse(try JSONDecoder().decode(NativeImagePreparationStatus.self, from: JSONSerialization.data(withJSONObject: changed)).matches(input))
+        changed = readback; changed["authority"] = true
+        XCTAssertThrowsError(try JSONDecoder().decode(NativeImagePreparationStatus.self, from: JSONSerialization.data(withJSONObject: changed)))
+        var changedRecipe = try XCTUnwrap(recipeJSON as? [String: Any]); changedRecipe["extra"] = true
+        changed = readback; changed["recipe"] = changedRecipe
+        XCTAssertThrowsError(try JSONDecoder().decode(NativeImagePreparationStatus.self, from: JSONSerialization.data(withJSONObject: changed)))
+        changedRecipe = try XCTUnwrap(recipeJSON as? [String: Any])
+        var changedConversion = try XCTUnwrap(changedRecipe["colourConversion"] as? [String: Any]); changedConversion["authority"] = true
+        changedRecipe["colourConversion"] = changedConversion; changed = readback; changed["recipe"] = changedRecipe
+        XCTAssertThrowsError(try JSONDecoder().decode(NativeImagePreparationStatus.self, from: JSONSerialization.data(withJSONObject: changed)))
+        var persisted = false
+        do {
+            _ = try await transfer.run(intent: input, jobID: UUID().uuidString.lowercased(), file: nil, transport: fixture,
+                persistIntent: { persisted = true }, persistJob: { _ in persisted = true }, isCurrent: { true })
+            XCTFail("ICC intent must remain preserved without admission")
+        } catch let error as AuthoringFailure { XCTAssertEqual(error.code, "IMPORT_ICC_UNAVAILABLE") }
+        let (calls, _) = await fixture.observed()
+        XCTAssertTrue(calls.isEmpty); XCTAssertFalse(persisted); XCTAssertNil(transfer.operationID)
+    }
+    func testLegacyJobIgnoresMalformedFutureImagePreparation() throws {
+        let input: [String: Any] = ["id": UUID().uuidString.lowercased(), "state": "uploading", "progress": 0, "attempts": 0,
+                                    "imagePreparation": ["unexpected": true]]
+        let job = try JSONDecoder().decode(NativeImportJob.self, from: JSONSerialization.data(withJSONObject: input))
+        XCTAssertNil(job.imagePreparation)
+    }
     private func intent(_ file: ImportFileSnapshot? = nil) -> NativeImportIntent {
         NativeImportIntent(artworkId: UUID().uuidString.lowercased(), mime: file?.mime ?? "model/gltf-binary",
             sha256: file?.sha256 ?? String(repeating: "a", count: 64), bytes: file?.data.count ?? 3,

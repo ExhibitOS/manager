@@ -133,6 +133,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "IMPORT_DRAIN_PENDING": return "작품 파일 처리의 종료를 아직 확인하지 못했습니다. 저장한 요청과 원본을 유지한 채 상태를 확인하거나 로컬 제작을 정상 정지하세요."
         case "IMPORT_MODEL_BINDING_INVALID": return "감상용 파일 요청의 파일·설정·작업 식별 정보가 일치하지 않습니다. 저장한 원본과 요청을 유지했습니다."
         case "IMPORT_MODEL_UNAVAILABLE": return "이 실행본은 저장한 감상용 파일 요청을 지원하지 않습니다. 원본과 요청을 보존했으니 지원 실행본에서 다시 확인하세요."
+        case "IMPORT_ICC_UNAVAILABLE": return "이 실행본은 저장한 ICC 변환 요청을 지원하지 않습니다. 원본과 요청을 보존했으니 지원 실행본에서 다시 확인하세요."
         case "IMPORT_INTENT_CHANGED": return "이전 검사 요청과 파일 또는 권리 입력이 다릅니다. 이전 요청을 완료하거나 취소한 뒤 새 검사를 시작하세요."
         case "IMPORT_FILE_REQUIRED": return "이전 요청과 같은 파일을 다시 선택하세요. 저장한 요청은 유지됩니다."
         default: break
@@ -536,6 +537,7 @@ public actor AuthoringAPI {
         try await request("/api/v1/tenants/\(tenant)/imports/" + identifier(id))
     }
     public func createImport(_ input: NativeImportIntent) async throws -> NativeImportJob {
+        guard input.derived?.recipe.colourConversion == nil else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
         guard input.bytes > 0, input.bytes <= 32 * 1024 * 1024,
               input.scaleMeters.isFinite, input.scaleMeters > 0, input.scaleMeters <= 1_000_000,
               ((["model/gltf-binary", "image/png"].contains(input.mime) && input.derived == nil)
@@ -570,6 +572,43 @@ public actor AuthoringAPI {
 }
 
 public enum NativeImportAction: String, Sendable { case complete, cancel, retry }
+public struct NativeImagePreparationStatus: Decodable, Sendable {
+    public let provenance: String
+    public let originalSha256: String
+    public let derivedSha256: String
+    public let recipe: NativeImportDerivedRecipe
+    private struct WireKey: CodingKey {
+        let stringValue: String
+        let intValue: Int? = nil
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
+    }
+    private enum CodingKeys: String, CodingKey { case provenance, originalSha256, derivedSha256, recipe }
+    public init(from decoder: Decoder) throws {
+        func checkKeys(_ decoder: Decoder, expected: Set<String>) throws -> KeyedDecodingContainer<WireKey> {
+            let values = try decoder.container(keyedBy: WireKey.self)
+            guard Set(values.allKeys.map(\.stringValue)) == expected else {
+                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unexpected ICC readback shape"))
+            }
+            return values
+        }
+        _ = try checkKeys(decoder, expected: ["provenance", "originalSha256", "derivedSha256", "recipe"])
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let recipeDecoder = try values.superDecoder(forKey: .recipe)
+        let fields = try checkKeys(recipeDecoder, expected: ["version", "role", "sampling", "colourMeaning", "recipeSha256", "settingsSha256", "sourcePixelsSha256", "outputPixelsSha256", "toolVersion", "colourConversion"])
+        let conversionDecoder = try fields.superDecoder(forKey: WireKey(stringValue: "colourConversion")!)
+        _ = try checkKeys(conversionDecoder, expected: ["version", "algorithm", "sourceIccSha256"])
+        provenance = try values.decode(String.self, forKey: .provenance)
+        originalSha256 = try values.decode(String.self, forKey: .originalSha256)
+        derivedSha256 = try values.decode(String.self, forKey: .derivedSha256)
+        recipe = try values.decode(NativeImportDerivedRecipe.self, forKey: .recipe)
+    }
+    func matches(_ intent: NativeImportIntent) -> Bool {
+        guard let derived = intent.derived, derived.recipe.colourConversion != nil else { return false }
+        return provenance == "client-declared" && originalSha256 == intent.sha256
+            && derivedSha256 == derived.sha256 && recipe == derived.recipe
+    }
+}
 public struct NativeImportJob: Decodable, Sendable {
     public let id: String
     public let state: String
@@ -580,9 +619,28 @@ public struct NativeImportJob: Decodable, Sendable {
     public let retryAt: String?
     public let originalAssetId: String?
     public let modelDerivation: NativeModelDerivationStatus?
-    public init(id: String, state: String, progress: Int, attempts: Int, errorCode: String?, assetId: String?, retryAt: String?, originalAssetId: String? = nil, modelDerivation: NativeModelDerivationStatus? = nil) {
+    public let imagePreparation: NativeImagePreparationStatus?
+    private enum CodingKeys: String, CodingKey {
+        case id, state, progress, attempts, errorCode, assetId, retryAt, originalAssetId, modelDerivation, imagePreparation
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        state = try values.decode(String.self, forKey: .state)
+        progress = try values.decode(Int.self, forKey: .progress)
+        attempts = try values.decode(Int.self, forKey: .attempts)
+        errorCode = try values.decodeIfPresent(String.self, forKey: .errorCode)
+        assetId = try values.decodeIfPresent(String.self, forKey: .assetId)
+        retryAt = try values.decodeIfPresent(String.self, forKey: .retryAt)
+        originalAssetId = try values.decodeIfPresent(String.self, forKey: .originalAssetId)
+        modelDerivation = try values.decodeIfPresent(NativeModelDerivationStatus.self, forKey: .modelDerivation)
+        // Legacy clients ignored this field. A malformed future field remains
+        // absent here; selected ICC validation then rejects that absence.
+        imagePreparation = try? values.decode(NativeImagePreparationStatus.self, forKey: .imagePreparation)
+    }
+    public init(id: String, state: String, progress: Int, attempts: Int, errorCode: String?, assetId: String?, retryAt: String?, originalAssetId: String? = nil, modelDerivation: NativeModelDerivationStatus? = nil, imagePreparation: NativeImagePreparationStatus? = nil) {
         self.id = id; self.state = state; self.progress = progress; self.attempts = attempts; self.errorCode = errorCode
-        self.assetId = assetId; self.retryAt = retryAt; self.originalAssetId = originalAssetId; self.modelDerivation = modelDerivation
+        self.assetId = assetId; self.retryAt = retryAt; self.originalAssetId = originalAssetId; self.modelDerivation = modelDerivation; self.imagePreparation = imagePreparation
     }
     public var terminal: Bool { ["approved", "cancelled"].contains(state) }
     public var canRetry: Bool {

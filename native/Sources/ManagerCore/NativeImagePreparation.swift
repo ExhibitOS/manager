@@ -11,8 +11,10 @@ import zlib
 /// remain the import owner's responsibility.
 public enum NativeImagePreparation {
     public static let algorithm = "nearest-source-colourspace-jpeg-rgb8-v1"
+    public static let iccAlgorithm = "icc-to-srgb-jpeg-rgb8-v1"
     public static let tool = "ExhibitOSManager.ImageIO"
     public static let toolVersion = "1"
+    public static let iccToolVersion = "2"
     public enum Role: String, Codable, Sendable { case baseColor, normal, occlusion }
     public enum Failure: Error, Equatable { case cancelledOrStale, binding, settings, limits, unsupportedJPEG, unsupportedPixels, encoding, outputMismatch }
     public struct Source: Sendable {
@@ -55,6 +57,8 @@ public enum NativeImagePreparation {
         public let spatialSampling: Bool
         public let grayExpandedToRGB: Bool
         public let colourMeaning: String
+        public let sourceICCSHA256: String?
+        public let colourTransferConverted: Bool?
         public let explicitBufferPayloadBytes: Int
     }
     public struct Image: Sendable { public let png: Data; public let report: ImageReport }
@@ -65,9 +69,9 @@ public enum NativeImagePreparation {
     }
     private struct Receipt: Encodable {
         let version = 1
-        let algorithm = NativeImagePreparation.algorithm
+        let algorithm: String
         let tool = NativeImagePreparation.tool
-        let toolVersion = NativeImagePreparation.toolVersion
+        let toolVersion: String
         let decoderOS = ProcessInfo.processInfo.operatingSystemVersionString
         let binding: Binding
         let images: [ImageReport]
@@ -76,7 +80,7 @@ public enum NativeImagePreparation {
         let sourceContainerMembershipVerified = false
         let consumerAdmitted = false
         let qualityApproved = false
-        let colourTransferConverted = false
+        let colourTransferConverted: Bool
         let normalRenormalized = false
         let normalDirectionRemapped = false
         let geometryChanged = false
@@ -87,7 +91,7 @@ public enum NativeImagePreparation {
     }
     private struct Pixels {
         let width: Int, height: Int, channels: Int
-        let samples: Data, rgb: Data
+        let samples: Data, sourceRGB: Data, rgb: Data
     }
     private static func hash(_ bytes: Data) -> String { SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined() }
     private static func digest(_ value: String) -> Bool { value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } }
@@ -124,19 +128,23 @@ public enum NativeImagePreparation {
             guard settingsBytes.count <= 4096,
                   let settings = try? JSONSerialization.jsonObject(with: settingsBytes) as? [String: Any],
                   Set(settings.keys) == ["algorithm", "maximumEdge", "allowSpatialSampling"],
-                  settings["algorithm"] as? String == algorithm,
+                  let selectedAlgorithm = settings["algorithm"] as? String,
+                  [algorithm, iccAlgorithm].contains(selectedAlgorithm),
                   let edge = settings["maximumEdge"] as? NSNumber, CFGetTypeID(edge) != CFBooleanGetTypeID(), edge.doubleValue == 2048,
                   let sampling = settings["allowSpatialSampling"] as? NSNumber, CFGetTypeID(sampling) == CFBooleanGetTypeID() else { throw Failure.settings }
             guard !sources.isEmpty, sources.count <= 3, Set(sources.map(\.role)).count == sources.count,
                   Set(sources.map(\.imageIndex)).count == sources.count,
                   sources.allSatisfy({ (0..<8).contains($0.imageIndex) && !$0.jpeg.isEmpty && $0.jpeg.count <= 32 * 1024 * 1024 }),
                   sources.reduce(0, { $0 + $1.jpeg.count }) <= 32 * 1024 * 1024 else { throw Failure.limits }
+            guard selectedAlgorithm != iccAlgorithm || (sources.count == 1 && sources[0].role == .baseColor) else { throw Failure.settings }
             var images: [Image] = []
             for input in sources {
                 try check(isCurrent)
                 guard digest(input.sha256), hash(input.jpeg) == input.sha256 else { throw Failure.binding }
                 let image = try autoreleasepool {
-                    let source = try decodeJPEG(input, isCurrent: isCurrent)
+                    let profile = selectedAlgorithm == iccAlgorithm ? try embeddedICC(input.jpeg, isCurrent: isCurrent) : nil
+                    if selectedAlgorithm == iccAlgorithm && profile == nil { throw Failure.unsupportedJPEG }
+                    let source = try decodeJPEG(input, profile: profile, isCurrent: isCurrent)
                     let scale = min(1, 2048 / Double(max(source.width, source.height)))
                     let width = max(1, Int(floor(Double(source.width) * scale)))
                     let height = max(1, Int(floor(Double(source.height) * scale)))
@@ -150,19 +158,20 @@ public enum NativeImagePreparation {
                     let report = ImageReport(role: input.role, sourceImageIndex: input.imageIndex,
                         sourceJPEGSHA256: input.sha256, sourceBytes: input.jpeg.count,
                         sourceWidth: source.width, sourceHeight: source.height, sourceChannels: source.channels,
-                        sourceDecodedSamplesSHA256: hash(source.samples), sourceRGB8SHA256: hash(source.rgb),
+                        sourceDecodedSamplesSHA256: hash(source.samples), sourceRGB8SHA256: hash(source.sourceRGB),
                         outputWidth: width, outputHeight: height, outputRGB8SHA256: hash(rgb),
                         outputPNGSHA256: hash(png), outputBytes: png.count, spatialSampling: resized,
                         grayExpandedToRGB: source.channels == 1,
-                        colourMeaning: input.role == .baseColor ? "decoded source RGB codes; display sRGB assumed, not calibrated" : "linear numeric RGB codes; no transfer conversion",
-                        explicitBufferPayloadBytes: input.jpeg.count + source.samples.count + source.rgb.count + rgb.count + png.count + verified.count)
+                        colourMeaning: profile != nil ? "ICC-converted sRGB; not physical colour calibration" : (input.role == .baseColor ? "decoded source RGB codes; display sRGB assumed, not calibrated" : "linear numeric RGB codes; no transfer conversion"),
+                        sourceICCSHA256: profile.map(hash), colourTransferConverted: profile == nil ? nil : true,
+                        explicitBufferPayloadBytes: input.jpeg.count + source.samples.count + source.rgb.count + (profile == nil ? 0 : source.sourceRGB.count + source.width * source.height * 4) + rgb.count + png.count + verified.count)
                     return Image(png: png, report: report)
                 }
                 images.append(image)
             }
             guard images.reduce(0, { $0 + $1.report.outputWidth * $1.report.outputHeight }) <= 12_582_912 else { throw Failure.limits }
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-            let candidate = Candidate(binding: binding, images: images, receipt: try encoder.encode(Receipt(binding: binding, images: images.map(\.report))))
+            let candidate = Candidate(binding: binding, images: images, receipt: try encoder.encode(Receipt(algorithm: selectedAlgorithm, toolVersion: selectedAlgorithm == iccAlgorithm ? iccToolVersion : toolVersion, binding: binding, images: images.map(\.report), colourTransferConverted: selectedAlgorithm == iccAlgorithm)))
             try check(isCurrent)
             return candidate
         } catch {
@@ -193,8 +202,8 @@ public enum NativeImagePreparation {
         }
         return output
     }
-    private static func decodeJPEG(_ input: Source, isCurrent: @Sendable () -> Bool) throws -> Pixels {
-        try rejectICC(input.jpeg)
+    private static func decodeJPEG(_ input: Source, profile: Data?, isCurrent: @Sendable () -> Bool) throws -> Pixels {
+        if profile == nil { try rejectICC(input.jpeg) }
         let options = [kCGImageSourceShouldCache: false, kCGImageSourceShouldAllowFloat: false] as CFDictionary
         guard let source = CGImageSourceCreateWithData(input.jpeg as CFData, options),
               CGImageSourceGetType(source) as String? == UTType.jpeg.identifier,
@@ -209,7 +218,31 @@ public enum NativeImagePreparation {
         guard let image = CGImageSourceCreateImageAtIndex(source, 0, options),
               image.width == w.intValue, image.height == h.intValue else { throw Failure.unsupportedJPEG }
         try check(isCurrent)
-        return try pixels(image, allowGray: input.role == .occlusion, isCurrent: isCurrent)
+        let original = try pixels(image, allowGray: input.role == .occlusion, isCurrent: isCurrent)
+        guard let profile else { return original }
+        guard input.role == .baseColor, original.channels == 3,
+              let embeddedSpace = CGColorSpace(iccData: profile as CFData), embeddedSpace.model == .rgb,
+              let decodedSpace = image.colorSpace, decodedSpace.model == .rgb,
+              let decodedProfile = decodedSpace.copyICCData() as Data?, hash(decodedProfile) == hash(profile),
+              let sourceImage = image.copy(colorSpace: embeddedSpace),
+              let targetSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+                  bytesPerRow: image.width * 4, space: targetSpace,
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+              let raw = context.data else { throw Failure.unsupportedPixels }
+        context.setBlendMode(.copy); context.interpolationQuality = .none
+        context.draw(sourceImage, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        let rgba = raw.bindMemory(to: UInt8.self, capacity: image.width * image.height * 4)
+        var converted = Data(capacity: image.width * image.height * 3)
+        for y in 0..<image.height {
+            try check(isCurrent)
+            for x in 0..<image.width {
+                let offset = (y * image.width + x) * 4
+                guard rgba[offset + 3] == 255 else { throw Failure.unsupportedPixels }
+                converted.append(contentsOf: [rgba[offset], rgba[offset + 1], rgba[offset + 2]])
+            }
+        }
+        return Pixels(width: image.width, height: image.height, channels: original.channels, samples: original.samples, sourceRGB: original.rgb, rgb: converted)
     }
     private static func pixels(_ image: CGImage, allowGray: Bool, isCurrent: @Sendable () -> Bool) throws -> Pixels {
         let gray = image.colorSpace?.model == .monochrome
@@ -246,7 +279,48 @@ public enum NativeImagePreparation {
                 }
             }
         }
-        return Pixels(width: image.width, height: image.height, channels: channels, samples: samples, rgb: rgb)
+        return Pixels(width: image.width, height: image.height, channels: channels, samples: samples, sourceRGB: rgb, rgb: rgb)
+    }
+    /// Extract a complete, bounded ICC profile from JPEG APP2 fragments. No
+    /// profile is assumed from a name, and malformed/duplicate parts fail.
+    static func embeddedICC(_ data: Data, isCurrent: @Sendable () -> Bool) throws -> Data? {
+        try check(isCurrent)
+        guard data.count >= 4, data[0] == 255, data[1] == 216 else { throw Failure.unsupportedJPEG }
+        let signature = Data("ICC_PROFILE\0".utf8)
+        var offset = 2, markers = 0, expected: Int?, fragments: [Int: Data] = [:], reachedScan = false
+        while offset < data.count {
+            try check(isCurrent)
+            markers += 1; guard markers <= 4096, data[offset] == 255 else { throw Failure.unsupportedJPEG }
+            while offset < data.count && data[offset] == 255 { offset += 1 }
+            guard offset < data.count else { throw Failure.unsupportedJPEG }
+            let marker = data[offset]; offset += 1
+            if marker == 218 { reachedScan = true; break }
+            guard marker != 0, marker != 216, marker != 217, !(208...215).contains(marker), offset + 2 <= data.count else { throw Failure.unsupportedJPEG }
+            let size = Int(data[offset]) * 256 + Int(data[offset + 1])
+            guard size >= 2, size <= data.count - offset else { throw Failure.unsupportedJPEG }
+            let payload = data[(offset + 2)..<(offset + size)]
+            if marker == 226 && payload.starts(with: signature) {
+                guard payload.count >= 14 else { throw Failure.unsupportedJPEG }
+                let start = payload.startIndex, sequence = Int(payload[start + 12]), count = Int(payload[start + 13])
+                guard count > 0, sequence > 0, sequence <= count, expected == nil || expected == count, fragments[sequence] == nil else { throw Failure.unsupportedJPEG }
+                expected = count; fragments[sequence] = Data(payload[(start + 14)..<payload.endIndex])
+                guard fragments.values.reduce(0, { $0 + $1.count }) <= 1_048_576 else { throw Failure.limits }
+            }
+            offset += size
+        }
+        guard reachedScan else { throw Failure.unsupportedJPEG }
+        guard let count = expected else {
+            guard data.range(of: signature) == nil else { throw Failure.unsupportedJPEG }
+            return nil
+        }
+        guard fragments.count == count else { throw Failure.unsupportedJPEG }
+        var profile = Data()
+        for i in 1...count { guard let fragment = fragments[i] else { throw Failure.unsupportedJPEG }; profile.append(fragment) }
+        guard profile.count >= 128,
+              Int(profile[0..<4].reduce(UInt32(0), { ($0 << 8) | UInt32($1) })) == profile.count,
+              profile[16..<20] == Data("RGB ".utf8), profile[36..<40] == Data("acsp".utf8) else { throw Failure.unsupportedJPEG }
+        try check(isCurrent)
+        return profile
     }
     /// Inspect JPEG marker metadata only; ImageIO remains the decoder. ICC is
     /// outside this source-code-preserving recipe, never silently transformed.
