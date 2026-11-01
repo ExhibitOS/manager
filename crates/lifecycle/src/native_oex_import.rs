@@ -97,6 +97,15 @@ impl InstallationController {
         &self, token: &str, expected: &Transfer, offer: &crate::native_host::OexSaveOffer,
         saved_etag: &str, proposed: &super::native_document::DocumentState,
     ) -> Result<super::native_document::DocumentState> {
+        self.finish_selected_oex_checked(token, expected, offer, saved_etag, proposed, |_| Ok(()))
+    }
+    /// The internal checkpoint is a no-op in production. It lets tests stop at
+    /// each durable boundary without modifying the filesystem implementation.
+    fn finish_selected_oex_checked(
+        &self, token: &str, expected: &Transfer, offer: &crate::native_host::OexSaveOffer,
+        saved_etag: &str, proposed: &super::native_document::DocumentState,
+        mut checkpoint: impl FnMut(&'static str) -> Result<()>,
+    ) -> Result<super::native_document::DocumentState> {
         self.with_current(token, |service| {
             let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
             let _lock = profile_lock(profile)?;
@@ -146,10 +155,13 @@ impl InstallationController {
                 _ => return Err(err("NATIVE_OEX_WORKER_UNCERTAIN")),
             }
             File::open(&profile.root).and_then(|f| f.sync_all()).map_err(|_| err("STATE_UNAVAILABLE"))?;
+            checkpoint("receipt")?;
             if before { write_json(&profile.root, &document_file, &saved)?;
                 File::open(&profile.root).and_then(|f| f.sync_all()).map_err(|_| err("STATE_UNAVAILABLE"))?; }
+            checkpoint("document")?;
             if current_bytes == expected_bytes { write_json(&profile.root, &file, &cleared)?;
                 File::open(&profile.root).and_then(|f| f.sync_all()).map_err(|_| err("STATE_UNAVAILABLE"))?; }
+            checkpoint("transfer")?;
             Ok(saved)
         })
     }
@@ -158,6 +170,88 @@ impl InstallationController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    struct CompletionFixture {
+        controller: InstallationController,
+        token: String,
+        profile: PathBuf,
+        root: PathBuf,
+        transfer: Transfer,
+        offer: crate::native_host::OexSaveOffer,
+        saved_etag: String,
+        proposed: super::super::native_document::DocumentState,
+    }
+    fn completion_fixture() -> CompletionFixture {
+        let parent = std::env::temp_dir().join(format!("exhibitos-oex-completion-{}", Uuid::new_v4()));
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        let parent = fs::canonicalize(parent).unwrap();
+        let profile = parent.join("profile");
+        let controller = InstallationController::new(profile.clone(), None).unwrap();
+        let token = controller.context().unwrap().selection_token;
+        let root = controller.with_current(&token, |service| {
+            let _guard = service.lock()?;
+            let personal = serde_json::json!({"format":1,"workspaceId":Uuid::new_v4().to_string(),
+                "tenantId":Uuid::new_v4().to_string(),"principalId":Uuid::new_v4().to_string(),
+                "ownerUid":unsafe { libc::geteuid() },"ports":{"web":13200,"api":13201,"database":15432},
+                "manifestSha256":"a".repeat(64),"environmentSha256":"b".repeat(64)});
+            write_private_new(&service.root, "native-personal.json", &serde_json::to_vec(&personal).unwrap(), 4096)?;
+            Ok(service.root.clone())
+        }).unwrap();
+        let mut transfer = controller.native_oex_import(&token).unwrap();
+        transfer.intent = Some(Intent { request_id: Uuid::new_v4().to_string(), sha256: "a".repeat(64), bytes: 67_108_865,
+            profile: Some("bounded-file-v1".into()), oex_format: Some("1.0.0-draft.9".into()) });
+        transfer.file_name = Some("synthetic.oex".into());
+        transfer = controller.save_native_oex_import(&token, transfer).unwrap();
+        transfer.job_id = Some(Uuid::new_v4().to_string());
+        transfer = controller.save_native_oex_import(&token, transfer).unwrap();
+        let exhibition = Uuid::new_v4().to_string();
+        let draft = serde_json::json!({"kind":"exhibition-draft","schemaVersion":"1.0.0-draft.1","exhibitionId":exhibition,
+            "id":Uuid::new_v4().to_string(),"candidate":{"id":exhibition},"editVersion":1});
+        let old_etag = format!("\"studio-r1-{}\"", "b".repeat(64));
+        let saved_etag = format!("\"studio-r2-{}\"", "c".repeat(64));
+        let request = Uuid::new_v4().to_string();
+        let mut pending = controller.native_document(&token).unwrap();
+        pending.draft = Some(draft.clone()); pending.etag = Some(old_etag.clone()); pending.saved_edit_version = Some(1);
+        pending.pending = Some(super::super::native_document::Pending { request_id: request.clone(), etag: Some(old_etag.clone()), draft });
+        pending = controller.save_native_document(&token, pending).unwrap();
+        let mut proposed = pending.clone(); proposed.pending = None; proposed.etag = Some(saved_etag.clone());
+        let offer = crate::native_host::OexSaveOffer { attempt_id: Uuid::new_v4().to_string(), exhibition_id: exhibition, etag: old_etag, request_id: request };
+        CompletionFixture { controller, token, profile, root, transfer, offer, saved_etag, proposed }
+    }
+
+    #[test]
+    fn selected_completion_preserves_each_interruption_and_retries_exactly() {
+        for boundary in ["receipt", "document", "transfer"] {
+            let f = completion_fixture();
+            let result = f.controller.finish_selected_oex_checked(&f.token, &f.transfer, &f.offer, &f.saved_etag, &f.proposed,
+                |at| if at == boundary { Err(err("SYNTHETIC_FAILURE")) } else { Ok(()) });
+            assert!(result.is_err());
+            let doc = f.controller.native_document(&f.token).unwrap();
+            let transfer = f.controller.native_oex_import(&f.token).unwrap();
+            assert_eq!(doc.pending.is_some(), boundary == "receipt");
+            assert_eq!(transfer.intent.is_some(), boundary != "transfer");
+            let saved = f.controller.finish_selected_oex(&f.token, &f.transfer, &f.offer, &f.saved_etag, &f.proposed).unwrap();
+            assert!(saved.pending.is_none());
+            assert!(f.controller.native_oex_import(&f.token).unwrap().intent.is_none());
+            let repeated = f.controller.finish_selected_oex(&f.token, &f.transfer, &f.offer, &f.saved_etag, &f.proposed).unwrap();
+            assert_eq!(saved.revision, repeated.revision);
+        }
+    }
+
+    #[test]
+    fn selected_completion_refuses_partial_receipt_and_mismatched_version() {
+        let f = completion_fixture();
+        let mut wrong = f.proposed.clone(); wrong.saved_edit_version = Some(2);
+        assert!(f.controller.finish_selected_oex(&f.token, &f.transfer, &f.offer, &f.saved_etag, &wrong).is_err());
+        let name = format!("native-oex-complete-{}-{}.json", digest(f.root.as_os_str().as_encoded_bytes()), f.offer.attempt_id);
+        write_private_new(&f.profile, &name, b"partial receipt", 65536).unwrap();
+        assert!(f.controller.finish_selected_oex(&f.token, &f.transfer, &f.offer, &f.saved_etag, &f.proposed).is_err());
+        assert_eq!(fs::read(f.profile.join(name)).unwrap(), b"partial receipt");
+        assert!(f.controller.native_document(&f.token).unwrap().pending.is_some());
+        assert!(f.controller.native_oex_import(&f.token).unwrap().intent.is_some());
+    }
     #[test]
     fn oex_journal_binds_request_and_refuses_paths_and_invalid_sizes() {
         let state = serde_json::json!({"format":1,"revision":0,"workspaceId":Uuid::new_v4().to_string(),"tenantId":Uuid::new_v4().to_string(),"principalId":Uuid::new_v4().to_string(),"intent":{"requestId":Uuid::new_v4().to_string(),"sha256":"a".repeat(64),"bytes":100},"jobId":null,"fileName":"test.oex"});

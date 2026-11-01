@@ -974,3 +974,76 @@ impl Drop for Host {
         self.shutdown();
     }
 }
+
+#[cfg(test)]
+mod selected_oex_ipc_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn request(id: u64, command: UiCommand) -> Request { Request { version: 1, id, command } }
+    #[test]
+    fn selected_pending_authorize_observe_and_stop_are_scoped() {
+        let parent = std::env::temp_dir().join(format!("exhibitos-selected-ipc-{}", Uuid::new_v4()));
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        let parent = fs::canonicalize(parent).unwrap();
+        let controller = Arc::new(InstallationController::new(parent.join("profile"), None).unwrap());
+        let token = controller.context().unwrap().selection_token;
+        let root = controller.with_current(&token, |service| {
+            let _guard = service.lock()?;
+            let personal = serde_json::json!({"format":1,"workspaceId":Uuid::new_v4().to_string(),
+                "tenantId":Uuid::new_v4().to_string(),"principalId":Uuid::new_v4().to_string(),
+                "ownerUid":unsafe { libc::geteuid() },"ports":{"web":13200,"api":13201,"database":15432},
+                "manifestSha256":"a".repeat(64),"environmentSha256":"b".repeat(64)});
+            write_private_new(&service.root, "native-personal.json", &serde_json::to_vec(&personal).unwrap(), 4096)?;
+            Ok(service.root.clone())
+        }).unwrap();
+        let mut transfer = controller.native_oex_import(&token).unwrap();
+        transfer.intent = Some(crate::installations::native_oex_import::Intent {
+            request_id: Uuid::new_v4().to_string(), sha256: "a".repeat(64), bytes: 67_108_865,
+            profile: Some("bounded-file-v1".into()), oex_format: Some("1.0.0-draft.9".into()),
+        });
+        transfer.file_name = Some("synthetic.oex".into());
+        transfer = controller.save_native_oex_import(&token, transfer).unwrap();
+        transfer.job_id = Some(Uuid::new_v4().to_string());
+        transfer = controller.save_native_oex_import(&token, transfer).unwrap();
+        let exhibition = Uuid::new_v4().to_string();
+        let draft = serde_json::json!({"kind":"exhibition-draft","schemaVersion":"1.0.0-draft.1",
+            "exhibitionId":exhibition,"id":Uuid::new_v4().to_string(),"candidate":{"id":exhibition},"editVersion":1});
+        let old_etag = format!("\"studio-r1-{}\"", "b".repeat(64));
+        let new_etag = format!("\"studio-r2-{}\"", "c".repeat(64));
+        let offer = OexSaveOffer { attempt_id: Uuid::new_v4().to_string(), exhibition_id: exhibition, etag: old_etag.clone(), request_id: Uuid::new_v4().to_string() };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut host = Host::new(controller.clone(), parent.join("unused-resources"));
+        { let mut state = host.state.lock().unwrap(); state.root = Some(root); state.busy = true;
+          state.operation = "importing_oex".into(); state.selected_oex = true; state.oex_save_offer = Some(offer.clone()); state.oex_save_sender = Some(sender); }
+        let mut document = controller.native_document(&token).unwrap();
+        document.draft = Some(draft.clone()); document.etag = Some(old_etag.clone()); document.saved_edit_version = Some(1);
+        document.pending = Some(crate::installations::native_document::Pending { request_id: offer.request_id.clone(), etag: Some(old_etag.clone()), draft });
+        let mut stale = document.clone(); stale.revision += 1;
+        assert!(host.handle(request(1, UiCommand::SaveDocumentState { selection_token: token.clone(), document: Box::new(stale) })).is_err());
+        let mut wrong_scope = document.clone(); wrong_scope.workspace_id = Uuid::new_v4().to_string();
+        assert!(host.handle(request(2, UiCommand::SaveDocumentState { selection_token: token.clone(), document: Box::new(wrong_scope) })).is_err());
+        assert!(controller.native_document(&token).unwrap().draft.is_none());
+        let save = UiCommand::SaveDocumentState { selection_token: token.clone(), document: Box::new(document) };
+        host.handle(request(3, save)).unwrap();
+        let observation = |attempt: String, etag: String| OexSaveObservation { attempt_id: attempt, exhibition_id: offer.exhibition_id.clone(), etag, request_id: offer.request_id.clone() };
+        { host.state.lock().unwrap().stop_requested = true; }
+        assert!(host.handle(request(4, UiCommand::NativeOexSaveAuthorize { selection_token: token.clone(), observation: observation(offer.attempt_id.clone(), old_etag.clone()) })).is_err());
+        { host.state.lock().unwrap().stop_requested = false; }
+        assert!(host.handle(request(5, UiCommand::NativeOexSaveAuthorize { selection_token: token.clone(), observation: observation(Uuid::new_v4().to_string(), old_etag.clone()) })).is_err());
+        host.handle(request(6, UiCommand::NativeOexSaveAuthorize { selection_token: token.clone(), observation: observation(offer.attempt_id.clone(), old_etag.clone()) })).unwrap();
+        assert!(host.handle(request(7, UiCommand::NativeOexSaveAuthorize { selection_token: token.clone(), observation: observation(offer.attempt_id.clone(), old_etag) })).is_err());
+        let mut cleared = transfer.clone(); cleared.intent = None; cleared.job_id = None; cleared.file_name = None;
+        assert!(host.handle(request(8, UiCommand::SaveOEXImportState { selection_token: token.clone(), transfer: Box::new(cleared.clone()) })).is_err());
+        host.handle(request(9, UiCommand::NativeOexSaveObserved { selection_token: token.clone(), observation: observation(offer.attempt_id.clone(), new_etag.clone()) })).unwrap();
+        assert_eq!(receiver.try_recv().unwrap(), new_etag);
+        host.handle(request(10, UiCommand::NativeStop { selection_token: token.clone() })).unwrap();
+        let doc = controller.native_document(&token).unwrap();
+        assert!(doc.pending.is_some());
+        assert!(host.handle(request(11, UiCommand::SaveDocumentState { selection_token: token.clone(), document: Box::new(doc) })).is_err());
+        { let mut state = host.state.lock().unwrap(); state.busy = false; state.operation = "idle".into(); }
+        assert!(host.handle(request(12, UiCommand::SaveOEXImportState { selection_token: token.clone(), transfer: Box::new(cleared) })).is_err());
+        assert!(controller.native_oex_import(&token).unwrap().intent.is_some());
+    }
+}
