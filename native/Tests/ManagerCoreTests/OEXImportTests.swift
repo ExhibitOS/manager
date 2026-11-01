@@ -24,6 +24,18 @@ private actor OEXMockTransport: NativeOEXImportTransport {
 }
 
 final class OEXImportTests: XCTestCase {
+    func testBoundedChunksPreserveOrderAndRejectChangedSnapshot() throws {
+        let limit = 16 * 1024 * 1024
+        var bytes = Data(repeating: 0x31, count: limit + 7)
+        bytes.replaceSubrange(0..<4, with: [0x50, 0x4b, 0x03, 0x04])
+        let archive = try NativeOEXArchive(data: bytes)
+        XCTAssertEqual(try archive.boundedChunk(index: 0), bytes.prefix(limit))
+        XCTAssertEqual(try archive.boundedChunk(index: 1), bytes.suffix(7))
+        XCTAssertThrowsError(try archive.boundedChunk(index: 2))
+        let handle = try FileHandle(forWritingTo: archive.fileURL)
+        try handle.seekToEnd(); try handle.write(contentsOf: Data([0x32])); try handle.close()
+        XCTAssertThrowsError(try archive.boundedChunk(index: 0))
+    }
     func testSnapshotRequiresLocalOEXRegularFileAndPreservesBytes() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
