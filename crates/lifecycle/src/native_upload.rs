@@ -64,6 +64,15 @@ pub struct DerivedRecipe {
     pub source_pixels_sha256: String,
     pub output_pixels_sha256: String,
     pub tool_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour_conversion: Option<ColourConversion>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ColourConversion {
+    pub version: u32,
+    pub algorithm: String,
+    pub source_icc_sha256: String,
 }
 impl Derived {
     fn valid(&self) -> bool {
@@ -82,6 +91,9 @@ impl Derived {
             && recipe.role == "baseColor"
             && recipe.sampling == "nearest-centre"
             && matches!(recipe.colour_meaning.as_str(), "srgb" | "srgb-assumed")
+            && recipe.colour_conversion.as_ref().is_none_or(|v|
+                v.version == 1 && v.algorithm == "icc-to-srgb-jpeg-rgb8-v1"
+                    && hash_valid(&v.source_icc_sha256) && recipe.colour_meaning == "srgb")
             && [
                 &recipe.recipe_sha256,
                 &recipe.settings_sha256,
@@ -300,6 +312,34 @@ mod tests {
         let state: Transfer = serde_json::from_value(input.clone()).unwrap();
         validate(&state).unwrap();
         assert_eq!(serde_json::to_value(state).unwrap(), input);
+    }
+    #[test]
+    fn icc_recipe_is_optional_closed_and_roundtrips_with_original_intent() {
+        let mut input = fixture();
+        input["intent"]["mime"] = serde_json::json!("image/jpeg");
+        input["intent"]["derived"] = derived();
+        let old: Transfer = serde_json::from_value(input.clone()).unwrap();
+        validate(&old).unwrap();
+        assert_eq!(serde_json::to_value(&old).unwrap(), input);
+        let canonical = br#"{"colourMeaning":"srgb","role":"baseColor","sampling":"nearest-centre","version":1}"#;
+        input["intent"]["derived"]["recipe"]["colourMeaning"] = serde_json::json!("srgb");
+        input["intent"]["derived"]["recipe"]["recipeSha256"] = serde_json::json!(digest(canonical));
+        input["intent"]["derived"]["recipe"]["colourConversion"] = serde_json::json!({"version":1,"algorithm":"icc-to-srgb-jpeg-rgb8-v1","sourceIccSha256":"f".repeat(64)});
+        let state: Transfer = serde_json::from_value(input.clone()).unwrap();
+        validate(&state).unwrap();
+        assert_eq!(serde_json::to_value(&state).unwrap(), input);
+        for (field, bad) in [("version", serde_json::json!(2)), ("algorithm", serde_json::json!("unknown")), ("sourceIccSha256", serde_json::json!("F".repeat(64)))] {
+            let mut changed = input.clone();
+            changed["intent"]["derived"]["recipe"]["colourConversion"][field] = bad;
+            assert!(validate(&serde_json::from_value(changed).unwrap()).is_err());
+        }
+        let mut unknown = input.clone();
+        unknown["intent"]["derived"]["recipe"]["colourConversion"]["authority"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<Transfer>(unknown).is_err());
+        let mut wrong_meaning = input.clone();
+        wrong_meaning["intent"]["derived"]["recipe"]["colourMeaning"] = serde_json::json!("srgb-assumed");
+        wrong_meaning["intent"]["derived"]["recipe"]["recipeSha256"] = derived()["recipe"]["recipeSha256"].clone();
+        assert!(validate(&serde_json::from_value(wrong_meaning).unwrap()).is_err());
     }
     #[test]
     fn jpeg_intent_binds_distinct_original_and_derived_hashes() {

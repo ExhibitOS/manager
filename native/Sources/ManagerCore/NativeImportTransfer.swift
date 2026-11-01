@@ -52,6 +52,10 @@ public final class NativeImportTransfer {
                     persistJob: @escaping @MainActor (NativeImportJob) async throws -> Void,
                     isCurrent: @escaping @MainActor () -> Bool) async throws -> NativeImportJob {
         try Task.checkCancellation()
+        // No reviewed ICC-capable runtime has been admitted yet. In particular,
+        // a restored intent must not POST, upload or complete through an older
+        // server which could strip the new provenance field.
+        guard intent.derived?.recipe.colourConversion == nil else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
         guard task == nil, modelDrainTask == nil,
               modelOperation.map({ $0.intent == intent }) ?? true else { throw AuthoringFailure("IMPORT_ACTIVE") }
         if let model = intent.modelDerivation {
@@ -136,6 +140,7 @@ public final class NativeImportTransfer {
 
     private static func valid(_ job: NativeImportJob, intent: NativeImportIntent) -> Bool {
         UUID(uuidString: job.id) != nil
+            && (intent.derived?.recipe.colourConversion == nil || job.imagePreparation?.matches(intent) == true)
             && ["uploading", "queued", "processing", "approved", "failed", "cancelled"].contains(job.state)
             && (job.originalAssetId == nil || job.originalAssetId.flatMap(UUID.init(uuidString:)) != nil)
             && (job.state != "approved" || (job.assetId.flatMap(UUID.init(uuidString:)) != nil
