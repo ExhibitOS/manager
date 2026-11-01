@@ -19,6 +19,8 @@ pub struct VerificationSource{
 }
 pub(crate) struct DirectoryPin{file:File,path:PathBuf}
 impl DirectoryPin{
+ pub(crate) fn try_clone_file(&self)->Result<File>{self.check()?;self.file.try_clone().map_err(|_|invalid())}
+ pub(crate) fn check_path(&self,expected:&Path)->Result<()>{if self.path!=expected{return Err(invalid());}self.check()}
  pub(crate) fn open(path:&Path)->Result<Self>{
   let file=OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW|libc::O_DIRECTORY|libc::O_NONBLOCK).open(path).map_err(|_|invalid())?;
   let pin=Self{file,path:path.into()};pin.check()?;Ok(pin)

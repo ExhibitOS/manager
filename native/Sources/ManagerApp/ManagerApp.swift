@@ -106,8 +106,9 @@ final class ManagerModel: ObservableObject {
     }
 
     func connectPersonalAuthoring() async {
+        guard !exhibitions.oexImport.busy else { return }
         if let authoringConnection { await authoringConnection.value; return }
-        guard !busy, !quitting, ready else { return }
+        guard !busy, !quitting, ready, !exhibitions.oexImport.busy else { return }
         // This shared workspace connection belongs to the model, not whichever
         // screen's .task first asked for it. New screens join the same operation.
         let connection = Task<Void, Never> { [weak self] in
@@ -119,7 +120,7 @@ final class ManagerModel: ObservableObject {
         authoringConnection = nil
     }
     private func connectPersonalAuthoringOwned() async {
-        guard !busy, !quitting, ready, let bridge, let context else { return }
+        guard !busy, !quitting, ready, !exhibitions.oexImport.busy, let bridge, let context else { return }
         guard exhibitions.beginEntranceCredentialRenewal() else { return }
         busy = true
         defer { busy = false }
@@ -132,9 +133,15 @@ final class ManagerModel: ObservableObject {
             authoring.bindImportStore(read: { try await bridge.uploadState(context) }, save: { state in try await bridge.saveUploadState(context, state: state) })
             let credentials = try await bridge.authoringSession(context)
             await authoring.connect(credentials)
+            guard !exhibitions.oexImport.busy else { exhibitions.entranceCredentialRenewalFailed(); return }
             if let api = authoring.exhibitionAPI, let session = authoring.session {
                 await exhibitions.connect(api: api, session: session, credentials: credentials, read: { try await bridge.documentState(context) }, write: { state in try await bridge.saveDocumentState(context, state: state) })
-                await exhibitions.oexImport.connect(api: api, session: session, read: { try await bridge.oexImportState(context) }, save: { state in try await bridge.saveOEXImportState(context, state: state) })
+                guard !exhibitions.oexImport.busy else { exhibitions.entranceCredentialRenewalFailed(); return }
+                await exhibitions.oexImport.connect(api: api, session: session, read: { try await bridge.oexImportState(context) }, save: { state in try await bridge.saveOEXImportState(context, state: state) },
+                    freshBounded: native?.selectedOex == true && ready, bridge: bridge, context: context,
+                    mayBeginBounded: { [weak self] in guard let self, let document = self.exhibitions.state else { return false }; return !self.busy && self.authoringConnection == nil && !self.authoring.busy && !self.exhibitions.dirty && !self.exhibitions.busy && document.draft == nil && document.pending == nil },
+                    acceptBoundedPending: { [weak self] document in self?.exhibitions.acceptBoundedPending(document) == true },
+                    acceptBoundedSaved: { [weak self] document, requestId in self?.exhibitions.acceptBoundedSaved(document, requestId: requestId) == true })
                 await publication.connect(api: api, session: session, read: { try await bridge.publicationState(context) }, write: { state in try await bridge.savePublicationState(context, state: state) })
             } else { exhibitions.entranceCredentialRenewalFailed() }
         } catch {
@@ -492,11 +499,14 @@ struct ManagerView: View {
             .allowsHitTesting(!workbenchActive)
             .accessibilityHidden(workbenchActive)
             NativeExhibitionView(model: model.exhibitions, controller: model.exhibitions.viewportController,
-                                 ready: model.ready, mode: model.presentation?.mode ?? .beginner,
+                                 oexImport: model.exhibitions.oexImport, ready: model.ready,
+                                 freshOEXOperationActive: model.native?.busy == true && model.native?.selectedOex == true && model.native?.operation == "importing_oex",
+                                 mode: model.presentation?.mode ?? .beginner,
                                  connect: { await model.connectPersonalAuthoring() }, active: workbenchActive,
                                  readOnly: model.presentation?.step == .preview,
                                  connectionAllowed: !model.busy && !model.quitting,
                                  edit: { model.change(step: .select) }, publish: { model.change(step: .publish) })
+                .disabled(model.exhibitions.oexImport.busy)
                 .opacity(workbenchActive ? 1 : 0)
                 .allowsHitTesting(workbenchActive && !model.quitting)
                 .accessibilityHidden(!workbenchActive)

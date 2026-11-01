@@ -8,9 +8,14 @@ use std::io::{BufRead, Read};
 
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
-    if args.len() != 3 || args[1] != "--profile" || !std::path::Path::new(&args[2]).is_absolute() {
+    if !(args.len() == 3 || (cfg!(target_os = "macos") && args.len() == 4 && args[3] == "--fresh-selected-oex"))
+        || args[1] != "--profile" || !std::path::Path::new(&args[2]).is_absolute() {
         eprintln!("NATIVE_PROFILE_REQUIRED");
         std::process::exit(2);
+    }
+    #[cfg(target_os = "macos")]
+    if args.len() == 4 {
+        std::process::exit(run_fresh_selected((&args[2]).into()));
     }
     let controller = match InstallationController::new((&args[2]).into(), None) {
         Ok(c) => c,
@@ -68,7 +73,28 @@ extern "C" fn shutdown_signal(_: libc::c_int) {
 #[cfg(target_os = "macos")]
 fn run(controller: InstallationController) -> i32 {
     use exhibitos_lifecycle::native_host::Host;
-    use std::sync::{Arc, atomic::Ordering};
+    use std::sync::Arc;
+    let Some(resources) = native_resources() else { eprintln!("NATIVE_HELPER_MISSING"); return 1; };
+    run_host(Host::new(Arc::new(controller), resources))
+}
+
+#[cfg(target_os = "macos")]
+fn native_resources() -> Option<std::path::PathBuf> {
+    std::env::current_exe().ok().and_then(|p| p.parent()?.parent().map(|p| p.join("Resources/native-runtime")))
+}
+
+#[cfg(target_os = "macos")]
+fn run_fresh_selected(profile: std::path::PathBuf) -> i32 {
+    let Some(resources) = native_resources() else { eprintln!("NATIVE_HELPER_MISSING"); return 1; };
+    match exhibitos_lifecycle::native_host::Host::new_fresh_selected(profile, resources) {
+        Ok(host) => run_host(host),
+        Err(error) => { eprintln!("{}", error.code); 1 }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run_host(mut host: exhibitos_lifecycle::native_host::Host) -> i32 {
+    use std::sync::atomic::Ordering;
     // Signal handlers only publish atomics. Child shutdown is owned by Host on
     // the normal thread, including EOF after the parent app disappears.
     unsafe {
@@ -82,15 +108,6 @@ fn run(controller: InstallationController) -> i32 {
         );
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
     }
-    let Some(resources) = std::env::current_exe().ok().and_then(|p| {
-        p.parent()?
-            .parent()
-            .map(|p| p.join("Resources/native-runtime"))
-    }) else {
-        eprintln!("NATIVE_HELPER_MISSING");
-        return 1;
-    };
-    let mut host = Host::new(Arc::new(controller), resources);
     let mut output = io::stdout().lock();
     let mut exit_code = 0;
     let mut frame = Vec::with_capacity(3_145_728);

@@ -18,6 +18,26 @@ pub mod native_upload;
 #[path = "native_oex_import.rs"]
 pub mod native_oex_import;
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
+#[path = "native_oex_pending.rs"]
+mod native_oex_pending;
+/// Opaque, one-use proof minted only inside the exclusive new-profile
+/// creation/selection transaction and handed directly to its Session.
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+pub(crate) struct NewSelectedRoot {
+    service: LifecycleService,
+    guard: OperationGuard,
+    root_pin: crate::maintenance_source::DirectoryPin,
+}
+#[cfg(target_os = "macos")]
+impl NewSelectedRoot {
+    #[allow(dead_code)]
+    pub(crate) fn into_parts(self) -> (LifecycleService, OperationGuard, crate::maintenance_source::DirectoryPin) {
+        (self.service, self.guard, self.root_pin)
+    }
+}
+#[cfg(target_os = "macos")]
 #[path = "native_publication.rs"]
 pub mod native_publication;
 #[cfg(target_os = "macos")]
@@ -309,6 +329,66 @@ impl Drop for DestinationLease<'_> {
     }
 }
 impl InstallationController {
+    /// Construct only an explicitly selected, entirely new profile and hand
+    /// its locked default root directly to the session initializer. This is
+    /// not a way to adopt an existing profile, even when it appears empty.
+    /// Failures leave any created files in place for diagnosis.
+    #[cfg(target_os = "macos")]
+    #[allow(dead_code)]
+    pub(crate) fn with_fresh_selected(
+        requested: PathBuf,
+        payload: std::sync::Arc<super::native_payload::Payload>,
+        ports: super::native_installation::Ports,
+    ) -> Result<(Self, super::native_runtime::Session)> {
+        if !payload.normal_oex_selected_input()? { return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
+        let (profile_path, anchor) = super::profile_backup::anchor_lock(&requested, true)?;
+        // mkdir is the proof of creation: an existing path is never adopted.
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new().mode(0o700).create(&profile_path)
+            .map_err(|_| err("NATIVE_FRESH_PROFILE_REQUIRED"))?;
+        let result = (|| {
+        private_directory(&profile_path)?;
+        let profile_pin = crate::maintenance_source::DirectoryPin::open(&profile_path)?;
+        let profile_session = super::profile_backup::anchored_session(&profile_path, anchor, true)?;
+        profile_session.check_exclusive(&profile_path)?;
+        let profile = LifecycleService::bound_existing(profile_path.clone())?;
+        let profile_guard = profile_lock(&profile)?;
+        profile_pin.check_path(&profile_path)?;
+        if load(&profile_path)?.is_some() {
+            return Err(err("INSTALLATION_SELECTION_INVALID"));
+        }
+        let entry = Entry { id: Uuid::new_v4().to_string(), kind: "default".into(), created_at: now() };
+        let path = root(&profile_path, &entry);
+        new_directory(&path)?;
+        let root_pin = crate::maintenance_source::DirectoryPin::open(&path)?;
+        let service = LifecycleService::bound_existing(path.clone())?;
+        let root_guard = service.lock()?;
+        let registry = Registry { format: 1, active_id: entry.id.clone(), installations: vec![entry.clone()] };
+        save(&profile_path, &registry, None)?;
+        let (readback, bytes) = load(&profile_path)?.ok_or_else(|| err("INSTALLATION_SELECTION_UNCERTAIN"))?;
+        let expected = serde_json::to_vec(&registry).map_err(|_| err("INSTALLATION_SELECTION_INVALID"))?;
+        if bytes != expected || readback.active_id != entry.id || readback.installations.len() != 1 {
+            return Err(err("INSTALLATION_SELECTION_UNCERTAIN"));
+        }
+        profile_session.check_exclusive(&profile_path)?;
+        profile_pin.check_path(&profile_path)?;
+        root_pin.check_path(&path)?;
+        let current = Selected { token: Uuid::new_v4().to_string(), entry, path, service: Some(LifecycleService::bound_existing(service.root.clone())?), error_code: None };
+        // The controller is not published yet, so no other selection in this
+        // process can race the initializer. Both profile and root locks remain
+        // held until the initializer consumes the non-cloneable proof.
+        let result = super::native_runtime::Session::prepare_selected_empty(
+            NewSelectedRoot { service, guard: root_guard, root_pin }, payload, ports,
+        )?;
+        profile_session.check_exclusive(&profile_path)?;
+        profile_pin.check_path(&profile_path)?;
+        drop(profile_guard);
+        Ok((Self { profile: Some(profile), _profile_session: Some(profile_session), mode: "managed".into(), current: RwLock::new(current), maintenance_destination: RwLock::new(None) }, result))
+        })();
+        // Once mkdir succeeds, any failure leaves a distinct partial profile.
+        // Never silently adopt or retry it as fresh.
+        result.map_err(|_: LifecycleError| err("NATIVE_FRESH_PROFILE_PARTIAL"))
+    }
     /// Pins the profile operation lock across admission and mutation. A precheck alone is not atomic.
     pub fn with_current_mutation<T>(&self,token:&str,task:impl FnOnce(&LifecycleService)->Result<T>)->Result<T>{self.with_current(token,|service|{
         let _profile=if let Some(profile)=&self.profile{if profile.root!=service.root{Some(profile.lock()?)}else{None}}else{None};

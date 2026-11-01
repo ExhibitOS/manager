@@ -71,6 +71,70 @@ pub struct Payload {
     manifest: Manifest,
     manifest_sha256: String,
 }
+const NORMAL_OEX_CAPABILITY_PATH: &str = "platform/scripts/native-normal-oex-capability-v1.json";
+const NORMAL_OEX_CAPABILITY_SHA256: &str = "f7573901d3884338eca4b262ad68b1b8379dfa84a9dd891fc44a174c5c453e57";
+const NORMAL_OEX_CAPABILITY: &[u8] = br#"{"format":1,"kind":"exhibitos-native-normal-oex","protocol":"normal-oex-v1","ownerChannelVersion":2,"schemaPath":"platform/database/native-oex-normal/026_oex_file_profile.sql","schemaSHA256":"9e2a204ef9f24132f25ca2247415604c65f3f301c04e70a6a2a2facbc9122112","archiveFormat":"1.0.0-draft.9","maxArchiveBytes":536870912,"oneShot":true}"#;
+// No official selected-OEX release provenance has yet been approved. Each
+// future entry must bind reviewed source, producer and complete manifest hash.
+const NORMAL_OEX_RELEASE_PROVENANCE: &[(&str, &str, &str)] = &[];
+
+fn normal_oex_release_declaration_matches(manifest: &Manifest, manifest_hash: &str, bytes: &[u8], approved: &[(&str, &str, &str)]) -> bool {
+    if manifest.mode != "release" || !manifest.redistribution_qualified || !manifest.official_signed
+        || !approved.iter().any(|(source, producer, hash)| *source == manifest.source_commit.as_str()
+            && *producer == manifest.producer_sha256.as_str() && *hash == manifest_hash)
+        || bytes != NORMAL_OEX_CAPABILITY || digest(bytes) != NORMAL_OEX_CAPABILITY_SHA256 {
+        return false;
+    }
+    let regular = |name: &str| manifest.files.iter().find(|f| f.path == name && f.link.is_none() && f.executable == Some(false));
+    let Some(capability) = regular(NORMAL_OEX_CAPABILITY_PATH) else { return false };
+    if capability.bytes != Some(NORMAL_OEX_CAPABILITY.len() as u64) || capability.sha256.as_deref() != Some(NORMAL_OEX_CAPABILITY_SHA256) { return false; }
+    let Some(schema) = regular("platform/database/native-oex-normal/026_oex_file_profile.sql") else { return false };
+    if schema.bytes != Some(1538) || schema.sha256.as_deref() != Some("9e2a204ef9f24132f25ca2247415604c65f3f301c04e70a6a2a2facbc9122112") { return false; }
+    ["platform/scripts/native-oex-normal-catalog.mjs", "platform/apps/api/dist/native-fresh-oex-owner.js",
+     "platform/apps/api/dist/native-selected-studio-put.js", "platform/apps/api/dist/oex-owned-chunk-materializer.js",
+     "platform/apps/api/dist/oex-owned-packed-worker-v2.js"].iter().all(|name| regular(name).is_some())
+}
+
+#[cfg(test)]
+mod normal_oex_release_declaration_tests {
+    use super::*;
+
+    fn fixture() -> Manifest {
+        let mut files = vec![
+            serde_json::json!({"path":NORMAL_OEX_CAPABILITY_PATH,"bytes":NORMAL_OEX_CAPABILITY.len(),"sha256":NORMAL_OEX_CAPABILITY_SHA256,"executable":false}),
+            serde_json::json!({"path":"platform/database/native-oex-normal/026_oex_file_profile.sql","bytes":1538,"sha256":"9e2a204ef9f24132f25ca2247415604c65f3f301c04e70a6a2a2facbc9122112","executable":false}),
+        ];
+        for path in ["platform/scripts/native-oex-normal-catalog.mjs", "platform/apps/api/dist/native-fresh-oex-owner.js",
+            "platform/apps/api/dist/native-selected-studio-put.js", "platform/apps/api/dist/oex-owned-chunk-materializer.js",
+            "platform/apps/api/dist/oex-owned-packed-worker-v2.js"] {
+            files.push(serde_json::json!({"path":path,"bytes":1,"sha256":"a".repeat(64),"executable":false}));
+        }
+        serde_json::from_value(serde_json::json!({"format":"exhibitos-native-runtime-v1","mode":"release","platform":"darwin-arm64",
+            "nodeVersion":"24.21.0","postgresVersion":"18.6","platformVersion":"0.1.0","protocolVersion":"1",
+            "sourceCommit":"a".repeat(40),"producerSHA256":"b".repeat(64),
+            "entry":{"node":"bin/node","script":"platform/scripts/local-runtime.mjs","postgres":"postgres/bin/postgres","initdb":"postgres/bin/initdb"},
+            "files":files,"redistributionQualified":true,"officialSigned":true,"remaining":"synthetic policy test"})).unwrap()
+    }
+
+    #[test]
+    fn selected_release_requires_exact_declaration_inventory_and_approved_tuple() {
+        let mut m = fixture();
+        let source = "a".repeat(40); let producer = "b".repeat(64); let hash = "c".repeat(64);
+        let approved = [(source.as_str(), producer.as_str(), hash.as_str())];
+        assert_eq!(NORMAL_OEX_CAPABILITY.len(), 333);
+        assert!(normal_oex_release_declaration_matches(&m, &hash, NORMAL_OEX_CAPABILITY, &approved));
+        assert!(!normal_oex_release_declaration_matches(&m, &hash, NORMAL_OEX_CAPABILITY, NORMAL_OEX_RELEASE_PROVENANCE));
+        assert!(!normal_oex_release_declaration_matches(&m, &"d".repeat(64), NORMAL_OEX_CAPABILITY, &approved));
+        let mut altered = NORMAL_OEX_CAPABILITY.to_vec(); altered.push(b'\n');
+        assert!(!normal_oex_release_declaration_matches(&m, &hash, &altered, &approved));
+        m.files[1].sha256 = Some("e".repeat(64));
+        assert!(!normal_oex_release_declaration_matches(&m, &hash, NORMAL_OEX_CAPABILITY, &approved));
+        m = fixture(); m.files.pop();
+        assert!(!normal_oex_release_declaration_matches(&m, &hash, NORMAL_OEX_CAPABILITY, &approved));
+        m = fixture(); m.mode = "local-validation".into();
+        assert!(!normal_oex_release_declaration_matches(&m, &hash, NORMAL_OEX_CAPABILITY, &approved));
+    }
+}
 /// Optional maintenance capability. Construction requires all fixed resources
 /// in the already byte-verified payload; older payloads remain usable for
 /// authoring, but cannot silently fall back to host PostgreSQL tools.
@@ -360,6 +424,48 @@ impl Payload {
     }
     pub fn node(&self) -> PathBuf {
         self.root.join(&self.manifest.entry.node)
+    }
+    /// A signed release additionally needs an explicitly approved source,
+    /// producer and exact manifest tuple. A capability record alone is never
+    /// authority; the allowlist is intentionally empty pending review.
+    pub(crate) fn normal_oex_selected_input(&self) -> Result<bool> {
+        if !NORMAL_OEX_RELEASE_PROVENANCE.iter().any(|(source, producer, hash)|
+            *source == self.manifest.source_commit.as_str() && *producer == self.manifest.producer_sha256.as_str() && *hash == self.manifest_sha256.as_str()) {
+            return Ok(false);
+        }
+        self.recheck()?;
+        let path = self.root.join(NORMAL_OEX_CAPABILITY_PATH);
+        if fs::canonicalize(&path).map_err(|_| invalid())? != path { return Err(invalid()); }
+        let (bytes, pin) = crate::hosted_runtime_file::bounded(&path, 1024)?;
+        let accepted = normal_oex_release_declaration_matches(&self.manifest, &self.manifest_sha256, &bytes, NORMAL_OEX_RELEASE_PROVENANCE);
+        pin.check()?;
+        Ok(accepted)
+    }
+    /// Fixed private OEX workers. Their presence alone is not admission or
+    /// authority; the selected Session must independently bind the payload.
+    pub(crate) fn oex_packed_worker(&self) -> Result<(PathBuf, PathBuf, PathBuf)> {
+        let name = "platform/apps/api/dist/oex-owned-packed-worker.js";
+        if !self.manifest.files.iter().any(|f| f.path == name && f.link.is_none() && f.executable == Some(false)) {
+            return Err(err("NATIVE_OEX_WORKER_UNAVAILABLE"));
+        }
+        self.recheck()?;
+        Ok((self.node(), self.root.join(name), self.root.clone()))
+    }
+    pub(crate) fn oex_materializer(&self) -> Result<(PathBuf, PathBuf, PathBuf)> {
+        let name = "platform/apps/api/dist/oex-owned-chunk-materializer.js";
+        if !self.manifest.files.iter().any(|f| f.path == name && f.link.is_none() && f.executable == Some(false)) {
+            return Err(err("NATIVE_OEX_WORKER_UNAVAILABLE"));
+        }
+        self.recheck()?;
+        Ok((self.node(), self.root.join(name), self.root.clone()))
+    }
+    pub(crate) fn oex_packed_worker_v2(&self) -> Result<(PathBuf, PathBuf, PathBuf)> {
+        let name = "platform/apps/api/dist/oex-owned-packed-worker-v2.js";
+        if !self.manifest.files.iter().any(|f| f.path == name && f.link.is_none() && f.executable == Some(false)) {
+            return Err(err("NATIVE_OEX_WORKER_UNAVAILABLE"));
+        }
+        self.recheck()?;
+        Ok((self.node(), self.root.join(name), self.root.clone()))
     }
     /// Fixed codec-only resources, rechecked against this admitted manifest and
     /// held across authentication. No arbitrary module or executable selection.

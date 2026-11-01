@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
+import CryptoKit
+
+public struct NativeBoundedOEXJob: Decodable, Sendable {
+    public let id: String
+    public let state: String
+}
 
 public struct AuthoringSession: Decodable, Sendable {
     public let userId: String
@@ -180,7 +186,7 @@ public actor AuthoringAPI {
         return id.uuidString.lowercased()
     }
     private func encoded<T: Encodable>(_ body: T) throws -> Data { try JSONEncoder().encode(body) }
-    private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, bodyFile: URL? = nil, bodyLength: Int? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, timeout: TimeInterval = 15) async throws -> T {
+    private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, bodyFile: URL? = nil, bodyLength: Int? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, chunkSHA256: String? = nil, timeout: TimeInterval = 15) async throws -> T {
         guard !(authenticated && authenticationBusy && path != "/api/v1/auth/logout") else { throw AuthoringFailure("AUTH_BUSY") }
         activeRequests += 1
         defer { activeRequests -= 1 }
@@ -197,6 +203,11 @@ public actor AuthoringAPI {
         if let ifMatch {
             guard ifMatch.range(of: #"^"studio-r[1-9][0-9]*-[a-f0-9]{64}"$"#, options: .regularExpression) != nil else { throw AuthoringFailure("ETAG_INVALID") }
             request.setValue(ifMatch, forHTTPHeaderField: "If-Match")
+        }
+        if let chunkSHA256 {
+            guard method == "PUT", contentType == "application/octet-stream", body != nil,
+                  chunkSHA256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw AuthoringFailure("OEX_IMPORT_INVALID") }
+            request.setValue(chunkSHA256, forHTTPHeaderField: "x-exhibitos-chunk-sha256")
         }
         request.setValue(base.absoluteString, forHTTPHeaderField: "Origin")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -332,6 +343,27 @@ public actor AuthoringAPI {
         guard response.draft.id == draft.id, response.draft == draft else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
         return response
     }
+    /// One selected-session save. Persist and revalidate the exact pending
+    /// request before the single PUT; uncertainty is never retried here.
+    public func saveAndReopenSelectedOEX(exhibitionId: String, expectedETag: String, requestId: String,
+        persistAndAuthorize: @Sendable (NativeStudioResponse, String) async throws -> Void) async throws -> NativeStudioResponse {
+        let current = generation
+        let original = try await exhibition(exhibitionId)
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard original.etag == expectedETag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE", status: 409) }
+        try Task.checkCancellation()
+        try await persistAndAuthorize(original, requestId)
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        try Task.checkCancellation()
+        let saved = try await saveExhibition(original.draft, requestId: requestId, etag: original.etag)
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard saved.revision == original.revision + 1, saved.etag != original.etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE", status: 409) }
+        try Task.checkCancellation()
+        let reopened = try await exhibition(exhibitionId)
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        try saved.requireSameComparison(reopened)
+        return reopened
+    }
     public func publicationReady(exhibitionId: String) async throws -> NativePublicationReady {
         let result: NativePublicationReady = try await request(studioPrefix + "/exhibitions/" + identifier(exhibitionId) + "/ready", timeout: 120)
         return try result.validated()
@@ -453,6 +485,39 @@ public actor AuthoringAPI {
         struct Receipt: Decodable { let received: Int }
         let receipt: Receipt = try await request("/api/v1/tenants/\(tenant)/oex/imports/\(identifier(id))/bytes", method: "PUT", bodyFile: archive.fileURL, bodyLength: archive.count, contentType: "application/octet-stream", timeout: 120)
         guard receipt.received == archive.count else { throw AuthoringFailure("OEX_IMPORT_RESPONSE_INVALID") }
+    }
+    /// Inactive selected-profile client. A live Session capability and server
+    /// writer exclusion must be established before a caller may use this.
+    public func createBoundedOEXImport(requestId: String, archive: NativeOEXArchive) async throws -> NativeBoundedOEXJob {
+        struct Body: Encodable { let requestId: String; let bytes: Int; let sha256: String }
+        guard archive.count > 0, archive.count <= NativeOEXImportFile.boundedMaximumBytes,
+              archive.sha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw AuthoringFailure("OEX_IMPORT_INVALID") }
+        let body = Body(requestId: try identifier(requestId), bytes: archive.count, sha256: archive.sha256)
+        let job: NativeBoundedOEXJob = try await request("/api/v1/tenants/\(tenant)/native-oex/imports", method: "POST", body: encoded(body))
+        guard try identifier(job.id) == job.id, job.state == "uploading" else { throw AuthoringFailure("OEX_IMPORT_RESPONSE_INVALID") }
+        return job
+    }
+    /// Each immutable retry resends the exact same snapshot segment. A verified
+    /// upload is not an import, commit, or permission to release its resources.
+    public func uploadBoundedOEXImport(_ id: String, archive: NativeOEXArchive) async throws {
+        struct ChunkReceipt: Decodable { let index: Int; let received: Int }
+        let job = try identifier(id), current = generation, chunkSize = 16 * 1024 * 1024
+        guard archive.count > 0, archive.count <= NativeOEXImportFile.boundedMaximumBytes, session != nil else { throw AuthoringFailure("OEX_IMPORT_INVALID") }
+        let chunks = (archive.count + chunkSize - 1) / chunkSize
+        for index in 0..<chunks {
+            try Task.checkCancellation()
+            guard generation == current, session != nil else { throw AuthoringFailure("OEX_IMPORT_SCOPE_CHANGED") }
+            let bytes = try archive.boundedChunk(index: index)
+            let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            let receipt: ChunkReceipt = try await request("/api/v1/tenants/\(tenant)/native-oex/imports/\(job)/chunks/\(index)", method: "PUT", body: bytes, contentType: "application/octet-stream", chunkSHA256: hash, timeout: 120)
+            guard generation == current, receipt.index == index, receipt.received == bytes.count else { throw AuthoringFailure("OEX_IMPORT_RESPONSE_INVALID") }
+        }
+    }
+    public func queueBoundedOEXImport(_ id: String) async throws -> NativeBoundedOEXJob {
+        let job = try identifier(id), current = generation
+        let result: NativeBoundedOEXJob = try await request("/api/v1/tenants/\(tenant)/native-oex/imports/\(job)/queue", method: "POST", body: Data("{}".utf8), timeout: 120)
+        guard generation == current, (try identifier(result.id)) == job, result.state == "queued" else { throw AuthoringFailure("OEX_IMPORT_RESPONSE_INVALID") }
+        return result
     }
     public func oexImportAction(_ id: String, action: String) async throws -> NativeOEXImportJob {
         guard ["complete", "retry", "cancel"].contains(action) else { throw AuthoringFailure("OEX_IMPORT_INVALID") }

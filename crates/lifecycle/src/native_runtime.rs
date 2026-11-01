@@ -3,6 +3,23 @@
 //! container engine, PATH lookup, PID adoption, or destructive recovery.
 use super::*;
 use super::{native_installation::Ports, native_payload::Payload};
+#[path = "native_runtime_oex_worker.rs"] mod oex_worker;
+#[path = "native_runtime_oex_worker_v2.rs"] mod oex_worker_v2;
+#[path = "native_runtime_oex_binding.rs"] mod oex_binding;
+#[path = "native_runtime_oex_read_fd.rs"] mod oex_read_fd;
+#[path = "native_runtime_oex_stage_root.rs"] mod oex_stage_root;
+#[path = "native_runtime_oex_reservation.rs"] mod oex_reservation;
+#[path = "native_runtime_oex_ack.rs"] mod oex_ack;
+#[path = "native_runtime_oex_ack_v2.rs"] mod oex_ack_v2;
+#[path = "native_runtime_oex_control_v2.rs"] mod oex_control_v2;
+#[path = "native_runtime_oex_chunks.rs"] mod oex_chunks;
+#[path = "native_runtime_oex_materializer_fds.rs"] mod oex_materializer_fds;
+#[path = "native_runtime_oex_materializer_protocol.rs"] mod oex_materializer_protocol;
+#[path = "native_runtime_oex_materializer.rs"] mod oex_materializer;
+#[path = "native_runtime_owner_channel.rs"] mod owner_channel;
+#[path = "native_runtime_owner_claim_frames.rs"] mod owner_claim_frames;
+#[path = "native_runtime_owner_metadata_frames.rs"] mod owner_metadata_frames;
+#[path = "native_runtime_owner_binding_encoding.rs"] mod owner_binding_encoding;
 use std::{
     collections::BTreeMap,
     net::TcpListener,
@@ -197,6 +214,12 @@ pub struct Session {
     readiness: Readiness,
     cancellation: Arc<AtomicBool>,
     local_authority: Option<LocalAuthority>,
+    owner_channel: Option<owner_channel::Connection>,
+    fresh_oex_test: bool,
+    normal_oex_selected: bool,
+    fresh_oex_started: bool,
+    oex_upload_selection_started: bool,
+    oex_upload_selected: Option<(String, u64, String)>,
     maintenance_space: Vec<PathBuf>,
 }
 fn directory(root: &Path, name: &str) -> Result<PathBuf> {
@@ -397,11 +420,70 @@ mod interrupted_root_tests {
     }
 }
 
+fn check_selected_empty_root(service: &LifecycleService, guard: &OperationGuard,
+                             root_pin: &crate::maintenance_source::DirectoryPin) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    installations::private_directory(&service.root)?;
+    root_pin.check_path(&service.root)?;
+    let held = guard.metadata().map_err(|_| err("NATIVE_TARGET_SELECTION_INVALID"))?;
+    let named = fs::symlink_metadata(service.root.join("operation.lock"))
+        .map_err(|_| err("NATIVE_TARGET_SELECTION_INVALID"))?;
+    if !held.is_file() || named.is_symlink() || held.uid() != unsafe { libc::geteuid() }
+        || held.mode() & 0o777 != 0o600 || held.nlink() != 1
+        || (held.dev(), held.ino()) != (named.dev(), named.ino()) {
+        return Err(err("NATIVE_TARGET_SELECTION_INVALID"));
+    }
+    for entry in fs::read_dir(&service.root).map_err(|_| err("NATIVE_TARGET_SELECTION_INVALID"))? {
+        if entry.map_err(|_| err("NATIVE_TARGET_SELECTION_INVALID"))?.file_name()
+            != std::ffi::OsStr::new("operation.lock") {
+            return Err(err("NATIVE_OEX_FRESH_ROOT_REQUIRED"));
+        }
+    }
+    root_pin.check_path(&service.root)
+}
+
+#[cfg(test)]
+mod selected_empty_root_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn empty_root_check_refuses_existing_data_without_changing_it() {
+        let root = std::env::temp_dir().join(format!("exhibitos-selected-empty-{}", Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let service = LifecycleService::bound_existing(root.clone()).unwrap();
+        let pin = crate::maintenance_source::DirectoryPin::open(&root).unwrap();
+        let guard = service.lock().unwrap();
+        assert!(check_selected_empty_root(&service, &guard, &pin).is_ok());
+        let marker = root.join("existing-data");
+        fs::write(&marker, b"preserve").unwrap();
+        assert!(check_selected_empty_root(&service, &guard, &pin).is_err());
+        assert_eq!(fs::read(marker).unwrap(), b"preserve");
+    }
+}
+
 impl Session {
     pub fn new(service: &LifecycleService, payload: Arc<Payload>, ports: Ports) -> Result<Self> {
         installations::private_directory(&service.root)?;
         let guard = service.lock()?;
         Self::new_with_guard(service, payload, ports, guard)
+    }
+    /// The opaque proof is minted by the atomic creation/selection
+    /// transaction after owner admission.
+    /// An empty path or a reselected existing workspace cannot mint it.
+    #[allow(dead_code)]
+    pub(crate) fn prepare_selected_empty(proof: installations::NewSelectedRoot, payload: Arc<Payload>, ports: Ports) -> Result<Self> {
+        let (service, guard, root_pin) = proof.into_parts();
+        if !payload.normal_oex_selected_input()? { return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
+        check_selected_empty_root(&service, &guard, &root_pin)?;
+        service.prepare_native_personal_locked(&payload, ports, &guard)?;
+        root_pin.check_path(&service.root)?;
+        let mut session = Self::new_with_guard(&service, payload, ports, guard)?;
+        session.check_native_observation_fence()?;
+        session.normal_oex_selected = true;
+        Ok(session)
     }
     pub(crate) fn new_with_guard(
         service: &LifecycleService,
@@ -433,11 +515,18 @@ impl Session {
             readiness: Readiness::default(),
             cancellation: Arc::new(AtomicBool::new(false)),
             local_authority: None,
+            owner_channel: None,
+            fresh_oex_test: false,
+            normal_oex_selected: false,
+            fresh_oex_started: false,
+            oex_upload_selection_started: false,
+            oex_upload_selected: None,
             maintenance_space: Vec::new(),
         })
     }
     /// Explicit private IPC only, never part of status/journal/log output.
     pub fn authoring_session(&mut self) -> Result<Value> {
+        if self.oex_upload_selection_started { return Err(err("NATIVE_OEX_SESSION_BOUND")); }
         if self.status()?.state != "ready" {
             return Err(err("NATIVE_NOT_READY"));
         }
@@ -549,6 +638,7 @@ impl Session {
                 changed = true;
             }
         }
+        if self.node.is_none() { self.owner_channel = None; }
         Ok(changed)
     }
     fn any_owned(&self) -> bool {
@@ -562,6 +652,7 @@ impl Session {
         input: Option<&[u8]>,
         capture: bool,
         marker: bool,
+        owner_setup: Option<&owner_channel::Setup>,
     ) -> Result<Owned> {
         let log = self
             .log
@@ -590,6 +681,7 @@ impl Session {
         for (key, value) in extra {
             command.env(key, value);
         }
+        if let Some(setup) = owner_setup { setup.configure(&mut command)?; }
         let mut child = command
             .spawn()
             .map_err(|_| err("NATIVE_PROCESS_START_FAILED"))?;
@@ -679,7 +771,7 @@ impl Session {
         timeout: Duration,
     ) -> Result<(i32, Vec<u8>)> {
         self.check_maintenance_space()?;
-        self.auxiliary = Some(self.spawn(&program, &args, &extra, input, true, false)?);
+        self.auxiliary = Some(self.spawn(&program, &args, &extra, input, true, false, None)?);
         self.record()?;
         let deadline = Instant::now() + timeout;
         loop {
@@ -854,6 +946,7 @@ impl Session {
             None,
             false,
             false,
+            None,
         )?);
         self.record()?;
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -994,9 +1087,17 @@ impl Session {
         } else {
             None
         };
-        let mut private_input = match &self.local_authority {
-            Some(a) => Some(serde_json::to_vec(a).map_err(|_| err("STATE_INVALID"))?),
-            None => None,
+        let mut owner_setup = if self.normal_oex_selected {
+            if self.local_authority.is_none() || !self.payload.normal_oex_selected_input()? {
+                return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));
+            }
+            Some(owner_channel::Setup::new()?)
+        } else { None };
+        let generation = self.job_id.as_deref().ok_or_else(|| err("NATIVE_JOURNAL_INVALID"))?;
+        let mut private_input = match (&self.local_authority, &owner_setup) {
+            (Some(a), Some(setup)) => Some(setup.normal_bootstrap(a, generation)?),
+            (Some(a), None) => Some(serde_json::to_vec(a).map_err(|_| err("STATE_INVALID"))?),
+            (None, _) => None,
         };
         let spawned = self.spawn(
             &self.payload.node(),
@@ -1005,12 +1106,19 @@ impl Session {
             private_input.as_deref(),
             false,
             true,
+            owner_setup.as_ref(),
         );
         if let Some(bytes) = private_input.as_mut() {
             bytes.fill(0);
         }
         self.node = Some(spawned?);
+        if let Some(setup) = owner_setup.as_mut() { setup.close_child(); }
         self.record()?;
+        if let Some(setup) = owner_setup {
+            let authority = self.local_authority.as_ref().ok_or_else(|| err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
+            let generation = self.job_id.as_deref().ok_or_else(|| err("NATIVE_JOURNAL_INVALID"))?;
+            self.owner_channel = Some(setup.handshake(authority, generation, &self.cancellation)?);
+        }
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             if self.cancelled() {
@@ -1031,6 +1139,10 @@ impl Session {
                 if ready.ready {
                     self.readiness = ready;
                     self.state = "ready".into();
+                    if self.normal_oex_selected { self.await_oex_owner_ready()?; }
+                    // The selected owner is not ready for use until its private
+                    // operation-ready frame has also been verified.  Do not
+                    // publish a ready journal entry while that check is pending.
                     self.record()?;
                     return Ok(());
                 }
@@ -1060,6 +1172,17 @@ impl Session {
         self.start_owned(false)
     }
     fn start_owned(&mut self, services: bool) -> Result<Context> {
+        if self.normal_oex_selected {
+            if self.fresh_oex_started || !services || self.guard.is_none()
+                || exists(&self.service.root.join("native-database"))?
+                || exists(&self.service.root.join("blobs"))?
+                || exists(&self.service.root.join("config"))?
+                || !self.payload.normal_oex_selected_input()? {
+                return Err(err("NATIVE_OEX_FRESH_ROOT_REQUIRED"));
+            }
+            self.check_native_observation_fence()?;
+            self.fresh_oex_started = true;
+        }
         if services && (exists(&self.service.root.join("native-restore-current.json"))?
             || exists(&self.service.root.join("native-target-preparation-current.json"))?
             || exists(&self.service.root.join("native-legacy-migration-current.json"))?) {
@@ -1555,6 +1678,143 @@ impl Drop for Session {
 }
 
 impl Session {
+    /// Inactive one-shot selected-path readiness. Repeating it closes the
+    /// channel. Success is correlation, not claim or reservation authority.
+    #[allow(dead_code)]
+    fn await_oex_owner_ready(&mut self) -> Result<()> {
+        let auth=self.local_authority.as_ref().ok_or_else(||err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
+        let identity=(auth.workspace_id.clone(),auth.tenant_id.clone(),auth.principal_id.clone());
+        let generation=self.job_id.clone().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+        let cancel=self.cancellation.clone();
+        let mut channel=self.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+        let mut check=|| {
+            self.poll()?;
+            self.check_native_observation_fence()?;
+            let current=self.local_authority.as_ref().ok_or_else(||err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
+            let actual=self.service.personal_identity()?;
+            if self.state!="ready" || self.node.is_none() || self.postgres.is_none()
+                || current.owner_uid!=unsafe {libc::geteuid()} || actual!=identity
+                || self.job_id.as_deref()!=Some(generation.as_str())
+                || (current.workspace_id.as_str(),current.tenant_id.as_str(),current.principal_id.as_str())
+                    != (identity.0.as_str(),identity.1.as_str(),identity.2.as_str()) {
+                return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));
+            }
+            Ok(())
+        };
+        let result=channel.receive_ready(&cancel,&mut check,&identity.0,&identity.1,&identity.2,&generation);
+        drop(check);
+        match result {
+            Ok(())=>{self.owner_channel=Some(channel);Ok(())},
+            Err(error)=>{channel.invalidate();Err(error)},
+        }
+    }
+    /// The host supplies only the currently selected, persisted intent. The
+    /// Swift caller must retain and match the selected private snapshot too.
+    pub(crate) fn select_oex_upload_from_intent(&mut self,state:&crate::installations::native_oex_import::Transfer)->Result<()> {
+        crate::installations::native_oex_import::validate(state)?;
+        let auth=self.local_authority.as_ref().ok_or_else(||err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
+        if (state.workspace_id.as_str(),state.tenant_id.as_str(),state.principal_id.as_str())!=(auth.workspace_id.as_str(),auth.tenant_id.as_str(),auth.principal_id.as_str())
+            || state.job_id.is_some() {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        let intent=state.intent.as_ref().ok_or_else(||err("NATIVE_OEX_ATTEMPT_INVALID"))?;
+        if intent.profile.as_deref()!=Some("bounded-file-v1")||intent.oex_format.as_deref()!=Some("1.0.0-draft.9"){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        self.select_oex_upload(&intent.request_id,intent.bytes,&intent.sha256)
+    }
+    /// Inactive until the host binds this to the exact durably saved intent
+    /// and retained private snapshot. It never selects a path or grants HTTP
+    /// authorization by itself. Selection attempts and renewal are one-shot.
+    #[allow(dead_code)]
+    fn select_oex_upload(&mut self,request:&str,bytes:u64,sha256:&str)->Result<()> {
+        if !(self.fresh_oex_test || self.normal_oex_selected)||self.oex_upload_selection_started||self.state!="ready"||self.node.is_none()||self.postgres.is_none(){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        self.oex_upload_selection_started=true;
+        let auth=match self.local_authority.as_ref(){Some(value)=>value,None=>{
+            if let Some(mut channel)=self.owner_channel.take(){channel.invalidate();}
+            return Err(err("NATIVE_PERSONAL_SESSION_REQUIRED"));
+        }};
+        let identity=(auth.workspace_id.clone(),auth.tenant_id.clone(),auth.principal_id.clone());
+        let generation=match self.job_id.clone(){Some(value)=>value,None=>{
+            if let Some(mut channel)=self.owner_channel.take(){channel.invalidate();}
+            return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));
+        }};
+        let frame=owner_claim_frames::UploadSelection{version:1,kind:"upload-selection".into(),correlation_id:Uuid::new_v4().to_string(),runtime_generation:generation.clone(),workspace_id:identity.0.clone(),tenant_id:identity.1.clone(),principal_id:identity.2.clone(),request_id:request.into(),archive_bytes:bytes,archive_sha256:sha256.into()};
+        let encoded=match frame.encode(){Ok(value)=>value,Err(error)=>{
+            if let Some(mut channel)=self.owner_channel.take(){channel.invalidate();}
+            return Err(error);
+        }};let cancel=self.cancellation.clone();
+        let mut channel=self.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+        let mut check=|| {
+            self.poll()?;self.check_native_observation_fence()?;
+            let current=self.local_authority.as_ref().ok_or_else(||err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
+            if self.cancelled()||self.state!="ready"||self.node.is_none()||self.postgres.is_none()||self.job_id.as_deref()!=Some(generation.as_str())
+                || current.owner_uid!=unsafe{libc::geteuid()}||self.service.personal_identity()?!=identity
+                || (current.workspace_id.as_str(),current.tenant_id.as_str(),current.principal_id.as_str())!=(identity.0.as_str(),identity.1.as_str(),identity.2.as_str()) {return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}Ok(())
+        };
+        let response=channel.exchange(&encoded,&cancel,&mut check).and_then(|reply|frame.check_selected(&reply)).and_then(|_|check());drop(check);
+        match response {Ok(())=>{self.oex_upload_selected=Some((request.into(),bytes,sha256.into()));self.owner_channel=Some(channel);Ok(())},Err(error)=>{channel.invalidate();Err(error)}}
+    }
+    /// Inactive one-shot claim. The borrow keeps this exact Session alive; on
+    /// error/abandonment the socket closes and the API must retain uncertainty.
+    #[allow(dead_code)]
+    fn begin_owned_oex_claim<'a>(&'a mut self,stage_root:&'a oex_stage_root::StageRoot,job:&str,request:&str,bytes:u64,sha256:&str) -> Result<OwnedOexClaim<'a>> {
+        if !(self.fresh_oex_test || self.normal_oex_selected) || self.oex_upload_selected.as_ref().is_none_or(|v|v.0!=request||v.1!=bytes||v.2!=sha256){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        let auth=self.local_authority.as_ref().ok_or_else(||err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
+        let identity=(auth.workspace_id.clone(),auth.tenant_id.clone(),auth.principal_id.clone());
+        let generation=self.job_id.clone().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+        let open=owner_claim_frames::ClaimOpen{version:1,kind:"claim-open".into(),correlation_id:Uuid::new_v4().to_string(),
+            runtime_generation:generation.clone(),workspace_id:identity.0.clone(),tenant_id:identity.1.clone(),job_id:job.to_string()};
+        let cancel=self.cancellation.clone();
+        let mut channel=self.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+        let mut check=|| {
+            stage_root.check_empty(self)?;
+            let current=self.local_authority.as_ref().ok_or_else(||err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
+            let actual=self.service.personal_identity()?;
+            if self.state!="ready" || self.node.is_none() || self.postgres.is_none() || actual!=identity
+                || current.owner_uid!=unsafe {libc::geteuid()} || self.job_id.as_deref()!=Some(generation.as_str())
+                || (current.workspace_id.as_str(),current.tenant_id.as_str(),current.principal_id.as_str())
+                    != (identity.0.as_str(),identity.1.as_str(),identity.2.as_str()) {
+                return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));
+            }
+            Ok(())
+        };
+        let result=channel.begin_claim(&open,&identity.2,request,bytes,sha256,stage_root.path(),stage_root.device(),0,&cancel,&mut check);
+        drop(check);
+        match result {
+            Ok((challenge,ready,capacity))=>{self.owner_channel=Some(channel);Ok(OwnedOexClaim{session:self,stage_root,challenge,ready,capacity,stage_started:false,retained_packed:None,save_started:false,save_ready:None,settled:false})},
+            Err(error)=>{channel.invalidate();Err(error)},
+        }
+    }
+    /// One fresh-selected operation using the exact durable queued intent.
+    /// The callback must persist the announced save request and complete the
+    /// real same-session GET/one PUT/GET before returning its new ETag. It may
+    /// not rearm on error. This routine holds the Session and claim through
+    /// selected-flow settlement and completion; failure preserves uncertainty.
+    #[allow(dead_code)]
+    pub(crate) fn run_fresh_oex_once<F>(&mut self,state:&crate::installations::native_oex_import::Transfer,
+        cancelled:&AtomicBool,mut save:F)->Result<()>
+    where F:FnMut(&str,&str,&str,&str)->Result<String> {
+        crate::installations::native_oex_import::validate(state)?;
+        if !(self.fresh_oex_test || self.normal_oex_selected){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        let auth=self.local_authority.as_ref().ok_or_else(||err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
+        if (state.workspace_id.as_str(),state.tenant_id.as_str(),state.principal_id.as_str())!=(auth.workspace_id.as_str(),auth.tenant_id.as_str(),auth.principal_id.as_str()) {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        let intent=state.intent.as_ref().ok_or_else(||err("NATIVE_OEX_ATTEMPT_INVALID"))?;
+        if intent.profile.as_deref()!=Some("bounded-file-v1")||intent.oex_format.as_deref()!=Some("1.0.0-draft.9"){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        let job=state.job_id.as_deref().ok_or_else(||err("NATIVE_OEX_ATTEMPT_INVALID"))?;
+        let result=(|| {
+        let root=oex_stage_root::StageRoot::create(self)?;
+        let mut claim=self.begin_owned_oex_claim(&root,job,&intent.request_id,intent.bytes,&intent.sha256)?;
+        let input_root=claim.session.observation_root.try_clone_file()?;
+        let chunks=oex_chunks::open_local(&input_root,&claim.ready.tenant_id,&claim.ready.job_id,claim.ready.archive_bytes)?;
+        let stage=claim.stage_root.create_input(claim.session,&claim.ready.stage_id)?;
+        let (device,inode)=stage.identity()?;let r=&claim.ready;
+        let request=oex_materializer_protocol::Request{version:1,kind:"oex-chunks-v1".into(),tenant_id:r.tenant_id.clone(),resource_id:r.workspace_id.clone(),job_id:r.job_id.clone(),user_id:r.user_id.clone(),request_id:r.request_id.clone(),lease_id:r.lease_id.clone(),attempt_id:r.attempt_id.clone(),runtime_generation:r.runtime_generation.clone(),stage_id:r.stage_id.clone(),reservation_id:r.reservation_id.clone(),reservation_generation:r.reservation_generation.clone(),archive_bytes:r.archive_bytes,archive_sha256:r.archive_sha256.clone(),stage_device:device.to_string(),stage_inode:inode.to_string(),chunks:chunks.iter().map(|c|oex_materializer_protocol::Chunk{device:c.device.to_string(),inode:c.inode.to_string(),bytes:c.bytes}).collect(),reservation_digest:r.reservation_digest.clone(),source_digest:r.source_digest.clone(),worker_digest:claim.session.payload.context().manifest_sha256,profile:r.profile.clone(),format:r.format.clone()};
+        let correlation=claim.challenge.correlation_id.clone();
+        claim.materialize_pack_and_serve(stage,&chunks,&request,&correlation,cancelled)?;
+        let ready=claim.wait_save_ready(cancelled)?;
+        let etag=save(&ready.exhibition_id,&ready.etag,&ready.request_id,&ready.attempt_id)?;
+        claim.confirm_save(&etag,cancelled)
+        })();
+        if result.is_err(){if let Some(mut channel)=self.owner_channel.take(){channel.invalidate();}}
+        result
+    }
     pub(crate) fn target_observation_root(&self) -> &Path {
         &self.service.root
     }
@@ -1673,5 +1933,234 @@ impl Session {
                 }
             }
         }
+    }
+}
+
+/// A borrowed Session plus a correlated live-bridge claim. Its selected-flow
+/// settlement is not general publication or crash-recovery authority.
+#[allow(dead_code)]
+struct OwnedOexClaim<'a> {
+    session:&'a mut Session,
+    stage_root:&'a oex_stage_root::StageRoot,
+    challenge:owner_claim_frames::ClaimChallenge,
+    ready:owner_claim_frames::ClaimReady,
+    capacity:u64,
+    stage_started:bool,
+    retained_packed:Option<RetainedOexPacked>,
+    save_started:bool,
+    save_ready:Option<owner_claim_frames::SaveFrame>,
+    settled:bool,
+}
+// Kept with the borrowed Session/claim until settlement or conservative drop.
+// These handles are not authority to release on their own.
+#[allow(dead_code)]
+struct RetainedOexPacked {
+    _input:oex_read_fd::ObservedStage,
+    _output:File,
+    _prepared:oex_worker_v2::Prepared,
+    _journal:crate::maintenance_source::DirectoryPin,
+    _materializer:oex_materializer::ReapedMaterializer,
+    _materializer_request:oex_materializer_protocol::Request,
+}
+#[allow(dead_code)]
+impl OwnedOexClaim<'_> {
+    /// One sequential attempt, under this same borrowed Session and claim.
+    /// Retains descriptors after drain response; neither response nor return
+    /// establishes Node decoder drain, DB commit, or reservation release.
+    fn materialize_pack_and_serve(&mut self,stage:oex_read_fd::Stage,chunks:&[oex_chunks::Chunk],
+        request:&oex_materializer_protocol::Request,correlation:&str,cancelled:&AtomicBool)->Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        if self.stage_started||self.retained_packed.is_some()||correlation!=self.challenge.correlation_id {
+            if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}
+            return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));
+        }
+        let (input,materializer)=self.materialize(stage,chunks,request,cancelled)?;
+        let r=&self.ready;
+        let result=(|| {
+            self.stage_root.check_input(self.session,&r.stage_id,input.device,input.inode)?;
+            let output=self.stage_root.create_output(self.session,&r.attempt_id)?;
+            let m=output.metadata().map_err(|_|err("NATIVE_OEX_OUTPUT_INVALID"))?;
+            let output_id=(m.dev(),m.ino());let input_id=(input.device,input.inode);
+            self.stage_root.check_pair(self.session,&r.stage_id,input_id,&r.attempt_id,output_id)?;
+            let journal_path=self.session.run.as_ref().ok_or_else(||err("NATIVE_JOURNAL_INVALID"))?.clone();
+            let journal=crate::maintenance_source::DirectoryPin::open(&journal_path)?;
+            let journal_file=journal.try_clone_file()?;
+            let control=oex_control_v2::Control{version:2,kind:"oex-packed-v2".into(),tenant_id:r.tenant_id.clone(),resource_id:r.workspace_id.clone(),job_id:r.job_id.clone(),user_id:r.user_id.clone(),request_id:r.request_id.clone(),lease_id:r.lease_id.clone(),attempt_id:r.attempt_id.clone(),runtime_generation:r.runtime_generation.clone(),stage_id:r.stage_id.clone(),reservation_id:r.reservation_id.clone(),reservation_generation:r.reservation_generation.clone(),archive_bytes:r.archive_bytes,archive_sha256:r.archive_sha256.clone(),capacity:self.capacity,input_device:input.device.to_string(),input_inode:input.inode.to_string(),output_device:m.dev().to_string(),output_inode:m.ino().to_string(),reservation_digest:r.reservation_digest.clone(),source_digest:r.source_digest.clone(),worker_digest:self.session.payload.context().manifest_sha256,profile:r.profile.clone(),format:r.format.clone()};
+            let payload=self.session.payload.clone();
+            let mut check=|| {
+                self.stage_root.check_pair(self.session,&r.stage_id,input_id,&r.attempt_id,output_id)?;journal.check()?;
+                if self.session.cancelled()||cancelled.load(Ordering::SeqCst){return Err(err("NATIVE_CANCELLED"));}
+                self.session.owner_channel.as_mut().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?.check_idle()
+            };
+            let prepared=oex_worker_v2::run_direct(&payload,&journal_file,&input,&output,&control,cancelled,&mut check)?;
+            drop(check);
+            let cancel=self.session.cancellation.clone();
+            let mut channel=self.session.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+            let mut check=|| {
+                self.stage_root.check_pair(self.session,&r.stage_id,input_id,&r.attempt_id,output_id)?;journal.check()?;
+                if self.session.cancelled()||cancelled.load(Ordering::SeqCst){return Err(err("NATIVE_CANCELLED"));}Ok(())
+            };
+            let served=channel.serve_packed(&control,&prepared,&output,&r.attempt_id,correlation,&cancel,&mut check);
+            drop(check);
+            if let Err(error)=served{channel.invalidate();return Err(error);}
+            self.session.owner_channel=Some(channel);
+            Ok(RetainedOexPacked{_input:input,_output:output,_prepared:prepared,_journal:journal,
+                _materializer:materializer,_materializer_request:request.clone()})
+        })();
+        match result {Ok(retained)=>{self.retained_packed=Some(retained);Ok(())},Err(error)=>{
+            if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}Err(error)
+        }}
+    }
+    /// Receive one post-import save offer without releasing this claim/output.
+    /// This is not itself permission to mutate a draft or infer COMMIT.
+    fn wait_save_ready(&mut self,cancelled:&AtomicBool)->Result<owner_claim_frames::SaveFrame> {
+        use std::os::unix::fs::MetadataExt;
+        if self.save_started||self.retained_packed.is_none(){return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}
+        self.save_started=true;let retained=self.retained_packed.as_ref().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
+        let input=(retained._input.device,retained._input.inode);let m=match retained._output.metadata(){Ok(value)=>value,Err(_)=>{
+            if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}
+            return Err(err("NATIVE_OEX_OUTPUT_INVALID"));
+        }};let output=(m.dev(),m.ino());
+        let stamp=retained._prepared.verified.output_stamp;let r=&self.ready;let cancel=self.session.cancellation.clone();
+        let mut channel=self.session.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+        let mut check=|| {
+            self.stage_root.check_pair(self.session,&r.stage_id,input,&r.attempt_id,output)?;retained._journal.check()?;
+            let m=retained._output.metadata().map_err(|_|err("NATIVE_OEX_OUTPUT_INVALID"))?;
+            if (m.dev(),m.ino(),m.len(),m.mtime(),m.mtime_nsec(),m.ctime(),m.ctime_nsec())!=stamp
+                || self.session.cancelled()||cancelled.load(Ordering::SeqCst){return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}Ok(())
+        };
+        let result=channel.receive_save_ready(&r.attempt_id,&cancel,&mut check);drop(check);
+        match result {Ok(ready)=>{self.save_ready=Some(ready.clone());self.session.owner_channel=Some(channel);Ok(ready)},Err(error)=>{channel.invalidate();Err(error)}}
+    }
+    /// Caller invokes only after the real same-session GET/one PUT/GET has
+    /// returned and the exact pending request/draft is durably retained.
+    fn confirm_save(&mut self,etag:&str,cancelled:&AtomicBool)->Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        let ready=self.save_ready.take().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
+        let retained=match self.retained_packed.as_ref(){Some(value)=>value,None=>{
+            if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}
+            return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));
+        }};
+        let input=(retained._input.device,retained._input.inode);let m=match retained._output.metadata(){Ok(value)=>value,Err(_)=>{
+            if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}
+            return Err(err("NATIVE_OEX_OUTPUT_INVALID"));
+        }};let output=(m.dev(),m.ino());
+        let stamp=retained._prepared.verified.output_stamp;let r=&self.ready;let cancel=self.session.cancellation.clone();
+        let mut channel=self.session.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+        let trace_log=self.session.log.clone();
+        let mut trace=|message: &'static [u8]| { if let Some(log)=&trace_log { log.write(message); } };
+        let materializer_request=&retained._materializer_request;
+        let materializer_bytes=materializer_request.encode()?;
+        let packed:oex_control_v2::Control=serde_json::from_slice(&retained._prepared.control).map_err(|_|err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
+        let started=self.stage_started;
+        let mut check=|| {
+            if !started || !retained._materializer.matches(materializer_request,&materializer_bytes)
+                || packed.encode()?!=retained._prepared.control || packed.attempt_id!=r.attempt_id
+                || packed.runtime_generation!=r.runtime_generation || packed.reservation_id!=r.reservation_id
+                || packed.reservation_generation!=r.reservation_generation || packed.reservation_digest!=r.reservation_digest
+                || packed.stage_id!=r.stage_id || packed.archive_sha256!=r.archive_sha256 {
+                return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));
+            }
+            self.stage_root.check_pair(self.session,&r.stage_id,input,&r.attempt_id,output)?;retained._journal.check()?;
+            let m=retained._output.metadata().map_err(|_|err("NATIVE_OEX_OUTPUT_INVALID"))?;
+            if (m.dev(),m.ino(),m.len(),m.mtime(),m.mtime_nsec(),m.ctime(),m.ctime_nsec())!=stamp
+                || self.session.cancelled()||cancelled.load(Ordering::SeqCst){return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}Ok(())
+        };
+        let result=channel.confirm_save(&ready,&self.challenge,etag,&cancel,&mut check,&mut trace);drop(check);
+        match result {Ok(())=>{self.session.owner_channel=Some(channel);self.settled=true;Ok(())},Err(error)=>{channel.invalidate();Err(error)}}
+    }
+    /// Inactive connection of the same claimed Session to the directly owned
+    /// materializer. The caller must create the stage in the independently
+    /// pinned live provider reservation and open source chunks from the exact
+    /// authenticated job root. A correlated result is still not a stage seal,
+    /// DB commit, claim release, or proof of absent noncooperating writers.
+    fn materialize(&mut self,stage:oex_read_fd::Stage,chunks:&[oex_chunks::Chunk],
+        request:&oex_materializer_protocol::Request,cancelled:&AtomicBool)->Result<(oex_read_fd::ObservedStage,oex_materializer::ReapedMaterializer)> {
+        let r=&self.ready;
+        if self.stage_started || !stage.matches_stage(&r.stage_id)
+            || request.tenant_id!=r.tenant_id || request.resource_id!=r.workspace_id || request.job_id!=r.job_id
+            || request.user_id!=r.user_id || request.request_id!=r.request_id || request.lease_id!=r.lease_id
+            || request.attempt_id!=r.attempt_id || request.runtime_generation!=r.runtime_generation
+            || request.stage_id!=r.stage_id || request.reservation_id!=r.reservation_id
+            || request.reservation_generation!=r.reservation_generation || request.archive_bytes!=r.archive_bytes
+            || request.archive_sha256!=r.archive_sha256 || request.source_digest!=r.source_digest
+            || request.reservation_digest!=r.reservation_digest || request.worker_digest!=self.session.payload.context().manifest_sha256 {
+            if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}
+            return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));
+        }
+        let (device,inode)=match stage.identity(){Ok(id)=>id,Err(error)=>{
+            if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}
+            return Err(error);
+        }};
+        if let Err(error)=self.stage_root.check_input(self.session,&r.stage_id,device,inode) {
+            if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}
+            return Err(error);
+        }
+        if request.stage_device!=device.to_string() || request.stage_inode!=inode.to_string() {
+            if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}
+            return Err(err("NATIVE_OEX_OUTPUT_INVALID"));
+        }
+        self.stage_started=true;
+        let stage_bound=owner_claim_frames::StageBound {version:1,kind:"stage-bound".into(),correlation_id:self.challenge.correlation_id.clone(),
+            runtime_generation:r.runtime_generation.clone(),workspace_id:r.workspace_id.clone(),tenant_id:r.tenant_id.clone(),
+            job_id:r.job_id.clone(),attempt_id:r.attempt_id.clone(),generation:r.generation.clone(),stage_id:r.stage_id.clone(),
+            reservation_id:r.reservation_id.clone(),reservation_generation:r.reservation_generation.clone(),
+            stage_device:device.to_string(),stage_inode:inode.to_string()};
+        let bytes=match stage_bound.encode(){Ok(bytes)=>bytes,Err(error)=>{
+            if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}
+            return Err(error);
+        }};let cancel=self.session.cancellation.clone();
+        let mut channel=self.session.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+        let mut check=|| {
+            self.stage_root.check_input(self.session,&r.stage_id,device,inode)?;
+            let auth=self.session.local_authority.as_ref().ok_or_else(||err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
+            let actual=self.session.service.personal_identity()?;
+            if self.session.cancelled() || cancelled.load(Ordering::SeqCst) {return Err(err("NATIVE_CANCELLED"));}
+            if self.session.state!="ready" || self.session.node.is_none() || self.session.postgres.is_none()
+                || self.session.job_id.as_deref()!=Some(r.runtime_generation.as_str()) || auth.owner_uid!=unsafe {libc::geteuid()}
+                || actual!=(r.workspace_id.clone(),r.tenant_id.clone(),r.user_id.clone())
+                || (auth.workspace_id.as_str(),auth.tenant_id.as_str(),auth.principal_id.as_str())!=(r.workspace_id.as_str(),r.tenant_id.as_str(),r.user_id.as_str()) {
+                return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));
+            }
+            Ok(())
+        };
+        let response=channel.exchange(&bytes,&cancel,&mut check)
+            .and_then(|reply|stage_bound.check_accepted(&bytes,&reply)).and_then(|_|check());
+        drop(check);
+        if let Err(error)=response {channel.invalidate();return Err(error);}
+        self.session.owner_channel=Some(channel);
+        let payload=self.session.payload.clone();
+        let mut check=|| {
+            self.stage_root.check_input(self.session,&r.stage_id,device,inode)?;
+            self.session.owner_channel.as_mut().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?.check_idle()?;
+            let auth=self.session.local_authority.as_ref().ok_or_else(||err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
+            let actual=self.session.service.personal_identity()?;
+            if self.session.cancelled() || cancelled.load(Ordering::SeqCst) {return Err(err("NATIVE_CANCELLED"));}
+            if self.session.state!="ready" || self.session.node.is_none() || self.session.postgres.is_none()
+                || self.session.job_id.as_deref()!=Some(r.runtime_generation.as_str()) || auth.owner_uid!=unsafe {libc::geteuid()}
+                || actual!=(r.workspace_id.clone(),r.tenant_id.clone(),r.user_id.clone())
+                || (auth.workspace_id.as_str(),auth.tenant_id.as_str(),auth.principal_id.as_str())!=(r.workspace_id.as_str(),r.tenant_id.as_str(),r.user_id.as_str()) {
+                return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));
+            }
+            Ok(())
+        };
+        let observed=(|| {
+            let reaped=oex_materializer::run_direct(&payload,&stage,chunks,request,cancelled,&mut check)?;
+            if !reaped.matches(request,&request.encode()?) {return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}
+            let observed=oex_read_fd::observe_stage(stage,r.archive_bytes,&r.archive_sha256,cancelled,&mut check)?;
+            Ok((observed,reaped))
+        })();
+        drop(check);
+        if observed.is_err() {
+            if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}
+        }
+        observed
+    }
+}
+impl Drop for OwnedOexClaim<'_> {
+    fn drop(&mut self) {
+        // Any path without both settlement and operation-complete remains
+        // uncertain: close the channel and preserve the durable records.
+        if !self.settled {if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}}
     }
 }

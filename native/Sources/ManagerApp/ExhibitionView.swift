@@ -683,6 +683,28 @@ final class ExhibitionModel: ObservableObject {
     }
     var canExport: Bool { !busy && !placingArtwork && !dirty && state?.etag != nil && draft != nil }
     var dirty: Bool { state?.dirty == true || formDirty || positionDirty || architectureDirty || architectureApplying }
+    /// Adopt the exact persisted pending request first, preserving it if the
+    /// final confirmation cannot be stored or reconciled.
+    func acceptBoundedPending(_ saved: NativeDocumentState) -> Bool {
+        guard let current = state, !busy, !dirty, current.draft == nil, current.pending == nil else { return false }
+        let (expectedRevision, overflow) = current.revision.addingReportingOverflow(1)
+        guard !overflow, saved.revision == expectedRevision, current.workspaceId == saved.workspaceId,
+              current.tenantId == saved.tenantId, current.principalId == saved.principalId,
+              saved.draft != nil, saved.etag != nil, saved.pending != nil else { return false }
+        state = saved; immutable = false; reusablePublicationId = nil; syncFields()
+        return true
+    }
+    func acceptBoundedSaved(_ saved: NativeDocumentState, requestId: String) -> Bool {
+        guard let current = state, !busy, let pending = current.pending, pending.requestId == requestId,
+              current.workspaceId == saved.workspaceId, current.tenantId == saved.tenantId,
+              current.principalId == saved.principalId, saved.pending == nil,
+              saved.draft == pending.draft, saved.etag != nil, !saved.dirty else { return false }
+        let (expectedRevision, overflow) = current.revision.addingReportingOverflow(1)
+        guard !overflow, saved.revision == expectedRevision else { return false }
+        state = saved; immutable = false; reusablePublicationId = nil; syncFields()
+        notice = "가져온 전시를 다시 열었습니다."
+        return true
+    }
     func connect(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession, read: @escaping () async throws -> NativeDocumentState, write: @escaping (NativeDocumentState) async throws -> NativeDocumentState) async {
         // Explicit reconnect during a preview has a separate acknowledgement
         // boundary. Never run the ordinary access-change reset on this path.

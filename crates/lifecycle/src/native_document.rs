@@ -83,7 +83,7 @@ pub(crate) fn validate(s: &DocumentState) -> Result<()> {
     Ok(())
 }
 impl InstallationController {
-    fn document_unlocked(&self, service: &LifecycleService) -> Result<(String, DocumentState)> {
+    pub(super) fn document_unlocked(&self, service: &LifecycleService) -> Result<(String, DocumentState)> {
         let profile = self
             .profile
             .as_ref()
