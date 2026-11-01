@@ -838,7 +838,7 @@ struct NativeViewportArea: View {
                     Button("위에서 보기") { model.requestViewportView("top") }.disabled(controller.planSupported && model.viewportPresentation == .plan)
                     Button("정면 보기") { model.requestViewportView("front") }.disabled(controller.planSupported && model.viewportPresentation == .plan)
                     if editable {
-                        Picker("편집 조작", selection: $model.viewportMode) { Text("이동").tag("translate"); Text("회전").tag("rotate"); Text("크기").tag("dimensions") }
+                        Picker("대상 편집", selection: $model.viewportMode) { Text("대상 이동").tag("translate"); Text("대상 회전").tag("rotate"); Text("대상 크기").tag("dimensions") }
                     }
                 }.disabled(model.placingArtwork || model.entrancePreviewActive)
                 Button("편집 화면 다시 열기") {
@@ -936,7 +936,7 @@ struct NativeViewportArea: View {
                 .disabled(model.entrancePreviewActive || !controller.connected || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.placingArtwork)
                 .accessibilityHint("같은 전시와 선택을 유지하며 편집 화면을 전환합니다.")
             if editable {
-                Picker("편집 조작", selection: $model.viewportMode) { Text("이동").tag("translate"); Text("회전").tag("rotate"); Text("크기").tag("dimensions") }
+                Picker("대상 편집", selection: $model.viewportMode) { Text("대상 이동").tag("translate"); Text("대상 회전").tag("rotate"); Text("대상 크기").tag("dimensions") }
                     .labelsHidden().fixedSize().disabled(model.placingArtwork || model.entrancePreviewActive)
             }
             Spacer(minLength: 0)
