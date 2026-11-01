@@ -8,6 +8,9 @@ extension NativeLightType {
     var title: String {
         switch self { case .point: "점광원"; case .spot: "스폿"; case .directional: "방향광"; case .area: "면광원" }
     }
+    var unitSymbol: String {
+        switch self { case .point, .spot: "cd"; case .directional: "lx"; case .area: "lm" }
+    }
 }
 
 extension NativeLightFixture {
@@ -133,7 +136,9 @@ struct SelectedLightInspector: View {
                                 Text("1000–20000 K의 화면용 근사입니다. 값을 바꾸고 미리보기하면 색상과 함께 적용됩니다. 저장된 전시를 열 때는 색상을 다시 계산하지 않습니다.").font(.caption).foregroundStyle(.secondary)
                             }
                             ColorPicker("빛 색상", selection: color, supportsOpacity: false).disabled(fields.colorMode == .temperature)
-                            TextField("밝기 · 렌더러 값", text: field(\.intensity))
+                            LabeledContent("밝기 · \(fields.type.unitSymbol)") {
+                                TextField("밝기 · \(fields.type.unitSymbol)", text: field(\.intensity)).labelsHidden()
+                            }
                             if fields.type == .spot { TextField("빔 전체각 · °", text: field(\.beamDegrees)) }
                             if fields.type == .area {
                                 TextField("광원 가로 · m", text: field(\.width))
