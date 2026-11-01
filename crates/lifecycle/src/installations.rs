@@ -18,6 +18,10 @@ pub mod native_upload;
 #[path = "native_oex_import.rs"]
 pub mod native_oex_import;
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
+#[path = "native_oex_pending.rs"]
+mod native_oex_pending;
+#[cfg(target_os = "macos")]
 #[path = "native_publication.rs"]
 pub mod native_publication;
 #[cfg(target_os = "macos")]
