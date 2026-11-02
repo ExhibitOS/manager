@@ -496,6 +496,9 @@ final class ExhibitionModel: ObservableObject {
     private var sharedFurnishingPreviewAccessID: UUID?
     @Published private(set) var sharedFurnishingStatus = ""
     @Published private(set) var sharedFurnishingCatalogReady = false
+    @Published private(set) var sharedFurnishingCatalog: [DocumentValue] = []
+    @Published var sharedFurnishingQuery = ""
+    @Published var sharedFurnishingCategory = "all"
     private var sharedFurnishingCatalogAccessID: UUID?
     private var sharedFurnishingCatalogLoading = false
     var sharedFurnishingDirty: Bool { sharedFurnishing != sharedFurnishingBaseline }
@@ -531,11 +534,14 @@ final class ExhibitionModel: ObservableObject {
         guard viewportController.connected, viewportController.sharedFurnishingVisualsSupported, !sharedFurnishingCatalogLoading,
               sharedFurnishingCatalogAccessID != viewportAccessID, let api else { return }
         sharedFurnishingCatalogLoading = true; defer { sharedFurnishingCatalogLoading = false }
+        sharedFurnishingCatalogReady = false; sharedFurnishingCatalog = []
         let access = viewportAccessID
         do {
-            _ = try await api.sharedFurnishings(); try Task.checkCancellation()
+            let items = try await api.sharedFurnishings(); try Task.checkCancellation()
             guard access == viewportAccessID, viewportController.connected, viewportController.sharedFurnishingVisualsSupported else { return }
+            sharedFurnishingCatalog = items
             sharedFurnishingCatalogReady = true; sharedFurnishingCatalogAccessID = access
+            if sharedFurnishingStatus == "비품 목록을 확인하지 못했습니다. 기존 설정은 유지됩니다." { sharedFurnishingStatus = "" }
         } catch {
             guard !Task.isCancelled, access == viewportAccessID else { return }
             sharedFurnishingCatalogAccessID = access; sharedFurnishingStatus = "비품 목록을 확인하지 못했습니다. 기존 설정은 유지됩니다."
@@ -788,7 +794,7 @@ final class ExhibitionModel: ObservableObject {
         if state?.etag != nil { storedImmutable = true }
         let accessChanged = viewportCredentials?.token != credentials.token || viewportCredentials?.origin != credentials.origin
         viewportCredentials = credentials
-        if accessChanged { sharedFurnishingCatalogReady = false; sharedFurnishingCatalogAccessID = nil; sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
+        if accessChanged { sharedFurnishingCatalogReady = false; sharedFurnishingCatalog = []; sharedFurnishingCatalogAccessID = nil; sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
         floorPreviewAccessID = nil; floorPreviewContext = nil; floorPreviewHostEpoch = nil
         if accessChanged { floorImages = [:]; floorImageAttempts = [] }
         self.read = read; self.write = write
