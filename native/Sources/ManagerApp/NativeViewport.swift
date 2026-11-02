@@ -320,7 +320,7 @@ struct NativeViewport: NSViewRepresentable {
         private var editingContextGeneration: UUID?
         private var installedToken: String?
         private var resourceRule: WKContentRuleList?
-        private var snapshotPolicy: (id: UUID, content: WKUserContentController, base: WKContentRuleList)?
+        private var snapshotPolicy: (id: UUID, content: WKUserContentController, base: WKContentRuleList, rule: WKContentRuleList)?
         private var prepared = false
         private var latest: ViewportFrame?
         private var placementIntent: ArtworkPlacementIntent?
@@ -348,7 +348,10 @@ struct NativeViewport: NSViewRepresentable {
         private func restoreSnapshotPolicy(_ id: UUID? = nil) {
             guard let held = snapshotPolicy, id == nil || held.id == id else { return }
             snapshotPolicy = nil
-            held.content.removeAllContentRuleLists(); held.content.add(held.base)
+            // Keep a blocker installed throughout the transition and preserve
+            // a newer base configuration if this web view was reconfigured.
+            held.content.add(resourceRule ?? held.base)
+            held.content.remove(held.rule)
         }
         private func endPlacement() {
             guard let intent = placementIntent else { return }
@@ -867,13 +870,19 @@ struct NativeViewport: NSViewRepresentable {
                 let content = web.configuration.userContentController
                 try Task.checkCancellation()
                 let policyId = UUID()
-                self.snapshotPolicy = (policyId, content, baseRule)
-                content.removeAllContentRuleLists(); content.add(snapshotRule)
+                self.snapshotPolicy = (policyId, content, baseRule, snapshotRule)
                 defer {
                     // Restore even after cancellation or host invalidation. This
                     // retained web view must never be left without its blockers.
                     self.restoreSnapshotPolicy(policyId)
                 }
+                content.add(snapshotRule)
+                guard self.snapshotPolicy?.id == policyId, self.active, self.generation == generation,
+                      self.latest?.sequence == frame.sequence else {
+                    content.remove(snapshotRule)
+                    throw AuthoringFailure("SCENE_SNAPSHOT_STALE")
+                }
+                content.remove(baseRule)
                 let response = try await withTaskCancellationHandler {
                     try await web.callAsyncJavaScript("if (typeof window.exhibitosViewport?.sceneSnapshot !== 'function') throw new Error('SCENE_SNAPSHOT_NOT_READY'); return await window.exhibitosViewport.sceneSnapshot(JSON.parse(requestJSON));", arguments: ["requestJSON": json], in: nil, contentWorld: .page)
                 } onCancel: { [weak self] in
