@@ -4,6 +4,7 @@ import ManagerCore
 
 struct WallFinishSettingsView: View {
     @ObservedObject var model: ExhibitionModel
+    @ObservedObject var viewport: NativeViewportController
     let ready: Bool
     private func field<Value>(_ key: WritableKeyPath<WallFinishFormBuffer, Value>, fallback: Value) -> Binding<Value> {
         Binding(get: { model.wallFinish?[keyPath: key] ?? fallback }, set: { value in
