@@ -266,6 +266,22 @@ public actor AuthoringAPI {
         session = value
         return value
     }
+    /// Recheck the existing cookie-bound session without minting credentials
+    /// or clearing a live selected import's authority.
+    public func verifyRetainedSession(_ expected: AuthoringSession) async throws -> AuthoringSession {
+        guard let original = session, original.userId == expected.userId, original.tenantId == expected.tenantId,
+              original.role == expected.role, original.csrfToken == expected.csrfToken, original.expiresAt == expected.expiresAt else {
+            throw AuthoringFailure("ACCOUNT_BINDING_MISMATCH")
+        }
+        let current: AuthoringSession = try await request("/api/v1/auth/session")
+        guard let held = session, held.userId == original.userId, held.tenantId == original.tenantId,
+              held.role == original.role, held.csrfToken == original.csrfToken, held.expiresAt == original.expiresAt,
+              current.userId == original.userId, current.tenantId == original.tenantId,
+              current.role == original.role, current.csrfToken == original.csrfToken, current.expiresAt == original.expiresAt else {
+            throw AuthoringFailure("ACCOUNT_BINDING_MISMATCH")
+        }
+        return current
+    }
     public func login(subject: String, password: String) async throws -> AuthoringSession {
         guard !authenticationBusy, activeRequests == 0 else { throw AuthoringFailure("AUTH_BUSY") }
         authenticationBusy = true
@@ -323,6 +339,12 @@ public actor AuthoringAPI {
     public func exhibition(_ id: String) async throws -> NativeStudioResponse {
         let value: NativeStudioResponse = try await request(studioPrefix + "/exhibitions/" + identifier(id))
         guard value.draft.id.lowercased() == id.lowercased() else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+        return value
+    }
+    /// A scoped policy observation; it does not authorize a write.
+    public func nativeViewportPolicy(_ id: String) async throws -> NativeViewportPolicy {
+        let value: NativeViewportPolicy = try await request(studioPrefix + "/exhibitions/" + identifier(id) + "/native-viewport-policy")
+        guard value.exhibitionId.lowercased() == id.lowercased(), value.revision > 0, !value.etag.isEmpty else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
         return value
     }
     /// A read-only lookup; a 404 from an older runtime remains unsupported and

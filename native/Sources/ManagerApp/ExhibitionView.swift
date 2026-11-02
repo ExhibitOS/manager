@@ -73,7 +73,52 @@ final class ExhibitionModel: ObservableObject {
         }.filter { $0.matches(query: catalogQuery, filter: catalogFilter, in: draft) }
     }
     @Published private(set) var comparison: NativeStudioResponse?
-    @Published private(set) var immutable = false
+    @Published private var storedImmutable = false
+    /// The frame restriction never grants authority. In selected native mode,
+    /// a saved draft remains locked until the exact current frame is acknowledged.
+    var immutable: Bool {
+        NativeViewportAccess.locked(selected: selectedBoundedPolicy, saved: state?.etag != nil, storedLocked: storedImmutable || boundedPolicyPending,
+            frameReadOnly: viewportController.boundedReadOnly,
+            exactOrdinaryFrame: viewportController.acknowledges(draft: draft, tenantId: state?.tenantId, principalId: state?.principalId))
+    }
+    // Do not feed the transient pending-ack lock back into the frame's
+    // disabled bit: that would create a new frame on every acknowledgement.
+    var viewportReadOnly: Bool { (storedImmutable && boundedPlacementCapability == nil) || viewportController.boundedReadOnly }
+    var boundedPlacementReady: Bool {
+        guard api != nil, let capability = boundedPlacementCapability, state?.etag == capability.etag, state?.pending == nil,
+              let selection = viewportSelection, selection.kind == "placement",
+              let access = boundedPlacementAccess, viewportAccessID == access,
+              let token = boundedPlacementToken, viewportCredentials?.token == token,
+              let current = session, let captured = boundedPlacementSession,
+              current.tenantId == captured.tenantId, current.userId == captured.userId, current.role == captured.role,
+              current.csrfToken == captured.csrfToken, current.expiresAt == captured.expiresAt,
+              let imported = oexImport.state, imported.intent == nil, imported.jobId == nil, imported.fileName == nil,
+              imported.workspaceId == state?.workspaceId, imported.tenantId == state?.tenantId, imported.principalId == state?.principalId else { return false }
+        return viewportController.acknowledgesPlacement(draft: draft, tenantId: state?.tenantId, principalId: state?.principalId,
+                                                        selection: selection, capability: capability)
+    }
+    /// Do not turn an uncertain selected-owner save into a generic PUT retry.
+    var boundedPendingRecoveryBlocked: Bool {
+        NativeViewportAccess.blocksPendingReplay(selected: selectedBoundedPolicy, pending: pending, origin: state?.pending?.origin)
+            || (pending && ordinaryBoundedRuntime)
+    }
+    @Published private(set) var boundedReadOnly = false
+    @Published private(set) var boundedPolicyPending = false
+    private var selectedBoundedPolicy = false
+    // The workspace kind enforces a lock; the host's exact release admission
+    // separately controls whether the scoped policy may enable a placement.
+    private var ordinaryBoundedRuntime = false
+    private var boundedRuntimeQualified = false
+    var boundedNavigationLocked: Bool { ordinaryBoundedRuntime }
+    @Published private(set) var boundedPlacementCapability: NativeBoundedEditCapability?
+    private var boundedPlacementPolicy: NativeViewportPolicy?
+    private var boundedPlacementBaseline: NativeExhibitionDraft?
+    private var boundedPlacementSession: AuthoringSession?
+    private var boundedPlacementAccess: UUID?
+    private var boundedPlacementToken: String?
+    private var boundedPlacementEpoch: String?
+    private var boundedProfileKnown: Bool?
+    private var boundedPolicyGeneration = UUID()
     @Published private(set) var reusablePublicationId: String?
     @Published private(set) var busy = false
     @Published private(set) var failure: AuthoringFailure?
@@ -661,8 +706,8 @@ final class ExhibitionModel: ObservableObject {
     private(set) var viewportCredentials: LocalAuthoringSession?
     @Published private var past: [NativeExhibitionDraft] = []
     @Published private var future: [NativeExhibitionDraft] = []
-    var canUndo: Bool { !entrancePreviewActive && !immutable && !past.isEmpty && !pending && !busy && !formDirty && !positionDirty && !architectureDirty && !architectureApplying && !placingArtwork }
-    var canRedo: Bool { !entrancePreviewActive && !immutable && !future.isEmpty && !pending && !busy && !formDirty && !positionDirty && !architectureDirty && !architectureApplying && !placingArtwork }
+    var canUndo: Bool { !entrancePreviewActive && (!immutable || boundedPlacementReady) && !past.isEmpty && !pending && !busy && !formDirty && !positionDirty && !architectureDirty && !architectureApplying && !placingArtwork }
+    var canRedo: Bool { !entrancePreviewActive && (!immutable || boundedPlacementReady) && !future.isEmpty && !pending && !busy && !formDirty && !positionDirty && !architectureDirty && !architectureApplying && !placingArtwork }
     private var api: AuthoringAPI?
     private var session: AuthoringSession?
     private var read: (() async throws -> NativeDocumentState)?
@@ -690,8 +735,8 @@ final class ExhibitionModel: ObservableObject {
         let (expectedRevision, overflow) = current.revision.addingReportingOverflow(1)
         guard !overflow, saved.revision == expectedRevision, current.workspaceId == saved.workspaceId,
               current.tenantId == saved.tenantId, current.principalId == saved.principalId,
-              saved.draft != nil, saved.etag != nil, saved.pending != nil else { return false }
-        state = saved; immutable = false; reusablePublicationId = nil; syncFields()
+              saved.draft != nil, saved.etag != nil, saved.pending?.origin == "bounded-import-v1" else { return false }
+        state = saved; storedImmutable = selectedBoundedPolicy; boundedPolicyPending = selectedBoundedPolicy; reusablePublicationId = nil; syncFields()
         return true
     }
     func acceptBoundedSaved(_ saved: NativeDocumentState, requestId: String) -> Bool {
@@ -701,11 +746,15 @@ final class ExhibitionModel: ObservableObject {
               saved.draft == pending.draft, saved.etag != nil, !saved.dirty else { return false }
         let (expectedRevision, overflow) = current.revision.addingReportingOverflow(1)
         guard !overflow, saved.revision == expectedRevision else { return false }
-        state = saved; immutable = false; reusablePublicationId = nil; syncFields()
+        state = saved; storedImmutable = selectedBoundedPolicy; boundedPolicyPending = selectedBoundedPolicy; reusablePublicationId = nil; syncFields()
         notice = "가져온 전시를 다시 열었습니다."
+        if selectedBoundedPolicy {
+            let access = viewportAccessID
+            Task { [weak self] in await self?.resolveImportedPolicy(saved, access: access) }
+        }
         return true
     }
-    func connect(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession, read: @escaping () async throws -> NativeDocumentState, write: @escaping (NativeDocumentState) async throws -> NativeDocumentState) async {
+    func connect(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession, selectedBoundedPolicy: Bool = false, ordinaryBoundedRuntime: Bool = false, boundedRuntimeQualified: Bool = false, read: @escaping () async throws -> NativeDocumentState, write: @escaping (NativeDocumentState) async throws -> NativeDocumentState) async {
         // Explicit reconnect during a preview has a separate acknowledgement
         // boundary. Never run the ordinary access-change reset on this path.
         if entrancePreviewActive {
@@ -724,11 +773,19 @@ final class ExhibitionModel: ObservableObject {
             guard !dirty else { self.api = nil; viewportCredentials = nil; failure = AuthoringFailure("DRAFT_ACCOUNT_MISMATCH"); return }
             state = nil; reusablePublicationId = nil; items = []; library = []; comparison = nil; exportedURL = nil; exportedSHA256 = nil; catalogArtworkId = ""; catalogStatus = ""
         }
+        boundedPolicyGeneration = UUID()
+        boundedPlacementCapability = nil; boundedPlacementPolicy = nil; boundedPlacementBaseline = nil
+        boundedPlacementSession = nil; boundedPlacementAccess = nil; boundedPlacementToken = nil; boundedPlacementEpoch = nil; boundedProfileKnown = nil
         self.api = api; self.session = session
+        self.selectedBoundedPolicy = selectedBoundedPolicy
+        self.ordinaryBoundedRuntime = ordinaryBoundedRuntime && !selectedBoundedPolicy
+        self.boundedRuntimeQualified = boundedRuntimeQualified
+        boundedPolicyPending = (selectedBoundedPolicy || self.ordinaryBoundedRuntime) && state?.etag != nil
+        if !selectedBoundedPolicy && !self.ordinaryBoundedRuntime { boundedReadOnly = false }
         // Capability is tied to the current runtime; fail closed until its
         // authenticated lookup succeeds, retaining the local document.
         reusablePublicationId = nil
-        if state?.etag != nil { immutable = true }
+        if state?.etag != nil { storedImmutable = true }
         let accessChanged = viewportCredentials?.token != credentials.token || viewportCredentials?.origin != credentials.origin
         viewportCredentials = credentials
         if accessChanged { sharedFurnishingCatalogReady = false; sharedFurnishingCatalogAccessID = nil; sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
@@ -749,13 +806,20 @@ final class ExhibitionModel: ObservableObject {
                 state = stored
                 // The persisted document may be a published snapshot. Lock it
                 // before any later list/capability request can fail.
-                if stored.etag != nil { immutable = true; reusablePublicationId = nil }
+                if stored.etag != nil { storedImmutable = true; boundedPolicyPending = selectedBoundedPolicy || self.ordinaryBoundedRuntime; reusablePublicationId = nil }
                 syncFields()
                 if stored.pending != nil { notice = "저장 요청의 응답을 확인해야 합니다. 같은 요청으로 다시 확인하세요." }
                 else if stored.dirty { notice = "이 Mac에 보관한 미완료 전시를 복원했습니다." }
             }
             try await list()
-            if let draft, state?.etag != nil { let access = try await publishedEditingAccess(draft.id, api: api); immutable = access.immutable; reusablePublicationId = access.publicationId } else { immutable = false; reusablePublicationId = nil }
+            if let draft, let etag = state?.etag {
+                let accessID = viewportAccessID, policyGeneration = boundedPolicyGeneration
+                let access = try await publishedEditingAccess(draft.id, api: api)
+                let restricted = try await checkBoundedPolicy(draft.id, etag: etag, api: api, access: accessID)
+                guard viewportAccessID == accessID, boundedPolicyGeneration == policyGeneration, self.api === api, self.state?.draft == draft, self.state?.etag == etag else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+                boundedReadOnly = restricted; boundedPolicyPending = self.ordinaryBoundedRuntime
+                storedImmutable = access.immutable || restricted || self.ordinaryBoundedRuntime; reusablePublicationId = access.publicationId
+            } else { storedImmutable = false; boundedReadOnly = false; boundedPolicyPending = false; reusablePublicationId = nil }
         }
     }
     func beginEntranceCredentialRenewal() -> Bool {
@@ -954,8 +1018,12 @@ final class ExhibitionModel: ObservableObject {
     }
     func acceptViewportCandidate(_ candidate: DocumentValue, base: NativeExhibitionDraft) async {
         await work {
-            guard !immutable, !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, draft == base, var value = state, var next = draft else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
-            try next.acceptGeometry(candidate); value.draft = next
+            guard (!immutable || boundedPlacementReady), !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, draft == base, var value = state, var next = draft else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            if boundedPlacementCapability != nil {
+                guard boundedPlacementReady, let selection = viewportSelection, let baseline = boundedPlacementBaseline else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                try next.acceptBoundedPlacement(candidate, selection: selection, savedBaseline: baseline)
+            } else { try next.acceptGeometry(candidate) }
+            value.draft = next
             try await persist(value); syncFields()
             notice = "3D 변경을 이 Mac에 보관했습니다. 전시 저장은 별도로 진행하세요."
         }
@@ -1579,16 +1647,26 @@ final class ExhibitionModel: ObservableObject {
     }
     func undo() async {
         await work {
-            guard !immutable, !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, let previous = past.last, let current = draft, var value = state else { return }
-            var next = current; try next.replaceCandidate(previous.candidate); value.draft = next
+            guard (!immutable || boundedPlacementReady), !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, let previous = past.last, let current = draft, var value = state else { return }
+            var next = current
+            if boundedPlacementCapability != nil {
+                guard boundedPlacementReady, let selection = viewportSelection, let baseline = boundedPlacementBaseline else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                try next.acceptBoundedPlacement(previous.candidate, selection: selection, savedBaseline: baseline)
+            } else { try next.replaceCandidate(previous.candidate) }
+            value.draft = next
             try await persist(value, recordUndo: false); past.removeLast(); future.append(current); syncFields()
             notice = "이전 편집으로 되돌렸습니다. 전시 저장본은 바꾸지 않았습니다."
         }
     }
     func redo() async {
         await work {
-            guard !immutable, !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, let previous = future.last, let current = draft, var value = state else { return }
-            var next = current; try next.replaceCandidate(previous.candidate); value.draft = next
+            guard (!immutable || boundedPlacementReady), !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, let previous = future.last, let current = draft, var value = state else { return }
+            var next = current
+            if boundedPlacementCapability != nil {
+                guard boundedPlacementReady, let selection = viewportSelection, let baseline = boundedPlacementBaseline else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                try next.acceptBoundedPlacement(previous.candidate, selection: selection, savedBaseline: baseline)
+            } else { try next.replaceCandidate(previous.candidate) }
+            value.draft = next
             try await persist(value, recordUndo: false); future.removeLast(); past.append(current); syncFields()
             notice = "편집을 다시 적용했습니다."
         }
@@ -1761,10 +1839,97 @@ final class ExhibitionModel: ObservableObject {
     func refresh(more: Bool = false) async { await work { try await list(more: more) } }
     func new() async {
         await work(allowViewingPlanInput: true, allowViewingPointInput: true) {
-            guard !pending, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
+            guard !ordinaryBoundedRuntime, !pending, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             value.draft = try NativeExhibitionDraft.new(); value.etag = nil; value.savedEditVersion = nil
-            try await persist(value); immutable = false; reusablePublicationId = nil; comparison = nil; syncFields()
+            try await persist(value); storedImmutable = false; reusablePublicationId = nil; comparison = nil; syncFields()
             notice = "새 전시를 이 Mac에 보관했습니다. 공간과 작품을 구성한 뒤 전시를 저장하세요."
+        }
+    }
+    /// Fail closed for selected native saved drafts until the server derives
+    /// the policy for this exact session, exhibition and saved ETag.
+    private func checkBoundedPolicy(_ id: String, etag: String, revision: Int? = nil, api: AuthoringAPI, access: UUID) async throws -> Bool {
+        guard selectedBoundedPolicy else { return false }
+        guard let originalSession = session, let workspace = state?.workspaceId else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+        let policyGeneration = boundedPolicyGeneration
+        let policy = try await api.nativeViewportPolicy(id)
+        guard selectedBoundedPolicy, viewportAccessID == access, boundedPolicyGeneration == policyGeneration, self.api === api, state?.workspaceId == workspace,
+              let currentSession = session, currentSession.tenantId == originalSession.tenantId,
+              currentSession.userId == originalSession.userId, currentSession.role == originalSession.role,
+              currentSession.csrfToken == originalSession.csrfToken, currentSession.expiresAt == originalSession.expiresAt,
+              policy.exhibitionId.lowercased() == id.lowercased(), policy.etag == etag,
+              revision == nil || policy.revision == revision else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+        return policy.boundedReadOnly
+    }
+    /// Read the exact saved revision and import record before considering the
+    /// narrow ordinary-session placement path. All failures retain the lock.
+    func prepareOrdinaryBoundedPlacement() async {
+        guard ordinaryBoundedRuntime, boundedRuntimeQualified, !selectedBoundedPolicy, let api, let initial = state,
+              let draft = initial.draft, let etag = initial.etag, let originalSession = session,
+              let credentials = viewportCredentials, let imported = oexImport.state else { return }
+        let access = viewportAccessID, generation = boundedPolicyGeneration
+        do {
+            let saved = try await api.exhibition(draft.id)
+            let policy = try await api.nativeViewportPolicy(draft.id)
+            let publication = try await publishedEditingAccess(draft.id, api: api, expected: saved)
+            guard ordinaryBoundedRuntime, viewportAccessID == access, boundedPolicyGeneration == generation,
+                  self.api === api, let current = state, current.revision == initial.revision,
+                  current.draft == initial.draft, current.etag == etag,
+                  let live = session, live.tenantId == originalSession.tenantId, live.userId == originalSession.userId,
+                  live.role == originalSession.role, live.csrfToken == originalSession.csrfToken, live.expiresAt == originalSession.expiresAt,
+                  viewportCredentials?.token == credentials.token, viewportCredentials?.origin == credentials.origin,
+                  let currentImport = oexImport.state, currentImport.revision == imported.revision,
+                  policy.exhibitionId.lowercased() == draft.id.lowercased(), policy.etag == etag,
+                  policy.revision == saved.revision, saved.etag == etag,
+                  let profile = policy.boundedProfile, let required = policy.boundedEditRequired else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+            boundedProfileKnown = profile
+            if !required {
+                guard !policy.boundedReadOnly else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+                boundedReadOnly = false; boundedPolicyPending = false; storedImmutable = publication.immutable
+                reusablePublicationId = publication.publicationId
+                return
+            }
+            guard !publication.immutable, saved.draft == draft,
+                  let capability = NativeBoundedEditAdmission.admit(policy: policy, document: current, importState: currentImport,
+                                                                    session: live, selectedImport: false) else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+            boundedPlacementPolicy = policy; boundedPlacementBaseline = saved.draft; boundedPlacementSession = live
+            boundedPlacementAccess = access; boundedPlacementToken = credentials.token; boundedPlacementEpoch = nil
+            boundedPlacementCapability = capability
+            boundedReadOnly = false; boundedPolicyPending = false; storedImmutable = true
+            notice = "이 전시는 선택한 작품의 위치·회전·크기를 조정할 수 있습니다."
+        } catch {
+            guard viewportAccessID == access, boundedPolicyGeneration == generation else { return }
+            boundedPlacementCapability = nil; boundedPlacementPolicy = nil; boundedPlacementBaseline = nil
+            boundedPlacementSession = nil; boundedPlacementEpoch = nil
+            storedImmutable = true; boundedPolicyPending = true
+            notice = "전시의 편집 가능 상태를 확인하지 못했습니다. 저장된 입력은 유지됩니다."
+        }
+    }
+
+    func acceptBoundedPlacementFrame(_ frame: ViewportFrame, _ response: ViewportAcceptance) -> Bool {
+        guard ordinaryBoundedRuntime, let capability = boundedPlacementCapability, let policy = boundedPlacementPolicy,
+              let document = state, let imported = oexImport.state, let session, let captured = boundedPlacementSession,
+              let access = boundedPlacementAccess, viewportAccessID == access,
+              viewportCredentials?.token == boundedPlacementToken, boundedPlacementEpoch == nil || boundedPlacementEpoch == frame.epoch,
+              NativeBoundedEditAdmission.acknowledges(response, frame: frame, expected: capability, policy: policy,
+                  ownerEpoch: viewportController.hostEpoch, currentSequence: frame.sequence, document: document,
+                  importState: imported, session: session, capturedSession: captured,
+                  firstAdmission: boundedPlacementEpoch == nil, selectedImport: selectedBoundedPolicy) else { return false }
+        boundedPlacementEpoch = frame.epoch
+        return true
+    }
+    private func resolveImportedPolicy(_ saved: NativeDocumentState, access: UUID) async {
+        guard selectedBoundedPolicy, let id = saved.draft?.id, let etag = saved.etag, let api else { return }
+        let policyGeneration = boundedPolicyGeneration
+        do {
+            let restricted = try await checkBoundedPolicy(id, etag: etag, api: api, access: access)
+            let publication = try await publishedEditingAccess(id, api: api)
+            guard viewportAccessID == access, boundedPolicyGeneration == policyGeneration, self.api === api, state?.draft == saved.draft, state?.etag == etag, state?.pending == nil else { return }
+            boundedReadOnly = restricted; boundedPolicyPending = false
+            storedImmutable = publication.immutable || restricted; reusablePublicationId = publication.publicationId
+        } catch {
+            guard viewportAccessID == access, boundedPolicyGeneration == policyGeneration, state?.draft == saved.draft, state?.etag == etag else { return }
+            storedImmutable = true; boundedPolicyPending = true
+            notice = "전시의 편집 가능 상태를 확인하지 못했습니다. 작업 공간을 다시 연결하세요."
         }
     }
     /// Publication identity is resolved only by the authenticated server; an
@@ -1784,11 +1949,27 @@ final class ExhibitionModel: ObservableObject {
     func open(_ id: String) async {
         await work(allowViewingPlanInput: true, allowViewingPointInput: true) {
             guard !pending, let api, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
+            if ordinaryBoundedRuntime {
+                boundedPolicyGeneration = UUID()
+                boundedPlacementCapability = nil; boundedPlacementPolicy = nil; boundedPlacementBaseline = nil
+                boundedPlacementSession = nil; boundedPlacementEpoch = nil; boundedProfileKnown = nil
+                storedImmutable = true; boundedPolicyPending = true
+            }
+            let accessID = viewportAccessID, policyGeneration = boundedPolicyGeneration
             let saved = try await api.exhibition(id)
+            guard viewportAccessID == accessID, boundedPolicyGeneration == policyGeneration, self.api === api, state?.revision == value.revision else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
             let editingAccess = try await publishedEditingAccess(id, api: api, expected: saved)
+            let restricted = try await checkBoundedPolicy(id, etag: saved.etag, revision: saved.revision, api: api, access: accessID)
+            guard viewportAccessID == accessID, boundedPolicyGeneration == policyGeneration, self.api === api, state?.revision == value.revision else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
             value.draft = saved.draft; value.etag = saved.etag; value.savedEditVersion = saved.draft.document["editVersion"].integer
-            try await persist(value); immutable = editingAccess.immutable; reusablePublicationId = editingAccess.publicationId; comparison = nil; syncFields()
-            notice = editingAccess.immutable ? "이 공개용 저장본은 현재 런타임에서 읽기 전용입니다." : editingAccess.publicationId != nil ? "공개된 전시의 편집 초안을 열었습니다. 저장해도 공개본은 바뀌지 않습니다." : "저장한 전시를 열었습니다."
+            if selectedBoundedPolicy { storedImmutable = true; boundedPolicyPending = true }
+            try await persist(value)
+            guard viewportAccessID == accessID, boundedPolicyGeneration == policyGeneration, self.api === api, state?.draft == saved.draft, state?.etag == saved.etag else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+            boundedReadOnly = restricted; boundedPolicyPending = ordinaryBoundedRuntime; storedImmutable = editingAccess.immutable || restricted || ordinaryBoundedRuntime; reusablePublicationId = editingAccess.publicationId; comparison = nil; syncFields()
+            if ordinaryBoundedRuntime { await prepareOrdinaryBoundedPlacement() }
+            if !boundedPolicyPending {
+                notice = editingAccess.immutable ? "이 공개용 저장본은 현재 런타임에서 읽기 전용입니다." : editingAccess.publicationId != nil ? "공개된 전시의 편집 초안을 열었습니다. 저장해도 공개본은 바뀌지 않습니다." : "저장한 전시를 열었습니다."
+            }
             // OEX import can add approved works after the last library fetch.
             // Refresh only after the saved draft is safely opened; a catalogue
             // failure must not undo or misreport that successful open.
@@ -1839,12 +2020,33 @@ final class ExhibitionModel: ObservableObject {
     func save() async {
         await work {
             guard let api, var value = state else { return }
+            guard !boundedPendingRecoveryBlocked else { throw AuthoringFailure("EXHIBITION_PENDING") }
+            let bounded = boundedPlacementCapability != nil
+            let access = viewportAccessID, generation = boundedPolicyGeneration, token = viewportCredentials?.token
             if value.pending == nil {
-                guard !immutable else { throw AuthoringFailure("PUBLISHED_DRAFT_IMMUTABLE", status: 409) }
-                value.draft = try appliedFields()
+                if bounded {
+                    guard boundedPlacementReady, !formDirty, !positionDirty, !architectureDirty,
+                          let baseline = boundedPlacementBaseline, let current = value.draft,
+                          let selection = viewportSelection else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                    if current.candidate == baseline.candidate {
+                        value.draft = baseline; try await persist(value); syncFields()
+                        notice = "저장된 배치와 같은 상태입니다."
+                        return
+                    }
+                    var checked = baseline
+                    try checked.acceptBoundedPlacement(current.candidate, selection: selection, savedBaseline: baseline)
+                } else {
+                    guard !immutable else { throw AuthoringFailure("PUBLISHED_DRAFT_IMMUTABLE", status: 409) }
+                    value.draft = try appliedFields()
+                }
                 guard let draft = value.draft else { throw AuthoringFailure("EXHIBITION_REQUIRED") }
-                value.pending = .init(etag: value.etag, draft: draft)
+                value.pending = .init(etag: value.etag, draft: draft, origin: bounded ? "bounded-placement-v1" : nil)
                 try await persist(value) // durable exact intent BEFORE the request
+                if bounded {
+                    guard viewportAccessID == access, boundedPolicyGeneration == generation,
+                          viewportCredentials?.token == token, self.api === api,
+                          state?.pending?.requestId == value.pending?.requestId else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+                }
                 syncEntrance()
                 syncPublicationWatermark()
             }
@@ -1853,26 +2055,48 @@ final class ExhibitionModel: ObservableObject {
             let saved: NativeStudioResponse
             do { saved = try await api.saveExhibition(intent.draft, requestId: intent.requestId, etag: intent.etag) }
             catch let error as AuthoringFailure {
-                if [400, 403, 412, 422].contains(error.status) || error.code == "PUBLISHED_DRAFT_IMMUTABLE", var rejected = state {
+                if (!bounded || (viewportAccessID == access && boundedPolicyGeneration == generation && viewportCredentials?.token == token && self.api === api)),
+                   ([400, 403, 412, 422].contains(error.status) || error.code == "PUBLISHED_DRAFT_IMMUTABLE"), var rejected = state,
+                   rejected.pending?.requestId == intent.requestId {
                     rejected.pending = nil; try await persist(rejected)
-                    if error.code == "PUBLISHED_DRAFT_IMMUTABLE" { immutable = true }
+                    if error.code == "PUBLISHED_DRAFT_IMMUTABLE" { storedImmutable = true }
                 }
                 throw error
             }
             guard var accepted = state, accepted.pending?.requestId == intent.requestId else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+            if bounded {
+                guard viewportAccessID == access, boundedPolicyGeneration == generation, viewportCredentials?.token == token,
+                      self.api === api, let cap = boundedPlacementCapability, let captured = boundedPlacementSession, let live = session,
+                      live.tenantId == captured.tenantId, live.userId == captured.userId, live.role == captured.role,
+                      live.csrfToken == captured.csrfToken, live.expiresAt == captured.expiresAt else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+                let (nextRevision, overflow) = cap.revision.addingReportingOverflow(1)
+                guard !overflow, saved.revision == nextRevision, saved.etag != cap.etag else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+            }
             accepted.draft = saved.draft; accepted.etag = saved.etag; accepted.savedEditVersion = saved.draft.document["editVersion"].integer; accepted.pending = nil
             try await persist(accepted); comparison = nil; syncFields()
+            if bounded {
+                boundedPlacementCapability = nil; boundedPlacementPolicy = nil; boundedPlacementBaseline = nil
+                boundedPlacementSession = nil; boundedPlacementEpoch = nil; boundedPolicyPending = true; storedImmutable = true
+            }
             notice = "전시를 저장했습니다. 작품과 권리를 다시 확인한 뒤 미리보기와 내보내기로 진행하세요."
-            try await list()
+            if bounded {
+                await prepareOrdinaryBoundedPlacement()
+                do { try await list() } catch {
+                    if boundedPolicyPending { catalogStatus = "전시 목록을 새로 확인하지 못했습니다." }
+                    else { notice = "전시는 저장했습니다. 전시 목록을 새로 확인하지 못했습니다." }
+                }
+            } else { try await list() }
         }
     }
     func copyForEditing() async {
+        guard !ordinaryBoundedRuntime, !boundedReadOnly, !boundedPolicyPending, !viewportController.boundedReadOnly,
+              !selectedBoundedPolicy || state?.etag == nil || viewportController.acknowledges(draft: draft, tenantId: state?.tenantId, principalId: state?.principalId) else { return }
         await work {
             guard !pending, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             var current = try appliedFields(allowPosition: true)
             if !placementId.isEmpty, current.placements.contains(where: { $0["id"].string == placementId }) { try current.movePlacement(placementId, position: [x,y,z]) }
             value.draft = try current.copyForEditing(); value.etag = nil; value.savedEditVersion = nil; value.pending = nil
-            try await persist(value); immutable = false; reusablePublicationId = nil; comparison = nil; syncFields()
+            try await persist(value); storedImmutable = false; reusablePublicationId = nil; comparison = nil; syncFields()
             notice = "편집할 사본을 이 Mac에 보관했습니다. 원래 공개용 저장본은 유지됩니다."
         }
     }
@@ -1912,7 +2136,7 @@ final class ExhibitionModel: ObservableObject {
     }
     func adoptComparison() async {
         await work(allowViewingPlanInput: true, allowViewingPointInput: true) {
-            guard !pending, let saved = comparison, let api, let original = state,
+            guard !ordinaryBoundedRuntime, !pending, let saved = comparison, let api, let original = state,
                   original.draft?.id == saved.draft.id else { throw AuthoringFailure("EXHIBITION_PENDING") }
             let access = viewportAccessID
             let editingAccess = try await publishedEditingAccess(saved.draft.id, api: api)
@@ -1926,7 +2150,7 @@ final class ExhibitionModel: ObservableObject {
             }
             var value = valueBefore
             value.draft = saved.draft; value.etag = saved.etag; value.savedEditVersion = saved.draft.document["editVersion"].integer
-            try await persist(value); immutable = editingAccess.immutable; reusablePublicationId = editingAccess.publicationId; comparison = nil; syncFields()
+            try await persist(value); storedImmutable = editingAccess.immutable; reusablePublicationId = editingAccess.publicationId; comparison = nil; syncFields()
             notice = "확인한 저장본으로 전환했습니다."
         }
     }

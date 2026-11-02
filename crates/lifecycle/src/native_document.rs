@@ -9,6 +9,8 @@ pub struct Pending {
     pub request_id: String,
     pub etag: Option<String>,
     pub draft: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -73,6 +75,8 @@ pub(crate) fn validate(s: &DocumentState) -> Result<()> {
     }
     if let Some(p) = &s.pending
         && (!uuid(&p.request_id)
+            || p.origin.as_deref().is_some_and(|v| v != "bounded-placement-v1" && v != "bounded-import-v1")
+            || (p.origin.is_some() && p.etag.is_none())
             || p.etag != s.etag
             || p.etag.as_ref().is_some_and(|v| !valid_etag(v))
             || draft_id(&p.draft).is_none()
@@ -128,7 +132,7 @@ impl InstallationController {
                 .profile
                 .as_ref()
                 .ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
-            let _lock = profile_lock(profile)?;
+            let _lock = profile_lock(profile)?; self.ensure_active_creation_unlocked(service)?;
             Ok(self.document_unlocked(service)?.1)
         })
     }
@@ -142,7 +146,7 @@ impl InstallationController {
                 .profile
                 .as_ref()
                 .ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
-            let _lock = profile_lock(profile)?;
+            let _lock = profile_lock(profile)?; self.ensure_active_creation_unlocked(service)?;
             let (file, current) = self.document_unlocked(service)?;
             validate(&state)?;
             if state.workspace_id != current.workspace_id
@@ -168,5 +172,42 @@ impl InstallationController {
                 .map_err(|_| err("STATE_UNAVAILABLE"))?;
             Ok(state)
         })
+    }
+}
+
+#[cfg(test)]
+mod pending_origin_tests {
+    use super::*;
+
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct LegacyPending { request_id: String, etag: Option<String>, draft: Value }
+
+    #[test]
+    fn tagged_pending_round_trips_and_unknown_origins_fail_closed() {
+        let workspace = Uuid::new_v4().to_string();
+        let exhibition = Uuid::new_v4().to_string();
+        let draft = serde_json::json!({"kind":"exhibition-draft","schemaVersion":"1.0.0-draft.1",
+            "id":Uuid::new_v4().to_string(),"exhibitionId":exhibition,"editVersion":1,
+            "candidate":{"id":exhibition}});
+        let etag = format!("\"studio-r1-{}\"", "a".repeat(64));
+        let mut state = DocumentState { format: 1, revision: 0, workspace_id: workspace,
+            tenant_id: Uuid::new_v4().to_string(), principal_id: Uuid::new_v4().to_string(),
+            draft: Some(draft.clone()), etag: Some(etag.clone()), saved_edit_version: Some(1),
+            pending: Some(Pending { request_id: Uuid::new_v4().to_string(), etag: Some(etag), draft, origin: None }) };
+        let legacy = serde_json::to_value(&state).unwrap();
+        assert!(legacy["pending"].get("origin").is_none());
+        assert!(serde_json::from_value::<LegacyPending>(legacy["pending"].clone()).is_ok());
+        assert!(validate(&serde_json::from_value(legacy).unwrap()).is_ok());
+        state.pending.as_mut().unwrap().origin = Some("bounded-placement-v1".into());
+        let tagged = serde_json::to_value(&state).unwrap();
+        assert_eq!(tagged["pending"]["origin"], "bounded-placement-v1");
+        assert!(serde_json::from_value::<LegacyPending>(tagged["pending"].clone()).is_err());
+        assert!(validate(&serde_json::from_value(tagged).unwrap()).is_ok());
+        state.pending.as_mut().unwrap().origin = Some("bounded-import-v1".into());
+        assert!(validate(&state).is_ok());
+        state.pending.as_mut().unwrap().origin = Some("other".into());
+        assert!(validate(&state).is_err());
     }
 }

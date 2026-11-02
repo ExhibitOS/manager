@@ -187,7 +187,7 @@ pub(crate) fn valid(registry: &Registry) -> Result<()> {
     for e in &registry.installations {
         if !uuid(&e.id)
             || !ids.insert(&e.id)
-            || !["default", "recovery"].contains(&e.kind.as_str())
+            || !["default", "recovery", "oex-import"].contains(&e.kind.as_str())
             || e.created_at > 8_640_000_000_000_000
         {
             return Err(err("INSTALLATION_SELECTION_INVALID"));
@@ -392,6 +392,7 @@ impl InstallationController {
     /// Pins the profile operation lock across admission and mutation. A precheck alone is not atomic.
     pub fn with_current_mutation<T>(&self,token:&str,task:impl FnOnce(&LifecycleService)->Result<T>)->Result<T>{self.with_current(token,|service|{
         let _profile=if let Some(profile)=&self.profile{if profile.root!=service.root{Some(profile.lock()?)}else{None}}else{None};
+        self.ensure_active_creation_unlocked(service)?;
         #[cfg(not(windows))]
         {if let Some(profile)=&self.profile{profile.ensure_external_archive_reconciled()?;}service.ensure_external_archive_reconciled()?;}
         task(service)
@@ -665,6 +666,27 @@ impl InstallationController {
         Ok((profile.root.clone(), receipt))
     }
     /// The read guard spans the entire IPC task; selection cannot race any in-flight request.
+    fn ensure_no_oex_creation_pending(&self) -> Result<()> {
+        if let Some(profile)=&self.profile {
+            match fs::symlink_metadata(profile.root.join("native-oex-creation-pending.json")) {
+                Err(e) if e.kind()==std::io::ErrorKind::NotFound => {},
+                Ok(_) => return Err(err("NATIVE_OEX_CREATION_PENDING")),
+                Err(_) => return Err(err("STATE_UNAVAILABLE")),
+            }
+        }
+        Ok(())
+    }
+    /// Caller holds the managed profile operation lock. Recheck the journal
+    /// and persisted active root after lock acquisition, not only at preflight.
+    pub(super) fn ensure_active_creation_unlocked(&self, service:&LifecycleService) -> Result<()> {
+        self.ensure_no_oex_creation_pending()?;
+        if let Some(profile)=&self.profile {
+            let (registry,_)=load(&profile.root)?.ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
+            let active=registry.installations.iter().find(|e|e.id==registry.active_id).ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
+            if root(&profile.root,active)!=service.root {return Err(err("INSTALLATION_SELECTION_CHANGED"));}
+        }
+        Ok(())
+    }
     pub fn with_current<T>(
         &self,
         token: &str,
@@ -681,6 +703,7 @@ impl InstallationController {
                 .unwrap_or("INSTALLATION_ROOT_UNAVAILABLE"))
         })?;
         private_directory(&current.path)?;
+        self.ensure_no_oex_creation_pending()?;
         task(service)
     }
     // Diagnosis must remain available when ordinary startup rejects an incomplete candidate.
@@ -917,7 +940,86 @@ impl InstallationController {
             }
         })
     }
+    /// Create a genuinely new OEX workspace in the existing profile. The
+    /// durable journal makes an interrupted pre-publication root discoverable;
+    /// no existing workspace is adopted and no partial root is deleted.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn create_selected_oex(&self, token: &str, acknowledged: bool,
+        payload: std::sync::Arc<super::native_payload::Payload>, ports: super::native_installation::Ports,
+    ) -> Result<(InstallationContext, super::native_runtime::Session)> {
+        if !acknowledged { return Err(err("INSTALLATION_SELECTION_ACK_REQUIRED")); }
+        if !payload.normal_oex_027_selected_input()? { return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
+        let mut current = self.current.try_write().map_err(|_| err("BUSY"))?;
+        if current.token != token || !uuid(token) { return Err(err("INSTALLATION_SELECTION_CHANGED")); }
+        let profile = self.profile.as_ref().ok_or_else(|| err("INSTALLATION_SELECTION_DISABLED"))?;
+        let _lock = profile_lock(profile)?;
+        let source = current.service.as_ref().ok_or_else(|| err("INSTALLATION_ROOT_UNAVAILABLE"))?;
+        if source.native_prepared()?.as_ref().is_some_and(|p| p.kind == "personal") {
+            let transfer = self.oex_import_unlocked(source)?.1;
+            let doc = self.document_unlocked(source)?.1;
+            let version = doc.draft.as_ref().and_then(|v| v.get("editVersion")).and_then(Value::as_u64);
+            if transfer.intent.is_some() || doc.pending.is_some() || (doc.draft.is_some() && version != doc.saved_edit_version) {
+                return Err(err("NATIVE_OEX_IMPORT_PENDING"));
+            }
+        }
+        let (mut registry, previous) = load(&profile.root)?.ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
+        if registry.active_id != current.entry.id || registry.installations.len() >= 128 { return Err(err("INSTALLATION_SELECTION_CHANGED")); }
+        let journal = "native-oex-creation-pending.json";
+        self.ensure_no_oex_creation_pending()?;
+        let entry = Entry { id: Uuid::new_v4().to_string(), kind: "oex-import".into(), created_at: now() };
+        let intent = serde_json::json!({"format":1,"id":entry.id,"previousActiveId":current.entry.id,
+            "previousRegistrySHA256":digest(&previous),"payloadManifestSHA256":payload.context().manifest_sha256});
+        write_private_new(&profile.root, journal, &serde_json::to_vec(&intent).map_err(|_| err("STATE_INVALID"))?, 4096)?;
+        File::open(&profile.root).and_then(|f| f.sync_all()).map_err(|_| err("NATIVE_OEX_CREATION_PENDING"))?;
+        let parent=profile.root.join("installations");
+        match fs::symlink_metadata(&parent) {
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound => new_directory(&parent)?,
+            Ok(_) => private_directory(&parent)?, Err(_) => return Err(err("STATE_UNAVAILABLE")),
+        }
+        File::open(&profile.root).and_then(|f| f.sync_all()).map_err(|_| err("NATIVE_OEX_CREATION_PENDING"))?;
+        let path=root(&profile.root,&entry);new_directory(&path)?;
+        File::open(&parent).and_then(|f| f.sync_all()).map_err(|_| err("NATIVE_OEX_CREATION_PENDING"))?;
+        let root_pin=crate::maintenance_source::DirectoryPin::open(&path)?;
+        let service=LifecycleService::bound_existing(path.clone())?;let guard=service.lock()?;
+        let session=super::native_runtime::Session::prepare_selected_empty(NewSelectedRoot {service,guard,root_pin},payload,ports)?;
+        // First register the prepared root while preserving the old active ID.
+        registry.installations.push(entry.clone());save(&profile.root,&registry,Some(&previous))?;
+        let (first, registered)=load(&profile.root)?.ok_or_else(|| err("NATIVE_OEX_CREATION_PENDING"))?;
+        if serde_json::to_vec(&first).map_err(|_| err("STATE_INVALID"))? != serde_json::to_vec(&registry).map_err(|_| err("STATE_INVALID"))? {
+            return Err(err("NATIVE_OEX_CREATION_PENDING"));
+        }
+        registry.active_id=entry.id.clone();save(&profile.root,&registry,Some(&registered))?;
+        let (readback,_) = load(&profile.root)?.ok_or_else(|| err("NATIVE_OEX_CREATION_PENDING"))?;
+        if serde_json::to_vec(&readback).map_err(|_| err("STATE_INVALID"))? != serde_json::to_vec(&registry).map_err(|_| err("STATE_INVALID"))? {
+            return Err(err("NATIVE_OEX_CREATION_PENDING"));
+        }
+        let next=selected(&profile.root,entry.clone());
+        if next.service.is_none() { return Err(err("NATIVE_OEX_CREATION_PENDING")); }
+        *current=next;
+        // The pending record remains until Host has retained the Session.
+        Ok((self.context_for(&current,Some(&readback)),session))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn finish_selected_oex_creation(&self, token:&str) -> Result<()> {
+        let current=self.current.try_read().map_err(|_| err("BUSY"))?;
+        if current.token!=token || current.entry.kind!="oex-import" {return Err(err("INSTALLATION_SELECTION_CHANGED"));}
+        let profile=self.profile.as_ref().ok_or_else(||err("INSTALLATION_SELECTION_DISABLED"))?;
+        let _lock=profile_lock(profile)?;
+        let journal="native-oex-creation-pending.json";
+        let raw=installation_backup::source_bytes(&profile.root,journal,4096,true)?;
+        let intent:Value=serde_json::from_slice(&raw).map_err(|_|err("NATIVE_OEX_CREATION_PENDING"))?;
+        if intent.get("id").and_then(Value::as_str)!=Some(current.entry.id.as_str()) {return Err(err("NATIVE_OEX_CREATION_PENDING"));}
+        let completed=format!("native-oex-creation-{}.json",current.entry.id);
+        fs::hard_link(profile.root.join(journal),profile.root.join(completed)).map_err(|_|err("NATIVE_OEX_CREATION_PENDING"))?;
+        File::open(&profile.root).and_then(|f|f.sync_all()).map_err(|_|err("NATIVE_OEX_CREATION_PENDING"))?;
+        fs::remove_file(profile.root.join(journal)).map_err(|_|err("NATIVE_OEX_CREATION_PENDING"))?;
+        File::open(&profile.root).and_then(|f|f.sync_all()).map_err(|_|err("NATIVE_OEX_CREATION_PENDING"))?;
+        Ok(())
+    }
+
     pub fn create(&self, token: &str, acknowledged: bool) -> Result<InstallationContext> {
+        self.ensure_no_oex_creation_pending()?;
         let mut current = self.current.try_write().map_err(|_| err("BUSY"))?;
         if current.token != token || !uuid(token) {
             return Err(err("INSTALLATION_SELECTION_CHANGED"));
@@ -930,6 +1032,7 @@ impl InstallationController {
             .as_ref()
             .ok_or_else(|| err("INSTALLATION_SELECTION_DISABLED"))?;
         let _lock = profile_lock(profile)?;
+        self.ensure_no_oex_creation_pending()?;
         let (mut registry, previous) =
             load(&profile.root)?.ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
         if registry.installations.len() >= 128 {
@@ -966,6 +1069,7 @@ impl InstallationController {
         target: &str,
         acknowledged: bool,
     ) -> Result<InstallationContext> {
+        self.ensure_no_oex_creation_pending()?;
         let mut current = self.current.try_write().map_err(|_| err("BUSY"))?;
         if current.token != token || !uuid(token) {
             return Err(err("INSTALLATION_SELECTION_CHANGED"));
@@ -981,6 +1085,7 @@ impl InstallationController {
             .as_ref()
             .ok_or_else(|| err("INSTALLATION_SELECTION_DISABLED"))?;
         let _lock = profile_lock(profile)?;
+        self.ensure_no_oex_creation_pending()?;
         let (mut registry, previous) =
             load(&profile.root)?.ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
         let entry = registry
@@ -1525,6 +1630,26 @@ mod tests {
         assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
         assert_ne!(new.active_id, first.active_id);
     }
+    #[test]
+    fn oex_creation_journal_blocks_selection_mutation_and_preserves_record() {
+        let (profile, controller)=fixture();let context=controller.context().unwrap();
+        let bytes=br#"{"format":1,"id":"synthetic-pending"}"#;
+        write_private_new(&profile,"native-oex-creation-pending.json",bytes,4096).unwrap();
+        assert_eq!(controller.create(&context.selection_token,true).err().unwrap().code,"NATIVE_OEX_CREATION_PENDING");
+        assert_eq!(controller.select(&context.selection_token,&context.active_id,true).err().unwrap().code,"NATIVE_OEX_CREATION_PENDING");
+        assert_eq!(controller.with_current(&context.selection_token, |_| Ok(())).err().unwrap().code,"NATIVE_OEX_CREATION_PENDING");
+        assert_eq!(fs::read(profile.join("native-oex-creation-pending.json")).unwrap(),bytes);
+        assert_eq!(controller.context().unwrap().active_id,context.active_id);
+    }
+
+    #[test]
+    fn oex_import_kind_is_distinct_from_restore_workspace() {
+        let default=Entry{id:Uuid::new_v4().to_string(),kind:"default".into(),created_at:now()};
+        let imported=Entry{id:Uuid::new_v4().to_string(),kind:"oex-import".into(),created_at:now()};
+        let registry=Registry{format:1,active_id:imported.id.clone(),installations:vec![default,imported.clone()]};
+        assert!(valid(&registry).is_ok());assert_eq!(root(Path::new("/tmp/profile"),&imported),Path::new("/tmp/profile/installations").join(&imported.id));
+    }
+
     #[test]
     fn missing_selected_directory_can_create_new_recovery_without_recreating_original() {
         let (profile, controller) = fixture();

@@ -13,6 +13,8 @@ use super::*;
 pub enum Input {
     CreateKey { path: PathBuf },
     CreateRecovery { acknowledged: bool },
+    CreateOexWorkspace { acknowledged: bool },
+    CheckOexWorkspace,
     Select { id: String, acknowledged: bool },
     StageRestore { source: PathBuf, key_file: PathBuf },
     ActivateRestore { id: String },

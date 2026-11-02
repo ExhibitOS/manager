@@ -43,7 +43,7 @@ struct NativeMaintenanceView: View {
                     Picker("보관한 작업 공간", selection: $targetID) {
                         Text("작업 공간 선택").tag("")
                         ForEach(context.installations) { installation in
-                            Text("\(installation.kind == "recovery" ? "복구 작업 공간" : "원래 작업 공간") · \(installation.id.prefix(8))").tag(installation.id)
+                            Text("\(installation.kind == "recovery" ? "복구 작업 공간" : installation.kind == "oex-import" ? "가져온 작업 공간" : "원래 작업 공간") · \(installation.id.prefix(8))").tag(installation.id)
                                 .disabled(!installation.available)
                         }
                     }

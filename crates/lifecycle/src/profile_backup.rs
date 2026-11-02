@@ -501,7 +501,15 @@ fn validate(s: &Snapshot) -> Result<Registry> {
     }
     Ok(r)
 }
+fn refuse_pending_oex_creation(profile: &Path) -> Result<()> {
+    match fs::symlink_metadata(profile.join("native-oex-creation-pending.json")) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err(err("NATIVE_OEX_CREATION_PENDING")),
+        Err(_) => Err(err("STATE_UNAVAILABLE")),
+    }
+}
 fn capture(profile: &Path) -> Result<Snapshot> {
+    refuse_pending_oex_creation(profile)?;
     let bytes = source_bytes(profile, "installation-selection.json", 64 * 1024, true)?;
     let r = registry(&bytes)?;
     let mut history = BTreeMap::new();
@@ -845,6 +853,7 @@ pub fn restore(profile: &Path, key: &Path, archive: &Path, ack: bool) -> Result<
     validate(&s)?;
     let _session = session_lock(profile, true)?;
     let _profile = lock_file(profile, "operation.lock", true)?;
+    refuse_pending_oex_creation(profile)?;
     let _roots = root_locks(profile, &s.spaces)?;
     let current = current_registry(profile)?;
     // Preserve the old pointer and lock current-only roots on an older-point restore.
@@ -1080,6 +1089,18 @@ mod tests {
             "PROFILE_PATH_INVALID"
         );
         fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    #[test]
+    fn restore_refuses_pending_oex_creation_without_changing_registry_or_journal() {
+        let (p, k, a) = fixture();
+        backup(&p, &k, &a, true).unwrap();
+        let before = fs::read(p.join("installation-selection.json")).unwrap();
+        let journal = p.join("native-oex-creation-pending.json");
+        write_new(&journal, b"preserved interrupted creation").unwrap();
+        assert_eq!(restore(&p, &k, &a, true).unwrap_err().code, "NATIVE_OEX_CREATION_PENDING");
+        assert_eq!(fs::read(p.join("installation-selection.json")).unwrap(), before);
+        assert_eq!(fs::read(journal).unwrap(), b"preserved interrupted creation");
+        assert!(!fs::read_dir(&p).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with("profile-restore-")));
     }
     #[test]
     fn opt_in_stream_profile_restores_same_registry_and_rejects_truncated_prefix() {

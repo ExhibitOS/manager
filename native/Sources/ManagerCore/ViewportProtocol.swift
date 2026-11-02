@@ -44,10 +44,31 @@ public enum NativeGeometryAction: Sendable {
 public enum ViewportPresentation: String, Codable, Hashable, Sendable {
     case threeD = "3d", plan = "plan"
 }
+/// Restrictive UI policy; this never grants permission to save or access data.
+public enum NativeViewportAccess {
+    /// A verified bounded policy may prepare an editable frame, but this is
+    /// not permission to accept gestures or save before the matching ACK.
+    public static func frameMayBeEditable(immutable: Bool, boundedAdmission: Bool) -> Bool {
+        !immutable || boundedAdmission
+    }
+    public static func boundedInteractionBlocked(boundedAdmission: Bool, acknowledged: Bool) -> Bool {
+        boundedAdmission && !acknowledged
+    }
+    public static func locked(selected: Bool, saved: Bool, storedLocked: Bool, frameReadOnly: Bool, exactOrdinaryFrame: Bool) -> Bool {
+        storedLocked || frameReadOnly || (selected && saved && !exactOrdinaryFrame)
+    }
+    public static func blocksPendingReplay(selected: Bool, pending: Bool, origin: String? = nil) -> Bool {
+        pending && (selected || origin != nil)
+    }
+}
 public struct ViewportAcceptance: Decodable, Sendable {
     public let accepted: Bool
     public let presentations: [ViewportPresentation]?
     public let capabilities: [String]?
+    /// Per-frame restriction reported by an authenticated native viewport.
+    /// Absence is unknown, not evidence that a bounded frame is editable.
+    public let boundedReadOnly: Bool?
+    public let editingCapability: NativeBoundedEditCapability?
     public var supportsArtworkThumbnail: Bool { accepted && capabilities?.contains("artwork-thumbnail-v1") == true }
     public var supportsFindSelection: Bool { accepted && capabilities?.contains("find-selection-v1") == true }
     public var supportsArtworkPlacement: Bool { accepted && capabilities?.contains("place-artwork-v1") == true }
@@ -141,8 +162,11 @@ public struct ViewportFrame: Encodable, Sendable {
     public let transparent: Bool
     public let disabled: Bool
     public let presentation: ViewportPresentation
-    public init(epoch: String, sequence: Int, tenantId: String, principalId: String, draft: NativeExhibitionDraft, selection: ViewportSelection?, mode: String, view: String, disabled: Bool, cameraSequence: Int = 0, transparent: Bool = true, presentation: ViewportPresentation = .threeD) {
+    public let workspaceId: String?
+    public let baseETag: String?
+    public init(epoch: String, sequence: Int, tenantId: String, principalId: String, draft: NativeExhibitionDraft, selection: ViewportSelection?, mode: String, view: String, disabled: Bool, cameraSequence: Int = 0, transparent: Bool = true, presentation: ViewportPresentation = .threeD, workspaceId: String? = nil, baseETag: String? = nil) {
         self.epoch = epoch; self.sequence = sequence; self.tenantId = tenantId; self.principalId = principalId; self.draft = draft; self.selection = selection; self.mode = mode; self.view = view; self.disabled = disabled; self.cameraSequence = cameraSequence; self.transparent = transparent; self.presentation = presentation
+        self.workspaceId = workspaceId; self.baseETag = baseETag
     }
     /// Used only with the controller's actually acknowledged frame. An old
     /// epoch or a preview-only draft cannot acknowledge host restoration.
@@ -150,16 +174,96 @@ public struct ViewportFrame: Encodable, Sendable {
         epoch != previousEpoch && epoch == ownerEpoch && UUID(uuidString: epoch) != nil && sequence > 0 && sequence == acceptedSequence
         && self.tenantId == tenantId && self.principalId == principalId && draft == expectedDraft
     }
-    private enum CodingKeys: String, CodingKey { case version, epoch, sequence, tenantId, principalId, draft, selection, mode, view, disabled, cameraSequence, transparent, presentation }
+    private enum CodingKeys: String, CodingKey { case version, epoch, sequence, tenantId, principalId, draft, selection, mode, view, disabled, cameraSequence, transparent, presentation, workspaceId, baseETag }
     public func encode(to encoder: Encoder) throws {
+        guard (workspaceId == nil) == (baseETag == nil),
+              workspaceId == nil || (UUID(uuidString: workspaceId!) != nil && !baseETag!.isEmpty) else {
+            throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "Bounded edit scope must contain both workspace and saved ETag"))
+        }
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(version, forKey: .version); try c.encode(epoch, forKey: .epoch); try c.encode(sequence, forKey: .sequence); try c.encode(tenantId, forKey: .tenantId); try c.encode(principalId, forKey: .principalId); try c.encode(draft, forKey: .draft)
         if let selection { try c.encode(selection, forKey: .selection) } else { try c.encodeNil(forKey: .selection) }
         if presentation == .plan { try c.encode(presentation, forKey: .presentation) }
+        if let workspaceId, let baseETag { try c.encode(workspaceId, forKey: .workspaceId); try c.encode(baseETag, forKey: .baseETag) }
         try c.encode(mode, forKey: .mode); try c.encode(view, forKey: .view); try c.encode(disabled, forKey: .disabled); try c.encode(cameraSequence, forKey: .cameraSequence); try c.encode(transparent, forKey: .transparent)
     }
 }
+
+extension NativeBoundedEditAdmission {
+    /// Call only with the exact frame captured by this particular awaited
+    /// WebKit invocation, after rechecking its owner, generation and session.
+    /// The capability remains a UI hint, not save authority.
+    public static func acknowledges(_ response: ViewportAcceptance, frame: ViewportFrame,
+                                    expected: NativeBoundedEditCapability, policy: NativeViewportPolicy,
+                                    ownerEpoch: String?,
+                                    currentSequence: Int, document: NativeDocumentState,
+                                    importState: NativeOEXImportState, session: AuthoringSession,
+                                    capturedSession: AuthoringSession, firstAdmission: Bool,
+                                    selectedImport: Bool) -> Bool {
+        guard response.accepted, response.boundedReadOnly == false,
+              !selectedImport, policy.boundedProfile == true, policy.boundedEditRequired == true,
+              policy.boundedReadOnly == false, policy.editingCapability == expected,
+              policy.revision == expected.revision, policy.etag == expected.etag,
+              policy.exhibitionId.lowercased() == expected.exhibitionId.lowercased(),
+              response.editingCapability == expected, let workspace = frame.workspaceId,
+              let etag = frame.baseETag, ownerEpoch == frame.epoch,
+              UUID(uuidString: frame.epoch) != nil, frame.sequence > 0, frame.sequence == currentSequence,
+              !firstAdmission || !document.dirty,
+              document.pending == nil, document.draft == frame.draft, document.etag == etag,
+              document.workspaceId == workspace, document.tenantId.lowercased() == session.tenantId.lowercased(),
+              document.principalId.lowercased() == session.userId.lowercased(),
+              frame.tenantId.lowercased() == document.tenantId.lowercased(),
+              frame.principalId.lowercased() == document.principalId.lowercased(),
+              session.tenantId == capturedSession.tenantId, session.userId == capturedSession.userId,
+              session.role == capturedSession.role, session.csrfToken == capturedSession.csrfToken,
+              session.expiresAt == capturedSession.expiresAt,
+              importState.workspaceId == document.workspaceId, importState.tenantId == document.tenantId,
+              importState.principalId == document.principalId, importState.intent == nil,
+              importState.jobId == nil, importState.fileName == nil else { return false }
+        return expected.matches(workspaceId: workspace, tenantId: frame.tenantId, principalId: frame.principalId,
+                                exhibitionId: frame.draft.id, revision: expected.revision, etag: etag)
+    }
+}
 extension NativeExhibitionDraft {
+    /// The first bounded-edit slice admits only the transform of one existing
+    /// selected placement. It does not grant the other geometry operations.
+    public mutating func acceptBoundedPlacement(_ candidate: DocumentValue, selection: ViewportSelection,
+                                                savedBaseline: NativeExhibitionDraft) throws {
+        // Each intermediate edit must remain within the same one-placement
+        // difference from the saved revision, not merely the preceding frame.
+        guard savedBaseline.id == id else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
+        if candidate != savedBaseline.candidate {
+            var checked = savedBaseline
+            try checked.acceptSingleBoundedPlacement(candidate, selection: selection)
+        }
+        try acceptSingleBoundedPlacement(candidate, selection: selection)
+    }
+    private mutating func acceptSingleBoundedPlacement(_ candidate: DocumentValue, selection: ViewportSelection) throws {
+        guard selection.kind == "placement", selection.belongs(to: self),
+              case .object(var before) = self.candidate, case .object(var after) = candidate,
+              var oldRows = before.removeValue(forKey: "placements")?.items,
+              let newRows = after.removeValue(forKey: "placements")?.items,
+              before == after, oldRows.count == newRows.count else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
+        let matching = oldRows.indices.filter { oldRows[$0]["id"].string?.lowercased() == selection.id.lowercased() }
+        guard matching.count == 1, let index = matching.first,
+              case .object(var oldPlacement) = oldRows[index], case .object(var newPlacement) = newRows[index],
+              let oldTransform = oldPlacement.removeValue(forKey: "transform"),
+              let transform = newPlacement.removeValue(forKey: "transform"), oldPlacement == newPlacement,
+              oldTransform != transform, case .object(let fields) = transform,
+              Set(fields.keys) == Set(["position", "rotation", "scale"]),
+              let position = transform["position"].items, position.count == 3,
+              position.allSatisfy({ $0.double.map { $0.isFinite } == true }),
+              let rotation = transform["rotation"].items, rotation.count == 4,
+              rotation.allSatisfy({ $0.double.map { $0.isFinite } == true }),
+              let scale = transform["scale"].items, scale.count == 3,
+              scale.allSatisfy({ $0.double.map { $0.isFinite } == true }) else {
+            throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED")
+        }
+        oldRows[index] = newRows[index]
+        guard oldRows == newRows else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
+        try acceptGeometry(candidate)
+    }
+
     /// The viewport may propose geometry only. Native identity, approved asset
     /// inventory/rights, metadata, scripts, extensions and accessibility survive.
     /// Platform's shared full validator runs before a proposal; save revalidates.
