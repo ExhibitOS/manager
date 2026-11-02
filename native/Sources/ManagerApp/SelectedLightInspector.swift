@@ -48,11 +48,21 @@ struct SelectedLightInspector: View {
     let mode: Mode
     @State private var positionDetails = false
     @State private var colorDetails = false
+    @State private var aimDetails = false
     private var editable: Bool {
         ready && controller.connected && controller.lightInspectorSupported && !model.busy && !model.pending && !model.immutable && !model.placingArtwork && !model.formDirty && !model.positionDirty && !model.architectureGeometryDirty && !model.surfaceMaterialDirty && !model.benchDirty && !model.plaqueDirty && !model.furnishingDirty && !model.spaceLightingDirty && !model.architectureApplying
     }
     private var selected: DocumentValue? {
         model.draft?.candidate["lights"].items?.first { $0["id"].string == model.selectedLightId }
+    }
+    private struct AimTarget: Identifiable { let id: String, title: String }
+    private var aimTargets: [AimTarget] {
+        guard let draft = model.draft, let selected else { return [] }
+        return draft.placements.filter { $0["roomId"] == selected["roomId"] }.compactMap { placement in
+            guard let id = placement["id"].string else { return nil }
+            let title = draft.artworks.first { $0["revisionId"] == placement["artworkRevisionId"] }?["metadata"]["title"].string ?? "작품"
+            return AimTarget(id: id, title: title)
+        }
     }
     private func field(_ key: WritableKeyPath<LightFormBuffer, String>) -> Binding<String> {
         Binding(get: { model.light?[keyPath: key] ?? "" }, set: { value in
@@ -145,6 +155,38 @@ struct SelectedLightInspector: View {
                                 TextField("광원 세로 · m", text: field(\.height))
                             }
                             DisclosureGroup("위치를 숫자로 다듬기", isExpanded: $positionDetails) { positionFields.padding(.top, 6) }
+                            if fields.fixtureEditable {
+                                DisclosureGroup("비출 대상과 빛 범위", isExpanded: $aimDetails) {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Picker("비출 방향", selection: field(\.aimMode)) {
+                                            Text("기존 조준 유지").tag("preserve")
+                                            Text("조명 회전 방향").tag("rotation")
+                                            Text("공간의 지점").tag("point").disabled(fields.type == .point)
+                                            Text("작품 중심").tag("placement-center").disabled(fields.type == .point)
+                                        }
+                                        if fields.aimMode == "point" {
+                                            Text("조명이 속한 공간 기준 · 미터").font(.caption).foregroundStyle(.secondary)
+                                            TextField("비출 지점 X · m", text: field(\.aimX))
+                                            TextField("비출 지점 Y · m", text: field(\.aimY))
+                                            TextField("비출 지점 Z · m", text: field(\.aimZ))
+                                        }
+                                        if fields.aimMode == "placement-center" {
+                                            Picker("비출 작품 배치", selection: field(\.targetPlacementId)) {
+                                                Text("같은 공간의 작품을 선택하세요").tag("")
+                                                ForEach(aimTargets) { target in Text(target.title).tag(target.id) }
+                                            }
+                                        }
+                                        if fields.type == .point || fields.type == .spot || !fields.range.isEmpty {
+                                            TextField("빛의 최대 거리 · 0.1–50 m", text: field(\.range))
+                                            Text("비우면 기존 렌더러의 기본 거리를 사용합니다.").font(.caption).foregroundStyle(.secondary)
+                                        }
+                                        if fields.type == .spot || !fields.penumbra.isEmpty {
+                                            TextField("빔 가장자리 부드러움 · 0–1", text: field(\.penumbra))
+                                            Text("그림자의 부드러움과는 다른 설정입니다. 비우면 기본값을 사용합니다.").font(.caption).foregroundStyle(.secondary)
+                                        }
+                                    }.padding(.top, 6)
+                                }.disabled(!controller.lightFixtureSupported)
+                            }
                             DisclosureGroup("색상 수치", isExpanded: $colorDetails) { colorFields.padding(.top, 6).disabled(fields.colorMode == .temperature) }
                         }.textFieldStyle(.roundedBorder).disabled(!editable)
                         if mode == .expert { LabeledContent("저장 단위", value: fields.type.unit) }

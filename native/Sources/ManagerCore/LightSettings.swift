@@ -10,6 +10,18 @@ public enum NativeLightType: String, CaseIterable, Sendable {
     }
 }
 
+/// Explicit edits to existing light-fixture-aim-v1 fields. Nil on the command
+/// preserves the exact original metadata; nil range/edge here explicitly clears it.
+public struct LightDetailEdits: Equatable, Sendable {
+    public enum Aim: Equatable, Sendable { case preserve, rotation, point([Double]), placementCenter(String) }
+    public let aim: Aim
+    public let range: Double?
+    public let penumbra: Double?
+    public init(aim: Aim, range: Double?, penumbra: Double?) {
+        self.aim = aim; self.range = range; self.penumbra = penumbra
+    }
+}
+
 /// One native-list selection, separate from the strict v1 viewport selection.
 /// This adapter does not grant transport authority or widen geometry actions.
 public struct LightCommand: Equatable, Sendable {
@@ -22,15 +34,17 @@ public struct LightCommand: Equatable, Sendable {
     public let areaSize: [Double]?
     public let fixture: NativeLightFixture? // nil keeps the existing fixture; explicit color intent may still use details.
     public let colorIntent: LightColorIntent
-    public var usesLightDetails: Bool { fixture != nil || colorIntent != .preserve }
+    public let details: LightDetailEdits?
+    public var usesLightDetails: Bool { fixture != nil || colorIntent != .preserve || details != nil }
 
     public init(lightId: String, type: NativeLightType, color: [Double], intensity: Double,
                 position: [Double], beamAngle: Double? = nil, areaSize: [Double]? = nil, fixture: NativeLightFixture? = nil,
-                colorIntent: LightColorIntent = .preserve) {
+                colorIntent: LightColorIntent = .preserve, details: LightDetailEdits? = nil) {
         self.lightId = lightId; self.type = type; self.color = color; self.intensity = intensity
         self.position = position; self.beamAngle = beamAngle; self.areaSize = areaSize
         self.fixture = fixture
         self.colorIntent = colorIntent
+        self.details = details
     }
     fileprivate static func invalid() -> AuthoringFailure { AuthoringFailure("LIGHT_FIELDS_INVALID") }
     fileprivate static func row(in draft: NativeExhibitionDraft, id: String, selectedLightId: String?) throws -> (Int, DocumentValue) {
@@ -68,6 +82,26 @@ public struct LightCommand: Equatable, Sendable {
         }
 
         var row = original
+        if let details {
+            if let range = details.range { guard (type == .point || type == .spot), range.isFinite, (0.1...50).contains(range) else { throw Self.invalid() } }
+            if let edge = details.penumbra { guard type == .spot, edge.isFinite, (0...1).contains(edge) else { throw Self.invalid() } }
+            switch details.aim {
+            case .preserve: break
+            case .rotation:
+                if case .object(var fields) = row { fields.removeValue(forKey: "targetPlacementId"); row = .object(fields) }
+            case .point(let point):
+                guard type != .point, point.count == 3, point.allSatisfy(\.isFinite),
+                      let room = draft.rooms.first(where: { $0["id"] == row["roomId"] }),
+                      let w = room["dimensions"]["width"].double, let h = room["dimensions"]["height"].double,
+                      let d = room["dimensions"]["depth"].double,
+                      abs(point[0]) <= w / 2, (0...h).contains(point[1]), abs(point[2]) <= d / 2 else { throw Self.invalid() }
+                if case .object(var fields) = row { fields.removeValue(forKey: "targetPlacementId"); row = .object(fields) }
+            case .placementCenter(let id):
+                guard type != .point, UUID(uuidString: id) != nil,
+                      draft.placements.contains(where: { $0["id"].string == id && $0["roomId"] == row["roomId"] }) else { throw Self.invalid() }
+                row["targetPlacementId"] = .string(id)
+            }
+        }
         func set(_ key: String, _ value: DocumentValue) { if row[key] != value { row[key] = value } }
         set("type", .string(type.rawValue)); set("unit", .string(type.unit))
         set("color", .vector(color)); set("intensity", .number(intensity))
@@ -125,6 +159,16 @@ public struct LightCommand: Equatable, Sendable {
             _ = try LightColorIntent.linearRGB(kelvin: kelvin)
             fields["temperatureKelvin"] = .number(kelvin)
         }
+        if let details {
+            switch details.aim {
+            case .preserve: break
+            case .rotation: fields["aim"] = .object(["kind": .string("rotation")])
+            case .point(let point): fields["aim"] = .object(["kind": .string("point"), "position": .vector(point)])
+            case .placementCenter: fields["aim"] = .object(["kind": .string("placement-center")])
+            }
+            if let range = details.range { fields["range"] = .number(range) } else { fields.removeValue(forKey: "range") }
+            if let edge = details.penumbra { fields["penumbra"] = .number(edge) } else { fields.removeValue(forKey: "penumbra") }
+        }
         return .object(fields)
     }
     /// Correspondence only, after the shared validator. Reject every unrelated
@@ -149,13 +193,18 @@ public struct LightFormBuffer: Equatable, Sendable {
     public var width: String, height: String
     public var fixture: NativeLightFixture
     public let fixtureEditable: Bool
+    public var aimMode: String, aimX: String, aimY: String, aimZ: String, targetPlacementId: String
+    public var range: String, penumbra: String
+    private let originalAdvancedFields: [String]
+    private var advancedFields: [String] { [aimMode, aimX, aimY, aimZ, targetPlacementId, range, penumbra] }
+    public var advancedDetailsChanged: Bool { advancedFields != originalAdvancedFields }
     private let originalFixture: NativeLightFixture
     public var fixtureChanged: Bool { fixture != originalFixture }
     public var colorDetailsChanged: Bool {
         colorMode == .direct ? originalTemperature != nil
             : Double(kelvin.trimmingCharacters(in: .whitespacesAndNewlines)) != originalTemperature
     }
-    public var detailsChanged: Bool { fixtureChanged || colorDetailsChanged }
+    public var detailsChanged: Bool { fixtureChanged || colorDetailsChanged || advancedDetailsChanged }
     private let originalBeamRadians: Double?
     private let originalBeamDegrees: String
 
@@ -190,6 +239,15 @@ public struct LightFormBuffer: Equatable, Sendable {
         kelvin = originalTemperature.map { String($0) } ?? "4500.0"
         originalFixture = settings?["fixture"].string.flatMap(NativeLightFixture.init(rawValue:)) ?? .none
         fixture = originalFixture; fixtureEditable = settings != nil
+        aimMode = settings?["aim"]["kind"].string ?? "preserve"
+        let aimPosition = settings?["aim"]["position"].items ?? []
+        aimX = aimPosition.count == 3 ? try text(aimPosition[0]) : "0"
+        aimY = aimPosition.count == 3 ? try text(aimPosition[1]) : "0"
+        aimZ = aimPosition.count == 3 ? try text(aimPosition[2]) : "0"
+        targetPlacementId = row["targetPlacementId"].string ?? ""
+        range = settings?["range"].double.map { String($0) } ?? ""
+        penumbra = settings?["penumbra"].double.map { String($0) } ?? ""
+        originalAdvancedFields = [aimMode, aimX, aimY, aimZ, targetPlacementId, range, penumbra]
         // Refuse unsupported existing data without normalizing or writing it.
         _ = try command().proposedCandidate(in: draft, selectedLightId: selectedLightId)
     }
@@ -233,6 +291,21 @@ public struct LightFormBuffer: Equatable, Sendable {
             guard let n = Double(value.trimmingCharacters(in: .whitespacesAndNewlines)), n.isFinite else { throw LightCommand.invalid() }; return n
         }
         let resolved = try colorValue()
+        let edits: LightDetailEdits?
+        if advancedDetailsChanged {
+            guard fixtureEditable else { throw LightCommand.invalid() }
+            let aim: LightDetailEdits.Aim
+            switch aimMode {
+            case "preserve": aim = .preserve
+            case "rotation": aim = .rotation
+            case "point": aim = .point(try [number(aimX), number(aimY), number(aimZ)])
+            case "placement-center": aim = .placementCenter(targetPlacementId)
+            default: throw LightCommand.invalid()
+            }
+            edits = LightDetailEdits(aim: aim,
+                range: range.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : try number(range),
+                penumbra: penumbra.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : try number(penumbra))
+        } else { edits = nil }
         let beam: Double?
         if type == .spot {
             // Opening and applying unchanged settings must not round-trip a
@@ -242,7 +315,7 @@ public struct LightFormBuffer: Equatable, Sendable {
         return LightCommand(lightId: lightId, type: type, color: resolved.color,
                             intensity: try number(intensity), position: try [number(x), number(y), number(z)],
                             beamAngle: beam, areaSize: type == .area ? try [number(width), number(height)] : nil,
-                            fixture: fixtureEditable && fixture != originalFixture ? fixture : nil, colorIntent: resolved.intent)
+                            fixture: fixtureEditable && fixture != originalFixture ? fixture : nil, colorIntent: resolved.intent, details: edits)
     }
 }
 
