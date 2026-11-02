@@ -34,7 +34,12 @@ public enum ViewportResourcePolicy {
         guard let url = URL(string: origin), let port = url.port, (1024...65535).contains(port), origin == "http://127.0.0.1:\(port)", let tenant = UUID(uuidString: tenantId)?.uuidString.lowercased() else { throw AuthoringFailure("LOCAL_SCOPE_INVALID") }
         let base = "^http://127\\.0\\.0\\.1:\(port)/"
         let artwork = "api/v1/tenants/\(tenant)/cms/artworks/[a-fA-F0-9-]+"
-        let suffixes = ["native-viewport\\.html$", "assets/[A-Za-z0-9_.-]+\\.js$", "assets/[A-Za-z0-9_.-]+\\.css$", "basis/[A-Za-z0-9_.-]+\\.js$", "basis/[A-Za-z0-9_.-]+\\.wasm$", "api/v1/auth/session$", "api/v1/tenants/\(tenant)/studio/artworks/[a-fA-F0-9-]+$", artwork + "$", artwork + "/display$", artwork + "/preview\\?expectedRevision=[0-9]+$"]
+        let hex = "[a-fA-F0-9]"
+        let exhibitionId = [String(repeating: hex, count: 8), String(repeating: hex, count: 4),
+                            "[1-8]" + String(repeating: hex, count: 3), "[89aAbB]" + String(repeating: hex, count: 3),
+                            String(repeating: hex, count: 12)].joined(separator: "-")
+        let viewportCheck = "api/v1/tenants/\(tenant)/studio/exhibitions/\(exhibitionId)/native-viewport-check$"
+        let suffixes = ["native-viewport\\.html$", "assets/[A-Za-z0-9_.-]+\\.js$", "assets/[A-Za-z0-9_.-]+\\.css$", "basis/[A-Za-z0-9_.-]+\\.js$", "basis/[A-Za-z0-9_.-]+\\.wasm$", "api/v1/auth/session$", "api/v1/tenants/\(tenant)/studio/artworks/[a-fA-F0-9-]+$", viewportCheck, artwork + "$", artwork + "/display$", artwork + "/preview\\?expectedRevision=[0-9]+$"]
         var rules: [[String:Any]] = [["trigger":["url-filter":".*"],"action":["type":"block"]]]
         let materialRules = (surfaceMaps + floorMaps).map { base + NSRegularExpression.escapedPattern(for: $0) + "$" }
         for pattern in suffixes.map({ base + $0 }) + materialRules + ["^blob:", "^data:"] {

@@ -105,6 +105,32 @@ final class ViewportResourcePolicyTests: XCTestCase {
             XCTAssertFalse(try allows(origin + denied), denied)
         }
     }
+    func testViewportCheckRouteIsLimitedToOriginTenantAndCanonicalExhibitionID() async throws {
+        let origin = "http://127.0.0.1:13200", tenant = UUID().uuidString.lowercased(), exhibition = UUID().uuidString.lowercased()
+        let encoded = try ViewportResourcePolicy.encodedRules(origin: origin, tenantId: tenant)
+        let store = WKContentRuleListStore.default()!, identifier = "ExhibitOSViewportCheck-" + UUID().uuidString
+        _ = try await store.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: encoded)
+        try await store.removeContentRuleList(forIdentifier: identifier)
+        let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [[String: Any]])
+        let filters = try rules.dropFirst().map { try NSRegularExpression(pattern: XCTUnwrap(($0["trigger"] as? [String: Any])?["url-filter"] as? String)) }
+        func allows(_ url: String) -> Bool { filters.contains { $0.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil } }
+        let path = "/api/v1/tenants/\(tenant)/studio/exhibitions/\(exhibition)/native-viewport-check"
+        XCTAssertTrue(allows(origin + path))
+        XCTAssertTrue(allows(origin + path.replacingOccurrences(of: exhibition, with: exhibition.uppercased())))
+        var badVersion = Array(exhibition); badVersion[14] = "0"
+        var badVariant = Array(exhibition); badVariant[19] = "0"
+        for denied in ["http://127.0.0.1:13201" + path, "https://127.0.0.1:13200" + path,
+                       origin + path.replacingOccurrences(of: tenant, with: UUID().uuidString.lowercased()),
+                       origin + path.replacingOccurrences(of: exhibition, with: "not-a-uuid"),
+                       origin + path.replacingOccurrences(of: exhibition, with: String(badVersion)),
+                       origin + path.replacingOccurrences(of: exhibition, with: String(badVariant)),
+                       origin + path + "?extra=1", origin + path + "/extra",
+                       origin + path.replacingOccurrences(of: "/native-viewport-check", with: "%2Fnative-viewport-check"),
+                       origin + path.replacingOccurrences(of: "native-viewport-check", with: "publish"),
+                       origin + "/api/v1/tenants/\(tenant)/studio/exhibitions/\(exhibition)"] {
+            XCTAssertFalse(allows(denied), denied)
+        }
+    }
     func testJSONWirePreservesIndependentEmptyDocumentCollectionsInActualWebKit() async throws {
         let web = WKWebView(frame: .zero)
         let json = "{\"surfaces\":[],\"openings\":[],\"lights\":[],\"placements\":[]}"
