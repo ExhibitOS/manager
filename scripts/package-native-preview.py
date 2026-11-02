@@ -17,10 +17,16 @@ parser.add_argument('--swift-executable', required=True, type=Path)
 parser.add_argument('--rust-helper', required=True, type=Path)
 parser.add_argument('--validation-profile', required=True, type=Path)
 parser.add_argument('--runtime-payload', type=Path)
+parser.add_argument('--legal-resources', type=Path)
 args = parser.parse_args()
 assert args.app.is_absolute() and not args.app.exists(), 'New absolute app path required'
 assert args.validation_profile.is_absolute() and not args.validation_profile.exists(), 'New isolated profile required'
 assert args.swift_executable.is_file() and args.rust_helper.is_file(), 'Built executables required'
+if args.legal_resources:
+    assert args.legal_resources.is_absolute() and args.legal_resources.is_dir(), 'Absolute legal resources directory required'
+    assert (args.legal_resources / 'index.html').is_file(), 'Legal source and notice index required'
+    assert not args.app.is_relative_to(args.legal_resources), 'App must be outside legal resources'
+    assert not args.legal_resources.is_symlink() and all(not p.is_symlink() and (p.is_file() or p.is_dir()) for p in args.legal_resources.rglob('*')), 'Legal resources must contain regular files and directories'
 contents = args.app / 'Contents'
 (contents / 'MacOS').mkdir(parents=True)
 (contents / 'Helpers').mkdir()
@@ -38,6 +44,8 @@ for name in ['manager.png', 'studio.svg', 'cms.svg', 'THIRD-PARTY-NOTICES.txt',
 # The upstream MDI notice links Apache-2.0; include the existing full project
 # license beside that unmodified attribution, without a new build dependency.
 shutil.copy2(source_root / 'LICENSE', brand / 'Apache-2.0.txt')
+if args.legal_resources:
+    shutil.copytree(args.legal_resources, contents / 'Resources/NativeRuntime-Legal')
 if args.runtime_payload:
     assert args.runtime_payload.is_absolute() and args.runtime_payload.is_dir(), 'Absolute runtime payload required'
     manifest = json.loads((args.runtime_payload / 'manifest.json').read_text())

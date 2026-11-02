@@ -30,6 +30,14 @@ Rust helper explicitly. The validation-profile Info key is recognized only in
 debug builds. Use an isolated profile for validation and retain original apps.
 Release delivery/signing is a separate existing distribution pipeline.
 
+`--legal-resources /absolute/prepared-directory` copies an existing license/source
+index and its files to `Contents/Resources/NativeRuntime-Legal`. The Help menu's
+“라이선스 및 소스 보기” command opens that local `index.html`; it is disabled when
+the index is absent. This companion stays outside the runtime inventory. Its
+actual corresponding-source/notices contents and owning-app resource seal must
+be reviewed and recorded with the delivered app; copying it does not establish
+redistribution qualification or change runtime admission.
+
 The native packager copies the approved Manager icon and integrated Studio/CMS
 marks from `native/Resources/Brand` into the app's existing Resources directory.
 `CFBundleIconFile` names `manager.icns`; the existing screen header uses the
