@@ -36,6 +36,7 @@ pub struct Status {
     pub backup: Option<super::installations::native_backup::Receipt>,
     pub restoration: Option<super::installations::native_maintenance::Restoration>,
     pub selected_oex: bool,
+    pub oex_027_qualified: bool,
     pub oex_save_offer: Option<OexSaveOffer>,
 }
 struct State {
@@ -53,6 +54,7 @@ struct State {
     backup: Option<super::installations::native_backup::Receipt>,
     restoration: Option<super::installations::native_maintenance::Restoration>,
     selected_oex: bool,
+    oex_027_qualified: bool,
     oex_save_offer: Option<OexSaveOffer>,
     oex_save_sender: Option<std::sync::mpsc::Sender<String>>,
     oex_terminal: Option<(OexSaveOffer, String, super::installations::native_oex_import::Transfer)>,
@@ -117,6 +119,7 @@ impl Host {
                 backup: None,
                 restoration: None,
                 selected_oex: false,
+                oex_027_qualified: false,
                 oex_save_offer: None,
                 oex_save_sender: None,
                 oex_terminal: None,
@@ -192,6 +195,7 @@ impl Host {
         state.cancel = None;
         state.stop_requested = false;
         state.selected_oex = false;
+        state.oex_027_qualified = false;
         state.oex_save_offer = None;
         state.oex_save_sender = None;
         state.oex_terminal = None;
@@ -217,6 +221,7 @@ impl Host {
             backup: state.backup.clone(),
             restoration: state.restoration.clone(),
             selected_oex: state.selected_oex,
+            oex_027_qualified: state.oex_027_qualified,
             oex_save_offer: state.oex_save_offer.clone(),
         })
     }
@@ -456,6 +461,7 @@ impl Host {
                                 Some(p) => p,
                                 None => Arc::new(Payload::open(&resources)?),
                             };
+                            let oex_027_qualified = payload.normal_oex_027_selected_input()?;
                             let existing = shared.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.session.take();
                             let session = match existing {
                                 Some(s) => s,
@@ -475,7 +481,13 @@ impl Host {
                                 cancel.store(state.stop_requested, Ordering::SeqCst);
                                 state.cancel = Some(cancel);
                             }
-                            let started = session.start_cancellable();
+                            let selected = shared.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.selected_oex;
+                            let started = if selected { session.start_cancellable() } else {
+                                controller.with_current_mutation(&token, |service| {
+                                    controller.ensure_no_bounded_import_transition_unlocked(service)?;
+                                    session.start_cancellable()
+                                })
+                            };
                             let requested = shared
                                 .lock()
                                 .map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?
@@ -489,6 +501,7 @@ impl Host {
                                 shared.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
                             let status_error = match context { Ok(value) => { state.runtime = Some(value); None }, Err(error) => { state.runtime = None; Some(error) } };
                             state.payload = Some(payload);
+                            state.oex_027_qualified = oex_027_qualified;
                             if state.session.is_some() { return Err(err("NATIVE_HOST_OWNER_CONFLICT")); }
                             state.session = lease.session.take();
                             state.cancel = None;
@@ -661,6 +674,9 @@ impl Host {
         }
         if let UiCommand::SaveOEXImportState { selection_token, transfer } = &request.command {
             let selected = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.selected_oex;
+            if !selected && transfer.intent.as_ref().is_some_and(|i| i.profile.as_deref() == Some("bounded-file-v1")) {
+                return Err(err("NATIVE_OEX_IMPORT_PENDING"));
+            }
             if selected {
                 let current = self.controller.native_oex_import(selection_token)?;
                 if let Some(intent) = &current.intent {
@@ -684,7 +700,7 @@ impl Host {
                 let current = self.controller.native_document(selection_token)?;
                 let pending = document.pending.as_ref().ok_or_else(|| err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
                 if current.draft.is_some() || current.pending.is_some() || current.etag.is_some() || current.saved_edit_version.is_some()
-                    || document.revision != current.revision || pending.request_id != offer.request_id
+                    || document.revision != current.revision || pending.origin.as_deref() != Some("bounded-import-v1") || pending.request_id != offer.request_id
                     || pending.etag.as_deref() != Some(offer.etag.as_str()) || document.etag != pending.etag
                     || document.draft.as_ref() != Some(&pending.draft)
                     || pending.draft.get("exhibitionId").and_then(Value::as_str) != Some(offer.exhibition_id.as_str())
@@ -738,7 +754,7 @@ impl Host {
             if !state.selected_oex || state.root.as_ref() != Some(&root) || !state.busy || state.stop_requested
                 || state.operation != "importing_oex" || observation.attempt_id != offer.attempt_id
                 || observation.exhibition_id != offer.exhibition_id || observation.request_id != offer.request_id
-                || pending.request_id != offer.request_id || pending.etag.as_deref() != Some(offer.etag.as_str())
+                || pending.origin.as_deref() != Some("bounded-import-v1") || pending.request_id != offer.request_id || pending.etag.as_deref() != Some(offer.etag.as_str())
                 || pending.draft.get("exhibitionId").and_then(Value::as_str) != Some(offer.exhibition_id.as_str())
                 || document.draft.as_ref() != Some(&pending.draft)
                 || (authorize && (state.oex_put_authorized || observation.etag != offer.etag))
@@ -811,8 +827,13 @@ impl Host {
         {
             use super::installations::native_maintenance::Input;
             self.selected(&selection_token)?;
+            if matches!(&maintenance, super::installations::native_maintenance::Input::CheckOexWorkspace) {
+                let payload=Payload::open(&self.resources)?;
+                return serde_json::to_value(payload.normal_oex_027_selected_input()?).map_err(|_|err("STATE_INVALID"));
+            }
             self.detach_stopped()?;
             return match maintenance {
+                Input::CheckOexWorkspace => Err(err("NATIVE_PROTOCOL_INVALID")),
                 Input::CreateKey { path } => {
                     self.controller.create_backup_key(&selection_token, &path)?;
                     Ok(Value::Null)
@@ -820,6 +841,22 @@ impl Host {
                 Input::CreateRecovery { acknowledged } => {
                     let context = self.controller.create(&selection_token, acknowledged)?;
                     self.reset_selection_state()?;
+                    serde_json::to_value(context).map_err(|_| err("STATE_INVALID"))
+                }
+                Input::CreateOexWorkspace { acknowledged } => {
+                    let payload=Arc::new(Payload::open(&self.resources)?);
+                    let created=self.controller.create_selected_oex(&selection_token,acknowledged,payload.clone(),Ports::default());
+                    let (context,session)=match created {
+                        Ok(value)=>value,
+                        Err(error)=>{self.reset_selection_state()?;return Err(error);}
+                    };
+                    self.reset_selection_state()?;
+                    let root=context.installations.iter().find(|v|v.id==context.active_id).map(|v|PathBuf::from(&v.path))
+                        .ok_or_else(||err("NATIVE_OEX_CREATION_PENDING"))?;
+                    { let mut state=self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+                      state.root=Some(root);state.payload=Some(payload);state.session=Some(session);state.selected_oex=true;state.oex_027_qualified=true; }
+                    // Journal clearing occurs only after Host retains the exact Session.
+                    self.controller.finish_selected_oex_creation(&context.selection_token)?;
                     serde_json::to_value(context).map_err(|_| err("STATE_INVALID"))
                 }
                 Input::Select { id, acknowledged } => {
@@ -931,6 +968,8 @@ impl Host {
                 account,
             } => self.launch(selection_token, Work::Prepare(account))?,
             UiCommand::NativeStart { selection_token } => {
+                let selected = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.selected_oex;
+                if !selected { self.controller.ensure_no_bounded_import_transition(&selection_token)?; }
                 self.launch(selection_token, Work::Start)?
             }
             UiCommand::NativeOexRun { selection_token } => self.launch(selection_token, Work::RunSelectedOex)?,
@@ -1019,7 +1058,7 @@ mod selected_oex_ipc_tests {
           state.operation = "importing_oex".into(); state.selected_oex = true; state.oex_save_offer = Some(offer.clone()); state.oex_save_sender = Some(sender); }
         let mut document = controller.native_document(&token).unwrap();
         document.draft = Some(draft.clone()); document.etag = Some(old_etag.clone()); document.saved_edit_version = Some(1);
-        document.pending = Some(crate::installations::native_document::Pending { request_id: offer.request_id.clone(), etag: Some(old_etag.clone()), draft });
+        document.pending = Some(crate::installations::native_document::Pending { request_id: offer.request_id.clone(), etag: Some(old_etag.clone()), draft, origin: Some("bounded-import-v1".into()) });
         let mut stale = document.clone(); stale.revision += 1;
         assert!(host.handle(request(1, UiCommand::SaveDocumentState { selection_token: token.clone(), document: Box::new(stale) })).is_err());
         let mut wrong_scope = document.clone(); wrong_scope.workspace_id = Uuid::new_v4().to_string();

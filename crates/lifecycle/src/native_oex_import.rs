@@ -35,7 +35,7 @@ pub(crate) fn validate(s: &Transfer) -> Result<()> {
     Ok(())
 }
 impl InstallationController {
-    fn oex_import_unlocked(&self, service: &LifecycleService) -> Result<(String, Transfer)> {
+    pub(super) fn oex_import_unlocked(&self, service: &LifecycleService) -> Result<(String, Transfer)> {
         let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
         let (workspace_id, tenant_id, principal_id) = service.personal_identity()?;
         let file = format!("native-oex-import-{}.json", digest(service.root.as_os_str().as_encoded_bytes()));
@@ -55,7 +55,7 @@ impl InstallationController {
     pub fn native_oex_import(&self, token: &str) -> Result<Transfer> {
         self.with_current(token, |service| {
             let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
-            let _lock = profile_lock(profile)?; Ok(self.oex_import_unlocked(service)?.1)
+            let _lock = profile_lock(profile)?; self.ensure_active_creation_unlocked(service)?; Ok(self.oex_import_unlocked(service)?.1)
         })
     }
     /// Host preflight runs before taking or stopping the owned runtime. The
@@ -64,7 +64,7 @@ impl InstallationController {
     pub fn ensure_no_pending_oex_import(&self, token: &str) -> Result<()> {
         self.with_current(token, |service| {
             let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
-            let _lock = profile_lock(profile)?;
+            let _lock = profile_lock(profile)?; self.ensure_active_creation_unlocked(service)?;
             let file = format!("native-oex-import-{}.json", digest(service.root.as_os_str().as_encoded_bytes()));
             match fs::symlink_metadata(profile.root.join(&file)) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -76,13 +76,55 @@ impl InstallationController {
             }
         })
     }
+    /// Do not change an unfinished selected import into an ordinary runtime.
+    /// The pending document may predate origin tags, so the transfer itself
+    /// remains the durable fence. The mutation path holds the profile lock.
+    pub(crate) fn ensure_no_bounded_import_transition(&self, token: &str) -> Result<()> {
+        self.with_current(token, |service| {
+            if service.native_prepared()?.as_ref().is_none_or(|p| p.kind != "personal") || self.profile.is_none() { return Ok(()); }
+            let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
+            let _lock = profile_lock(profile)?; self.ensure_active_creation_unlocked(service)?;
+            self.ensure_no_bounded_import_transition_unlocked(service)
+        })
+    }
+    pub(crate) fn ensure_no_bounded_import_transition_unlocked(&self, service: &LifecycleService) -> Result<()> {
+        if service.native_prepared()?.as_ref().is_none_or(|p| p.kind != "personal") || self.profile.is_none() { return Ok(()); }
+        let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
+        // with_current_mutation does not hold a second profile lock when both
+        // roots coincide; fail closed rather than admit an unguarded race.
+        if profile.root == service.root { return Err(err("NATIVE_MANAGED_PROFILE_REQUIRED")); }
+        let transfer = self.oex_import_unlocked(service)?.1;
+        if transfer.intent.as_ref().is_some_and(|i| i.profile.as_deref() == Some("bounded-file-v1")) {
+            return Err(err("NATIVE_BOUNDED_IMPORT_PENDING"));
+        }
+        let (registry,_) = load(&profile.root)?.ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
+        let entry=registry.installations.iter().find(|e|e.id==registry.active_id).ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
+        if entry.kind=="oex-import" {
+            let name=format!("native-oex-workspace-complete-{}.json",digest(service.root.as_os_str().as_encoded_bytes()));
+            let expected=serde_json::json!({"format":1,"workspaceId":transfer.workspace_id,"tenantId":transfer.tenant_id,"principalId":transfer.principal_id});
+            let bytes=installation_backup::source_bytes(&profile.root,&name,4096,true).map_err(|_|err("NATIVE_BOUNDED_IMPORT_PENDING"))?;
+            let actual:Value=serde_json::from_slice(&bytes).map_err(|_|err("NATIVE_BOUNDED_IMPORT_PENDING"))?;
+            if actual!=expected {return Err(err("NATIVE_BOUNDED_IMPORT_PENDING"));}
+        }
+        Ok(())
+    }
     pub fn save_native_oex_import(&self, token: &str, mut state: Transfer) -> Result<Transfer> {
         self.with_current(token, |service| {
             let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
-            let _lock = profile_lock(profile)?; let (file, current) = self.oex_import_unlocked(service)?;
+            let _lock = profile_lock(profile)?; self.ensure_active_creation_unlocked(service)?; let (file, current) = self.oex_import_unlocked(service)?;
             validate(&state)?;
             if state.workspace_id != current.workspace_id || state.tenant_id != current.tenant_id || state.principal_id != current.principal_id { return Err(err("NATIVE_OEX_IMPORT_SCOPE_CHANGED")); }
             if state.revision != current.revision { return Err(err("NATIVE_OEX_IMPORT_STATE_CHANGED")); }
+            // A selected bounded transfer is a durable recovery fence. Only
+            // the verified terminal completion path may clear or replace it.
+            if current.intent.as_ref().is_some_and(|i| i.profile.as_deref() == Some("bounded-file-v1")) {
+                let old = serde_json::to_value(&current.intent).map_err(|_| err("STATE_INVALID"))?;
+                let proposed = serde_json::to_value(&state.intent).map_err(|_| err("STATE_INVALID"))?;
+                if old != proposed || state.file_name != current.file_name
+                    || (current.job_id.is_some() && state.job_id != current.job_id) {
+                    return Err(err("NATIVE_OEX_IMPORT_PENDING"));
+                }
+            }
             state.revision = state.revision.checked_add(1).ok_or_else(|| err("NATIVE_OEX_IMPORT_INVALID"))?;
             if serde_json::to_vec(&state).map_err(|_| err("STATE_INVALID"))?.len() as u64 > LIMIT { return Err(err("NATIVE_OEX_IMPORT_INVALID")); }
             write_json(&profile.root, &file, &state)?;
@@ -108,7 +150,7 @@ impl InstallationController {
     ) -> Result<super::native_document::DocumentState> {
         self.with_current(token, |service| {
             let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
-            let _lock = profile_lock(profile)?;
+            let _lock = profile_lock(profile)?; self.ensure_active_creation_unlocked(service)?;
             let (file, current) = self.oex_import_unlocked(service)?;
             if expected.intent.is_none() || expected.job_id.is_none()
                 || !uuid(&offer.attempt_id) || !uuid(&offer.request_id) || !uuid(&offer.exhibition_id) {
@@ -137,7 +179,7 @@ impl InstallationController {
             let saved_bytes = serde_json::to_vec(&saved).map_err(|_| err("STATE_INVALID"))?;
             let pending = document.pending.as_ref();
             let before = document.revision == proposed.revision && pending.is_some_and(|p|
-                p.request_id == offer.request_id && p.etag.as_deref() == Some(offer.etag.as_str())
+                p.origin.as_deref() == Some("bounded-import-v1") && p.request_id == offer.request_id && p.etag.as_deref() == Some(offer.etag.as_str())
                 && &p.draft == saved_draft && document.draft.as_ref() == Some(saved_draft))
                 && document.workspace_id == proposed.workspace_id && document.tenant_id == proposed.tenant_id
                 && document.principal_id == proposed.principal_id;
@@ -162,6 +204,19 @@ impl InstallationController {
             if current_bytes == expected_bytes { write_json(&profile.root, &file, &cleared)?;
                 File::open(&profile.root).and_then(|f| f.sync_all()).map_err(|_| err("STATE_UNAVAILABLE"))?; }
             checkpoint("transfer")?;
+            let (registry,_) = load(&profile.root)?.ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
+            let entry=registry.installations.iter().find(|e|e.id==registry.active_id).ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
+            if entry.kind=="oex-import" {
+                let name=format!("native-oex-workspace-complete-{}.json",digest(service.root.as_os_str().as_encoded_bytes()));
+                let bytes=serde_json::to_vec(&serde_json::json!({"format":1,"workspaceId":expected.workspace_id,
+                    "tenantId":expected.tenant_id,"principalId":expected.principal_id})).map_err(|_|err("STATE_INVALID"))?;
+                match fs::symlink_metadata(profile.root.join(&name)) {
+                    Err(e) if e.kind()==std::io::ErrorKind::NotFound => write_private_new(&profile.root,&name,&bytes,4096)?,
+                    Ok(_) if installation_backup::source_bytes(&profile.root,&name,4096,true)?==bytes => {},
+                    _ => return Err(err("NATIVE_OEX_WORKER_UNCERTAIN")),
+                }
+                File::open(&profile.root).and_then(|f|f.sync_all()).map_err(|_|err("STATE_UNAVAILABLE"))?;
+            }
             Ok(saved)
         })
     }
@@ -182,13 +237,23 @@ mod tests {
         saved_etag: String,
         proposed: super::super::native_document::DocumentState,
     }
-    fn completion_fixture() -> CompletionFixture {
+    fn completion_fixture() -> CompletionFixture { completion_fixture_for(false) }
+    fn completion_fixture_for(import_workspace: bool) -> CompletionFixture {
         let parent = std::env::temp_dir().join(format!("exhibitos-oex-completion-{}", Uuid::new_v4()));
         fs::create_dir(&parent).unwrap();
         fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
         let parent = fs::canonicalize(parent).unwrap();
         let profile = parent.join("profile");
-        let controller = InstallationController::new(profile.clone(), None).unwrap();
+        let mut controller = InstallationController::new(profile.clone(), None).unwrap();
+        if import_workspace {
+            let token=controller.context().unwrap().selection_token;
+            let selected=controller.create(&token,true).unwrap();
+            { let _guard=profile_lock(controller.profile.as_ref().unwrap()).unwrap();
+              let (mut registry, previous)=load(&profile).unwrap().unwrap();
+              let entry=registry.installations.iter_mut().find(|e|e.id==selected.active_id).unwrap();
+              entry.kind="oex-import".into();save(&profile,&registry,Some(&previous)).unwrap(); }
+            drop(controller);controller=InstallationController::new(profile.clone(),None).unwrap();
+        }
         let token = controller.context().unwrap().selection_token;
         let root = controller.with_current(&token, |service| {
             let _guard = service.lock()?;
@@ -214,11 +279,58 @@ mod tests {
         let request = Uuid::new_v4().to_string();
         let mut pending = controller.native_document(&token).unwrap();
         pending.draft = Some(draft.clone()); pending.etag = Some(old_etag.clone()); pending.saved_edit_version = Some(1);
-        pending.pending = Some(super::super::native_document::Pending { request_id: request.clone(), etag: Some(old_etag.clone()), draft });
+        pending.pending = Some(super::super::native_document::Pending { request_id: request.clone(), etag: Some(old_etag.clone()), draft, origin: Some("bounded-import-v1".into()) });
         pending = controller.save_native_document(&token, pending).unwrap();
         let mut proposed = pending.clone(); proposed.pending = None; proposed.etag = Some(saved_etag.clone());
         let offer = crate::native_host::OexSaveOffer { attempt_id: Uuid::new_v4().to_string(), exhibition_id: exhibition, etag: old_etag, request_id: request };
         CompletionFixture { controller, token, profile, root, transfer, offer, saved_etag, proposed }
+    }
+
+    #[test]
+    fn bounded_transfer_fence_preserves_legacy_pending_until_verified_completion() {
+        let f = completion_fixture();
+        assert_eq!(f.controller.ensure_no_bounded_import_transition(&f.token).err().unwrap().code, "NATIVE_BOUNDED_IMPORT_PENDING");
+        // A competing profile writer must not wait or inspect an unguarded state.
+        let profile = f.controller.profile.as_ref().unwrap();
+        let held = profile_lock(profile).unwrap();
+        assert_eq!(f.controller.ensure_no_bounded_import_transition(&f.token).err().unwrap().code, "BUSY");
+        drop(held);
+        let mut cleared = f.transfer.clone();
+        cleared.intent = None; cleared.job_id = None; cleared.file_name = None;
+        assert_eq!(f.controller.save_native_oex_import(&f.token, cleared).err().unwrap().code, "NATIVE_OEX_IMPORT_PENDING");
+        let mut replaced = f.transfer.clone(); replaced.intent.as_mut().unwrap().request_id = Uuid::new_v4().to_string();
+        assert_eq!(f.controller.save_native_oex_import(&f.token, replaced).err().unwrap().code, "NATIVE_OEX_IMPORT_PENDING");
+        let mut wrong_job = f.transfer.clone(); wrong_job.job_id = Some(Uuid::new_v4().to_string());
+        assert_eq!(f.controller.save_native_oex_import(&f.token, wrong_job).err().unwrap().code, "NATIVE_OEX_IMPORT_PENDING");
+        assert!(f.controller.native_document(&f.token).unwrap().pending.is_some());
+        assert!(f.controller.native_oex_import(&f.token).unwrap().intent.is_some());
+        let saved = f.controller.finish_selected_oex(&f.token, &f.transfer, &f.offer, &f.saved_etag, &f.proposed).unwrap();
+        assert!(saved.pending.is_none());
+        assert!(f.controller.native_oex_import(&f.token).unwrap().intent.is_none());
+        assert!(f.controller.ensure_no_bounded_import_transition(&f.token).is_ok());
+        // Ordinary legacy transfers retain their existing explicit-clear path.
+        let mut legacy = f.controller.native_oex_import(&f.token).unwrap();
+        legacy.intent = Some(Intent { request_id: Uuid::new_v4().to_string(), sha256: "d".repeat(64), bytes: 123, profile: None, oex_format: None });
+        legacy.file_name = Some("legacy.oex".into());
+        legacy = f.controller.save_native_oex_import(&f.token, legacy).unwrap();
+        assert!(f.controller.ensure_no_bounded_import_transition(&f.token).is_ok());
+        legacy.intent = None; legacy.file_name = None;
+        assert!(f.controller.save_native_oex_import(&f.token, legacy).is_ok());
+    }
+
+    #[test]
+    fn imported_workspace_requires_verified_completion_marker_for_ordinary_start() {
+        let f=completion_fixture_for(true);
+        assert_eq!(f.controller.ensure_no_bounded_import_transition(&f.token).err().unwrap().code,"NATIVE_BOUNDED_IMPORT_PENDING");
+        let failure=f.controller.finish_selected_oex_checked(&f.token,&f.transfer,&f.offer,&f.saved_etag,&f.proposed,
+            |at| if at=="transfer" {Err(err("SYNTHETIC_FAILURE"))} else {Ok(())});
+        assert!(failure.is_err());assert!(f.controller.native_oex_import(&f.token).unwrap().intent.is_none());
+        assert_eq!(f.controller.ensure_no_bounded_import_transition(&f.token).err().unwrap().code,"NATIVE_BOUNDED_IMPORT_PENDING");
+        f.controller.finish_selected_oex(&f.token,&f.transfer,&f.offer,&f.saved_etag,&f.proposed).unwrap();
+        assert!(f.controller.ensure_no_bounded_import_transition(&f.token).is_ok());
+        let marker=format!("native-oex-workspace-complete-{}.json",digest(f.root.as_os_str().as_encoded_bytes()));
+        fs::write(f.profile.join(marker),b"corrupt").unwrap();
+        assert_eq!(f.controller.ensure_no_bounded_import_transition(&f.token).err().unwrap().code,"NATIVE_BOUNDED_IMPORT_PENDING");
     }
 
     #[test]

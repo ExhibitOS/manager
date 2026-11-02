@@ -82,6 +82,12 @@ impl Setup {
         if bytes.len()>4096 {bytes.fill(0);return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
         Ok(bytes)
     }
+    pub(super) fn normal_027_bootstrap(&self, auth:&LocalAuthority, generation:&str) -> Result<Vec<u8>> {
+        let value=FreshOwnerBootstrap {workspace:auth,owner_channel:FreshOwnerBinding {version:2,runtime_generation:generation,secret:&self.secret,mode:"normal-oex-027-v2"}};
+        let mut bytes=serde_json::to_vec(&value).map_err(|_|err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+        if bytes.len()>4096 { bytes.fill(0);return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
+        Ok(bytes)
+    }
     pub(super) fn configure(&self, command:&mut Command) -> Result<()> {
         let fd=self.child.as_ref().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?.as_raw_fd();
         command.env("EXHIBITOS_NATIVE_OWNER_FD",fd.to_string());
@@ -123,7 +129,7 @@ impl Connection {
     // No MAC accessor yet: cached `valid` alone cannot prove the owned peer or
     // fence is live. A typed, single-use Session-bound challenge is required.
     fn fail(&mut self) {self.valid=false;self.key.fill(0);let _=self.socket.shutdown(std::net::Shutdown::Both);}
-    fn read_frame(&mut self, deadline:Instant, cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>)->Result<Vec<u8>> {
+    pub(super) fn read_frame(&mut self, deadline:Instant, cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>)->Result<Vec<u8>> {
         let mut len=[0u8;4];read_bounded(&mut self.socket,&mut len,deadline,cancellation,check)?;
         let n=u32::from_be_bytes(len) as usize;if n==0||n>8192{return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
         let mut bytes=vec![0u8;n];read_bounded(&mut self.socket,&mut bytes,deadline,cancellation,check)?;Ok(bytes)
@@ -149,7 +155,7 @@ impl Connection {
         if result.is_err(){self.fail();}result
     }
     pub(super) fn invalidate(&mut self) {self.fail();}
-    fn send_frame(&mut self,bytes:&[u8],deadline:Instant,cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>)->Result<()> {
+    pub(super) fn send_frame(&mut self,bytes:&[u8],deadline:Instant,cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>)->Result<()> {
         if bytes.is_empty()||bytes.len()>8192{return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
         write_bounded(&mut self.socket,&(bytes.len() as u32).to_be_bytes(),deadline,cancellation,check)?;
         write_bounded(&mut self.socket,bytes,deadline,cancellation,check)

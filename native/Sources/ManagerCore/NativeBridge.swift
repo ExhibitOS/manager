@@ -83,6 +83,7 @@ public struct NativeHostStatus: Decodable, Sendable {
     public let backup: Backup?
     public let restoration: Restoration?
     public let selectedOex: Bool?
+    public let oex027Qualified: Bool?
     public let oexSaveOffer: NativeOEXSaveOffer?
     public var needsShutdown: Bool { busy || runtime?.hasOwnedProcesses == true }
 }
@@ -139,7 +140,11 @@ public struct BridgeFailure: Error, LocalizedError, Sendable {
         case "NATIVE_RESTORE_PENDING": "진행 중인 복원을 먼저 확인하세요. 기존 데이터와 복원 후보는 보관됩니다."
         case "NATIVE_RESTORE_CANDIDATE_CHANGED": "복원 후보나 백업이 이전 요청과 다릅니다. 원래 백업과 작업 공간을 다시 선택하세요."
         case "NATIVE_BACKUP_RESOURCE_BUDGET": "이 작업에 필요한 여유 공간이 부족합니다. 기존 백업을 보관하고 저장 위치를 확인하세요."
-        case "NATIVE_OEX_IMPORT_PENDING": "OEX 가져오기를 완료하거나 취소하고 기록을 확인한 뒤 백업하세요."
+        case "NATIVE_OEX_IMPORT_PENDING": "OEX 가져오기 기록이 남아 있습니다. 기록을 확인하고 보관하세요."
+        case "NATIVE_OEX_RELEASE_UNAVAILABLE": "현재 실행 패키지에서는 새 OEX 작업 공간을 사용할 수 없습니다. 기존 작업은 계속할 수 있습니다."
+        case "NATIVE_OEX_WORKSPACE_BACKUP_UNAVAILABLE": "이 가져오기 작업 공간의 백업은 아직 지원되지 않습니다. 기존 작업 공간과 전시 파일을 보관하세요."
+        case "NATIVE_OEX_CREATION_PENDING": "새 작업 공간의 생성 기록을 확인해야 합니다. 기존 작업과 생성 기록을 보관하세요."
+        case "NATIVE_BOUNDED_IMPORT_PENDING": "완료되지 않은 OEX 가져오기 기록을 보관하고 확인하세요. 확인 전에는 로컬 제작을 시작할 수 없습니다."
         case "NATIVE_PORT_IN_USE": "다른 앱이 필요한 로컬 연결을 사용하고 있습니다. 해당 작업을 마친 뒤 다시 시작하세요."
         case "NATIVE_CANCELLED": "시작을 중단했습니다. 저장된 설정을 사용해 다시 시작할 수 있습니다."
         case "NATIVE_STOP_PENDING": "로컬 작업이 아직 정지 중입니다. 정지가 끝날 때까지 앱을 열어 두세요."
@@ -299,6 +304,12 @@ public actor NativeBridge {
     public func createBackupKey(_ context: Context, at path: URL) throws {
         guard path.isFileURL else { throw BridgeFailure("NATIVE_BACKUP_INPUT_INVALID") }
         let _: DocumentValue = try request("native_maintenance", fields: ["selection_token": context.selectionToken, "maintenance": ["action": "create_key", "path": path.path]])
+    }
+    public func canCreateOEXWorkspace(_ context: Context) throws -> Bool {
+        try request("native_maintenance", fields: ["selection_token": context.selectionToken, "maintenance": ["action": "check_oex_workspace"]])
+    }
+    public func createOEXWorkspace(_ context: Context) throws -> Context {
+        try request("native_maintenance", fields: ["selection_token": context.selectionToken, "maintenance": ["action": "create_oex_workspace", "acknowledged": true]])
     }
     public func createRecoveryWorkspace(_ context: Context) throws -> Context {
         try request("native_maintenance", fields: ["selection_token": context.selectionToken, "maintenance": ["action": "create_recovery", "acknowledged": true]])

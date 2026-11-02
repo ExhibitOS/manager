@@ -9,9 +9,13 @@ final class ManagerModel: ObservableObject {
     var presentation: Presentation? { selection.value }
     private var presentationSave: Task<Void, Never>?
     var presentationPending: Bool { selection.hasPendingSave }
-    @Published private(set) var context: Context?
+    @Published private(set) var context: Context? {
+        didSet { if oldValue?.selectionToken != context?.selectionToken || oldValue?.activeId != context?.activeId { invalidateRetainedAuthoring() } }
+    }
     @Published private(set) var native: NativeHostStatus? {
         didSet {
+            if let binding = retainedAuthoring, let current = native, !current.busy,
+               !binding.matches(context: context, status: current) { invalidateRetainedAuthoring() }
             exhibitions.configurePublicationWatermark(native?.configuration, ready: ready)
             exhibitions.configureFloorRuntime(native?.configuration, ready: ready)
             publication.configureWatermarkRuntime(native?.configuration, ready: ready)
@@ -30,7 +34,7 @@ final class ManagerModel: ObservableObject {
     @Published var accountSubject = ""
     @Published var accountPassword = ""
     @Published private(set) var quitting = false {
-        didSet { if quitting { statusGeneration = UUID() } }
+        didSet { if quitting { statusGeneration = UUID(); invalidateRetainedAuthoring() } }
     }
     @Published private(set) var jobs: [Job] = []
     @Published private(set) var busy = false {
@@ -52,6 +56,33 @@ final class ManagerModel: ObservableObject {
     private var bridge: NativeBridge?
     private var pollTask: Task<Void, Never>?
     private var authoringConnection: Task<Void, Never>?
+    private struct RetainedAuthoring {
+        let selectionToken: String
+        let installationId: String
+        let runtimeJobId: String
+        let nodePid: UInt32
+        let postgresPid: UInt32
+        let manifest: String
+        let port: UInt16
+        let credentials: LocalAuthoringSession
+        let session: AuthoringSession
+        let api: AuthoringAPI
+        func matches(context: Context?, status: NativeHostStatus) -> Bool {
+            guard let context, let config = status.configuration, let runtime = status.runtime,
+                  !status.busy, config.kind == "personal",
+                  runtime.state == "ready", runtime.readiness.ready, runtime.nodePid == nodePid, runtime.postgresPid == postgresPid,
+                  context.selectionToken == selectionToken, context.activeId == installationId,
+                  runtime.jobId == runtimeJobId, config.manifestSha256 == manifest, config.ports.web == port,
+                  config.tenantId?.lowercased() == credentials.tenantId.lowercased(),
+                  credentials.origin == "http://127.0.0.1:\(port)",
+                  session.tenantId.lowercased() == credentials.tenantId.lowercased(),
+                  session.userId.lowercased() == credentials.principalId.lowercased() else { return false }
+            return true
+        }
+    }
+    private var retainedAuthoring: RetainedAuthoring?
+    private var retainedAuthoringGeneration = UUID()
+    private func invalidateRetainedAuthoring() { retainedAuthoring = nil; retainedAuthoringGeneration = UUID() }
     private var startAfterPrepare = false
     private var serviceRequested = false
     var mayHaveServices: Bool { serviceRequested || native?.needsShutdown == true || staticExport.running || hosting.running || hosting.busy }
@@ -121,6 +152,9 @@ final class ManagerModel: ObservableObject {
     }
     private func connectPersonalAuthoringOwned() async {
         guard !busy, !quitting, ready, !exhibitions.oexImport.busy, let bridge, let context else { return }
+        if native?.selectedOex == true, retainedAuthoring != nil, exhibitions.entrancePreviewActive {
+            failure = BridgeFailure("NATIVE_OEX_SESSION_BOUND"); return
+        }
         guard exhibitions.beginEntranceCredentialRenewal() else { return }
         busy = true
         defer { busy = false }
@@ -131,23 +165,98 @@ final class ManagerModel: ObservableObject {
                 return
             }
             authoring.bindImportStore(read: { try await bridge.uploadState(context) }, save: { state in try await bridge.saveUploadState(context, state: state) })
-            let credentials = try await bridge.authoringSession(context)
-            await authoring.connect(credentials)
+            let status = try await bridge.nativeStatus(context)
+            let credentials: LocalAuthoringSession
+            if status.selectedOex == true, let binding = retainedAuthoring {
+                guard binding.matches(context: self.context, status: status),
+                      authoring.exhibitionAPI === binding.api, let held = authoring.session,
+                      Self.sameSession(held, binding.session) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
+                let generation = retainedAuthoringGeneration
+                _ = try await binding.api.verifyRetainedSession(binding.session)
+                let checked = try await bridge.nativeStatus(context)
+                guard !quitting, generation == retainedAuthoringGeneration,
+                      checked.selectedOex == true, binding.matches(context: self.context, status: checked),
+                      authoring.exhibitionAPI === binding.api, let current = authoring.session,
+                      Self.sameSession(current, binding.session) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
+                credentials = binding.credentials
+            } else {
+                invalidateRetainedAuthoring()
+                let generation = retainedAuthoringGeneration
+                credentials = try await bridge.authoringSession(context)
+                guard !quitting, generation == retainedAuthoringGeneration,
+                      self.context?.selectionToken == context.selectionToken, self.context?.activeId == context.activeId else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
+                await authoring.connect(credentials)
+                let checked = try await bridge.nativeStatus(context)
+                guard !quitting, generation == retainedAuthoringGeneration,
+                      self.context?.selectionToken == context.selectionToken, self.context?.activeId == context.activeId else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
+                if checked.selectedOex == true {
+                    guard let api = authoring.exhibitionAPI, let session = authoring.session,
+                          let config = checked.configuration, let jobId = checked.runtime?.jobId,
+                          let nodePid = checked.runtime?.nodePid, let postgresPid = checked.runtime?.postgresPid else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
+                    _ = try await api.verifyRetainedSession(session)
+                    let verifiedStatus = try await bridge.nativeStatus(context)
+                    guard !quitting, generation == retainedAuthoringGeneration,
+                          self.context?.selectionToken == context.selectionToken, self.context?.activeId == context.activeId,
+                          authoring.exhibitionAPI === api, let current = authoring.session,
+                          Self.sameSession(current, session) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
+                    let candidate = RetainedAuthoring(selectionToken: context.selectionToken, installationId: context.activeId,
+                        runtimeJobId: jobId, nodePid: nodePid, postgresPid: postgresPid, manifest: config.manifestSha256, port: config.ports.web,
+                        credentials: credentials, session: session, api: api)
+                    guard verifiedStatus.selectedOex == true, candidate.matches(context: self.context, status: verifiedStatus) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
+                    retainedAuthoring = candidate
+                }
+            }
             guard !exhibitions.oexImport.busy else { exhibitions.entranceCredentialRenewalFailed(); return }
             if let api = authoring.exhibitionAPI, let session = authoring.session {
-                await exhibitions.connect(api: api, session: session, credentials: credentials, read: { try await bridge.documentState(context) }, write: { state in try await bridge.saveDocumentState(context, state: state) })
+                let connectionGeneration = retainedAuthoringGeneration
+                let gate = try await bridge.nativeStatus(context)
+                guard !quitting, self.context?.selectionToken == context.selectionToken, self.context?.activeId == context.activeId,
+                      authoring.exhibitionAPI === api, let live = authoring.session,
+                      live.tenantId == session.tenantId, live.userId == session.userId, live.role == session.role,
+                      live.csrfToken == session.csrfToken, live.expiresAt == session.expiresAt,
+                      gate.runtime?.readiness.ready == true, gate.runtime?.jobId != nil,
+                      gate.runtime?.nodePid != nil, gate.runtime?.postgresPid != nil,
+                      gate.configuration?.manifestSha256 == native?.configuration?.manifestSha256 else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
+                let selected = gate.selectedOex == true
+                if selected {
+                    guard connectionGeneration == retainedAuthoringGeneration, let binding = retainedAuthoring,
+                          binding.matches(context: self.context, status: gate), binding.api === api,
+                          Self.sameSession(binding.session, session) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
+                }
+                let boundedWorkspace = context.installations.first(where: { $0.id == context.activeId })?.kind == "oex-import"
+                await exhibitions.connect(api: api, session: session, credentials: credentials,
+                    selectedBoundedPolicy: selected, ordinaryBoundedRuntime: boundedWorkspace && !selected,
+                    boundedRuntimeQualified: gate.oex027Qualified == true,
+                    read: { try await bridge.documentState(context) }, write: { state in try await bridge.saveDocumentState(context, state: state) })
+                guard !quitting, connectionGeneration == retainedAuthoringGeneration,
+                      self.context?.selectionToken == context.selectionToken, self.context?.activeId == context.activeId,
+                      authoring.exhibitionAPI === api, let current = authoring.session, Self.sameSession(current, session) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
                 guard !exhibitions.oexImport.busy else { exhibitions.entranceCredentialRenewalFailed(); return }
                 await exhibitions.oexImport.connect(api: api, session: session, read: { try await bridge.oexImportState(context) }, save: { state in try await bridge.saveOEXImportState(context, state: state) },
                     freshBounded: native?.selectedOex == true && ready, bridge: bridge, context: context,
                     mayBeginBounded: { [weak self] in guard let self, let document = self.exhibitions.state else { return false }; return !self.busy && self.authoringConnection == nil && !self.authoring.busy && !self.exhibitions.dirty && !self.exhibitions.busy && document.draft == nil && document.pending == nil },
                     acceptBoundedPending: { [weak self] document in self?.exhibitions.acceptBoundedPending(document) == true },
                     acceptBoundedSaved: { [weak self] document, requestId in self?.exhibitions.acceptBoundedSaved(document, requestId: requestId) == true })
+                guard !quitting, connectionGeneration == retainedAuthoringGeneration,
+                      self.context?.selectionToken == context.selectionToken, self.context?.activeId == context.activeId,
+                      authoring.exhibitionAPI === api, let refreshed = authoring.session,
+                      refreshed.tenantId == session.tenantId, refreshed.userId == session.userId, refreshed.role == session.role,
+                      refreshed.csrfToken == session.csrfToken, refreshed.expiresAt == session.expiresAt else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
+                if boundedWorkspace && !selected { await exhibitions.prepareOrdinaryBoundedPlacement() }
+                guard !quitting, connectionGeneration == retainedAuthoringGeneration,
+                      self.context?.selectionToken == context.selectionToken, self.context?.activeId == context.activeId,
+                      authoring.exhibitionAPI === api, let finalSession = authoring.session,
+                      Self.sameSession(finalSession, session) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
                 await publication.connect(api: api, session: session, read: { try await bridge.publicationState(context) }, write: { state in try await bridge.savePublicationState(context, state: state) })
             } else { exhibitions.entranceCredentialRenewalFailed() }
         } catch {
+            invalidateRetainedAuthoring()
             exhibitions.entranceCredentialRenewalFailed()
             failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_CONNECTION_FAILED")
         }
+    }
+    private static func sameSession(_ a: AuthoringSession, _ b: AuthoringSession) -> Bool {
+        a.userId == b.userId && a.tenantId == b.tenantId && a.role == b.role && a.csrfToken == b.csrfToken && a.expiresAt == b.expiresAt
     }
     private func bindStaticExport() async {
         guard native?.configuration?.kind == "personal", let bridge, let context else { return }
@@ -174,6 +283,7 @@ final class ManagerModel: ObservableObject {
 
     func stop() async {
         guard !busy, !exhibitions.oexImport.busy, let bridge, let context else { return }
+        invalidateRetainedAuthoring()
         busy = true; failure = nil; startAfterPrepare = false
         defer { busy = false }
         await authoring.cancelImportAndWait()
@@ -194,6 +304,7 @@ final class ManagerModel: ObservableObject {
         throw BridgeFailure("NATIVE_TIMEOUT")
     }
     private func stopForMaintenance(_ bridge: NativeBridge, _ context: Context) async throws {
+        invalidateRetainedAuthoring()
         startAfterPrepare = false
         native = try await bridge.stop(context)
         try await waitForMaintenanceIdle(bridge, context)
@@ -201,10 +312,33 @@ final class ManagerModel: ObservableObject {
         serviceRequested = false
     }
     private func replaceWorkspaceModels() {
+        invalidateRetainedAuthoring()
         authoring = AuthoringModel(); exhibitions = ExhibitionModel()
         exhibitions.viewportController.editingContextActive = presentation?.step == .select
         publication = PublicationModel(); staticExport = StaticExportModel()
         hosting = HostingModel()
+    }
+    func createOEXWorkspace() async {
+        guard canMaintain, !pendingRestoration, native?.selectedOex != true, let bridge, let previous = context else { return }
+        busy = true; failure = nil; maintenanceNotice = ""
+        defer { busy = false }
+        do {
+            guard try await bridge.canCreateOEXWorkspace(previous) else { throw BridgeFailure("NATIVE_OEX_RELEASE_UNAVAILABLE") }
+            try await stopForMaintenance(bridge, previous)
+            let selected = try await bridge.createOEXWorkspace(previous)
+            context = selected; replaceWorkspaceModels()
+            serviceRequested = true
+            native = try await bridge.start(selected)
+            maintenanceNotice = "새 작업 공간을 준비하고 있습니다. 준비가 끝나면 OEX 파일을 선택하세요."
+            schedulePoll()
+        } catch {
+            // A registry publication may have succeeded before an error. Read
+            // the actual selection; never guess or delete the candidate.
+            if let actual = try? await bridge.context(), actual.activeId != previous.activeId {
+                context = actual; replaceWorkspaceModels(); native = try? await bridge.nativeStatus(actual)
+            }
+            failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_OEX_CREATION_PENDING")
+        }
     }
     func makeBackup(key: URL, destination: URL) async {
         guard canMaintain, !pendingRestoration, let bridge, let context else { return }
@@ -504,6 +638,8 @@ struct ManagerView: View {
                                  mode: model.presentation?.mode ?? .beginner,
                                  connect: { await model.connectPersonalAuthoring() }, active: workbenchActive,
                                  readOnly: model.presentation?.step == .preview,
+                                 canCreateOEXWorkspace: model.canMaintain && !model.pendingRestoration && model.native?.selectedOex != true,
+                                 createOEXWorkspace: { await model.createOEXWorkspace() },
                                  connectionAllowed: !model.busy && !model.quitting,
                                  edit: { model.change(step: .select) }, publish: { model.change(step: .publish) })
                 .disabled(model.exhibitions.oexImport.busy)

@@ -17,6 +17,8 @@ use super::{native_installation::Ports, native_payload::Payload};
 #[path = "native_runtime_oex_materializer_protocol.rs"] mod oex_materializer_protocol;
 #[path = "native_runtime_oex_materializer.rs"] mod oex_materializer;
 #[path = "native_runtime_owner_channel.rs"] mod owner_channel;
+#[path = "native_runtime_oex_owner.rs"] mod oex_owner;
+#[path = "native_runtime_oex_catalog_frames.rs"] mod oex_catalog_frames;
 #[path = "native_runtime_owner_claim_frames.rs"] mod owner_claim_frames;
 #[path = "native_runtime_owner_metadata_frames.rs"] mod owner_metadata_frames;
 #[path = "native_runtime_owner_binding_encoding.rs"] mod owner_binding_encoding;
@@ -1095,6 +1097,7 @@ impl Session {
         } else { None };
         let generation = self.job_id.as_deref().ok_or_else(|| err("NATIVE_JOURNAL_INVALID"))?;
         let mut private_input = match (&self.local_authority, &owner_setup) {
+            (Some(a), Some(setup)) if self.payload.normal_oex_027_selected_input()? => Some(setup.normal_027_bootstrap(a, generation)?),
             (Some(a), Some(setup)) => Some(setup.normal_bootstrap(a, generation)?),
             (Some(a), None) => Some(serde_json::to_vec(a).map_err(|_| err("STATE_INVALID"))?),
             (None, _) => None,
@@ -1139,7 +1142,10 @@ impl Session {
                 if ready.ready {
                     self.readiness = ready;
                     self.state = "ready".into();
-                    if self.normal_oex_selected { self.await_oex_owner_ready()?; }
+                    if self.normal_oex_selected {
+                        if self.payload.normal_oex_027_selected_input()? { self.accept_oex_catalog()?; }
+                        self.await_oex_owner_ready()?;
+                    }
                     // The selected owner is not ready for use until its private
                     // operation-ready frame has also been verified.  Do not
                     // publish a ready journal entry while that check is pending.
@@ -1678,6 +1684,40 @@ impl Drop for Session {
 }
 
 impl Session {
+    /// Verify the catalog against our owned DB, pinned store and payload before
+    /// acknowledging the peer. The channel remains tied to this Session.
+    fn accept_oex_catalog(&mut self) -> Result<()> {
+        let owner = oex_owner::Owner::capture(self)?;
+        let authority = self.local_authority.as_ref().ok_or_else(|| err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
+        let identity = (authority.workspace_id.clone(), authority.tenant_id.clone(), authority.principal_id.clone());
+        let generation = self.job_id.clone().ok_or_else(|| err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+        let manifest = self.payload.context().manifest_sha256;
+        let cancel = self.cancellation.clone();
+        let mut channel = self.owner_channel.take().ok_or_else(|| err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+        let outcome = (|| {
+            let mut live = || owner.check(self);
+            let raw = channel.read_frame(Instant::now() + Duration::from_secs(120), &cancel, &mut live)?;
+            drop(live);
+            owner.recheck_database_identity(self)?;
+            self.payload.recheck()?;
+            owner.check(self)?;
+            let rows = self.query_database("exhibitos", "SELECT name,sha256 FROM public.schema_migrations WHERE name IN ('026_oex_file_profile.sql','027_oex_exhibition_provenance.sql') ORDER BY name")?;
+            owner.check(self)?;
+            let expected = format!("026_oex_file_profile.sql|{}\n027_oex_exhibition_provenance.sql|{}", oex_catalog_frames::SCHEMA_026, oex_catalog_frames::SCHEMA_027);
+            if rows != expected { return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
+            owner.recheck_database_identity(self)?;
+            self.payload.recheck()?;
+            let (_, device, inode) = owner.store_identity();
+            let observed = oex_catalog_frames::Observation { workspace:&identity.0, tenant:&identity.1, principal:&identity.2,
+                generation:&generation, manifest:&manifest, system:&owner.system_id, oid:&owner.database_oid, device, inode };
+            let ack = oex_catalog_frames::acknowledge(&raw, &observed)?;
+            let mut live = || owner.check(self);
+            channel.send_frame(&ack, Instant::now() + Duration::from_secs(30), &cancel, &mut live)?;
+            live()?;
+            Ok(())
+        })();
+        match outcome { Ok(()) => { self.owner_channel=Some(channel); Ok(()) }, Err(e) => { channel.invalidate(); Err(e) } }
+    }
     /// Inactive one-shot selected-path readiness. Repeating it closes the
     /// channel. Success is correlation, not claim or reservation authority.
     #[allow(dead_code)]

@@ -36,6 +36,11 @@ final class NativeViewportController: ObservableObject {
         didSet { if oldValue != editingContextActive { editingContextGeneration = UUID(); displayReadout = "" } }
     }
     @Published var connected = false
+    /// Restriction from an acknowledged frame; retained until a newer exact
+    /// frame explicitly clears it. It never grants server authority.
+    @Published fileprivate(set) var boundedReadOnly = false
+    fileprivate var acknowledgedBoundedReadOnly: Bool?
+    fileprivate var acknowledgedBoundedEdit: NativeBoundedEditCapability?
     @Published fileprivate(set) var planSupported = false
     @Published fileprivate(set) var thumbnailSupported = false
     @Published fileprivate(set) var findSelectionSupported = false
@@ -70,6 +75,19 @@ final class NativeViewportController: ObservableObject {
             guard editingContextActive, editingContextGeneration == context, owner == epoch else { return }
             diagnose("DISPLAY_READ", error)
         }
+    }
+    /// An older or pending frame cannot clear a saved draft's restriction.
+    func acknowledges(draft: NativeExhibitionDraft?, tenantId: String?, principalId: String?, boundedEdit: NativeBoundedEditCapability? = nil) -> Bool {
+        guard connected, let frame = acknowledgedFrame, let owner, let draft,
+              let tenantId, let principalId else { return false }
+        return acknowledgedBoundedReadOnly == false && (boundedEdit == nil || acknowledgedBoundedEdit == boundedEdit) && frame.epoch == owner && frame.sequence == acceptedSequence && frame.draft == draft &&
+            frame.tenantId == tenantId && frame.principalId == principalId
+    }
+    func acknowledgesPlacement(draft: NativeExhibitionDraft?, tenantId: String?, principalId: String?,
+                               selection: ViewportSelection, capability: NativeBoundedEditCapability) -> Bool {
+        acknowledges(draft: draft, tenantId: tenantId, principalId: principalId, boundedEdit: capability)
+            && acknowledgedFrame?.selection == selection && acknowledgedFrame?.disabled == false
+            && editingContextActive
     }
     var hostEpoch: String? { owner }
     func confirmsFloorPreview(_ draft: NativeExhibitionDraft, tenantId: String, principalId: String) -> Bool {
@@ -220,6 +238,8 @@ struct NativeViewport: NSViewRepresentable {
     let transparent: Bool
     let disabled: Bool
     let interactionDisabled: Bool
+    var boundedEdit: NativeBoundedEditCapability? = nil
+    var acceptBoundedAck: (ViewportFrame, ViewportAcceptance) -> Bool = { _, _ in false }
     @ObservedObject var controller: NativeViewportController
     let onSelect: (ViewportSelection) -> Void
     let onCandidate: (DocumentValue, NativeExhibitionDraft) -> Void
@@ -278,7 +298,7 @@ struct NativeViewport: NSViewRepresentable {
             guard active else { return }
             endPlacement()
             entranceOperation = nil
-            if controller.owner == epoch { controller.entrancePreviewAction = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }
+            if controller.owner == epoch { controller.entrancePreviewAction = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }
             active = false; generation = UUID(); sendTask?.cancel()
             if controller.owner == epoch { controller.sharedFurnishingVisualsAction = nil; controller.sharedFurnishingVisualsSupported = false; controller.plinthEnvelopeAlignSupported = false }
             if controller.owner == epoch { controller.furnishingVisualsAction = nil; controller.furnishingThumbnailAction = nil; controller.spaceSettingsAction = nil; controller.viewingPlanAction = nil; controller.lightInspectorAction = nil; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.benchInspectorAction = nil; controller.benchInspectorSupported = false; controller.plaqueInspectorAction = nil; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false }
@@ -306,7 +326,7 @@ struct NativeViewport: NSViewRepresentable {
             }
             if installedToken == nil {
                 controller.sharedFurnishingVisualsSupported = false; controller.plinthEnvelopeAlignSupported = false
-                entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""
+                entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""
                 controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false
                 installedToken = value.credentials.token
                 generation = UUID(); sequence = 0; sent = 0; fingerprint = nil; prepared = false
@@ -316,7 +336,7 @@ struct NativeViewport: NSViewRepresentable {
                 Task { await install(page: page, generation: installGeneration) }
             }
             let selection = value.selection.flatMap { $0.belongs(to: value.draft) ? $0 : nil }
-            let probe = ViewportFrame(epoch: epoch, sequence: 1, tenantId: value.credentials.tenantId, principalId: value.credentials.principalId, draft: value.draft, selection: selection, mode: value.mode, view: value.view, disabled: value.disabled, cameraSequence: value.cameraSequence, transparent: value.transparent, presentation: controller.planSupported ? value.presentation : .threeD)
+            let probe = ViewportFrame(epoch: epoch, sequence: 1, tenantId: value.credentials.tenantId, principalId: value.credentials.principalId, draft: value.draft, selection: selection, mode: value.mode, view: value.view, disabled: value.disabled, cameraSequence: value.cameraSequence, transparent: value.transparent, presentation: controller.planSupported ? value.presentation : .threeD, workspaceId: value.boundedEdit?.workspaceId, baseETag: value.boundedEdit?.etag)
             let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
             guard let bytes = try? encoder.encode(probe) else { return }
             let hash = Data(SHA256.hash(data: bytes))
@@ -330,7 +350,8 @@ struct NativeViewport: NSViewRepresentable {
             fingerprint = hash; sequence += 1
             if !controller.displayReadout.isEmpty { controller.displayReadout = "" }
             controller.connected = false
-            latest = ViewportFrame(epoch: epoch, sequence: sequence, tenantId: value.credentials.tenantId, principalId: value.credentials.principalId, draft: value.draft, selection: selection, mode: value.mode, view: value.view, disabled: value.disabled, cameraSequence: value.cameraSequence, transparent: value.transparent, presentation: controller.planSupported ? value.presentation : .threeD)
+            controller.acknowledgedBoundedEdit = nil
+            latest = ViewportFrame(epoch: epoch, sequence: sequence, tenantId: value.credentials.tenantId, principalId: value.credentials.principalId, draft: value.draft, selection: selection, mode: value.mode, view: value.view, disabled: value.disabled, cameraSequence: value.cameraSequence, transparent: value.transparent, presentation: controller.planSupported ? value.presentation : .threeD, workspaceId: value.boundedEdit?.workspaceId, baseETag: value.boundedEdit?.etag)
             schedule()
         }
         private func install(page: URL, generation: UUID) async {
@@ -366,7 +387,7 @@ struct NativeViewport: NSViewRepresentable {
             return .allow
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             guard active, controller.owner == epoch, webView === web else { return }
             controller.message = "3D 화면을 열지 못했습니다. 로컬 제작 상태를 확인하세요."
@@ -387,8 +408,25 @@ struct NativeViewport: NSViewRepresentable {
                         let value = String(decoding: bytes, as: UTF8.self)
                         let response = try await web.callAsyncJavaScript("const deadline = Date.now() + 10000; while (!window.exhibitosViewport && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25)); if (!window.exhibitosViewport) throw new Error('VIEWPORT_ENTRY_UNAVAILABLE'); return await window.exhibitosViewport.accept(JSON.parse(frameJSON))", arguments: ["frameJSON":value], in: nil, contentWorld: .page)
                         guard self.active, !Task.isCancelled, self.controller.owner == self.epoch, self.generation == generation else { return }
+                        // A newer frame owns admission; ignore even a rejected
+                        // older response and advance to the current frame.
+                        if frame.workspaceId != nil, frame.sequence != self.sequence { self.sent = frame.sequence; continue }
                         guard let response, JSONSerialization.isValidJSONObject(response),
                               let acceptance = try? JSONDecoder().decode(ViewportAcceptance.self, from: JSONSerialization.data(withJSONObject: response)), acceptance.accepted else { throw BridgeFailure("VIEWPORT_ACCEPT_INVALID") }
+                        if frame.workspaceId != nil {
+                            guard self.parent.acceptBoundedAck(frame, acceptance),
+                                  let capability = self.parent.boundedEdit, acceptance.editingCapability == capability else {
+                                self.controller.boundedReadOnly = true
+                                throw BridgeFailure("VIEWPORT_ACCEPT_INVALID")
+                            }
+                            self.controller.acknowledgedBoundedEdit = capability
+                        } else { self.controller.acknowledgedBoundedEdit = nil }
+                        if frame.sequence == self.sequence { self.controller.acknowledgedBoundedReadOnly = acceptance.boundedReadOnly }
+                        if acceptance.boundedReadOnly == true {
+                            self.controller.boundedReadOnly = true
+                        } else if acceptance.boundedReadOnly == false && frame.sequence == self.sequence {
+                            self.controller.boundedReadOnly = false
+                        }
                         self.controller.planSupported = acceptance.supportsPlan
                         self.controller.thumbnailSupported = acceptance.supportsArtworkThumbnail
                         self.controller.findSelectionSupported = acceptance.supportsFindSelection
@@ -919,7 +957,7 @@ struct NativeViewportArea: View {
         return identity.uuidString + digest.map { String(format: "%02x", $0) }.joined()
     }
     private func renderer(credentials: LocalAuthoringSession, draft: NativeExhibitionDraft) -> some View {
-        NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing, interactionDisabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.placingArtwork, controller: controller, onSelect: { if controller.editingContextActive { model.selectViewport($0) } }, onCandidate: { candidate, base in let context = controller.editingContextGeneration; Task { guard controller.editingContextActive, controller.editingContextGeneration == context else { return }; await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
+        NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing, interactionDisabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.placingArtwork, boundedEdit: model.boundedPlacementCapability, acceptBoundedAck: { model.acceptBoundedPlacementFrame($0, $1) }, controller: controller, onSelect: { if controller.editingContextActive { model.selectViewport($0) } }, onCandidate: { candidate, base in let context = controller.editingContextGeneration; Task { guard controller.editingContextActive, controller.editingContextGeneration == context else { return }; await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
             .id(rendererIdentity(credentials))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .allowsHitTesting(!model.architectureDirty && !model.architectureApplying && !model.placementApplying)

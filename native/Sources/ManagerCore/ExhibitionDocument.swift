@@ -155,6 +155,61 @@ public struct NativeStudioResponse: Decodable, Sendable {
         }
     }
 }
+/// A scoped server observation, never authority to issue a write by itself.
+public struct NativeBoundedEditCapability: Decodable, Equatable, Sendable {
+    public let version: Int
+    public let kind: String
+    public let tenantId: String
+    public let principalId: String
+    public let workspaceId: String
+    public let exhibitionId: String
+    public let revision: Int
+    public let etag: String
+
+    public func matches(workspaceId: String, tenantId: String, principalId: String,
+                        exhibitionId: String, revision: Int, etag: String) -> Bool {
+        let pairs = [(self.workspaceId, workspaceId), (self.tenantId, tenantId),
+                     (self.principalId, principalId), (self.exhibitionId, exhibitionId)]
+        return version == 1 && kind == "native-bounded-edit-v1" && revision > 0 && self.revision == revision
+            && self.etag == etag && !etag.isEmpty
+            && pairs.allSatisfy { UUID(uuidString: $0.0) != nil && UUID(uuidString: $0.1) != nil && $0.0.lowercased() == $0.1.lowercased() }
+    }
+}
+
+/// Server-derived restriction for a specific saved exhibition.
+public struct NativeViewportPolicy: Decodable, Sendable {
+    public let exhibitionId: String
+    public let revision: Int
+    public let etag: String
+    public let boundedReadOnly: Bool
+    /// Absence is unknown, not proof that a draft has no bounded provenance.
+    public let boundedProfile: Bool?
+    /// Absence is unknown, not an ordinary-size admission.
+    public let boundedEditRequired: Bool?
+    public let editingCapability: NativeBoundedEditCapability?
+}
+
+/// Admission is only for the first clean ordinary-session edit. A capability
+/// observation does not authorize a PUT, or resolve any existing pending save.
+public enum NativeBoundedEditAdmission {
+    public static func admit(policy: NativeViewportPolicy, document: NativeDocumentState,
+                             importState: NativeOEXImportState, session: AuthoringSession,
+                             selectedImport: Bool) -> NativeBoundedEditCapability? {
+        guard !selectedImport, policy.boundedProfile == true, policy.boundedEditRequired == true, !policy.boundedReadOnly,
+              !document.dirty, document.pending == nil, let draft = document.draft,
+              let etag = document.etag, let capability = policy.editingCapability,
+              importState.intent == nil, importState.jobId == nil, importState.fileName == nil,
+              importState.workspaceId == document.workspaceId, importState.tenantId == document.tenantId,
+              importState.principalId == document.principalId,
+              session.tenantId.lowercased() == document.tenantId.lowercased(),
+              session.userId.lowercased() == document.principalId.lowercased(),
+              policy.exhibitionId.lowercased() == draft.id.lowercased(), policy.etag == etag,
+              capability.matches(workspaceId: document.workspaceId, tenantId: document.tenantId,
+                                 principalId: document.principalId, exhibitionId: draft.id,
+                                 revision: policy.revision, etag: etag) else { return nil }
+        return capability
+    }
+}
 public struct NativeExhibitionSummary: Decodable, Sendable, Identifiable {
     public let id: String
     public let revision: Int
@@ -172,7 +227,12 @@ public struct NativeDocumentState: Codable, Sendable {
         public let requestId: String
         public let etag: String?
         public let draft: NativeExhibitionDraft
-        public init(requestId: String = UUID().uuidString.lowercased(), etag: String?, draft: NativeExhibitionDraft) { self.requestId = requestId; self.etag = etag; self.draft = draft }
+        /// Older records omit this field. Tagged bounded requests must never
+        /// enter the generic retry path after a runtime or session change.
+        public let origin: String?
+        public init(requestId: String = UUID().uuidString.lowercased(), etag: String?, draft: NativeExhibitionDraft, origin: String? = nil) {
+            self.requestId = requestId; self.etag = etag; self.draft = draft; self.origin = origin
+        }
     }
     public let format: Int
     public var revision: UInt64

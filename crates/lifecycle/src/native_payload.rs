@@ -77,6 +77,14 @@ const NORMAL_OEX_CAPABILITY: &[u8] = br#"{"format":1,"kind":"exhibitos-native-no
 // No official selected-OEX release provenance has yet been approved. Each
 // future entry must bind reviewed source, producer and complete manifest hash.
 const NORMAL_OEX_RELEASE_PROVENANCE: &[(&str, &str, &str)] = &[];
+// Separate 027 release admission; empty until the producer and full payload
+// are independently qualified. Capability presence alone grants nothing.
+const NORMAL_OEX_027_RELEASE_PROVENANCE: &[(&str, &str, &str)] = &[];
+const NORMAL_OEX_027_PATH: &str = "platform/database/native-oex-normal/027_oex_exhibition_provenance.sql";
+const NORMAL_OEX_027_SHA256: &str = "09bd82b3195e2f54545f6af45173bbab569effac95553a50f573745dab96f2c7";
+const NORMAL_OEX_027_CAPABILITY_PATH: &str = "platform/scripts/native-normal-oex-027-capability-v2.json";
+const NORMAL_OEX_027_CAPABILITY_SHA256: &str = "e7f7bb5c5c12bf7cd901df5d8c1e5a0072fae30f98cdbd905215f311de09033b";
+
 
 fn normal_oex_release_declaration_matches(manifest: &Manifest, manifest_hash: &str, bytes: &[u8], approved: &[(&str, &str, &str)]) -> bool {
     if manifest.mode != "release" || !manifest.redistribution_qualified || !manifest.official_signed
@@ -93,6 +101,15 @@ fn normal_oex_release_declaration_matches(manifest: &Manifest, manifest_hash: &s
     ["platform/scripts/native-oex-normal-catalog.mjs", "platform/apps/api/dist/native-fresh-oex-owner.js",
      "platform/apps/api/dist/native-selected-studio-put.js", "platform/apps/api/dist/oex-owned-chunk-materializer.js",
      "platform/apps/api/dist/oex-owned-packed-worker-v2.js"].iter().all(|name| regular(name).is_some())
+}
+
+fn normal_oex_027_declaration_matches(manifest: &Manifest, manifest_hash: &str, bytes: &[u8], approved: &[(&str, &str, &str)]) -> bool {
+    let regular = |name: &str| manifest.files.iter().find(|f| f.path == name && f.link.is_none() && f.executable == Some(false));
+    normal_oex_release_declaration_matches(manifest, manifest_hash, bytes, approved)
+        && regular(NORMAL_OEX_027_PATH).is_some_and(|f| f.bytes == Some(2611) && f.sha256.as_deref() == Some(NORMAL_OEX_027_SHA256))
+        && regular(NORMAL_OEX_027_CAPABILITY_PATH).is_some_and(|f| f.bytes == Some(516) && f.sha256.as_deref() == Some(NORMAL_OEX_027_CAPABILITY_SHA256))
+        && regular("platform/apps/api/dist/native-oex-provenance.js").is_some_and(|f| f.bytes.is_some_and(|n| n > 0) && f.sha256.as_deref().is_some_and(hash_valid))
+        && regular("platform/apps/api/dist/native-oex-catalog-proof.js").is_some_and(|f| f.bytes.is_some_and(|n| n > 0) && f.sha256.as_deref().is_some_and(hash_valid))
 }
 
 #[cfg(test)]
@@ -114,6 +131,22 @@ mod normal_oex_release_declaration_tests {
             "sourceCommit":"a".repeat(40),"producerSHA256":"b".repeat(64),
             "entry":{"node":"bin/node","script":"platform/scripts/local-runtime.mjs","postgres":"postgres/bin/postgres","initdb":"postgres/bin/initdb"},
             "files":files,"redistributionQualified":true,"officialSigned":true,"remaining":"synthetic policy test"})).unwrap()
+    }
+
+    #[test]
+    fn provenance_027_needs_distinct_approved_tuple_and_complete_inventory() {
+        let mut m=fixture();let hash="c".repeat(64);let source="a".repeat(40);let producer="b".repeat(64);
+        let approved=[(source.as_str(),producer.as_str(),hash.as_str())];
+        assert!(!normal_oex_027_declaration_matches(&m,&hash,NORMAL_OEX_CAPABILITY,&approved));
+        for (path,bytes,sha) in [(NORMAL_OEX_027_PATH,2611,NORMAL_OEX_027_SHA256),
+            (NORMAL_OEX_027_CAPABILITY_PATH,516,NORMAL_OEX_027_CAPABILITY_SHA256),
+            ("platform/apps/api/dist/native-oex-provenance.js",1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            ("platform/apps/api/dist/native-oex-catalog-proof.js",1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")] {
+            m.files.push(serde_json::from_value(serde_json::json!({"path":path,"bytes":bytes,"sha256":sha,"executable":false})).unwrap());
+        }
+        assert!(normal_oex_027_declaration_matches(&m,&hash,NORMAL_OEX_CAPABILITY,&approved));
+        assert!(!normal_oex_027_declaration_matches(&m,&hash,NORMAL_OEX_CAPABILITY,NORMAL_OEX_027_RELEASE_PROVENANCE));
+        m.files.pop();assert!(!normal_oex_027_declaration_matches(&m,&hash,NORMAL_OEX_CAPABILITY,&approved));
     }
 
     #[test]
@@ -429,15 +462,23 @@ impl Payload {
     /// producer and exact manifest tuple. A capability record alone is never
     /// authority; the allowlist is intentionally empty pending review.
     pub(crate) fn normal_oex_selected_input(&self) -> Result<bool> {
-        if !NORMAL_OEX_RELEASE_PROVENANCE.iter().any(|(source, producer, hash)|
-            *source == self.manifest.source_commit.as_str() && *producer == self.manifest.producer_sha256.as_str() && *hash == self.manifest_sha256.as_str()) {
-            return Ok(false);
-        }
+        self.normal_oex_026_selected_input().and_then(|v| if v { Ok(true) } else { self.normal_oex_027_selected_input() })
+    }
+    fn normal_oex_026_selected_input(&self) -> Result<bool> {
+        self.normal_oex_selected_admission(NORMAL_OEX_RELEASE_PROVENANCE, false)
+    }
+    pub(crate) fn normal_oex_027_selected_input(&self) -> Result<bool> {
+        self.normal_oex_selected_admission(NORMAL_OEX_027_RELEASE_PROVENANCE, true)
+    }
+    fn normal_oex_selected_admission(&self, approved: &[(&str, &str, &str)], with_027: bool) -> Result<bool> {
+        if !approved.iter().any(|(source, producer, hash)| *source == self.manifest.source_commit.as_str()
+            && *producer == self.manifest.producer_sha256.as_str() && *hash == self.manifest_sha256.as_str()) { return Ok(false); }
         self.recheck()?;
         let path = self.root.join(NORMAL_OEX_CAPABILITY_PATH);
         if fs::canonicalize(&path).map_err(|_| invalid())? != path { return Err(invalid()); }
         let (bytes, pin) = crate::hosted_runtime_file::bounded(&path, 1024)?;
-        let accepted = normal_oex_release_declaration_matches(&self.manifest, &self.manifest_sha256, &bytes, NORMAL_OEX_RELEASE_PROVENANCE);
+        let accepted = if with_027 { normal_oex_027_declaration_matches(&self.manifest, &self.manifest_sha256, &bytes, approved) }
+            else { normal_oex_release_declaration_matches(&self.manifest, &self.manifest_sha256, &bytes, approved) };
         pin.check()?;
         Ok(accepted)
     }

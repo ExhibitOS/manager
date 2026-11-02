@@ -74,15 +74,24 @@ final class OEXImportModel: ObservableObject {
         let panel = NSOpenPanel(); panel.title = "OEX 가져오기"; panel.message = "전시를 새 사본으로 가져옵니다. 기존 전시는 변경하지 않습니다."
         panel.allowedContentTypes = [UTType(filenameExtension: "oex") ?? .data]; panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        busy = true; defer { busy = false }; let current = generation
+        busy = true; defer { busy = false }; let current = generation; let bounded = freshBounded
         do {
             let selected: NativeOEXImportFile
-            if freshBounded { selected = try await NativeOEXImportFile.loadForBoundedProfile(url) }
+            if bounded { selected = try await NativeOEXImportFile.loadForBoundedProfile(url) }
             else { selected = try await NativeOEXImportFile.load(url) }
             guard generation == current else { throw AuthoringFailure("OEX_IMPORT_SCOPE_CHANGED") }
             if let intent = state?.intent, !intent.matches(selected.archive) { throw AuthoringFailure("OEX_IMPORT_FILE_CHANGED") }
             file = selected; message = "파일을 확인했습니다. 가져오기를 시작하거나 이어가세요."
-        } catch { message = (error as? AuthoringFailure)?.errorDescription ?? "OEX 파일을 읽지 못했습니다." }
+        } catch {
+            guard generation == current else { return }
+            if let failure = error as? AuthoringFailure, failure.code == "OEX_LIMIT" {
+                message = bounded
+                    ? "OEX 파일은 1바이트부터 512 MiB까지 가져올 수 있습니다. 파일 크기를 확인하세요."
+                    : "OEX 파일은 1바이트부터 64 MiB까지 가져올 수 있습니다. 파일 크기를 확인하세요."
+            } else {
+                message = (error as? AuthoringFailure)?.errorDescription ?? "OEX 파일을 읽지 못했습니다."
+            }
+        }
     }
     func run() async {
         guard !busy, let initial = state, let api, let save else { return }
@@ -146,17 +155,17 @@ final class OEXImportModel: ObservableObject {
                           document.etag == nil, document.savedEditVersion == nil,
                           let version = source.draft.document["editVersion"].integer else { throw AuthoringFailure("EXHIBITION_PENDING") }
                     document.draft = source.draft; document.etag = source.etag; document.savedEditVersion = version
-                    document.pending = .init(requestId: requestId, etag: source.etag, draft: source.draft)
+                    document.pending = .init(requestId: requestId, etag: source.etag, draft: source.draft, origin: "bounded-import-v1")
 
                     let stored = try await bridge.saveDocumentState(context, state: document)
 
                     guard stored.workspaceId == original.workspaceId, stored.tenantId == original.tenantId,
-                          stored.principalId == original.principalId, stored.pending?.requestId == requestId,
+                          stored.principalId == original.principalId, stored.pending?.requestId == requestId, stored.pending?.origin == "bounded-import-v1",
                           stored.pending?.etag == source.etag, stored.pending?.draft == source.draft,
                           stored.draft == source.draft else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
                     guard await MainActor.run(body: { self?.generation == current && self?.mayBeginBounded?() == true }) else { throw AuthoringFailure("EXHIBITION_PENDING") }
                     let checked = try await bridge.documentState(context)
-                    guard checked.revision == stored.revision, checked.pending?.requestId == requestId,
+                    guard checked.revision == stored.revision, checked.pending?.requestId == requestId, checked.pending?.origin == "bounded-import-v1",
                           checked.pending?.etag == source.etag, checked.pending?.draft == source.draft,
                           checked.draft == source.draft else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
                     try await bridge.authorizeBoundedOEXSave(context, offer: offer)

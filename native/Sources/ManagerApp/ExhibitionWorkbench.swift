@@ -15,6 +15,9 @@ struct NativeExhibitionView: View {
     let connect: () async -> Void
     var active = true
     var readOnly = false
+    var canCreateOEXWorkspace = false
+    var createOEXWorkspace: () async -> Void = {}
+    @State private var confirmOEXWorkspace = false
     var connectionAllowed = true
     var edit: () -> Void = {}
     var publish: () -> Void = {}
@@ -58,12 +61,18 @@ struct NativeExhibitionView: View {
         let key = [model.state?.tenantId ?? "", model.state?.principalId ?? "", model.draft?.id ?? "", model.placementId].joined(separator: ":")
         return Binding(get: { inspectorInputs[key] ?? InstallationInspectorState() }, set: { inspectorInputs[key] = $0 })
     }
+    private var editRestricted: Bool { readOnly || model.boundedReadOnly || model.boundedPolicyPending || controller.boundedReadOnly || model.boundedPlacementCapability != nil }
     private var formLocked: Bool {
         !ready || readOnly || model.entrancePreviewActive || model.busy || model.pending || model.immutable || model.architectureDirty || model.architectureApplying || model.placingArtwork
     }
-    private var saveLocked: Bool { !ready || readOnly || model.busy || model.entrancePreviewActive || (model.immutable && !model.pending) }
+    private var saveLocked: Bool {
+        if model.boundedPlacementCapability != nil {
+            return !ready || readOnly || !model.boundedPlacementReady || model.boundedPendingRecoveryBlocked || model.busy || model.entrancePreviewActive || !model.dirty
+        }
+        return !ready || editRestricted || model.boundedPendingRecoveryBlocked || model.busy || model.entrancePreviewActive || (model.immutable && !model.pending)
+    }
     private func requestOpen(_ id: String?) {
-        guard !model.entrancePreviewActive, !model.pending, id != nil || (active && !readOnly) else { return }
+        guard (id != nil || !model.boundedNavigationLocked), !model.entrancePreviewActive, !model.pending, !model.busy, !model.placingArtwork, id != nil || (active && !readOnly) else { return }
         if model.dirty { pendingOpen = id; pendingNew = id == nil; pendingAdopt = false; discardPrompt = true }
         else { Task { if let id { await model.open(id) } else if controller.editingContextActive { await model.new() } } }
     }
@@ -136,8 +145,8 @@ struct NativeExhibitionView: View {
             Text(model.draft?.title ?? "전시 선택").font(.headline).lineLimit(1).layoutPriority(-1)
             Spacer(minLength: 4)
             ControlGroup {
-                Button { Task { if controller.editingContextActive { await model.undo() } } } label: { Label("되돌리기", systemImage: "arrow.uturn.backward") }.disabled(!ready || readOnly || !model.canUndo)
-                Button { Task { if controller.editingContextActive { await model.redo() } } } label: { Label("다시 실행", systemImage: "arrow.uturn.forward") }.disabled(!ready || readOnly || !model.canRedo)
+                Button { Task { if controller.editingContextActive { await model.undo() } } } label: { Label("되돌리기", systemImage: "arrow.uturn.backward") }.disabled(!ready || readOnly || (editRestricted && model.boundedPlacementCapability == nil) || !model.canUndo)
+                Button { Task { if controller.editingContextActive { await model.redo() } } } label: { Label("다시 실행", systemImage: "arrow.uturn.forward") }.disabled(!ready || readOnly || (editRestricted && model.boundedPlacementCapability == nil) || !model.canRedo)
             }.labelStyle(.iconOnly).fixedSize()
             if coverPurpose || readOnly || model.entrancePreviewActive {
                 Button { returnToScene() } label: { Label("편집으로", systemImage: "arrow.backward") }
@@ -164,8 +173,14 @@ struct NativeExhibitionView: View {
                 TextField("전시 검색", text: $model.query).onSubmit { Task { await model.refresh() } }
                 Button { Task { await model.refresh() } } label: { Label("검색", systemImage: "magnifyingglass") }.labelStyle(.iconOnly)
             }.disabled(!ready || model.busy)
-            Button("새 전시", systemImage: "plus") { requestOpen(nil) }.disabled(!ready || readOnly || model.busy || model.pending)
-            OEXImportControls(model: model.oexImport, ready: ready && active && !readOnly && !model.pending && !model.entrancePreviewActive, open: { requestOpen($0) })
+            Button("새 전시", systemImage: "plus") { requestOpen(nil) }.disabled(!ready || readOnly || model.boundedNavigationLocked || model.busy || model.pending || model.placingArtwork || model.entrancePreviewActive)
+            OEXImportControls(model: model.oexImport, ready: ready && active && !editRestricted && !model.pending && !model.entrancePreviewActive, open: { requestOpen($0) })
+            Button("새 작업 공간에서 OEX 가져오기") { confirmOEXWorkspace = true }
+                .disabled(!active || readOnly || !canCreateOEXWorkspace)
+                .confirmationDialog("새 작업 공간에서 가져올까요?", isPresented: $confirmOEXWorkspace, titleVisibility: .visible) {
+                    Button("새 작업 공간 만들기") { Task { await createOEXWorkspace() } }
+                    Button("취소", role: .cancel) {}
+                } message: { Text("현재 로컬 제작을 정지하고 새 작업 공간을 만듭니다. 기존 작업 공간과 저장된 전시는 보관됩니다.") }
             List(selection: Binding<String?>(get: { model.items.contains(where: { $0.id == model.draft?.id }) ? model.draft?.id : nil }, set: { if let id = $0 { requestOpen(id) } })) {
                 ForEach(model.items) { item in
                     VStack(alignment: .leading, spacing: 3) { Text(item.title).lineLimit(2); Text("저장본 \(item.revision)").font(.caption).foregroundStyle(.secondary) }.tag(item.id)

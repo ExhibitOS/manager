@@ -369,6 +369,13 @@ impl InstallationController {
             if !session.belongs_to(service) { return Err(err("NATIVE_OTHER_INSTALLATION_ACTIVE")); }
             let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
             let _profile = profile_lock(profile)?;
+            self.ensure_active_creation_unlocked(service)?;
+            // This new workspace type has not yet qualified completion-marker
+            // rebinding on restore. Never emit a backup we cannot reopen.
+            let (registry,_) = load(&profile.root)?.ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
+            if registry.installations.iter().any(|e|e.id==registry.active_id && e.kind=="oex-import") {
+                return Err(err("NATIVE_OEX_WORKSPACE_BACKUP_UNAVAILABLE"));
+            }
             let prepared = service.native_prepared()?.ok_or_else(|| err("NATIVE_NOT_READY"))?;
             // Keep the established four-journal archive compatible with older
             // readers. An unfinished OEX request is never silently omitted.
