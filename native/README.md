@@ -30,6 +30,14 @@ Rust helper explicitly. The validation-profile Info key is recognized only in
 debug builds. Use an isolated profile for validation and retain original apps.
 Release delivery/signing is a separate existing distribution pipeline.
 
+`--legal-resources /absolute/prepared-directory` copies an existing license/source
+index and its files to `Contents/Resources/NativeRuntime-Legal`. The Help menu's
+“라이선스 및 소스 보기” command opens that local `index.html`; it is disabled when
+the index is absent. This companion stays outside the runtime inventory. Its
+actual corresponding-source/notices contents and owning-app resource seal must
+be reviewed and recorded with the delivered app; copying it does not establish
+redistribution qualification or change runtime admission.
+
 The native packager copies the approved Manager icon and integrated Studio/CMS
 marks from `native/Resources/Brand` into the app's existing Resources directory.
 `CFBundleIconFile` names `manager.icns`; the existing screen header uses the
@@ -39,6 +47,26 @@ these resources, including the rounded MDI floor-plan modification notice. No
 external font or brand-generation tool is required by the app. Existing bundles
 acquire these assets only when a subsequent package includes them; source changes
 alone do not establish package, GUI or distribution qualification.
+
+The native OEX client keeps the existing64MiB export when the authenticated
+session does not advertise `nativeOexExportProfile: "bounded-file-v1"`. A
+supporting personal runtime can receive up to512MiB into a private snapshot,
+with a new request UUID and exact saved ETag. The client verifies the fixed
+length, profile, operation ID and SHA256, then waits for that same session's
+producer/response/known-stage terminal receipt before exposing a file. An
+explicit retry first checks a retained uncertain UUID; it never reposts that
+UUID. The receiver's intent is in memory, and runtime loss is not a completed
+owner return. The server's unresolved-stage refusal remains authoritative.
+Bounded output uses a new destination and never replaces an existing file.
+These are implementation boundaries; actual runtime/workspace qualification
+and native GUI output evidence must match the delivered payload separately.
+
+Local publication uses its own affirmative `nativePublicationProfile:
+"bounded-local-v1"` session advertisement and an explicit per-call profile
+header. Ordinary readiness/publish requests retain their existing behavior.
+A negotiated pending request commits the selected profile in its existing plan
+binding, keeping the same snapshot, ETag and publish request ID on cold retry.
+This does not grant watermark support or enlarge the ordinary draft-create limit.
 
 An optional `--runtime-payload /absolute/newly-produced-runtime` embeds the
 Platform producer's local validation payload under `Contents/Resources/native-runtime`.

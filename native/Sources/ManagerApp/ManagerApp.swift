@@ -554,6 +554,9 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate {
 struct ManagerApp: App {
     @NSApplicationDelegateAdaptor(ManagerDelegate.self) private var delegate
     @StateObject private var model = ManagerModel()
+    private var legalIndexURL: URL? {
+        Bundle.main.url(forResource: "index", withExtension: "html", subdirectory: "NativeRuntime-Legal")
+    }
     var body: some Scene {
         Window("ExhibitOS Manager", id: "manager") {
             ManagerView(model: model).task { delegate.model = model; await model.refresh() }
@@ -574,6 +577,11 @@ struct ManagerApp: App {
             CommandMenu("보기") {
                 Button("일반 모드") { model.change(mode: .beginner) }
                 Button("전문가 모드") { model.change(mode: .expert) }
+            }
+            CommandGroup(after: .help) {
+                Button("라이선스 및 소스 보기") {
+                    if let url = legalIndexURL { NSWorkspace.shared.open(url) }
+                }.disabled(legalIndexURL == nil)
             }
         }
         Settings {

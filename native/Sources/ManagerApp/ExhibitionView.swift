@@ -2105,9 +2105,14 @@ final class ExhibitionModel: ObservableObject {
             guard !dirty, let draft, let etag = state?.etag, let api else { throw AuthoringFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
             exporting = true
             defer { exporting = false }
+            let bounded = session?.nativeOexExportProfile == "bounded-file-v1"
+            let accessID = viewportAccessID, workspace = state?.workspaceId
+            let principal = state?.principalId, tenant = state?.tenantId
             let panel = NSSavePanel()
             panel.title = "OEX 내보내기"
-            panel.message = "전시와 내보내기가 허용된 작품 파일을 함께 저장합니다."
+            panel.message = bounded
+                ? "전시와 허용된 작품 파일을 새 이름으로 저장합니다. 기존 파일은 덮어쓰지 않습니다."
+                : "전시와 내보내기가 허용된 작품 파일을 함께 저장합니다."
             panel.nameFieldStringValue = "전시.oex"
             panel.allowedContentTypes = [UTType(filenameExtension: "oex") ?? .data]
             panel.allowsOtherFileTypes = true; panel.canCreateDirectories = true; panel.isExtensionHidden = false
@@ -2117,13 +2122,30 @@ final class ExhibitionModel: ObservableObject {
             }
             guard response == .OK, let url = panel.url else { notice = "내보내기를 취소했습니다."; return }
             try Task.checkCancellation()
-            let archive = try await api.exportOEX(exhibitionId: draft.id, etag: etag)
-            guard self.draft == draft, state?.etag == etag, !dirty else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+            if bounded, FileManager.default.fileExists(atPath: url.path) {
+                notice = "기존 파일을 보존했습니다. 새 파일 이름으로 다시 내보내세요."
+                return
+            }
+            guard viewportAccessID == accessID, state?.workspaceId == workspace,
+                  state?.principalId == principal, state?.tenantId == tenant,
+                  self.draft == draft, state?.etag == etag, !dirty else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+            let archiveSHA256: String
+            let writeOutput: (URL) async throws -> Void
+            if bounded {
+                let archive = try await api.exportBoundedOEX(exhibitionId: draft.id, etag: etag)
+                archiveSHA256 = archive.sha256; writeOutput = { try await archive.write(to: $0) }
+            } else {
+                let archive = try await api.exportOEX(exhibitionId: draft.id, etag: etag)
+                archiveSHA256 = archive.sha256; writeOutput = { try await archive.write(to: $0) }
+            }
+            guard viewportAccessID == accessID, state?.workspaceId == workspace,
+                  state?.principalId == principal, state?.tenantId == tenant,
+                  self.draft == draft, state?.etag == etag, !dirty else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
             try Task.checkCancellation()
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
-            try await archive.write(to: url)
-            exportedURL = url; exportedSHA256 = archive.sha256
+            try await writeOutput(url)
+            exportedURL = url; exportedSHA256 = archiveSHA256
             notice = "OEX 파일을 저장했습니다. 인터넷 공개는 공개 단계에서 진행하세요."
         }
     }

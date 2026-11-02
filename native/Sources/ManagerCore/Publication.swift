@@ -140,17 +140,33 @@ func validPublicationPlanBinding(_ value: String?) -> Bool { value.map(nativeImp
 
 /// Cache identity only, never an authorization or execution capability. The
 /// exact runtime artifact pins publication quality/derivation policy; there is
-/// no separate native quality selector. Normalize only effective watermark data.
-public func nativePublicationPlanBinding(sourceExhibitionId: String, etag: String, runtimeManifestSha256: String, watermark: PublicationWatermark?) throws -> String {
+/// no separate native quality selector. Explicit bounded transport is committed
+/// only when negotiated; legacy commitments retain their original bytes.
+public func nativePublicationPlanBinding(sourceExhibitionId: String, etag: String, runtimeManifestSha256: String, watermark: PublicationWatermark?, publicationProfile: String? = nil) throws -> String {
     guard UUID(uuidString: sourceExhibitionId) != nil, validPublicationETag(etag), nativeImportDigest(runtimeManifestSha256) else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
     let settings = watermark ?? PublicationWatermark(); try settings.validate()
-    let record: DocumentValue = .object(["version": .integer(1), "sourceExhibitionId": .string(sourceExhibitionId), "sourceEtag": .string(etag),
-        "runtimeManifestSha256": .string(runtimeManifestSha256), "effectiveWatermark": settings.value])
+    guard publicationProfile == nil || publicationProfile == "bounded-local-v1" else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
+    var fields: [String: DocumentValue] = ["version": .integer(publicationProfile == nil ? 1 : 2), "sourceExhibitionId": .string(sourceExhibitionId), "sourceEtag": .string(etag),
+        "runtimeManifestSha256": .string(runtimeManifestSha256), "effectiveWatermark": settings.value]
+    if let publicationProfile { fields["publicationProfile"] = .string(publicationProfile) }
+    let record = DocumentValue.object(fields)
     let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     return nativeImportSHA256(try encoder.encode(record))
 }
 
 extension NativeExhibitionDraft {
+    /// A primary-source size signal, not a measurement of publication derivatives.
+    public var primarySourcesExceedLegacyPublicationBudget: Bool {
+        var remaining: Int64 = 64 * 1024 * 1024
+        for artwork in artworks {
+            guard let primary = artwork["primaryAssetId"].string,
+                  let asset = artwork["assets"].items?.first(where: { $0["id"].string == primary }),
+                  let bytes = asset["bytes"].integer, bytes > 0 else { return false }
+            if bytes > remaining { return true }
+            remaining -= bytes
+        }
+        return false
+    }
     /// The existing publication API freezes its source exhibition. A separate
     /// private copy retains that contract while the user's authoring draft stays editable.
     public func copyForPublication(now: Date = Date()) throws -> Self { try copyWithNewIdentity(suffix: " · 공개용 저장본", now: now) }

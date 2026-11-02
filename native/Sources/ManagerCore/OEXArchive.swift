@@ -151,6 +151,70 @@ public struct NativeOEXArchive: Sendable {
         try Task.checkCancellation()
         return bytes
     }
+    /// Selected bounded output only. The caller must first establish the
+    /// separately reviewed owner terminal/drain proof for this exact snapshot.
+    func writeBoundedVerified(to url: URL) async throws {
+        guard url.isFileURL, !url.lastPathComponent.isEmpty, url.lastPathComponent != ".", url.lastPathComponent != ".." else { throw AuthoringFailure("EXPORT_WRITE_FAILED") }
+        let ownedFile = file, identity = stamp, expectedHash = sha256, expectedBytes = count
+        let work = Task.detached(priority: .userInitiated) {
+            let parentFD = Darwin.open(url.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard parentFD >= 0 else { throw AuthoringFailure("EXPORT_WRITE_FAILED") }
+            defer { Darwin.close(parentFD) }
+            // One owner creates and holds this private directory until commit.
+            let directory = ".exhibitos-oex-" + UUID().uuidString
+            guard mkdirat(parentFD, directory, 0o700) == 0 else { throw AuthoringFailure("EXPORT_WRITE_FAILED") }
+            let dirFD = openat(parentFD, directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard dirFD >= 0 else { throw AuthoringFailure("EXPORT_WRITE_FAILED") }
+            defer { Darwin.close(dirFD) }
+            var dirIdentity = stat()
+            guard fstat(dirFD, &dirIdentity) == 0, dirIdentity.st_mode & S_IFMT == S_IFDIR,
+                  dirIdentity.st_mode & 0o777 == 0o700, dirIdentity.st_uid == geteuid() else { throw AuthoringFailure("EXPORT_WRITE_FAILED") }
+            defer {
+                var namedDir = stat()
+                if fstatat(parentFD, directory, &namedDir, AT_SYMLINK_NOFOLLOW) == 0,
+                   namedDir.st_dev == dirIdentity.st_dev, namedDir.st_ino == dirIdentity.st_ino { _ = unlinkat(parentFD, directory, AT_REMOVEDIR) }
+            }
+            let sourceFD = Darwin.open(ownedFile.url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+            guard sourceFD >= 0 else { throw AuthoringFailure("FILE_CHANGED") }
+            let input = FileHandle(fileDescriptor: sourceFD, closeOnDealloc: true)
+            defer { try? input.close() }
+            var before = stat()
+            guard fstat(sourceFD, &before) == 0, identity.matches(before), before.st_size == Int64(expectedBytes) else { throw AuthoringFailure("FILE_CHANGED") }
+            let fd = openat(dirFD, "archive", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            guard fd >= 0 else { throw AuthoringFailure("EXPORT_WRITE_FAILED") }
+            let output = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+            var outputIdentity = stat()
+            guard fstat(fd, &outputIdentity) == 0, outputIdentity.st_mode & S_IFMT == S_IFREG,
+                  outputIdentity.st_uid == geteuid(), outputIdentity.st_nlink == 1 else { throw AuthoringFailure("EXPORT_WRITE_FAILED") }
+            defer {
+                // Remove only the named file and directory identities we created.
+                var named = stat()
+                if fstatat(dirFD, "archive", &named, AT_SYMLINK_NOFOLLOW) == 0,
+                   named.st_dev == outputIdentity.st_dev, named.st_ino == outputIdentity.st_ino { _ = unlinkat(dirFD, "archive", 0) }
+                try? output.close()
+            }
+            var hasher = SHA256(), copied = 0
+            while let block = try input.read(upToCount: 256 * 1024), !block.isEmpty {
+                try Task.checkCancellation()
+                guard block.count <= expectedBytes - copied else { throw AuthoringFailure("FILE_CHANGED") }
+                try output.write(contentsOf: block); hasher.update(data: block); copied += block.count
+            }
+            var after = stat(), namedOutput = stat(), namedDir = stat()
+            guard fstat(sourceFD, &after) == 0, identity.matches(after), copied == expectedBytes,
+                  hasher.finalize().map({ String(format: "%02x", $0) }).joined() == expectedHash else { throw AuthoringFailure("FILE_CHANGED") }
+            guard Darwin.fsync(fd) == 0,
+                  fstatat(dirFD, "archive", &namedOutput, AT_SYMLINK_NOFOLLOW) == 0,
+                  namedOutput.st_dev == outputIdentity.st_dev, namedOutput.st_ino == outputIdentity.st_ino,
+                  fstatat(parentFD, directory, &namedDir, AT_SYMLINK_NOFOLLOW) == 0,
+                  namedDir.st_dev == dirIdentity.st_dev, namedDir.st_ino == dirIdentity.st_ino else { throw AuthoringFailure("EXPORT_WRITE_FAILED") }
+            try Task.checkCancellation()
+            // No existing or concurrently created destination may be replaced.
+            // After this exclusive rename succeeds, report committed even if
+            // cancellation arrives while the kernel call executes.
+            guard renameatx_np(dirFD, "archive", parentFD, url.lastPathComponent, UInt32(RENAME_EXCL)) == 0 else { throw AuthoringFailure("EXPORT_WRITE_FAILED") }
+        }
+        try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+    }
     public func write(to url: URL) async throws {
         guard url.isFileURL else { throw AuthoringFailure("EXPORT_WRITE_FAILED") }
         let ownedFile = file
