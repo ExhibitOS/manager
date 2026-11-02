@@ -258,6 +258,7 @@ final class ExhibitionModel: ObservableObject {
         if let value = plaquePreview?.displayDraft { return value }
         if let value = benchPreview?.displayDraft { return value }
         if let value = lightPreview?.displayDraft { return value }
+        if let value = wallFinishPreview?.displayDraft { return value }
         if let value = surfaceMaterialPreview?.displayDraft { return value }
         if let value = surfaceMaterialTexturePreview?.displayDraft { return value }
         if floorDirty { return floorPreview ?? draft }
@@ -284,7 +285,7 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var architectureStatus = ""
     @Published private(set) var architectureApplying = false
     var architectureGeometryDirty: Bool { architecture != architectureBaseline }
-    var architectureDirty: Bool { architectureGeometryDirty || surfaceMaterialDirty || lightDirty || benchDirty || plaqueDirty || spaceLightingDirty || furnishingDirty || viewingPlanDirty }
+    var architectureDirty: Bool { architectureGeometryDirty || surfaceMaterialDirty || wallFinishDirty || lightDirty || benchDirty || plaqueDirty || spaceLightingDirty || furnishingDirty || viewingPlanDirty }
     @Published var viewingPlan: ViewingPlanFormBuffer? {
         didSet { viewingPlanPreview = nil; viewingPlanPreviewAccessID = nil; viewingPlanStatus = "" }
     }
@@ -496,6 +497,9 @@ final class ExhibitionModel: ObservableObject {
     private var sharedFurnishingPreviewAccessID: UUID?
     @Published private(set) var sharedFurnishingStatus = ""
     @Published private(set) var sharedFurnishingCatalogReady = false
+    @Published private(set) var sharedFurnishingCatalog: [DocumentValue] = []
+    @Published var sharedFurnishingQuery = ""
+    @Published var sharedFurnishingCategory = "all"
     private var sharedFurnishingCatalogAccessID: UUID?
     private var sharedFurnishingCatalogLoading = false
     var sharedFurnishingDirty: Bool { sharedFurnishing != sharedFurnishingBaseline }
@@ -531,11 +535,14 @@ final class ExhibitionModel: ObservableObject {
         guard viewportController.connected, viewportController.sharedFurnishingVisualsSupported, !sharedFurnishingCatalogLoading,
               sharedFurnishingCatalogAccessID != viewportAccessID, let api else { return }
         sharedFurnishingCatalogLoading = true; defer { sharedFurnishingCatalogLoading = false }
+        sharedFurnishingCatalogReady = false; sharedFurnishingCatalog = []
         let access = viewportAccessID
         do {
-            _ = try await api.sharedFurnishings(); try Task.checkCancellation()
+            let items = try await api.sharedFurnishings(); try Task.checkCancellation()
             guard access == viewportAccessID, viewportController.connected, viewportController.sharedFurnishingVisualsSupported else { return }
+            sharedFurnishingCatalog = items
             sharedFurnishingCatalogReady = true; sharedFurnishingCatalogAccessID = access
+            if sharedFurnishingStatus == "비품 목록을 확인하지 못했습니다. 기존 설정은 유지됩니다." { sharedFurnishingStatus = "" }
         } catch {
             guard !Task.isCancelled, access == viewportAccessID else { return }
             sharedFurnishingCatalogAccessID = access; sharedFurnishingStatus = "비품 목록을 확인하지 못했습니다. 기존 설정은 유지됩니다."
@@ -570,6 +577,76 @@ final class ExhibitionModel: ObservableObject {
             notice = "비품 변경을 이 Mac에 보관했습니다. 전시 저장은 별도로 진행합니다."
         }
         syncSharedFurnishing()
+    }
+    @Published var wallFinish: WallFinishFormBuffer? { didSet { clearWallFinishPreview() } }
+    private var wallFinishBaseline: WallFinishFormBuffer?
+    @Published private var wallFinishPreview: WallFinishPreview?
+    private var wallFinishPreviewAccessID: UUID?
+    private var wallFinishPreviewContext: UUID?
+    private var wallFinishPreviewHost: String?
+    @Published private(set) var wallFinishStatus = ""
+    var wallFinishDirty: Bool { wallFinish != wallFinishBaseline }
+    var wallFinishPreviewing: Bool { wallFinishPreview != nil }
+    private var wallFinishContextEditable: Bool {
+        !entrancePreviewActive && !pending && !immutable && !placingArtwork && viewingPointInput == nil
+            && !floorDirty && !nonFloorFormDirty && !positionDirty && !architectureGeometryDirty
+            && !surfaceMaterialDirty && !lightDirty && !benchDirty && !plaqueDirty && !spaceLightingDirty
+            && !furnishingDirty && !viewingPlanDirty && viewportController.editingContextActive
+            && viewportController.connected && viewportController.wallFinishSupported
+            && viewportSelection?.kind == "surface" && viewportSelection?.id == wallFinish?.surfaceId && wallFinish != nil
+    }
+    var canEditWallFinish: Bool { !busy && !architectureApplying && wallFinishContextEditable }
+    var canPreviewWallFinish: Bool { canEditWallFinish && wallFinishDirty && wallFinishPreview == nil }
+    private var checkedWallFinishPreview: WallFinishPreview? {
+        guard wallFinishContextEditable, let preview = wallFinishPreview, preview.base == draft,
+              let fields = wallFinish, (try? fields.command()) == preview.command,
+              wallFinishPreviewAccessID == viewportAccessID,
+              wallFinishPreviewContext == viewportController.editingContextGeneration,
+              wallFinishPreviewHost == viewportController.hostEpoch, let credentials = viewportCredentials,
+              viewportController.confirmsMetadataPreview(preview.displayDraft, tenantId: credentials.tenantId, principalId: credentials.principalId) else { return nil }
+        return preview
+    }
+    var canApplyWallFinish: Bool { canEditWallFinish && checkedWallFinishPreview != nil }
+    private func clearWallFinishPreview() {
+        wallFinishPreview = nil; wallFinishPreviewAccessID = nil; wallFinishPreviewContext = nil; wallFinishPreviewHost = nil; wallFinishStatus = ""
+    }
+    private func syncWallFinish() {
+        guard !wallFinishDirty else { return }
+        wallFinish = nil; wallFinishBaseline = nil
+        guard let draft, let selection = viewportSelection, selection.kind == "surface",
+              draft.candidate["surfaces"].items?.contains(where: { $0["id"].string == selection.id && $0["type"].string == "wall" }) == true else { return }
+        do { let fields = try WallFinishFormBuffer(draft: draft, surfaceId: selection.id); wallFinish = fields; wallFinishBaseline = fields }
+        catch { wallFinishStatus = "벽 마감 정보를 읽지 못했습니다. 기존 설정은 유지됩니다." }
+    }
+    func discardWallFinish() {
+        guard !busy, !pending, !architectureApplying, !placingArtwork else { return }
+        wallFinish = wallFinishBaseline; syncWallFinish()
+    }
+    func previewWallFinish() async {
+        guard canPreviewWallFinish, let fields = wallFinish, let base = draft else { return }
+        let access = viewportAccessID, context = viewportController.editingContextGeneration, host = viewportController.hostEpoch
+        do {
+            let command = try fields.command(); architectureApplying = true; defer { architectureApplying = false }
+            let preview = try await viewportController.wallFinish(command)
+            guard architectureApplying, wallFinishContextEditable, viewportAccessID == access,
+                  viewportController.editingContextGeneration == context, viewportController.hostEpoch == host,
+                  draft == base, preview.base == base, wallFinish == fields else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            wallFinishPreview = preview; wallFinishPreviewAccessID = access; wallFinishPreviewContext = context; wallFinishPreviewHost = host
+            wallFinishStatus = "확인한 벽 마감을 미리 보고 있습니다. 문과 작품의 여유 공간을 확인한 뒤 적용하세요."
+        } catch {
+            failure = error as? AuthoringFailure ?? AuthoringFailure("WALL_FINISH_PREVIEW_FAILED")
+            viewportController.diagnose("WALL_FINISH", error)
+        }
+    }
+    func applyWallFinish() async {
+        guard canApplyWallFinish else { return }
+        await work {
+            guard !architectureApplying, let preview = checkedWallFinishPreview, let fields = wallFinish,
+                  let draft, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            value.draft = try preview.apply(to: draft, command: fields.command(), selectedSurfaceId: fields.surfaceId)
+            try await persist(value); wallFinishBaseline = wallFinish; syncFields()
+            notice = "벽 마감을 이 Mac에 보관했습니다. 되돌리기로 복원할 수 있으며 전시 저장은 별도로 진행합니다."
+        }
     }
     @Published var spaceLighting: SpaceLightingFormBuffer? { didSet { spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; spaceLightingStatus = "" } }
     private var spaceLightingBaseline: SpaceLightingFormBuffer?
@@ -714,7 +791,10 @@ final class ExhibitionModel: ObservableObject {
     private var write: ((NativeDocumentState) async throws -> NativeDocumentState)?
     var draft: NativeExhibitionDraft? { state?.draft }
     var pending: Bool { state?.pending != nil }
-    var formDirty: Bool { viewingPointInput != nil || floorDirty || nonFloorFormDirty }
+    // A staged wall command blocks ordinary native/3D edits, while its own
+    // negotiated auxiliary request still needs the unchanged editable frame.
+    var viewportFormDirty: Bool { viewingPointInput != nil || floorDirty || nonFloorFormDirty }
+    var formDirty: Bool { viewportFormDirty || wallFinishDirty }
     private var nonFloorFormDirty: Bool {
         guard let draft else { return false }
         let entranceDirty = (entranceEditable && ((try? draft.viewerEntranceSettings()) != entrance || coverEntry.isDirty)) || installationDirty || publicationWatermark.isDirty
@@ -788,7 +868,7 @@ final class ExhibitionModel: ObservableObject {
         if state?.etag != nil { storedImmutable = true }
         let accessChanged = viewportCredentials?.token != credentials.token || viewportCredentials?.origin != credentials.origin
         viewportCredentials = credentials
-        if accessChanged { sharedFurnishingCatalogReady = false; sharedFurnishingCatalogAccessID = nil; sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
+        if accessChanged { clearWallFinishPreview(); sharedFurnishingCatalogReady = false; sharedFurnishingCatalog = []; sharedFurnishingCatalogAccessID = nil; sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
         floorPreviewAccessID = nil; floorPreviewContext = nil; floorPreviewHostEpoch = nil
         if accessChanged { floorImages = [:]; floorImageAttempts = [] }
         self.read = read; self.write = write
@@ -1384,9 +1464,21 @@ final class ExhibitionModel: ObservableObject {
     }
     func previewFloor() { guard canEditFloor else { return }; refreshFloorPreview() }
     private func setFloorCandidate(_ next: inout NativeExhibitionDraft, target: FloorSettings.Target) throws {
+        if floor.concreteFootstepsRequested {
+            try next.replaceCandidate(ConcreteFootsteps.proposedCandidate(in: next, target: target, resourcesAvailable: floorAudioRuntimeAvailable))
+            return
+        }
         let settings = try floor.value(candidate: next.candidate)
         let declare = try floor.declareSoundResources(available: floorAudioRuntimeAvailable, requiresQualifiedRuntime: floorAudioIntentBound)
         try next.setFloor(settings, target: target, declareDefaultSound: declare)
+    }
+    var canStageConcreteFootsteps: Bool {
+        guard canEditFloor, !floorDirty, floorAudioRuntimeAvailable, let draft, let target = floorTarget else { return false }
+        return (try? ConcreteFootsteps.proposedCandidate(in: draft, target: target, resourcesAvailable: true)) != nil
+    }
+    func stageConcreteFootsteps() {
+        guard canStageConcreteFootsteps else { return }
+        var fields = floor; fields.concreteFootstepsRequested = true; floor = fields
     }
     func stageFloorPreset(_ preset: FloorSettings.Preset, fields: Set<FloorSettings.Field>) {
         guard canEditFloor, !fields.isEmpty, let draft, let target = floorTarget else { return }
@@ -1589,6 +1681,7 @@ final class ExhibitionModel: ObservableObject {
     }
     func syncArchitecture() {
         syncSurfaceMaterial()
+        syncWallFinish()
         guard let draft, let selection = viewportSelection, ["room", "surface", "opening"].contains(selection.kind) else {
             architecture = nil; architectureBaseline = nil; architectureStatus = ""; return
         }

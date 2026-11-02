@@ -17,15 +17,76 @@ struct SharedFurnishingCatalogView: View {
             guard var form = model.sharedFurnishing else { return }; form.selected = value; model.sharedFurnishing = form
         })
     }
-    private func title(_ host: SharedFurnishingCommand.Host) -> String {
-        switch host { case .bench: "등받이 없는 참나무 벤치"; case .light: "전시용 트랙 스포트"; case .opening: "열린 전시 통로"; case .pedestal: "사각 전시 받침" }
+    private struct Entry: Identifiable {
+        let id: String, name: String, host: SharedFurnishingCommand.Host
+        var category: String {
+            switch host { case .bench: "벤치"; case .light: "조명"; case .opening: "통로"; case .pedestal: "받침" }
+        }
+        var selectionHint: String {
+            switch host {
+            case .bench: "벤치를 선택하면 사용할 수 있습니다."
+            case .light: "조명을 선택하면 사용할 수 있습니다."
+            case .opening: "문을 선택하면 사용할 수 있습니다."
+            case .pedestal: "작품 배치를 선택하면 사용할 수 있습니다."
+            }
+        }
+    }
+    // Display only the exact records admitted by the existing shared validator.
+    // Category and search are local presentation, not new catalogue authority.
+    private var entries: [Entry] {
+        model.sharedFurnishingCatalog.compactMap { item in
+            guard let id = item["catalogId"].string, let name = item["name"].string,
+                  let kinds = item["hostKinds"].items, kinds.count == 1,
+                  let kind = kinds.first?.string, let host = SharedFurnishingCommand.Host(rawValue: kind) else { return nil }
+            return Entry(id: id, name: name, host: host)
+        }
+    }
+    private var filteredEntries: [Entry] {
+        let query = model.sharedFurnishingQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        return entries.filter {
+            (model.sharedFurnishingCategory == "all" || model.sharedFurnishingCategory == $0.host.rawValue)
+                && (query.isEmpty || ($0.name + " " + $0.id + " " + $0.host.rawValue + " " + $0.category).localizedCaseInsensitiveContains(query))
+        }
+    }
+    private func catalog(_ target: SharedFurnishingCommand.Host) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("비품 이름 검색", text: $model.sharedFurnishingQuery)
+            Picker("비품 종류", selection: $model.sharedFurnishingCategory) {
+                Text("전체").tag("all")
+                Text("벤치").tag("bench")
+                Text("받침").tag("pedestal")
+                Text("조명").tag("light")
+                Text("통로").tag("opening")
+            }.pickerStyle(.menu)
+            if filteredEntries.isEmpty { Text("검색 결과가 없습니다.").foregroundStyle(.secondary) }
+            ForEach(filteredEntries) { entry in
+                VStack(alignment: .leading, spacing: 4) {
+                    Button {
+                        guard ready, model.canEditSharedFurnishing, entry.host == target,
+                              let current = model.sharedFurnishingTarget, current.0 == target,
+                              var form = model.sharedFurnishing, form.host == target, form.hostId == current.1 else { return }
+                        form.selected = true; model.sharedFurnishing = form
+                    } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Label(entry.name, systemImage: entry.host == target && model.sharedFurnishing?.selected == true ? "checkmark.circle.fill" : "cube")
+                            Text(entry.category + " · CC0 1.0").font(.caption).foregroundStyle(.secondary)
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
+                    }.buttonStyle(.bordered)
+                        .disabled(entry.host != target || !ready || !model.canEditSharedFurnishing)
+                        .accessibilityHint(entry.host == target ? "외형을 선택합니다. 미리보기와 적용 전에는 전시가 바뀌지 않습니다." : entry.selectionHint)
+                    if entry.host != target { Text(entry.selectionHint).font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+        }
     }
     var body: some View {
         if viewport.sharedFurnishingVisualsSupported, let target = model.sharedFurnishingTarget {
             GroupBox("비품 외형") {
                 VStack(alignment: .leading, spacing: 8) {
                     if model.sharedFurnishingCatalogReady, let form = model.sharedFurnishing, form.host == target.0, form.hostId == target.1 {
-                        Toggle(title(target.0), isOn: selected).disabled(!ready || !model.canEditSharedFurnishing)
+                        catalog(target.0)
+                        Divider()
+                        Toggle("선택한 대상의 비품 외형 사용", isOn: selected).disabled(!ready || !model.canEditSharedFurnishing)
                         Text("CC0 1.0 · 전시에 사용한 모델과 고지문을 함께 보관합니다.").font(.caption).foregroundStyle(.secondary)
                         if form.selected {
                             VStack(alignment: .leading, spacing: 8) {
