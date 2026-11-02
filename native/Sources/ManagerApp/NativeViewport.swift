@@ -213,10 +213,27 @@ final class NativeViewportController: ObservableObject {
     func diagnose(_ stage: String, _ error: Error) {
         let e = error as NSError
         let domain = e.domain.range(of: "^[A-Za-z0-9_.-]{1,80}$", options: .regularExpression) == nil ? "WebKit" : e.domain
-        let detail = (error as? AuthoringFailure)?.code ?? (e.userInfo["WKJavaScriptExceptionMessage"] as? String)?.replacingOccurrences(of: "Error: ", with: "") ?? ""
+        let rawDetail = (error as? AuthoringFailure)?.code ?? (e.userInfo["WKJavaScriptExceptionMessage"] as? String) ?? ""
+        let detail = rawDetail.hasPrefix("Error: ") ? String(rawDetail.dropFirst(7)) : rawDetail
         let known = ["crypto.randomUUID", "structuredClone", "INVALID_GEOMETRY", "VIEWPORT_COMMAND_DENIED", "VIEWPORT_NOT_READY", "func2"].filter { detail.contains($0) }.joined(separator: ",")
-        let code = detail.range(of: "^[A-Z0-9_]{1,180}$", options: .regularExpression) == nil ? "" : " · " + detail
-        diagnostic = "\(stage) · \(domain) · \(e.code)" + code + (known.isEmpty ? "" : " · " + known)
+        let snapshotCodes = ["SCENE_SNAPSHOT_NOT_READY", "SCENE_SNAPSHOT_INVALID", "SCENE_SNAPSHOT_STALE", "SCENE_SNAPSHOT_UNAVAILABLE", "SCENE_SNAPSHOT_OVERLAY_UNSUPPORTED", "SCENE_SNAPSHOT_TARGET_INVALID", "SCENE_SNAPSHOT_TARGET_NOT_READY", "SCENE_SNAPSHOT_SAVED_CHANGED", "SCENE_SNAPSHOT_SAVED_LIMIT", "SCENE_SNAPSHOT_RIGHTS_UNVERIFIED", "SCENE_SNAPSHOT_PNG_LIMIT", "SCENE_SNAPSHOT_ENCODE", "SCENE_SNAPSHOT_CANCELLED"]
+        let allowedCode = stage == "SCENE_SNAPSHOT" ? snapshotCodes.contains(detail) : detail.range(of: "^[A-Z0-9_]{1,180}$", options: .regularExpression) != nil
+        let code = allowedCode ? " · " + detail : ""
+        var snapshotDetail = ""
+        if stage == "SCENE_SNAPSHOT" {
+            // Fixed tokens and bounded source positions identify a script failure
+            // without showing arbitrary exception text, URLs, tokens or document data.
+            let kinds = ["TypeError", "ReferenceError", "RangeError", "SyntaxError"].filter { rawDetail.hasPrefix($0 + ":") }
+            let methods = ["crypto.subtle", "getActiveCubeFace", "getActiveMipmapLevel", "readRenderTargetPixels", "ImageData", "throwIfAborted"].filter { rawDetail.contains($0) }
+            let positions = [("line", "WKJavaScriptExceptionLineNumber"), ("column", "WKJavaScriptExceptionColumnNumber")].compactMap { name, key -> String? in
+                guard let number = e.userInfo[key] as? NSNumber, number.doubleValue.isFinite,
+                      number.doubleValue.rounded() == number.doubleValue, (0...1_000_000).contains(number.doubleValue) else { return nil }
+                return name + " " + number.stringValue
+            }
+            let fields = kinds + methods + positions
+            if !fields.isEmpty { snapshotDetail = " · " + fields.joined(separator: " · ") }
+        }
+        diagnostic = "\(stage) · \(domain) · \(e.code)" + code + (known.isEmpty ? "" : " · " + known) + snapshotDetail
     }
     fileprivate var owner: String?
     fileprivate var action: ((NativeGeometryAction) async throws -> (DocumentValue, NativeExhibitionDraft))?

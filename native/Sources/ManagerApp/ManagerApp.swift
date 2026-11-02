@@ -657,17 +657,26 @@ struct ManagerView: View {
                 .font(.system(size: bodySize * scale))
             }
             .safeAreaInset(edge: .top, spacing: 0) {
-                if workbenchActive {
-                    if model.quitting || model.runtimeBusy || model.busy {
-                        ProgressView(model.quitting ? "로컬 작업을 정지하고 있습니다…" : model.runtimeBusy ? operationTitle : "작업 공간을 연결하고 있습니다…")
-                            .controlSize(.small).padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                if workbenchActive && (model.quitting || model.runtimeBusy || model.busy || model.failure != nil) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if model.quitting || model.runtimeBusy || model.busy {
+                            ProgressView(model.quitting ? "로컬 작업을 정지하고 있습니다…" : model.runtimeBusy ? operationTitle : "작업 공간을 연결하고 있습니다…")
+                                .controlSize(.small)
+                        }
+                        if let failure = model.failure {
+                            HStack(alignment: .top, spacing: 8) {
+                                Label(failure.localizedDescription, systemImage: "exclamationmark.triangle")
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Button("작업 공간 다시 연결") { Task { await model.connectPersonalAuthoring() } }
+                                    .controlSize(.small).fixedSize()
+                                    .disabled(!model.ready || model.busy || model.quitting)
+                            }
+                        }
                     }
-                    if let failure = model.failure {
-                        HStack {
-                            Label(failure.localizedDescription, systemImage: "exclamationmark.triangle")
-                            Button("작업 공간 다시 연결") { Task { await model.connectPersonalAuthoring() } }.disabled(!model.ready || model.busy || model.quitting)
-                        }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(nsColor: .windowBackgroundColor))
                 }
             }
         }
