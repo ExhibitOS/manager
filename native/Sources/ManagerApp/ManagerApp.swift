@@ -612,6 +612,8 @@ struct ManagerView: View {
             }.disabled(model.quitting || model.presentation == nil)
                 .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 320)
         } detail: {
+            VStack(spacing: 0) {
+                workbenchStatus
             ZStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
@@ -656,28 +658,6 @@ struct ManagerView: View {
                 .accessibilityHidden(!workbenchActive)
                 .font(.system(size: bodySize * scale))
             }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                if workbenchActive && (model.quitting || model.runtimeBusy || model.busy || model.failure != nil) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        if model.quitting || model.runtimeBusy || model.busy {
-                            ProgressView(model.quitting ? "로컬 작업을 정지하고 있습니다…" : model.runtimeBusy ? operationTitle : "작업 공간을 연결하고 있습니다…")
-                                .controlSize(.small)
-                        }
-                        if let failure = model.failure {
-                            HStack(alignment: .top, spacing: 8) {
-                                Label(failure.localizedDescription, systemImage: "exclamationmark.triangle")
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                Button("작업 공간 다시 연결") { Task { await model.connectPersonalAuthoring() } }
-                                    .controlSize(.small).fixedSize()
-                                    .disabled(!model.ready || model.busy || model.quitting)
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: .windowBackgroundColor))
-                }
             }
         }
         .frame(minWidth: 680, minHeight: 480)
@@ -699,6 +679,29 @@ struct ManagerView: View {
                 }.disabled(model.quitting || model.presentation == nil).help("같은 전시와 작업을 두 모드에서 사용합니다.")
             }
             ToolbarItem { Button("다시 확인", systemImage: "arrow.clockwise") { Task { await model.refresh() } }.disabled(model.busy) }
+        }
+    }
+    @ViewBuilder private var workbenchStatus: some View {
+        if workbenchActive && (model.quitting || model.runtimeBusy || model.busy || model.failure != nil) {
+            VStack(alignment: .leading, spacing: 8) {
+                if model.quitting || model.runtimeBusy || model.busy {
+                    ProgressView(model.quitting ? "로컬 작업을 정지하고 있습니다…" : model.runtimeBusy ? operationTitle : "작업 공간을 연결하고 있습니다…")
+                        .controlSize(.small)
+                }
+                if let failure = model.failure {
+                    HStack(alignment: .top, spacing: 8) {
+                        Label(failure.localizedDescription, systemImage: "exclamationmark.triangle")
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button("작업 공간 다시 연결") { Task { await model.connectPersonalAuthoring() } }
+                            .controlSize(.small).fixedSize()
+                            .disabled(!model.ready || model.busy || model.quitting)
+                    }
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .windowBackgroundColor))
         }
     }
     private var workbenchActive: Bool { model.presentation?.step == .select || model.presentation?.step == .preview }
