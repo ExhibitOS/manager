@@ -447,6 +447,10 @@ struct NativeViewport: NSViewRepresentable {
                         self.controller.displayReadout = ""
                         self.controller.acceptedSequence = frame.sequence
                         self.sent = frame.sequence; self.controller.connected = self.sent == self.sequence; self.controller.diagnostic = ""
+                        // A later accepted frame supersedes an earlier frame error.
+                        if self.controller.connected && self.controller.message == "전시를 3D에 표시하지 못했습니다. 저장한 전시와 연결을 확인하세요." {
+                            self.controller.message = "전시 연결을 확인했습니다."
+                        }
                     } catch { if self.generation == generation { self.controller.connected = false; self.controller.message = "전시를 3D에 표시하지 못했습니다. 저장한 전시와 연결을 확인하세요."; self.controller.diagnose("FRAME", error) }; break }
                 }
             }
