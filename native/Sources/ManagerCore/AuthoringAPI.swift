@@ -13,6 +13,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public let role: String
     public let csrfToken: String
     public let expiresAt: String
+    public var nativeOexExportProfile: String? = nil
 }
 public struct AuthoringPage<Item: Decodable & Sendable>: Decodable, Sendable {
     public let items: [Item]
@@ -117,6 +118,11 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "PUBLICATION_SCOPE_CHANGED", "PUBLICATION_STATUS_UNCONFIRMED": return "이 Mac의 준비 상태를 다시 확인하세요. 제작 중인 전시와 이전 기록은 유지됩니다."
         case "PUBLICATION_NOT_READY": return "공개 준비에 필요한 항목이 남아 있습니다. 작품의 승인·표시 권리와 전시 정보를 확인하세요."
         case "PUBLISHED_DRAFT_IMMUTABLE": return "이 공개용 저장본은 변경할 수 없습니다. 원래 제작 전시에서 편집하세요."
+        case "NATIVE_OEX_EXPORT_LIMIT": return "이 실행본의 대용량 OEX는 최대 512 MiB를 지원합니다. 원본과 기존 파일은 유지됩니다."
+        case "NATIVE_OEX_EXPORT_BUSY": return "이전 내보내기 작업이 진행 중입니다. 종료를 확인한 뒤 다시 내보내세요."
+        case "NATIVE_OEX_EXPORT_UNCERTAIN", "NATIVE_OEX_EXPORT_STAGE_UNCERTAIN", "NATIVE_OEX_EXPORT_FILE_UNCERTAIN": return "이전 내보내기의 종료를 아직 확인하지 못했습니다. 입력과 기존 파일은 유지됩니다. 다시 내보내면 같은 작업의 상태부터 확인합니다."
+        case "NATIVE_OEX_EXPORT_UNAVAILABLE": return "현재 실행본에서 대용량 내보내기를 사용할 수 없습니다. 전시와 기존 파일은 보존됩니다."
+        case "NATIVE_OEX_EXPORT_CAPACITY": return "내보내기에 필요한 저장 공간이 부족합니다. 전시와 기존 파일은 보존됩니다."
         case "OEX_LIMIT": return "내보내기 파일은 최대 64 MiB를 지원합니다. 전시의 작품 파일 크기를 확인하세요."
         case "RIGHTS_DENIED": return "내보내기를 허용하지 않은 작품이 있습니다. 작품의 권리와 내보내기 허용을 확인하세요."
         case "OEX_SOURCE_CHANGED", "ASSET_INTEGRITY": return "저장한 전시와 현재 작품 파일 또는 승인 상태가 다릅니다. 작품을 확인한 뒤 전시를 다시 저장하세요."
@@ -155,6 +161,27 @@ private final class LocalRedirectBlocker: NSObject, URLSessionTaskDelegate, Send
 
 /// A private in-memory cookie jar per selected native installation. Callers get
 /// typed CMS operations, never an arbitrary authenticated URL request API.
+/// An exact streamed snapshot released only after the selected producer confirms
+/// its response drain and known-stage cleanup for the same authenticated operation.
+public struct NativeBoundedOEXExport: Sendable {
+    private let archive: NativeOEXArchive
+    public var count: Int { archive.count }
+    public var sha256: String { archive.sha256 }
+    fileprivate init(_ archive: NativeOEXArchive) { self.archive = archive }
+    public func write(to url: URL) async throws { try await archive.writeBoundedVerified(to: url) }
+}
+private struct NativeOEXExportResponse: Sendable {
+    let archive: NativeOEXArchive
+    let operationId: String?
+}
+private struct NativeOEXExportCompletion: Decodable, Sendable {
+    let operationId: String
+    let state: String
+    let etag: String?
+    let bytes: Int?
+    let sha256: String?
+}
+
 public actor AuthoringAPI {
     private let base: URL
     private let tenant: String
@@ -163,6 +190,14 @@ public actor AuthoringAPI {
     private var generation: UInt64 = 0
     private var authenticationBusy = false
     private var activeRequests = 0
+    private struct BoundedExportIntent: Sendable {
+        let requestId: String
+        let exhibitionId: String
+        let etag: String
+        let generation: UInt64
+    }
+    private var uncertainBoundedExport: BoundedExportIntent?
+    private var boundedExportBusy = false
 
     public init(port: UInt16, tenantId: String) throws {
         guard port >= 1024, let id = UUID(uuidString: tenantId) else { throw AuthoringFailure("LOCAL_SCOPE_INVALID") }
@@ -436,15 +471,79 @@ public actor AuthoringAPI {
         return try file.check(data)
     }
     public func exportOEX(exhibitionId: String, etag: String) async throws -> NativeOEXArchive {
+        try await receiveOEXExport(exhibitionId: exhibitionId, etag: etag, bounded: false).archive
+    }
+
+    /// Uses only the selected native producer. Legacy export remains limited to64MiB.
+    public func exportBoundedOEX(exhibitionId: String, etag: String) async throws -> NativeBoundedOEXExport {
+        guard !authenticationBusy, session != nil else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
+        guard session?.nativeOexExportProfile == "bounded-file-v1" else { throw AuthoringFailure("NATIVE_OEX_EXPORT_UNAVAILABLE") }
+        guard !boundedExportBusy else { throw AuthoringFailure("NATIVE_OEX_EXPORT_BUSY") }
+        let id = try identifier(exhibitionId), current = generation
+        guard etag.range(of: #"^"studio-r[1-9][0-9]*-[a-f0-9]{64}"$"#, options: .regularExpression) != nil else { throw AuthoringFailure("ETAG_INVALID") }
+        boundedExportBusy = true; activeRequests += 1
+        defer { boundedExportBusy = false; activeRequests -= 1 }
+        if let previous = uncertainBoundedExport {
+            // An explicit retry first correlates the original operation; it never
+            // starts another producer while the previous owner is unresolved.
+            _ = try await boundedExportCompletion(previous, allowFailed: true)
+            uncertainBoundedExport = nil
+        }
+        let intent = BoundedExportIntent(requestId: UUID().uuidString.lowercased(), exhibitionId: id, etag: etag, generation: current)
+        uncertainBoundedExport = intent
+        do {
+            let received = try await receiveOEXExport(exhibitionId: id, etag: etag, bounded: true, requestId: intent.requestId)
+            guard received.operationId == intent.requestId else { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
+            let result = try await boundedExportCompletion(intent)
+            guard result.bytes == received.archive.count, result.sha256 == received.archive.sha256 else { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
+            try Task.checkCancellation()
+            uncertainBoundedExport = nil
+            return NativeBoundedOEXExport(received.archive)
+        } catch {
+            // Keep the request identity even when the operation header/response
+            // was lost. No error or cancellation is an owner-release assertion.
+            throw error
+        }
+    }
+
+    private func boundedExportCompletion(_ intent: BoundedExportIntent, allowFailed: Bool = false) async throws -> NativeOEXExportCompletion {
+        let path = studioPrefix + "/exhibitions/" + intent.exhibitionId + "/native-oex/exports/" + intent.requestId
+        let clock = ContinuousClock(), deadline = ContinuousClock.now.advanced(by: .seconds(30))
+        while clock.now < deadline {
+            try Task.checkCancellation()
+            guard generation == intent.generation, session != nil else { throw AuthoringFailure("NATIVE_OEX_EXPORT_UNCERTAIN") }
+            let result: NativeOEXExportCompletion = try await request(path, ifMatch: intent.etag, timeout: 5)
+            guard generation == intent.generation, session != nil else { throw AuthoringFailure("NATIVE_OEX_EXPORT_UNCERTAIN") }
+            guard result.operationId == intent.requestId else { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
+            if result.state == "complete" {
+                guard result.etag == intent.etag, let count = result.bytes, count > 0,
+                      count <= NativeOEXImportFile.boundedMaximumBytes,
+                      result.sha256?.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
+                return result
+            }
+            if allowFailed, result.state == "failed", result.etag == nil, result.bytes == nil, result.sha256 == nil { return result }
+            guard result.state == "pending", result.etag == nil, result.bytes == nil, result.sha256 == nil else {
+                throw AuthoringFailure("NATIVE_OEX_EXPORT_UNCERTAIN")
+            }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        throw AuthoringFailure("NATIVE_OEX_EXPORT_UNCERTAIN")
+    }
+
+    private func receiveOEXExport(exhibitionId: String, etag: String, bounded: Bool, requestId: String? = nil) async throws -> NativeOEXExportResponse {
         guard !authenticationBusy, let session else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
         guard etag.range(of: #"^"studio-r[1-9][0-9]*-[a-f0-9]{64}"$"#, options: .regularExpression) != nil else { throw AuthoringFailure("ETAG_INVALID") }
         let id = try identifier(exhibitionId)
-        let url = base.appendingPathComponent(studioPrefix + "/exhibitions/" + id + "/oex/export")
+        let url = base.appendingPathComponent(studioPrefix + "/exhibitions/" + id + (bounded ? "/native-oex/export" : "/oex/export"))
         activeRequests += 1
         defer { activeRequests -= 1 }
         let current = generation
         var request = URLRequest(url: url, timeoutInterval: 120)
-        request.httpMethod = "POST"; request.httpBody = Data("{}".utf8)
+        request.httpMethod = "POST"
+        if bounded {
+            struct Input: Encodable { let requestId: String }
+            request.httpBody = try encoded(Input(requestId: identifier(requestId ?? "")))
+        } else { request.httpBody = Data("{}".utf8) }
         request.setValue(base.absoluteString, forHTTPHeaderField: "Origin")
         request.setValue(session.csrfToken, forHTTPHeaderField: "x-csrf-token")
         request.setValue(etag, forHTTPHeaderField: "If-Match")
@@ -455,9 +554,25 @@ public actor AuthoringAPI {
         defer { bytes.task.cancel() } // also cancels early header/size rejection
         guard let http = response as? HTTPURLResponse, http.url == url else { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
         let success = http.statusCode == 200
-        let limit = success ? NativeOEXArchive.maximumBytes : 64 * 1024
-        guard http.expectedContentLength <= Int64(limit) else { throw AuthoringFailure(success ? "OEX_LIMIT" : "RESPONSE_LIMIT") }
+        let limit = success ? (bounded ? NativeOEXImportFile.boundedMaximumBytes : NativeOEXArchive.maximumBytes) : 64 * 1024
+        guard http.expectedContentLength <= Int64(limit) else { throw AuthoringFailure(success ? (bounded ? "NATIVE_OEX_EXPORT_LIMIT" : "OEX_LIMIT") : "RESPONSE_LIMIT") }
+        var expectedSHA256: String?
+        var operationId: String?
         if success {
+            if bounded {
+                let digest = http.value(forHTTPHeaderField: "X-ExhibitOS-OEX-SHA256") ?? ""
+                let rawLength = http.value(forHTTPHeaderField: "Content-Length") ?? ""
+                let cache = (http.value(forHTTPHeaderField: "Cache-Control") ?? "").lowercased().split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                guard let length = Int64(rawLength), length > 0, String(length) == rawLength,
+                      length == http.expectedContentLength, length <= Int64(limit),
+                      http.value(forHTTPHeaderField: "Transfer-Encoding") == nil, cache.contains("no-store"),
+                      http.value(forHTTPHeaderField: "X-ExhibitOS-OEX-Profile") == "bounded-file-v1",
+                      digest.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
+                let rawOperation = http.value(forHTTPHeaderField: "X-ExhibitOS-OEX-Operation") ?? ""
+                guard let uuid = UUID(uuidString: rawOperation), uuid.uuidString.lowercased() == rawOperation,
+                      rawOperation == requestId else { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
+                expectedSHA256 = digest; operationId = rawOperation
+            }
             guard http.mimeType?.lowercased() == NativeOEXArchive.mime,
                   http.value(forHTTPHeaderField: "Content-Encoding").map({ $0.lowercased() == "identity" }) ?? true else { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
         }
@@ -470,15 +585,21 @@ public actor AuthoringAPI {
             }
             guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
             let code = (try? JSONDecoder().decode(APIErrorEnvelope.self, from: data).code) ?? "REQUEST_FAILED"
+            if bounded, (400..<500).contains(http.statusCode),
+               let requestId, uncertainBoundedExport?.requestId == requestId,
+               http.value(forHTTPHeaderField: "X-ExhibitOS-OEX-Operation") == requestId,
+               http.value(forHTTPHeaderField: "X-ExhibitOS-OEX-Admission") == "attempt-not-admitted" {
+                uncertainBoundedExport = nil
+            }
             if http.statusCode == 401 { generation &+= 1; clear() }
             throw AuthoringFailure(code.range(of: "^[A-Z0-9_]{1,80}$", options: .regularExpression) == nil ? "REQUEST_FAILED" : code, status: http.statusCode)
         }
-        let writer = try OEXArchiveWriter()
+        let writer = try OEXArchiveWriter(limit: limit)
         var chunk = Data(); chunk.reserveCapacity(256 * 1024)
         try await withTaskCancellationHandler {
             for try await byte in bytes {
                 try Task.checkCancellation()
-                guard writer.count + chunk.count < limit else { throw AuthoringFailure("OEX_LIMIT") }
+                guard writer.count + chunk.count < limit else { throw AuthoringFailure(bounded ? "NATIVE_OEX_EXPORT_LIMIT" : "OEX_LIMIT") }
                 chunk.append(byte)
                 if chunk.count == 256 * 1024 { try writer.append(chunk); chunk.removeAll(keepingCapacity: true) }
             }
@@ -486,7 +607,9 @@ public actor AuthoringAPI {
         } onCancel: { bytes.task.cancel() }
         guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         guard http.expectedContentLength < 0 || Int64(writer.count) == http.expectedContentLength else { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
-        return try writer.finish()
+        let staged = try writer.finish()
+        if bounded, staged.sha256 != expectedSHA256 { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
+        return NativeOEXExportResponse(archive: staged, operationId: operationId)
     }
 
     /// Reuses the server's scoped OEX import and idempotent request ID. No

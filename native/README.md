@@ -48,6 +48,19 @@ external font or brand-generation tool is required by the app. Existing bundles
 acquire these assets only when a subsequent package includes them; source changes
 alone do not establish package, GUI or distribution qualification.
 
+The native OEX client keeps the existing64MiB export when the authenticated
+session does not advertise `nativeOexExportProfile: "bounded-file-v1"`. A
+supporting personal runtime can receive up to512MiB into a private snapshot,
+with a new request UUID and exact saved ETag. The client verifies the fixed
+length, profile, operation ID and SHA256, then waits for that same session's
+producer/response/known-stage terminal receipt before exposing a file. An
+explicit retry first checks a retained uncertain UUID; it never reposts that
+UUID. The receiver's intent is in memory, and runtime loss is not a completed
+owner return. The server's unresolved-stage refusal remains authoritative.
+Bounded output uses a new destination and never replaces an existing file.
+These are implementation boundaries; actual runtime/workspace qualification
+and native GUI output evidence must match the delivered payload separately.
+
 An optional `--runtime-payload /absolute/newly-produced-runtime` embeds the
 Platform producer's local validation payload under `Contents/Resources/native-runtime`.
 The helper's closed `runtime_payload` query resolves that fixed app-relative path,
