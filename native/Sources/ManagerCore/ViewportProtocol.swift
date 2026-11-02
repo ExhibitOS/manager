@@ -46,6 +46,14 @@ public enum ViewportPresentation: String, Codable, Hashable, Sendable {
 }
 /// Restrictive UI policy; this never grants permission to save or access data.
 public enum NativeViewportAccess {
+    /// A verified bounded policy may prepare an editable frame, but this is
+    /// not permission to accept gestures or save before the matching ACK.
+    public static func frameMayBeEditable(immutable: Bool, boundedAdmission: Bool) -> Bool {
+        !immutable || boundedAdmission
+    }
+    public static func boundedInteractionBlocked(boundedAdmission: Bool, acknowledged: Bool) -> Bool {
+        boundedAdmission && !acknowledged
+    }
     public static func locked(selected: Bool, saved: Bool, storedLocked: Bool, frameReadOnly: Bool, exactOrdinaryFrame: Bool) -> Bool {
         storedLocked || frameReadOnly || (selected && saved && !exactOrdinaryFrame)
     }

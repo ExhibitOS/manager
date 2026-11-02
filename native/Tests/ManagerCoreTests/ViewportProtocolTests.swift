@@ -2,6 +2,14 @@
 import XCTest
 @testable import ManagerCore
 final class ViewportProtocolTests: XCTestCase {
+    func testBoundedFramePreparationDoesNotAuthorizeInteractionWithoutAck() {
+        XCTAssertFalse(NativeViewportAccess.frameMayBeEditable(immutable: true, boundedAdmission: false))
+        XCTAssertTrue(NativeViewportAccess.frameMayBeEditable(immutable: true, boundedAdmission: true))
+        XCTAssertTrue(NativeViewportAccess.boundedInteractionBlocked(boundedAdmission: true, acknowledged: false))
+        XCTAssertFalse(NativeViewportAccess.boundedInteractionBlocked(boundedAdmission: true, acknowledged: true))
+        XCTAssertTrue(NativeViewportAccess.frameMayBeEditable(immutable: false, boundedAdmission: false))
+        XCTAssertFalse(NativeViewportAccess.boundedInteractionBlocked(boundedAdmission: false, acknowledged: false))
+    }
     func testBoundedEditCapabilityRequiresEverySavedScopeField() throws {
         let tenant = UUID().uuidString.lowercased(), principal = UUID().uuidString.lowercased()
         let workspace = UUID().uuidString.lowercased(), exhibition = UUID().uuidString.lowercased()
