@@ -2,6 +2,7 @@
 import SwiftUI
 import WebKit
 import CryptoKit
+import ImageIO
 import ManagerCore
 
 struct NativeEntrancePreviewInput {
@@ -43,6 +44,7 @@ final class NativeViewportController: ObservableObject {
     fileprivate var acknowledgedBoundedEdit: NativeBoundedEditCapability?
     @Published fileprivate(set) var planSupported = false
     @Published fileprivate(set) var thumbnailSupported = false
+    @Published fileprivate(set) var sceneSnapshotSupported = false
     @Published fileprivate(set) var findSelectionSupported = false
     @Published fileprivate(set) var placementSupported = false
     @Published fileprivate(set) var furnishingVisualsSupported = false
@@ -128,6 +130,7 @@ final class NativeViewportController: ObservableObject {
     }
     @Published fileprivate(set) var acceptedSequence = 0
     fileprivate var thumbnailAction: ((String, Int) async throws -> Data)?
+    fileprivate var sceneSnapshotAction: ((NativeStudioResponse, String, String) async throws -> SceneSnapshotResult)?
     fileprivate var findSelectionAction: (() async throws -> Void)?
     fileprivate var placementAction: ((ArtworkPlacementIntent, ViewportPlacementPhase, ViewportPlacementTarget?) async throws -> DocumentValue?)?
     fileprivate var furnishingVisualsAction: ((FurnishingCommand) async throws -> FurnishingPreview)?
@@ -189,6 +192,13 @@ final class NativeViewportController: ObservableObject {
     func thumbnail(artworkId: String, revision: Int) async throws -> Data {
         guard connected, thumbnailSupported, let thumbnailAction else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
         return try await thumbnailAction(artworkId, revision)
+    }
+    func sceneSnapshot(saved: NativeStudioResponse, viewpointId: String, placementId: String) async throws -> SceneSnapshotResult {
+        guard editingContextActive, connected, sceneSnapshotSupported, let sceneSnapshotAction else { throw AuthoringFailure("SCENE_SNAPSHOT_NOT_READY") }
+        let context = editingContextGeneration
+        let image = try await sceneSnapshotAction(saved, viewpointId, placementId)
+        guard editingContextActive, editingContextGeneration == context else { throw AuthoringFailure("SCENE_SNAPSHOT_STALE") }
+        return image
     }
     func findSelection() async {
         guard connected, findSelectionSupported, let findSelectionAction else { return }
@@ -308,6 +318,7 @@ struct NativeViewport: NSViewRepresentable {
             guard active else { return }
             endPlacement()
             entranceOperation = nil
+            if controller.owner == epoch { controller.sceneSnapshotAction = nil; controller.sceneSnapshotSupported = false }
             if controller.owner == epoch { controller.entrancePreviewAction = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }
             active = false; generation = UUID(); sendTask?.cancel()
             if controller.owner == epoch { controller.sharedFurnishingVisualsAction = nil; controller.sharedFurnishingVisualsSupported = false; controller.plinthEnvelopeAlignSupported = false }
@@ -335,6 +346,7 @@ struct NativeViewport: NSViewRepresentable {
                 return
             }
             if installedToken == nil {
+                controller.sceneSnapshotSupported = false; controller.sceneSnapshotAction = nil
                 controller.sharedFurnishingVisualsSupported = false; controller.plinthEnvelopeAlignSupported = false
                 entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""
                 controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.wallFinishSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false
@@ -397,7 +409,7 @@ struct NativeViewport: NSViewRepresentable {
             return .allow
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.wallFinishSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; controller.sceneSnapshotSupported = false; controller.sceneSnapshotAction = nil; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.wallFinishSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             guard active, controller.owner == epoch, webView === web else { return }
             controller.message = "3D 화면을 열지 못했습니다. 로컬 제작 상태를 확인하세요."
@@ -439,6 +451,7 @@ struct NativeViewport: NSViewRepresentable {
                         }
                         self.controller.planSupported = acceptance.supportsPlan
                         self.controller.thumbnailSupported = acceptance.supportsArtworkThumbnail
+                        self.controller.sceneSnapshotSupported = acceptance.supportsSceneSnapshot
                         self.controller.findSelectionSupported = acceptance.supportsFindSelection
                         self.controller.placementSupported = acceptance.supportsArtworkPlacement
                         self.controller.furnishingVisualsSupported = acceptance.supportsFurnishingVisuals
@@ -805,6 +818,30 @@ struct NativeViewport: NSViewRepresentable {
                 let bytes = try JSONSerialization.data(withJSONObject: fields)
                 guard bytes.count <= 710_000 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
                 return try request.pngData(JSONDecoder().decode(DocumentValue.self, from: bytes))
+            }
+            controller.sceneSnapshotAction = { [weak self] saved, viewpointId, placementId in
+                guard let self, self.active, self.controller.owner == self.epoch, self.controller.sceneSnapshotSupported,
+                      !self.inspectorPending, self.placementIntent == nil, self.entranceOperation == nil,
+                      let web = self.web, let frame = self.latest, self.prepared, self.sent == frame.sequence,
+                      !frame.disabled, !self.parent.interactionDisabled else { throw AuthoringFailure("SCENE_SNAPSHOT_NOT_READY") }
+                self.inspectorPending = true; defer { self.inspectorPending = false }
+                let generation = self.generation
+                let request = try SceneSnapshotViewportRequest(frame: frame, saved: saved, viewpointId: viewpointId, placementId: placementId)
+                let json = String(decoding: try JSONEncoder().encode(request.value), as: UTF8.self)
+                let response = try await web.callAsyncJavaScript("if (typeof window.exhibitosViewport?.sceneSnapshot !== 'function') throw new Error('SCENE_SNAPSHOT_NOT_READY'); return await window.exhibitosViewport.sceneSnapshot(JSON.parse(requestJSON));", arguments: ["requestJSON": json], in: nil, contentWorld: .page)
+                try Task.checkCancellation()
+                guard self.active, self.controller.owner == self.epoch, self.generation == generation,
+                      self.latest?.sequence == frame.sequence, self.latest?.draft == saved.draft, !self.parent.interactionDisabled,
+                      let fields = response as? [String: Any], let png = fields["pngBase64"] as? String,
+                      png.utf8.count <= SceneSnapshotViewportRequest.maximumBase64Bytes,
+                      JSONSerialization.isValidJSONObject(fields) else { throw AuthoringFailure("SCENE_SNAPSHOT_STALE") }
+                let bytes = try JSONSerialization.data(withJSONObject: fields)
+                guard bytes.count <= 710_000 else { throw AuthoringFailure("SCENE_SNAPSHOT_INVALID") }
+                let result = try request.checkedReply(JSONDecoder().decode(DocumentValue.self, from: bytes))
+                guard let image = CGImageSourceCreateWithData(result.png as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+                      CGImageSourceGetCount(image) == 1, let decoded = CGImageSourceCreateImageAtIndex(image, 0, nil),
+                      decoded.width == SceneSnapshotViewportRequest.width, decoded.height == SceneSnapshotViewportRequest.height else { throw AuthoringFailure("SCENE_SNAPSHOT_INVALID") }
+                return result
             }
             controller.thumbnailAction = { [weak self] artworkId, revision in
                 guard let self, self.active, self.controller.owner == self.epoch, self.controller.thumbnailSupported,

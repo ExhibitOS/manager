@@ -70,6 +70,7 @@ public struct ViewportAcceptance: Decodable, Sendable {
     public let boundedReadOnly: Bool?
     public let editingCapability: NativeBoundedEditCapability?
     public var supportsArtworkThumbnail: Bool { accepted && capabilities?.contains("artwork-thumbnail-v1") == true }
+    public var supportsSceneSnapshot: Bool { accepted && capabilities?.contains("scene-snapshot-v1") == true }
     public var supportsFindSelection: Bool { accepted && capabilities?.contains("find-selection-v1") == true }
     public var supportsArtworkPlacement: Bool { accepted && capabilities?.contains("place-artwork-v1") == true }
     public var supportsFurnishingVisuals: Bool { accepted && capabilities?.contains("furnishing-visuals-v1") == true }
