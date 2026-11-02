@@ -12,14 +12,24 @@ final class PublicationReleaseTransportTests: XCTestCase {
         try #"""
         import http from 'node:http';
         const [tenant,user]=process.argv.slice(2), csrf='owned-publication-wire-csrf', token='a'.repeat(43), prefix='/api/v1/tenants/'+tenant+'/studio', hash='b'.repeat(64), date='2026-10-29T00:00:00Z';
-        let lostStatus='published';
+        let lostStatus='published',lostPrepare=false;const prepared=new Map(),etag='"studio-r1-'+ 'a'.repeat(64)+'"';
         const publication=(id,status='unpublished')=>({publicationId:id,publicUrl:'/p/'+id,revisionSha256:hash,publishedAt:date,status});
         const server=http.createServer((req,res)=>{
           let body='';req.on('data',b=>body+=b);req.on('end',()=>{
             const send=(code,value)=>{res.writeHead(code,{'content-type':'application/json'});res.end(JSON.stringify(value));};
-            if(req.url==='/api/v1/auth/session'){send(200,{tenantId:tenant,userId:user,role:'admin',csrfToken:csrf,expiresAt:new Date(Date.now()+3600000).toISOString()});return;}
+            if(req.url==='/api/v1/auth/session'){send(200,{tenantId:tenant,userId:user,role:'admin',csrfToken:csrf,expiresAt:new Date(Date.now()+3600000).toISOString(),...(req.headers.cookie?.includes('exhibitos_local_session='+token)?{nativePublicationProfile:'bounded-local-v1'}:{})});return;}
             const base='http://127.0.0.1:'+server.address().port;
             if(req.headers.origin!==base||!req.headers.cookie?.includes('exhibitos_local_session='+token)){send(403,{code:'FIXTURE_AUTH_INVALID'});return;}
+            const selected=req.url.match(new RegExp('^'+prefix+'/exhibitions/(00000000-0000-4000-8000-00000000000[89])/(ready|publications)$'));
+            if(selected){
+              const id=selected[1],bounded=id.endsWith('8'),profile=req.headers['x-exhibitos-publication-profile'];
+              if((bounded?profile!=='bounded-local-v1':profile!==undefined)||((bounded||req.method==='POST')?req.headers['if-match']!==etag:req.headers['if-match']!==undefined)){send(400,{code:'FIXTURE_PROFILE_INVALID'});return;}
+              if(req.method==='GET'&&selected[2]==='ready'){send(200,{status:'READY',etag,issues:[]});return;}
+              const requestId=JSON.parse(body).requestId;if(req.method!=='POST'||selected[2]!=='publications'||req.headers['x-csrf-token']!==csrf||requestId!==(bounded?'11111111-1111-4111-8111-111111111111':'22222222-2222-4222-8222-222222222222')){send(400,{code:'FIXTURE_MUTATION_INVALID'});return;}
+              if(!prepared.has(requestId))prepared.set(requestId,publication(id,'published'));
+              if(bounded&&!lostPrepare){lostPrepare=true;req.socket.destroy();return;}
+              send(200,prepared.get(requestId));return;
+            }
             const lostId='00000000-0000-4000-8000-000000000007';
             if(req.method==='GET'&&req.url===prefix+'/exhibitions/'+lostId+'/publications'){send(200,{items:[publication(lostId,lostStatus)]});return;}
             const match=req.url.match(new RegExp('^'+prefix+'/publications/(00000000-0000-4000-8000-00000000000[1-7])/unpublish$'));
@@ -53,6 +63,21 @@ final class PublicationReleaseTransportTests: XCTestCase {
             let id = "00000000-0000-4000-8000-00000000000" + suffix
             return NativePublication(publicationId: id, publicUrl: "/p/" + id, revisionSha256: String(repeating: "b", count: 64), publishedAt: "2026-10-29T00:00:00Z", status: "published")
         }
+        let selectedID = "00000000-0000-4000-8000-000000000008", legacyID = "00000000-0000-4000-8000-000000000009"
+        let etag = "\"studio-r1-" + String(repeating: "a", count: 64) + "\"", requestID = "11111111-1111-4111-8111-111111111111"
+        let legacyReady = try await api.publicationReady(exhibitionId: legacyID)
+        XCTAssertEqual(legacyReady.status, "READY")
+        let legacyPrepared = try await api.preparePublication(exhibitionId: legacyID, etag: etag, requestId: "22222222-2222-4222-8222-222222222222")
+        XCTAssertEqual(legacyPrepared.publicationId, legacyID)
+        let boundedReady = try await api.publicationReady(exhibitionId: selectedID, etag: etag, publicationProfile: "bounded-local-v1")
+        XCTAssertEqual(boundedReady.etag, etag)
+        do { _ = try await api.preparePublication(exhibitionId: selectedID, etag: etag, requestId: requestID, publicationProfile: "bounded-local-v1"); XCTFail("A lost bounded response must stay unresolved") } catch { }
+        let sameRequest = try await api.preparePublication(exhibitionId: selectedID, etag: etag, requestId: requestID, publicationProfile: "bounded-local-v1")
+        XCTAssertEqual(sameRequest.publicationId, selectedID)
+        let unavailable = try AuthoringAPI(port: port, tenantId: tenant)
+        _ = try await unavailable.connect(LocalAuthoringSession(tenantId: tenant, principalId: user, origin: "http://127.0.0.1:\(port)", token: String(repeating: "b", count: 43)))
+        do { _ = try await unavailable.publicationReady(exhibitionId: selectedID, etag: etag, publicationProfile: "bounded-local-v1"); XCTFail("A missing affirmative capability must reject before request") }
+        catch let failure as AuthoringFailure { XCTAssertEqual(failure.code, "PUBLICATION_STAGE_UNAVAILABLE") }
         let first = try await api.unpublish(expected("1"))
         XCTAssertEqual(first.status, "unpublished")
         for suffix in ["2", "3", "4", "5", "6"] {

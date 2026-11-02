@@ -14,6 +14,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public let csrfToken: String
     public let expiresAt: String
     public var nativeOexExportProfile: String? = nil
+    public var nativePublicationProfile: String? = nil
 }
 public struct AuthoringPage<Item: Decodable & Sendable>: Decodable, Sendable {
     public let items: [Item]
@@ -116,6 +117,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "WATERMARK_RUNTIME_UNAVAILABLE": return "이 실행본은 새 워터마크 설정을 지원하지 않습니다. 입력과 저장 요청을 보존했습니다. 지원 실행본에서 다시 확인하세요."
         case "PUBLICATION_RESPONSE_INVALID": return "공개 준비 상태를 확인하지 못했습니다. 같은 요청으로 다시 확인하세요."
         case "PUBLICATION_SCOPE_CHANGED", "PUBLICATION_STATUS_UNCONFIRMED": return "이 Mac의 준비 상태를 다시 확인하세요. 제작 중인 전시와 이전 기록은 유지됩니다."
+        case "PUBLICATION_STAGE_UNAVAILABLE": return "현재 실행본에서 이 공개 준비 방식을 사용할 수 없습니다. 보관한 요청과 전시는 유지됩니다."
         case "PUBLICATION_NOT_READY": return "공개 준비에 필요한 항목이 남아 있습니다. 작품의 승인·표시 권리와 전시 정보를 확인하세요."
         case "PUBLISHED_DRAFT_IMMUTABLE": return "이 공개용 저장본은 변경할 수 없습니다. 원래 제작 전시에서 편집하세요."
         case "NATIVE_OEX_EXPORT_LIMIT": return "이 실행본의 대용량 OEX는 최대 512 MiB를 지원합니다. 원본과 기존 파일은 유지됩니다."
@@ -221,7 +223,7 @@ public actor AuthoringAPI {
         return id.uuidString.lowercased()
     }
     private func encoded<T: Encodable>(_ body: T) throws -> Data { try JSONEncoder().encode(body) }
-    private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, bodyFile: URL? = nil, bodyLength: Int? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, chunkSHA256: String? = nil, timeout: TimeInterval = 15) async throws -> T {
+    private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, bodyFile: URL? = nil, bodyLength: Int? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, chunkSHA256: String? = nil, publicationProfile: String? = nil, timeout: TimeInterval = 15) async throws -> T {
         guard !(authenticated && authenticationBusy && path != "/api/v1/auth/logout") else { throw AuthoringFailure("AUTH_BUSY") }
         activeRequests += 1
         defer { activeRequests -= 1 }
@@ -230,6 +232,10 @@ public actor AuthoringAPI {
         guard let url = URL(string: path, relativeTo: base)?.absoluteURL, url.host == "127.0.0.1", url.port == base.port, url.scheme == "http", url.user == nil, url.password == nil else { throw AuthoringFailure("LOCAL_SCOPE_INVALID") }
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = method; request.httpBody = body
+        if let publicationProfile {
+            guard publicationProfile == "bounded-local-v1", session?.nativePublicationProfile == publicationProfile else { throw AuthoringFailure("PUBLICATION_STAGE_UNAVAILABLE") }
+            request.setValue(publicationProfile, forHTTPHeaderField: "X-ExhibitOS-Publication-Profile")
+        }
         if let bodyFile {
             guard body == nil, let bodyLength, bodyLength > 0, let stream = InputStream(url: bodyFile) else { throw AuthoringFailure("OEX_IMPORT_INVALID") }
             request.httpBodyStream = stream
@@ -421,13 +427,14 @@ public actor AuthoringAPI {
         try saved.requireSameComparison(reopened)
         return reopened
     }
-    public func publicationReady(exhibitionId: String) async throws -> NativePublicationReady {
-        let result: NativePublicationReady = try await request(studioPrefix + "/exhibitions/" + identifier(exhibitionId) + "/ready", timeout: 120)
+    public func publicationReady(exhibitionId: String, etag: String? = nil, publicationProfile: String? = nil) async throws -> NativePublicationReady {
+        if publicationProfile != nil, etag == nil { throw AuthoringFailure("ETAG_INVALID") }
+        let result: NativePublicationReady = try await request(studioPrefix + "/exhibitions/" + identifier(exhibitionId) + "/ready", ifMatch: publicationProfile == nil ? nil : etag, publicationProfile: publicationProfile, timeout: 120)
         return try result.validated()
     }
-    public func preparePublication(exhibitionId: String, etag: String, requestId: String) async throws -> NativePublication {
+    public func preparePublication(exhibitionId: String, etag: String, requestId: String, publicationProfile: String? = nil) async throws -> NativePublication {
         struct Input: Encodable { let requestId: String }
-        let result: NativePublication = try await request(studioPrefix + "/exhibitions/" + identifier(exhibitionId) + "/publications", method: "POST", body: encoded(Input(requestId: identifier(requestId))), ifMatch: etag, timeout: 120)
+        let result: NativePublication = try await request(studioPrefix + "/exhibitions/" + identifier(exhibitionId) + "/publications", method: "POST", body: encoded(Input(requestId: identifier(requestId))), ifMatch: etag, publicationProfile: publicationProfile, timeout: 120)
         return try result.validated()
     }
     public func publications(exhibitionId: String) async throws -> [NativePublication] {

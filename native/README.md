@@ -61,6 +61,13 @@ Bounded output uses a new destination and never replaces an existing file.
 These are implementation boundaries; actual runtime/workspace qualification
 and native GUI output evidence must match the delivered payload separately.
 
+Local publication uses its own affirmative `nativePublicationProfile:
+"bounded-local-v1"` session advertisement and an explicit per-call profile
+header. Ordinary readiness/publish requests retain their existing behavior.
+A negotiated pending request commits the selected profile in its existing plan
+binding, keeping the same snapshot, ETag and publish request ID on cold retry.
+This does not grant watermark support or enlarge the ordinary draft-create limit.
+
 An optional `--runtime-payload /absolute/newly-produced-runtime` embeds the
 Platform producer's local validation payload under `Contents/Resources/native-runtime`.
 The helper's closed `runtime_payload` query resolves that fixed app-relative path,

@@ -12,6 +12,22 @@ final class PublicationPlanBindingTests: XCTestCase {
         let id = UUID().uuidString.lowercased()
         return NativePublicationCompleted(pending: pending, publication: NativePublication(publicationId: id, publicUrl: "/p/" + id, revisionSha256: String(repeating: "c", count: 64), publishedAt: "2026-10-28T00:00:00Z", status: "published"))
     }
+    func testBoundedProfileCommitmentSurvivesColdPendingWithoutChangingLegacyHash() throws {
+        let fixedID = "00000000-0000-4000-8000-000000000001"
+        let legacy = try nativePublicationPlanBinding(sourceExhibitionId: fixedID, etag: etag, runtimeManifestSha256: runtime, watermark: nil)
+        XCTAssertEqual(legacy, "b48cbcd3783272fc1a00e084451ef8461d305a42bf02241b8e78a10877fe34c5")
+        let draft = try NativeExhibitionDraft.new(title: "프로필을 보관하는 전시")
+        let bounded = try nativePublicationPlanBinding(sourceExhibitionId: draft.id, etag: etag, runtimeManifestSha256: runtime, watermark: nil, publicationProfile: "bounded-local-v1")
+        XCTAssertNotEqual(bounded, try binding(draft))
+        let pending = try NativePublicationPending(source: draft, etag: etag, planBindingSha256: bounded)
+        let cold = try JSONDecoder().decode(NativePublicationPending.self, from: JSONEncoder().encode(pending))
+        XCTAssertEqual(cold.saveRequestId, pending.saveRequestId)
+        XCTAssertEqual(cold.publishRequestId, pending.publishRequestId)
+        XCTAssertEqual(cold.snapshot, pending.snapshot)
+        try cold.requirePlanBinding(nativePublicationPlanBinding(sourceExhibitionId: cold.sourceExhibitionId, etag: cold.sourceEtag, runtimeManifestSha256: runtime, watermark: cold.snapshot.publicationWatermark(), publicationProfile: "bounded-local-v1"))
+        XCTAssertThrowsError(try cold.requirePlanBinding(binding(draft)))
+        XCTAssertThrowsError(try nativePublicationPlanBinding(sourceExhibitionId: draft.id, etag: etag, runtimeManifestSha256: runtime, watermark: nil, publicationProfile: "unrecognized"))
+    }
     func testEffectiveRecipeIgnoresInactiveNoneFieldsButBindsRuntimeSourceAndSettings() throws {
         let draft = try NativeExhibitionDraft.new(title: "전시")
         let absent = try binding(draft)
