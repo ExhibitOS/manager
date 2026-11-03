@@ -77,9 +77,12 @@ final class ExhibitionModel: ObservableObject {
     /// The frame restriction never grants authority. In selected native mode,
     /// a saved draft remains locked until the exact current frame is acknowledged.
     var immutable: Bool {
+        editingLocked(acknowledging: draft)
+    }
+    private func editingLocked(acknowledging expectedDraft: NativeExhibitionDraft?) -> Bool {
         NativeViewportAccess.locked(selected: selectedBoundedPolicy, saved: state?.etag != nil, storedLocked: storedImmutable || boundedPolicyPending,
             frameReadOnly: viewportController.boundedReadOnly,
-            exactOrdinaryFrame: viewportController.acknowledges(draft: draft, tenantId: state?.tenantId, principalId: state?.principalId))
+            exactOrdinaryFrame: viewportController.acknowledges(draft: expectedDraft, tenantId: state?.tenantId, principalId: state?.principalId))
     }
     // Do not feed the transient pending-ack lock back into the frame's
     // disabled bit: that would create a new frame on every acknowledgement.
@@ -682,9 +685,12 @@ final class ExhibitionModel: ObservableObject {
             && (light?.detailsChanged != true || viewportController.lightFixtureSupported)
     }
     var canApplyLight: Bool {
-        guard !busy, !pending, !immutable, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
+        // The renderer acknowledges the temporary light document while the
+        // saved draft and the preview's base remain the source of edit authority.
+        guard !busy, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
               !surfaceMaterialDirty, !benchDirty, !plaqueDirty, !furnishingDirty && !spaceLightingDirty, !architectureApplying, viewportController.connected, viewportController.lightInspectorSupported,
               lightPreviewAccessID == viewportAccessID, let preview = lightPreview, preview.base == draft,
+              !editingLocked(acknowledging: preview.displayDraft),
               selectedLightId == preview.command.lightId, let fields = light else { return false }
         guard !preview.command.usesLightDetails || viewportController.lightFixtureSupported else { return false }
         return (try? fields.command()) == preview.command
@@ -1719,9 +1725,10 @@ final class ExhibitionModel: ObservableObject {
     func applyLight() async {
         guard canApplyLight else { return }
         await work {
-            guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
+            guard !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
                   !surfaceMaterialDirty, !benchDirty, !plaqueDirty, !furnishingDirty && !spaceLightingDirty, !architectureApplying, lightPreviewAccessID == viewportAccessID,
-                  let preview = lightPreview, let fields = light, let draft, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                  let preview = lightPreview, !editingLocked(acknowledging: preview.displayDraft),
+                  let fields = light, let draft, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             value.draft = try preview.apply(to: draft, selectedLightId: selectedLightId, command: fields.command())
             try await persist(value); syncFields()
             notice = "조명 변경을 이 Mac에 보관했습니다. 되돌리기로 취소할 수 있으며 전시 저장은 별도로 진행합니다."
