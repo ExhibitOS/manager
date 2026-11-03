@@ -94,6 +94,11 @@ const NORMAL_OEX_027_LOCAL_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[
     ("d9caa058175c684fad8e2070373497cc735cc8a8",
      "15021a235469473596f496c277543b17d243044fc3a31fdd37ad2d036d9bdd65",
      "1af44d49d98c097ef2c44549b0b83a4ab103c894fe39af1012a2edba29fae2dc"),
+    // Final reviewed frontend integration also hides the editing light guide;
+    // non-frontend inventory and the managed-core supplier remain unchanged.
+    ("26b191c90ccee7045f234a058f6c30801b623035",
+     "15021a235469473596f496c277543b17d243044fc3a31fdd37ad2d036d9bdd65",
+     "115be25154dc989c9bfe4c0b5a94ed23b7ed9930afc9695cc8198480bc0b5dfe"),
 ];
 const NORMAL_OEX_027_PATH: &str = "platform/database/native-oex-normal/027_oex_exhibition_provenance.sql";
 const NORMAL_OEX_027_SHA256: &str = "09bd82b3195e2f54545f6af45173bbab569effac95553a50f573745dab96f2c7";
