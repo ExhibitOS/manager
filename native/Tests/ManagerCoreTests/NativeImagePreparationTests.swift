@@ -123,16 +123,17 @@ final class NativeImagePreparationTests: XCTestCase {
         let prefix = Data(png.prefix(8)) + chunk("IHDR", header)
         var badCRC = chunk("IDAT", compressed); badCRC[badCRC.count - 1] ^= 1
         var badHeader = header; badHeader[9] = 6
-        let cases = [
-            prefix + badCRC + chunk("IEND"),
-            Data(png.prefix(8)) + chunk("IHDR", badHeader) + chunk("IDAT", compressed) + chunk("IEND"),
-            prefix + chunk("ABCD") + chunk("IDAT", compressed) + chunk("IEND"),
-            prefix + chunk("IDAT") + chunk("tEXt") + chunk("IDAT", compressed) + chunk("IEND"),
-            png + chunk("tEXt"),
-            Data(png.dropLast()),
-            Data(count: 8_388_609)
+        let cases: [[Data]] = [
+            [prefix, badCRC, chunk("IEND")],
+            [Data(png.prefix(8)), chunk("IHDR", badHeader), chunk("IDAT", compressed), chunk("IEND")],
+            [prefix, chunk("ABCD"), chunk("IDAT", compressed), chunk("IEND")],
+            [prefix, chunk("IDAT"), chunk("tEXt"), chunk("IDAT", compressed), chunk("IEND")],
+            [png, chunk("tEXt")],
+            [Data(png.dropLast())],
+            [Data(count: 8_388_609)]
         ]
-        for invalid in cases {
+        for parts in cases {
+            let invalid = parts.reduce(into: Data()) { $0.append($1) }
             XCTAssertThrowsError(try Prep.cleanPNG(invalid, width: 19, height: 11, role: .baseColor, isCurrent: { true })) {
                 XCTAssertEqual($0 as? Prep.Failure, .encoding)
             }
