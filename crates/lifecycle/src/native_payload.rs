@@ -706,7 +706,7 @@ impl Payload {
         pin.check()?;
         Ok(total)
     }
-    pub fn static_export_resources(&self) -> Result<(PathBuf, PathBuf)> {
+    pub fn static_export_resources(&self, private_editor: bool) -> Result<(PathBuf, PathBuf)> {
         for name in [
             "platform/scripts/native-static-export.mjs",
             "platform/scripts/export-static-publication.mjs",
@@ -721,6 +721,13 @@ impl Payload {
             {
                 return Err(err("NATIVE_STATIC_EXPORT_UNAVAILABLE"));
             }
+        }
+        if private_editor {
+            let entry = "platform/apps/web/dist-static/static-studio.html";
+            if !self.manifest.files.iter().any(|f| f.path == entry && f.link.is_none() && f.executable == Some(false)) {
+                return Err(err("NATIVE_STATIC_PRIVATE_EDITOR_UNAVAILABLE"));
+            }
+            self.recheck()?;
         }
         Ok((
             self.root.join("platform/scripts/native-static-export.mjs"),

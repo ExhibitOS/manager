@@ -122,6 +122,8 @@ public struct BridgeFailure: Error, LocalizedError, Sendable {
         case "HOSTED_OPERATION_UNCERTAIN", "HOSTED_RESULT_UNCERTAIN": "배포 결과를 확인해야 합니다. 같은 작업의 배포 상태를 다시 확인하세요."
         case "NATIVE_STATIC_OUTPUT_EXISTS": "이미 같은 위치에 파일이 있습니다. 기존 파일을 보관하고 다른 위치를 선택하세요."
         case "NATIVE_STATIC_OUTPUT_INVALID": "저장 위치를 사용할 수 없습니다. 접근할 수 있는 폴더를 선택하세요."
+        case "NATIVE_STATIC_PRIVATE_EDITOR_UNAVAILABLE": "이 앱에는 개인 사본 편집을 포함하는 저장 도구가 없습니다."
+        case "NATIVE_STATIC_PRIVATE_EDITOR_RIGHTS": "개인 사본을 제공하려면 포함된 작품과 자료에 CC0 표시·내보내기 권리가 필요합니다."
         case "NATIVE_STATIC_EXPORT_UNAVAILABLE": "이 앱에는 정적 전시 저장 도구가 없습니다. 검증된 최신 앱을 설치하세요."
         case "NATIVE_STATIC_STOP_PENDING": "전시 파일 저장을 정지하고 있습니다. 완료될 때까지 앱을 열어 두세요."
         case "NATIVE_STATIC_EXPORT_FAILED", "NATIVE_STATIC_EXPORT_INVALID": "전시 파일을 완성하지 못했습니다. 기존 파일을 보관하고 새 폴더에 다시 저장하세요."
@@ -223,9 +225,11 @@ public actor NativeBridge {
     public func staticExportStatus(_ context: Context) throws -> NativeStaticExportStatus? {
         try request("static_export_status", fields: ["selection_token": context.selectionToken])
     }
-    public func startStaticExport(_ context: Context, publicationId: String, output: URL) throws -> NativeStaticExportStatus {
+    public func startStaticExport(_ context: Context, publicationId: String, output: URL, privateEditor: Bool = false) throws -> NativeStaticExportStatus {
         guard output.isFileURL else { throw BridgeFailure("NATIVE_STATIC_OUTPUT_INVALID") }
-        return try request("static_export", fields: ["selection_token": context.selectionToken, "export": ["publicationId": publicationId, "output": output.path]])
+        var export: [String: Any] = ["publicationId": publicationId, "output": output.path]
+        if privateEditor { export["privateEditor"] = true }
+        return try request("static_export", fields: ["selection_token": context.selectionToken, "export": export])
     }
     public func cancelStaticExport(_ context: Context) throws -> NativeStaticExportStatus? {
         try request("static_export_cancel", fields: ["selection_token": context.selectionToken])
