@@ -35,8 +35,8 @@ final class AuthoringModel: ObservableObject {
     private var importRead: Task<ImportFileSnapshot, Error>?
     private var imagePreparation: Task<NativePreparedJPEG, Error>?
     private var imagePreparationScope: NativeImagePreparationScope?
-    // The native schema-21 packet has real original/derived custody evidence.
-    // Other runtime manifests keep the existing PNG/GLB chooser and contract.
+    // Only explicitly qualified runtime packets expose original/derived JPEG
+    // custody. Other manifests retain the existing PNG/GLB chooser and contract.
     @Published private(set) var jpegImportsEnabled = false
     @Published private(set) var modelDerivationEnabled = false
     var modelWorkerPending: Bool { importTransfer.hasPendingModelWorker }
@@ -85,8 +85,7 @@ final class AuthoringModel: ObservableObject {
         let previousManifest = runtimeManifestSHA256
         runtimeManifestSHA256 = configuration?.manifestSha256
         modelDerivationEnabled = configuration?.kind == "personal" && NativeModelDerivationProfile.supports(manifestSHA256: runtimeManifestSHA256, ready: ready)
-        jpegImportsEnabled = ready && (runtimeManifestSHA256 == "74b08c7899d74ad989bbb61e47fc86fe9fa25c8853ab27ce57e9135c4932e96a"
-            || PublicationWatermarkRuntime.supports(manifestSHA256: runtimeManifestSHA256, ready: ready))
+        jpegImportsEnabled = NativeJPEGImportRuntime.supports(manifestSHA256: runtimeManifestSHA256, ready: ready)
         if !ready || previousManifest != runtimeManifestSHA256 {
             importStatusGeneration = UUID()
             imagePreparationScope?.invalidate(); imagePreparation?.cancel()
@@ -346,6 +345,7 @@ extension AuthoringModel {
             guard current(), result.originalSHA256 == original.sha256 else { throw CancellationError() }
             return result
         } catch {
+            if current() { notice = "" }
             if Task.isCancelled || owned.isCancelled || !current() { throw CancellationError() }
             if let failure = error as? NativeImagePreparation.Failure {
                 switch failure {

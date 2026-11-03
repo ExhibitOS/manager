@@ -284,18 +284,22 @@ public enum NativeImagePreparation {
         return try cleanPNG(encoded as Data, width: width, height: height, role: role, isCurrent: isCurrent)
     }
     private static func u32(_ data: Data, _ at: Int) -> Int { (0..<4).reduce(0) { ($0 << 8) | Int(data[at + $1]) } }
-    /// Reuse the public worker's closed PNG chunk policy. System encoding is
-    /// followed by metadata removal; unknown critical chunks fail closed.
-    private static func cleanPNG(_ data: Data, width: Int, height: Int, role: Role, isCurrent: @Sendable () -> Bool) throws -> Data {
+    /// Validate the bounded system output before removing metadata. ImageIO may
+    /// split one compressed stream into many IDAT chunks; join those payloads
+    /// without changing them so the consumer receives only three or four chunks.
+    static func cleanPNG(_ data: Data, width: Int, height: Int, role: Role, isCurrent: @Sendable () -> Bool) throws -> Data {
         let signature = Data([137,80,78,71,13,10,26,10])
-        guard data.count >= 33, data.prefix(8) == signature else { throw Failure.encoding }
-        var result = signature, offset = 8, count = 0, idat = false, ended = false
+        guard data.count >= 33, data.count <= 8_388_608, data.prefix(8) == signature else { throw Failure.encoding }
+        var result = signature, compressed = Data(), offset = 8, idat = false, closedIDAT = false, ended = false
         while offset < data.count {
             try check(isCurrent)
-            count += 1; guard count <= 256, data.count - offset >= 12 else { throw Failure.encoding }
+            // Every iteration consumes at least 12 bytes of the bounded input.
+            guard data.count - offset >= 12 else { throw Failure.encoding }
             let size = u32(data, offset)
             guard size <= data.count - offset - 12 else { throw Failure.encoding }
             let end = offset + size + 12, name = data[(offset + 4)..<(offset + 8)]
+            guard name.allSatisfy({ (65...90).contains($0) || (97...122).contains($0) }),
+                  (65...90).contains(data[offset + 6]) else { throw Failure.encoding }
             let crcInput = data.subdata(in: (offset + 4)..<(end - 4))
             let actual = crcInput.withUnsafeBytes { crc32(0, $0.bindMemory(to: Bytef.self).baseAddress, uInt(crcInput.count)) }
             guard actual == uLong(u32(data, end - 4)), !ended else { throw Failure.encoding }
@@ -310,11 +314,23 @@ public enum NativeImagePreparation {
                     result.append(contentsOf: [0, 0, 0, 1]); result.append(payload)
                     result.append(contentsOf: (0..<4).reversed().map { UInt8(truncatingIfNeeded: crc >> ($0 * 8)) })
                 }
-            } else if name == Data("IDAT".utf8) { idat = true; result.append(data[offset..<end]) }
+            } else if name == Data("IDAT".utf8) {
+                guard !closedIDAT else { throw Failure.encoding }
+                idat = true; compressed.append(data[(offset + 8)..<(end - 4)])
+            }
             else if name == Data("IEND".utf8) {
                 guard size == 0, idat, end == data.count else { throw Failure.encoding }
+                let type = Data("IDAT".utf8)
+                let initial = type.withUnsafeBytes { crc32(0, $0.bindMemory(to: Bytef.self).baseAddress, uInt(type.count)) }
+                let crc = compressed.withUnsafeBytes { crc32(initial, $0.bindMemory(to: Bytef.self).baseAddress, uInt(compressed.count)) }
+                result.append(contentsOf: (0..<4).reversed().map { UInt8(truncatingIfNeeded: compressed.count >> ($0 * 8)) })
+                result.append(type); result.append(compressed)
+                result.append(contentsOf: (0..<4).reversed().map { UInt8(truncatingIfNeeded: crc >> ($0 * 8)) })
                 ended = true; result.append(data[offset..<end])
-            } else { guard name.first.map({ $0 & 32 != 0 }) == true else { throw Failure.encoding } }
+            } else {
+                guard name.first.map({ $0 & 32 != 0 }) == true else { throw Failure.encoding }
+                if idat { closedIDAT = true }
+            }
             offset = end
         }
         guard ended, result.count <= 8_388_608 else { throw Failure.encoding }
