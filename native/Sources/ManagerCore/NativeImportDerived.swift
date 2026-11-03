@@ -6,7 +6,9 @@ import CryptoKit
 /// contract. This does not enable watermark or model-derivation features.
 public enum NativeJPEGImportRuntime {
     public static let currentManifestSHA256 = "115be25154dc989c9bfe4c0b5a94ed23b7ed9930afc9695cc8198480bc0b5dfe"
-    private static let qualifiedICCManifests: Set<String> = []
+    private static let qualifiedICCManifests: Set<String> = [
+        "253de8963ec9f0e0a2884a27d8e756b453cf61899e38c31571d9993a7d6ecff4",
+    ]
     public static func supportsICC(manifestSHA256: String?, ready: Bool) -> Bool {
         guard ready, let manifestSHA256 else { return false }
         return qualifiedICCManifests.contains(manifestSHA256)
