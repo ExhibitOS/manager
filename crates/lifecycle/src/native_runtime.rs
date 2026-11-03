@@ -10,7 +10,6 @@ use super::{native_installation::Ports, native_payload::Payload};
 #[path = "native_runtime_oex_binding.rs"] mod oex_binding;
 #[path = "native_runtime_oex_read_fd.rs"] mod oex_read_fd;
 #[path = "native_runtime_oex_stage_root.rs"] mod oex_stage_root;
-#[path = "native_runtime_oex_owner.rs"] mod oex_owner;
 #[path = "native_runtime_oex_reservation.rs"] mod oex_reservation;
 #[path = "native_runtime_oex_ack.rs"] mod oex_ack;
 #[path = "native_runtime_oex_ack_v2.rs"] mod oex_ack_v2;
