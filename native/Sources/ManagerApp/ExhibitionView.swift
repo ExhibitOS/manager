@@ -815,56 +815,91 @@ final class ExhibitionModel: ObservableObject {
         viewportController.connected && viewportController.sceneSnapshotSupported &&
         viewportController.acknowledges(draft: draft, tenantId: state?.tenantId, principalId: state?.principalId)
     }
-    func saveSceneSnapshot(viewpointId: String, placementId: String) async {
-        guard canCaptureSceneSnapshot, let original = state, let base = draft, let etag = original.etag,
-              original.savedEditVersion == base.document["editVersion"].integer, let api,
-              let window = NSApp.keyWindow else { return }
-        let access = viewportAccessID, context = viewportController.editingContextGeneration, host = viewportController.hostEpoch
-        let selection = viewportSelection
-        func unchanged() -> Bool {
-            viewportAccessID == access && viewportController.editingContextGeneration == context &&
-            viewportController.hostEpoch == host && viewportController.editingContextActive &&
-            viewportController.connected && state?.revision == original.revision && state?.etag == etag &&
-            draft == base && !dirty && !pending && !busy && !entrancePreviewActive &&
-            viewportSelection == selection && viewportPresentation == .threeD
-        }
-        sceneSnapshotting = true; sceneSnapshotStatus = "저장된 감상 시점의 이미지를 준비하고 있습니다."
-        // This operation never marks the draft busy/disabled, changes selection,
-        // stages a candidate or touches undo. User edits cause a stale rejection.
-        defer { sceneSnapshotting = false }
+    private var sceneSnapshotConnectionGeneration = UUID()
+
+    /// In-process API on this model's authenticated, acknowledged live WK host.
+    /// No GUI trigger, file panel, document write or selected-target requirement.
+    func captureSceneSnapshot(camera: SceneSnapshotCamera, placementId: String) async throws -> SceneSnapshotResult {
         do {
-            let saved = try await api.exhibition(base.id)
-            guard unchanged(), saved.etag == etag, saved.draft == base else { throw AuthoringFailure("SCENE_SNAPSHOT_STALE") }
-            let image = try await viewportController.sceneSnapshot(saved: saved, viewpointId: viewpointId, placementId: placementId)
-            let current = try await api.exhibition(base.id)
-            try saved.requireSameComparison(current)
-            guard unchanged(), image.savedETag == etag, image.savedRevision == saved.revision,
-                  image.localEditVersion == original.savedEditVersion else { throw AuthoringFailure("SCENE_SNAPSHOT_STALE") }
-            let panel = NSSavePanel()
-            panel.allowedContentTypes = [.png]; panel.canCreateDirectories = true
-            panel.nameFieldStringValue = "전시-시점-r\(saved.revision).png"
-            panel.title = "감상 시점 이미지 저장"
-            panel.message = "저장된 전시 r\(saved.revision)의 감상 시점 · 640 × 360 PNG"
-            let answer = await withCheckedContinuation { continuation in
-                panel.beginSheetModal(for: window) { continuation.resume(returning: $0) }
-            }
-            guard answer == .OK, let destination = panel.url else { sceneSnapshotStatus = "이미지 저장을 취소했습니다."; return }
-            let beforeCommit = try await api.exhibition(base.id)
-            try saved.requireSameComparison(beforeCommit)
-            guard unchanged() else { throw AuthoringFailure("SCENE_SNAPSHOT_STALE") }
-            // A new destination preserves any existing file, even after a panel
-            // replacement choice. File-system failure never modifies the draft.
-            try await image.writeNewPNG(to: destination)
-            let visibility: String
-            if image.target["inFrustum"] != .bool(true) { visibility = "대상 작품이 화면 밖에 있습니다." }
-            else { switch image.target["centerRay"].string {
-                case "clear": visibility = "작품 중심 방향에 가림이 감지되지 않았습니다."
-                case "blocked": visibility = "작품 중심 방향에 가림이 있습니다."
-                default: visibility = "작품 중심의 가림 여부를 확인하지 못했습니다."
-            } }
-            sceneSnapshotStatus = "전시 r\(saved.revision) · 640 × 360 PNG를 저장했습니다. " + visibility + " 작품 전체의 가림을 보장하지는 않습니다."
+            let image = try await withSceneSnapshot(camera: camera, placementId: placementId) { image, _, _ in image }
+            sceneSnapshotStatus = "전시 r\(image.savedRevision)의 시점 이미지를 준비했습니다."
+            return image
         } catch {
-            sceneSnapshotStatus = unchanged() ? "이미지를 저장하지 못했습니다. 장면 준비·저장 상태와 새 파일 이름을 확인하세요. 기존 전시와 입력은 유지됩니다." : "선택이나 저장 상태가 바뀌어 이미지를 저장하지 않았습니다. 현재 입력은 유지됩니다."
+            sceneSnapshotStatus = "시점 이미지를 준비하지 못했습니다. 기존 전시와 입력은 유지됩니다."
+            throw error
+        }
+    }
+
+    private func withSceneSnapshot<Result>(camera: SceneSnapshotCamera, placementId: String,
+        consume: (SceneSnapshotResult, NativeStudioResponse, () -> Bool) async throws -> Result) async throws -> Result {
+        try Task.checkCancellation()
+        guard canCaptureSceneSnapshot, !camera.isInspection || viewportController.sceneSnapshotInspectionSupported,
+              let original = state, let base = draft, let etag = original.etag,
+              original.savedEditVersion == base.document["editVersion"].integer, let api, let session else {
+            throw AuthoringFailure("SCENE_SNAPSHOT_NOT_READY")
+        }
+        let access = viewportAccessID, connection = sceneSnapshotConnectionGeneration
+        let context = viewportController.editingContextGeneration, host = viewportController.hostEpoch
+        let selection = viewportSelection, accepted = viewportController.acceptedSequence
+        func unchanged() -> Bool {
+            viewportAccessID == access && sceneSnapshotConnectionGeneration == connection && self.api === api &&
+            viewportController.editingContextGeneration == context && viewportController.hostEpoch == host &&
+            viewportController.acceptedSequence == accepted && viewportController.editingContextActive &&
+            viewportController.acknowledges(draft: base, tenantId: original.tenantId, principalId: original.principalId) &&
+            state?.revision == original.revision && state?.workspaceId == original.workspaceId &&
+            state?.tenantId == original.tenantId && state?.principalId == original.principalId &&
+            state?.etag == etag && state?.savedEditVersion == original.savedEditVersion &&
+            draft == base && canExport && !pending && !entrancePreviewActive && !immutable &&
+            viewportSelection == selection && viewportPresentation == .threeD && !viewportTransparent
+        }
+        sceneSnapshotting = true; sceneSnapshotStatus = "저장된 전시의 시점 이미지를 준비하고 있습니다."
+        // Never mark the frame disabled/busy, stage a candidate or touch undo.
+        // Edits, account/store rebinding and newer frames invalidate the result.
+        defer { sceneSnapshotting = false }
+        _ = try await api.verifyRetainedSession(session)
+        let saved = try await api.exhibition(base.id)
+        try Task.checkCancellation()
+        guard unchanged(), saved.etag == etag, saved.draft == base else { throw AuthoringFailure("SCENE_SNAPSHOT_STALE") }
+        let image = try await viewportController.sceneSnapshot(saved: saved, camera: camera, placementId: placementId)
+        let current = try await api.exhibition(base.id)
+        try saved.requireSameComparison(current)
+        _ = try await api.verifyRetainedSession(session)
+        try Task.checkCancellation()
+        guard unchanged(), image.savedETag == etag, image.savedRevision == saved.revision,
+              image.localEditVersion == original.savedEditVersion else { throw AuthoringFailure("SCENE_SNAPSHOT_STALE") }
+        return try await consume(image, saved, unchanged)
+    }
+
+    func saveSceneSnapshot(viewpointId: String, placementId: String) async {
+        guard let window = NSApp.keyWindow, let api else { return }
+        do {
+            try await withSceneSnapshot(camera: .savedViewpoint(viewpointId), placementId: placementId) { image, saved, unchanged in
+                let panel = NSSavePanel()
+                panel.allowedContentTypes = [.png]; panel.canCreateDirectories = true
+                panel.nameFieldStringValue = "전시-시점-r\(saved.revision).png"
+                panel.title = "감상 시점 이미지 저장"
+                panel.message = "저장된 전시 r\(saved.revision)의 감상 시점 · 640 × 360 PNG"
+                let answer = await withCheckedContinuation { continuation in
+                    panel.beginSheetModal(for: window) { continuation.resume(returning: $0) }
+                }
+                guard answer == .OK, let destination = panel.url else { sceneSnapshotStatus = "이미지 저장을 취소했습니다."; return }
+                let beforeCommit = try await api.exhibition(saved.draft.id)
+                try saved.requireSameComparison(beforeCommit)
+                guard unchanged() else { throw AuthoringFailure("SCENE_SNAPSHOT_STALE") }
+                // A new destination preserves any existing file, even after a panel
+                // replacement choice. File-system failure never modifies the draft.
+                try await image.writeNewPNG(to: destination)
+                let visibility: String
+                if image.target["inFrustum"] != .bool(true) { visibility = "대상 작품이 화면 밖에 있습니다." }
+                else { switch image.target["centerRay"].string {
+                    case "clear": visibility = "작품 중심 방향에 가림이 감지되지 않았습니다."
+                    case "blocked": visibility = "작품 중심 방향에 가림이 있습니다."
+                    default: visibility = "작품 중심의 가림 여부를 확인하지 못했습니다."
+                } }
+                sceneSnapshotStatus = "전시 r\(saved.revision) · 640 × 360 PNG를 저장했습니다. " + visibility + " 작품 전체의 가림을 보장하지는 않습니다."
+            }
+        } catch {
+            sceneSnapshotStatus = "이미지를 저장하지 못했습니다. 현재 연결·선택·저장 상태와 새 파일 이름을 확인하세요. 기존 전시와 입력은 유지됩니다."
             viewportController.diagnose("SCENE_SNAPSHOT", error)
         }
     }
@@ -911,12 +946,13 @@ final class ExhibitionModel: ObservableObject {
         // have started in the meantime; never replace its account/store binding.
         guard !busy, !placingArtwork, !architectureApplying else { return }
         if let old = self.session, old.tenantId != session.tenantId || old.userId != session.userId {
-            guard !dirty else { self.api = nil; viewportCredentials = nil; failure = AuthoringFailure("DRAFT_ACCOUNT_MISMATCH"); return }
+            guard !dirty else { sceneSnapshotConnectionGeneration = UUID(); self.api = nil; viewportCredentials = nil; failure = AuthoringFailure("DRAFT_ACCOUNT_MISMATCH"); return }
             state = nil; reusablePublicationId = nil; items = []; library = []; comparison = nil; exportedURL = nil; exportedSHA256 = nil; catalogArtworkId = ""; catalogStatus = ""
         }
         boundedPolicyGeneration = UUID()
         boundedPlacementCapability = nil; boundedPlacementPolicy = nil; boundedPlacementBaseline = nil
         boundedPlacementSession = nil; boundedPlacementAccess = nil; boundedPlacementToken = nil; boundedPlacementEpoch = nil; boundedProfileKnown = nil
+        sceneSnapshotConnectionGeneration = UUID()
         self.api = api; self.session = session
         self.selectedBoundedPolicy = selectedBoundedPolicy
         self.ordinaryBoundedRuntime = ordinaryBoundedRuntime && !selectedBoundedPolicy
@@ -990,6 +1026,7 @@ final class ExhibitionModel: ObservableObject {
             entranceCredentialRenewalFailed()
             return
         }
+        sceneSnapshotConnectionGeneration = UUID()
         self.api = api; self.session = session; self.read = read; self.write = write
         viewportCredentials = credentials
         viewportAccessID = UUID() // Same model/buffers/history; a new owned WK coordinator.
