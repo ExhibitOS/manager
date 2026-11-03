@@ -252,12 +252,13 @@ impl ClaimReady {
     /// Correlates the response with the exact one-shot challenge. The API's
     /// independently held claim/provider/fence remain indispensable.
     pub(super) fn parse(bytes:&[u8],c:&ClaimChallenge,mac:&str,expected_request:&str,expected_bytes:u64,expected_sha256:&str)->Result<Self> {
-        Self::parse_for(bytes,c,mac,expected_request,expected_bytes,expected_sha256,"claim-challenge","claim-ready")
+        Self::parse_for(bytes,c,mac,expected_request,expected_bytes,expected_sha256,("claim-challenge","claim-ready"))
     }
     pub(super) fn parse_v3(bytes:&[u8],c:&ClaimChallenge,mac:&str,expected_request:&str,expected_bytes:u64,expected_sha256:&str)->Result<Self> {
-        Self::parse_for(bytes,c,mac,expected_request,expected_bytes,expected_sha256,"claim-challenge-v3","claim-ready-v3")
+        Self::parse_for(bytes,c,mac,expected_request,expected_bytes,expected_sha256,("claim-challenge-v3","claim-ready-v3"))
     }
-    fn parse_for(bytes:&[u8],c:&ClaimChallenge,mac:&str,expected_request:&str,expected_bytes:u64,expected_sha256:&str,challenge_kind:&str,ready_kind:&str)->Result<Self> {
+    fn parse_for(bytes:&[u8],c:&ClaimChallenge,mac:&str,expected_request:&str,expected_bytes:u64,expected_sha256:&str,kinds:(&str,&str))->Result<Self> {
+        let (challenge_kind,ready_kind)=kinds;
         if bytes.is_empty()||bytes.len()>LIMIT||!hash_valid(mac)||!hash_valid(expected_sha256)
             || !valid_id(expected_request) || !(1..=512*1024*1024).contains(&expected_bytes) {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         let r:Self=serde_json::from_slice(bytes).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))?;

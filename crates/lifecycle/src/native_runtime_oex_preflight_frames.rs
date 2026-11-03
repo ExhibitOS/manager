@@ -2,6 +2,7 @@
 //! Inactive same-channel v3 preflight correlation. Receipt bytes are not a
 //! live provider lease; caller must hold/recheck the owner, session and FDs.
 use super::*;
+use super::oex_reservation::V3PlanScope;
 
 fn invalid()->LifecycleError {err("NATIVE_OEX_PREFLIGHT_INVALID")}
 fn uuid(s:&str)->bool {Uuid::parse_str(s).is_ok_and(|v|v.to_string()==s&&v.get_variant()==uuid::Variant::RFC4122&&(1..=8).contains(&v.get_version_num()))}
@@ -20,14 +21,13 @@ pub(super) struct InputScope { stage:PathBuf,stage_device:u64,store:PathBuf,stor
 impl InputScope {
     /// Compare the A-only receipt with independently held roots/owner. This is
     /// still not verification of a live provider lease or session.
-    pub(super) fn from_receipt(receipt:&[u8],request:&super::oex_preflight::Control,system_id:&str,database_id:&str,
-        stage:&Path,stage_device:u64,store:&Path,store_device:u64,store_inode:u64)->Result<Self> {
+    pub(super) fn from_receipt(receipt:&[u8],request:&super::oex_preflight::Control,scope:V3PlanScope<'_>)->Result<Self> {
         let control=request.encode()?;
-        if stage_device.to_string()!=request.input_device{return Err(invalid());}
+        if scope.stage_device.to_string()!=request.input_device{return Err(invalid());}
         super::oex_reservation::check_v3_plan(receipt,&request.reservation_digest,&request.reservation_id,&request.reservation_generation,
-            system_id,database_id,stage,stage_device,store,store_device,store_inode,request.archive_bytes,0)?;
-        Ok(Self{stage:stage.to_path_buf(),stage_device,store:store.to_path_buf(),store_device,store_inode,
-            system_id:system_id.into(),database_id:database_id.into(),reservation_id:request.reservation_id.clone(),
+            scope,request.archive_bytes,0)?;
+        Ok(Self{stage:scope.stage_path.to_path_buf(),stage_device:scope.stage_device,store:scope.store_path.to_path_buf(),store_device:scope.store_device,store_inode:scope.store_inode,
+            system_id:scope.system_id.into(),database_id:scope.database_id.into(),reservation_id:request.reservation_id.clone(),
             reservation_generation:request.reservation_generation.clone(),receipt_digest:request.reservation_digest.clone(),control})
     }
 }
@@ -141,8 +141,9 @@ impl Bound {
         let generation=self.wire.output_reservation_generation.as_deref().ok_or_else(invalid)?;
         let sha=self.wire.output_receipt_digest.as_deref().ok_or_else(invalid)?;
         if self.wire.packed_bytes==0{return Err(invalid());}
-        super::oex_reservation::check_v3_plan(receipt,sha,id,generation,&self.scope.system_id,&self.scope.database_id,
-            &self.scope.stage,self.scope.stage_device,&self.scope.store,self.scope.store_device,self.scope.store_inode,self.wire.packed_bytes,self.wire.packed_bytes)?;
+        let scope=V3PlanScope{system_id:&self.scope.system_id,database_id:&self.scope.database_id,stage_path:&self.scope.stage,
+            stage_device:self.scope.stage_device,store_path:&self.scope.store,store_device:self.scope.store_device,store_inode:self.scope.store_inode};
+        super::oex_reservation::check_v3_plan(receipt,sha,id,generation,scope,self.wire.packed_bytes,self.wire.packed_bytes)?;
         self.confirm()
     }
     fn confirm(&self)->Result<Vec<u8>> {
@@ -235,9 +236,10 @@ mod tests {
         for s in [request.reservation_id.as_str(),request.reservation_generation.as_str(),"oex-import","123","456","/private/store","2","9"]{field(&mut input,s);}
         input.extend_from_slice(&1u32.to_be_bytes());for s in ["/private/stage","1","100"]{field(&mut input,s);}
         request.reservation_digest=digest(&input);
-        let scope=InputScope::from_receipt(&input,&request,"123","456",Path::new("/private/stage"),1,Path::new("/private/store"),2,9).unwrap();
-        assert!(InputScope::from_receipt(&input,&request,"123","457",Path::new("/private/stage"),1,Path::new("/private/store"),2,9).is_err());
-        assert!(InputScope::from_receipt(&input,&request,"123","456",Path::new("/private/stage"),2,Path::new("/private/store"),2,9).is_err());
+        let plan=V3PlanScope{system_id:"123",database_id:"456",stage_path:Path::new("/private/stage"),stage_device:1,store_path:Path::new("/private/store"),store_device:2,store_inode:9};
+        let scope=InputScope::from_receipt(&input,&request,plan).unwrap();
+        assert!(InputScope::from_receipt(&input,&request,V3PlanScope{database_id:"457",..plan}).is_err());
+        assert!(InputScope::from_receipt(&input,&request,V3PlanScope{stage_device:2,..plan}).is_err());
         let challenge=super::super::owner_claim_frames::ClaimChallenge{version:1,kind:"claim-challenge-v3".into(),correlation_id:next(),workspace_id:next(),tenant_id:next(),principal_id:next(),runtime_generation:request.runtime_generation.clone(),job_id:next(),attempt_id:request.attempt_id.clone(),generation:next(),stage_id:request.stage_id.clone(),reservation_id:request.reservation_id.clone(),reservation_generation:request.reservation_generation.clone(),claim_digest:"d".repeat(64),receipt_digest:request.reservation_digest.clone()};
         let prepared=super::super::oex_preflight::Prepared::test_only(&request,80,40);let report=prepared.report(&request,&challenge).unwrap();
         let output_id=next();let output_generation=next();let mut receipt=b"EXHIBITOS-DISK-RESERVATION\0v1\0".to_vec();

@@ -67,7 +67,7 @@ impl StageRoot {
         if unsafe{libc::fstatat(dir.as_raw_fd(),name.as_ptr(),named.as_mut_ptr(),libc::AT_SYMLINK_NOFOLLOW)}!=0{return Err(err("NATIVE_OEX_OUTPUT_INVALID"));}
         let named=unsafe{named.assume_init()};
         if named.st_mode&libc::S_IFMT!=libc::S_IFREG || named.st_uid!=unsafe{libc::geteuid()} || named.st_mode&0o777!=0o600 || named.st_nlink!=1
-            || (named.st_dev as u64,named.st_ino as u64)!=(device,inode){return Err(err("NATIVE_OEX_OUTPUT_INVALID"));}
+            || (named.st_dev as u64,named.st_ino)!=(device,inode){return Err(err("NATIVE_OEX_OUTPUT_INVALID"));}
         self.check(session)
     }
     /// Both exact files must remain named under this same pinned directory.
@@ -113,7 +113,8 @@ impl StageRoot {
     /// partial unlink is uncertain; this method never retries or removes the
     /// directory/journal. The cooperative fence does not exclude same-user
     /// outsiders and removal does not prove physical blocks were reclaimed.
-    pub(super) fn retire_pair(&self,session:&mut Session,owner:&super::oex_owner::Owner,stage:&str,attempt:&str,input:&File,output:&File,cancelled:&AtomicBool)->Result<()> {
+    pub(super) fn retire_pair(&self,session:&mut Session,owner:&super::oex_owner::Owner,ready:&super::owner_claim_frames::ClaimReady,input:&File,output:&File,cancelled:&AtomicBool)->Result<()> {
+        let (stage,attempt)=(&ready.stage_id,&ready.attempt_id);
         let bad=||err("NATIVE_OEX_WORKER_UNCERTAIN");
         owner.check(session)?;if cancelled.load(Ordering::SeqCst){return Err(bad());}
         let a=input.metadata().map_err(|_|bad())?;let b=output.metadata().map_err(|_|bad())?;

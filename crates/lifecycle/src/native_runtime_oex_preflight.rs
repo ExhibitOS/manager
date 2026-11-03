@@ -187,7 +187,10 @@ fn run_owned(node: &Path, script: &Path, root: &Path, input: &super::oex_read_fd
             Err(_) => return Err(uncertain()),
         }}
         if status.is_none() { status = child.poll().map_err(|_| uncertain())?; }
-        if let Some(exit) = status { if !exit.success() { return Err(uncertain()); } if eof && closed { break; } }
+        if let Some(exit) = status {
+            if !exit.success() { return Err(uncertain()); }
+            if eof && closed { break; }
+        }
         if !progressed { thread::sleep(Duration::from_millis(5)); }
     }
     check_owner()?;

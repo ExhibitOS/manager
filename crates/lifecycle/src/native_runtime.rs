@@ -1841,7 +1841,9 @@ impl Session {
         let cancel=self.cancellation.clone();
         let mut channel=self.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
         let mut check=|| {owner.check(self)?;stage_root.check_empty(self)};
-        let result=channel.begin_claim_v3(&open,&identity.2,request,bytes,sha256,stage_root.path(),stage_root.device(),&owner,&cancel,&mut check);
+        let archive=owner_channel::SelectedArchive{request_id:request,bytes,sha256};
+        let scope=oex_reservation::V3PlanScope::from_owner(&owner,stage_root.path(),stage_root.device());
+        let result=channel.begin_claim_v3(&open,&identity.2,archive,scope,&cancel,&mut check);
         drop(check);
         let result=result.and_then(|value|{owner.recheck_database_identity(self)?;stage_root.check_empty(self)?;Ok(value)});
         match result {
@@ -1907,7 +1909,7 @@ impl Session {
             claim.save_and_retire(cancelled,&mut save)?;
             claim.settle(cancelled)
         })();
-        if result.is_err(){if let Some(mut channel)=self.owner_channel.take(){channel.invalidate();}}
+        if result.is_err() && let Some(mut channel)=self.owner_channel.take(){channel.invalidate();}
         result
     }
     pub(crate) fn target_observation_root(&self) -> &Path {
@@ -2166,7 +2168,7 @@ impl OwnedOexV3Claim<'_> {
             self.owner.recheck_database_identity(self.session)?;
             check_v3_held(self.session,&self.owner,self.stage_root,&self.ready,retained,packed,cancelled)?;
             if !self.peer_save_verified{return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}
-            self.stage_root.retire_pair(self.session,&self.owner,&self.ready.stage_id,&self.ready.attempt_id,retained.input.file(),&packed.output,cancelled)?;
+            self.stage_root.retire_pair(self.session,&self.owner,&self.ready,retained.input.file(),&packed.output,cancelled)?;
             let RetainedV3Preflight{input,materializer,materializer_request,preflight,preflight_request}=self.retained.take().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
             let RetainedV3Packed{output,prepared,control,journal}=self.packed.take().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
             self.uncertain_retirement=Some(RetiredV3{materializer,materializer_request,preflight,preflight_request,prepared,control,journal,save:ready,etag});
@@ -2248,7 +2250,7 @@ impl OwnedOexV3Claim<'_> {
             let mut channel=self.session.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
             let mut check=|| {self.owner.check(self.session)?;self.stage_root.check_pair(self.session,&r.stage_id,input_id,&r.attempt_id,output_id)?;input.check_unchanged()?;journal.check()?;
                 if cancelled.load(Ordering::SeqCst){return Err(err("NATIVE_CANCELLED"));}Ok(())};
-            let served=channel.serve_packed_v3(&control,&prepared,&output,&r.attempt_id,&self.challenge.correlation_id,bound,&cancel,&mut check);drop(check);
+            let served=channel.serve_packed_v3(owner_channel::PackedServe{control:&control,prepared:&prepared,output:&output},&r.attempt_id,&self.challenge.correlation_id,bound,&cancel,&mut check);drop(check);
             if let Err(error)=served{channel.invalidate();return Err(error);}self.session.owner_channel=Some(channel);
             Ok(RetainedV3Packed{output,prepared,control,journal})
         })();
@@ -2268,9 +2270,8 @@ impl OwnedOexV3Claim<'_> {
             self.owner.recheck_database_identity(self.session)?;
             self.stage_root.check_input(self.session,&r.stage_id,input.device,input.inode)?;
             input.check_unchanged()?;
-            let (store,device,inode)=self.owner.store_identity();
-            let scope=oex_preflight_frames::InputScope::from_receipt(&self.input_receipt,&retained.preflight_request,
-                &self.owner.system_id,&self.owner.database_oid,self.stage_root.path(),self.stage_root.device(),store,device,inode)?;
+            let plan=oex_reservation::V3PlanScope::from_owner(&self.owner,self.stage_root.path(),self.stage_root.device());
+            let scope=oex_preflight_frames::InputScope::from_receipt(&self.input_receipt,&retained.preflight_request,plan)?;
             if !retained.materializer.matches(&retained.materializer_request,&retained.materializer_request.encode()?) {
                 return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));
             }

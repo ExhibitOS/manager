@@ -37,9 +37,20 @@ pub(super) struct Setup { parent: UnixStream, child: Option<File>, secret: Strin
 pub(super) struct Connection { socket: UnixStream, key: [u8;32], valid: bool, ready: bool, claim_started: bool, metadata_started: bool }
 /// Keep the session connection only after the exact completion was checked.
 pub(super) fn finish_v3_claim(channel: &mut Option<Connection>, completed: bool) {
-    if !completed {
-        if let Some(mut connection) = channel.take() { connection.invalidate(); }
-    }
+    if !completed && let Some(mut connection) = channel.take() { connection.invalidate(); }
+}
+
+pub(super) struct PackedServe<'a> {
+    pub control: &'a super::oex_control_v2::Control,
+    pub prepared: &'a super::oex_worker_v2::Prepared,
+    pub output: &'a File,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct SelectedArchive<'a> {
+    pub request_id: &'a str,
+    pub bytes: u64,
+    pub sha256: &'a str,
 }
 impl Drop for Connection {
     fn drop(&mut self) { self.key.fill(0); }
@@ -190,16 +201,17 @@ impl Connection {
     /// never commits, releases the reservation or certifies Node descendants.
     pub(super) fn serve_packed(&mut self,control:&super::oex_control_v2::Control,prepared:&super::oex_worker_v2::Prepared,
         output:&File,attempt:&str,correlation:&str,cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>) -> Result<()> {
-        self.serve_packed_for(control,prepared,output,attempt,correlation,None,cancellation,check)
+        self.serve_packed_for(PackedServe{control,prepared,output},attempt,correlation,None,cancellation,check)
     }
     #[allow(dead_code)]
-    pub(super) fn serve_packed_v3(&mut self,control:&super::oex_control_v2::Control,prepared:&super::oex_worker_v2::Prepared,
-        output:&File,attempt:&str,correlation:&str,bound:&super::oex_preflight_frames::Bound,cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>) -> Result<()> {
-        self.serve_packed_for(control,prepared,output,attempt,correlation,Some(bound),cancellation,check)
+    pub(super) fn serve_packed_v3(&mut self,packed:PackedServe<'_>,attempt:&str,correlation:&str,
+        bound:&super::oex_preflight_frames::Bound,cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>) -> Result<()> {
+        self.serve_packed_for(packed,attempt,correlation,Some(bound),cancellation,check)
     }
-    fn serve_packed_for(&mut self,control:&super::oex_control_v2::Control,prepared:&super::oex_worker_v2::Prepared,
-        output:&File,attempt:&str,correlation:&str,v3:Option<&super::oex_preflight_frames::Bound>,cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>) -> Result<()> {
+    fn serve_packed_for(&mut self,packed:PackedServe<'_>,attempt:&str,correlation:&str,
+        v3:Option<&super::oex_preflight_frames::Bound>,cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>) -> Result<()> {
         use std::os::unix::fs::{FileExt,MetadataExt};
+        let PackedServe{control,prepared,output}=packed;
         #[derive(Serialize)] #[serde(rename_all="camelCase")]
         struct Notice<'a>{version:u32,kind:&'static str,correlation_id:&'a str,attempt_id:&'a str,control:&'a super::oex_control_v2::Control}
         #[derive(Serialize,Deserialize)] #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -374,8 +386,8 @@ impl Connection {
     /// and stage pins. The caller keeps checking the owner and live provider.
     #[allow(dead_code)]
     pub(super) fn begin_claim_v3(&mut self,open:&super::owner_claim_frames::ClaimOpen,principal:&str,
-        expected_request:&str,expected_bytes:u64,expected_sha256:&str,stage_path:&Path,stage_device:u64,
-        owner:&super::oex_owner::Owner,cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>)
+        archive:SelectedArchive<'_>,scope:super::oex_reservation::V3PlanScope<'_>,
+        cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>)
         ->Result<(super::owner_claim_frames::ClaimChallenge,super::owner_claim_frames::ClaimReady,Vec<u8>)> {
         if !self.valid||!self.ready||self.claim_started {self.fail();return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
         self.claim_started=true;
@@ -383,13 +395,12 @@ impl Connection {
             let bytes=self.exchange(&open.encode_v3()?,cancellation,check)?;
             let challenge=super::owner_claim_frames::ClaimChallenge::parse_v3(&bytes,open,principal)?;
             let receipt=self.receive_reservation_receipt(&challenge,&challenge.receipt_digest,cancellation,check)?;
-            let (store,device,inode)=owner.store_identity();
             super::oex_reservation::check_v3_plan(&receipt,&challenge.receipt_digest,&challenge.reservation_id,
-                &challenge.reservation_generation,&owner.system_id,&owner.database_oid,stage_path,stage_device,store,device,inode,expected_bytes,0)?;
+                &challenge.reservation_generation,scope,archive.bytes,0)?;
             check()?;if cancellation.load(Ordering::SeqCst)||super::cancelled(){return Err(err("NATIVE_CANCELLED"));}
             let mac=self.claim_binding_mac(&challenge)?;
             let reply=self.exchange(&challenge.binding_v3(&mac)?,cancellation,check)?;
-            let ready=super::owner_claim_frames::ClaimReady::parse_v3(&reply,&challenge,&mac,expected_request,expected_bytes,expected_sha256)?;
+            let ready=super::owner_claim_frames::ClaimReady::parse_v3(&reply,&challenge,&mac,archive.request_id,archive.bytes,archive.sha256)?;
             check()?;if cancellation.load(Ordering::SeqCst)||super::cancelled(){return Err(err("NATIVE_CANCELLED"));}
             Ok((challenge,ready,receipt))
         })();
@@ -696,10 +707,12 @@ mod tests {
                 send(&mut peer,&serde_json::to_vec(&ready).unwrap());
             });
             let mut channel=Connection{socket:parent,key:[1;32],valid:true,ready:true,claim_started:false,metadata_started:false};
-            let result=channel.begin_claim_v3(&open,&id(3),&request,100,&archive,Path::new("/private/stage"),1,&owner,&AtomicBool::new(false),&mut ||Ok(()));
+            let selected=SelectedArchive{request_id:&request,bytes:100,sha256:&archive};
+            let scope=super::super::oex_reservation::V3PlanScope::from_owner(&owner,Path::new("/private/stage"),1);
+            let result=channel.begin_claim_v3(&open,&id(3),selected,scope,&AtomicBool::new(false),&mut ||Ok(()));
             assert_eq!(result.is_ok(),valid);if !valid {assert!(!channel.valid);assert_eq!(channel.key,[0;32]);}
             worker.join().unwrap();
-            assert!(channel.begin_claim_v3(&open,&id(3),&request,100,&archive,Path::new("/private/stage"),1,&owner,&AtomicBool::new(false),&mut ||Ok(())).is_err());
+            assert!(channel.begin_claim_v3(&open,&id(3),selected,scope,&AtomicBool::new(false),&mut ||Ok(())).is_err());
         }
         drop(owner);fs::remove_dir(path).unwrap();
     }
