@@ -149,6 +149,8 @@ final class ManagerModel: ObservableObject {
         authoringConnection = connection
         await connection.value
         authoringConnection = nil
+        // The OEX picker also gates on this task, independently of published readiness.
+        exhibitions.oexImport.objectWillChange.send()
     }
     private func connectPersonalAuthoringOwned() async {
         guard !busy, !quitting, ready, !exhibitions.oexImport.busy, let bridge, let context else { return }
