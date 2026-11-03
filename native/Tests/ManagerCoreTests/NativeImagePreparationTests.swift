@@ -4,6 +4,7 @@ import CryptoKit
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
+import zlib
 @testable import ManagerCore
 
 private final class ImageCurrentnessCounter: @unchecked Sendable {
@@ -81,6 +82,62 @@ final class NativeImagePreparationTests: XCTestCase {
         }
         return names
     }
+    private func chunk(_ name: String, _ body: Data = Data()) -> Data {
+        let payload = Data(name.utf8) + body
+        let crc = payload.withUnsafeBytes { crc32(0, $0.bindMemory(to: Bytef.self).baseAddress, uInt(payload.count)) }
+        return Data((0..<4).reversed().map { UInt8(truncatingIfNeeded: body.count >> ($0 * 8)) })
+            + payload + Data((0..<4).reversed().map { UInt8(truncatingIfNeeded: crc >> ($0 * 8)) })
+    }
+    private func chunks(_ png: Data) -> [(String, Data)] {
+        var at = 8, result: [(String, Data)] = []
+        while at + 12 <= png.count {
+            let size = (0..<4).reduce(0) { ($0 << 8) | Int(png[at + $1]) }
+            result.append((String(decoding: png[(at + 4)..<(at + 8)], as: UTF8.self), png.subdata(in: (at + 8)..<(at + 8 + size))))
+            at += size + 12
+        }
+        return result
+    }
+    func testManyConsecutiveIDATChunksKeepTheExactCompressedStream() throws {
+        let candidate = try Prep.prepareSynchronously(sources: [source(try jpeg())], binding: binding(), settingsBytes: settings, isCurrent: { true })
+        let png = try XCTUnwrap(candidate.images.first?.png), parts = chunks(png)
+        let header = try XCTUnwrap(parts.first(where: { $0.0 == "IHDR" })?.1)
+        let compressed = parts.filter { $0.0 == "IDAT" }.reduce(into: Data()) { $0.append($1.1) }
+        var fragmented = Data(png.prefix(8)) + chunk("IHDR", header)
+        for index in 0..<300 {
+            fragmented.append(chunk("IDAT", compressed.subdata(in: (index * compressed.count / 300)..<((index + 1) * compressed.count / 300))))
+        }
+        fragmented.append(chunk("IEND"))
+        XCTAssertEqual(chunkNames(fragmented).count, 302)
+        let cleaned = try Prep.cleanPNG(fragmented, width: 19, height: 11, role: .baseColor, isCurrent: { true })
+        let output = chunks(cleaned)
+        XCTAssertEqual(output.map(\.0), ["IHDR", "sRGB", "IDAT", "IEND"])
+        XCTAssertEqual(output.first(where: { $0.0 == "IDAT" })?.1, compressed)
+        XCTAssertEqual(cleaned, output.reduce(into: Data(png.prefix(8))) { $0.append(chunk($1.0, $1.1)) })
+        XCTAssertEqual(cleaned, png)
+    }
+    func testIDATCoalescingRejectsDamagedOrMisorderedInput() throws {
+        let candidate = try Prep.prepareSynchronously(sources: [source(try jpeg())], binding: binding(), settingsBytes: settings, isCurrent: { true })
+        let png = try XCTUnwrap(candidate.images.first?.png), parts = chunks(png)
+        let header = try XCTUnwrap(parts.first(where: { $0.0 == "IHDR" })?.1)
+        let compressed = try XCTUnwrap(parts.first(where: { $0.0 == "IDAT" })?.1)
+        let prefix = Data(png.prefix(8)) + chunk("IHDR", header)
+        var badCRC = chunk("IDAT", compressed); badCRC[badCRC.count - 1] ^= 1
+        var badHeader = header; badHeader[9] = 6
+        let cases = [
+            prefix + badCRC + chunk("IEND"),
+            Data(png.prefix(8)) + chunk("IHDR", badHeader) + chunk("IDAT", compressed) + chunk("IEND"),
+            prefix + chunk("ABCD") + chunk("IDAT", compressed) + chunk("IEND"),
+            prefix + chunk("IDAT") + chunk("tEXt") + chunk("IDAT", compressed) + chunk("IEND"),
+            png + chunk("tEXt"),
+            Data(png.dropLast()),
+            Data(count: 8_388_609)
+        ]
+        for invalid in cases {
+            XCTAssertThrowsError(try Prep.cleanPNG(invalid, width: 19, height: 11, role: .baseColor, isCurrent: { true })) {
+                XCTAssertEqual($0 as? Prep.Failure, .encoding)
+            }
+        }
+    }
     func testAuthorizedStandaloneJPEGFixtureUsesProductionPreparation() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard let path = environment["EXHIBITOS_NATIVE_JPEG_FIXTURE_PATH"],
@@ -99,6 +156,7 @@ final class NativeImagePreparationTests: XCTestCase {
             XCTAssertEqual(result.originalSHA256, expected)
             XCTAssertTrue(result.derived.valid)
             XCTAssertEqual(result.derived.sha256, hash(result.png))
+            XCTAssertEqual(chunkNames(result.png), ["IHDR", "sRGB", "IDAT", "IEND"])
             XCTAssertEqual(original.data, bytes)
         } catch let failure as Prep.Failure {
             XCTFail("Production JPEG preparation failed: \(failure)")

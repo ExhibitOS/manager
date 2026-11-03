@@ -345,6 +345,7 @@ extension AuthoringModel {
             guard current(), result.originalSHA256 == original.sha256 else { throw CancellationError() }
             return result
         } catch {
+            if current() { notice = "" }
             if Task.isCancelled || owned.isCancelled || !current() { throw CancellationError() }
             if let failure = error as? NativeImagePreparation.Failure {
                 switch failure {

@@ -98,6 +98,9 @@ struct NativeImportControls: View {
           if let artwork = model.selected {
             Section {
                 DisclosureGroup("저장된 파일 상세 · \(artwork.assets.count)개") {
+                    Text("작품 ID: \(artwork.id) · revision \(artwork.revision)")
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text("이 작품에 연결된 파일입니다. 파일 검사 상태와 작품 정보·권리 승인은 별개입니다.")
                         .foregroundStyle(.secondary)
                     if artwork.assets.isEmpty { Text("연결된 파일이 없습니다.") }
