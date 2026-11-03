@@ -192,6 +192,7 @@ public actor AuthoringAPI {
     private let base: URL
     private let tenant: String
     private let transport: URLSession
+    public nonisolated let admitsICCJPEG: Bool
     private var session: AuthoringSession?
     private var generation: UInt64 = 0
     private var authenticationBusy = false
@@ -205,10 +206,11 @@ public actor AuthoringAPI {
     private var uncertainBoundedExport: BoundedExportIntent?
     private var boundedExportBusy = false
 
-    public init(port: UInt16, tenantId: String) throws {
+    public init(port: UInt16, tenantId: String, nativeRuntimeManifestSHA256: String? = nil) throws {
         guard port >= 1024, let id = UUID(uuidString: tenantId) else { throw AuthoringFailure("LOCAL_SCOPE_INVALID") }
         base = URL(string: "http://127.0.0.1:\(port)")!
         tenant = id.uuidString.lowercased()
+        admitsICCJPEG = NativeJPEGImportRuntime.supportsICC(manifestSHA256: nativeRuntimeManifestSHA256, ready: true)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -692,7 +694,7 @@ public actor AuthoringAPI {
         try await request("/api/v1/tenants/\(tenant)/imports/" + identifier(id))
     }
     public func createImport(_ input: NativeImportIntent) async throws -> NativeImportJob {
-        guard input.derived?.recipe.colourConversion == nil else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
+        guard input.derived?.recipe.colourConversion == nil || admitsICCJPEG else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
         guard input.bytes > 0, input.bytes <= 32 * 1024 * 1024,
               input.scaleMeters.isFinite, input.scaleMeters > 0, input.scaleMeters <= 1_000_000,
               ((["model/gltf-binary", "image/png"].contains(input.mime) && input.derived == nil)
