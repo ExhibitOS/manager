@@ -99,6 +99,11 @@ const NORMAL_OEX_027_LOCAL_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[
     ("26b191c90ccee7045f234a058f6c30801b623035",
      "15021a235469473596f496c277543b17d243044fc3a31fdd37ad2d036d9bdd65",
      "115be25154dc989c9bfe4c0b5a94ed23b7ed9930afc9695cc8198480bc0b5dfe"),
+    // Reviewed transient inspection-camera frontend; non-web inventory and
+    // managed-core supplier are unchanged from the retained 115be packet.
+    ("a99897a09b6c5b09a785cd063e6c60634c203364",
+     "15021a235469473596f496c277543b17d243044fc3a31fdd37ad2d036d9bdd65",
+     "8dcfd78c3d6b4a99f1a6e63440c44a4bc7c8e50324adab7b11e769b70b72266c"),
 ];
 const NORMAL_OEX_027_PATH: &str = "platform/database/native-oex-normal/027_oex_exhibition_provenance.sql";
 const NORMAL_OEX_027_SHA256: &str = "09bd82b3195e2f54545f6af45173bbab569effac95553a50f573745dab96f2c7";
