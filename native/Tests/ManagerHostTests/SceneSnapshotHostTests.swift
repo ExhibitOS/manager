@@ -105,19 +105,23 @@ final class SceneSnapshotHostTests: XCTestCase {
             // Configure the fresh inspection host before its first frame; the
             // capture method itself never toggles the editor's transparency.
             model.viewportTransparent = false
-            _ = NSApplication.shared
+            let application = NSApplication.shared
+            try require(application.setActivationPolicy(.regular), "HOST_TEST_WINDOW_ACTIVATION_DENIED")
+            application.finishLaunching()
             let host = NSHostingView(rootView: NativeViewportArea(model: model, ready: true, controller: model.viewportController, workbench: true))
             let liveWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 700), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             liveWindow.isReleasedWhenClosed = false; liveWindow.title = "Native snapshot integration"
-            liveWindow.contentView = host; liveWindow.orderFront(nil); window = liveWindow
+            liveWindow.contentView = host; liveWindow.makeKeyAndOrderFront(nil); window = liveWindow
+            application.activate(ignoringOtherApps: true)
             let deadline = ContinuousClock.now.advanced(by: .seconds(60))
-            while !model.canCaptureSceneSnapshot || !model.viewportController.sceneSnapshotInspectionSupported || model.viewportController.loaded != saved.draft.placements.count {
+            while !application.isActive || !liveWindow.occlusionState.contains(.visible) || !model.canCaptureSceneSnapshot || !model.viewportController.sceneSnapshotInspectionSupported || model.viewportController.loaded != saved.draft.placements.count {
                 guard ContinuousClock.now < deadline else { throw BridgeFailure("HOST_TEST_ACK_TIMEOUT") }
                 try await Task.sleep(for: .milliseconds(100))
             }
             let controller = model.viewportController
             hostController = controller
-            let epoch = controller.hostEpoch, sequence = controller.acceptedSequence, selection = model.viewportSelection
+            let epoch = controller.hostEpoch, selection = model.viewportSelection
+            var sequence = controller.acceptedSequence
             let mode = model.viewportMode, view = model.viewportView, cameraSequence = model.viewportCameraSequence
             func preserved() -> Bool {
                 model.draft == saved.draft && !model.dirty && !model.pending && !model.sceneSnapshotting && !controller.sceneSnapshotPolicyActiveForTesting &&
@@ -156,6 +160,16 @@ final class SceneSnapshotHostTests: XCTestCase {
             controller.editingContextActive = false
             do { _ = try await stale.value; XCTFail("Replaced editing context was accepted") } catch {}
             controller.editingContextActive = true
+            // A new editing context must receive a NEW exact ordinary ACK.
+            // Keeping the old security sequence would conceal the real boundary.
+            let recoveryDeadline = ContinuousClock.now.advanced(by: .seconds(60))
+            while !model.canCaptureSceneSnapshot || controller.hostEpoch != epoch || controller.acceptedSequence <= sequence {
+                guard ContinuousClock.now < recoveryDeadline else { throw BridgeFailure("HOST_TEST_CONTEXT_ACK_TIMEOUT") }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            evidence["stalePreviousSequence"] = String(sequence)
+            sequence = controller.acceptedSequence
+            evidence["staleRecoveredSequence"] = String(sequence)
             try require(preserved(), "HOST_TEST_STALE_STATE_CHANGED")
             var cancelFinished = false
             let cancelled = Task {
