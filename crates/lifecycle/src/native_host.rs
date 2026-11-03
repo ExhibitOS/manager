@@ -55,11 +55,29 @@ struct State {
     restoration: Option<super::installations::native_maintenance::Restoration>,
     selected_oex: bool,
     selected_oex_completed: bool,
+    selected_oex_stop_accepted: bool,
     oex_027_qualified: bool,
     oex_save_offer: Option<OexSaveOffer>,
     oex_save_sender: Option<std::sync::mpsc::Sender<String>>,
     oex_terminal: Option<(OexSaveOffer, String, super::installations::native_oex_import::Transfer)>,
     oex_put_authorized: bool,
+}
+impl State {
+    fn retire_completed_oex_after_drain(&mut self) -> Option<Session> {
+        if self.selected_oex && self.selected_oex_completed && self.selected_oex_stop_accepted
+            && self.oex_terminal.is_none() && self.oex_save_offer.is_none()
+            && self.oex_save_sender.is_none()
+            && self.runtime.as_ref().is_some_and(is_drained)
+        {
+            let session = self.session.take()?;
+            self.selected_oex = false;
+            self.selected_oex_completed = false;
+            self.selected_oex_stop_accepted = false;
+            Some(session)
+        } else {
+            None
+        }
+    }
 }
 fn is_drained(context: &Context) -> bool {
     context.state == "stopped"
@@ -127,6 +145,7 @@ impl Host {
                 restoration: None,
                 selected_oex: false,
                 selected_oex_completed: false,
+                selected_oex_stop_accepted: false,
                 oex_027_qualified: false,
                 oex_save_offer: None,
                 oex_save_sender: None,
@@ -204,6 +223,7 @@ impl Host {
         state.stop_requested = false;
         state.selected_oex = false;
         state.selected_oex_completed = false;
+        state.selected_oex_stop_accepted = false;
         state.oex_027_qualified = false;
         state.oex_save_offer = None;
         state.oex_save_sender = None;
@@ -577,19 +597,13 @@ impl Host {
                                 // The selected Session may start only in an empty root. After
                                 // durable completion and normal drain, the next Start must use
                                 // the ordinary Session and its persisted transition guard.
-                                let retire_selected = state.selected_oex && state.selected_oex_completed
-                                    && state.oex_terminal.is_none() && state.oex_save_offer.is_none()
-                                    && state.oex_save_sender.is_none()
-                                    && stopped.as_ref().is_ok_and(is_drained)
-                                    && state.runtime.as_ref().is_some_and(is_drained);
-                                if retire_selected {
-                                    state.selected_oex = false;
-                                    state.selected_oex_completed = false;
-                                    drop(state);
-                                    drop(lease.session.take());
-                                } else {
-                                    state.session = lease.session.take();
-                                }
+                                state.selected_oex_stop_accepted = state.selected_oex && state.selected_oex_completed
+                                    && stopped.as_ref().is_ok_and(|context| is_drained(context) || context.state == "stopping")
+                                    && status_error.is_none();
+                                state.session = lease.session.take();
+                                let retired = state.retire_completed_oex_after_drain();
+                                drop(state);
+                                drop(retired);
                                 stopped?;
                                 if let Some(error) = status_error { return Err(error); }
                             }
@@ -676,10 +690,21 @@ impl Host {
             state.configuration = prepared.0;
             state.account_required = prepared.1;
             if let Some(session) = state.session.as_mut() {
-                state.runtime = Some(session.status()?);
+                match session.status() {
+                    Ok(runtime) => state.runtime = Some(runtime),
+                    Err(error) => {
+                        state.selected_oex_stop_accepted = false;
+                        return Err(error);
+                    }
+                }
             }
+            // A normal stop may finish after the worker returns "stopping".
+            let retired = state.retire_completed_oex_after_drain();
+            drop(state);
+            drop(retired);
+        } else {
+            drop(state);
         }
-        drop(state);
         self.snapshot()
     }
     pub fn handle(&mut self, request: Request) -> Result<Value> {
