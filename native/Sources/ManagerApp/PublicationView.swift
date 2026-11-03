@@ -322,7 +322,7 @@ struct NativePublicationView: View {
             NativeStaticExportView(model: staticExport, completed: model.state?.completed.flatMap { completed in
                 model.completedMatches(completed, source: source) ? completed : nil
             }, ready: ready && !model.busy && !hosting.running && !hosting.busy)
-            NativeHostingView(model: hosting, receipt: staticExport.status?.receipt.flatMap { receipt in
+            NativeHostingView(model: hosting, receipt: staticExport.status?.privateEditor == true ? nil : staticExport.status?.receipt.flatMap { receipt in
                 model.state?.completed.flatMap { completed in
                     completed.publication.publicationId == receipt.publicationId && model.completedMatches(completed, source: source) ? receipt : nil
                 }

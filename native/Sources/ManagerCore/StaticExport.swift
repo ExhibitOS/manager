@@ -10,5 +10,6 @@ public struct NativeStaticExportStatus: Codable, Sendable {
     public let publicationId: String, revisionSha256: String, output: String, state: String
     public let receipt: NativeStaticExportReceipt?
     public let errorCode: String?
+    public let privateEditor: Bool?
     public var running: Bool { state == "running" }
 }

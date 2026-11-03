@@ -93,7 +93,7 @@ impl Work {
     }
     fn verify_source(&self) -> Result<static_publication_source::SourcePin> {
         self.validate()?;
-        let value = super::native_static_export::Status { format: 1, job_id: self.id.clone(), workspace_id: self.workspace_id.clone(), tenant_id: self.tenant_id.clone(), principal_id: self.principal_id.clone(), publication_id: self.source.publication_id.clone(), revision_sha256: self.source.revision_sha256.clone(), output: self.source.output.clone(), state: "completed".into(), receipt: None, error_code: None };
+        let value = super::native_static_export::Status { format: 1, job_id: self.id.clone(), workspace_id: self.workspace_id.clone(), tenant_id: self.tenant_id.clone(), principal_id: self.principal_id.clone(), publication_id: self.source.publication_id.clone(), revision_sha256: self.source.revision_sha256.clone(), output: self.source.output.clone(), state: "completed".into(), private_editor: false, receipt: None, error_code: None };
         let current = super::native_static_export::verify_output(&value)?;
         if let Some(expected) = &self.static_cache_policy_sha256
             && super::native_static_export::cache_policy_sha256(&current)? != *expected { return Err(err("HOSTED_STATIC_BUNDLE_CHANGED")); }
@@ -222,7 +222,7 @@ impl Hoster {
     pub fn cancel(&self) { self.cancel.store(true, Ordering::SeqCst); }
     pub fn review(&self, token: &str) -> Result<Review> {
         let exported = self.controller.read_static_export(token)?.ok_or_else(|| err("NATIVE_STATIC_EXPORT_UNAVAILABLE"))?;
-        if exported.state != "completed" { return Err(err("NATIVE_STATIC_EXPORT_UNAVAILABLE")); }
+        if exported.state != "completed" || exported.private_editor { return Err(err("NATIVE_STATIC_EXPORT_UNAVAILABLE")); }
         let source = super::native_static_export::verify_output(&exported)?;
         let publication = self.controller.native_publication(token)?;
         let completed = publication.completed.ok_or_else(|| err("NATIVE_PUBLICATION_REQUIRED"))?;
@@ -252,7 +252,7 @@ impl Hoster {
                 if !rights_confirmed || !cost_confirmed || !account_id(&account) { return Err(err("HOSTED_PERMISSION_REQUIRED")); }
                 if previous.work.as_ref().is_some_and(|w| !matches!(w.state.as_str(), "completed" | "failed")) { return Err(err("NATIVE_HOSTING_RECONCILE_REQUIRED")); }
                 let exported = self.controller.read_static_export(&token)?.ok_or_else(|| err("NATIVE_STATIC_EXPORT_UNAVAILABLE"))?;
-                if exported.state != "completed" { return Err(err("NATIVE_STATIC_EXPORT_UNAVAILABLE")); }
+                if exported.state != "completed" || exported.private_editor { return Err(err("NATIVE_STATIC_EXPORT_UNAVAILABLE")); }
                 let source = super::native_static_export::verify_output(&exported)?;
                 let publication = self.controller.native_publication(&token)?;
                 let completed = publication.completed.ok_or_else(|| err("NATIVE_PUBLICATION_REQUIRED"))?;

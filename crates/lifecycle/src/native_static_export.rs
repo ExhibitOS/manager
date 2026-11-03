@@ -17,6 +17,8 @@ use std::{
 pub struct Input {
     pub publication_id: String,
     pub output: PathBuf,
+    #[serde(default)]
+    pub private_editor: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -41,6 +43,8 @@ pub struct Status {
     pub revision_sha256: String,
     pub output: PathBuf,
     pub state: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub private_editor: bool,
     pub receipt: Option<Receipt>,
     pub error_code: Option<String>,
 }
@@ -125,6 +129,48 @@ fn valid_cache_marker(bytes: &[u8], index: &str, headers: &str) -> bool {
 #[cfg(test)]
 mod cache_policy_tests {
     use super::*;
+    #[test]
+    fn private_output_cannot_be_reconciled_as_an_ordinary_export() {
+        let root = std::env::temp_dir().join(format!("exhibitos-static-mode-{}", Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let publication_id = Uuid::new_v4().to_string();
+        let revision = "a".repeat(64);
+        let index = b"{}";
+        let index_hash = digest(index);
+        let mut status: Status = serde_json::from_value(serde_json::json!({
+            "format":1, "jobId":Uuid::new_v4(), "workspaceId":Uuid::new_v4(),
+            "tenantId":Uuid::new_v4(), "principalId":Uuid::new_v4(),
+            "publicationId":publication_id, "revisionSha256":revision,
+            "output":root, "state":"running", "receipt":null, "errorCode":null
+        })).unwrap();
+        let write_bundle = |private_editor| {
+            let mut index_html = format!("<meta content=\"{index_hash}\">");
+            let mut entries = vec![("static-publication-index.json", index.to_vec())];
+            if private_editor {
+                index_html.push_str("<meta name=\"exhibitos-private-editor\" content=\"enabled\">");
+                entries.push(("studio.html", format!("<meta content=\"{index_hash}\">").into_bytes()));
+            }
+            entries.push(("index.html", index_html.into_bytes()));
+            let files: Vec<_> = entries.into_iter().map(|(name, bytes)| {
+                fs::write(root.join(name), &bytes).unwrap();
+                serde_json::json!({"path":name,"bytes":bytes.len(),"sha256":digest(&bytes)})
+            }).collect();
+            fs::write(root.join("static-export-manifest.json"), serde_json::to_vec(&serde_json::json!({
+                "format":"exhibitos-static-publication-v1", "publicationId":publication_id,
+                "revisionSha256":revision, "indexSha256":index_hash, "files":files
+            })).unwrap()).unwrap();
+        };
+        write_bundle(false);
+        assert!(!status.private_editor);
+        assert!(verify_output(&status).is_ok());
+        status.private_editor = true;
+        assert!(verify_output(&status).is_err());
+        write_bundle(true);
+        assert!(verify_output(&status).is_ok());
+        status.private_editor = false;
+        assert!(verify_output(&status).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn headers_match_fixed_profile_and_rule_limit() {
         let paths = (0..102).rev().map(|i| format!("data/{i:064x}.bin")).collect();
@@ -240,7 +286,7 @@ pub fn verify_output(status: &Status) -> Result<Receipt> {
     walk(&status.output, &status.output, 0, &mut actual)?;
     if actual != expected
         || !expected.contains("index.html")
-        || expected.contains("studio.html")
+        || expected.contains("studio.html") != status.private_editor
         || digest(&bounded(
             &status.output,
             "static-publication-index.json",
@@ -250,7 +296,14 @@ pub fn verify_output(status: &Status) -> Result<Receipt> {
         return Err(bad());
     }
     let html = bounded(&status.output, "index.html", 1024 * 1024)?;
-    if !String::from_utf8_lossy(&html).contains(&manifest.index_sha256) {
+    let html = String::from_utf8_lossy(&html);
+    let private_marker = "<meta name=\"exhibitos-private-editor\" content=\"enabled\">";
+    if !html.contains(&manifest.index_sha256) || html.contains(private_marker) != status.private_editor {
+        return Err(bad());
+    }
+    if status.private_editor && !String::from_utf8_lossy(&bounded(&status.output, "studio.html", 1024 * 1024)?)
+        .contains(&manifest.index_sha256)
+    {
         return Err(bad());
     }
     Ok(Receipt {
@@ -439,7 +492,7 @@ impl Exporter {
         }
         // All optional capability bytes were included in Payload::open's exact
         // inventory. An older runtime is refused instead of searching PATH.
-        let (script, viewer) = payload.static_export_resources()?;
+        let (script, viewer) = payload.static_export_resources(input.private_editor)?;
         let value = Status {
             format: 1,
             job_id: uuid::Uuid::new_v4().to_string(),
@@ -450,6 +503,7 @@ impl Exporter {
             revision_sha256: completed.publication.revision_sha256,
             output: input.output,
             state: "running".into(),
+            private_editor: input.private_editor,
             receipt: None,
             error_code: None,
         };
@@ -488,16 +542,19 @@ impl Exporter {
                         };
                         let stdout = create(&stdout_name)?;
                         let stderr = create(&stderr_name)?;
-                        let mut child = OwnedChild(
-                            std::process::Command::new(payload.node())
-                                .args([
+                        let mut command = std::process::Command::new(payload.node());
+                        command.args([
                                     script.as_os_str(),
                                     std::ffi::OsStr::new(&format!("http://127.0.0.1:{port}")),
                                     std::ffi::OsStr::new(&value.publication_id),
                                     viewer.as_os_str(),
                                     value.output.as_os_str(),
-                                ])
-                                .env_clear()
+                                ]);
+                        if value.private_editor {
+                            command.arg("--private-editor");
+                        }
+                        let mut child = OwnedChild(
+                            command.env_clear()
                                 .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
                                 .env("LANG", "en_US.UTF-8")
                                 .stdin(Stdio::piped())
@@ -539,6 +596,12 @@ impl Exporter {
                                 .map_err(|_| err("NATIVE_STATIC_CANCELLED"));
                         }
                         if !exit.success() || stopping.is_some() {
+                            if value.private_editor && stopping.is_none()
+                                && installation_backup::source_bytes(&root, &stderr_name, 1024, true)
+                                    .is_ok_and(|bytes| bytes == b"STATIC_PRIVATE_EDITOR_RIGHTS\n")
+                            {
+                                return Err(err("NATIVE_STATIC_PRIVATE_EDITOR_RIGHTS"));
+                            }
                             return Err(err("NATIVE_STATIC_EXPORT_FAILED"));
                         }
                         let raw =
