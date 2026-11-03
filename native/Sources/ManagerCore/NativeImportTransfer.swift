@@ -4,11 +4,13 @@ import Foundation
 /// Existing authenticated server import operations. An acknowledged complete
 /// rechecks the durable original's length/hash before the server queues work.
 public protocol NativeImportTransport: Sendable {
+    var admitsICCJPEG: Bool { get }
     func createImport(_ input: NativeImportIntent) async throws -> NativeImportJob
     func uploadImport(_ id: String, bytes: Data) async throws
     func uploadDerivedImport(_ id: String, bytes: Data) async throws
     func importAction(_ id: String, action: NativeImportAction) async throws -> NativeImportJob
 }
+extension NativeImportTransport { public var admitsICCJPEG: Bool { false } }
 extension AuthoringAPI: NativeImportTransport {}
 
 /// The same import API, with observation of the server-owned worker. A cancel
@@ -52,6 +54,9 @@ public final class NativeImportTransfer {
                     persistJob: @escaping @MainActor (NativeImportJob) async throws -> Void,
                     isCurrent: @escaping @MainActor () -> Bool) async throws -> NativeImportJob {
         try Task.checkCancellation()
+        // A restored intent must not continue against an older runtime that
+        // cannot preserve the colour provenance on the exact same job.
+        guard intent.derived?.recipe.colourConversion == nil || transport.admitsICCJPEG else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
         guard task == nil, modelDrainTask == nil,
               modelOperation.map({ $0.intent == intent }) ?? true else { throw AuthoringFailure("IMPORT_ACTIVE") }
         if let model = intent.modelDerivation {
@@ -136,6 +141,7 @@ public final class NativeImportTransfer {
 
     private static func valid(_ job: NativeImportJob, intent: NativeImportIntent) -> Bool {
         UUID(uuidString: job.id) != nil
+            && (intent.derived?.recipe.colourConversion == nil || job.imagePreparation?.matches(intent) == true)
             && ["uploading", "queued", "processing", "approved", "failed", "cancelled"].contains(job.state)
             && (job.originalAssetId == nil || job.originalAssetId.flatMap(UUID.init(uuidString:)) != nil)
             && (job.state != "approved" || (job.assetId.flatMap(UUID.init(uuidString:)) != nil

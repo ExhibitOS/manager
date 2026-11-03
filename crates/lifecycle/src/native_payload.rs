@@ -125,6 +125,10 @@ const NORMAL_OEX_027_LOCAL_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[
     ("735c7724c611441fcc1f17b3212c9f3dc270dc71",
      "3e1676fd354b4dd7bfa43fdf3b995062e810e4c91b2c4c34e647e76d5fddca8d",
      "10bb2250789b5b42ddb8c0ef5ef28c0634c7a31c7b7837f292380de1ee5867d3"),
+    // The independently verified ICC receipt delta retains the exact ABI3 bytes.
+    ("a393f38a9d0b48b1ce683db0cadaffb978c276cc",
+     "3e1676fd354b4dd7bfa43fdf3b995062e810e4c91b2c4c34e647e76d5fddca8d",
+     "253de8963ec9f0e0a2884a27d8e756b453cf61899e38c31571d9993a7d6ecff4"),
 ];
 const NORMAL_OEX_027_PATH: &str = "platform/database/native-oex-normal/027_oex_exhibition_provenance.sql";
 const NORMAL_OEX_027_SHA256: &str = "09bd82b3195e2f54545f6af45173bbab569effac95553a50f573745dab96f2c7";

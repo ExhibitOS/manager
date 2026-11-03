@@ -58,6 +58,10 @@ final class AuthoringModel: ObservableObject {
     private var pollingImportStatus = false
     private var original = ArtworkMetadata()
     private var api: AuthoringAPI?
+    private var iccImportAdmitted: Bool {
+        available && session != nil && api?.admitsICCJPEG == true
+            && NativeJPEGImportRuntime.supportsICC(manifestSHA256: runtimeManifestSHA256, ready: available)
+    }
     var exhibitionAPI: AuthoringAPI? { session == nil ? nil : api }
     private var scope: String?
     private var runtimeManifestSHA256: String?
@@ -101,7 +105,7 @@ final class AuthoringModel: ObservableObject {
         readTransfer = nil; writeTransfer = nil
         scope = next; session = nil; artworks = []; artists = []; selected = nil; editing = false
         subject = configuration.subject ?? ""
-        do { api = try AuthoringAPI(port: configuration.ports.web, tenantId: tenant) }
+        do { api = try AuthoringAPI(port: configuration.ports.web, tenantId: tenant, nativeRuntimeManifestSHA256: configuration.manifestSha256) }
         catch { failure = AuthoringFailure("LOCAL_SCOPE_INVALID"); return false }
         return available
     }
@@ -176,6 +180,10 @@ final class AuthoringModel: ObservableObject {
     func save() async {
         await action {
             guard let api else { return }
+            if let selected, let intent = transfer?.intent, intent.derived?.recipe.colourConversion != nil,
+               selected.id.lowercased() == intent.artworkId.lowercased() {
+                throw AuthoringFailure(iccImportAdmitted ? "IMPORT_ACTIVE" : "IMPORT_ICC_UNAVAILABLE")
+            }
             if creationYearText.isEmpty { draft.creationYear = nil }
             else if let year = Int(creationYearText), (1...9999).contains(year) { draft.creationYear = year }
             else { throw AuthoringFailure("CREATION_YEAR_INVALID", status: 400) }
@@ -324,9 +332,11 @@ extension AuthoringModel {
         let generation = importStatusGeneration, currentScope = scope, manifest = runtimeManifestSHA256
         let tenant = session?.tenantId, principal = session?.userId, workspace = transfer?.workspaceId
         let ticket = NativeImagePreparationScope(operationID: operationID, generation: generation.uuidString.lowercased(), originalSHA256: original.sha256)
+        let allowICC = NativeJPEGImportRuntime.supportsICC(manifestSHA256: manifest, ready: available)
         let owned = Task {
             try await NativePreparedJPEG.prepare(original: original, operationID: ticket.operationID, generation: ticket.generation,
-                isCurrent: { ticket.isCurrent(operationID: operationID, generation: generation.uuidString.lowercased(), originalSHA256: original.sha256) })
+                isCurrent: { ticket.isCurrent(operationID: operationID, generation: generation.uuidString.lowercased(), originalSHA256: original.sha256) },
+                allowICC: allowICC)
         }
         imagePreparationScope = ticket; imagePreparation = owned
         defer {
@@ -376,6 +386,11 @@ extension AuthoringModel {
     func changeImport(_ change: NativeImportAction) async {
         await action {
             guard let api, let job = importJob else { return }
+            if let intent = transfer?.intent, intent.derived?.recipe.colourConversion != nil {
+                guard iccImportAdmitted else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
+                guard transfer?.jobId?.lowercased() == job.id.lowercased() else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
+                try importTransfer.observe(job, intent: intent)
+            }
             if change == .cancel, transfer?.intent?.modelDerivation != nil {
                 await importTransfer.cancelAndWait()
                 guard !modelWorkerPending else { throw AuthoringFailure("IMPORT_DRAIN_PENDING") }
@@ -410,8 +425,19 @@ extension AuthoringModel {
     }
     func clearImport() async {
         await action {
+            guard transfer?.intent?.derived?.recipe.colourConversion == nil || iccImportAdmitted else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
             guard importJob?.terminal == true, !modelWorkerPending,
                   importJob?.modelDerivation?.workerDrained != false, var state = transfer else { throw AuthoringFailure("IMPORT_ACTIVE") }
+            if let intent = state.intent, intent.derived?.recipe.colourConversion != nil {
+                guard let api, let job = importJob, state.jobId?.lowercased() == job.id.lowercased() else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
+                try importTransfer.observe(job, intent: intent)
+                if job.state == "approved" {
+                    let artwork = try await api.artwork(intent.artworkId)
+                    guard artwork.approvedRevision == artwork.revision, artwork.approvedAssetId == job.assetId else {
+                        throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+                    }
+                }
+            }
             state.intent = nil; state.jobId = nil; state.fileName = nil
             try await persistImport(state)
             importJob = nil; importFile = nil; approvalAcknowledged = false
@@ -421,6 +447,12 @@ extension AuthoringModel {
         await action {
             guard let api, let selected, !metadataDirty, approvalAcknowledged,
                   selected.assets.contains(where: { $0.id == assetId && $0.state == "approved" }) else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+            if let intent = transfer?.intent, intent.artworkId.lowercased() == selected.id.lowercased(),
+               intent.derived?.recipe.colourConversion != nil {
+                guard iccImportAdmitted else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
+                guard let job = importJob, jpegOriginalStored, job.assetId == assetId else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
+                try importTransfer.observe(job, intent: intent)
+            }
             if transfer?.intent?.derived != nil, transfer?.intent?.artworkId == selected.id, importJob?.assetId == assetId {
                 guard jpegOriginalStored else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
             }
