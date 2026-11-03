@@ -30,6 +30,24 @@ Rust helper explicitly. The validation-profile Info key is recognized only in
 debug builds. Use an isolated profile for validation and retain original apps.
 Release delivery/signing is a separate existing distribution pipeline.
 
+Scene snapshots are returned in-process by the existing live native exhibition
+model's `captureSceneSnapshot(camera:placementId:)` method, before the optional
+GUI save panel. It requires that model's authenticated, clean saved document and
+exact acknowledged WK frame; it is not a renderer-free server or CLI endpoint.
+The original `scene-snapshot-v1` saved-viewpoint request keeps its same-room
+requirement. The separate `scene-snapshot-inspection-v1` capability accepts a
+temporary room-local camera for an existing placement without editing the saved
+viewing plan or selection. Shared Viewer geometry validates and resolves that
+camera; the native reply binds its exact local pose and saved/frame identities.
+Both paths retain the fixed 640×360 PNG, size, rights and single-operation limits.
+The opt-in `ManagerHostTests` integration requires a normal foreground
+application-hosted runner and an explicitly owned, prepared isolated fixture
+(`EXHIBITOS_NATIVE_SNAPSHOT_HOST_FIXTURE`). A standalone `swift test` CLI skips
+actual host execution, including when a fixture is supplied: a CLI process may
+remain inactive and occluded despite an activation request. Compilation or a
+skipped test does not qualify live WK capture, restoration or artwork framing;
+these need an actual visible application host and its returned PNG.
+
 `--legal-resources /absolute/prepared-directory` copies an existing license/source
 index and its files to `Contents/Resources/NativeRuntime-Legal`. The Help menu's
 “라이선스 및 소스 보기” command opens that local `index.html`; it is disabled when

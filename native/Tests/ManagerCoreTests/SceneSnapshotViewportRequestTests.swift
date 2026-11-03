@@ -66,6 +66,49 @@ final class SceneSnapshotViewportRequestTests: XCTestCase {
         let saved = NativeStudioResponse(revision: 9, etag: q.saved.etag, draft: draft)
         XCTAssertNoThrow(try SceneSnapshotViewportRequest(frame: frame, saved: saved, viewpointId: q.value["viewpointId"].string!, placementId: q.value["placementId"].string!))
     }
+    func testInspectionNeedsNoSavedStopAndBindsItsExactLocalPose() throws {
+        let old = try fixture(), f = old.frame
+        var draft = f.draft, candidate = draft.candidate
+        candidate["extensions"]["org.exhibitos.studio/presentation"]["viewpoints"] = .array([])
+        try draft.replaceCandidate(candidate)
+        let saved = NativeStudioResponse(revision: 9, etag: old.saved.etag, draft: draft)
+        let frame = ViewportFrame(epoch: f.epoch, sequence: f.sequence, tenantId: f.tenantId, principalId: f.principalId, draft: draft, selection: nil, mode: f.mode, view: f.view, disabled: false, transparent: false)
+        let camera = try SceneSnapshotInspectionCamera(roomId: old.placement["roomId"].string!, position: [0, 1.2, 2], target: [0, 1.2, 0], fov: 50)
+        let q = try SceneSnapshotViewportRequest(frame: frame, saved: saved, camera: .inspection(camera), placementId: old.placement["id"].string!)
+        XCTAssertEqual(q.value["viewpointId"], .null)
+        XCTAssertEqual(q.value["inspectionCamera"], camera.value)
+        XCTAssertThrowsError(try SceneSnapshotViewportRequest(frame: frame, saved: saved, viewpointId: old.value["viewpointId"].string!, placementId: old.placement["id"].string!))
+        var good = reply(q)
+        good["camera"] = .object(["inspection": .bool(true), "roomId": camera.value["roomId"], "position": .vector([10, 1.2, 2]), "target": .vector([10, 1.2, 0]), "fov": .number(50), "localPosition": camera.value["position"], "localTarget": camera.value["target"]])
+        XCTAssertEqual(try q.checkedReply(good).camera["inspection"], .bool(true))
+        for key in ["inspection", "roomId", "localPosition", "localTarget", "fov"] {
+            var bad = good; bad["camera"][key] = .null
+            XCTAssertThrowsError(try q.checkedReply(bad), key)
+        }
+        var bad = good; bad["camera"]["viewpointId"] = old.value["viewpointId"]
+        XCTAssertThrowsError(try q.checkedReply(bad))
+        XCTAssertEqual(q.frame.draft, draft)
+        let legacy = try JSONDecoder().decode(ViewportAcceptance.self, from: Data("{\"accepted\":true,\"capabilities\":[\"scene-snapshot-v1\"]}".utf8))
+        XCTAssertFalse(legacy.supportsSceneSnapshotInspection)
+        let current = try JSONDecoder().decode(ViewportAcceptance.self, from: Data("{\"accepted\":true,\"capabilities\":[\"scene-snapshot-inspection-v1\"]}".utf8))
+        XCTAssertTrue(current.supportsSceneSnapshotInspection)
+    }
+    func testInspectionRejectsNonfiniteCoincidentOutOfRoomAndForeignRoomInputs() throws {
+        let q = try fixture(), room = q.placement["roomId"].string!
+        for point in [[Double.nan, 1, 2], [0, Double.infinity, 2], [0, 1, 1_000_001], [0, 1]] {
+            XCTAssertThrowsError(try SceneSnapshotInspectionCamera(roomId: room, position: point, target: [0, 1, 0], fov: 50))
+        }
+        XCTAssertThrowsError(try SceneSnapshotInspectionCamera(roomId: room, position: [0, 1, 0], target: [0, 1, 0], fov: 50))
+        for fov in [9, 121, Double.nan] {
+            XCTAssertThrowsError(try SceneSnapshotInspectionCamera(roomId: room, position: [0, 1, 2], target: [0, 1, 0], fov: fov))
+        }
+        for point in [[6.001, 1, 2], [0, -0.001, 2], [0, 4.001, 2], [0, 1, 4.001]] {
+            let camera = try SceneSnapshotInspectionCamera(roomId: room, position: point, target: [0, 1, 0], fov: 50)
+            XCTAssertThrowsError(try SceneSnapshotViewportRequest(frame: q.frame, saved: q.saved, camera: .inspection(camera), placementId: q.placement["id"].string!))
+        }
+        let other = try SceneSnapshotInspectionCamera(roomId: UUID().uuidString.lowercased(), position: [0, 1, 2], target: [0, 1, 0], fov: 50)
+        XCTAssertThrowsError(try SceneSnapshotViewportRequest(frame: q.frame, saved: q.saved, camera: .inspection(other), placementId: q.placement["id"].string!))
+    }
     @MainActor
     func testOutputCommitsNewFileAndPreservesExistingDestinationOnFailure() async throws {
         let q = try fixture(), result = try q.checkedReply(reply(q))
