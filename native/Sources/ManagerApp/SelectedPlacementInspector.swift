@@ -66,6 +66,7 @@ struct SelectedPlacementInspector: View {
                     Text("이 속성은 선택한 배치에 적용됩니다. 작품 원본과 기록된 크기는 유지됩니다.").font(.caption).foregroundStyle(.secondary)
                     Button("공간에서 찾기", systemImage: "scope") { Task { await model.viewportController.findSelection() } }
                         .disabled(!editable || !model.viewportController.findSelectionSupported || !model.canSelectCatalog || model.viewportPresentation == .plan)
+                    SceneSnapshotControls(model: model, controller: model.viewportController, placement: selected.placement, ready: ready)
                     GroupBox("높이 맞추기") {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("작품 중심 높이").font(.caption).foregroundStyle(.secondary)

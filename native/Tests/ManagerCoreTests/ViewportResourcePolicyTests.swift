@@ -131,6 +131,39 @@ final class ViewportResourcePolicyTests: XCTestCase {
             XCTAssertFalse(allows(denied), denied)
         }
     }
+    func testCaptureSavedSourceReadIsBoundToOneExhibitionAndDefaultStillBlocksIt() async throws {
+        let origin = "http://127.0.0.1:13200", tenant = UUID().uuidString.lowercased(), exhibition = UUID().uuidString.lowercased()
+        let path = "/api/v1/tenants/\(tenant)/studio/exhibitions/\(exhibition)"
+        let encoded = try ViewportResourcePolicy.encodedRules(origin: origin, tenantId: tenant, savedExhibitionId: exhibition)
+        let store = WKContentRuleListStore.default()!, identifier = "ExhibitOSCaptureRules-" + UUID().uuidString
+        let compiled = try await store.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: encoded)
+        XCTAssertNotNil(compiled)
+        try await store.removeContentRuleList(forIdentifier: identifier)
+        func filters(_ encoded: String) throws -> [NSRegularExpression] {
+            let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [[String: Any]])
+            return try rules.dropFirst().map { try NSRegularExpression(pattern: XCTUnwrap(($0["trigger"] as? [String: Any])?["url-filter"] as? String)) }
+        }
+        let capture = try filters(encoded)
+        func allows(_ url: String, rules: [NSRegularExpression]) -> Bool {
+            rules.contains { $0.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil }
+        }
+        XCTAssertTrue(allows(origin + path, rules: capture))
+        for denied in ["http://127.0.0.1:13201" + path, "https://127.0.0.1:13200" + path,
+                       "https://attacker.invalid" + path,
+                       origin + path.replacingOccurrences(of: tenant, with: UUID().uuidString.lowercased()),
+                       origin + path.replacingOccurrences(of: exhibition, with: UUID().uuidString.lowercased()),
+                       origin + path + "?extra=1", origin + path + "/", origin + path + "/publish",
+                       origin + path.replacingOccurrences(of: "/studio/exhibitions/", with: "/studio%2Fexhibitions/")] {
+            XCTAssertFalse(allows(denied, rules: capture), denied)
+        }
+        let restored = try filters(ViewportResourcePolicy.encodedRules(origin: origin, tenantId: tenant))
+        XCTAssertFalse(allows(origin + path, rules: restored))
+        var badVersion = Array(exhibition); badVersion[14] = "0"
+        var badVariant = Array(exhibition); badVariant[19] = "0"
+        for invalid in ["invalid", String(badVersion), String(badVariant)] {
+            XCTAssertThrowsError(try ViewportResourcePolicy.encodedRules(origin: origin, tenantId: tenant, savedExhibitionId: invalid))
+        }
+    }
     func testJSONWirePreservesIndependentEmptyDocumentCollectionsInActualWebKit() async throws {
         let web = WKWebView(frame: .zero)
         let json = "{\"surfaces\":[],\"openings\":[],\"lights\":[],\"placements\":[]}"

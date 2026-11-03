@@ -80,6 +80,16 @@ const NORMAL_OEX_RELEASE_PROVENANCE: &[(&str, &str, &str)] = &[];
 // Separate 027 release admission; empty until the producer and full payload
 // are independently qualified. Capability presence alone grants nothing.
 const NORMAL_OEX_027_RELEASE_PROVENANCE: &[(&str, &str, &str)] = &[];
+// Development validation is separate from official release admission. Add only
+// an independently checked complete local payload tuple; no caller/env override.
+// Release builds never use this list, even if copied alongside a local payload.
+const NORMAL_OEX_027_LOCAL_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[
+    // Independently checked managed-core supplier and complete PNG payload;
+    // non-frontend inventory is byte-identical to the retained 661 packet.
+    ("d630fcc2c3c079284c3febfe723cd08624ddb920",
+     "15021a235469473596f496c277543b17d243044fc3a31fdd37ad2d036d9bdd65",
+     "1ed982ce1701a7f1ef12b2c7d1fde065e648f5787e9b999bc60ef7d6a67b49be"),
+];
 const NORMAL_OEX_027_PATH: &str = "platform/database/native-oex-normal/027_oex_exhibition_provenance.sql";
 const NORMAL_OEX_027_SHA256: &str = "09bd82b3195e2f54545f6af45173bbab569effac95553a50f573745dab96f2c7";
 const NORMAL_OEX_027_CAPABILITY_PATH: &str = "platform/scripts/native-normal-oex-027-capability-v2.json";
@@ -89,10 +99,14 @@ const NORMAL_OEX_027_CAPABILITY_SHA256: &str = "e7f7bb5c5c12bf7cd901df5d8c1e5a00
 fn normal_oex_release_declaration_matches(manifest: &Manifest, manifest_hash: &str, bytes: &[u8], approved: &[(&str, &str, &str)]) -> bool {
     if manifest.mode != "release" || !manifest.redistribution_qualified || !manifest.official_signed
         || !approved.iter().any(|(source, producer, hash)| *source == manifest.source_commit.as_str()
-            && *producer == manifest.producer_sha256.as_str() && *hash == manifest_hash)
-        || bytes != NORMAL_OEX_CAPABILITY || digest(bytes) != NORMAL_OEX_CAPABILITY_SHA256 {
+            && *producer == manifest.producer_sha256.as_str() && *hash == manifest_hash) {
         return false;
     }
+    normal_oex_inventory_matches(manifest, bytes)
+}
+
+fn normal_oex_inventory_matches(manifest: &Manifest, bytes: &[u8]) -> bool {
+    if bytes != NORMAL_OEX_CAPABILITY || digest(bytes) != NORMAL_OEX_CAPABILITY_SHA256 { return false; }
     let regular = |name: &str| manifest.files.iter().find(|f| f.path == name && f.link.is_none() && f.executable == Some(false));
     let Some(capability) = regular(NORMAL_OEX_CAPABILITY_PATH) else { return false };
     if capability.bytes != Some(NORMAL_OEX_CAPABILITY.len() as u64) || capability.sha256.as_deref() != Some(NORMAL_OEX_CAPABILITY_SHA256) { return false; }
@@ -104,12 +118,24 @@ fn normal_oex_release_declaration_matches(manifest: &Manifest, manifest_hash: &s
 }
 
 fn normal_oex_027_declaration_matches(manifest: &Manifest, manifest_hash: &str, bytes: &[u8], approved: &[(&str, &str, &str)]) -> bool {
-    let regular = |name: &str| manifest.files.iter().find(|f| f.path == name && f.link.is_none() && f.executable == Some(false));
     normal_oex_release_declaration_matches(manifest, manifest_hash, bytes, approved)
-        && regular(NORMAL_OEX_027_PATH).is_some_and(|f| f.bytes == Some(2611) && f.sha256.as_deref() == Some(NORMAL_OEX_027_SHA256))
+        && normal_oex_027_inventory_matches(manifest)
+}
+
+fn normal_oex_027_inventory_matches(manifest: &Manifest) -> bool {
+    let regular = |name: &str| manifest.files.iter().find(|f| f.path == name && f.link.is_none() && f.executable == Some(false));
+    regular(NORMAL_OEX_027_PATH).is_some_and(|f| f.bytes == Some(2611) && f.sha256.as_deref() == Some(NORMAL_OEX_027_SHA256))
         && regular(NORMAL_OEX_027_CAPABILITY_PATH).is_some_and(|f| f.bytes == Some(516) && f.sha256.as_deref() == Some(NORMAL_OEX_027_CAPABILITY_SHA256))
         && regular("platform/apps/api/dist/native-oex-provenance.js").is_some_and(|f| f.bytes.is_some_and(|n| n > 0) && f.sha256.as_deref().is_some_and(hash_valid))
         && regular("platform/apps/api/dist/native-oex-catalog-proof.js").is_some_and(|f| f.bytes.is_some_and(|n| n > 0) && f.sha256.as_deref().is_some_and(hash_valid))
+}
+
+fn normal_oex_027_local_validation_matches(manifest: &Manifest, manifest_hash: &str, bytes: &[u8], approved: &[(&str, &str, &str)]) -> bool {
+    cfg!(all(debug_assertions, target_os = "macos"))
+        && manifest.mode == "local-validation" && !manifest.redistribution_qualified && !manifest.official_signed
+        && approved.iter().any(|(source, producer, hash)| *source == manifest.source_commit.as_str()
+            && *producer == manifest.producer_sha256.as_str() && *hash == manifest_hash)
+        && normal_oex_inventory_matches(manifest, bytes) && normal_oex_027_inventory_matches(manifest)
 }
 
 #[cfg(test)]
@@ -131,6 +157,53 @@ mod normal_oex_release_declaration_tests {
             "sourceCommit":"a".repeat(40),"producerSHA256":"b".repeat(64),
             "entry":{"node":"bin/node","script":"platform/scripts/local-runtime.mjs","postgres":"postgres/bin/postgres","initdb":"postgres/bin/initdb"},
             "files":files,"redistributionQualified":true,"officialSigned":true,"remaining":"synthetic policy test"})).unwrap()
+    }
+
+    fn local_fixture() -> Manifest {
+        let mut m = fixture();
+        m.mode = "local-validation".into(); m.redistribution_qualified = false; m.official_signed = false;
+        for (path, bytes, sha) in [(NORMAL_OEX_027_PATH,2611,NORMAL_OEX_027_SHA256),
+            (NORMAL_OEX_027_CAPABILITY_PATH,516,NORMAL_OEX_027_CAPABILITY_SHA256),
+            ("platform/apps/api/dist/native-oex-provenance.js",1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            ("platform/apps/api/dist/native-oex-catalog-proof.js",1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")] {
+            m.files.push(serde_json::from_value(serde_json::json!({"path":path,"bytes":bytes,"sha256":sha,"executable":false})).unwrap());
+        }
+        m
+    }
+
+    #[test]
+    fn local_027_accepts_only_exact_development_tuple_and_never_official_release() {
+        let mut m = local_fixture(); let hash = "c".repeat(64);
+        let source = "a".repeat(40); let producer = "b".repeat(64);
+        let approved = [(source.as_str(), producer.as_str(), hash.as_str())];
+        assert_eq!(normal_oex_027_local_validation_matches(&m,&hash,NORMAL_OEX_CAPABILITY,&approved),
+            cfg!(all(debug_assertions, target_os="macos")));
+        assert!(!normal_oex_027_local_validation_matches(&m,&hash,NORMAL_OEX_CAPABILITY,NORMAL_OEX_027_LOCAL_VALIDATION_PROVENANCE));
+        assert!(!normal_oex_027_declaration_matches(&m,&hash,NORMAL_OEX_CAPABILITY,&approved));
+        assert!(!normal_oex_027_local_validation_matches(&m,&"d".repeat(64),NORMAL_OEX_CAPABILITY,&approved));
+        m.source_commit="e".repeat(40);
+        assert!(!normal_oex_027_local_validation_matches(&m,&hash,NORMAL_OEX_CAPABILITY,&approved));
+        m=local_fixture();m.producer_sha256="f".repeat(64);
+        assert!(!normal_oex_027_local_validation_matches(&m,&hash,NORMAL_OEX_CAPABILITY,&approved));
+        m=local_fixture();m.mode="release".into();m.official_signed=true;m.redistribution_qualified=true;
+        assert!(!normal_oex_027_local_validation_matches(&m,&hash,NORMAL_OEX_CAPABILITY,&approved));
+        assert!(!normal_oex_027_declaration_matches(&m,&hash,NORMAL_OEX_CAPABILITY,NORMAL_OEX_027_RELEASE_PROVENANCE));
+    }
+
+    #[test]
+    fn local_027_refuses_mixed_flags_and_changed_capability_or_schema() {
+        let hash="c".repeat(64);let source="a".repeat(40);let producer="b".repeat(64);
+        let approved=[(source.as_str(),producer.as_str(),hash.as_str())];
+        let mut m=local_fixture();m.official_signed=true;
+        assert!(!normal_oex_027_local_validation_matches(&m,&hash,NORMAL_OEX_CAPABILITY,&approved));
+        m=local_fixture();m.redistribution_qualified=true;
+        assert!(!normal_oex_027_local_validation_matches(&m,&hash,NORMAL_OEX_CAPABILITY,&approved));
+        m=local_fixture();let mut altered=NORMAL_OEX_CAPABILITY.to_vec();altered.push(b'\n');
+        assert!(!normal_oex_027_local_validation_matches(&m,&hash,&altered,&approved));
+        m=local_fixture();m.files.iter_mut().find(|f|f.path==NORMAL_OEX_027_PATH).unwrap().sha256=Some("e".repeat(64));
+        assert!(!normal_oex_027_local_validation_matches(&m,&hash,NORMAL_OEX_CAPABILITY,&approved));
+        m=local_fixture();m.files.retain(|f|f.path!=NORMAL_OEX_027_CAPABILITY_PATH);
+        assert!(!normal_oex_027_local_validation_matches(&m,&hash,NORMAL_OEX_CAPABILITY,&approved));
     }
 
     #[test]
@@ -468,7 +541,19 @@ impl Payload {
         self.normal_oex_selected_admission(NORMAL_OEX_RELEASE_PROVENANCE, false)
     }
     pub(crate) fn normal_oex_027_selected_input(&self) -> Result<bool> {
-        self.normal_oex_selected_admission(NORMAL_OEX_027_RELEASE_PROVENANCE, true)
+        if self.normal_oex_selected_admission(NORMAL_OEX_027_RELEASE_PROVENANCE, true)? { return Ok(true); }
+        // Only the compiled development tuple enters this path. Existing fresh
+        // selected-root/UID/owner and stage fences remain in Session/controller.
+        if !normal_oex_027_local_validation_matches(&self.manifest, &self.manifest_sha256, NORMAL_OEX_CAPABILITY,
+            NORMAL_OEX_027_LOCAL_VALIDATION_PROVENANCE) { return Ok(false); }
+        self.recheck()?;
+        let path = self.root.join(NORMAL_OEX_CAPABILITY_PATH);
+        if fs::canonicalize(&path).map_err(|_| invalid())? != path { return Err(invalid()); }
+        let (bytes, pin) = crate::hosted_runtime_file::bounded(&path, 1024)?;
+        let accepted = normal_oex_027_local_validation_matches(&self.manifest, &self.manifest_sha256, &bytes,
+            NORMAL_OEX_027_LOCAL_VALIDATION_PROVENANCE);
+        pin.check()?;
+        Ok(accepted)
     }
     fn normal_oex_selected_admission(&self, approved: &[(&str, &str, &str)], with_027: bool) -> Result<bool> {
         if !approved.iter().any(|(source, producer, hash)| *source == self.manifest.source_commit.as_str()

@@ -807,6 +807,67 @@ final class ExhibitionModel: ObservableObject {
         return !artworkId.isEmpty
     }
     var canExport: Bool { !busy && !placingArtwork && !dirty && state?.etag != nil && draft != nil }
+    @Published private(set) var sceneSnapshotting = false
+    @Published private(set) var sceneSnapshotStatus = ""
+    var canCaptureSceneSnapshot: Bool {
+        !sceneSnapshotting && canExport && !pending && !entrancePreviewActive && !immutable &&
+        viewportPresentation == .threeD && !viewportTransparent && viewportController.editingContextActive &&
+        viewportController.connected && viewportController.sceneSnapshotSupported &&
+        viewportController.acknowledges(draft: draft, tenantId: state?.tenantId, principalId: state?.principalId)
+    }
+    func saveSceneSnapshot(viewpointId: String, placementId: String) async {
+        guard canCaptureSceneSnapshot, let original = state, let base = draft, let etag = original.etag,
+              original.savedEditVersion == base.document["editVersion"].integer, let api,
+              let window = NSApp.keyWindow else { return }
+        let access = viewportAccessID, context = viewportController.editingContextGeneration, host = viewportController.hostEpoch
+        let selection = viewportSelection
+        func unchanged() -> Bool {
+            viewportAccessID == access && viewportController.editingContextGeneration == context &&
+            viewportController.hostEpoch == host && viewportController.editingContextActive &&
+            viewportController.connected && state?.revision == original.revision && state?.etag == etag &&
+            draft == base && !dirty && !pending && !busy && !entrancePreviewActive &&
+            viewportSelection == selection && viewportPresentation == .threeD
+        }
+        sceneSnapshotting = true; sceneSnapshotStatus = "저장된 감상 시점의 이미지를 준비하고 있습니다."
+        // This operation never marks the draft busy/disabled, changes selection,
+        // stages a candidate or touches undo. User edits cause a stale rejection.
+        defer { sceneSnapshotting = false }
+        do {
+            let saved = try await api.exhibition(base.id)
+            guard unchanged(), saved.etag == etag, saved.draft == base else { throw AuthoringFailure("SCENE_SNAPSHOT_STALE") }
+            let image = try await viewportController.sceneSnapshot(saved: saved, viewpointId: viewpointId, placementId: placementId)
+            let current = try await api.exhibition(base.id)
+            try saved.requireSameComparison(current)
+            guard unchanged(), image.savedETag == etag, image.savedRevision == saved.revision,
+                  image.localEditVersion == original.savedEditVersion else { throw AuthoringFailure("SCENE_SNAPSHOT_STALE") }
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.png]; panel.canCreateDirectories = true
+            panel.nameFieldStringValue = "전시-시점-r\(saved.revision).png"
+            panel.title = "감상 시점 이미지 저장"
+            panel.message = "저장된 전시 r\(saved.revision)의 감상 시점 · 640 × 360 PNG"
+            let answer = await withCheckedContinuation { continuation in
+                panel.beginSheetModal(for: window) { continuation.resume(returning: $0) }
+            }
+            guard answer == .OK, let destination = panel.url else { sceneSnapshotStatus = "이미지 저장을 취소했습니다."; return }
+            let beforeCommit = try await api.exhibition(base.id)
+            try saved.requireSameComparison(beforeCommit)
+            guard unchanged() else { throw AuthoringFailure("SCENE_SNAPSHOT_STALE") }
+            // A new destination preserves any existing file, even after a panel
+            // replacement choice. File-system failure never modifies the draft.
+            try await image.writeNewPNG(to: destination)
+            let visibility: String
+            if image.target["inFrustum"] != .bool(true) { visibility = "대상 작품이 화면 밖에 있습니다." }
+            else { switch image.target["centerRay"].string {
+                case "clear": visibility = "작품 중심 방향에 가림이 감지되지 않았습니다."
+                case "blocked": visibility = "작품 중심 방향에 가림이 있습니다."
+                default: visibility = "작품 중심의 가림 여부를 확인하지 못했습니다."
+            } }
+            sceneSnapshotStatus = "전시 r\(saved.revision) · 640 × 360 PNG를 저장했습니다. " + visibility + " 작품 전체의 가림을 보장하지는 않습니다."
+        } catch {
+            sceneSnapshotStatus = unchanged() ? "이미지를 저장하지 못했습니다. 장면 준비·저장 상태와 새 파일 이름을 확인하세요. 기존 전시와 입력은 유지됩니다." : "선택이나 저장 상태가 바뀌어 이미지를 저장하지 않았습니다. 현재 입력은 유지됩니다."
+            viewportController.diagnose("SCENE_SNAPSHOT", error)
+        }
+    }
     var dirty: Bool { state?.dirty == true || formDirty || positionDirty || architectureDirty || architectureApplying }
     /// Adopt the exact persisted pending request first, preserving it if the
     /// final confirmation cannot be stored or reconciled.
