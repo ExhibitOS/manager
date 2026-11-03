@@ -568,16 +568,47 @@ struct NativeViewport: NSViewRepresentable {
                   if (value !== null && value.length > 4096) throw new Error('VIEWPORT_DISPLAY_LIMIT');
                   result[key] = value;
                 }
+                // Project only the agreed bounded loader slice. Legacy or
+                // malformed records remain unavailable; never forward the
+                // unrelated viewer state, raw errors, paths or timing data.
+                result.viewerState = null;
+                const raw = c.dataset.viewerState;
+                if (typeof raw === 'string' && raw.length <= 131072) {
+                    try {
+                        const stages = JSON.parse(raw).preparationStages;
+                        if (Array.isArray(stages) && stages.length <= 32) {
+                            const uuid = value => typeof value === 'string' && value.length === 36 &&
+                                /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value);
+                            const token = (value, pattern) => typeof value === 'string' && pattern.exec(value)?.[0] === value;
+                            const rows = [];
+                            for (const row of stages) {
+                                if (!row || typeof row !== 'object' ||
+                                    !['assetId','artworkRevisionId','stage','errorCode'].every(key => Object.hasOwn(row,key)) ||
+                                    !uuid(row.assetId) || !(row.artworkRevisionId === null || uuid(row.artworkRevisionId)) ||
+                                    !token(row.stage,/^[a-z][a-z0-9-]{0,63}$/)) throw new Error('UNAVAILABLE');
+                                const errorCode = token(row.errorCode,/^[A-Z][A-Z0-9_]{0,79}$/) ? row.errorCode : null;
+                                if (errorCode !== null && !['failed','deferred-budget'].includes(row.stage)) throw new Error('UNAVAILABLE');
+                                rows.push({assetId:row.assetId,artworkRevisionId:row.artworkRevisionId,stage:row.stage,errorCode});
+                            }
+                            const value = JSON.stringify({preparationStages: rows});
+                            if (value.length <= 16384) result.viewerState = value;
+                        }
+                    } catch { /* No exact attribution is available. */ }
+                }
                 return result;
                 """
                 let response = try await web.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page)
                 try Task.checkCancellation(); try current()
                 guard let response, JSONSerialization.isValidJSONObject(response) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 let bytes = try JSONSerialization.data(withJSONObject: response)
-                guard bytes.count <= 16_384, case .object(let fields) = try JSONDecoder().decode(DocumentValue.self, from: bytes),
-                      Set(fields.keys) == Set(["floorView", "cameraProjection", "floorTextures"]) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                guard bytes.count <= 65_536, case .object(let fields) = try JSONDecoder().decode(DocumentValue.self, from: bytes),
+                      Set(fields.keys) == Set(["floorView", "cameraProjection", "floorTextures", "viewerState"]) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 var datasets: [String: DocumentValue] = [:]
                 for (key, value) in fields {
+                    if key == "viewerState" {
+                        datasets[key] = AssetPreparationReadout.projected(value.string, in: frame.draft)
+                        continue
+                    }
                     if value == .null { datasets[key] = .null; continue }
                     guard let string = value.string, string.utf8.count <= 4096 else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                     let parsed = try JSONDecoder().decode(DocumentValue.self, from: Data(string.utf8))

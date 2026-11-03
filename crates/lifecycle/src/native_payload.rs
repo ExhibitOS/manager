@@ -104,6 +104,18 @@ const NORMAL_OEX_027_LOCAL_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[
     ("a99897a09b6c5b09a785cd063e6c60634c203364",
      "15021a235469473596f496c277543b17d243044fc3a31fdd37ad2d036d9bdd65",
      "8dcfd78c3d6b4a99f1a6e63440c44a4bc7c8e50324adab7b11e769b70b72266c"),
+    // Exact loader-stage validation packet: complete inventory independently
+    // checked, with non-web resources unchanged from the retained 8dc packet.
+    // Renderer qualification and owning-app execution remain separate.
+    ("a2ced9b583f24c36768d0160acde47a86c68bf2b",
+     "15021a235469473596f496c277543b17d243044fc3a31fdd37ad2d036d9bdd65",
+     "76f58e45e632154752bb513b7d20042e04308757bfc7a87eee195aed7b3a3992"),
+    // Existing local loader stage callback; complete inventory independently
+    // checked with non-web resources unchanged from the retained 76f58 packet.
+    // Native observation remains separate from source/package qualification.
+    ("7833eb206f45327b6c83741d553cb6c34c33ffee",
+     "15021a235469473596f496c277543b17d243044fc3a31fdd37ad2d036d9bdd65",
+     "7f287fb38599adb560496a6d78f5e9c975434ccc4e9247a483ac008791c208aa"),
 ];
 const NORMAL_OEX_027_PATH: &str = "platform/database/native-oex-normal/027_oex_exhibition_provenance.sql";
 const NORMAL_OEX_027_SHA256: &str = "09bd82b3195e2f54545f6af45173bbab569effac95553a50f573745dab96f2c7";
