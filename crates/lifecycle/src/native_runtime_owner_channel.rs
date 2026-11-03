@@ -35,6 +35,23 @@ pub(super) struct Setup { parent: UnixStream, child: Option<File>, secret: Strin
 /// that lifetime. It is not a claim, readiness, fence or authorization; loss
 /// of the socket is terminal once observed by the transport.
 pub(super) struct Connection { socket: UnixStream, key: [u8;32], valid: bool, ready: bool, claim_started: bool, metadata_started: bool }
+/// Keep the session connection only after the exact completion was checked.
+pub(super) fn finish_v3_claim(channel: &mut Option<Connection>, completed: bool) {
+    if !completed && let Some(mut connection) = channel.take() { connection.invalidate(); }
+}
+
+pub(super) struct PackedServe<'a> {
+    pub control: &'a super::oex_control_v2::Control,
+    pub prepared: &'a super::oex_worker_v2::Prepared,
+    pub output: &'a File,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct SelectedArchive<'a> {
+    pub request_id: &'a str,
+    pub bytes: u64,
+    pub sha256: &'a str,
+}
 impl Drop for Connection {
     fn drop(&mut self) { self.key.fill(0); }
 }
@@ -83,7 +100,7 @@ impl Setup {
         Ok(bytes)
     }
     pub(super) fn normal_027_bootstrap(&self, auth:&LocalAuthority, generation:&str) -> Result<Vec<u8>> {
-        let value=FreshOwnerBootstrap {workspace:auth,owner_channel:FreshOwnerBinding {version:2,runtime_generation:generation,secret:&self.secret,mode:"normal-oex-027-v2"}};
+        let value=FreshOwnerBootstrap {workspace:auth,owner_channel:FreshOwnerBinding {version:3,runtime_generation:generation,secret:&self.secret,mode:"normal-oex-027-v3"}};
         let mut bytes=serde_json::to_vec(&value).map_err(|_|err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
         if bytes.len()>4096 { bytes.fill(0);return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
         Ok(bytes)
@@ -184,7 +201,17 @@ impl Connection {
     /// never commits, releases the reservation or certifies Node descendants.
     pub(super) fn serve_packed(&mut self,control:&super::oex_control_v2::Control,prepared:&super::oex_worker_v2::Prepared,
         output:&File,attempt:&str,correlation:&str,cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>) -> Result<()> {
+        self.serve_packed_for(PackedServe{control,prepared,output},attempt,correlation,None,cancellation,check)
+    }
+    #[allow(dead_code)]
+    pub(super) fn serve_packed_v3(&mut self,packed:PackedServe<'_>,attempt:&str,correlation:&str,
+        bound:&super::oex_preflight_frames::Bound,cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>) -> Result<()> {
+        self.serve_packed_for(packed,attempt,correlation,Some(bound),cancellation,check)
+    }
+    fn serve_packed_for(&mut self,packed:PackedServe<'_>,attempt:&str,correlation:&str,
+        v3:Option<&super::oex_preflight_frames::Bound>,cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>) -> Result<()> {
         use std::os::unix::fs::{FileExt,MetadataExt};
+        let PackedServe{control,prepared,output}=packed;
         #[derive(Serialize)] #[serde(rename_all="camelCase")]
         struct Notice<'a>{version:u32,kind:&'static str,correlation_id:&'a str,attempt_id:&'a str,control:&'a super::oex_control_v2::Control}
         #[derive(Serialize,Deserialize)] #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -204,7 +231,7 @@ impl Connection {
             if stamp(&before)!=prepared.verified.output_stamp || !before.is_file()||before.uid()!=unsafe{libc::geteuid()}||before.mode()&0o777!=0o600||before.nlink()!=1
                 || before.dev().to_string()!=control.output_device||before.ino().to_string()!=control.output_inode {return Err(bad());}
             check()?;
-            let notice=Notice{version:1,kind:"worker-control",correlation_id:correlation,attempt_id:attempt,control};
+            let notice=Notice{version:1,kind:if v3.is_some(){"worker-control-v3"}else{"worker-control"},correlation_id:correlation,attempt_id:attempt,control};
             let bytes=serde_json::to_vec(&notice).map_err(|_|bad())?;
             self.send_frame(&bytes,Instant::now()+Duration::from_secs(30),cancellation,check)?;
             self.serve_metadata(&prepared.verified.raw_ack,attempt,correlation,cancellation,check)?;
@@ -227,12 +254,14 @@ impl Connection {
                 }
             }
             let deadline=Instant::now()+Duration::from_secs(300);let raw=self.read_frame(deadline,cancellation,check)?;
-            let request:Drain=serde_json::from_slice(&raw).map_err(|_|bad())?;
-            if serde_json::to_vec(&request).map_err(|_|bad())?!=raw||request.version!=1||request.kind!="drain-check"||request.attempt_id!=attempt
-                || Uuid::parse_str(&request.correlation_id).ok().is_none_or(|v|v.to_string()!=request.correlation_id) {return Err(bad());}
             check()?;let after=output.metadata().map_err(|_|bad())?;if stamp(&after)!=stamp(&before){return Err(bad());}
-            let response=Drained{version:1,kind:"drain-result",correlation_id:&request.correlation_id,attempt_id:attempt,status:"drained"};
-            self.send_frame(&serde_json::to_vec(&response).map_err(|_|bad())?,deadline,cancellation,check)?;check()
+            let response=if let Some(bound)=v3 {bound.drain_reply(&raw)?} else {
+                let request:Drain=serde_json::from_slice(&raw).map_err(|_|bad())?;
+                if serde_json::to_vec(&request).map_err(|_|bad())?!=raw||request.version!=1||request.kind!="drain-check"||request.attempt_id!=attempt
+                    || Uuid::parse_str(&request.correlation_id).ok().is_none_or(|v|v.to_string()!=request.correlation_id) {return Err(bad());}
+                serde_json::to_vec(&Drained{version:1,kind:"drain-result",correlation_id:&request.correlation_id,attempt_id:attempt,status:"drained"}).map_err(|_|bad())?
+            };
+            self.send_frame(&response,deadline,cancellation,check)?;check()
         })();
         if result.is_err(){self.fail();}result
     }
@@ -244,9 +273,25 @@ impl Connection {
             .and_then(|bytes|super::owner_claim_frames::SaveFrame::parse_ready(&bytes,attempt)).and_then(|ready|{check()?;Ok(ready)});
         if result.is_err(){self.fail();}result
     }
+    #[allow(dead_code)]
+    pub(super) fn receive_save_ready_v3(&mut self,bound:&super::oex_preflight_frames::Bound,cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>) -> Result<super::owner_claim_frames::SaveFrameV3> {
+        if !self.valid||!self.ready||!self.claim_started||!self.metadata_started {self.fail();return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
+        let result=self.read_frame(Instant::now()+Duration::from_secs(120),cancellation,check)
+            .and_then(|bytes|super::owner_claim_frames::SaveFrameV3::parse_ready(&bytes,bound)).and_then(|ready|{check()?;Ok(ready)});
+        if result.is_err(){self.fail();}result
+    }
+    #[allow(dead_code)]
+    pub(super) fn confirm_save_v3(&mut self,ready:&super::owner_claim_frames::SaveFrameV3,etag:&str,cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>) -> Result<()> {
+        if !self.valid||!self.ready||!self.claim_started||!self.metadata_started {self.fail();return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
+        let result=(|| {let deadline=Instant::now()+Duration::from_secs(120);
+            self.send_frame(&ready.observed(etag)?,deadline,cancellation,check)?;
+            let reply=self.read_frame(deadline,cancellation,check)?;ready.check_verified(etag,&reply)?;check()
+        })();if result.is_err(){self.fail();}result
+    }
     /// Only a previously checked actual save/reopen may be reported. A reply
     /// is correlation to Node's verification, never retirement authority.
     pub(super) fn confirm_save(&mut self,ready:&super::owner_claim_frames::SaveFrame,challenge:&super::owner_claim_frames::ClaimChallenge,etag:&str,cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>,trace:&mut dyn FnMut(&'static [u8])) -> Result<()> {
+        if challenge.kind!="claim-challenge" {self.fail();return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         let result=(||{let bytes=ready.observed(etag)?;let deadline=Instant::now()+Duration::from_secs(120);
             self.send_frame(&bytes,deadline,cancellation,check)?;let reply=self.read_frame(deadline,cancellation,check)?;
             trace(b"NATIVE_OEX_NATIVE save-verified-read\n");ready.check_verified(etag,&reply)?;trace(b"NATIVE_OEX_NATIVE save-verified-valid\n");check()?;
@@ -287,12 +332,30 @@ impl Connection {
             let request=open.encode()?;
             let bytes=self.exchange(&request,cancellation,check)?;
             let challenge=super::owner_claim_frames::ClaimChallenge::parse(&bytes,open,principal)?;
-            // Provider has issued an actual receipt but has not bound it yet.
+            let receipt=self.receive_reservation_receipt(&challenge,&challenge.receipt_digest,cancellation,check)?;
+            let capacity=super::oex_reservation::stage_capacity(&receipt,&challenge.receipt_digest,&challenge.reservation_id,
+                &challenge.reservation_generation,stage_path,stage_device,expected_bytes,other_stage_bytes)?;
+            check()?;if cancellation.load(Ordering::SeqCst)||super::cancelled(){return Err(err("NATIVE_CANCELLED"));}
+            let encoded=self.claim_binding_mac(&challenge)?;
+            check()?;
+            let binding=challenge.binding(&encoded)?;
+            let reply=self.exchange(&binding,cancellation,check)?;
+            let ready=super::owner_claim_frames::ClaimReady::parse(&reply,&challenge,&encoded,expected_request,expected_bytes,expected_sha256)?;
+            check()?;
+            if cancellation.load(Ordering::SeqCst)||super::cancelled(){return Err(err("NATIVE_CANCELLED"));}
+            Ok((challenge,ready,capacity))
+        })();
+        if result.is_err(){self.fail();}result
+    }
+    /// Transfer the exact receipt on this authenticated channel. The receipt
+    /// does not itself establish that the provider still holds a live lease.
+    pub(super) fn receive_reservation_receipt(&mut self,challenge:&super::owner_claim_frames::ClaimChallenge,expected_digest:&str,
+        cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>) -> Result<Vec<u8>> {
             let ready_bytes=self.read_frame(Instant::now()+Duration::from_secs(30),cancellation,check)?;
             let notice:super::owner_claim_frames::ReceiptReady=serde_json::from_slice(&ready_bytes).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))?;
             if serde_json::to_vec(&notice).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))?.as_slice()!=ready_bytes
                 || notice.version!=1||notice.kind!="receipt-ready"||notice.correlation_id!=challenge.correlation_id
-                || notice.attempt_id!=challenge.attempt_id||notice.sha256!=challenge.receipt_digest||!(1..=32768).contains(&notice.bytes){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+                || notice.attempt_id!=challenge.attempt_id||notice.sha256!=expected_digest||!hash_valid(expected_digest)||!(1..=32768).contains(&notice.bytes){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
             let mut receipt=Vec::with_capacity(notice.bytes);
             while receipt.len()<notice.bytes {
                 let offset=receipt.len();let length=4096.min(notice.bytes-offset);let correlation=Uuid::new_v4().to_string();
@@ -307,23 +370,39 @@ impl Connection {
                 let decoded=STANDARD.decode(&chunk.data).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))?;
                 if decoded.len()!=length||STANDARD.encode(&decoded)!=chunk.data{return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}receipt.extend_from_slice(&decoded);
             }
-            let capacity=super::oex_reservation::stage_capacity(&receipt,&challenge.receipt_digest,&challenge.reservation_id,
-                &challenge.reservation_generation,stage_path,stage_device,expected_bytes,other_stage_bytes)?;
-            check()?;if cancellation.load(Ordering::SeqCst)||super::cancelled(){return Err(err("NATIVE_CANCELLED"));}
+            if digest(&receipt)!=expected_digest {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+            Ok(receipt)
+    }
+    fn claim_binding_mac(&self,challenge:&super::owner_claim_frames::ClaimChallenge)->Result<String> {
             let fields=super::owner_binding_encoding::Fields {workspace:&challenge.workspace_id,tenant:&challenge.tenant_id,
                 principal:&challenge.principal_id,runtime_generation:&challenge.runtime_generation,job:&challenge.job_id,
                 attempt:&challenge.attempt_id,generation:&challenge.generation,stage:&challenge.stage_id,
                 reservation:&challenge.reservation_id,reservation_generation:&challenge.reservation_generation,
                 claim_digest:&challenge.claim_digest,receipt_digest:&challenge.receipt_digest};
             let mac=super::owner_binding_encoding::correlation_mac(&self.key,&fields)?;
-            check()?;
-            let encoded=mac.iter().map(|v|format!("{v:02x}")).collect::<String>();
-            let binding=challenge.binding(&encoded)?;
-            let reply=self.exchange(&binding,cancellation,check)?;
-            let ready=super::owner_claim_frames::ClaimReady::parse(&reply,&challenge,&encoded,expected_request,expected_bytes,expected_sha256)?;
-            check()?;
-            if cancellation.load(Ordering::SeqCst)||super::cancelled(){return Err(err("NATIVE_CANCELLED"));}
-            Ok((challenge,ready,capacity))
+            Ok(mac.iter().map(|v|format!("{v:02x}")).collect())
+    }
+    /// One v3 input reservation, correlated to independently held DB/blob
+    /// and stage pins. The caller keeps checking the owner and live provider.
+    #[allow(dead_code)]
+    pub(super) fn begin_claim_v3(&mut self,open:&super::owner_claim_frames::ClaimOpen,principal:&str,
+        archive:SelectedArchive<'_>,scope:super::oex_reservation::V3PlanScope<'_>,
+        cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>)
+        ->Result<(super::owner_claim_frames::ClaimChallenge,super::owner_claim_frames::ClaimReady,Vec<u8>)> {
+        if !self.valid||!self.ready||self.claim_started {self.fail();return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
+        self.claim_started=true;
+        let result=(|| {
+            let bytes=self.exchange(&open.encode_v3()?,cancellation,check)?;
+            let challenge=super::owner_claim_frames::ClaimChallenge::parse_v3(&bytes,open,principal)?;
+            let receipt=self.receive_reservation_receipt(&challenge,&challenge.receipt_digest,cancellation,check)?;
+            super::oex_reservation::check_v3_plan(&receipt,&challenge.receipt_digest,&challenge.reservation_id,
+                &challenge.reservation_generation,scope,archive.bytes,0)?;
+            check()?;if cancellation.load(Ordering::SeqCst)||super::cancelled(){return Err(err("NATIVE_CANCELLED"));}
+            let mac=self.claim_binding_mac(&challenge)?;
+            let reply=self.exchange(&challenge.binding_v3(&mac)?,cancellation,check)?;
+            let ready=super::owner_claim_frames::ClaimReady::parse_v3(&reply,&challenge,&mac,archive.request_id,archive.bytes,archive.sha256)?;
+            check()?;if cancellation.load(Ordering::SeqCst)||super::cancelled(){return Err(err("NATIVE_CANCELLED"));}
+            Ok((challenge,ready,receipt))
         })();
         if result.is_err(){self.fail();}result
     }
@@ -366,6 +445,35 @@ fn read_bounded(stream:&mut UnixStream, bytes:&mut [u8], deadline:Instant, cance
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn v3_claim_completion_keeps_session_socket_but_abandonment_closes_it() {
+        for completed in [true, false] {
+            let (parent, mut peer) = UnixStream::pair().unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+            let mut channel = Some(Connection { socket: parent, key: [1;32], valid: true, ready: true, claim_started: true, metadata_started: true });
+            finish_v3_claim(&mut channel, completed);
+            if completed {
+                channel.as_mut().unwrap().socket.write_all(b"x").unwrap();
+                let mut byte = [0]; peer.read_exact(&mut byte).unwrap();
+                assert_eq!(byte, *b"x");
+            } else {
+                assert!(channel.is_none());
+                let mut byte = [0]; assert_eq!(peer.read(&mut byte).unwrap(), 0);
+            }
+        }
+    }
+    #[test]
+    fn v3_challenge_cannot_send_v2_save_or_settlement() {
+        use super::super::owner_claim_frames::{ClaimChallenge,SaveFrame};
+        let id=||Uuid::new_v4().to_string();let attempt=id();
+        let ready=SaveFrame{version:1,kind:"save-ready".into(),correlation_id:id(),attempt_id:attempt.clone(),exhibition_id:id(),etag:format!("\"studio-r1-{}\"","a".repeat(64)),request_id:id()};
+        let challenge=ClaimChallenge{version:1,kind:"claim-challenge-v3".into(),correlation_id:id(),workspace_id:id(),tenant_id:id(),principal_id:id(),runtime_generation:id(),job_id:id(),attempt_id:attempt,generation:id(),stage_id:id(),reservation_id:id(),reservation_generation:id(),claim_digest:"c".repeat(64),receipt_digest:"d".repeat(64)};
+        let (parent,mut peer)=UnixStream::pair().unwrap();
+        let mut channel=Connection{socket:parent,key:[1;32],valid:true,ready:true,claim_started:true,metadata_started:true};
+        let result=channel.confirm_save(&ready,&challenge,&format!("\"studio-r2-{}\"","b".repeat(64)),&AtomicBool::new(false),&mut ||Ok(()),&mut |_|{});
+        assert_eq!(result.unwrap_err().code,"NATIVE_OEX_ATTEMPT_INVALID");
+        let mut byte=[0u8;1];assert_eq!(peer.read(&mut byte).unwrap(),0);
+    }
     #[test]
     fn settlement_requires_same_attempt_receipt_before_completion() {
         use super::super::owner_claim_frames::{ClaimChallenge,SaveFrame};
@@ -416,6 +524,18 @@ mod tests {
         let mut normal=setup.bootstrap(&auth,&generation).unwrap();let parsed:Value=serde_json::from_slice(&normal).unwrap();normal.fill(0);
         let binding=parsed["ownerChannel"].as_object().unwrap();assert_eq!(binding.len(),3);
         assert_eq!(binding["version"],1);assert!(!binding.contains_key("mode"));
+    }
+    #[test]
+    fn current_normal_027_bootstrap_declares_private_abi_three() {
+        let setup=Setup::new().unwrap();
+        let auth=authority();
+        let generation=Uuid::new_v4().to_string();
+        let value:Value=serde_json::from_slice(&setup.normal_027_bootstrap(&auth,&generation).unwrap()).unwrap();
+        assert_eq!(value["ownerChannel"]["version"],3);
+        assert_eq!(value["ownerChannel"]["mode"],"normal-oex-027-v3");
+        assert_eq!(value["ownerChannel"]["runtimeGeneration"],generation);
+        assert_eq!(value["workspace"]["workspaceId"],auth.workspace_id);
+        assert_eq!(value["ownerChannel"].as_object().unwrap().len(),4);
     }
     #[test]
     fn selected_normal_bootstrap_has_exact_v2_identity_and_mode() {
@@ -553,5 +673,47 @@ mod tests {
         assert_eq!(ready.request_id,request);worker.join().unwrap();
         assert!(connection.begin_claim(&open,&id(3),&request,67_108_865,&archive,Path::new("/private/stage"),1,0,&cancel,&mut ||Ok(())).is_err());
         assert!(!connection.valid);assert_eq!(connection.key,[0;32]);
+    }
+    #[cfg(target_os="macos")]
+    #[test]
+    fn v3_claim_checks_independent_owner_before_binding() {
+        use super::super::owner_claim_frames::{ClaimChallenge,ClaimOpen,ClaimReady,ReceiptReady,ReceiptChunk};
+        use std::os::unix::fs::MetadataExt;
+        fn id(n:usize)->String {format!("10000000-0000-4000-8000-{n:012}")}
+        fn read_frame(s:&mut UnixStream)->Vec<u8> {let mut h=[0;4];s.read_exact(&mut h).unwrap();let mut b=vec![0;u32::from_be_bytes(h) as usize];s.read_exact(&mut b).unwrap();b}
+        fn send(s:&mut UnixStream,b:&[u8]) {s.write_all(&(b.len() as u32).to_be_bytes()).unwrap();s.write_all(b).unwrap();}
+        fn field(out:&mut Vec<u8>,s:&str){out.extend_from_slice(&(s.len() as u32).to_be_bytes());out.extend_from_slice(s.as_bytes());}
+        let path=std::env::temp_dir().join(format!("oex-owner-{}",Uuid::new_v4()));fs::create_dir(&path).unwrap();
+        let path=fs::canonicalize(path).unwrap();let stat=fs::metadata(&path).unwrap();
+        let owner=super::super::oex_owner::Owner::test_only(&path);
+        for valid in [true,false] {
+            let mut receipt=b"EXHIBITOS-DISK-RESERVATION\0v1\0".to_vec();
+            let fields:[&str;8]=[&id(9),&id(10),"oex-import",if valid{"123"}else{"124"},"456",path.to_str().unwrap(),&stat.dev().to_string(),&stat.ino().to_string()];
+            for value in fields {field(&mut receipt,value);}
+            receipt.extend_from_slice(&1u32.to_be_bytes());for value in ["/private/stage","1","100"] {field(&mut receipt,value);}
+            let open=ClaimOpen{version:1,kind:"claim-open-v3".into(),correlation_id:id(11),workspace_id:id(1),tenant_id:id(2),runtime_generation:id(4),job_id:id(5)};
+            let challenge=ClaimChallenge{version:1,kind:"claim-challenge-v3".into(),correlation_id:id(11),workspace_id:id(1),tenant_id:id(2),principal_id:id(3),runtime_generation:id(4),job_id:id(5),attempt_id:id(6),generation:id(7),stage_id:id(8),reservation_id:id(9),reservation_generation:id(10),claim_digest:"c".repeat(64),receipt_digest:digest(&receipt)};
+            let request=id(12);let archive="d".repeat(64);let peer_open=open.clone();let peer_request=request.clone();let peer_archive=archive.clone();
+            let (parent,mut peer)=UnixStream::pair().unwrap();parent.set_nonblocking(true).unwrap();peer.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let worker=std::thread::spawn(move || {
+                assert_eq!(read_frame(&mut peer),peer_open.encode_v3().unwrap());send(&mut peer,&serde_json::to_vec(&challenge).unwrap());
+                send(&mut peer,&serde_json::to_vec(&ReceiptReady{version:1,kind:"receipt-ready".into(),correlation_id:id(11),attempt_id:id(6),bytes:receipt.len(),sha256:challenge.receipt_digest.clone()}).unwrap());
+                let read:Value=serde_json::from_slice(&read_frame(&mut peer)).unwrap();
+                send(&mut peer,&serde_json::to_vec(&ReceiptChunk{version:1,kind:"receipt-chunk".into(),correlation_id:read["correlationId"].as_str().unwrap().into(),attempt_id:id(6),offset:0,data:STANDARD.encode(&receipt)}).unwrap());
+                if !valid {let mut byte=[0u8;1];assert_eq!(peer.read(&mut byte).unwrap(),0);return;}
+                let binding:Value=serde_json::from_slice(&read_frame(&mut peer)).unwrap();assert_eq!(binding["kind"],"claim-binding-v3");
+                let mac=binding["managerBindingDigest"].as_str().unwrap().to_string();
+                let ready=ClaimReady{version:1,kind:"claim-ready-v3".into(),correlation_id:id(11),runtime_generation:id(4),workspace_id:id(1),tenant_id:id(2),job_id:id(5),user_id:id(3),request_id:peer_request,lease_id:id(13),attempt_id:id(6),generation:id(7),stage_id:id(8),reservation_id:id(9),reservation_generation:id(10),archive_bytes:100,archive_sha256:peer_archive.clone(),source_digest:peer_archive,reservation_digest:challenge.receipt_digest,manager_binding_digest:mac,profile:"bounded-file-v1".into(),format:"1.0.0-draft.9".into()};
+                send(&mut peer,&serde_json::to_vec(&ready).unwrap());
+            });
+            let mut channel=Connection{socket:parent,key:[1;32],valid:true,ready:true,claim_started:false,metadata_started:false};
+            let selected=SelectedArchive{request_id:&request,bytes:100,sha256:&archive};
+            let scope=super::super::oex_reservation::V3PlanScope::from_owner(&owner,Path::new("/private/stage"),1);
+            let result=channel.begin_claim_v3(&open,&id(3),selected,scope,&AtomicBool::new(false),&mut ||Ok(()));
+            assert_eq!(result.is_ok(),valid);if !valid {assert!(!channel.valid);assert_eq!(channel.key,[0;32]);}
+            worker.join().unwrap();
+            assert!(channel.begin_claim_v3(&open,&id(3),selected,scope,&AtomicBool::new(false),&mut ||Ok(())).is_err());
+        }
+        drop(owner);fs::remove_dir(path).unwrap();
     }
 }

@@ -54,11 +54,36 @@ struct State {
     backup: Option<super::installations::native_backup::Receipt>,
     restoration: Option<super::installations::native_maintenance::Restoration>,
     selected_oex: bool,
+    selected_oex_completed: bool,
+    selected_oex_stop_accepted: bool,
     oex_027_qualified: bool,
     oex_save_offer: Option<OexSaveOffer>,
     oex_save_sender: Option<std::sync::mpsc::Sender<String>>,
     oex_terminal: Option<(OexSaveOffer, String, super::installations::native_oex_import::Transfer)>,
     oex_put_authorized: bool,
+}
+impl State {
+    fn retire_completed_oex_after_drain(&mut self) -> Option<Session> {
+        if self.selected_oex && self.selected_oex_completed && self.selected_oex_stop_accepted
+            && self.oex_terminal.is_none() && self.oex_save_offer.is_none()
+            && self.oex_save_sender.is_none()
+            && self.runtime.as_ref().is_some_and(is_drained)
+        {
+            let session = self.session.take()?;
+            self.selected_oex = false;
+            self.selected_oex_completed = false;
+            self.selected_oex_stop_accepted = false;
+            Some(session)
+        } else {
+            None
+        }
+    }
+}
+fn is_drained(context: &Context) -> bool {
+    context.state == "stopped"
+        && context.postgres_pid.is_none()
+        && context.node_pid.is_none()
+        && context.auxiliary_pid.is_none()
 }
 /// Return the unique runtime owner to Host on every early return or unwind.
 /// The worker owns this lease only while Host is marked busy.
@@ -119,6 +144,8 @@ impl Host {
                 backup: None,
                 restoration: None,
                 selected_oex: false,
+                selected_oex_completed: false,
+                selected_oex_stop_accepted: false,
                 oex_027_qualified: false,
                 oex_save_offer: None,
                 oex_save_sender: None,
@@ -195,6 +222,8 @@ impl Host {
         state.cancel = None;
         state.stop_requested = false;
         state.selected_oex = false;
+        state.selected_oex_completed = false;
+        state.selected_oex_stop_accepted = false;
         state.oex_027_qualified = false;
         state.oex_save_offer = None;
         state.oex_save_sender = None;
@@ -565,7 +594,16 @@ impl Host {
                                     shared.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
                                 let status_error = match context { Ok(value) => { state.runtime = Some(value); None }, Err(error) => { state.runtime = None; Some(error) } };
                                 if state.session.is_some() { return Err(err("NATIVE_HOST_OWNER_CONFLICT")); }
+                                // The selected Session may start only in an empty root. After
+                                // durable completion and normal drain, the next Start must use
+                                // the ordinary Session and its persisted transition guard.
+                                state.selected_oex_stop_accepted = state.selected_oex && state.selected_oex_completed
+                                    && stopped.as_ref().is_ok_and(|context| is_drained(context) || context.state == "stopping")
+                                    && status_error.is_none();
                                 state.session = lease.session.take();
+                                let retired = state.retire_completed_oex_after_drain();
+                                drop(state);
+                                drop(retired);
                                 stopped?;
                                 if let Some(error) = status_error { return Err(error); }
                             }
@@ -652,10 +690,21 @@ impl Host {
             state.configuration = prepared.0;
             state.account_required = prepared.1;
             if let Some(session) = state.session.as_mut() {
-                state.runtime = Some(session.status()?);
+                match session.status() {
+                    Ok(runtime) => state.runtime = Some(runtime),
+                    Err(error) => {
+                        state.selected_oex_stop_accepted = false;
+                        return Err(error);
+                    }
+                }
             }
+            // A normal stop may finish after the worker returns "stopping".
+            let retired = state.retire_completed_oex_after_drain();
+            drop(state);
+            drop(retired);
+        } else {
+            drop(state);
         }
-        drop(state);
         self.snapshot()
     }
     pub fn handle(&mut self, request: Request) -> Result<Value> {
@@ -727,7 +776,9 @@ impl Host {
                       return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));
                   } }
                 let stored = self.controller.finish_selected_oex(selection_token, &transfer, &offer, &saved_etag, document)?;
-                self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.oex_terminal = None;
+                let mut state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+                state.oex_terminal = None;
+                state.selected_oex_completed = true;
                 return serde_json::to_value(stored).map_err(|_| err("STATE_INVALID"));
             }
             let selected = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.selected_oex;

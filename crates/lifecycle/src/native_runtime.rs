@@ -5,6 +5,8 @@ use super::*;
 use super::{native_installation::Ports, native_payload::Payload};
 #[path = "native_runtime_oex_worker.rs"] mod oex_worker;
 #[path = "native_runtime_oex_worker_v2.rs"] mod oex_worker_v2;
+#[path = "native_runtime_oex_preflight.rs"] mod oex_preflight;
+#[path = "native_runtime_oex_preflight_frames.rs"] mod oex_preflight_frames;
 #[path = "native_runtime_oex_binding.rs"] mod oex_binding;
 #[path = "native_runtime_oex_read_fd.rs"] mod oex_read_fd;
 #[path = "native_runtime_oex_stage_root.rs"] mod oex_stage_root;
@@ -1822,6 +1824,33 @@ impl Session {
             Err(error)=>{channel.invalidate();Err(error)},
         }
     }
+    /// One two-phase claim under the admitted new workspace Session and its
+    /// existing operation fence. Legacy frames cannot enter this exchange.
+    #[allow(dead_code)]
+    fn begin_owned_oex_claim_v3<'a>(&'a mut self,stage_root:&'a oex_stage_root::StageRoot,job:&str,request:&str,bytes:u64,sha256:&str) -> Result<OwnedOexV3Claim<'a>> {
+        if !(self.fresh_oex_test || self.normal_oex_selected) || self.oex_upload_selected.as_ref().is_none_or(|v|v.0!=request||v.1!=bytes||v.2!=sha256) {
+            return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));
+        }
+        let owner=oex_owner::Owner::capture(self)?;
+        owner.recheck_database_identity(self)?;
+        let auth=self.local_authority.as_ref().ok_or_else(||err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
+        let identity=(auth.workspace_id.clone(),auth.tenant_id.clone(),auth.principal_id.clone());
+        let generation=self.job_id.clone().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+        let open=owner_claim_frames::ClaimOpen{version:1,kind:"claim-open-v3".into(),correlation_id:Uuid::new_v4().to_string(),
+            runtime_generation:generation,workspace_id:identity.0,tenant_id:identity.1,job_id:job.into()};
+        let cancel=self.cancellation.clone();
+        let mut channel=self.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+        let mut check=|| {owner.check(self)?;stage_root.check_empty(self)};
+        let archive=owner_channel::SelectedArchive{request_id:request,bytes,sha256};
+        let scope=oex_reservation::V3PlanScope::from_owner(&owner,stage_root.path(),stage_root.device());
+        let result=channel.begin_claim_v3(&open,&identity.2,archive,scope,&cancel,&mut check);
+        drop(check);
+        let result=result.and_then(|value|{owner.recheck_database_identity(self)?;stage_root.check_empty(self)?;Ok(value)});
+        match result {
+            Ok((challenge,ready,input_receipt))=>{self.owner_channel=Some(channel);Ok(OwnedOexV3Claim{session:self,stage_root,owner,challenge,ready,input_receipt,preflight_started:false,retained:None,report_started:false,bound:None,packed_started:false,packed:None,save_started:false,save_ready:None,peer_save_verified:false,retirement_started:false,retired:None,uncertain_retirement:None,uncertain_save:None,settlement_started:false,completed:false})},
+            Err(error)=>{channel.invalidate();Err(error)},
+        }
+    }
     /// One fresh-selected operation using the exact durable queued intent.
     /// The callback must persist the announced save request and complete the
     /// real same-session GET/one PUT/GET before returning its new ETag. It may
@@ -1831,6 +1860,9 @@ impl Session {
     pub(crate) fn run_fresh_oex_once<F>(&mut self,state:&crate::installations::native_oex_import::Transfer,
         cancelled:&AtomicBool,mut save:F)->Result<()>
     where F:FnMut(&str,&str,&str,&str)->Result<String> {
+        if self.normal_oex_selected && self.payload.normal_oex_027_selected_input()? {
+            return self.run_selected_oex_v3_once(state,cancelled,save);
+        }
         crate::installations::native_oex_import::validate(state)?;
         if !(self.fresh_oex_test || self.normal_oex_selected){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         let auth=self.local_authority.as_ref().ok_or_else(||err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
@@ -1853,6 +1885,31 @@ impl Session {
         claim.confirm_save(&etag,cancelled)
         })();
         if result.is_err(){if let Some(mut channel)=self.owner_channel.take(){channel.invalidate();}}
+        result
+    }
+    pub(crate) fn run_selected_oex_v3_once<F>(&mut self,state:&crate::installations::native_oex_import::Transfer,
+        cancelled:&AtomicBool,mut save:F)->Result<()>
+    where F:FnMut(&str,&str,&str,&str)->Result<String> {
+        let result=(|| {
+        crate::installations::native_oex_import::validate(state)?;
+        if !self.normal_oex_selected || !self.payload.normal_oex_027_selected_input()?{return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        let auth=self.local_authority.as_ref().ok_or_else(||err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
+        if (state.workspace_id.as_str(),state.tenant_id.as_str(),state.principal_id.as_str())!=(auth.workspace_id.as_str(),auth.tenant_id.as_str(),auth.principal_id.as_str()) {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        let intent=state.intent.as_ref().ok_or_else(||err("NATIVE_OEX_ATTEMPT_INVALID"))?;
+        if intent.profile.as_deref()!=Some("bounded-file-v1")||intent.oex_format.as_deref()!=Some("1.0.0-draft.9"){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        let job=state.job_id.as_deref().ok_or_else(||err("NATIVE_OEX_ATTEMPT_INVALID"))?;
+        if self.cancelled()||cancelled.load(Ordering::SeqCst)||self.oex_upload_selected.as_ref().is_none_or(|v|v.0!=intent.request_id||v.1!=intent.bytes||v.2!=intent.sha256) {
+            return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));
+        }
+            let root=oex_stage_root::StageRoot::create(self)?;
+            let mut claim=self.begin_owned_oex_claim_v3(&root,job,&intent.request_id,intent.bytes,&intent.sha256)?;
+            claim.materialize_and_preflight(cancelled)?;
+            claim.bind_preflight(cancelled)?;
+            claim.pack_and_serve(cancelled)?;
+            claim.save_and_retire(cancelled,&mut save)?;
+            claim.settle(cancelled)
+        })();
+        if result.is_err() && let Some(mut channel)=self.owner_channel.take(){channel.invalidate();}
         result
     }
     pub(crate) fn target_observation_root(&self) -> &Path {
@@ -1990,6 +2047,314 @@ struct OwnedOexClaim<'a> {
     save_started:bool,
     save_ready:Option<owner_claim_frames::SaveFrame>,
     settled:bool,
+}
+/// The v3 claim holds the exact Session, owner observation and input receipt.
+/// It is intentionally not a provider release or completion token.
+#[allow(dead_code)]
+struct OwnedOexV3Claim<'a> {
+    session:&'a mut Session,
+    stage_root:&'a oex_stage_root::StageRoot,
+    owner:oex_owner::Owner,
+    challenge:owner_claim_frames::ClaimChallenge,
+    ready:owner_claim_frames::ClaimReady,
+    input_receipt:Vec<u8>,
+    preflight_started:bool,
+    retained:Option<RetainedV3Preflight>,
+    report_started:bool,
+    bound:Option<RetainedV3Reservation>,
+    packed_started:bool,
+    packed:Option<RetainedV3Packed>,
+    save_started:bool,
+    save_ready:Option<owner_claim_frames::SaveFrameV3>,
+    peer_save_verified:bool,
+    retirement_started:bool,
+    retired:Option<RetiredV3>,
+    uncertain_retirement:Option<RetiredV3>,
+    uncertain_save:Option<(owner_claim_frames::SaveFrameV3,String)>,
+    settlement_started:bool,
+    completed:bool,
+}
+#[allow(dead_code)]
+struct RetainedV3Preflight {
+    input:oex_read_fd::ObservedStage,
+    materializer:oex_materializer::ReapedMaterializer,
+    materializer_request:oex_materializer_protocol::Request,
+    preflight:oex_preflight::Prepared,
+    preflight_request:oex_preflight::Control,
+}
+#[allow(dead_code)]
+struct RetainedV3Reservation { bound:oex_preflight_frames::Bound, output_receipt:Option<Vec<u8>> }
+#[allow(dead_code)]
+struct RetainedV3Packed {output:File,prepared:oex_worker_v2::Prepared,control:oex_control_v2::Control,journal:crate::maintenance_source::DirectoryPin}
+#[allow(dead_code)]
+struct RetiredV3 {
+    materializer:oex_materializer::ReapedMaterializer,materializer_request:oex_materializer_protocol::Request,
+    preflight:oex_preflight::Prepared,preflight_request:oex_preflight::Control,
+    prepared:oex_worker_v2::Prepared,control:oex_control_v2::Control,journal:crate::maintenance_source::DirectoryPin,
+    save:owner_claim_frames::SaveFrameV3,etag:String,
+}
+fn check_v3_held(session:&mut Session,owner:&oex_owner::Owner,root:&oex_stage_root::StageRoot,r:&owner_claim_frames::ClaimReady,
+    retained:&RetainedV3Preflight,packed:&RetainedV3Packed,cancelled:&AtomicBool)->Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    owner.check(session)?;retained.input.check_unchanged()?;packed.journal.check()?;
+    let m=packed.output.metadata().map_err(|_|err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
+    let stamp=(m.dev(),m.ino(),m.len(),m.mtime(),m.mtime_nsec(),m.ctime(),m.ctime_nsec());
+    root.check_pair(session,&r.stage_id,(retained.input.device,retained.input.inode),&r.attempt_id,(m.dev(),m.ino()))?;
+    if cancelled.load(Ordering::SeqCst)||stamp!=packed.prepared.verified.output_stamp
+        || packed.control.encode()?!=packed.prepared.control || !retained.preflight.matches(&retained.preflight_request)
+        || !retained.materializer.matches(&retained.materializer_request,&retained.materializer_request.encode()?) {
+        return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));
+    }
+    Ok(())
+}
+fn check_v3_retired(session:&mut Session,owner:&oex_owner::Owner,root:&oex_stage_root::StageRoot,retired:&RetiredV3,cancelled:&AtomicBool)->Result<()> {
+    owner.check(session)?;root.check_empty(session)?;retired.journal.check()?;
+    if cancelled.load(Ordering::SeqCst)||retired.control.encode()?!=retired.prepared.control
+        || !retired.preflight.matches(&retired.preflight_request)
+        || !retired.materializer.matches(&retired.materializer_request,&retired.materializer_request.encode()?) {
+        return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));
+    }
+    Ok(())
+}
+#[allow(dead_code)]
+impl OwnedOexV3Claim<'_> {
+    /// Accept one exact two-receipt settlement only after the owned temporary
+    /// files were retired and the trusted host save completed. Lost frames or
+    /// partial provider release remain UNKNOWN; no rearm or retry occurs here.
+    fn settle(&mut self,cancelled:&AtomicBool)->Result<()> {
+        if self.settlement_started {self.completed=false;if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}
+        self.settlement_started=true;
+        let result=(|| {
+            let retired=self.retired.as_ref().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
+            let bound=&self.bound.as_ref().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?.bound;
+            if !self.peer_save_verified||self.uncertain_save.is_some()||self.uncertain_retirement.is_some(){return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}
+            self.owner.recheck_database_identity(self.session)?;
+            let cancel=self.session.cancellation.clone();let mut channel=self.session.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+            let exchange=(|| {
+                let mut check=||check_v3_retired(self.session,&self.owner,self.stage_root,retired,cancelled);
+                let bytes=channel.read_frame(Instant::now()+Duration::from_secs(120),&cancel,&mut check)?;drop(check);
+                let settlement=owner_claim_frames::SettlementV3::parse_check(&bytes,&self.challenge,bound,&retired.save,&retired.etag)?;
+                self.owner.recheck_database_identity(self.session)?;
+                let mut check=||check_v3_retired(self.session,&self.owner,self.stage_root,retired,cancelled);
+                let deadline=Instant::now()+Duration::from_secs(120);
+                channel.send_frame(&settlement.ready()?,deadline,&cancel,&mut check)?;
+                let receipt=channel.read_frame(deadline,&cancel,&mut check)?;drop(check);
+                let ack=settlement.receipt_ack(&receipt)?;
+                self.owner.recheck_database_identity(self.session)?;
+                let mut check=||check_v3_retired(self.session,&self.owner,self.stage_root,retired,cancelled);
+                channel.send_frame(&ack,Instant::now()+Duration::from_secs(120),&cancel,&mut check)?;
+                let completed=channel.read_frame(Instant::now()+Duration::from_secs(120),&cancel,&mut check)?;
+                retired.save.check_completed(&retired.etag,&completed)?;check()
+            })();
+            match exchange {Ok(())=>{self.session.owner_channel=Some(channel);Ok(())},Err(error)=>{channel.invalidate();Err(error)}}
+        })();
+        match result {Ok(())=>{self.completed=true;Ok(())},Err(error)=>{self.completed=false;if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}Err(error)}}
+    }
+    /// Only the host's existing durable selected-save path may supply `save`:
+    /// it must record the exact offer and complete same-session GET/PUT/GET.
+    /// No provider release is implied by retirement.
+    fn save_and_retire<F>(&mut self,cancelled:&AtomicBool,mut save:F)->Result<()>
+    where F:FnMut(&str,&str,&str,&str)->Result<String> {
+        use std::os::fd::IntoRawFd;
+        if self.retirement_started {if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}
+        self.retirement_started=true;
+        let result=(|| {
+            let ready=self.wait_save_ready(cancelled)?;
+            let etag=save(&ready.exhibition_id,&ready.etag,&ready.request_id,&ready.attempt_id)?;
+            self.uncertain_save=Some((ready.clone(),etag.clone()));
+            self.confirm_save(&etag,cancelled)?;
+            let retained=self.retained.as_ref().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
+            let packed=self.packed.as_ref().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
+            self.owner.recheck_database_identity(self.session)?;
+            check_v3_held(self.session,&self.owner,self.stage_root,&self.ready,retained,packed,cancelled)?;
+            if !self.peer_save_verified{return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}
+            self.stage_root.retire_pair(self.session,&self.owner,&self.ready,retained.input.file(),&packed.output,cancelled)?;
+            let RetainedV3Preflight{input,materializer,materializer_request,preflight,preflight_request}=self.retained.take().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
+            let RetainedV3Packed{output,prepared,control,journal}=self.packed.take().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
+            self.uncertain_retirement=Some(RetiredV3{materializer,materializer_request,preflight,preflight_request,prepared,control,journal,save:ready,etag});
+            let input_closed=input.close_owned();let output_fd=output.into_raw_fd();let output_closed=unsafe{libc::close(output_fd)}==0;
+            if input_closed.is_err()||!output_closed{return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}
+            self.owner.recheck_database_identity(self.session)?;self.stage_root.check_empty(self.session)?;
+            self.uncertain_save=None;
+            self.uncertain_retirement.take().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))
+        })();
+        match result {Ok(retired)=>{self.retired=Some(retired);Ok(())},Err(error)=>{if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}Err(error)}}
+    }
+    /// Receive a post-import offer while retaining the input, output, and all
+    /// direct-child results. The host must durably perform GET/PUT/GET.
+    fn wait_save_ready(&mut self,cancelled:&AtomicBool)->Result<owner_claim_frames::SaveFrameV3> {
+        if self.save_started {if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}
+        self.save_started=true;
+        let result=(|| {
+            let retained=self.retained.as_ref().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
+            let packed=self.packed.as_ref().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
+            let bound=&self.bound.as_ref().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?.bound;
+            self.owner.recheck_database_identity(self.session)?;
+            let cancel=self.session.cancellation.clone();let mut channel=self.session.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+            let mut check=||check_v3_held(self.session,&self.owner,self.stage_root,&self.ready,retained,packed,cancelled);
+            let response=channel.receive_save_ready_v3(bound,&cancel,&mut check);drop(check);
+            match response {Ok(ready)=>{self.session.owner_channel=Some(channel);self.owner.recheck_database_identity(self.session)?;Ok(ready)},Err(error)=>{channel.invalidate();Err(error)}}
+        })();
+        match result {Ok(ready)=>{self.save_ready=Some(ready.clone());Ok(ready)},Err(error)=>{if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}Err(error)}}
+    }
+    /// Call only after the host persisted and verified the exact same-session
+    /// GET/PUT/GET. Until that host result is wired, this inactive method
+    /// establishes only the peer's echo, not Manager save evidence or release.
+    fn confirm_save(&mut self,etag:&str,cancelled:&AtomicBool)->Result<()> {
+        let result=(|| {
+            let ready=self.save_ready.take().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
+            let retained=self.retained.as_ref().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
+            let packed=self.packed.as_ref().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
+            self.owner.recheck_database_identity(self.session)?;
+            let cancel=self.session.cancellation.clone();let mut channel=self.session.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+            let mut check=||check_v3_held(self.session,&self.owner,self.stage_root,&self.ready,retained,packed,cancelled);
+            let response=channel.confirm_save_v3(&ready,etag,&cancel,&mut check);drop(check);
+            match response {Ok(())=>{self.session.owner_channel=Some(channel);Ok(())},Err(error)=>{channel.invalidate();Err(error)}}
+        })();
+        match result {Ok(())=>{self.peer_save_verified=true;Ok(())},Err(error)=>{self.peer_save_verified=false;if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}Err(error)}}
+    }
+    /// Reuse the owned packed worker and bounded streaming on the confirmed
+    /// reservation. The result is not yet a commit or settlement grant.
+    fn pack_and_serve(&mut self,cancelled:&AtomicBool)->Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        if self.packed_started {if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}
+        self.packed_started=true;
+        let result=(|| {
+            let retained=self.retained.as_ref().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
+            let reservation=self.bound.as_ref().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
+            let r=&self.ready;let input=&retained.input;let bound=&reservation.bound;
+            self.owner.recheck_database_identity(self.session)?;input.check_unchanged()?;
+            self.stage_root.check_input(self.session,&r.stage_id,input.device,input.inode)?;
+            match reservation.output_receipt.as_deref(){Some(receipt)=>{bound.confirm_output(receipt)?;},None=>{bound.confirm_empty()?;}}
+            let (capacity,manifest,output_plan)=bound.output_plan();
+            let (reservation_id,reservation_generation,reservation_digest)=output_plan.unwrap_or((&r.reservation_id,&r.reservation_generation,&r.reservation_digest));
+            let output=self.stage_root.create_output(self.session,&r.attempt_id)?;
+            let m=output.metadata().map_err(|_|err("NATIVE_OEX_OUTPUT_INVALID"))?;let output_id=(m.dev(),m.ino());let input_id=(input.device,input.inode);
+            self.stage_root.check_pair(self.session,&r.stage_id,input_id,&r.attempt_id,output_id)?;
+            let ready=bound.packed_ready(&output,reservation.output_receipt.as_deref())?;let bytes=ready.encode()?;let cancel=self.session.cancellation.clone();
+            let mut channel=self.session.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+            let mut check=|| {self.owner.check(self.session)?;self.stage_root.check_pair(self.session,&r.stage_id,input_id,&r.attempt_id,output_id)?;input.check_unchanged()?;
+                if cancelled.load(Ordering::SeqCst){return Err(err("NATIVE_CANCELLED"));}Ok(())};
+            let accepted=channel.exchange(&bytes,&cancel,&mut check).and_then(|reply|ready.check_accepted(&reply)).and_then(|_|check());drop(check);
+            if let Err(error)=accepted{channel.invalidate();return Err(error);}self.session.owner_channel=Some(channel);
+            self.owner.recheck_database_identity(self.session)?;
+            let control=oex_control_v2::Control{version:2,kind:"oex-packed-v2".into(),tenant_id:r.tenant_id.clone(),resource_id:r.workspace_id.clone(),job_id:r.job_id.clone(),user_id:r.user_id.clone(),request_id:r.request_id.clone(),lease_id:r.lease_id.clone(),attempt_id:r.attempt_id.clone(),runtime_generation:r.runtime_generation.clone(),stage_id:r.stage_id.clone(),reservation_id:reservation_id.into(),reservation_generation:reservation_generation.into(),archive_bytes:r.archive_bytes,archive_sha256:r.archive_sha256.clone(),capacity,input_device:input.device.to_string(),input_inode:input.inode.to_string(),output_device:m.dev().to_string(),output_inode:m.ino().to_string(),reservation_digest:reservation_digest.into(),source_digest:r.source_digest.clone(),worker_digest:self.session.payload.context().manifest_sha256,profile:r.profile.clone(),format:r.format.clone()};
+            let journal_path=self.session.run.as_ref().ok_or_else(||err("NATIVE_JOURNAL_INVALID"))?.clone();
+            let journal=crate::maintenance_source::DirectoryPin::open(&journal_path)?;let journal_file=journal.try_clone_file()?;let payload=self.session.payload.clone();
+            let mut check=|| {self.owner.check(self.session)?;self.stage_root.check_pair(self.session,&r.stage_id,input_id,&r.attempt_id,output_id)?;input.check_unchanged()?;journal.check()?;
+                self.session.owner_channel.as_mut().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?.check_idle()?;
+                if cancelled.load(Ordering::SeqCst){return Err(err("NATIVE_CANCELLED"));}Ok(())};
+            let prepared=oex_worker_v2::run_direct(&payload,&journal_file,input,&output,&control,cancelled,&mut check)?;drop(check);
+            if prepared.verified.manifest_sha256!=manifest||prepared.verified.output_stamp.2!=capacity {return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}
+            self.owner.recheck_database_identity(self.session)?;
+            let mut channel=self.session.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+            let mut check=|| {self.owner.check(self.session)?;self.stage_root.check_pair(self.session,&r.stage_id,input_id,&r.attempt_id,output_id)?;input.check_unchanged()?;journal.check()?;
+                if cancelled.load(Ordering::SeqCst){return Err(err("NATIVE_CANCELLED"));}Ok(())};
+            let served=channel.serve_packed_v3(owner_channel::PackedServe{control:&control,prepared:&prepared,output:&output},&r.attempt_id,&self.challenge.correlation_id,bound,&cancel,&mut check);drop(check);
+            if let Err(error)=served{channel.invalidate();return Err(error);}self.session.owner_channel=Some(channel);
+            Ok(RetainedV3Packed{output,prepared,control,journal})
+        })();
+        match result {Ok(packed)=>{self.packed=Some(packed);Ok(())},Err(error)=>{if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}Err(error)}}
+    }
+    /// Report the exact direct-child result and correlate an optional E lease
+    /// against the same independently pinned owner. Viewer verifies liveness.
+    fn bind_preflight(&mut self,cancelled:&AtomicBool)->Result<()> {
+        if self.report_started {
+            if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}
+            return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));
+        }
+        self.report_started=true;
+        let result=(|| {
+            let retained=self.retained.as_ref().ok_or_else(||err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
+            let r=&self.ready;let input=&retained.input;
+            self.owner.recheck_database_identity(self.session)?;
+            self.stage_root.check_input(self.session,&r.stage_id,input.device,input.inode)?;
+            input.check_unchanged()?;
+            let plan=oex_reservation::V3PlanScope::from_owner(&self.owner,self.stage_root.path(),self.stage_root.device());
+            let scope=oex_preflight_frames::InputScope::from_receipt(&self.input_receipt,&retained.preflight_request,plan)?;
+            if !retained.materializer.matches(&retained.materializer_request,&retained.materializer_request.encode()?) {
+                return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));
+            }
+            let report=retained.preflight.report(&retained.preflight_request,&self.challenge)?;
+            let cancel=self.session.cancellation.clone();
+            let mut channel=self.session.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+            let mut check=|| {self.owner.check(self.session)?;self.stage_root.check_input(self.session,&r.stage_id,input.device,input.inode)?;input.check_unchanged()?;
+                if cancelled.load(Ordering::SeqCst){return Err(err("NATIVE_CANCELLED"));}Ok(())};
+            let exchange=(|| {
+                let bytes=channel.exchange(&report,&cancel,&mut check)?;
+                let bound=oex_preflight_frames::Bound::parse(&bytes,&retained.preflight,&retained.preflight_request,&self.challenge,&scope)?;
+                let output_receipt=match bound.output_receipt_digest() {
+                    Some(sha)=>Some(channel.receive_reservation_receipt(&self.challenge,sha,&cancel,&mut check)?),None=>None,
+                };
+                let confirm=match output_receipt.as_deref() {Some(receipt)=>bound.confirm_output(receipt)?,None=>bound.confirm_empty()?};
+                Ok((RetainedV3Reservation{bound,output_receipt},confirm))
+            })();
+            drop(check);
+            let (bound,confirm)=match exchange {Ok(value)=>value,Err(error)=>{channel.invalidate();return Err(error)}};
+            if let Err(error)=self.owner.recheck_database_identity(self.session) {channel.invalidate();return Err(error);}
+            let mut check=|| {self.owner.check(self.session)?;self.stage_root.check_input(self.session,&r.stage_id,input.device,input.inode)?;input.check_unchanged()?;
+                if cancelled.load(Ordering::SeqCst){return Err(err("NATIVE_CANCELLED"));}Ok(())};
+            let sent=channel.send_frame(&confirm,Instant::now()+Duration::from_secs(30),&cancel,&mut check).and_then(|_|check());
+            drop(check);
+            match sent {Ok(())=>{self.session.owner_channel=Some(channel);Ok(bound)},Err(error)=>{channel.invalidate();Err(error)}}
+        })();
+        match result {Ok(bound)=>{self.bound=Some(bound);Ok(())},Err(error)=>{
+            if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}Err(error)
+        }}
+    }
+    /// Sequentially materialize and preflight the same input under this claim.
+    /// A failed attempt cannot be rearmed; its named stage and durable records
+    /// remain for reconciliation. On success the input FD and both direct-child
+    /// results are retained, without implying a provider grant.
+    fn materialize_and_preflight(&mut self,cancelled:&AtomicBool)->Result<()> {
+        if self.preflight_started {
+            if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}
+            return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));
+        }
+        self.preflight_started=true;
+        let r=&self.ready;
+        let outcome=(|| {
+            self.owner.recheck_database_identity(self.session)?;
+            self.stage_root.check_empty(self.session)?;
+            let input_root=self.session.observation_root.try_clone_file()?;
+            let chunks=oex_chunks::open_local(&input_root,&r.tenant_id,&r.job_id,r.archive_bytes)?;
+            let stage=self.stage_root.create_input(self.session,&r.stage_id)?;
+            let (device,inode)=stage.identity()?;
+            self.stage_root.check_input(self.session,&r.stage_id,device,inode)?;
+            let request=oex_materializer_protocol::Request{version:1,kind:"oex-chunks-v1".into(),tenant_id:r.tenant_id.clone(),resource_id:r.workspace_id.clone(),job_id:r.job_id.clone(),user_id:r.user_id.clone(),request_id:r.request_id.clone(),lease_id:r.lease_id.clone(),attempt_id:r.attempt_id.clone(),runtime_generation:r.runtime_generation.clone(),stage_id:r.stage_id.clone(),reservation_id:r.reservation_id.clone(),reservation_generation:r.reservation_generation.clone(),archive_bytes:r.archive_bytes,archive_sha256:r.archive_sha256.clone(),stage_device:device.to_string(),stage_inode:inode.to_string(),chunks:chunks.iter().map(|c|oex_materializer_protocol::Chunk{device:c.device.to_string(),inode:c.inode.to_string(),bytes:c.bytes}).collect(),reservation_digest:r.reservation_digest.clone(),source_digest:r.source_digest.clone(),worker_digest:self.session.payload.context().manifest_sha256,profile:r.profile.clone(),format:r.format.clone()};
+            let bound=owner_claim_frames::StageBound{version:1,kind:"stage-bound-v3".into(),correlation_id:self.challenge.correlation_id.clone(),runtime_generation:r.runtime_generation.clone(),workspace_id:r.workspace_id.clone(),tenant_id:r.tenant_id.clone(),job_id:r.job_id.clone(),attempt_id:r.attempt_id.clone(),generation:r.generation.clone(),stage_id:r.stage_id.clone(),reservation_id:r.reservation_id.clone(),reservation_generation:r.reservation_generation.clone(),stage_device:device.to_string(),stage_inode:inode.to_string()};
+            let bytes=bound.encode_v3()?;let cancel=self.session.cancellation.clone();
+            let mut channel=self.session.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+            let mut check=|| {self.owner.check(self.session)?;self.stage_root.check_input(self.session,&r.stage_id,device,inode)?;
+                if cancelled.load(Ordering::SeqCst){return Err(err("NATIVE_CANCELLED"));}Ok(())};
+            let accepted=channel.exchange(&bytes,&cancel,&mut check).and_then(|reply|bound.check_accepted_v3(&bytes,&reply)).and_then(|_|check());
+            drop(check);
+            if let Err(error)=accepted {channel.invalidate();return Err(error);}
+            self.session.owner_channel=Some(channel);
+            let payload=self.session.payload.clone();
+            let mut check=|| {self.owner.check(self.session)?;self.stage_root.check_input(self.session,&r.stage_id,device,inode)?;
+                self.session.owner_channel.as_mut().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?.check_idle()?;
+                if cancelled.load(Ordering::SeqCst){return Err(err("NATIVE_CANCELLED"));}Ok(())};
+            let materializer=oex_materializer::run_direct(&payload,&stage,&chunks,&request,cancelled,&mut check)?;
+            if !materializer.matches(&request,&request.encode()?) {return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}
+            let input=oex_read_fd::observe_stage(stage,r.archive_bytes,&r.archive_sha256,cancelled,&mut check)?;
+            let preflight_request=oex_preflight::Control{version:1,kind:"oex-preflight-v1".into(),attempt_id:r.attempt_id.clone(),runtime_generation:r.runtime_generation.clone(),stage_id:r.stage_id.clone(),reservation_id:r.reservation_id.clone(),reservation_generation:r.reservation_generation.clone(),reservation_digest:r.reservation_digest.clone(),archive_bytes:r.archive_bytes,archive_sha256:r.archive_sha256.clone(),input_device:device.to_string(),input_inode:inode.to_string()};
+            let preflight=oex_preflight::run_direct(&payload,&input,&preflight_request,cancelled,&mut check)?;
+            drop(check);
+            input.check_unchanged()?;
+            Ok(RetainedV3Preflight{input,materializer,materializer_request:request,preflight,preflight_request})
+        })();
+        match outcome {Ok(retained)=>{self.retained=Some(retained);Ok(())},Err(error)=>{
+            if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}Err(error)
+        }}
+    }
+}
+impl Drop for OwnedOexV3Claim<'_> {
+    fn drop(&mut self) {
+        // An unverified or abandoned operation must close the channel. A
+        // checked completion retains the existing Session's connection.
+        owner_channel::finish_v3_claim(&mut self.session.owner_channel, self.completed);
+    }
 }
 // Kept with the borrowed Session/claim until settlement or conservative drop.
 // These handles are not authority to release on their own.
