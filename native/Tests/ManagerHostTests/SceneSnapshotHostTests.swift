@@ -13,9 +13,12 @@ import ManagerCore
 @MainActor
 final class SceneSnapshotHostTests: XCTestCase {
     private var evidence: [String: String] = [:]
-    private func captureFailure(_ error: Error, phase: String, controller: NativeViewportController) -> String {
-        controller.diagnose("SCENE_SNAPSHOT", error)
-        evidence[phase + "Diagnostic"] = controller.diagnostic
+    private func captureFailure(_ error: Error, phase: String, controller _: NativeViewportController) -> String {
+        // Do not publish diagnostics into the live view while observing it.
+        // Retain bounded codes only, never arbitrary JS text or request data.
+        let native = error as NSError
+        evidence[phase + "NativeCode"] = String(native.code)
+        evidence[phase + "NativeDomain"] = native.domain.range(of: "^[A-Za-z0-9_.-]{1,80}$", options: .regularExpression) == nil ? "Native" : native.domain
         let known = ["SCENE_SNAPSHOT_NOT_READY", "SCENE_SNAPSHOT_UNAVAILABLE", "SCENE_SNAPSHOT_STALE",
                      "SCENE_SNAPSHOT_RIGHTS_UNVERIFIED", "SCENE_SNAPSHOT_SAVED_CHANGED", "SCENE_SNAPSHOT_TARGET_NOT_READY",
                      "SCENE_SNAPSHOT_CAMERA_INVALID", "VIEWING_TARGET_OUTSIDE_ARTWORK", "VIEWING_IMAGE_FRONT"]
