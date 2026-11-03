@@ -81,6 +81,29 @@ final class NativeImagePreparationTests: XCTestCase {
         }
         return names
     }
+    func testAuthorizedStandaloneJPEGFixtureUsesProductionPreparation() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let path = environment["EXHIBITOS_NATIVE_JPEG_FIXTURE_PATH"],
+              let expected = environment["EXHIBITOS_NATIVE_JPEG_FIXTURE_SHA256"] else {
+            throw XCTSkip("An explicitly authorized local JPEG fixture is required.")
+        }
+        let url = URL(fileURLWithPath: path)
+        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard size > 0, size <= ImportFileSnapshot.limit else { throw Prep.Failure.limits }
+        let bytes = try Data(contentsOf: url)
+        guard hash(bytes) == expected else { throw Prep.Failure.binding }
+        let original = ImportFileSnapshot(name: "authorized-fixture.jpg", mime: "image/jpeg", sha256: expected, data: bytes)
+        do {
+            let result = try await NativePreparedJPEG.prepare(original: original,
+                operationID: "authorized-fixture", generation: "diagnosis-1", isCurrent: { true })
+            XCTAssertEqual(result.originalSHA256, expected)
+            XCTAssertTrue(result.derived.valid)
+            XCTAssertEqual(result.derived.sha256, hash(result.png))
+            XCTAssertEqual(original.data, bytes)
+        } catch let failure as Prep.Failure {
+            XCTFail("Production JPEG preparation failed: \(failure)")
+        }
+    }
     func testPreparedStandaloneJPEGKeepsOriginalAndDerivedBindingsDistinct() async throws {
         let bytes = try jpeg()
         let original = ImportFileSnapshot(name: "synthetic.jpg", mime: "image/jpeg", sha256: hash(bytes), data: bytes)
