@@ -52,7 +52,7 @@ final class ManagerModel: ObservableObject {
     @Published private(set) var backupLocation: URL?
     var pendingRestoration: Bool { native?.restoration.map { $0.state != "activated" } == true }
     var canMaintain: Bool { !busy && !runtimeBusy && !quitting && !hasUnsavedAuthoring && !authoring.busy && !authoring.modelWorkerPending && !exhibitions.busy && !exhibitions.oexImport.busy && !exhibitions.oexImport.hasPendingWork && !publication.busy && !staticExport.running && !hosting.running && !hosting.busy && context != nil }
-    var hasUnsavedAuthoring: Bool { authoring.dirty || exhibitions.dirty || exhibitions.oexImport.hasFile }
+    var hasUnsavedAuthoring: Bool { authoring.dirty || authoring.hasWaitingIntake || exhibitions.dirty || exhibitions.oexImport.hasFile }
     private var bridge: NativeBridge?
     private var pollTask: Task<Void, Never>?
     private var authoringConnection: Task<Void, Never>?
@@ -168,6 +168,12 @@ final class ManagerModel: ObservableObject {
             }
             authoring.bindImportStore(read: { try await bridge.uploadState(context) }, save: { state in try await bridge.saveUploadState(context, state: state) })
             let status = try await bridge.nativeStatus(context)
+            authoring.bindIntakeWorkspace(available: status.selectedOex == false) { [weak self] in
+                guard let self, self.context?.selectionToken == context.selectionToken else { return false }
+                let observed = try await bridge.nativeStatus(context)
+                return self.context?.selectionToken == context.selectionToken && observed.selectedOex == false
+                    && observed.runtime?.readiness.ready == true
+            }
             let credentials: LocalAuthoringSession
             if status.selectedOex == true, let binding = retainedAuthoring {
                 guard binding.matches(context: self.context, status: status),

@@ -26,6 +26,43 @@ final class AuthoringModel: ObservableObject {
     @Published private(set) var importFile: ImportFileSnapshot?
     @Published private(set) var transfer: NativeUploadState?
     @Published private(set) var importJob: NativeImportJob?
+    struct IntakeRow: Identifiable {
+        struct Result {
+            let artworkID: String
+            let artworkRevision: Int
+            let jobID: String
+            let state: String
+        }
+        let id = UUID()
+        let url: URL
+        var name: String { url.lastPathComponent }
+        var error: String?
+        var result: Result?
+    }
+    @Published private(set) var intakeRows: [IntakeRow] = []
+    @Published private(set) var activeIntakeID: UUID?
+    @Published private(set) var intakeWritesAvailable = false
+    private var intakeTarget: (artworkID: String, revision: Int)?
+    private var intakeWorkspaceCheck: (() async throws -> Bool)?
+    var hasWaitingIntake: Bool { intakeRows.contains { $0.result == nil && $0.id != activeIntakeID } }
+    var canSelectIntake: Bool {
+        intakeWritesAvailable && (modelDerivationEnabled || iccImportAdmitted) && available && session != nil && !busy
+    }
+    var canOpenIntakeRow: Bool {
+        canSelectIntake && activeIntakeID == nil && selected?.archived == false && !metadataDirty && importFile == nil && transfer?.intent == nil
+    }
+    var intakeDrainPending: Bool {
+        guard let intent = transfer?.intent, let job = importJob else { return false }
+        return (job.terminal || job.state == "failed") && requiresIntakeDrain(intent, job: job)
+            && !job.confirmsIntakeDrain(for: intent.mime)
+    }
+    private func requiresIntakeDrain(_ intent: NativeImportIntent, job: NativeImportJob) -> Bool {
+        // A restarted queue loses its in-memory row, but keeps this intent and
+        // the runtime's drain contract. Unknown older single-file runtimes
+        // retain their existing behavior.
+        activeIntakeID != nil || intent.modelDerivation != nil
+            || (intent.mime == "image/png" && (iccImportAdmitted || (job.workerDrainVersion ?? 0) > 0))
+    }
     @Published var importScale = 1.0
     @Published var approvalAcknowledged = false
     @Published var assetId = ""
@@ -99,9 +136,10 @@ final class AuthoringModel: ObservableObject {
         guard next != scope else { return available && api != nil }
         imagePreparationScope?.invalidate(); imagePreparation?.cancel()
         importStatusGeneration = UUID()
-        guard !busy, !dirty else { api = nil; session = nil; failure = AuthoringFailure("LOCAL_SCOPE_CHANGED"); return false }
+        guard !busy, !dirty, !hasWaitingIntake else { api = nil; session = nil; failure = AuthoringFailure("LOCAL_SCOPE_CHANGED"); return false }
         importPoll?.cancel(); importPoll = nil; importPollID = nil
         transfer = nil; importJob = nil; importFile = nil; assetId = ""
+        intakeRows = []; activeIntakeID = nil; intakeTarget = nil; intakeWritesAvailable = false; intakeWorkspaceCheck = nil
         readTransfer = nil; writeTransfer = nil
         scope = next; session = nil; artworks = []; artists = []; selected = nil; editing = false
         subject = configuration.subject ?? ""
@@ -208,6 +246,64 @@ final class AuthoringModel: ObservableObject {
 }
 
 extension AuthoringModel {
+    func bindIntakeWorkspace(available: Bool, recheck: @escaping () async throws -> Bool) {
+        intakeWritesAvailable = available; intakeWorkspaceCheck = recheck
+    }
+    func chooseIntakeFiles() async {
+        guard canSelectIntake, intakeRows.count < 8, let window = NSApp.keyWindow else { return }
+        let generation = importStatusGeneration, workspace = transfer?.workspaceId
+        let panel = NSOpenPanel()
+        panel.title = "작품 파일 대기 목록에 추가"
+        panel.message = "최대 8개까지 추가합니다. 선택만으로 작품에 연결하거나 파일 검사를 시작하지 않습니다."
+        panel.canChooseDirectories = false; panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = (iccImportAdmitted ? [.png] : []) + (modelDerivationEnabled ? [UTType(filenameExtension: "glb") ?? .data] : [])
+        let response = await withCheckedContinuation { continuation in
+            panel.beginSheetModal(for: window) { continuation.resume(returning: $0) }
+        }
+        guard response == .OK, canSelectIntake, generation == importStatusGeneration,
+              workspace == transfer?.workspaceId else { return }
+        let urls = panel.urls.filter { url in !intakeRows.contains { $0.url == url } }
+        guard intakeRows.count + urls.count <= 8 else { failure = AuthoringFailure("INTAKE_QUEUE_LIMIT"); return }
+        intakeRows += urls.map { IntakeRow(url: $0) }
+    }
+    func openIntakeRow(_ id: UUID) async {
+        guard canOpenIntakeRow, let artwork = selected,
+              let row = intakeRows.first(where: { $0.id == id && $0.result == nil }) else { return }
+        await action {
+            let generation = importStatusGeneration, workspace = transfer?.workspaceId
+            guard try await intakeWorkspaceCheck?() == true else { throw AuthoringFailure("INTAKE_WORKSPACE_UNAVAILABLE") }
+            do {
+                let read = Task { try await ImportFileSnapshot.load(row.url) }
+                importRead = read
+                defer { importRead = nil }
+                let file = try await withTaskCancellationHandler { try await read.value } onCancel: { read.cancel() }
+                try Task.checkCancellation()
+                guard generation == importStatusGeneration, workspace == transfer?.workspaceId, available,
+                      selected?.id == artwork.id, selected?.revision == artwork.revision, !metadataDirty,
+                      transfer?.intent == nil, importFile == nil else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+                guard file.mime == "image/png" && iccImportAdmitted || file.mime == "model/gltf-binary" && modelDerivationEnabled else {
+                    throw AuthoringFailure("INTAKE_WORKSPACE_UNAVAILABLE")
+                }
+                guard !artwork.assets.contains(where: { $0.sha256 == file.sha256 && $0.state == "approved" }) else {
+                    throw AuthoringFailure("INTAKE_FILE_ALREADY_APPROVED")
+                }
+                activeIntakeID = id; intakeTarget = (artwork.id, artwork.revision)
+                importFile = file; importScale = 1
+                if let i = intakeRows.firstIndex(where: { $0.id == id }) { intakeRows[i].error = nil }
+            } catch let error as AuthoringFailure {
+                if generation == importStatusGeneration, let i = intakeRows.firstIndex(where: { $0.id == id }) { intakeRows[i].error = error.code }
+                throw error
+            }
+        }
+    }
+    func removeIntakeRow(_ id: UUID) {
+        guard !busy, id != activeIntakeID else { return }
+        intakeRows.removeAll { $0.id == id }
+    }
+    func putBackIntakeRow() {
+        guard !busy, activeIntakeID != nil, transfer?.intent == nil else { return }
+        activeIntakeID = nil; intakeTarget = nil; importFile = nil
+    }
     func bindImportStore(read: @escaping () async throws -> NativeUploadState, save: @escaping (NativeUploadState) async throws -> NativeUploadState) {
         readTransfer = read; writeTransfer = save
     }
@@ -233,7 +329,7 @@ extension AuthoringModel {
         transfer = try await writeTransfer(state)
     }
     func chooseImportFile() async {
-        guard !busy, available, session != nil else { return }
+        guard !busy, available, session != nil, activeIntakeID == nil || transfer?.intent != nil else { return }
         let panel = NSOpenPanel()
         panel.title = "작품 파일 가져오기"
         panel.message = jpegImportsEnabled ? "GLB·PNG·JPEG 파일을 선택하세요. 최대 32 MiB이며 JPEG 원본을 유지하고 감상용 PNG를 준비합니다." : "GLB 또는 PNG 파일을 선택하세요. 최대 32 MiB를 지원합니다."
@@ -260,6 +356,21 @@ extension AuthoringModel {
         await action {
             guard let api, let selected, !metadataDirty, let file = importFile, let state = transfer else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
             let generation = importStatusGeneration, currentScope = scope, manifest = runtimeManifestSHA256
+            if let target = intakeTarget {
+                guard target.artworkID == selected.id, target.revision == selected.revision,
+                      try await intakeWorkspaceCheck?() == true else { throw AuthoringFailure("INTAKE_WORKSPACE_UNAVAILABLE") }
+                let fresh = try await api.artwork(target.artworkID)
+                guard available, generation == importStatusGeneration, currentScope == scope,
+                      !fresh.archived, fresh.revision == target.revision, fresh.metadata == selected.metadata,
+                      self.selected?.id == target.artworkID, self.selected?.revision == target.revision,
+                      !metadataDirty, self.transfer?.revision == state.revision else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+                guard file.mime == "image/png" && iccImportAdmitted || file.mime == "model/gltf-binary" && modelDerivationEnabled else {
+                    throw AuthoringFailure("INTAKE_WORKSPACE_UNAVAILABLE")
+                }
+                if state.intent == nil, fresh.assets.contains(where: { $0.sha256 == file.sha256 && $0.state == "approved" }) {
+                    throw AuthoringFailure("INTAKE_FILE_ALREADY_APPROVED")
+                }
+            }
             let rights = draft.rights, scale = importScale
             let requestKey = state.intent?.idempotencyKey ?? UUID().uuidString.lowercased()
             let derived: NativePreparedJPEG?
@@ -428,6 +539,16 @@ extension AuthoringModel {
             guard transfer?.intent?.derived?.recipe.colourConversion == nil || iccImportAdmitted else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
             guard importJob?.terminal == true, !modelWorkerPending,
                   importJob?.modelDerivation?.workerDrained != false, var state = transfer else { throw AuthoringFailure("IMPORT_ACTIVE") }
+            let generation = importStatusGeneration, currentScope = scope
+            let tenant = session?.tenantId, principal = session?.userId
+            if let intent = state.intent, let job = importJob, requiresIntakeDrain(intent, job: job) {
+                guard let api, job.id == state.jobId else { throw AuthoringFailure("IMPORT_DRAIN_PENDING") }
+                let observed = try await api.importJob(job.id)
+                try importTransfer.observe(observed, intent: intent)
+                importJob = observed
+                guard observed.id == job.id, observed.terminal, observed.confirmsIntakeDrain(for: intent.mime),
+                      transfer?.revision == state.revision else { throw AuthoringFailure("IMPORT_DRAIN_PENDING") }
+            }
             if let intent = state.intent, intent.derived?.recipe.colourConversion != nil {
                 guard let api, let job = importJob, state.jobId?.lowercased() == job.id.lowercased() else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
                 try importTransfer.observe(job, intent: intent)
@@ -438,8 +559,19 @@ extension AuthoringModel {
                     }
                 }
             }
+            let completed = importJob
+            guard available, generation == importStatusGeneration, currentScope == scope,
+                  tenant == session?.tenantId, principal == session?.userId,
+                  transfer?.workspaceId == state.workspaceId, transfer?.revision == state.revision,
+                  transfer?.intent == state.intent, transfer?.jobId == state.jobId,
+                  completed?.id == state.jobId else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
             state.intent = nil; state.jobId = nil; state.fileName = nil
             try await persistImport(state)
+            if let activeIntakeID, let i = intakeRows.firstIndex(where: { $0.id == activeIntakeID }), let completed, let target = intakeTarget {
+                intakeRows[i].result = IntakeRow.Result(artworkID: target.artworkID, artworkRevision: target.revision,
+                                                        jobID: completed.id, state: completed.state)
+                self.activeIntakeID = nil; intakeTarget = nil
+            }
             importJob = nil; importFile = nil; approvalAcknowledged = false
         }
     }
@@ -511,7 +643,7 @@ extension AuthoringModel {
     private var shouldPollImport: Bool {
         guard let job = importJob else { return false }
         return ["queued", "processing"].contains(job.state) || (job.state == "failed" && job.attempts < 5 && !job.canRetry)
-            || job.modelDerivation?.workerDrained == false || (job.state == "approved" && job.modelDerivation?.status == "pending")
+            || intakeDrainPending || job.modelDerivation?.workerDrained == false || (job.state == "approved" && job.modelDerivation?.status == "pending")
     }
 }
 
@@ -581,6 +713,7 @@ struct NativeAuthoringView: View {
         }
     }
     private func select(_ id: String?) {
+        guard model.activeIntakeID == nil else { return }
         pendingId = id; pendingNew = id == nil
         if model.dirty { discardPrompt = true } else { performSelection() }
     }
