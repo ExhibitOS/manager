@@ -116,6 +116,11 @@ const NORMAL_OEX_027_LOCAL_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[
     ("7833eb206f45327b6c83741d553cb6c34c33ffee",
      "15021a235469473596f496c277543b17d243044fc3a31fdd37ad2d036d9bdd65",
      "7f287fb38599adb560496a6d78f5e9c975434ccc4e9247a483ac008791c208aa"),
+    // Independently checked local ABI3 packet with the same managed-core
+    // supplier and bounded Spec 11 preflight. Release lists stay separate.
+    ("7d7a4829674e04ffa7c51ad2d59eddac7e59d1eb",
+     "461aaeab80c9250a20ad4cbbf40a0352d0f3ac597cbe94cfcab9750c70c526d9",
+     "85aaa2fef1458ccf68a44eaadbffd7d919a03311f7896ee6091543afd45475cd"),
 ];
 const NORMAL_OEX_027_PATH: &str = "platform/database/native-oex-normal/027_oex_exhibition_provenance.sql";
 const NORMAL_OEX_027_SHA256: &str = "09bd82b3195e2f54545f6af45173bbab569effac95553a50f573745dab96f2c7";
