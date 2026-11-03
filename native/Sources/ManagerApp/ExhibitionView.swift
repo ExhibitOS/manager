@@ -831,7 +831,7 @@ final class ExhibitionModel: ObservableObject {
     }
 
     private func withSceneSnapshot<Result>(camera: SceneSnapshotCamera, placementId: String,
-        consume: (SceneSnapshotResult, NativeStudioResponse, () -> Bool) async throws -> Result) async throws -> Result {
+        consume: @MainActor (SceneSnapshotResult, NativeStudioResponse, @MainActor () -> Bool) async throws -> Result) async throws -> Result {
         try Task.checkCancellation()
         guard canCaptureSceneSnapshot, !camera.isInspection || viewportController.sceneSnapshotInspectionSupported,
               let original = state, let base = draft, let etag = original.etag,
