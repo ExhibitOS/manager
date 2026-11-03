@@ -27,7 +27,7 @@ final class SceneSnapshotHostTests: XCTestCase {
         let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while !controller.sceneSnapshotPolicyActiveForTesting {
             guard ContinuousClock.now < deadline else { throw BridgeFailure("HOST_TEST_POLICY_NOT_INSTALLED") }
-            await Task.yield()
+            try await Task.sleep(for: .milliseconds(1))
         }
     }
     private func waitForRuntime(_ bridge: NativeBridge, _ context: Context, ready: Bool) async throws -> NativeHostStatus {
@@ -71,10 +71,21 @@ final class SceneSnapshotHostTests: XCTestCase {
             try require(local.pending == nil && !local.dirty && local.draft == saved.draft && local.etag == f.etag &&
                         saved.etag == f.etag && saved.revision == f.revision, "HOST_TEST_SAVED_CHANGED")
             let model = ExhibitionModel()
+            let selected = status.selectedOex == true
+            let boundedWorkspace = context.installations.first(where: { $0.id == context.activeId })?.kind == "oex-import"
             await model.connect(api: api, session: session, credentials: credentials,
+                selectedBoundedPolicy: selected, ordinaryBoundedRuntime: boundedWorkspace && !selected,
+                boundedRuntimeQualified: status.oex027Qualified == true,
                 read: { try await bridge.documentState(context) },
                 write: { _ in throw BridgeFailure("CAPTURE_MUST_NOT_WRITE") })
+            await model.oexImport.connect(api: api, session: session,
+                read: { try await bridge.oexImportState(context) },
+                save: { _ in throw BridgeFailure("CAPTURE_MUST_NOT_WRITE") })
+            if boundedWorkspace && !selected { await model.prepareOrdinaryBoundedPlacement() }
             try require(model.draft == saved.draft && !model.dirty && !model.pending, "HOST_TEST_MODEL_CHANGED")
+            // Configure the fresh inspection host before its first frame; the
+            // capture method itself never toggles the editor's transparency.
+            model.viewportTransparent = false
             _ = NSApplication.shared
             let host = NSHostingView(rootView: NativeViewportArea(model: model, ready: true, controller: model.viewportController, workbench: true))
             let liveWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 700), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
