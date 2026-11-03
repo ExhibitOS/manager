@@ -67,7 +67,7 @@ impl StageRoot {
         if unsafe{libc::fstatat(dir.as_raw_fd(),name.as_ptr(),named.as_mut_ptr(),libc::AT_SYMLINK_NOFOLLOW)}!=0{return Err(err("NATIVE_OEX_OUTPUT_INVALID"));}
         let named=unsafe{named.assume_init()};
         if named.st_mode&libc::S_IFMT!=libc::S_IFREG || named.st_uid!=unsafe{libc::geteuid()} || named.st_mode&0o777!=0o600 || named.st_nlink!=1
-            || (named.st_dev as u64,named.st_ino)!=(device,inode){return Err(err("NATIVE_OEX_OUTPUT_INVALID"));}
+            || (named.st_dev as u64,named.st_ino as u64)!=(device,inode){return Err(err("NATIVE_OEX_OUTPUT_INVALID"));}
         self.check(session)
     }
     /// Both exact files must remain named under this same pinned directory.
@@ -140,7 +140,7 @@ fn retire_names(dir:&File,path:&Path,names:&[String;2],input:&File,output:&File,
             if unsafe{libc::fstatat(dir.as_raw_fd(),c.as_ptr(),st.as_mut_ptr(),libc::AT_SYMLINK_NOFOLLOW)}!=0{return Err(bad());}
             let named=unsafe{st.assume_init()};let held=file.metadata().map_err(|_|bad())?;
             if named.st_mode&libc::S_IFMT!=libc::S_IFREG||named.st_uid!=unsafe{libc::geteuid()}||named.st_mode&0o777!=0o600||named.st_nlink!=1
-                || (named.st_dev as u64,named.st_ino as u64)!=expected||(held.dev(),held.ino(),held.nlink())!=(expected.0,expected.1,1)
+                || (named.st_dev as u64,named.st_ino)!=expected||(held.dev(),held.ino(),held.nlink())!=(expected.0,expected.1,1)
                 || (held.len(),held.mtime(),held.mtime_nsec(),held.ctime(),held.ctime_nsec())!=(before.len(),before.mtime(),before.mtime_nsec(),before.ctime(),before.ctime_nsec()) {return Err(bad());}Ok(c)
         };
         check()?;verify(0)?;verify(1)?;
