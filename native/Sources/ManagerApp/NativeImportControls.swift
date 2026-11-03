@@ -23,6 +23,7 @@ struct NativeImportControls: View {
                     Button("검사 중인 작품 열기") { openArtwork(id) }
                 } else {
                     Button(model.importFile == nil ? "\(model.importFormats) 파일 선택…" : "같은 파일 다시 선택…", systemImage: "doc.badge.plus") { Task { await model.chooseImportFile() } }
+                        .disabled(model.activeIntakeID != nil && model.transfer?.intent == nil)
                     if let file = model.importFile {
                         Text("\(file.name) · \(file.data.count.formatted())바이트").textSelection(.enabled)
                         if ImportFileSnapshot.mayExceedStaticOutputLimit(mime: file.mime, bytes: file.data.count) {
@@ -69,14 +70,15 @@ struct NativeImportControls: View {
                     HStack {
                         Button("상태 다시 확인") { Task { await model.refreshImport() } }
                         if job.state == "uploading" { Button("받은 원본으로 검사 계속") { Task { await model.recoverImport() } } }
-                        if job.state == "failed" { Button("검사 재시도") { Task { await model.changeImport(.retry) } }.disabled(!job.canRetry) }
+                        if job.state == "failed" { Button("검사 재시도") { Task { await model.changeImport(.retry) } }.disabled(!job.canRetry || model.intakeDrainPending) }
                         if job.state == "approved", job.modelDerivation?.status == "failed" {
                             Button("감상용 파일 재시도") { Task { await model.changeImport(.retry) } }
                                 .disabled(!job.canRetry || !model.modelDerivationEnabled || model.modelWorkerPending)
                         }
                         if !job.terminal { Button("검사 중단") { Task { await model.changeImport(.cancel) } } }
-                        if job.terminal { Button("다른 파일 검사 준비") { Task { await model.clearImport() } }.disabled(model.modelWorkerPending || job.modelDerivation?.workerDrained == false) }
+                        if job.terminal { Button("다른 파일 검사 준비") { Task { await model.clearImport() } }.disabled(model.intakeDrainPending || model.modelWorkerPending || job.modelDerivation?.workerDrained == false) }
                     }
+                    if model.intakeDrainPending { Text("현재 파일 검사 작업이 실제로 끝날 때까지 다음 파일은 대기합니다.").foregroundStyle(.secondary) }
                     if let code = job.errorCode {
                         Text(code == "FORMAT_REJECTED" ? "지원하는 파일 형식인지 확인하세요. 다른 파일을 쓰려면 검사를 중단한 뒤 새 파일을 선택하세요." : "파일 검사를 마치지 못했습니다. 상태와 접근 권한을 확인하세요.").foregroundStyle(.secondary)
                         DisclosureGroup("검사 오류 상세") { Text(code).textSelection(.enabled) }
@@ -94,6 +96,36 @@ struct NativeImportControls: View {
                     if let artwork = model.selected, artwork.approvedRevision == artwork.revision { Text("저장한 이 버전은 전시에서 사용할 수 있습니다.").foregroundStyle(.secondary) }
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).disabled(model.busy || !ready)
+          }
+          if model.canSelectIntake || !model.intakeRows.isEmpty {
+            Section("작품 파일 대기 목록") {
+                Text("이 목록은 앱을 열어 두는 동안 유지됩니다. 파일마다 저장한 작품과 권리를 확인하고 하나씩 검사하세요.")
+                    .foregroundStyle(.secondary)
+                Button("여러 파일 선택…") { Task { await model.chooseIntakeFiles() } }
+                    .disabled(!model.canSelectIntake || model.intakeRows.count >= 8)
+                ForEach(model.intakeRows) { row in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(row.name)
+                        if model.activeIntakeID == row.id {
+                            Text("현재 선택한 작품에 연결했습니다. 위에서 파일 검사를 시작하거나 상태를 확인하세요.")
+                            if model.transfer?.intent == nil { Button("대기 목록으로 돌려놓기") { model.putBackIntakeRow() }.disabled(model.busy) }
+                        } else {
+                            if let result = row.result {
+                                Text(stateTitle(result.state))
+                                Text("작품 \(result.artworkID.prefix(8)) · 저장본 \(result.artworkRevision) · 검사 \(result.jobID.prefix(8))")
+                                    .foregroundStyle(.secondary)
+                            }
+                            else {
+                                if let error = row.error { Text("파일을 열지 못했습니다 · \(error)").foregroundStyle(.secondary) }
+                                Button(row.error == nil ? "이 작품에서 검사 준비" : "같은 파일 다시 확인") {
+                                    Task { await model.openIntakeRow(row.id) }
+                                }.disabled(!model.canOpenIntakeRow)
+                            }
+                            Button("목록에서 빼기") { model.removeIntakeRow(row.id) }.disabled(model.busy)
+                        }
+                    }
+                }
+            }
           }
           if let artwork = model.selected {
             Section {

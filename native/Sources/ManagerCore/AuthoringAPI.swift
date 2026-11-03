@@ -777,8 +777,10 @@ public struct NativeImportJob: Decodable, Sendable {
     public let originalAssetId: String?
     public let modelDerivation: NativeModelDerivationStatus?
     public let imagePreparation: NativeImagePreparationStatus?
+    public let workerDrainVersion: Int?
+    public let workerDrained: Bool?
     private enum CodingKeys: String, CodingKey {
-        case id, state, progress, attempts, errorCode, assetId, retryAt, originalAssetId, modelDerivation, imagePreparation
+        case id, state, progress, attempts, errorCode, assetId, retryAt, originalAssetId, modelDerivation, imagePreparation, workerDrainVersion, workerDrained
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -794,12 +796,22 @@ public struct NativeImportJob: Decodable, Sendable {
         // Legacy clients ignored this field. A malformed future field remains
         // absent here; selected ICC validation then rejects that absence.
         imagePreparation = try? values.decode(NativeImagePreparationStatus.self, forKey: .imagePreparation)
+        workerDrainVersion = try? values.decode(Int.self, forKey: .workerDrainVersion)
+        workerDrained = try? values.decode(Bool.self, forKey: .workerDrained)
     }
     public init(id: String, state: String, progress: Int, attempts: Int, errorCode: String?, assetId: String?, retryAt: String?, originalAssetId: String? = nil, modelDerivation: NativeModelDerivationStatus? = nil, imagePreparation: NativeImagePreparationStatus? = nil) {
         self.id = id; self.state = state; self.progress = progress; self.attempts = attempts; self.errorCode = errorCode
         self.assetId = assetId; self.retryAt = retryAt; self.originalAssetId = originalAssetId; self.modelDerivation = modelDerivation; self.imagePreparation = imagePreparation
+        self.workerDrainVersion = nil; self.workerDrained = nil
     }
     public var terminal: Bool { ["approved", "cancelled"].contains(state) }
+    public func confirmsIntakeDrain(for mime: String) -> Bool {
+        switch mime {
+        case "image/png": workerDrainVersion == 1 && workerDrained == true
+        case "model/gltf-binary": modelDerivation?.workerDrained == true
+        default: false
+        }
+    }
     public var canRetry: Bool {
         let optionalModelFailure = state == "approved" && modelDerivation?.status == "failed" && modelDerivation?.workerDrained == true
         guard state == "failed" || optionalModelFailure, attempts < 5 else { return false }

@@ -2,6 +2,22 @@
 import XCTest
 @testable import ManagerCore
 
+final class NativeIntakeDrainTests: XCTestCase {
+    func testPNGQueueRequiresExplicitVersionedDrainEvenAfterCancellation() throws {
+        func job(_ workerFields: String) throws -> NativeImportJob {
+            try JSONDecoder().decode(NativeImportJob.self, from: Data("""
+            {"id":"job","state":"cancelled","progress":100,"attempts":1\(workerFields)}
+            """.utf8))
+        }
+        XCTAssertFalse(try job("").confirmsIntakeDrain(for: "image/png"))
+        XCTAssertFalse(try job(",\"workerDrainVersion\":1,\"workerDrained\":false").confirmsIntakeDrain(for: "image/png"))
+        XCTAssertFalse(try job(",\"workerDrainVersion\":2,\"workerDrained\":true").confirmsIntakeDrain(for: "image/png"))
+        let drained = try job(",\"workerDrainVersion\":1,\"workerDrained\":true")
+        XCTAssertTrue(drained.confirmsIntakeDrain(for: "image/png"))
+        XCTAssertFalse(drained.confirmsIntakeDrain(for: "model/gltf-binary"))
+    }
+}
+
 private actor ImportTransportFixture: NativeImportTransport {
     let id = UUID().uuidString.lowercased()
     var calls: [String] = []
