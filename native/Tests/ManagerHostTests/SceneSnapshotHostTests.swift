@@ -12,6 +12,19 @@ import ManagerCore
 /// No fixture, credentials or artwork bytes are bundled in the test target.
 @MainActor
 final class SceneSnapshotHostTests: XCTestCase {
+    private var evidence: [String: String] = [:]
+    private func captureFailure(_ error: Error, phase: String, controller: NativeViewportController) -> String {
+        controller.diagnose("SCENE_SNAPSHOT", error)
+        evidence[phase + "Diagnostic"] = controller.diagnostic
+        let known = ["SCENE_SNAPSHOT_NOT_READY", "SCENE_SNAPSHOT_UNAVAILABLE", "SCENE_SNAPSHOT_STALE",
+                     "SCENE_SNAPSHOT_RIGHTS_UNVERIFIED", "SCENE_SNAPSHOT_SAVED_CHANGED", "SCENE_SNAPSHOT_TARGET_NOT_READY",
+                     "SCENE_SNAPSHOT_CAMERA_INVALID", "VIEWING_TARGET_OUTSIDE_ARTWORK", "VIEWING_IMAGE_FRONT"]
+        let raw = (error as? AuthoringFailure)?.code ?? ((error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String) ?? ""
+        let code = raw.hasPrefix("Error: ") ? String(raw.dropFirst(7)) : raw
+        let result = known.contains(code) ? code : "NATIVE_ERROR"
+        evidence[phase + "Code"] = result
+        return result
+    }
     private struct Fixture: Decodable {
         let app: String, profile: String, documentFile: String, documentSHA256: String
         let manifestSHA256: String, exhibitionId: String, etag: String
@@ -23,12 +36,14 @@ final class SceneSnapshotHostTests: XCTestCase {
         guard condition else { throw BridgeFailure(code) }
     }
     private func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
-    private func waitForSnapshotPolicy(_ controller: NativeViewportController) async throws {
+    private func waitForSnapshotPolicy(_ controller: NativeViewportController, finished: () -> Bool, phase: String) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while !controller.sceneSnapshotPolicyActiveForTesting {
+            guard !finished() else { throw BridgeFailure("HOST_TEST_REQUEST_FINISHED_BEFORE_POLICY_OBSERVATION") }
             guard ContinuousClock.now < deadline else { throw BridgeFailure("HOST_TEST_POLICY_NOT_INSTALLED") }
             try await Task.sleep(for: .milliseconds(1))
         }
+        evidence[phase + "PolicyObserved"] = "true"
     }
     private func waitForRuntime(_ bridge: NativeBridge, _ context: Context, ready: Bool) async throws -> NativeHostStatus {
         let deadline = ContinuousClock.now.advanced(by: .seconds(120))
@@ -56,6 +71,7 @@ final class SceneSnapshotHostTests: XCTestCase {
         let initial = try await bridge.nativeStatus(context)
         try require(!initial.needsShutdown && !initial.busy, "HOST_TEST_ALREADY_OWNED")
         var window: NSWindow?
+        var hostController: NativeViewportController?
         var requests: [Task<SceneSnapshotResult, Error>] = []
         var failure: Error?
         do {
@@ -97,6 +113,7 @@ final class SceneSnapshotHostTests: XCTestCase {
                 try await Task.sleep(for: .milliseconds(100))
             }
             let controller = model.viewportController
+            hostController = controller
             let epoch = controller.hostEpoch, sequence = controller.acceptedSequence, selection = model.viewportSelection
             let mode = model.viewportMode, view = model.viewportView, cameraSequence = model.viewportCameraSequence
             func preserved() -> Bool {
@@ -110,25 +127,41 @@ final class SceneSnapshotHostTests: XCTestCase {
             do {
                 _ = try await model.captureSceneSnapshot(camera: .savedViewpoint(f.otherRoomViewpointId), placementId: f.placementId)
                 XCTFail("Cross-room saved viewpoint was accepted")
-            } catch { try require(preserved(), "HOST_TEST_SAVED_FAILURE_STATE_CHANGED") }
+            } catch {
+                try require(captureFailure(error, phase: "savedGuard", controller: controller) == "SCENE_SNAPSHOT_NOT_READY", "HOST_TEST_WRONG_SAVED_GUARD_ERROR")
+                try require(preserved(), "HOST_TEST_SAVED_FAILURE_STATE_CHANGED")
+            }
             // A finite in-room camera aimed away from this artwork reaches the
             // shared validator, then the native policy/lane must be restored.
             let wrongTarget = try SceneSnapshotInspectionCamera(roomId: f.roomId, position: f.position, target: [0, 0, 0], fov: f.fov)
             do {
                 _ = try await model.captureSceneSnapshot(camera: .inspection(wrongTarget), placementId: f.placementId)
                 XCTFail("Camera outside the artwork viewing bounds was accepted")
-            } catch { try require(preserved(), "HOST_TEST_INSPECTION_FAILURE_STATE_CHANGED") }
+            } catch {
+                try require(captureFailure(error, phase: "wrongTarget", controller: controller) == "VIEWING_TARGET_OUTSIDE_ARTWORK", "HOST_TEST_WRONG_INSPECTION_ERROR")
+                try require(preserved(), "HOST_TEST_INSPECTION_FAILURE_STATE_CHANGED")
+            }
             let camera = try SceneSnapshotInspectionCamera(roomId: f.roomId, position: f.position, target: f.target, fov: f.fov)
-            let stale = Task { try await model.captureSceneSnapshot(camera: .inspection(camera), placementId: f.placementId) }
+            var staleFinished = false
+            let stale = Task {
+                defer { staleFinished = true }
+                do { return try await model.captureSceneSnapshot(camera: .inspection(camera), placementId: f.placementId) }
+                catch { _ = captureFailure(error, phase: "staleRequest", controller: controller); throw error }
+            }
             requests.append(stale)
-            try await waitForSnapshotPolicy(controller)
+            try await waitForSnapshotPolicy(controller, finished: { staleFinished }, phase: "stale")
             controller.editingContextActive = false
             do { _ = try await stale.value; XCTFail("Replaced editing context was accepted") } catch {}
             controller.editingContextActive = true
             try require(preserved(), "HOST_TEST_STALE_STATE_CHANGED")
-            let cancelled = Task { try await model.captureSceneSnapshot(camera: .inspection(camera), placementId: f.placementId) }
+            var cancelFinished = false
+            let cancelled = Task {
+                defer { cancelFinished = true }
+                do { return try await model.captureSceneSnapshot(camera: .inspection(camera), placementId: f.placementId) }
+                catch { _ = captureFailure(error, phase: "cancelRequest", controller: controller); throw error }
+            }
             requests.append(cancelled)
-            try await waitForSnapshotPolicy(controller)
+            try await waitForSnapshotPolicy(controller, finished: { cancelFinished }, phase: "cancel")
             cancelled.cancel()
             do { _ = try await cancelled.value; XCTFail("Cancelled capture was accepted") } catch {}
             try require(preserved(), "HOST_TEST_CANCEL_STATE_CHANGED")
@@ -144,8 +177,16 @@ final class SceneSnapshotHostTests: XCTestCase {
                 "programmaticLiveWK": .bool(true), "filePanelShown": .bool(false),
                 "inflightCancellationPolicyRestored": .bool(true), "inflightStaleContextPolicyRestored": .bool(true)])
             try JSONEncoder().encode(receipt).write(to: output.appendingPathComponent("capture.json"), options: .withoutOverwriting)
-        } catch { failure = error }
+        } catch {
+            failure = error
+            if let hostController { _ = captureFailure(error, phase: "failure", controller: hostController) }
+        }
         for request in requests { request.cancel(); _ = try? await request.value }
+        evidence["applicationActive"] = String(NSApp?.isActive == true)
+        evidence["windowVisible"] = String(window?.isVisible == true)
+        evidence["windowUnoccluded"] = String(window?.occlusionState.contains(.visible) == true)
+        do { try JSONEncoder().encode(evidence).write(to: output.appendingPathComponent("phase-evidence.json"), options: .withoutOverwriting) }
+        catch { if failure == nil { failure = error } }
         window?.contentView = nil; window?.close(); window = nil
         await Task.yield()
         _ = try await bridge.stop(context)
