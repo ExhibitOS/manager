@@ -40,10 +40,13 @@ temporary room-local camera for an existing placement without editing the saved
 viewing plan or selection. Shared Viewer geometry validates and resolves that
 camera; the native reply binds its exact local pose and saved/frame identities.
 Both paths retain the fixed 640×360 PNG, size, rights and single-operation limits.
-The opt-in `ManagerHostTests` integration requires an explicitly owned, prepared
-isolated fixture (`EXHIBITOS_NATIVE_SNAPSHOT_HOST_FIXTURE`); an ordinary test run
-skips actual host execution. Source compilation alone does not qualify live WK
-capture, restoration or a particular artwork's framing.
+The opt-in `ManagerHostTests` integration requires a normal foreground
+application-hosted runner and an explicitly owned, prepared isolated fixture
+(`EXHIBITOS_NATIVE_SNAPSHOT_HOST_FIXTURE`). A standalone `swift test` CLI skips
+actual host execution, including when a fixture is supplied: a CLI process may
+remain inactive and occluded despite an activation request. Compilation or a
+skipped test does not qualify live WK capture, restoration or artwork framing;
+these need an actual visible application host and its returned PNG.
 
 `--legal-resources /absolute/prepared-directory` copies an existing license/source
 index and its files to `Contents/Resources/NativeRuntime-Legal`. The Help menu's

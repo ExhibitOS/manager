@@ -7,8 +7,8 @@ import ManagerCore
 @testable import ManagerApp
 
 #if DEBUG
-/// Opt-in actual native/WK integration. The owner supplies an already prepared,
-/// stopped isolated profile and holds the application's execution resources.
+/// Opt-in application-hosted native/WK integration. The owner supplies a real
+/// foreground application host, a stopped isolated profile and execution resources.
 /// No fixture, credentials or artwork bytes are bundled in the test target.
 @MainActor
 final class SceneSnapshotHostTests: XCTestCase {
@@ -64,6 +64,9 @@ final class SceneSnapshotHostTests: XCTestCase {
         guard let path = ProcessInfo.processInfo.environment["EXHIBITOS_NATIVE_SNAPSHOT_HOST_FIXTURE"] else {
             throw XCTSkip("Requires an explicitly owned isolated live native host fixture")
         }
+        guard Bundle.main.bundleURL.pathExtension == "app", NSApp?.isRunning == true else {
+            throw XCTSkip("Requires a normal application-hosted runner; a standalone XCTest CLI is not a foreground WK host")
+        }
         let f = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
         let profile = URL(fileURLWithPath: f.profile), output = URL(fileURLWithPath: f.outputDirectory)
         let documentURL = profile.appendingPathComponent(f.documentFile)
@@ -106,8 +109,6 @@ final class SceneSnapshotHostTests: XCTestCase {
             // capture method itself never toggles the editor's transparency.
             model.viewportTransparent = false
             let application = NSApplication.shared
-            try require(application.setActivationPolicy(.regular), "HOST_TEST_WINDOW_ACTIVATION_DENIED")
-            application.finishLaunching()
             let host = NSHostingView(rootView: NativeViewportArea(model: model, ready: true, controller: model.viewportController, workbench: true))
             let liveWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 700), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             liveWindow.isReleasedWhenClosed = false; liveWindow.title = "Native snapshot integration"
@@ -158,7 +159,9 @@ final class SceneSnapshotHostTests: XCTestCase {
             requests.append(stale)
             try await waitForSnapshotPolicy(controller, finished: { staleFinished }, phase: "stale")
             controller.editingContextActive = false
-            do { _ = try await stale.value; XCTFail("Replaced editing context was accepted") } catch {}
+            var staleRejected = false
+            do { _ = try await stale.value } catch { staleRejected = true }
+            try require(staleRejected, "HOST_TEST_STALE_GUARD_MISSING")
             controller.editingContextActive = true
             // A new editing context must receive a NEW exact ordinary ACK.
             // Keeping the old security sequence would conceal the real boundary.
@@ -180,7 +183,9 @@ final class SceneSnapshotHostTests: XCTestCase {
             requests.append(cancelled)
             try await waitForSnapshotPolicy(controller, finished: { cancelFinished }, phase: "cancel")
             cancelled.cancel()
-            do { _ = try await cancelled.value; XCTFail("Cancelled capture was accepted") } catch {}
+            var cancelRejected = false
+            do { _ = try await cancelled.value } catch { cancelRejected = true }
+            try require(cancelRejected && cancelled.isCancelled, "HOST_TEST_CANCEL_GUARD_MISSING")
             try require(preserved(), "HOST_TEST_CANCEL_STATE_CHANGED")
             let image = try await model.captureSceneSnapshot(camera: .inspection(camera), placementId: f.placementId)
             try require(preserved() && image.savedRevision == f.revision && image.savedETag == f.etag &&
