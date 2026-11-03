@@ -121,6 +121,10 @@ const NORMAL_OEX_027_LOCAL_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[
     ("7d7a4829674e04ffa7c51ad2d59eddac7e59d1eb",
      "461aaeab80c9250a20ad4cbbf40a0352d0f3ac597cbe94cfcab9750c70c526d9",
      "85aaa2fef1458ccf68a44eaadbffd7d919a03311f7896ee6091543afd45475cd"),
+    // Exact local dual-entry packet with independently verified inventory.
+    ("735c7724c611441fcc1f17b3212c9f3dc270dc71",
+     "3e1676fd354b4dd7bfa43fdf3b995062e810e4c91b2c4c34e647e76d5fddca8d",
+     "10bb2250789b5b42ddb8c0ef5ef28c0634c7a31c7b7837f292380de1ee5867d3"),
 ];
 const NORMAL_OEX_027_PATH: &str = "platform/database/native-oex-normal/027_oex_exhibition_provenance.sql";
 const NORMAL_OEX_027_SHA256: &str = "09bd82b3195e2f54545f6af45173bbab569effac95553a50f573745dab96f2c7";
