@@ -95,6 +95,27 @@ struct NativeImportControls: View {
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).disabled(model.busy || !ready)
           }
+          if let artwork = model.selected {
+            Section {
+                DisclosureGroup("저장된 파일 상세 · \(artwork.assets.count)개") {
+                    Text("이 작품에 연결된 파일입니다. 파일 검사 상태와 작품 정보·권리 승인은 별개입니다.")
+                        .foregroundStyle(.secondary)
+                    if artwork.assets.isEmpty { Text("연결된 파일이 없습니다.") }
+                    ForEach(artwork.assets) { asset in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("\(asset.mime) · \(asset.bytes.formatted())바이트")
+                            Text(assetStateTitle(asset.state))
+                            Text("파일 ID: \(asset.id)")
+                            Text("SHA-256: \(asset.sha256)").monospaced()
+                        }
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 6)
+                    }
+                }.id(artwork.id)
+            }
+          }
           Section("선택 도구 · Processing") {
             OptionalProcessingControls()
           }
@@ -103,6 +124,14 @@ struct NativeImportControls: View {
     }
     private func stateTitle(_ state: String) -> String {
         switch state { case "uploading": "파일 전송 대기"; case "queued": "파일 검사 대기"; case "processing": "파일 검사 중"; case "approved": "파일 검사 완료"; case "failed": "파일 검사 실패"; case "cancelled": "파일 검사 중단됨"; default: "검사 상태 확인 필요" }
+    }
+    private func assetStateTitle(_ state: String) -> String {
+        switch state {
+        case "approved": "파일 검사 완료 (approved)"
+        case "quarantine": "격리 보관 (quarantine) · 전시용 아님"
+        case "rejected": "파일 거부됨 (rejected)"
+        default: "파일 상태 확인 필요 (\(state))"
+        }
     }
 }
 
