@@ -174,7 +174,7 @@ struct NativeExhibitionView: View {
                 Button { Task { await model.refresh() } } label: { Label("검색", systemImage: "magnifyingglass") }.labelStyle(.iconOnly)
             }.disabled(!ready || model.busy)
             Button("새 전시", systemImage: "plus") { requestOpen(nil) }.disabled(!ready || readOnly || model.boundedNavigationLocked || model.busy || model.pending || model.placingArtwork || model.entrancePreviewActive)
-            OEXImportControls(model: model.oexImport, ready: ready && active && !editRestricted && !model.pending && !model.entrancePreviewActive, open: { requestOpen($0) })
+            OEXImportControls(model: model.oexImport, ready: ready && active && !editRestricted && !model.pending && !model.entrancePreviewActive)
             Button("새 작업 공간에서 OEX 가져오기") { confirmOEXWorkspace = true }
                 .disabled(!active || readOnly || !canCreateOEXWorkspace)
                 .confirmationDialog("새 작업 공간에서 가져올까요?", isPresented: $confirmOEXWorkspace, titleVisibility: .visible) {

@@ -49,6 +49,84 @@ pub(super) struct SaveFrame {
     pub version:u32,pub kind:String,pub correlation_id:String,pub attempt_id:String,
     pub exhibition_id:String,pub etag:String,pub request_id:String,
 }
+/// V3 save correlation is separate from the selected v2 settlement protocol.
+#[derive(Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub(super) struct SaveFrameV3 {
+    pub version:u32,pub kind:String,pub correlation_id:String,pub operation_correlation_id:String,
+    pub attempt_id:String,pub runtime_generation:String,pub stage_id:String,pub report_sha256:String,
+    pub exhibition_id:String,pub etag:String,pub request_id:String,
+}
+#[allow(dead_code)]
+impl SaveFrameV3 {
+    pub(super) fn parse_ready(bytes:&[u8],bound:&super::oex_preflight_frames::Bound)->Result<Self> {
+        if bytes.is_empty()||bytes.len()>LIMIT{return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        let v:Self=serde_json::from_slice(bytes).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))?;
+        let identity=bound.operation_identity();
+        if v.version!=1||v.kind!="save-ready-v3"||!valid_id(&v.correlation_id)||v.correlation_id==identity.0
+            || (v.operation_correlation_id.as_str(),v.attempt_id.as_str(),v.runtime_generation.as_str(),v.stage_id.as_str(),v.report_sha256.as_str())!=identity
+            || !valid_id(&v.exhibition_id)||!valid_id(&v.request_id)||!studio_etag(&v.etag)
+            || serde_json::to_vec(&v).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))?.as_slice()!=bytes{return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        Ok(v)
+    }
+    pub(super) fn observed(&self,etag:&str)->Result<Vec<u8>> {
+        if !studio_etag(etag)||etag==self.etag{return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        let mut v=self.clone();v.kind="save-observed-v3".into();v.etag=etag.into();
+        serde_json::to_vec(&v).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))
+    }
+    pub(super) fn check_verified(&self,etag:&str,bytes:&[u8])->Result<()> {
+        let mut v=self.clone();self.observed(etag)?;v.kind="save-verified-v3".into();v.etag=etag.into();
+        if serde_json::to_vec(&v).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))?.as_slice()!=bytes{return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}Ok(())
+    }
+    pub(super) fn check_completed(&self,etag:&str,bytes:&[u8])->Result<()> {
+        #[derive(Serialize)] #[serde(rename_all="camelCase")]
+        struct Completed<'a>{version:u32,kind:&'static str,correlation_id:&'a str,attempt_id:&'a str,exhibition_id:&'a str,etag:&'a str,request_id:&'a str}
+        self.observed(etag)?;
+        let expected=Completed{version:1,kind:"operation-complete-v3",correlation_id:&self.correlation_id,attempt_id:&self.attempt_id,exhibition_id:&self.exhibition_id,etag,request_id:&self.request_id};
+        if serde_json::to_vec(&expected).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))?.as_slice()!=bytes{return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}Ok(())
+    }
+}
+/// Wire correlation only: the caller must first establish actual save,
+/// no-further-writes, child drain and safe temporary-byte retirement.
+#[derive(Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+struct SettlementWireV3 {
+    version:u32,kind:String,correlation_id:String,operation_correlation_id:String,attempt_id:String,runtime_generation:String,generation:String,stage_id:String,report_sha256:String,
+    input_reservation_id:String,input_reservation_generation:String,input_receipt_digest:String,
+    output_reservation_id:Option<String>,output_reservation_generation:Option<String>,output_receipt_digest:Option<String>,
+    exhibition_id:String,etag:String,request_id:String,
+}
+pub(super) struct SettlementV3(SettlementWireV3);
+#[allow(dead_code)]
+impl SettlementV3 {
+    pub(super) fn parse_check(bytes:&[u8],c:&ClaimChallenge,bound:&super::oex_preflight_frames::Bound,save:&SaveFrameV3,etag:&str)->Result<Self> {
+        if bytes.is_empty()||bytes.len()>LIMIT||c.kind!="claim-challenge-v3" {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        SaveFrameV3::parse_ready(&serde_json::to_vec(save).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))?,bound)?;
+        let s:SettlementWireV3=serde_json::from_slice(bytes).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))?;
+        let identity=bound.operation_identity();let (_,_,output)=bound.output_plan();
+        let actual_output=match (&s.output_reservation_id,&s.output_reservation_generation,&s.output_receipt_digest) {
+            (None,None,None)=>None,(Some(id),Some(generation),Some(digest))=>Some((id.as_str(),generation.as_str(),digest.as_str())),_=>return Err(err("NATIVE_OEX_ATTEMPT_INVALID")),
+        };
+        if (c.correlation_id.as_str(),c.attempt_id.as_str(),c.runtime_generation.as_str(),c.stage_id.as_str())!=(identity.0,identity.1,identity.2,identity.3)
+            || (c.generation.as_str(),c.reservation_id.as_str(),c.reservation_generation.as_str(),c.receipt_digest.as_str())!=bound.input_plan()
+            || (save.operation_correlation_id.as_str(),save.attempt_id.as_str(),save.runtime_generation.as_str(),save.stage_id.as_str(),save.report_sha256.as_str())!=identity
+            || s.version!=1||s.kind!="settle-check-v3"||!valid_id(&s.correlation_id)||s.correlation_id==identity.0||s.correlation_id==save.correlation_id
+            || (s.operation_correlation_id.as_str(),s.attempt_id.as_str(),s.runtime_generation.as_str(),s.stage_id.as_str(),s.report_sha256.as_str())!=identity
+            || s.generation!=c.generation||s.input_reservation_id!=c.reservation_id||s.input_reservation_generation!=c.reservation_generation
+            || s.input_receipt_digest!=c.receipt_digest||actual_output!=output||s.exhibition_id!=save.exhibition_id||s.request_id!=save.request_id
+            || s.etag!=etag||!studio_etag(etag)||etag==save.etag
+            || serde_json::to_vec(&s).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))?.as_slice()!=bytes {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        Ok(Self(s))
+    }
+    fn encoded_as(&self,kind:&str)->Result<Vec<u8>> {
+        let mut result=self.0.clone();result.kind=kind.into();serde_json::to_vec(&result).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))
+    }
+    pub(super) fn ready(&self)->Result<Vec<u8>> {self.encoded_as("settle-ready-v3")}
+    pub(super) fn receipt_ack(&self,receipt:&[u8])->Result<Vec<u8>> {
+        if self.encoded_as("settle-receipt-v3")?.as_slice()!=receipt{return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        self.encoded_as("settle-receipt-ack-v3")
+    }
+}
 fn studio_etag(value:&str)->bool {
     let Some(body)=value.strip_prefix("\"studio-r").and_then(|s|s.strip_suffix('"')) else{return false;};
     let Some((revision,hash))=body.split_once('-') else{return false;};
@@ -128,7 +206,7 @@ struct Settlement<'a> {
 #[allow(dead_code)]
 impl ClaimChallenge {
     pub(super) fn settlement(&self,kind:&'static str)->Result<Vec<u8>> {
-        if !matches!(kind,"settle-check"|"settle-ready"|"settle-receipt")
+        if self.kind!="claim-challenge" || !matches!(kind,"settle-check"|"settle-ready"|"settle-receipt")
             || [&self.correlation_id,&self.attempt_id,&self.runtime_generation,&self.generation,
                 &self.reservation_id,&self.reservation_generation].iter().any(|v|!valid_id(v))
             || !hash_valid(&self.receipt_digest) {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
@@ -138,11 +216,17 @@ impl ClaimChallenge {
             .map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))
     }
     pub(super) fn parse(bytes:&[u8],open:&ClaimOpen,principal:&str)->Result<Self> {
-        if open.encode().is_err() || !valid_id(principal) || bytes.is_empty() || bytes.len()>LIMIT {
+        Self::parse_for(bytes,open,principal,"claim-open","claim-challenge")
+    }
+    pub(super) fn parse_v3(bytes:&[u8],open:&ClaimOpen,principal:&str)->Result<Self> {
+        Self::parse_for(bytes,open,principal,"claim-open-v3","claim-challenge-v3")
+    }
+    fn parse_for(bytes:&[u8],open:&ClaimOpen,principal:&str,open_kind:&str,challenge_kind:&str)->Result<Self> {
+        if open.encode_for(open_kind).is_err() || !valid_id(principal) || bytes.is_empty() || bytes.len()>LIMIT {
             return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));
         }
         let c:Self=serde_json::from_slice(bytes).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))?;
-        if c.version!=1 || c.kind!="claim-challenge" || c.correlation_id!=open.correlation_id
+        if c.version!=1 || c.kind!=challenge_kind || c.correlation_id!=open.correlation_id
             || c.workspace_id!=open.workspace_id || c.tenant_id!=open.tenant_id
             || c.principal_id!=principal || c.runtime_generation!=open.runtime_generation || c.job_id!=open.job_id
             || [&c.attempt_id,&c.generation,&c.stage_id,&c.reservation_id,&c.reservation_generation].iter().any(|v|!valid_id(v))
@@ -168,10 +252,16 @@ impl ClaimReady {
     /// Correlates the response with the exact one-shot challenge. The API's
     /// independently held claim/provider/fence remain indispensable.
     pub(super) fn parse(bytes:&[u8],c:&ClaimChallenge,mac:&str,expected_request:&str,expected_bytes:u64,expected_sha256:&str)->Result<Self> {
+        Self::parse_for(bytes,c,mac,expected_request,expected_bytes,expected_sha256,"claim-challenge","claim-ready")
+    }
+    pub(super) fn parse_v3(bytes:&[u8],c:&ClaimChallenge,mac:&str,expected_request:&str,expected_bytes:u64,expected_sha256:&str)->Result<Self> {
+        Self::parse_for(bytes,c,mac,expected_request,expected_bytes,expected_sha256,"claim-challenge-v3","claim-ready-v3")
+    }
+    fn parse_for(bytes:&[u8],c:&ClaimChallenge,mac:&str,expected_request:&str,expected_bytes:u64,expected_sha256:&str,challenge_kind:&str,ready_kind:&str)->Result<Self> {
         if bytes.is_empty()||bytes.len()>LIMIT||!hash_valid(mac)||!hash_valid(expected_sha256)
             || !valid_id(expected_request) || !(1..=512*1024*1024).contains(&expected_bytes) {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         let r:Self=serde_json::from_slice(bytes).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))?;
-        if r.version!=1 || r.kind!="claim-ready" || r.correlation_id!=c.correlation_id || r.runtime_generation!=c.runtime_generation
+        if c.kind!=challenge_kind || r.version!=1 || r.kind!=ready_kind || r.correlation_id!=c.correlation_id || r.runtime_generation!=c.runtime_generation
             || r.workspace_id!=c.workspace_id || r.tenant_id!=c.tenant_id || r.job_id!=c.job_id || r.user_id!=c.principal_id
             || r.attempt_id!=c.attempt_id || r.generation!=c.generation || r.stage_id!=c.stage_id
             || r.reservation_id!=c.reservation_id || r.reservation_generation!=c.reservation_generation
@@ -197,8 +287,14 @@ impl ClaimChallenge {
     /// The encoded MAC is correlation only; the API must independently
     /// verify its held claim, actual provider receipt, and common fence.
     pub(super) fn binding(&self,mac:&str)->Result<Vec<u8>> {
-        if !hash_valid(mac) {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
-        let reply=ClaimBinding{version:1,kind:"claim-binding",correlation_id:&self.correlation_id,
+        self.binding_for(mac,"claim-challenge","claim-binding")
+    }
+    pub(super) fn binding_v3(&self,mac:&str)->Result<Vec<u8>> {
+        self.binding_for(mac,"claim-challenge-v3","claim-binding-v3")
+    }
+    fn binding_for(&self,mac:&str,challenge_kind:&str,binding_kind:&'static str)->Result<Vec<u8>> {
+        if self.kind!=challenge_kind || !hash_valid(mac) {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        let reply=ClaimBinding{version:1,kind:binding_kind,correlation_id:&self.correlation_id,
             runtime_generation:&self.runtime_generation,attempt_id:&self.attempt_id,generation:&self.generation,
             stage_id:&self.stage_id,reservation_id:&self.reservation_id,reservation_generation:&self.reservation_generation,
             claim_digest:&self.claim_digest,receipt_digest:&self.receipt_digest,manager_binding_digest:mac};
@@ -209,7 +305,13 @@ impl ClaimChallenge {
 #[allow(dead_code)]
 impl ClaimOpen {
     pub(super) fn encode(&self)->Result<Vec<u8>> {
-        if self.version!=1 || self.kind!="claim-open" || [&self.correlation_id,&self.runtime_generation,
+        self.encode_for("claim-open")
+    }
+    pub(super) fn encode_v3(&self)->Result<Vec<u8>> {
+        self.encode_for("claim-open-v3")
+    }
+    fn encode_for(&self,kind:&str)->Result<Vec<u8>> {
+        if self.version!=1 || self.kind!=kind || [&self.correlation_id,&self.runtime_generation,
             &self.workspace_id,&self.tenant_id,&self.job_id].iter().any(|s|!valid_id(s)) {
             return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));
         }
@@ -229,15 +331,21 @@ pub(super) struct StageBound {
 }
 #[allow(dead_code)]
 impl StageBound {
-    fn valid(&self)->bool {
-        self.version==1 && self.kind=="stage-bound"
+    fn valid_for(&self,kind:&str)->bool {
+        self.version==1 && self.kind==kind
             && [&self.correlation_id,&self.runtime_generation,&self.workspace_id,&self.tenant_id,&self.job_id,
                 &self.attempt_id,&self.generation,&self.stage_id,&self.reservation_id,&self.reservation_generation]
                 .iter().all(|s|valid_id(s))
             && decimal(&self.stage_device,false) && decimal(&self.stage_inode,true)
     }
     pub(super) fn encode(&self)->Result<Vec<u8>> {
-        if !self.valid() {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        self.encode_for("stage-bound")
+    }
+    pub(super) fn encode_v3(&self)->Result<Vec<u8>> {
+        self.encode_for("stage-bound-v3")
+    }
+    fn encode_for(&self,kind:&str)->Result<Vec<u8>> {
+        if !self.valid_for(kind) {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         let bytes=serde_json::to_vec(self).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))?;
         if bytes.is_empty() || bytes.len()>LIMIT {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         Ok(bytes)
@@ -245,23 +353,29 @@ impl StageBound {
     /// Only an exact echo on the retained authenticated connection may advance
     /// correlation. It does not prove the API observed this file descriptor.
     pub(super) fn check_accepted(&self,sent:&[u8],reply:&[u8])->Result<()> {
-        if self.encode()?.as_slice()!=sent || reply.is_empty() || reply.len()>LIMIT {
+        self.check_accepted_for(sent,reply,"stage-bound","stage-accepted")
+    }
+    pub(super) fn check_accepted_v3(&self,sent:&[u8],reply:&[u8])->Result<()> {
+        self.check_accepted_for(sent,reply,"stage-bound-v3","stage-accepted-v3")
+    }
+    fn check_accepted_for(&self,sent:&[u8],reply:&[u8],bound_kind:&str,accepted_kind:&str)->Result<()> {
+        if self.encode_for(bound_kind)?.as_slice()!=sent || reply.is_empty() || reply.len()>LIMIT {
             return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));
         }
-        let mut exact=self.clone();exact.kind="stage-accepted".into();
+        let mut exact=self.clone();exact.kind=accepted_kind.into();
         if serde_json::to_vec(&exact).map_err(|_|err("NATIVE_OEX_WORKER_UNCERTAIN"))?.as_slice()!=reply {
             return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));
         }
         let mut accepted:StageBound=serde_json::from_slice(reply).map_err(|_|err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
-        if accepted.kind!="stage-accepted" {return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}
-        accepted.kind="stage-bound".into();
+        if accepted.kind!=accepted_kind {return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}
+        accepted.kind=bound_kind.into();
         if &accepted!=self {return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}
         Ok(())
     }
 }
 
-// There is deliberately no claim-ready parser, bind action, or production
-// caller: managerBindingDigest has no agreed producer/encoding or meaning yet.
+// Frame validation proves correlation only. The owning Session and API keep
+// independent live provider, process, file and two-receipt settlement guards.
 
 #[cfg(test)]
 mod tests {
@@ -300,6 +414,35 @@ mod tests {
         assert!(ClaimReady::parse(&response,&challenge,&mac,&request,ready.archive_bytes+1,&archive).is_err());
     }
     #[test]
+    fn v3_claim_frames_reject_cross_version_and_changed_bindings() {
+        let id=||Uuid::new_v4().to_string();let principal=id();
+        let open=ClaimOpen{version:1,kind:"claim-open-v3".into(),correlation_id:id(),runtime_generation:id(),workspace_id:id(),tenant_id:id(),job_id:id()};
+        assert!(open.encode_v3().is_ok());assert!(open.encode().is_err());
+        let challenge=ClaimChallenge{version:1,kind:"claim-challenge-v3".into(),correlation_id:open.correlation_id.clone(),
+            workspace_id:open.workspace_id.clone(),tenant_id:open.tenant_id.clone(),principal_id:principal.clone(),
+            runtime_generation:open.runtime_generation.clone(),job_id:open.job_id.clone(),attempt_id:id(),generation:id(),stage_id:id(),
+            reservation_id:id(),reservation_generation:id(),claim_digest:"a".repeat(64),receipt_digest:"b".repeat(64)};
+        let bytes=serde_json::to_vec(&challenge).unwrap();
+        assert!(ClaimChallenge::parse_v3(&bytes,&open,&principal).is_ok());
+        assert!(ClaimChallenge::parse(&bytes,&open,&principal).is_err());
+        assert!(ClaimChallenge::parse_v3(&bytes,&open,&id()).is_err());
+        let mac="c".repeat(64);let request=id();let archive="d".repeat(64);
+        let binding=challenge.binding_v3(&mac).unwrap();
+        let value:Value=serde_json::from_slice(&binding).unwrap();assert_eq!(value["kind"],"claim-binding-v3");
+        assert!(challenge.binding(&mac).is_err());
+        assert!(challenge.settlement("settle-check").is_err());
+        let ready=ClaimReady{version:1,kind:"claim-ready-v3".into(),correlation_id:challenge.correlation_id.clone(),
+            runtime_generation:challenge.runtime_generation.clone(),workspace_id:challenge.workspace_id.clone(),tenant_id:challenge.tenant_id.clone(),
+            job_id:challenge.job_id.clone(),user_id:principal,request_id:request.clone(),lease_id:id(),attempt_id:challenge.attempt_id.clone(),
+            generation:challenge.generation.clone(),stage_id:challenge.stage_id.clone(),reservation_id:challenge.reservation_id.clone(),
+            reservation_generation:challenge.reservation_generation.clone(),archive_bytes:100,archive_sha256:archive.clone(),source_digest:archive.clone(),
+            reservation_digest:challenge.receipt_digest.clone(),manager_binding_digest:mac.clone(),profile:"bounded-file-v1".into(),format:"1.0.0-draft.9".into()};
+        let response=serde_json::to_vec(&ready).unwrap();
+        assert!(ClaimReady::parse_v3(&response,&challenge,&mac,&request,100,&archive).is_ok());
+        assert!(ClaimReady::parse(&response,&challenge,&mac,&request,100,&archive).is_err());
+        assert!(ClaimReady::parse_v3(&response,&challenge,&mac,&request,101,&archive).is_err());
+    }
+    #[test]
     fn ready_requires_exact_personal_session_and_runtime() {
         let w=Uuid::new_v4().to_string();let t=Uuid::new_v4().to_string();let p=Uuid::new_v4().to_string();let g=Uuid::new_v4().to_string();
         let bytes=serde_json::to_vec(&Ready{version:1,kind:"operation-ready",workspace_id:&w,tenant_id:&t,principal_id:&p,runtime_generation:&g}).unwrap();
@@ -321,5 +464,10 @@ mod tests {
         let mut extra=accepted.clone();extra.pop();extra.extend_from_slice(b",\"unknown\":true}");assert!(stage.check_accepted(&sent,&extra).is_err());
         let mut whitespace=accepted.clone();whitespace.insert(1,b' ');assert!(stage.check_accepted(&sent,&whitespace).is_err());
         assert!(stage.check_accepted(b"{}",&accepted).is_err());
+        let mut v3=stage.clone();v3.kind="stage-bound-v3".into();let sent_v3=v3.encode_v3().unwrap();
+        let mut accepted_v3=v3.clone();accepted_v3.kind="stage-accepted-v3".into();let reply_v3=serde_json::to_vec(&accepted_v3).unwrap();
+        assert!(v3.check_accepted_v3(&sent_v3,&reply_v3).is_ok());
+        assert!(v3.encode().is_err());assert!(v3.check_accepted(&sent_v3,&reply_v3).is_err());
+        assert!(v3.check_accepted_v3(&sent_v3,&accepted).is_err());
     }
 }

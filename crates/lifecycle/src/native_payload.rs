@@ -119,8 +119,8 @@ const NORMAL_OEX_027_LOCAL_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[
 ];
 const NORMAL_OEX_027_PATH: &str = "platform/database/native-oex-normal/027_oex_exhibition_provenance.sql";
 const NORMAL_OEX_027_SHA256: &str = "09bd82b3195e2f54545f6af45173bbab569effac95553a50f573745dab96f2c7";
-const NORMAL_OEX_027_CAPABILITY_PATH: &str = "platform/scripts/native-normal-oex-027-capability-v2.json";
-const NORMAL_OEX_027_CAPABILITY_SHA256: &str = "e7f7bb5c5c12bf7cd901df5d8c1e5a0072fae30f98cdbd905215f311de09033b";
+const NORMAL_OEX_027_CAPABILITY_PATH: &str = "platform/scripts/native-normal-oex-027-capability-v3.json";
+const NORMAL_OEX_027_CAPABILITY_SHA256: &str = "f9eecec7b17a7f010a94bcc8711326a44261c9713249b01231cc62b86b18eb6d";
 
 
 fn normal_oex_release_declaration_matches(manifest: &Manifest, manifest_hash: &str, bytes: &[u8], approved: &[(&str, &str, &str)]) -> bool {
@@ -155,6 +155,8 @@ fn normal_oex_027_inventory_matches(manifest: &Manifest) -> bool {
         && regular(NORMAL_OEX_027_CAPABILITY_PATH).is_some_and(|f| f.bytes == Some(516) && f.sha256.as_deref() == Some(NORMAL_OEX_027_CAPABILITY_SHA256))
         && regular("platform/apps/api/dist/native-oex-provenance.js").is_some_and(|f| f.bytes.is_some_and(|n| n > 0) && f.sha256.as_deref().is_some_and(hash_valid))
         && regular("platform/apps/api/dist/native-oex-catalog-proof.js").is_some_and(|f| f.bytes.is_some_and(|n| n > 0) && f.sha256.as_deref().is_some_and(hash_valid))
+        && ["platform/apps/api/dist/oex-owned-preflight.js", "platform/apps/api/dist/oex-size-preflight.js"].iter().all(|name|
+            regular(name).is_some_and(|f| f.bytes.is_some_and(|n| n > 0) && f.sha256.as_deref().is_some_and(hash_valid)))
 }
 
 fn normal_oex_027_local_validation_matches(manifest: &Manifest, manifest_hash: &str, bytes: &[u8], approved: &[(&str, &str, &str)]) -> bool {
@@ -192,7 +194,9 @@ mod normal_oex_release_declaration_tests {
         for (path, bytes, sha) in [(NORMAL_OEX_027_PATH,2611,NORMAL_OEX_027_SHA256),
             (NORMAL_OEX_027_CAPABILITY_PATH,516,NORMAL_OEX_027_CAPABILITY_SHA256),
             ("platform/apps/api/dist/native-oex-provenance.js",1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            ("platform/apps/api/dist/native-oex-catalog-proof.js",1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")] {
+            ("platform/apps/api/dist/native-oex-catalog-proof.js",1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            ("platform/apps/api/dist/oex-owned-preflight.js",1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            ("platform/apps/api/dist/oex-size-preflight.js",1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")] {
             m.files.push(serde_json::from_value(serde_json::json!({"path":path,"bytes":bytes,"sha256":sha,"executable":false})).unwrap());
         }
         m
@@ -241,12 +245,26 @@ mod normal_oex_release_declaration_tests {
         for (path,bytes,sha) in [(NORMAL_OEX_027_PATH,2611,NORMAL_OEX_027_SHA256),
             (NORMAL_OEX_027_CAPABILITY_PATH,516,NORMAL_OEX_027_CAPABILITY_SHA256),
             ("platform/apps/api/dist/native-oex-provenance.js",1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            ("platform/apps/api/dist/native-oex-catalog-proof.js",1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")] {
+            ("platform/apps/api/dist/native-oex-catalog-proof.js",1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            ("platform/apps/api/dist/oex-owned-preflight.js",1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            ("platform/apps/api/dist/oex-size-preflight.js",1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")] {
             m.files.push(serde_json::from_value(serde_json::json!({"path":path,"bytes":bytes,"sha256":sha,"executable":false})).unwrap());
         }
         assert!(normal_oex_027_declaration_matches(&m,&hash,NORMAL_OEX_CAPABILITY,&approved));
         assert!(!normal_oex_027_declaration_matches(&m,&hash,NORMAL_OEX_CAPABILITY,NORMAL_OEX_027_RELEASE_PROVENANCE));
         m.files.pop();assert!(!normal_oex_027_declaration_matches(&m,&hash,NORMAL_OEX_CAPABILITY,&approved));
+    }
+
+    #[test]
+    fn current_027_inventory_refuses_previous_private_abi_and_missing_preflight() {
+        let mut m=local_fixture();
+        assert!(normal_oex_027_inventory_matches(&m));
+        let capability=m.files.iter_mut().find(|f|f.path==NORMAL_OEX_027_CAPABILITY_PATH).unwrap();
+        capability.path="platform/scripts/native-normal-oex-027-capability-v2.json".into();
+        capability.sha256=Some("e7f7bb5c5c12bf7cd901df5d8c1e5a0072fae30f98cdbd905215f311de09033b".into());
+        assert!(!normal_oex_027_inventory_matches(&m));
+        m=local_fixture();m.files.retain(|f|f.path!="platform/apps/api/dist/oex-owned-preflight.js");
+        assert!(!normal_oex_027_inventory_matches(&m));
     }
 
     #[test]
@@ -612,6 +630,16 @@ impl Payload {
         self.recheck()?;
         Ok((self.node(), self.root.join(name), self.root.clone()))
     }
+    pub(crate) fn oex_preflight(&self) -> Result<(PathBuf, PathBuf, PathBuf)> {
+        let name = "platform/apps/api/dist/oex-owned-preflight.js";
+        if !self.manifest.files.iter().any(|f| f.path == name && f.link.is_none() && f.executable == Some(false)) {
+            return Err(err("NATIVE_OEX_WORKER_UNAVAILABLE"));
+        }
+        self.recheck()?;
+        Ok((self.node(), self.root.join(name), self.root.clone()))
+    }
+    /// Fixed codec-only resources, rechecked against this admitted manifest and
+    /// held across authentication. No arbitrary module or executable selection.
     pub(crate) fn oex_packed_worker_v2(&self) -> Result<(PathBuf, PathBuf, PathBuf)> {
         let name = "platform/apps/api/dist/oex-owned-packed-worker-v2.js";
         if !self.manifest.files.iter().any(|f| f.path == name && f.link.is_none() && f.executable == Some(false)) {

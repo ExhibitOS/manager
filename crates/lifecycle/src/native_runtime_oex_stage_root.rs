@@ -108,4 +108,72 @@ impl StageRoot {
             || (after.dev(),after.ino(),after.len(),after.nlink())!=(stat.dev(),stat.ino(),0,1){return Err(err("NATIVE_OEX_OUTPUT_INVALID"));}
         self.check(session)?;Ok(file)
     }
+    /// Retire only the two already pinned, private temporary names after the
+    /// caller has proved its owned writers and consumer have drained. A
+    /// partial unlink is uncertain; this method never retries or removes the
+    /// directory/journal. The cooperative fence does not exclude same-user
+    /// outsiders and removal does not prove physical blocks were reclaimed.
+    pub(super) fn retire_pair(&self,session:&mut Session,owner:&super::oex_owner::Owner,stage:&str,attempt:&str,input:&File,output:&File,cancelled:&AtomicBool)->Result<()> {
+        let bad=||err("NATIVE_OEX_WORKER_UNCERTAIN");
+        owner.check(session)?;if cancelled.load(Ordering::SeqCst){return Err(bad());}
+        let a=input.metadata().map_err(|_|bad())?;let b=output.metadata().map_err(|_|bad())?;
+        let ids=[(a.dev(),a.ino()),(b.dev(),b.ino())];
+        self.check_pair(session,stage,ids[0],attempt,ids[1])?;
+        let dir=self.pin.try_clone_file()?;
+        let names=[format!(".oex-stage-{stage}"),format!(".oex-packed-{attempt}")];
+        let mut check=|| {owner.check(session)?;self.check(session)?;if cancelled.load(Ordering::SeqCst){return Err(bad());}Ok(())};
+        retire_names(&dir,&self.path,&names,input,output,&mut check)
+    }
+}
+
+/// Caller already owns the private directory and its cooperative writer fence.
+fn retire_names(dir:&File,path:&Path,names:&[String;2],input:&File,output:&File,check:&mut dyn FnMut()->Result<()>)->Result<()> {
+        let bad=||err("NATIVE_OEX_WORKER_UNCERTAIN");
+        let a=input.metadata().map_err(|_|bad())?;let b=output.metadata().map_err(|_|bad())?;
+        let ids=[(a.dev(),a.ino()),(b.dev(),b.ino())];
+        if ids[0]==ids[1]||names[0]==names[1]{return Err(bad());}
+        let files=[input,output];let before=[&a,&b];
+        let verify=|index:usize|->Result<std::ffi::CString> {
+            let name=&names[index];let file=files[index];let expected=ids[index];let before=before[index];
+            let c=std::ffi::CString::new(name.as_bytes()).map_err(|_|bad())?;let mut st=std::mem::MaybeUninit::<libc::stat>::uninit();
+            if unsafe{libc::fstatat(dir.as_raw_fd(),c.as_ptr(),st.as_mut_ptr(),libc::AT_SYMLINK_NOFOLLOW)}!=0{return Err(bad());}
+            let named=unsafe{st.assume_init()};let held=file.metadata().map_err(|_|bad())?;
+            if named.st_mode&libc::S_IFMT!=libc::S_IFREG||named.st_uid!=unsafe{libc::geteuid()}||named.st_mode&0o777!=0o600||named.st_nlink!=1
+                || (named.st_dev as u64,named.st_ino as u64)!=expected||(held.dev(),held.ino(),held.nlink())!=(expected.0,expected.1,1)
+                || (held.len(),held.mtime(),held.mtime_nsec(),held.ctime(),held.ctime_nsec())!=(before.len(),before.mtime(),before.mtime_nsec(),before.ctime(),before.ctime_nsec()) {return Err(bad());}Ok(c)
+        };
+        check()?;verify(0)?;verify(1)?;
+        for index in 0..2 {
+            check()?;let c=verify(index)?;let file=files[index];let expected=ids[index];let before=before[index];
+            if unsafe{libc::unlinkat(dir.as_raw_fd(),c.as_ptr(),0)}!=0{return Err(bad());}
+            let after=file.metadata().map_err(|_|bad())?;
+            if (after.dev(),after.ino(),after.nlink())!=(expected.0,expected.1,0)
+                || (after.len(),after.mtime(),after.mtime_nsec())!=(before.len(),before.mtime(),before.mtime_nsec()){return Err(bad());}
+        }
+        dir.sync_all().map_err(|_|bad())?;check()?;
+        if fs::read_dir(path).map_err(|_|bad())?.next().is_some(){return Err(bad());}
+        check()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::OpenOptionsExt;
+    #[test]
+    fn retire_names_only_owned_pair_and_preserves_partial_failure() {
+        for case in ["success","wrong-output","interrupted"] {
+            let path=std::env::temp_dir().join(format!("oex-v3-retire-{}",Uuid::new_v4()));fs::create_dir(&path).unwrap();
+            let dir=File::open(&path).unwrap();let names=["input".to_string(),"output".to_string()];
+            let open=|name:&str|OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(path.join(name)).unwrap();
+            let input=open(&names[0]);let output=open(&names[1]);
+            let result=if case=="wrong-output" {retire_names(&dir,&path,&names,&input,&input,&mut ||Ok(()))}
+                else {let calls=std::cell::Cell::new(0);retire_names(&dir,&path,&names,&input,&output,&mut ||{calls.set(calls.get()+1);if case=="interrupted"&&calls.get()==3 {Err(err("NATIVE_CANCELLED"))}else{Ok(())}})};
+            match case {
+                "success"=>{assert!(result.is_ok());assert_eq!(input.metadata().unwrap().nlink(),0);assert_eq!(output.metadata().unwrap().nlink(),0);},
+                "wrong-output"=>{assert!(result.is_err());assert!(path.join("input").exists()&&path.join("output").exists());},
+                _=>{assert!(result.is_err());assert!(!path.join("input").exists()&&path.join("output").exists());},
+            }
+            drop((input,output,dir));fs::remove_dir_all(path).unwrap();
+        }
+    }
 }

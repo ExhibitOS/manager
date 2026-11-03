@@ -52,7 +52,7 @@ final class ManagerModel: ObservableObject {
     @Published private(set) var backupLocation: URL?
     var pendingRestoration: Bool { native?.restoration.map { $0.state != "activated" } == true }
     var canMaintain: Bool { !busy && !runtimeBusy && !quitting && !hasUnsavedAuthoring && !authoring.busy && !authoring.modelWorkerPending && !exhibitions.busy && !exhibitions.oexImport.busy && !exhibitions.oexImport.hasPendingWork && !publication.busy && !staticExport.running && !hosting.running && !hosting.busy && context != nil }
-    var hasUnsavedAuthoring: Bool { authoring.dirty || exhibitions.dirty }
+    var hasUnsavedAuthoring: Bool { authoring.dirty || exhibitions.dirty || exhibitions.oexImport.hasFile }
     private var bridge: NativeBridge?
     private var pollTask: Task<Void, Never>?
     private var authoringConnection: Task<Void, Never>?
@@ -319,7 +319,7 @@ final class ManagerModel: ObservableObject {
         hosting = HostingModel()
     }
     func createOEXWorkspace() async {
-        guard canMaintain, !pendingRestoration, native?.selectedOex != true, let bridge, let previous = context else { return }
+        guard canMaintain, !pendingRestoration, let bridge, let previous = context else { return }
         busy = true; failure = nil; maintenanceNotice = ""
         defer { busy = false }
         do {
@@ -648,7 +648,7 @@ struct ManagerView: View {
                                  mode: model.presentation?.mode ?? .beginner,
                                  connect: { await model.connectPersonalAuthoring() }, active: workbenchActive,
                                  readOnly: model.presentation?.step == .preview,
-                                 canCreateOEXWorkspace: model.canMaintain && !model.pendingRestoration && model.native?.selectedOex != true,
+                                 canCreateOEXWorkspace: model.canMaintain && !model.pendingRestoration,
                                  createOEXWorkspace: { await model.createOEXWorkspace() },
                                  connectionAllowed: !model.busy && !model.quitting,
                                  edit: { model.change(step: .select) }, publish: { model.change(step: .publish) })

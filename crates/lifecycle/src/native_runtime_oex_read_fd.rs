@@ -19,6 +19,7 @@ pub(super) struct ObservedStage {
     pub(super) inode: u64,
     pub(super) bytes: u64,
     pub(super) sha256: String,
+    stamp: (i64,i64,i64,i64),
 }
 #[allow(dead_code)]
 impl Stage {
@@ -107,6 +108,22 @@ impl Stage {
 #[allow(dead_code)]
 impl ObservedStage {
     pub(super) fn file(&self)->&File {&self.read}
+    pub(super) fn check_unchanged(&self)->Result<()> {
+        let m=self.read.metadata().map_err(|_|err("NATIVE_OEX_INPUT_INVALID"))?;
+        let flags=unsafe {libc::fcntl(self.read.as_raw_fd(),libc::F_GETFL)};
+        if !m.is_file()||m.uid()!=unsafe{libc::geteuid()}||m.mode()&0o777!=0o600||m.nlink()!=1
+            || (m.dev(),m.ino(),m.len())!=(self.device,self.inode,self.bytes)
+            || (m.mtime(),m.mtime_nsec(),m.ctime(),m.ctime_nsec())!=self.stamp
+            || flags<0||flags&libc::O_ACCMODE!=libc::O_RDONLY {return Err(err("NATIVE_OEX_INPUT_INVALID"));}
+        Ok(())
+    }
+    /// Close this exact owned descriptor after its name has been retired.
+    /// A close error leaves retirement uncertain; never retry the raw fd.
+    pub(super) fn close_owned(self)->Result<()> {
+        use std::os::fd::IntoRawFd;
+        let fd=self.read.into_raw_fd();
+        if unsafe{libc::close(fd)}!=0{return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}Ok(())
+    }
 }
 
 pub(super) fn observe_stage(
@@ -114,7 +131,7 @@ pub(super) fn observe_stage(
     check_owner: &mut dyn FnMut() -> Result<()>,
 ) -> Result<ObservedStage> {
     let invalid = || err("NATIVE_OEX_OUTPUT_INVALID");
-    if !(1..=512 * 1024 * 1024).contains(&expected_bytes) || !hash_valid(expected_sha256) {
+    if !(1..=512*1024*1024).contains(&expected_bytes) || !hash_valid(expected_sha256) {
         return Err(invalid());
     }
     check_owner()?;
@@ -153,7 +170,8 @@ pub(super) fn observe_stage(
     }
     check_owner()?;
     if cancelled.load(Ordering::SeqCst) { return Err(err("NATIVE_CANCELLED")); }
-    Ok(ObservedStage { read, device: a.dev(), inode: a.ino(), bytes: expected_bytes, sha256: digest })
+    Ok(ObservedStage { read, device: a.dev(), inode: a.ino(), bytes: expected_bytes, sha256: digest,
+        stamp:(after.mtime(),after.mtime_nsec(),after.ctime(),after.ctime_nsec()) })
 }
 #[allow(dead_code)]
 pub(super) struct Inherited(File);
@@ -217,7 +235,10 @@ mod tests {
         assert_eq!((observed.inode,observed.bytes,observed.sha256.as_str()),(inode,3,digest(b"abc").as_str()));
         assert!(observed.read.write_at(b"x",0).is_err());
         let mut bytes=[0;3];assert_eq!(observed.read.read_at(&mut bytes,0).unwrap(),3);assert_eq!(&bytes,b"abc");
-        assert!(Stage::create(&directory,&id).is_err());drop(observed);
+        assert!(observed.check_unchanged().is_ok());
+        let mut other=OpenOptions::new().append(true).open(path.join(format!(".oex-stage-{id}"))).unwrap();
+        other.write_all(b"x").unwrap();drop(other);assert!(observed.check_unchanged().is_err());
+        assert!(Stage::create(&directory,&id).is_err());observed.close_owned().unwrap();
         let failed_id=Uuid::new_v4().to_string();let mut failed=Stage::create(&directory,&failed_id).unwrap();
         failed.write.write_all(b"abc").unwrap();
         assert!(observe_stage(failed,3,&digest(b"different"),&cancelled,&mut || Ok(())).is_err());
