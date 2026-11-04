@@ -10,6 +10,7 @@ final class PublicationWatermarkTests: XCTestCase {
         XCTAssertFalse(PublicationWatermarkFormBuffer().isDirty)
         try draft.setPublicationWatermark(PublicationWatermark())
         XCTAssertEqual(draft.candidate["extensions"][PublicationWatermark.namespace]["watermark"], .object(["version": .integer(1), "mode": .string("none")]))
+        XCTAssertEqual(try draft.publicationWatermark()?.requiresQualifiedRuntime, false)
         XCTAssertEqual(try BenchViewpoint.list(in: draft), [])
         for key in ["id", "revisionId", "rooms", "placements", "artworks", "accessibility"] { XCTAssertEqual(draft.candidate[key], original.candidate[key]) }
         let version = draft.document["editVersion"]
@@ -28,6 +29,7 @@ final class PublicationWatermarkTests: XCTestCase {
         try draft.setPublicationWatermark(settings)
         let reopened = try JSONDecoder().decode(NativeExhibitionDraft.self, from: JSONEncoder().encode(draft))
         XCTAssertEqual(try reopened.publicationWatermark()?.text, "Author-12 @Museum")
+        XCTAssertEqual(try reopened.publicationWatermark()?.requiresQualifiedRuntime, true)
         for key in ["viewpoints", "credits", "startCamera"] { XCTAssertEqual(reopened.candidate["extensions"][PublicationWatermark.namespace][key], presentation[key]) }
         XCTAssertEqual(reopened.candidate["extensions"]["org.example/unknown"], before.candidate["extensions"]["org.example/unknown"])
         let copy = try reopened.copyForPublication()
@@ -44,6 +46,7 @@ final class PublicationWatermarkTests: XCTestCase {
         var draft = try NativeExhibitionDraft.new()
         let text = String(repeating: "e\u{301}", count: 80) // 80 graphemes, 160 shared Unicode codepoints.
         try draft.setPublicationWatermark(.init(mode: .overlay, text: text))
+        XCTAssertEqual(try draft.publicationWatermark()?.requiresQualifiedRuntime, true)
         let saved = draft
         for text in [text+"x", " "+text, text+" ", "\u{FEFF}", "\u{85}앞", "\n앞", "앞\n뒤", "앞\u{85}뒤", "   "] {
             XCTAssertThrowsError(try draft.setPublicationWatermark(.init(mode: .overlay, text: text)))

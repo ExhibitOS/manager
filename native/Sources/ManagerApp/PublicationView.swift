@@ -28,7 +28,7 @@ final class PublicationModel: ObservableObject {
         runtimeManifestSha256 = configuration?.manifestSha256; runtimeReady = ready; watermarkRuntimeAvailable = available
     }
     private func requireWatermarkRuntime(_ draft: NativeExhibitionDraft) throws {
-        if try draft.publicationWatermark() != nil, !watermarkRuntimeAvailable { throw AuthoringFailure("WATERMARK_RUNTIME_UNAVAILABLE") }
+        if try draft.publicationWatermark()?.requiresQualifiedRuntime == true, !watermarkRuntimeAvailable { throw AuthoringFailure("WATERMARK_RUNTIME_UNAVAILABLE") }
     }
     private func planBinding(_ draft: NativeExhibitionDraft, etag: String, sourceId: String? = nil, publicationProfile: String? = nil) throws -> String? {
         try requireWatermarkRuntime(draft)

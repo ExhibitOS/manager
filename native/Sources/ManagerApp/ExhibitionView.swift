@@ -2270,7 +2270,7 @@ final class ExhibitionModel: ObservableObject {
                 syncPublicationWatermark()
             }
             guard let intent = state?.pending else { throw AuthoringFailure("EXHIBITION_PENDING") }
-            if try intent.draft.publicationWatermark() != nil, !publicationWatermarkRuntimeAvailable { throw AuthoringFailure("WATERMARK_RUNTIME_UNAVAILABLE") }
+            if try intent.draft.publicationWatermark()?.requiresQualifiedRuntime == true, !publicationWatermarkRuntimeAvailable { throw AuthoringFailure("WATERMARK_RUNTIME_UNAVAILABLE") }
             let saved: NativeStudioResponse
             do { saved = try await api.saveExhibition(intent.draft, requestId: intent.requestId, etag: intent.etag) }
             catch let error as AuthoringFailure {
