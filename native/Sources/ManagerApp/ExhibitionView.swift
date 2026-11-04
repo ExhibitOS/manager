@@ -2087,7 +2087,10 @@ final class ExhibitionModel: ObservableObject {
                       currentImport.workspaceId == current.workspaceId, currentImport.tenantId == current.tenantId,
                       currentImport.principalId == current.principalId else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
                 boundedProfileKnown = profile
-                boundedReadOnly = false; boundedPolicyPending = false; storedImmutable = publication.immutable
+                boundedReadOnly = false; boundedPolicyPending = false
+                // An unqualified ordinary session may copy a verified published
+                // source, but must keep the existing publication row locked.
+                storedImmutable = publication.immutable || (!boundedRuntimeQualified && publication.publicationId != nil)
                 reusablePublicationId = publication.publicationId
                 return
             }
@@ -2171,7 +2174,7 @@ final class ExhibitionModel: ObservableObject {
             boundedReadOnly = restricted; boundedPolicyPending = ordinaryBoundedRuntime; storedImmutable = editingAccess.immutable || restricted || ordinaryBoundedRuntime; reusablePublicationId = editingAccess.publicationId; comparison = nil; syncFields()
             if ordinaryBoundedRuntime { await prepareOrdinaryBoundedPlacement() }
             if !boundedPolicyPending {
-                notice = editingAccess.immutable ? "이 공개용 저장본은 현재 런타임에서 읽기 전용입니다." : editingAccess.publicationId != nil ? "공개된 전시의 편집 초안을 열었습니다. 저장해도 공개본은 바뀌지 않습니다." : "저장한 전시를 열었습니다."
+                notice = storedImmutable ? "이 공개용 저장본은 현재 런타임에서 읽기 전용입니다." : editingAccess.publicationId != nil ? "공개된 전시의 편집 초안을 열었습니다. 저장해도 공개본은 바뀌지 않습니다." : "저장한 전시를 열었습니다."
             }
             // OEX import can add approved works after the last library fetch.
             // Refresh only after the saved draft is safely opened; a catalogue
