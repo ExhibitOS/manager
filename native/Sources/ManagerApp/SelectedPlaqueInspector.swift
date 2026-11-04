@@ -44,13 +44,23 @@ struct SelectedPlaqueInspector: View {
         Binding(get: {
             let id = model.plaque?.roomId ?? ""
             return model.draft?.rooms.first(where: { $0["id"].string?.lowercased() == id.lowercased() })?["id"].string ?? id
-        }, set: { value in guard var fields = model.plaque else { return }; fields.roomId = value; model.plaque = fields })
+        }, set: { value in
+            guard var fields = model.plaque, let draft = model.draft, !fields.roomIntroductionChanged,
+                  (try? fields.selectRoom(value, in: draft)) != nil else { return }
+            model.plaque = fields
+        })
     }
     @ViewBuilder private func sourceFields(_ fields: PlaqueFormBuffer) -> some View {
         Picker("표시할 내용", selection: field(\.sourceKind, fallback: .exhibition)) {
             Text("전시 제목·소개").tag(PlaqueFormBuffer.SourceKind.exhibition)
-            Text("공간 이름").tag(PlaqueFormBuffer.SourceKind.room)
+            Text("공간 이름·소개").tag(PlaqueFormBuffer.SourceKind.room)
             Text("작품 캡션").tag(PlaqueFormBuffer.SourceKind.artwork)
+        }.disabled(fields.roomIntroductionChanged)
+        if fields.sourceKind == .room {
+            TextField("공간 소개", text: field(\.roomIntroductionText, fallback: ""), axis: .vertical)
+                .lineLimit(2...5)
+                .accessibilityHint("이 공간의 모든 명판에 표시할 소개를 입력하세요.")
+            Text("이 소개는 같은 공간의 모든 명판에 표시됩니다.").font(.caption).foregroundStyle(.secondary)
         }
         if fields.sourceKind == .artwork {
             let rows = (model.draft?.placements ?? []).filter { $0["roomId"].string?.lowercased() == fields.roomId.lowercased() }
@@ -68,7 +78,9 @@ struct SelectedPlaqueInspector: View {
             }
             if rows.isEmpty { Text("이 공간에 배치한 작품이 없습니다. 기존 작품 배치를 만든 뒤 선택하세요.").font(.caption).foregroundStyle(.secondary) }
         }
-        Text("내용은 기존 전시·공간·작품 정보에서 가져옵니다. 문안은 원래 편집 화면에서 수정하세요.").font(.caption).foregroundStyle(.secondary)
+        if fields.sourceKind != .room {
+            Text("내용은 기존 전시·작품 정보에서 가져옵니다.").font(.caption).foregroundStyle(.secondary)
+        }
     }
     private var positionFields: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -99,7 +111,7 @@ struct SelectedPlaqueInspector: View {
                         Picker("명판이 놓일 공간", selection: roomSelection) {
                             let rooms = model.draft?.rooms ?? []
                             ForEach(rooms.indices, id: \.self) { index in Text(rooms[index]["name"].string ?? "공간").tag(rooms[index]["id"].string ?? "") }
-                        }
+                        }.disabled(fields.roomIntroductionChanged)
                         sourceFields(fields)
                         Toggle("명판 표시", isOn: field(\.visible, fallback: true))
                         Text("숨긴 명판도 설정과 참조를 보관합니다.").font(.caption).foregroundStyle(.secondary)

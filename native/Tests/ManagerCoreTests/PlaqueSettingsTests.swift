@@ -96,6 +96,37 @@ final class PlaqueSettingsTests: XCTestCase {
             XCTAssertEqual(sqrt(pose.rotation.reduce(0) { $0 + $1 * $1 }), 1, accuracy: 1e-15)
         }
     }
+    func testRoomIntroductionUsesOneSourceAndPreviewRejectsUnrelatedTextDelta() throws {
+        var draft = try fixture(), input = try fields(draft)
+        input.sourceKind = .room
+        let command = PlaqueCommand.add(try input.settings(), roomIntroductionText: "공간 소개")
+        let candidate = try command.proposedCandidate(in: draft, selectedPlaqueId: input.id)
+        XCTAssertEqual(candidate["extensions"][PlaqueSettings.namespace]["version"], .integer(2))
+        var tampered = candidate
+        tampered["extensions"][PlaqueSettings.namespace]["roomIntroductions"][input.roomId]["text"] = .string("Altered")
+        XCTAssertThrowsError(try command.checkProposal(tampered, base: draft, selectedPlaqueId: input.id))
+        try draft.replaceCandidate(candidate)
+        let reopened = try JSONDecoder().decode(NativeExhibitionDraft.self, from: JSONEncoder().encode(draft))
+        var fields = try PlaqueFormBuffer(draft: reopened, plaqueId: input.id)
+        XCTAssertEqual(fields.roomIntroductionText, "공간 소개")
+        XCTAssertFalse(fields.roomIntroductionChanged)
+        fields.width = "1.0"
+        let cleared = try PlaqueCommand.set(fields.settings(), roomIntroductionText: "").proposedCandidate(in: reopened, selectedPlaqueId: fields.id)
+        XCTAssertEqual(cleared["extensions"][PlaqueSettings.namespace]["version"], .integer(1))
+        XCTAssertEqual(cleared["extensions"][PlaqueSettings.namespace]["roomIntroductions"], .null)
+        let moved = try PlaqueCommand.set(fields.settings()).proposedCandidate(in: reopened, selectedPlaqueId: fields.id)
+        XCTAssertEqual(moved["extensions"][PlaqueSettings.namespace]["roomIntroductions"], candidate["extensions"][PlaqueSettings.namespace]["roomIntroductions"])
+        var translated = candidate
+        translated["extensions"][PlaqueSettings.namespace]["roomIntroductions"][input.roomId]["translations"] = .array([
+            .object(["locale": .string("en"), "text": .string("Room introduction")])
+        ])
+        try draft.replaceCandidate(translated)
+        let edited = try PlaqueCommand.set(fields.settings(), roomIntroductionText: "수정한 소개").proposedCandidate(in: draft, selectedPlaqueId: fields.id)
+        XCTAssertEqual(edited["extensions"][PlaqueSettings.namespace]["roomIntroductions"][input.roomId]["translations"],
+                       translated["extensions"][PlaqueSettings.namespace]["roomIntroductions"][input.roomId]["translations"])
+        XCTAssertThrowsError(try PlaqueCommand.set(fields.settings(), roomIntroductionText: "").proposedCandidate(in: draft, selectedPlaqueId: fields.id))
+    }
+
     func testDecimalCommaPreservesRawInputAndExistingBounds() throws {
         let draft = try fixture(); var input = try fields(draft)
         input.width = "0,8"; input.height = "0,4"; input.x = "-0,25"

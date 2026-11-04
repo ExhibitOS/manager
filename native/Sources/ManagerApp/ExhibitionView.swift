@@ -1321,7 +1321,9 @@ final class ExhibitionModel: ObservableObject {
     func beginPlaque() {
         guard canAddPlaque else { return }
         do {
-            let fields = try PlaqueFormBuffer(roomId: roomId)
+            guard let draft else { return }
+            var fields = try PlaqueFormBuffer(roomId: roomId)
+            try fields.selectRoom(roomId, in: draft)
             selectedLightId = ""; syncLight(); clearBenchSelection()
             viewportSelection = nil; catalogArtworkId = ""; syncArchitecture()
             selectedPlaqueId = fields.id; plaqueAdding = true; plaqueRemoving = false
@@ -1332,7 +1334,8 @@ final class ExhibitionModel: ObservableObject {
         if plaqueRemoving { return .remove(id: selectedPlaqueId) }
         guard let plaque, plaque.id == selectedPlaqueId else { throw AuthoringFailure("PLAQUE_SELECTION_CHANGED") }
         let settings = try plaque.settings()
-        return plaqueAdding ? .add(settings) : .set(settings)
+        let introduction = plaque.roomIntroductionChanged ? plaque.roomIntroductionText : nil
+        return plaqueAdding ? .add(settings, roomIntroductionText: introduction) : .set(settings, roomIntroductionText: introduction)
     }
     func discardPlaque() {
         guard !busy, !pending, !architectureApplying, !placingArtwork else { return }

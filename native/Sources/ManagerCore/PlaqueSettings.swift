@@ -56,8 +56,14 @@ public struct PlaqueSettings: Equatable, Sendable {
     static func invalid() -> AuthoringFailure { AuthoringFailure("PLAQUE_FIELDS_INVALID") }
     public static func list(in draft: NativeExhibitionDraft) throws -> [Self] {
         guard let raw = try BenchSettings.extensionValue(namespace, in: draft) else { return [] }
-        guard case .object(let fields) = raw, Set(fields.keys) == ["version", "plaques"], raw["version"] == .integer(1),
+        guard case .object(let fields) = raw,
               let rows = raw["plaques"].items, rows.count <= 32, try JSONEncoder().encode(raw).count <= 16_384 else { throw invalid() }
+        switch raw["version"] {
+        case .integer(1) where Set(fields.keys) == ["version", "plaques"]: break
+        case .integer(2) where Set(fields.keys) == ["version", "plaques", "roomIntroductions"]:
+            guard try !roomIntroductionRows(fields["roomIntroductions"], in: draft).isEmpty else { throw invalid() }
+        default: throw invalid()
+        }
         var seen = Set<String>()
         return try rows.map { row in
             let plaque = try Self(value: row)
@@ -69,10 +75,45 @@ public struct PlaqueSettings: Equatable, Sendable {
             return plaque
         }
     }
+    static func validIntroductionText(_ text: String) -> Bool {
+        let whitespace = CharacterSet(charactersIn: "\u{0009}\u{000A}\u{000B}\u{000C}\u{000D}\u{0020}\u{00A0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200A}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}\u{FEFF}")
+        return text.utf16.count <= 1024 && !text.trimmingCharacters(in: whitespace).isEmpty
+    }
+    static func roomIntroductionRows(_ value: DocumentValue?, in draft: NativeExhibitionDraft) throws -> [String: DocumentValue] {
+        guard let value else { return [:] }
+        guard case .object(let rows) = value, rows.count <= 32 else { throw invalid() }
+        var seen = Set<String>()
+        for (roomId, row) in rows {
+            guard BenchSettings.uuid(roomId), seen.insert(roomId.lowercased()).inserted,
+                  draft.rooms.contains(where: { $0["id"].string?.lowercased() == roomId.lowercased() }),
+                  case .object(let fields) = row, Set(fields.keys).subtracting(["translations"]) == ["text"],
+                  let text = row["text"].string, validIntroductionText(text) else { throw invalid() }
+            if let translations = fields["translations"] {
+                guard let variants = translations.items, variants.count <= 8 else { throw invalid() }
+                var tags = Set<String>()
+                for variant in variants {
+                    guard case .object(let data) = variant, Set(data.keys) == ["locale", "text"],
+                          let locale = variant["locale"].string,
+                          locale.range(of: #"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8}){0,4}$"#, options: .regularExpression) == locale.startIndex..<locale.endIndex,
+                          tags.insert(locale.lowercased()).inserted,
+                          let text = variant["text"].string, validIntroductionText(text) else { throw invalid() }
+                }
+            }
+        }
+        return rows
+    }
+    public static func roomIntroductionText(in draft: NativeExhibitionDraft, roomId: String) throws -> String {
+        let raw = try BenchSettings.extensionValue(namespace, in: draft)
+        guard let raw else { return "" }
+        guard case .object(let fields) = raw else { throw invalid() }
+        let rows = try roomIntroductionRows(fields["roomIntroductions"], in: draft)
+        return rows.first(where: { $0.key.lowercased() == roomId.lowercased() })?.value["text"].string ?? ""
+    }
 }
 
-/// No text body is stored here. Existing exhibition/room/artwork metadata is
-/// referenced, while every raw pose/size input remains in the model buffer.
+/// Plaques refer to existing exhibition, room and artwork sources. Room text
+/// uses the shared source for every plaque associated with that room.
+/// Every raw pose/size input remains in the model buffer.
 public struct PlaqueFormBuffer: Equatable, Sendable {
     public enum Facing: String, CaseIterable, Sendable { case forward, back, left, right }
     public enum SourceKind: String, CaseIterable, Sendable { case exhibition, room, artwork }
@@ -80,6 +121,9 @@ public struct PlaqueFormBuffer: Equatable, Sendable {
     public var roomId: String
     public var sourceKind: SourceKind = .exhibition
     public var placementId = ""
+    public var roomIntroductionText = ""
+    private var originalRoomIntroductionText = ""
+    public var roomIntroductionChanged: Bool { roomIntroductionText != originalRoomIntroductionText }
     public var x = "0.0", y = "1.5", z = "0.0"
     public var rotationX = "0.0", rotationY = "0.0", rotationZ = "0.0", rotationW = "1.0"
     public var width = "0.8", height = "0.4"
@@ -91,6 +135,7 @@ public struct PlaqueFormBuffer: Equatable, Sendable {
     public init(draft: NativeExhibitionDraft, plaqueId: String) throws {
         guard let plaque = try PlaqueSettings.list(in: draft).first(where: { $0.id == plaqueId }) else { throw AuthoringFailure("PLAQUE_SELECTION_CHANGED") }
         id = plaque.id; roomId = plaque.roomId
+        try selectRoom(plaque.roomId, in: draft)
         switch plaque.source {
         case .exhibition: sourceKind = .exhibition
         case .room: sourceKind = .room
@@ -99,6 +144,12 @@ public struct PlaqueFormBuffer: Equatable, Sendable {
         x = String(plaque.position[0]); y = String(plaque.position[1]); z = String(plaque.position[2])
         rotationX = String(plaque.rotation[0]); rotationY = String(plaque.rotation[1]); rotationZ = String(plaque.rotation[2]); rotationW = String(plaque.rotation[3])
         width = String(plaque.width); height = String(plaque.height); visible = plaque.visible
+    }
+    public mutating func selectRoom(_ roomId: String, in draft: NativeExhibitionDraft) throws {
+        let original = try PlaqueSettings.roomIntroductionText(in: draft, roomId: roomId)
+        self.roomId = roomId
+        originalRoomIntroductionText = original
+        roomIntroductionText = original
     }
     public func settings() throws -> PlaqueSettings {
         func number(_ text: String) throws -> Double {
