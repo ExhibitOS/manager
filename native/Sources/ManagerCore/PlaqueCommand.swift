@@ -2,15 +2,18 @@
 import Foundation
 
 public enum PlaqueCommand: Equatable, Sendable {
-    case add(PlaqueSettings), set(PlaqueSettings), remove(id: String)
+    case add(PlaqueSettings, roomIntroductionText: String? = nil), set(PlaqueSettings, roomIntroductionText: String? = nil), remove(id: String)
     public var plaqueId: String {
-        switch self { case .add(let p), .set(let p): p.id; case .remove(let id): id }
+        switch self { case .add(let p, _), .set(let p, _): p.id; case .remove(let id): id }
     }
     private var isAdd: Bool { if case .add = self { return true }; return false }
     public var value: DocumentValue {
         switch self {
-        case .add(let p), .set(let p): .object(["type": .string(isAdd ? "add-plaque" : "set-plaque"), "plaque": p.value])
-        case .remove(let id): .object(["type": .string("remove-plaque"), "plaqueId": .string(id)])
+        case .add(let p, let introduction), .set(let p, let introduction):
+            var fields: [String: DocumentValue] = ["type": .string(isAdd ? "add-plaque" : "set-plaque"), "plaque": p.value]
+            if let introduction { fields["roomIntroductionText"] = .string(introduction) }
+            return .object(fields)
+        case .remove(let id): return .object(["type": .string("remove-plaque"), "plaqueId": .string(id)])
         }
     }
     /// Exact prospective delta only; shared full source/result validation is
@@ -22,13 +25,33 @@ public enum PlaqueCommand: Equatable, Sendable {
         if let index, stored[index].id != plaqueId { throw AuthoringFailure("PLAQUE_SELECTION_CHANGED") }
         var candidate = draft.candidate
         if candidate["extensions"] == .null { candidate["extensions"] = .object([:]) }
-        var rows = (try BenchSettings.extensionValue(PlaqueSettings.namespace, in: draft))?["plaques"].items ?? []
+        let raw = try BenchSettings.extensionValue(PlaqueSettings.namespace, in: draft)
+        var fields: [String: DocumentValue] = ["version": .integer(1)]
+        if case .object(let stored)? = raw { fields = stored }
+        var rows = fields["plaques"]?.items ?? []
         switch self {
-        case .add(let plaque), .set(let plaque):
+        case .add(let plaque, let introduction), .set(let plaque, let introduction):
             if let index { rows[index] = plaque.value } else { rows.append(plaque.value) }
+            if let introduction {
+                guard plaque.source == .room,
+                      let roomId = draft.rooms.first(where: { $0["id"].string?.lowercased() == plaque.roomId.lowercased() })?["id"].string else { throw PlaqueSettings.invalid() }
+                var sources = try PlaqueSettings.roomIntroductionRows(fields["roomIntroductions"], in: draft)
+                var source: [String: DocumentValue] = [:]
+                if let key = sources.keys.first(where: { $0.lowercased() == roomId.lowercased() }),
+                   case .object(let existing)? = sources.removeValue(forKey: key) { source = existing }
+                if introduction.isEmpty {
+                    guard source["translations"]?.items?.isEmpty ?? true else { throw PlaqueSettings.invalid() }
+                } else {
+                    guard PlaqueSettings.validIntroductionText(introduction) else { throw PlaqueSettings.invalid() }
+                    source["text"] = .string(introduction); sources[roomId] = .object(source)
+                }
+                fields["roomIntroductions"] = sources.isEmpty ? nil : .object(sources)
+            }
         case .remove: if let index { rows.remove(at: index) }
         }
-        candidate["extensions"][PlaqueSettings.namespace] = .object(["version": .integer(1), "plaques": .array(rows)])
+        fields["version"] = .integer(fields["roomIntroductions"] == nil ? 1 : 2)
+        fields["plaques"] = .array(rows)
+        candidate["extensions"][PlaqueSettings.namespace] = .object(fields)
         let template = "org.exhibitos.studio/template"
         if candidate["extensions"][template] != .null {
             guard case .object = candidate["extensions"][template], case .bool = candidate["extensions"][template]["modified"] else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
