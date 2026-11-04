@@ -187,6 +187,11 @@ public struct NativeViewportPolicy: Decodable, Sendable {
     /// Absence is unknown, not an ordinary-size admission.
     public let boundedEditRequired: Bool?
     public let editingCapability: NativeBoundedEditCapability?
+
+    /// A positive server observation for a draft outside bounded provenance.
+    public var confirmsOrdinaryDraft: Bool {
+        boundedProfile == false && boundedEditRequired == false && !boundedReadOnly && editingCapability == nil
+    }
 }
 
 /// Admission is only for the first clean ordinary-session edit. A capability

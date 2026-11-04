@@ -2061,7 +2061,7 @@ final class ExhibitionModel: ObservableObject {
     /// Read the exact saved revision and import record before considering the
     /// narrow ordinary-session placement path. All failures retain the lock.
     func prepareOrdinaryBoundedPlacement() async {
-        guard ordinaryBoundedRuntime, boundedRuntimeQualified, !selectedBoundedPolicy, let api, let initial = state,
+        guard ordinaryBoundedRuntime, !selectedBoundedPolicy, let api, let initial = state,
               let draft = initial.draft, let etag = initial.etag, let originalSession = session,
               let credentials = viewportCredentials, let imported = oexImport.state else { return }
         let access = viewportAccessID, generation = boundedPolicyGeneration
@@ -2079,14 +2079,19 @@ final class ExhibitionModel: ObservableObject {
                   policy.exhibitionId.lowercased() == draft.id.lowercased(), policy.etag == etag,
                   policy.revision == saved.revision, saved.etag == etag,
                   let profile = policy.boundedProfile, let required = policy.boundedEditRequired else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
-            boundedProfileKnown = profile
             if !required {
-                guard !policy.boundedReadOnly else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+                guard !policy.boundedReadOnly,
+                      profile ? boundedRuntimeQualified : policy.confirmsOrdinaryDraft,
+                      saved.draft == draft,
+                      currentImport.intent == nil, currentImport.jobId == nil, currentImport.fileName == nil,
+                      currentImport.workspaceId == current.workspaceId, currentImport.tenantId == current.tenantId,
+                      currentImport.principalId == current.principalId else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+                boundedProfileKnown = profile
                 boundedReadOnly = false; boundedPolicyPending = false; storedImmutable = publication.immutable
                 reusablePublicationId = publication.publicationId
                 return
             }
-            guard !publication.immutable, saved.draft == draft,
+            guard boundedRuntimeQualified, !publication.immutable, saved.draft == draft,
                   let capability = NativeBoundedEditAdmission.admit(policy: policy, document: current, importState: currentImport,
                                                                     session: live, selectedImport: false) else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
             boundedPlacementPolicy = policy; boundedPlacementBaseline = saved.draft; boundedPlacementSession = live
@@ -2097,7 +2102,7 @@ final class ExhibitionModel: ObservableObject {
         } catch {
             guard viewportAccessID == access, boundedPolicyGeneration == generation else { return }
             boundedPlacementCapability = nil; boundedPlacementPolicy = nil; boundedPlacementBaseline = nil
-            boundedPlacementSession = nil; boundedPlacementEpoch = nil
+            boundedPlacementSession = nil; boundedPlacementEpoch = nil; boundedProfileKnown = nil
             storedImmutable = true; boundedPolicyPending = true
             notice = "전시의 편집 가능 상태를 확인하지 못했습니다. 저장된 입력은 유지됩니다."
         }
@@ -2286,13 +2291,37 @@ final class ExhibitionModel: ObservableObject {
             } else { try await list() }
         }
     }
+    var canCopyForEditing: Bool { !busy && copySourceAvailable }
+    private var copySourceAvailable: Bool {
+        guard !pending, !boundedReadOnly, !boundedPolicyPending,
+              !viewportController.boundedReadOnly, viewportController.editingContextActive else { return false }
+        let acknowledged = viewportController.acknowledges(draft: draft, tenantId: state?.tenantId, principalId: state?.principalId)
+        if ordinaryBoundedRuntime {
+            guard boundedProfileKnown == false, storedImmutable, !dirty, state?.etag != nil,
+                  let imported = oexImport.state, imported.intent == nil, imported.jobId == nil, imported.fileName == nil,
+                  imported.workspaceId == state?.workspaceId, imported.tenantId == state?.tenantId,
+                  imported.principalId == state?.principalId else { return false }
+            return acknowledged
+        }
+        return !selectedBoundedPolicy || state?.etag == nil || acknowledged
+    }
     func copyForEditing() async {
-        guard !ordinaryBoundedRuntime, !boundedReadOnly, !boundedPolicyPending, !viewportController.boundedReadOnly,
-              !selectedBoundedPolicy || state?.etag == nil || viewportController.acknowledges(draft: draft, tenantId: state?.tenantId, principalId: state?.principalId) else { return }
+        guard canCopyForEditing, let source = state else { return }
         await work {
-            guard !pending, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
-            var current = try appliedFields(allowPosition: true)
-            if !placementId.isEmpty, current.placements.contains(where: { $0["id"].string == placementId }) { try current.movePlacement(placementId, position: [x,y,z]) }
+            guard copySourceAvailable, state?.revision == source.revision,
+                  state?.draft == source.draft, state?.etag == source.etag else {
+                throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
+            }
+            var value = source
+            let current: NativeExhibitionDraft
+            if ordinaryBoundedRuntime {
+                guard let saved = value.draft else { throw AuthoringFailure("EXHIBITION_REQUIRED") }
+                current = saved
+            } else {
+                var applied = try appliedFields(allowPosition: true)
+                if !placementId.isEmpty, applied.placements.contains(where: { $0["id"].string == placementId }) { try applied.movePlacement(placementId, position: [x,y,z]) }
+                current = applied
+            }
             value.draft = try current.copyForEditing(); value.etag = nil; value.savedEditVersion = nil; value.pending = nil
             try await persist(value); storedImmutable = false; reusablePublicationId = nil; comparison = nil; syncFields()
             notice = "편집할 사본을 이 Mac에 보관했습니다. 원래 공개용 저장본은 유지됩니다."
