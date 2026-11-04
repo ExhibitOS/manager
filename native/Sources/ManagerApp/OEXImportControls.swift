@@ -6,6 +6,28 @@ import ManagerCore
 
 @MainActor
 final class OEXImportModel: ObservableObject {
+    enum Phase: Equatable {
+        case readingRetainedRecord
+        case transfer(NativeOEXImportTransferPhase)
+        case checkingQueuedJob
+        case importing
+        case savingImportedExhibition
+        case verifyingSavedExhibition
+
+        var title: String {
+            switch self {
+            case .readingRetainedRecord: "이 Mac의 가져오기 기록을 확인하고 있습니다…"
+            case .transfer(.preparingRequest): "이 파일의 가져오기 요청을 준비하고 있습니다…"
+            case .transfer(.uploading): "확인된 OEX 전송량"
+            case .transfer(.queuing): "검증된 파일을 가져오기 대기열에 등록하고 있습니다…"
+            case .checkingQueuedJob: "대기열에 등록된 작업의 시작 상태를 확인하고 있습니다…"
+            case .importing: "OEX를 검증하고 전시를 가져오고 있습니다…"
+            case .savingImportedExhibition: "가져온 전시를 저장하고 다시 열고 있습니다…"
+            case .verifyingSavedExhibition: "같은 작업의 저장 결과를 확인하고 있습니다…"
+            }
+        }
+    }
+    @Published private(set) var phase: Phase?
     @Published private(set) var state: NativeOEXImportState?
     @Published private(set) var busy = false
     @Published private(set) var message = ""
@@ -41,6 +63,8 @@ final class OEXImportModel: ObservableObject {
         }
         guard generation == current else { return }
         if retainedFile == nil { state = nil }
+        phase = .readingRetainedRecord
+        defer { if generation == current { phase = nil } }
         do {
             let restored = try await read()
             guard generation == current, restored.tenantId.lowercased() == session.tenantId.lowercased(),
@@ -60,7 +84,7 @@ final class OEXImportModel: ObservableObject {
                 message = "서버 작업 번호 \(uncertain.jobId ?? "미확인"), 요청 번호 \(uncertain.requestId)를 보관하고 다시 시작하지 마세요."
             } else if let intent = restored.intent {
                 message = intent.profile == "bounded-file-v1" && intent.oexFormat == "1.0.0-draft.9"
-                    ? "진행 중인 가져오기 기록을 보관했습니다. 같은 요청을 다시 시작하지 마세요."
+                    ? "이전 가져오기 기록을 보관했습니다. 현재 서버 작업의 실행 여부는 확인되지 않았습니다."
                     : "이전 방식의 가져오기 기록을 보관했습니다. 현재 앱에서는 이어가기·재시도·취소를 지원하지 않습니다."
             } else if !freshBounded {
                 message = "OEX 가져오기는 새 작업 공간에서 시작합니다. 현재 전시와 저장된 작업은 보관됩니다."
@@ -73,7 +97,7 @@ final class OEXImportModel: ObservableObject {
         }
     }
     func invalidate() {
-        generation = UUID(); api = nil; save = nil; bridge = nil
+        generation = UUID(); api = nil; save = nil; bridge = nil; phase = nil
         // Keep input and its original scope as data, never as live authority.
         // Reconnect checks the same root/token before reusing a selected file.
         if !hasPendingWork { state = nil; context = nil; freshBounded = false }
@@ -108,17 +132,30 @@ final class OEXImportModel: ObservableObject {
     }
     func run() async {
         guard !busy, let initial = state, let api, let save else { return }
-        busy = true; defer { busy = false }; let current = generation
+        busy = true
+        message = ""
+        let current = generation
+        defer {
+            busy = false
+            if generation == current { phase = nil }
+        }
         do {
             if freshBounded {
                 guard initial.intent == nil, let file, let bridge, let context, mayBeginBounded?() == true else { throw AuthoringFailure("OEX_IMPORT_PROFILE_UNAVAILABLE") }
                 let result = try await NativeOEXImportTransfer.runBoundedOnce(state: initial, file: file, api: api, persist: { [weak self] value in
                     let saved = try await save(value); guard let self, self.generation == current else { throw AuthoringFailure("OEX_IMPORT_SCOPE_CHANGED") }
                     self.state = saved; return saved
-                }, select: { try await bridge.selectBoundedOEX(context) }, isCurrent: { [weak self] in self?.generation == current })
+                }, select: { try await bridge.selectBoundedOEX(context) }, isCurrent: { [weak self] in self?.generation == current },
+                   observe: { [weak self] observation in
+                       guard let self, self.generation == current else { return }
+                       self.phase = .transfer(observation)
+                   })
                 guard generation == current, result.0.jobId == result.1.id else { throw AuthoringFailure("OEX_IMPORT_SCOPE_CHANGED") }
                 state = result.0
-                _ = try await bridge.runBoundedOEX(context)
+                phase = .checkingQueuedJob
+                let started = try await bridge.runBoundedOEX(context)
+                guard generation == current else { throw AuthoringFailure("OEX_IMPORT_SCOPE_CHANGED") }
+                if started.busy && started.selectedOex == true && started.operation == "importing_oex" { phase = .importing }
                 try await finishBounded(api: api, bridge: bridge, context: context, original: initial, current: current)
                 return
             }
@@ -151,9 +188,14 @@ final class OEXImportModel: ObservableObject {
             try Task.checkCancellation()
             guard generation == current else { throw AuthoringFailure("OEX_IMPORT_SCOPE_CHANGED") }
             let status = try await bridge.nativeStatus(context)
+            guard generation == current else { throw AuthoringFailure("OEX_IMPORT_SCOPE_CHANGED") }
+            if offered == nil, status.busy && status.selectedOex == true && status.operation == "importing_oex" {
+                phase = .importing
+            }
             if let offer = status.oexSaveOffer, offered == nil {
                 guard mayBeginBounded?() == true else { throw AuthoringFailure("EXHIBITION_PENDING") }
                 offered = offer
+                phase = .savingImportedExhibition
                 boundedSaveRequestId = offer.requestId
                 let result = try await api.saveAndReopenSelectedOEX(exhibitionId: offer.exhibitionId, expectedETag: offer.etag, requestId: offer.requestId) { [weak self] source, requestId in
                     guard await MainActor.run(body: { self?.generation == current && self?.mayBeginBounded?() == true }) else { throw AuthoringFailure("EXHIBITION_PENDING") }
@@ -186,6 +228,7 @@ final class OEXImportModel: ObservableObject {
 
             }
             if !status.busy {
+                phase = .verifyingSavedExhibition
                 guard status.errorCode == nil, let offer = offered, let result = reopened else { throw AuthoringFailure(status.errorCode ?? "OEX_IMPORT_INVALID") }
                 guard generation == current, let id = state?.jobId else { throw AuthoringFailure("OEX_IMPORT_SCOPE_CHANGED") }
                 let completed = try await api.oexImportJob(id)
@@ -243,7 +286,17 @@ struct OEXImportControls: View {
             }
             if let id = model.state?.jobId { Text("보관된 작업 번호 · \(id)").font(.caption).textSelection(.enabled) }
             if let id = model.state?.intent?.requestId { Text("보관된 요청 번호 · \(id)").font(.caption).textSelection(.enabled) }
-            if !model.message.isEmpty { Text(model.message).font(.caption).textSelection(.enabled) }
+            if let phase = model.phase {
+                if case .transfer(.uploading(let verified, let total)) = phase, total > 0 {
+                    let sent = ByteCountFormatter.string(fromByteCount: Int64(verified), countStyle: .file)
+                    let expected = ByteCountFormatter.string(fromByteCount: Int64(total), countStyle: .file)
+                    ProgressView("\(phase.title) · \(sent) / \(expected)", value: Double(verified), total: Double(total))
+                } else {
+                    ProgressView(phase.title).controlSize(.small)
+                }
+            } else if !model.message.isEmpty {
+                Text(model.message).font(.caption).textSelection(.enabled)
+            }
         }
     }
 }
