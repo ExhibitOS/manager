@@ -49,7 +49,8 @@ public enum PlaqueCommand: Equatable, Sendable {
             }
         case .remove: if let index { rows.remove(at: index) }
         }
-        fields["version"] = .integer(fields["roomIntroductions"] == nil ? 1 : 2)
+        let hasCaption = rows.contains { $0["artworkCaption"] != .null }
+        fields["version"] = .integer(hasCaption ? 3 : (fields["roomIntroductions"] == nil ? 1 : 2))
         fields["plaques"] = .array(rows)
         candidate["extensions"][PlaqueSettings.namespace] = .object(fields)
         let template = "org.exhibitos.studio/template"

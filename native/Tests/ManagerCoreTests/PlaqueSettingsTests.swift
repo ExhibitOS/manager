@@ -127,6 +127,48 @@ final class PlaqueSettingsTests: XCTestCase {
         XCTAssertThrowsError(try PlaqueCommand.set(fields.settings(), roomIntroductionText: "").proposedCandidate(in: draft, selectedPlaqueId: fields.id))
     }
 
+    func testLocalizedArtworkCaptionRoundTripsWithoutChangingLegacySources() throws {
+        var draft = try fixture()
+        var room = try fields(draft)
+        room.sourceKind = .room
+        let intro = PlaqueCommand.add(try room.settings(), roomIntroductionText: "공간 소개")
+        try draft.replaceCandidate(intro.proposedCandidate(in: draft, selectedPlaqueId: room.id))
+        let old = draft.candidate["extensions"][PlaqueSettings.namespace]
+        XCTAssertEqual(old["version"], .integer(2))
+
+        var caption = try fields(draft)
+        caption.sourceKind = .artwork
+        caption.placementId = try XCTUnwrap(draft.placements.first?["id"].string)
+        caption.captionTranslations = [.init(locale: "ko", artist: "에두아르 마네", date: "1862~63년경"),
+                                       .init(locale: "en", artist: "Édouard Manet", date: "ca. 1862–63")]
+        let added = try adding(caption, to: draft)
+        let raw = added.candidate["extensions"][PlaqueSettings.namespace]
+        XCTAssertEqual(raw["version"], .integer(3))
+        XCTAssertEqual(raw["roomIntroductions"], old["roomIntroductions"])
+        XCTAssertEqual(raw["plaques"].items?.first, old["plaques"].items?.first)
+        let reopened = try PlaqueFormBuffer(draft: added, plaqueId: caption.id)
+        XCTAssertEqual(reopened.captionTranslations, caption.captionTranslations)
+        XCTAssertEqual(reopened.placementId, caption.placementId)
+        XCTAssertEqual(added.artworks, draft.artworks)
+
+        var legacyWithCaption = added.candidate
+        legacyWithCaption["extensions"][PlaqueSettings.namespace]["version"] = .integer(2)
+        var invalid = added
+        try invalid.replaceCandidate(legacyWithCaption)
+        XCTAssertThrowsError(try PlaqueSettings.list(in: invalid))
+
+        let removed = try PlaqueCommand.remove(id: caption.id).proposedCandidate(in: added, selectedPlaqueId: caption.id)
+        XCTAssertEqual(removed["extensions"][PlaqueSettings.namespace], old)
+        caption.captionTranslations[1].locale = "KO"
+        XCTAssertThrowsError(try caption.settings())
+        caption.captionTranslations[1].locale = "en"
+        caption.captionTranslations[1].date = "ca. 1862\n63"
+        XCTAssertThrowsError(try caption.settings())
+        caption.captionTranslations = reopened.captionTranslations
+        caption.sourceKind = .room
+        XCTAssertThrowsError(try caption.settings())
+    }
+
     func testDecimalCommaPreservesRawInputAndExistingBounds() throws {
         let draft = try fixture(); var input = try fields(draft)
         input.width = "0,8"; input.height = "0,4"; input.x = "-0,25"

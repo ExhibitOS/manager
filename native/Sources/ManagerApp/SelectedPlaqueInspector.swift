@@ -31,6 +31,7 @@ struct SelectedPlaqueInspector: View {
     let mode: Mode
     @State private var positionDetails = false
     @State private var rotationDetails = false
+    @State private var captionDetails = false
     private var editable: Bool { ready && model.canEditPlaque && !model.plaqueRemoving }
     private func field<Value>(_ key: WritableKeyPath<PlaqueFormBuffer, Value>, fallback: Value) -> Binding<Value> {
         Binding(get: { model.plaque?[keyPath: key] ?? fallback }, set: { value in
@@ -55,7 +56,7 @@ struct SelectedPlaqueInspector: View {
             Text("전시 제목·소개").tag(PlaqueFormBuffer.SourceKind.exhibition)
             Text("공간 이름·소개").tag(PlaqueFormBuffer.SourceKind.room)
             Text("작품 캡션").tag(PlaqueFormBuffer.SourceKind.artwork)
-        }.disabled(fields.roomIntroductionChanged)
+        }.disabled(fields.roomIntroductionChanged || !fields.captionTranslations.isEmpty)
         if fields.sourceKind == .room {
             TextField("공간 소개", text: field(\.roomIntroductionText, fallback: ""), axis: .vertical)
                 .lineLimit(2...5)
@@ -75,13 +76,47 @@ struct SelectedPlaqueInspector: View {
                 if !fields.placementId.isEmpty && !rows.contains(where: { $0["id"].string?.lowercased() == fields.placementId.lowercased() }) {
                     Text("이전 배치 · 같은 공간의 대상을 다시 선택하세요").tag(fields.placementId)
                 }
-            }
+            }.disabled(!fields.captionTranslations.isEmpty)
             if rows.isEmpty { Text("이 공간에 배치한 작품이 없습니다. 기존 작품 배치를 만든 뒤 선택하세요.").font(.caption).foregroundStyle(.secondary) }
+            captionFields(fields)
         }
         if fields.sourceKind != .room {
             Text("내용은 기존 전시·작품 정보에서 가져옵니다.").font(.caption).foregroundStyle(.secondary)
         }
     }
+    private func captionText(_ index: Int, _ key: WritableKeyPath<PlaqueSettings.CaptionTranslation, String>) -> Binding<String> {
+        Binding(get: {
+            guard let rows = model.plaque?.captionTranslations, rows.indices.contains(index) else { return "" }
+            return rows[index][keyPath: key]
+        }, set: { value in
+            guard var fields = model.plaque, fields.captionTranslations.indices.contains(index) else { return }
+            fields.captionTranslations[index][keyPath: key] = value
+            model.plaque = fields
+        })
+    }
+    private func captionFields(_ fields: PlaqueFormBuffer) -> some View {
+        DisclosureGroup("언어별 작품 캡션", isExpanded: $captionDetails) {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(fields.captionTranslations.indices, id: \.self) { index in
+                    TextField("캡션 언어 코드 · 예: ko", text: captionText(index, \.locale))
+                    TextField("캡션 작가 이름", text: captionText(index, \.artist))
+                    TextField("캡션 제작 시기 · 예: 1862~63년경", text: captionText(index, \.date))
+                    Button("이 언어 캡션 제거") {
+                        guard var fields = model.plaque, fields.captionTranslations.indices.contains(index) else { return }
+                        fields.captionTranslations.remove(at: index); model.plaque = fields
+                    }
+                }
+                Button("캡션 언어 추가") {
+                    guard var fields = model.plaque, fields.captionTranslations.count < 8 else { return }
+                    fields.captionTranslations.append(.init()); model.plaque = fields
+                }.disabled(fields.captionTranslations.count >= 8)
+                if !fields.captionTranslations.isEmpty {
+                    Text("표시할 대상을 바꾸려면 언어별 캡션을 먼저 제거하세요.").font(.caption).foregroundStyle(.secondary)
+                }
+            }.padding(.top, 6)
+        }
+    }
+
     private var positionFields: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("명판 중심 · 선택한 공간 기준 미터").font(.caption).foregroundStyle(.secondary)
@@ -111,7 +146,7 @@ struct SelectedPlaqueInspector: View {
                         Picker("명판이 놓일 공간", selection: roomSelection) {
                             let rooms = model.draft?.rooms ?? []
                             ForEach(rooms.indices, id: \.self) { index in Text(rooms[index]["name"].string ?? "공간").tag(rooms[index]["id"].string ?? "") }
-                        }.disabled(fields.roomIntroductionChanged)
+                        }.disabled(fields.roomIntroductionChanged || !fields.captionTranslations.isEmpty)
                         sourceFields(fields)
                         Toggle("명판 표시", isOn: field(\.visible, fallback: true))
                         Text("숨긴 명판도 설정과 참조를 보관합니다.").font(.caption).foregroundStyle(.secondary)
