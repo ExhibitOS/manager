@@ -20,11 +20,17 @@ final class BoundedOEXExportTests: XCTestCase {
           if(req.url==='/api/v1/auth/session'){req.resume();json(200,{tenantId:tenant,userId:user,role:'admin',csrfToken:csrf,expiresAt:'2099-01-01T00:00:00Z',nativeOexExportProfile:'bounded-file-v1'});return;}
           const base='http://127.0.0.1:'+server.address().port;
           if(req.headers.origin!==base||!req.headers.cookie?.includes('exhibitos_local_session='+token)||req.headers['if-match']!==etag){req.resume();json(403,{code:'FORBIDDEN'});return;}
-          const match=req.url.match(new RegExp(`^/api/v1/tenants/${tenant}/studio/exhibitions/00000000-0000-4000-8000-(\\d{12})/native-oex/(export|exports/([a-f0-9-]+))$`));
+          const match=req.url.match(new RegExp(`^/api/v1/tenants/${tenant}/studio/exhibitions/00000000-0000-4000-8000-(\\d{12})/native-oex/(export|exports/([a-f0-9-]+)(/progress)?)$`));
           if(!match){req.resume();json(404,{code:'NOT_FOUND'});return;}
           const n=Number(match[1]);
           if(req.method==='GET'){
             req.resume();const operationId=match[3],op=operations.get(operationId);if(!op){json(404,{code:'NOT_FOUND'});return;}
+            if(match[4]){
+              if(n!==14||!op.release){json(404,{code:'NOT_FOUND'});return;}
+              op.progressPolls=(op.progressPolls??0)+1;
+              if(op.progressPolls===1){json(200,{operationId,state:'pending',progress:{phase:'packing',completedItems:1,totalItems:2}});return;}
+              json(200,{operationId,state:'pending',progress:{phase:'preparing'}});op.release();return;
+            }
             if(op.state==='failed'){json(200,{operationId,state:'failed'});return;}
             op.polls++;if(n===8||n===11||op.polls===1){json(200,{operationId,state:'pending'});return;}
             if(n===5||n===6){json(200,{operationId,state:n===5?'failed':'uncertain'});return;}
@@ -40,6 +46,13 @@ final class BoundedOEXExportTests: XCTestCase {
           if(n===11){
             const stream=Buffer.alloc(1024*1024);data.copy(stream);res.writeHead(200,{'content-type':'application/vnd.exhibitos.oex+zip','content-length':String(stream.length),'cache-control':'no-store','x-exhibitos-oex-profile':'bounded-file-v1','x-exhibitos-oex-sha256':createHash('sha256').update(stream).digest('hex'),'x-exhibitos-oex-operation':requestId});
             let offset=0;const timer=setInterval(()=>{const end=Math.min(offset+65536,stream.length);res.write(stream.subarray(offset,end));offset=end;if(offset===stream.length){clearInterval(timer);res.end();}},50);res.on('close',()=>{clearInterval(timer);op.state='failed';});return;
+          }
+          if(n===14){
+            await new Promise(resolve=>{
+              const timer=setTimeout(resolve,3000);
+              op.release=()=>{clearTimeout(timer);resolve();};
+            });
+            delete op.release;
           }
           res.writeHead(200,{'content-type':'application/vnd.exhibitos.oex+zip','content-length':n===13?'536870913':String(data.length),'cache-control':'no-store','x-exhibitos-oex-profile':'bounded-file-v1','x-exhibitos-oex-sha256':n===3?'0'.repeat(64):sha256,'x-exhibitos-oex-operation':n===2?'invalid':(n===12?'11111111-1111-4111-8111-111111111111':requestId)});res.end(data);
         });server.listen(0,'127.0.0.1',()=>console.log(server.address().port));
@@ -73,7 +86,10 @@ final class BoundedOEXExportTests: XCTestCase {
         catch let failure as AuthoringFailure { XCTAssertEqual(failure.code, "ETAG_INVALID") }
         do { _ = try await api.exportBoundedOEX(exhibitionId: id(9), etag: etag); XCTFail("Pre-admission denial must reject output") }
         catch let failure as AuthoringFailure { XCTAssertEqual(failure.status, 403) }
-        let archive = try await api.exportBoundedOEX(exhibitionId: id(1), etag: etag)
+        var progress: [NativeOEXExportProgress] = []
+        let archive = try await api.exportBoundedOEX(exhibitionId: id(14), etag: etag) { progress.append($0) }
+        XCTAssertEqual(progress, [.packing(completed: 1, total: 2), .receiving(bytes: 0, total: 26),
+                                  .receiving(bytes: 26, total: 26), .verifying])
         XCTAssertEqual(archive.count, 26)
         try await archive.write(to: output)
         let original = try Data(contentsOf: output)

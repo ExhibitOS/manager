@@ -127,6 +127,7 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var failure: AuthoringFailure?
     @Published private(set) var notice = ""
     @Published private(set) var exporting = false
+    @Published private(set) var exportProgress: OEXExportDisplayProgress?
     @Published private(set) var exportedURL: URL?
     @Published private(set) var exportedSHA256: String?
     @Published var query = ""
@@ -2333,8 +2334,12 @@ final class ExhibitionModel: ObservableObject {
     func exportOEX() async {
         await work {
             guard !dirty, let draft, let etag = state?.etag, let api else { throw AuthoringFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
+            exportProgress = nil
             exporting = true
-            defer { exporting = false }
+            defer {
+                exporting = false
+                if exportProgress != .complete { exportProgress = nil }
+            }
             let bounded = session?.nativeOexExportProfile == "bounded-file-v1"
             let accessID = viewportAccessID, workspace = state?.workspaceId
             let principal = state?.principalId, tenant = state?.tenantId
@@ -2359,13 +2364,18 @@ final class ExhibitionModel: ObservableObject {
             guard viewportAccessID == accessID, state?.workspaceId == workspace,
                   state?.principalId == principal, state?.tenantId == tenant,
                   self.draft == draft, state?.etag == etag, !dirty else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+            exportProgress = .preparing
+            let progress: @MainActor @Sendable (NativeOEXExportProgress) -> Void = { [weak self] update in
+                guard !Task.isCancelled, let self, self.exporting, self.viewportAccessID == accessID else { return }
+                self.exportProgress = .transport(update)
+            }
             let archiveSHA256: String
             let writeOutput: (URL) async throws -> Void
             if bounded {
-                let archive = try await api.exportBoundedOEX(exhibitionId: draft.id, etag: etag)
+                let archive = try await api.exportBoundedOEX(exhibitionId: draft.id, etag: etag, progress: progress)
                 archiveSHA256 = archive.sha256; writeOutput = { try await archive.write(to: $0) }
             } else {
-                let archive = try await api.exportOEX(exhibitionId: draft.id, etag: etag)
+                let archive = try await api.exportOEX(exhibitionId: draft.id, etag: etag, progress: progress)
                 archiveSHA256 = archive.sha256; writeOutput = { try await archive.write(to: $0) }
             }
             guard viewportAccessID == accessID, state?.workspaceId == workspace,
@@ -2374,8 +2384,10 @@ final class ExhibitionModel: ObservableObject {
             try Task.checkCancellation()
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
+            exportProgress = .saving
             try await writeOutput(url)
             exportedURL = url; exportedSHA256 = archiveSHA256
+            exportProgress = .complete
             notice = "OEX 파일을 저장했습니다. 인터넷 공개는 공개 단계에서 진행하세요."
         }
     }
@@ -2506,6 +2518,38 @@ final class ExhibitionModel: ObservableObject {
     }
 }
 
+enum OEXExportDisplayProgress: Equatable {
+    case preparing, transport(NativeOEXExportProgress), saving, complete
+
+    var label: String {
+        switch self {
+        case .preparing: "작품의 권리와 파일을 확인하고 OEX를 준비하고 있습니다."
+        case .transport(.packing(let completed?, let total?)): "OEX 구성 파일 확인 · \(completed) / \(total)개"
+        case .transport(.packing): "OEX에 넣을 파일을 확인하고 있습니다."
+        case .transport(.checkingPackage): "서버에서 만든 OEX 파일을 확인하고 있습니다."
+        case .transport(.receiving(let bytes, let total)):
+            total.map { "OEX 파일 받기 · \(formatted(bytes)) / \(formatted($0))" }
+                ?? "OEX 파일 받기 · \(formatted(bytes))"
+        case .transport(.verifying): "OEX 파일과 내보내기 결과를 확인하고 있습니다."
+        case .saving: "선택한 위치에 OEX 파일을 저장하고 있습니다."
+        case .complete: "OEX 파일 저장 완료"
+        }
+    }
+
+    var fraction: Double? {
+        switch self {
+        case .transport(.packing(let completed?, let total?)): min(0.99, Double(completed) / Double(total))
+        case .transport(.receiving(let bytes, let total?)): min(0.99, Double(bytes) / Double(total))
+        case .complete: 1
+        default: nil
+        }
+    }
+
+    private func formatted(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+}
+
 struct NativeOEXExportControls: View {
     @ObservedObject var model: ExhibitionModel
     let ready: Bool
@@ -2517,7 +2561,18 @@ struct NativeOEXExportControls: View {
                 .keyboardShortcut("e", modifiers: [.command, .shift])
             Text("저장한 전시와 허용된 작품 파일을 OEX로 저장합니다.").foregroundStyle(.secondary)
             if ready && (model.dirty || model.state?.etag == nil) { Text("먼저 전시를 저장하세요.").foregroundStyle(.secondary) }
-            if model.exporting { ProgressView("작품의 권리와 파일을 확인하고 OEX를 준비하고 있습니다…") }
+            if let progress = model.exportProgress, model.exporting || model.exportedURL != nil {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(progress.label)
+                    Group {
+                        if let fraction = progress.fraction { ProgressView(value: fraction) }
+                        else { ProgressView() }
+                    }
+                    .progressViewStyle(.linear)
+                    .frame(height: 8)
+                    .accessibilityLabel(progress.label)
+                }
+            }
             if let url = model.exportedURL {
                 Text(url.path).textSelection(.enabled)
                 Button("Finder에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
