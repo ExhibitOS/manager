@@ -200,7 +200,7 @@ struct NativeExhibitionView: View {
             } else if model.pending {
                 Label("저장 응답을 확인할 때까지 현재 전시를 유지합니다.", systemImage: "clock")
             } else if model.immutable {
-                HStack { Text("공개용 저장본").foregroundStyle(.secondary); Button("복제해서 편집") { Task { if controller.editingContextActive { await model.copyForEditing() } } }.disabled(!ready || readOnly || model.busy) }
+                HStack { Text("공개용 저장본").foregroundStyle(.secondary); Button("복제해서 편집") { Task { await model.copyForEditing() } }.disabled(!ready || readOnly || !model.canCopyForEditing) }
             } else if model.dirty {
                 Text("아직 저장하지 않은 입력이 있습니다.").foregroundStyle(.secondary)
             } else if model.reusablePublicationId != nil {

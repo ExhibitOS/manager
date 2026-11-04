@@ -24,6 +24,32 @@ final class ViewportProtocolTests: XCTestCase {
         let old = try JSONDecoder().decode(NativeViewportPolicy.self, from: Data("{\"exhibitionId\":\"\(exhibition)\",\"revision\":2,\"etag\":\"old\",\"boundedReadOnly\":true}".utf8))
         XCTAssertNil(old.boundedProfile); XCTAssertNil(old.editingCapability)
     }
+    func testOrdinaryDraftPolicyRequiresExplicitNonBoundedProvenance() throws {
+        let base: [String: Any] = ["exhibitionId": UUID().uuidString, "revision": 2, "etag": "saved",
+                                  "boundedProfile": false, "boundedEditRequired": false, "boundedReadOnly": false]
+        func policy(_ value: [String: Any]) throws -> NativeViewportPolicy {
+            try JSONDecoder().decode(NativeViewportPolicy.self, from: JSONSerialization.data(withJSONObject: value))
+        }
+        XCTAssertTrue(try policy(base).confirmsOrdinaryDraft)
+        for key in ["boundedProfile", "boundedEditRequired", "boundedReadOnly"] {
+            var restricted = base
+            restricted[key] = true
+            XCTAssertFalse(try policy(restricted).confirmsOrdinaryDraft)
+        }
+        var contradictory = base
+        contradictory["editingCapability"] = [
+            "version": 1, "kind": "native-bounded-edit-v1", "tenantId": UUID().uuidString,
+            "principalId": UUID().uuidString, "workspaceId": UUID().uuidString,
+            "exhibitionId": base["exhibitionId"]!, "revision": 2,
+            "etag": "\"studio-r2-" + String(repeating: "a", count: 64) + "\"",
+        ]
+        XCTAssertFalse(try policy(contradictory).confirmsOrdinaryDraft)
+        for key in ["boundedProfile", "boundedEditRequired"] {
+            var legacy = base
+            legacy.removeValue(forKey: key)
+            XCTAssertFalse(try policy(legacy).confirmsOrdinaryDraft)
+        }
+    }
     func testBoundedFrameScopeIsPairedAndLegacyFramesOmitIt() throws {
         let draft = try NativeExhibitionDraft.new(), workspace = UUID().uuidString.lowercased()
         func frame(_ workspace: String?, _ etag: String?) -> ViewportFrame {
