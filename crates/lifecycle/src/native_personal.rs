@@ -25,6 +25,43 @@ mod selected_guard_tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
+    fn torn_runtime_binding_refuses_both_configurations() {
+        let old = "253de8963ec9f0e0a2884a27d8e756b453cf61899e38c31571d9993a7d6ecff4";
+        let new = "10a21f3b7a73a66011e077f7927f951f917e604720591acbcc2cdb47222f4032";
+        let password = "a".repeat(96);
+        let tenant = Uuid::new_v4().to_string();
+        let ports = Ports::default();
+        let workspace = Uuid::new_v4().to_string();
+        let principal = Uuid::new_v4().to_string();
+        let environment = |pin: &str| {
+            format!("EXHIBITOS_RUNTIME_MODE=native\nEXHIBITOS_AUTHORING_MODE=personal\nNATIVE_RUNTIME_MANIFEST_SHA256={pin}\nEXHIBITOS_PORT={}\nEXHIBITOS_API_PORT={}\nPOSTGRES_PASSWORD={password}\nDATABASE_URL=postgresql://exhibitos:{password}@127.0.0.1:{}/exhibitos\nTENANT_ID={tenant}\n", ports.web, ports.api, ports.database)
+        };
+        let record = |pin: &str, bytes: &[u8]| Personal {
+            format: 1,
+            workspace_id: workspace.clone(),
+            tenant_id: tenant.clone(),
+            principal_id: principal.clone(),
+            owner_uid: unsafe { libc::geteuid() },
+            ports,
+            manifest_sha256: pin.into(),
+            environment_sha256: digest(bytes),
+        };
+        let before = environment(old);
+        let after = environment(new);
+        let source = record(old, before.as_bytes());
+        let target = record(new, after.as_bytes());
+        let mut source_fields = personal_environment_fields(&source, before.as_bytes()).unwrap();
+        let mut target_fields = personal_environment_fields(&target, after.as_bytes()).unwrap();
+        assert_eq!(source_fields.remove("NATIVE_RUNTIME_MANIFEST_SHA256").as_deref(), Some(old));
+        assert_eq!(target_fields.remove("NATIVE_RUNTIME_MANIFEST_SHA256").as_deref(), Some(new));
+        assert_eq!(source_fields, target_fields);
+        assert_eq!(personal_environment_fields(&source, after.as_bytes()).unwrap_err().code,
+                   "NATIVE_CONFIGURATION_CHANGED");
+        assert_eq!(personal_environment_fields(&target, before.as_bytes()).unwrap_err().code,
+                   "NATIVE_CONFIGURATION_CHANGED");
+    }
+
+    #[test]
     fn guard_is_bound_to_exact_private_root() {
         let parent = std::env::temp_dir().join(format!("exhibitos-selected-guard-{}", Uuid::new_v4()));
         fs::create_dir(&parent).unwrap();
@@ -91,6 +128,57 @@ fn read(service: &LifecycleService) -> Result<Personal> {
     }
     Ok(record)
 }
+fn personal_environment_fields(record: &Personal, bytes: &[u8]) -> Result<BTreeMap<String, String>> {
+    let ports = record.ports;
+    if digest(bytes) != record.environment_sha256 {
+        return Err(err("NATIVE_CONFIGURATION_CHANGED"));
+    }
+    let mut fields = BTreeMap::new();
+    for line in std::str::from_utf8(bytes)
+        .map_err(|_| err("NATIVE_CONFIGURATION_INVALID"))?
+        .lines()
+    {
+        let (k, v) = line
+            .split_once('=')
+            .ok_or_else(|| err("NATIVE_CONFIGURATION_INVALID"))?;
+        if fields.insert(k.to_string(), v.to_string()).is_some() {
+            return Err(err("NATIVE_CONFIGURATION_INVALID"));
+        }
+    }
+    let password = fields
+        .get("POSTGRES_PASSWORD")
+        .ok_or_else(|| err("NATIVE_CONFIGURATION_INVALID"))?;
+    if password.len() != 96
+        || !password
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err(err("NATIVE_CONFIGURATION_INVALID"));
+    }
+    let required = [
+        ("EXHIBITOS_RUNTIME_MODE", "native".into()),
+        ("EXHIBITOS_AUTHORING_MODE", "personal".into()),
+        ("NATIVE_RUNTIME_MANIFEST_SHA256", record.manifest_sha256.clone()),
+        ("EXHIBITOS_PORT", ports.web.to_string()),
+        ("EXHIBITOS_API_PORT", ports.api.to_string()),
+        ("TENANT_ID", record.tenant_id.clone()),
+        (
+            "DATABASE_URL",
+            format!(
+                "postgresql://exhibitos:{password}@127.0.0.1:{}/exhibitos",
+                ports.database
+            ),
+        ),
+    ];
+    if fields.len() != 8 || required.iter().any(|(k, v)| fields.get(*k) != Some(v)) {
+        return Err(err("NATIVE_CONFIGURATION_INVALID"));
+    }
+    fields.insert("WORKSPACE_ID".into(), record.workspace_id.clone());
+    fields.insert("PRINCIPAL_ID".into(), record.principal_id.clone());
+    fields.insert("OWNER_UID".into(), record.owner_uid.to_string());
+    Ok(fields)
+}
+
 impl LifecycleService {
     pub(crate) fn personal_identity(&self) -> Result<(String, String, String)> {
         let r = read(self)?;
@@ -131,54 +219,9 @@ impl LifecycleService {
             8192,
             true,
         )?);
-        if digest(&bytes.0) != record.environment_sha256 {
-            return Err(err("NATIVE_CONFIGURATION_CHANGED"));
-        }
-        let mut fields = BTreeMap::new();
-        for line in std::str::from_utf8(&bytes.0)
-            .map_err(|_| err("NATIVE_CONFIGURATION_INVALID"))?
-            .lines()
-        {
-            let (k, v) = line
-                .split_once('=')
-                .ok_or_else(|| err("NATIVE_CONFIGURATION_INVALID"))?;
-            if fields.insert(k.to_string(), v.to_string()).is_some() {
-                return Err(err("NATIVE_CONFIGURATION_INVALID"));
-            }
-        }
-        let password = fields
-            .get("POSTGRES_PASSWORD")
-            .ok_or_else(|| err("NATIVE_CONFIGURATION_INVALID"))?;
-        if password.len() != 96
-            || !password
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-        {
-            return Err(err("NATIVE_CONFIGURATION_INVALID"));
-        }
-        let required = [
-            ("EXHIBITOS_RUNTIME_MODE", "native".into()),
-            ("EXHIBITOS_AUTHORING_MODE", "personal".into()),
-            ("NATIVE_RUNTIME_MANIFEST_SHA256", record.manifest_sha256),
-            ("EXHIBITOS_PORT", ports.web.to_string()),
-            ("EXHIBITOS_API_PORT", ports.api.to_string()),
-            ("TENANT_ID", record.tenant_id),
-            (
-                "DATABASE_URL",
-                format!(
-                    "postgresql://exhibitos:{password}@127.0.0.1:{}/exhibitos",
-                    ports.database
-                ),
-            ),
-        ];
-        if fields.len() != 8 || required.iter().any(|(k, v)| fields.get(*k) != Some(v)) {
-            return Err(err("NATIVE_CONFIGURATION_INVALID"));
-        }
-        fields.insert("WORKSPACE_ID".into(), record.workspace_id);
-        fields.insert("PRINCIPAL_ID".into(), record.principal_id);
-        fields.insert("OWNER_UID".into(), record.owner_uid.to_string());
-        Ok(fields)
+        personal_environment_fields(&record, &bytes.0)
     }
+
     pub fn prepare_native_personal(&self, payload: &Payload, ports: Ports) -> Result<Context> {
         let _lock = self.lock()?;
         self.prepare_native_personal_impl(payload, ports)
@@ -278,3 +321,7 @@ impl LifecycleService {
         })
     }
 }
+
+#[cfg(debug_assertions)]
+#[path = "native_personal_checkpoint.rs"]
+pub(crate) mod physical_checkpoint;

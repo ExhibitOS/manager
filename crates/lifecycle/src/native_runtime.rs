@@ -203,6 +203,7 @@ pub struct Session {
     payload: Arc<Payload>,
     ports: Ports,
     environment: Environment,
+    transition_fence: Option<String>,
     guard: Option<OperationGuard>,
     postgres: Option<Owned>,
     node: Option<Owned>,
@@ -307,6 +308,38 @@ pub(crate) fn check_interrupted_root(root: &Path) -> Result<()> {
         if alive(pid) {
             return Err(err("NATIVE_RECOVERY_REQUIRED"));
         }
+    }
+    Ok(())
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn check_cold_checkpoint_root(root: &Path) -> Result<()> {
+    check_cold_transition_root(root, None)
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn check_cold_transition_root(root: &Path, drained_failure: Option<&str>) -> Result<()> {
+    check_interrupted_root(root)?;
+    let cold = || err("NATIVE_PHYSICAL_CHECKPOINT_NOT_COLD");
+    if exists(&root.join("native-database/postmaster.pid"))? {
+        return Err(cold());
+    }
+    let current: Current = serde_json::from_slice(&installation_backup::source_bytes(
+        root, "native-current-run.json", 4096, true,
+    )?).map_err(|_| cold())?;
+    let relative = format!("native-runs/{}/state.json", current.id);
+    let prior: Context = serde_json::from_slice(&installation_backup::source_bytes(
+        root, &relative, 8192, true,
+    )?).map_err(|_| cold())?;
+    let terminal = if let Some(confirmed) = drained_failure {
+        prior.state == "failed" && confirmed == current.id
+    } else {
+        prior.state == "stopped" && ["postgres", "node", "auxiliary"].iter()
+            .all(|name| prior.exits.get(*name) == Some(&0))
+    };
+    if !terminal || prior.postgres_pid.is_some() || prior.node_pid.is_some()
+        || prior.auxiliary_pid.is_some() || prior.exits.values().any(|code| *code != 0) {
+        return Err(cold());
     }
     Ok(())
 }
@@ -498,12 +531,36 @@ impl Session {
         installations::private_directory(&service.root)?;
         signed_release::trust::lifecycle_writer::admit(&service.root, &Action::Start)?;
         let environment = Environment(service.native_start_environment(&payload, ports)?);
+        Self::bound_session(service, payload, ports, guard, environment, None)
+    }
+    #[cfg(debug_assertions)]
+    pub(crate) fn new_transition_trial(
+        service: &LifecycleService,
+        payload: Arc<Payload>,
+        ports: Ports,
+        guard: OperationGuard,
+        binding: crate::native_personal::physical_checkpoint::TrialBinding,
+    ) -> Result<Self> {
+        installations::private_directory(&service.root)?;
+        signed_release::trust::lifecycle_writer::admit(&service.root, &Action::Start)?;
+        let (fields, fence) = binding.into_parts();
+        Self::bound_session(service, payload, ports, guard, Environment(fields), Some(fence))
+    }
+    fn bound_session(
+        service: &LifecycleService,
+        payload: Arc<Payload>,
+        ports: Ports,
+        guard: OperationGuard,
+        environment: Environment,
+        transition_fence: Option<String>,
+    ) -> Result<Self> {
         Ok(Self {
             service: LifecycleService::bound_existing(service.root.clone())?,
             observation_root: crate::maintenance_source::DirectoryPin::open(&service.root)?,
             payload,
             ports,
             environment,
+            transition_fence,
             guard: Some(guard),
             postgres: None,
             node: None,
@@ -1207,10 +1264,16 @@ impl Session {
             self.guard = Some(self.service.lock()?);
         }
         signed_release::trust::lifecycle_writer::admit(&self.service.root, &Action::Start)?;
-        self.environment = Environment(
-            self.service
-                .native_start_environment(&self.payload, self.ports)?,
-        );
+        #[cfg(debug_assertions)]
+        if let Some(fence) = &self.transition_fence {
+            self.check_native_observation_fence()?;
+            crate::native_personal::physical_checkpoint::check_trial_fence(&self.service.root, fence)?;
+        }
+        if self.transition_fence.is_none() {
+            self.environment = Environment(
+                self.service.native_start_environment(&self.payload, self.ports)?,
+            );
+        }
         // Check before publishing a new current pointer, including orphaned jobs.
         check_interrupted_root(&self.service.root)?;
         let parent = directory(&self.service.root, "native-runs")?;
@@ -1589,6 +1652,7 @@ impl Session {
                 child.signal()?;
             } else if let Some(child) = self.node.as_mut() {
                 child.signal()?;
+                self.node_drain_requested |= child.term_delivered;
             } else if let Some(child) = self.postgres.as_mut() {
                 child.signal()?;
             } else {
@@ -1602,7 +1666,9 @@ impl Session {
                     self.state = "stopping".into();
                     return Err(error);
                 }
-                self.guard = None;
+                if self.transition_fence.is_none() {
+                    self.guard = None;
+                }
                 self.local_authority = None;
                 return Ok(self.snapshot());
             }
@@ -1615,6 +1681,17 @@ impl Session {
             thread::sleep(Duration::from_millis(100));
         }
     }
+    #[cfg(debug_assertions)]
+    pub(crate) fn drained_transition_guard(&self) -> Result<&OperationGuard> {
+        if self.transition_fence.is_none() || self.any_owned()
+            || !matches!(self.state.as_str(), "stopped" | "failed")
+            || !clean_node_quiescence(self.exits.contains_key("node"), self.node_drain_requested, &self.exits)
+            || self.exits.values().any(|code| *code != 0) {
+            return Err(err("NATIVE_STOP_PENDING"));
+        }
+        self.check_native_observation_fence()?;
+        self.guard.as_ref().ok_or_else(|| err("NATIVE_STOP_PENDING"))
+    }
     pub fn status(&mut self) -> Result<Context> {
         self.poll()?;
         if self.state == "stopping" {
@@ -1624,6 +1701,7 @@ impl Session {
                 child.signal()?;
             } else if let Some(child) = self.node.as_mut() {
                 child.signal()?;
+                self.node_drain_requested |= child.term_delivered;
             } else if let Some(child) = self.postgres.as_mut() {
                 child.signal()?;
             } else {
@@ -1637,7 +1715,9 @@ impl Session {
                     self.state = "stopping".into();
                     return Err(error);
                 }
-                self.guard = None;
+                if self.transition_fence.is_none() {
+                    self.guard = None;
+                }
                 self.local_authority = None;
             }
             return Ok(self.snapshot());

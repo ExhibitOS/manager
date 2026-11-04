@@ -8,6 +8,11 @@ use std::io::{Cursor, Seek};
 mod current_inventory;
 #[path = "host_stream_extraction.rs"]
 mod stream_extraction;
+#[cfg(all(target_os = "macos", debug_assertions))]
+#[path = "host_selected_checkpoint.rs"]
+mod selected_checkpoint;
+#[cfg(all(target_os = "macos", debug_assertions))]
+pub(crate) use selected_checkpoint::protect_selected;
 pub use current_inventory::HostCurrentReceipt;
 pub(crate) use current_inventory::verify_host_current_borrowed;
 const CONTEXT: &[u8] = b"ExhibitOS-host-checkpoint-v1\0";
@@ -421,11 +426,18 @@ fn deduplicate(m: &mut Inventory) {
 }
 struct Body {
     prefix: Cursor<Vec<u8>>,
+    projected_sources: BTreeMap<String, PathBuf>,
     root: PathBuf,
     items: Vec<Item>,
     references: BTreeMap<String, String>,
     next: usize,
     current: Option<(File, Item, fs::Metadata, u64, Sha256)>,
+}
+fn body_path(root: &Path, projected: &BTreeMap<String, PathBuf>, name: &str) -> std::io::Result<PathBuf> {
+    if projected.is_empty() {
+        return Ok(root.join(name));
+    }
+    projected.get(name).cloned().ok_or_else(|| std::io::Error::other("HOST_SOURCE_CHANGED"))
 }
 impl Read for Body {
     fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
@@ -451,7 +463,7 @@ impl Read for Body {
                 let mut extra = [0u8; 1];
                 if f.read(&mut extra)? != 0
                     || !unchanged(before, &f.metadata()?)
-                    || !unchanged(before, &fs::symlink_metadata(self.root.join(&e.path))?)
+                    || !unchanged(before, &fs::symlink_metadata(body_path(&self.root, &self.projected_sources, &e.path)?)?)
                     || format!("{:x}", h.clone().finalize()) != e.sha256.as_deref().unwrap_or("")
                 {
                     return Err(std::io::Error::other("HOST_SOURCE_CHANGED"));
@@ -466,14 +478,14 @@ impl Read for Body {
                 continue;
             }
             if self.references.contains_key(&e.path) {
-                let (bytes, digest) = hash(&self.root.join(&e.path))
+                let (bytes, digest) = hash(&body_path(&self.root, &self.projected_sources, &e.path)?)
                     .map_err(|_| std::io::Error::other("HOST_SOURCE_CHANGED"))?;
                 if bytes != e.bytes || Some(digest) != e.sha256 {
                     return Err(std::io::Error::other("HOST_SOURCE_CHANGED"));
                 }
                 continue;
             }
-            let f = file(&self.root.join(&e.path))
+            let f = file(&body_path(&self.root, &self.projected_sources, &e.path)?)
                 .map_err(|_| std::io::Error::other("HOST_SOURCE_CHANGED"))?;
             let meta = f.metadata()?;
             if meta.len() != e.bytes || mode(&meta) != e.mode {
@@ -686,6 +698,7 @@ fn checkpoint_host_guarded<B, T>(
     let pending = parent.join(format!(".host-checkpoint-{id}.pending"));
     let mut output = private_new(&pending)?;
     let mut body = Body {
+        projected_sources: BTreeMap::new(),
         prefix: Cursor::new(prefix),
         root: profile.into(),
         items: m.items.clone(),
@@ -1697,6 +1710,7 @@ mod tests {
         assert_eq!(m.content_references["b"], "a");
         fs::write(p.join("b"), vec![18; 8192]).unwrap();
         let mut body = Body {
+            projected_sources: BTreeMap::new(),
             prefix: Cursor::new(Vec::new()),
             root: p.clone(),
             items: m.items,
@@ -1987,6 +2001,7 @@ mod tests {
         write_new(&data, b"initial").unwrap();
         let m = inventory(&p, &BTreeSet::new(), &Uuid::new_v4().to_string()).unwrap();
         let mut body = Body {
+            projected_sources: BTreeMap::new(),
             prefix: Cursor::new(Vec::new()),
             root: p,
             items: m.items,

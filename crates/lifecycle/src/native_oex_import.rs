@@ -100,13 +100,34 @@ impl InstallationController {
         let (registry,_) = load(&profile.root)?.ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
         let entry=registry.installations.iter().find(|e|e.id==registry.active_id).ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
         if entry.kind=="oex-import" {
-            let name=format!("native-oex-workspace-complete-{}.json",digest(service.root.as_os_str().as_encoded_bytes()));
-            let expected=serde_json::json!({"format":1,"workspaceId":transfer.workspace_id,"tenantId":transfer.tenant_id,"principalId":transfer.principal_id});
-            let bytes=installation_backup::source_bytes(&profile.root,&name,4096,true).map_err(|_|err("NATIVE_BOUNDED_IMPORT_PENDING"))?;
-            let actual:Value=serde_json::from_slice(&bytes).map_err(|_|err("NATIVE_BOUNDED_IMPORT_PENDING"))?;
-            if actual!=expected {return Err(err("NATIVE_BOUNDED_IMPORT_PENDING"));}
+            self.verified_oex_workspace_completion_unlocked(service, &transfer)?;
         }
         Ok(())
+    }
+
+    /// Return the exact source bytes only after checking the path-bound
+    /// completion marker against this workspace's validated transfer identity.
+    fn verified_oex_workspace_completion_unlocked(
+        &self,
+        service: &LifecycleService,
+        transfer: &Transfer,
+    ) -> Result<Vec<u8>> {
+        let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
+        let name = format!("native-oex-workspace-complete-{}.json", digest(service.root.as_os_str().as_encoded_bytes()));
+        let expected = serde_json::json!({
+            "format": 1,
+            "workspaceId": transfer.workspace_id,
+            "tenantId": transfer.tenant_id,
+            "principalId": transfer.principal_id,
+        });
+        let bytes = installation_backup::source_bytes(&profile.root, &name, 4096, true)
+            .map_err(|_| err("NATIVE_BOUNDED_IMPORT_PENDING"))?;
+        let actual: Value = serde_json::from_slice(&bytes)
+            .map_err(|_| err("NATIVE_BOUNDED_IMPORT_PENDING"))?;
+        if actual != expected {
+            return Err(err("NATIVE_BOUNDED_IMPORT_PENDING"));
+        }
+        Ok(bytes)
     }
     pub fn save_native_oex_import(&self, token: &str, mut state: Transfer) -> Result<Transfer> {
         self.with_current(token, |service| {
