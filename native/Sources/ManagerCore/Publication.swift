@@ -169,16 +169,16 @@ extension NativeExhibitionDraft {
     }
     /// The existing publication API freezes its source exhibition. A separate
     /// private copy retains that contract while the user's authoring draft stays editable.
-    public func copyForPublication(now: Date = Date()) throws -> Self { try copyWithNewIdentity(suffix: " · 공개용 저장본", now: now) }
+    public func copyForPublication(now: Date = Date()) throws -> Self { try copyWithNewIdentity(suffix: nil, now: now) }
     public func copyForEditing(now: Date = Date()) throws -> Self { try copyWithNewIdentity(suffix: " · 편집 사본", now: now) }
-    private func copyWithNewIdentity(suffix: String, now: Date) throws -> Self {
+    private func copyWithNewIdentity(suffix: String?, now: Date) throws -> Self {
         var value = document, candidate = self.candidate
         let id = UUID().uuidString.lowercased(), time = ISO8601DateFormatter().string(from: now)
         value["id"] = .string(UUID().uuidString.lowercased()); value["exhibitionId"] = .string(id)
         value["editVersion"] = .integer(1); value["createdAt"] = .string(time); value["updatedAt"] = .string(time)
         candidate["id"] = .string(id); candidate["revisionId"] = .string(UUID().uuidString.lowercased())
         candidate["revision"] = .integer(1); candidate["createdAt"] = .string(time)
-        candidate["title"] = .string(String(title.prefix(480)) + suffix)
+        if let suffix { candidate["title"] = .string(String(title.prefix(480)) + suffix) }
         candidate = try InstallationSettings.remappingPlacementReferences(in: candidate)
         value["candidate"] = candidate
         return try Self(document: value)

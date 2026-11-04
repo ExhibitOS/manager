@@ -3,7 +3,8 @@ import XCTest
 @testable import ManagerCore
 final class PublicationTests: XCTestCase {
     func testPublicationCopyRetainsGeometryRightsAndOpaqueDataWhileChangingOnlyDocumentIdentity() throws {
-        var source = try NativeExhibitionDraft.new(title: "제작 원본")
+        let authoredTitle = String(repeating: "가", count: 500) + " · 공개용 저장본"
+        var source = try NativeExhibitionDraft.new(title: authoredTitle)
         var candidate = source.candidate
         candidate["extensions"] = .object(["com.example/retained":.object(["note":.string("원문 보존")])])
         try source.replaceCandidate(candidate)
@@ -14,7 +15,7 @@ final class PublicationTests: XCTestCase {
         XCTAssertNotEqual(copy.candidate["revisionId"], source.candidate["revisionId"])
         XCTAssertEqual(copy.document["editVersion"].integer, 1)
         for key in ["rooms","surfaces","openings","placements","artworks","lights","accessibility","extensions","mediaAssets","audioZones","annotations","scripts"] { XCTAssertEqual(copy.candidate[key],source.candidate[key]) }
-        XCTAssertTrue(copy.title.hasSuffix("공개용 저장본")); XCTAssertEqual(source, original)
+        XCTAssertEqual(copy.title, authoredTitle); XCTAssertEqual(source, original)
         XCTAssertNil(pending.snapshotEtag)
         let decoded = try JSONDecoder().decode(NativePublicationPending.self, from: JSONEncoder().encode(pending)); XCTAssertEqual(decoded, pending)
         XCTAssertTrue(try source.copyForEditing().title.hasSuffix("편집 사본"))
