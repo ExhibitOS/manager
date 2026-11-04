@@ -9,9 +9,13 @@ public enum NativeFloorAudioRuntime {
     /// resolver are present in this reviewed personal runtime. Output and actual
     /// playback still require their own selected-resource checks.
     public static let personalManifestSHA256 = "661fe13d9c059fb2fb501f3154f35fa5359303ff7835dfcb4332ce2f535ac14e"
+    /// The selected personal runtime retains the qualified floor and footstep
+    /// resources and authoring contract. Playback remains a separate check.
+    static let selectedPersonalManifestSHA256 = "10a21f3b7a73a66011e077f7927f951f917e604720591acbcc2cdb47222f4032"
     public static func supports(manifestSHA256: String?, ready: Bool) -> Bool {
         guard ready, let qualifiedManifestSHA256 else { return false }
         return manifestSHA256 == qualifiedManifestSHA256 || manifestSHA256 == personalManifestSHA256
+            || manifestSHA256 == selectedPersonalManifestSHA256
     }
 }
 
@@ -21,6 +25,7 @@ public enum NativeFloorRuntime {
     public static func supports(manifestSHA256: String?, ready: Bool) -> Bool {
         ready && (manifestSHA256 == "46c3d7ef193e21eb8185e707cf886832ccd4d7942667407453e939b2f72ce111"
             || manifestSHA256 == NativeFloorAudioRuntime.personalManifestSHA256
+            || manifestSHA256 == NativeFloorAudioRuntime.selectedPersonalManifestSHA256
             || manifestSHA256 == "b2ce49e9703cadf7d22b73ec5dfd93622489a07c34721f9bbe2b9f6df17ee28e"
             || manifestSHA256 == "859525370a4599a465a502fff15d1cb26db3961ee11ac5bf0a6f64af070c355d")
     }

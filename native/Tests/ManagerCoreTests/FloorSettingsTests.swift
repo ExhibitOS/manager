@@ -120,8 +120,13 @@ final class FloorSettingsTests: XCTestCase {
     }
     func testFootstepCapabilityRequiresExactReadyRuntime() {
         let qualified = "46c3d7ef193e21eb8185e707cf886832ccd4d7942667407453e939b2f72ce111"
+        let selected = "10a21f3b7a73a66011e077f7927f951f917e604720591acbcc2cdb47222f4032"
         XCTAssertTrue(NativeFloorAudioRuntime.supports(manifestSHA256: qualified, ready: true))
         XCTAssertTrue(NativeFloorRuntime.supports(manifestSHA256: qualified, ready: true))
+        XCTAssertTrue(NativeFloorAudioRuntime.supports(manifestSHA256: selected, ready: true))
+        XCTAssertTrue(NativeFloorRuntime.supports(manifestSHA256: selected, ready: true))
+        XCTAssertFalse(NativeFloorAudioRuntime.supports(manifestSHA256: selected, ready: false))
+        XCTAssertFalse(NativeFloorRuntime.supports(manifestSHA256: selected, ready: false))
         XCTAssertFalse(NativeFloorAudioRuntime.supports(manifestSHA256: qualified, ready: false))
         XCTAssertFalse(NativeFloorAudioRuntime.supports(manifestSHA256: nil, ready: true))
         XCTAssertFalse(NativeFloorAudioRuntime.supports(manifestSHA256: "b2ce49e9703cadf7d22b73ec5dfd93622489a07c34721f9bbe2b9f6df17ee28e", ready: true))
