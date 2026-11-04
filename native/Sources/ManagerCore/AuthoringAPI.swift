@@ -188,6 +188,35 @@ private struct NativeOEXExportCompletion: Decodable, Sendable {
     let sha256: String?
 }
 
+public enum NativeOEXExportProgress: Equatable, Sendable {
+    case packing(completed: Int?, total: Int?)
+    case checkingPackage
+    case receiving(bytes: Int, total: Int?)
+    case verifying
+}
+
+private struct NativeOEXPreparationStatus: Decodable {
+    struct Progress: Decodable {
+        let phase: String
+        let completedItems: Int?
+        let totalItems: Int?
+    }
+    let operationId: String
+    let state: String
+    let progress: Progress
+
+    var update: NativeOEXExportProgress? {
+        guard state == "pending" else { return nil }
+        switch (progress.phase, progress.completedItems, progress.totalItems) {
+        case ("packing", nil, nil): return .packing(completed: nil, total: nil)
+        case ("packing", let completed?, let total?) where (1...256).contains(total) && (0...total).contains(completed):
+            return .packing(completed: completed, total: total)
+        case ("verifying", nil, nil): return .checkingPackage
+        default: return nil
+        }
+    }
+}
+
 public actor AuthoringAPI {
     private let base: URL
     private let tenant: String
@@ -483,12 +512,14 @@ public actor AuthoringAPI {
         guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return try file.check(data)
     }
-    public func exportOEX(exhibitionId: String, etag: String) async throws -> NativeOEXArchive {
-        try await receiveOEXExport(exhibitionId: exhibitionId, etag: etag, bounded: false).archive
+    public func exportOEX(exhibitionId: String, etag: String,
+                          progress: (@MainActor @Sendable (NativeOEXExportProgress) -> Void)? = nil) async throws -> NativeOEXArchive {
+        try await receiveOEXExport(exhibitionId: exhibitionId, etag: etag, bounded: false, progress: progress).archive
     }
 
     /// Uses only the selected native producer. Legacy export remains limited to64MiB.
-    public func exportBoundedOEX(exhibitionId: String, etag: String) async throws -> NativeBoundedOEXExport {
+    public func exportBoundedOEX(exhibitionId: String, etag: String,
+                                 progress: (@MainActor @Sendable (NativeOEXExportProgress) -> Void)? = nil) async throws -> NativeBoundedOEXExport {
         guard !authenticationBusy, session != nil else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
         guard session?.nativeOexExportProfile == "bounded-file-v1" else { throw AuthoringFailure("NATIVE_OEX_EXPORT_UNAVAILABLE") }
         guard !boundedExportBusy else { throw AuthoringFailure("NATIVE_OEX_EXPORT_BUSY") }
@@ -505,7 +536,8 @@ public actor AuthoringAPI {
         let intent = BoundedExportIntent(requestId: UUID().uuidString.lowercased(), exhibitionId: id, etag: etag, generation: current)
         uncertainBoundedExport = intent
         do {
-            let received = try await receiveOEXExport(exhibitionId: id, etag: etag, bounded: true, requestId: intent.requestId)
+            let received = try await receiveOEXExport(exhibitionId: id, etag: etag, bounded: true,
+                                                      requestId: intent.requestId, progress: progress)
             guard received.operationId == intent.requestId else { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
             let result = try await boundedExportCompletion(intent)
             guard result.bytes == received.archive.count, result.sha256 == received.archive.sha256 else { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
@@ -543,7 +575,42 @@ public actor AuthoringAPI {
         throw AuthoringFailure("NATIVE_OEX_EXPORT_UNCERTAIN")
     }
 
-    private func receiveOEXExport(exhibitionId: String, etag: String, bounded: Bool, requestId: String? = nil) async throws -> NativeOEXExportResponse {
+    /// Optional observation uses its own read-only endpoint. Polling must not
+    /// acknowledge the terminal receipt that authorizes saving the archive.
+    private func observeBoundedExport(exhibitionId: String, operationId: String, etag: String, generation: UInt64,
+                                      progress: @MainActor @Sendable (NativeOEXExportProgress) -> Void) async {
+        let path = studioPrefix + "/exhibitions/" + exhibitionId + "/native-oex/exports/" + operationId + "/progress"
+        let url = base.appendingPathComponent(path)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 3)
+        request.setValue(etag, forHTTPHeaderField: "If-Match")
+        request.setValue(base.absoluteString, forHTTPHeaderField: "Origin")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        while !Task.isCancelled, self.generation == generation, session != nil {
+            do {
+                let (bytes, response) = try await transport.bytes(for: request)
+                defer { bytes.task.cancel() }
+                guard let http = response as? HTTPURLResponse, http.url == url else { return }
+                if http.statusCode == 200, http.mimeType == "application/json", http.expectedContentLength <= 4096 {
+                    var data = Data()
+                    for try await byte in bytes {
+                        guard data.count < 4096 else { return }
+                        data.append(byte)
+                    }
+                    let status = try JSONDecoder().decode(NativeOEXPreparationStatus.self, from: data)
+                    if !Task.isCancelled, self.generation == generation, status.operationId == operationId,
+                       let update = status.update { await progress(update) }
+                } else if http.statusCode != 404 {
+                    return
+                }
+                try await Task.sleep(for: .milliseconds(500))
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func receiveOEXExport(exhibitionId: String, etag: String, bounded: Bool, requestId: String? = nil,
+                                  progress: (@MainActor @Sendable (NativeOEXExportProgress) -> Void)?) async throws -> NativeOEXExportResponse {
         guard !authenticationBusy, let session else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
         guard etag.range(of: #"^"studio-r[1-9][0-9]*-[a-f0-9]{64}"$"#, options: .regularExpression) != nil else { throw AuthoringFailure("ETAG_INVALID") }
         let id = try identifier(exhibitionId)
@@ -563,7 +630,16 @@ public actor AuthoringAPI {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/vnd.exhibitos.oex+zip", forHTTPHeaderField: "Accept")
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        let observer: Task<Void, Never>?
+        if bounded, let requestId, let progress {
+            observer = Task { await observeBoundedExport(exhibitionId: id, operationId: requestId, etag: etag,
+                                                         generation: current, progress: progress) }
+        } else {
+            observer = nil
+        }
+        defer { observer?.cancel() }
         let (bytes, response) = try await transport.bytes(for: request)
+        observer?.cancel()
         defer { bytes.task.cancel() } // also cancels early header/size rejection
         guard let http = response as? HTTPURLResponse, http.url == url else { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
         let success = http.statusCode == 200
@@ -608,18 +684,31 @@ public actor AuthoringAPI {
             throw AuthoringFailure(code.range(of: "^[A-Z0-9_]{1,80}$", options: .regularExpression) == nil ? "REQUEST_FAILED" : code, status: http.statusCode)
         }
         let writer = try OEXArchiveWriter(limit: limit)
+        let total = http.expectedContentLength > 0 ? Int(http.expectedContentLength) : nil
+        let clock = ContinuousClock()
+        var lastUpdate = clock.now
+        await progress?(.receiving(bytes: 0, total: total))
         var chunk = Data(); chunk.reserveCapacity(256 * 1024)
         try await withTaskCancellationHandler {
             for try await byte in bytes {
                 try Task.checkCancellation()
                 guard writer.count + chunk.count < limit else { throw AuthoringFailure(bounded ? "NATIVE_OEX_EXPORT_LIMIT" : "OEX_LIMIT") }
                 chunk.append(byte)
-                if chunk.count == 256 * 1024 { try writer.append(chunk); chunk.removeAll(keepingCapacity: true) }
+                if chunk.count == 256 * 1024 {
+                    try writer.append(chunk); chunk.removeAll(keepingCapacity: true)
+                    if progress != nil, total.map({ writer.count <= $0 }) ?? true,
+                       lastUpdate.duration(to: clock.now) >= .milliseconds(125) {
+                        lastUpdate = clock.now
+                        await progress?(.receiving(bytes: writer.count, total: total))
+                    }
+                }
             }
             if !chunk.isEmpty { try writer.append(chunk) }
         } onCancel: { bytes.task.cancel() }
         guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         guard http.expectedContentLength < 0 || Int64(writer.count) == http.expectedContentLength else { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
+        await progress?(.receiving(bytes: writer.count, total: total))
+        await progress?(.verifying)
         let staged = try writer.finish()
         if bounded, staged.sha256 != expectedSHA256 { throw AuthoringFailure("OEX_RESPONSE_INVALID") }
         return NativeOEXExportResponse(archive: staged, operationId: operationId)
