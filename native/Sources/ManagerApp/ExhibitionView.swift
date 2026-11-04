@@ -743,8 +743,14 @@ final class ExhibitionModel: ObservableObject {
     var canPreviewPlaque: Bool { canEditPlaque && plaqueDirty && !plaquePreviewing }
     var canRemovePlaque: Bool { canEditPlaque && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && !selectedPlaqueId.isEmpty && !plaqueAdding }
     var canApplyPlaque: Bool {
-        guard canEditPlaque, plaquePreviewAccessID == viewportAccessID, let preview = plaquePreview,
-              preview.base == draft, selectedPlaqueId == preview.command.plaqueId else { return false }
+        // The renderer acknowledges the temporary plaque frame. The saved
+        // base still owns the edit and must match the preview exactly.
+        guard !busy, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
+              !surfaceMaterialDirty, !lightDirty, !benchDirty, !furnishingDirty, !spaceLightingDirty, !architectureApplying,
+              viewportController.connected, viewportController.plaqueInspectorSupported, plaqueMetadataEditable,
+              plaquePreviewAccessID == viewportAccessID, let preview = plaquePreview,
+              preview.base == draft, !editingLocked(acknowledging: preview.displayDraft),
+              selectedPlaqueId == preview.command.plaqueId else { return false }
         return (try? currentPlaqueCommand()) == preview.command
     }
     @Published var surfaceMaterial: SurfaceMaterialFormBuffer? { didSet { clearSurfaceMaterialPreview() } }
@@ -1374,9 +1380,12 @@ final class ExhibitionModel: ObservableObject {
     func applyPlaque() async {
         guard canApplyPlaque else { return }
         await work {
-            guard !immutable, !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
-                  !surfaceMaterialDirty, !lightDirty, !benchDirty, !furnishingDirty && !spaceLightingDirty, !architectureApplying, plaquePreviewAccessID == viewportAccessID,
-                  let preview = plaquePreview, let draft, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            guard !pending, !placingArtwork, !formDirty, !positionDirty, !architectureGeometryDirty,
+                  !surfaceMaterialDirty, !lightDirty, !benchDirty, !furnishingDirty, !spaceLightingDirty, !architectureApplying,
+                  viewportController.connected, viewportController.plaqueInspectorSupported,
+                  plaquePreviewAccessID == viewportAccessID, let preview = plaquePreview,
+                  !editingLocked(acknowledging: preview.displayDraft),
+                  let draft, var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             value.draft = try preview.apply(to: draft, selectedPlaqueId: selectedPlaqueId, command: currentPlaqueCommand())
             try await persist(value); syncFields()
             notice = "명판 변경을 이 Mac에 보관했습니다. 되돌리기로 취소할 수 있으며 전시 저장은 별도로 진행합니다."
