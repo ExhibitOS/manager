@@ -219,6 +219,11 @@ final class ExhibitionModel: ObservableObject {
     private var floorPreviewHostEpoch: String?
     @Published private(set) var floorRuntimeAvailable = false
     @Published private(set) var floorAudioRuntimeAvailable = false
+    @Published private(set) var privateFloorRuntimeAvailable = false
+    @Published private(set) var privateFloorCatalog: NativePrivateFloorCatalog?
+    @Published private(set) var privateFloorImage: NSImage?
+    @Published private(set) var privateFloorLoadFailed = false
+    private var privateFloorRequestID: UUID?
     private var floorAudioIntentBound = false
     @Published private(set) var floorImages: [FloorSettings.Preset: NSImage] = [:]
     private var floorImageAttempts = Set<FloorSettings.Preset>()
@@ -980,7 +985,10 @@ final class ExhibitionModel: ObservableObject {
         viewportCredentials = credentials
         if accessChanged { clearWallFinishPreview(); sharedFurnishingCatalogReady = false; sharedFurnishingCatalog = []; sharedFurnishingCatalogAccessID = nil; sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
         floorPreviewAccessID = nil; floorPreviewContext = nil; floorPreviewHostEpoch = nil
-        if accessChanged { floorImages = [:]; floorImageAttempts = [] }
+        if accessChanged {
+            floorImages = [:]; floorImageAttempts = []
+            clearPrivateFloorCatalog()
+        }
         self.read = read; self.write = write
         viewingPlanPreview = nil; viewingPlanPreviewAccessID = nil; viewingPlanPreviewContext = nil; viewingPlanPreviewHostEpoch = nil; viewingPlanPreviewSequence = nil
         clearViewingPointPreview()
@@ -1529,7 +1537,12 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     func configureFloorRuntime(_ configuration: NativeConfiguration?, ready: Bool) {
-        let available = NativeFloorRuntime.supports(manifestSHA256: configuration?.manifestSha256, ready: ready)
+        let privateFloor = NativePrivateFloorCatalog.supports(manifestSHA256: configuration?.manifestSha256, ready: ready)
+        if privateFloorRuntimeAvailable != privateFloor {
+            privateFloorRuntimeAvailable = privateFloor
+            clearPrivateFloorCatalog()
+        }
+        let available = privateFloor || NativeFloorRuntime.supports(manifestSHA256: configuration?.manifestSha256, ready: ready)
         if floorRuntimeAvailable != available { floorRuntimeAvailable = available }
         let audioAvailable = NativeFloorAudioRuntime.supports(manifestSHA256: configuration?.manifestSha256, ready: ready)
         if floorAudioRuntimeAvailable != audioAvailable {
@@ -1598,12 +1611,55 @@ final class ExhibitionModel: ObservableObject {
         var fields = floor; fields.concreteFootstepsRequested = true; floor = fields
     }
     func stageFloorPreset(_ preset: FloorSettings.Preset, fields: Set<FloorSettings.Field>) {
+        stageFloorMaterial(preset, defaults: FloorSettings.defaults(preset), fields: fields)
+    }
+    private func stageFloorMaterial(_ preset: FloorSettings.Preset, defaults: [FloorSettings.Field: DocumentValue],
+                                    fields: Set<FloorSettings.Field>) {
         guard canEditFloor, !fields.isEmpty, let draft, let target = floorTarget else { return }
         do {
             let prior = try floor.settings.map { _ in try floor.value(candidate: draft.candidate) } ?? nil
-            try floor.stage(FloorSettings.applying(preset: preset, defaults: FloorSettings.defaults(preset), fields: fields,
+            try floor.stage(FloorSettings.applying(preset: preset, defaults: defaults, fields: fields,
                 target: target, prior: prior, candidate: draft.candidate), replacing: fields, candidate: draft.candidate)
         } catch { floorStatus = "유효한 입력을 먼저 적용하거나 되돌린 뒤 재질을 선택하세요." }
+    }
+    var canStagePrivateFloor: Bool {
+        canEditFloor && privateFloorRuntimeAvailable && privateFloorCatalog != nil
+            && floorTarget?.kind == .surface && !floorDirty
+    }
+    func stagePrivateFloor() {
+        guard canStagePrivateFloor else { return }
+        stageFloorMaterial(.wood, defaults: NativePrivateFloorCatalog.defaults, fields: Set(NativePrivateFloorCatalog.defaults.keys))
+    }
+    private func clearPrivateFloorCatalog() {
+        privateFloorRequestID = nil
+        privateFloorCatalog = nil
+        privateFloorImage = nil
+        privateFloorLoadFailed = false
+    }
+    func loadPrivateFloorCatalog() async {
+        guard privateFloorRuntimeAvailable, privateFloorCatalog == nil, privateFloorRequestID == nil, let api else { return }
+        let requestID = UUID()
+        let access = viewportAccessID
+        privateFloorRequestID = requestID
+        privateFloorLoadFailed = false
+        defer { if privateFloorRequestID == requestID { privateFloorRequestID = nil } }
+        do {
+            let catalog = try await api.privateFloorCatalog()
+            try Task.checkCancellation()
+            guard access == viewportAccessID, privateFloorRequestID == requestID, privateFloorRuntimeAvailable else { return }
+            privateFloorCatalog = catalog
+            // A missing thumbnail never blocks a named material choice.
+            let bytes = try await api.privateFloorPreview(catalog)
+            try Task.checkCancellation()
+            guard access == viewportAccessID, privateFloorRequestID == requestID, privateFloorRuntimeAvailable,
+                  let source = CGImageSourceCreateWithData(bytes as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+                  let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 128, kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { return }
+            privateFloorImage = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+        } catch {
+            guard !Task.isCancelled, access == viewportAccessID, privateFloorRequestID == requestID else { return }
+            privateFloorLoadFailed = privateFloorCatalog == nil
+        }
     }
     func resetFloorField(_ field: FloorSettings.Field) {
         guard canEditFloor, floorCanReset, let draft, let persisted = floorBaseline.settings else { return }

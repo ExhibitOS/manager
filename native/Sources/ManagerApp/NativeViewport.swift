@@ -276,6 +276,7 @@ final class NativeViewportController: ObservableObject {
 
 struct NativeViewport: NSViewRepresentable {
     let credentials: LocalAuthoringSession
+    let privateFloor: Bool
     let draft: NativeExhibitionDraft
     let selection: ViewportSelection?
     let presentation: ViewportPresentation
@@ -433,7 +434,7 @@ struct NativeViewport: NSViewRepresentable {
                 for cookie in await store.allCookies() { await store.deleteCookie(cookie) }
                 await store.setCookie(cookie)
                 stage = "RESOURCE_POLICY"
-                let encodedRules = try ViewportResourcePolicy.encodedRules(origin: parent.credentials.origin, tenantId: parent.credentials.tenantId)
+                let encodedRules = try ViewportResourcePolicy.encodedRules(origin: parent.credentials.origin, tenantId: parent.credentials.tenantId, privateFloor: parent.privateFloor)
                 let identifier = "ExhibitOSViewport-" + UUID().uuidString
                 let rule = try await WKContentRuleListStore.default().compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: encodedRules)
                 try? await WKContentRuleListStore.default().removeContentRuleList(forIdentifier: identifier)
@@ -909,7 +910,7 @@ struct NativeViewport: NSViewRepresentable {
                 let request = try SceneSnapshotViewportRequest(frame: frame, saved: saved, camera: camera, placementId: placementId)
                 let json = String(decoding: try JSONEncoder().encode(request.value), as: UTF8.self)
                 guard let baseRule = self.resourceRule else { throw AuthoringFailure("SCENE_SNAPSHOT_NOT_READY") }
-                let rules = try ViewportResourcePolicy.encodedRules(origin: self.parent.credentials.origin, tenantId: frame.tenantId, savedExhibitionId: saved.draft.id)
+                let rules = try ViewportResourcePolicy.encodedRules(origin: self.parent.credentials.origin, tenantId: frame.tenantId, savedExhibitionId: saved.draft.id, privateFloor: self.parent.privateFloor)
                 let identifier = "ExhibitOSSnapshot-" + UUID().uuidString
                 let store = WKContentRuleListStore.default()!
                 let snapshotRule = try await store.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: rules)
@@ -1142,8 +1143,8 @@ struct NativeViewportArea: View {
     }
     private func renderer(credentials: LocalAuthoringSession, draft: NativeExhibitionDraft) -> some View {
         let selectionBlocked = !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.placingArtwork
-        return NativeViewport(credentials: credentials, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.viewportFormDirty || model.positionDirty || model.wallFinishPreviewing || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing, interactionDisabled: selectionBlocked || NativeViewportAccess.boundedInteractionBlocked(boundedAdmission: model.boundedPlacementCapability != nil, acknowledged: model.boundedPlacementReady), selectionDisabled: selectionBlocked, boundedEdit: model.boundedPlacementCapability, acceptBoundedAck: { model.acceptBoundedPlacementFrame($0, $1) }, controller: controller, onSelect: { if controller.editingContextActive { model.selectViewport($0) } }, onCandidate: { candidate, base in let context = controller.editingContextGeneration; Task { guard controller.editingContextActive, controller.editingContextGeneration == context else { return }; await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
-            .id(rendererIdentity(credentials))
+        return NativeViewport(credentials: credentials, privateFloor: model.privateFloorRuntimeAvailable, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.viewportFormDirty || model.positionDirty || model.wallFinishPreviewing || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing, interactionDisabled: selectionBlocked || NativeViewportAccess.boundedInteractionBlocked(boundedAdmission: model.boundedPlacementCapability != nil, acknowledged: model.boundedPlacementReady), selectionDisabled: selectionBlocked, boundedEdit: model.boundedPlacementCapability, acceptBoundedAck: { model.acceptBoundedPlacementFrame($0, $1) }, controller: controller, onSelect: { if controller.editingContextActive { model.selectViewport($0) } }, onCandidate: { candidate, base in let context = controller.editingContextGeneration; Task { guard controller.editingContextActive, controller.editingContextGeneration == context else { return }; await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
+            .id(rendererIdentity(credentials) + String(model.privateFloorRuntimeAvailable))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .allowsHitTesting(!model.architectureDirty && !model.architectureApplying && !model.placementApplying)
             .disabled(model.architectureDirty || model.architectureApplying)

@@ -174,6 +174,27 @@ final class ViewportResourcePolicyTests: XCTestCase {
         // Diagnostic of the old bridge; only JSON wire independence is the contract.
         print("Legacy Foundation array lengths: \(legacy as? [Int] ?? [])")
     }
+    func testPrivateFloorAddsOnlyExactOakMapRulesWhenEnabled() throws {
+        let origin = "http://127.0.0.1:13200"
+        let tenant = UUID().uuidString.lowercased()
+        func filters(privateFloor: Bool) throws -> Set<String> {
+            let encoded = try ViewportResourcePolicy.encodedRules(origin: origin, tenantId: tenant, privateFloor: privateFloor)
+            let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [[String: Any]])
+            return Set(try rules.map { rule in
+                let trigger = try XCTUnwrap(rule["trigger"] as? [String: Any])
+                return try XCTUnwrap(trigger["url-filter"] as? String)
+            })
+        }
+        let legacy = try filters(privateFloor: false)
+        let paired = try filters(privateFloor: true)
+        XCTAssertTrue(legacy.isSubset(of: paired))
+        let paths = ["color-4e001eaaba46.png", "normal-21bddb22f10b.png", "roughness-f889803f9d84.png"]
+        let expected = Set(paths.map {
+            "^http://127\\.0\\.0\\.1:13200/" + NSRegularExpression.escapedPattern(for: "floor-textures/quiet-oak-herringbone/1/" + $0) + "$"
+        })
+        XCTAssertEqual(paired.subtracting(legacy), expected)
+    }
+
     func testActualWebKitCompilerAcceptsPinnedSeparateRulesAndRefusesOriginalDisjunction() async throws {
         let tenant = UUID().uuidString.lowercased()
         let encoded = try ViewportResourcePolicy.encodedRules(origin: "http://127.0.0.1:13200", tenantId: tenant)

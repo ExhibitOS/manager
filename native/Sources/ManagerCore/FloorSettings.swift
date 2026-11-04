@@ -150,7 +150,7 @@ public struct FloorSettings: Equatable, Sendable {
         }
         if let pack = v["texturePack"] {
             let p = try keys(pack, required: ["id", "version"])
-            guard let id = p["id"]?.string, ["WoodFloor051", "Marble006", "Tiles074", "Carpet004"].contains(id), p["version"]?.double == 1 else { throw invalid() }
+            guard let id = p["id"]?.string, ["WoodFloor051", "Marble006", "Tiles074", "Carpet004", NativePrivateFloorCatalog.id].contains(id), p["version"]?.double == 1 else { throw invalid() }
         }
         if let normal = v["normalScale"] { try bounded(normal, 0...2) }
         if let ao = v["aoStrength"] { try bounded(ao, 0...1) }

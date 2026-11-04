@@ -37,6 +37,19 @@ struct NativeFloorSettingsInspector: View {
                 stage: model.stageFloorPreset, reset: model.resetFloorField,
                 apply: { Task { await model.applyFloor() } }, discard: model.discardFloor,
                 preset: $model.floorPreset, scope: $model.floorScope)
+            if model.privateFloorCatalog != nil {
+                Button(action: model.stagePrivateFloor) {
+                    HStack(spacing: 10) {
+                        if let image = model.privateFloorImage {
+                            Image(nsImage: image).resizable().scaledToFit().frame(width: 48, height: 48)
+                                .accessibilityHidden(true)
+                        }
+                        Text(NativePrivateFloorCatalog.name + " 기본값 입력")
+                    }
+                }.disabled(!ready || !model.canStagePrivateFloor)
+            } else if model.privateFloorLoadFailed {
+                Button("헤링본 재질 목록 다시 확인") { Task { await model.loadPrivateFloorCatalog() } }
+            }
             Button("승인된 콘크리트 발소리 입력") { model.stageConcreteFootsteps() }
                 .disabled(!ready || !model.canStageConcreteFootsteps)
             Text("선택한 바닥의 발소리를 승인된 녹음으로 바꿉니다. 바닥 외관은 유지합니다. 바닥 재질의 소리 설정이 있으면 변경할 수 없습니다.")
@@ -51,6 +64,8 @@ struct NativeFloorSettingsInspector: View {
             }
         }.task(id: "\(model.viewportAccessID)-\(model.floorRuntimeAvailable)") {
             if ready { await model.loadFloorImages() }
+        }.task(id: "\(model.viewportAccessID)-\(model.privateFloorRuntimeAvailable)") {
+            if ready { await model.loadPrivateFloorCatalog() }
         }
     }
 }
