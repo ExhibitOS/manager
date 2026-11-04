@@ -553,6 +553,29 @@ fn exchange_data_directories(root: &Path, plan: &RestorePlan, members: &[&str]) 
 }
 
 impl LifecycleService {
+    pub(crate) fn check_selected_checkpoint_source(
+        &self,
+        source: &Payload,
+        guard: &OperationGuard,
+    ) -> Result<()> {
+        self.check_prepare_guard(guard)?;
+        crate::native_runtime::check_cold_checkpoint_root(&self.root)?;
+        let context = source.context();
+        if context.manifest_sha256 != OLD_MANIFEST
+            || context.official_signed
+            || context.redistribution_qualified
+        {
+            return Err(invalid());
+        }
+        source.recheck()?;
+        let record = read(self)?;
+        let mut fields = self.personal_environment(source, record.ports)?;
+        for value in fields.values_mut() {
+            std::mem::take(value).into_bytes().fill(0);
+        }
+        Ok(())
+    }
+
     fn transition_checkpoint(&self, envelope: &[u8], key: &[u8; 32]) -> Result<Checkpoint> {
         let checkpoint = open(envelope, key)?;
         let staging = &checkpoint.staged;

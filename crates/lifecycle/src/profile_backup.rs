@@ -20,6 +20,8 @@ pub(crate) use host_checkpoint::{
     checkpoint_host_borrowed, recheck_extracted_host_current, verify_extracted_host,
     verify_host_current_borrowed,
 };
+#[cfg(all(target_os = "macos", debug_assertions))]
+pub(crate) use host_checkpoint::protect_selected;
 #[cfg(unix)]
 #[path = "authority_host_fence.rs"]
 mod authority_host_fence;

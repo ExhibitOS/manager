@@ -419,6 +419,36 @@ impl InstallationController {
         })
     }
 
+    /// Protect the exact selected workspace and upload receipt without
+    /// changing the current writer state or admitting activation.
+    #[cfg(all(target_os = "macos", debug_assertions))]
+    pub(crate) fn protect_selected_personal_transition(
+        &self,
+        token: &str,
+        source: &super::native_payload::Payload,
+        archive: &Path,
+        key_file: &Path,
+        recovered: &Path,
+        upload_job_id: &str,
+    ) -> Result<()> {
+        self.with_current_mutation(token, |service| {
+            let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
+            if profile.root == service.root || key_file.starts_with(&service.root) || !uuid(upload_job_id) {
+                return Err(err("NATIVE_PHYSICAL_CHECKPOINT_INVALID"));
+            }
+            let guard = service.lock()?;
+            service.check_selected_checkpoint_source(source, &guard)?;
+            let (upload, transfer) = self.upload_unlocked(service)?;
+            if transfer.job_id.as_deref() != Some(upload_job_id) || transfer.intent.is_none() {
+                return Err(err("NATIVE_PHYSICAL_CHECKPOINT_INVALID"));
+            }
+            super::profile_backup::protect_selected(
+                &profile.root, &service.root, &profile.root.join(upload), upload_job_id,
+                key_file, archive, recovered,
+            )
+        })
+    }
+
     /// Explicit user save only; no key bytes cross IPC. Selection is held throughout creation.
     pub fn create_backup_key(&self, token:&str, path:&Path)->Result<()> {
         self.with_current(token, |service| {

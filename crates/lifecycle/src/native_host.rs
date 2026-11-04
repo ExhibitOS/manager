@@ -388,6 +388,12 @@ impl Host {
                         Work::PersonalTransition(transition) => {
                             use super::installations::native_maintenance::LocalPersonalTransition;
                             match transition {
+                                LocalPersonalTransition::Protect { source_payload, archive, key_file, recovered, upload_job_id } => {
+                                    let source = Payload::open(&source_payload)?;
+                                    controller.protect_selected_personal_transition(
+                                        &token, &source, &archive, &key_file, &recovered, &upload_job_id,
+                                    )?;
+                                }
                                 LocalPersonalTransition::Stage { source_payload, staging, key_file } => {
                                     let source = Payload::open(&source_payload)?;
                                     let target = Payload::open(&resources)?;

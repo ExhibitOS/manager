@@ -5,6 +5,7 @@ use std::io::Write;
 
 pub(super) struct Extraction {
     profile: PathBuf,
+    validate: fn(&Inventory, &Path) -> Result<()>,
     recovered: PathBuf,
     prefix: Vec<u8>,
     manifest_len: Option<usize>,
@@ -18,8 +19,16 @@ pub(super) struct Extraction {
 }
 impl Extraction {
     pub(super) fn new(profile: &Path, recovered: &Path) -> Self {
+        Self::with_validator(profile, recovered, validate_inventory)
+    }
+    pub(super) fn with_validator(
+        profile: &Path,
+        recovered: &Path,
+        validate: fn(&Inventory, &Path) -> Result<()>,
+    ) -> Self {
         Self {
             profile: profile.into(),
+            validate,
             recovered: recovered.into(),
             prefix: Vec::new(),
             manifest_len: None,
@@ -108,7 +117,7 @@ impl Extraction {
                 return Ok(());
             }
             let m: Inventory = serde_json::from_slice(&self.manifest).map_err(|_| fail())?;
-            validate_inventory(&m, &self.profile)?;
+            (self.validate)(&m, &self.profile)?;
             installations::new_directory(&self.recovered)?;
             self.inventory = Some(m);
             self.advance()?;

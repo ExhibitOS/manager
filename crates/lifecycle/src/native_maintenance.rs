@@ -29,6 +29,13 @@ pub enum Input {
 #[derive(Clone, Deserialize)]
 #[serde(tag = "phase", rename_all = "snake_case", rename_all_fields = "camelCase", deny_unknown_fields)]
 pub enum LocalPersonalTransition {
+    Protect {
+        source_payload: PathBuf,
+        archive: PathBuf,
+        key_file: PathBuf,
+        recovered: PathBuf,
+        upload_job_id: String,
+    },
     Stage { source_payload: PathBuf, staging: PathBuf, key_file: PathBuf },
     Activate { staging: PathBuf, key_file: PathBuf },
     Recover { staging: PathBuf, key_file: PathBuf },
