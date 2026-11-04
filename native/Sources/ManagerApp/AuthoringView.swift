@@ -103,13 +103,14 @@ final class AuthoringModel: ObservableObject {
     private var scope: String?
     private var runtimeManifestSHA256: String?
     private var editingUser: String?
+    private var runtimeJobID: String?
     private var available = false
     var metadataDirty: Bool { editing && (draft != original || selected == nil || creationYearText != (original.creationYear.map(String.init) ?? "")) }
 
     var dirty: Bool { metadataDirty || (importFile != nil && transfer?.intent == nil) }
 
     @discardableResult
-    func configure(_ configuration: NativeConfiguration?, ready: Bool) -> Bool {
+    func configure(_ configuration: NativeConfiguration?, ready: Bool, runtimeJobID: String?) -> Bool {
         let requestedScope = configuration.flatMap { configuration in
             configuration.tenantId.map { "\($0):\(configuration.ports.web):\(configuration.manifestSha256)" }
         }
@@ -123,6 +124,13 @@ final class AuthoringModel: ObservableObject {
             return false
         }
         available = ready
+        if self.runtimeJobID != runtimeJobID {
+            // Starting a new local runtime revokes the previous session even
+            // when the tenant, port and runtime manifest stay the same.
+            self.runtimeJobID = runtimeJobID
+            session = nil
+            importStatusGeneration = UUID()
+        }
         let previousManifest = runtimeManifestSHA256
         runtimeManifestSHA256 = configuration?.manifestSha256
         modelDerivationEnabled = configuration?.kind == "personal" && NativeModelDerivationProfile.supports(manifestSHA256: runtimeManifestSHA256, ready: ready)
@@ -164,7 +172,9 @@ final class AuthoringModel: ObservableObject {
     func connect(_ credentials: LocalAuthoringSession) async {
         await action {
             guard let api else { return }
+            let jobID = runtimeJobID
             let authenticated = try await api.connect(credentials)
+            guard available, self.api === api, runtimeJobID == jobID else { throw AuthoringFailure("LOCAL_SCOPE_CHANGED") }
             if let editingUser, dirty && editingUser != authenticated.userId { throw AuthoringFailure("DRAFT_ACCOUNT_MISMATCH", status: 403) }
             session = authenticated
             try await restoreImport()
@@ -172,6 +182,13 @@ final class AuthoringModel: ObservableObject {
             let page = try await api.artworks(query: query); artworks = page.items; cursor = page.nextCursor
             notice = "이 Mac의 작업 공간에 연결했습니다. 작품은 이 Mac에 저장됩니다."
         }
+    }
+    func waitForConnectionTurn(runtimeJobID: String?) async -> Bool {
+        while busy && available && self.runtimeJobID == runtimeJobID {
+            do { try await Task.sleep(for: .milliseconds(50)) }
+            catch { return false }
+        }
+        return available && self.runtimeJobID == runtimeJobID && !Task.isCancelled
     }
     func login() async {
         await action {
@@ -651,12 +668,13 @@ struct NativeAuthoringView: View {
     @ObservedObject var model: AuthoringModel
     let configuration: NativeConfiguration?
     let ready: Bool
+    let runtimeJobID: String?
     let mode: Mode
     let connect: () async -> Void
     @State private var discardPrompt = false
     @State private var pendingId: String?
     @State private var pendingNew = false
-    private var scope: String { "\(configuration?.tenantId ?? ""):\(configuration?.ports.web ?? 0):\(configuration?.manifestSha256 ?? ""):\(ready)" }
+    private var scope: String { "\(configuration?.tenantId ?? ""):\(configuration?.ports.web ?? 0):\(configuration?.manifestSha256 ?? ""):\(runtimeJobID ?? ""):\(ready)" }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             if !ready { Text("작업 환경에서 로컬 제작을 시작하세요.").foregroundStyle(.secondary) }
@@ -706,7 +724,11 @@ struct NativeAuthoringView: View {
         }
         .onChange(of: model.draft) { _, _ in model.approvalAcknowledged = false }
         .onChange(of: model.creationYearText) { _, _ in model.approvalAcknowledged = false }
-        .task(id: scope) { model.configure(configuration, ready: ready); if ready && configuration?.kind == "personal" && model.session == nil { await connect() } }
+        .task(id: scope) {
+            guard model.configure(configuration, ready: ready, runtimeJobID: runtimeJobID),
+                  configuration?.kind == "personal", model.session == nil else { return }
+            await connect()
+        }
         .confirmationDialog("저장하지 않은 입력을 버릴까요?", isPresented: $discardPrompt, titleVisibility: .visible) {
             Button("입력 버리기", role: .destructive) { performSelection() }
             Button("계속 편집", role: .cancel) {}

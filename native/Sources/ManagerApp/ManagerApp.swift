@@ -55,7 +55,7 @@ final class ManagerModel: ObservableObject {
     var hasUnsavedAuthoring: Bool { authoring.dirty || authoring.hasWaitingIntake || exhibitions.dirty || exhibitions.oexImport.hasFile }
     private var bridge: NativeBridge?
     private var pollTask: Task<Void, Never>?
-    private var authoringConnection: Task<Void, Never>?
+    private var authoringConnection: (jobID: String?, task: Task<Void, Never>)?
     private struct RetainedAuthoring {
         let selectionToken: String
         let installationId: String
@@ -138,22 +138,30 @@ final class ManagerModel: ObservableObject {
 
     func connectPersonalAuthoring() async {
         guard !exhibitions.oexImport.busy else { return }
-        if let authoringConnection { await authoringConnection.value; return }
-        guard !busy, !quitting, ready, !exhibitions.oexImport.busy else { return }
+        let jobID = native?.runtime?.jobId
+        while let connection = authoringConnection {
+            await connection.task.value
+            if connection.jobID == jobID { return }
+        }
+        guard !Task.isCancelled, native?.runtime?.jobId == jobID,
+              !busy, !quitting, ready, !exhibitions.oexImport.busy else { return }
         // This shared workspace connection belongs to the model, not whichever
         // screen's .task first asked for it. New screens join the same operation.
         let connection = Task<Void, Never> { [weak self] in
             guard let self else { return }
-            await self.connectPersonalAuthoringOwned()
+            defer {
+                self.authoringConnection = nil
+                // The OEX picker also gates on this task, independently of published readiness.
+                self.exhibitions.oexImport.objectWillChange.send()
+            }
+            await self.connectPersonalAuthoringOwned(runtimeJobID: jobID)
         }
-        authoringConnection = connection
+        authoringConnection = (jobID, connection)
         await connection.value
-        authoringConnection = nil
-        // The OEX picker also gates on this task, independently of published readiness.
-        exhibitions.oexImport.objectWillChange.send()
     }
-    private func connectPersonalAuthoringOwned() async {
-        guard !busy, !quitting, ready, !exhibitions.oexImport.busy, let bridge, let context else { return }
+    private func connectPersonalAuthoringOwned(runtimeJobID: String?) async {
+        guard !busy, !quitting, ready, native?.runtime?.jobId == runtimeJobID,
+              !exhibitions.oexImport.busy, let bridge, let context else { return }
         if native?.selectedOex == true, retainedAuthoring != nil, exhibitions.entrancePreviewActive {
             failure = BridgeFailure("NATIVE_OEX_SESSION_BOUND"); return
         }
@@ -162,12 +170,16 @@ final class ManagerModel: ObservableObject {
         defer { busy = false }
         do {
             await bindStaticExport()
-            guard authoring.configure(native?.configuration, ready: ready) else {
+            guard authoring.configure(native?.configuration, ready: ready, runtimeJobID: runtimeJobID),
+                  await authoring.waitForConnectionTurn(runtimeJobID: runtimeJobID),
+                  !quitting, native?.runtime?.jobId == runtimeJobID,
+                  self.context?.selectionToken == context.selectionToken else {
                 exhibitions.entranceCredentialRenewalFailed()
                 return
             }
             authoring.bindImportStore(read: { try await bridge.uploadState(context) }, save: { state in try await bridge.saveUploadState(context, state: state) })
             let status = try await bridge.nativeStatus(context)
+            guard status.runtime?.jobId == runtimeJobID else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
             authoring.bindIntakeWorkspace(available: status.selectedOex == false) { [weak self] in
                 guard let self, self.context?.selectionToken == context.selectionToken else { return false }
                 let observed = try await bridge.nativeStatus(context)
@@ -222,7 +234,7 @@ final class ManagerModel: ObservableObject {
                       authoring.exhibitionAPI === api, let live = authoring.session,
                       live.tenantId == session.tenantId, live.userId == session.userId, live.role == session.role,
                       live.csrfToken == session.csrfToken, live.expiresAt == session.expiresAt,
-                      gate.runtime?.readiness.ready == true, gate.runtime?.jobId != nil,
+                      gate.runtime?.readiness.ready == true, gate.runtime?.jobId == runtimeJobID, runtimeJobID != nil,
                       gate.runtime?.nodePid != nil, gate.runtime?.postgresPid != nil,
                       gate.configuration?.manifestSha256 == native?.configuration?.manifestSha256 else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
                 let selected = gate.selectedOex == true
@@ -751,7 +763,9 @@ struct ManagerView: View {
             }
             NativeMaintenanceView(model: model)
         case .create:
-            NativeAuthoringView(model: model.authoring, configuration: model.native?.configuration, ready: model.ready, mode: model.presentation?.mode ?? .beginner, connect: { await model.connectPersonalAuthoring() })
+            NativeAuthoringView(model: model.authoring, configuration: model.native?.configuration, ready: model.ready,
+                                runtimeJobID: model.native?.runtime?.jobId, mode: model.presentation?.mode ?? .beginner,
+                                connect: { await model.connectPersonalAuthoring() })
         case .select, .preview:
             EmptyView() // The same mounted workbench above owns both purposes.
         case .publish:
