@@ -24,7 +24,7 @@ private actor OEXMockTransport: NativeOEXImportTransport {
 }
 
 private actor BoundedOEXMock: NativeBoundedOEXTransport {
-    enum Behavior { case loseCreate, created, cancelAfterCreate }
+    enum Behavior { case loseCreate, created, cancelAfterCreate, failAfterFirstReceipt }
     let behavior: Behavior
     let jobId = UUID().uuidString.lowercased()
     private var requests = 0
@@ -37,11 +37,38 @@ private actor BoundedOEXMock: NativeBoundedOEXTransport {
         return NativeBoundedOEXJob(id: jobId, state: "uploading")
     }
     func uploadBoundedOEXImport(_ id: String, archive: NativeOEXArchive) async throws { uploads += 1 }
+    func uploadBoundedOEXImport(_ id: String, archive: NativeOEXArchive, observe: NativeOEXUploadObservation?) async throws {
+        uploads += 1
+        await observe?(archive.count / 2, archive.count)
+        if case .failAfterFirstReceipt = behavior { throw AuthoringFailure("REQUEST_FAILED") }
+        await observe?(archive.count, archive.count)
+    }
     func queueBoundedOEXImport(_ id: String) async throws -> NativeBoundedOEXJob { NativeBoundedOEXJob(id: jobId, state: "queued") }
     func observed() -> (Int, Int) { (requests, uploads) }
 }
 
 final class OEXImportTests: XCTestCase {
+    @MainActor
+    func testVerifiedTransferProgressDoesNotReportFullOrQueueAfterFailedReceipt() async throws {
+        let id = UUID().uuidString.lowercased()
+        let state = NativeOEXImportState(format: 1, revision: 0, workspaceId: id, tenantId: id, principalId: id, intent: nil, jobId: nil, fileName: nil)
+        let archive = try NativeOEXArchive(data: Data([0x50, 0x4b, 0x03, 0x04] + Array(repeating: 0, count: 20)))
+        let file = NativeOEXImportFile(name: "synthetic.oex", archive: archive)
+        var durable = state
+        var observed: [NativeOEXImportTransferPhase] = []
+        do {
+            _ = try await NativeOEXImportTransfer.runBoundedOnce(state: state, file: file, api: BoundedOEXMock(.failAfterFirstReceipt), persist: { input in
+                var next = input; next.revision += 1; durable = next; return next
+            }, select: {}, isCurrent: { true }, observe: { observed.append($0) })
+            XCTFail("Incomplete verified upload must not queue")
+        } catch let error as AuthoringFailure {
+            XCTAssertEqual(error.code, "REQUEST_FAILED")
+        }
+        XCTAssertNotNil(durable.jobId)
+        XCTAssertEqual(observed, [.preparingRequest, .uploading(verifiedBytes: 0, totalBytes: archive.count),
+                                  .uploading(verifiedBytes: archive.count / 2, totalBytes: archive.count)])
+    }
+
     @MainActor
     func testSelectedCreateFailureAndCancellationPreserveIntentWithoutRetry() async throws {
         let id = UUID().uuidString.lowercased()

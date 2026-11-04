@@ -747,10 +747,14 @@ public actor AuthoringAPI {
     /// Each immutable retry resends the exact same snapshot segment. A verified
     /// upload is not an import, commit, or permission to release its resources.
     public func uploadBoundedOEXImport(_ id: String, archive: NativeOEXArchive) async throws {
+        try await uploadBoundedOEXImport(id, archive: archive, observe: nil)
+    }
+    public func uploadBoundedOEXImport(_ id: String, archive: NativeOEXArchive, observe: NativeOEXUploadObservation?) async throws {
         struct ChunkReceipt: Decodable { let index: Int; let received: Int }
         let job = try identifier(id), current = generation, chunkSize = 16 * 1024 * 1024
         guard archive.count > 0, archive.count <= NativeOEXImportFile.boundedMaximumBytes, session != nil else { throw AuthoringFailure("OEX_IMPORT_INVALID") }
         let chunks = (archive.count + chunkSize - 1) / chunkSize
+        var verifiedBytes = 0
         for index in 0..<chunks {
             try Task.checkCancellation()
             guard generation == current, session != nil else { throw AuthoringFailure("OEX_IMPORT_SCOPE_CHANGED") }
@@ -758,6 +762,8 @@ public actor AuthoringAPI {
             let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
             let receipt: ChunkReceipt = try await request("/api/v1/tenants/\(tenant)/native-oex/imports/\(job)/chunks/\(index)", method: "PUT", body: bytes, contentType: "application/octet-stream", chunkSHA256: hash, timeout: 120)
             guard generation == current, receipt.index == index, receipt.received == bytes.count else { throw AuthoringFailure("OEX_IMPORT_RESPONSE_INVALID") }
+            verifiedBytes += receipt.received
+            await observe?(verifiedBytes, archive.count)
         }
     }
     public func queueBoundedOEXImport(_ id: String) async throws -> NativeBoundedOEXJob {

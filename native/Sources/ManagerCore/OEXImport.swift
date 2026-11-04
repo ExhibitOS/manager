@@ -56,12 +56,26 @@ public protocol NativeOEXImportTransport: Sendable {
 }
 extension AuthoringAPI: NativeOEXImportTransport {}
 
+public enum NativeOEXImportTransferPhase: Equatable, Sendable {
+    case preparingRequest
+    case uploading(verifiedBytes: Int, totalBytes: Int)
+    case queuing
+}
+
+public typealias NativeOEXUploadObservation = @Sendable (_ verifiedBytes: Int, _ totalBytes: Int) async -> Void
+
 /// Selected bounded transport remains unusable without a separately admitted
 /// live owner; the protocol permits focused failure and cancellation checks.
 public protocol NativeBoundedOEXTransport: Sendable {
     func createBoundedOEXImport(requestId: String, archive: NativeOEXArchive) async throws -> NativeBoundedOEXJob
     func uploadBoundedOEXImport(_ id: String, archive: NativeOEXArchive) async throws
+    func uploadBoundedOEXImport(_ id: String, archive: NativeOEXArchive, observe: NativeOEXUploadObservation?) async throws
     func queueBoundedOEXImport(_ id: String) async throws -> NativeBoundedOEXJob
+}
+extension NativeBoundedOEXTransport {
+    public func uploadBoundedOEXImport(_ id: String, archive: NativeOEXArchive, observe: NativeOEXUploadObservation?) async throws {
+        try await uploadBoundedOEXImport(id, archive: archive)
+    }
 }
 extension AuthoringAPI: NativeBoundedOEXTransport {}
 
@@ -76,9 +90,11 @@ public enum NativeOEXImportTransfer {
                                       api: any NativeBoundedOEXTransport,
                                       persist: @escaping @MainActor (NativeOEXImportState) async throws -> NativeOEXImportState,
                                       select: @escaping @MainActor () async throws -> Void,
-                                      isCurrent: @escaping @MainActor () -> Bool) async throws -> (NativeOEXImportState, NativeBoundedOEXJob) {
+                                      isCurrent: @escaping @MainActor () -> Bool,
+                                      observe: @escaping @MainActor @Sendable (NativeOEXImportTransferPhase) -> Void = { _ in }) async throws -> (NativeOEXImportState, NativeBoundedOEXJob) {
         func check() throws { try Task.checkCancellation(); guard isCurrent() else { throw AuthoringFailure("OEX_IMPORT_SCOPE_CHANGED") } }
         try check()
+        observe(.preparingRequest)
         guard state.format == 1, state.revision < UInt64.max - 1,
               state.intent == nil, state.jobId == nil else { throw AuthoringFailure("OEX_IMPORT_PROFILE_UNAVAILABLE") }
         var saved = state
@@ -115,7 +131,15 @@ public enum NativeOEXImportTransfer {
               saved.workspaceId == state.workspaceId, saved.tenantId == state.tenantId, saved.principalId == state.principalId,
               saved.intent == intent, saved.jobId == created.id, saved.fileName == file.name else { throw uncertain }
         try check()
-        try await api.uploadBoundedOEXImport(created.id, archive: file.archive); try check()
+        observe(.uploading(verifiedBytes: 0, totalBytes: file.archive.count))
+        try await api.uploadBoundedOEXImport(created.id, archive: file.archive, observe: { verified, total in
+            await MainActor.run {
+                guard isCurrent() else { return }
+                observe(.uploading(verifiedBytes: verified, totalBytes: total))
+            }
+        })
+        try check()
+        observe(.queuing)
         let queued = try await api.queueBoundedOEXImport(created.id); try check()
         return (saved, queued)
     }

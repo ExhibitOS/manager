@@ -772,6 +772,7 @@ struct ManagerView: View {
         switch model.native?.operation {
         case "preparing": "제작 환경을 준비하고 있습니다…"
         case "starting": "로컬 제작을 시작하고 있습니다…"
+        case "importing_oex": "OEX를 검증하고 전시를 가져오고 있습니다…"
         case "stopping": "로컬 작업을 정지하고 있습니다…"
         case "backing_up": "백업을 저장하고 무결성을 확인하고 있습니다…"
         case "restoring": "새 작업 공간에 백업을 복원하고 있습니다…"
