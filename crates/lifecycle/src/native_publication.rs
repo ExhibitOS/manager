@@ -113,7 +113,7 @@ pub(crate) fn validate(s: &PublicationState) -> Result<()> {
     Ok(())
 }
 impl InstallationController {
-    fn publication_unlocked(
+    pub(super) fn publication_unlocked(
         &self,
         service: &LifecycleService,
     ) -> Result<(String, PublicationState)> {

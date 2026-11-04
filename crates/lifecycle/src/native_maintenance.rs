@@ -18,6 +18,20 @@ pub enum Input {
     Select { id: String, acknowledged: bool },
     StageRestore { source: PathBuf, key_file: PathBuf },
     ActivateRestore { id: String },
+    #[cfg(debug_assertions)]
+    LocalPersonalTransition {
+        transition: LocalPersonalTransition,
+        acknowledged: bool,
+    },
+}
+
+#[cfg(debug_assertions)]
+#[derive(Clone, Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case", rename_all_fields = "camelCase", deny_unknown_fields)]
+pub enum LocalPersonalTransition {
+    Stage { source_payload: PathBuf, staging: PathBuf, key_file: PathBuf },
+    Activate { staging: PathBuf, key_file: PathBuf },
+    Recover { staging: PathBuf, key_file: PathBuf },
 }
 
 #[derive(Clone, Serialize)]

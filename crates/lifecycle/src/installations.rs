@@ -397,6 +397,28 @@ impl InstallationController {
         {if let Some(profile)=&self.profile{profile.ensure_external_archive_reconciled()?;}service.ensure_external_archive_reconciled()?;}
         task(service)
     })}
+    #[cfg(all(target_os = "macos", debug_assertions))]
+    pub(crate) fn with_personal_transition(
+        &self,
+        token: &str,
+        task: impl FnOnce(&LifecycleService, &Path) -> Result<()>,
+    ) -> Result<()> {
+        self.with_current_mutation(token, |service| {
+            self.ensure_no_bounded_import_transition_unlocked(service)?;
+            if self.oex_import_unlocked(service)?.1.intent.is_some() {
+                return Err(err("NATIVE_OEX_IMPORT_PENDING"));
+            }
+            let document = self.document_unlocked(service)?.1;
+            let version = document.draft.as_ref().and_then(|v| v.get("editVersion")).and_then(Value::as_u64);
+            if document.pending.is_some() || (document.draft.is_some() && version != document.saved_edit_version)
+                || self.upload_unlocked(service)?.1.intent.is_some() || self.publication_unlocked(service)?.1.pending.is_some() {
+                return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
+            }
+            let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
+            task(service, &profile.root)
+        })
+    }
+
     /// Explicit user save only; no key bytes cross IPC. Selection is held throughout creation.
     pub fn create_backup_key(&self, token:&str, path:&Path)->Result<()> {
         self.with_current(token, |service| {

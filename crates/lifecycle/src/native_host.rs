@@ -121,6 +121,8 @@ enum Work {
     Backup(super::installations::native_backup::Input),
     Restore(super::installations::native_restore::Input),
     Activate(String),
+    #[cfg(debug_assertions)]
+    PersonalTransition(super::installations::native_maintenance::LocalPersonalTransition),
 }
 impl Host {
     pub fn new(controller: Arc<InstallationController>, resources: PathBuf) -> Self {
@@ -268,7 +270,7 @@ impl Host {
             }
             if matches!(work, Work::Stop) && state.busy {
                 state.stop_requested = true;
-                if state.operation == "activating_restore" {
+                if matches!(state.operation.as_str(), "activating_restore" | "transitioning_personal_runtime") {
                     // Activation owns a final verification/commit sequence.
                     // A quit request waits for ordered completion; it is not a
                     // cancellation acknowledgement and must retain this phase.
@@ -307,6 +309,8 @@ impl Host {
                 Work::Backup(_) => "backing_up",
                 Work::Restore(_) => "restoring",
                 Work::Activate(_) => "activating_restore",
+                #[cfg(debug_assertions)]
+                Work::PersonalTransition(_) => "transitioning_personal_runtime",
             }
             .into();
         }
@@ -379,6 +383,30 @@ impl Host {
                                     return Err(error);
                                 }
                             };
+                        }
+                        #[cfg(debug_assertions)]
+                        Work::PersonalTransition(transition) => {
+                            use super::installations::native_maintenance::LocalPersonalTransition;
+                            match transition {
+                                LocalPersonalTransition::Stage { source_payload, staging, key_file } => {
+                                    let source = Payload::open(&source_payload)?;
+                                    let target = Payload::open(&resources)?;
+                                    controller.prepare_local_personal_runtime_transition(
+                                        &token, &source, &target, &staging, &key_file,
+                                    )?;
+                                }
+                                LocalPersonalTransition::Activate { staging, key_file } => {
+                                    let target = Arc::new(Payload::open(&resources)?);
+                                    controller.activate_local_personal_runtime_transition(
+                                        &token, target, &staging, &key_file,
+                                    )?;
+                                }
+                                LocalPersonalTransition::Recover { staging, key_file } => {
+                                    controller.recover_local_personal_runtime_transition(
+                                        &token, &staging, &key_file,
+                                    )?;
+                                }
+                            }
                         }
                         Work::Backup(input) => {
                             let cached = shared
@@ -715,6 +743,14 @@ impl Host {
             let state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
             (state.selected_oex && state.busy, state.selected_oex && state.busy && state.operation == "importing_oex")
         };
+        #[cfg(debug_assertions)]
+        {
+            let state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+            if state.busy && state.operation == "transitioning_personal_runtime"
+                && !matches!(&request.command, UiCommand::NativeStatus { .. } | UiCommand::NativeStop { .. }) {
+                return Err(err("BUSY"));
+            }
+        }
         if selected_busy && !matches!(&request.command, UiCommand::NativeStatus { .. } | UiCommand::NativeStop { .. })
             && !(selected_import_busy && matches!(&request.command,
                 UiCommand::DocumentState { .. } | UiCommand::SaveDocumentState { .. }
@@ -922,6 +958,12 @@ impl Host {
                     Work::Restore(super::installations::native_restore::Input { source, key_file }),
                 )?)
                 .map_err(|_| err("STATE_INVALID")),
+                #[cfg(debug_assertions)]
+                Input::LocalPersonalTransition { transition, acknowledged } => {
+                    if !acknowledged { return Err(err("INSTALLATION_SELECTION_ACK_REQUIRED")); }
+                    serde_json::to_value(self.launch(selection_token, Work::PersonalTransition(transition))?)
+                        .map_err(|_| err("STATE_INVALID"))
+                }
                 Input::ActivateRestore { id } => {
                     serde_json::to_value(self.launch(selection_token, Work::Activate(id))?)
                         .map_err(|_| err("STATE_INVALID"))

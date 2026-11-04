@@ -160,7 +160,7 @@ pub(crate) fn validate(s: &Transfer) -> Result<()> {
     Ok(())
 }
 impl InstallationController {
-    fn upload_unlocked(&self, service: &LifecycleService) -> Result<(String, Transfer)> {
+    pub(super) fn upload_unlocked(&self, service: &LifecycleService) -> Result<(String, Transfer)> {
         let profile = self
             .profile
             .as_ref()
