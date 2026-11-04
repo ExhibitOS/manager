@@ -25,6 +25,9 @@ public struct PublicationWatermark: Equatable, Sendable {
     public init(mode: Mode = .none, text: String = "", position: Position = .bottomRight, size: Int = 12, opacity: Double = 0.25) {
         self.mode = mode; self.text = text; self.position = position; self.size = size; self.opacity = opacity
     }
+    /// A preserved explicit NONE uses no watermark producer or renderer.
+    public var requiresQualifiedRuntime: Bool { mode != .none }
+
     public func validate() throws {
         let label = Self.trimmedText(text)
         guard (8...24).contains(size), opacity.isFinite, (0.1...0.6).contains(opacity),
