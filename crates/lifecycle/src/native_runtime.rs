@@ -1226,7 +1226,9 @@ impl Session {
                     self.readiness = ready;
                     self.state = "ready".into();
                     if self.normal_oex_selected {
-                        if self.payload.normal_oex_027_selected_input()? { self.accept_oex_catalog()?; }
+                        if self.payload.normal_oex_027_selected_input()? {
+                            self.accept_oex_catalog(oex_catalog_frames::Protocol::V2)?;
+                        }
                         self.await_oex_owner_ready()?;
                     }
                     // The selected owner is not ready for use until its private
@@ -1792,7 +1794,7 @@ impl Drop for Session {
 impl Session {
     /// Verify the catalog against our owned DB, pinned store and payload before
     /// acknowledging the peer. The channel remains tied to this Session.
-    fn accept_oex_catalog(&mut self) -> Result<()> {
+    fn accept_oex_catalog(&mut self, protocol: oex_catalog_frames::Protocol) -> Result<()> {
         let owner = oex_owner::Owner::capture(self)?;
         let authority = self.local_authority.as_ref().ok_or_else(|| err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
         let identity = (authority.workspace_id.clone(), authority.tenant_id.clone(), authority.principal_id.clone());
@@ -1807,16 +1809,22 @@ impl Session {
             owner.recheck_database_identity(self)?;
             self.payload.recheck()?;
             owner.check(self)?;
-            let rows = self.query_database("exhibitos", "SELECT name,sha256 FROM public.schema_migrations WHERE name IN ('026_oex_file_profile.sql','027_oex_exhibition_provenance.sql') ORDER BY name")?;
+            let required = match protocol {
+                oex_catalog_frames::Protocol::V2 => &oex_catalog_frames::WORKSPACE_V5_LEDGER[..2],
+                oex_catalog_frames::Protocol::WorkspaceV5 => &oex_catalog_frames::WORKSPACE_V5_LEDGER[..],
+            };
+            let names = required.iter().map(|(name, _)| format!("'{name}'")).collect::<Vec<_>>().join(",");
+            let sql = format!("SELECT name,sha256 FROM public.schema_migrations WHERE name IN ({names}) ORDER BY name");
+            let rows = self.query_database("exhibitos", &sql)?;
             owner.check(self)?;
-            let expected = format!("026_oex_file_profile.sql|{}\n027_oex_exhibition_provenance.sql|{}", oex_catalog_frames::SCHEMA_026, oex_catalog_frames::SCHEMA_027);
+            let expected = required.iter().map(|(name, hash)| format!("{name}|{hash}")).collect::<Vec<_>>().join("\n");
             if rows != expected { return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
-            if self.payload.normal_oex_028_selected_input()? {
+            if protocol == oex_catalog_frames::Protocol::V2 && self.payload.normal_oex_028_selected_input()? {
                 let row=self.query_database("exhibitos","SELECT sha256 FROM public.schema_migrations WHERE name='028_oex_material_catalogue.sql'")?;
                 if row!=super::native_payload::NORMAL_OEX_028_SCHEMA_SHA256{return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
                 owner.check(self)?;
             }
-            if self.payload.normal_oex_029_floor_selected_input()? {
+            if protocol == oex_catalog_frames::Protocol::V2 && self.payload.normal_oex_029_floor_selected_input()? {
                 let row=self.query_database("exhibitos","SELECT sha256 FROM public.schema_migrations WHERE name='029_oex_quiet_oak_floor.sql'")?;
                 if row!=super::native_payload::NORMAL_OEX_029_FLOOR_SCHEMA_SHA256{return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
                 owner.check(self)?;
@@ -1833,7 +1841,7 @@ impl Session {
             let (_, device, inode) = owner.store_identity();
             let observed = oex_catalog_frames::Observation { workspace:&identity.0, tenant:&identity.1, principal:&identity.2,
                 generation:&generation, manifest:&manifest, system:&owner.system_id, oid:&owner.database_oid, device, inode };
-            let ack = oex_catalog_frames::acknowledge(&raw, &observed)?;
+            let ack = oex_catalog_frames::acknowledge(&raw, &observed, protocol)?;
             let mut live = || owner.check(self);
             channel.send_frame(&ack, Instant::now() + Duration::from_secs(30), &cancel, &mut live)?;
             live()?;
