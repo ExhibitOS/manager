@@ -149,6 +149,9 @@ const NORMAL_OEX_028_LOCAL_VALIDATION_PROVENANCE:&[(&str,&str,&str)]=&[
     ("61bd336b3333ab917bc2588a63ff99cb56261fad",
      "1739c79934910d21a40d67509dda16fa2a86c6a45c3d78ef5dfda52214fed1f2",
      "4f4b584c98edfb54ce82da76bec53bad4e6b72e9c8389b0385e524d81db15a23"),
+    ("7a2150bc4112044b313236ea081e5fa151a60ff8",
+     "1739c79934910d21a40d67509dda16fa2a86c6a45c3d78ef5dfda52214fed1f2",
+     "83d711e787ba01938739f2af95f83f578784dc6105db887799ac8355068f8483"),
 ];
 fn normal_oex_028_inventory_matches(manifest:&Manifest)->bool {
     let regular=|name:&str|manifest.files.iter().find(|f|f.path==name&&f.link.is_none()&&f.executable==Some(false));

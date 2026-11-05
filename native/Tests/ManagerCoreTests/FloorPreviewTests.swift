@@ -20,7 +20,8 @@ final class FloorPreviewTests: XCTestCase {
         let old = "9b9d6b1cba4b5722a8710471283e9f693f14883f5da950c4504ca7bbf00efeb7"
         let new = "7ff6e64700cbe7324b634d2cb11e0acc87288ce27ab90ae18e675ae5fa899eb2"
         let compatibleOEX = "4f4b584c98edfb54ce82da76bec53bad4e6b72e9c8389b0385e524d81db15a23"
-        for pin in [old, new, compatibleOEX] {
+        let correctedOEX = "83d711e787ba01938739f2af95f83f578784dc6105db887799ac8355068f8483"
+        for pin in [old, new, compatibleOEX, correctedOEX] {
             XCTAssertTrue(NativePrivateFloorCatalog.supports(manifestSHA256: pin, ready: true))
             XCTAssertFalse(NativePrivateFloorCatalog.supports(manifestSHA256: pin, ready: false))
         }
