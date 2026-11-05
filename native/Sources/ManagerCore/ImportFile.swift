@@ -27,15 +27,16 @@ public struct ImportFileSnapshot: Sendable {
     public let sha256: String
     public let data: Data
 
-    public static func load(_ url: URL, allowJPEG: Bool = false) async throws -> Self {
-        let worker = Task.detached(priority: .userInitiated) { try read(url, allowJPEG: allowJPEG) }
+    public static func load(_ url: URL, allowJPEG: Bool = false, byteLimit: Int = limit) async throws -> Self {
+        guard (1...limit).contains(byteLimit) else { throw AuthoringFailure("FILE_SIZE_INVALID") }
+        let worker = Task.detached(priority: .userInitiated) { try read(url, allowJPEG: allowJPEG, limit: byteLimit) }
         return try await withTaskCancellationHandler {
             let snapshot = try await worker.value
             try Task.checkCancellation()
             return snapshot
         } onCancel: { worker.cancel() }
     }
-    private static func read(_ url: URL, allowJPEG: Bool) throws -> Self {
+    private static func read(_ url: URL, allowJPEG: Bool, limit: Int) throws -> Self {
         guard url.isFileURL else { throw AuthoringFailure("FILE_LOCAL_REQUIRED") }
         let mime: String
         switch url.pathExtension.lowercased() {

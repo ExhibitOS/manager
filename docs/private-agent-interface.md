@@ -98,6 +98,29 @@ Operations:
   contains the new native `document` and the
   observed saved `policy`. Save before exporting. This command has no visual or
   audio observation.
+- Workspace material intake requires a qualified native runtime and an ordinary
+  authenticated owner session advertising `workspace-material-intake-v1`.
+  The runtime admission list is pending a verified package. The commands below
+  return `WORKSPACE_MATERIAL_UNAVAILABLE` until admission is configured.
+  - `workspace-material-intake-create` takes `kind` (`floor` or `wall`),
+    `name`, `rights`, `provenance`, and `maps` in `command`. The outer
+    request UUID is the create idempotency key. Use the same UUID and declaration
+    to recover an uncertain create response.
+  - `workspace-material-intake-upload` takes `intakeId`, `role` and an
+    allowlisted top-level `inputPath` for the declared PNG. The CLI verifies
+    the file pin and returns the intake state with verified role receipts.
+  - `workspace-material-intake-status`, `workspace-material-intake-complete`,
+    `workspace-material-intake-cancel` and `workspace-material-intake-retry`
+    take `intakeId`. Poll status with a new outer request UUID. After an
+    uncertain mutation, read status before taking another action. Cancel is
+    pending while the phase is `cancelling`. Retry only when the server reports
+    `retryable`.
+  - `workspace-material-list` takes `cursor` (null for the first page).
+    `workspace-material-read` takes `id` and `version`.
+    `workspace-material-preview` also takes `role` and returns an identity,
+    byte count and SHA-256 after verifying the authorized inline PNG.
+  - Registration stores a workspace material version. Surface application
+    and export are separate operations.
 - `bench-prepare`: accept the existing `add-bench` command and optional fresh
   viewpoint; write the existing frame/request packet to a new `outputPath`.
 - `bench-apply`: provide its `proposalId` and a fixed shared-renderer reply at

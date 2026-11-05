@@ -14,6 +14,11 @@ public enum NativeAutomationFailure {
                     "jobId": uncertain.jobId.map(DocumentValue.string) ?? .null])])
         }
         let code = (error as? BridgeFailure)?.code ?? (error as? AuthoringFailure)?.code ?? (error is CancellationError ? "AUTOMATION_CANCELLED" : "AUTOMATION_FAILED")
-        return .object(["code": .string(code)])
+        var result: [String: DocumentValue] = ["code": .string(code)]
+        if let failure = error as? AuthoringFailure {
+            if let role = failure.role { result["role"] = .string(role) }
+            if let field = failure.field { result["field"] = .string(field) }
+        }
+        return .object(result)
     }
 }
