@@ -44,11 +44,19 @@ struct Ack {
     reservation_id: String, reservation_generation: String, control_sha256: String,
     archive_bytes: u64, expanded_bytes: u64, packed_bytes: u64, manifest_sha256: String,
     entry_count: usize, archive_sha256: String, input_device: String, input_inode: String,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    archive_format:Option<String>,
 }
 /// Observed child output only; the owner must still revalidate the held file,
 /// provider leases and actual child drain before it can be used for admission.
 #[allow(dead_code)]
-pub(super) struct Inventory { pub expanded_bytes: u64, pub packed_bytes: u64, pub manifest_sha256: String, pub entry_count: usize }
+pub(super) struct Inventory { pub expanded_bytes: u64, pub packed_bytes: u64, pub manifest_sha256: String, pub entry_count: usize, pub archive_format:Option<String> }
+impl Inventory {
+    pub(super) fn check_format(&self, selected:Option<&str>)->Result<()> {
+        if self.archive_format.as_deref()!=selected
+            || selected.is_some_and(|f|!matches!(f,"1.0.0-draft.9"|"1.0.0-draft.10")){return Err(invalid());} Ok(())
+    }
+}
 #[allow(dead_code)]
 pub(super) fn check(control: &Control, reply: &[u8]) -> Result<Inventory> {
     let encoded = control.encode()?;
@@ -64,9 +72,10 @@ pub(super) fn check(control: &Control, reply: &[u8]) -> Result<Inventory> {
         || value.expanded_bytes > 512*1024*1024
         || value.packed_bytes > value.expanded_bytes || value.packed_bytes > 512*1024*1024
         || value.entry_count < 2 || value.entry_count > 256
+        || value.archive_format.as_deref().is_some_and(|f| !matches!(f,"1.0.0-draft.9"|"1.0.0-draft.10"))
         || !hash_valid(&value.manifest_sha256) { return Err(invalid()); }
     Ok(Inventory { expanded_bytes: value.expanded_bytes, packed_bytes: value.packed_bytes,
-        manifest_sha256: value.manifest_sha256, entry_count: value.entry_count })
+        manifest_sha256: value.manifest_sha256, entry_count: value.entry_count, archive_format:value.archive_format })
 }
 
 /// Correlated bytes and actual direct-child reap, still not provider authority
@@ -88,7 +97,7 @@ impl Prepared {
         let ack=Ack{version:1,kind:"preflight-complete".into(),attempt_id:request.attempt_id.clone(),runtime_generation:request.runtime_generation.clone(),
             stage_id:request.stage_id.clone(),reservation_id:request.reservation_id.clone(),reservation_generation:request.reservation_generation.clone(),
             control_sha256:digest(&control),archive_bytes:request.archive_bytes,expanded_bytes,packed_bytes,manifest_sha256:"c".repeat(64),
-            entry_count:2,archive_sha256:request.archive_sha256.clone(),input_device:request.input_device.clone(),input_inode:request.input_inode.clone()};
+            entry_count:2,archive_sha256:request.archive_sha256.clone(),input_device:request.input_device.clone(),input_inode:request.input_inode.clone(),archive_format:None};
         let ack=serde_json::to_vec(&ack).unwrap();let inventory=check(request,&ack).unwrap();
         Self{inventory,control,ack,_child:super::oex_materializer::ReapedChild::test_only()}
     }
@@ -117,14 +126,18 @@ impl Prepared {
 
 #[allow(dead_code)]
 pub(super) fn run_direct(payload: &Payload, input: &super::oex_read_fd::ObservedStage,
-    request: &Control, cancelled: &AtomicBool, check_owner: &mut dyn FnMut() -> Result<()>) -> Result<Prepared> {
+    request: &Control, expected_format:Option<&str>, cancelled: &AtomicBool, check_owner: &mut dyn FnMut() -> Result<()>) -> Result<Prepared> {
+    if expected_format.is_some()!=payload.normal_oex_028_selected_input()?{return Err(invalid());}
     let (node, script, root) = payload.oex_preflight()?;
-    run_owned(&node, &script, &root, input, request, cancelled, check_owner)
+    let prepared=run_owned(&node, &script, &root, input, request, expected_format, cancelled, check_owner)?;
+    prepared.inventory().check_format(expected_format)?;
+    Ok(prepared)
 }
 
 /// Executable paths come only from the already-verified payload in production.
 fn run_owned(node: &Path, script: &Path, root: &Path, input: &super::oex_read_fd::ObservedStage,
-    request: &Control, cancelled: &AtomicBool, check_owner: &mut dyn FnMut() -> Result<()>) -> Result<Prepared> {
+    request: &Control, expected_format:Option<&str>, cancelled: &AtomicBool, check_owner: &mut dyn FnMut() -> Result<()>) -> Result<Prepared> {
+    if expected_format.is_some_and(|f|!matches!(f,"1.0.0-draft.9"|"1.0.0-draft.10")){return Err(invalid());}
     let uncertain = || err("NATIVE_OEX_WORKER_UNCERTAIN");
     let encoded = request.encode()?;
     check_owner()?;
@@ -150,6 +163,7 @@ fn run_owned(node: &Path, script: &Path, root: &Path, input: &super::oex_read_fd
     command.arg("--permission").arg(format!("--allow-fs-read={}", root.display())).arg("--no-addons").arg(script)
         .env_clear().env("PATH", "/usr/bin:/bin").env("LANG", "C").env("EXHIBITOS_OEX_PREFLIGHT_FDS", list)
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    if let Some(format)=expected_format {command.env("EXHIBITOS_OEX_PREFLIGHT_FORMAT",format);}
     unsafe { command.pre_exec(move || {
         // No archive/output file is written by preflight.
         let limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
@@ -220,7 +234,17 @@ mod tests {
             runtime_generation: control.runtime_generation.clone(), stage_id: control.stage_id.clone(), reservation_id: control.reservation_id.clone(),
             reservation_generation: control.reservation_generation.clone(), control_sha256: digest(&control.encode().unwrap()), archive_bytes: 128,
             expanded_bytes: 100, packed_bytes: 80, manifest_sha256: "c".repeat(64), entry_count: 3,
-            archive_sha256: control.archive_sha256.clone(), input_device: "1".into(), input_inode: "2".into() };
+            archive_sha256: control.archive_sha256.clone(), input_device: "1".into(), input_inode: "2".into(),archive_format:None };
+        let legacy=check(&control,&serde_json::to_vec(&ack).unwrap()).unwrap();
+        assert!(legacy.check_format(None).is_ok());assert!(legacy.check_format(Some("1.0.0-draft.10")).is_err());
+        for format in ["1.0.0-draft.9","1.0.0-draft.10"] {
+            ack.archive_format=Some(format.into());
+            let actual=check(&control,&serde_json::to_vec(&ack).unwrap()).unwrap();
+            assert!(actual.check_format(Some(format)).is_ok());assert!(actual.check_format(None).is_err());
+            assert!(actual.check_format(Some(if format.ends_with("10"){"1.0.0-draft.9"}else{"1.0.0-draft.10"})).is_err());
+        }
+        ack.archive_format=Some("1.0.0-draft.11".into());assert!(check(&control,&serde_json::to_vec(&ack).unwrap()).is_err());
+        ack.archive_format=None;
         let accepted = check(&control, &serde_json::to_vec(&ack).unwrap()).unwrap();
         assert_eq!((accepted.expanded_bytes, accepted.packed_bytes, accepted.entry_count), (100, 80, 3));
         let challenge=super::super::owner_claim_frames::ClaimChallenge{version:1,kind:"claim-challenge-v3".into(),correlation_id:next(),workspace_id:next(),tenant_id:next(),principal_id:next(),runtime_generation:control.runtime_generation.clone(),job_id:next(),attempt_id:control.attempt_id.clone(),generation:next(),stage_id:control.stage_id.clone(),reservation_id:control.reservation_id.clone(),reservation_generation:control.reservation_generation.clone(),claim_digest:"d".repeat(64),receipt_digest:control.reservation_digest.clone()};
@@ -262,12 +286,12 @@ mod tests {
         let mut control = Control { version: 1, kind: "oex-preflight-v1".into(), attempt_id: next(), runtime_generation: next(),
             stage_id, reservation_id: next(), reservation_generation: next(), reservation_digest: "a".repeat(64),
             archive_bytes: observed.bytes, archive_sha256: observed.sha256.clone(), input_device: observed.device.to_string(), input_inode: observed.inode.to_string() };
-        let prepared = run_owned(Path::new(&node), Path::new(&script), Path::new(&root), &observed, &control, &cancelled, &mut || Ok(())).unwrap();
+        let prepared = run_owned(Path::new(&node), Path::new(&script), Path::new(&root), &observed, &control, None, &cancelled, &mut || Ok(())).unwrap();
         assert!(prepared.matches(&control));
         assert!(prepared.inventory.expanded_bytes >= prepared.inventory.packed_bytes);
         control.input_inode = observed.inode.checked_add(1).unwrap_or(observed.inode - 1).to_string();
         assert!(!prepared.matches(&control));
-        let error = match run_owned(Path::new(&node), Path::new(&script), Path::new(&root), &observed, &control, &cancelled, &mut || Ok(())) {
+        let error = match run_owned(Path::new(&node), Path::new(&script), Path::new(&root), &observed, &control, None, &cancelled, &mut || Ok(())) {
             Ok(_) => panic!("mismatched input inode must fail"), Err(error) => error,
         };
         assert_eq!(error.code, "NATIVE_OEX_WORKER_UNCERTAIN");

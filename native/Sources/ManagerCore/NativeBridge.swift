@@ -84,6 +84,7 @@ public struct NativeHostStatus: Decodable, Sendable {
     public let restoration: Restoration?
     public let selectedOex: Bool?
     public let oex027Qualified: Bool?
+    public let oex028Qualified: Bool?
     public let oexSaveOffer: NativeOEXSaveOffer?
     public var needsShutdown: Bool { busy || runtime?.hasOwnedProcesses == true }
 }
@@ -202,6 +203,11 @@ public actor NativeBridge {
         process.waitUntilExit()
         try output.close()
         guard process.terminationStatus == 0 else { throw BridgeFailure("NATIVE_HELPER_EXITED") }
+    }
+    /// A separate read-only helper receives only the held private snapshot FD.
+    public func selectedOEXFormat(_ archive: NativeOEXArchive) async throws -> String {
+        guard let helper = process.executableURL else { throw BridgeFailure("NATIVE_HELPER_MISSING") }
+        return try await archive.selectedFormat(helper: helper)
     }
     public func context() throws -> Context { try request("context") }
     public func presentation() throws -> Presentation { try request("presentation") }

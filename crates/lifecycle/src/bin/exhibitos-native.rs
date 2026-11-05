@@ -8,6 +8,17 @@ use std::io::{BufRead, Read};
 
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
+    #[cfg(target_os = "macos")]
+    if args.len()==2 && args[1]=="--oex-selected-format" {
+        unsafe { libc::signal(libc::SIGTERM,shutdown_signal as *const () as libc::sighandler_t);libc::signal(libc::SIGINT,shutdown_signal as *const () as libc::sighandler_t); }
+        let result=native_resources().ok_or(())
+            .and_then(|root|exhibitos_lifecycle::native_runtime::selected_oex_format(&root,libc::STDIN_FILENO,&STOP).map_err(|_|()));
+        match result {
+            Ok(bytes)=>{let mut out=io::stdout().lock();if out.write_all(&bytes).and_then(|_|out.write_all(b"\n")).is_err(){std::process::exit(1);}},
+            Err(())=>{eprintln!("NATIVE_OEX_FORMAT_INVALID");std::process::exit(1);}
+        }
+        return;
+    }
     if !(args.len() == 3 || (cfg!(target_os = "macos") && args.len() == 4 && args[3] == "--fresh-selected-oex"))
         || args[1] != "--profile" || !std::path::Path::new(&args[2]).is_absolute() {
         eprintln!("NATIVE_PROFILE_REQUIRED");

@@ -79,6 +79,19 @@ Bounded output uses a new destination and never replaces an existing file.
 These are implementation boundaries; actual runtime/workspace qualification
 and native GUI output evidence must match the delivered payload separately.
 
+Fresh-workspace OEX import preserves the existing026/027 draft.9 mode. A
+separately admitted028/v4 payload supports explicit draft.9 and draft.10 under
+the same512MiB bounded-file profile. Before saving a new intent, the fixed bundled
+helper inspects the already sealed private snapshot through a read-only inherited
+FD using Spec's size index. That provisional format is not archive validation or
+import authority: selection ACK, job/lease, actual hashed preflight, worker control
+and decoded manifest must agree. The028 catalog row/hash is checked independently
+before the unchanged catalog ACK. Old capabilities/schemas and failed intents stay
+unchanged; draft.10 cannot enter a legacy selected runtime. The additive028 schema
+is applied only to a newly selected workspace, and ordinary startup does not
+silently upgrade an existing catalog. Native execution and output acceptance
+remain specific to the validated source/payload/profile.
+
 Local publication uses its own affirmative `nativePublicationProfile:
 "bounded-local-v1"` session advertisement and an explicit per-call profile
 header. Ordinary readiness/publish requests retain their existing behavior.

@@ -123,6 +123,57 @@ public struct NativeOEXArchive: Sendable {
     public init(data: Data) throws {
         let writer = try OEXArchiveWriter(); try writer.append(data); self = try writer.finish()
     }
+    /// Provisional metadata from the same sealed snapshot. Platform still hashes
+    /// and validates the complete archive under the independently held import lease.
+    func selectedFormat(helper: URL) async throws -> String {
+        let ownedFile = file, identity = stamp, expectedCount = count
+        let work = Task.detached(priority: .userInitiated) {
+            let fd = Darwin.open(ownedFile.url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+            guard fd >= 0 else { throw AuthoringFailure("FILE_CHANGED") }
+            let source = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+            defer { try? source.close() }
+            var before = stat()
+            guard fstat(fd, &before) == 0, identity.matches(before), before.st_size == Int64(expectedCount) else { throw AuthoringFailure("FILE_CHANGED") }
+            let child = Process(), pipe = Pipe()
+            child.executableURL = helper; child.arguments = ["--oex-selected-format"]
+            child.environment = ["PATH": "/usr/bin:/bin", "LANG": "C"]
+            child.standardInput = source; child.standardOutput = pipe; child.standardError = FileHandle.nullDevice
+            try Task.checkCancellation(); try child.run()
+            try? pipe.fileHandleForWriting.close()
+            defer {
+                if child.isRunning { child.terminate() }
+                child.waitUntilExit()
+                try? pipe.fileHandleForReading.close()
+            }
+            let outFD = pipe.fileHandleForReading.fileDescriptor
+            let flags = fcntl(outFD, F_GETFL)
+            guard flags >= 0, fcntl(outFD, F_SETFL, flags | O_NONBLOCK) == 0 else { throw AuthoringFailure("OEX_FORMAT_INVALID") }
+            let deadline = ContinuousClock.now.advanced(by: .seconds(45))
+            var result = Data(), eof = false
+            while child.isRunning || !eof {
+                try Task.checkCancellation()
+                guard ContinuousClock.now < deadline else { throw AuthoringFailure("OEX_FORMAT_INVALID") }
+                var block = [UInt8](repeating: 0, count: 1024)
+                let n = Darwin.read(outFD, &block, block.count)
+                if n == 0 { eof = true }
+                else if n > 0 {
+                    guard result.count + n <= 1024 else { throw AuthoringFailure("OEX_FORMAT_INVALID") }
+                    result.append(contentsOf: block.prefix(n))
+                } else if errno != EAGAIN && errno != EINTR { throw AuthoringFailure("OEX_FORMAT_INVALID") }
+                if child.isRunning || !eof { try await Task.sleep(for: .milliseconds(10)) }
+            }
+            child.waitUntilExit(); try Task.checkCancellation()
+            var after = stat()
+            guard child.terminationStatus == 0, fstat(fd, &after) == 0, identity.matches(after), result.last == 10 else { throw AuthoringFailure("OEX_FORMAT_INVALID") }
+            result.removeLast()
+            let hint = try JSONDecoder().decode(OEXSelectedFormatHint.self, from: result)
+            try hint.check(bytes: result, count: expectedCount, device: before.st_dev, inode: before.st_ino)
+            return hint.archiveFormat
+        }
+        return try await withTaskCancellationHandler {
+            let value = try await work.value; try Task.checkCancellation(); return value
+        } onCancel: { work.cancel() }
+    }
     /// Reads one deterministic segment from the private snapshot. The
     /// consumer still verifies the full archive digest.
     func boundedChunk(index: Int) throws -> Data {
@@ -233,5 +284,17 @@ public struct NativeOEXArchive: Sendable {
             catch { throw AuthoringFailure("EXPORT_WRITE_FAILED") }
         }
         try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+    }
+}
+
+struct OEXSelectedFormatHint: Decodable {
+    let version: Int, kind: String, archiveFormat: String, archiveBytes: Int
+    let manifestSha256: String, inputDevice: String, inputInode: String
+    func check(bytes: Data, count: Int, device: dev_t, inode: ino_t) throws {
+        guard let object = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+              Set(object.keys) == Set(["version", "kind", "archiveFormat", "archiveBytes", "manifestSha256", "inputDevice", "inputInode"]),
+              version == 1, kind == "oex-format-hint", ["1.0.0-draft.9", "1.0.0-draft.10"].contains(archiveFormat),
+              archiveBytes == count, inputDevice == String(UInt32(bitPattern: device)), inputInode == String(inode),
+              manifestSha256.utf8.count == 64, manifestSha256.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { throw AuthoringFailure("OEX_FORMAT_INVALID") }
     }
 }

@@ -17,7 +17,7 @@ fn decimal(s:&str,nonzero:bool)->bool {s.parse::<u64>().is_ok_and(|n|n.to_string
 impl Control {
     pub(super) fn encode(&self)->Result<Vec<u8>> {
         let bad=||err("NATIVE_OEX_ATTEMPT_INVALID");
-        if self.version!=2||self.kind!="oex-packed-v2"||self.profile!="bounded-file-v1"||self.format!="1.0.0-draft.9"
+        if self.version!=2||self.kind!="oex-packed-v2"||self.profile!="bounded-file-v1"||!matches!(self.format.as_str(),"1.0.0-draft.9"|"1.0.0-draft.10")
             || !(1..=512*1024*1024).contains(&self.archive_bytes)||self.capacity>512*1024*1024
             || self.source_digest!=self.archive_sha256
             || [&self.tenant_id,&self.resource_id,&self.job_id,&self.user_id,&self.request_id,&self.lease_id,&self.attempt_id,

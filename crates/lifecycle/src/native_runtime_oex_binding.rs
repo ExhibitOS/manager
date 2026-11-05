@@ -54,7 +54,7 @@ impl Receipt {
                 &self.lease_id, &self.attempt_id, &self.runtime_generation,
                 &self.stage_id, &self.reservation_id, &self.reservation_generation]
                 .iter().all(|v| Uuid::parse_str(v).is_ok_and(|id| id.to_string() == **v && id.get_variant() == uuid::Variant::RFC4122 && (1..=8).contains(&id.get_version_num())))
-            && self.profile == "bounded-file-v1" && self.format == "1.0.0-draft.9"
+            && self.profile == "bounded-file-v1" && matches!(self.format.as_str(), "1.0.0-draft.9" | "1.0.0-draft.10")
             && self.source_digest == self.archive_sha256
             && (1..=536_870_912).contains(&self.archive_bytes)
             && (1..=536_870_912).contains(&self.capacity)

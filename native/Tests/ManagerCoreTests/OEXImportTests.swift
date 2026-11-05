@@ -48,6 +48,37 @@ private actor BoundedOEXMock: NativeBoundedOEXTransport {
 }
 
 final class OEXImportTests: XCTestCase {
+    func testSelectedFormatHintRejectsUnknownFormatAndForeignSnapshot() throws {
+        func bytes(_ format: String = "1.0.0-draft.10", inode: String = "42", extra: Bool = false) throws -> Data {
+            var value: [String: Any] = ["version": 1, "kind": "oex-format-hint", "archiveFormat": format, "archiveBytes": 100,
+                                       "manifestSha256": String(repeating: "a", count: 64), "inputDevice": "1", "inputInode": inode]
+            if extra { value["authority"] = true }
+            return try JSONSerialization.data(withJSONObject: value)
+        }
+        for format in ["1.0.0-draft.9", "1.0.0-draft.10"] {
+            let data = try bytes(format), hint = try JSONDecoder().decode(OEXSelectedFormatHint.self, from: data)
+            try hint.check(bytes: data, count: 100, device: 1, inode: 42)
+        }
+        for data in [try bytes("1.0.0-draft.11"), try bytes(inode: "041"), try bytes(extra: true)] {
+            let hint = try JSONDecoder().decode(OEXSelectedFormatHint.self, from: data)
+            XCTAssertThrowsError(try hint.check(bytes: data, count: 100, device: 1, inode: 42))
+        }
+        let data = try bytes(), hint = try JSONDecoder().decode(OEXSelectedFormatHint.self, from: data)
+        XCTAssertThrowsError(try hint.check(bytes: data, count: 101, device: 1, inode: 42))
+    }
+    @MainActor
+    func testExplicitDraft10IsPersistedBeforeSelectedMutation() async throws {
+        let id = UUID().uuidString.lowercased()
+        let state = NativeOEXImportState(format: 1, revision: 0, workspaceId: id, tenantId: id, principalId: id, intent: nil, jobId: nil, fileName: nil)
+        let archive = try NativeOEXArchive(data: Data([0x50, 0x4b, 0x03, 0x04] + Array(repeating: 0, count: 20)))
+        let file = NativeOEXImportFile(name: "synthetic.oex", archive: archive)
+        var durable = state
+        _ = try await NativeOEXImportTransfer.runBoundedOnce(state: state, file: file, api: BoundedOEXMock(.created), archiveFormat: "1.0.0-draft.10", persist: { input in
+            var next = input; next.revision += 1; durable = next; return next
+        }, select: { XCTAssertEqual(durable.intent?.oexFormat, "1.0.0-draft.10") }, isCurrent: { true })
+        XCTAssertEqual(durable.intent?.oexFormat, "1.0.0-draft.10")
+        XCTAssertFalse(durable.intent!.permitsLegacyJobMutation)
+    }
     @MainActor
     func testVerifiedTransferProgressDoesNotReportFullOrQueueAfterFailedReceipt() async throws {
         let id = UUID().uuidString.lowercased()

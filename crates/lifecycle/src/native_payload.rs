@@ -136,6 +136,28 @@ const NORMAL_OEX_027_CAPABILITY_PATH: &str = "platform/scripts/native-normal-oex
 const NORMAL_OEX_027_CAPABILITY_SHA256: &str = "f9eecec7b17a7f010a94bcc8711326a44261c9713249b01231cc62b86b18eb6d";
 
 
+// Explicit material-catalogue format admission; legacy capability bytes stay frozen.
+const NORMAL_OEX_028_CAPABILITY_PATH:&str="platform/scripts/native-normal-oex-028-capability-v4.json";
+const NORMAL_OEX_028_CAPABILITY_SHA256:&str="9ffbff5c770be6c70e5bbffd4183006003ed73dabb807e18f496a19af94a58b4";
+const NORMAL_OEX_028_CAPABILITY:&[u8]=br#"{"format":1,"kind":"exhibitos-native-normal-oex-028","protocol":"normal-oex-028-v4","ownerChannelVersion":3,"baseSchemaPath":"platform/database/native-oex-normal/026_oex_file_profile.sql","baseSchemaSHA256":"9e2a204ef9f24132f25ca2247415604c65f3f301c04e70a6a2a2facbc9122112","provenanceSchemaPath":"platform/database/native-oex-normal/027_oex_exhibition_provenance.sql","provenanceSchemaSHA256":"09bd82b3195e2f54545f6af45173bbab569effac95553a50f573745dab96f2c7","schemaPath":"platform/database/native-oex-normal/028_oex_material_catalogue.sql","schemaSHA256":"1f88a8ed07a3814954d11d58ebe9b627f399a39f918e8eb838d94a5df4f5b9af","archiveFormats":["1.0.0-draft.9","1.0.0-draft.10"],"formatHintScript":"platform/apps/api/dist/oex-selected-format.js","maxArchiveBytes":536870912,"oneShot":true}"#;
+const NORMAL_OEX_028_SCHEMA_PATH:&str="platform/database/native-oex-normal/028_oex_material_catalogue.sql";
+pub(crate) const NORMAL_OEX_028_SCHEMA_SHA256:&str="1f88a8ed07a3814954d11d58ebe9b627f399a39f918e8eb838d94a5df4f5b9af";
+const NORMAL_OEX_028_RELEASE_PROVENANCE:&[(&str,&str,&str)]=&[];
+const NORMAL_OEX_028_LOCAL_VALIDATION_PROVENANCE:&[(&str,&str,&str)]=&[
+    // Complete inventory independently checked; old Node/PostgreSQL/static
+    // assets retained. Explicit formats and additive028 remain local-only.
+    ("61bd336b3333ab917bc2588a63ff99cb56261fad",
+     "1739c79934910d21a40d67509dda16fa2a86c6a45c3d78ef5dfda52214fed1f2",
+     "4f4b584c98edfb54ce82da76bec53bad4e6b72e9c8389b0385e524d81db15a23"),
+];
+fn normal_oex_028_inventory_matches(manifest:&Manifest)->bool {
+    let regular=|name:&str|manifest.files.iter().find(|f|f.path==name&&f.link.is_none()&&f.executable==Some(false));
+    normal_oex_inventory_matches(manifest,NORMAL_OEX_CAPABILITY)&&normal_oex_027_inventory_matches(manifest)
+        && regular(NORMAL_OEX_028_CAPABILITY_PATH).is_some_and(|f|f.bytes==Some(NORMAL_OEX_028_CAPABILITY.len() as u64)&&f.sha256.as_deref()==Some(NORMAL_OEX_028_CAPABILITY_SHA256))
+        && regular(NORMAL_OEX_028_SCHEMA_PATH).is_some_and(|f|f.bytes.is_some_and(|n|n>0)&&f.sha256.as_deref()==Some(NORMAL_OEX_028_SCHEMA_SHA256))
+        && regular("platform/apps/api/dist/oex-selected-format.js").is_some_and(|f|f.bytes.is_some_and(|n|n>0)&&f.sha256.as_deref().is_some_and(hash_valid))
+}
+
 fn normal_oex_release_declaration_matches(manifest: &Manifest, manifest_hash: &str, bytes: &[u8], approved: &[(&str, &str, &str)]) -> bool {
     if manifest.mode != "release" || !manifest.redistribution_qualified || !manifest.official_signed
         || !approved.iter().any(|(source, producer, hash)| *source == manifest.source_commit.as_str()
@@ -215,6 +237,21 @@ mod normal_oex_release_declaration_tests {
         m
     }
 
+    #[test]
+    fn material_catalogue_capability_requires_both_frozen_schemas_and_new_inventory() {
+        let mut m=local_fixture();
+        for (path,bytes,hash) in [(NORMAL_OEX_028_CAPABILITY_PATH,NORMAL_OEX_028_CAPABILITY.len() as u64,NORMAL_OEX_028_CAPABILITY_SHA256),
+            (NORMAL_OEX_028_SCHEMA_PATH,100,NORMAL_OEX_028_SCHEMA_SHA256),
+            ("platform/apps/api/dist/oex-selected-format.js",1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")] {
+            m.files.push(serde_json::from_value(serde_json::json!({"path":path,"bytes":bytes,"sha256":hash,"executable":false})).unwrap());
+        }
+        assert!(normal_oex_028_inventory_matches(&m));
+        assert_eq!(digest(NORMAL_OEX_028_CAPABILITY),NORMAL_OEX_028_CAPABILITY_SHA256);
+        for name in [NORMAL_OEX_CAPABILITY_PATH,NORMAL_OEX_027_PATH,NORMAL_OEX_028_SCHEMA_PATH,NORMAL_OEX_028_CAPABILITY_PATH,"platform/apps/api/dist/oex-selected-format.js"] {
+            let index=m.files.iter().position(|f|f.path==name).unwrap();let hash=m.files[index].sha256.clone();
+            m.files[index].sha256=Some(if name.ends_with("oex-selected-format.js"){"invalid".into()}else{"f".repeat(64)});assert!(!normal_oex_028_inventory_matches(&m));m.files[index].sha256=hash;
+        }
+    }
     #[test]
     fn local_027_accepts_only_exact_development_tuple_and_never_official_release() {
         let mut m = local_fixture(); let hash = "c".repeat(64);
@@ -598,7 +635,27 @@ impl Payload {
     fn normal_oex_026_selected_input(&self) -> Result<bool> {
         self.normal_oex_selected_admission(NORMAL_OEX_RELEASE_PROVENANCE, false)
     }
+    pub(crate) fn normal_oex_028_selected_input(&self)->Result<bool> {
+        let approved=if self.manifest.mode=="release"&&self.manifest.redistribution_qualified&&self.manifest.official_signed {
+            NORMAL_OEX_028_RELEASE_PROVENANCE
+        } else if cfg!(all(debug_assertions,target_os="macos"))&&self.manifest.mode=="local-validation"&&!self.manifest.redistribution_qualified&&!self.manifest.official_signed {
+            NORMAL_OEX_028_LOCAL_VALIDATION_PROVENANCE
+        } else {return Ok(false);};
+        if !approved.iter().any(|(source,producer,hash)|*source==self.manifest.source_commit&&*producer==self.manifest.producer_sha256&&*hash==self.manifest_sha256)
+            || !normal_oex_028_inventory_matches(&self.manifest){return Ok(false);}
+        self.recheck()?;
+        let path=self.root.join(NORMAL_OEX_028_CAPABILITY_PATH);
+        if fs::canonicalize(&path).map_err(|_|invalid())?!=path{return Err(invalid());}
+        let (bytes,pin)=crate::hosted_runtime_file::bounded(&path,2048)?;
+        let accepted=bytes==NORMAL_OEX_028_CAPABILITY&&digest(&bytes)==NORMAL_OEX_028_CAPABILITY_SHA256;
+        pin.check()?;Ok(accepted)
+    }
+    pub(crate) fn oex_format_hint(&self)->Result<(PathBuf,PathBuf,PathBuf)> {
+        if !self.normal_oex_028_selected_input()?{return Err(err("NATIVE_OEX_FORMAT_UNAVAILABLE"));}
+        Ok((self.node(),self.root.join("platform/apps/api/dist/oex-selected-format.js"),self.root.clone()))
+    }
     pub(crate) fn normal_oex_027_selected_input(&self) -> Result<bool> {
+        if self.normal_oex_028_selected_input()? {return Ok(true);}
         if self.normal_oex_selected_admission(NORMAL_OEX_027_RELEASE_PROVENANCE, true)? { return Ok(true); }
         // Only the compiled development tuple enters this path. Existing fresh
         // selected-root/UID/owner and stage fences remain in Session/controller.

@@ -83,7 +83,7 @@ final class OEXImportModel: ObservableObject {
             if let uncertain = uncertainBounded {
                 message = "서버 작업 번호 \(uncertain.jobId ?? "미확인"), 요청 번호 \(uncertain.requestId)를 보관하고 다시 시작하지 마세요."
             } else if let intent = restored.intent {
-                message = intent.profile == "bounded-file-v1" && intent.oexFormat == "1.0.0-draft.9"
+                message = intent.profile == "bounded-file-v1" && intent.hasSupportedProfile
                     ? "이전 가져오기 기록을 보관했습니다. 현재 서버 작업의 실행 여부는 확인되지 않았습니다."
                     : "이전 방식의 가져오기 기록을 보관했습니다. 현재 앱에서는 이어가기·재시도·취소를 지원하지 않습니다."
             } else if !freshBounded {
@@ -142,7 +142,11 @@ final class OEXImportModel: ObservableObject {
         do {
             if freshBounded {
                 guard initial.intent == nil, let file, let bridge, let context, mayBeginBounded?() == true else { throw AuthoringFailure("OEX_IMPORT_PROFILE_UNAVAILABLE") }
-                let result = try await NativeOEXImportTransfer.runBoundedOnce(state: initial, file: file, api: api, persist: { [weak self] value in
+                let status = try await bridge.nativeStatus(context)
+                guard generation == current, mayBeginBounded?() == true else { throw AuthoringFailure("OEX_IMPORT_SCOPE_CHANGED") }
+                let archiveFormat = status.oex028Qualified == true ? try await bridge.selectedOEXFormat(file.archive) : "1.0.0-draft.9"
+                guard generation == current, mayBeginBounded?() == true else { throw AuthoringFailure("OEX_IMPORT_SCOPE_CHANGED") }
+                let result = try await NativeOEXImportTransfer.runBoundedOnce(state: initial, file: file, api: api, archiveFormat: archiveFormat, persist: { [weak self] value in
                     let saved = try await save(value); guard let self, self.generation == current else { throw AuthoringFailure("OEX_IMPORT_SCOPE_CHANGED") }
                     self.state = saved; return saved
                 }, select: { try await bridge.selectBoundedOEX(context) }, isCurrent: { [weak self] in self?.generation == current },
