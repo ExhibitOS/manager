@@ -52,6 +52,28 @@ Operations:
 - `bench-apply`: provide its `proposalId` and a fixed shared-renderer reply at
   `inputPath` under the output root. Native checks the held request, exact reply,
   unchanged draft/CAS and narrow BenchCommand delta before persisting it.
+- `surface-texture-prepare`: require a clean saved draft and `command` with
+  exactly `type: "set-material-texture"`, `surfaceId` and the existing closed
+  `texture` binding. Only a wall is supported. The actual authenticated catalogue
+  must contain the requested pack/version. Preserve the wall's current scalar
+  material automatically; the caller cannot clear or change that value. Write a
+  new `outputPath` packet for the shared domain reducer, holding its exact native
+  frame, selection, ETag and command. This is a domain proposal, not a visual
+  texture-rendering acceptance.
+- `surface-texture-apply`: provide the prepare operation's top-level requestId as
+  `proposalId` and the checked producer's reply at `inputPath` under the output
+  root. The reply contains exactly `version`, `epoch`, `sequence`, `tenantId`,
+  `principalId`, `requestId`, `surfaceId`, `candidate`; the six correlation fields
+  match the held inner request. Existing `SurfaceMaterialTexturePreview` checks
+  the complete candidate delta before native CAS. A changed ETag, pending/dirty
+  document, wrong scope/selection or unrelated candidate change refuses. Existing
+  template-modified bookkeeping remains part of that domain command. Use `save`
+  for the authenticated server write and exact readback afterward.
+  Both wall operations require a current native viewport policy with matching
+  exhibition/ETag, explicit `boundedProfile`, `boundedEditRequired: false`,
+  `boundedReadOnly: false` and no editing capability. Bounded provenance with an
+  ordinary-size draft is supported; bounded-edit-required and unknown policies
+  refuse. These operations do not synthesize a viewport ACK or bypass a bound.
 - `save`: persist the exact native pending request before authenticated API save,
   then read back the exact Studio response and commit the native journal CAS.
   Uncertain responses retain the original request/draft/ETag. An explicitly
@@ -78,6 +100,12 @@ silently evict replay protection. All operations preserve source inputs. Old
 success/failure profiles, pending requests and authority evidence remain intact.
 Restart recovery of a closed automation session is not implemented by this fresh
 profile entry point; preserve its profile and pending records for the owner.
+
+The wall adapter leaves `selectedOEX9` and `import-oex9` unchanged. Its baseline
+archive must be actual draft.9 from the exact approved producer. The import
+receipt/idMap must establish the new wall identity; a public or prior-profile
+surface ID, array label, raw public blob reference or rewritten archive version
+is not a substitute. No existing success/failure profile is reopened.
 
 The renderer has no native profile writer. Snapshot receipts must independently
 bind native workspace/identity/journal/editVersion and Studio saved revision/ETag,
