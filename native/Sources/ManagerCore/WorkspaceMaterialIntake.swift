@@ -65,6 +65,16 @@ public struct WorkspaceMaterialDeclaration: Codable, Equatable, Sendable {
             throw AuthoringFailure("MATERIAL_DECLARATION")
         }
     }
+
+    public func pendingAfterCreateFailure(_ failure: AuthoringFailure) -> Self? {
+        // Preserve the exact declaration when a retry could find an existing intake.
+        switch (failure.status, failure.code) {
+        case (0, "MATERIAL_DECLARATION"), (400, "MATERIAL_DECLARATION"), (409, "MATERIAL_INTAKE_LIMIT"):
+            return nil
+        default:
+            return self
+        }
+    }
 }
 
 private func workspaceMaterialFieldsValid(name: String, provenance: String, maps: [String: WorkspaceMaterialMap]) -> Bool {

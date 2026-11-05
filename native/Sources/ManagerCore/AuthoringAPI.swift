@@ -129,6 +129,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "SURFACE_MATERIAL_TEXTURE_INVALID": return "무늬 반복은 0.05–20 m, 회전은 −180–180도, 요철 강도는 0–2로 입력하세요. 입력과 기존 재질은 유지됩니다."
         case "MATERIAL_CATALOG_INVALID": return "재질 목록을 확인하지 못했습니다. 기존 재질과 입력은 유지됩니다."
         case "MATERIAL_DECLARATION": return "재질 이름, 출처와 권리 입력을 확인하세요."
+        case "MATERIAL_INTAKE_LIMIT": return "진행 중인 재질 등록이 한도에 도달했습니다. 기존 등록을 마친 뒤 다시 시도하세요."
         case "MATERIAL_MAP_DESCRIPTOR", "MATERIAL_MAP_DIMENSIONS", "PNG_PIXEL_LIMIT_EXCEEDED", "FORMAT_REJECTED":
             return "크기가 8 MiB 이하이고 픽셀이 419만 개 이하인 8비트 RGB 또는 RGBA PNG를 선택하세요."
         case "MATERIAL_MAP_COLOR_SPACE": return "색상 맵은 sRGB, 데이터 맵은 선형 색 공간의 PNG를 선택하세요."

@@ -36,4 +36,16 @@ final class WorkspaceMaterialIntakeTests: XCTestCase {
             XCTAssertEqual(error.code, "WORKSPACE_MATERIAL_UNAVAILABLE")
         }
     }
+
+    func testOnlyDefinitiveCreateRejectionsReleasePendingDeclaration() {
+        let declaration = WorkspaceMaterialDeclaration(requestId: UUID().uuidString.lowercased(), kind: .floor,
+            name: "Fixture", rights: ArtworkMetadata().rights, provenance: "Synthetic input", maps: [:])
+
+        XCTAssertNil(declaration.pendingAfterCreateFailure(AuthoringFailure("MATERIAL_DECLARATION")))
+        XCTAssertNil(declaration.pendingAfterCreateFailure(AuthoringFailure("MATERIAL_DECLARATION", status: 400)))
+        XCTAssertNil(declaration.pendingAfterCreateFailure(AuthoringFailure("MATERIAL_INTAKE_LIMIT", status: 409)))
+        XCTAssertEqual(declaration.pendingAfterCreateFailure(AuthoringFailure("MATERIAL_INTAKE_LIMIT", status: 500)), declaration)
+        XCTAssertEqual(declaration.pendingAfterCreateFailure(AuthoringFailure("JOB_STATE", status: 409)), declaration)
+        XCTAssertEqual(declaration.pendingAfterCreateFailure(AuthoringFailure("CONNECTION")), declaration)
+    }
 }

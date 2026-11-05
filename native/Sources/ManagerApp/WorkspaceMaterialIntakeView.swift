@@ -213,11 +213,14 @@ struct WorkspaceMaterialIntakeView: View {
                 if let intake {
                     try remember(await api.workspaceMaterialIntake(intake.intakeId))
                 } else {
-                    do { try remember(await api.createWorkspaceMaterial(declaration)) }
-                    catch let error as AuthoringFailure where error.code == "MATERIAL_DECLARATION" && intake == nil {
-                        self.declaration = nil
-                        throw error
+                    let next: WorkspaceMaterialIntake
+                    do {
+                        next = try await api.createWorkspaceMaterial(declaration)
+                    } catch let failure as AuthoringFailure {
+                        self.declaration = declaration.pendingAfterCreateFailure(failure)
+                        throw failure
                     }
+                    try remember(next)
                 }
                 guard let intake, intake.phase == .uploading else { return }
                 for role in WorkspaceMaterialRole.allCases where intake.received[role.rawValue] == nil {
