@@ -72,6 +72,39 @@ final class FloorSettingsTests: XCTestCase {
             XCTAssertEqual(audio.value["sound"], FloorSettings.defaults(next)[.sound])
         }
     }
+    func testAutomationAppliesTileOnlyToPinnedFloorAndPreservesExplicitFootsteps() throws {
+        var (draft, _) = try fixture()
+        var original = draft.candidate
+        let roomId = original["rooms"].items![0]["id"].string!
+        let surfaceId = original["surfaces"].items![0]["id"].string!
+        let otherFloor = UUID().uuidString
+        original["surfaces"] = .array(original["surfaces"].items! + [
+            .object(["id": .string(otherFloor), "type": .string("floor"), "roomId": .string(roomId)])
+        ])
+        original["extensions"]["org.exhibitos.viewer/experience"] = .object([
+            "footsteps": .array([surfaceId, otherFloor].map { id in
+                .object(["surfaceId": .string(id), "material": .string("concrete")])
+            })
+        ])
+        original["extensions"]["org.exhibitos.viewer/footstep-resources"] = .object([
+            "version": .integer(1), "families": .array([.string("concrete")])
+        ])
+        try draft.replaceCandidate(original)
+        let before = draft
+        XCTAssertThrowsError(try draft.applyFloorAppearance(.tile, roomId: UUID().uuidString, surfaceId: surfaceId))
+        XCTAssertEqual(draft, before)
+        try draft.applyFloorAppearance(.tile, roomId: roomId, surfaceId: surfaceId)
+        let bindings = try FloorSettings.all(in: draft.candidate)
+        XCTAssertEqual(bindings.count, 1)
+        let binding = try XCTUnwrap(bindings.first)
+        XCTAssertEqual(binding.target.id, surfaceId)
+        XCTAssertEqual(binding.value["texturePack"], .object(["id": .string("Tiles074"), "version": .integer(1)]))
+        XCTAssertEqual(binding.value["repeatMeters"], .vector([2.1, 2.1]))
+        XCTAssertEqual(binding.value["sound"], .null)
+        var expected = original
+        expected["extensions"][FloorSettings.namespace] = draft.candidate["extensions"][FloorSettings.namespace]
+        XCTAssertEqual(draft.candidate, expected)
+    }
     func testExplicitDefaultSoundDeclaresOnlySelectedFamilyAndPreservesOtherData() throws {
         var (draft, target) = try fixture()
         let tile = try preset(.tile, draft: draft, target: target)

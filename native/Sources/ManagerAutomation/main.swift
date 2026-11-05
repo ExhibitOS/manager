@@ -12,6 +12,7 @@ struct Configuration: Decodable {
     let temporaryRoot: String
     let inputs: [String: String]
     let selectedOEX9: Bool?
+    let selectedOEX10: Bool?
 }
 actor Driver {
     let session: NativeAutomationSession
@@ -62,10 +63,10 @@ actor Driver {
     }
     private func finished() { active = nil; activeID = nil }
     func isClosed() -> Bool { closed }
-    func eof() async {
+    func eof() async -> Bool {
         let task = active; task?.cancel(); await task?.value
-        do { try await session.close(); closed = true }
-        catch { failure(nil, error) }
+        do { try await session.close(); closed = true; return true }
+        catch { failure(nil, error); return false }
     }
 }
 
@@ -81,10 +82,10 @@ func run() async -> Int32 {
         let data = try Data(contentsOf: url)
         let fields = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let names = Set(fields?.keys.map { $0 } ?? [])
-        guard names.subtracting(["selectedOEX9"]) == ["helper", "profile", "ports", "outputRoot", "temporaryRoot", "inputs"] else { throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID") }
+        guard names.subtracting(["selectedOEX9", "selectedOEX10"]) == ["helper", "profile", "ports", "outputRoot", "temporaryRoot", "inputs"] else { throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID") }
         let config = try JSONDecoder().decode(Configuration.self, from: data)
         guard setenv("TMPDIR", config.temporaryRoot, 1) == 0 else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
-        let owned = try NativeAutomationSession(helper: URL(fileURLWithPath: config.helper), profile: URL(fileURLWithPath: config.profile), ports: config.ports, outputRoot: URL(fileURLWithPath: config.outputRoot), temporaryRoot: URL(fileURLWithPath: config.temporaryRoot), inputs: config.inputs, selectedOEX9: config.selectedOEX9 ?? false)
+        let owned = try NativeAutomationSession(helper: URL(fileURLWithPath: config.helper), profile: URL(fileURLWithPath: config.profile), ports: config.ports, outputRoot: URL(fileURLWithPath: config.outputRoot), temporaryRoot: URL(fileURLWithPath: config.temporaryRoot), inputs: config.inputs, selectedOEX9: config.selectedOEX9 ?? false, selectedOEX10: config.selectedOEX10 ?? false)
         session = owned
         let driver = Driver(owned)
         await driver.emit(.object(["version": .integer(1), "event": .string("ready"), "result": try await owned.open()]))
@@ -117,7 +118,8 @@ func run() async -> Int32 {
                 if await driver.isClosed() { break }
             }
         } catch { protocolFailed = true; await driver.failure(nil, error) }
-        await driver.eof(); return protocolFailed ? 2 : 0
+        let drained = await driver.eof()
+        return protocolFailed ? 2 : drained ? 0 : 1
     } catch {
         if let session { try? await session.close() }
         let code = (error as? BridgeFailure)?.code ?? (error as? AuthoringFailure)?.code ?? "AUTOMATION_FAILED"

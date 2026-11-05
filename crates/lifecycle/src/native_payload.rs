@@ -168,6 +168,25 @@ const NORMAL_OEX_029_FLOOR_LOCAL_VALIDATION_PROVENANCE:&[(&str,&str,&str)]=&[
      "6b7753dbe3885bed579700011cddc738aa9bf9a5e8a246e57b46bf473969321e",
      "b751e43ed1968cd53aea2a9495a395d193b4d02ec48cd9e16ebae6806b4599b9"),
 ];
+const NORMAL_OEX_030_CONCRETE_CAPABILITY_PATH: &str = "platform/scripts/native-normal-oex-030-concrete-capability-v4.json";
+const NORMAL_OEX_030_CONCRETE_CAPABILITY_SHA256: &str = "3efa68edbbe474d5f873a09d6316d48909a53dc8239526e44ff4b99077125da0";
+const NORMAL_OEX_030_CONCRETE_CAPABILITY_BYTES: u64 = 575;
+const NORMAL_OEX_030_CONCRETE_SCHEMA_PATH: &str = "platform/database/native-oex-normal/030_oex_concrete_surface.sql";
+pub(crate) const NORMAL_OEX_030_CONCRETE_SCHEMA_SHA256: &str = "8c42cecb6a90c61eab4c72c4af81af42801db6bac60a567b61e69e7a31e22848";
+const NORMAL_OEX_030_CONCRETE_LOCAL_VALIDATION_PROVENANCE: (&str, &str, &str) = (
+    "4dc05911b32e2e627213e515a51b75aed406f395",
+    "a256cc405532140d2e135a228c106619bedaa76caafd1898d8607db63b1cf9aa",
+    "c9907e0733363fac0fa05848976913b5704d28ea8a7cb6bfcef343eb42af7031",
+);
+
+fn normal_oex_030_concrete_inventory_matches(manifest: &Manifest) -> bool {
+    [
+        (NORMAL_OEX_030_CONCRETE_CAPABILITY_PATH, NORMAL_OEX_030_CONCRETE_CAPABILITY_BYTES, NORMAL_OEX_030_CONCRETE_CAPABILITY_SHA256),
+        (NORMAL_OEX_030_CONCRETE_SCHEMA_PATH, 519, NORMAL_OEX_030_CONCRETE_SCHEMA_SHA256),
+    ].iter().all(|&(path, bytes, sha)| manifest.files.iter().any(|item|
+        item.path == path && item.link.is_none() && item.executable == Some(false)
+            && item.bytes == Some(bytes) && item.sha256.as_deref() == Some(sha)))
+}
 
 fn normal_oex_028_inventory_matches(manifest:&Manifest)->bool {
     let regular=|name:&str|manifest.files.iter().find(|f|f.path==name&&f.link.is_none()&&f.executable==Some(false));
@@ -298,6 +317,33 @@ mod normal_oex_release_declaration_tests {
         let index=m.files.iter().position(|f|f.path==NORMAL_OEX_029_FLOOR_SCHEMA_PATH).unwrap();m.files[index].bytes=Some(565);
         assert!(!normal_oex_029_floor_inventory_matches(&m));
         assert!(normal_oex_028_inventory_matches(&m),"Historical028 inventory checks remain independent of029");
+    }
+    #[test]
+    fn concrete_surface_supplement_binds_exact_local_tuple_and_inventory() {
+        let (source, producer, hash) = NORMAL_OEX_030_CONCRETE_LOCAL_VALIDATION_PROVENANCE;
+        let mut manifest = local_fixture();
+        manifest.source_commit = source.into();
+        manifest.producer_sha256 = producer.into();
+        let mut payload = Payload { root: PathBuf::new(), manifest, manifest_sha256: hash.into() };
+        assert!(payload.normal_oex_030_concrete_tuple());
+        assert!(!payload.normal_oex_029_floor_tuple());
+        assert!(!normal_oex_030_concrete_inventory_matches(&payload.manifest));
+        for (path, bytes, digest) in [
+            (NORMAL_OEX_030_CONCRETE_CAPABILITY_PATH, 575, NORMAL_OEX_030_CONCRETE_CAPABILITY_SHA256),
+            (NORMAL_OEX_030_CONCRETE_SCHEMA_PATH, 519, NORMAL_OEX_030_CONCRETE_SCHEMA_SHA256),
+        ] {
+            payload.manifest.files.push(serde_json::from_value(serde_json::json!({
+                "path": path, "bytes": bytes, "sha256": digest, "executable": false
+            })).unwrap());
+        }
+        assert!(normal_oex_030_concrete_inventory_matches(&payload.manifest));
+        payload.manifest.files.last_mut().unwrap().bytes = Some(518);
+        assert!(!normal_oex_030_concrete_inventory_matches(&payload.manifest));
+        payload.manifest.official_signed = true;
+        assert!(!payload.normal_oex_030_concrete_tuple());
+        payload.manifest.official_signed = false;
+        payload.manifest_sha256 = "f".repeat(64);
+        assert!(!payload.normal_oex_030_concrete_tuple());
     }
     #[test]
     fn local_027_accepts_only_exact_development_tuple_and_never_official_release() {
@@ -683,7 +729,8 @@ impl Payload {
         self.normal_oex_selected_admission(NORMAL_OEX_RELEASE_PROVENANCE, false)
     }
     pub(crate) fn normal_oex_028_selected_input(&self)->Result<bool> {
-        let floor=self.normal_oex_029_floor_tuple();
+        let concrete = self.normal_oex_030_concrete_tuple();
+        let floor=self.normal_oex_029_floor_tuple() || concrete;
         let approved=if self.manifest.mode=="release"&&self.manifest.redistribution_qualified&&self.manifest.official_signed {
             NORMAL_OEX_028_RELEASE_PROVENANCE
         } else if cfg!(all(debug_assertions,target_os="macos"))&&self.manifest.mode=="local-validation"&&!self.manifest.redistribution_qualified&&!self.manifest.official_signed {
@@ -691,7 +738,8 @@ impl Payload {
         } else {return Ok(false);};
         if !(floor||approved.iter().any(|(source,producer,hash)|*source==self.manifest.source_commit&&*producer==self.manifest.producer_sha256&&*hash==self.manifest_sha256))
             || !normal_oex_028_inventory_matches(&self.manifest)
-            || (floor&&!normal_oex_029_floor_inventory_matches(&self.manifest)){return Ok(false);}
+            || (floor&&!normal_oex_029_floor_inventory_matches(&self.manifest))
+            || (concrete && !normal_oex_030_concrete_inventory_matches(&self.manifest)){return Ok(false);}
         self.recheck()?;
         let path=self.root.join(NORMAL_OEX_028_CAPABILITY_PATH);
         if fs::canonicalize(&path).map_err(|_|invalid())?!=path{return Err(invalid());}
@@ -703,7 +751,15 @@ impl Payload {
         if fs::canonicalize(&path).map_err(|_|invalid())?!=path{return Err(invalid());}
         let (bytes,pin)=crate::hosted_runtime_file::bounded(&path,2048)?;
         let accepted=bytes==NORMAL_OEX_029_FLOOR_CAPABILITY&&digest(&bytes)==NORMAL_OEX_029_FLOOR_CAPABILITY_SHA256;
-        pin.check()?;Ok(accepted)
+        pin.check()?;
+        if !accepted || !concrete { return Ok(accepted); }
+        let path = self.root.join(NORMAL_OEX_030_CONCRETE_CAPABILITY_PATH);
+        if fs::canonicalize(&path).map_err(|_| invalid())? != path { return Err(invalid()); }
+        let (bytes, pin) = crate::hosted_runtime_file::bounded(&path, 2048)?;
+        let accepted = bytes.len() as u64 == NORMAL_OEX_030_CONCRETE_CAPABILITY_BYTES
+            && digest(&bytes) == NORMAL_OEX_030_CONCRETE_CAPABILITY_SHA256;
+        pin.check()?;
+        Ok(accepted)
     }
     fn normal_oex_029_floor_tuple(&self)->bool {
         cfg!(all(debug_assertions,target_os="macos"))&&self.manifest.mode=="local-validation"
@@ -712,8 +768,17 @@ impl Payload {
                 *source==self.manifest.source_commit&&*producer==self.manifest.producer_sha256&&*hash==self.manifest_sha256)
     }
     pub(crate) fn normal_oex_029_floor_selected_input(&self)->Result<bool> {
-        if !self.normal_oex_029_floor_tuple(){return Ok(false);}
+        if !self.normal_oex_029_floor_tuple() && !self.normal_oex_030_concrete_tuple(){return Ok(false);}
         self.normal_oex_028_selected_input()
+    }
+    /// Only identifies the pinned successor. Admission also requires the
+    /// complete 028/029/030 inventory and capability checks.
+    pub(crate) fn normal_oex_030_concrete_tuple(&self) -> bool {
+        cfg!(all(debug_assertions, target_os = "macos"))
+            && self.manifest.mode == "local-validation"
+            && !self.manifest.redistribution_qualified && !self.manifest.official_signed
+            && (self.manifest.source_commit.as_str(), self.manifest.producer_sha256.as_str(), self.manifest_sha256.as_str())
+                == NORMAL_OEX_030_CONCRETE_LOCAL_VALIDATION_PROVENANCE
     }
     pub(crate) fn oex_format_hint(&self)->Result<(PathBuf,PathBuf,PathBuf)> {
         if !self.normal_oex_028_selected_input()?{return Err(err("NATIVE_OEX_FORMAT_UNAVAILABLE"));}

@@ -1,11 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 import CryptoKit
+import Darwin
 
 /// Private agent adapter to the same native document journal and authenticated
 /// API used by ManagerApp. No credentials or arbitrary executable are exposed.
 public actor NativeAutomationSession {
-    private let bridge: NativeBridge
+    private var bridge: NativeBridge
+    private var bridgeOpen = true
+    private var closeFailure: Error?
+    private var closing = false
+    private let helper: URL
+    private let profile: URL
+    private let temporaryRoot: URL
+    private let ports: [String: UInt16]
     private let root: URL
     private let inputs: [String: String]
     private let capability = UUID().uuidString.lowercased()
@@ -22,15 +30,18 @@ public actor NativeAutomationSession {
     private var surfaceProposals: [String: SurfaceMaterialTextureRequest] = [:]
     private var pendingRevisions: [String: UInt64] = [:]
     private var staticIntents: [String: NativePublicationPending] = [:]
-    private var selectedOEX9: Bool
+    private var selectedOEXFormat: String?
     private var runtimeStopped = false
 
-    public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false) throws {
+    public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false) throws {
+        guard !selectedOEX9 || !selectedOEX10 else { throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID") }
         guard outputRoot.isFileURL, outputRoot.path.hasPrefix("/"),
               FileManager.default.fileExists(atPath: outputRoot.path),
               outputRoot.resolvingSymlinksInPath().path == outputRoot.path,
               !profile.path.hasPrefix(outputRoot.path + "/") else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
-        self.root = outputRoot; self.inputs = inputs; self.selectedOEX9 = selectedOEX9
+        self.root = outputRoot; self.inputs = inputs
+        self.helper = helper; self.profile = profile; self.temporaryRoot = temporaryRoot; self.ports = ports
+        selectedOEXFormat = selectedOEX10 ? "1.0.0-draft.10" : selectedOEX9 ? "1.0.0-draft.9" : nil
         for url in [outputRoot, temporaryRoot] {
             let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
             guard attributes[.type] as? FileAttributeType == .typeDirectory,
@@ -38,7 +49,8 @@ public actor NativeAutomationSession {
                   (attributes[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
                   url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
         }
-        bridge = try NativeBridge(helper: helper, profile: profile, freshSelectedOEX: selectedOEX9, freshWorkspacePorts: ports, temporaryDirectory: temporaryRoot)
+        bridge = try NativeBridge(helper: helper, profile: profile, freshSelectedOEX: selectedOEX9 || selectedOEX10,
+                                  freshWorkspacePorts: ports, temporaryDirectory: temporaryRoot)
     }
     private func value<T: Encodable>(_ v: T) throws -> DocumentValue {
         try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(v))
@@ -60,7 +72,7 @@ public actor NativeAutomationSession {
     public func open() async throws -> DocumentValue {
         guard context == nil, !closed else { throw BridgeFailure("AUTOMATION_ALREADY_OPEN") }
         let context = try await bridge.context(); self.context = context
-        if !selectedOEX9 { _ = try await bridge.prepare(context); _ = try await waitReady() }
+        if selectedOEXFormat == nil { _ = try await bridge.prepare(context); _ = try await waitReady() }
         _ = try await bridge.start(context)
         let status = try await waitReady()
         guard status.runtime?.readiness.ready == true, let config = status.configuration else { throw BridgeFailure("NATIVE_NOT_READY") }
@@ -70,6 +82,65 @@ public actor NativeAutomationSession {
         identity = try await bridge.documentState(context)
         return try await statusValue()
     }
+    private func reopenSaved(_ current: NativeDocumentState, context: Context, api: AuthoringAPI) async throws -> DocumentValue {
+        guard selectedOEXFormat == nil, !current.dirty, let draft = current.draft, let etag = current.etag,
+              let manifest = runtimeManifest else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
+        let prior = try await api.exhibition(draft.id)
+        guard prior.draft == draft, prior.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+        let previous = try await bridge.nativeStatus(context)
+        guard previous.runtime?.readiness.ready == true, let previousJob = previous.runtime?.jobId else { throw BridgeFailure("NATIVE_NOT_READY") }
+        let directory = try profileIdentity()
+
+        runtimeStopped = true
+        proposals.removeAll(); surfaceProposals.removeAll()
+        _ = try await bridge.stop(context)
+        let stopped = try await waitReady()
+        guard let runtime = stopped.runtime, runtime.state == "stopped", !runtime.hasOwnedProcesses else {
+            throw BridgeFailure("AUTOMATION_DRAIN_UNCERTAIN")
+        }
+        try await closeBridge()
+        try Task.checkCancellation()
+        guard try profileIdentity() == directory else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+        bridge = try NativeBridge(helper: helper, profile: profile, temporaryDirectory: temporaryRoot)
+        bridgeOpen = true
+        let reopened = try await bridge.context()
+        self.context = reopened
+        guard try profileIdentity() == directory, reopened.activeId == context.activeId,
+              try value(await bridge.documentState(reopened)) == value(current) else {
+            throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED")
+        }
+        let persisted = try await bridge.nativeStatus(reopened)
+        guard let config = persisted.configuration, config.manifestSha256 == manifest,
+              config.ports.web == ports["web"], config.ports.api == ports["api"], config.ports.database == ports["database"],
+              !persisted.busy, persisted.runtime?.hasOwnedProcesses != true else {
+            throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
+        }
+        try Task.checkCancellation()
+        _ = try await bridge.start(reopened)
+        let ready = try await waitReady()
+        guard ready.runtime?.readiness.ready == true, let job = ready.runtime?.jobId, job != previousJob,
+              ready.configuration?.manifestSha256 == manifest else { throw BridgeFailure("NATIVE_NOT_READY") }
+        let credentials = try await bridge.authoringSession(reopened)
+        let reopenedAPI = try AuthoringAPI(port: config.ports.web, tenantId: current.tenantId, nativeRuntimeManifestSHA256: manifest)
+        let session = try await reopenedAPI.connect(credentials)
+        guard try profileIdentity() == directory, session.userId == current.principalId,
+              try value(await bridge.documentState(reopened)) == value(current) else {
+            throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
+        }
+        try prior.requireSameComparison(await reopenedAPI.exhibition(draft.id))
+        self.api = reopenedAPI
+        authoringSession = session
+        runtimeStopped = false
+        return .object(["document": try value(current), "previousRuntimeJobId": .string(previousJob),
+                        "runtimeJobId": .string(job), "studioRevision": .integer(Int64(prior.revision))])
+    }
+    private func profileIdentity() throws -> (dev_t, ino_t) {
+        var metadata = stat()
+        guard profile.resolvingSymlinksInPath().path == profile.path, lstat(profile.path, &metadata) == 0,
+              metadata.st_mode & S_IFMT == S_IFDIR, metadata.st_mode & 0o777 == 0o700,
+              metadata.st_uid == getuid() else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+        return (metadata.st_dev, metadata.st_ino)
+    }
     private func statusValue() async throws -> DocumentValue {
         guard let context else { throw BridgeFailure("AUTOMATION_NOT_READY") }
         let state = try await bridge.documentState(context)
@@ -77,7 +148,7 @@ public actor NativeAutomationSession {
                         "capability": .string(capability), "revision": .integer(Int64(state.revision)), "document": try value(state), "closed": .bool(closed)])
     }
     private func checked(_ request: DocumentValue) async throws -> (Context, AuthoringAPI, NativeDocumentState) {
-        guard !closed, let context, let api, let identity,
+        guard !closed, !closing, closeFailure == nil, let context, let api, let identity,
               request["capability"].string == capability,
               request["workspaceId"].string == identity.workspaceId,
               request["tenantId"].string == identity.tenantId,
@@ -101,10 +172,12 @@ public actor NativeAutomationSession {
         guard policy.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
         guard !policy.boundedReadOnly, policy.boundedEditRequired != true else { throw BridgeFailure(unsupportedCode) }
     }
-    private func checkSavedSurfacePolicy(_ state: NativeDocumentState, api: AuthoringAPI) async throws {
+    @discardableResult
+    private func checkSavedSurfacePolicy(_ state: NativeDocumentState, api: AuthoringAPI) async throws -> NativeViewportPolicy {
         guard !state.dirty, state.pending == nil, let draft = state.draft, state.etag != nil else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
         let policy = try await api.nativeViewportPolicy(draft.id)
         try SurfaceMaterialTextureRequest.requireEditingPolicy(policy, document: state)
+        return policy
     }
     private func write(_ object: DocumentValue, to path: String) throws -> DocumentValue {
         let url = try output(path), bytes = try JSONEncoder().encode(object)
@@ -143,7 +216,7 @@ public actor NativeAutomationSession {
         case "read": result = try await statusValue()
         case "load-copy":
             try checkedRevision(request, current)
-            guard !selectedOEX9, current.draft == nil, current.pending == nil, let path = request["inputPath"].string, let hash = inputs[path] else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+            guard selectedOEXFormat == nil, current.draft == nil, current.pending == nil, let path = request["inputPath"].string, let hash = inputs[path] else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
             let url = URL(fileURLWithPath: path)
             guard url.resolvingSymlinksInPath() == url, let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 1_048_576 else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
             let data = try Data(contentsOf: url); guard Self.digest(data) == hash else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
@@ -155,18 +228,25 @@ public actor NativeAutomationSession {
             result = .object(["document": try value(saved), "idMap": .object([
                 sourceDraftID: saved.draft!.document["id"], source.id: .string(saved.draft!.id),
                 sourceRevisionID: saved.draft!.candidate["revisionId"]]), "nestedIdsPreserved": .bool(true)])
-        case "import-oex9":
+        case "import-oex9", "import-oex10":
             try checkedRevision(request, current)
-            guard selectedOEX9, current.draft == nil, current.pending == nil,
-                  request["archiveFormat"].string == "1.0.0-draft.9", let path = request["inputPath"].string,
+            let archiveFormat = operation == "import-oex10" ? "1.0.0-draft.10" : "1.0.0-draft.9"
+            guard selectedOEXFormat == archiveFormat, current.draft == nil, current.pending == nil,
+                  request["archiveFormat"].string == archiveFormat, let path = request["inputPath"].string,
                   let expectedHash = inputs[path], let outputPath = request["outputPath"].string else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
             _ = try output(outputPath)
             let status = try await bridge.nativeStatus(context)
-            guard status.selectedOex == true, status.oex027Qualified == true else { throw BridgeFailure("NATIVE_OEX_RELEASE_UNAVAILABLE") }
+            guard status.selectedOex == true, status.oex027Qualified == true,
+                  archiveFormat != "1.0.0-draft.10" || status.oex028Qualified == true else {
+                throw BridgeFailure("NATIVE_OEX_RELEASE_UNAVAILABLE")
+            }
             let source = URL(fileURLWithPath: path)
             guard source.resolvingSymlinksInPath() == source else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
             let file = try await NativeOEXImportFile.loadForBoundedProfile(source)
             guard file.archive.sha256 == expectedHash else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
+            if archiveFormat == "1.0.0-draft.10" {
+                guard try await bridge.selectedOEXFormat(file.archive) == archiveFormat else { throw BridgeFailure("OEX_FORMAT_INVALID") }
+            }
             let original = try await bridge.oexImportState(context)
             guard original.workspaceId == current.workspaceId, original.tenantId == current.tenantId,
                   original.principalId == current.principalId else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
@@ -174,22 +254,40 @@ public actor NativeAutomationSession {
             // immutable context stays owned until task drain; each journal and
             // owner-channel action independently checks its original token.
             let transfer = try await NativeOEXImportTransfer.runBoundedOnce(state: original, file: file, api: api,
-                archiveFormat: "1.0.0-draft.9", requestId: id,
+                archiveFormat: archiveFormat, requestId: id,
                 persist: { [bridge] state in try await bridge.saveOEXImportState(context, state: state) },
                 select: { [bridge] in try await bridge.selectBoundedOEX(context) },
                 isCurrent: { original.workspaceId == current.workspaceId && original.tenantId == current.tenantId && original.principalId == current.principalId })
             _ = try await bridge.runBoundedOEX(context)
             let stored = try await NativeSelectedOEXCompletion.finish(bridge: bridge, context: context, api: api, original: original, jobId: transfer.1.id)
             let receipt = try await api.oexImportReceipt(transfer.1.id)
-            let recorded = try write(.object(["archiveSHA256": .string(expectedHash), "archiveFormat": .string("1.0.0-draft.9"),
+            let recorded = try write(.object(["archiveSHA256": .string(expectedHash), "archiveFormat": .string(archiveFormat),
                 "jobId": .string(transfer.1.id), "requestId": .string(id), "document": try value(stored), "importReceipt": receipt]), to: outputPath)
             // The supported selected-owner transition must drain normally
             // before ordinary editing can start in the imported workspace.
             _ = try await bridge.stop(context); _ = try await waitReady()
             _ = try await bridge.start(context); _ = try await waitReady()
             authoringSession = try await api.connect(bridge.authoringSession(context))
-            selectedOEX9 = false
+            selectedOEXFormat = nil
             result = .object(["document": try value(stored), "receipt": recorded])
+        case "floor-appearance-apply":
+            try checkedRevision(request, current)
+            let policy = try await checkSavedSurfacePolicy(current, api: api)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["roomId", "surfaceId", "preset"])
+            guard selectedOEXFormat == nil, var draft = current.draft,
+                  let room = command["roomId"].string, let surface = command["surfaceId"].string,
+                  let name = command["preset"].string, let preset = FloorSettings.Preset(rawValue: name) else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            try draft.applyFloorAppearance(preset, roomId: room, surfaceId: surface)
+            _ = try await api.floorPreview(preset)
+            var next = current
+            next.draft = draft
+            let saved = try await bridge.saveDocumentState(context, state: next)
+            result = .object(["document": try value(saved),
+                "policy": .object(["exhibitionId": .string(policy.exhibitionId), "revision": .integer(Int64(policy.revision)),
+                    "etag": .string(policy.etag), "boundedProfile": .bool(policy.boundedProfile == true),
+                    "boundedEditRequired": .bool(false), "boundedReadOnly": .bool(false)])])
         case "surface-texture-prepare":
             try checkedRevision(request, current)
             try await checkSavedSurfacePolicy(current, api: api)
@@ -244,7 +342,7 @@ public actor NativeAutomationSession {
         case "import-glb":
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "artworkRevision", "scaleMeters"])
-            guard !selectedOEX9, current.pending == nil, let path = request["inputPath"].string,
+            guard selectedOEXFormat == nil, current.pending == nil, let path = request["inputPath"].string,
                   let expected = inputs[path], let artworkId = command["artworkId"].string,
                   let revision = command["artworkRevision"].integer, let scale = command["scaleMeters"].double else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
             let url = URL(fileURLWithPath: path)
@@ -352,6 +450,9 @@ public actor NativeAutomationSession {
             try saved.requireSameComparison(await api.exhibition(draft.id))
             next.draft = saved.draft; next.etag = saved.etag; next.savedEditVersion = saved.draft.document["editVersion"].integer; next.pending = nil
             result = try value(await bridge.saveDocumentState(context, state: next))
+        case "reopen-saved":
+            try checkedRevision(request, current)
+            result = try await reopenSaved(current, context: context, api: api)
         case "export-oex":
             try checkedRevision(request, current)
             guard !current.dirty, let draft = current.draft, let etag = current.etag, let path = request["outputPath"].string else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
@@ -455,21 +556,34 @@ public actor NativeAutomationSession {
         return result
     }
     public func close() async throws {
-        guard !busy else { throw BridgeFailure("AUTOMATION_BUSY") }
+        guard !busy, !closing else { throw BridgeFailure("AUTOMATION_BUSY") }
         guard !closed else { return }
+        closing = true
+        defer { closing = false }
+        try await closeBridge()
         closed = true
-        try await bridge.close()
+    }
+    private func closeBridge() async throws {
+        if let closeFailure { throw closeFailure }
+        guard bridgeOpen else { return }
+        do {
+            try await bridge.close()
+            bridgeOpen = false
+        } catch {
+            closeFailure = error
+            throw error
+        }
     }
     /// Control authorization precedes cancellation or shutdown side effects.
     public func authorizeControl(_ request: DocumentValue) async throws {
-        guard !closed, context != nil, let identity,
+        guard !closed, !closing, context != nil, let identity,
               request["capability"].string == capability,
               request["workspaceId"].string == identity.workspaceId,
               request["tenantId"].string == identity.tenantId,
               request["principalId"].string == identity.principalId else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
     }
     public func nativeStatusValue() async throws -> DocumentValue {
-        guard let context, !closed else { throw BridgeFailure("AUTOMATION_NOT_READY") }
+        guard let context, !closed, bridgeOpen else { throw BridgeFailure("AUTOMATION_NOT_READY") }
         let host = try await bridge.nativeStatus(context)
         let transfer = try? await bridge.oexImportState(context)
         return .object(["operation": .string(host.operation), "busy": .bool(host.busy),
@@ -480,7 +594,9 @@ public actor NativeAutomationSession {
             "retainedImport": try transfer.map { try value($0) } ?? .null])
     }
     public func cancelOwnedRuntime() async throws -> Bool {
-        guard !busy, let context, !closed else { throw BridgeFailure("AUTOMATION_BUSY") }
+        guard !busy, !closing, let context, !closed else { throw BridgeFailure("AUTOMATION_BUSY") }
+        if let closeFailure { throw closeFailure }
+        if !bridgeOpen { return true }
         _ = try await bridge.stop(context)
         for _ in 0..<1200 {
             let status = try await bridge.nativeStatus(context)
