@@ -15,6 +15,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public let expiresAt: String
     public var nativeOexExportProfile: String? = nil
     public var nativePublicationProfile: String? = nil
+    public var workspaceMaterialProfile: String? = nil
 }
 public struct AuthoringPage<Item: Decodable & Sendable>: Decodable, Sendable {
     public let items: [Item]
@@ -100,7 +101,19 @@ public struct NativeArtwork: Codable, Sendable, Identifiable {
 public struct AuthoringFailure: Error, LocalizedError, Sendable {
     public let status: Int
     public let code: String
-    public init(_ code: String, status: Int = 0) { self.code = code; self.status = status }
+    public let role: String?
+    public let field: String?
+    public init(_ code: String, status: Int = 0, role: String? = nil, field: String? = nil) {
+        self.code = code; self.status = status
+        self.role = role.flatMap(WorkspaceMaterialRole.init(rawValue:))?.rawValue
+        self.field = Self.safeField(field) ? field : nil
+    }
+    static func safeCode(_ code: String) -> Bool {
+        code.range(of: "^[A-Z0-9_]{1,80}$", options: .regularExpression) != nil
+    }
+    static func safeField(_ field: String?) -> Bool {
+        field.map { $0.range(of: "^[A-Za-z][A-Za-z0-9_.-]{0,63}$", options: .regularExpression) != nil } ?? true
+    }
     public var errorDescription: String? {
         switch code {
         case "ARTWORK_DISPLAY_REFERENCE_INVALID": return "원본 단위 미확인 작품의 임시 표시 기준과 파일을 확인하세요. 배치 위치는 숫자로 입력할 수 있습니다."
@@ -115,6 +128,14 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "SURFACE_MATERIAL_INVALID": return "색상과 재질 값을 확인하세요. 색상 코드는 #rrggbb, 거칠기와 금속성은 0부터 1까지 입력하세요. 입력과 기존 설정은 유지됩니다."
         case "SURFACE_MATERIAL_TEXTURE_INVALID": return "무늬 반복은 0.05–20 m, 회전은 −180–180도, 요철 강도는 0–2로 입력하세요. 입력과 기존 재질은 유지됩니다."
         case "MATERIAL_CATALOG_INVALID": return "재질 목록을 확인하지 못했습니다. 기존 재질과 입력은 유지됩니다."
+        case "MATERIAL_DECLARATION": return "재질 이름, 출처와 권리 입력을 확인하세요."
+        case "MATERIAL_INTAKE_LIMIT": return "진행 중인 재질 등록이 한도에 도달했습니다. 기존 등록을 마친 뒤 다시 시도하세요."
+        case "MATERIAL_MAP_DESCRIPTOR", "MATERIAL_MAP_DIMENSIONS", "PNG_PIXEL_LIMIT_EXCEEDED", "FORMAT_REJECTED":
+            return "크기가 8 MiB 이하이고 픽셀이 419만 개 이하인 8비트 RGB 또는 RGBA PNG를 선택하세요."
+        case "MATERIAL_MAP_COLOR_SPACE": return "색상 맵은 sRGB, 데이터 맵은 선형 색 공간의 PNG를 선택하세요."
+        case "DISPLAY_PERMISSION_REQUIRED": return "이 재질의 전시 권한을 확인하세요."
+        case "WORKSPACE_MATERIAL_UNAVAILABLE": return "이 작업공간에서 재질을 등록할 수 없습니다. 연결 상태를 확인하세요."
+        case "ROLE_CONFLICT", "UPLOAD_INTEGRITY": return "선언한 파일과 받은 파일이 다릅니다. 원래 파일로 등록을 이어가거나 새로 등록하세요."
         case "ARCHITECTURE_SELECTION_CHANGED": return "선택한 대상이 바뀌었습니다. 입력을 취소한 뒤 대상을 다시 선택하세요."
         case "PLACEMENT_APPLY_REQUIRED": return "배치와 위치 입력을 먼저 적용하거나 취소하세요. 입력과 기존 전시는 그대로 유지됩니다."
         case "ARCHITECTURE_APPLY_REQUIRED": return "공간·재질 변경을 적용하거나 입력을 취소한 뒤 전시를 저장하세요."
@@ -175,7 +196,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         }
     }
 }
-private struct APIErrorEnvelope: Decodable { let code: String }
+private struct APIErrorEnvelope: Decodable { let code: String; let role: String?; let field: String? }
 private final class LocalRedirectBlocker: NSObject, URLSessionTaskDelegate, Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
         completionHandler(nil)
@@ -239,6 +260,10 @@ public actor AuthoringAPI {
     private let tenant: String
     private let transport: URLSession
     public nonisolated let admitsICCJPEG: Bool
+    // Admission remains closed until a reviewed native owner/runtime tuple is paired.
+    private static let workspaceMaterialManifestPins: Set<String> = []
+    public nonisolated let workspaceMaterialRuntimeQualified: Bool
+    private var nativeSession = false
     private var session: AuthoringSession?
     private var generation: UInt64 = 0
     private var authenticationBusy = false
@@ -257,6 +282,7 @@ public actor AuthoringAPI {
         base = URL(string: "http://127.0.0.1:\(port)")!
         tenant = id.uuidString.lowercased()
         admitsICCJPEG = NativeJPEGImportRuntime.supportsICC(manifestSHA256: nativeRuntimeManifestSHA256, ready: true)
+        workspaceMaterialRuntimeQualified = Self.workspaceMaterialManifestPins.contains(nativeRuntimeManifestSHA256 ?? "")
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -268,6 +294,7 @@ public actor AuthoringAPI {
     deinit { transport.invalidateAndCancel() }
     private func clear() {
         session = nil
+        nativeSession = false
         for cookie in transport.configuration.httpCookieStorage?.cookies ?? [] { transport.configuration.httpCookieStorage?.deleteCookie(cookie) }
     }
     private func identifier(_ value: String) throws -> String {
@@ -317,9 +344,11 @@ public actor AuthoringAPI {
         }
         guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         guard (200..<300).contains(http.statusCode) else {
-            let code = (try? JSONDecoder().decode(APIErrorEnvelope.self, from: data).code) ?? "REQUEST_FAILED"
+            let envelope = try? JSONDecoder().decode(APIErrorEnvelope.self, from: data)
+            let code = envelope?.code ?? "REQUEST_FAILED"
             if http.statusCode == 401 { generation &+= 1; clear() }
-            throw AuthoringFailure(code.range(of: "^[A-Z0-9_]{1,80}$", options: .regularExpression) == nil ? "REQUEST_FAILED" : code, status: http.statusCode)
+            throw AuthoringFailure(AuthoringFailure.safeCode(code) ? code : "REQUEST_FAILED", status: http.statusCode,
+                                   role: envelope?.role, field: envelope?.field)
         }
         let result = try JSONDecoder().decode(T.self, from: data)
         if let studio = result as? NativeStudioResponse {
@@ -361,6 +390,7 @@ public actor AuthoringAPI {
         let value: AuthoringSession = try await request("/api/v1/auth/session", authenticated: false)
         guard value.tenantId.lowercased() == tenant, value.userId.lowercased() == credentials.principalId.lowercased(), !value.csrfToken.isEmpty else { clear(); throw AuthoringFailure("ACCOUNT_BINDING_MISMATCH") }
         session = value
+        nativeSession = true
         return value
     }
     /// Recheck the existing cookie-bound session without minting credentials
@@ -523,7 +553,7 @@ public actor AuthoringAPI {
         return try await floorPreviewFile(.init(path: preview.url, bytes: Int(preview.bytes), sha256: preview.sha256))
     }
 
-    private func floorPreviewFile(_ file: NativeFloorPreview) async throws -> Data {
+    private func floorPreviewFile(_ file: NativeFloorPreview, requireDigestHeader: Bool = false) async throws -> Data {
         guard !authenticationBusy, session != nil else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
         let current = generation
         let url = base.appendingPathComponent(file.path)
@@ -534,8 +564,12 @@ public actor AuthoringAPI {
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         let (bytes, response) = try await transport.bytes(for: request)
         defer { bytes.task.cancel() }
+        if requireDigestHeader, let http = response as? HTTPURLResponse, http.url == url, http.statusCode == 403 {
+            throw AuthoringFailure("DISPLAY_PERMISSION_REQUIRED", status: 403)
+        }
         guard let http = response as? HTTPURLResponse, http.url == url, http.statusCode == 200,
               http.mimeType?.lowercased() == "image/png",
+              !requireDigestHeader || http.value(forHTTPHeaderField: "x-exhibitos-sha256") == file.sha256,
               http.value(forHTTPHeaderField: "Content-Encoding").map({ $0.lowercased() == "identity" }) ?? true,
               http.expectedContentLength < 0 || http.expectedContentLength == Int64(file.bytes) else { throw AuthoringFailure("FLOOR_PREVIEW_INVALID") }
         var data = Data(); data.reserveCapacity(file.bytes)
@@ -857,6 +891,88 @@ public actor AuthoringAPI {
     }
     public func importAction(_ id: String, action: NativeImportAction) async throws -> NativeImportJob {
         try await request("/api/v1/tenants/\(tenant)/imports/" + identifier(id) + "/" + action.rawValue, method: "POST", body: Data("{}".utf8))
+    }
+
+    public var admitsWorkspaceMaterials: Bool {
+        workspaceMaterialRuntimeQualified && nativeSession && !authenticationBusy
+            && session?.workspaceMaterialProfile == "workspace-material-intake-v1"
+    }
+
+    private func workspaceMaterialPath(_ suffix: String) throws -> String {
+        guard admitsWorkspaceMaterials else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
+        return "/api/v1/tenants/\(tenant)/workspace/" + suffix
+    }
+
+    public func createWorkspaceMaterial(_ declaration: WorkspaceMaterialDeclaration) async throws -> WorkspaceMaterialIntake {
+        try declaration.check()
+        let status: WorkspaceMaterialIntake = try await request(workspaceMaterialPath("material-intakes"),
+            method: "POST", body: encoded(declaration))
+        try status.check(declaration: declaration)
+        return status
+    }
+
+    public func workspaceMaterialIntake(_ id: String) async throws -> WorkspaceMaterialIntake {
+        let id = try identifier(id)
+        let status: WorkspaceMaterialIntake = try await request(workspaceMaterialPath("material-intakes/" + id))
+        try status.check(id: id)
+        return status
+    }
+
+    public func uploadWorkspaceMaterial(_ id: String, role: WorkspaceMaterialRole, snapshot: ImportFileSnapshot) async throws -> WorkspaceMaterialIntake {
+        let id = try identifier(id)
+        let map = try WorkspaceMaterialMap(snapshot: snapshot, role: role)
+        let path = try workspaceMaterialPath("material-intakes/" + id + "/maps/" + role.rawValue)
+        let status: WorkspaceMaterialIntake = try await request(path, method: "PUT", body: snapshot.data,
+            contentType: "application/octet-stream")
+        try status.check(id: id)
+        guard status.received[role.rawValue]?.bytes == map.bytes, status.received[role.rawValue]?.sha256 == map.sha256 else {
+            throw AuthoringFailure("MATERIAL_RESPONSE_INVALID")
+        }
+        return status
+    }
+
+    public func workspaceMaterialAction(_ id: String, _ action: WorkspaceMaterialIntakeAction) async throws -> WorkspaceMaterialIntake {
+        let id = try identifier(id)
+        let path = try workspaceMaterialPath("material-intakes/" + id + "/" + action.rawValue)
+        let status: WorkspaceMaterialIntake = try await request(path, method: "POST", body: Data("{}".utf8))
+        try status.check(id: id)
+        return status
+    }
+
+    public func workspaceMaterials(cursor: String? = nil) async throws -> AuthoringPage<WorkspaceMaterialSummary> {
+        func validCursor(_ value: String) -> Bool {
+            value.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil
+        }
+        guard cursor.map(validCursor) ?? true else { throw AuthoringFailure("INVALID_CURSOR") }
+        let path = try workspaceMaterialPath("materials" + (cursor.map { "?cursor=" + $0 } ?? ""))
+        let page: AuthoringPage<WorkspaceMaterialSummary> = try await request(path)
+        guard page.items.count <= 50, page.nextCursor.map(validCursor) ?? true,
+              page.items.allSatisfy({ UUID(uuidString: $0.id)?.uuidString.lowercased() == $0.id
+                  && (1...2_147_483_647).contains($0.version) && (1...256).contains($0.name.unicodeScalars.count) }) else {
+            throw AuthoringFailure("MATERIAL_RESPONSE_INVALID")
+        }
+        return page
+    }
+
+    public func workspaceMaterial(_ id: String, version: Int) async throws -> WorkspaceMaterial {
+        let id = try identifier(id)
+        let path = try workspaceMaterialVersionPath(id, version: version)
+        let material: WorkspaceMaterial = try await request(path)
+        try material.check()
+        guard material.id == id, material.version == version else { throw AuthoringFailure("MATERIAL_RESPONSE_INVALID") }
+        return material
+    }
+
+    public func workspaceMaterialPreview(_ material: WorkspaceMaterial, role: WorkspaceMaterialRole) async throws -> Data {
+        try material.check()
+        guard let map = material.maps[role.rawValue] else { throw AuthoringFailure("MATERIAL_MAP_NOT_FOUND") }
+        let path = try workspaceMaterialVersionPath(material.id, version: material.version) + "/maps/" + role.rawValue
+        return try await floorPreviewFile(.init(path: path, bytes: map.bytes, sha256: map.sha256), requireDigestHeader: true)
+    }
+
+    private func workspaceMaterialVersionPath(_ id: String, version: Int) throws -> String {
+        guard (1...2_147_483_647).contains(version) else { throw AuthoringFailure("MATERIAL_DECLARATION") }
+        return try workspaceMaterialPath("materials/" + identifier(id) + "/versions/" + String(version))
     }
     public func approveArtwork(_ id: String, revision: Int, assetId: String) async throws -> NativeArtwork {
         struct Approval: Encodable { let revision: Int; let assetId: String }

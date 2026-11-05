@@ -18,6 +18,7 @@ struct NativeExhibitionView: View {
     var canCreateOEXWorkspace = false
     var createOEXWorkspace: () async -> Void = {}
     @State private var confirmOEXWorkspace = false
+    @State private var workspaceMaterialAccess: UUID?
     var connectionAllowed = true
     var edit: () -> Void = {}
     var publish: () -> Void = {}
@@ -116,6 +117,9 @@ struct NativeExhibitionView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .disabled(!active)
+        .sheet(isPresented: Binding(get: { workspaceMaterialAccess != nil }, set: { if !$0 { workspaceMaterialAccess = nil } })) {
+            if let workspaceMaterialAccess { WorkspaceMaterialIntakeView(model: model, access: workspaceMaterialAccess) }
+        }
         .inspector(isPresented: inspectorPresented) { inspector }
         .inspectorColumnWidth(min: 240, ideal: 300, max: 420)
         .onChange(of: model.selectedPlaqueId) { _, id in if !id.isEmpty { showSelection() } }
@@ -161,6 +165,10 @@ struct NativeExhibitionView: View {
                 .labelStyle(.iconOnly).disabled(saveLocked).keyboardShortcut("s", modifiers: .command)
             Menu {
                 ForEach(InspectorScope.allCases) { value in Button(value.title) { inspect(value) }.disabled(value == .cover && model.placingArtwork) }
+                if model.workspaceMaterialIntakeAvailable {
+                    Button("작업공간 재질 등록") { workspaceMaterialAccess = model.viewportAccessID }
+                        .disabled(formLocked || editRestricted)
+                }
                 Divider()
                 Button(inspectorVisible ? "속성 가리기" : "속성 보기") { inspectorVisible.toggle() }
             } label: { Label("설정", systemImage: "sidebar.right") }

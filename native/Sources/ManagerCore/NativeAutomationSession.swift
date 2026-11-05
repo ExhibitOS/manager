@@ -194,6 +194,63 @@ public actor NativeAutomationSession {
         guard case .object(let fields) = request else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         _ = try write(.object(fields.filter { $0.key != "capability" }), to: path)
     }
+
+    private func executeWorkspaceMaterial(_ operation: String, request: DocumentValue, api: AuthoringAPI) async throws -> DocumentValue {
+        switch operation {
+        case "workspace-material-intake-create":
+            var command = try NativeAutomationArtworkRules.command(request, keys: ["kind", "name", "rights", "provenance", "maps"])
+            command["requestId"] = request["requestId"]
+            let declaration = try JSONDecoder().decode(WorkspaceMaterialDeclaration.self, from: JSONEncoder().encode(command))
+            guard try value(declaration) == command else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            return try value(await api.createWorkspaceMaterial(declaration))
+        case "workspace-material-intake-status":
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["intakeId"])
+            guard let id = command["intakeId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            return try value(await api.workspaceMaterialIntake(id))
+        case "workspace-material-intake-upload":
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["intakeId", "role"])
+            guard let id = command["intakeId"].string, let name = command["role"].string,
+                  let role = WorkspaceMaterialRole(rawValue: name),
+                  let path = request["inputPath"].string, let pin = inputs[path] else {
+                throw BridgeFailure("AUTOMATION_INPUT_INVALID")
+            }
+            let url = URL(fileURLWithPath: path)
+            guard url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+            let snapshot = try await ImportFileSnapshot.load(url, byteLimit: WorkspaceMaterialMap.byteLimit)
+            guard snapshot.sha256 == pin else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
+            return try value(await api.uploadWorkspaceMaterial(id, role: role, snapshot: snapshot))
+        case "workspace-material-intake-complete", "workspace-material-intake-cancel", "workspace-material-intake-retry":
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["intakeId"])
+            guard let id = command["intakeId"].string, let name = operation.split(separator: "-").last,
+                  let action = WorkspaceMaterialIntakeAction(rawValue: String(name)) else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            return try value(await api.workspaceMaterialAction(id, action))
+        case "workspace-material-list":
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["cursor"])
+            guard command["cursor"] == .null || command["cursor"].string != nil else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            let page = try await api.workspaceMaterials(cursor: command["cursor"].string)
+            return .object(["items": try value(page.items), "nextCursor": page.nextCursor.map(DocumentValue.string) ?? .null])
+        case "workspace-material-read", "workspace-material-preview":
+            let preview = operation == "workspace-material-preview"
+            let command = try NativeAutomationArtworkRules.command(request, keys: preview ? ["id", "version", "role"] : ["id", "version"])
+            guard let id = command["id"].string, let version = command["version"].integer,
+                  (1...2_147_483_647).contains(version) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let material = try await api.workspaceMaterial(id, version: Int(version))
+            guard preview else { return try value(material) }
+            guard let name = command["role"].string, let role = WorkspaceMaterialRole(rawValue: name) else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            let bytes = try await api.workspaceMaterialPreview(material, role: role)
+            return .object(["id": .string(material.id), "version": .integer(version), "role": .string(role.rawValue),
+                            "bytes": .integer(Int64(bytes.count)), "sha256": .string(Self.digest(bytes))])
+        default:
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        }
+    }
+
     public func execute(_ request: DocumentValue) async throws -> DocumentValue {
         guard request["version"] == .integer(1), let id = request["requestId"].string, UUID(uuidString: id) != nil,
               let operation = request["operation"].string, case .object(let fields) = request,
@@ -214,6 +271,14 @@ public actor NativeAutomationSession {
         let result: DocumentValue
         switch operation {
         case "read": result = try await statusValue()
+        case "workspace-material-intake-create", "workspace-material-intake-status",
+             "workspace-material-intake-upload", "workspace-material-intake-complete",
+             "workspace-material-intake-cancel", "workspace-material-intake-retry",
+             "workspace-material-list", "workspace-material-read", "workspace-material-preview":
+            guard selectedOEXFormat == nil, await api.admitsWorkspaceMaterials else {
+                throw BridgeFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
+            }
+            result = try await executeWorkspaceMaterial(operation, request: request, api: api)
         case "load-copy":
             try checkedRevision(request, current)
             guard selectedOEXFormat == nil, current.draft == nil, current.pending == nil, let path = request["inputPath"].string, let hash = inputs[path] else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
