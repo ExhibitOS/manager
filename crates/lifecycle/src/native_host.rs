@@ -185,8 +185,25 @@ impl Host {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     pub fn new_fresh_workspace_v5_validation(profile: PathBuf, resources: PathBuf, ports: Ports) -> Result<Self> {
         ports.validate()?;
-        let payload = Arc::new(Payload::open_workspace_v5_validation(&resources)?);
+        let payload = Arc::new(Payload::open_workspace_v5_validation(&resources, true)?);
         Self::from_fresh_selected_payload(profile, resources, ports, payload)
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub fn reopen_workspace_v5_validation(profile: PathBuf, resources: PathBuf) -> Result<Self> {
+        if !profile.is_absolute() || !fs::symlink_metadata(&profile).is_ok_and(|m| m.is_dir()) {
+            return Err(err("NATIVE_PROFILE_REQUIRED"));
+        }
+        let payload = Arc::new(Payload::open_workspace_v5_validation(&resources, false)?);
+        let controller = InstallationController::new(profile, None)?;
+        let token = controller.context()?.selection_token;
+        let prepared = controller.with_current(&token, |service| service.native_prepared())?
+            .ok_or_else(|| err("NATIVE_NOT_READY"))?;
+        if prepared.manifest_sha256 != payload.context().manifest_sha256 {
+            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        }
+        let host = Self::new(Arc::new(controller), resources);
+        host.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.payload = Some(payload);
+        Ok(host)
     }
     fn from_fresh_selected_payload(profile: PathBuf, resources: PathBuf, ports: Ports, payload: Arc<Payload>) -> Result<Self> {
         let (controller, session) = InstallationController::with_fresh_selected(profile, payload.clone(), ports)?;

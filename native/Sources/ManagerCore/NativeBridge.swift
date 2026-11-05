@@ -165,10 +165,11 @@ public actor NativeBridge {
     private let process: Process
     private let input: FileHandle
     private let output: FileHandle
+    private let workspaceV5ValidationRuntime: URL?
     private var sequence: UInt64 = 0
     private var buffered = Data()
 
-    public init(helper: URL, profile: URL, freshSelectedOEX: Bool = false, freshWorkspacePorts: [String: UInt16]? = nil, temporaryDirectory: URL? = nil) throws {
+    public init(helper: URL, profile: URL, freshSelectedOEX: Bool = false, freshWorkspacePorts: [String: UInt16]? = nil, temporaryDirectory: URL? = nil, workspaceV5ValidationRuntime: URL? = nil) throws {
         guard helper.isFileURL, profile.isFileURL,
               FileManager.default.isExecutableFile(atPath: helper.path) else {
             throw BridgeFailure("NATIVE_HELPER_MISSING")
@@ -177,11 +178,25 @@ public actor NativeBridge {
         let incoming = Pipe(), outgoing = Pipe()
         process.executableURL = helper
         process.arguments = ["--profile", profile.path] + (freshSelectedOEX ? ["--fresh-selected-oex"] : [])
+        if let runtime = workspaceV5ValidationRuntime {
+            #if DEBUG
+            guard runtime.isFileURL, runtime.resolvingSymlinksInPath().path == runtime.path,
+                  freshSelectedOEX == (freshWorkspacePorts != nil) else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
+            if !freshSelectedOEX { process.arguments = ["--profile", profile.path, "--reopen-workspace-v5-validation", runtime.path] }
+            #else
+            throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID")
+            #endif
+        }
         if let ports = freshWorkspacePorts {
             guard Set(ports.keys) == ["web", "api", "database"], Set(ports.values).count == 3, ports.values.allSatisfy({ $0 >= 1024 }),
                   !FileManager.default.fileExists(atPath: profile.path) else { throw BridgeFailure("NATIVE_FRESH_WORKSPACE_REQUIRED") }
             let bytes = try JSONSerialization.data(withJSONObject: ports, options: [.sortedKeys])
-            process.arguments = ["--profile", profile.path, "--fresh-workspace-ports", String(decoding: bytes, as: UTF8.self)] + (freshSelectedOEX ? ["--selected-oex9"] : [])
+            process.arguments = ["--profile", profile.path, "--fresh-workspace-ports", String(decoding: bytes, as: UTF8.self)]
+            if let runtime = workspaceV5ValidationRuntime {
+                process.arguments?.append(contentsOf: ["--selected-oex-v5-validation", runtime.path])
+            } else if freshSelectedOEX {
+                process.arguments?.append("--selected-oex9")
+            }
         }
         // Legacy status may inspect system-installed engines, but never inherits
         // development PATH, credential environment, or a development checkout.
@@ -197,6 +212,7 @@ public actor NativeBridge {
         self.process = process
         self.input = incoming.fileHandleForWriting
         self.output = outgoing.fileHandleForReading
+        self.workspaceV5ValidationRuntime = workspaceV5ValidationRuntime
         try process.run()
     }
 
@@ -218,7 +234,7 @@ public actor NativeBridge {
     /// A separate read-only helper receives only the held private snapshot FD.
     public func selectedOEXFormat(_ archive: NativeOEXArchive) async throws -> String {
         guard let helper = process.executableURL else { throw BridgeFailure("NATIVE_HELPER_MISSING") }
-        return try await archive.selectedFormat(helper: helper)
+        return try await archive.selectedFormat(helper: helper, workspaceV5ValidationRuntime: workspaceV5ValidationRuntime)
     }
     public func context() throws -> Context { try request("context") }
     public func presentation() throws -> Presentation { try request("presentation") }

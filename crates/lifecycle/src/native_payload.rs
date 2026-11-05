@@ -748,12 +748,12 @@ impl Payload {
     /// Available only to the fresh selected validation entry. The normal
     /// payload opener cannot create this state, even in a validation build.
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    pub(crate) fn open_workspace_v5_validation(root: &Path) -> Result<Self> {
+    pub(crate) fn open_workspace_v5_validation(root: &Path, selected: bool) -> Result<Self> {
         let mut payload = Self::open(root)?;
         if !workspace_v5_validation_matches(&payload.manifest, &payload.manifest_sha256) {
             return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
         }
-        payload.workspace_v5_validation = true;
+        payload.workspace_v5_validation = selected;
         Ok(payload)
     }
     pub(crate) fn workspace_v5_selected_input(&self) -> bool {

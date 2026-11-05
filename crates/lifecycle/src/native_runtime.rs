@@ -9,7 +9,11 @@ use super::{native_installation::Ports, native_payload::Payload};
 #[path = "native_runtime_oex_format_hint.rs"] mod oex_format_hint;
 /// Fixed helper-only read-only ingress; no profile or lifecycle is instantiated.
 pub fn selected_oex_format(resources:&Path,input_fd:i32,cancelled:&AtomicBool)->Result<Vec<u8>> {
-    oex_format_hint::run(resources,input_fd,cancelled)
+    oex_format_hint::run(&Payload::open(resources)?,input_fd,cancelled)
+}
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+pub fn selected_oex_format_v5_validation(resources: &Path, input_fd: i32, cancelled: &AtomicBool) -> Result<Vec<u8>> {
+    oex_format_hint::run(&Payload::open_workspace_v5_validation(resources, true)?, input_fd, cancelled)
 }
 #[path = "native_runtime_oex_preflight_frames.rs"] mod oex_preflight_frames;
 #[path = "native_runtime_oex_binding.rs"] mod oex_binding;

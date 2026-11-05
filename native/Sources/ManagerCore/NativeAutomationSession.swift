@@ -14,6 +14,7 @@ public actor NativeAutomationSession {
     private let profile: URL
     private let temporaryRoot: URL
     private let ports: [String: UInt16]
+    private let workspaceV5ValidationRuntime: URL?
     private let root: URL
     private let inputs: [String: String]
     private let capability = UUID().uuidString.lowercased()
@@ -33,14 +34,17 @@ public actor NativeAutomationSession {
     private var selectedOEXFormat: String?
     private var runtimeStopped = false
 
-    public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false) throws {
-        guard !selectedOEX9 || !selectedOEX10 else { throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID") }
+    public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false, workspaceV5ValidationRuntime: URL? = nil) throws {
+        guard !selectedOEX9 || !selectedOEX10, workspaceV5ValidationRuntime == nil || selectedOEX10 else {
+            throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID")
+        }
         guard outputRoot.isFileURL, outputRoot.path.hasPrefix("/"),
               FileManager.default.fileExists(atPath: outputRoot.path),
               outputRoot.resolvingSymlinksInPath().path == outputRoot.path,
               !profile.path.hasPrefix(outputRoot.path + "/") else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
         self.root = outputRoot; self.inputs = inputs
         self.helper = helper; self.profile = profile; self.temporaryRoot = temporaryRoot; self.ports = ports
+        self.workspaceV5ValidationRuntime = workspaceV5ValidationRuntime
         selectedOEXFormat = selectedOEX10 ? "1.0.0-draft.10" : selectedOEX9 ? "1.0.0-draft.9" : nil
         for url in [outputRoot, temporaryRoot] {
             let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
@@ -50,7 +54,8 @@ public actor NativeAutomationSession {
                   url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
         }
         bridge = try NativeBridge(helper: helper, profile: profile, freshSelectedOEX: selectedOEX9 || selectedOEX10,
-                                  freshWorkspacePorts: ports, temporaryDirectory: temporaryRoot)
+                                  freshWorkspacePorts: ports, temporaryDirectory: temporaryRoot,
+                                  workspaceV5ValidationRuntime: workspaceV5ValidationRuntime)
     }
     private func value<T: Encodable>(_ v: T) throws -> DocumentValue {
         try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(v))
@@ -101,7 +106,8 @@ public actor NativeAutomationSession {
         try await closeBridge()
         try Task.checkCancellation()
         guard try profileIdentity() == directory else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
-        bridge = try NativeBridge(helper: helper, profile: profile, temporaryDirectory: temporaryRoot)
+        bridge = try NativeBridge(helper: helper, profile: profile, temporaryDirectory: temporaryRoot,
+                                  workspaceV5ValidationRuntime: workspaceV5ValidationRuntime)
         bridgeOpen = true
         let reopened = try await bridge.context()
         self.context = reopened

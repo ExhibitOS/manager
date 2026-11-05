@@ -16,6 +16,15 @@ Each role needs distinct profile, port triple, temporary root and output root.
 No existing Manager profile is rebound. All fresh-profile input bytes and runtime
 admission must be checked by the operator before handing over the configuration.
 
+For the isolated v5 owner qualification, a debug CLI accepts
+`workspaceV5ValidationRuntime` as an absolute runtime directory with
+`selectedOEX10: true`. Use a debug Rust helper built with the non-default
+`workspace-v5-owner-validation` feature. The helper verifies the exact candidate
+source, producer, complete manifest and capability marker before preparing a
+fresh profile. The same pin is required for the inherited-FD format check and
+for `reopen-saved` on that profile. These commands leave release and workspace
+material admission unchanged.
+
 The first `ready` event returns workspace, tenant, principal, a session capability
 and the current native document. Keep the process and inherited pipes open. All
 requests carry version1, UUID `requestId`, `operation`, and the exact four scope
