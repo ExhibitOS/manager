@@ -83,7 +83,15 @@ struct NativeImportControls: View {
                     }
                     if model.intakeDrainPending { Text("현재 파일 검사 작업이 실제로 끝날 때까지 다음 파일은 대기합니다.").foregroundStyle(.secondary) }
                     if let code = job.errorCode {
-                        Text(code == "FORMAT_REJECTED" ? "지원하는 파일 형식인지 확인하세요. 다른 파일을 쓰려면 검사를 중단한 뒤 새 파일을 선택하세요." : "파일 검사를 마치지 못했습니다. 상태와 접근 권한을 확인하세요.").foregroundStyle(.secondary)
+                        let guidance = switch code {
+                        case "PNG_PIXEL_LIMIT_EXCEEDED":
+                            "PNG의 전체 픽셀 수가 4,194,304픽셀 한도를 넘었습니다. 원본은 보관하고, 전체 픽셀 수가 이 한도 이하이고 가로·세로가 각각 8,192픽셀 이하인 PNG 사본을 만드세요. 현재 검사를 중단하고 ‘다른 파일 검사 준비’를 누른 뒤 축소본을 선택하세요."
+                        case "FORMAT_REJECTED":
+                            "지원하는 파일 형식인지 확인하세요. 다른 파일을 쓰려면 검사를 중단한 뒤 새 파일을 선택하세요."
+                        default:
+                            "파일 검사를 마치지 못했습니다. 상태와 접근 권한을 확인하세요."
+                        }
+                        Text(guidance).foregroundStyle(.secondary)
                         DisclosureGroup("검사 오류 상세") { Text(code).textSelection(.enabled) }
                     }
                 }
