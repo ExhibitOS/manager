@@ -105,7 +105,13 @@ struct ArtworkCatalogView: View {
         let selected = model.catalogArtworkId == entry.id
         let count = model.draft?.catalogPlacementIDs(for: entry.id).count ?? 0
         let key = model.catalogImageKey(entry)
-        let dimensions = entry.dimensions.isEmpty ? "치수 확인 중" : entry.dimensions.map { $0.formatted(.number.precision(.fractionLength(0...3))) }.joined(separator: " × ") + " m"
+        let size = ArtworkSizePresentation(entry.artwork)
+        let values = entry.dimensions
+        let dimensions = values.isEmpty ? "치수 확인 중" : values.map { $0.formatted(.number.precision(.fractionLength(0...3))) }.joined(separator: " × ") + " m"
+        let recorded = size.sourceUnitsUnknown ? "기관 표기 H/W/D · " + dimensions : dimensions
+        let reference = size.provisionalHeightMeters.map { height in
+            "임시 표시 높이 · 미보정 · " + height.formatted(.number.precision(.fractionLength(0...4))) + " m"
+        }
         return Button { model.selectCatalog(entry.id) } label: {
             VStack(alignment: .leading, spacing: compact ? 2 : 5) {
                 ZStack {
@@ -121,7 +127,10 @@ struct ArtworkCatalogView: View {
                 }.frame(height: compact ? (condensed ? 28 : 44) : 98).clipShape(RoundedRectangle(cornerRadius: 4)).accessibilityHidden(true)
                 Text(entry.title).font(compact ? .caption.weight(.medium) : .body.weight(.medium)).lineLimit(compact ? 1 : 2).multilineTextAlignment(.leading)
                 Text(entry.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                if !compact { Text(entry.typeLabel + " · " + dimensions).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+                if !compact {
+                    Text(entry.typeLabel + " · " + recorded).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    if let reference { Text(reference).font(.caption).foregroundStyle(.secondary) }
+                }
                 Label(count == 0 ? "미배치" : "배치 \(count)개", systemImage: selected ? "checkmark.circle.fill" : count == 0 ? "circle" : "square.on.square")
                     .font(.caption).foregroundStyle(selected ? Color.accentColor : Color.secondary)
             }
@@ -132,7 +141,8 @@ struct ArtworkCatalogView: View {
         .buttonStyle(.plain)
         .disabled(!ready || !model.canSelectCatalog)
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityLabel("\(entry.title), \(entry.artist), \(entry.typeLabel), \(dimensions), \(count == 0 ? "미배치" : "배치 \(count)개")")
+        .accessibilityLabel([entry.title, entry.artist, entry.typeLabel, recorded, reference,
+                             count == 0 ? "미배치" : "배치 \(count)개"].compactMap { $0 }.joined(separator: ", "))
         .accessibilityHint("원본 작품을 선택합니다. 배치된 작품이면 같은 배치가 공간과 목록에서 강조됩니다. 시점은 그대로 유지됩니다.")
     }
 }

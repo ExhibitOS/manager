@@ -53,6 +53,8 @@ public indirect enum DocumentValue: Codable, Equatable, Sendable {
 }
 
 public struct NativeExhibitionDraft: Codable, Equatable, Sendable {
+    private static let legacySchema = DocumentValue.string("1.0.0-draft.1")
+    private static let qualifiedSchema = DocumentValue.string("1.0.0-draft.2")
     public private(set) var document: DocumentValue
     public var id: String { document["exhibitionId"].string! }
     public var title: String { document["candidate"]["title"].string ?? "" }
@@ -64,11 +66,12 @@ public struct NativeExhibitionDraft: Codable, Equatable, Sendable {
         // Envelope/identity admission only. Platform's existing full OES and
         // Studio validators remain authoritative on save and viewport entry.
         let c = document["candidate"]
-        guard document["kind"].string == "exhibition-draft", document["schemaVersion"].string == "1.0.0-draft.1",
+        let schema = document["schemaVersion"]
+        guard document["kind"].string == "exhibition-draft", schema == Self.legacySchema || schema == Self.qualifiedSchema,
               let id = document["exhibitionId"].string, UUID(uuidString: id) != nil,
               let draftId = document["id"].string, UUID(uuidString: draftId) != nil,
               let version = document["editVersion"].integer, version > 0, version <= 2_147_483_647,
-              c["kind"].string == "exhibition-revision", c["schemaVersion"].string == "1.0.0-draft.1",
+              c["kind"].string == "exhibition-revision", c["schemaVersion"] == schema,
               c["id"].string?.lowercased() == id.lowercased(), let revision = c["revisionId"].string, UUID(uuidString: revision) != nil,
               c["units"].string == "meter", c["coordinates"].string == "right-handed-y-up",
               c["title"].string != nil, c["rooms"].items != nil, c["artworks"].items != nil, c["placements"].items != nil else { throw AuthoringFailure("EXHIBITION_DOCUMENT_INVALID") }
@@ -95,6 +98,16 @@ public struct NativeExhibitionDraft: Codable, Equatable, Sendable {
     public mutating func replaceCandidate(_ candidate: DocumentValue) throws {
         guard candidate["id"] == self.candidate["id"], candidate["revisionId"] == self.candidate["revisionId"], candidate["kind"] == self.candidate["kind"], candidate["schemaVersion"] == self.candidate["schemaVersion"] else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
         try change(candidate)
+    }
+    /// History holds validated local drafts. Restore both schema versions in
+    /// the same edit while keeping the current journal's edit counter.
+    public mutating func restoreEditHistory(_ previous: Self) throws {
+        guard previous.document["id"] == document["id"], previous.id == id,
+              previous.candidate["revisionId"] == candidate["revisionId"] else {
+            throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED")
+        }
+        try change(previous.candidate)
+        document["schemaVersion"] = previous.document["schemaVersion"]
     }
     public mutating func rename(_ title: String) throws {
         guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, title.count <= 512 else { throw AuthoringFailure("TITLE_INVALID") }
@@ -123,6 +136,10 @@ public struct NativeExhibitionDraft: Codable, Equatable, Sendable {
               rotation.allSatisfy({ $0.double.map { $0.isFinite && abs($0) <= 1 } == true }),
               abs(rotation.reduce(0) { $0 + pow($1.double!, 2) } - 1) <= 1e-6,
               transform["scale"] == .vector([1, 1, 1]) else { throw AuthoringFailure("PLACEMENT_INVALID") }
+        let needsQualifiedSchema = artwork["schemaVersion"] == Self.qualifiedSchema
+        guard needsQualifiedSchema == (artwork["units"] == .string("unknown")) else {
+            throw AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID")
+        }
         var c = candidate, inventory = artworks
         if let old = inventory.first(where: { $0["revisionId"].string == revision }) {
             guard old == artwork else { throw AuthoringFailure("ARTWORK_REVISION_CHANGED") }
@@ -134,7 +151,10 @@ public struct NativeExhibitionDraft: Codable, Equatable, Sendable {
         var descriptions = c["accessibility"]["artworkDescriptions"].items ?? []
         descriptions.append(.object(["placementId": .string(placementId), "text": .string(alternative)]))
         c["accessibility"]["artworkDescriptions"] = .array(descriptions)
-        c["artworks"] = .array(inventory); c["placements"] = .array(rows); try change(c)
+        c["artworks"] = .array(inventory); c["placements"] = .array(rows)
+        if needsQualifiedSchema { c["schemaVersion"] = Self.qualifiedSchema }
+        try change(c)
+        document["schemaVersion"] = c["schemaVersion"]
     }
     public mutating func movePlacement(_ id: String, position: [Double]) throws {
         guard position.count == 3, position.allSatisfy({ $0.isFinite && abs($0) <= 1_000_000 }), var rows = candidate["placements"].items, let i = rows.firstIndex(where: { $0["id"].string == id }) else { throw AuthoringFailure("PLACEMENT_INVALID") }

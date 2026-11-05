@@ -49,8 +49,10 @@ final class AuthoringModel: ObservableObject {
         intakeWritesAvailable && (modelDerivationEnabled || iccImportAdmitted) && available && session != nil && !busy
     }
     var canOpenIntakeRow: Bool {
-        canSelectIntake && activeIntakeID == nil && selected?.archived == false && !metadataDirty && importFile == nil && transfer?.intent == nil
+        canSelectIntake && !hasUnknownSourceUnits && activeIntakeID == nil && selected?.archived == false
+            && !metadataDirty && importFile == nil && transfer?.intent == nil
     }
+    var hasUnknownSourceUnits: Bool { draft.provenance.sourceUnits == "unknown" }
     var intakeDrainPending: Bool {
         guard let intent = transfer?.intent, let job = importJob else { return false }
         return (job.terminal || job.state == "failed") && requiresIntakeDrain(intent, job: job)
@@ -346,6 +348,7 @@ extension AuthoringModel {
         transfer = try await writeTransfer(state)
     }
     func chooseImportFile() async {
+        guard !hasUnknownSourceUnits else { return }
         guard !busy, available, session != nil, activeIntakeID == nil || transfer?.intent != nil else { return }
         let panel = NSOpenPanel()
         panel.title = "작품 파일 가져오기"
@@ -371,7 +374,7 @@ extension AuthoringModel {
     }
     func uploadImportFile() async {
         await action {
-            guard let api, let selected, !metadataDirty, let file = importFile, let state = transfer else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
+            guard !hasUnknownSourceUnits, let api, let selected, !metadataDirty, let file = importFile, let state = transfer else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
             let generation = importStatusGeneration, currentScope = scope, manifest = runtimeManifestSHA256
             if let target = intakeTarget {
                 guard target.artworkID == selected.id, target.revision == selected.revision,
@@ -420,9 +423,20 @@ extension AuthoringModel {
     func recoverImport() async {
         await action {
             guard let api, let intent = transfer?.intent else { return }
+            try await checkGUIImportContinuation(intent, api: api)
             try await continueImport(intent: intent, file: nil, api: api)
             notice = "같은 파일 검사 요청의 현재 상태를 확인했습니다."
             scheduleImportPoll()
+        }
+    }
+    private func checkGUIImportContinuation(_ intent: NativeImportIntent, api: AuthoringAPI) async throws {
+        let generation = importStatusGeneration
+        let artwork = try await api.artwork(intent.artworkId)
+        guard generation == importStatusGeneration, available, self.api === api,
+              transfer?.intent == intent else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+        guard artwork.id == intent.artworkId, let metadata = artwork.metadata,
+              ["m", "cm", "mm"].contains(metadata.provenance.sourceUnits) else {
+            throw AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID")
         }
     }
     private func continueImport(intent: NativeImportIntent, file: ImportFileSnapshot?, derived: NativePreparedJPEG? = nil, api: AuthoringAPI) async throws {
@@ -514,6 +528,13 @@ extension AuthoringModel {
     func changeImport(_ change: NativeImportAction) async {
         await action {
             guard let api, let job = importJob else { return }
+            if change == .retry {
+                guard let intent = transfer?.intent, transfer?.jobId == job.id else {
+                    throw AuthoringFailure("IMPORT_RECEIPT_INVALID")
+                }
+                try await checkGUIImportContinuation(intent, api: api)
+                guard importJob?.id == job.id, transfer?.jobId == job.id else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+            }
             if let intent = transfer?.intent, intent.derived?.recipe.colourConversion != nil {
                 guard iccImportAdmitted else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
                 guard transfer?.jobId?.lowercased() == job.id.lowercased() else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
@@ -594,7 +615,7 @@ extension AuthoringModel {
     }
     func approveImportedArtwork() async {
         await action {
-            guard let api, let selected, !metadataDirty, approvalAcknowledged,
+            guard !hasUnknownSourceUnits, let api, let selected, !metadataDirty, approvalAcknowledged,
                   selected.assets.contains(where: { $0.id == assetId && $0.state == "approved" }) else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
             if let intent = transfer?.intent, intent.artworkId.lowercased() == selected.id.lowercased(),
                intent.derived?.recipe.colourConversion != nil {
@@ -754,9 +775,18 @@ struct NativeAuthoringView: View {
                 TextField("설명", text: $model.draft.description, axis: .vertical).lineLimit(3...8)
                 TextField("재료·매체", text: Binding(get: { model.draft.medium ?? "" }, set: { model.draft.medium = $0.isEmpty ? nil : $0 }))
                 TextField("제작 연도 (선택)", text: $model.creationYearText)
-                TextField("가로 (m)", value: $model.draft.dimensions.width, format: .number)
-                TextField("세로 (m)", value: $model.draft.dimensions.height, format: .number)
-                TextField("깊이 (m, 선택)", value: $model.draft.dimensions.depth, format: .number)
+                if model.draft.provenance.sourceUnits == "unknown" {
+                    LabeledContent("기관 표기 높이 (m)", value: model.draft.dimensions.height.formatted())
+                    LabeledContent("기관 표기 폭 (m)", value: model.draft.dimensions.width.formatted())
+                    if let depth = model.draft.dimensions.depth {
+                        LabeledContent("기관 표기 깊이 (m)", value: depth.formatted())
+                    }
+                    Text("기관 치수의 GLB 좌표축 대응은 미확인입니다.").foregroundStyle(.secondary)
+                } else {
+                    TextField("가로 (m)", value: $model.draft.dimensions.width, format: .number)
+                    TextField("세로 (m)", value: $model.draft.dimensions.height, format: .number)
+                    TextField("깊이 (m, 선택)", value: $model.draft.dimensions.depth, format: .number)
+                }
             }
             Section("권리와 표시") {
                 TextField("권리자", text: $model.draft.rights.holder)
@@ -777,8 +807,15 @@ struct NativeAuthoringView: View {
                 Picker("출처", selection: $model.draft.provenance.source) {
                     Text("직접 제작").tag("human-authored"); Text("AI 도움").tag("ai-assisted"); Text("AI 생성").tag("ai-generated"); Text("합성 자료").tag("synthetic")
                 }
-                Picker("원래 단위", selection: $model.draft.provenance.sourceUnits) { Text("m").tag("m"); Text("cm").tag("cm"); Text("mm").tag("mm") }
-                Toggle("크기를 조정했음", isOn: $model.draft.provenance.scaleApplied)
+                if model.draft.provenance.sourceUnits == "unknown" {
+                    LabeledContent("GLB 원본 단위", value: "미확인")
+                    if let reference = model.draft.displayReference {
+                        LabeledContent("임시 표시 높이 · 미보정", value: reference.referenceHeightMeters.formatted() + " m")
+                    }
+                } else {
+                    Picker("원래 단위", selection: $model.draft.provenance.sourceUnits) { Text("m").tag("m"); Text("cm").tag("cm"); Text("mm").tag("mm") }
+                    Toggle("크기를 조정했음", isOn: $model.draft.provenance.scaleApplied)
+                }
                 TextField("출처 설명", text: $model.draft.provenance.notes, axis: .vertical)
             }
             if let selected = model.selected {

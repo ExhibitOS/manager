@@ -16,6 +16,7 @@ public struct ArtworkPlacementIntent: Equatable, Sendable {
     public let base: NativeExhibitionDraft
     public init(artworkId: String, expectedRevision: Int, tenantId: String, artwork: DocumentValue, roomId: String, base: NativeExhibitionDraft) throws {
         let cms = artwork["extensions"]["org.exhibitos.studio/cms"]
+        guard !ArtworkSizePresentation(artwork).sourceUnitsUnknown else { throw AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID") }
         guard UUID(uuidString: artworkId) != nil, UUID(uuidString: tenantId) != nil,
               (1...2_147_483_647).contains(expectedRevision), artwork["id"].string == artworkId,
               cms["tenantId"].string == tenantId, cms["artworkId"].string == artworkId,

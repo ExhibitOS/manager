@@ -20,7 +20,7 @@ public struct AuthoringPage<Item: Decodable & Sendable>: Decodable, Sendable {
     public let items: [Item]
     public let nextCursor: String?
 }
-public struct NativeArtist: Decodable, Sendable, Identifiable {
+public struct NativeArtist: Codable, Sendable, Identifiable {
     public let id: String
     public let userId: String?
     public let revision: Int
@@ -28,7 +28,7 @@ public struct NativeArtist: Decodable, Sendable, Identifiable {
     public let bio: String
     public let archived: Bool
 }
-public struct ArtworkSummary: Decodable, Sendable, Identifiable {
+public struct ArtworkSummary: Codable, Sendable, Identifiable {
     public let id: String
     public let artistId: String
     public let revision: Int
@@ -61,16 +61,31 @@ public struct ArtworkMetadata: Codable, Equatable, Sendable {
         public var scaleApplied = false
         public var notes = ""
     }
+    public struct DisplayReference: Codable, Equatable, Sendable {
+        public struct Bounds: Codable, Equatable, Sendable {
+            public let min: [Double], max: [Double]
+        }
+        public struct Pose: Codable, Equatable, Sendable {
+            public let position: [Double], rotation: [Double], scale: [Double]
+        }
+        public let version: Int
+        public let status: String
+        public let assetSha256: String
+        public let rawBounds: Bounds
+        public let referenceHeightMeters: Double
+        public let pose: Pose
+    }
     public var title = "", description = ""
     public var medium: String?
     public var creationYear: Int?
     public var dimensions = Dimensions()
     public var rights = Rights()
     public var provenance = Provenance()
+    public var displayReference: DisplayReference?
     public init() {}
 }
-public struct NativeArtwork: Decodable, Sendable, Identifiable {
-    public struct Asset: Decodable, Sendable, Identifiable {
+public struct NativeArtwork: Codable, Sendable, Identifiable {
+    public struct Asset: Codable, Sendable, Identifiable {
         public let id: String, mime: String, state: String, sha256: String
         public let bytes: Int64
     }
@@ -88,6 +103,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
     public init(_ code: String, status: Int = 0) { self.code = code; self.status = status }
     public var errorDescription: String? {
         switch code {
+        case "ARTWORK_DISPLAY_REFERENCE_INVALID": return "원본 단위 미확인 작품의 임시 표시 기준과 파일을 확인하세요. 배치 위치는 숫자로 입력할 수 있습니다."
         case "EXHIBITION_COMPARISON_STALE": return "저장본이 비교 후 바뀌었습니다. 현재 입력은 유지됩니다. 저장본을 다시 비교하세요."
         case "ARCHITECTURE_FIELDS_INVALID": return "공간 이름·크기·위치를 확인하세요. 크기는 0보다 큰 값, 위치는 숫자로 입력하세요."
         case "FURNISHING_FIELDS_INVALID": return "받침의 위치·회전·비례 크기를 확인하세요. 위치는 미터, 회전은 −180–180도, 비율은 0.1–4입니다. 입력과 기존 전시는 유지됩니다."

@@ -22,7 +22,10 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var placementApplying = false
     private var placementAttempt: UUID?
     var placingArtwork: Bool { artworkPlacement != nil || placementApplying }
-    var canPlaceVisually: Bool { canSelectCatalog && !immutable && viewportPresentation == .threeD && viewportController.connected && viewportController.placementSupported && catalogEntries[catalogArtworkId] != nil }
+    var canPlaceVisually: Bool {
+        guard let entry = catalogEntries[catalogArtworkId], !ArtworkSizePresentation(entry.artwork).sourceUnitsUnknown else { return false }
+        return canSelectCatalog && !immutable && viewportPresentation == .threeD && viewportController.connected && viewportController.placementSupported
+    }
     @Published private(set) var libraryCursor: String?
     private var catalogTask: Task<Void, Never>?
     @Published private(set) var catalogImages: [String: NSImage] = [:]
@@ -1937,7 +1940,7 @@ final class ExhibitionModel: ObservableObject {
             if boundedPlacementCapability != nil {
                 guard boundedPlacementReady, let selection = viewportSelection, let baseline = boundedPlacementBaseline else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 try next.acceptBoundedPlacement(previous.candidate, selection: selection, savedBaseline: baseline)
-            } else { try next.replaceCandidate(previous.candidate) }
+            } else { try next.restoreEditHistory(previous) }
             value.draft = next
             try await persist(value, recordUndo: false); past.removeLast(); future.append(current); syncFields()
             notice = "이전 편집으로 되돌렸습니다. 전시 저장본은 바꾸지 않았습니다."
@@ -1950,7 +1953,7 @@ final class ExhibitionModel: ObservableObject {
             if boundedPlacementCapability != nil {
                 guard boundedPlacementReady, let selection = viewportSelection, let baseline = boundedPlacementBaseline else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 try next.acceptBoundedPlacement(previous.candidate, selection: selection, savedBaseline: baseline)
-            } else { try next.replaceCandidate(previous.candidate) }
+            } else { try next.restoreEditHistory(previous) }
             value.draft = next
             try await persist(value, recordUndo: false); future.removeLast(); past.append(current); syncFields()
             notice = "편집을 다시 적용했습니다."

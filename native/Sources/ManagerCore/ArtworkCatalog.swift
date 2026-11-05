@@ -15,7 +15,11 @@ public struct ArtworkCatalogEntry: Identifiable, Equatable, Sendable {
     public var kind: String { artwork["artworkType"].string ?? "" }
     private var isPainting: Bool { kind == "image" || kind == "painting" }
     public var typeLabel: String { isPainting ? "회화" : kind == "sculpture" ? "조각" : "작품" }
-    public var dimensions: [Double] { ["width", "height", "depth"].compactMap { artwork["dimensions"][$0].double } }
+    public var dimensions: [Double] {
+        let size = ArtworkSizePresentation(artwork)
+        let keys = size.sourceUnitsUnknown ? ["height", "width", "depth"] : ["width", "height", "depth"]
+        return keys.compactMap { size.recordedDimensions[$0].double }
+    }
     public var primaryMime: String? {
         artwork["assets"].items?.first { $0["id"].string == artwork["primaryAssetId"].string }?["mime"].string
     }
@@ -28,6 +32,26 @@ public struct ArtworkCatalogEntry: Identifiable, Equatable, Sendable {
         case .painting: return isPainting
         case .sculpture: return kind == "sculpture"
         case .unplaced: return draft.catalogPlacementIDs(for: id).isEmpty
+        }
+    }
+}
+public struct ArtworkSizePresentation {
+    public let sourceUnitsUnknown: Bool
+    public let recordedDimensions: DocumentValue
+    public let provisionalHeightMeters: Double?
+
+    public init(_ artwork: DocumentValue) {
+        sourceUnitsUnknown = artwork["units"] == .string("unknown") || artwork["schemaVersion"] == .string("1.0.0-draft.2")
+        if sourceUnitsUnknown {
+            let reference = artwork["extensions"]["org.exhibitos.studio/display-reference"]
+            let dimensions = reference["catalogueDimensions"]
+            let valid = reference["version"] == .integer(1) && reference["status"] == .string("provisional-uncalibrated")
+                && reference["axisMapping"] == .string("unverified")
+            recordedDimensions = valid && dimensions["unit"] == .string("m") ? dimensions : .null
+            provisionalHeightMeters = valid ? reference["referenceHeightMeters"].double : nil
+        } else {
+            recordedDimensions = artwork["dimensions"]
+            provisionalHeightMeters = nil
         }
     }
 }

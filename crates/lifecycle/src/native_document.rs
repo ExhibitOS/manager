@@ -36,17 +36,23 @@ fn valid_etag(value: &str) -> bool {
                 && hash_valid(h)
         })
 }
-fn draft_id(value: &Value) -> Option<&str> {
-    if value.get("kind")?.as_str()? != "exhibition-draft"
-        || value.get("schemaVersion")?.as_str()? != "1.0.0-draft.1"
-    {
+pub(super) fn draft_id(value: &Value) -> Option<&str> {
+    let candidate = value.get("candidate")?;
+    let schema = value.get("schemaVersion")?.as_str()?;
+    let candidate_schema = candidate.get("schemaVersion");
+    let compatible = match schema {
+        "1.0.0-draft.1" => candidate_schema.is_none_or(|version| version == schema),
+        "1.0.0-draft.2" => candidate_schema.is_some_and(|version| version == schema)
+            && candidate["kind"] == "exhibition-revision",
+        _ => false,
+    };
+    if value.get("kind")?.as_str()? != "exhibition-draft" || !compatible {
         return None;
     }
     let id = value.get("exhibitionId")?.as_str()?;
     if !uuid(id)
         || !uuid(value.get("id")?.as_str()?)
-        || !value
-            .get("candidate")?
+        || !candidate
             .get("id")?
             .as_str()?
             .eq_ignore_ascii_case(id)
@@ -183,6 +189,21 @@ mod pending_origin_tests {
     #[allow(dead_code)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct LegacyPending { request_id: String, etag: Option<String>, draft: Value }
+
+    #[test]
+    fn qualified_draft_requires_matching_candidate_schema() {
+        let exhibition = Uuid::new_v4().to_string();
+        let mut draft = serde_json::json!({"kind":"exhibition-draft","schemaVersion":"1.0.0-draft.2",
+            "id":Uuid::new_v4().to_string(),"exhibitionId":exhibition,"editVersion":2,
+            "candidate":{"kind":"exhibition-revision","schemaVersion":"1.0.0-draft.2","id":exhibition}});
+        assert_eq!(draft_id(&draft), Some(exhibition.as_str()));
+        draft["candidate"]["schemaVersion"] = serde_json::json!("1.0.0-draft.1");
+        assert!(draft_id(&draft).is_none());
+        draft["schemaVersion"] = serde_json::json!("1.0.0-draft.1");
+        assert_eq!(draft_id(&draft), Some(exhibition.as_str()));
+        draft["candidate"]["schemaVersion"] = serde_json::json!("1.0.0-draft.2");
+        assert!(draft_id(&draft).is_none());
+    }
 
     #[test]
     fn tagged_pending_round_trips_and_unknown_origins_fail_closed() {

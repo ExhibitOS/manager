@@ -21,6 +21,9 @@ struct NativeImportControls: View {
                 if !belongs, let id = model.transfer?.intent?.artworkId {
                     Text("다른 작품에 시작한 파일 검사가 있습니다.")
                     Button("검사 중인 작품 열기") { openArtwork(id) }
+                } else if model.hasUnknownSourceUnits {
+                    Text("원본 단위 미확인 GLB의 파일 검사와 승인은 지정된 입고 절차에서 진행합니다.")
+                        .foregroundStyle(.secondary)
                 } else {
                     Button(model.importFile == nil ? "\(model.importFormats) 파일 선택…" : "같은 파일 다시 선택…", systemImage: "doc.badge.plus") { Task { await model.chooseImportFile() } }
                         .disabled(model.activeIntakeID != nil && model.transfer?.intent == nil)
@@ -41,7 +44,7 @@ struct NativeImportControls: View {
                             .disabled(model.metadataDirty || model.selected == nil || model.importFile == nil || model.transfer == nil || !model.importScale.isFinite || model.importScale <= 0)
                     }
                 }
-                if model.transfer?.intent != nil && model.importJob == nil {
+                if !model.hasUnknownSourceUnits && model.transfer?.intent != nil && model.importJob == nil {
                     Button("이전 검사 요청 찾기") { Task { await model.recoverImport() } }
                 }
                 if let job = model.importJob {
@@ -69,9 +72,9 @@ struct NativeImportControls: View {
                     if ["queued", "processing"].contains(job.state) { ProgressView(value: Double(job.progress), total: 100).accessibilityLabel("파일 검사 진행") }
                     HStack {
                         Button("상태 다시 확인") { Task { await model.refreshImport() } }
-                        if job.state == "uploading" { Button("받은 원본으로 검사 계속") { Task { await model.recoverImport() } } }
-                        if job.state == "failed" { Button("검사 재시도") { Task { await model.changeImport(.retry) } }.disabled(!job.canRetry || model.intakeDrainPending) }
-                        if job.state == "approved", job.modelDerivation?.status == "failed" {
+                        if !model.hasUnknownSourceUnits && job.state == "uploading" { Button("받은 원본으로 검사 계속") { Task { await model.recoverImport() } } }
+                        if !model.hasUnknownSourceUnits && job.state == "failed" { Button("검사 재시도") { Task { await model.changeImport(.retry) } }.disabled(!job.canRetry || model.intakeDrainPending) }
+                        if !model.hasUnknownSourceUnits, job.state == "approved", job.modelDerivation?.status == "failed" {
                             Button("감상용 파일 재시도") { Task { await model.changeImport(.retry) } }
                                 .disabled(!job.canRetry || !model.modelDerivationEnabled || model.modelWorkerPending)
                         }
@@ -85,14 +88,16 @@ struct NativeImportControls: View {
                     }
                 }
                 if !approvedAssets.isEmpty {
-                    Picker("전시에 쓸 파일", selection: $model.assetId) {
-                        Text("파일 선택").tag("")
-                        ForEach(approvedAssets) { asset in Text("\(asset.mime == "model/gltf-binary" ? "GLB" : "PNG") · \(asset.id.prefix(8))").tag(asset.id) }
+                    if !model.hasUnknownSourceUnits {
+                        Picker("전시에 쓸 파일", selection: $model.assetId) {
+                            Text("파일 선택").tag("")
+                            ForEach(approvedAssets) { asset in Text("\(asset.mime == "model/gltf-binary" ? "GLB" : "PNG") · \(asset.id.prefix(8))").tag(asset.id) }
+                        }
+                        if needsNewRevision { Text("다른 파일을 승인하려면 작품 정보를 한 번 더 저장해 새 버전을 만드세요.").foregroundStyle(.secondary) }
+                        Toggle("저장한 정보와 파일·권리를 확인했습니다", isOn: $model.approvalAcknowledged)
+                        Button("작품 정보·권리 승인") { Task { await model.approveImportedArtwork() } }
+                            .disabled(!model.approvalAcknowledged || model.metadataDirty || model.assetId.isEmpty || needsNewRevision)
                     }
-                    if needsNewRevision { Text("다른 파일을 승인하려면 작품 정보를 한 번 더 저장해 새 버전을 만드세요.").foregroundStyle(.secondary) }
-                    Toggle("저장한 정보와 파일·권리를 확인했습니다", isOn: $model.approvalAcknowledged)
-                    Button("작품 정보·권리 승인") { Task { await model.approveImportedArtwork() } }
-                        .disabled(!model.approvalAcknowledged || model.metadataDirty || model.assetId.isEmpty || needsNewRevision)
                     if let artwork = model.selected, artwork.approvedRevision == artwork.revision { Text("저장한 이 버전은 전시에서 사용할 수 있습니다.").foregroundStyle(.secondary) }
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).disabled(model.busy || !ready)

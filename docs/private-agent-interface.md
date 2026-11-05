@@ -7,7 +7,7 @@ authentication. This development interface is not a signed distribution claim.
 Start with `exhibitos-automation --configuration /absolute/private/config.json`.
 The configuration contains exactly `helper`, `profile`, `ports`, `outputRoot`,
 `temporaryRoot`, and `inputs`, with optional `selectedOEX9: true` for the existing
-fresh selected importer. `inputs` maps approved draft/archive input paths to their
+fresh selected importer. `inputs` maps approved draft/archive/GLB input paths to their
 SHA256. The helper is the operator-selected paired native executable, never a
 request-selected executable. The profile must not exist; its parent must exist.
 The output and temporary roots must be existing, owned, private 0700 directories.
@@ -41,6 +41,36 @@ Operations:
 - `load-copy`: read the SHA-pinned `inputPath` and use the existing native copy
   operation. Return the changed draft/exhibition/revision identity map; preserve
   typed nested IDs and opaque fields. This is not OEX ingestion or blob transfer.
+- `catalog-read`: return the existing artist/artwork first pages for a small,
+  isolated catalogue. A nonempty next cursor refuses with
+  `AUTOMATION_CATALOG_PAGE_LIMIT`; incomplete pages cannot reconcile a creation.
+- `artist-create`: `command` contains exactly `name` and `bio`.
+- `artwork-create`: `command` contains exactly `artistId` and `metadata` in the
+  existing CMS `ArtworkMetadata` shape. Unknown or discarded metadata is refused.
+  Both creation operations persist a private attempt before the non-idempotent
+  CMS POST and a separate acknowledged result afterward. An uncertain attempt
+  refuses with `AUTOMATION_CREATE_UNCERTAIN`; inspect the retained attempt/result
+  and catalogue before any explicit new creation. No replacement ID is generated
+  by recovery, and successful same-request replay uses the existing session cache.
+- `import-glb`: requires SHA-pinned `inputPath` and exactly `artworkId`,
+  `artworkRevision`, `scaleMeters` in `command`. Read the unchanged bounded GLB,
+  recheck the artwork revision/rights, and use the GUI's `NativeImportTransfer`
+  with the same native upload intent/job journal. The caller requestId is the
+  durable import idempotency key. A different intent cannot replace a retained
+  one, including after uncertain replies. No texture/model derivation is requested.
+- `artwork-status`: `command` contains exactly `artworkId`; return its current
+  authenticated CMS row plus retained native upload state and matching job status.
+  An approved job is not an artwork approval or a native worker-drain receipt.
+- `artwork-approve`: exactly `artworkId`, `revision`, `assetId`, and explicit
+  `acknowledgeRights: true`. Recheck the retained job's approved asset, original
+  hash/length/MIME, current artwork revision and unchanged rights before invoking
+  the existing approval API and reading the result back.
+- `artwork-register`: exactly `artworkId`, `revision`, `roomId`, `placementId`,
+  `transform`. Fetch the approved Studio snapshot, verify its tenant/CMS revision
+  and display permission, and call existing native `addApprovedArtwork`. Saved
+  documents retain the existing viewport policy/ETag/bounded-edit gate. The
+  explicit pose uses unit scale; unsupported bounded editing refuses. Registration
+  changes only the native draft; use the existing save/export operations afterward.
 - `import-oex9`: only in the explicit fresh selected mode and exact qualified
   runtime. Requires SHA-pinned archive and explicit `archiveFormat` draft.9. Reuse
   immutable native selection/job/lease/worker and selected-save handshake, retain
@@ -106,6 +136,21 @@ archive must be actual draft.9 from the exact approved producer. The import
 receipt/idMap must establish the new wall identity; a public or prior-profile
 surface ID, array label, raw public blob reference or rewritten archive version
 is not a substitute. No existing success/failure profile is reopened.
+
+An unknown-unit GLB requires CMS `displayReference`, `sourceUnits: "unknown"`,
+`scaleApplied: false`, and upload `scaleMeters: 1`. Import and approval check
+the reference against the exact GLB SHA-256. The display reference describes a
+provisional height. Institutional catalogue dimensions are separate, and the
+mapping to GLB axes is unverified. The original GLB bytes and the approved
+Artwork transform are preserved. Numeric placement supplies a unit-scale pose
+and makes no floor contact, support, or facing assertion.
+
+Registration of a qualified Artwork draft.2 promotes the editable local
+Exhibition and lifecycle draft to draft.2 together. The saved Studio readback
+must preserve the same candidate, including existing artworks and the approved
+display-reference extension. The paired Platform producer writes OEX draft.11
+and static output. The native OEX import entry points retain their existing
+supported formats.
 
 The renderer has no native profile writer. Snapshot receipts must independently
 bind native workspace/identity/journal/editVersion and Studio saved revision/ETag,
