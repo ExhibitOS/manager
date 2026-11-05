@@ -21,6 +21,9 @@ struct NativeImportControls: View {
                 if !belongs, let id = model.transfer?.intent?.artworkId {
                     Text("다른 작품에 시작한 파일 검사가 있습니다.")
                     Button("검사 중인 작품 열기") { openArtwork(id) }
+                } else if model.hasUnknownSourceUnits {
+                    Text("원본 단위 미확인 GLB의 파일 검사와 승인은 지정된 입고 절차에서 진행합니다.")
+                        .foregroundStyle(.secondary)
                 } else {
                     Button(model.importFile == nil ? "\(model.importFormats) 파일 선택…" : "같은 파일 다시 선택…", systemImage: "doc.badge.plus") { Task { await model.chooseImportFile() } }
                         .disabled(model.activeIntakeID != nil && model.transfer?.intent == nil)
@@ -85,14 +88,16 @@ struct NativeImportControls: View {
                     }
                 }
                 if !approvedAssets.isEmpty {
-                    Picker("전시에 쓸 파일", selection: $model.assetId) {
-                        Text("파일 선택").tag("")
-                        ForEach(approvedAssets) { asset in Text("\(asset.mime == "model/gltf-binary" ? "GLB" : "PNG") · \(asset.id.prefix(8))").tag(asset.id) }
+                    if !model.hasUnknownSourceUnits {
+                        Picker("전시에 쓸 파일", selection: $model.assetId) {
+                            Text("파일 선택").tag("")
+                            ForEach(approvedAssets) { asset in Text("\(asset.mime == "model/gltf-binary" ? "GLB" : "PNG") · \(asset.id.prefix(8))").tag(asset.id) }
+                        }
+                        if needsNewRevision { Text("다른 파일을 승인하려면 작품 정보를 한 번 더 저장해 새 버전을 만드세요.").foregroundStyle(.secondary) }
+                        Toggle("저장한 정보와 파일·권리를 확인했습니다", isOn: $model.approvalAcknowledged)
+                        Button("작품 정보·권리 승인") { Task { await model.approveImportedArtwork() } }
+                            .disabled(!model.approvalAcknowledged || model.metadataDirty || model.assetId.isEmpty || needsNewRevision)
                     }
-                    if needsNewRevision { Text("다른 파일을 승인하려면 작품 정보를 한 번 더 저장해 새 버전을 만드세요.").foregroundStyle(.secondary) }
-                    Toggle("저장한 정보와 파일·권리를 확인했습니다", isOn: $model.approvalAcknowledged)
-                    Button("작품 정보·권리 승인") { Task { await model.approveImportedArtwork() } }
-                        .disabled(!model.approvalAcknowledged || model.metadataDirty || model.assetId.isEmpty || needsNewRevision)
                     if let artwork = model.selected, artwork.approvedRevision == artwork.revision { Text("저장한 이 버전은 전시에서 사용할 수 있습니다.").foregroundStyle(.secondary) }
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).disabled(model.busy || !ready)

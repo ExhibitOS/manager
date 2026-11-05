@@ -80,10 +80,7 @@ pub(crate) fn validate(s: &PublicationState) -> Result<()> {
             || !uuid(&p.publish_request_id)
             || p.plan_binding_sha256.as_ref().is_some_and(|v| !hash_valid(v))
             || p.snapshot_etag.as_ref().is_some_and(|v| !valid_etag(v))
-            || !uuid(id)
-            || !uuid(p.snapshot["id"].as_str().unwrap_or(""))
-            || p.snapshot["kind"] != "exhibition-draft"
-            || p.snapshot["schemaVersion"] != "1.0.0-draft.1"
+            || native_document::draft_id(&p.snapshot) != Some(id)
             || p.snapshot["candidate"]["id"] != id
         {
             return Err(bad());
@@ -215,6 +212,23 @@ impl InstallationController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qualified_publication_copy_retains_matching_versions_in_the_journal() {
+        let id = || Uuid::new_v4().to_string();
+        let snapshot = id();
+        let wire = serde_json::json!({"format":1,"revision":0,"workspaceId":id(),"tenantId":id(),"principalId":id(),
+            "pending":{"sourceExhibitionId":id(),"sourceEtag":format!("\"studio-r2-{}\"", "a".repeat(64)),
+                "snapshot":{"id":id(),"exhibitionId":snapshot,"kind":"exhibition-draft","schemaVersion":"1.0.0-draft.2","editVersion":1,
+                    "candidate":{"id":snapshot,"kind":"exhibition-revision","schemaVersion":"1.0.0-draft.2"}},
+                "saveRequestId":id(),"snapshotEtag":null,"publishRequestId":id()},"completed":null});
+        let state: PublicationState = serde_json::from_value(wire).unwrap();
+        validate(&state).unwrap();
+        let mut reopened: PublicationState = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert!(reopened.pending == state.pending);
+        reopened.pending.as_mut().unwrap().snapshot["candidate"]["schemaVersion"] = serde_json::json!("1.0.0-draft.1");
+        assert!(validate(&reopened).is_err());
+    }
 
     #[test]
     fn direct_publication_journal_binds_same_draft_and_exact_etag() {

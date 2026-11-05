@@ -36,7 +36,7 @@ fn valid_etag(value: &str) -> bool {
                 && hash_valid(h)
         })
 }
-fn draft_id(value: &Value) -> Option<&str> {
+pub(super) fn draft_id(value: &Value) -> Option<&str> {
     let candidate = value.get("candidate")?;
     let schema = value.get("schemaVersion")?.as_str()?;
     let candidate_schema = candidate.get("schemaVersion");

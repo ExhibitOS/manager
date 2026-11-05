@@ -49,8 +49,10 @@ final class AuthoringModel: ObservableObject {
         intakeWritesAvailable && (modelDerivationEnabled || iccImportAdmitted) && available && session != nil && !busy
     }
     var canOpenIntakeRow: Bool {
-        canSelectIntake && activeIntakeID == nil && selected?.archived == false && !metadataDirty && importFile == nil && transfer?.intent == nil
+        canSelectIntake && !hasUnknownSourceUnits && activeIntakeID == nil && selected?.archived == false
+            && !metadataDirty && importFile == nil && transfer?.intent == nil
     }
+    var hasUnknownSourceUnits: Bool { draft.provenance.sourceUnits == "unknown" }
     var intakeDrainPending: Bool {
         guard let intent = transfer?.intent, let job = importJob else { return false }
         return (job.terminal || job.state == "failed") && requiresIntakeDrain(intent, job: job)
@@ -346,6 +348,7 @@ extension AuthoringModel {
         transfer = try await writeTransfer(state)
     }
     func chooseImportFile() async {
+        guard !hasUnknownSourceUnits else { return }
         guard !busy, available, session != nil, activeIntakeID == nil || transfer?.intent != nil else { return }
         let panel = NSOpenPanel()
         panel.title = "작품 파일 가져오기"
@@ -371,7 +374,7 @@ extension AuthoringModel {
     }
     func uploadImportFile() async {
         await action {
-            guard let api, let selected, !metadataDirty, let file = importFile, let state = transfer else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
+            guard !hasUnknownSourceUnits, let api, let selected, !metadataDirty, let file = importFile, let state = transfer else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
             let generation = importStatusGeneration, currentScope = scope, manifest = runtimeManifestSHA256
             if let target = intakeTarget {
                 guard target.artworkID == selected.id, target.revision == selected.revision,
@@ -594,7 +597,7 @@ extension AuthoringModel {
     }
     func approveImportedArtwork() async {
         await action {
-            guard let api, let selected, !metadataDirty, approvalAcknowledged,
+            guard !hasUnknownSourceUnits, let api, let selected, !metadataDirty, approvalAcknowledged,
                   selected.assets.contains(where: { $0.id == assetId && $0.state == "approved" }) else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
             if let intent = transfer?.intent, intent.artworkId.lowercased() == selected.id.lowercased(),
                intent.derived?.recipe.colourConversion != nil {
