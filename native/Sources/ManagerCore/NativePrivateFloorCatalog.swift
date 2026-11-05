@@ -6,8 +6,8 @@ public struct NativePrivateFloorCatalog: Equatable, Sendable {
     public static let version = 1
     public static let name = "차분한 오크 헤링본"
 
-    // The versioned catalogue is available only in the exact private runtime.
-    static let manifestSHA256 = "35b07cfc4c89abeaab518fd72c5be5f55569c03ae99906ff7220edf7d9712bf8"
+    // The versioned catalogue is available only in the exact reviewed local runtime.
+    static let manifestSHA256 = "9b9d6b1cba4b5722a8710471283e9f693f14883f5da950c4504ca7bbf00efeb7"
 
     public let previewPath: String
     static let previewBytes = 27_373
