@@ -1820,6 +1820,13 @@ impl Session {
                 let row=self.query_database("exhibitos","SELECT sha256 FROM public.schema_migrations WHERE name='029_oex_quiet_oak_floor.sql'")?;
                 if row!=super::native_payload::NORMAL_OEX_029_FLOOR_SCHEMA_SHA256{return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
                 owner.check(self)?;
+                if self.payload.normal_oex_030_concrete_tuple() {
+                    let row = self.query_database("exhibitos", "SELECT sha256 FROM public.schema_migrations WHERE name='030_oex_concrete_surface.sql'")?;
+                    if row != super::native_payload::NORMAL_OEX_030_CONCRETE_SCHEMA_SHA256 {
+                        return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));
+                    }
+                    owner.check(self)?;
+                }
             }
             owner.recheck_database_identity(self)?;
             self.payload.recheck()?;

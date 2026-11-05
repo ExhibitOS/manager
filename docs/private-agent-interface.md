@@ -131,8 +131,9 @@ Operations:
   The new helper must observe the same installation, complete native journal,
   port triple and runtime manifest. A new runtime job must read back the same
   saved draft and ETag. The response includes both runtime job IDs, the
-  `document` and the Studio revision. If reopening fails, close the session and
-  preserve its profile.
+  `document` and the Studio revision. The profile directory identity is checked
+  across the helper handoff. If reopening fails, close the session and preserve
+  its profile.
 - `export-oex`: require the saved unchanged document, re-read Studio ETag/draft,
   and use the existing bounded native archive writer into a new output file.
 - `export-static`: use existing native publication pending/CAS, private snapshot,
@@ -148,6 +149,7 @@ Operations:
   `close` waits for the task and owning helper's normal shutdown. EOF cancels the
   owned task and closes that helper; it never stops a different workspace.
   A successful `close` exits the CLI without requiring an EOF workaround.
+  A helper close failure remains terminal and the CLI exits nonzero on EOF.
 
 Identical successful requests replay their held result. Reusing a request ID with
 different bytes refuses. The session bounds its request history; it does not

@@ -136,7 +136,7 @@ public actor NativeAutomationSession {
     }
     private func profileIdentity() throws -> (dev_t, ino_t) {
         var metadata = stat()
-        guard profile.resolvingSymlinksInPath() == profile, lstat(profile.path, &metadata) == 0,
+        guard profile.resolvingSymlinksInPath().path == profile.path, lstat(profile.path, &metadata) == 0,
               metadata.st_mode & S_IFMT == S_IFDIR, metadata.st_mode & 0o777 == 0o700,
               metadata.st_uid == getuid() else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
         return (metadata.st_dev, metadata.st_ino)
