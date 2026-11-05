@@ -19,6 +19,7 @@ public actor NativeAutomationSession {
     private var replay: [String: (Data, DocumentValue)] = [:]
     private var seenRequests: [String: Data] = [:]
     private var proposals: [String: BenchViewportRequest] = [:]
+    private var surfaceProposals: [String: SurfaceMaterialTextureRequest] = [:]
     private var pendingRevisions: [String: UInt64] = [:]
     private var staticIntents: [String: NativePublicationPending] = [:]
     private var selectedOEX9: Bool
@@ -100,6 +101,11 @@ public actor NativeAutomationSession {
         guard policy.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
         guard !policy.boundedReadOnly, policy.boundedEditRequired != true else { throw BridgeFailure("NATIVE_BENCH_CAPABILITY_UNAVAILABLE") }
     }
+    private func checkSavedSurfacePolicy(_ state: NativeDocumentState, api: AuthoringAPI) async throws {
+        guard !state.dirty, state.pending == nil, let draft = state.draft, state.etag != nil else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
+        let policy = try await api.nativeViewportPolicy(draft.id)
+        try SurfaceMaterialTextureRequest.requireEditingPolicy(policy, document: state)
+    }
     private func write(_ object: DocumentValue, to path: String) throws -> DocumentValue {
         let url = try output(path), bytes = try JSONEncoder().encode(object)
         try bytes.write(to: url, options: .withoutOverwriting)
@@ -175,6 +181,34 @@ public actor NativeAutomationSession {
             authoringSession = try await api.connect(bridge.authoringSession(context))
             selectedOEX9 = false
             result = .object(["document": try value(stored), "receipt": recorded])
+        case "surface-texture-prepare":
+            try checkedRevision(request, current)
+            try await checkSavedSurfacePolicy(current, api: api)
+            guard let draft = current.draft, let surfaceId = request["command"]["surfaceId"].string,
+                  let path = request["outputPath"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let frame = ViewportFrame(epoch: capability, sequence: 1, tenantId: current.tenantId, principalId: current.principalId,
+                draft: draft, selection: ViewportSelection(kind: "surface", id: surfaceId), mode: "translate", view: "isometric",
+                disabled: false, workspaceId: current.workspaceId, baseETag: current.etag)
+            let proposal = try SurfaceMaterialTextureRequest(frame: frame, input: request["command"])
+            let catalog = try await api.surfaceMaterials()
+            guard catalog.items.contains(where: { $0.id == proposal.command.texture?.catalogId && $0.version == proposal.command.texture?.catalogVersion }) else { throw BridgeFailure("MATERIAL_CATALOG_INVALID") }
+            _ = try output(path)
+            result = try write(.object(["version": .integer(1), "operation": .string("surface-texture-proposal"),
+                "frame": try value(frame), "request": proposal.value]), to: path)
+            surfaceProposals[id] = proposal
+        case "surface-texture-apply":
+            try checkedRevision(request, current)
+            try await checkSavedSurfacePolicy(current, api: api)
+            guard current.pending == nil, let draft = current.draft, let proposalId = request["proposalId"].string,
+                  let proposal = surfaceProposals[proposalId], proposal.frame.draft == draft,
+                  let path = request["inputPath"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let url = URL(fileURLWithPath: path)
+            guard url.path.hasPrefix(root.path + "/"), url.resolvingSymlinksInPath() == url,
+                  let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 1_100_000 else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+            let reply = try JSONDecoder().decode(DocumentValue.self, from: Data(contentsOf: url))
+            var next = current
+            next.draft = try proposal.applyReply(reply, to: current)
+            result = try value(await bridge.saveDocumentState(context, state: next))
         case "bench-prepare":
             try checkedRevision(request, current)
             try await checkSavedBenchPolicy(current, api: api)
