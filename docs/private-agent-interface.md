@@ -6,8 +6,9 @@ authentication. This development interface is not a signed distribution claim.
 
 Start with `exhibitos-automation --configuration /absolute/private/config.json`.
 The configuration contains exactly `helper`, `profile`, `ports`, `outputRoot`,
-`temporaryRoot`, and `inputs`, with optional `selectedOEX9: true` for the existing
-fresh selected importer. `inputs` maps approved draft/archive/GLB input paths to their
+`temporaryRoot`, and `inputs`, with at most one of `selectedOEX9: true` and
+`selectedOEX10: true` for the corresponding fresh selected importer.
+`inputs` maps approved draft/archive/GLB input paths to their
 SHA256. The helper is the operator-selected paired native executable, never a
 request-selected executable. The profile must not exist; its parent must exist.
 The output and temporary roots must be existing, owned, private 0700 directories.
@@ -77,6 +78,22 @@ Operations:
   the full supported receipt/idMap, drain normally and start ordinary editing.
   The durable archive request uses the caller's requestId; uncertain attempts are
   preserved and never retried. Existing success/failure profiles are refused.
+- `import-oex10`: set `selectedOEX10: true` and use a new `outputPath`,
+  allowlisted `inputPath` and explicit `archiveFormat: "1.0.0-draft.10"`. The
+  exact runtime must qualify for selected 028/v4. The helper verifies the format
+  against the SHA-pinned private archive before transfer. This shares the same
+  one-shot selected-save handshake, authentic import receipt and ordinary
+  editing transition as draft.9. The returned `receipt.path` holds the actual
+  import `idMap` and `assetAliases`.
+- `floor-appearance-apply`: `command` contains exactly `roomId`, `surfaceId` and
+  `preset` (`wood`, `marble`, `tile` or `carpet`). Use the mapped room and
+  floor IDs from the import receipt. The current saved Studio policy must
+  explicitly permit ordinary editing and match the native ETag. The runtime
+  must serve the verified preset preview. The existing floor reducer applies
+  the preset's appearance fields for that floor, retaining its sound and
+  footstep resources. The response contains the new native `document` and the
+  observed saved `policy`. Save before exporting. This command has no visual or
+  audio observation.
 - `bench-prepare`: accept the existing `add-bench` command and optional fresh
   viewpoint; write the existing frame/request packet to a new `outputPath`.
 - `bench-apply`: provide its `proposalId` and a fixed shared-renderer reply at
@@ -108,6 +125,14 @@ Operations:
   then read back the exact Studio response and commit the native journal CAS.
   Uncertain responses retain the original request/draft/ETag. An explicitly
   repeated identical request may recover only its exact held pending revision.
+- `reopen-saved`: with the latest native CAS and a clean saved draft, compare
+  the authenticated Studio document, stop and close the owning helper, and
+  reopen that same session-created profile through the ordinary helper entry.
+  The new helper must observe the same installation, complete native journal,
+  port triple and runtime manifest. A new runtime job must read back the same
+  saved draft and ETag. The response includes both runtime job IDs, the
+  `document` and the Studio revision. If reopening fails, close the session and
+  preserve its profile.
 - `export-oex`: require the saved unchanged document, re-read Studio ETag/draft,
   and use the existing bounded native archive writer into a new output file.
 - `export-static`: use existing native publication pending/CAS, private snapshot,
@@ -136,6 +161,17 @@ archive must be actual draft.9 from the exact approved producer. The import
 receipt/idMap must establish the new wall identity; a public or prior-profile
 surface ID, array label, raw public blob reference or rewritten archive version
 is not a substitute. No existing success/failure profile is reopened.
+
+For a draft.10 floor comparison, start a fresh selected session and issue
+`import-oex10` with the pinned input and a new import receipt path. Read the
+receipt and map the source room and floor IDs through `importReceipt.result.idMap`.
+Issue `floor-appearance-apply` with the mapped IDs and `preset: "tile"` to
+apply the existing Tiles074/1 defaults, including the 2.1 m repeat.
+Use the latest native CAS and edit version for each of `save`, `reopen-saved`,
+`export-oex` and `export-static`. Use distinct, nonexistent output paths below
+the private output root. Finish with `close` and verify the returned resources.
+This flow keeps explicit concrete footsteps. It produces a private comparison
+and leaves visual and playback acceptance to the Viewer.
 
 An unknown-unit GLB requires CMS `displayReference`, `sourceUnits: "unknown"`,
 `scaleApplied: false`, and upload `scaleMeters: 1`. Import and approval check
