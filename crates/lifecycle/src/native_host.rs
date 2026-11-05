@@ -37,6 +37,7 @@ pub struct Status {
     pub restoration: Option<super::installations::native_maintenance::Restoration>,
     pub selected_oex: bool,
     pub oex_027_qualified: bool,
+    pub oex_028_qualified: bool,
     pub oex_save_offer: Option<OexSaveOffer>,
 }
 struct State {
@@ -57,6 +58,7 @@ struct State {
     selected_oex_completed: bool,
     selected_oex_stop_accepted: bool,
     oex_027_qualified: bool,
+    oex_028_qualified: bool,
     oex_save_offer: Option<OexSaveOffer>,
     oex_save_sender: Option<std::sync::mpsc::Sender<String>>,
     oex_terminal: Option<(OexSaveOffer, String, super::installations::native_oex_import::Transfer)>,
@@ -108,6 +110,7 @@ impl Drop for SessionLease {
 pub struct Host {
     controller: Arc<InstallationController>,
     resources: PathBuf,
+    prepare_ports: Ports,
     state: Arc<Mutex<State>>,
     worker: Option<thread::JoinHandle<()>>,
     exporter: super::installations::native_static_export::Exporter,
@@ -131,6 +134,7 @@ impl Host {
             hoster: super::installations::native_hosting::Hoster::new(controller.clone()),
             controller,
             resources,
+            prepare_ports: Ports::default(),
             state: Arc::new(Mutex::new(State {
                 root: None,
                 busy: false,
@@ -149,6 +153,7 @@ impl Host {
                 selected_oex_completed: false,
                 selected_oex_stop_accepted: false,
                 oex_027_qualified: false,
+                oex_028_qualified: false,
                 oex_save_offer: None,
                 oex_save_sender: None,
                 oex_terminal: None,
@@ -157,14 +162,28 @@ impl Host {
             worker: None,
         }
     }
+    /// Fresh ordinary automation workspaces use their own validated ports.
+    /// The CLI checks nonexistence before constructing the controller; the
+    /// profile lock still supplies exclusive ownership during initialization.
+    pub fn new_with_ports(controller: Arc<InstallationController>, resources: PathBuf, ports: Ports) -> Result<Self> {
+        ports.validate()?;
+        let mut host = Self::new(controller, resources);
+        host.prepare_ports = ports;
+        Ok(host)
+    }
     /// Explicit selected entry for a profile that must not already exist.
     /// The controller and its exclusively locked Session remain owned by the
     /// same Host; no existing installation is stopped or selected here.
     pub fn new_fresh_selected(profile: PathBuf, resources: PathBuf) -> Result<Self> {
+        Self::new_fresh_selected_with_ports(profile, resources, Ports::default())
+    }
+    pub fn new_fresh_selected_with_ports(profile: PathBuf, resources: PathBuf, ports: Ports) -> Result<Self> {
+        ports.validate()?;
         let payload = Arc::new(Payload::open(&resources)?);
-        let (controller, session) = InstallationController::with_fresh_selected(profile, payload.clone(), Ports::default())?;
+        let (controller, session) = InstallationController::with_fresh_selected(profile, payload.clone(), ports)?;
         let token = controller.context()?.selection_token;
         let root = controller.with_current(&token, |s| Ok(s.root.clone()))?;
+        let configuration = controller.with_current(&token, |service| service.native_prepared())?;
         let host = Self::new(Arc::new(controller), resources);
         {
             let mut state = host.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
@@ -172,6 +191,8 @@ impl Host {
             state.payload = Some(payload);
             state.session = Some(session);
             state.selected_oex = true;
+            state.configuration = configuration;
+            state.account_required = false;
         }
         Ok(host)
     }
@@ -227,6 +248,7 @@ impl Host {
         state.selected_oex_completed = false;
         state.selected_oex_stop_accepted = false;
         state.oex_027_qualified = false;
+        state.oex_028_qualified = false;
         state.oex_save_offer = None;
         state.oex_save_sender = None;
         state.oex_terminal = None;
@@ -253,6 +275,7 @@ impl Host {
             restoration: state.restoration.clone(),
             selected_oex: state.selected_oex,
             oex_027_qualified: state.oex_027_qualified,
+            oex_028_qualified: state.oex_028_qualified,
             oex_save_offer: state.oex_save_offer.clone(),
         })
     }
@@ -317,6 +340,7 @@ impl Host {
         let shared = self.state.clone();
         let controller = self.controller.clone();
         let resources = self.resources.clone();
+        let prepare_ports = self.prepare_ports;
         self.worker = Some(thread::spawn(move || {
             let mut preserved_backup = false;
             let mut oex_owned_session = false;
@@ -497,11 +521,11 @@ impl Host {
                             };
                             let context = controller.with_current_mutation(&token, |service| {
                                 if account.is_none() {
-                                    service.prepare_native_personal(&payload, Ports::default())
+                                    service.prepare_native_personal(&payload, prepare_ports)
                                 } else {
                                     service.prepare_native_installation(
                                         &payload,
-                                        Ports::default(),
+                                        prepare_ports,
                                         account,
                                     )
                                 }
@@ -525,6 +549,7 @@ impl Host {
                                 None => Arc::new(Payload::open(&resources)?),
                             };
                             let oex_027_qualified = payload.normal_oex_027_selected_input()?;
+                            let oex_028_qualified = payload.normal_oex_028_selected_input()?;
                             let existing = shared.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.session.take();
                             let session = match existing {
                                 Some(s) => s,
@@ -565,6 +590,7 @@ impl Host {
                             let status_error = match context { Ok(value) => { state.runtime = Some(value); None }, Err(error) => { state.runtime = None; Some(error) } };
                             state.payload = Some(payload);
                             state.oex_027_qualified = oex_027_qualified;
+                            state.oex_028_qualified = oex_028_qualified;
                             if state.session.is_some() { return Err(err("NATIVE_HOST_OWNER_CONFLICT")); }
                             state.session = lease.session.take();
                             state.cancel = None;
@@ -947,7 +973,7 @@ impl Host {
                     let root=context.installations.iter().find(|v|v.id==context.active_id).map(|v|PathBuf::from(&v.path))
                         .ok_or_else(||err("NATIVE_OEX_CREATION_PENDING"))?;
                     { let mut state=self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
-                      state.root=Some(root);state.payload=Some(payload);state.session=Some(session);state.selected_oex=true;state.oex_027_qualified=true; }
+                      state.oex_028_qualified=payload.normal_oex_028_selected_input()?;state.root=Some(root);state.payload=Some(payload);state.session=Some(session);state.selected_oex=true;state.oex_027_qualified=true; }
                     // Journal clearing occurs only after Host retains the exact Session.
                     self.controller.finish_selected_oex_creation(&context.selection_token)?;
                     serde_json::to_value(context).map_err(|_| err("STATE_INVALID"))
@@ -1033,7 +1059,10 @@ impl Host {
                 )?)
                 .map_err(|_| err("STATE_INVALID"));
             }
-            UiCommand::NativeStop { .. } => { self.exporter.cancel(); self.hoster.cancel(); },
+            UiCommand::NativeStop { selection_token } => {
+                self.selected(selection_token)?;
+                self.exporter.cancel(); self.hoster.cancel();
+            },
             _ => {}
         }
         if let UiCommand::NativeAuthoringSession { selection_token } = &request.command {

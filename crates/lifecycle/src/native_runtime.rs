@@ -6,6 +6,11 @@ use super::{native_installation::Ports, native_payload::Payload};
 #[path = "native_runtime_oex_worker.rs"] mod oex_worker;
 #[path = "native_runtime_oex_worker_v2.rs"] mod oex_worker_v2;
 #[path = "native_runtime_oex_preflight.rs"] mod oex_preflight;
+#[path = "native_runtime_oex_format_hint.rs"] mod oex_format_hint;
+/// Fixed helper-only read-only ingress; no profile or lifecycle is instantiated.
+pub fn selected_oex_format(resources:&Path,input_fd:i32,cancelled:&AtomicBool)->Result<Vec<u8>> {
+    oex_format_hint::run(resources,input_fd,cancelled)
+}
 #[path = "native_runtime_oex_preflight_frames.rs"] mod oex_preflight_frames;
 #[path = "native_runtime_oex_binding.rs"] mod oex_binding;
 #[path = "native_runtime_oex_read_fd.rs"] mod oex_read_fd;
@@ -24,6 +29,24 @@ use super::{native_installation::Ports, native_payload::Payload};
 #[path = "native_runtime_owner_claim_frames.rs"] mod owner_claim_frames;
 #[path = "native_runtime_owner_metadata_frames.rs"] mod owner_metadata_frames;
 #[path = "native_runtime_owner_binding_encoding.rs"] mod owner_binding_encoding;
+fn native_port_bind_code(error: &std::io::Error) -> &'static str {
+    match error.kind() {
+        std::io::ErrorKind::AddrInUse => "NATIVE_PORT_IN_USE",
+        std::io::ErrorKind::PermissionDenied => "NATIVE_PORT_ACCESS_DENIED",
+        _ => "NATIVE_PORT_BIND_FAILED",
+    }
+}
+#[cfg(test)]
+mod port_bind_diagnostic_tests {
+    #[test]
+    fn permission_failure_is_not_reported_as_foreign_port_owner() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(super::native_port_bind_code(&Error::from(ErrorKind::AddrInUse)), "NATIVE_PORT_IN_USE");
+        assert_eq!(super::native_port_bind_code(&Error::from(ErrorKind::PermissionDenied)), "NATIVE_PORT_ACCESS_DENIED");
+        assert_eq!(super::native_port_bind_code(&Error::from_raw_os_error(libc::EPERM)), "NATIVE_PORT_ACCESS_DENIED");
+        assert_eq!(super::native_port_bind_code(&Error::from(ErrorKind::AddrNotAvailable)), "NATIVE_PORT_BIND_FAILED");
+    }
+}
 use std::{
     collections::BTreeMap,
     net::TcpListener,
@@ -224,7 +247,7 @@ pub struct Session {
     normal_oex_selected: bool,
     fresh_oex_started: bool,
     oex_upload_selection_started: bool,
-    oex_upload_selected: Option<(String, u64, String)>,
+    oex_upload_selected: Option<(String, u64, String, String)>,
     maintenance_space: Vec<PathBuf>,
 }
 fn directory(root: &Path, name: &str) -> Result<PathBuf> {
@@ -926,7 +949,7 @@ impl Session {
         for port in [self.ports.web, self.ports.api, self.ports.database] {
             reservations.push(
                 TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port)))
-                    .map_err(|_| err("NATIVE_PORT_IN_USE"))?,
+                    .map_err(|error| err(native_port_bind_code(&error)))?,
             );
         }
         if fs2::available_space(&self.service.root).map_err(|_| err("STORAGE_UNAVAILABLE"))?
@@ -1156,6 +1179,7 @@ impl Session {
         } else { None };
         let generation = self.job_id.as_deref().ok_or_else(|| err("NATIVE_JOURNAL_INVALID"))?;
         let mut private_input = match (&self.local_authority, &owner_setup) {
+            (Some(a), Some(setup)) if self.payload.normal_oex_028_selected_input()? => Some(setup.normal_028_bootstrap(a, generation)?),
             (Some(a), Some(setup)) if self.payload.normal_oex_027_selected_input()? => Some(setup.normal_027_bootstrap(a, generation)?),
             (Some(a), Some(setup)) => Some(setup.normal_bootstrap(a, generation)?),
             (Some(a), None) => Some(serde_json::to_vec(a).map_err(|_| err("STATE_INVALID"))?),
@@ -1787,6 +1811,11 @@ impl Session {
             owner.check(self)?;
             let expected = format!("026_oex_file_profile.sql|{}\n027_oex_exhibition_provenance.sql|{}", oex_catalog_frames::SCHEMA_026, oex_catalog_frames::SCHEMA_027);
             if rows != expected { return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
+            if self.payload.normal_oex_028_selected_input()? {
+                let row=self.query_database("exhibitos","SELECT sha256 FROM public.schema_migrations WHERE name='028_oex_material_catalogue.sql'")?;
+                if row!=super::native_payload::NORMAL_OEX_028_SCHEMA_SHA256{return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
+                owner.check(self)?;
+            }
             owner.recheck_database_identity(self)?;
             self.payload.recheck()?;
             let (_, device, inode) = owner.store_identity();
@@ -1838,14 +1867,17 @@ impl Session {
         if (state.workspace_id.as_str(),state.tenant_id.as_str(),state.principal_id.as_str())!=(auth.workspace_id.as_str(),auth.tenant_id.as_str(),auth.principal_id.as_str())
             || state.job_id.is_some() {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         let intent=state.intent.as_ref().ok_or_else(||err("NATIVE_OEX_ATTEMPT_INVALID"))?;
-        if intent.profile.as_deref()!=Some("bounded-file-v1")||intent.oex_format.as_deref()!=Some("1.0.0-draft.9"){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
-        self.select_oex_upload(&intent.request_id,intent.bytes,&intent.sha256)
+        if intent.profile.as_deref()!=Some("bounded-file-v1")||!matches!(intent.oex_format.as_deref(),Some("1.0.0-draft.9"|"1.0.0-draft.10"))||(intent.oex_format.as_deref()==Some("1.0.0-draft.10")&&!self.payload.normal_oex_028_selected_input()?){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        self.select_oex_upload_format(&intent.request_id,intent.bytes,&intent.sha256,intent.oex_format.as_deref().ok_or_else(||err("NATIVE_OEX_ATTEMPT_INVALID"))?)
     }
     /// Inactive until the host binds this to the exact durably saved intent
     /// and retained private snapshot. It never selects a path or grants HTTP
     /// authorization by itself. Selection attempts and renewal are one-shot.
     #[allow(dead_code)]
-    fn select_oex_upload(&mut self,request:&str,bytes:u64,sha256:&str)->Result<()> {
+    fn select_oex_upload(&mut self,request:&str,bytes:u64,sha256:&str)->Result<()> { self.select_oex_upload_format(request,bytes,sha256,"1.0.0-draft.9") }
+    fn select_oex_upload_format(&mut self,request:&str,bytes:u64,sha256:&str,format:&str)->Result<()> {
+        let v4=self.payload.normal_oex_028_selected_input()?;
+        if !matches!(format,"1.0.0-draft.9"|"1.0.0-draft.10")||(!v4&&format!="1.0.0-draft.9"){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         if !(self.fresh_oex_test || self.normal_oex_selected)||self.oex_upload_selection_started||self.state!="ready"||self.node.is_none()||self.postgres.is_none(){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         self.oex_upload_selection_started=true;
         let auth=match self.local_authority.as_ref(){Some(value)=>value,None=>{
@@ -1857,7 +1889,7 @@ impl Session {
             if let Some(mut channel)=self.owner_channel.take(){channel.invalidate();}
             return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));
         }};
-        let frame=owner_claim_frames::UploadSelection{version:1,kind:"upload-selection".into(),correlation_id:Uuid::new_v4().to_string(),runtime_generation:generation.clone(),workspace_id:identity.0.clone(),tenant_id:identity.1.clone(),principal_id:identity.2.clone(),request_id:request.into(),archive_bytes:bytes,archive_sha256:sha256.into()};
+        let frame=owner_claim_frames::UploadSelection{version:1,kind:"upload-selection".into(),correlation_id:Uuid::new_v4().to_string(),runtime_generation:generation.clone(),workspace_id:identity.0.clone(),tenant_id:identity.1.clone(),principal_id:identity.2.clone(),request_id:request.into(),archive_bytes:bytes,archive_sha256:sha256.into(),archive_format:if v4{Some(format.into())}else{None}};
         let encoded=match frame.encode(){Ok(value)=>value,Err(error)=>{
             if let Some(mut channel)=self.owner_channel.take(){channel.invalidate();}
             return Err(error);
@@ -1871,7 +1903,7 @@ impl Session {
                 || (current.workspace_id.as_str(),current.tenant_id.as_str(),current.principal_id.as_str())!=(identity.0.as_str(),identity.1.as_str(),identity.2.as_str()) {return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}Ok(())
         };
         let response=channel.exchange(&encoded,&cancel,&mut check).and_then(|reply|frame.check_selected(&reply)).and_then(|_|check());drop(check);
-        match response {Ok(())=>{self.oex_upload_selected=Some((request.into(),bytes,sha256.into()));self.owner_channel=Some(channel);Ok(())},Err(error)=>{channel.invalidate();Err(error)}}
+        match response {Ok(())=>{self.oex_upload_selected=Some((request.into(),bytes,sha256.into(),format.into()));self.owner_channel=Some(channel);Ok(())},Err(error)=>{channel.invalidate();Err(error)}}
     }
     /// Inactive one-shot claim. The borrow keeps this exact Session alive; on
     /// error/abandonment the socket closes and the API must retain uncertainty.
@@ -1920,9 +1952,11 @@ impl Session {
             runtime_generation:generation,workspace_id:identity.0,tenant_id:identity.1,job_id:job.into()};
         let cancel=self.cancellation.clone();
         let mut channel=self.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
-        let mut check=|| {owner.check(self)?;stage_root.check_empty(self)};
-        let archive=owner_channel::SelectedArchive{request_id:request,bytes,sha256};
+        let format=self.oex_upload_selected.as_ref().ok_or_else(||err("NATIVE_OEX_ATTEMPT_INVALID"))?.3.clone();
+        let v4=self.payload.normal_oex_028_selected_input()?;
+        let archive=owner_channel::SelectedArchive{request_id:request,bytes,sha256,format:if v4{Some(&format)}else{None}};
         let scope=oex_reservation::V3PlanScope::from_owner(&owner,stage_root.path(),stage_root.device());
+        let mut check=|| {owner.check(self)?;stage_root.check_empty(self)};
         let result=channel.begin_claim_v3(&open,&identity.2,archive,scope,&cancel,&mut check);
         drop(check);
         let result=result.and_then(|value|{owner.recheck_database_identity(self)?;stage_root.check_empty(self)?;Ok(value)});
@@ -1976,9 +2010,9 @@ impl Session {
         let auth=self.local_authority.as_ref().ok_or_else(||err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
         if (state.workspace_id.as_str(),state.tenant_id.as_str(),state.principal_id.as_str())!=(auth.workspace_id.as_str(),auth.tenant_id.as_str(),auth.principal_id.as_str()) {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         let intent=state.intent.as_ref().ok_or_else(||err("NATIVE_OEX_ATTEMPT_INVALID"))?;
-        if intent.profile.as_deref()!=Some("bounded-file-v1")||intent.oex_format.as_deref()!=Some("1.0.0-draft.9"){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        if intent.profile.as_deref()!=Some("bounded-file-v1")||!matches!(intent.oex_format.as_deref(),Some("1.0.0-draft.9"|"1.0.0-draft.10"))||(intent.oex_format.as_deref()==Some("1.0.0-draft.10")&&!self.payload.normal_oex_028_selected_input()?){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         let job=state.job_id.as_deref().ok_or_else(||err("NATIVE_OEX_ATTEMPT_INVALID"))?;
-        if self.cancelled()||cancelled.load(Ordering::SeqCst)||self.oex_upload_selected.as_ref().is_none_or(|v|v.0!=intent.request_id||v.1!=intent.bytes||v.2!=intent.sha256) {
+        if self.cancelled()||cancelled.load(Ordering::SeqCst)||self.oex_upload_selected.as_ref().is_none_or(|v|v.0!=intent.request_id||v.1!=intent.bytes||v.2!=intent.sha256||Some(v.3.as_str())!=intent.oex_format.as_deref()) {
             return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));
         }
             let root=oex_stage_root::StageRoot::create(self)?;
@@ -2412,6 +2446,7 @@ impl OwnedOexV3Claim<'_> {
             if let Err(error)=accepted {channel.invalidate();return Err(error);}
             self.session.owner_channel=Some(channel);
             let payload=self.session.payload.clone();
+            let v4=payload.normal_oex_028_selected_input()?;
             let mut check=|| {self.owner.check(self.session)?;self.stage_root.check_input(self.session,&r.stage_id,device,inode)?;
                 self.session.owner_channel.as_mut().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?.check_idle()?;
                 if cancelled.load(Ordering::SeqCst){return Err(err("NATIVE_CANCELLED"));}Ok(())};
@@ -2419,8 +2454,9 @@ impl OwnedOexV3Claim<'_> {
             if !materializer.matches(&request,&request.encode()?) {return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));}
             let input=oex_read_fd::observe_stage(stage,r.archive_bytes,&r.archive_sha256,cancelled,&mut check)?;
             let preflight_request=oex_preflight::Control{version:1,kind:"oex-preflight-v1".into(),attempt_id:r.attempt_id.clone(),runtime_generation:r.runtime_generation.clone(),stage_id:r.stage_id.clone(),reservation_id:r.reservation_id.clone(),reservation_generation:r.reservation_generation.clone(),reservation_digest:r.reservation_digest.clone(),archive_bytes:r.archive_bytes,archive_sha256:r.archive_sha256.clone(),input_device:device.to_string(),input_inode:inode.to_string()};
-            let preflight=oex_preflight::run_direct(&payload,&input,&preflight_request,cancelled,&mut check)?;
+            let preflight=oex_preflight::run_direct(&payload,&input,&preflight_request,if v4{Some(r.format.as_str())}else{None},cancelled,&mut check)?;
             drop(check);
+            if !v4 && r.format!="1.0.0-draft.9"{return Err(err("NATIVE_OEX_PREFLIGHT_INVALID"));}
             input.check_unchanged()?;
             Ok(RetainedV3Preflight{input,materializer,materializer_request:request,preflight,preflight_request})
         })();

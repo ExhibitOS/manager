@@ -27,7 +27,7 @@ public struct NativeSurfaceMaterialCatalog: Equatable, Sendable {
         guard UUID(uuidString: tenantId) != nil,
               case .object(let envelope) = value, Set(envelope.keys) == ["version", "items"],
               envelope["version"] == .integer(1), let rows = envelope["items"]?.items,
-              rows.count == 2 else { throw AuthoringFailure("MATERIAL_CATALOG_INVALID") }
+              [2, 3].contains(rows.count) else { throw AuthoringFailure("MATERIAL_CATALOG_INVALID") }
         var checked: [Item] = []
         var seen = Set<String>()
         for row in rows {
@@ -48,7 +48,8 @@ public struct NativeSurfaceMaterialCatalog: Equatable, Sendable {
             checked.append(Item(id: id, version: 1, name: name, material: material, texture: texture,
                                 preview: try Self.preview(previewValue, tenantId: tenantId, id: id)))
         }
-        guard seen == [SurfaceMaterialTextureBinding.paint, SurfaceMaterialTextureBinding.plaster] else { throw AuthoringFailure("MATERIAL_CATALOG_INVALID") }
+        let existing: Set<String> = [SurfaceMaterialTextureBinding.paint, SurfaceMaterialTextureBinding.plaster]
+        guard seen == existing || seen == existing.union([SurfaceMaterialTextureBinding.concrete]) else { throw AuthoringFailure("MATERIAL_CATALOG_INVALID") }
         items = checked
     }
     private static func preview(_ value: DocumentValue, tenantId: String, id: String) throws -> Preview? {
@@ -63,16 +64,21 @@ public struct NativeSurfaceMaterialCatalog: Equatable, Sendable {
               sha.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil,
               let width = preview["width"]?.integer, width > 0,
               let height = preview["height"]?.integer, height > 0 else { throw AuthoringFailure("MATERIAL_CATALOG_INVALID") }
+        if id == SurfaceMaterialTextureBinding.concrete {
+            guard bytes == 27_612, sha == "82b907f0df15c881ce06d76c04f73f285edd555d23c56524f67242b754dacf8e",
+                  width == 256, height == 256 else { throw AuthoringFailure("MATERIAL_CATALOG_INVALID") }
+        }
         return Preview(url: url, mime: "image/png", bytes: bytes, sha256: sha, width: width, height: height)
     }
 }
 
-/// The closed first-two-material binding agreed with the shared Studio owner.
+/// The closed versioned material binding agreed with the shared Studio owner.
 /// It carries catalogue identity and physical UV controls, never file paths.
 public struct SurfaceMaterialTextureBinding: Equatable, Sendable {
     public static let capability = "surface-material-textures-v1"
     public static let paint = "museum-matte-paint"
     public static let plaster = "fine-lime-plaster"
+    public static let concrete = "fine-gallery-concrete"
     public let catalogId: String
     public let catalogVersion: Int
     public let repeatMeters: [Double]
@@ -80,7 +86,7 @@ public struct SurfaceMaterialTextureBinding: Equatable, Sendable {
     public let normalScale: Double
 
     public init(catalogId: String, catalogVersion: Int = 1, repeatMeters: [Double], rotation: Double, normalScale: Double) throws {
-        guard [Self.paint, Self.plaster].contains(catalogId), catalogVersion == 1,
+        guard [Self.paint, Self.plaster, Self.concrete].contains(catalogId), catalogVersion == 1,
               repeatMeters.count == 2, repeatMeters.allSatisfy({ $0.isFinite && (0.05...20).contains($0) }),
               rotation.isFinite, (-Double.pi...Double.pi).contains(rotation),
               normalScale.isFinite, (0...2).contains(normalScale) else { throw AuthoringFailure("SURFACE_MATERIAL_TEXTURE_INVALID") }
@@ -100,7 +106,7 @@ public struct SurfaceMaterialTextureBinding: Equatable, Sendable {
                  "repeatMeters": .vector(repeatMeters), "rotation": .number(rotation), "normalScale": .number(normalScale)])
     }
     public static func recommendedRepeat(for id: String) throws -> Double {
-        guard [paint, plaster].contains(id) else { throw AuthoringFailure("SURFACE_MATERIAL_TEXTURE_INVALID") }
+        guard [paint, plaster, concrete].contains(id) else { throw AuthoringFailure("SURFACE_MATERIAL_TEXTURE_INVALID") }
         return id == paint ? 1 : 2
     }
     static func assignments(_ value: DocumentValue, in draft: NativeExhibitionDraft) throws -> [String: DocumentValue] {

@@ -21,7 +21,9 @@ public struct NativePrivateFloorCatalog: Equatable, Sendable {
     ]
 
     public static func supports(manifestSHA256: String?, ready: Bool) -> Bool {
-        ready && manifestSHA256 == Self.manifestSHA256
+        ready && [Self.manifestSHA256,
+                  "7ff6e64700cbe7324b634d2cb11e0acc87288ce27ab90ae18e675ae5fa899eb2",
+                  "4f4b584c98edfb54ce82da76bec53bad4e6b72e9c8389b0385e524d81db15a23"].contains(manifestSHA256 ?? "")
     }
 
     public init(value: DocumentValue, tenantId: String) throws {

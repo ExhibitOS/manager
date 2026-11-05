@@ -51,6 +51,7 @@ pub(super) struct SelectedArchive<'a> {
     pub request_id: &'a str,
     pub bytes: u64,
     pub sha256: &'a str,
+    pub format: Option<&'a str>,
 }
 impl Drop for Connection {
     fn drop(&mut self) { self.key.fill(0); }
@@ -104,6 +105,11 @@ impl Setup {
         let mut bytes=serde_json::to_vec(&value).map_err(|_|err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
         if bytes.len()>4096 { bytes.fill(0);return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
         Ok(bytes)
+    }
+    pub(super) fn normal_028_bootstrap(&self, auth:&LocalAuthority, generation:&str) -> Result<Vec<u8>> {
+        let value=FreshOwnerBootstrap {workspace:auth,owner_channel:FreshOwnerBinding {version:3,runtime_generation:generation,secret:&self.secret,mode:"normal-oex-028-v4"}};
+        let bytes=serde_json::to_vec(&value).map_err(|_|err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+        if bytes.len()>4096 {return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));} Ok(bytes)
     }
     pub(super) fn configure(&self, command:&mut Command) -> Result<()> {
         let fd=self.child.as_ref().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?.as_raw_fd();
@@ -400,7 +406,10 @@ impl Connection {
             check()?;if cancellation.load(Ordering::SeqCst)||super::cancelled(){return Err(err("NATIVE_CANCELLED"));}
             let mac=self.claim_binding_mac(&challenge)?;
             let reply=self.exchange(&challenge.binding_v3(&mac)?,cancellation,check)?;
-            let ready=super::owner_claim_frames::ClaimReady::parse_v3(&reply,&challenge,&mac,archive.request_id,archive.bytes,archive.sha256)?;
+            let ready=match archive.format {
+                Some(format)=>super::owner_claim_frames::ClaimReady::parse_v4(&reply,&challenge,&mac,archive.request_id,archive.bytes,archive.sha256,format)?,
+                None=>super::owner_claim_frames::ClaimReady::parse_v3(&reply,&challenge,&mac,archive.request_id,archive.bytes,archive.sha256)?,
+            };
             check()?;if cancellation.load(Ordering::SeqCst)||super::cancelled(){return Err(err("NATIVE_CANCELLED"));}
             Ok((challenge,ready,receipt))
         })();
@@ -707,7 +716,7 @@ mod tests {
                 send(&mut peer,&serde_json::to_vec(&ready).unwrap());
             });
             let mut channel=Connection{socket:parent,key:[1;32],valid:true,ready:true,claim_started:false,metadata_started:false};
-            let selected=SelectedArchive{request_id:&request,bytes:100,sha256:&archive};
+            let selected=SelectedArchive{request_id:&request,bytes:100,sha256:&archive,format:None};
             let scope=super::super::oex_reservation::V3PlanScope::from_owner(&owner,Path::new("/private/stage"),1);
             let result=channel.begin_claim_v3(&open,&id(3),selected,scope,&AtomicBool::new(false),&mut ||Ok(()));
             assert_eq!(result.is_ok(),valid);if !valid {assert!(!channel.valid);assert_eq!(channel.key,[0;32]);}

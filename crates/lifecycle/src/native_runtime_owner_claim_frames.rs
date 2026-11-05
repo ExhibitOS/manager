@@ -163,10 +163,13 @@ pub(super) struct UploadSelection {
     pub version:u32,pub kind:String,pub correlation_id:String,pub runtime_generation:String,
     pub workspace_id:String,pub tenant_id:String,pub principal_id:String,pub request_id:String,
     pub archive_bytes:u64,pub archive_sha256:String,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub archive_format:Option<String>,
 }
 impl UploadSelection {
     pub(super) fn encode(&self)->Result<Vec<u8>> {
         if self.version!=1||self.kind!="upload-selection"||[&self.correlation_id,&self.runtime_generation,&self.workspace_id,&self.tenant_id,&self.principal_id,&self.request_id].iter().any(|v|!valid_id(v))
+            || self.archive_format.as_deref().is_some_and(|f| !matches!(f,"1.0.0-draft.9"|"1.0.0-draft.10"))
             || !(1..=512*1024*1024).contains(&self.archive_bytes)||!hash_valid(&self.archive_sha256){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         let bytes=serde_json::to_vec(self).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))?;
         if bytes.len()>LIMIT{return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}Ok(bytes)
@@ -257,7 +260,14 @@ impl ClaimReady {
     pub(super) fn parse_v3(bytes:&[u8],c:&ClaimChallenge,mac:&str,expected_request:&str,expected_bytes:u64,expected_sha256:&str)->Result<Self> {
         Self::parse_for(bytes,c,mac,expected_request,expected_bytes,expected_sha256,("claim-challenge-v3","claim-ready-v3"))
     }
+    pub(super) fn parse_v4(bytes:&[u8],c:&ClaimChallenge,mac:&str,expected_request:&str,expected_bytes:u64,expected_sha256:&str,format:&str)->Result<Self> {
+        Self::parse_for_format(bytes,c,mac,expected_request,expected_bytes,expected_sha256,("claim-challenge-v3","claim-ready-v3"),format)
+    }
     fn parse_for(bytes:&[u8],c:&ClaimChallenge,mac:&str,expected_request:&str,expected_bytes:u64,expected_sha256:&str,kinds:(&str,&str))->Result<Self> {
+        Self::parse_for_format(bytes,c,mac,expected_request,expected_bytes,expected_sha256,kinds,"1.0.0-draft.9")
+    }
+    fn parse_for_format(bytes:&[u8],c:&ClaimChallenge,mac:&str,expected_request:&str,expected_bytes:u64,expected_sha256:&str,kinds:(&str,&str),format:&str)->Result<Self> {
+        if !matches!(format,"1.0.0-draft.9"|"1.0.0-draft.10") {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         let (challenge_kind,ready_kind)=kinds;
         if bytes.is_empty()||bytes.len()>LIMIT||!hash_valid(mac)||!hash_valid(expected_sha256)
             || !valid_id(expected_request) || !(1..=512*1024*1024).contains(&expected_bytes) {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
@@ -268,7 +278,7 @@ impl ClaimReady {
             || r.reservation_id!=c.reservation_id || r.reservation_generation!=c.reservation_generation
             || r.request_id!=expected_request || !valid_id(&r.lease_id) || r.archive_bytes!=expected_bytes
             || r.archive_sha256!=expected_sha256 || r.source_digest!=r.archive_sha256 || r.reservation_digest!=c.receipt_digest
-            || r.manager_binding_digest!=mac || r.profile!="bounded-file-v1" || r.format!="1.0.0-draft.9"
+            || r.manager_binding_digest!=mac || r.profile!="bounded-file-v1" || r.format!=format
             || serde_json::to_vec(&r).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))?.as_slice()!=bytes {
             return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));
         }
@@ -442,6 +452,20 @@ mod tests {
         assert!(ClaimReady::parse_v3(&response,&challenge,&mac,&request,100,&archive).is_ok());
         assert!(ClaimReady::parse(&response,&challenge,&mac,&request,100,&archive).is_err());
         assert!(ClaimReady::parse_v3(&response,&challenge,&mac,&request,101,&archive).is_err());
+        let mut ready=ready;ready.format="1.0.0-draft.10".into();let response=serde_json::to_vec(&ready).unwrap();
+        assert!(ClaimReady::parse_v3(&response,&challenge,&mac,&request,100,&archive).is_err());
+        assert!(ClaimReady::parse_v4(&response,&challenge,&mac,&request,100,&archive,"1.0.0-draft.10").is_ok());
+        assert!(ClaimReady::parse_v4(&response,&challenge,&mac,&request,100,&archive,"1.0.0-draft.9").is_err());
+        assert!(ClaimReady::parse_v4(&response,&challenge,&mac,&request,100,&archive,"1.0.0-draft.11").is_err());
+        let mut selection=UploadSelection{version:1,kind:"upload-selection".into(),correlation_id:id(),runtime_generation:challenge.runtime_generation,
+            workspace_id:challenge.workspace_id,tenant_id:challenge.tenant_id,principal_id:challenge.principal_id,request_id:request,
+            archive_bytes:100,archive_sha256:archive,archive_format:None};
+        let old=selection.encode().unwrap();let value:Value=serde_json::from_slice(&old).unwrap();assert!(value.get("archiveFormat").is_none());
+        selection.archive_format=Some("1.0.0-draft.10".into());let sent=selection.encode().unwrap();
+        let mut reply=selection.clone();reply.kind="upload-selected".into();assert!(selection.check_selected(&serde_json::to_vec(&reply).unwrap()).is_ok());
+        reply.archive_format=Some("1.0.0-draft.9".into());assert!(selection.check_selected(&serde_json::to_vec(&reply).unwrap()).is_err());
+        assert_ne!(old,sent);
+
     }
     #[test]
     fn ready_requires_exact_personal_session_and_runtime() {

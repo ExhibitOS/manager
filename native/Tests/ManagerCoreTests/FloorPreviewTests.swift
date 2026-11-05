@@ -16,6 +16,17 @@ final class FloorPreviewTests: XCTestCase {
         XCTAssertFalse(NativeFloorRuntime.supports(manifestSHA256: nil, ready: true))
         XCTAssertEqual(try FloorSettings.all(in: NativeExhibitionDraft.new().candidate), [])
     }
+    func testConcreteSuccessorRetainsOakCapabilityWithoutAcceptingUnknownRuntime() {
+        let old = "9b9d6b1cba4b5722a8710471283e9f693f14883f5da950c4504ca7bbf00efeb7"
+        let new = "7ff6e64700cbe7324b634d2cb11e0acc87288ce27ab90ae18e675ae5fa899eb2"
+        let compatibleOEX = "4f4b584c98edfb54ce82da76bec53bad4e6b72e9c8389b0385e524d81db15a23"
+        for pin in [old, new, compatibleOEX] {
+            XCTAssertTrue(NativePrivateFloorCatalog.supports(manifestSHA256: pin, ready: true))
+            XCTAssertFalse(NativePrivateFloorCatalog.supports(manifestSHA256: pin, ready: false))
+        }
+        XCTAssertFalse(NativePrivateFloorCatalog.supports(manifestSHA256: String(repeating: "0", count: 64), ready: true))
+    }
+
     func testRetainedHostFrameMustMatchCurrentPreviewAndScopeWithoutInventingEchoFields() throws {
         let base = try NativeExhibitionDraft.new(), epoch = UUID().uuidString, tenant = UUID().uuidString, principal = UUID().uuidString
         func frame(_ draft: NativeExhibitionDraft, disabled: Bool = true) -> ViewportFrame {

@@ -70,7 +70,7 @@ fn decimal(value: &str, nonzero: bool) -> bool {
 impl Request {
     fn valid(&self) -> bool {
         if self.version != 1 || self.kind != "oex-chunks-v1" || self.profile != "bounded-file-v1"
-            || self.format != "1.0.0-draft.9" || !(1..=MAX_BYTES).contains(&self.archive_bytes)
+            || !matches!(self.format.as_str(), "1.0.0-draft.9" | "1.0.0-draft.10") || !(1..=MAX_BYTES).contains(&self.archive_bytes)
             || self.source_digest != self.archive_sha256
             || [&self.tenant_id,&self.resource_id,&self.job_id,&self.user_id,&self.request_id,&self.lease_id,
                 &self.attempt_id,&self.runtime_generation,&self.stage_id,&self.reservation_id,&self.reservation_generation]

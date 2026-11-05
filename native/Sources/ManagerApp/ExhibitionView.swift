@@ -767,6 +767,7 @@ final class ExhibitionModel: ObservableObject {
     private var surfaceMaterialPreviewAccessID: UUID?
     @Published private(set) var surfaceMaterialStatus = ""
     @Published private(set) var surfaceMaterialCatalog: NativeSurfaceMaterialCatalog?
+    @Published private(set) var surfaceMaterialImages: [String: NSImage] = [:]
     @Published private(set) var surfaceMaterialCatalogLoading = false
     @Published private(set) var surfaceMaterialCatalogStatus = ""
     private var surfaceMaterialCatalogAccessID: UUID?
@@ -995,7 +996,7 @@ final class ExhibitionModel: ObservableObject {
         // Reconnecting may replace the native store closures even for the same
         // account/origin. Keep text, but never apply a prior binding's preview.
         clearSurfaceMaterialPreview()
-        if accessChanged { surfaceMaterialCatalog = nil; surfaceMaterialCatalogAccessID = nil; surfaceMaterialCatalogRequestID = nil; surfaceMaterialCatalogLoading = false; surfaceMaterialCatalogStatus = "" }
+        if accessChanged { surfaceMaterialImages = [:]; surfaceMaterialCatalog = nil; surfaceMaterialCatalogAccessID = nil; surfaceMaterialCatalogRequestID = nil; surfaceMaterialCatalogLoading = false; surfaceMaterialCatalogStatus = "" }
         furnishingPreview = nil; furnishingPreviewAccessID = nil; sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil
         await work {
             if state == nil {
@@ -1278,6 +1279,23 @@ final class ExhibitionModel: ObservableObject {
             try Task.checkCancellation()
             guard access == viewportAccessID, surfaceMaterialCatalogRequestID == requestID, surfaceMaterialTexturesSupported else { return }
             surfaceMaterialCatalog = catalog; surfaceMaterialCatalogAccessID = access; surfaceMaterialCatalogStatus = ""
+            for item in catalog.items where surfaceMaterialImages[item.id] == nil {
+                guard let preview = item.preview else { continue }
+                // Optional imagery never blocks the authenticated named choice.
+                do {
+                    let bytes = try await api.surfaceMaterialPreview(preview)
+                    try Task.checkCancellation()
+                    guard access == viewportAccessID, surfaceMaterialCatalogRequestID == requestID,
+                          surfaceMaterialTexturesSupported else { return }
+                    if let source = CGImageSourceCreateWithData(bytes as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+                       let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                            kCGImageSourceThumbnailMaxPixelSize: 128, kCGImageSourceShouldCacheImmediately: true] as CFDictionary) {
+                        surfaceMaterialImages[item.id] = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+                    }
+                } catch {
+                    guard !Task.isCancelled, access == viewportAccessID, surfaceMaterialCatalogRequestID == requestID else { return }
+                }
+            }
         } catch {
             guard !Task.isCancelled, access == viewportAccessID, surfaceMaterialCatalogRequestID == requestID else { return }
             surfaceMaterialCatalogAccessID = access

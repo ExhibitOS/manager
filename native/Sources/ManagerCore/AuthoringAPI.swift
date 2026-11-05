@@ -134,6 +134,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "OEX_PROFILE_INVALID", "OEX_EXTENSION_UNSUPPORTED", "OEX_LEGAL_NOTICE_INVALID", "OEX_INVALID": return "현재 전시에 OEX로 내보낼 수 없는 정보가 있습니다. 전시와 작품 정보를 확인하세요."
         case "OEX_RESPONSE_INVALID": return "내보내기 파일을 확인하지 못했습니다. 저장하지 않았습니다. 다시 시도하세요."
         case "OEX_FILE_REQUIRED": return "이 Mac의 OEX 파일을 선택하세요."
+        case "OEX_FORMAT_INVALID": return "OEX 파일의 형식을 확인하지 못했습니다. 원본을 보관하고 지원되는 전시 파일인지 확인하세요."
         case "OEX_IMPORT_PROFILE_UNAVAILABLE": return "이 실행본은 해당 OEX 전송 방식을 아직 지원하지 않습니다. 원본과 작업 기록을 보관하세요."
         case "OEX_IMPORT_FILE_CHANGED": return "처음 선택한 OEX와 다른 파일입니다. 원래 파일을 다시 선택하세요."
         case "OEX_IMPORT_SCOPE_CHANGED": return "작업 공간이 바뀌어 가져오기를 멈췄습니다. 원래 작업 공간에서 다시 확인하세요."
@@ -499,6 +500,13 @@ public actor AuthoringAPI {
                                          sha256: NativePrivateFloorCatalog.previewSHA256))
     }
 
+    public func surfaceMaterialPreview(_ preview: NativeSurfaceMaterialCatalog.Preview) async throws -> Data {
+        guard (1...2_000_000).contains(preview.bytes), preview.width <= 256, preview.height <= 256 else {
+            throw AuthoringFailure("MATERIAL_PREVIEW_INVALID")
+        }
+        return try await floorPreviewFile(.init(path: preview.url, bytes: Int(preview.bytes), sha256: preview.sha256))
+    }
+
     private func floorPreviewFile(_ file: NativeFloorPreview) async throws -> Data {
         guard !authenticationBusy, session != nil else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
         let current = generation
@@ -740,6 +748,11 @@ public actor AuthoringAPI {
     public func oexImportJob(_ id: String) async throws -> NativeOEXImportJob {
         let job: NativeOEXImportJob = try await request("/api/v1/tenants/\(tenant)/oex/imports/\(identifier(id))")
         return try job.checked()
+    }
+    /// Preserve the supported importer's full receipt/idMap without inventing
+    /// fields absent from older runtimes or exposing local session credentials.
+    public func oexImportReceipt(_ id: String) async throws -> DocumentValue {
+        try await request("/api/v1/tenants/\(tenant)/oex/imports/\(identifier(id))")
     }
     public func uploadOEXImport(_ id: String, archive: NativeOEXArchive) async throws {
         struct Receipt: Decodable { let received: Int }

@@ -50,7 +50,7 @@ fn validate(record: &PendingImportedSave, transfer: &native_oex_import::Transfer
         || intent.bytes != record.archive_bytes
         || intent.sha256 != record.archive_sha256
         || intent.profile.as_deref() != Some("bounded-file-v1")
-        || intent.oex_format.as_deref() != Some("1.0.0-draft.9")
+        || !matches!(intent.oex_format.as_deref(), Some("1.0.0-draft.9" | "1.0.0-draft.10"))
         || record.document.workspace_id != transfer.workspace_id
         || record.document.tenant_id != transfer.tenant_id
         || record.document.principal_id != transfer.principal_id

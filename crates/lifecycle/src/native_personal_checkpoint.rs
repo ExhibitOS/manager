@@ -21,6 +21,8 @@ const TRANSITION_PAIRS: &[(&str, &str)] = &[
     (OLD_MANIFEST, NEW_MANIFEST),
     ("35b07cfc4c89abeaab518fd72c5be5f55569c03ae99906ff7220edf7d9712bf8",
      "9b9d6b1cba4b5722a8710471283e9f693f14883f5da950c4504ca7bbf00efeb7"),
+    ("9b9d6b1cba4b5722a8710471283e9f693f14883f5da950c4504ca7bbf00efeb7",
+     "7ff6e64700cbe7324b634d2cb11e0acc87288ce27ab90ae18e675ae5fa899eb2"),
 ];
 fn admitted_pair(source: &str, target: &str) -> bool {
     TRANSITION_PAIRS.contains(&(source, target))
