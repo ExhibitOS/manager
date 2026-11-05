@@ -327,6 +327,10 @@ public actor AuthoringAPI {
         let value: DocumentValue = try await request("/api/v1/tenants/\(tenant)/studio/materials")
         return try NativeSurfaceMaterialCatalog(value: value, tenantId: tenant)
     }
+    public func privateFloorCatalog() async throws -> NativePrivateFloorCatalog {
+        let value: DocumentValue = try await request(studioPrefix + "/materials/private-floor")
+        return try NativePrivateFloorCatalog(value: value, tenantId: tenant)
+    }
     public func connect(_ credentials: LocalAuthoringSession) async throws -> AuthoringSession {
         guard !authenticationBusy, activeRequests == 0 else { throw AuthoringFailure("AUTH_BUSY") }
         guard credentials.tenantId.lowercased() == tenant, credentials.origin == base.absoluteString,
@@ -487,8 +491,17 @@ public actor AuthoringAPI {
     /// Export only a saved exact revision through the existing rights/integrity gate.
     /// Bounded streaming prevents a malformed local response from allocating an unbounded archive.
     public func floorPreview(_ preset: FloorSettings.Preset) async throws -> Data {
+        try await floorPreviewFile(.forPreset(preset))
+    }
+
+    public func privateFloorPreview(_ catalog: NativePrivateFloorCatalog) async throws -> Data {
+        try await floorPreviewFile(.init(path: catalog.previewPath, bytes: NativePrivateFloorCatalog.previewBytes,
+                                         sha256: NativePrivateFloorCatalog.previewSHA256))
+    }
+
+    private func floorPreviewFile(_ file: NativeFloorPreview) async throws -> Data {
         guard !authenticationBusy, session != nil else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
-        let file = NativeFloorPreview.forPreset(preset), current = generation
+        let current = generation
         let url = base.appendingPathComponent(file.path)
         activeRequests += 1
         defer { activeRequests -= 1 }

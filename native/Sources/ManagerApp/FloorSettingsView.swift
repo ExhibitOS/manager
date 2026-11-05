@@ -41,7 +41,7 @@ struct FloorSettingsView: View {
         guard let value, value != .null else { return field == .sound ? "기존 소리 유지" : "기존 값" }
         if field == .texturePack {
             let id = value["id"].string ?? ""
-            return ["WoodFloor051": "목재", "Marble006": "대리석", "Tiles074": "타일", "Carpet004": "카펫"][id] ?? "기존 재질 이미지"
+            return ["WoodFloor051": "목재", "Marble006": "대리석", "Tiles074": "타일", "Carpet004": "카펫", NativePrivateFloorCatalog.id: NativePrivateFloorCatalog.name][id] ?? "기존 재질 이미지"
         }
         if field == .repeatMeters, let values = value.items { return values.compactMap(\.double).map { String($0) }.joined(separator: " × ") + " m" }
         if field == .sound {
