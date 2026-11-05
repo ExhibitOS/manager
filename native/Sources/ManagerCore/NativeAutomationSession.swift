@@ -95,11 +95,11 @@ public actor NativeAutomationSession {
               !FileManager.default.fileExists(atPath: url.path) else { throw BridgeFailure("AUTOMATION_OUTPUT_INVALID") }
         return url
     }
-    private func checkSavedBenchPolicy(_ state: NativeDocumentState, api: AuthoringAPI) async throws {
+    private func checkSavedEditPolicy(_ state: NativeDocumentState, api: AuthoringAPI, unsupportedCode: String = "NATIVE_BENCH_CAPABILITY_UNAVAILABLE") async throws {
         guard let draft = state.draft, let etag = state.etag else { return }
         let policy = try await api.nativeViewportPolicy(draft.id)
         guard policy.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
-        guard !policy.boundedReadOnly, policy.boundedEditRequired != true else { throw BridgeFailure("NATIVE_BENCH_CAPABILITY_UNAVAILABLE") }
+        guard !policy.boundedReadOnly, policy.boundedEditRequired != true else { throw BridgeFailure(unsupportedCode) }
     }
     private func checkSavedSurfacePolicy(_ state: NativeDocumentState, api: AuthoringAPI) async throws {
         guard !state.dirty, state.pending == nil, let draft = state.draft, state.etag != nil else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
@@ -111,6 +111,15 @@ public actor NativeAutomationSession {
         try bytes.write(to: url, options: .withoutOverwriting)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         return .object(["path": .string(url.path), "sha256": .string(Self.digest(bytes)), "bytes": .integer(Int64(bytes.count))])
+    }
+    // These existing CMS create endpoints have no idempotency key. Preserve
+    // the exact attempt before POST and never automatically repeat an uncertain
+    // creation. The consumer inspects catalog-read and this durable receipt.
+    private func beginCatalogCreation(_ request: DocumentValue, id: String) throws {
+        let path = root.appendingPathComponent(".automation-catalog-" + id + ".json").path
+        guard !FileManager.default.fileExists(atPath: path) else { throw BridgeFailure("AUTOMATION_CREATE_UNCERTAIN") }
+        guard case .object(let fields) = request else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        _ = try write(.object(fields.filter { $0.key != "capability" }), to: path)
     }
     public func execute(_ request: DocumentValue) async throws -> DocumentValue {
         guard request["version"] == .integer(1), let id = request["requestId"].string, UUID(uuidString: id) != nil,
@@ -209,9 +218,91 @@ public actor NativeAutomationSession {
             var next = current
             next.draft = try proposal.applyReply(reply, to: current)
             result = try value(await bridge.saveDocumentState(context, state: next))
+        case "catalog-read":
+            let artists = try await api.artists(), artworks = try await api.artworks()
+            guard artists.nextCursor == nil, artworks.nextCursor == nil else { throw BridgeFailure("AUTOMATION_CATALOG_PAGE_LIMIT") }
+            result = .object(["artists": try value(artists.items), "artworks": try value(artworks.items),
+                              "nextCursor": artworks.nextCursor.map(DocumentValue.string) ?? .null])
+        case "artist-create":
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["name", "bio"])
+            guard let name = command["name"].string, let bio = command["bio"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            try beginCatalogCreation(request, id: id)
+            let created = try value(await api.createArtist(name: name, bio: bio))
+            _ = try write(created, to: root.appendingPathComponent(".automation-catalog-" + id + ".result.json").path)
+            result = created
+        case "artwork-create":
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["artistId", "metadata"])
+            guard let artist = command["artistId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let metadata = try JSONDecoder().decode(ArtworkMetadata.self, from: JSONEncoder().encode(command["metadata"]))
+            guard try value(metadata) == command["metadata"] else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            try beginCatalogCreation(request, id: id)
+            let created = try value(await api.saveArtwork(id: nil, revision: nil, artistId: artist, metadata: metadata))
+            _ = try write(created, to: root.appendingPathComponent(".automation-catalog-" + id + ".result.json").path)
+            result = created
+        case "import-glb":
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "artworkRevision", "scaleMeters"])
+            guard !selectedOEX9, current.pending == nil, let path = request["inputPath"].string,
+                  let expected = inputs[path], let artworkId = command["artworkId"].string,
+                  let revision = command["artworkRevision"].integer, let scale = command["scaleMeters"].double else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+            let url = URL(fileURLWithPath: path)
+            guard url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+            let file = try await ImportFileSnapshot.load(url)
+            guard file.mime == "model/gltf-binary", file.sha256 == expected else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
+            let artwork = try await api.artwork(artworkId)
+            guard Int64(artwork.revision) == revision, !artwork.archived, let metadata = artwork.metadata else { throw BridgeFailure("ARTWORK_SCOPE_CHANGED") }
+            let intent = NativeImportIntent(artworkId: artwork.id, idempotencyKey: id, mime: file.mime,
+                sha256: file.sha256, bytes: file.data.count, scaleMeters: scale, rights: metadata.rights)
+            let state = try await bridge.uploadState(context)
+            try NativeAutomationArtworkRules.checkUploadScope(state, document: current)
+            let job = try await NativeAutomationGLBTransfer.run(bridge: bridge, context: context, state: state,
+                intent: intent, file: file, transport: api)
+            result = .object(["job": NativeAutomationArtworkRules.jobValue(job), "transfer": try value(await bridge.uploadState(context))])
+        case "artwork-status":
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId"])
+            guard let artworkId = command["artworkId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let artwork = try await api.artwork(artworkId), state = try await bridge.uploadState(context)
+            try NativeAutomationArtworkRules.checkUploadScope(state, document: current)
+            var fields: [String: DocumentValue] = ["artwork": try value(artwork), "transfer": try value(state)]
+            if let intent = state.intent, intent.artworkId == artwork.id, let job = state.jobId {
+                let observed = try await api.importJob(job)
+                try NativeAutomationArtworkRules.checkJob(observed, id: job)
+                fields["job"] = NativeAutomationArtworkRules.jobValue(observed)
+            }
+            result = .object(fields)
+        case "artwork-approve":
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "revision", "assetId", "acknowledgeRights"])
+            guard command["acknowledgeRights"] == .bool(true), let artworkId = command["artworkId"].string,
+                  let revision = command["revision"].integer, let assetId = command["assetId"].string else { throw BridgeFailure("APPROVAL_REVIEW_REQUIRED") }
+            let state = try await bridge.uploadState(context)
+            try NativeAutomationArtworkRules.checkUploadScope(state, document: current)
+            guard let intent = state.intent, intent.artworkId == artworkId, intent.mime == "model/gltf-binary",
+                  intent.derived == nil, intent.modelDerivation == nil, let jobId = state.jobId else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
+            let job = try await api.importJob(jobId), artwork = try await api.artwork(artworkId)
+            try NativeAutomationArtworkRules.checkApproval(artwork: artwork, job: job, jobId: jobId,
+                intent: intent, revision: revision, assetId: assetId)
+            _ = try await api.approveArtwork(artworkId, revision: Int(revision), assetId: assetId)
+            let approved = try await api.artwork(artworkId)
+            guard approved.approvedRevision.map(Int64.init) == revision, approved.approvedAssetId == assetId else { throw BridgeFailure("ARTWORK_SCOPE_CHANGED") }
+            result = try value(approved)
+        case "artwork-register":
+            try checkedRevision(request, current)
+            try await checkSavedEditPolicy(current, api: api, unsupportedCode: "NATIVE_ARTWORK_CAPABILITY_UNAVAILABLE")
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "revision", "roomId", "placementId", "transform"])
+            guard current.pending == nil, var draft = current.draft, let artworkId = command["artworkId"].string,
+                  let revision = command["revision"].integer, let room = command["roomId"].string,
+                  let placement = command["placementId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let approved = try await api.studioArtwork(artworkId)
+            try NativeAutomationArtworkRules.checkRegistration(approved.artwork, artworkId: artworkId, revision: revision, tenantId: current.tenantId)
+            try draft.addApprovedArtwork(approved.artwork, roomId: room, placementId: placement, transform: command["transform"])
+            var next = current; next.draft = draft
+            result = try value(await bridge.saveDocumentState(context, state: next))
         case "bench-prepare":
             try checkedRevision(request, current)
-            try await checkSavedBenchPolicy(current, api: api)
+            try await checkSavedEditPolicy(current, api: api)
             guard current.pending == nil, let draft = current.draft, request["command"]["type"].string == "add-bench" else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
             let bench = try BenchSettings(value: request["command"]["bench"])
             guard case .object(let commandFields) = request["command"],
@@ -226,7 +317,7 @@ public actor NativeAutomationSession {
             result = try write(packet, to: path)
         case "bench-apply":
             try checkedRevision(request, current)
-            try await checkSavedBenchPolicy(current, api: api)
+            try await checkSavedEditPolicy(current, api: api)
             guard current.pending == nil, let draft = current.draft, let proposalId = request["proposalId"].string,
                   let proposal = proposals[proposalId], proposal.frame.draft == draft,
                   let path = request["inputPath"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }

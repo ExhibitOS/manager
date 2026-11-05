@@ -20,7 +20,7 @@ public struct AuthoringPage<Item: Decodable & Sendable>: Decodable, Sendable {
     public let items: [Item]
     public let nextCursor: String?
 }
-public struct NativeArtist: Decodable, Sendable, Identifiable {
+public struct NativeArtist: Codable, Sendable, Identifiable {
     public let id: String
     public let userId: String?
     public let revision: Int
@@ -28,7 +28,7 @@ public struct NativeArtist: Decodable, Sendable, Identifiable {
     public let bio: String
     public let archived: Bool
 }
-public struct ArtworkSummary: Decodable, Sendable, Identifiable {
+public struct ArtworkSummary: Codable, Sendable, Identifiable {
     public let id: String
     public let artistId: String
     public let revision: Int
@@ -69,8 +69,8 @@ public struct ArtworkMetadata: Codable, Equatable, Sendable {
     public var provenance = Provenance()
     public init() {}
 }
-public struct NativeArtwork: Decodable, Sendable, Identifiable {
-    public struct Asset: Decodable, Sendable, Identifiable {
+public struct NativeArtwork: Codable, Sendable, Identifiable {
+    public struct Asset: Codable, Sendable, Identifiable {
         public let id: String, mime: String, state: String, sha256: String
         public let bytes: Int64
     }

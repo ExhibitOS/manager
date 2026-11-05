@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: Apache-2.0
+import XCTest
+@testable import ManagerCore
+
+final class NativeAutomationArtworkTests: XCTestCase {
+    private let artworkId = "11111111-1111-4111-8111-111111111111"
+    private let assetId = "22222222-2222-4222-8222-222222222222"
+    private let jobId = "33333333-3333-4333-8333-333333333333"
+    private let tenantId = "44444444-4444-4444-8444-444444444444"
+    private func approvalFixture() throws -> (NativeArtwork, NativeImportJob, NativeImportIntent, DocumentValue) {
+        let metadata = ArtworkMetadata()
+        let encoded = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(metadata))
+        let intent = NativeImportIntent(artworkId: artworkId, mime: "model/gltf-binary", sha256: String(repeating: "a", count: 64), bytes: 100, scaleMeters: 1, rights: metadata.rights)
+        let body: DocumentValue = .object(["id": .string(artworkId), "artistId": .string(tenantId), "revision": .integer(3), "archived": .bool(false), "metadata": encoded,
+            "assets": .array([.object(["id": .string(assetId), "mime": .string(intent.mime), "state": .string("approved"), "sha256": .string(intent.sha256), "bytes": .integer(100)])])])
+        let art = try JSONDecoder().decode(NativeArtwork.self, from: JSONEncoder().encode(body))
+        let job = NativeImportJob(id: jobId, state: "approved", progress: 100, attempts: 1, errorCode: nil, assetId: assetId, retryAt: nil)
+        return (art, job, intent, body)
+    }
+    func testApprovalBindsExactOriginalHashRightsAndBothRevisions() throws {
+        let (art, job, intent, body) = try approvalFixture()
+        try NativeAutomationArtworkRules.checkApproval(artwork: art, job: job, jobId: jobId, intent: intent, revision: 3, assetId: assetId)
+        for revision in [Int64(2), 0, 2_147_483_648] {
+            XCTAssertThrowsError(try NativeAutomationArtworkRules.checkApproval(artwork: art, job: job, jobId: jobId, intent: intent, revision: revision, assetId: assetId))
+        }
+        for key in ["sha256", "mime", "state", "bytes"] {
+            var changed = body, assets = changed["assets"].items!
+            assets[0][key] = key == "bytes" ? .integer(99) : .string("changed")
+            changed["assets"] = .array(assets)
+            let other = try JSONDecoder().decode(NativeArtwork.self, from: JSONEncoder().encode(changed))
+            XCTAssertThrowsError(try NativeAutomationArtworkRules.checkApproval(artwork: other, job: job, jobId: jobId, intent: intent, revision: 3, assetId: assetId))
+        }
+        var changed = body; changed["metadata"]["rights"]["holder"] = .string("another holder")
+        let other = try JSONDecoder().decode(NativeArtwork.self, from: JSONEncoder().encode(changed))
+        XCTAssertThrowsError(try NativeAutomationArtworkRules.checkApproval(artwork: other, job: job, jobId: jobId, intent: intent, revision: 3, assetId: assetId))
+        let pending = NativeImportJob(id: jobId, state: "processing", progress: 50, attempts: 1, errorCode: nil, assetId: assetId, retryAt: nil)
+        XCTAssertThrowsError(try NativeAutomationArtworkRules.checkApproval(artwork: art, job: pending, jobId: jobId, intent: intent, revision: 3, assetId: assetId))
+    }
+    func testRegistrationRejectsOtherTenantRevisionAndNonDisplayRights() throws {
+        let snapshot: DocumentValue = .object(["id": .string(artworkId), "artworkType": .string("sculpture"),
+            "extensions": .object(["org.exhibitos.studio/cms": .object(["tenantId": .string(tenantId), "artworkId": .string(artworkId), "revision": .integer(3)])]),
+            "rights": .object(["permissions": .object(["display": .bool(true)])])])
+        try NativeAutomationArtworkRules.checkRegistration(snapshot, artworkId: artworkId, revision: 3, tenantId: tenantId)
+        for (key, value) in [("tenantId", DocumentValue.string(artworkId)), ("artworkId", .string(tenantId)), ("revision", .integer(2))] {
+            var changed = snapshot; changed["extensions"]["org.exhibitos.studio/cms"][key] = value
+            XCTAssertThrowsError(try NativeAutomationArtworkRules.checkRegistration(changed, artworkId: artworkId, revision: 3, tenantId: tenantId))
+        }
+        var changed = snapshot; changed["rights"]["permissions"]["display"] = .bool(false)
+        XCTAssertThrowsError(try NativeAutomationArtworkRules.checkRegistration(changed, artworkId: artworkId, revision: 3, tenantId: tenantId))
+    }
+    func testUploadJournalCannotCrossWorkspaceAndCommandCannotAddDerivation() throws {
+        let document = NativeDocumentState(format: 1, revision: 0, workspaceId: artworkId, tenantId: tenantId, principalId: assetId)
+        var transfer = NativeUploadState(format: 1, revision: 0, workspaceId: artworkId, tenantId: tenantId, principalId: assetId)
+        try NativeAutomationArtworkRules.checkUploadScope(transfer, document: document)
+        transfer = NativeUploadState(format: 1, revision: 0, workspaceId: jobId, tenantId: tenantId, principalId: assetId)
+        XCTAssertThrowsError(try NativeAutomationArtworkRules.checkUploadScope(transfer, document: document))
+        let request: DocumentValue = .object(["command": .object(["artworkId": .string(artworkId), "scaleMeters": .integer(1), "artworkRevision": .integer(3), "modelDerivation": .null])])
+        XCTAssertThrowsError(try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "scaleMeters", "artworkRevision"]))
+    }
+}
