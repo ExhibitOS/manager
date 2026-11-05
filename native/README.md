@@ -92,6 +92,13 @@ is applied only to a newly selected workspace, and ordinary startup does not
 silently upgrade an existing catalog. Native execution and output acceptance
 remain specific to the validated source/payload/profile.
 
+The separately admitted Quiet Oak floor supplement retains normal028/v4 and its
+existing capability bytes. Its exact additional declaration and029 schema are
+required only for the new local payload tuple; the helper independently checks
+the owned DB's029 checksum before the unchanged catalogue ACK. Fresh selected
+workspaces apply the addition, while ordinary reopen of an older028 catalogue
+does not silently apply029. Historical migrations and payload pins remain intact.
+
 Local publication uses its own affirmative `nativePublicationProfile:
 "bounded-local-v1"` session advertisement and an explicit per-call profile
 header. Ordinary readiness/publish requests retain their existing behavior.

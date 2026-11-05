@@ -149,13 +149,38 @@ const NORMAL_OEX_028_LOCAL_VALIDATION_PROVENANCE:&[(&str,&str,&str)]=&[
     ("61bd336b3333ab917bc2588a63ff99cb56261fad",
      "1739c79934910d21a40d67509dda16fa2a86c6a45c3d78ef5dfda52214fed1f2",
      "4f4b584c98edfb54ce82da76bec53bad4e6b72e9c8389b0385e524d81db15a23"),
+    ("7a2150bc4112044b313236ea081e5fa151a60ff8",
+     "1739c79934910d21a40d67509dda16fa2a86c6a45c3d78ef5dfda52214fed1f2",
+     "83d711e787ba01938739f2af95f83f578784dc6105db887799ac8355068f8483"),
+    ("c40b79664defdfc3619a2237bbea4323e8d52216",
+     "1739c79934910d21a40d67509dda16fa2a86c6a45c3d78ef5dfda52214fed1f2",
+     "a2a83a968a2fab269cd43ba0c0f054dfe86ce1033135bd304964726c3676ea24"),
 ];
+const NORMAL_OEX_029_FLOOR_CAPABILITY_PATH:&str="platform/scripts/native-normal-oex-029-floor-capability-v4.json";
+const NORMAL_OEX_029_FLOOR_CAPABILITY_SHA256:&str="b8fef3df267e7cae39b5f6bb169d3ceb0efdad9050e615b7e8b33e640c29b649";
+const NORMAL_OEX_029_FLOOR_CAPABILITY:&[u8]=br#"{"format":1,"kind":"exhibitos-native-normal-oex-floor-supplement","protocol":"normal-oex-028-v4","ownerChannelVersion":3,"parentCapabilityPath":"platform/scripts/native-normal-oex-028-capability-v4.json","parentCapabilitySHA256":"9ffbff5c770be6c70e5bbffd4183006003ed73dabb807e18f496a19af94a58b4","schemaPath":"platform/database/native-oex-normal/029_oex_quiet_oak_floor.sql","schemaSHA256":"d09e11450cdaa4e64f0b977cc17b1e468543314e6ce733571bc61b6b20deeb8a","packId":"quiet-oak-herringbone","packVersion":1,"freshOnly":true}"#;
+const NORMAL_OEX_029_FLOOR_SCHEMA_PATH:&str="platform/database/native-oex-normal/029_oex_quiet_oak_floor.sql";
+pub(crate) const NORMAL_OEX_029_FLOOR_SCHEMA_SHA256:&str="d09e11450cdaa4e64f0b977cc17b1e468543314e6ce733571bc61b6b20deeb8a";
+// The frozen additional schema remains local-only. Historical028 tuples never
+// opt into a schema upgrade merely because a newer payload exists.
+const NORMAL_OEX_029_FLOOR_LOCAL_VALIDATION_PROVENANCE:&[(&str,&str,&str)]=&[
+    ("b5b586b4f3e4757a12896083210513a5fa446cdc",
+     "6b7753dbe3885bed579700011cddc738aa9bf9a5e8a246e57b46bf473969321e",
+     "b751e43ed1968cd53aea2a9495a395d193b4d02ec48cd9e16ebae6806b4599b9"),
+];
+
 fn normal_oex_028_inventory_matches(manifest:&Manifest)->bool {
     let regular=|name:&str|manifest.files.iter().find(|f|f.path==name&&f.link.is_none()&&f.executable==Some(false));
     normal_oex_inventory_matches(manifest,NORMAL_OEX_CAPABILITY)&&normal_oex_027_inventory_matches(manifest)
         && regular(NORMAL_OEX_028_CAPABILITY_PATH).is_some_and(|f|f.bytes==Some(NORMAL_OEX_028_CAPABILITY.len() as u64)&&f.sha256.as_deref()==Some(NORMAL_OEX_028_CAPABILITY_SHA256))
         && regular(NORMAL_OEX_028_SCHEMA_PATH).is_some_and(|f|f.bytes.is_some_and(|n|n>0)&&f.sha256.as_deref()==Some(NORMAL_OEX_028_SCHEMA_SHA256))
         && regular("platform/apps/api/dist/oex-selected-format.js").is_some_and(|f|f.bytes.is_some_and(|n|n>0)&&f.sha256.as_deref().is_some_and(hash_valid))
+}
+fn normal_oex_029_floor_inventory_matches(manifest:&Manifest)->bool {
+    let regular=|name:&str|manifest.files.iter().find(|f|f.path==name&&f.link.is_none()&&f.executable==Some(false));
+    normal_oex_028_inventory_matches(manifest)
+        && regular(NORMAL_OEX_029_FLOOR_CAPABILITY_PATH).is_some_and(|f|f.bytes==Some(NORMAL_OEX_029_FLOOR_CAPABILITY.len() as u64)&&f.sha256.as_deref()==Some(NORMAL_OEX_029_FLOOR_CAPABILITY_SHA256))
+        && regular(NORMAL_OEX_029_FLOOR_SCHEMA_PATH).is_some_and(|f|f.bytes==Some(566)&&f.sha256.as_deref()==Some(NORMAL_OEX_029_FLOOR_SCHEMA_SHA256))
 }
 
 fn normal_oex_release_declaration_matches(manifest: &Manifest, manifest_hash: &str, bytes: &[u8], approved: &[(&str, &str, &str)]) -> bool {
@@ -251,6 +276,28 @@ mod normal_oex_release_declaration_tests {
             let index=m.files.iter().position(|f|f.path==name).unwrap();let hash=m.files[index].sha256.clone();
             m.files[index].sha256=Some(if name.ends_with("oex-selected-format.js"){"invalid".into()}else{"f".repeat(64)});assert!(!normal_oex_028_inventory_matches(&m));m.files[index].sha256=hash;
         }
+    }
+    #[test]
+    fn quiet_oak_floor_supplement_requires_exact_parent_schema_and_inventory() {
+        let mut m=local_fixture();
+        for (path,bytes,hash) in [(NORMAL_OEX_028_CAPABILITY_PATH,NORMAL_OEX_028_CAPABILITY.len() as u64,NORMAL_OEX_028_CAPABILITY_SHA256),
+            (NORMAL_OEX_028_SCHEMA_PATH,100,NORMAL_OEX_028_SCHEMA_SHA256),
+            ("platform/apps/api/dist/oex-selected-format.js",1,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            (NORMAL_OEX_029_FLOOR_CAPABILITY_PATH,NORMAL_OEX_029_FLOOR_CAPABILITY.len() as u64,NORMAL_OEX_029_FLOOR_CAPABILITY_SHA256),
+            (NORMAL_OEX_029_FLOOR_SCHEMA_PATH,566,NORMAL_OEX_029_FLOOR_SCHEMA_SHA256)] {
+            m.files.push(serde_json::from_value(serde_json::json!({"path":path,"bytes":bytes,"sha256":hash,"executable":false})).unwrap());
+        }
+        assert_eq!(digest(NORMAL_OEX_029_FLOOR_CAPABILITY),NORMAL_OEX_029_FLOOR_CAPABILITY_SHA256);
+        assert!(normal_oex_029_floor_inventory_matches(&m));
+        for name in [NORMAL_OEX_028_CAPABILITY_PATH,NORMAL_OEX_028_SCHEMA_PATH,NORMAL_OEX_029_FLOOR_CAPABILITY_PATH,NORMAL_OEX_029_FLOOR_SCHEMA_PATH] {
+            let index=m.files.iter().position(|f|f.path==name).unwrap();let file=m.files.remove(index);
+            assert!(!normal_oex_029_floor_inventory_matches(&m));m.files.insert(index,file);
+            let hash=m.files[index].sha256.clone();m.files[index].sha256=Some("f".repeat(64));
+            assert!(!normal_oex_029_floor_inventory_matches(&m));m.files[index].sha256=hash;
+        }
+        let index=m.files.iter().position(|f|f.path==NORMAL_OEX_029_FLOOR_SCHEMA_PATH).unwrap();m.files[index].bytes=Some(565);
+        assert!(!normal_oex_029_floor_inventory_matches(&m));
+        assert!(normal_oex_028_inventory_matches(&m),"Historical028 inventory checks remain independent of029");
     }
     #[test]
     fn local_027_accepts_only_exact_development_tuple_and_never_official_release() {
@@ -636,19 +683,37 @@ impl Payload {
         self.normal_oex_selected_admission(NORMAL_OEX_RELEASE_PROVENANCE, false)
     }
     pub(crate) fn normal_oex_028_selected_input(&self)->Result<bool> {
+        let floor=self.normal_oex_029_floor_tuple();
         let approved=if self.manifest.mode=="release"&&self.manifest.redistribution_qualified&&self.manifest.official_signed {
             NORMAL_OEX_028_RELEASE_PROVENANCE
         } else if cfg!(all(debug_assertions,target_os="macos"))&&self.manifest.mode=="local-validation"&&!self.manifest.redistribution_qualified&&!self.manifest.official_signed {
             NORMAL_OEX_028_LOCAL_VALIDATION_PROVENANCE
         } else {return Ok(false);};
-        if !approved.iter().any(|(source,producer,hash)|*source==self.manifest.source_commit&&*producer==self.manifest.producer_sha256&&*hash==self.manifest_sha256)
-            || !normal_oex_028_inventory_matches(&self.manifest){return Ok(false);}
+        if !(floor||approved.iter().any(|(source,producer,hash)|*source==self.manifest.source_commit&&*producer==self.manifest.producer_sha256&&*hash==self.manifest_sha256))
+            || !normal_oex_028_inventory_matches(&self.manifest)
+            || (floor&&!normal_oex_029_floor_inventory_matches(&self.manifest)){return Ok(false);}
         self.recheck()?;
         let path=self.root.join(NORMAL_OEX_028_CAPABILITY_PATH);
         if fs::canonicalize(&path).map_err(|_|invalid())?!=path{return Err(invalid());}
         let (bytes,pin)=crate::hosted_runtime_file::bounded(&path,2048)?;
         let accepted=bytes==NORMAL_OEX_028_CAPABILITY&&digest(&bytes)==NORMAL_OEX_028_CAPABILITY_SHA256;
+        pin.check()?;
+        if !accepted||!floor{return Ok(accepted);}
+        let path=self.root.join(NORMAL_OEX_029_FLOOR_CAPABILITY_PATH);
+        if fs::canonicalize(&path).map_err(|_|invalid())?!=path{return Err(invalid());}
+        let (bytes,pin)=crate::hosted_runtime_file::bounded(&path,2048)?;
+        let accepted=bytes==NORMAL_OEX_029_FLOOR_CAPABILITY&&digest(&bytes)==NORMAL_OEX_029_FLOOR_CAPABILITY_SHA256;
         pin.check()?;Ok(accepted)
+    }
+    fn normal_oex_029_floor_tuple(&self)->bool {
+        cfg!(all(debug_assertions,target_os="macos"))&&self.manifest.mode=="local-validation"
+            &&!self.manifest.redistribution_qualified&&!self.manifest.official_signed
+            &&NORMAL_OEX_029_FLOOR_LOCAL_VALIDATION_PROVENANCE.iter().any(|(source,producer,hash)|
+                *source==self.manifest.source_commit&&*producer==self.manifest.producer_sha256&&*hash==self.manifest_sha256)
+    }
+    pub(crate) fn normal_oex_029_floor_selected_input(&self)->Result<bool> {
+        if !self.normal_oex_029_floor_tuple(){return Ok(false);}
+        self.normal_oex_028_selected_input()
     }
     pub(crate) fn oex_format_hint(&self)->Result<(PathBuf,PathBuf,PathBuf)> {
         if !self.normal_oex_028_selected_input()?{return Err(err("NATIVE_OEX_FORMAT_UNAVAILABLE"));}
