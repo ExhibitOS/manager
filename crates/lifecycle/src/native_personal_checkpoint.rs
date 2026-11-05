@@ -15,6 +15,17 @@ use std::sync::Arc;
 
 const OLD_MANIFEST: &str = "253de8963ec9f0e0a2884a27d8e756b453cf61899e38c31571d9993a7d6ecff4";
 const NEW_MANIFEST: &str = "10a21f3b7a73a66011e077f7927f951f917e604720591acbcc2cdb47222f4032";
+// Development-only transitions are admitted as directed, exact pairs. Keep
+// the historical recovery path available alongside the reviewed Oak successor.
+const TRANSITION_PAIRS: &[(&str, &str)] = &[
+    (OLD_MANIFEST, NEW_MANIFEST),
+    ("35b07cfc4c89abeaab518fd72c5be5f55569c03ae99906ff7220edf7d9712bf8",
+     "9b9d6b1cba4b5722a8710471283e9f693f14883f5da950c4504ca7bbf00efeb7"),
+];
+fn admitted_pair(source: &str, target: &str) -> bool {
+    TRANSITION_PAIRS.contains(&(source, target))
+}
+
 const DOMAIN: &[u8] = b"ExhibitOS-local-personal-physical-checkpoint-v1\0";
 const ENVELOPE: &str = "physical-checkpoint.gcm";
 const MAX_FILES: usize = 50_000;
@@ -285,6 +296,9 @@ struct Bindings {
 }
 
 fn bindings(checkpoint: &Checkpoint) -> Result<Bindings> {
+    if !admitted_pair(&checkpoint.old_manifest, &checkpoint.new_manifest) {
+        return Err(invalid());
+    }
     let stage = &checkpoint.staged;
     let old_env = Bytes(installation_backup::source_bytes(
         stage,
@@ -294,7 +308,7 @@ fn bindings(checkpoint: &Checkpoint) -> Result<Bindings> {
     )?);
     let old_record = installation_backup::source_bytes(stage, staged_name(RECORD), 4096, true)?;
     let mut record: Personal = serde_json::from_slice(&old_record).map_err(|_| invalid())?;
-    if record.manifest_sha256 != OLD_MANIFEST
+    if record.manifest_sha256 != checkpoint.old_manifest
         || record.workspace_id != checkpoint.workspace_id
         || record.tenant_id != checkpoint.tenant_id
         || record.principal_id != checkpoint.principal_id
@@ -307,12 +321,12 @@ fn bindings(checkpoint: &Checkpoint) -> Result<Bindings> {
     let mut replaced = false;
     for line in old_env.0.split_inclusive(|byte| *byte == b'\n') {
         if let Some(value) = line.strip_prefix(prefix) {
-            if replaced || value.strip_suffix(b"\n").unwrap_or(value) != OLD_MANIFEST.as_bytes() {
+            if replaced || value.strip_suffix(b"\n").unwrap_or(value) != checkpoint.old_manifest.as_bytes() {
                 return Err(invalid());
             }
             replaced = true;
             new_env.0.extend_from_slice(prefix);
-            new_env.0.extend_from_slice(NEW_MANIFEST.as_bytes());
+            new_env.0.extend_from_slice(checkpoint.new_manifest.as_bytes());
             if line.ends_with(b"\n") {
                 new_env.0.push(b'\n');
             }
@@ -323,7 +337,7 @@ fn bindings(checkpoint: &Checkpoint) -> Result<Bindings> {
     if !replaced {
         return Err(invalid());
     }
-    record.manifest_sha256 = NEW_MANIFEST.into();
+    record.manifest_sha256 = checkpoint.new_manifest.clone();
     record.environment_sha256 = digest(&new_env.0);
     let new_record = serde_json::to_vec(&record).map_err(|_| invalid())?;
     Ok(Bindings {
@@ -561,7 +575,7 @@ impl LifecycleService {
         self.check_prepare_guard(guard)?;
         crate::native_runtime::check_cold_checkpoint_root(&self.root)?;
         let context = source.context();
-        if context.manifest_sha256 != OLD_MANIFEST
+        if !TRANSITION_PAIRS.iter().any(|(source, _)| *source == context.manifest_sha256)
             || context.official_signed
             || context.redistribution_qualified
         {
@@ -580,8 +594,7 @@ impl LifecycleService {
         let checkpoint = open(envelope, key)?;
         let staging = &checkpoint.staged;
         if checkpoint.source != self.root
-            || checkpoint.old_manifest != OLD_MANIFEST
-            || checkpoint.new_manifest != NEW_MANIFEST
+            || !admitted_pair(&checkpoint.old_manifest, &checkpoint.new_manifest)
             || checkpoint.owner_uid != unsafe { libc::geteuid() }
             || !staging.is_absolute()
             || staging.starts_with(&self.root)
@@ -609,7 +622,7 @@ impl LifecycleService {
     ) -> Result<()> {
         let guard = self.lock()?;
         self.check_prepare_guard(&guard)?;
-        if target.context().manifest_sha256 != NEW_MANIFEST {
+        if !admitted_pair(&source.context().manifest_sha256, &target.context().manifest_sha256) {
             return Err(invalid());
         }
         source.recheck()?;
@@ -623,7 +636,9 @@ impl LifecycleService {
         let envelope =
             installation_backup::source_bytes(staging, ENVELOPE, (MAX_MANIFEST + 28) as u64, true)?;
         let checkpoint = self.transition_checkpoint(&envelope, key)?;
-        if checkpoint.trial
+        if checkpoint.old_manifest != source.context().manifest_sha256
+            || checkpoint.new_manifest != target.context().manifest_sha256
+            || checkpoint.trial
             || checkpoint.staged != staging
             || inventory(&self.root, false)? != checkpoint.files
         {
@@ -713,7 +728,7 @@ impl LifecycleService {
         self.check_prepare_guard(&guard)?;
         crate::native_runtime::check_cold_checkpoint_root(&self.root)?;
         let target_context = target.context();
-        if target_context.manifest_sha256 != NEW_MANIFEST
+        if !TRANSITION_PAIRS.iter().any(|(_, target)| *target == target_context.manifest_sha256)
             || target_context.official_signed
             || target_context.redistribution_qualified
         {
@@ -723,7 +738,8 @@ impl LifecycleService {
         let pending = read_pending(&self.root)?;
         let envelope = pending.strip_prefix(PENDING_PREFIX).ok_or_else(invalid)?;
         let mut checkpoint = self.transition_checkpoint(envelope, key)?;
-        if checkpoint.trial || checkpoint.staged != staging {
+        if checkpoint.new_manifest != target_context.manifest_sha256
+            || checkpoint.trial || checkpoint.staged != staging {
             return Err(invalid());
         }
         verify_unchanged(&self.root, &checkpoint, &pending)?;
@@ -810,8 +826,7 @@ impl LifecycleService {
         self.check_prepare_guard(&guard)?;
         let source = source_payload.context();
         let target = target_payload.context();
-        if source.manifest_sha256 != OLD_MANIFEST
-            || target.manifest_sha256 != NEW_MANIFEST
+        if !admitted_pair(&source.manifest_sha256, &target.manifest_sha256)
             || source.official_signed
             || source.redistribution_qualified
             || target.official_signed
@@ -1050,6 +1065,22 @@ mod tests {
         )
         .unwrap();
         std::process::exit(99);
+    }
+
+    #[test]
+    fn transition_manifest_pairs_reject_cross_pair_reverse_and_unknown() {
+        for &(source, target) in TRANSITION_PAIRS {
+            assert!(admitted_pair(source, target));
+            assert!(!admitted_pair(target, source));
+            assert!(!admitted_pair(source, source));
+            assert!(!admitted_pair(source, &"0".repeat(64)));
+            for &(other_source, other_target) in TRANSITION_PAIRS {
+                if source != other_source {
+                    assert!(!admitted_pair(source, other_target));
+                    assert!(!admitted_pair(other_source, target));
+                }
+            }
+        }
     }
 
     fn owner_transition(
