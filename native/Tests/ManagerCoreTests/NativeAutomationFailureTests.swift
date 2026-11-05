@@ -27,12 +27,15 @@ final class NativeAutomationFailureTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
                                                 attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: folder) }
+        let output = folder.appendingPathComponent("output", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
         for exitCode in [0, 9] {
             let helper = folder.appendingPathComponent("helper-\(exitCode)")
             try "#!/bin/sh\ncat >/dev/null\nexit \(exitCode)\n".write(to: helper, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
             let session = try NativeAutomationSession(helper: helper, profile: folder.appendingPathComponent("profile"),
-                ports: ["web": 13200, "api": 13201, "database": 15432], outputRoot: folder,
+                ports: ["web": 13200, "api": 13201, "database": 15432], outputRoot: output,
                 temporaryRoot: folder, inputs: [:])
             for _ in 0..<2 {
                 do {
