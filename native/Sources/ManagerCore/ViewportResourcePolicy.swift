@@ -2,7 +2,7 @@
 import Foundation
 
 public enum ViewportResourcePolicy {
-    /// Exact compiled first-two-material maps. Neither exhibition data nor a
+    /// Exact compiled registered material maps. Neither exhibition data nor a
     /// caller-supplied directory can extend this WebKit network exception.
     private static let surfaceMaps = [
         "surface-material-textures/museum-matte-paint/1/color-01fee8fd9374.png",
@@ -10,7 +10,10 @@ public enum ViewportResourcePolicy {
         "surface-material-textures/museum-matte-paint/1/roughness-b62c048f8819.png",
         "surface-material-textures/fine-lime-plaster/1/color-73294b172675.png",
         "surface-material-textures/fine-lime-plaster/1/normal-36d7e70a9317.png",
-        "surface-material-textures/fine-lime-plaster/1/roughness-bb774369bf82.png"
+        "surface-material-textures/fine-lime-plaster/1/roughness-bb774369bf82.png",
+        "surface-material-textures/fine-gallery-concrete/1/color-634a67d2a076.png",
+        "surface-material-textures/fine-gallery-concrete/1/normal-124a39f69958.png",
+        "surface-material-textures/fine-gallery-concrete/1/roughness-d773c26d56f0.png"
     ]
     /// Exact registered public floor maps; no caller-provided path or directory wildcard.
     private static let floorMaps = [

@@ -71,6 +71,41 @@ final class SurfaceMaterialTextureTests: XCTestCase {
         XCTAssertThrowsError(try NativeSurfaceMaterialCatalog(value: value, tenantId: tenant))
     }
 
+    func testConcreteCatalogueKeepsLegacyRowsAndPinsThumbnailToTenantAndBytes() throws {
+        let ids = [SurfaceMaterialTextureBinding.paint, SurfaceMaterialTextureBinding.plaster, SurfaceMaterialTextureBinding.concrete]
+        var rows = try ids.map { id in
+            DocumentValue.object(["id": .string(id), "version": .integer(1), "name": .string(id),
+                "defaults": .object(["material": try SurfaceMaterial(color: "#ffffff", roughness: 1, metalness: 0).value,
+                                     "texture": try binding(id).value]), "preview": .null])
+        }
+        rows[2]["preview"] = .object(["url": .string("/api/v1/tenants/\(tenant)/studio/materials/fine-gallery-concrete/1/preview"),
+            "mime": .string("image/png"), "bytes": .integer(27_612),
+            "sha256": .string("82b907f0df15c881ce06d76c04f73f285edd555d23c56524f67242b754dacf8e"),
+            "width": .integer(256), "height": .integer(256)])
+        func parse(_ rows: [DocumentValue]) throws -> NativeSurfaceMaterialCatalog {
+            try .init(value: .object(["version": .integer(1), "items": .array(rows)]), tenantId: tenant)
+        }
+        let catalog = try parse(rows)
+        XCTAssertEqual(catalog.items.count, 3)
+        XCTAssertNil(catalog.items[0].preview); XCTAssertNil(catalog.items[1].preview)
+        XCTAssertEqual(catalog.items[2].texture.repeatMeters, [2, 2])
+        XCTAssertEqual(catalog.items[2].preview?.bytes, 27_612)
+        XCTAssertThrowsError(try parse([rows[0], rows[2]]))
+        for field in ["url", "bytes", "sha256", "width"] {
+            var tampered = rows
+            tampered[2]["preview"][field] = field == "url" ? .string("/api/v1/tenants/\(surface)/studio/materials/fine-gallery-concrete/1/preview") : .integer(1)
+            XCTAssertThrowsError(try parse(tampered))
+        }
+        let base = try fixture(), concrete = try binding(SurfaceMaterialTextureBinding.concrete)
+        let command = SurfaceMaterialTextureCommand(surfaceId: surface, material: nil, texture: concrete)
+        var candidate = base.candidate
+        candidate["extensions"][namespace]["surfaceTextures"] = .object([surface: concrete.value])
+        let preview = try SurfaceMaterialTexturePreview(candidate: candidate, base: base, command: command, selected: selection)
+        let applied = try preview.apply(to: base, selected: selection, command: command)
+        XCTAssertEqual(applied.candidate["extensions"][namespace]["surfaces"], base.candidate["extensions"][namespace]["surfaces"])
+        XCTAssertEqual(applied.candidate["extensions"]["future-exhibition"], .string("keep"))
+    }
+
     func testAtomicTexturePreviewRefusesOtherSurfaceMutationAndStaleApply() throws {
         let base = try fixture(), texture = try binding(SurfaceMaterialTextureBinding.plaster)
         let command = SurfaceMaterialTextureCommand(surfaceId: surface, material: nil, texture: texture)

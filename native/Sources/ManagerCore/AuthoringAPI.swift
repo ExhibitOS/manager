@@ -499,6 +499,13 @@ public actor AuthoringAPI {
                                          sha256: NativePrivateFloorCatalog.previewSHA256))
     }
 
+    public func surfaceMaterialPreview(_ preview: NativeSurfaceMaterialCatalog.Preview) async throws -> Data {
+        guard (1...2_000_000).contains(preview.bytes), preview.width <= 256, preview.height <= 256 else {
+            throw AuthoringFailure("MATERIAL_PREVIEW_INVALID")
+        }
+        return try await floorPreviewFile(.init(path: preview.url, bytes: Int(preview.bytes), sha256: preview.sha256))
+    }
+
     private func floorPreviewFile(_ file: NativeFloorPreview) async throws -> Data {
         guard !authenticationBusy, session != nil else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
         let current = generation

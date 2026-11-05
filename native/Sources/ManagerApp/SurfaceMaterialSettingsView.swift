@@ -41,7 +41,7 @@ struct SurfaceMaterialSettingsView: View {
                     if model.surfaceMaterialTexture != nil {
                         SurfaceMaterialCatalogView(entries: model.surfaceMaterialCatalog?.items.map {
                             .init(catalogId: $0.id, name: $0.name, recommendedRepeat: $0.texture.repeatMeters[0])
-                        } ?? [], images: [:], fields: texture, mode: mode, supported: model.surfaceMaterialTexturesSupported,
+                        } ?? [], images: model.surfaceMaterialImages, fields: texture, mode: mode, supported: model.surfaceMaterialTexturesSupported,
                            editable: editable, loading: model.surfaceMaterialCatalogLoading, status: model.surfaceMaterialCatalogStatus,
                            select: model.selectSurfaceMaterial, remove: model.removeSurfaceMaterialTexture,
                            useRecommendedValues: model.resetSurfaceMaterialTextureValues,
