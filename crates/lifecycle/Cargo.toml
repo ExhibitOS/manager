@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+workspace-v5-owner-validation = []
+
 [dependencies]
 ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std", "fast"] }
 aes-gcm = "=0.10.3"

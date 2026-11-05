@@ -13,6 +13,7 @@ struct Configuration: Decodable {
     let inputs: [String: String]
     let selectedOEX9: Bool?
     let selectedOEX10: Bool?
+    let workspaceV5ValidationRuntime: String?
 }
 actor Driver {
     let session: NativeAutomationSession
@@ -82,10 +83,18 @@ func run() async -> Int32 {
         let data = try Data(contentsOf: url)
         let fields = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let names = Set(fields?.keys.map { $0 } ?? [])
-        guard names.subtracting(["selectedOEX9", "selectedOEX10"]) == ["helper", "profile", "ports", "outputRoot", "temporaryRoot", "inputs"] else { throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID") }
+        var optional: Set<String> = ["selectedOEX9", "selectedOEX10"]
+        #if DEBUG
+        optional.insert("workspaceV5ValidationRuntime")
+        #endif
+        guard names.subtracting(optional) == ["helper", "profile", "ports", "outputRoot", "temporaryRoot", "inputs"] else { throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID") }
         let config = try JSONDecoder().decode(Configuration.self, from: data)
+        if names.contains("workspaceV5ValidationRuntime") {
+            guard config.workspaceV5ValidationRuntime?.hasPrefix("/") == true else { throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID") }
+        }
         guard setenv("TMPDIR", config.temporaryRoot, 1) == 0 else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
-        let owned = try NativeAutomationSession(helper: URL(fileURLWithPath: config.helper), profile: URL(fileURLWithPath: config.profile), ports: config.ports, outputRoot: URL(fileURLWithPath: config.outputRoot), temporaryRoot: URL(fileURLWithPath: config.temporaryRoot), inputs: config.inputs, selectedOEX9: config.selectedOEX9 ?? false, selectedOEX10: config.selectedOEX10 ?? false)
+        let owned = try NativeAutomationSession(helper: URL(fileURLWithPath: config.helper), profile: URL(fileURLWithPath: config.profile), ports: config.ports, outputRoot: URL(fileURLWithPath: config.outputRoot), temporaryRoot: URL(fileURLWithPath: config.temporaryRoot), inputs: config.inputs, selectedOEX9: config.selectedOEX9 ?? false, selectedOEX10: config.selectedOEX10 ?? false,
+                                                workspaceV5ValidationRuntime: config.workspaceV5ValidationRuntime.map { URL(fileURLWithPath: $0) })
         session = owned
         let driver = Driver(owned)
         await driver.emit(.object(["version": .integer(1), "event": .string("ready"), "result": try await owned.open()]))

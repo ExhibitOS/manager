@@ -22,8 +22,7 @@ fn check_hint(bytes:&[u8],before:&fs::Metadata)->Result<()> {
         || h.archive_bytes!=before.len()||h.input_device!=before.dev().to_string()||h.input_inode!=before.ino().to_string()
         || !hash_valid(&h.manifest_sha256)||serde_json::to_vec(&h).map_err(|_|invalid())?!=bytes {return Err(invalid());} Ok(())
 }
-pub(super) fn run(resources:&Path, input_fd:i32, cancelled:&AtomicBool)->Result<Vec<u8>> {
-    let payload=Payload::open(resources)?;
+pub(super) fn run(payload:&Payload, input_fd:i32, cancelled:&AtomicBool)->Result<Vec<u8>> {
     let (node,script,root)=payload.oex_format_hint()?;
     let fd=unsafe{libc::fcntl(input_fd,libc::F_DUPFD_CLOEXEC,64)};
     if fd<0{return Err(invalid());}

@@ -125,7 +125,7 @@ public struct NativeOEXArchive: Sendable {
     }
     /// Provisional metadata from the same sealed snapshot. Platform still hashes
     /// and validates the complete archive under the independently held import lease.
-    func selectedFormat(helper: URL) async throws -> String {
+    func selectedFormat(helper: URL, workspaceV5ValidationRuntime: URL? = nil) async throws -> String {
         let ownedFile = file, identity = stamp, expectedCount = count
         let work = Task.detached(priority: .userInitiated) {
             let fd = Darwin.open(ownedFile.url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
@@ -135,7 +135,8 @@ public struct NativeOEXArchive: Sendable {
             var before = stat()
             guard fstat(fd, &before) == 0, identity.matches(before), before.st_size == Int64(expectedCount) else { throw AuthoringFailure("FILE_CHANGED") }
             let child = Process(), pipe = Pipe()
-            child.executableURL = helper; child.arguments = ["--oex-selected-format"]
+            child.executableURL = helper
+            child.arguments = workspaceV5ValidationRuntime.map { ["--oex-selected-format-v5-validation", $0.path] } ?? ["--oex-selected-format"]
             child.environment = ["PATH": "/usr/bin:/bin", "LANG": "C"]
             child.standardInput = source; child.standardOutput = pipe; child.standardError = FileHandle.nullDevice
             try Task.checkCancellation(); try child.run()

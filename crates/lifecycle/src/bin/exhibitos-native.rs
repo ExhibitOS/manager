@@ -9,18 +9,27 @@ use std::io::{BufRead, Read};
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
     #[cfg(target_os = "macos")]
-    if args.len()==2 && args[1]=="--oex-selected-format" {
-        unsafe { libc::signal(libc::SIGTERM,shutdown_signal as *const () as libc::sighandler_t);libc::signal(libc::SIGINT,shutdown_signal as *const () as libc::sighandler_t); }
-        let result=native_resources().ok_or(())
-            .and_then(|root|exhibitos_lifecycle::native_runtime::selected_oex_format(&root,libc::STDIN_FILENO,&STOP).map_err(|_|()));
-        match result {
-            Ok(bytes)=>{let mut out=io::stdout().lock();if out.write_all(&bytes).and_then(|_|out.write_all(b"\n")).is_err(){std::process::exit(1);}},
-            Err(())=>{eprintln!("NATIVE_OEX_FORMAT_INVALID");std::process::exit(1);}
-        }
+    if args.len() == 2 && args[1] == "--oex-selected-format" {
+        run_format_hint(|| native_resources().ok_or(()).and_then(|root|
+            exhibitos_lifecycle::native_runtime::selected_oex_format(&root, libc::STDIN_FILENO, &STOP).map_err(|_| ())));
         return;
     }
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    if args.len() == 3 && args[1] == "--oex-selected-format-v5-validation" {
+        run_format_hint(|| exhibitos_lifecycle::native_runtime::selected_oex_format_v5_validation(
+            std::path::Path::new(&args[2]), libc::STDIN_FILENO, &STOP).map_err(|_| ()));
+        return;
+    }
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    if args.len() == 5 && args[1] == "--profile" && args[3] == "--reopen-workspace-v5-validation" {
+        let result = exhibitos_lifecycle::native_host::Host::reopen_workspace_v5_validation((&args[2]).into(), (&args[4]).into());
+        match result { Ok(host) => std::process::exit(run_host(host)), Err(error) => { eprintln!("{}", error.code); std::process::exit(1); } }
+    }
     #[cfg(target_os = "macos")]
-    if (args.len() == 5 || (args.len() == 6 && args[5] == "--selected-oex9")) && args[1] == "--profile" && args[3] == "--fresh-workspace-ports" {
+    if (args.len() == 5 || (args.len() == 6 && args[5] == "--selected-oex9")
+        || (cfg!(all(feature = "workspace-v5-owner-validation", debug_assertions))
+            && args.len() == 7 && args[5] == "--selected-oex-v5-validation"))
+        && args[1] == "--profile" && args[3] == "--fresh-workspace-ports" {
         let profile = std::path::PathBuf::from(&args[2]);
         let ports = args[4].to_str().and_then(|v| serde_json::from_str::<exhibitos_lifecycle::native_installation::Ports>(v).ok());
         if !profile.is_absolute() || profile.symlink_metadata().is_ok() || ports.is_none() {
@@ -32,6 +41,12 @@ fn main() {
         let values = [ports.web, ports.api, ports.database];
         if values.iter().any(|p| *p < 1024) || values[0] == values[1] || values[0] == values[2] || values[1] == values[2] {
             eprintln!("NATIVE_PORTS_INVALID"); std::process::exit(2);
+        }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        if args.len() == 7 {
+            let runtime = std::path::PathBuf::from(&args[6]);
+            let result = exhibitos_lifecycle::native_host::Host::new_fresh_workspace_v5_validation(profile, runtime, ports);
+            match result { Ok(host) => std::process::exit(run_host(host)), Err(error) => { eprintln!("{}", error.code); std::process::exit(1); } }
         }
         if args.len() == 6 {
             let result = native_resources().ok_or_else(|| "NATIVE_HELPER_MISSING".to_string()).and_then(|resources|
@@ -104,6 +119,20 @@ fn run(controller: InstallationController) -> i32 {
 
 #[cfg(target_os = "macos")]
 static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+fn run_format_hint(inspect: impl FnOnce() -> Result<Vec<u8>, ()>) {
+    unsafe {
+        libc::signal(libc::SIGTERM, shutdown_signal as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGINT, shutdown_signal as *const () as libc::sighandler_t);
+    }
+    match inspect() {
+        Ok(bytes) => {
+            let mut out = io::stdout().lock();
+            if out.write_all(&bytes).and_then(|_| out.write_all(b"\n")).is_err() { std::process::exit(1); }
+        }
+        Err(()) => { eprintln!("NATIVE_OEX_FORMAT_INVALID"); std::process::exit(1); }
+    }
+}
 #[cfg(target_os = "macos")]
 extern "C" fn shutdown_signal(_: libc::c_int) {
     STOP.store(true, std::sync::atomic::Ordering::SeqCst);
