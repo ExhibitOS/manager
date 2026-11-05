@@ -107,7 +107,13 @@ impl Setup {
         Ok(bytes)
     }
     pub(super) fn normal_028_bootstrap(&self, auth:&LocalAuthority, generation:&str) -> Result<Vec<u8>> {
-        let value=FreshOwnerBootstrap {workspace:auth,owner_channel:FreshOwnerBinding {version:3,runtime_generation:generation,secret:&self.secret,mode:"normal-oex-028-v4"}};
+        self.normal_selected_v3_bootstrap(auth, generation, "normal-oex-028-v4")
+    }
+    pub(super) fn workspace_v5_bootstrap(&self, auth: &LocalAuthority, generation: &str) -> Result<Vec<u8>> {
+        self.normal_selected_v3_bootstrap(auth, generation, "normal-oex-workspace-v5")
+    }
+    fn normal_selected_v3_bootstrap(&self, auth: &LocalAuthority, generation: &str, mode: &'static str) -> Result<Vec<u8>> {
+        let value=FreshOwnerBootstrap {workspace:auth,owner_channel:FreshOwnerBinding {version:3,runtime_generation:generation,secret:&self.secret,mode}};
         let bytes=serde_json::to_vec(&value).map_err(|_|err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
         if bytes.len()>4096 {return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));} Ok(bytes)
     }
@@ -545,6 +551,19 @@ mod tests {
         assert_eq!(value["ownerChannel"]["runtimeGeneration"],generation);
         assert_eq!(value["workspace"]["workspaceId"],auth.workspace_id);
         assert_eq!(value["ownerChannel"].as_object().unwrap().len(),4);
+    }
+    #[test]
+    fn workspace_v5_bootstrap_uses_the_private_v3_envelope() {
+        let setup = Setup::new().unwrap();
+        let auth = authority();
+        let generation = Uuid::new_v4().to_string();
+        let bytes = setup.workspace_v5_bootstrap(&auth, &generation).unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        let mut legacy: Value = serde_json::from_slice(&setup.normal_028_bootstrap(&auth, &generation).unwrap()).unwrap();
+        assert_eq!(legacy["ownerChannel"]["mode"], "normal-oex-028-v4");
+        legacy["ownerChannel"]["mode"] = "normal-oex-workspace-v5".into();
+        assert_eq!(value, legacy);
+        assert_eq!(value["ownerChannel"]["version"], 3);
     }
     #[test]
     fn selected_normal_bootstrap_has_exact_v2_identity_and_mode() {

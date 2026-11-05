@@ -180,6 +180,15 @@ impl Host {
     pub fn new_fresh_selected_with_ports(profile: PathBuf, resources: PathBuf, ports: Ports) -> Result<Self> {
         ports.validate()?;
         let payload = Arc::new(Payload::open(&resources)?);
+        Self::from_fresh_selected_payload(profile, resources, ports, payload)
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub fn new_fresh_workspace_v5_validation(profile: PathBuf, resources: PathBuf, ports: Ports) -> Result<Self> {
+        ports.validate()?;
+        let payload = Arc::new(Payload::open_workspace_v5_validation(&resources)?);
+        Self::from_fresh_selected_payload(profile, resources, ports, payload)
+    }
+    fn from_fresh_selected_payload(profile: PathBuf, resources: PathBuf, ports: Ports, payload: Arc<Payload>) -> Result<Self> {
         let (controller, session) = InstallationController::with_fresh_selected(profile, payload.clone(), ports)?;
         let token = controller.context()?.selection_token;
         let root = controller.with_current(&token, |s| Ok(s.root.clone()))?;

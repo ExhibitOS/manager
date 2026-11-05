@@ -20,7 +20,10 @@ fn main() {
         return;
     }
     #[cfg(target_os = "macos")]
-    if (args.len() == 5 || (args.len() == 6 && args[5] == "--selected-oex9")) && args[1] == "--profile" && args[3] == "--fresh-workspace-ports" {
+    if (args.len() == 5 || (args.len() == 6 && args[5] == "--selected-oex9")
+        || (cfg!(all(feature = "workspace-v5-owner-validation", debug_assertions))
+            && args.len() == 7 && args[5] == "--selected-oex-v5-validation"))
+        && args[1] == "--profile" && args[3] == "--fresh-workspace-ports" {
         let profile = std::path::PathBuf::from(&args[2]);
         let ports = args[4].to_str().and_then(|v| serde_json::from_str::<exhibitos_lifecycle::native_installation::Ports>(v).ok());
         if !profile.is_absolute() || profile.symlink_metadata().is_ok() || ports.is_none() {
@@ -32,6 +35,12 @@ fn main() {
         let values = [ports.web, ports.api, ports.database];
         if values.iter().any(|p| *p < 1024) || values[0] == values[1] || values[0] == values[2] || values[1] == values[2] {
             eprintln!("NATIVE_PORTS_INVALID"); std::process::exit(2);
+        }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        if args.len() == 7 {
+            let runtime = std::path::PathBuf::from(&args[6]);
+            let result = exhibitos_lifecycle::native_host::Host::new_fresh_workspace_v5_validation(profile, runtime, ports);
+            match result { Ok(host) => std::process::exit(run_host(host)), Err(error) => { eprintln!("{}", error.code); std::process::exit(1); } }
         }
         if args.len() == 6 {
             let result = native_resources().ok_or_else(|| "NATIVE_HELPER_MISSING".to_string()).and_then(|resources|

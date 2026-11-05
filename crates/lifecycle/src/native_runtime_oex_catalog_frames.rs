@@ -23,8 +23,6 @@ pub(super) const WORKSPACE_V5_LEDGER: [(&str, &str); 7] = [
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Protocol {
     V2,
-    // Selection remains disabled until the pinned v5 package is qualified.
-    #[allow(dead_code)]
     WorkspaceV5,
 }
 

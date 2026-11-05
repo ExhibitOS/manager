@@ -1179,6 +1179,7 @@ impl Session {
         } else { None };
         let generation = self.job_id.as_deref().ok_or_else(|| err("NATIVE_JOURNAL_INVALID"))?;
         let mut private_input = match (&self.local_authority, &owner_setup) {
+            (Some(a), Some(setup)) if self.payload.workspace_v5_selected_input() => Some(setup.workspace_v5_bootstrap(a, generation)?),
             (Some(a), Some(setup)) if self.payload.normal_oex_028_selected_input()? => Some(setup.normal_028_bootstrap(a, generation)?),
             (Some(a), Some(setup)) if self.payload.normal_oex_027_selected_input()? => Some(setup.normal_027_bootstrap(a, generation)?),
             (Some(a), Some(setup)) => Some(setup.normal_bootstrap(a, generation)?),
@@ -1226,7 +1227,9 @@ impl Session {
                     self.readiness = ready;
                     self.state = "ready".into();
                     if self.normal_oex_selected {
-                        if self.payload.normal_oex_027_selected_input()? {
+                        if self.payload.workspace_v5_selected_input() {
+                            self.accept_oex_catalog(oex_catalog_frames::Protocol::WorkspaceV5)?;
+                        } else if self.payload.normal_oex_027_selected_input()? {
                             self.accept_oex_catalog(oex_catalog_frames::Protocol::V2)?;
                         }
                         self.await_oex_owner_ready()?;

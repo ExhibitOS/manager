@@ -70,6 +70,30 @@ pub struct Payload {
     root: PathBuf,
     manifest: Manifest,
     manifest_sha256: String,
+    workspace_v5_validation: bool,
+}
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const WORKSPACE_V5_VALIDATION_PROVENANCE: (&str, &str, &str) = (
+    "742412c152037c20a4c32e5ccce8535be46822aa",
+    "d0dac02c2b8cc5344a1aef48042d64fdd5f6d61a26851ae6c27cee03bcef7364",
+    "40ca49e65e769c4c034eea69300ff65ce8af46ef9b081a9a2b4b1ade12ed9415",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const WORKSPACE_V5_CAPABILITY: (&str, u64, &str) = (
+    "platform/scripts/native-workspace-material-capability-v5.json",
+    700,
+    "8c5f7f44fb7b0a898611977064f95d4988eeff4945093c0df351f7b6baaf217a",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+fn workspace_v5_validation_matches(manifest: &Manifest, manifest_hash: &str) -> bool {
+    let (path, bytes, sha) = WORKSPACE_V5_CAPABILITY;
+    manifest.mode == "local-validation" && !manifest.redistribution_qualified && !manifest.official_signed
+        && (manifest.source_commit.as_str(), manifest.producer_sha256.as_str(), manifest_hash)
+            == WORKSPACE_V5_VALIDATION_PROVENANCE
+        && manifest.files.iter().any(|item| {
+            item.path == path && item.link.is_none() && item.executable == Some(false)
+                && item.bytes == Some(bytes) && item.sha256.as_deref() == Some(sha)
+        })
 }
 const NORMAL_OEX_CAPABILITY_PATH: &str = "platform/scripts/native-normal-oex-capability-v1.json";
 const NORMAL_OEX_CAPABILITY_SHA256: &str = "f7573901d3884338eca4b262ad68b1b8379dfa84a9dd891fc44a174c5c453e57";
@@ -267,6 +291,26 @@ mod normal_oex_release_declaration_tests {
             "files":files,"redistributionQualified":true,"officialSigned":true,"remaining":"synthetic policy test"})).unwrap()
     }
 
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn workspace_v5_validation_requires_exact_local_tuple_and_regular_marker() {
+        let (source, producer, hash) = WORKSPACE_V5_VALIDATION_PROVENANCE;
+        let (path, bytes, sha) = WORKSPACE_V5_CAPABILITY;
+        let mut manifest = fixture();
+        manifest.source_commit = source.into();
+        manifest.producer_sha256 = producer.into();
+        assert!(!workspace_v5_validation_matches(&manifest, hash));
+        manifest.mode = "local-validation".into();
+        manifest.redistribution_qualified = false;
+        manifest.official_signed = false;
+        assert!(!workspace_v5_validation_matches(&manifest, hash));
+        manifest.files.push(Item { path: path.into(), bytes: Some(bytes), sha256: Some(sha.into()), executable: Some(false), link: None });
+        assert!(workspace_v5_validation_matches(&manifest, hash));
+        assert!(!workspace_v5_validation_matches(&manifest, &"0".repeat(64)));
+        manifest.files.last_mut().unwrap().link = Some("other".into());
+        assert!(!workspace_v5_validation_matches(&manifest, hash));
+    }
+
     fn local_fixture() -> Manifest {
         let mut m = fixture();
         m.mode = "local-validation".into(); m.redistribution_qualified = false; m.official_signed = false;
@@ -324,7 +368,7 @@ mod normal_oex_release_declaration_tests {
         let mut manifest = local_fixture();
         manifest.source_commit = source.into();
         manifest.producer_sha256 = producer.into();
-        let mut payload = Payload { root: PathBuf::new(), manifest, manifest_sha256: hash.into() };
+        let mut payload = Payload { root: PathBuf::new(), manifest, manifest_sha256: hash.into(), workspace_v5_validation: false };
         assert!(payload.normal_oex_030_concrete_tuple());
         assert!(!payload.normal_oex_029_floor_tuple());
         assert!(!normal_oex_030_concrete_inventory_matches(&payload.manifest));
@@ -698,7 +742,22 @@ impl Payload {
             root,
             manifest,
             manifest_sha256: digest(&bytes),
+            workspace_v5_validation: false,
         })
+    }
+    /// Available only to the fresh selected validation entry. The normal
+    /// payload opener cannot create this state, even in a validation build.
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn open_workspace_v5_validation(root: &Path) -> Result<Self> {
+        let mut payload = Self::open(root)?;
+        if !workspace_v5_validation_matches(&payload.manifest, &payload.manifest_sha256) {
+            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        }
+        payload.workspace_v5_validation = true;
+        Ok(payload)
+    }
+    pub(crate) fn workspace_v5_selected_input(&self) -> bool {
+        self.workspace_v5_validation
     }
     /// Fresh byte admission before a migration writes or runs maintenance tools.
     pub(crate) fn recheck(&self) -> Result<()> {
@@ -729,6 +788,10 @@ impl Payload {
         self.normal_oex_selected_admission(NORMAL_OEX_RELEASE_PROVENANCE, false)
     }
     pub(crate) fn normal_oex_028_selected_input(&self)->Result<bool> {
+        if self.workspace_v5_selected_input() {
+            self.recheck()?;
+            return Ok(true);
+        }
         let concrete = self.normal_oex_030_concrete_tuple();
         let floor=self.normal_oex_029_floor_tuple() || concrete;
         let approved=if self.manifest.mode=="release"&&self.manifest.redistribution_qualified&&self.manifest.official_signed {
