@@ -435,7 +435,7 @@ extension AuthoringModel {
         guard generation == importStatusGeneration, available, self.api === api,
               transfer?.intent == intent else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
         guard artwork.id == intent.artworkId, let metadata = artwork.metadata,
-              metadata.provenance.sourceUnits != "unknown" else {
+              ["m", "cm", "mm"].contains(metadata.provenance.sourceUnits) else {
             throw AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID")
         }
     }
