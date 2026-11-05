@@ -423,9 +423,19 @@ extension AuthoringModel {
     func recoverImport() async {
         await action {
             guard let api, let intent = transfer?.intent else { return }
+            try await checkGUIImportContinuation(intent, api: api)
             try await continueImport(intent: intent, file: nil, api: api)
             notice = "같은 파일 검사 요청의 현재 상태를 확인했습니다."
             scheduleImportPoll()
+        }
+    }
+    private func checkGUIImportContinuation(_ intent: NativeImportIntent, api: AuthoringAPI) async throws {
+        let generation = importStatusGeneration
+        let artwork = try await api.artwork(intent.artworkId)
+        guard generation == importStatusGeneration, available, self.api === api,
+              transfer?.intent == intent else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+        guard artwork.metadata?.provenance.sourceUnits != "unknown" else {
+            throw AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID")
         }
     }
     private func continueImport(intent: NativeImportIntent, file: ImportFileSnapshot?, derived: NativePreparedJPEG? = nil, api: AuthoringAPI) async throws {
@@ -517,6 +527,10 @@ extension AuthoringModel {
     func changeImport(_ change: NativeImportAction) async {
         await action {
             guard let api, let job = importJob else { return }
+            if change == .retry, let intent = transfer?.intent {
+                try await checkGUIImportContinuation(intent, api: api)
+                guard importJob?.id == job.id else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+            }
             if let intent = transfer?.intent, intent.derived?.recipe.colourConversion != nil {
                 guard iccImportAdmitted else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
                 guard transfer?.jobId?.lowercased() == job.id.lowercased() else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }

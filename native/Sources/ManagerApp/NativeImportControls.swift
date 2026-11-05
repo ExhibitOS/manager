@@ -44,7 +44,7 @@ struct NativeImportControls: View {
                             .disabled(model.metadataDirty || model.selected == nil || model.importFile == nil || model.transfer == nil || !model.importScale.isFinite || model.importScale <= 0)
                     }
                 }
-                if model.transfer?.intent != nil && model.importJob == nil {
+                if !model.hasUnknownSourceUnits && model.transfer?.intent != nil && model.importJob == nil {
                     Button("이전 검사 요청 찾기") { Task { await model.recoverImport() } }
                 }
                 if let job = model.importJob {
@@ -72,9 +72,9 @@ struct NativeImportControls: View {
                     if ["queued", "processing"].contains(job.state) { ProgressView(value: Double(job.progress), total: 100).accessibilityLabel("파일 검사 진행") }
                     HStack {
                         Button("상태 다시 확인") { Task { await model.refreshImport() } }
-                        if job.state == "uploading" { Button("받은 원본으로 검사 계속") { Task { await model.recoverImport() } } }
-                        if job.state == "failed" { Button("검사 재시도") { Task { await model.changeImport(.retry) } }.disabled(!job.canRetry || model.intakeDrainPending) }
-                        if job.state == "approved", job.modelDerivation?.status == "failed" {
+                        if !model.hasUnknownSourceUnits && job.state == "uploading" { Button("받은 원본으로 검사 계속") { Task { await model.recoverImport() } } }
+                        if !model.hasUnknownSourceUnits && job.state == "failed" { Button("검사 재시도") { Task { await model.changeImport(.retry) } }.disabled(!job.canRetry || model.intakeDrainPending) }
+                        if !model.hasUnknownSourceUnits, job.state == "approved", job.modelDerivation?.status == "failed" {
                             Button("감상용 파일 재시도") { Task { await model.changeImport(.retry) } }
                                 .disabled(!job.canRetry || !model.modelDerivationEnabled || model.modelWorkerPending)
                         }
