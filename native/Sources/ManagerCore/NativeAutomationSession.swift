@@ -273,14 +273,31 @@ public actor NativeAutomationSession {
         case "floor-appearance-apply":
             try checkedRevision(request, current)
             let policy = try await checkSavedSurfacePolicy(current, api: api)
-            let command = try NativeAutomationArtworkRules.command(request, keys: ["roomId", "surfaceId", "preset"])
+            let command = request["command"]
             guard selectedOEXFormat == nil, var draft = current.draft,
-                  let room = command["roomId"].string, let surface = command["surfaceId"].string,
-                  let name = command["preset"].string, let preset = FloorSettings.Preset(rawValue: name) else {
+                  case .object(let fields) = command,
+                  let room = command["roomId"].string, let surface = command["surfaceId"].string else {
                 throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
             }
-            try draft.applyFloorAppearance(preset, roomId: room, surfaceId: surface)
-            _ = try await api.floorPreview(preset)
+            if Set(fields.keys) == ["roomId", "surfaceId", "preset"],
+               let name = command["preset"].string, let preset = FloorSettings.Preset(rawValue: name) {
+                try draft.applyFloorAppearance(preset, roomId: room, surfaceId: surface)
+                _ = try await api.floorPreview(preset)
+            } else {
+                guard Set(fields.keys) == ["roomId", "surfaceId", "catalog"],
+                      command["catalog"] == NativePrivateFloorCatalog.reference else {
+                    throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+                }
+                let status = try await bridge.nativeStatus(context)
+                guard let manifest = status.configuration?.manifestSha256, manifest == runtimeManifest,
+                      NativePrivateFloorCatalog.supports(manifestSHA256: manifest, ready: status.runtime?.readiness.ready == true) else {
+                    throw BridgeFailure("MATERIAL_CATALOG_UNAVAILABLE")
+                }
+                let catalog = try await api.privateFloorCatalog()
+                _ = try await api.privateFloorPreview(catalog)
+                try draft.applyFloorAppearance(.wood, roomId: room, surfaceId: surface,
+                                               defaults: NativePrivateFloorCatalog.defaults)
+            }
             var next = current
             next.draft = draft
             let saved = try await bridge.saveDocumentState(context, state: next)

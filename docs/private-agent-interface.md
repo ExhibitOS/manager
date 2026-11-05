@@ -85,13 +85,17 @@ Operations:
   one-shot selected-save handshake, authentic import receipt and ordinary
   editing transition as draft.9. The returned `receipt.path` holds the actual
   import `idMap` and `assetAliases`.
-- `floor-appearance-apply`: `command` contains exactly `roomId`, `surfaceId` and
-  `preset` (`wood`, `marble`, `tile` or `carpet`). Use the mapped room and
-  floor IDs from the import receipt. The current saved Studio policy must
-  explicitly permit ordinary editing and match the native ETag. The runtime
-  must serve the verified preset preview. The existing floor reducer applies
-  the preset's appearance fields for that floor, retaining its sound and
-  footstep resources. The response contains the new native `document` and the
+- `floor-appearance-apply` accepts `roomId` and `surfaceId` in `command` plus
+  exactly one selection. Use `preset` (`wood`, `marble`, `tile` or `carpet`)
+  for the existing presets. Use `catalog: {"id":"quiet-oak-herringbone","version":1}`
+  for the named private card. The card requires a ready, qualified local
+  runtime and a verified catalogue response and preview for the authenticated
+  tenant. It sets the pack, 0.9 m repeat, rotation and normal scale for the
+  mapped floor. Use the room and floor IDs from the import receipt. The current
+  saved Studio policy must explicitly permit ordinary editing and match the
+  native ETag. Presets require their verified preview. Both selections use the
+  same floor reducer and retain sound and footstep resources. The response
+  contains the new native `document` and the
   observed saved `policy`. Save before exporting. This command has no visual or
   audio observation.
 - `bench-prepare`: accept the existing `add-bench` command and optional fresh

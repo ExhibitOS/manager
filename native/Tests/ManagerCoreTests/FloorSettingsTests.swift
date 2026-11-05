@@ -104,6 +104,20 @@ final class FloorSettingsTests: XCTestCase {
         var expected = original
         expected["extensions"][FloorSettings.namespace] = draft.candidate["extensions"][FloorSettings.namespace]
         XCTAssertEqual(draft.candidate, expected)
+
+        var oakDraft = before
+        try oakDraft.applyFloorAppearance(.wood, roomId: roomId, surfaceId: surfaceId,
+                                          defaults: NativePrivateFloorCatalog.defaults)
+        expected["extensions"][FloorSettings.namespace] = .object([
+            "version": .integer(1),
+            "bindings": .array([.object([
+                "target": .object(["kind": .string("surface"), "surfaceId": .string(surfaceId)]),
+                "preset": .string("wood"),
+                "texturePack": .object(["id": .string("quiet-oak-herringbone"), "version": .integer(1)]),
+                "repeatMeters": .vector([0.9, 0.9]), "rotation": .integer(0), "normalScale": .integer(1)
+            ])])
+        ])
+        XCTAssertEqual(oakDraft.candidate, expected)
     }
     func testExplicitDefaultSoundDeclaresOnlySelectedFamilyAndPreservesOtherData() throws {
         var (draft, target) = try fixture()
