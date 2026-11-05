@@ -239,15 +239,17 @@ public struct FloorSettings: Equatable, Sendable {
 extension NativeExhibitionDraft {
     public mutating func setFloor(_ settings: FloorSettings?, target: FloorSettings.Target, declareDefaultSound: Bool = false) throws { try FloorSettings.set(settings, target: target, on: &self, declareDefaultSound: declareDefaultSound) }
 
-    mutating func applyFloorAppearance(_ preset: FloorSettings.Preset, roomId: String, surfaceId: String) throws {
+    mutating func applyFloorAppearance(_ preset: FloorSettings.Preset, roomId: String, surfaceId: String,
+                                       defaults: [FloorSettings.Field: DocumentValue]? = nil) throws {
         guard UUID(uuidString: roomId) != nil, UUID(uuidString: surfaceId) != nil,
               candidate["surfaces"].items?.contains(where: {
                   $0["id"].string == surfaceId && $0["roomId"].string == roomId && $0["type"].string == "floor"
               }) == true else { throw AuthoringFailure("FLOOR_TARGET_INVALID") }
         let target = FloorSettings.Target(kind: .surface, id: surfaceId)
         let prior = try FloorSettings.read(from: self, target: target)
-        let fields = Set(FloorSettings.Field.allCases).subtracting([.sound])
-        let appearance = try FloorSettings.applying(preset: preset, defaults: FloorSettings.defaults(preset),
+        let defaults = defaults ?? FloorSettings.defaults(preset)
+        let fields = Set(defaults.keys).subtracting([.sound])
+        let appearance = try FloorSettings.applying(preset: preset, defaults: defaults,
             fields: fields, target: target, prior: prior, candidate: candidate)
         try setFloor(appearance, target: target)
     }
