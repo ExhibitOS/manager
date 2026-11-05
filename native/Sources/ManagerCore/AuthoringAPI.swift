@@ -749,6 +749,11 @@ public actor AuthoringAPI {
         let job: NativeOEXImportJob = try await request("/api/v1/tenants/\(tenant)/oex/imports/\(identifier(id))")
         return try job.checked()
     }
+    /// Preserve the supported importer's full receipt/idMap without inventing
+    /// fields absent from older runtimes or exposing local session credentials.
+    public func oexImportReceipt(_ id: String) async throws -> DocumentValue {
+        try await request("/api/v1/tenants/\(tenant)/oex/imports/\(identifier(id))")
+    }
     public func uploadOEXImport(_ id: String, archive: NativeOEXArchive) async throws {
         struct Receipt: Decodable { let received: Int }
         let receipt: Receipt = try await request("/api/v1/tenants/\(tenant)/oex/imports/\(identifier(id))/bytes", method: "PUT", bodyFile: archive.fileURL, bodyLength: archive.count, contentType: "application/octet-stream", timeout: 120)

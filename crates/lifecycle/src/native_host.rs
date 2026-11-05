@@ -110,6 +110,7 @@ impl Drop for SessionLease {
 pub struct Host {
     controller: Arc<InstallationController>,
     resources: PathBuf,
+    prepare_ports: Ports,
     state: Arc<Mutex<State>>,
     worker: Option<thread::JoinHandle<()>>,
     exporter: super::installations::native_static_export::Exporter,
@@ -133,6 +134,7 @@ impl Host {
             hoster: super::installations::native_hosting::Hoster::new(controller.clone()),
             controller,
             resources,
+            prepare_ports: Ports::default(),
             state: Arc::new(Mutex::new(State {
                 root: None,
                 busy: false,
@@ -160,14 +162,28 @@ impl Host {
             worker: None,
         }
     }
+    /// Fresh ordinary automation workspaces use their own validated ports.
+    /// The CLI checks nonexistence before constructing the controller; the
+    /// profile lock still supplies exclusive ownership during initialization.
+    pub fn new_with_ports(controller: Arc<InstallationController>, resources: PathBuf, ports: Ports) -> Result<Self> {
+        ports.validate()?;
+        let mut host = Self::new(controller, resources);
+        host.prepare_ports = ports;
+        Ok(host)
+    }
     /// Explicit selected entry for a profile that must not already exist.
     /// The controller and its exclusively locked Session remain owned by the
     /// same Host; no existing installation is stopped or selected here.
     pub fn new_fresh_selected(profile: PathBuf, resources: PathBuf) -> Result<Self> {
+        Self::new_fresh_selected_with_ports(profile, resources, Ports::default())
+    }
+    pub fn new_fresh_selected_with_ports(profile: PathBuf, resources: PathBuf, ports: Ports) -> Result<Self> {
+        ports.validate()?;
         let payload = Arc::new(Payload::open(&resources)?);
-        let (controller, session) = InstallationController::with_fresh_selected(profile, payload.clone(), Ports::default())?;
+        let (controller, session) = InstallationController::with_fresh_selected(profile, payload.clone(), ports)?;
         let token = controller.context()?.selection_token;
         let root = controller.with_current(&token, |s| Ok(s.root.clone()))?;
+        let configuration = controller.with_current(&token, |service| service.native_prepared())?;
         let host = Self::new(Arc::new(controller), resources);
         {
             let mut state = host.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
@@ -175,6 +191,8 @@ impl Host {
             state.payload = Some(payload);
             state.session = Some(session);
             state.selected_oex = true;
+            state.configuration = configuration;
+            state.account_required = false;
         }
         Ok(host)
     }
@@ -322,6 +340,7 @@ impl Host {
         let shared = self.state.clone();
         let controller = self.controller.clone();
         let resources = self.resources.clone();
+        let prepare_ports = self.prepare_ports;
         self.worker = Some(thread::spawn(move || {
             let mut preserved_backup = false;
             let mut oex_owned_session = false;
@@ -502,11 +521,11 @@ impl Host {
                             };
                             let context = controller.with_current_mutation(&token, |service| {
                                 if account.is_none() {
-                                    service.prepare_native_personal(&payload, Ports::default())
+                                    service.prepare_native_personal(&payload, prepare_ports)
                                 } else {
                                     service.prepare_native_installation(
                                         &payload,
-                                        Ports::default(),
+                                        prepare_ports,
                                         account,
                                     )
                                 }
@@ -1040,7 +1059,10 @@ impl Host {
                 )?)
                 .map_err(|_| err("STATE_INVALID"));
             }
-            UiCommand::NativeStop { .. } => { self.exporter.cancel(); self.hoster.cancel(); },
+            UiCommand::NativeStop { selection_token } => {
+                self.selected(selection_token)?;
+                self.exporter.cancel(); self.hoster.cancel();
+            },
             _ => {}
         }
         if let UiCommand::NativeAuthoringSession { selection_token } = &request.command {

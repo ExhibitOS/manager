@@ -19,6 +19,35 @@ fn main() {
         }
         return;
     }
+    #[cfg(target_os = "macos")]
+    if (args.len() == 5 || (args.len() == 6 && args[5] == "--selected-oex9")) && args[1] == "--profile" && args[3] == "--fresh-workspace-ports" {
+        let profile = std::path::PathBuf::from(&args[2]);
+        let ports = args[4].to_str().and_then(|v| serde_json::from_str::<exhibitos_lifecycle::native_installation::Ports>(v).ok());
+        if !profile.is_absolute() || profile.symlink_metadata().is_ok() || ports.is_none() {
+            eprintln!("NATIVE_FRESH_WORKSPACE_REQUIRED"); std::process::exit(2);
+        }
+        // Validate before initializing any new profile. Port validation remains
+        // in the existing preparation path too; existing profiles are refused.
+        let ports = ports.unwrap();
+        let values = [ports.web, ports.api, ports.database];
+        if values.iter().any(|p| *p < 1024) || values[0] == values[1] || values[0] == values[2] || values[1] == values[2] {
+            eprintln!("NATIVE_PORTS_INVALID"); std::process::exit(2);
+        }
+        if args.len() == 6 {
+            let result = native_resources().ok_or_else(|| "NATIVE_HELPER_MISSING".to_string()).and_then(|resources|
+                exhibitos_lifecycle::native_host::Host::new_fresh_selected_with_ports(profile, resources, ports).map_err(|e| e.code));
+            match result { Ok(host) => std::process::exit(run_host(host)), Err(code) => { eprintln!("{code}"); std::process::exit(1); } }
+        }
+        use std::os::unix::fs::DirBuilderExt;
+        if std::fs::DirBuilder::new().mode(0o700).create(&profile).is_err() {
+            eprintln!("NATIVE_FRESH_WORKSPACE_REQUIRED"); std::process::exit(2);
+        }
+        let result = native_resources().ok_or_else(|| "NATIVE_HELPER_MISSING".to_string()).and_then(|resources| {
+            InstallationController::new(profile, None).map_err(|e| e.code).and_then(|controller|
+                exhibitos_lifecycle::native_host::Host::new_with_ports(std::sync::Arc::new(controller), resources, ports).map_err(|e| e.code))
+        });
+        match result { Ok(host) => std::process::exit(run_host(host)), Err(code) => { eprintln!("{code}"); std::process::exit(1); } }
+    }
     if !(args.len() == 3 || (cfg!(target_os = "macos") && args.len() == 4 && args[3] == "--fresh-selected-oex"))
         || args[1] != "--profile" || !std::path::Path::new(&args[2]).is_absolute() {
         eprintln!("NATIVE_PROFILE_REQUIRED");

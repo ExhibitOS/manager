@@ -87,7 +87,7 @@ public enum NativeOEXImportTransfer {
     /// private selection or HTTP; the caller retains the same file and Session.
     /// Errors preserve the journal and are never retried/rearmed here.
     public static func runBoundedOnce(state: NativeOEXImportState, file: NativeOEXImportFile,
-                                      api: any NativeBoundedOEXTransport, archiveFormat: String = "1.0.0-draft.9",
+                                      api: any NativeBoundedOEXTransport, archiveFormat: String = "1.0.0-draft.9", requestId: String = UUID().uuidString.lowercased(),
                                       persist: @escaping @MainActor (NativeOEXImportState) async throws -> NativeOEXImportState,
                                       select: @escaping @MainActor () async throws -> Void,
                                       isCurrent: @escaping @MainActor () -> Bool,
@@ -96,9 +96,10 @@ public enum NativeOEXImportTransfer {
         try check()
         observe(.preparingRequest)
         guard state.format == 1, state.revision < UInt64.max - 1,
-              state.intent == nil, state.jobId == nil else { throw AuthoringFailure("OEX_IMPORT_PROFILE_UNAVAILABLE") }
+              state.intent == nil, state.jobId == nil,
+              UUID(uuidString: requestId)?.uuidString.lowercased() == requestId else { throw AuthoringFailure("OEX_IMPORT_PROFILE_UNAVAILABLE") }
         var saved = state
-        let intent = NativeOEXImportIntent(requestId: UUID().uuidString.lowercased(), sha256: file.archive.sha256, bytes: file.archive.count,
+        let intent = NativeOEXImportIntent(requestId: requestId, sha256: file.archive.sha256, bytes: file.archive.count,
                                            profile: "bounded-file-v1", oexFormat: archiveFormat)
         guard intent.matches(file.archive) else { throw AuthoringFailure("OEX_IMPORT_FILE_CHANGED") }
         saved.intent = intent; saved.fileName = file.name

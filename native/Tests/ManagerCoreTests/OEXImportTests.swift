@@ -29,9 +29,11 @@ private actor BoundedOEXMock: NativeBoundedOEXTransport {
     let jobId = UUID().uuidString.lowercased()
     private var requests = 0
     private var uploads = 0
+    private var requestIDs: [String] = []
     init(_ behavior: Behavior) { self.behavior = behavior }
     func createBoundedOEXImport(requestId: String, archive: NativeOEXArchive) async throws -> NativeBoundedOEXJob {
         requests += 1
+        requestIDs.append(requestId)
         if case .loseCreate = behavior { throw AuthoringFailure("REQUEST_FAILED") }
         if case .cancelAfterCreate = behavior { withUnsafeCurrentTask { $0?.cancel() } }
         return NativeBoundedOEXJob(id: jobId, state: "uploading")
@@ -45,9 +47,29 @@ private actor BoundedOEXMock: NativeBoundedOEXTransport {
     }
     func queueBoundedOEXImport(_ id: String) async throws -> NativeBoundedOEXJob { NativeBoundedOEXJob(id: jobId, state: "queued") }
     func observed() -> (Int, Int) { (requests, uploads) }
+    func observedIDs() -> [String] { requestIDs }
 }
 
 final class OEXImportTests: XCTestCase {
+    @MainActor
+    func testExplicitAgentDraft9RequestIsDurableBeforeSelectionAndInvalidIDHasNoSideEffects() async throws {
+        let identity = UUID().uuidString.lowercased(), requestID = UUID().uuidString.lowercased()
+        let state = NativeOEXImportState(format: 1, revision: 0, workspaceId: identity, tenantId: identity, principalId: identity, intent: nil, jobId: nil, fileName: nil)
+        let archive = try NativeOEXArchive(data: Data([0x50,0x4b,0x03,0x04] + Array(repeating: 0, count: 20)))
+        let file = NativeOEXImportFile(name: "private.oex", archive: archive), api = BoundedOEXMock(.created)
+        var durable = state
+        _ = try await NativeOEXImportTransfer.runBoundedOnce(state: state, file: file, api: api, archiveFormat: "1.0.0-draft.9", requestId: requestID,
+            persist: { input in var next = input; next.revision += 1; durable = next; return next },
+            select: { XCTAssertEqual(durable.intent?.requestId, requestID); XCTAssertEqual(durable.intent?.oexFormat, "1.0.0-draft.9") }, isCurrent: { true })
+        let ids = await api.observedIDs(); XCTAssertEqual(ids, [requestID])
+        let refused = BoundedOEXMock(.created)
+        do {
+            _ = try await NativeOEXImportTransfer.runBoundedOnce(state: state, file: file, api: refused, requestId: "foreign",
+                persist: { _ in XCTFail("Invalid ID must not persist"); return state }, select: { XCTFail("Invalid ID must not select") }, isCurrent: { true })
+            XCTFail("Invalid ID admitted")
+        } catch { XCTAssertEqual((error as? AuthoringFailure)?.code, "OEX_IMPORT_PROFILE_UNAVAILABLE") }
+        let observed = await refused.observed(); XCTAssertEqual(observed.0, 0)
+    }
     func testSelectedFormatHintRejectsUnknownFormatAndForeignSnapshot() throws {
         func bytes(_ format: String = "1.0.0-draft.10", inode: String = "42", extra: Bool = false) throws -> Data {
             var value: [String: Any] = ["version": 1, "kind": "oex-format-hint", "archiveFormat": format, "archiveBytes": 100,

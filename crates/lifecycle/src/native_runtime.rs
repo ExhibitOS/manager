@@ -29,6 +29,24 @@ pub fn selected_oex_format(resources:&Path,input_fd:i32,cancelled:&AtomicBool)->
 #[path = "native_runtime_owner_claim_frames.rs"] mod owner_claim_frames;
 #[path = "native_runtime_owner_metadata_frames.rs"] mod owner_metadata_frames;
 #[path = "native_runtime_owner_binding_encoding.rs"] mod owner_binding_encoding;
+fn native_port_bind_code(error: &std::io::Error) -> &'static str {
+    match error.kind() {
+        std::io::ErrorKind::AddrInUse => "NATIVE_PORT_IN_USE",
+        std::io::ErrorKind::PermissionDenied => "NATIVE_PORT_ACCESS_DENIED",
+        _ => "NATIVE_PORT_BIND_FAILED",
+    }
+}
+#[cfg(test)]
+mod port_bind_diagnostic_tests {
+    #[test]
+    fn permission_failure_is_not_reported_as_foreign_port_owner() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(super::native_port_bind_code(&Error::from(ErrorKind::AddrInUse)), "NATIVE_PORT_IN_USE");
+        assert_eq!(super::native_port_bind_code(&Error::from(ErrorKind::PermissionDenied)), "NATIVE_PORT_ACCESS_DENIED");
+        assert_eq!(super::native_port_bind_code(&Error::from_raw_os_error(libc::EPERM)), "NATIVE_PORT_ACCESS_DENIED");
+        assert_eq!(super::native_port_bind_code(&Error::from(ErrorKind::AddrNotAvailable)), "NATIVE_PORT_BIND_FAILED");
+    }
+}
 use std::{
     collections::BTreeMap,
     net::TcpListener,
@@ -931,7 +949,7 @@ impl Session {
         for port in [self.ports.web, self.ports.api, self.ports.database] {
             reservations.push(
                 TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port)))
-                    .map_err(|_| err("NATIVE_PORT_IN_USE"))?,
+                    .map_err(|error| err(native_port_bind_code(&error)))?,
             );
         }
         if fs2::available_space(&self.service.root).map_err(|_| err("STORAGE_UNAVAILABLE"))?

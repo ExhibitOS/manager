@@ -168,7 +168,7 @@ public actor NativeBridge {
     private var sequence: UInt64 = 0
     private var buffered = Data()
 
-    public init(helper: URL, profile: URL, freshSelectedOEX: Bool = false) throws {
+    public init(helper: URL, profile: URL, freshSelectedOEX: Bool = false, freshWorkspacePorts: [String: UInt16]? = nil, temporaryDirectory: URL? = nil) throws {
         guard helper.isFileURL, profile.isFileURL,
               FileManager.default.isExecutableFile(atPath: helper.path) else {
             throw BridgeFailure("NATIVE_HELPER_MISSING")
@@ -177,9 +177,20 @@ public actor NativeBridge {
         let incoming = Pipe(), outgoing = Pipe()
         process.executableURL = helper
         process.arguments = ["--profile", profile.path] + (freshSelectedOEX ? ["--fresh-selected-oex"] : [])
+        if let ports = freshWorkspacePorts {
+            guard Set(ports.keys) == ["web", "api", "database"], Set(ports.values).count == 3, ports.values.allSatisfy({ $0 >= 1024 }),
+                  !FileManager.default.fileExists(atPath: profile.path) else { throw BridgeFailure("NATIVE_FRESH_WORKSPACE_REQUIRED") }
+            let bytes = try JSONSerialization.data(withJSONObject: ports, options: [.sortedKeys])
+            process.arguments = ["--profile", profile.path, "--fresh-workspace-ports", String(decoding: bytes, as: UTF8.self)] + (freshSelectedOEX ? ["--selected-oex9"] : [])
+        }
         // Legacy status may inspect system-installed engines, but never inherits
         // development PATH, credential environment, or a development checkout.
         process.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": NSHomeDirectory(), "LANG": "en_US.UTF-8"]
+        if let temporaryDirectory {
+            guard temporaryDirectory.isFileURL, temporaryDirectory.resolvingSymlinksInPath() == temporaryDirectory,
+                  FileManager.default.fileExists(atPath: temporaryDirectory.path) else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
+            process.environment?["TMPDIR"] = temporaryDirectory.path
+        }
         process.standardInput = incoming
         process.standardOutput = outgoing
         process.standardError = FileHandle.nullDevice
