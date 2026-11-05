@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 import CryptoKit
+import Darwin
 
 /// Private agent adapter to the same native document journal and authenticated
 /// API used by ManagerApp. No credentials or arbitrary executable are exposed.
 public actor NativeAutomationSession {
     private var bridge: NativeBridge
     private var bridgeOpen = true
+    private var closeFailure: Error?
+    private var closing = false
     private let helper: URL
     private let profile: URL
     private let temporaryRoot: URL
@@ -86,6 +89,7 @@ public actor NativeAutomationSession {
         guard prior.draft == draft, prior.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
         let previous = try await bridge.nativeStatus(context)
         guard previous.runtime?.readiness.ready == true, let previousJob = previous.runtime?.jobId else { throw BridgeFailure("NATIVE_NOT_READY") }
+        let directory = try profileIdentity()
 
         runtimeStopped = true
         proposals.removeAll(); surfaceProposals.removeAll()
@@ -94,14 +98,14 @@ public actor NativeAutomationSession {
         guard let runtime = stopped.runtime, runtime.state == "stopped", !runtime.hasOwnedProcesses else {
             throw BridgeFailure("AUTOMATION_DRAIN_UNCERTAIN")
         }
-        try await bridge.close()
-        bridgeOpen = false
+        try await closeBridge()
         try Task.checkCancellation()
+        guard try profileIdentity() == directory else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
         bridge = try NativeBridge(helper: helper, profile: profile, temporaryDirectory: temporaryRoot)
         bridgeOpen = true
         let reopened = try await bridge.context()
         self.context = reopened
-        guard reopened.activeId == context.activeId,
+        guard try profileIdentity() == directory, reopened.activeId == context.activeId,
               try value(await bridge.documentState(reopened)) == value(current) else {
             throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED")
         }
@@ -119,7 +123,7 @@ public actor NativeAutomationSession {
         let credentials = try await bridge.authoringSession(reopened)
         let reopenedAPI = try AuthoringAPI(port: config.ports.web, tenantId: current.tenantId, nativeRuntimeManifestSHA256: manifest)
         let session = try await reopenedAPI.connect(credentials)
-        guard session.userId == current.principalId,
+        guard try profileIdentity() == directory, session.userId == current.principalId,
               try value(await bridge.documentState(reopened)) == value(current) else {
             throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
         }
@@ -130,6 +134,13 @@ public actor NativeAutomationSession {
         return .object(["document": try value(current), "previousRuntimeJobId": .string(previousJob),
                         "runtimeJobId": .string(job), "studioRevision": .integer(Int64(prior.revision))])
     }
+    private func profileIdentity() throws -> (dev_t, ino_t) {
+        var metadata = stat()
+        guard profile.resolvingSymlinksInPath() == profile, lstat(profile.path, &metadata) == 0,
+              metadata.st_mode & S_IFMT == S_IFDIR, metadata.st_mode & 0o777 == 0o700,
+              metadata.st_uid == getuid() else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+        return (metadata.st_dev, metadata.st_ino)
+    }
     private func statusValue() async throws -> DocumentValue {
         guard let context else { throw BridgeFailure("AUTOMATION_NOT_READY") }
         let state = try await bridge.documentState(context)
@@ -137,7 +148,7 @@ public actor NativeAutomationSession {
                         "capability": .string(capability), "revision": .integer(Int64(state.revision)), "document": try value(state), "closed": .bool(closed)])
     }
     private func checked(_ request: DocumentValue) async throws -> (Context, AuthoringAPI, NativeDocumentState) {
-        guard !closed, let context, let api, let identity,
+        guard !closed, !closing, closeFailure == nil, let context, let api, let identity,
               request["capability"].string == capability,
               request["workspaceId"].string == identity.workspaceId,
               request["tenantId"].string == identity.tenantId,
@@ -545,14 +556,27 @@ public actor NativeAutomationSession {
         return result
     }
     public func close() async throws {
-        guard !busy else { throw BridgeFailure("AUTOMATION_BUSY") }
+        guard !busy, !closing else { throw BridgeFailure("AUTOMATION_BUSY") }
         guard !closed else { return }
+        closing = true
+        defer { closing = false }
+        try await closeBridge()
         closed = true
-        if bridgeOpen { try await bridge.close() }
+    }
+    private func closeBridge() async throws {
+        if let closeFailure { throw closeFailure }
+        guard bridgeOpen else { return }
+        do {
+            try await bridge.close()
+            bridgeOpen = false
+        } catch {
+            closeFailure = error
+            throw error
+        }
     }
     /// Control authorization precedes cancellation or shutdown side effects.
     public func authorizeControl(_ request: DocumentValue) async throws {
-        guard !closed, context != nil, let identity,
+        guard !closed, !closing, context != nil, let identity,
               request["capability"].string == capability,
               request["workspaceId"].string == identity.workspaceId,
               request["tenantId"].string == identity.tenantId,
@@ -570,7 +594,8 @@ public actor NativeAutomationSession {
             "retainedImport": try transfer.map { try value($0) } ?? .null])
     }
     public func cancelOwnedRuntime() async throws -> Bool {
-        guard !busy, let context, !closed else { throw BridgeFailure("AUTOMATION_BUSY") }
+        guard !busy, !closing, let context, !closed else { throw BridgeFailure("AUTOMATION_BUSY") }
+        if let closeFailure { throw closeFailure }
         if !bridgeOpen { return true }
         _ = try await bridge.stop(context)
         for _ in 0..<1200 {

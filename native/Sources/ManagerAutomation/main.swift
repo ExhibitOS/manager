@@ -63,10 +63,10 @@ actor Driver {
     }
     private func finished() { active = nil; activeID = nil }
     func isClosed() -> Bool { closed }
-    func eof() async {
+    func eof() async -> Bool {
         let task = active; task?.cancel(); await task?.value
-        do { try await session.close(); closed = true }
-        catch { failure(nil, error) }
+        do { try await session.close(); closed = true; return true }
+        catch { failure(nil, error); return false }
     }
 }
 
@@ -118,7 +118,8 @@ func run() async -> Int32 {
                 if await driver.isClosed() { break }
             }
         } catch { protocolFailed = true; await driver.failure(nil, error) }
-        await driver.eof(); return protocolFailed ? 2 : 0
+        let drained = await driver.eof()
+        return protocolFailed ? 2 : drained ? 0 : 1
     } catch {
         if let session { try? await session.close() }
         let code = (error as? BridgeFailure)?.code ?? (error as? AuthoringFailure)?.code ?? "AUTOMATION_FAILED"
