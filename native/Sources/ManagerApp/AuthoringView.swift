@@ -434,7 +434,8 @@ extension AuthoringModel {
         let artwork = try await api.artwork(intent.artworkId)
         guard generation == importStatusGeneration, available, self.api === api,
               transfer?.intent == intent else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
-        guard artwork.metadata?.provenance.sourceUnits != "unknown" else {
+        guard artwork.id == intent.artworkId, let metadata = artwork.metadata,
+              metadata.provenance.sourceUnits != "unknown" else {
             throw AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID")
         }
     }
@@ -527,9 +528,12 @@ extension AuthoringModel {
     func changeImport(_ change: NativeImportAction) async {
         await action {
             guard let api, let job = importJob else { return }
-            if change == .retry, let intent = transfer?.intent {
+            if change == .retry {
+                guard let intent = transfer?.intent, transfer?.jobId == job.id else {
+                    throw AuthoringFailure("IMPORT_RECEIPT_INVALID")
+                }
                 try await checkGUIImportContinuation(intent, api: api)
-                guard importJob?.id == job.id else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+                guard importJob?.id == job.id, transfer?.jobId == job.id else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
             }
             if let intent = transfer?.intent, intent.derived?.recipe.colourConversion != nil {
                 guard iccImportAdmitted else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
