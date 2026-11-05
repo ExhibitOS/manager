@@ -25,6 +25,18 @@ enum NativeAutomationArtworkRules {
                   && $0.mime == intent.mime && $0.sha256 == intent.sha256 && $0.bytes == intent.bytes }) else {
             throw BridgeFailure("APPROVAL_REVIEW_REQUIRED")
         }
+        if let metadata = artwork.metadata {
+            try checkDisplayAsset(metadata, sha256: intent.sha256, scaleMeters: intent.scaleMeters)
+        }
+    }
+    static func checkDisplayAsset(_ metadata: ArtworkMetadata, sha256: String, scaleMeters: Double) throws {
+        guard metadata.provenance.sourceUnits == "unknown" || metadata.displayReference != nil else { return }
+        guard metadata.provenance.sourceUnits == "unknown", !metadata.provenance.scaleApplied,
+              let reference = metadata.displayReference,
+              reference.version == 1, reference.status == "provisional-uncalibrated",
+              reference.assetSha256 == sha256, scaleMeters == 1 else {
+            throw BridgeFailure("ARTWORK_DISPLAY_REFERENCE_INVALID")
+        }
     }
     static func checkRegistration(_ artwork: DocumentValue, artworkId: String, revision: Int64, tenantId: String) throws {
         let cms = artwork["extensions"]["org.exhibitos.studio/cms"]

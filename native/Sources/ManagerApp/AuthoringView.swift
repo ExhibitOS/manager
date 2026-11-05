@@ -754,9 +754,18 @@ struct NativeAuthoringView: View {
                 TextField("설명", text: $model.draft.description, axis: .vertical).lineLimit(3...8)
                 TextField("재료·매체", text: Binding(get: { model.draft.medium ?? "" }, set: { model.draft.medium = $0.isEmpty ? nil : $0 }))
                 TextField("제작 연도 (선택)", text: $model.creationYearText)
-                TextField("가로 (m)", value: $model.draft.dimensions.width, format: .number)
-                TextField("세로 (m)", value: $model.draft.dimensions.height, format: .number)
-                TextField("깊이 (m, 선택)", value: $model.draft.dimensions.depth, format: .number)
+                if model.draft.provenance.sourceUnits == "unknown" {
+                    LabeledContent("기관 표기 높이 (m)", value: model.draft.dimensions.height.formatted())
+                    LabeledContent("기관 표기 폭 (m)", value: model.draft.dimensions.width.formatted())
+                    if let depth = model.draft.dimensions.depth {
+                        LabeledContent("기관 표기 깊이 (m)", value: depth.formatted())
+                    }
+                    Text("기관 치수의 GLB 좌표축 대응은 미확인입니다.").foregroundStyle(.secondary)
+                } else {
+                    TextField("가로 (m)", value: $model.draft.dimensions.width, format: .number)
+                    TextField("세로 (m)", value: $model.draft.dimensions.height, format: .number)
+                    TextField("깊이 (m, 선택)", value: $model.draft.dimensions.depth, format: .number)
+                }
             }
             Section("권리와 표시") {
                 TextField("권리자", text: $model.draft.rights.holder)
@@ -777,8 +786,15 @@ struct NativeAuthoringView: View {
                 Picker("출처", selection: $model.draft.provenance.source) {
                     Text("직접 제작").tag("human-authored"); Text("AI 도움").tag("ai-assisted"); Text("AI 생성").tag("ai-generated"); Text("합성 자료").tag("synthetic")
                 }
-                Picker("원래 단위", selection: $model.draft.provenance.sourceUnits) { Text("m").tag("m"); Text("cm").tag("cm"); Text("mm").tag("mm") }
-                Toggle("크기를 조정했음", isOn: $model.draft.provenance.scaleApplied)
+                if model.draft.provenance.sourceUnits == "unknown" {
+                    LabeledContent("GLB 원본 단위", value: "미확인")
+                    if let reference = model.draft.displayReference {
+                        LabeledContent("임시 표시 높이 · 미보정", value: reference.referenceHeightMeters.formatted() + " m")
+                    }
+                } else {
+                    Picker("원래 단위", selection: $model.draft.provenance.sourceUnits) { Text("m").tag("m"); Text("cm").tag("cm"); Text("mm").tag("mm") }
+                    Toggle("크기를 조정했음", isOn: $model.draft.provenance.scaleApplied)
+                }
                 TextField("출처 설명", text: $model.draft.provenance.notes, axis: .vertical)
             }
             if let selected = model.selected {

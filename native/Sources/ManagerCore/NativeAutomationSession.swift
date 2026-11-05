@@ -253,6 +253,7 @@ public actor NativeAutomationSession {
             guard file.mime == "model/gltf-binary", file.sha256 == expected else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
             let artwork = try await api.artwork(artworkId)
             guard Int64(artwork.revision) == revision, !artwork.archived, let metadata = artwork.metadata else { throw BridgeFailure("ARTWORK_SCOPE_CHANGED") }
+            try NativeAutomationArtworkRules.checkDisplayAsset(metadata, sha256: file.sha256, scaleMeters: scale)
             let intent = NativeImportIntent(artworkId: artwork.id, idempotencyKey: id, mime: file.mime,
                 sha256: file.sha256, bytes: file.data.count, scaleMeters: scale, rights: metadata.rights)
             let state = try await bridge.uploadState(context)
@@ -287,6 +288,9 @@ public actor NativeAutomationSession {
             _ = try await api.approveArtwork(artworkId, revision: Int(revision), assetId: assetId)
             let approved = try await api.artwork(artworkId)
             guard approved.approvedRevision.map(Int64.init) == revision, approved.approvedAssetId == assetId else { throw BridgeFailure("ARTWORK_SCOPE_CHANGED") }
+            if artwork.metadata?.displayReference != nil {
+                guard approved.metadata == artwork.metadata else { throw BridgeFailure("ARTWORK_SCOPE_CHANGED") }
+            }
             result = try value(approved)
         case "artwork-register":
             try checkedRevision(request, current)

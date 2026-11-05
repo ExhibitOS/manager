@@ -35,10 +35,13 @@ struct SelectedPlacementInspector: View {
             .enumerated().compactMap { index, row in row["id"].string.map { ($0, (kind == "floor" ? "바닥 " : "벽 ") + String(index + 1)) } }
     }
     private func number(_ value: Double) -> String { value.formatted(.number.precision(.fractionLength(0...4))) }
-    private func sourceDimensions(_ artwork: DocumentValue) -> String {
-        [("width", "폭"), ("height", "높이"), ("depth", "깊이")].compactMap { key, label in
-            artwork["dimensions"][key].double.map { label + " " + number($0) + " m" }
+    private func sourceDimensions(_ size: ArtworkSizePresentation) -> String {
+        let axes = size.sourceUnitsUnknown ? [("height", "높이"), ("width", "폭"), ("depth", "깊이")]
+            : [("width", "폭"), ("height", "높이"), ("depth", "깊이")]
+        let text = axes.compactMap { key, label in
+            size.recordedDimensions[key].double.map { label + " " + number($0) + " m" }
         }.joined(separator: " · ")
+        return text.isEmpty ? "치수 확인 중" : text
     }
     private func vector(_ value: DocumentValue) -> String {
         value.items?.compactMap(\.double).map(number).joined(separator: ", ") ?? "확인할 수 없음"
@@ -58,11 +61,18 @@ struct SelectedPlacementInspector: View {
     var body: some View {
         ScrollView {
             if let selected {
+                let size = ArtworkSizePresentation(selected.artwork)
                 VStack(alignment: .leading, spacing: 16) {
                     Text("선택한 작품 배치").font(.headline).accessibilityAddTraits(.isHeader)
                     Text(selected.artwork["metadata"]["title"].string ?? "제목 없는 작품").font(.title3.weight(.semibold))
                     Text(selected.artwork["metadata"]["artist"].string ?? "작가 미상").foregroundStyle(.secondary)
-                    LabeledContent("기록된 크기", value: sourceDimensions(selected.artwork))
+                    LabeledContent(size.sourceUnitsUnknown ? "기관 표기 치수" : "기록된 크기", value: sourceDimensions(size))
+                    if size.sourceUnitsUnknown {
+                        Text("GLB 원본 단위와 기관 치수의 좌표축 대응은 미확인입니다.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let height = size.provisionalHeightMeters {
+                        LabeledContent("임시 표시 높이 · 미보정", value: number(height) + " m")
+                    }
                     Text("이 속성은 선택한 배치에 적용됩니다. 작품 원본과 기록된 크기는 유지됩니다.").font(.caption).foregroundStyle(.secondary)
                     Button("공간에서 찾기", systemImage: "scope") { Task { await model.viewportController.findSelection() } }
                         .disabled(!editable || !model.viewportController.findSelectionSupported || !model.canSelectCatalog || model.viewportPresentation == .plan)

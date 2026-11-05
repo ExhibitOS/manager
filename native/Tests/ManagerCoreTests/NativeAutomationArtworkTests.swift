@@ -48,6 +48,27 @@ final class NativeAutomationArtworkTests: XCTestCase {
         var changed = snapshot; changed["rights"]["permissions"]["display"] = .bool(false)
         XCTAssertThrowsError(try NativeAutomationArtworkRules.checkRegistration(changed, artworkId: artworkId, revision: 3, tenantId: tenantId))
     }
+    func testQualifiedMetadataRoundTripsAndBindsExactUpload() throws {
+        let (_, job, intent, body) = try approvalFixture()
+        var qualified = body
+        qualified["metadata"]["provenance"]["sourceUnits"] = .string("unknown")
+        qualified["metadata"]["displayReference"] = .object([
+            "version": .integer(1), "status": .string("provisional-uncalibrated"), "assetSha256": .string(intent.sha256),
+            "rawBounds": .object(["min": .vector([-2, -3, -1]), "max": .vector([2, 3, 1])]),
+            "referenceHeightMeters": .number(0.3),
+            "pose": .object(["position": .vector([0, 0, 0]), "rotation": .vector([0, 0, 0, 1]), "scale": .vector([0.05, 0.05, 0.05])])
+        ])
+        let art = try JSONDecoder().decode(NativeArtwork.self, from: JSONEncoder().encode(qualified))
+        let metadata = try XCTUnwrap(art.metadata)
+        let encoded = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(metadata))
+        XCTAssertEqual(encoded, qualified["metadata"])
+        try NativeAutomationArtworkRules.checkApproval(artwork: art, job: job, jobId: jobId, intent: intent, revision: 3, assetId: assetId)
+        XCTAssertThrowsError(try NativeAutomationArtworkRules.checkDisplayAsset(metadata, sha256: intent.sha256, scaleMeters: 0.05))
+        XCTAssertThrowsError(try NativeAutomationArtworkRules.checkDisplayAsset(metadata, sha256: String(repeating: "b", count: 64), scaleMeters: 1))
+        var unqualified = metadata
+        unqualified.displayReference = nil
+        XCTAssertThrowsError(try NativeAutomationArtworkRules.checkDisplayAsset(unqualified, sha256: intent.sha256, scaleMeters: 1))
+    }
     func testUploadJournalCannotCrossWorkspaceAndCommandCannotAddDerivation() throws {
         let document = NativeDocumentState(format: 1, revision: 0, workspaceId: artworkId, tenantId: tenantId, principalId: assetId)
         var transfer = NativeUploadState(format: 1, revision: 0, workspaceId: artworkId, tenantId: tenantId, principalId: assetId)

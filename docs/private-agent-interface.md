@@ -137,13 +137,20 @@ receipt/idMap must establish the new wall identity; a public or prior-profile
 surface ID, array label, raw public blob reference or rewritten archive version
 is not a substitute. No existing success/failure profile is reopened.
 
-The GLB adapter does not establish physical units, front direction, floor contact
-or support. `scaleMeters` retains its existing API meaning and accepted range
-`0 < value <= 1_000_000`; storage of that value is not proof the approved snapshot
-or renderer consumes a display scale. The current CMS metadata contract requires
-`sourceUnits` to be `m`, `cm` or `mm`. An unresolved unit cannot truthfully be
-relabelled merely to pass that contract; resolve the concrete domain gap with its
-owner before issuing runnable artwork metadata. Source GLB vertices remain exact.
+An unknown-unit GLB requires CMS `displayReference`, `sourceUnits: "unknown"`,
+`scaleApplied: false`, and upload `scaleMeters: 1`. Import and approval check
+the reference against the exact GLB SHA-256. The display reference describes a
+provisional height. Institutional catalogue dimensions are separate, and the
+mapping to GLB axes is unverified. The original GLB bytes and the approved
+Artwork transform are preserved. Numeric placement supplies a unit-scale pose
+and makes no floor contact, support, or facing assertion.
+
+Registration of a qualified Artwork draft.2 promotes the editable local
+Exhibition and lifecycle draft to draft.2 together. The saved Studio readback
+must preserve the same candidate, including existing artworks and the approved
+display-reference extension. The paired Platform producer writes OEX draft.11
+and static output. The native OEX import entry points retain their existing
+supported formats.
 
 The renderer has no native profile writer. Snapshot receipts must independently
 bind native workspace/identity/journal/editVersion and Studio saved revision/ETag,

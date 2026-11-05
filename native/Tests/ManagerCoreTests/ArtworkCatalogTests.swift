@@ -54,6 +54,49 @@ final class ArtworkCatalogTests: XCTestCase {
         let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as? [String: Any])
         XCTAssertNil(fields["capabilities"]); XCTAssertNil(fields["presentation"])
     }
+    func testQualifiedArtworkPromotesDraftAndShowsSeparateCatalogueAndDisplaySizes() throws {
+        var draft = try NativeExhibitionDraft.new()
+        let room = try XCTUnwrap(draft.rooms[0]["id"].string)
+        let legacy = artwork(kind: "image", title: "기존 회화")
+        try draft.addApprovedArtwork(legacy, roomId: room, position: [0, 0, 0])
+        let previous = draft
+        var sculpture = artwork(kind: "sculpture", title: "합성 조각")
+        sculpture["schemaVersion"] = .string("1.0.0-draft.2")
+        sculpture["units"] = .string("unknown")
+        sculpture["dimensions"] = .object(["width": .integer(4), "height": .integer(6), "depth": .integer(2)])
+        sculpture["transform"] = NativeExhibitionDraft.identity
+        sculpture["transform"]["scale"] = .vector([0.05, 0.05, 0.05])
+        let key = "org.exhibitos.studio/display-reference"
+        sculpture["extensions"][key] = .object([
+            "version": .integer(1), "status": .string("provisional-uncalibrated"), "axisMapping": .string("unverified"),
+            "catalogueDimensions": .object(["height": .number(0.27), "width": .number(0.25), "depth": .number(0.12), "unit": .string("m")]),
+            "referenceHeightMeters": .number(0.3)
+        ])
+        let entry = ArtworkCatalogEntry(id: try XCTUnwrap(sculpture["id"].string), revision: 1, artwork: sculpture)
+        XCTAssertEqual(entry.dimensions, [0.27, 0.25, 0.12])
+        XCTAssertEqual(ArtworkSizePresentation(sculpture).provisionalHeightMeters, 0.3)
+        var unqualified = sculpture
+        unqualified["extensions"][key] = .null
+        XCTAssertEqual(ArtworkSizePresentation(unqualified).recordedDimensions, .null)
+        XCTAssertNil(ArtworkSizePresentation(unqualified).provisionalHeightMeters)
+
+        try draft.addApprovedArtwork(sculpture, roomId: room, position: [0, 0, 0])
+        XCTAssertEqual(draft.document["schemaVersion"], sculpture["schemaVersion"])
+        XCTAssertEqual(draft.candidate["schemaVersion"], sculpture["schemaVersion"])
+        XCTAssertEqual(draft.artworks, [legacy, sculpture])
+        XCTAssertEqual(draft.placements.last?["transform"], NativeExhibitionDraft.identity)
+        XCTAssertEqual(try JSONDecoder().decode(NativeExhibitionDraft.self, from: JSONEncoder().encode(draft)), draft)
+        var mismatched = draft.document
+        mismatched["schemaVersion"] = previous.document["schemaVersion"]
+        XCTAssertThrowsError(try NativeExhibitionDraft(document: mismatched))
+        let promoted = draft
+        try draft.restoreEditHistory(previous)
+        XCTAssertEqual(draft.document["schemaVersion"], previous.document["schemaVersion"])
+        XCTAssertEqual(draft.candidate, previous.candidate)
+        try draft.restoreEditHistory(promoted)
+        XCTAssertEqual(draft.document["schemaVersion"], promoted.document["schemaVersion"])
+        XCTAssertEqual(draft.candidate, promoted.candidate)
+    }
     func testThumbnailRejectsStaleAccountFrameRevisionAndUnsafePNGBounds() throws {
         let request = try ViewportThumbnailRequest(frame: frame(NativeExhibitionDraft.new()), artworkId: UUID().uuidString, expectedRevision: 4)
         let data = try JSONEncoder().encode(request)
