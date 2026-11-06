@@ -26,6 +26,22 @@ final class PresentationSelectionTests: XCTestCase {
         XCTAssertEqual(state.value?.step, .publish); XCTAssertEqual(state.value?.revision, 2)
         XCTAssertNil(state.nextSave())
     }
+    func testRetryAfterBusySavesNewestSelectionAtSameRevision() throws {
+        var state = PresentationSelection(); state.refresh(Presentation(revision: 7, step: .prepare))
+        state.select(step: .select)
+        let rejected = try XCTUnwrap(state.nextSave())
+        state.failed(rejected)
+        XCTAssertTrue(state.hasPendingSave)
+        state.select(step: .preview)
+        let retry = try XCTUnwrap(state.nextSave())
+        XCTAssertEqual(retry.value.step, .preview)
+        XCTAssertEqual(retry.value.revision, 7)
+        var saved = retry.value; saved.revision += 1
+        try state.acknowledge(retry, stored: saved)
+        XCTAssertEqual(state.value, saved)
+        XCTAssertFalse(state.hasPendingSave)
+    }
+
     func testModeAndScaleAreRetainedAcrossRapidNavigationAndFailedPersistence() throws {
         var state = PresentationSelection(); state.refresh(Presentation(revision: 4, step: .select))
         state.select(step: .preview); let request = try XCTUnwrap(state.nextSave())

@@ -506,11 +506,24 @@ final class ManagerModel: ObservableObject {
         presentationSave = Task { [weak self] in
             guard let self else { return }
             defer { self.presentationSave = nil }
+            let clock = ContinuousClock()
+            var retryUntil = clock.now.advanced(by: .seconds(120))
             while let request = self.selection.nextSave() {
-                do { try self.selection.acknowledge(request, stored: await bridge.save(request.value)) }
-                catch {
+                do {
+                    try self.selection.acknowledge(request, stored: await bridge.save(request.value))
+                    retryUntil = clock.now.advanced(by: .seconds(120))
+                } catch {
                     self.selection.failed(request)
-                    self.failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_SAVE_FAILED")
+                    let failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_SAVE_FAILED")
+                    // The runtime can hold the profile lock during startup.
+                    // BUSY rejects the save before writing. Retry the newest
+                    // selection with its current revision once the lock drains.
+                    if failure.code == "BUSY", clock.now < retryUntil {
+                        do { try await clock.sleep(until: min(retryUntil, clock.now.advanced(by: .milliseconds(500)))) }
+                        catch { return }
+                        continue
+                    }
+                    self.failure = failure
                     return
                 }
             }
