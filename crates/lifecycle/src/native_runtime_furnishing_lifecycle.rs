@@ -105,7 +105,7 @@ impl Binding {
                 self.previous_generation.is_none() && self.restore.is_none()
             }
             (Phase::Active | Phase::Clean, Admission::CleanReopen) => {
-                self.previous_generation.is_some() && self.restore.is_none()
+                self.previous_generation.is_some()
             }
             (Phase::Active | Phase::Clean, Admission::VerifiedRestore) => {
                 self.previous_generation.is_some() && self.restore.is_some()
@@ -150,11 +150,9 @@ impl Binding {
         match prior.phase {
             Phase::Active => return Err(err(ERROR)),
             Phase::Clean => self.admission_kind = Admission::CleanReopen,
-            Phase::ActivatedRestore => {
-                self.admission_kind = Admission::VerifiedRestore;
-                self.restore = prior.restore.clone();
-            }
+            Phase::ActivatedRestore => self.admission_kind = Admission::VerifiedRestore,
         }
+        self.restore = prior.restore.clone();
         self.previous_generation = Some(prior.generation.clone());
         self.check()
     }
@@ -440,9 +438,15 @@ mod tests {
         let observed = current_run(&root).unwrap().unwrap();
         assert_eq!(observed.id, NEXT);
         assert_eq!(observed.furnishing.as_ref().unwrap().generation, GENERATION);
+        assert!(validate_cold_furnishing_source(&root, None, &binding(NEXT)).is_err());
+        let mut replacement = binding(NEXT);
+        replacement.physical.lock_inode += 1;
+        assert!(validate_cold_furnishing_source(&root, Some(&prior), &replacement).is_err());
+        validate_cold_furnishing_source(&root, Some(&prior), &binding(NEXT)).unwrap();
         consume_furnishing_completion(&root, &prior, LATER).unwrap();
         // Crash after consuming but before replacing the current pointer.
         assert!(consume_furnishing_completion(&root, &prior, NEXT).is_err());
+        assert!(validate_cold_furnishing_source(&root, Some(&prior), &binding(NEXT)).is_err());
         let (_, proof) = read_run(&root, GENERATION).unwrap();
         assert_eq!(proof.unwrap().consumed_by.as_deref(), Some(LATER));
         write_json(
@@ -477,6 +481,11 @@ mod tests {
         assert_eq!(next.admission_kind, Admission::VerifiedRestore);
         assert_eq!(next.restore, prior.restore);
         assert!(binding(LATER).consume(&next).is_err());
+        next.phase = Phase::Clean;
+        let mut later = binding(LATER);
+        later.consume(&next).unwrap();
+        assert_eq!(later.admission_kind, Admission::CleanReopen);
+        assert_eq!(later.restore, prior.restore);
     }
 
     #[test]

@@ -10,7 +10,7 @@ pub(super) const FD_MAX: i32 = 1023;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct WriterIdentity {
+pub(crate) struct WriterIdentity {
     pub(super) root_device: u64,
     pub(super) root_inode: u64,
     pub(super) lock_device: u64,

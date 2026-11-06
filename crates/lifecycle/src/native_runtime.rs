@@ -37,6 +37,7 @@ pub fn selected_oex_format_v7_validation(resources: &Path, input_fd: i32, cancel
 #[path = "native_runtime_oex_materializer.rs"] mod oex_materializer;
 #[path = "native_runtime_owner_channel.rs"] mod owner_channel;
 #[path = "native_runtime_furnishing_lifetime.rs"] mod furnishing_lifetime;
+pub(crate) use furnishing_lifetime::WriterIdentity as FurnishingWriterIdentity;
 #[path = "native_runtime_furnishing_lease.rs"] mod furnishing_lease;
 #[path = "native_runtime_furnishing_lifecycle.rs"] mod furnishing_lifecycle;
 use furnishing_lifecycle::{Admission, Binding, Owner as FurnishingOwner, Phase, Restore as FurnishingRestore};
@@ -51,6 +52,14 @@ pub(crate) const WORKSPACE_FURNISHING_INITIALIZATION: &str = "native-workspace-f
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FurnishingStart { Initialize, Reopen }
+
+#[derive(Clone, Copy)]
+enum StartMode<'a> {
+    Services,
+    Database,
+    RestoreStage,
+    RestoreActivation(&'a str),
+}
 
 impl FurnishingStart {
     fn owner_mode(self) -> &'static str {
@@ -308,12 +317,11 @@ fn write_run(root: &Path, context: &Context, completion: Option<FurnishingComple
     File::open(root).and_then(|file| file.sync_all()).map_err(|_| err("STATE_UNAVAILABLE"))
 }
 
-fn consume_furnishing_completion(root: &Path, prior: &Binding, next: &str) -> Result<()> {
+fn unconsumed_furnishing_completion(root: &Path, prior: &Binding) -> Result<(Context, FurnishingCompletion)> {
     let invalid = || err(furnishing_lifecycle::ERROR);
     let (context, completion) = read_run(root, &prior.generation)?;
-    let mut proof = completion.ok_or_else(invalid)?;
-    if !installations::uuid(next) || next == prior.generation || proof.consumed_by.is_some()
-        || proof.binding_sha256 != prior.sha256()? || context.state != "stopped"
+    let proof = completion.ok_or_else(invalid)?;
+    if proof.consumed_by.is_some() || proof.binding_sha256 != prior.sha256()? || context.state != "stopped"
         || context.failure_code.is_some() || context.exits.get("postgres") != Some(&0)
         || context.node_pid.is_some() || context.postgres_pid.is_some() || context.auxiliary_pid.is_some()
         || (prior.phase == Phase::Clean && context.exits.get("node") != Some(&0))
@@ -322,8 +330,23 @@ fn consume_furnishing_completion(root: &Path, prior: &Binding, next: &str) -> Re
     {
         return Err(invalid());
     }
+    Ok((context, proof))
+}
+
+fn consume_furnishing_completion(root: &Path, prior: &Binding, next: &str) -> Result<()> {
+    if !installations::uuid(next) || next == prior.generation {
+        return Err(err(furnishing_lifecycle::ERROR));
+    }
+    let (context, mut proof) = unconsumed_furnishing_completion(root, prior)?;
     proof.consumed_by = Some(next.into());
     write_run(&root.join("native-runs").join(&prior.generation), &context, Some(proof))
+}
+
+fn validate_cold_furnishing_source(root: &Path, prior: Option<&Binding>, live: &Binding) -> Result<()> {
+    let prior = prior.filter(|prior| prior.phase == Phase::Clean && prior.same_installation(live))
+        .ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+    unconsumed_furnishing_completion(root, prior)?;
+    Ok(())
 }
 
 pub struct Session {
@@ -796,7 +819,47 @@ impl Session {
         if self.status()?.state != "database_ready" || self.node.is_some() || self.auxiliary.is_some() {
             return Err(err("NATIVE_QUIESCENCE_UNCONFIRMED"));
         }
-        self.verify_furnishing_db_quiescence(Instant::now() + Duration::from_secs(60))
+        let deadline = Instant::now() + Duration::from_secs(60);
+        if self.active_furnishing_binding().is_some() {
+            if !self.furnishing_clean_checked || self.failure.is_some() {
+                return Err(err(furnishing_lifecycle::ERROR));
+            }
+        } else {
+            let live = self.furnishing_binding_for(Uuid::new_v4().to_string(), Phase::Active, Admission::FreshEmpty)?;
+            validate_cold_furnishing_source(&self.service.root, self.furnishing_binding.as_ref(), &live)?;
+        }
+        self.verify_furnishing_db_quiescence(deadline)
+    }
+
+    pub(crate) fn furnishing_restore_target_identity(&self) -> Result<Option<FurnishingWriterIdentity>> {
+        if self.payload.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::Writer037) {
+            return Ok(None);
+        }
+        if self.state != "database_ready"
+            || self.furnishing_binding.as_ref().is_some_and(|binding| binding.phase != Phase::ActivatedRestore)
+        {
+            return Err(err(furnishing_lifecycle::ERROR));
+        }
+        self.check_native_observation_fence()?;
+        self.furnishing_writer_lifetime.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?.identity().map(Some)
+    }
+
+    pub(crate) fn verify_furnishing_restore_target(&mut self, id: &str) -> Result<()> {
+        if let Some(physical) = self.furnishing_restore_target_identity()? {
+            let system = crate::installations::native_restore::pending_furnishing_target(&self.service.root, Some(id), physical)?
+                .ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+            let deadline = Instant::now() + Duration::from_secs(60);
+            self.verify_furnishing_database_identity(&system, deadline)?;
+            self.verify_furnishing_db_quiescence(deadline)?;
+        }
+        Ok(())
+    }
+
+    fn verify_furnishing_database_identity(&mut self, expected: &str, deadline: Instant) -> Result<()> {
+        if self.query_database_before("exhibitos", "SELECT system_identifier::text FROM pg_control_system()", deadline)? != expected {
+            return Err(err(furnishing_lifecycle::ERROR));
+        }
+        Ok(())
     }
 
     fn verify_furnishing_db_quiescence(&mut self, deadline: Instant) -> Result<()> {
@@ -1222,7 +1285,7 @@ const { isDeepStrictEqual } = require('node:util');
             .map(|s| s.trim().into())
             .map_err(|_| err("NATIVE_DATABASE_UNAVAILABLE"))
     }
-    fn start_inner(&mut self, services: bool) -> Result<()> {
+    fn start_inner(&mut self, services: bool, maintenance_system: Option<&str>, existing_database: bool) -> Result<()> {
         let mut reservations = Vec::new();
         for port in [self.ports.web, self.ports.api, self.ports.database] {
             reservations.push(
@@ -1240,7 +1303,7 @@ const { isDeepStrictEqual } = require('node:util');
         let furnishing = self.active_furnishing_binding().map(|binding| {
             if binding.admission_kind == Admission::FreshEmpty { FurnishingStart::Initialize } else { FurnishingStart::Reopen }
         });
-        let require_existing = reopen_import.is_some() || furnishing == Some(FurnishingStart::Reopen);
+        let require_existing = existing_database || reopen_import.is_some() || furnishing == Some(FurnishingStart::Reopen);
         let database = self.service.root.join("native-database");
         if !exists(&database)? {
             if require_existing {
@@ -1395,6 +1458,9 @@ const { isDeepStrictEqual } = require('node:util');
         // Restore must reach an empty database before any application migration
         // or owner bootstrap runs. Keep the same Session and operation fence.
         if !services {
+            if let Some(expected) = maintenance_system {
+                self.verify_furnishing_database_identity(expected, Instant::now() + Duration::from_secs(60))?;
+            }
             self.state = "database_ready".into();
             self.record()?;
             return Ok(());
@@ -1409,9 +1475,7 @@ const { isDeepStrictEqual } = require('node:util');
             let restore_system = self.active_furnishing_binding().and_then(|binding| binding.restore.as_ref())
                 .map(|restore| restore.target_system_identifier.clone());
             if let Some(expected) = restore_system {
-                if self.query_database("exhibitos", "SELECT system_identifier::text FROM pg_control_system()")? != expected {
-                    return Err(err(furnishing_lifecycle::ERROR));
-                }
+                self.verify_furnishing_database_identity(&expected, Instant::now() + Duration::from_secs(60))?;
             }
         }
         self.state = "starting_services".into();
@@ -1596,7 +1660,7 @@ const { isDeepStrictEqual } = require('node:util');
     /// The host resets cancellation before publishing its handle, so a stop
     /// arriving between publication and startup cannot be overwritten.
     pub(crate) fn start_cancellable(&mut self) -> Result<Context> {
-        self.start_owned(true)
+        self.start_owned(StartMode::Services)
     }
     /// Maintenance preparation only: owned PG18 and database, without Node,
     /// API/workers, schema migrations, authentication bootstrap or readiness.
@@ -1605,9 +1669,16 @@ const { isDeepStrictEqual } = require('node:util');
         self.start_database_only_cancellable()
     }
     pub(crate) fn start_database_only_cancellable(&mut self) -> Result<Context> {
-        self.start_owned(false)
+        self.start_owned(StartMode::Database)
     }
-    fn start_owned(&mut self, services: bool) -> Result<Context> {
+    pub(crate) fn start_restore_stage_cancellable(&mut self) -> Result<Context> {
+        self.start_owned(StartMode::RestoreStage)
+    }
+    pub(crate) fn start_restore_activation(&mut self, id: &str) -> Result<Context> {
+        self.start_owned(StartMode::RestoreActivation(id))
+    }
+    fn start_owned(&mut self, mode: StartMode<'_>) -> Result<Context> {
+        let services = matches!(mode, StartMode::Services);
         if !services && exists(&self.service.root.join(WORKSPACE_FURNISHING_INITIALIZATION))? {
             return Err(err("NATIVE_WORKSPACE_FURNISHING_INITIALIZATION_PENDING"));
         }
@@ -1655,16 +1726,23 @@ const { isDeepStrictEqual } = require('node:util');
         let prior_binding = prior.as_ref().and_then(|current| current.furnishing.clone());
         let catalog = self.payload.workspace_furnishing_catalog()?;
         let mut binding = prior_binding.clone();
+        let mut maintenance_system = None;
+        let mut existing_database = false;
         if catalog == Some(WorkspaceFurnishingCatalog::Writer037) {
             self.check_native_observation_fence()?;
             let has_database = exists(&self.service.root.join("native-database"))?;
             let start = if services { self.workspace_furnishing_start()? } else { None };
-            let create_lock = match start {
-                Some(FurnishingStart::Initialize) if prior.is_none() && !has_database => true,
-                Some(FurnishingStart::Reopen) if has_database && prior_binding.is_some() => false,
-                None if !services => prior_binding.is_none() && !has_database,
+            let restore_pending = exists(&self.service.root.join("native-restore-current.json"))?;
+            let create_lock = match (mode, start, has_database, restore_pending) {
+                (StartMode::Services, Some(FurnishingStart::Initialize), false, false) if prior.is_none() => true,
+                (StartMode::Services, Some(FurnishingStart::Reopen), true, false) if prior_binding.is_some() => false,
+                (StartMode::Database, None, true, false) if prior_binding.is_some() => false,
+                (StartMode::RestoreStage, None, false, false) if prior.is_none() => true,
+                (StartMode::RestoreStage, None, true, true) if prior_binding.is_none() => false,
+                (StartMode::RestoreActivation(_), None, true, true) => false,
                 _ => return Err(err(furnishing_lifecycle::ERROR)),
             };
+            existing_database = has_database;
             self.furnishing_writer_lifetime = None;
             self.furnishing_writer_lifetime = Some(if create_lock {
                 furnishing_lifetime::WriterLifetime::acquire(&self.service.root)?
@@ -1677,7 +1755,8 @@ const { isDeepStrictEqual } = require('node:util');
                     Some(FurnishingStart::Initialize) => (),
                     Some(FurnishingStart::Reopen) => {
                         active.consume(prior_binding.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?)?;
-                        if let Some(proof) = &active.restore {
+                        if active.admission_kind == Admission::VerifiedRestore {
+                            let proof = active.restore.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
                             crate::installations::native_restore::verify_ordinary_activation(
                                 &self.service.root, &proof.id, &proof.backup_id, &proof.archive_manifest_sha256,
                                 &proof.target_system_identifier, &active.payload_manifest_sha256,
@@ -1687,9 +1766,29 @@ const { isDeepStrictEqual } = require('node:util');
                     _ => return Err(err(furnishing_lifecycle::ERROR)),
                 }
                 binding = Some(active);
-            } else if let Some(prior) = &prior_binding {
-                if prior.phase == Phase::Active || !active.same_installation(prior) {
-                    return Err(err(furnishing_lifecycle::ERROR));
+            } else {
+                match mode {
+                    StartMode::Database => {
+                        validate_cold_furnishing_source(&self.service.root, prior_binding.as_ref(), &active)?;
+                        maintenance_system = prior_binding.as_ref().and_then(|prior| prior.restore.as_ref())
+                            .map(|restore| restore.target_system_identifier.clone());
+                    }
+                    StartMode::RestoreStage | StartMode::RestoreActivation(_) if restore_pending => {
+                        let id = match mode { StartMode::RestoreActivation(id) => Some(id), _ => None };
+                        if let Some(prior) = &prior_binding {
+                            if prior.phase != Phase::ActivatedRestore || !active.same_installation(prior)
+                                || prior.restore.as_ref().map(|restore| restore.id.as_str()) != id {
+                                return Err(err(furnishing_lifecycle::ERROR));
+                            }
+                            unconsumed_furnishing_completion(&self.service.root, prior)?;
+                        }
+                        maintenance_system = crate::installations::native_restore::pending_furnishing_target(
+                            &self.service.root, id, active.physical,
+                        )?;
+                        if maintenance_system.is_none() { return Err(err(furnishing_lifecycle::ERROR)); }
+                    }
+                    StartMode::RestoreStage => (),
+                    _ => return Err(err(furnishing_lifecycle::ERROR)),
                 }
             }
         } else if catalog.is_some() || prior_binding.is_some() {
@@ -1727,7 +1826,7 @@ const { isDeepStrictEqual } = require('node:util');
         self.publish_current(binding.clone())?;
         self.furnishing_binding = binding;
         // The current pointer now describes this owned attempt; it has no PIDs yet.
-        let result = self.start_inner(services);
+        let result = self.start_inner(services, maintenance_system.as_deref(), existing_database);
         if let Err(error) = result {
             self.failure = Some(error.code.clone());
             let _ = self.stop();
@@ -1783,13 +1882,13 @@ const { isDeepStrictEqual } = require('node:util');
         Ok(())
     }
 
-    pub(crate) fn stop_with_furnishing_activation_fences(&mut self) -> Result<Context> {
+    pub(crate) fn stop_with_furnishing_activation_fences(&mut self, id: &str) -> Result<Context> {
         if self.payload.workspace_furnishing_catalog()? == Some(WorkspaceFurnishingCatalog::Writer037) {
             if self.furnishing_binding.as_ref().is_some_and(|binding| binding.phase != Phase::ActivatedRestore)
                 || self.state != "database_ready" {
                 return Err(err(furnishing_lifecycle::ERROR));
             }
-            self.verify_furnishing_db_quiescence(Instant::now() + Duration::from_secs(60))?;
+            self.verify_furnishing_restore_target(id)?;
             self.furnishing_keep_fences = true;
         }
         self.stop()

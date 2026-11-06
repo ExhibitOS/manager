@@ -464,7 +464,7 @@ impl Host {
                                 state.cancel = Some(cancel);
                             }
                             let result = (|| {
-                                session.start_database_only_cancellable()?;
+                                session.start_restore_stage_cancellable()?;
                                 controller.stage_native_restore(&token, &mut session, input)
                             })();
                             let stopped = session.stop();

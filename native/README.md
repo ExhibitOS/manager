@@ -47,6 +47,11 @@ completion from the owned Node process, its successful exit, the exact
 ledger and zero worker claims while PostgreSQL is still available, and
 successful PostgreSQL shutdown under the same writer fence. Interrupted or
 incomplete transitions preserve the active state and refuse ordinary reopen.
+An EXB source requires either this session's verified writer drain or an
+unconsumed clean completion for the same physical root and lock. A database-only
+restore may initialize a new empty target or resume the exact pending restore
+intent bound to the target lock and PostgreSQL system identifier. The restored
+database identifier is checked on the first start and later clean reopens.
 
 The Manager implementation and Platform wire must be qualified together before
 adding a manifest pin. Source regression checks do not qualify actual startup,

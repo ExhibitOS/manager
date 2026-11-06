@@ -4,7 +4,7 @@
 use super::native_backup::{Secret, SourceMap, resource_budget, text};
 use super::native_oex_import::{WORKSPACE_COMPLETION_ARCHIVE_NAME, workspace_completion, workspace_completion_name};
 use super::*;
-use crate::{native_installation::Ports, native_payload::Payload, native_runtime::Session};
+use crate::{native_installation::Ports, native_payload::Payload, native_runtime::{FurnishingWriterIdentity, Session}};
 use std::{
     collections::{BTreeMap, BTreeSet},
     os::unix::fs::MetadataExt,
@@ -39,6 +39,8 @@ struct Intent {
     system_identifier: String,
     target_environment_sha256: String,
     target_owner_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    furnishing_target: Option<FurnishingWriterIdentity>,
 }
 impl Intent {
     fn check(
@@ -98,6 +100,25 @@ impl Drop for Fields {
     }
 }
 const MARKER: &str = "native-restore-current.json";
+
+pub(crate) fn pending_furnishing_target(
+    root: &Path, expected_id: Option<&str>, physical: FurnishingWriterIdentity,
+) -> Result<Option<String>> {
+    if !exists(root, MARKER)? { return Ok(None); }
+    let pending: Pending = json(root, MARKER, 4096)?;
+    if pending.format != 1 || !uuid(&pending.id) || expected_id.is_some_and(|id| id != pending.id) {
+        return Err(bad());
+    }
+    let directory = root.join(format!("native-restore-{}", pending.id));
+    private_directory(&directory)?;
+    let intent: Intent = json(&directory, "intent.json", 16384)?;
+    if intent.format != 1 || intent.id != pending.id || intent.furnishing_target != Some(physical)
+        || !intent.system_identifier.parse::<u64>().is_ok_and(|id| id != 0 && id.to_string() == intent.system_identifier)
+    {
+        return Err(bad());
+    }
+    Ok(Some(intent.system_identifier))
+}
 fn bad() -> LifecycleError {
     err("NATIVE_RESTORE_INVALID")
 }
@@ -600,6 +621,7 @@ impl InstallationController {
             }
             let source_manifest_sha256=digest(&installation_backup::source_bytes(&input.source,"manifest.gcm",17*1024*1024,true)?);
             let system_identifier=session.maintenance_system_identifier()?;
+            let furnishing_target = session.furnishing_restore_target_identity()?;
             let pending:Option<Pending>=if exists(&service.root,MARKER)?{Some(json(&service.root,MARKER,4096)?)}else{None};
             let empty=session.maintenance_empty_target()?;
             if pending.is_none() && !empty{return Err(err("NATIVE_RESTORE_TARGET_NOT_EMPTY"));}
@@ -617,7 +639,7 @@ impl InstallationController {
                 }
             }else{
                 new_directory(&directory)?;
-                let intent=Intent{format:1,id:id.clone(),source:input.source.clone(),source_manifest_sha256,system_identifier:system_identifier.clone(),target_environment_sha256:file_hash(&service.root,"runtime.env")?.ok_or_else(bad)?,target_owner_sha256:file_hash(&service.root,owner)?.ok_or_else(bad)?};
+                let intent=Intent{format:1,id:id.clone(),source:input.source.clone(),source_manifest_sha256,system_identifier:system_identifier.clone(),target_environment_sha256:file_hash(&service.root,"runtime.env")?.ok_or_else(bad)?,target_owner_sha256:file_hash(&service.root,owner)?.ok_or_else(bad)?,furnishing_target};
                 write_private_new(&directory,"intent.json",&serde_json::to_vec(&intent).map_err(|_|bad())?,16384)?;
                 File::open(&directory).and_then(|v|v.sync_all()).map_err(|_|bad())?;
                 let marker=Pending{format:1,id:id.clone()};
@@ -918,7 +940,7 @@ impl InstallationController {
             private_directory(&scratch)?;
             let mut session = Session::new_with_guard(service, payload.clone(), plan.ports, guard)?;
             let result = (|| {
-                session.start_database_only()?;
+                session.start_restore_activation(id)?;
                 if session.maintenance_system_identifier()? != plan.system_identifier {
                     return Err(bad());
                 }
@@ -940,7 +962,7 @@ impl InstallationController {
                 Ok(())
             })();
             let stopped = if result.is_ok() {
-                match session.stop_with_furnishing_activation_fences() {
+                match session.stop_with_furnishing_activation_fences(id) {
                     Ok(stopped) => stopped,
                     Err(error) => { let _ = session.stop(); return Err(error); }
                 }
@@ -1009,7 +1031,7 @@ fn observe(
     budget: u64,
     scratch: &Path,
 ) -> Result<()> {
-    session.verify_workspace_furnishing_writer_quiescence()?;
+    session.verify_furnishing_restore_target(&plan.id)?;
     session.backup_tool(
         vec![
             "check-restored-inventory".into(),
@@ -1171,6 +1193,38 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn ordinary_furnishing_pending_restore_target_requires_exact_intent_and_physical_binding() {
+        let target = root();
+        let id = Uuid::new_v4().to_string();
+        let physical = serde_json::from_value(serde_json::json!({
+            "rootDevice": 1, "rootInode": 2, "lockDevice": 1, "lockInode": 3,
+        })).unwrap();
+        let replacement = serde_json::from_value(serde_json::json!({
+            "rootDevice": 1, "rootInode": 2, "lockDevice": 1, "lockInode": 4,
+        })).unwrap();
+        assert!(pending_furnishing_target(&target, None, physical).unwrap().is_none());
+        let directory = target.join(format!("native-restore-{id}"));
+        new_directory(&directory).unwrap();
+        write_json(&target, MARKER, &Pending { format: 1, id: id.clone() }).unwrap();
+        assert!(pending_furnishing_target(&target, Some(&id), physical).is_err());
+        let mut intent = Intent {
+            format: 1, id: id.clone(), source: target.join("archive"),
+            source_manifest_sha256: "a".repeat(64), system_identifier: "123".into(),
+            target_environment_sha256: "b".repeat(64), target_owner_sha256: "c".repeat(64),
+            furnishing_target: None,
+        };
+        write_json(&directory, "intent.json", &intent).unwrap();
+        assert!(pending_furnishing_target(&target, Some(&id), physical).is_err());
+        intent.furnishing_target = Some(physical);
+        write_json(&directory, "intent.json", &intent).unwrap();
+        assert_eq!(pending_furnishing_target(&target, None, physical).unwrap().as_deref(), Some("123"));
+        assert_eq!(pending_furnishing_target(&target, Some(&id), physical).unwrap().as_deref(), Some("123"));
+        assert!(pending_furnishing_target(&target, Some(&id), replacement).is_err());
+        assert!(pending_furnishing_target(&target, Some(&Uuid::new_v4().to_string()), physical).is_err());
+        fs::remove_dir_all(target).unwrap();
+    }
+
+    #[test]
     fn pre_stage_retry_uses_same_intent_and_refuses_changed_archive_cluster_or_target() {
         let target = root();
         let source = root();
@@ -1185,6 +1239,7 @@ mod tests {
             system_identifier: "123".into(),
             target_environment_sha256: digest(b"synthetic target env"),
             target_owner_sha256: digest(b"synthetic owner"),
+            furnishing_target: None,
         };
         // The key path/value is deliberately not frozen: an explicitly chosen
         // corrected key still has to pass archive authentication on the retry.
