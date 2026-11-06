@@ -33,6 +33,71 @@ final class NativeWorkspaceOEXTerminalProofTests: XCTestCase {
         XCTAssertEqual(verified.proofSha256, "cb9fadf4f98414781521c7363168c1591a71a5132fa6eb1ce65089f0311da6f3")
     }
 
+    func testExactPlatformWallAndMixedFixtures() throws {
+        struct PlatformFixture: Decodable {
+            let kind: String
+            let sourceCommit: String
+            let scope: Terminal.Scope
+            let offer: NativeOEXSaveOffer
+            let held: NativeStudioResponse
+            let saved: NativeStudioResponse
+            let resultUtf8: String
+            let proofUtf8: String
+        }
+        guard let path = ProcessInfo.processInfo.environment["EXHIBITOS_DRAFT12_WALL_TERMINAL_FIXTURES"] else {
+            throw XCTSkip("Supply the pinned Platform wall and mixed fixtures.")
+        }
+        let root = URL(fileURLWithPath: path, isDirectory: true)
+        let scope = Terminal.Scope(
+            workspaceId: "50ed5798-c1c9-4753-a9d8-be483fd7deca",
+            tenantId: "e29a6d07-d443-49ce-b443-6cf2b92c50c4",
+            principalId: "fa9be060-61f1-4b9c-91c2-2f23dd85574c",
+            jobId: "9d8eee8f-e084-455c-8d30-5b2b6fa9a853",
+            attemptId: "a276233c-4c28-48d6-b822-138b493e4ec0",
+            importRequestId: "3747828b-0f93-4f8f-9da1-4afadd75f4f0",
+            sourceArchiveSha256: String(repeating: "a", count: 64)
+        )
+        let cases = [
+            (name: "wall", envelope: "d77cc757e6859d5479a3681bb3d2a18351209a378aff1886088a726d89a8291b",
+             result: "e20ff2761b6732928baa9f442129a7815308a3b85c9d5fa1e07362f50d29179d",
+             proof: "40bee7078149ff0aceb4b42896e746b22836b72899a696aea7c4794bcfca8b8b",
+             etag: "f733f2022e133d344fc3060cf8b74f1cb8713e26165ef4433513c9d8259aec92",
+             resultBytes: 31_501),
+            (name: "mixed", envelope: "f24f746874d136db419d4769e6d7be6cfa62921b7eeaa21dbb7903808ae2c7bd",
+             result: "3560e6d9d3b3864b64d2b13638f676618c6b8a3e0b9ee15cf0a848172a81dafc",
+             proof: "5240eb7fe03352e507b237174677ce59502f154870b91b0ede413940112b92e6",
+             etag: "b86296162e033dc18fa3128d32cdd450904661f95222d94c34665c5d2c4f43f6",
+             resultBytes: 32_238)
+        ]
+        for sample in cases {
+            let bytes = try Data(contentsOf: root.appendingPathComponent("\(sample.name).json"))
+            XCTAssertEqual(sha256(bytes), sample.envelope)
+            let fixture = try JSONDecoder().decode(PlatformFixture.self, from: bytes)
+            XCTAssertEqual(fixture.kind, "synthetic-noncommitted-\(sample.name)-terminal-v1")
+            XCTAssertEqual(fixture.sourceCommit, "04a9f8f8268bdfdb3fdfcd8d6baf1fc7f8fd9c3f")
+            XCTAssertEqual(fixture.scope, scope)
+            let offer = NativeOEXSaveOffer(
+                attemptId: scope.attemptId, exhibitionId: "d8d4f1e9-34c1-4e3b-a7d0-2cdb6914d66d",
+                etag: ""studio-r1-\(sample.etag)"", requestId: "33333333-3333-4333-8333-333333333333"
+            )
+            XCTAssertEqual(fixture.offer.attemptId, offer.attemptId)
+            XCTAssertEqual(fixture.offer.exhibitionId, offer.exhibitionId)
+            XCTAssertEqual(fixture.offer.etag, offer.etag)
+            XCTAssertEqual(fixture.offer.requestId, offer.requestId)
+            XCTAssertEqual(fixture.saved.etag, ""studio-r2-\(sample.etag)"")
+            let result = try Data(contentsOf: root.appendingPathComponent("\(sample.name).result.utf8"))
+            let proof = try Data(contentsOf: root.appendingPathComponent("\(sample.name).proof.utf8"))
+            XCTAssertEqual(result, Data(fixture.resultUtf8.utf8))
+            XCTAssertEqual(proof, Data(fixture.proofUtf8.utf8))
+            let verified = try Terminal.verify(proofBytes: proof, resultBytes: result, scope: scope,
+                                               offer: offer, held: fixture.held, reopened: fixture.saved)
+            XCTAssertEqual(verified.scope, scope)
+            XCTAssertEqual(verified.resultBytes, sample.resultBytes)
+            XCTAssertEqual(verified.resultSha256, sample.result)
+            XCTAssertEqual(verified.proofSha256, sample.proof)
+        }
+    }
+
     func testValidProofReturnsExactByteDigests() throws {
         let input = try Fixture()
         let verified = try input.verify()

@@ -199,7 +199,12 @@ The focused Swift tests use synthetic inputs. Set
 `EXHIBITOS_DRAFT12_TERMINAL_TEST_FIXTURE` to the exact Platform PR #347 synthetic
 fixture at `apps/api/test-fixtures/workspace-oex-terminal-native-v1.json` when
 running `swift test --filter NativeWorkspaceOEXTerminalProofTests` to check the
-producer's original proof and result bytes.
+producer's original proof and result bytes. Set
+`EXHIBITOS_DRAFT12_WALL_TERMINAL_FIXTURES` to the directory containing the
+pinned Platform wall and mixed JSON and raw UTF-8 proof/result files. These
+fixtures exercise the producer encoding and the Manager verifier using
+synthetic results. Runtime authority and database commits require separate
+evidence.
 
 The Manager Rust owner has a Draft 12 recovery witness boundary for the
 selected owner protocol. After matching the exact settlement receipt, it checks
