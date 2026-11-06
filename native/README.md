@@ -656,6 +656,15 @@ fresh EXB recovery workspace on the same paired payload. An existing V7 profile
 keeps its current schema and payload. Viewer, OEX and static output qualification
 are separate from these intake and placement source checks.
 
+The dormant native path follows the private v3 owner hello with one bounded v1
+writer lease and acknowledgment. Each frame authenticates the mode, payload,
+workspace and runtime identities, and the root and lock file device and inode.
+The writer descriptor is probed before inheritance. Native readiness and
+credential issuance require the authenticated acknowledgment and live channel.
+Existing selected OEX frames use their existing protocol. Platform validator
+inheritance and the opt-in claim recovery schema require separate qualification
+before a furnishing payload can be admitted.
+
 ### Optional furnishing catalog (source integration)
 
 `furnishing-visuals-v1` adds one protected catalog entry, the CC0 canted display

@@ -34,12 +34,12 @@ pub(super) struct Setup {
     parent: UnixStream,
     child: Option<File>,
     secret: String,
-    furnishing_writer: Option<File>,
+    furnishing_writer: Option<super::furnishing_lifetime::ProbedWriter>,
 }
 /// Intended to stay inside the owning Session; this type does not enforce
 /// that lifetime. It is not a claim, readiness, fence or authorization; loss
 /// of the socket is terminal once observed by the transport.
-pub(super) struct Connection { socket: UnixStream, key: [u8;32], valid: bool, ready: bool, claim_started: bool, metadata_started: bool }
+pub(super) struct Connection { socket: UnixStream, key: [u8;32], valid: bool, ready: bool, furnishing_bound: bool, claim_started: bool, metadata_started: bool }
 /// Keep the session connection only after the exact completion was checked.
 pub(super) fn finish_v3_claim(channel: &mut Option<Connection>, completed: bool) {
     if !completed && let Some(mut connection) = channel.take() { connection.invalidate(); }
@@ -83,7 +83,7 @@ impl Setup {
         parent.set_nonblocking(true).map_err(|_| err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
         Ok(Self {parent,child:Some(child),secret,furnishing_writer:None})
     }
-    pub(super) fn with_furnishing_writer(mut self, file: File) -> Self {
+    pub(super) fn with_furnishing_writer(mut self, file: super::furnishing_lifetime::ProbedWriter) -> Self {
         self.furnishing_writer = Some(file);
         self
     }
@@ -136,7 +136,13 @@ impl Setup {
         let fd=self.child.as_ref().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?.as_raw_fd();
         command.env("EXHIBITOS_NATIVE_OWNER_FD",fd.to_string());
         let writer = self.furnishing_writer.as_ref().map(AsRawFd::as_raw_fd);
-        if let Some(writer) = writer { command.env("EXHIBITOS_NATIVE_FURNISHING_WRITER_FD", writer.to_string()); }
+        if let Some(writer) = writer {
+            use super::furnishing_lifetime::{FD_MIN, FD_MAX};
+            if writer == fd || !(FD_MIN..=FD_MAX).contains(&writer) {
+                return Err(err("NATIVE_FURNISHING_WRITER_LOCK_INVALID"));
+            }
+            command.env("EXHIBITOS_NATIVE_FURNISHING_WRITER_FD", writer.to_string());
+        }
         unsafe { command.pre_exec(move || {
             for descriptor in std::iter::once(fd).chain(writer) {
                 let flags = libc::fcntl(descriptor, libc::F_GETFD);
@@ -173,7 +179,7 @@ impl Setup {
             let digit=|v:u8|if v<=b'9'{v-b'0'}else{v-b'a'+10};
             key[i]=(digit(pair[0])<<4)|digit(pair[1]);
         }
-        Ok(Connection {socket,key,valid:true,ready:false,claim_started:false,metadata_started:false})
+        Ok(Connection {socket,key,valid:true,ready:false,furnishing_bound: false,claim_started:false,metadata_started:false})
     }
 }
 
@@ -183,15 +189,46 @@ impl Connection {
     // fence is live. A typed, single-use Session-bound challenge is required.
     fn fail(&mut self) {self.valid=false;self.key.fill(0);let _=self.socket.shutdown(std::net::Shutdown::Both);}
     pub(super) fn read_frame(&mut self, deadline:Instant, cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>)->Result<Vec<u8>> {
+        self.read_frame_limited(8192, deadline, cancellation, check)
+    }
+    fn read_frame_limited(&mut self, limit: usize, deadline: Instant, cancellation: &AtomicBool,
+                          check: &mut dyn FnMut() -> Result<()>) -> Result<Vec<u8>> {
         let mut len=[0u8;4];read_bounded(&mut self.socket,&mut len,deadline,cancellation,check)?;
-        let n=u32::from_be_bytes(len) as usize;if n==0||n>8192{return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
+        let n=u32::from_be_bytes(len) as usize;if n==0||n>limit{return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
         let mut bytes=vec![0u8;n];read_bounded(&mut self.socket,&mut bytes,deadline,cancellation,check)?;Ok(bytes)
+    }
+    pub(super) fn bind_furnishing_lease(&mut self, lease: &super::furnishing_lease::Lease,
+        cancellation: &AtomicBool, check: &mut dyn FnMut() -> Result<()>) -> Result<()> {
+        use super::furnishing_lease::{Kind, LIMIT};
+        if !self.valid || self.ready || self.furnishing_bound {
+            self.fail();
+            return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let result = (|| {
+            let wire = lease.signed(&self.key, Kind::Lease)?;
+            self.send_frame(&wire, deadline, cancellation, check)?;
+            let reply = self.read_frame_limited(LIMIT, deadline, cancellation, check)?;
+            lease.check_ack(&self.key, &reply)?;
+            check()?;
+            self.check_authenticated_idle()
+        })();
+        if result.is_ok() { self.furnishing_bound = true; } else { self.fail(); }
+        result
+    }
+
+    pub(super) fn check_furnishing_idle(&mut self) -> Result<()> {
+        if !self.furnishing_bound {
+            self.fail();
+            return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));
+        }
+        self.check_authenticated_idle()
     }
     /// Accept exactly one canonical readiness frame tied to the supplied live
     /// personal identity. Any mismatch or transport error closes permanently.
     pub(super) fn receive_ready(&mut self,cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>,
         workspace:&str,tenant:&str,principal:&str,generation:&str)->Result<()> {
-        if !self.valid||self.ready {self.fail();return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
+        if !self.valid||self.ready||self.furnishing_bound {self.fail();return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
         let result=self.read_frame(Instant::now()+Duration::from_secs(30),cancellation,check)
             .and_then(|bytes|super::owner_claim_frames::check_ready(&bytes,workspace,tenant,principal,generation))
             .and_then(|_|check());
@@ -345,7 +382,7 @@ impl Connection {
         self.check_authenticated_idle()
     }
     /// Ordinary furnishing startup has no selected OEX ready frame.
-    pub(super) fn check_authenticated_idle(&mut self) -> Result<()> {
+    fn check_authenticated_idle(&mut self) -> Result<()> {
         if !self.valid { self.fail(); return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
         let mut byte=0u8;
         for _ in 0..4 {
@@ -500,6 +537,50 @@ pub(super) fn worker_control_notice(control: &super::oex_control_v2::Control,
 mod tests {
     use super::*;
     #[test]
+    fn furnishing_channel_requires_exact_ack_and_rejects_eof() {
+        use super::super::{FurnishingStart, furnishing_lease::{Kind, Lease}, furnishing_lifetime::WriterIdentity};
+        let key = [7; 32];
+        let generation = Uuid::new_v4().to_string();
+        let lease = Lease::new(&authority(), &generation, FurnishingStart::Reopen, "a".repeat(64),
+            WriterIdentity { root_device: 1, root_inode: 2, lock_device: 1, lock_inode: 3 });
+        for attempt in 0..4 {
+            let (parent, mut peer) = UnixStream::pair().unwrap();
+            parent.set_nonblocking(true).unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let expected = lease.signed(&key, Kind::Lease).unwrap();
+            let mut reply = lease.signed(&key, Kind::Ack).unwrap();
+            if attempt == 1 { reply = lease.signed(&[8; 32], Kind::Ack).unwrap(); }
+            let (release, wait) = std::sync::mpsc::channel();
+            let child = std::thread::spawn(move || {
+                let mut header = [0; 4];
+                peer.read_exact(&mut header).unwrap();
+                let mut body = vec![0; u32::from_be_bytes(header) as usize];
+                peer.read_exact(&mut body).unwrap();
+                assert_eq!(body, expected);
+                if attempt == 2 { return; } // EOF before ACK
+                if attempt == 3 { peer.write_all(&2049_u32.to_be_bytes()).unwrap(); return; }
+                peer.write_all(&(reply.len() as u32).to_be_bytes()).unwrap();
+                peer.write_all(&reply).unwrap();
+                if attempt == 0 { let _ = wait.recv_timeout(Duration::from_secs(5)); }
+            });
+            let mut connection = Connection { socket: parent, key, valid: true, ready: false,
+                furnishing_bound: false, claim_started: false, metadata_started: false };
+            let cancellation = AtomicBool::new(false);
+            let result = connection.bind_furnishing_lease(&lease, &cancellation, &mut || Ok(()));
+            if attempt == 0 {
+                assert!(result.is_ok());
+                assert!(!connection.ready);
+                assert!(connection.check_furnishing_idle().is_ok());
+                release.send(()).unwrap();
+            } else {
+                assert!(result.is_err());
+                assert!(!connection.valid);
+            }
+            child.join().unwrap();
+            assert!(connection.check_furnishing_idle().is_err());
+        }
+    }
+    #[test]
     fn workspace_furnishing_bootstrap_uses_closed_v3_initialize_and_reopen_modes() {
         let setup = Setup::new().unwrap();
         let auth = authority();
@@ -547,7 +628,7 @@ mod tests {
         for completed in [true, false] {
             let (parent, mut peer) = UnixStream::pair().unwrap();
             peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
-            let mut channel = Some(Connection { socket: parent, key: [1;32], valid: true, ready: true, claim_started: true, metadata_started: true });
+            let mut channel = Some(Connection { socket: parent, key: [1;32], valid: true, ready: true, furnishing_bound: false, claim_started: true, metadata_started: true });
             finish_v3_claim(&mut channel, completed);
             if completed {
                 channel.as_mut().unwrap().socket.write_all(b"x").unwrap();
@@ -566,7 +647,7 @@ mod tests {
         let ready=SaveFrame{version:1,kind:"save-ready".into(),correlation_id:id(),attempt_id:attempt.clone(),exhibition_id:id(),etag:format!("\"studio-r1-{}\"","a".repeat(64)),request_id:id()};
         let challenge=ClaimChallenge{version:1,kind:"claim-challenge-v3".into(),correlation_id:id(),workspace_id:id(),tenant_id:id(),principal_id:id(),runtime_generation:id(),job_id:id(),attempt_id:attempt,generation:id(),stage_id:id(),reservation_id:id(),reservation_generation:id(),claim_digest:"c".repeat(64),receipt_digest:"d".repeat(64)};
         let (parent,mut peer)=UnixStream::pair().unwrap();
-        let mut channel=Connection{socket:parent,key:[1;32],valid:true,ready:true,claim_started:true,metadata_started:true};
+        let mut channel=Connection{socket:parent,key:[1;32],valid:true,ready:true,furnishing_bound: false,claim_started:true,metadata_started:true};
         let result=channel.confirm_save(&ready,&challenge,&format!("\"studio-r2-{}\"","b".repeat(64)),&AtomicBool::new(false),&mut ||Ok(()),&mut |_|{});
         assert_eq!(result.unwrap_err().code,"NATIVE_OEX_ATTEMPT_INVALID");
         let mut byte=[0u8;1];assert_eq!(peer.read(&mut byte).unwrap(),0);
@@ -591,7 +672,7 @@ mod tests {
                 send(&mut peer,&response.settlement("settle-receipt").unwrap());
                 if !wrong {verified.kind="operation-complete".into();send(&mut peer,&serde_json::to_vec(&verified).unwrap());}
             });
-            let mut channel=Connection{socket:parent,key:[1;32],valid:true,ready:true,claim_started:true,metadata_started:true};
+            let mut channel=Connection{socket:parent,key:[1;32],valid:true,ready:true,furnishing_bound: false,claim_started:true,metadata_started:true};
             let result=channel.confirm_save(&ready,&challenge,&next,&AtomicBool::new(false),&mut ||Ok(()),&mut |_|{});
             assert_eq!(result.is_ok(),!wrong);assert_eq!(channel.valid,!wrong);worker.join().unwrap();
         }
@@ -697,7 +778,7 @@ mod tests {
             peer.write_all(&(request.len() as u32).to_be_bytes()).unwrap();peer.write_all(request.as_bytes()).unwrap();
             let done:Value=serde_json::from_slice(&read_frame(&mut peer)).unwrap();assert_eq!(done["status"],"drained");
         });
-        let mut channel=Connection{socket:parent,key:[1;32],valid:true,ready:true,claim_started:true,metadata_started:false};
+        let mut channel=Connection{socket:parent,key:[1;32],valid:true,ready:true,furnishing_bound: false,claim_started:true,metadata_started:false};
         channel.serve_packed(&control,&prepared,&output,&attempt,&operation,&AtomicBool::new(false),&mut ||Ok(())).unwrap();worker.join().unwrap();
         drop(channel);drop(output);fs::remove_dir_all(dir).unwrap();
     }
@@ -713,7 +794,7 @@ mod tests {
             let mut request=vec![0u8;n];peer.read_exact(&mut request).unwrap();assert_eq!(request,b"abc");
             peer.write_all(&2u32.to_be_bytes()).unwrap();peer.write_all(b"ok").unwrap();
         });
-        let mut connection=Connection{socket:parent,key:[9;32],valid:true,ready:false,claim_started:false,metadata_started:false};let cancel=AtomicBool::new(false);
+        let mut connection=Connection{socket:parent,key:[9;32],valid:true,ready:false,furnishing_bound: false,claim_started:false,metadata_started:false};let cancel=AtomicBool::new(false);
         connection.receive_ready(&cancel,&mut ||Ok(()),&auth.workspace_id,&auth.tenant_id,&auth.principal_id,&generation).unwrap();
         assert_eq!(connection.exchange(b"abc",&cancel,&mut ||Ok(())).unwrap(),b"ok");worker.join().unwrap();
         assert!(connection.exchange(b"abc",&cancel,&mut ||Ok(())).is_err());assert!(!connection.valid);assert_eq!(connection.key,[0;32]);
@@ -724,14 +805,14 @@ mod tests {
         let (parent,mut peer)=UnixStream::pair().unwrap();parent.set_nonblocking(true).unwrap();
         peer.write_all(&2u32.to_be_bytes()).unwrap();peer.write_all(b"{}").unwrap();
         let auth=authority();let generation=Uuid::new_v4().to_string();
-        let mut connection=Connection{socket:parent,key:[9;32],valid:true,ready:false,claim_started:false,metadata_started:false};
+        let mut connection=Connection{socket:parent,key:[9;32],valid:true,ready:false,furnishing_bound: false,claim_started:false,metadata_started:false};
         assert!(connection.receive_ready(&AtomicBool::new(false),&mut ||Ok(()),&auth.workspace_id,&auth.tenant_id,&auth.principal_id,&generation).is_err());
         assert!(!connection.valid);assert_eq!(connection.key,[0;32]);
     }
     #[test]
     fn idle_socket_detects_eof_while_peer_handle_still_exists() {
         let (parent,peer)=UnixStream::pair().unwrap();parent.set_nonblocking(true).unwrap();
-        let mut connection=Connection{socket:parent,key:[9;32],valid:true,ready:true,claim_started:true,metadata_started:false};
+        let mut connection=Connection{socket:parent,key:[9;32],valid:true,ready:true,furnishing_bound: false,claim_started:true,metadata_started:false};
         assert!(connection.check_idle().is_ok());
         peer.shutdown(std::net::Shutdown::Write).unwrap();
         assert!(connection.check_idle().is_err());assert!(!connection.valid);assert_eq!(connection.key,[0;32]);
@@ -776,7 +857,7 @@ mod tests {
                 reservation_digest:challenge.receipt_digest.clone(),manager_binding_digest:mac,profile:"bounded-file-v1".into(),format:"1.0.0-draft.9".into()};
             send(&mut peer,&serde_json::to_vec(&ready).unwrap());
         });
-        let mut connection=Connection{socket:parent,key:std::array::from_fn(|i|i as u8),valid:true,ready:true,claim_started:false,metadata_started:false};
+        let mut connection=Connection{socket:parent,key:std::array::from_fn(|i|i as u8),valid:true,ready:true,furnishing_bound: false,claim_started:false,metadata_started:false};
         let cancel=AtomicBool::new(false);
         let (_,ready,capacity)=connection.begin_claim(&open,&id(3),&request,67_108_865,&archive,Path::new("/private/stage"),1,0,&cancel,&mut ||Ok(())).unwrap();
         assert_eq!(capacity,532_891_135);
@@ -816,7 +897,7 @@ mod tests {
                 let ready=ClaimReady{version:1,kind:"claim-ready-v3".into(),correlation_id:id(11),runtime_generation:id(4),workspace_id:id(1),tenant_id:id(2),job_id:id(5),user_id:id(3),request_id:peer_request,lease_id:id(13),attempt_id:id(6),generation:id(7),stage_id:id(8),reservation_id:id(9),reservation_generation:id(10),archive_bytes:100,archive_sha256:peer_archive.clone(),source_digest:peer_archive,reservation_digest:challenge.receipt_digest,manager_binding_digest:mac,profile:"bounded-file-v1".into(),format:"1.0.0-draft.9".into()};
                 send(&mut peer,&serde_json::to_vec(&ready).unwrap());
             });
-            let mut channel=Connection{socket:parent,key:[1;32],valid:true,ready:true,claim_started:false,metadata_started:false};
+            let mut channel=Connection{socket:parent,key:[1;32],valid:true,ready:true,furnishing_bound: false,claim_started:false,metadata_started:false};
             let selected=SelectedArchive{request_id:&request,bytes:100,sha256:&archive,format:None};
             let scope=super::super::oex_reservation::V3PlanScope::from_owner(&owner,Path::new("/private/stage"),1);
             let result=channel.begin_claim_v3(&open,&id(3),selected,scope,&AtomicBool::new(false),&mut ||Ok(()));
