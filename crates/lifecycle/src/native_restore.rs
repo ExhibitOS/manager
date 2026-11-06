@@ -2,6 +2,7 @@
 //! Fresh native candidate restoration and explicit, replayable activation.
 //! Archive crypto, database restore and inventory checks remain Platform-owned.
 use super::native_backup::{Secret, SourceMap, resource_budget, text};
+use super::native_oex_import::{WORKSPACE_COMPLETION_ARCHIVE_NAME, workspace_completion, workspace_completion_name};
 use super::*;
 use crate::{native_installation::Ports, native_payload::Payload, native_runtime::Session};
 use std::{
@@ -185,6 +186,7 @@ fn owner_name(kind: &str) -> Result<&'static str> {
 }
 fn journal(source: &Path, logical: &str) -> Result<String> {
     let kind = match logical {
+        WORKSPACE_COMPLETION_ARCHIVE_NAME => return Ok(workspace_completion_name(source)),
         "document.json" => "document",
         "upload.json" => "upload",
         "oex-import.json" => "oex-import",
@@ -360,6 +362,13 @@ fn authenticated_journals(restored: &Path, source: &SourceMap) -> Result<()> {
     Ok(())
 }
 fn rebound_journal(logical: &str, bytes: &[u8], fields: &Fields) -> Result<Vec<u8>> {
+    if logical == WORKSPACE_COMPLETION_ARCHIVE_NAME {
+        let identity = |name| fields.0.get(name).filter(|id| uuid(id)).map(String::as_str).ok_or_else(bad);
+        let expected = workspace_completion(identity("WORKSPACE_ID")?, identity("TENANT_ID")?, identity("PRINCIPAL_ID")?);
+        let marker: Value = serde_json::from_slice(bytes).map_err(|_| bad())?;
+        if bytes.len() > 4096 || marker != expected { return Err(bad()); }
+        return Ok(bytes.into());
+    }
     let mut value = journal_value(logical, bytes)?;
     if value["workspaceId"].as_str() != fields.0.get("WORKSPACE_ID").map(String::as_str)
         || value["tenantId"].as_str() != fields.0.get("TENANT_ID").map(String::as_str)
@@ -376,6 +385,44 @@ fn rebound_journal(logical: &str, bytes: &[u8], fields: &Fields) -> Result<Vec<u
         Ok(bytes.into())
     }
 }
+fn validate_source(source: &SourceMap, owner: &str, payload: &str, target: &Path) -> Result<bool> {
+    let imported = source.journal_names.contains_key(WORKSPACE_COMPLETION_ARCHIVE_NAME);
+    if source.format != 1 || source.owner_kind != owner || source.manifest_sha256 != payload
+        || !source.source_root.is_absolute() || source.source_root == target
+        || source.source_root.components().any(|p| matches!(p, Component::ParentDir))
+        || source.journal_names.len() > if imported { 5 } else { 4 }
+        || (imported && owner != "personal")
+    {
+        return Err(bad());
+    }
+    for (logical, name) in &source.journal_names {
+        if logical == "oex-import.json" || journal(&source.source_root, logical)? != *name {
+            return Err(bad());
+        }
+    }
+    text(&source.source_root)?;
+    Ok(imported)
+}
+
+fn restore_entry<'a>(profile: &Path, target: &Path, registry: &'a mut Registry) -> Result<&'a mut Entry> {
+    registry.installations.iter_mut()
+        .find(|entry| entry.id == registry.active_id && root(profile, entry) == target)
+        .ok_or_else(|| err("INSTALLATION_SELECTION_CHANGED"))
+}
+
+fn promote_restored_entry(profile: &Path, target: &Path, mut registry: Registry, previous: &[u8]) -> Result<()> {
+    let entry = restore_entry(profile, target, &mut registry)?;
+    match entry.kind.as_str() {
+        "oex-import" => return Ok(()),
+        "recovery" => entry.kind = "oex-import".into(),
+        _ => return Err(err("NATIVE_RESTORE_TARGET_NOT_EMPTY")),
+    }
+    save(profile, &registry, Some(previous))?;
+    let (mut installed, _) = load(profile)?.ok_or_else(bad)?;
+    if restore_entry(profile, target, &mut installed)?.kind != "oex-import" { return Err(bad()); }
+    Ok(())
+}
+
 fn rebound_identity(kind: &str, original: &Fields, current: &Fields) -> Result<()> {
     let keys: &[&str] = match kind {
         "personal" => &["WORKSPACE_ID", "PRINCIPAL_ID", "OWNER_UID", "TENANT_ID"],
@@ -398,7 +445,7 @@ fn valid_plan(plan: &Plan, target: &Path) -> Result<()> {
         || !hash_valid(&plan.manifest_sha256)
         || !hash_valid(&plan.payload_sha256)
         || plan.files.len() < 3
-        || plan.files.len() > 7
+        || plan.files.len() > 8
     {
         return Err(bad());
     }
@@ -519,6 +566,7 @@ impl InstallationController {
             session.backup_source_current()?;
             let profile = self.profile.as_ref().ok_or_else(bad)?;
             let _profile = profile_lock(profile)?;
+            self.ensure_active_creation_unlocked(service)?;
             signed_release::trust::lifecycle_writer::admit(&service.root,&Action::Install)?;
             key(&input, &profile.root, &service.root)?;
             let prepared = service.native_prepared()?.ok_or_else(bad)?;
@@ -544,6 +592,7 @@ impl InstallationController {
                 "oex-import.json",
                 "publication.json",
                 "static-export.json",
+                WORKSPACE_COMPLETION_ARCHIVE_NAME,
             ] {
                 if exists(&profile.root, &journal(&service.root, logical)?)? {
                     return Err(err("NATIVE_RESTORE_TARGET_NOT_EMPTY"));
@@ -615,25 +664,12 @@ impl InstallationController {
                 .collect(),
             )?;
             let source: SourceMap = json(&configuration, "native-source.json", 65536)?;
-            if source.format != 1
-                || source.owner_kind != prepared.kind
-                || source.manifest_sha256 != payload.context().manifest_sha256
-                || !source.source_root.is_absolute()
-                || source.source_root == service.root
-                || source
-                    .source_root
-                    .components()
-                    .any(|p| matches!(p, Component::ParentDir))
-                || source.journal_names.len() > 4
-            {
-                return Err(bad());
-            }
-            for (logical, name) in &source.journal_names {
-                if journal(&source.source_root, logical)? != *name {
-                    return Err(bad());
+            if validate_source(&source, &prepared.kind, &payload.context().manifest_sha256, &service.root)? {
+                let (mut registry, _) = load(&profile.root)?.ok_or_else(bad)?;
+                if restore_entry(&profile.root, &service.root, &mut registry)?.kind != "recovery" {
+                    return Err(err("NATIVE_RESTORE_TARGET_NOT_EMPTY"));
                 }
             }
-            text(&source.source_root)?;
             authenticated_journals(&restored, &source)?;
             let validation = directory.join(format!("validation-{attempt}"));
             new_directory(&validation)?;
@@ -778,6 +814,7 @@ impl InstallationController {
             }
             let profile = self.profile.as_ref().ok_or_else(bad)?;
             let _profile = profile_lock(profile)?;
+            self.ensure_active_creation_unlocked(service)?;
             let guard = service.lock()?;
             signed_release::trust::lifecycle_writer::admit(&service.root, &Action::Install)?;
             let directory = service.root.join(format!("native-restore-{id}"));
@@ -790,6 +827,7 @@ impl InstallationController {
             if plan.id != id || plan.payload_sha256 != payload.context().manifest_sha256 {
                 return Err(bad());
             }
+            let completion = plan.files.iter().find(|f| f.profile && f.staged == WORKSPACE_COMPLETION_ARCHIVE_NAME);
             if !exists(&service.root, MARKER)? {
                 let receipt: Receipt = json(&directory, "activated.json", 4096)?;
                 if receipt.id != id
@@ -797,6 +835,12 @@ impl InstallationController {
                     || receipt.state != "activated"
                 {
                     return Err(bad());
+                }
+                if let Some(file) = completion {
+                    let (mut registry, _) = load(&profile.root)?.ok_or_else(bad)?;
+                    if restore_entry(&profile.root, &service.root, &mut registry)?.kind != "oex-import"
+                        || file_hash(&profile.root, &file.name)?.as_deref() != Some(file.sha256.as_str())
+                    { return Err(bad()); }
                 }
                 return Ok(receipt);
             }
@@ -816,20 +860,12 @@ impl InstallationController {
             authenticated_configuration(&restored, &plan.kind)?;
             let source: SourceMap =
                 json(&restored.join("configuration"), "native-source.json", 65536)?;
-            if source.format != 1
-                || source.owner_kind != plan.kind
-                || source.manifest_sha256 != plan.payload_sha256
-                || source.source_root == service.root
-                || !source.source_root.is_absolute()
-                || source.journal_names.len() > 4
-                || plan.files.len() != 3 + source.journal_names.len()
-            {
-                return Err(bad());
-            }
-            for (logical, name) in &source.journal_names {
-                if journal(&source.source_root, logical)? != *name {
-                    return Err(bad());
-                }
+            let imported = validate_source(&source, &plan.kind, &plan.payload_sha256, &service.root)?;
+            if imported != completion.is_some() || plan.files.len() != 3 + source.journal_names.len() { return Err(bad()); }
+            let (mut registry, previous) = load(&profile.root)?.ok_or_else(bad)?;
+            let entry = restore_entry(&profile.root, &service.root, &mut registry)?;
+            if imported && !matches!(entry.kind.as_str(), "recovery" | "oex-import") {
+                return Err(err("NATIVE_RESTORE_TARGET_NOT_EMPTY"));
             }
             authenticated_journals(&restored, &source)?;
             let owner = owner_name(&plan.kind)?;
@@ -923,6 +959,11 @@ impl InstallationController {
             let current_marker: Pending = json(&service.root, MARKER, 4096)?;
             if current_marker.format != 1 || current_marker.id != id {
                 return Err(bad());
+            }
+            if imported {
+                // The profile registry is authoritative for ordinary startup.
+                // Keep the runtime fence across marker installation and promotion.
+                promote_restored_entry(&profile.root, &service.root, registry, &previous)?;
             }
             fs::remove_file(service.root.join(MARKER)).map_err(|_| bad())?;
             File::open(&service.root)
@@ -1022,6 +1063,55 @@ mod tests {
         assert!(rebound_journal("upload.json", &raw, &other).is_err());
         fs::remove_dir_all(source).unwrap();
         fs::remove_dir_all(target).unwrap();
+    }
+    #[test]
+    fn settled_import_marker_rebinds_only_exact_source_path_payload_and_owner() {
+        let source = root();
+        let target = root();
+        let f = fields();
+        let logical = WORKSPACE_COMPLETION_ARCHIVE_NAME;
+        let source_name = journal(&source, logical).unwrap();
+        let target_name = journal(&target, logical).unwrap();
+        assert_ne!(source_name, target_name);
+        let payload = "a".repeat(64);
+        let mut map = SourceMap { format: 1, source_root: source.clone(), owner_kind: "personal".into(),
+            manifest_sha256: payload.clone(), journal_names: BTreeMap::new() };
+        assert!(!validate_source(&map, "personal", &payload, &target).unwrap());
+        map.journal_names.insert(logical.into(), target_name);
+        assert!(validate_source(&map, "personal", &payload, &target).is_err());
+        map.journal_names.insert(logical.into(), source_name);
+        assert!(validate_source(&map, "personal", &payload, &target).unwrap());
+        assert!(validate_source(&map, "personal", &payload, &source).is_err());
+        assert!(validate_source(&map, "personal", &"b".repeat(64), &target).is_err());
+
+        let mut marker = workspace_completion(&f.0["WORKSPACE_ID"], &f.0["TENANT_ID"], &f.0["PRINCIPAL_ID"]);
+        let raw = serde_json::to_vec(&marker).unwrap();
+        assert_eq!(rebound_journal(logical, &raw, &f).unwrap(), raw);
+        marker["principalId"] = Value::String(Uuid::new_v4().to_string());
+        assert!(rebound_journal(logical, &serde_json::to_vec(&marker).unwrap(), &f).is_err());
+        fs::remove_dir_all(source).unwrap();
+        fs::remove_dir_all(target).unwrap();
+    }
+
+    #[test]
+    fn settled_import_registry_promotion_is_exact_and_replayable() {
+        let profile = root();
+        let original = Entry { id: Uuid::new_v4().to_string(), kind: "default".into(), created_at: now() };
+        let candidate = Entry { id: Uuid::new_v4().to_string(), kind: "recovery".into(), created_at: now() };
+        let target = super::root(&profile, &candidate);
+        let wrong = super::root(&profile, &original);
+        let registry = Registry { format: 1, active_id: candidate.id.clone(), installations: vec![original, candidate] };
+        save(&profile, &registry, None).unwrap();
+        let (registry, before) = load(&profile).unwrap().unwrap();
+        assert!(promote_restored_entry(&profile, &wrong, registry, &before).is_err());
+        let (registry, before) = load(&profile).unwrap().unwrap();
+        promote_restored_entry(&profile, &target, registry, &before).unwrap();
+        let (mut registry, after) = load(&profile).unwrap().unwrap();
+        assert_eq!(registry.installations[0].kind, "default");
+        assert_eq!(restore_entry(&profile, &target, &mut registry).unwrap().kind, "oex-import");
+        promote_restored_entry(&profile, &target, registry, &after).unwrap();
+        assert_eq!(load(&profile).unwrap().unwrap().1, after);
+        fs::remove_dir_all(profile).unwrap();
     }
     #[test]
     fn activation_replays_partial_configuration_and_preserves_later_user_changes() {

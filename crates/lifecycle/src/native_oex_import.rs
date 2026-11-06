@@ -2,6 +2,15 @@
 //! Separate workspace-bound OEX intent. No archive bytes or local path are persisted.
 use super::*;
 const LIMIT: u64 = 65536;
+pub(super) const WORKSPACE_COMPLETION_ARCHIVE_NAME: &str = "oex-workspace-complete.json";
+
+pub(super) fn workspace_completion_name(root: &Path) -> String {
+    format!("native-oex-workspace-complete-{}.json", digest(root.as_os_str().as_encoded_bytes()))
+}
+
+pub(super) fn workspace_completion(workspace: &str, tenant: &str, principal: &str) -> Value {
+    serde_json::json!({"format":1,"workspaceId":workspace,"tenantId":tenant,"principalId":principal})
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -107,19 +116,14 @@ impl InstallationController {
 
     /// Return the exact source bytes only after checking the path-bound
     /// completion marker against this workspace's validated transfer identity.
-    fn verified_oex_workspace_completion_unlocked(
+    pub(super) fn verified_oex_workspace_completion_unlocked(
         &self,
         service: &LifecycleService,
         transfer: &Transfer,
     ) -> Result<Vec<u8>> {
         let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
-        let name = format!("native-oex-workspace-complete-{}.json", digest(service.root.as_os_str().as_encoded_bytes()));
-        let expected = serde_json::json!({
-            "format": 1,
-            "workspaceId": transfer.workspace_id,
-            "tenantId": transfer.tenant_id,
-            "principalId": transfer.principal_id,
-        });
+        let name = workspace_completion_name(&service.root);
+        let expected = workspace_completion(&transfer.workspace_id, &transfer.tenant_id, &transfer.principal_id);
         let bytes = installation_backup::source_bytes(&profile.root, &name, 4096, true)
             .map_err(|_| err("NATIVE_BOUNDED_IMPORT_PENDING"))?;
         let actual: Value = serde_json::from_slice(&bytes)
@@ -228,9 +232,9 @@ impl InstallationController {
             let (registry,_) = load(&profile.root)?.ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
             let entry=registry.installations.iter().find(|e|e.id==registry.active_id).ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
             if entry.kind=="oex-import" {
-                let name=format!("native-oex-workspace-complete-{}.json",digest(service.root.as_os_str().as_encoded_bytes()));
-                let bytes=serde_json::to_vec(&serde_json::json!({"format":1,"workspaceId":expected.workspace_id,
-                    "tenantId":expected.tenant_id,"principalId":expected.principal_id})).map_err(|_|err("STATE_INVALID"))?;
+                let name=workspace_completion_name(&service.root);
+                let bytes=serde_json::to_vec(&workspace_completion(&expected.workspace_id, &expected.tenant_id, &expected.principal_id))
+                    .map_err(|_|err("STATE_INVALID"))?;
                 match fs::symlink_metadata(profile.root.join(&name)) {
                     Err(e) if e.kind()==std::io::ErrorKind::NotFound => write_private_new(&profile.root,&name,&bytes,4096)?,
                     Ok(_) if installation_backup::source_bytes(&profile.root,&name,4096,true)?==bytes => {},
