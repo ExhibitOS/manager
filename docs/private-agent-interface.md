@@ -182,6 +182,16 @@ Operations:
     in degrees. **바닥에 연결** stages the change. Close the sheet and save
     the exhibition. The current runtime can save the binding. Surface
     rendering and portable outputs require a runtime that supports them.
+  - `workspace-material-wall-apply` uses the same command fields and saved
+    Studio checks. Pass a wall surface UUID and the exact registered color-only
+    wall material. Use `save` after a change. In Manager, the corresponding
+    actions are **벽 연결 설정** and **벽에 연결**.
+    Wall application is available to an ordinary authenticated owner session
+    on the local-validation wall preview payload from Platform source
+    `f4f6625110df63258a13407cbe45334e4372ab5e`, manifest SHA-256
+    `6be2d5969462e4961e9ecbd3b6417936f2f075de1fbc3626d1b4f19cde7e65ec`.
+    Floor-only runtime pins keep wall application unavailable in the GUI, and
+    CLI attempts return `WORKSPACE_MATERIAL_BINDING_UNSUPPORTED`.
 - `bench-prepare`: accept the existing `add-bench` command and optional fresh
   viewpoint; write the existing frame/request packet to a new `outputPath`.
 - `bench-apply`: provide its `proposalId` and a fixed shared-renderer reply at

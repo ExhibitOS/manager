@@ -212,7 +212,10 @@ impl Host {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     pub fn maintain_workspace_v5_transition(profile: PathBuf, resources: PathBuf) -> Result<Self> {
         let target = Payload::open_workspace_v5_validation(&resources, false)?;
-        if target.context().manifest_sha256 != crate::native_payload::WORKSPACE_V5_TRANSITION.1 {
+        let target_hash = target.context().manifest_sha256;
+        if !crate::native_payload::WORKSPACE_V5_SAVED_TRANSITIONS.iter()
+            .any(|(_, hash)| *hash == target_hash)
+        {
             return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
         }
         let controller = InstallationController::open_existing_managed(profile)?;

@@ -88,6 +88,11 @@ against the exact target with `--reopen-workspace-v5-validation`.
 The completed transition clears the fence. This command set has no post-commit
 rollback path.
 
+The isolated V5 wall preview validation also admits a directed saved-profile
+transition from the exact `cfe1` manifest to the reviewed `6be2` manifest.
+It uses the same authenticated checkpoint and saved-draft trial. The new
+payload is admitted for ordinary reopen after the transition.
+
 ### Private floor rendering
 
 The reviewed `cfe1` local-validation runtime also admits the existing Quiet

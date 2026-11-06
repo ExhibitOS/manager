@@ -120,10 +120,87 @@ final class WorkspaceMaterialIntakeTests: XCTestCase {
                                                                repeatMeters: [2, 2], rotation: 4))
     }
 
-    private func floorMaterialFixture() throws -> WorkspaceMaterial {
+    func testWorkspaceWallBindingChangesOnlyTheSelectedWallAndKeepsFloorAndSound() throws {
+        let floor = UUID().uuidString.lowercased()
+        let wall = UUID().uuidString.lowercased()
+        let otherWall = UUID().uuidString.lowercased()
+        let floorMaterial = try floorMaterialFixture()
+        let wallMaterial = try floorMaterialFixture(kind: .wall)
+        let namespace = WorkspaceSurfaceMaterialBinding.namespace
+        var draft = try NativeExhibitionDraft.new()
+        var candidate = draft.candidate
+        candidate["surfaces"] = .array([
+            .object(["id": .string(floor), "type": .string("floor")]),
+            .object(["id": .string(wall), "type": .string("wall")]),
+            .object(["id": .string(otherWall), "type": .string("wall")])
+        ])
+        candidate["extensions"] = .object(["test.example/sound": .string("preserve")])
+        try draft.replaceCandidate(candidate)
+
+        let floorBinding = try WorkspaceFloorMaterialBinding(surfaceId: floor, materialId: floorMaterial.id,
+            materialVersion: 1, repeatMeters: [2, 2], rotation: 0)
+        let before = try XCTUnwrap(floorBinding.applying(floorMaterial, to: draft))
+        let wallBinding = try WorkspaceSurfaceMaterialBinding(surfaceKind: .wall, surfaceId: wall,
+            materialId: wallMaterial.id, materialVersion: 1, repeatMeters: [2, 2], rotation: 0)
+        let after = try XCTUnwrap(wallBinding.applying(wallMaterial, to: before))
+        let updated = after.candidate["extensions"][namespace]
+        let rows = try XCTUnwrap(updated["bindings"].items)
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows.first, before.candidate["extensions"][namespace]["bindings"].items?.first)
+        XCTAssertEqual(rows.last?["surfaceId"].string, wall)
+        XCTAssertEqual(rows.last?["materialId"].string, wallMaterial.id)
+        XCTAssertEqual(rows.last?["materialVersion"].integer, 1)
+        var withoutWallChange = after.candidate
+        withoutWallChange["extensions"][namespace] = before.candidate["extensions"][namespace]
+        XCTAssertEqual(withoutWallChange, before.candidate)
+        XCTAssertNil(try wallBinding.applying(wallMaterial, to: after))
+
+        let wrongTarget = try WorkspaceSurfaceMaterialBinding(surfaceKind: .wall, surfaceId: floor,
+            materialId: wallMaterial.id, materialVersion: 1, repeatMeters: [2, 2], rotation: 0)
+        XCTAssertThrowsError(try wrongTarget.applying(wallMaterial, to: before)) {
+            XCTAssertEqual(($0 as? AuthoringFailure)?.code, "ARCHITECTURE_SELECTION_CHANGED")
+        }
+        let wrongMaterial = try WorkspaceSurfaceMaterialBinding(surfaceKind: .wall, surfaceId: wall,
+            materialId: floorMaterial.id, materialVersion: 1, repeatMeters: [2, 2], rotation: 0)
+        XCTAssertThrowsError(try wrongMaterial.applying(floorMaterial, to: before)) {
+            XCTAssertEqual(($0 as? AuthoringFailure)?.code, "WORKSPACE_MATERIAL_BINDING_UNSUPPORTED")
+        }
+    }
+
+    func testExistingFloorPreviewRuntimeRejectsWallBindingBeforeRequest() async throws {
+        let id = UUID().uuidString.lowercased()
+        let api = try AuthoringAPI(port: 65535, tenantId: id,
+            nativeRuntimeManifestSHA256: "cfe1faba63dc6d41e2451ad8bf8870d197a48e1b6d234850bdbad16c23083b59")
+        XCTAssertFalse(api.workspaceWallMaterialRuntimeQualified)
+        let binding = try WorkspaceSurfaceMaterialBinding(surfaceKind: .wall, surfaceId: id,
+            materialId: id, materialVersion: 1, repeatMeters: [2, 2], rotation: 0)
+        let document = NativeDocumentState(format: 1, revision: 0, workspaceId: id, tenantId: id, principalId: id)
+        do {
+            _ = try await api.prepareWorkspaceSurfaceMaterial(binding, in: document)
+            XCTFail("The floor-only runtime must refuse wall edits.")
+        } catch let failure as AuthoringFailure {
+            XCTAssertEqual(failure.code, "WORKSPACE_MATERIAL_BINDING_UNSUPPORTED")
+        }
+    }
+
+    func testWallPreviewPinDoesNotReplaceNativeSessionAdmission() async throws {
+        let id = UUID().uuidString.lowercased()
+        let api = try AuthoringAPI(port: 65535, tenantId: id,
+            nativeRuntimeManifestSHA256: "6be2d5969462e4961e9ecbd3b6417936f2f075de1fbc3626d1b4f19cde7e65ec")
+        #if DEBUG
+        XCTAssertTrue(api.workspaceWallMaterialRuntimeQualified)
+        XCTAssertTrue(api.workspaceMaterialRuntimeQualified)
+        #else
+        XCTAssertFalse(api.workspaceWallMaterialRuntimeQualified)
+        #endif
+        let admitted = await api.admitsWorkspaceMaterials
+        XCTAssertFalse(admitted)
+    }
+
+    private func floorMaterialFixture(kind: WorkspaceMaterialKind = .floor) throws -> WorkspaceMaterial {
         let id = UUID().uuidString.lowercased(), sha = String(repeating: "a", count: 64)
         return try JSONDecoder().decode(WorkspaceMaterial.self, from: Data("""
-            {"id":"\(id)","version":1,"kind":"floor","name":"Fixture","provenance":"Synthetic",
+            {"id":"\(id)","version":1,"kind":"\(kind.rawValue)","name":"Fixture","provenance":"Synthetic",
              "rights":{"holder":"Fixture","ownership":"owner","licenseId":"CC0-1.0","creditLine":"",
              "permissions":{"display":true,"download":true,"export":true,"commercial":true}},
              "maps":{"color":{"mime":"image/png","bytes":128,"sha256":"\(sha)","width":4,"height":4,"colorSpace":"srgb"}}}
