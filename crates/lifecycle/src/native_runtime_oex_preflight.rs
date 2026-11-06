@@ -127,7 +127,7 @@ impl Prepared {
 #[allow(dead_code)]
 pub(super) fn run_direct(payload: &Payload, input: &super::oex_read_fd::ObservedStage,
     request: &Control, expected_format:Option<&str>, cancelled: &AtomicBool, check_owner: &mut dyn FnMut() -> Result<()>) -> Result<Prepared> {
-    let selected_format = payload.workspace_v6_selected_input() || payload.normal_oex_028_selected_input()?;
+    let selected_format = payload.workspace_import_selected_input() || payload.normal_oex_028_selected_input()?;
     if expected_format.is_some() != selected_format
         || !payload.admits_selected_oex_format(expected_format.unwrap_or("1.0.0-draft.9"))? {
         return Err(invalid());

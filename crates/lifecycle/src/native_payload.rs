@@ -71,7 +71,7 @@ pub struct Payload {
     manifest: Manifest,
     manifest_sha256: String,
     workspace_v5_validation: bool,
-    workspace_v6_selected: bool,
+    workspace_import: Option<(WorkspaceImport, bool)>,
 }
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const WORKSPACE_V5_TRANSITION: (&str, &str) = (
@@ -124,20 +124,72 @@ fn workspace_v5_validation_matches(manifest: &Manifest, manifest_hash: &str, sel
                 && item.bytes == Some(bytes) && item.sha256.as_deref() == Some(sha)
         })
 }
-const WORKSPACE_V6_FORMAT_HINT: &str = "platform/apps/api/dist/oex-workspace-format-hint.js";
-const WORKSPACE_V6_PREFLIGHT: &str = "platform/apps/api/dist/oex-owned-workspace-preflight.js";
-const WORKSPACE_V6_MATERIALIZER: &str = "platform/apps/api/dist/oex-owned-workspace-chunk-materializer.js";
-const WORKSPACE_V6_PACKED: &str = "platform/apps/api/dist/oex-owned-workspace-packed-v2.js";
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkspaceImport {
+    V6,
+    V7,
+}
+
+pub(crate) const WORKSPACE_WALL_SCHEMA_NAME: &str = "035_workspace_material_wall_import.sql";
+pub(crate) const WORKSPACE_WALL_SCHEMA_SHA256: &str =
+    "c347183b3e58805c46d1dde7ae6e2defc37762af52f585846357181b9635a544";
+
+const WORKSPACE_IMPORT_FORMAT_HINT: &str = "platform/apps/api/dist/oex-workspace-format-hint.js";
+const WORKSPACE_IMPORT_PREFLIGHT: &str = "platform/apps/api/dist/oex-owned-workspace-preflight.js";
+const WORKSPACE_IMPORT_MATERIALIZER: &str = "platform/apps/api/dist/oex-owned-workspace-chunk-materializer.js";
+const WORKSPACE_IMPORT_PACKED: &str = "platform/apps/api/dist/oex-owned-workspace-packed-v2.js";
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const WORKSPACE_V6_CAPABILITY: (&str, u64, &str) = (
     "platform/scripts/native-workspace-oex-import-capability-v6.json",
     775,
     "1d5177c8c4ddb9dec26ed7724178376ae4ca615e06e64573b132b7c7abfa25e8",
 );
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const WORKSPACE_V7_CAPABILITY: (&str, u64, &str) = (
+    "platform/scripts/native-workspace-oex-import-capability-v7.json",
+    552,
+    "7229cba9fbf98301960f44d39927c8d528ed55c3eb5e5fbdf203341261f342d5",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const WORKSPACE_WALL_SCHEMA_PATH: &str =
+    "platform/database/native-oex-workspace-import-wall/035_workspace_material_wall_import.sql";
+
 // Admit only an independently verified local runtime's full source, producer
 // and manifest tuple. Source conformance alone does not populate this list.
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const WORKSPACE_V6_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[];
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const WORKSPACE_V7_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[];
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+fn workspace_import_validation_matches(
+    manifest: &Manifest,
+    manifest_sha256: &str,
+    version: WorkspaceImport,
+    approved: &[(&str, &str, &str)],
+) -> bool {
+    let regular_file = |path: &str| {
+        manifest.files.iter().find(|file| file.path == path && file.link.is_none()
+            && file.executable == Some(false))
+    };
+    let exact_file = |(path, bytes, hash): (&str, u64, &str)| {
+        regular_file(path).is_some_and(|file| file.bytes == Some(bytes)
+            && file.sha256.as_deref() == Some(hash))
+    };
+    manifest.mode == "local-validation" && !manifest.redistribution_qualified && !manifest.official_signed
+        && approved.contains(&(manifest.source_commit.as_str(), manifest.producer_sha256.as_str(), manifest_sha256))
+        && exact_file(WORKSPACE_V6_CAPABILITY)
+        && [WORKSPACE_IMPORT_FORMAT_HINT, WORKSPACE_IMPORT_MATERIALIZER, WORKSPACE_IMPORT_PREFLIGHT, WORKSPACE_IMPORT_PACKED]
+            .into_iter().all(|path| regular_file(path).is_some())
+        && match version {
+            WorkspaceImport::V6 => !manifest.files.iter().any(|file| {
+                file.path == WORKSPACE_V7_CAPABILITY.0
+                    || file.path.rsplit('/').next() == Some(WORKSPACE_WALL_SCHEMA_NAME)
+            }),
+            WorkspaceImport::V7 => exact_file(WORKSPACE_V7_CAPABILITY)
+                && exact_file((WORKSPACE_WALL_SCHEMA_PATH, 3720, WORKSPACE_WALL_SCHEMA_SHA256)),
+        }
+}
 
 const NORMAL_OEX_CAPABILITY_PATH: &str = "platform/scripts/native-normal-oex-capability-v1.json";
 const NORMAL_OEX_CAPABILITY_SHA256: &str = "f7573901d3884338eca4b262ad68b1b8379dfa84a9dd891fc44a174c5c453e57";
@@ -371,6 +423,50 @@ mod normal_oex_release_declaration_tests {
         m
     }
 
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    #[test]
+    fn workspace_import_validation_distinguishes_v6_v7_and_preserves_reopen() {
+        let mut manifest = local_fixture();
+        let sha = "a".repeat(64);
+        let mut add = |(path, bytes, digest): (&str, u64, &str)| {
+            manifest.files.push(serde_json::from_value(serde_json::json!({
+                "path": path, "bytes": bytes, "sha256": digest, "executable": false
+            })).unwrap());
+        };
+        add(WORKSPACE_V6_CAPABILITY);
+        for path in [WORKSPACE_IMPORT_FORMAT_HINT, WORKSPACE_IMPORT_PREFLIGHT, WORKSPACE_IMPORT_MATERIALIZER, WORKSPACE_IMPORT_PACKED] {
+            add((path, 1, &sha));
+        }
+        let check = |manifest: &Manifest, version| workspace_import_validation_matches(
+            manifest, &sha, version, &[(&manifest.source_commit, &manifest.producer_sha256, &sha)],
+        );
+        assert!(check(&manifest, WorkspaceImport::V6));
+        assert!(!check(&manifest, WorkspaceImport::V7));
+        for (path, bytes, digest) in [WORKSPACE_V7_CAPABILITY, (WORKSPACE_WALL_SCHEMA_PATH, 3720, WORKSPACE_WALL_SCHEMA_SHA256)] {
+            manifest.files.push(serde_json::from_value(serde_json::json!({
+                "path": path, "bytes": bytes, "sha256": digest, "executable": false
+            })).unwrap());
+        }
+        assert!(check(&manifest, WorkspaceImport::V7));
+        assert!(!check(&manifest, WorkspaceImport::V6));
+        assert!(!workspace_import_validation_matches(&manifest, &sha, WorkspaceImport::V7, &[]));
+        for path in [WORKSPACE_V6_CAPABILITY.0, WORKSPACE_V7_CAPABILITY.0, WORKSPACE_WALL_SCHEMA_PATH] {
+            let file = manifest.files.iter_mut().find(|file| file.path == path).unwrap();
+            let original = file.sha256.replace(sha.clone());
+            assert!(!check(&manifest, WorkspaceImport::V7));
+            manifest.files.iter_mut().find(|file| file.path == path).unwrap().sha256 = original;
+        }
+        let mut payload = Payload {
+            root: PathBuf::new(), manifest, manifest_sha256: sha,
+            workspace_v5_validation: false, workspace_import: Some((WorkspaceImport::V7, false)),
+        };
+        assert!(payload.workspace_import_version() == Some(WorkspaceImport::V7));
+        assert!(!payload.workspace_import_selected_input());
+        assert!(!payload.normal_oex_selected_input().unwrap());
+        payload.workspace_import = Some((WorkspaceImport::V7, true));
+        assert!(payload.workspace_import_selected_input());
+    }
+
     #[test]
     fn material_catalogue_capability_requires_both_frozen_schemas_and_new_inventory() {
         let mut m=local_fixture();
@@ -414,7 +510,7 @@ mod normal_oex_release_declaration_tests {
         let mut manifest = local_fixture();
         manifest.source_commit = source.into();
         manifest.producer_sha256 = producer.into();
-        let mut payload = Payload { root: PathBuf::new(), manifest, manifest_sha256: hash.into(), workspace_v5_validation: false, workspace_v6_selected: false };
+        let mut payload = Payload { root: PathBuf::new(), manifest, manifest_sha256: hash.into(), workspace_v5_validation: false, workspace_import: None };
         assert!(payload.normal_oex_030_concrete_tuple());
         assert!(!payload.normal_oex_029_floor_tuple());
         assert!(!normal_oex_030_concrete_inventory_matches(&payload.manifest));
@@ -788,7 +884,7 @@ impl Payload {
             root,
             manifest,
             manifest_sha256: digest(&bytes),
-            workspace_v5_validation: false, workspace_v6_selected: false,
+            workspace_v5_validation: false, workspace_import: None,
         })
     }
     /// Available only to the fresh selected validation entry. The normal
@@ -806,29 +902,29 @@ impl Payload {
         self.workspace_v5_validation
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    pub(crate) fn open_workspace_v6_validation(root: &Path, selected: bool) -> Result<Self> {
+    pub(crate) fn open_workspace_import_validation(root: &Path, version: WorkspaceImport, selected: bool) -> Result<Self> {
         let mut payload = Self::open(root)?;
-        let manifest = &payload.manifest;
-        let (marker, bytes, hash) = WORKSPACE_V6_CAPABILITY;
-        if manifest.mode != "local-validation" || manifest.redistribution_qualified || manifest.official_signed
-            || !WORKSPACE_V6_VALIDATION_PROVENANCE.contains(&(
-                manifest.source_commit.as_str(), manifest.producer_sha256.as_str(), payload.manifest_sha256.as_str(),
-            ))
-            || !manifest.files.iter().any(|f| f.path == marker && f.link.is_none()
-                && f.executable == Some(false) && f.bytes == Some(bytes) && f.sha256.as_deref() == Some(hash))
-            || [WORKSPACE_V6_FORMAT_HINT, WORKSPACE_V6_MATERIALIZER, WORKSPACE_V6_PREFLIGHT, WORKSPACE_V6_PACKED].iter().any(|path|
-                !manifest.files.iter().any(|f| f.path == *path && f.link.is_none() && f.executable == Some(false)))
-        {
+        let approved = match version {
+            WorkspaceImport::V6 => WORKSPACE_V6_VALIDATION_PROVENANCE,
+            WorkspaceImport::V7 => WORKSPACE_V7_VALIDATION_PROVENANCE,
+        };
+        if !workspace_import_validation_matches(&payload.manifest, &payload.manifest_sha256, version, approved) {
             return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
         }
-        payload.workspace_v6_selected = selected;
+        payload.workspace_import = Some((version, selected));
         Ok(payload)
     }
-    pub(crate) fn workspace_v6_selected_input(&self) -> bool {
-        self.workspace_v6_selected
+    pub(crate) fn workspace_import_version(&self) -> Option<WorkspaceImport> {
+        self.workspace_import.map(|(version, _)| version)
+    }
+    pub(crate) fn selected_workspace_import_version(&self) -> Option<WorkspaceImport> {
+        self.workspace_import.and_then(|(version, selected)| selected.then_some(version))
+    }
+    pub(crate) fn workspace_import_selected_input(&self) -> bool {
+        self.selected_workspace_import_version().is_some()
     }
     pub(crate) fn admits_selected_oex_format(&self, format: &str) -> Result<bool> {
-        if self.workspace_v6_selected_input() {
+        if self.workspace_import_selected_input() {
             self.recheck()?;
             return Ok(format == "1.0.0-draft.12");
         }
@@ -923,9 +1019,9 @@ impl Payload {
                 == NORMAL_OEX_030_CONCRETE_LOCAL_VALIDATION_PROVENANCE
     }
     pub(crate) fn oex_format_hint(&self)->Result<(PathBuf,PathBuf,PathBuf)> {
-        let script = if self.workspace_v6_selected_input() {
+        let script = if self.workspace_import_selected_input() {
             self.recheck()?;
-            WORKSPACE_V6_FORMAT_HINT
+            WORKSPACE_IMPORT_FORMAT_HINT
         } else if self.normal_oex_028_selected_input()? {
             "platform/apps/api/dist/oex-selected-format.js"
         } else {
@@ -934,7 +1030,7 @@ impl Payload {
         Ok((self.node(), self.root.join(script), self.root.clone()))
     }
     pub(crate) fn normal_oex_027_selected_input(&self) -> Result<bool> {
-        if self.workspace_v6_selected_input() { self.recheck()?; return Ok(true); }
+        if self.workspace_import_selected_input() { self.recheck()?; return Ok(true); }
         if self.normal_oex_028_selected_input()? {return Ok(true);}
         if self.normal_oex_selected_admission(NORMAL_OEX_027_RELEASE_PROVENANCE, true)? { return Ok(true); }
         // Only the compiled development tuple enters this path. Existing fresh
@@ -973,7 +1069,7 @@ impl Payload {
         Ok((self.node(), self.root.join(name), self.root.clone()))
     }
     pub(crate) fn oex_materializer(&self) -> Result<(PathBuf, PathBuf, PathBuf)> {
-        let name = if self.workspace_v6_selected_input() { WORKSPACE_V6_MATERIALIZER } else { "platform/apps/api/dist/oex-owned-chunk-materializer.js" };
+        let name = if self.workspace_import_selected_input() { WORKSPACE_IMPORT_MATERIALIZER } else { "platform/apps/api/dist/oex-owned-chunk-materializer.js" };
         if !self.manifest.files.iter().any(|f| f.path == name && f.link.is_none() && f.executable == Some(false)) {
             return Err(err("NATIVE_OEX_WORKER_UNAVAILABLE"));
         }
@@ -981,7 +1077,7 @@ impl Payload {
         Ok((self.node(), self.root.join(name), self.root.clone()))
     }
     pub(crate) fn oex_preflight(&self) -> Result<(PathBuf, PathBuf, PathBuf)> {
-        let name = if self.workspace_v6_selected_input() { WORKSPACE_V6_PREFLIGHT } else { "platform/apps/api/dist/oex-owned-preflight.js" };
+        let name = if self.workspace_import_selected_input() { WORKSPACE_IMPORT_PREFLIGHT } else { "platform/apps/api/dist/oex-owned-preflight.js" };
         if !self.manifest.files.iter().any(|f| f.path == name && f.link.is_none() && f.executable == Some(false)) {
             return Err(err("NATIVE_OEX_WORKER_UNAVAILABLE"));
         }
@@ -991,7 +1087,7 @@ impl Payload {
     /// Fixed codec-only resources, rechecked against this admitted manifest and
     /// held across authentication. No arbitrary module or executable selection.
     pub(crate) fn oex_packed_worker_v2(&self) -> Result<(PathBuf, PathBuf, PathBuf)> {
-        let name = if self.workspace_v6_selected_input() { WORKSPACE_V6_PACKED } else { "platform/apps/api/dist/oex-owned-packed-worker-v2.js" };
+        let name = if self.workspace_import_selected_input() { WORKSPACE_IMPORT_PACKED } else { "platform/apps/api/dist/oex-owned-packed-worker-v2.js" };
         if !self.manifest.files.iter().any(|f| f.path == name && f.link.is_none() && f.executable == Some(false)) {
             return Err(err("NATIVE_OEX_WORKER_UNAVAILABLE"));
         }

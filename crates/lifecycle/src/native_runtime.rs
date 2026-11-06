@@ -17,7 +17,11 @@ pub fn selected_oex_format_v5_validation(resources: &Path, input_fd: i32, cancel
 }
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
 pub fn selected_oex_format_v6_validation(resources: &Path, input_fd: i32, cancelled: &AtomicBool) -> Result<Vec<u8>> {
-    oex_format_hint::run(&Payload::open_workspace_v6_validation(resources, true)?, input_fd, cancelled)
+    oex_format_hint::run(&Payload::open_workspace_import_validation(resources, crate::native_payload::WorkspaceImport::V6, true)?, input_fd, cancelled)
+}
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+pub fn selected_oex_format_v7_validation(resources: &Path, input_fd: i32, cancelled: &AtomicBool) -> Result<Vec<u8>> {
+    oex_format_hint::run(&Payload::open_workspace_import_validation(resources, crate::native_payload::WorkspaceImport::V7, true)?, input_fd, cancelled)
 }
 #[path = "native_runtime_oex_preflight_frames.rs"] mod oex_preflight_frames;
 #[path = "native_runtime_oex_binding.rs"] mod oex_binding;
@@ -1023,8 +1027,13 @@ const { isDeepStrictEqual } = require('node:util');
         {
             return Err(err("STORAGE_LOW"));
         }
+        let reopen_import = self.payload.workspace_import_version()
+            .filter(|_| services && !self.normal_oex_selected);
         let database = self.service.root.join("native-database");
         if !exists(&database)? {
+            if reopen_import.is_some() {
+                return Err(err("NATIVE_DATABASE_UNAVAILABLE"));
+            }
             self.state = "initializing_database".into();
             self.record()?;
             let mut input = self
@@ -1138,6 +1147,9 @@ const { isDeepStrictEqual } = require('node:util');
         {
             "t" => {}
             "f" => {
+                if reopen_import.is_some() {
+                    return Err(err("NATIVE_DATABASE_UNAVAILABLE"));
+                }
                 let password = self
                     .environment
                     .0
@@ -1174,6 +1186,11 @@ const { isDeepStrictEqual } = require('node:util');
             self.state = "database_ready".into();
             self.record()?;
             return Ok(());
+        }
+        if let Some(version) = reopen_import {
+            // Read the settled profile before Platform can apply any migration.
+            // Ordinary reopen has no selected owner channel or claim.
+            self.check_oex_catalog_ledger(version.into())?;
         }
         self.state = "starting_services".into();
         self.record()?;
@@ -1244,14 +1261,14 @@ const { isDeepStrictEqual } = require('node:util');
             Some(owner_channel::Setup::new()?)
         } else { None };
         let generation = self.job_id.as_deref().ok_or_else(|| err("NATIVE_JOURNAL_INVALID"))?;
-        let mut private_input = match (&self.local_authority, &owner_setup) {
-            (Some(a), Some(setup)) if self.payload.workspace_v6_selected_input() => Some(setup.workspace_v6_bootstrap(a, generation)?),
-            (Some(a), Some(setup)) if self.payload.workspace_v5_selected_input() => Some(setup.workspace_v5_bootstrap(a, generation)?),
-            (Some(a), Some(setup)) if self.payload.normal_oex_028_selected_input()? => Some(setup.normal_028_bootstrap(a, generation)?),
-            (Some(a), Some(setup)) if self.payload.normal_oex_027_selected_input()? => Some(setup.normal_027_bootstrap(a, generation)?),
-            (Some(a), Some(setup)) => Some(setup.normal_bootstrap(a, generation)?),
-            (Some(a), None) => Some(serde_json::to_vec(a).map_err(|_| err("STATE_INVALID"))?),
-            (None, _) => None,
+        let mut private_input = match (&self.local_authority, &owner_setup, self.payload.workspace_import_version()) {
+            (Some(a), Some(setup), Some(version)) => Some(setup.workspace_import_bootstrap(a, generation, version)?),
+            (Some(a), Some(setup), _) if self.payload.workspace_v5_selected_input() => Some(setup.workspace_v5_bootstrap(a, generation)?),
+            (Some(a), Some(setup), _) if self.payload.normal_oex_028_selected_input()? => Some(setup.normal_028_bootstrap(a, generation)?),
+            (Some(a), Some(setup), _) if self.payload.normal_oex_027_selected_input()? => Some(setup.normal_027_bootstrap(a, generation)?),
+            (Some(a), Some(setup), _) => Some(setup.normal_bootstrap(a, generation)?),
+            (Some(a), None, _) => Some(serde_json::to_vec(a).map_err(|_| err("STATE_INVALID"))?),
+            (None, _, _) => None,
         };
         let spawned = self.spawn(
             &self.payload.node(),
@@ -1294,8 +1311,8 @@ const { isDeepStrictEqual } = require('node:util');
                     self.readiness = ready;
                     self.state = "ready".into();
                     if self.normal_oex_selected {
-                        if self.payload.workspace_v6_selected_input() {
-                            self.accept_oex_catalog(oex_catalog_frames::Protocol::WorkspaceV6)?;
+                        if let Some(version) = self.payload.workspace_import_version() {
+                            self.accept_oex_catalog(version.into())?;
                         } else if self.payload.workspace_v5_selected_input() {
                             self.accept_oex_catalog(oex_catalog_frames::Protocol::WorkspaceV5)?;
                         } else if self.payload.normal_oex_027_selected_input()? {
@@ -1864,6 +1881,11 @@ impl Drop for Session {
 }
 
 impl Session {
+    fn check_oex_catalog_ledger(&mut self, protocol: oex_catalog_frames::Protocol) -> Result<()> {
+        let rows = self.query_database("exhibitos", &protocol.ledger_query())?;
+        protocol.check_ledger(&rows)
+    }
+
     /// Verify the catalog against our owned DB, pinned store and payload before
     /// acknowledging the peer. The channel remains tied to this Session.
     fn accept_oex_catalog(&mut self, protocol: oex_catalog_frames::Protocol) -> Result<()> {
@@ -1881,12 +1903,8 @@ impl Session {
             owner.recheck_database_identity(self)?;
             self.payload.recheck()?;
             owner.check(self)?;
-            let names = protocol.ledger().map(|(name, _)| format!("'{name}'")).collect::<Vec<_>>().join(",");
-            let sql = format!("SELECT name,sha256 FROM public.schema_migrations WHERE name IN ({names}) ORDER BY name");
-            let rows = self.query_database("exhibitos", &sql)?;
+            self.check_oex_catalog_ledger(protocol)?;
             owner.check(self)?;
-            let expected = protocol.ledger().map(|(name, hash)| format!("{name}|{hash}")).collect::<Vec<_>>().join("\n");
-            if rows != expected { return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
             if protocol == oex_catalog_frames::Protocol::V2 && self.payload.normal_oex_028_selected_input()? {
                 let row=self.query_database("exhibitos","SELECT sha256 FROM public.schema_migrations WHERE name='028_oex_material_catalogue.sql'")?;
                 if row!=super::native_payload::NORMAL_OEX_028_SCHEMA_SHA256{return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
@@ -1967,7 +1985,7 @@ impl Session {
     #[allow(dead_code)]
     fn select_oex_upload(&mut self,request:&str,bytes:u64,sha256:&str)->Result<()> { self.select_oex_upload_format(request,bytes,sha256,"1.0.0-draft.9") }
     fn select_oex_upload_format(&mut self,request:&str,bytes:u64,sha256:&str,format:&str)->Result<()> {
-        let v4=self.payload.workspace_v6_selected_input() || self.payload.normal_oex_028_selected_input()?;
+        let v4=self.payload.workspace_import_selected_input() || self.payload.normal_oex_028_selected_input()?;
         if !self.payload.admits_selected_oex_format(format)? { return Err(err("NATIVE_OEX_ATTEMPT_INVALID")); }
         if !(self.fresh_oex_test || self.normal_oex_selected)||self.oex_upload_selection_started||self.state!="ready"||self.node.is_none()||self.postgres.is_none(){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         self.oex_upload_selection_started=true;
@@ -2044,7 +2062,7 @@ impl Session {
         let cancel=self.cancellation.clone();
         let mut channel=self.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
         let format=self.oex_upload_selected.as_ref().ok_or_else(||err("NATIVE_OEX_ATTEMPT_INVALID"))?.3.clone();
-        let v4=self.payload.workspace_v6_selected_input() || self.payload.normal_oex_028_selected_input()?;
+        let v4=self.payload.workspace_import_selected_input() || self.payload.normal_oex_028_selected_input()?;
         let archive=owner_channel::SelectedArchive{request_id:request,bytes,sha256,format:if v4{Some(&format)}else{None}};
         let scope=oex_reservation::V3PlanScope::from_owner(&owner,stage_root.path(),stage_root.device());
         let mut check=|| {owner.check(self)?;stage_root.check_empty(self)};
@@ -2544,7 +2562,7 @@ impl OwnedOexV3Claim<'_> {
             if let Err(error)=accepted {channel.invalidate();return Err(error);}
             self.session.owner_channel=Some(channel);
             let payload=self.session.payload.clone();
-            let v4=payload.workspace_v6_selected_input() || payload.normal_oex_028_selected_input()?;
+            let v4=payload.workspace_import_selected_input() || payload.normal_oex_028_selected_input()?;
             let mut check=|| {self.owner.check(self.session)?;self.stage_root.check_input(self.session,&r.stage_id,device,inode)?;
                 self.session.owner_channel.as_mut().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?.check_idle()?;
                 if cancelled.load(Ordering::SeqCst){return Err(err("NATIVE_CANCELLED"));}Ok(())};

@@ -144,7 +144,7 @@ final class OEXImportModel: ObservableObject {
                 guard initial.intent == nil, let file, let bridge, let context, mayBeginBounded?() == true else { throw AuthoringFailure("OEX_IMPORT_PROFILE_UNAVAILABLE") }
                 let status = try await bridge.nativeStatus(context)
                 guard generation == current, mayBeginBounded?() == true else { throw AuthoringFailure("OEX_IMPORT_SCOPE_CHANGED") }
-                let archiveFormat = (status.oex028Qualified == true || status.oexWorkspaceV6Qualified == true) ? try await bridge.selectedOEXFormat(file.archive) : "1.0.0-draft.9"
+                let archiveFormat = (status.oex028Qualified == true || status.oexWorkspaceV6Qualified == true || status.oexWorkspaceV7Qualified == true) ? try await bridge.selectedOEXFormat(file.archive) : "1.0.0-draft.9"
                 guard generation == current, mayBeginBounded?() == true else { throw AuthoringFailure("OEX_IMPORT_SCOPE_CHANGED") }
                 let result = try await NativeOEXImportTransfer.runBoundedOnce(state: initial, file: file, api: api, archiveFormat: archiveFormat, persist: { [weak self] value in
                     let saved = try await save(value); guard let self, self.generation == current else { throw AuthoringFailure("OEX_IMPORT_SCOPE_CHANGED") }

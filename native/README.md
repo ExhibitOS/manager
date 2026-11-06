@@ -234,6 +234,16 @@ Studio revision. A failed reopen returns an error and leaves the requested
 completion receipt absent. Keep the profile for inspection. The Draft 9 and 10
 automation paths use their existing formats and receipt behavior.
 
+The separate `workspaceV7ValidationRuntime` debug setting selects the V7
+Draft 12 wall and mixed import protocol once its complete Platform payload is
+admitted. Use a fresh profile for the selected import. V7 requires the exact
+V6 parent marker, V7 marker and schema 035. The owned PostgreSQL ledger must
+match 026–035 for V7 or 026–034 with 035 absent for V6. After settlement,
+the existing stop and reopen flow uses the same payload and checks the ledger
+before starting services. The reopened helper uses the ordinary session.
+Existing profiles keep their original payload binding. V7 source validation
+leaves the complete payload allowlist empty until a separate qualification.
+
 Local publication uses its own affirmative `nativePublicationProfile:
 "bounded-local-v1"` session advertisement and an explicit per-call profile
 header. Ordinary readiness/publish requests retain their existing behavior.

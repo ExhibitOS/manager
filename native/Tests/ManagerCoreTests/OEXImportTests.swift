@@ -81,6 +81,10 @@ final class OEXImportTests: XCTestCase {
             let data = try bytes(format), hint = try JSONDecoder().decode(OEXSelectedFormatHint.self, from: data)
             try hint.check(bytes: data, count: 100, device: 1, inode: 42)
         }
+        let draft12 = try bytes("1.0.0-draft.12")
+        let draft12Hint = try JSONDecoder().decode(OEXSelectedFormatHint.self, from: draft12)
+        try draft12Hint.check(bytes: draft12, count: 100, device: 1, inode: 42, workspaceImport: true)
+        XCTAssertThrowsError(try draft12Hint.check(bytes: draft12, count: 100, device: 1, inode: 42))
         for data in [try bytes("1.0.0-draft.11"), try bytes(inode: "041"), try bytes(extra: true)] {
             let hint = try JSONDecoder().decode(OEXSelectedFormatHint.self, from: data)
             XCTAssertThrowsError(try hint.check(bytes: data, count: 100, device: 1, inode: 42))

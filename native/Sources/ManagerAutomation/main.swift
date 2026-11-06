@@ -15,6 +15,7 @@ struct Configuration: Decodable {
     let selectedOEX10: Bool?
     let workspaceV5ValidationRuntime: String?
     let workspaceV6ValidationRuntime: String?
+    let workspaceV7ValidationRuntime: String?
     let existingWorkspaceV5: NativeAutomationSession.ExistingWorkspaceV5?
 }
 actor Driver {
@@ -89,6 +90,7 @@ func run() async -> Int32 {
         #if DEBUG
         optional.insert("workspaceV5ValidationRuntime")
         optional.insert("workspaceV6ValidationRuntime")
+        optional.insert("workspaceV7ValidationRuntime")
         optional.insert("existingWorkspaceV5")
         #endif
         guard names.subtracting(optional) == ["helper", "profile", "ports", "outputRoot", "temporaryRoot", "inputs"] else { throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID") }
@@ -96,8 +98,9 @@ func run() async -> Int32 {
         if names.contains("workspaceV5ValidationRuntime") {
             guard config.workspaceV5ValidationRuntime?.hasPrefix("/") == true else { throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID") }
         }
-        if names.contains("workspaceV6ValidationRuntime") {
-            guard config.workspaceV6ValidationRuntime?.hasPrefix("/") == true else { throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID") }
+        for (name, path) in [("workspaceV6ValidationRuntime", config.workspaceV6ValidationRuntime),
+                             ("workspaceV7ValidationRuntime", config.workspaceV7ValidationRuntime)] where names.contains(name) {
+            guard path?.hasPrefix("/") == true else { throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID") }
         }
         if names.contains("existingWorkspaceV5") {
             let scope = fields?["existingWorkspaceV5"] as? [String: Any]
@@ -110,7 +113,8 @@ func run() async -> Int32 {
         let owned = try NativeAutomationSession(helper: URL(fileURLWithPath: config.helper), profile: URL(fileURLWithPath: config.profile), ports: config.ports, outputRoot: URL(fileURLWithPath: config.outputRoot), temporaryRoot: URL(fileURLWithPath: config.temporaryRoot), inputs: config.inputs, selectedOEX9: config.selectedOEX9 ?? false, selectedOEX10: config.selectedOEX10 ?? false,
                                                 workspaceV5ValidationRuntime: config.workspaceV5ValidationRuntime.map { URL(fileURLWithPath: $0) },
                                                 existingWorkspaceV5: config.existingWorkspaceV5,
-                                                workspaceV6ValidationRuntime: config.workspaceV6ValidationRuntime.map { URL(fileURLWithPath: $0) })
+                                                workspaceV6ValidationRuntime: config.workspaceV6ValidationRuntime.map { URL(fileURLWithPath: $0) },
+                                                workspaceV7ValidationRuntime: config.workspaceV7ValidationRuntime.map { URL(fileURLWithPath: $0) })
         session = owned
         let driver = Driver(owned)
         await driver.emit(.object(["version": .integer(1), "event": .string("ready"), "result": try await owned.open()]))
