@@ -53,6 +53,12 @@ restore may initialize a new empty target or resume the exact pending restore
 intent bound to the target lock and PostgreSQL system identifier. The restored
 database identifier is checked on the first start and later clean reopens.
 
+If restore preparation fails before a pending restore appears, reopen Backup
+and Restore and choose Restore to a New Workspace (새 작업 공간에 복원). This
+creates a fresh target and preserves the earlier candidate, original workspace,
+and backup. Once a pending restore appears, use Resume Restore with the same
+backup and the correct key.
+
 The Manager implementation and Platform wire must be qualified together before
 adding a manifest pin. Source regression checks do not qualify actual startup,
 owner-loss recovery or EXB restoration.

@@ -489,6 +489,53 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_furnishing_restore_before_intent_failure_uses_new_recovery_target() {
+        use crate::installations::{InstallationController, native_maintenance::Input, native_ui::{Command, Request}};
+        use std::os::unix::fs::DirBuilderExt;
+
+        let parent = std::env::temp_dir().join(format!("furnishing-restore-retry-{}", Uuid::new_v4()));
+        fs::DirBuilder::new().mode(0o700).create(&parent).unwrap();
+        let parent = fs::canonicalize(parent).unwrap();
+        let controller = Arc::new(InstallationController::new(parent.join("profile"), None).unwrap());
+        let original = controller.context().unwrap();
+        let failed = controller.create(&original.selection_token, true).unwrap();
+        let failed_root = failed.installations.iter().find(|entry| entry.id == failed.active_id).unwrap();
+        let failed_root = Path::new(&failed_root.path);
+        let database = directory(failed_root, "native-database").unwrap();
+        write_private_new(&database, "PG_VERSION", b"18\n", 32).unwrap();
+        write_json(failed_root, "native-current-run.json", &Current {
+            format: 1, id: GENERATION.into(), furnishing: None,
+        }).unwrap();
+        let journal = fs::read(failed_root.join("native-current-run.json")).unwrap();
+        assert!(controller.native_pending_restoration(&failed.selection_token).unwrap().is_none());
+        assert!(furnishing_restore_stage_creates_lock(current_run(failed_root).unwrap().as_ref(), true, false).is_err());
+
+        let mut host = crate::native_host::Host::new(controller.clone(), parent.join("unused-resources"));
+        host.handle(Request {
+            version: 1, id: 1,
+            command: Command::NativeMaintenance {
+                selection_token: failed.selection_token,
+                maintenance: Input::CreateRecovery { acknowledged: true },
+            },
+        }).unwrap();
+        let replacement = controller.context().unwrap();
+        assert_ne!(replacement.active_id, failed.active_id);
+        assert!(replacement.installations.iter().any(|entry| entry.id == original.active_id));
+        assert!(replacement.installations.iter().any(|entry| entry.id == failed.active_id));
+        assert_eq!(fs::read(failed_root.join("native-current-run.json")).unwrap(), journal);
+        assert_eq!(fs::read(database.join("PG_VERSION")).unwrap(), b"18\n");
+        let target = replacement.installations.iter().find(|entry| entry.id == replacement.active_id).unwrap();
+        let target = Path::new(&target.path);
+        assert!(furnishing_restore_stage_creates_lock(
+            current_run(target).unwrap().as_ref(),
+            exists(&target.join("native-database")).unwrap(),
+            controller.native_pending_restoration(&replacement.selection_token).unwrap().is_some(),
+        ).unwrap());
+        drop(host);
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
     fn ordinary_furnishing_reopen_does_not_create_missing_lock() {
         use std::os::unix::fs::DirBuilderExt;
         let root = std::env::temp_dir().join(format!("furnishing-missing-lock-{}", Uuid::new_v4()));

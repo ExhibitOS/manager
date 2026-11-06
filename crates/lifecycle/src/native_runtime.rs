@@ -349,6 +349,14 @@ fn validate_cold_furnishing_source(root: &Path, prior: Option<&Binding>, live: &
     Ok(())
 }
 
+fn furnishing_restore_stage_creates_lock(prior: Option<&Current>, has_database: bool, restore_pending: bool) -> Result<bool> {
+    match (prior, has_database, restore_pending) {
+        (None, false, false) => Ok(true),
+        (prior, true, true) if prior.is_none_or(|current| current.furnishing.is_none()) => Ok(false),
+        _ => Err(err(furnishing_lifecycle::ERROR)),
+    }
+}
+
 pub struct Session {
     service: LifecycleService,
     observation_root: crate::maintenance_source::DirectoryPin,
@@ -1737,8 +1745,9 @@ const { isDeepStrictEqual } = require('node:util');
                 (StartMode::Services, Some(FurnishingStart::Initialize), false, false) if prior.is_none() => true,
                 (StartMode::Services, Some(FurnishingStart::Reopen), true, false) if prior_binding.is_some() => false,
                 (StartMode::Database, None, true, false) if prior_binding.is_some() => false,
-                (StartMode::RestoreStage, None, false, false) if prior.is_none() => true,
-                (StartMode::RestoreStage, None, true, true) if prior_binding.is_none() => false,
+                (StartMode::RestoreStage, None, _, _) => furnishing_restore_stage_creates_lock(
+                    prior.as_ref(), has_database, restore_pending,
+                )?,
                 (StartMode::RestoreActivation(_), None, true, true) => false,
                 _ => return Err(err(furnishing_lifecycle::ERROR)),
             };
