@@ -620,6 +620,42 @@ The release manifest SHA-256 is
 Retain the producer receipt with the packaged runtime. The four models and four
 notices match the existing catalog identities and bytes.
 
+### Workspace furnishing registration (source integration)
+
+The Manager client has a separate workspace furnishing catalog for pedestal and
+bench GLBs. It requires an exact qualified native payload and an authenticated
+ordinary session advertising `workspace-furnishing-intake-v1`. The current
+source has an empty payload admission list. The existing bundled catalog
+continues to use its own IDs and files.
+
+In a qualified workspace, open **작업 공간 비품 등록·배치** from the exhibition
+settings menu. Choose a GLB up to 32 MiB and enter its name, provenance and rights.
+Reopen the registration records to resume the same request. If a receipt is
+missing, reselect the file with the same byte count and SHA-256. A receipt allows
+validation or a permitted retry with the server's copy. After registration,
+select the catalog version and room, enter the room-local position, angle and
+scale, then save the exhibition. The placement records a visual model and pose.
+
+The private native automation command uses the same intake and catalog API:
+
+- `workspace-furnishing-intake-create` takes `kind`, `name`, `rights`,
+  `provenance` and `model` (`mime`, `bytes`, `sha256`). The envelope request
+  ID is the idempotency key. Reuse the same declaration if the create reply is lost.
+- `workspace-furnishing-intake-list` and `workspace-furnishing-list` take
+  `cursor` (null for the first page). Intake `status`, `upload`, `complete`,
+  `cancel` and `retry` take `intakeId`. Upload also takes the configured
+  digest-pinned `inputPath` in the automation envelope.
+- `workspace-furnishing-read` and `workspace-furnishing-model-check` take
+  `id` and `version`. The model check reports byte count and SHA-256.
+- `workspace-furnishing-place` takes `id`, `roomId`, `furnishingId`,
+  `furnishingVersion`, `position` (metres), `yaw` (radians) and `scale`.
+  Supply the expected document revision and edit version, then save normally.
+
+The planned live qualification uses a newly created workspace and a separate
+fresh EXB recovery workspace on the same paired payload. An existing V7 profile
+keeps its current schema and payload. Viewer, OEX and static output qualification
+are separate from these intake and placement source checks.
+
 ### Optional furnishing catalog (source integration)
 
 `furnishing-visuals-v1` adds one protected catalog entry, the CC0 canted display

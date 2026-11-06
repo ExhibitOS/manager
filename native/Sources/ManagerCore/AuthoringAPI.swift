@@ -16,6 +16,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var nativeOexExportProfile: String? = nil
     public var nativePublicationProfile: String? = nil
     public var workspaceMaterialProfile: String? = nil
+    public var workspaceFurnishingProfile: String? = nil
 }
 public struct AuthoringPage<Item: Decodable & Sendable>: Decodable, Sendable {
     public let items: [Item]
@@ -141,7 +142,10 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "MATERIAL_MAP_COLOR_SPACE": return "색상 맵은 sRGB, 데이터 맵은 선형 색 공간의 PNG를 선택하세요."
         case "DISPLAY_PERMISSION_REQUIRED": return "이 재질의 전시 권한을 확인하세요."
         case "WORKSPACE_MATERIAL_UNAVAILABLE": return "이 작업공간에서 재질을 등록할 수 없습니다. 연결 상태를 확인하세요."
-        case "ROLE_CONFLICT", "UPLOAD_INTEGRITY": return "선언한 파일과 받은 파일이 다릅니다. 원래 파일로 등록을 이어가거나 새로 등록하세요."
+        case "ROLE_CONFLICT", "MODEL_CONFLICT", "UPLOAD_INTEGRITY": return "선언한 파일과 받은 파일이 다릅니다. 원래 파일로 등록을 이어가거나 새로 등록하세요."
+        case "FURNISHING_DECLARATION": return "비품 이름, 출처, 권리와 32 MiB 이하 GLB 파일을 확인하세요."
+        case "FURNISHING_VALIDATION_UNAVAILABLE": return "비품 검증이 중단됐습니다. 등록 기록에서 상태를 확인하고 검증을 다시 시도하세요."
+        case "WORKSPACE_FURNISHING_INVALID": return "선택한 공간과 비품의 위치, 방향, 크기를 확인하세요."
         case "ARCHITECTURE_SELECTION_CHANGED": return "선택한 대상이 바뀌었습니다. 입력을 취소한 뒤 대상을 다시 선택하세요."
         case "PLACEMENT_APPLY_REQUIRED": return "배치와 위치 입력을 먼저 적용하거나 취소하세요. 입력과 기존 전시는 그대로 유지됩니다."
         case "ARCHITECTURE_APPLY_REQUIRED": return "공간·재질 변경을 적용하거나 입력을 취소한 뒤 전시를 저장하세요."
@@ -285,6 +289,9 @@ public actor AuthoringAPI {
     public nonisolated let workspaceMaterialRuntimeQualified: Bool
     public nonisolated let workspaceWallMaterialRuntimeQualified: Bool
     private let workspaceCatalogReadRuntimeQualified: Bool
+    // Add the paired manifest only after the native 036 owner path is qualified.
+    private static let workspaceFurnishingManifestPins: Set<String> = []
+    public nonisolated let workspaceFurnishingRuntimeQualified: Bool
     private var nativeSession = false
     private var session: AuthoringSession?
     private var generation: UInt64 = 0
@@ -308,6 +315,7 @@ public actor AuthoringAPI {
         let wallQualified = Self.workspaceWallMaterialManifestPins.contains(manifest)
         workspaceWallMaterialRuntimeQualified = wallQualified
         workspaceMaterialRuntimeQualified = wallQualified || Self.workspaceMaterialManifestPins.contains(manifest)
+        workspaceFurnishingRuntimeQualified = Self.workspaceFurnishingManifestPins.contains(manifest)
         #if DEBUG
         workspaceCatalogReadRuntimeQualified = manifest == Self.workspaceCatalogReadManifest
         #else
@@ -584,13 +592,19 @@ public actor AuthoringAPI {
     }
 
     private func floorPreviewFile(_ file: NativeFloorPreview, requireDigestHeader: Bool = false) async throws -> Data {
+        try await readPreviewBytes(path: file.path, expectedBytes: file.bytes, sha256: file.sha256,
+            mime: "image/png", invalidCode: "FLOOR_PREVIEW_INVALID", requireDigestHeader: requireDigestHeader)
+    }
+
+    private func readPreviewBytes(path: String, expectedBytes: Int, sha256: String, mime: String,
+                                  invalidCode: String, requireDigestHeader: Bool) async throws -> Data {
         guard !authenticationBusy, session != nil else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
         let current = generation
-        let url = base.appendingPathComponent(file.path)
+        let url = base.appendingPathComponent(path)
         activeRequests += 1
         defer { activeRequests -= 1 }
         var request = URLRequest(url: url, timeoutInterval: 30)
-        request.setValue("image/png", forHTTPHeaderField: "Accept")
+        request.setValue(mime, forHTTPHeaderField: "Accept")
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         let (bytes, response) = try await transport.bytes(for: request)
         defer { bytes.task.cancel() }
@@ -598,20 +612,21 @@ public actor AuthoringAPI {
             throw AuthoringFailure("DISPLAY_PERMISSION_REQUIRED", status: 403)
         }
         guard let http = response as? HTTPURLResponse, http.url == url, http.statusCode == 200,
-              http.mimeType?.lowercased() == "image/png",
-              !requireDigestHeader || http.value(forHTTPHeaderField: "x-exhibitos-sha256") == file.sha256,
+              http.mimeType?.lowercased() == mime,
+              !requireDigestHeader || http.value(forHTTPHeaderField: "x-exhibitos-sha256") == sha256,
               http.value(forHTTPHeaderField: "Content-Encoding").map({ $0.lowercased() == "identity" }) ?? true,
-              http.expectedContentLength < 0 || http.expectedContentLength == Int64(file.bytes) else { throw AuthoringFailure("FLOOR_PREVIEW_INVALID") }
-        var data = Data(); data.reserveCapacity(file.bytes)
+              http.expectedContentLength < 0 || http.expectedContentLength == Int64(expectedBytes) else { throw AuthoringFailure(invalidCode) }
+        var data = Data(); data.reserveCapacity(expectedBytes)
         try await withTaskCancellationHandler {
             for try await byte in bytes {
                 try Task.checkCancellation()
-                guard data.count < file.bytes else { throw AuthoringFailure("FLOOR_PREVIEW_INVALID") }
+                guard data.count < expectedBytes else { throw AuthoringFailure(invalidCode) }
                 data.append(byte)
             }
         } onCancel: { bytes.task.cancel() }
         guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
-        return try file.check(data)
+        guard data.count == expectedBytes, nativeImportSHA256(data) == sha256 else { throw AuthoringFailure(invalidCode) }
+        return data
     }
     public func exportOEX(exhibitionId: String, etag: String,
                           progress: (@MainActor @Sendable (NativeOEXExportProgress) -> Void)? = nil) async throws -> NativeOEXArchive {
@@ -1052,6 +1067,115 @@ public actor AuthoringAPI {
         guard (1...2_147_483_647).contains(version) else { throw AuthoringFailure("MATERIAL_DECLARATION") }
         return try workspaceMaterialPath("materials/" + identifier(id) + "/versions/" + String(version), catalogRead: catalogRead)
     }
+    public var admitsWorkspaceFurnishings: Bool {
+        workspaceFurnishingRuntimeQualified && nativeSession && !authenticationBusy
+            && session?.workspaceFurnishingProfile == "workspace-furnishing-intake-v1"
+            && ["admin", "artist", "curator"].contains(session?.role ?? "")
+    }
+
+    private func workspaceFurnishingPath(_ suffix: String) throws -> String {
+        guard admitsWorkspaceFurnishings else { throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
+        return "/api/v1/tenants/\(tenant)/workspace/" + suffix
+    }
+
+    private func furnishingIntakePath(_ id: String) throws -> String {
+        guard workspaceFurnishingID(id) else { throw AuthoringFailure("IDENTIFIER_INVALID") }
+        return try workspaceFurnishingPath("furnishing-intakes/" + id)
+    }
+
+    public func createWorkspaceFurnishing(requestId: String, details: WorkspaceFurnishingDetails) async throws -> WorkspaceFurnishingIntake {
+        guard workspaceFurnishingID(requestId), details.isValid else { throw AuthoringFailure("FURNISHING_DECLARATION") }
+        let body = try encoded(WorkspaceFurnishingRequest(requestId: requestId, details: details))
+        let intake: WorkspaceFurnishingIntake = try await request(workspaceFurnishingPath("furnishing-intakes"), method: "POST", body: body)
+        try intake.check(requestId: requestId, details: details)
+        return intake
+    }
+
+    public func workspaceFurnishingIntake(_ id: String) async throws -> WorkspaceFurnishingIntake {
+        let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(id))
+        try intake.check(id: id)
+        return intake
+    }
+
+    public func uploadWorkspaceFurnishing(_ previous: WorkspaceFurnishingIntake,
+                                          snapshot: ImportFileSnapshot) async throws -> WorkspaceFurnishingIntake {
+        try previous.check()
+        let model = try WorkspaceFurnishingModel(snapshot: snapshot)
+        guard model == previous.declaration.model else { throw AuthoringFailure("MODEL_CONFLICT") }
+        let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(previous.intakeId) + "/model",
+            method: "PUT", body: snapshot.data, contentType: "application/octet-stream", timeout: 120)
+        try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration)
+        guard intake.received != nil else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
+        return intake
+    }
+
+    public func workspaceFurnishingAction(_ previous: WorkspaceFurnishingIntake,
+                                          _ action: WorkspaceFurnishingIntakeAction) async throws -> WorkspaceFurnishingIntake {
+        try previous.check()
+        let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(previous.intakeId) + "/" + action.rawValue,
+            method: "POST", body: Data("{}".utf8))
+        try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration)
+        return intake
+    }
+
+    private func furnishingPage<Item: Decodable & Sendable>(_ suffix: String, cursor: String?) async throws -> AuthoringPage<Item> {
+        func valid(_ cursor: String) -> Bool {
+            cursor.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil
+        }
+        guard cursor.map(valid) ?? true else { throw AuthoringFailure("INVALID_CURSOR") }
+        let page: AuthoringPage<Item> = try await request(workspaceFurnishingPath(suffix + (cursor.map { "?cursor=" + $0 } ?? "")))
+        guard page.items.count <= 50, page.nextCursor.map(valid) ?? true,
+              page.nextCursor == nil || (!page.items.isEmpty && page.nextCursor != cursor) else {
+            throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
+        }
+        return page
+    }
+
+    public func workspaceFurnishingIntakes(cursor: String? = nil) async throws -> AuthoringPage<WorkspaceFurnishingIntake> {
+        let page: AuthoringPage<WorkspaceFurnishingIntake> = try await furnishingPage("furnishing-intakes", cursor: cursor)
+        for intake in page.items { try intake.check() }
+        guard Set(page.items.map(\.intakeId)).count == page.items.count else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
+        return page
+    }
+
+    public func workspaceFurnishings(cursor: String? = nil) async throws -> AuthoringPage<WorkspaceFurnishingSummary> {
+        let page: AuthoringPage<WorkspaceFurnishingSummary> = try await furnishingPage("furnishings", cursor: cursor)
+        guard page.items.allSatisfy(\.isValid), Set(page.items.map(\.id)).count == page.items.count else {
+            throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
+        }
+        return page
+    }
+
+    private func workspaceFurnishingVersionPath(_ id: String, version: Int) throws -> String {
+        guard workspaceFurnishingID(id), version == 1 else { throw AuthoringFailure("FURNISHING_DECLARATION") }
+        return try workspaceFurnishingPath("furnishings/" + id + "/versions/1")
+    }
+
+    public func workspaceFurnishing(_ id: String, version: Int) async throws -> WorkspaceFurnishing {
+        let furnishing: WorkspaceFurnishing = try await request(workspaceFurnishingVersionPath(id, version: version))
+        guard furnishing.id == id else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
+        return furnishing
+    }
+
+    public func workspaceFurnishingModel(_ furnishing: WorkspaceFurnishing) async throws -> Data {
+        let path = try workspaceFurnishingVersionPath(furnishing.id, version: furnishing.version) + "/model"
+        let model = furnishing.details.model
+        return try await readPreviewBytes(path: path, expectedBytes: model.bytes, sha256: model.sha256,
+            mime: model.mime, invalidCode: "FURNISHING_RESPONSE_INVALID", requireDigestHeader: true)
+    }
+
+    public func prepareWorkspaceFurnishingPlacement(_ placement: WorkspaceFurnishingPlacement,
+                                                   in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        guard document.pending == nil, document.tenantId == tenant, session?.userId == document.principalId,
+              let draft = document.draft else { throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
+        let heldGeneration = generation
+        let furnishing = try await workspaceFurnishing(placement.furnishingId, version: placement.furnishingVersion)
+        let next = try placement.applying(furnishing, to: draft)
+        _ = try await workspaceFurnishingModel(furnishing)
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return next
+    }
+
     public func approveArtwork(_ id: String, revision: Int, assetId: String) async throws -> NativeArtwork {
         struct Approval: Encodable { let revision: Int; let assetId: String }
         return try await request(prefix + "/artworks/" + identifier(id) + "/approve", method: "POST", body: encoded(Approval(revision: revision, assetId: try identifier(assetId))))
