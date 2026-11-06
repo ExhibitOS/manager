@@ -161,7 +161,7 @@ public enum WorkspaceMaterialIntakeAction: String, Sendable {
 }
 
 public struct WorkspaceFloorMaterialBinding: Sendable {
-    private static let namespace = "org.exhibitos.studio/workspace-materials"
+    static let namespace = "org.exhibitos.studio/workspace-materials"
     public let surfaceId: String
     public let materialId: String
     public let materialVersion: Int
