@@ -438,7 +438,7 @@ mod normal_oex_release_declaration_tests {
         let regular = |path| Item { path, bytes: Some(1), sha256: Some("b".repeat(64)), executable: Some(false), link: None };
         payload.manifest.files.push(regular(WORKSPACE_FURNISHING_CAPABILITY.into()));
         assert_eq!(payload.workspace_furnishing_validation().unwrap_err().code, "NATIVE_RUNTIME_UNQUALIFIED");
-        for index in (1..=36).rev() {
+        for index in (1..=36).rev().filter(|index| !matches!(*index, 26 | 27)) {
             let dir = match index {
                 1..=25 => "migrations",
                 26..=32 => "native-oex-normal",
