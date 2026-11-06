@@ -246,8 +246,11 @@ built with `workspace-v5-owner-validation` admits one isolated V7 payload. It
 requires Platform source `d823896613e27c49d7a3aaeee570a527b2142350`, its
 producer SHA-256 `809ae0bd70b5702b325e0607324d53423474b453242e72a222a22fc08e970f34`,
 and manifest SHA-256 `aad7ddf920dc64b02b916166e829d9638fca11b585cd0cb9157bc49a0f09e0d9`.
-Use this payload in a fresh synthetic validation profile. The V6 and release
-admission tables are unchanged.
+Use this payload in a fresh synthetic validation profile. After ordinary reopen,
+the debug authoring client can list and read workspace catalog metadata when the
+authenticated native session advertises `workspace-material-intake-v1`.
+Intake, map preview and surface editing retain their existing admission checks.
+The V6 and release admission tables are unchanged.
 
 Local publication uses its own affirmative `nativePublicationProfile:
 "bounded-local-v1"` session advertisement and an explicit per-call profile

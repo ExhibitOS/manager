@@ -361,8 +361,13 @@ public actor NativeAutomationSession {
         case "workspace-material-intake-create", "workspace-material-intake-status",
              "workspace-material-intake-upload", "workspace-material-intake-complete",
              "workspace-material-intake-cancel", "workspace-material-intake-retry",
-             "workspace-material-list", "workspace-material-read", "workspace-material-preview":
+             "workspace-material-preview":
             guard selectedOEXFormat == nil, await api.admitsWorkspaceMaterials else {
+                throw BridgeFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
+            }
+            result = try await executeWorkspaceMaterial(operation, request: request, api: api)
+        case "workspace-material-list", "workspace-material-read":
+            guard selectedOEXFormat == nil, await api.admitsWorkspaceMaterialCatalog else {
                 throw BridgeFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
             }
             result = try await executeWorkspaceMaterial(operation, request: request, api: api)
