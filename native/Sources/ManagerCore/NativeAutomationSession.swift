@@ -339,7 +339,7 @@ public actor NativeAutomationSession {
                 throw BridgeFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
             }
             result = try await executeWorkspaceMaterial(operation, request: request, api: api)
-        case "workspace-material-floor-apply":
+        case "workspace-material-floor-apply", "workspace-material-wall-apply":
             guard selectedOEXFormat == nil else { throw BridgeFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["surfaceId", "materialId", "materialVersion", "repeatMeters", "rotation"])
@@ -347,9 +347,10 @@ public actor NativeAutomationSession {
                   let version = command["materialVersion"].integer, let dimensions = command["repeatMeters"].items,
                   dimensions.count == 2, let width = dimensions[0].double, let length = dimensions[1].double,
                   let rotation = command["rotation"].double else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
-            let binding = try WorkspaceFloorMaterialBinding(surfaceId: surfaceId, materialId: materialId, materialVersion: Int(version),
-                                                            repeatMeters: [width, length], rotation: rotation)
-            if let draft = try await api.prepareWorkspaceFloorMaterial(binding, in: current) {
+            let surfaceKind: WorkspaceMaterialKind = operation == "workspace-material-wall-apply" ? .wall : .floor
+            let binding = try WorkspaceSurfaceMaterialBinding(surfaceKind: surfaceKind, surfaceId: surfaceId, materialId: materialId,
+                                                              materialVersion: Int(version), repeatMeters: [width, length], rotation: rotation)
+            if let draft = try await api.prepareWorkspaceSurfaceMaterial(binding, in: current) {
                 var next = current
                 next.draft = draft
                 result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])

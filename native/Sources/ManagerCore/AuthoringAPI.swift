@@ -276,7 +276,11 @@ public actor AuthoringAPI {
     #else
     private static let workspaceMaterialManifestPins: Set<String> = []
     #endif
+    // A floor-only renderer rejects a draft containing any wall material.
+    // Admit the wall action only for a reviewed complete renderer payload.
+    private static let workspaceWallMaterialManifestPins: Set<String> = []
     public nonisolated let workspaceMaterialRuntimeQualified: Bool
+    public nonisolated let workspaceWallMaterialRuntimeQualified: Bool
     private var nativeSession = false
     private var session: AuthoringSession?
     private var generation: UInt64 = 0
@@ -296,7 +300,10 @@ public actor AuthoringAPI {
         base = URL(string: "http://127.0.0.1:\(port)")!
         tenant = id.uuidString.lowercased()
         admitsICCJPEG = NativeJPEGImportRuntime.supportsICC(manifestSHA256: nativeRuntimeManifestSHA256, ready: true)
-        workspaceMaterialRuntimeQualified = Self.workspaceMaterialManifestPins.contains(nativeRuntimeManifestSHA256 ?? "")
+        let manifest = nativeRuntimeManifestSHA256 ?? ""
+        let wallQualified = Self.workspaceWallMaterialManifestPins.contains(manifest)
+        workspaceWallMaterialRuntimeQualified = wallQualified
+        workspaceMaterialRuntimeQualified = wallQualified || Self.workspaceMaterialManifestPins.contains(manifest)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -985,6 +992,13 @@ public actor AuthoringAPI {
     }
 
     public func prepareWorkspaceFloorMaterial(_ binding: WorkspaceFloorMaterialBinding, in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        try await prepareWorkspaceSurfaceMaterial(binding.surface, in: document)
+    }
+
+    public func prepareWorkspaceSurfaceMaterial(_ binding: WorkspaceSurfaceMaterialBinding, in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        guard binding.surfaceKind == .floor || workspaceWallMaterialRuntimeQualified else {
+            throw AuthoringFailure("WORKSPACE_MATERIAL_BINDING_UNSUPPORTED")
+        }
         guard admitsWorkspaceMaterials, document.tenantId == tenant, document.principalId == session?.userId else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }

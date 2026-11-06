@@ -161,31 +161,53 @@ public enum WorkspaceMaterialIntakeAction: String, Sendable {
 }
 
 public struct WorkspaceFloorMaterialBinding: Sendable {
+    static let namespace = WorkspaceSurfaceMaterialBinding.namespace
+    let surface: WorkspaceSurfaceMaterialBinding
+    public var surfaceId: String { surface.surfaceId }
+    public var materialId: String { surface.materialId }
+    public var materialVersion: Int { surface.materialVersion }
+    public var repeatMeters: [Double] { surface.repeatMeters }
+    public var rotation: Double { surface.rotation }
+
+    public init(surfaceId: String, materialId: String, materialVersion: Int, repeatMeters: [Double], rotation: Double) throws {
+        surface = try WorkspaceSurfaceMaterialBinding(surfaceKind: .floor, surfaceId: surfaceId,
+            materialId: materialId, materialVersion: materialVersion, repeatMeters: repeatMeters, rotation: rotation)
+    }
+
+    func applying(_ material: WorkspaceMaterial, to draft: NativeExhibitionDraft) throws -> NativeExhibitionDraft? {
+        try surface.applying(material, to: draft)
+    }
+}
+
+public struct WorkspaceSurfaceMaterialBinding: Sendable {
     static let namespace = "org.exhibitos.studio/workspace-materials"
+    public let surfaceKind: WorkspaceMaterialKind
     public let surfaceId: String
     public let materialId: String
     public let materialVersion: Int
     public let repeatMeters: [Double]
     public let rotation: Double
 
-    public init(surfaceId: String, materialId: String, materialVersion: Int, repeatMeters: [Double], rotation: Double) throws {
+    public init(surfaceKind: WorkspaceMaterialKind, surfaceId: String, materialId: String, materialVersion: Int,
+                repeatMeters: [Double], rotation: Double) throws {
         guard [surfaceId, materialId].allSatisfy({ UUID(uuidString: $0)?.uuidString.lowercased() == $0 }),
               (1...2_147_483_647).contains(materialVersion), repeatMeters.count == 2,
               repeatMeters.allSatisfy({ (0.05...20).contains($0) }), (-Double.pi...Double.pi).contains(rotation) else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_BINDING_INVALID")
         }
-        self.surfaceId = surfaceId; self.materialId = materialId; self.materialVersion = materialVersion
+        self.surfaceKind = surfaceKind; self.surfaceId = surfaceId
+        self.materialId = materialId; self.materialVersion = materialVersion
         self.repeatMeters = repeatMeters; self.rotation = rotation
     }
 
     func applying(_ material: WorkspaceMaterial, to draft: NativeExhibitionDraft) throws -> NativeExhibitionDraft? {
         guard material.id == materialId, material.version == materialVersion else { throw AuthoringFailure("MATERIAL_RESPONSE_INVALID") }
-        guard material.kind == .floor, Set(material.maps.keys) == ["color"] else {
+        guard material.kind == surfaceKind, Set(material.maps.keys) == ["color"] else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_BINDING_UNSUPPORTED")
         }
         guard material.rights.permissions.display else { throw AuthoringFailure("DISPLAY_PERMISSION_REQUIRED") }
         guard let surfaces = draft.candidate["surfaces"].items,
-              surfaces.filter({ $0["id"].string == surfaceId }).map({ $0["type"].string }) == ["floor"] else {
+              surfaces.filter({ $0["id"].string == surfaceId }).map({ $0["type"].string }) == [surfaceKind.rawValue] else {
             throw AuthoringFailure("ARCHITECTURE_SELECTION_CHANGED")
         }
         let invalid = AuthoringFailure("WORKSPACE_MATERIAL_BINDING_INVALID")

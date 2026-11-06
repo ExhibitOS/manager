@@ -1201,6 +1201,9 @@ final class ExhibitionModel: ObservableObject {
     var workspaceMaterialIntakeAvailable: Bool {
         workspaceMaterialPreviewAvailable && !selectedBoundedPolicy
     }
+    var workspaceWallMaterialAvailable: Bool {
+        workspaceMaterialIntakeAvailable && api?.workspaceWallMaterialRuntimeQualified == true
+    }
     func withWorkspaceMaterialAccess<T>(_ access: UUID, _ body: (AuthoringAPI) async throws -> T) async throws -> T {
         guard workspaceMaterialIntakeAvailable, access == viewportAccessID, !busy, !entrancePreviewActive,
               !placingArtwork, !architectureApplying, !pending, let api else {
@@ -1213,12 +1216,12 @@ final class ExhibitionModel: ObservableObject {
         guard access == viewportAccessID else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return result
     }
-    func applyWorkspaceFloorMaterial(_ binding: WorkspaceFloorMaterialBinding, access: UUID) async throws -> Bool {
+    func applyWorkspaceSurfaceMaterial(_ binding: WorkspaceSurfaceMaterialBinding, access: UUID) async throws -> Bool {
         try await withWorkspaceMaterialAccess(access) { api in
             guard !immutable, !formDirty, !positionDirty, !architectureDirty, !viewingPlanDirty, viewingPointInput == nil,
                   var current = state else { throw AuthoringFailure("ARCHITECTURE_APPLY_REQUIRED") }
             let revision = current.revision
-            let next = try await api.prepareWorkspaceFloorMaterial(binding, in: current)
+            let next = try await api.prepareWorkspaceSurfaceMaterial(binding, in: current)
             guard access == viewportAccessID, state?.revision == revision, state?.draft == current.draft else {
                 throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
             }

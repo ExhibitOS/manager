@@ -29,19 +29,23 @@ struct WorkspaceMaterialIntakeView: View {
     @State private var library: [WorkspaceMaterialSummary] = []
     @State private var nextCursor: String?
     @State private var loadedLibrary = false
-    @State private var floorMaterial: WorkspaceMaterialSummary?
-    @State private var floorSurfaceId = ""
+    @State private var surfaceMaterial: WorkspaceMaterialSummary?
+    @State private var targetSurfaceId = ""
     @State private var repeatWidth = "2"
     @State private var repeatLength = "2"
     @State private var rotationDegrees = "0"
     @State private var bindingNotice: String?
 
-    private var floorSurfaces: [(id: String, name: String)] {
+    private func surfaceLabel(_ kind: WorkspaceMaterialKind) -> String {
+        kind == .floor ? "바닥" : "벽"
+    }
+
+    private func surfaces(for kind: WorkspaceMaterialKind) -> [(id: String, name: String)] {
         guard let draft = model.draft else { return [] }
         return (draft.candidate["surfaces"].items ?? []).enumerated().compactMap { index, surface in
-            guard surface["type"].string == "floor", let id = surface["id"].string else { return nil }
+            guard surface["type"].string == kind.rawValue, let id = surface["id"].string else { return nil }
             let room = draft.rooms.first(where: { $0["id"] == surface["roomId"] })?["name"].string ?? "공간"
-            return (id, "\(room) · 바닥 \(index + 1)")
+            return (id, "\(room) · \(surfaceLabel(kind)) \(index + 1)")
         }
     }
 
@@ -130,12 +134,13 @@ struct WorkspaceMaterialIntakeView: View {
                             HStack {
                                 Button(item.name) { Task { await previewLibraryItem(item) } }
                                     .disabled(!item.rightsAvailability.display)
-                                if item.kind == .floor && item.rightsAvailability.display {
+                                if item.rightsAvailability.display && (item.kind == .floor || model.workspaceWallMaterialAvailable) {
+                                    let label = surfaceLabel(item.kind)
                                     Spacer()
-                                    Button("바닥 연결 설정") {
-                                        floorMaterial = item; floorSurfaceId = ""; bindingNotice = nil
+                                    Button("\(label) 연결 설정") {
+                                        surfaceMaterial = item; targetSurfaceId = ""; bindingNotice = nil
                                     }
-                                    .accessibilityLabel("\(item.name) 바닥 연결 설정")
+                                    .accessibilityLabel("\(item.name) \(label) 연결 설정")
                                 }
                             }
                         }
@@ -146,20 +151,23 @@ struct WorkspaceMaterialIntakeView: View {
                         }
                         if loadedLibrary && library.isEmpty { Text("등록된 재질이 없습니다.").foregroundStyle(.secondary) }
                     }
-                    if let floorMaterial {
-                        Section("바닥 연결") {
-                            Text(floorMaterial.name)
-                            Picker("바닥", selection: $floorSurfaceId) {
-                                Text("바닥 선택").tag("")
-                                ForEach(floorSurfaces, id: \.id) { surface in Text(surface.name).tag(surface.id) }
+                    if let surfaceMaterial {
+                        let label = surfaceLabel(surfaceMaterial.kind)
+                        Section("\(label) 연결") {
+                            Text(surfaceMaterial.name)
+                            Picker(label, selection: $targetSurfaceId) {
+                                Text("\(label) 선택").tag("")
+                                ForEach(surfaces(for: surfaceMaterial.kind), id: \.id) { surface in Text(surface.name).tag(surface.id) }
                             }
                             TextField("가로 반복 (m)", text: $repeatWidth)
                             TextField("세로 반복 (m)", text: $repeatLength)
                             TextField("회전 (°)", text: $rotationDegrees)
-                            Text("색상 맵 한 장을 연결합니다. 현재 런타임에서 표면 미리보기는 지원하지 않습니다.")
+                            Text(surfaceMaterial.kind == .floor
+                                 ? "색상 맵 한 장을 연결합니다. 현재 런타임에서 표면 미리보기는 지원하지 않습니다."
+                                 : "색상 맵 한 장을 연결합니다.")
                                 .foregroundStyle(.secondary)
-                            Button("바닥에 연결") { Task { await applyFloorMaterial(floorMaterial) } }
-                                .disabled(floorSurfaceId.isEmpty)
+                            Button("\(label)에 연결") { Task { await applySurfaceMaterial(surfaceMaterial) } }
+                                .disabled(targetSurfaceId.isEmpty)
                         }
                     }
                 }
@@ -325,17 +333,18 @@ struct WorkspaceMaterialIntakeView: View {
         }
     }
 
-    private func applyFloorMaterial(_ material: WorkspaceMaterialSummary) async {
+    private func applySurfaceMaterial(_ material: WorkspaceMaterialSummary) async {
         bindingNotice = nil
         await perform {
             guard let width = Double(repeatWidth), let length = Double(repeatLength),
                   let degrees = Double(rotationDegrees), (-180...180).contains(degrees) else {
                 throw AuthoringFailure("WORKSPACE_MATERIAL_BINDING_INVALID")
             }
-            let binding = try WorkspaceFloorMaterialBinding(surfaceId: floorSurfaceId, materialId: material.id,
-                materialVersion: material.version, repeatMeters: [width, length], rotation: degrees * (.pi / 180))
-            let changed = try await model.applyWorkspaceFloorMaterial(binding, access: access)
-            bindingNotice = changed ? "바닥 연결을 보관했습니다. 닫은 뒤 전시를 저장하세요." : "이 바닥에 같은 재질과 설정이 이미 저장되어 있습니다."
+            let binding = try WorkspaceSurfaceMaterialBinding(surfaceKind: material.kind, surfaceId: targetSurfaceId,
+                materialId: material.id, materialVersion: material.version, repeatMeters: [width, length], rotation: degrees * (.pi / 180))
+            let changed = try await model.applyWorkspaceSurfaceMaterial(binding, access: access)
+            let label = surfaceLabel(material.kind)
+            bindingNotice = changed ? "\(label) 연결을 보관했습니다. 닫은 뒤 전시를 저장하세요." : "이 \(label)에 같은 재질과 설정이 이미 저장되어 있습니다."
         }
     }
 }
