@@ -78,6 +78,15 @@ pub(crate) const WORKSPACE_V5_TRANSITION: (&str, &str) = (
     "cfe1faba63dc6d41e2451ad8bf8870d197a48e1b6d234850bdbad16c23083b59",
 );
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const WORKSPACE_WALL_PREVIEW_TRANSITION: (&str, &str) = (
+    WORKSPACE_V5_TRANSITION.1,
+    "6be2d5969462e4961e9ecbd3b6417936f2f075de1fbc3626d1b4f19cde7e65ec",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const WORKSPACE_V5_SAVED_TRANSITIONS: &[(&str, &str)] =
+    &[WORKSPACE_V5_TRANSITION, WORKSPACE_WALL_PREVIEW_TRANSITION];
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const WORKSPACE_V5_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[
     (
         "742412c152037c20a4c32e5ccce8535be46822aa",
@@ -89,6 +98,11 @@ const WORKSPACE_V5_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[
         "d0dac02c2b8cc5344a1aef48042d64fdd5f6d61a26851ae6c27cee03bcef7364",
         WORKSPACE_V5_TRANSITION.1,
     ),
+    (
+        "f4f6625110df63258a13407cbe45334e4372ab5e",
+        "f57122ec4bfcbd8c943c101d8b8bba3a40a5152e1cd292d85416cfb633d2f7d0",
+        WORKSPACE_WALL_PREVIEW_TRANSITION.1,
+    ),
 ];
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const WORKSPACE_V5_CAPABILITY: (&str, u64, &str) = (
@@ -97,9 +111,10 @@ const WORKSPACE_V5_CAPABILITY: (&str, u64, &str) = (
     "8c5f7f44fb7b0a898611977064f95d4988eeff4945093c0df351f7b6baaf217a",
 );
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-fn workspace_v5_validation_matches(manifest: &Manifest, manifest_hash: &str) -> bool {
+fn workspace_v5_validation_matches(manifest: &Manifest, manifest_hash: &str, selected: bool) -> bool {
     let (path, bytes, sha) = WORKSPACE_V5_CAPABILITY;
     manifest.mode == "local-validation" && !manifest.redistribution_qualified && !manifest.official_signed
+        && (!selected || manifest_hash != WORKSPACE_WALL_PREVIEW_TRANSITION.1)
         && WORKSPACE_V5_VALIDATION_PROVENANCE.contains(&(
             manifest.source_commit.as_str(), manifest.producer_sha256.as_str(), manifest_hash,
         ))
@@ -312,16 +327,17 @@ mod normal_oex_release_declaration_tests {
             let mut manifest = fixture();
             manifest.source_commit = source.into();
             manifest.producer_sha256 = producer.into();
-            assert!(!workspace_v5_validation_matches(&manifest, hash));
+            assert!(!workspace_v5_validation_matches(&manifest, hash, false));
             manifest.mode = "local-validation".into();
             manifest.redistribution_qualified = false;
             manifest.official_signed = false;
-            assert!(!workspace_v5_validation_matches(&manifest, hash));
+            assert!(!workspace_v5_validation_matches(&manifest, hash, false));
             manifest.files.push(Item { path: path.into(), bytes: Some(bytes), sha256: Some(sha.into()), executable: Some(false), link: None });
-            assert!(workspace_v5_validation_matches(&manifest, hash));
-            assert!(!workspace_v5_validation_matches(&manifest, &"0".repeat(64)));
+            assert!(workspace_v5_validation_matches(&manifest, hash, false));
+            assert_eq!(workspace_v5_validation_matches(&manifest, hash, true), hash != WORKSPACE_WALL_PREVIEW_TRANSITION.1);
+            assert!(!workspace_v5_validation_matches(&manifest, &"0".repeat(64), false));
             manifest.files.last_mut().unwrap().link = Some("other".into());
-            assert!(!workspace_v5_validation_matches(&manifest, hash));
+            assert!(!workspace_v5_validation_matches(&manifest, hash, false));
         }
     }
 
@@ -764,7 +780,7 @@ impl Payload {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn open_workspace_v5_validation(root: &Path, selected: bool) -> Result<Self> {
         let mut payload = Self::open(root)?;
-        if !workspace_v5_validation_matches(&payload.manifest, &payload.manifest_sha256) {
+        if !workspace_v5_validation_matches(&payload.manifest, &payload.manifest_sha256, selected) {
             return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
         }
         payload.workspace_v5_validation = selected;

@@ -273,12 +273,14 @@ public actor AuthoringAPI {
         "40ca49e65e769c4c034eea69300ff65ce8af46ef9b081a9a2b4b1ade12ed9415",
         "cfe1faba63dc6d41e2451ad8bf8870d197a48e1b6d234850bdbad16c23083b59"
     ]
+    // A floor-only renderer rejects a draft containing any wall material.
+    private static let workspaceWallMaterialManifestPins: Set<String> = [
+        "6be2d5969462e4961e9ecbd3b6417936f2f075de1fbc3626d1b4f19cde7e65ec"
+    ]
     #else
     private static let workspaceMaterialManifestPins: Set<String> = []
-    #endif
-    // A floor-only renderer rejects a draft containing any wall material.
-    // Admit the wall action only for a reviewed complete renderer payload.
     private static let workspaceWallMaterialManifestPins: Set<String> = []
+    #endif
     public nonisolated let workspaceMaterialRuntimeQualified: Bool
     public nonisolated let workspaceWallMaterialRuntimeQualified: Bool
     private var nativeSession = false

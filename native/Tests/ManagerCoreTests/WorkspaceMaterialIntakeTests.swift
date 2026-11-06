@@ -183,6 +183,20 @@ final class WorkspaceMaterialIntakeTests: XCTestCase {
         }
     }
 
+    func testWallPreviewPinDoesNotReplaceNativeSessionAdmission() async throws {
+        let id = UUID().uuidString.lowercased()
+        let api = try AuthoringAPI(port: 65535, tenantId: id,
+            nativeRuntimeManifestSHA256: "6be2d5969462e4961e9ecbd3b6417936f2f075de1fbc3626d1b4f19cde7e65ec")
+        #if DEBUG
+        XCTAssertTrue(api.workspaceWallMaterialRuntimeQualified)
+        XCTAssertTrue(api.workspaceMaterialRuntimeQualified)
+        #else
+        XCTAssertFalse(api.workspaceWallMaterialRuntimeQualified)
+        #endif
+        let admitted = await api.admitsWorkspaceMaterials
+        XCTAssertFalse(admitted)
+    }
+
     private func floorMaterialFixture(kind: WorkspaceMaterialKind = .floor) throws -> WorkspaceMaterial {
         let id = UUID().uuidString.lowercased(), sha = String(repeating: "a", count: 64)
         return try JSONDecoder().decode(WorkspaceMaterial.self, from: Data("""

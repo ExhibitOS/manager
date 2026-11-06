@@ -186,10 +186,12 @@ Operations:
     Studio checks. Pass a wall surface UUID and the exact registered color-only
     wall material. Use `save` after a change. In Manager, the corresponding
     actions are **벽 연결 설정** and **벽에 연결**.
-    Wall application requires an independently qualified private wall renderer
-    payload. The current V5 payload pins keep this action unavailable in the
-    GUI, and CLI attempts return `WORKSPACE_MATERIAL_BINDING_UNSUPPORTED`.
-    Wall registration and color-map preview remain available in those runtimes.
+    Wall application is available to an ordinary authenticated owner session
+    on the local-validation wall preview payload from Platform source
+    `f4f6625110df63258a13407cbe45334e4372ab5e`, manifest SHA-256
+    `6be2d5969462e4961e9ecbd3b6417936f2f075de1fbc3626d1b4f19cde7e65ec`.
+    Floor-only runtime pins keep wall application unavailable in the GUI, and
+    CLI attempts return `WORKSPACE_MATERIAL_BINDING_UNSUPPORTED`.
 - `bench-prepare`: accept the existing `add-bench` command and optional fresh
   viewpoint; write the existing frame/request packet to a new `outputPath`.
 - `bench-apply`: provide its `proposalId` and a fixed shared-renderer reply at

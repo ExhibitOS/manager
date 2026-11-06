@@ -16,7 +16,9 @@ use std::sync::Arc;
 const OLD_MANIFEST: &str = "253de8963ec9f0e0a2884a27d8e756b453cf61899e38c31571d9993a7d6ecff4";
 const NEW_MANIFEST: &str = "10a21f3b7a73a66011e077f7927f951f917e604720591acbcc2cdb47222f4032";
 #[cfg(feature = "workspace-v5-owner-validation")]
-use crate::native_payload::WORKSPACE_V5_TRANSITION;
+use crate::native_payload::{
+    WORKSPACE_V5_SAVED_TRANSITIONS, WORKSPACE_V5_TRANSITION, WORKSPACE_WALL_PREVIEW_TRANSITION,
+};
 
 // Development-only transitions are admitted as directed, exact pairs. Keep
 // the historical recovery path available alongside the reviewed Oak successor.
@@ -24,6 +26,8 @@ const TRANSITION_PAIRS: &[(&str, &str)] = &[
     (OLD_MANIFEST, NEW_MANIFEST),
     #[cfg(feature = "workspace-v5-owner-validation")]
     WORKSPACE_V5_TRANSITION,
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    WORKSPACE_WALL_PREVIEW_TRANSITION,
     ("35b07cfc4c89abeaab518fd72c5be5f55569c03ae99906ff7220edf7d9712bf8",
      "9b9d6b1cba4b5722a8710471283e9f693f14883f5da950c4504ca7bbf00efeb7"),
     ("9b9d6b1cba4b5722a8710471283e9f693f14883f5da950c4504ca7bbf00efeb7",
@@ -94,7 +98,7 @@ fn check_transition_host(
     saved_workspace_host: bool,
 ) -> Result<()> {
     #[cfg(feature = "workspace-v5-owner-validation")]
-    let is_saved_workspace_pair = pair == WORKSPACE_V5_TRANSITION;
+    let is_saved_workspace_pair = WORKSPACE_V5_SAVED_TRANSITIONS.contains(&pair);
     #[cfg(not(feature = "workspace-v5-owner-validation"))]
     let is_saved_workspace_pair = false;
     if !admitted_pair(pair.0, pair.1)
@@ -927,7 +931,7 @@ impl LifecycleService {
             return Err(invalid());
         }
         #[cfg(feature = "workspace-v5-owner-validation")]
-        if ((source.manifest_sha256.as_str(), target.manifest_sha256.as_str()) == WORKSPACE_V5_TRANSITION)
+        if WORKSPACE_V5_SAVED_TRANSITIONS.contains(&(source.manifest_sha256.as_str(), target.manifest_sha256.as_str()))
             != saved_document_sha256.is_some()
         {
             return Err(invalid());
@@ -1051,8 +1055,9 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
     ) -> Result<()> {
-        if (source.context().manifest_sha256.as_str(), target.context().manifest_sha256.as_str())
-            != WORKSPACE_V5_TRANSITION
+        if !WORKSPACE_V5_SAVED_TRANSITIONS.contains(&(
+            source.context().manifest_sha256.as_str(), target.context().manifest_sha256.as_str(),
+        ))
         {
             return Err(invalid());
         }
@@ -1225,17 +1230,18 @@ mod tests {
     #[test]
     fn transition_scope_requires_pair_saved_proof_and_dedicated_host() {
         let legacy = (OLD_MANIFEST, NEW_MANIFEST);
-        let saved = WORKSPACE_V5_TRANSITION;
         let proof = "a".repeat(64);
         assert!(check_transition_host(legacy, None, false).is_ok());
-        assert!(check_transition_host(saved, Some(&proof), true).is_ok());
-        for host in [false, true] {
-            assert!(check_transition_host(legacy, Some(&proof), host).is_err());
-            assert!(check_transition_host(saved, None, host).is_err());
-        }
-        assert!(check_transition_host(saved, Some(&proof), false).is_err());
-        assert!(check_transition_host(saved, Some("malformed"), true).is_err());
         assert!(check_transition_host(legacy, None, true).is_err());
+        for &saved in WORKSPACE_V5_SAVED_TRANSITIONS {
+            assert!(check_transition_host(saved, Some(&proof), true).is_ok());
+            for host in [false, true] {
+                assert!(check_transition_host(legacy, Some(&proof), host).is_err());
+                assert!(check_transition_host(saved, None, host).is_err());
+            }
+            assert!(check_transition_host(saved, Some(&proof), false).is_err());
+            assert!(check_transition_host(saved, Some("malformed"), true).is_err());
+        }
     }
 
     #[test]
