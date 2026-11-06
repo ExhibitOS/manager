@@ -119,6 +119,18 @@ final class NativeWorkspaceOEXTerminalProofTests: XCTestCase {
         }
     }
 
+    func testRejectsNestedDuplicateKeysEvenWithMatchingDigest() throws {
+        let input = try Fixture()
+        let result = String(decoding: input.resultBytes, as: UTF8.self)
+        let candidate = try XCTUnwrap(result.range(of: #""candidate":{"#))
+        for key in ["id", #"\u0069d"#] {
+            var changed = result
+            changed.insert(contentsOf: #""\#(key)":"\#(input.held.draft.id)","#, at: candidate.upperBound)
+            let bytes = Data(changed.utf8)
+            rejects(try input.verify(proof: input.proof(for: bytes), result: bytes))
+        }
+    }
+
     func testRejectsUnmappedOrInvalidMaterialBindingEvenWhenBothDraftsMatch() throws {
         let input = try Fixture()
         var unmapped = input.result

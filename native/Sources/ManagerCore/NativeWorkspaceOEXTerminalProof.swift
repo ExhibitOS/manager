@@ -3,7 +3,8 @@ import CryptoKit
 import Foundation
 
 /// Checks the Draft 12 terminal wire data against independently held native
-/// state. The caller must establish the owner and settlement before using it.
+/// state. The caller must establish the owner and settlement and bind the
+/// reopened observation to the exact pending save request and receipt.
 public enum NativeWorkspaceOEXTerminalProof {
     public static let proofByteLimit = 8 * 1024
     public static let resultByteLimit = 4 * 1024 * 1024
@@ -74,7 +75,7 @@ public enum NativeWorkspaceOEXTerminalProof {
               String(data: resultBytes, encoding: .utf8) != nil,
               let result = try? decoder.decode(DocumentValue.self, from: resultBytes),
               case .object(let fields) = result, Set(fields.keys) == resultKeys,
-              rootMemberCount(resultBytes) == resultKeys.count,
+              hasUniqueObjectMembers(resultBytes, decoder: decoder),
               result["revision"].integer == 1, result["etag"].string == offer.etag,
               result["exhibitionId"].string == offer.exhibitionId,
               let draft = try? NativeExhibitionDraft(document: result["draft"]), draft == held.draft,
@@ -113,27 +114,49 @@ public enum NativeWorkspaceOEXTerminalProof {
         return (49...56).contains(bytes[14]) && "89abAB".utf8.contains(bytes[19])
     }
 
-    /// Foundation has already parsed the object. Count its raw root members
-    /// so a duplicate wire key cannot disappear in the decoded dictionary.
-    private static func rootMemberCount(_ data: Data) -> Int {
-        var depth = 0, count = 0
-        var quoted = false, escaped = false
-        for byte in data {
-            if quoted {
-                if escaped { escaped = false }
-                else if byte == 92 { escaped = true }
-                else if byte == 34 { quoted = false }
+    /// Foundation has already parsed the JSON. Walk its wire keys as well,
+    /// since decoding into a dictionary can silently discard duplicates.
+    private static func hasUniqueObjectMembers(_ data: Data, decoder: JSONDecoder) -> Bool {
+        var keysByDepth: [Set<String>?] = []
+        var stringStart: Data.Index?
+        var escaped = false
+        for index in data.indices {
+            let byte = data[index]
+            if let start = stringStart {
+                if escaped {
+                    escaped = false
+                } else if byte == 92 {
+                    escaped = true
+                } else if byte == 34 {
+                    stringStart = nil
+                    var next = index + 1
+                    while next < data.endIndex, [9, 10, 13, 32].contains(data[next]) { next += 1 }
+                    guard next < data.endIndex, data[next] == 58 else { continue }
+
+                    let contents = data[(start + 1)..<index]
+                    let key: String
+                    if contents.contains(92) {
+                        guard let decoded = try? decoder.decode(String.self, from: data[start...index]) else { return false }
+                        key = decoded
+                    } else {
+                        key = String(decoding: contents, as: UTF8.self)
+                    }
+                    guard let frame = keysByDepth.indices.last,
+                          keysByDepth[frame]?.insert(key).inserted == true else { return false }
+                }
                 continue
             }
             switch byte {
-            case 34: quoted = true
-            case 123, 91: depth += 1
-            case 125, 93: depth -= 1
-            case 58 where depth == 1: count += 1
+            case 34: stringStart = index
+            case 123: keysByDepth.append(Set<String>())
+            case 91: keysByDepth.append(nil)
+            case 125, 93:
+                guard !keysByDepth.isEmpty else { return false }
+                keysByDepth.removeLast()
             default: break
             }
         }
-        return count
+        return keysByDepth.isEmpty && stringStart == nil
     }
 
     private static func validAlias(_ value: DocumentValue) -> Bool {

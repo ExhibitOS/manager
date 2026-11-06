@@ -179,10 +179,13 @@ proof (up to 8 KiB), exact result (up to 4 MiB), independently held import scope
 and selected save offer, held Studio revision 1, and the independently reopened
 Studio revision 2 after the save. The verifier checks the fixed proof encoding
 and the raw result length and SHA-256 before decoding the native draft. It
-requires the same complete draft in both Studio revisions and checks the
+rejects duplicate result object keys at any depth, requires the same complete
+draft in both Studio revisions, and checks the
 remapped floor and color material bindings. The returned value contains proof
 and result digests and their validated scope. Owner settlement, transport,
 durable local recording and acknowledgement are the caller's responsibilities.
+The caller also binds the reopened revision to the exact pending save request
+and receipt. The terminal wire data carries the import request ID.
 The GUI and CLI import flows have yet to connect to this verifier.
 
 The focused Swift tests use synthetic inputs. Set
