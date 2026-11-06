@@ -160,9 +160,9 @@ const WORKSPACE_WALL_SCHEMA_PATH: &str =
 const WORKSPACE_V6_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[];
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const WORKSPACE_V7_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[(
-    "fa8320777fbcd4f5dcaf4751fc566e4e79e4beb0",
+    "d823896613e27c49d7a3aaeee570a527b2142350",
     "809ae0bd70b5702b325e0607324d53423474b453242e72a222a22fc08e970f34",
-    "f845813b8a0b0f525926e7736b2c0715e9c9e188f5309fdc31120024f4aa4e27",
+    "aad7ddf920dc64b02b916166e829d9638fca11b585cd0cb9157bc49a0f09e0d9",
 )];
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
