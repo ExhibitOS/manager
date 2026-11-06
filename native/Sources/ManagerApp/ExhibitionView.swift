@@ -1194,9 +1194,12 @@ final class ExhibitionModel: ObservableObject {
         entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false
         entrancePreviewStatus = "편집 화면을 다시 연결했습니다. 입력·선택·실행 취소 이력과 마지막으로 선택한 보기는 유지됩니다."
     }
-    var workspaceMaterialIntakeAvailable: Bool {
+    var workspaceMaterialPreviewAvailable: Bool {
         viewportCredentials != nil && api?.workspaceMaterialRuntimeQualified == true
-            && session?.workspaceMaterialProfile == "workspace-material-intake-v1" && !selectedBoundedPolicy
+            && session?.workspaceMaterialProfile == "workspace-material-intake-v1"
+    }
+    var workspaceMaterialIntakeAvailable: Bool {
+        workspaceMaterialPreviewAvailable && !selectedBoundedPolicy
     }
     func withWorkspaceMaterialAccess<T>(_ access: UUID, _ body: (AuthoringAPI) async throws -> T) async throws -> T {
         guard workspaceMaterialIntakeAvailable, access == viewportAccessID, !busy, !entrancePreviewActive,

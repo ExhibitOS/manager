@@ -88,6 +88,22 @@ against the exact target with `--reopen-workspace-v5-validation`.
 The completed transition clears the fence. This command set has no post-commit
 rollback path.
 
+### Private floor rendering
+
+The reviewed `cfe1` local-validation runtime also admits the existing Quiet
+Oak catalogue and its three pinned floor maps. When the authenticated local
+session advertises `workspace-material-intake-v1` and the runtime matches a
+debug workspace material pin, the native viewport permits the same-origin,
+same-tenant material version and color-map routes. The server handles GET,
+ownership and display rights. The renderer verifies the descriptor and map
+before using it.
+
+In expert mode, open **3D 연결 상세** and select **표시 상태 확인** to
+inspect the loaded map status. Check the entrance and the adjacent floor in
+**걸어보기**. A `fallback` status cannot qualify the intended material.
+The readout reports requests and loaded maps. Visual scale and direction need
+observation in the rendered view.
+
 Scene snapshots are returned in-process by the existing live native exhibition
 model's `captureSceneSnapshot(camera:placementId:)` method, before the optional
 GUI save panel. It requires that model's authenticated, clean saved document and

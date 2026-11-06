@@ -38,16 +38,26 @@ public enum ViewportResourcePolicy {
     ]
     /// WK content blockers accept a strict regex subset: anchors occur only at
     /// the start/end, and each resource gets its own rule (no disjunction).
-    public static func encodedRules(origin: String, tenantId: String, savedExhibitionId: String? = nil, privateFloor: Bool = false) throws -> String {
+    public static func encodedRules(origin: String, tenantId: String, savedExhibitionId: String? = nil, privateFloor: Bool = false, workspaceMaterials: Bool = false) throws -> String {
         guard let url = URL(string: origin), let port = url.port, (1024...65535).contains(port), origin == "http://127.0.0.1:\(port)", let tenant = UUID(uuidString: tenantId)?.uuidString.lowercased() else { throw AuthoringFailure("LOCAL_SCOPE_INVALID") }
         let base = "^http://127\\.0\\.0\\.1:\(port)/"
         let artwork = "api/v1/tenants/\(tenant)/cms/artworks/[a-fA-F0-9-]+"
-        let hex = "[a-fA-F0-9]"
-        let exhibitionId = [String(repeating: hex, count: 8), String(repeating: hex, count: 4),
-                            "[1-8]" + String(repeating: hex, count: 3), "[89aAbB]" + String(repeating: hex, count: 3),
-                            String(repeating: hex, count: 12)].joined(separator: "-")
+        func uuidPattern(hex: String, variant: String) -> String {
+            [String(repeating: hex, count: 8), String(repeating: hex, count: 4),
+             "[1-8]" + String(repeating: hex, count: 3), variant + String(repeating: hex, count: 3),
+             String(repeating: hex, count: 12)].joined(separator: "-")
+        }
+        let exhibitionId = uuidPattern(hex: "[a-fA-F0-9]", variant: "[89aAbB]")
         let viewportCheck = "api/v1/tenants/\(tenant)/studio/exhibitions/\(exhibitionId)/native-viewport-check$"
         var suffixes = ["native-viewport\\.html$", "assets/[A-Za-z0-9_.-]+\\.js$", "assets/[A-Za-z0-9_.-]+\\.css$", "basis/[A-Za-z0-9_.-]+\\.js$", "basis/[A-Za-z0-9_.-]+\\.wasm$", "api/v1/auth/session$", "api/v1/tenants/\(tenant)/studio/artworks/[a-fA-F0-9-]+$", viewportCheck, artwork + "$", artwork + "/display$", artwork + "/preview\\?expectedRevision=[0-9]+$"]
+        if workspaceMaterials {
+            let materialId = uuidPattern(hex: "[a-f0-9]", variant: "[89ab]")
+            let version = "[1-9]" + String(repeating: "[0-9]?", count: 9)
+            let material = "api/v1/tenants/\(tenant)/workspace/materials/\(materialId)/versions/\(version)"
+            // These URL exceptions serve the two read-only Platform routes.
+            // WebKit filters URLs; the server still enforces methods and ownership.
+            suffixes += [material + "$", material + "/maps/color$"]
+        }
         // A capture may recheck only its already-bound saved source. Ordinary
         // viewport policy still refuses all full exhibition reads.
         if let savedExhibitionId {
