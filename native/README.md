@@ -173,6 +173,24 @@ the owned DB's029 checksum before the unchanged catalogue ACK. Fresh selected
 workspaces apply the addition, while ordinary reopen of an older028 catalogue
 does not silently apply029. Historical migrations and payload pins remain intact.
 
+`ManagerCore.NativeWorkspaceOEXTerminalProof` verifies Draft 12 terminal
+evidence for the bounded workspace material import. Supply the exact UTF-8
+proof (up to 8 KiB), exact result (up to 4 MiB), independently held import scope
+and selected save offer, held Studio revision 1, and the independently reopened
+Studio revision 2 after the save. The verifier checks the fixed proof encoding
+and the raw result length and SHA-256 before decoding the native draft. It
+requires the same complete draft in both Studio revisions and checks the
+remapped floor and color material bindings. The returned value contains proof
+and result digests and their validated scope. Owner settlement, transport,
+durable local recording and acknowledgement are the caller's responsibilities.
+The GUI and CLI import flows have yet to connect to this verifier.
+
+The focused Swift tests use synthetic inputs. Set
+`EXHIBITOS_DRAFT12_TERMINAL_TEST_FIXTURE` to the exact Platform PR #347 synthetic
+fixture at `apps/api/test-fixtures/workspace-oex-terminal-native-v1.json` when
+running `swift test --filter NativeWorkspaceOEXTerminalProofTests` to check the
+producer's original proof and result bytes.
+
 Local publication uses its own affirmative `nativePublicationProfile:
 "bounded-local-v1"` session advertisement and an explicit per-call profile
 header. Ordinary readiness/publish requests retain their existing behavior.
