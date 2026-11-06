@@ -53,6 +53,52 @@ final class WorkspaceMaterialIntakeTests: XCTestCase {
         XCTAssertFalse(admitted)
     }
 
+    func testV7DebugCatalogReadsRequireNativeCapabilityAndKeepIntakeClosed() async throws {
+        guard let port = ProcessInfo.processInfo.environment["EXHIBITOS_TEST_WORKSPACE_CATALOG_PORT"].flatMap(UInt16.init) else {
+            throw XCTSkip("Requires the isolated loopback workspace catalog fixture")
+        }
+        let tenantId = "10000000-0000-4000-8000-000000000001"
+        let principalId = "10000000-0000-4000-8000-000000000002"
+        let materialId = "10000000-0000-4000-8000-000000000003"
+        let manifest = "aad7ddf920dc64b02b916166e829d9638fca11b585cd0cb9157bc49a0f09e0d9"
+        let credentials = LocalAuthoringSession(tenantId: tenantId, principalId: principalId,
+            origin: "http://127.0.0.1:\(port)", token: String(repeating: "a", count: 43))
+        let api = try AuthoringAPI(port: port, tenantId: tenantId, nativeRuntimeManifestSHA256: manifest)
+        let anonymousCatalog = await api.admitsWorkspaceMaterialCatalog
+        XCTAssertFalse(anonymousCatalog)
+        _ = try await api.connect(credentials)
+
+        #if DEBUG
+        let list = try await api.workspaceMaterials()
+        XCTAssertEqual(list.items.map(\.id), [materialId])
+        let material = try await api.workspaceMaterial(materialId, version: 1)
+        XCTAssertEqual(material.kind, .wall)
+        #else
+        do {
+            _ = try await api.workspaceMaterial(materialId, version: 1)
+            XCTFail("Release admitted the debug catalog pin")
+        } catch let error as AuthoringFailure {
+            XCTAssertEqual(error.code, "WORKSPACE_MATERIAL_UNAVAILABLE")
+        }
+        #endif
+
+        XCTAssertFalse(api.workspaceWallMaterialRuntimeQualified)
+        let intake = await api.admitsWorkspaceMaterials
+        XCTAssertFalse(intake)
+        do {
+            _ = try await api.workspaceMaterialAction(materialId, .complete)
+            XCTFail("The catalog pin admitted an intake mutation")
+        } catch let error as AuthoringFailure {
+            XCTAssertEqual(error.code, "WORKSPACE_MATERIAL_UNAVAILABLE")
+        }
+
+        let mismatch = try AuthoringAPI(port: port, tenantId: tenantId,
+            nativeRuntimeManifestSHA256: String(manifest.dropLast()) + "0")
+        _ = try await mismatch.connect(credentials)
+        let mismatchedCatalog = await mismatch.admitsWorkspaceMaterialCatalog
+        XCTAssertFalse(mismatchedCatalog)
+    }
+
     func testOnlyDefinitiveCreateRejectionsReleasePendingDeclaration() {
         let declaration = WorkspaceMaterialDeclaration(requestId: UUID().uuidString.lowercased(), kind: .floor,
             name: "Fixture", rights: ArtworkMetadata().rights, provenance: "Synthetic input", maps: [:])

@@ -277,12 +277,14 @@ public actor AuthoringAPI {
     private static let workspaceWallMaterialManifestPins: Set<String> = [
         "6be2d5969462e4961e9ecbd3b6417936f2f075de1fbc3626d1b4f19cde7e65ec"
     ]
+    private static let workspaceCatalogReadManifest = "aad7ddf920dc64b02b916166e829d9638fca11b585cd0cb9157bc49a0f09e0d9"
     #else
     private static let workspaceMaterialManifestPins: Set<String> = []
     private static let workspaceWallMaterialManifestPins: Set<String> = []
     #endif
     public nonisolated let workspaceMaterialRuntimeQualified: Bool
     public nonisolated let workspaceWallMaterialRuntimeQualified: Bool
+    private let workspaceCatalogReadRuntimeQualified: Bool
     private var nativeSession = false
     private var session: AuthoringSession?
     private var generation: UInt64 = 0
@@ -306,6 +308,11 @@ public actor AuthoringAPI {
         let wallQualified = Self.workspaceWallMaterialManifestPins.contains(manifest)
         workspaceWallMaterialRuntimeQualified = wallQualified
         workspaceMaterialRuntimeQualified = wallQualified || Self.workspaceMaterialManifestPins.contains(manifest)
+        #if DEBUG
+        workspaceCatalogReadRuntimeQualified = manifest == Self.workspaceCatalogReadManifest
+        #else
+        workspaceCatalogReadRuntimeQualified = false
+        #endif
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -916,13 +923,22 @@ public actor AuthoringAPI {
         try await request("/api/v1/tenants/\(tenant)/imports/" + identifier(id) + "/" + action.rawValue, method: "POST", body: Data("{}".utf8))
     }
 
-    public var admitsWorkspaceMaterials: Bool {
-        workspaceMaterialRuntimeQualified && nativeSession && !authenticationBusy
-            && session?.workspaceMaterialProfile == "workspace-material-intake-v1"
+    private var hasWorkspaceMaterialSession: Bool {
+        nativeSession && !authenticationBusy && session?.workspaceMaterialProfile == "workspace-material-intake-v1"
     }
 
-    private func workspaceMaterialPath(_ suffix: String) throws -> String {
-        guard admitsWorkspaceMaterials else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
+    public var admitsWorkspaceMaterials: Bool {
+        workspaceMaterialRuntimeQualified && hasWorkspaceMaterialSession
+    }
+
+    var admitsWorkspaceMaterialCatalog: Bool {
+        (workspaceMaterialRuntimeQualified || workspaceCatalogReadRuntimeQualified) && hasWorkspaceMaterialSession
+    }
+
+    private func workspaceMaterialPath(_ suffix: String, catalogRead: Bool = false) throws -> String {
+        guard catalogRead ? admitsWorkspaceMaterialCatalog : admitsWorkspaceMaterials else {
+            throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
+        }
         return "/api/v1/tenants/\(tenant)/workspace/" + suffix
     }
 
@@ -967,7 +983,7 @@ public actor AuthoringAPI {
             value.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil
         }
         guard cursor.map(validCursor) ?? true else { throw AuthoringFailure("INVALID_CURSOR") }
-        let path = try workspaceMaterialPath("materials" + (cursor.map { "?cursor=" + $0 } ?? ""))
+        let path = try workspaceMaterialPath("materials" + (cursor.map { "?cursor=" + $0 } ?? ""), catalogRead: true)
         let page: AuthoringPage<WorkspaceMaterialSummary> = try await request(path)
         guard page.items.count <= 50, page.nextCursor.map(validCursor) ?? true,
               page.items.allSatisfy({ UUID(uuidString: $0.id)?.uuidString.lowercased() == $0.id
@@ -979,7 +995,7 @@ public actor AuthoringAPI {
 
     public func workspaceMaterial(_ id: String, version: Int) async throws -> WorkspaceMaterial {
         let id = try identifier(id)
-        let path = try workspaceMaterialVersionPath(id, version: version)
+        let path = try workspaceMaterialVersionPath(id, version: version, catalogRead: true)
         let material: WorkspaceMaterial = try await request(path)
         try material.check()
         guard material.id == id, material.version == version else { throw AuthoringFailure("MATERIAL_RESPONSE_INVALID") }
@@ -1032,9 +1048,9 @@ public actor AuthoringAPI {
         return next
     }
 
-    private func workspaceMaterialVersionPath(_ id: String, version: Int) throws -> String {
+    private func workspaceMaterialVersionPath(_ id: String, version: Int, catalogRead: Bool = false) throws -> String {
         guard (1...2_147_483_647).contains(version) else { throw AuthoringFailure("MATERIAL_DECLARATION") }
-        return try workspaceMaterialPath("materials/" + identifier(id) + "/versions/" + String(version))
+        return try workspaceMaterialPath("materials/" + identifier(id) + "/versions/" + String(version), catalogRead: catalogRead)
     }
     public func approveArtwork(_ id: String, revision: Int, assetId: String) async throws -> NativeArtwork {
         struct Approval: Encodable { let revision: Int; let assetId: String }
