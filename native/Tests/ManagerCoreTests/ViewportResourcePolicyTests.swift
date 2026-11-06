@@ -198,6 +198,49 @@ final class ViewportResourcePolicyTests: XCTestCase {
         XCTAssertEqual(paired.subtracting(legacy), expected)
     }
 
+    func testWorkspaceMaterialRulesRequireQualifiedSameTenantAndExactColorPaths() async throws {
+        let origin = "http://127.0.0.1:13200"
+        let tenant = UUID().uuidString.lowercased()
+        let material = "1cbbc396-a6b8-4a44-88fe-7f7a7ffc4fd1"
+        let collection = "/api/v1/tenants/\(tenant)/workspace/materials"
+        let version = "\(collection)/\(material)/versions/1"
+        func rules(_ encoded: String) throws -> Set<String> {
+            let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [[String: Any]])
+            return Set(try rows.dropFirst().map { row in
+                let trigger = try XCTUnwrap(row["trigger"] as? [String: Any])
+                return try XCTUnwrap(trigger["url-filter"] as? String)
+            })
+        }
+        let base = try ViewportResourcePolicy.encodedRules(origin: origin, tenantId: tenant)
+        let scoped = try ViewportResourcePolicy.encodedRules(origin: origin, tenantId: tenant, workspaceMaterials: true)
+        let store = WKContentRuleListStore.default()!
+        let identifier = "ExhibitOSWorkspaceColor-" + UUID().uuidString
+        let compiled = try await store.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: scoped)
+        XCTAssertNotNil(compiled)
+        try await store.removeContentRuleList(forIdentifier: identifier)
+        let added = try rules(scoped).subtracting(rules(base))
+        XCTAssertEqual(added.count, 2)
+        let expressions = try added.map { try NSRegularExpression(pattern: $0) }
+        func allows(_ url: String) -> Bool {
+            expressions.contains { $0.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil }
+        }
+        for path in [version, version + "/maps/color", String(version.dropLast()) + "2147483647/maps/color"] {
+            XCTAssertTrue(allows(origin + path), path)
+        }
+        for url in [
+            "http://127.0.0.1:13201" + version, "https://127.0.0.1:13200" + version,
+            "http://localhost:13200" + version, origin + version.replacingOccurrences(of: tenant, with: UUID().uuidString.lowercased()),
+            origin + collection, origin + version.replacingOccurrences(of: material, with: "not-a-uuid"),
+            origin + version.replacingOccurrences(of: material, with: material.uppercased()),
+            origin + String(version.dropLast()) + "0", origin + String(version.dropLast()) + "01",
+            origin + String(version.dropLast()) + "12345678901", origin + version + "/maps/normal",
+            origin + version + "/maps/color/", origin + version + "?version=2", origin + version + "/maps/color?extra=1",
+            origin + collection.replacingOccurrences(of: "materials", with: "material-intakes")
+        ] {
+            XCTAssertFalse(allows(url), url)
+        }
+    }
+
     func testActualWebKitCompilerAcceptsPinnedSeparateRulesAndRefusesOriginalDisjunction() async throws {
         let tenant = UUID().uuidString.lowercased()
         let encoded = try ViewportResourcePolicy.encodedRules(origin: "http://127.0.0.1:13200", tenantId: tenant)
