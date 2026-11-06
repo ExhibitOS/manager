@@ -563,7 +563,7 @@ boundaries require the matching shared implementation and scoped actual evidence
 
 A Manager installation with the matching native runtime includes four CC0
 furnishings and their license notices. In the exhibition editor, select a bench,
-light, opening, or artwork placement with a pedestal, then open **비품 외형**.
+light, opening, or artwork placement, then open **비품 외형**.
 Select the compatible furnishing, preview it, and apply it. Save the exhibition
 to keep the selection when you reopen it.
 
@@ -572,16 +572,16 @@ to keep the selection when you reopen it.
 | `backless-oak-bench` | 1 | Bench |
 | `museum-track-spot` | 1 | Light |
 | `gallery-open-portal` | 1 | Opening |
-| `rectangular-plinth` | 1 | Artwork placement with a pedestal |
+| `rectangular-plinth` | 1 | Artwork placement (for a pedestal visual) |
 
 The bundled runtime serves these files to Manager over its authenticated local
 connection. They are available without downloading assets or importing GLBs
 into the workspace. The Manager catalog uses its existing localized labels.
 
-For release-backed packages, stage the
+With a Platform producer that supports `defaultFurnishingsRoot`, stage the
 [default furnishings v1.0.0 release](https://github.com/ExhibitOS/default-furnishings/releases/tag/v1.0.0)
 at commit `4ac7d23c1b557d8e303ad04d78379bcefab50b40` and pass the staged
-checkout to the Platform native runtime producer as `defaultFurnishingsRoot`.
+checkout as that option.
 The release manifest SHA-256 is
 `f11ba6f4407e31531230cdb94921d7d7baef3caca49b1859f8696fa1a39c4530`.
 Retain the producer receipt with the packaged runtime. The four models and four
