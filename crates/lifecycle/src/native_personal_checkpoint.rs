@@ -88,11 +88,33 @@ fn saved_document_digest(document: &super::installations::native_document::Docum
     Ok(digest(&serde_json::to_vec(document).map_err(|_| invalid())?))
 }
 
-fn check_transition_host(checkpoint: &Checkpoint, saved_workspace_host: bool) -> Result<()> {
-    if checkpoint.saved_document_sha256.is_some() != saved_workspace_host {
+fn check_transition_host(
+    pair: (&str, &str),
+    saved_document_sha256: Option<&str>,
+    saved_workspace_host: bool,
+) -> Result<()> {
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    let is_saved_workspace_pair = pair == WORKSPACE_V5_TRANSITION;
+    #[cfg(not(feature = "workspace-v5-owner-validation"))]
+    let is_saved_workspace_pair = false;
+    if !admitted_pair(pair.0, pair.1)
+        || is_saved_workspace_pair != saved_workspace_host
+        || is_saved_workspace_pair != saved_document_sha256.is_some()
+        || saved_document_sha256.is_some_and(|sha| !hash_valid(sha))
+    {
         return Err(invalid());
     }
     Ok(())
+}
+
+impl Checkpoint {
+    fn check_host(&self, saved_workspace_host: bool) -> Result<()> {
+        check_transition_host(
+            (&self.old_manifest, &self.new_manifest),
+            self.saved_document_sha256.as_deref(),
+            saved_workspace_host,
+        )
+    }
 }
 
 fn invalid() -> LifecycleError {
@@ -686,7 +708,7 @@ impl LifecycleService {
         {
             return Err(invalid());
         }
-        check_transition_host(&checkpoint, saved_workspace_host)?;
+        checkpoint.check_host(saved_workspace_host)?;
         let binding = bindings(&checkpoint)?;
         verify_beforeimage(&checkpoint, ENVIRONMENT, &binding.old_env.0)?;
         verify_beforeimage(&checkpoint, RECORD, &binding.old_record)?;
@@ -715,7 +737,7 @@ impl LifecycleService {
             .ok_or_else(invalid)?
             .to_vec();
         let mut checkpoint = self.transition_checkpoint(&envelope, key)?;
-        check_transition_host(&checkpoint, saved_workspace_host)?;
+        checkpoint.check_host(saved_workspace_host)?;
         if checkpoint.staged != staging {
             return Err(invalid());
         }
@@ -784,7 +806,7 @@ impl LifecycleService {
         let pending = read_pending(&self.root)?;
         let envelope = pending.strip_prefix(PENDING_PREFIX).ok_or_else(invalid)?;
         let mut checkpoint = self.transition_checkpoint(envelope, key)?;
-        check_transition_host(&checkpoint, saved_workspace_host)?;
+        checkpoint.check_host(saved_workspace_host)?;
         if checkpoint.new_manifest != target_context.manifest_sha256
             || checkpoint.trial || checkpoint.staged != staging {
             return Err(invalid());
@@ -1197,6 +1219,23 @@ mod tests {
         )
         .unwrap();
         std::process::exit(99);
+    }
+
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    #[test]
+    fn transition_scope_requires_pair_saved_proof_and_dedicated_host() {
+        let legacy = (OLD_MANIFEST, NEW_MANIFEST);
+        let saved = WORKSPACE_V5_TRANSITION;
+        let proof = "a".repeat(64);
+        assert!(check_transition_host(legacy, None, false).is_ok());
+        assert!(check_transition_host(saved, Some(&proof), true).is_ok());
+        for host in [false, true] {
+            assert!(check_transition_host(legacy, Some(&proof), host).is_err());
+            assert!(check_transition_host(saved, None, host).is_err());
+        }
+        assert!(check_transition_host(saved, Some(&proof), false).is_err());
+        assert!(check_transition_host(saved, Some("malformed"), true).is_err());
+        assert!(check_transition_host(legacy, None, true).is_err());
     }
 
     #[test]
