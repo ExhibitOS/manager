@@ -21,6 +21,25 @@ final class NativeAutomationFailureTests: XCTestCase {
         XCTAssertEqual(result, .object(["code": .string("AUTOMATION_FAILED")]))
     }
 
+    func testExistingWorkspaceV5RejectsFreshSelectionAndInvalidScopeBeforeLaunchingHelper() throws {
+        let workspace = UUID().uuidString.lowercased()
+        let identity = try JSONDecoder().decode(NativeAutomationSession.ExistingWorkspaceV5.self, from: Data("""
+            {"workspaceId":"\(workspace)","tenantId":"\(workspace)","principalId":"\(workspace)","manifestSHA256":"\(String(repeating: "a", count: 64))"}
+            """.utf8))
+        let missing = URL(fileURLWithPath: "/missing/exhibitos-native")
+        for (selected, runtime) in [(true, missing), (false, nil)] {
+            XCTAssertThrowsError(try NativeAutomationSession(helper: missing, profile: missing,
+                ports: [:], outputRoot: missing, temporaryRoot: missing, inputs: [:],
+                selectedOEX10: selected, workspaceV5ValidationRuntime: runtime, existingWorkspaceV5: identity)) {
+                XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_CONFIGURATION_INVALID")
+            }
+        }
+        let invalid = try JSONDecoder().decode(NativeAutomationSession.ExistingWorkspaceV5.self, from: Data("""
+            {"workspaceId":"wrong","tenantId":"\(workspace)","principalId":"\(workspace)","manifestSHA256":"\(String(repeating: "a", count: 64))"}
+            """.utf8))
+        XCTAssertThrowsError(try invalid.check())
+    }
+
     func testCloseOnlyReplaysConfirmedHelperExit() async throws {
         let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

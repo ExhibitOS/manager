@@ -10,7 +10,8 @@ The configuration contains exactly `helper`, `profile`, `ports`, `outputRoot`,
 `selectedOEX10: true` for the corresponding fresh selected importer.
 `inputs` maps approved draft/archive/GLB input paths to their
 SHA256. The helper is the operator-selected paired native executable, never a
-request-selected executable. The profile must not exist; its parent must exist.
+request-selected executable. For fresh mode the profile must not exist and its
+parent must exist.
 The output and temporary roots must be existing, owned, private 0700 directories.
 Each role needs distinct profile, port triple, temporary root and output root.
 No existing Manager profile is rebound. All fresh-profile input bytes and runtime
@@ -24,6 +25,38 @@ source, producer, complete manifest and capability marker before preparing a
 fresh profile. The same pin is required for the inherited-FD format check and
 for `reopen-saved` on that profile. These commands leave release and workspace
 material admission unchanged.
+
+To start on a saved isolated v5 profile already handed to the operator, use
+the same CLI with the following debug configuration. Omit both selected
+import flags. Supply the exact scope from the prior import receipt and use
+the existing port assignments.
+
+```json
+{
+  "helper": "/absolute/private/exhibitos-native",
+  "profile": "/absolute/private/returned-profile",
+  "ports": {"web": 52044, "api": 52045, "database": 52046},
+  "outputRoot": "/absolute/private/output",
+  "temporaryRoot": "/absolute/private/tmp",
+  "inputs": {},
+  "workspaceV5ValidationRuntime": "/absolute/private/runtime",
+  "existingWorkspaceV5": {
+    "workspaceId": "00000000-0000-4000-8000-000000000001",
+    "tenantId": "00000000-0000-4000-8000-000000000002",
+    "principalId": "00000000-0000-4000-8000-000000000003",
+    "manifestSHA256": "40ca49e65e769c4c034eea69300ff65ce8af46ef9b081a9a2b4b1ade12ed9415"
+  }
+}
+```
+
+Run `exhibitos-automation --configuration /absolute/private/reopen.json`.
+The existing profile must be exclusively available and its ports free.
+The ordinary helper checks the prepared runtime and the CLI checks the saved
+scope before starting. It emits `ready` only after the authenticated native
+session confirms the material capability and the Studio draft and ETag match
+the saved document. A mismatched scope or manifest refuses startup. The CLI
+skips preparation and import in this mode. Use the scoped `close` request to
+drain the owned runtime.
 
 The first `ready` event returns workspace, tenant, principal, a session capability
 and the current native document. Keep the process and inherited pipes open. All

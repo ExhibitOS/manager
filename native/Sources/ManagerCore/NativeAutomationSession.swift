@@ -6,6 +6,18 @@ import Darwin
 /// Private agent adapter to the same native document journal and authenticated
 /// API used by ManagerApp. No credentials or arbitrary executable are exposed.
 public actor NativeAutomationSession {
+    public struct ExistingWorkspaceV5: Decodable, Sendable {
+        public let workspaceId: String
+        public let tenantId: String
+        public let principalId: String
+        public let manifestSHA256: String
+
+        func check() throws {
+            guard [workspaceId, tenantId, principalId].allSatisfy({ UUID(uuidString: $0)?.uuidString.lowercased() == $0 }),
+                  nativeImportDigest(manifestSHA256) else { throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID") }
+        }
+    }
+
     private var bridge: NativeBridge
     private var bridgeOpen = true
     private var closeFailure: Error?
@@ -15,6 +27,7 @@ public actor NativeAutomationSession {
     private let temporaryRoot: URL
     private let ports: [String: UInt16]
     private let workspaceV5ValidationRuntime: URL?
+    private let existingWorkspaceV5: ExistingWorkspaceV5?
     private let root: URL
     private let inputs: [String: String]
     private let capability = UUID().uuidString.lowercased()
@@ -34,10 +47,14 @@ public actor NativeAutomationSession {
     private var selectedOEXFormat: String?
     private var runtimeStopped = false
 
-    public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false, workspaceV5ValidationRuntime: URL? = nil) throws {
-        guard !selectedOEX9 || !selectedOEX10, workspaceV5ValidationRuntime == nil || selectedOEX10 else {
+    public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false, workspaceV5ValidationRuntime: URL? = nil, existingWorkspaceV5: ExistingWorkspaceV5? = nil) throws {
+        guard !(selectedOEX9 && selectedOEX10),
+              existingWorkspaceV5 == nil || (!selectedOEX9 && !selectedOEX10 && workspaceV5ValidationRuntime != nil),
+              workspaceV5ValidationRuntime == nil || selectedOEX10 || existingWorkspaceV5 != nil else {
             throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID")
         }
+        try existingWorkspaceV5?.check()
+        if existingWorkspaceV5 != nil { _ = try Self.profileIdentity(profile) }
         guard outputRoot.isFileURL, outputRoot.path.hasPrefix("/"),
               FileManager.default.fileExists(atPath: outputRoot.path),
               outputRoot.resolvingSymlinksInPath().path == outputRoot.path,
@@ -45,6 +62,7 @@ public actor NativeAutomationSession {
         self.root = outputRoot; self.inputs = inputs
         self.helper = helper; self.profile = profile; self.temporaryRoot = temporaryRoot; self.ports = ports
         self.workspaceV5ValidationRuntime = workspaceV5ValidationRuntime
+        self.existingWorkspaceV5 = existingWorkspaceV5
         selectedOEXFormat = selectedOEX10 ? "1.0.0-draft.10" : selectedOEX9 ? "1.0.0-draft.9" : nil
         for url in [outputRoot, temporaryRoot] {
             let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
@@ -54,7 +72,7 @@ public actor NativeAutomationSession {
                   url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
         }
         bridge = try NativeBridge(helper: helper, profile: profile, freshSelectedOEX: selectedOEX9 || selectedOEX10,
-                                  freshWorkspacePorts: ports, temporaryDirectory: temporaryRoot,
+                                  freshWorkspacePorts: existingWorkspaceV5 == nil ? ports : nil, temporaryDirectory: temporaryRoot,
                                   workspaceV5ValidationRuntime: workspaceV5ValidationRuntime)
     }
     private func value<T: Encodable>(_ v: T) throws -> DocumentValue {
@@ -77,6 +95,7 @@ public actor NativeAutomationSession {
     public func open() async throws -> DocumentValue {
         guard context == nil, !closed else { throw BridgeFailure("AUTOMATION_ALREADY_OPEN") }
         let context = try await bridge.context(); self.context = context
+        if let existingWorkspaceV5 { return try await openExistingWorkspace(existingWorkspaceV5, context: context) }
         if selectedOEXFormat == nil { _ = try await bridge.prepare(context); _ = try await waitReady() }
         _ = try await bridge.start(context)
         let status = try await waitReady()
@@ -85,6 +104,38 @@ public actor NativeAutomationSession {
         let api = try AuthoringAPI(port: config.ports.web, tenantId: credentials.tenantId, nativeRuntimeManifestSHA256: config.manifestSha256)
         authoringSession = try await api.connect(credentials); self.api = api; runtimeManifest = config.manifestSha256
         identity = try await bridge.documentState(context)
+        return try await statusValue()
+    }
+    private func openExistingWorkspace(_ expected: ExistingWorkspaceV5, context: Context) async throws -> DocumentValue {
+        let directory = try profileIdentity()
+        let status = try await bridge.nativeStatus(context)
+        let saved = try await bridge.documentState(context)
+        guard !status.needsShutdown, !status.accountRequired, status.selectedOex != true, status.errorCode == nil,
+              let config = status.configuration, config.manifestSha256 == expected.manifestSHA256,
+              config.tenantId == expected.tenantId, config.ports.web == ports["web"],
+              config.ports.api == ports["api"], config.ports.database == ports["database"],
+              saved.workspaceId == expected.workspaceId, saved.tenantId == expected.tenantId,
+              saved.principalId == expected.principalId, !saved.dirty, let draft = saved.draft, let etag = saved.etag else {
+            throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
+        }
+        _ = try await bridge.start(context)
+        let ready = try await waitReady()
+        guard ready.runtime?.readiness.ready == true, ready.selectedOex != true,
+              ready.configuration?.manifestSha256 == expected.manifestSHA256,
+              try profileIdentity() == directory else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+        let credentials = try await bridge.authoringSession(context)
+        guard credentials.tenantId == expected.tenantId, credentials.principalId == expected.principalId else {
+            throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
+        }
+        let api = try AuthoringAPI(port: config.ports.web, tenantId: expected.tenantId, nativeRuntimeManifestSHA256: config.manifestSha256)
+        let session = try await api.connect(credentials)
+        guard await api.admitsWorkspaceMaterials else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
+        let stored = try await api.exhibition(draft.id)
+        guard stored.draft == draft, stored.etag == etag,
+              try value(await bridge.documentState(context)) == value(saved) else {
+            throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        self.api = api; authoringSession = session; runtimeManifest = config.manifestSha256; identity = saved
         return try await statusValue()
     }
     private func reopenSaved(_ current: NativeDocumentState, context: Context, api: AuthoringAPI) async throws -> DocumentValue {
@@ -141,6 +192,9 @@ public actor NativeAutomationSession {
                         "runtimeJobId": .string(job), "studioRevision": .integer(Int64(prior.revision))])
     }
     private func profileIdentity() throws -> (dev_t, ino_t) {
+        try Self.profileIdentity(profile)
+    }
+    private static func profileIdentity(_ profile: URL) throws -> (dev_t, ino_t) {
         var metadata = stat()
         guard profile.resolvingSymlinksInPath().path == profile.path, lstat(profile.path, &metadata) == 0,
               metadata.st_mode & S_IFMT == S_IFDIR, metadata.st_mode & 0o777 == 0o700,
