@@ -404,6 +404,11 @@ impl InstallationController {
         task: impl FnOnce(&LifecycleService, &Path) -> Result<()>,
     ) -> Result<()> {
         self.with_current_mutation(token, |service| {
+            match fs::symlink_metadata(service.root.join("native-restore-current.json")) {
+                Ok(_) => return Err(err("NATIVE_RESTORE_PENDING")),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(err("STATE_UNAVAILABLE")),
+            }
             self.ensure_no_bounded_import_transition_unlocked(service)?;
             if self.oex_import_unlocked(service)?.1.intent.is_some() {
                 return Err(err("NATIVE_OEX_IMPORT_PENDING"));

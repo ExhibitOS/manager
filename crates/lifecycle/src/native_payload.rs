@@ -73,11 +73,23 @@ pub struct Payload {
     workspace_v5_validation: bool,
 }
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const WORKSPACE_V5_VALIDATION_PROVENANCE: (&str, &str, &str) = (
-    "742412c152037c20a4c32e5ccce8535be46822aa",
-    "d0dac02c2b8cc5344a1aef48042d64fdd5f6d61a26851ae6c27cee03bcef7364",
+pub(crate) const WORKSPACE_V5_TRANSITION: (&str, &str) = (
     "40ca49e65e769c4c034eea69300ff65ce8af46ef9b081a9a2b4b1ade12ed9415",
+    "cfe1faba63dc6d41e2451ad8bf8870d197a48e1b6d234850bdbad16c23083b59",
 );
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const WORKSPACE_V5_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[
+    (
+        "742412c152037c20a4c32e5ccce8535be46822aa",
+        "d0dac02c2b8cc5344a1aef48042d64fdd5f6d61a26851ae6c27cee03bcef7364",
+        WORKSPACE_V5_TRANSITION.0,
+    ),
+    (
+        "af7f9a8f8ff2cc259e015c88680d202cc339ee47",
+        "d0dac02c2b8cc5344a1aef48042d64fdd5f6d61a26851ae6c27cee03bcef7364",
+        WORKSPACE_V5_TRANSITION.1,
+    ),
+];
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const WORKSPACE_V5_CAPABILITY: (&str, u64, &str) = (
     "platform/scripts/native-workspace-material-capability-v5.json",
@@ -88,8 +100,9 @@ const WORKSPACE_V5_CAPABILITY: (&str, u64, &str) = (
 fn workspace_v5_validation_matches(manifest: &Manifest, manifest_hash: &str) -> bool {
     let (path, bytes, sha) = WORKSPACE_V5_CAPABILITY;
     manifest.mode == "local-validation" && !manifest.redistribution_qualified && !manifest.official_signed
-        && (manifest.source_commit.as_str(), manifest.producer_sha256.as_str(), manifest_hash)
-            == WORKSPACE_V5_VALIDATION_PROVENANCE
+        && WORKSPACE_V5_VALIDATION_PROVENANCE.contains(&(
+            manifest.source_commit.as_str(), manifest.producer_sha256.as_str(), manifest_hash,
+        ))
         && manifest.files.iter().any(|item| {
             item.path == path && item.link.is_none() && item.executable == Some(false)
                 && item.bytes == Some(bytes) && item.sha256.as_deref() == Some(sha)
@@ -294,21 +307,22 @@ mod normal_oex_release_declaration_tests {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
     fn workspace_v5_validation_requires_exact_local_tuple_and_regular_marker() {
-        let (source, producer, hash) = WORKSPACE_V5_VALIDATION_PROVENANCE;
-        let (path, bytes, sha) = WORKSPACE_V5_CAPABILITY;
-        let mut manifest = fixture();
-        manifest.source_commit = source.into();
-        manifest.producer_sha256 = producer.into();
-        assert!(!workspace_v5_validation_matches(&manifest, hash));
-        manifest.mode = "local-validation".into();
-        manifest.redistribution_qualified = false;
-        manifest.official_signed = false;
-        assert!(!workspace_v5_validation_matches(&manifest, hash));
-        manifest.files.push(Item { path: path.into(), bytes: Some(bytes), sha256: Some(sha.into()), executable: Some(false), link: None });
-        assert!(workspace_v5_validation_matches(&manifest, hash));
-        assert!(!workspace_v5_validation_matches(&manifest, &"0".repeat(64)));
-        manifest.files.last_mut().unwrap().link = Some("other".into());
-        assert!(!workspace_v5_validation_matches(&manifest, hash));
+        for &(source, producer, hash) in WORKSPACE_V5_VALIDATION_PROVENANCE {
+            let (path, bytes, sha) = WORKSPACE_V5_CAPABILITY;
+            let mut manifest = fixture();
+            manifest.source_commit = source.into();
+            manifest.producer_sha256 = producer.into();
+            assert!(!workspace_v5_validation_matches(&manifest, hash));
+            manifest.mode = "local-validation".into();
+            manifest.redistribution_qualified = false;
+            manifest.official_signed = false;
+            assert!(!workspace_v5_validation_matches(&manifest, hash));
+            manifest.files.push(Item { path: path.into(), bytes: Some(bytes), sha256: Some(sha.into()), executable: Some(false), link: None });
+            assert!(workspace_v5_validation_matches(&manifest, hash));
+            assert!(!workspace_v5_validation_matches(&manifest, &"0".repeat(64)));
+            manifest.files.last_mut().unwrap().link = Some("other".into());
+            assert!(!workspace_v5_validation_matches(&manifest, hash));
+        }
     }
 
     fn local_fixture() -> Manifest {

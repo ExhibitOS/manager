@@ -266,11 +266,12 @@ public actor AuthoringAPI {
     private let tenant: String
     private let transport: URLSession
     public nonisolated let admitsICCJPEG: Bool
-    // This reviewed v5 tuple is a local-validation payload. Release admission
+    // These reviewed v5 tuples are local-validation payloads. Release admission
     // requires separate package qualification.
     #if DEBUG
     private static let workspaceMaterialManifestPins: Set<String> = [
-        "40ca49e65e769c4c034eea69300ff65ce8af46ef9b081a9a2b4b1ade12ed9415"
+        "40ca49e65e769c4c034eea69300ff65ce8af46ef9b081a9a2b4b1ade12ed9415",
+        "cfe1faba63dc6d41e2451ad8bf8870d197a48e1b6d234850bdbad16c23083b59"
     ]
     #else
     private static let workspaceMaterialManifestPins: Set<String> = []

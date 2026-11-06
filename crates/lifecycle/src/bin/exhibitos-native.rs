@@ -25,6 +25,16 @@ fn main() {
         let result = exhibitos_lifecycle::native_host::Host::reopen_workspace_v5_validation((&args[2]).into(), (&args[4]).into());
         match result { Ok(host) => std::process::exit(run_host(host)), Err(error) => { eprintln!("{}", error.code); std::process::exit(1); } }
     }
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    if args.len() == 5 && args[1] == "--profile" && args[3] == "--maintain-workspace-v5-transition" {
+        let result = exhibitos_lifecycle::native_host::Host::maintain_workspace_v5_transition(
+            (&args[2]).into(), (&args[4]).into(),
+        );
+        match result {
+            Ok(host) => std::process::exit(run_host(host)),
+            Err(error) => { eprintln!("{}", error.code); std::process::exit(1); }
+        }
+    }
     #[cfg(target_os = "macos")]
     if (args.len() == 5 || (args.len() == 6 && args[5] == "--selected-oex9")
         || (cfg!(all(feature = "workspace-v5-owner-validation", debug_assertions))

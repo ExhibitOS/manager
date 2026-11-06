@@ -15,10 +15,15 @@ use std::sync::Arc;
 
 const OLD_MANIFEST: &str = "253de8963ec9f0e0a2884a27d8e756b453cf61899e38c31571d9993a7d6ecff4";
 const NEW_MANIFEST: &str = "10a21f3b7a73a66011e077f7927f951f917e604720591acbcc2cdb47222f4032";
+#[cfg(feature = "workspace-v5-owner-validation")]
+use crate::native_payload::WORKSPACE_V5_TRANSITION;
+
 // Development-only transitions are admitted as directed, exact pairs. Keep
 // the historical recovery path available alongside the reviewed Oak successor.
 const TRANSITION_PAIRS: &[(&str, &str)] = &[
     (OLD_MANIFEST, NEW_MANIFEST),
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    WORKSPACE_V5_TRANSITION,
     ("35b07cfc4c89abeaab518fd72c5be5f55569c03ae99906ff7220edf7d9712bf8",
      "9b9d6b1cba4b5722a8710471283e9f693f14883f5da950c4504ca7bbf00efeb7"),
     ("9b9d6b1cba4b5722a8710471283e9f693f14883f5da950c4504ca7bbf00efeb7",
@@ -72,9 +77,15 @@ struct Checkpoint {
     old_manifest: String,
     new_manifest: String,
     files: BTreeMap<PathBuf, Entry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    saved_document_sha256: Option<String>,
     trial: bool,
     drained_failure: Option<String>,
     restore: Option<RestorePlan>,
+}
+
+fn saved_document_digest(document: &super::installations::native_document::DocumentState) -> Result<String> {
+    Ok(digest(&serde_json::to_vec(document).map_err(|_| invalid())?))
 }
 
 fn invalid() -> LifecycleError {
@@ -443,10 +454,21 @@ fn recovery_copy(root: &Path, checkpoint: &Checkpoint) -> Result<PathBuf> {
         Uuid::new_v4()
     ));
     installations::new_directory(&copy)?;
-    for (relative, entry) in &checkpoint.files {
+    copy_beforeimages(&checkpoint.staged, true, &copy, &checkpoint.files)?;
+    sync_root(root)?;
+    Ok(copy)
+}
+
+fn copy_beforeimages(
+    source_root: &Path,
+    source_staged: bool,
+    destination: &Path,
+    files: &BTreeMap<PathBuf, Entry>,
+) -> Result<()> {
+    for (relative, entry) in files {
         let name = relative.to_str().ok_or_else(invalid)?;
         let archived = Path::new(staged_name(name));
-        let destination = copy.join(archived);
+        let destination = destination.join(archived);
         if entry.sha256.is_none() {
             installations::new_directory(&destination)?;
             fs::set_permissions(&destination, fs::Permissions::from_mode(entry.mode))
@@ -456,10 +478,11 @@ fn recovery_copy(root: &Path, checkpoint: &Checkpoint) -> Result<PathBuf> {
         let source = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-            .open(checkpoint.staged.join(archived))
+            .open(source_root.join(if source_staged { archived } else { relative }))
             .map_err(|_| invalid())?;
         let meta = source.metadata().map_err(|_| invalid())?;
-        if !meta.is_file() || meta.nlink() != 1 || meta.len() != entry.bytes {
+        if !meta.is_file() || meta.nlink() != 1 || meta.len() != entry.bytes
+            || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o777 != entry.mode {
             return Err(invalid());
         }
         let mut output = private_options().open(destination).map_err(|_| invalid())?;
@@ -472,11 +495,10 @@ fn recovery_copy(root: &Path, checkpoint: &Checkpoint) -> Result<PathBuf> {
             .set_permissions(fs::Permissions::from_mode(entry.mode))
             .map_err(|_| invalid())?;
     }
-    if inventory(&copy, true)? != checkpoint.files {
+    if inventory(destination, true)? != *files {
         return Err(invalid());
     }
-    sync_root(root)?;
-    Ok(copy)
+    Ok(())
 }
 
 fn prepare_physical_recovery(
@@ -646,6 +668,12 @@ impl LifecycleService {
         {
             return Err(invalid());
         }
+        #[cfg(feature = "workspace-v5-owner-validation")]
+        if (checkpoint.old_manifest.as_str(), checkpoint.new_manifest.as_str()) == WORKSPACE_V5_TRANSITION
+            && checkpoint.saved_document_sha256.is_none()
+        {
+            return Err(invalid());
+        }
         let binding = bindings(&checkpoint)?;
         verify_beforeimage(&checkpoint, ENVIRONMENT, &binding.old_env.0)?;
         verify_beforeimage(&checkpoint, RECORD, &binding.old_record)?;
@@ -664,6 +692,7 @@ impl LifecycleService {
         &self,
         staging: &Path,
         key: &[u8; 32],
+        pair: Option<(&str, &str)>,
     ) -> Result<()> {
         let guard = self.lock()?;
         self.check_prepare_guard(&guard)?;
@@ -673,7 +702,10 @@ impl LifecycleService {
             .ok_or_else(invalid)?
             .to_vec();
         let mut checkpoint = self.transition_checkpoint(&envelope, key)?;
-        if checkpoint.staged != staging {
+        if checkpoint.staged != staging
+            || pair.is_some_and(|(source, target)|
+                source != checkpoint.old_manifest || target != checkpoint.new_manifest)
+        {
             return Err(invalid());
         }
         crate::native_runtime::check_cold_transition_root(
@@ -773,6 +805,7 @@ impl LifecycleService {
         target: Arc<Payload>,
         staging: &Path,
         key: &[u8; 32],
+        document: &super::installations::native_document::DocumentState,
     ) -> Result<()> {
         let (mut session, mut checkpoint, binding, envelope) =
             self.trial_local_personal_runtime(target, staging, key)?;
@@ -780,11 +813,19 @@ impl LifecycleService {
             if session.start()?.state != "ready" {
                 return Err(invalid());
             }
+            if let Some(expected) = &checkpoint.saved_document_sha256
+                && saved_document_digest(document)? != *expected
+            {
+                return Err(err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED"));
+            }
             let authoring = session.authoring_session()?;
             if authoring["tenantId"].as_str() != Some(checkpoint.tenant_id.as_str())
                 || authoring["principalId"].as_str() != Some(checkpoint.principal_id.as_str())
             {
                 return Err(invalid());
+            }
+            if checkpoint.saved_document_sha256.is_some() {
+                session.verify_transition_studio(&authoring, document)?;
             }
             Ok(())
         })();
@@ -808,6 +849,15 @@ impl LifecycleService {
             return Err(invalid());
         }
         self.transition_checkpoint(&envelope, key)?;
+        if checkpoint.saved_document_sha256.is_some() {
+            let unchanged = |path: &Path| path.starts_with("blobs") || path.starts_with("config");
+            let live = inventory_with_limit(&self.root, false, MAX_BYTES + pending.len() as u64)?;
+            if live.iter().filter(|(path, _)| unchanged(path))
+                .ne(checkpoint.files.iter().filter(|(path, _)| unchanged(path)))
+            {
+                return Err(err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED"));
+            }
+        }
         keep_receipt(&self.root, "qualified", &envelope)?;
         replace_private(&self.root, RECORD, &binding.new_record, 4096)?;
         replace_private(&self.root, ENVIRONMENT, &binding.new_env.0, 4096)?;
@@ -823,6 +873,7 @@ impl LifecycleService {
         target_payload: &Payload,
         staging: &Path,
         key: &[u8; 32],
+        saved_document_sha256: Option<String>,
     ) -> Result<()> {
         let guard = self.lock()?;
         self.check_prepare_guard(&guard)?;
@@ -839,23 +890,45 @@ impl LifecycleService {
         {
             return Err(invalid());
         }
+        #[cfg(feature = "workspace-v5-owner-validation")]
+        if ((source.manifest_sha256.as_str(), target.manifest_sha256.as_str()) == WORKSPACE_V5_TRANSITION)
+            != saved_document_sha256.is_some()
+        {
+            return Err(invalid());
+        }
         source_payload.recheck()?;
         target_payload.recheck()?;
         installations::private_directory(staging)?;
         let staging_pin = crate::maintenance_source::DirectoryPin::open(staging)?;
-        // Staged beforeimages have backup names, so there is no runnable
-        // personal configuration at the staged root.
-        check_staged_names(staging, false)?;
         crate::native_runtime::check_cold_checkpoint_root(&self.root)?;
-        if present(staging, "native-database/postmaster.pid")? {
-            return Err(invalid());
-        }
         let record = read(self)?;
         let mut fields = self.personal_environment(source_payload, record.ports)?;
         for value in fields.values_mut() {
             std::mem::take(value).into_bytes().fill(0);
         }
         let files = inventory(&self.root, false)?;
+        if saved_document_sha256.is_some() {
+            let device = directory_identity(&self.root)?.0;
+            if fs::read_dir(staging).map_err(|_| invalid())?.next().is_some()
+                || device != directory_identity(staging)?.0
+            {
+                return Err(invalid());
+            }
+            for name in DATA_DIRECTORIES {
+                if directory_identity(&self.root.join(name))?.0 != device {
+                    return Err(invalid());
+                }
+            }
+            let bytes: u64 = files.values().map(|entry| entry.bytes).sum();
+            if fs2::available_space(staging).map_err(|_| invalid())?
+                < 2 * bytes + MAX_MANIFEST as u64 + 256 * 1024 * 1024
+            {
+                return Err(err("NATIVE_PHYSICAL_CHECKPOINT_SPACE"));
+            }
+            copy_beforeimages(&self.root, false, staging, &files)?;
+        }
+        // Backup names keep the staged directory from becoming a runnable profile.
+        check_staged_names(staging, false)?;
         if files != inventory(staging, true)? {
             return Err(invalid());
         }
@@ -871,6 +944,7 @@ impl LifecycleService {
             old_manifest: source.manifest_sha256,
             new_manifest: target.manifest_sha256,
             files,
+            saved_document_sha256,
             trial: false,
             drained_failure: None,
             restore: None,
@@ -926,7 +1000,46 @@ impl InstallationController {
     ) -> Result<()> {
         self.with_transition_key(token, key_path, staging, |service, key| {
             if !present(staging, ENVELOPE)? {
-                service.authenticate_local_personal_checkpoint(source, target, staging, key)?;
+                service.authenticate_local_personal_checkpoint(source, target, staging, key, None)?;
+            }
+            service.stage_local_personal_runtime_transition(source, target, staging, key)
+        })
+    }
+
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    pub(crate) fn prepare_saved_workspace_v5_transition(
+        &self,
+        token: &str,
+        source: &Payload,
+        target: &Payload,
+        staging: &Path,
+        key_path: &Path,
+    ) -> Result<()> {
+        if (source.context().manifest_sha256.as_str(), target.context().manifest_sha256.as_str())
+            != WORKSPACE_V5_TRANSITION
+        {
+            return Err(invalid());
+        }
+        self.with_transition_key(token, key_path, staging, |service, key| {
+            let profile = &self.profile.as_ref().ok_or_else(invalid)?.root;
+            if !staging.is_absolute() || staging.starts_with(profile) || profile.starts_with(staging) {
+                return Err(invalid());
+            }
+            let document = self.document_unlocked(service)?.1;
+            if document.draft.is_none() || document.etag.is_none() {
+                return Err(err("NATIVE_PHYSICAL_CHECKPOINT_SAVED_DOCUMENT_REQUIRED"));
+            }
+            let document_sha256 = saved_document_digest(&document)?;
+            if present(staging, ENVELOPE)? {
+                let envelope = installation_backup::source_bytes(staging, ENVELOPE, ENVELOPE_LIMIT as u64, true)?;
+                let checkpoint = service.transition_checkpoint(&envelope, key)?;
+                if checkpoint.saved_document_sha256.as_deref() != Some(document_sha256.as_str()) {
+                    return Err(invalid());
+                }
+            } else {
+                service.authenticate_local_personal_checkpoint(
+                    source, target, staging, key, Some(document_sha256),
+                )?;
             }
             service.stage_local_personal_runtime_transition(source, target, staging, key)
         })
@@ -942,7 +1055,7 @@ impl InstallationController {
         key_path: &Path,
     ) -> Result<()> {
         self.with_transition_key(token, key_path, staging, |service, key| {
-            service.authenticate_local_personal_checkpoint(source, target, staging, key)
+            service.authenticate_local_personal_checkpoint(source, target, staging, key, None)
         })
     }
 
@@ -968,7 +1081,20 @@ impl InstallationController {
         key_path: &Path,
     ) -> Result<()> {
         self.with_transition_key(token, key_path, staging, |service, key| {
-            service.activate_local_personal_runtime_transition(target, staging, key)
+            let document = self.document_unlocked(service)?.1;
+            service.activate_local_personal_runtime_transition(target, staging, key, &document)
+        })
+    }
+
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    pub(crate) fn recover_saved_workspace_v5_transition(
+        &self,
+        token: &str,
+        staging: &Path,
+        key_path: &Path,
+    ) -> Result<()> {
+        self.with_transition_key(token, key_path, staging, |service, key| {
+            service.recover_local_personal_runtime_transition(staging, key, Some(WORKSPACE_V5_TRANSITION))
         })
     }
 
@@ -979,7 +1105,7 @@ impl InstallationController {
         key_path: &Path,
     ) -> Result<()> {
         self.with_transition_key(token, key_path, staging, |service, key| {
-            service.recover_local_personal_runtime_transition(staging, key)
+            service.recover_local_personal_runtime_transition(staging, key, None)
         })
     }
 }
