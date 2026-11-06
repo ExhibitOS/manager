@@ -30,7 +30,12 @@ struct Ack { version: u32, kind: String, workspace_id: String, tenant_id: String
 
 /// Holds both original endpoints until spawn. Only the duplicated child
 /// descriptor is made inheritable in the forked API child.
-pub(super) struct Setup { parent: UnixStream, child: Option<File>, secret: String }
+pub(super) struct Setup {
+    parent: UnixStream,
+    child: Option<File>,
+    secret: String,
+    furnishing_writer: Option<File>,
+}
 /// Intended to stay inside the owning Session; this type does not enforce
 /// that lifetime. It is not a claim, readiness, fence or authorization; loss
 /// of the socket is terminal once observed by the transport.
@@ -76,7 +81,11 @@ impl Setup {
         if unsafe { libc::getentropy(bytes.as_mut_ptr().cast(),bytes.len()) }!=0 { return Err(err("NATIVE_RANDOM_UNAVAILABLE")); }
         let secret=bytes.iter().map(|v|format!("{v:02x}")).collect::<String>();bytes.fill(0);
         parent.set_nonblocking(true).map_err(|_| err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
-        Ok(Self {parent,child:Some(child),secret})
+        Ok(Self {parent,child:Some(child),secret,furnishing_writer:None})
+    }
+    pub(super) fn with_furnishing_writer(mut self, file: File) -> Self {
+        self.furnishing_writer = Some(file);
+        self
     }
     pub(super) fn bootstrap(&self, auth:&LocalAuthority, generation:&str) -> Result<Vec<u8>> {
         let value=OwnerBootstrap { workspace:auth, owner_channel:OwnerBinding {version:1,runtime_generation:generation,secret:&self.secret} };
@@ -115,6 +124,9 @@ impl Setup {
     pub(super) fn workspace_import_bootstrap(&self, auth: &LocalAuthority, generation: &str, version: crate::native_payload::WorkspaceImport) -> Result<Vec<u8>> {
         self.normal_selected_v3_bootstrap(auth, generation, super::oex_catalog_frames::Protocol::from(version).owner_mode())
     }
+    pub(super) fn workspace_furnishing_bootstrap(&self, auth: &LocalAuthority, generation: &str, start: super::FurnishingStart) -> Result<Vec<u8>> {
+        self.normal_selected_v3_bootstrap(auth, generation, start.owner_mode())
+    }
     fn normal_selected_v3_bootstrap(&self, auth: &LocalAuthority, generation: &str, mode: &'static str) -> Result<Vec<u8>> {
         let value=FreshOwnerBootstrap {workspace:auth,owner_channel:FreshOwnerBinding {version:3,runtime_generation:generation,secret:&self.secret,mode}};
         let bytes=serde_json::to_vec(&value).map_err(|_|err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
@@ -123,14 +135,23 @@ impl Setup {
     pub(super) fn configure(&self, command:&mut Command) -> Result<()> {
         let fd=self.child.as_ref().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?.as_raw_fd();
         command.env("EXHIBITOS_NATIVE_OWNER_FD",fd.to_string());
+        let writer = self.furnishing_writer.as_ref().map(AsRawFd::as_raw_fd);
+        if let Some(writer) = writer { command.env("EXHIBITOS_NATIVE_FURNISHING_WRITER_FD", writer.to_string()); }
         unsafe { command.pre_exec(move || {
-            let flags=libc::fcntl(fd,libc::F_GETFD);
-            if flags<0 || libc::fcntl(fd,libc::F_SETFD,flags & !libc::FD_CLOEXEC)<0 { return Err(std::io::Error::last_os_error()); }
+            for descriptor in std::iter::once(fd).chain(writer) {
+                let flags = libc::fcntl(descriptor, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
             Ok(())
         }); }
         Ok(())
     }
-    pub(super) fn close_child(&mut self) { self.child.take(); }
+    pub(super) fn close_child(&mut self) {
+        self.child.take();
+        self.furnishing_writer.take();
+    }
     /// A successful hello proves only possession of this inherited socket and
     /// agreement on the launch identity. The operation still needs live claim,
     /// workspace, process and fence verification; EOF/timeout is unavailable.
@@ -320,7 +341,12 @@ impl Connection {
     /// inbound bytes. EOF, error, or unexpected data makes the operation
     /// uncertain; EAGAIN is only a momentary observation, not authority.
     pub(super) fn check_idle(&mut self)->Result<()> {
-        if !self.valid||!self.ready {self.fail();return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
+        if !self.ready {self.fail();return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
+        self.check_authenticated_idle()
+    }
+    /// Ordinary furnishing startup has no selected OEX ready frame.
+    pub(super) fn check_authenticated_idle(&mut self) -> Result<()> {
+        if !self.valid { self.fail(); return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
         let mut byte=0u8;
         for _ in 0..4 {
             let n=unsafe {libc::recv(self.socket.as_raw_fd(),(&mut byte as *mut u8).cast(),1,libc::MSG_PEEK|libc::MSG_DONTWAIT)};
@@ -473,6 +499,25 @@ pub(super) fn worker_control_notice(control: &super::oex_control_v2::Control,
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn workspace_furnishing_bootstrap_uses_closed_v3_initialize_and_reopen_modes() {
+        let setup = Setup::new().unwrap();
+        let auth = authority();
+        let generation = Uuid::new_v4().to_string();
+        for (start, mode) in [
+            (super::super::FurnishingStart::Initialize, "workspace-furnishing-036-initialize-v1"),
+            (super::super::FurnishingStart::Reopen, "workspace-furnishing-036-reopen-v1"),
+        ] {
+            let wire = setup.workspace_furnishing_bootstrap(&auth, &generation, start).unwrap();
+            let value: Value = serde_json::from_slice(&wire).unwrap();
+            assert_eq!(value.as_object().unwrap().len(), 2);
+            assert_eq!(value["ownerChannel"].as_object().unwrap().len(), 4);
+            assert_eq!(value["ownerChannel"]["version"], 3);
+            assert_eq!(value["ownerChannel"]["runtimeGeneration"], generation);
+            assert_eq!(value["ownerChannel"]["mode"], mode);
+            assert_eq!(value["workspace"]["workspaceId"], auth.workspace_id);
+        }
+    }
     #[test]
     fn workspace_v7_bootstrap_matches_exact_owner_channel_bytes() {
         use crate::native_payload::WorkspaceImport;

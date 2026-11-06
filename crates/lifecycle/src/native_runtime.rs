@@ -36,12 +36,27 @@ pub fn selected_oex_format_v7_validation(resources: &Path, input_fd: i32, cancel
 #[path = "native_runtime_oex_materializer_protocol.rs"] mod oex_materializer_protocol;
 #[path = "native_runtime_oex_materializer.rs"] mod oex_materializer;
 #[path = "native_runtime_owner_channel.rs"] mod owner_channel;
+#[path = "native_runtime_furnishing_lifetime.rs"] mod furnishing_lifetime;
 #[path = "native_runtime_oex_owner.rs"] mod oex_owner;
 #[path = "native_runtime_oex_recovery.rs"] mod oex_recovery;
 #[path = "native_runtime_oex_catalog_frames.rs"] mod oex_catalog_frames;
 #[path = "native_runtime_owner_claim_frames.rs"] mod owner_claim_frames;
 #[path = "native_runtime_owner_metadata_frames.rs"] mod owner_metadata_frames;
 #[path = "native_runtime_owner_binding_encoding.rs"] mod owner_binding_encoding;
+
+pub(crate) const WORKSPACE_FURNISHING_INITIALIZATION: &str = "native-workspace-furnishing-initialization.json";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FurnishingStart { Initialize, Reopen }
+
+impl FurnishingStart {
+    fn owner_mode(self) -> &'static str {
+        match self {
+            Self::Initialize => "workspace-furnishing-036-initialize-v1",
+            Self::Reopen => "workspace-furnishing-036-reopen-v1",
+        }
+    }
+}
 fn native_port_bind_code(error: &std::io::Error) -> &'static str {
     match error.kind() {
         std::io::ErrorKind::AddrInUse => "NATIVE_PORT_IN_USE",
@@ -259,9 +274,11 @@ pub struct Session {
     cancellation: Arc<AtomicBool>,
     local_authority: Option<LocalAuthority>,
     owner_channel: Option<owner_channel::Connection>,
+    furnishing_writer_lifetime: Option<furnishing_lifetime::WriterLifetime>,
     fresh_oex_test: bool,
     normal_oex_selected: bool,
     fresh_oex_started: bool,
+    fresh_ordinary_furnishing: bool,
     oex_upload_selection_started: bool,
     oex_upload_selected: Option<(String, u64, String, String)>,
     maintenance_space: Vec<PathBuf>,
@@ -616,13 +633,71 @@ impl Session {
             cancellation: Arc::new(AtomicBool::new(false)),
             local_authority: None,
             owner_channel: None,
+            furnishing_writer_lifetime: None,
             fresh_oex_test: false,
             normal_oex_selected: false,
             fresh_oex_started: false,
+            fresh_ordinary_furnishing: false,
             oex_upload_selection_started: false,
             oex_upload_selected: None,
             maintenance_space: Vec::new(),
         })
+    }
+    pub(crate) fn authorize_fresh_workspace_furnishing(&mut self, root: &crate::maintenance_source::DirectoryPin) -> Result<()> {
+        root.check_path(&self.service.root)?;
+        self.check_native_observation_fence()?;
+        self.fresh_ordinary_furnishing = true;
+        Ok(())
+    }
+
+    fn workspace_furnishing_start(&self) -> Result<Option<FurnishingStart>> {
+        use std::os::unix::fs::MetadataExt;
+        if !self.payload.workspace_furnishing_validation()? { return Ok(None); }
+        if self.normal_oex_selected || self.transition_fence.is_some() {
+            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        }
+        self.check_native_observation_fence()?;
+        self.payload.recheck()?;
+        self.payload.workspace_furnishing_ledger()?;
+        let (workspace, tenant, principal) = self.service.personal_identity()?;
+        let root = &self.service.root;
+        let metadata = fs::symlink_metadata(root).map_err(|_| err("STATE_UNAVAILABLE"))?;
+        let expected = serde_json::to_vec(&serde_json::json!({
+            "format": 1,
+            "workspaceId": workspace,
+            "tenantId": tenant,
+            "principalId": principal,
+            "manifestSHA256": self.payload.context().manifest_sha256,
+            "rootSHA256": digest(root.as_os_str().as_encoded_bytes()),
+            "rootDevice": metadata.dev().to_string(),
+            "rootInode": metadata.ino().to_string(),
+        })).map_err(|_| err("STATE_INVALID"))?;
+        let name = WORKSPACE_FURNISHING_INITIALIZATION;
+        if exists(&root.join(name))? {
+            let saved = installation_backup::source_bytes(root, name, 4096, true)?;
+            if saved != expected { return Err(err("NATIVE_CONFIGURATION_CHANGED")); }
+            return Ok(Some(FurnishingStart::Initialize));
+        }
+        if self.fresh_ordinary_furnishing && !exists(&root.join("native-database"))? {
+            if exists(&root.join("blobs"))? || exists(&root.join("config"))? {
+                return Err(err("NATIVE_FRESH_WORKSPACE_REQUIRED"));
+            }
+            write_private_new(root, name, &expected, 4096)?;
+            File::open(root).and_then(|file| file.sync_all()).map_err(|_| err("STATE_UNAVAILABLE"))?;
+            return Ok(Some(FurnishingStart::Initialize));
+        }
+        Ok(Some(FurnishingStart::Reopen))
+    }
+
+    fn verify_workspace_furnishing_ledger(&mut self) -> Result<()> {
+        let expected = self.payload.workspace_furnishing_ledger()?;
+        let observed = self.query_database("exhibitos", "SELECT name,sha256 FROM public.schema_migrations ORDER BY name")?;
+        if observed != expected { return Err(err("NATIVE_WORKSPACE_FURNISHING_CATALOG")); }
+        Ok(())
+    }
+
+    fn check_workspace_furnishing_channel(&mut self) -> Result<()> {
+        self.owner_channel.as_mut().ok_or_else(|| err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?.check_authenticated_idle()
     }
     /// Explicit private IPC only, never part of status/journal/log output.
     pub fn authoring_session(&mut self) -> Result<Value> {
@@ -630,6 +705,7 @@ impl Session {
         if self.status()?.state != "ready" {
             return Err(err("NATIVE_NOT_READY"));
         }
+        if self.payload.workspace_furnishing_validation()? { self.check_workspace_furnishing_channel()?; }
         if self.auxiliary.is_some() { return Err(err("NATIVE_OPERATION_ACTIVE")); }
         self.observation_root.check()?;
         let identity = self.service.personal_identity()?;
@@ -1029,9 +1105,11 @@ const { isDeepStrictEqual } = require('node:util');
         }
         let reopen_import = self.payload.workspace_import_version()
             .filter(|_| services && !self.normal_oex_selected);
+        let furnishing = if services { self.workspace_furnishing_start()? } else { None };
+        let require_existing = reopen_import.is_some() || furnishing == Some(FurnishingStart::Reopen);
         let database = self.service.root.join("native-database");
         if !exists(&database)? {
-            if reopen_import.is_some() {
+            if require_existing {
                 return Err(err("NATIVE_DATABASE_UNAVAILABLE"));
             }
             self.state = "initializing_database".into();
@@ -1147,7 +1225,7 @@ const { isDeepStrictEqual } = require('node:util');
         {
             "t" => {}
             "f" => {
-                if reopen_import.is_some() {
+                if require_existing {
                     return Err(err("NATIVE_DATABASE_UNAVAILABLE"));
                 }
                 let password = self
@@ -1192,6 +1270,7 @@ const { isDeepStrictEqual } = require('node:util');
             // Ordinary reopen has no selected owner channel or claim.
             self.check_oex_catalog_ledger(version.into())?;
         }
+        if furnishing == Some(FurnishingStart::Reopen) { self.verify_workspace_furnishing_ledger()?; }
         self.state = "starting_services".into();
         self.record()?;
         let mut environment = vec![
@@ -1254,21 +1333,26 @@ const { isDeepStrictEqual } = require('node:util');
         } else {
             None
         };
-        let mut owner_setup = if self.normal_oex_selected {
+        let mut owner_setup = if furnishing.is_some() {
+            if self.local_authority.is_none() { return Err(err("NATIVE_PERSONAL_SESSION_REQUIRED")); }
+            let lifetime = self.furnishing_writer_lifetime.as_ref().ok_or_else(|| err("NATIVE_FURNISHING_WRITER_LOCK_INVALID"))?;
+            Some(owner_channel::Setup::new()?.with_furnishing_writer(lifetime.duplicate_for_writer()?))
+        } else if self.normal_oex_selected {
             if self.local_authority.is_none() || !self.payload.normal_oex_selected_input()? {
                 return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));
             }
             Some(owner_channel::Setup::new()?)
         } else { None };
         let generation = self.job_id.as_deref().ok_or_else(|| err("NATIVE_JOURNAL_INVALID"))?;
-        let mut private_input = match (&self.local_authority, &owner_setup, self.payload.workspace_import_version()) {
-            (Some(a), Some(setup), Some(version)) => Some(setup.workspace_import_bootstrap(a, generation, version)?),
-            (Some(a), Some(setup), _) if self.payload.workspace_v5_selected_input() => Some(setup.workspace_v5_bootstrap(a, generation)?),
-            (Some(a), Some(setup), _) if self.payload.normal_oex_028_selected_input()? => Some(setup.normal_028_bootstrap(a, generation)?),
-            (Some(a), Some(setup), _) if self.payload.normal_oex_027_selected_input()? => Some(setup.normal_027_bootstrap(a, generation)?),
-            (Some(a), Some(setup), _) => Some(setup.normal_bootstrap(a, generation)?),
-            (Some(a), None, _) => Some(serde_json::to_vec(a).map_err(|_| err("STATE_INVALID"))?),
-            (None, _, _) => None,
+        let mut private_input = match (&self.local_authority, &owner_setup, self.payload.workspace_import_version(), furnishing) {
+            (Some(a), Some(setup), _, Some(start)) => Some(setup.workspace_furnishing_bootstrap(a, generation, start)?),
+            (Some(a), Some(setup), Some(version), _) => Some(setup.workspace_import_bootstrap(a, generation, version)?),
+            (Some(a), Some(setup), _, _) if self.payload.workspace_v5_selected_input() => Some(setup.workspace_v5_bootstrap(a, generation)?),
+            (Some(a), Some(setup), _, _) if self.payload.normal_oex_028_selected_input()? => Some(setup.normal_028_bootstrap(a, generation)?),
+            (Some(a), Some(setup), _, _) if self.payload.normal_oex_027_selected_input()? => Some(setup.normal_027_bootstrap(a, generation)?),
+            (Some(a), Some(setup), _, _) => Some(setup.normal_bootstrap(a, generation)?),
+            (Some(a), None, _, _) => Some(serde_json::to_vec(a).map_err(|_| err("STATE_INVALID"))?),
+            (None, _, _, _) => None,
         };
         let spawned = self.spawn(
             &self.payload.node(),
@@ -1308,6 +1392,15 @@ const { isDeepStrictEqual } = require('node:util');
                     "0.1.0",
                 );
                 if ready.ready {
+                    if let Some(start) = furnishing {
+                        if start == FurnishingStart::Initialize { self.verify_workspace_furnishing_ledger()?; }
+                        self.check_workspace_furnishing_channel()?;
+                        if start == FurnishingStart::Initialize {
+                            fs::remove_file(self.service.root.join(WORKSPACE_FURNISHING_INITIALIZATION))
+                                .map_err(|_| err("STATE_UNAVAILABLE"))?;
+                            File::open(&self.service.root).and_then(|file| file.sync_all()).map_err(|_| err("STATE_UNAVAILABLE"))?;
+                        }
+                    }
                     self.readiness = ready;
                     self.state = "ready".into();
                     if self.normal_oex_selected {
@@ -1352,6 +1445,9 @@ const { isDeepStrictEqual } = require('node:util');
         self.start_owned(false)
     }
     fn start_owned(&mut self, services: bool) -> Result<Context> {
+        if !services && exists(&self.service.root.join(WORKSPACE_FURNISHING_INITIALIZATION))? {
+            return Err(err("NATIVE_WORKSPACE_FURNISHING_INITIALIZATION_PENDING"));
+        }
         if self.normal_oex_selected {
             if self.fresh_oex_started || !services || self.guard.is_none()
                 || exists(&self.service.root.join("native-database"))?
@@ -1391,6 +1487,13 @@ const { isDeepStrictEqual } = require('node:util');
         }
         // Check before publishing a new current pointer, including orphaned jobs.
         check_interrupted_root(&self.service.root)?;
+        if self.payload.workspace_furnishing_validation()? {
+            self.check_native_observation_fence()?;
+            // A new generation always acquires a distinct open description.
+            // Closing our prior FD cannot unlock a writer descendant's copy.
+            self.furnishing_writer_lifetime = None;
+            self.furnishing_writer_lifetime = Some(furnishing_lifetime::WriterLifetime::acquire(&self.service.root)?);
+        }
         let parent = directory(&self.service.root, "native-runs")?;
         let id = Uuid::new_v4().to_string();
         let run = directory(&parent, &id)?;
@@ -1478,7 +1581,8 @@ const { isDeepStrictEqual } = require('node:util');
     pub fn backup_available(&self) -> Result<()> {
         if exists(&self.service.root.join("native-restore-current.json"))?
             || exists(&self.service.root.join("native-target-preparation-current.json"))?
-            || exists(&self.service.root.join("native-legacy-migration-current.json"))? {
+            || exists(&self.service.root.join("native-legacy-migration-current.json"))?
+            || exists(&self.service.root.join(WORKSPACE_FURNISHING_INITIALIZATION))? {
             return Err(err("NATIVE_RESTORE_PENDING"));
         }
         self.maintenance_available()
@@ -1784,6 +1888,7 @@ const { isDeepStrictEqual } = require('node:util');
                 if self.transition_fence.is_none() {
                     self.guard = None;
                 }
+                self.furnishing_writer_lifetime = None;
                 self.local_authority = None;
                 return Ok(self.snapshot());
             }
@@ -1833,6 +1938,7 @@ const { isDeepStrictEqual } = require('node:util');
                 if self.transition_fence.is_none() {
                     self.guard = None;
                 }
+                self.furnishing_writer_lifetime = None;
                 self.local_authority = None;
             }
             return Ok(self.snapshot());

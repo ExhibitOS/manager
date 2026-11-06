@@ -114,6 +114,7 @@ pub struct Host {
     controller: Arc<InstallationController>,
     resources: PathBuf,
     prepare_ports: Ports,
+    fresh_ordinary_root: Option<(PathBuf, Arc<crate::maintenance_source::DirectoryPin>)>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     workspace_v5_maintenance_only: bool,
     state: Arc<Mutex<State>>,
@@ -140,6 +141,7 @@ impl Host {
             controller,
             resources,
             prepare_ports: Ports::default(),
+            fresh_ordinary_root: None,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             workspace_v5_maintenance_only: false,
             state: Arc::new(Mutex::new(State {
@@ -176,6 +178,10 @@ impl Host {
         ports.validate()?;
         let mut host = Self::new(controller, resources);
         host.prepare_ports = ports;
+        let token = host.controller.context()?.selection_token;
+        let root = host.selected(&token)?;
+        let pin = Arc::new(crate::maintenance_source::DirectoryPin::open(&root)?);
+        host.fresh_ordinary_root = Some((root, pin));
         Ok(host)
     }
     /// Explicit selected entry for a profile that must not already exist.
@@ -431,6 +437,7 @@ impl Host {
         };
         let resources = self.resources.clone();
         let prepare_ports = self.prepare_ports;
+        let fresh_ordinary_root = self.fresh_ordinary_root.clone();
         self.worker = Some(thread::spawn(move || {
             let mut preserved_backup = false;
             let mut oex_owned_session = false;
@@ -617,6 +624,9 @@ impl Host {
                                 Some(p) => p,
                                 None => Arc::new(Payload::open(&resources)?),
                             };
+                            if payload.workspace_furnishing_validation()? && account.is_some() {
+                                return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+                            }
                             let context = controller.with_current_mutation(&token, |service| {
                                 if account.is_none() {
                                     service.prepare_native_personal(&payload, prepare_ports)
@@ -655,7 +665,13 @@ impl Host {
                                     let configured = service
                                         .native_prepared()?
                                         .ok_or_else(|| err("INITIAL_ACCOUNT_REQUIRED"))?;
-                                    Session::new(service, payload.clone(), configured.ports)
+                                    let mut session = Session::new(service, payload.clone(), configured.ports)?;
+                                    if let Some((path, pin)) = &fresh_ordinary_root
+                                        && path == &service.root && payload.workspace_furnishing_validation()?
+                                    {
+                                        session.authorize_fresh_workspace_furnishing(pin)?;
+                                    }
+                                    Ok(session)
                                 })?,
                             };
                             let mut lease = SessionLease { shared: shared.clone(), session: Some(session) };
