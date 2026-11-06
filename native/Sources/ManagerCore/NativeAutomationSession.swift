@@ -339,6 +339,23 @@ public actor NativeAutomationSession {
                 throw BridgeFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
             }
             result = try await executeWorkspaceMaterial(operation, request: request, api: api)
+        case "workspace-material-floor-apply":
+            guard selectedOEXFormat == nil else { throw BridgeFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["surfaceId", "materialId", "materialVersion", "repeatMeters", "rotation"])
+            guard let surfaceId = command["surfaceId"].string, let materialId = command["materialId"].string,
+                  let version = command["materialVersion"].integer, let dimensions = command["repeatMeters"].items,
+                  dimensions.count == 2, let width = dimensions[0].double, let length = dimensions[1].double,
+                  let rotation = command["rotation"].double else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let binding = try WorkspaceFloorMaterialBinding(surfaceId: surfaceId, materialId: materialId, materialVersion: Int(version),
+                                                            repeatMeters: [width, length], rotation: rotation)
+            if let draft = try await api.prepareWorkspaceFloorMaterial(binding, in: current) {
+                var next = current
+                next.draft = draft
+                result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
+            } else {
+                result = .object(["changed": .bool(false), "document": try value(current)])
+            }
         case "load-copy":
             try checkedRevision(request, current)
             guard selectedOEXFormat == nil, current.draft == nil, current.pending == nil, let path = request["inputPath"].string, let hash = inputs[path] else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }

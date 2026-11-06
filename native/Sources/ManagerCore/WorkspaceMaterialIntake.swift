@@ -159,3 +159,74 @@ public struct WorkspaceMaterialIntake: Codable, Sendable {
 public enum WorkspaceMaterialIntakeAction: String, Sendable {
     case complete, cancel, retry
 }
+
+public struct WorkspaceFloorMaterialBinding: Sendable {
+    private static let namespace = "org.exhibitos.studio/workspace-materials"
+    public let surfaceId: String
+    public let materialId: String
+    public let materialVersion: Int
+    public let repeatMeters: [Double]
+    public let rotation: Double
+
+    public init(surfaceId: String, materialId: String, materialVersion: Int, repeatMeters: [Double], rotation: Double) throws {
+        guard [surfaceId, materialId].allSatisfy({ UUID(uuidString: $0)?.uuidString.lowercased() == $0 }),
+              (1...2_147_483_647).contains(materialVersion), repeatMeters.count == 2,
+              repeatMeters.allSatisfy({ (0.05...20).contains($0) }), (-Double.pi...Double.pi).contains(rotation) else {
+            throw AuthoringFailure("WORKSPACE_MATERIAL_BINDING_INVALID")
+        }
+        self.surfaceId = surfaceId; self.materialId = materialId; self.materialVersion = materialVersion
+        self.repeatMeters = repeatMeters; self.rotation = rotation
+    }
+
+    func applying(_ material: WorkspaceMaterial, to draft: NativeExhibitionDraft) throws -> NativeExhibitionDraft? {
+        guard material.id == materialId, material.version == materialVersion else { throw AuthoringFailure("MATERIAL_RESPONSE_INVALID") }
+        guard material.kind == .floor, Set(material.maps.keys) == ["color"] else {
+            throw AuthoringFailure("WORKSPACE_MATERIAL_BINDING_UNSUPPORTED")
+        }
+        guard material.rights.permissions.display else { throw AuthoringFailure("DISPLAY_PERMISSION_REQUIRED") }
+        guard let surfaces = draft.candidate["surfaces"].items,
+              surfaces.filter({ $0["id"].string == surfaceId }).map({ $0["type"].string }) == ["floor"] else {
+            throw AuthoringFailure("ARCHITECTURE_SELECTION_CHANGED")
+        }
+        let invalid = AuthoringFailure("WORKSPACE_MATERIAL_BINDING_INVALID")
+        let descriptor = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(material))
+        var candidate = draft.candidate
+        var extensions: [String: DocumentValue]
+        switch candidate["extensions"] {
+        case .null: extensions = [:]
+        case .object(let existing): extensions = existing
+        default: throw invalid
+        }
+        var materials: [DocumentValue] = [], bindings: [DocumentValue] = []
+        if let existing = extensions[Self.namespace] {
+            guard case .object(let fields) = existing, Set(fields.keys) == ["version", "materials", "bindings"],
+                  existing["version"] == .integer(1), let rows = existing["materials"].items,
+                  let targets = existing["bindings"].items else { throw invalid }
+            materials = rows; bindings = targets
+        }
+        let value: DocumentValue = .object([
+            "surfaceId": .string(surfaceId), "materialId": .string(materialId),
+            "materialVersion": .integer(Int64(materialVersion)), "repeatMeters": .vector(repeatMeters), "rotation": .number(rotation)
+        ])
+        let matches = bindings.indices.filter { bindings[$0]["surfaceId"] == value["surfaceId"] }
+        let descriptors = materials.indices.filter { materials[$0]["id"] == value["materialId"] && materials[$0]["version"] == value["materialVersion"] }
+        guard matches.count <= 1, descriptors.count <= 1 else { throw invalid }
+        if let index = descriptors.first {
+            guard materials[index] == descriptor else { throw AuthoringFailure("MATERIAL_VERSION_MISMATCH") }
+        } else { materials.append(descriptor) }
+        if let index = matches.first {
+            let previous = bindings[index]
+            if previous == value && !descriptors.isEmpty { return nil }
+            bindings[index] = value
+            if !bindings.contains(where: { $0["materialId"] == previous["materialId"] && $0["materialVersion"] == previous["materialVersion"] }) {
+                materials.removeAll { $0["id"] == previous["materialId"] && $0["version"] == previous["materialVersion"] }
+            }
+        } else { bindings.append(value) }
+        guard materials.count <= 64, bindings.count <= 128 else { throw invalid }
+        extensions[Self.namespace] = .object(["version": .integer(1), "materials": .array(materials), "bindings": .array(bindings)])
+        candidate["extensions"] = .object(extensions)
+        var next = draft
+        try next.replaceCandidate(candidate)
+        return next
+    }
+}
