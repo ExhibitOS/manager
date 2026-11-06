@@ -131,6 +131,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "MATERIAL_DECLARATION": return "재질 이름, 출처와 권리 입력을 확인하세요."
         case "WORKSPACE_MATERIAL_BINDING_INVALID": return "바닥과 반복 크기, 회전 값을 확인하세요."
         case "WORKSPACE_MATERIAL_BINDING_UNSUPPORTED": return "지금은 색상 맵 한 장만 등록한 바닥 재질을 연결할 수 있습니다."
+        case "WORKSPACE_MATERIAL_BINDING_SAMPLING_UNSUPPORTED": return "이 바닥에 기존 요철 또는 주변광 차폐 설정이 있어 다른 재질로 교체할 수 없습니다."
         case "WORKSPACE_MATERIAL_SAVED_DRAFT_REQUIRED": return "현재 전시를 저장한 뒤 재질을 연결하세요."
         case "NATIVE_SURFACE_CAPABILITY_UNAVAILABLE": return "현재 저장본의 편집 정책에서는 바닥 재질을 연결할 수 없습니다."
         case "NATIVE_DOCUMENT_STATE_CHANGED": return "저장 문서가 바뀌었습니다. 전시를 다시 확인하세요."
@@ -1005,7 +1006,12 @@ public actor AuthoringAPI {
             let path = studioPrefix + "/exhibitions/" + (try identifier(draft.id)) + "/native-viewport-check"
             let response: Validation = try await request(path, method: "POST", body: body, ifMatch: etag)
             guard response.valid else { throw AuthoringFailure("DRAFT_INVALID") }
+        } else {
+            // The descriptor alone may carry a future or expired display grant.
+            // Reuse the authorized color endpoint for ordinary edits and no-ops.
+            _ = try await workspaceMaterialPreview(material, role: .color)
         }
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next
     }
 

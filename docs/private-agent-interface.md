@@ -175,6 +175,8 @@ Operations:
     `changed` and the native `document`. An identical saved binding returns
     `changed: false` without writing a revision. Otherwise use the returned
     revision and edit version with the existing `save` command.
+    Existing sampling settings survive an edit to the same material. A
+    replacement that would discard those settings is refused.
   - In Manager, open the registration sheet, load the registered library,
     choose **바닥 연결 설정**, select a floor, and enter repeats and rotation
     in degrees. **바닥에 연결** stages the change. Close the sheet and save

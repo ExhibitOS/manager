@@ -204,7 +204,7 @@ public struct WorkspaceFloorMaterialBinding: Sendable {
                   let targets = existing["bindings"].items else { throw invalid }
             materials = rows; bindings = targets
         }
-        let value: DocumentValue = .object([
+        var value: DocumentValue = .object([
             "surfaceId": .string(surfaceId), "materialId": .string(materialId),
             "materialVersion": .integer(Int64(materialVersion)), "repeatMeters": .vector(repeatMeters), "rotation": .number(rotation)
         ])
@@ -216,6 +216,11 @@ public struct WorkspaceFloorMaterialBinding: Sendable {
         } else { materials.append(descriptor) }
         if let index = matches.first {
             let previous = bindings[index]
+            let sameMaterial = previous["materialId"] == value["materialId"] && previous["materialVersion"] == value["materialVersion"]
+            for key in ["normalScale", "aoStrength"] where previous[key] != .null {
+                guard sameMaterial else { throw AuthoringFailure("WORKSPACE_MATERIAL_BINDING_SAMPLING_UNSUPPORTED") }
+                value[key] = previous[key]
+            }
             if previous == value && !descriptors.isEmpty { return nil }
             bindings[index] = value
             if !bindings.contains(where: { $0["materialId"] == previous["materialId"] && $0["materialVersion"] == previous["materialVersion"] }) {

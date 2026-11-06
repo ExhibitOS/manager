@@ -93,6 +93,23 @@ final class WorkspaceMaterialIntakeTests: XCTestCase {
         XCTAssertNil(try selected.applying(replacement, to: changed))
         XCTAssertThrowsError(try binding(wall, replacement).applying(replacement, to: both))
         XCTAssertThrowsError(try selected.applying(first, to: both))
+
+        var withSampling = changed
+        var sampled = changed.candidate
+        var rows = try XCTUnwrap(sampled["extensions"][namespace]["bindings"].items)
+        rows[0]["normalScale"] = .number(0.5)
+        rows[0]["aoStrength"] = .number(0)
+        sampled["extensions"][namespace]["bindings"] = .array(rows)
+        try withSampling.replaceCandidate(sampled)
+        XCTAssertNil(try selected.applying(replacement, to: withSampling))
+        let resized = try WorkspaceFloorMaterialBinding(surfaceId: target, materialId: replacement.id, materialVersion: 1,
+                                                        repeatMeters: [3, 2], rotation: 0)
+        let updated = try XCTUnwrap(resized.applying(replacement, to: withSampling))
+        let updatedRows = try XCTUnwrap(updated.candidate["extensions"][namespace]["bindings"].items)
+        XCTAssertEqual(updatedRows[0]["normalScale"], .number(0.5))
+        XCTAssertEqual(updatedRows[0]["aoStrength"], .integer(0))
+        XCTAssertEqual(updatedRows[1], rows[1])
+        XCTAssertThrowsError(try binding(target, first).applying(first, to: withSampling))
     }
 
     func testWorkspaceFloorBindingRejectsNonFiniteOrOutOfRangeValues() throws {
