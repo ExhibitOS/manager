@@ -29,6 +29,7 @@ pub fn selected_oex_format_v5_validation(resources: &Path, input_fd: i32, cancel
 #[path = "native_runtime_oex_materializer.rs"] mod oex_materializer;
 #[path = "native_runtime_owner_channel.rs"] mod owner_channel;
 #[path = "native_runtime_oex_owner.rs"] mod oex_owner;
+#[path = "native_runtime_oex_recovery.rs"] mod oex_recovery;
 #[path = "native_runtime_oex_catalog_frames.rs"] mod oex_catalog_frames;
 #[path = "native_runtime_owner_claim_frames.rs"] mod owner_claim_frames;
 #[path = "native_runtime_owner_metadata_frames.rs"] mod owner_metadata_frames;
@@ -2336,6 +2337,10 @@ impl OwnedOexV3Claim<'_> {
                 let receipt=channel.read_frame(deadline,&cancel,&mut check)?;drop(check);
                 let ack=settlement.receipt_ack(&receipt)?;
                 self.owner.recheck_database_identity(self.session)?;
+                if self.ready.format == oex_recovery::FORMAT {
+                    check_v3_retired(self.session,&self.owner,self.stage_root,retired,cancelled)?;
+                    oex_recovery::persist(self.session,&self.owner,&self.challenge,&self.ready,&retired.save,&retired.etag,&receipt)?;
+                }
                 let mut check=||check_v3_retired(self.session,&self.owner,self.stage_root,retired,cancelled);
                 channel.send_frame(&ack,Instant::now()+Duration::from_secs(120),&cancel,&mut check)?;
                 let completed=channel.read_frame(Instant::now()+Duration::from_secs(120),&cancel,&mut check)?;
