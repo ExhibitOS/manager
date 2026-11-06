@@ -243,9 +243,9 @@ the existing stop and reopen flow uses the same payload and checks the ledger
 before starting services. The reopened helper uses the ordinary session.
 Existing profiles keep their original payload binding. The macOS debug helper
 built with `workspace-v5-owner-validation` admits one isolated V7 payload. It
-requires Platform source `d28df69ae941084c3ab46c8b8bc06d6789b30c3b`, its
+requires Platform source `fa8320777fbcd4f5dcaf4751fc566e4e79e4beb0`, its
 producer SHA-256 `809ae0bd70b5702b325e0607324d53423474b453242e72a222a22fc08e970f34`,
-and manifest SHA-256 `085d9ea464376ad9347a9c5c7a52ad096650c6ff0bf642b01bf455a2a6494a7a`.
+and manifest SHA-256 `f845813b8a0b0f525926e7736b2c0715e9c9e188f5309fdc31120024f4aa4e27`.
 Use this payload in a fresh synthetic validation profile. The V6 and release
 admission tables are unchanged.
 
