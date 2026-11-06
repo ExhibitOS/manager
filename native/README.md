@@ -30,6 +30,28 @@ Rust helper explicitly. The validation-profile Info key is recognized only in
 debug builds. Use an isolated profile for validation and retain original apps.
 Release delivery/signing is a separate existing distribution pipeline.
 
+## Ordinary furnishing workspace lifecycle
+
+The 037 ordinary path requires one qualified local runtime manifest shared by
+the native helper and Swift authoring. It uses a fresh empty installation,
+a clean reopen on the same physical root and lock, or an authenticated EXB
+restore activation into a separate physical installation. Restore preserves
+the logical workspace and owner IDs. Payload changes require a separately
+qualified transition.
+
+The current-run record keeps the writer generation and physical binding when
+database-only maintenance advances the diagnostic run ID. Before ordinary
+startup, the helper durably consumes the prior clean or restored completion
+and records the new active generation. Normal stop requires authenticated
+completion from the owned Node process, its successful exit, the exact
+ledger and zero worker claims while PostgreSQL is still available, and
+successful PostgreSQL shutdown under the same writer fence. Interrupted or
+incomplete transitions preserve the active state and refuse ordinary reopen.
+
+The Manager implementation and Platform wire must be qualified together before
+adding a manifest pin. Source regression checks do not qualify actual startup,
+owner-loss recovery or EXB restoration.
+
 ## Saved workspace runtime transition
 
 The macOS debug helper built with `--features workspace-v5-owner-validation`

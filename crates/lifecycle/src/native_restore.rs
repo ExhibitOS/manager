@@ -939,7 +939,14 @@ impl InstallationController {
                 }
                 Ok(())
             })();
-            let stopped = session.stop()?;
+            let stopped = if result.is_ok() {
+                match session.stop_with_furnishing_activation_fences() {
+                    Ok(stopped) => stopped,
+                    Err(error) => { let _ = session.stop(); return Err(error); }
+                }
+            } else {
+                session.stop()?
+            };
             if stopped.postgres_pid.is_some()
                 || stopped.node_pid.is_some()
                 || stopped.auxiliary_pid.is_some()
@@ -965,6 +972,9 @@ impl InstallationController {
                 // Keep the runtime fence across marker installation and promotion.
                 promote_restored_entry(&profile.root, &service.root, registry, &previous)?;
             }
+            session.record_furnishing_activation(
+                id, &receipt.backup_id, &plan.manifest_sha256, &plan.system_identifier,
+            )?;
             fs::remove_file(service.root.join(MARKER)).map_err(|_| bad())?;
             File::open(&service.root)
                 .and_then(|v| v.sync_all())
@@ -973,6 +983,25 @@ impl InstallationController {
         })
     }
 }
+pub(crate) fn verify_ordinary_activation(
+    root: &Path, id: &str, backup_id: &str, manifest_sha256: &str, system_identifier: &str, payload_sha256: &str,
+) -> Result<()> {
+    if !uuid(id) || exists(root, MARKER)? { return Err(bad()); }
+    let directory = root.join(format!("native-restore-{id}"));
+    private_directory(&directory)?;
+    let plan: Plan = json(&directory, "stage.json", 65536)?;
+    valid_plan(&plan, root)?;
+    let receipt: Receipt = json(&directory, "activated.json", 4096)?;
+    if plan.id != id || receipt.id != id || receipt.state != "activated"
+        || plan.backup_id != backup_id || receipt.backup_id != backup_id
+        || plan.manifest_sha256 != manifest_sha256 || plan.system_identifier != system_identifier
+        || plan.payload_sha256 != payload_sha256 || plan.kind != "personal"
+    {
+        return Err(bad());
+    }
+    Ok(())
+}
+
 fn observe(
     session: &mut Session,
     directory: &Path,

@@ -8,7 +8,8 @@ const NAME: &str = "native-workspace-furnishing-writers.lock";
 pub(super) const FD_MIN: i32 = 10;
 pub(super) const FD_MAX: i32 = 1023;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct WriterIdentity {
     pub(super) root_device: u64,
     pub(super) root_inode: u64,
@@ -35,9 +36,17 @@ pub(super) struct WriterLifetime {
 
 impl WriterLifetime {
     pub(super) fn acquire(root: &Path) -> Result<Self> {
+        Self::acquire_with_creation(root, true)
+    }
+
+    pub(super) fn acquire_existing(root: &Path) -> Result<Self> {
+        Self::acquire_with_creation(root, false)
+    }
+
+    fn acquire_with_creation(root: &Path, create: bool) -> Result<Self> {
         let path = root.join(NAME);
         let root = crate::maintenance_source::DirectoryPin::open(root).map_err(|_| invalid())?;
-        let file = OpenOptions::new().read(true).write(true).create(true).mode(0o600)
+        let file = OpenOptions::new().read(true).write(true).create(create).mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
             .open(&path).map_err(|_| err("NATIVE_FURNISHING_WRITER_LOCK_INVALID"))?;
         let lifetime = Self { file, path, root };

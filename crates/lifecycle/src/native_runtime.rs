@@ -38,6 +38,8 @@ pub fn selected_oex_format_v7_validation(resources: &Path, input_fd: i32, cancel
 #[path = "native_runtime_owner_channel.rs"] mod owner_channel;
 #[path = "native_runtime_furnishing_lifetime.rs"] mod furnishing_lifetime;
 #[path = "native_runtime_furnishing_lease.rs"] mod furnishing_lease;
+#[path = "native_runtime_furnishing_lifecycle.rs"] mod furnishing_lifecycle;
+use furnishing_lifecycle::{Admission, Binding, Owner as FurnishingOwner, Phase, Restore as FurnishingRestore};
 #[path = "native_runtime_oex_owner.rs"] mod oex_owner;
 #[path = "native_runtime_oex_recovery.rs"] mod oex_recovery;
 #[path = "native_runtime_oex_catalog_frames.rs"] mod oex_catalog_frames;
@@ -250,6 +252,78 @@ pub struct Context {
 struct Current {
     format: u32,
     id: String,
+    #[serde(default, deserialize_with = "read_furnishing_binding", skip_serializing_if = "Option::is_none")]
+    furnishing: Option<Binding>,
+}
+fn read_furnishing_binding<'de, D: serde::Deserializer<'de>>(input: D) -> std::result::Result<Option<Binding>, D::Error> {
+    Binding::deserialize(input).map(Some)
+}
+
+fn current_run(root: &Path) -> Result<Option<Current>> {
+    if !exists(&root.join("native-current-run.json"))? {
+        return Ok(None);
+    }
+    let current: Current = serde_json::from_slice(&installation_backup::source_bytes(
+        root, "native-current-run.json", 4096, true,
+    )?).map_err(|_| err("NATIVE_JOURNAL_INVALID"))?;
+    if current.format != 1 || !installations::uuid(&current.id) {
+        return Err(err("NATIVE_JOURNAL_INVALID"));
+    }
+    if let Some(binding) = &current.furnishing {
+        binding.check()?;
+    }
+    Ok(Some(current))
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FurnishingCompletion {
+    binding_sha256: String,
+    consumed_by: Option<String>,
+}
+
+fn read_run(root: &Path, generation: &str) -> Result<(Context, Option<FurnishingCompletion>)> {
+    let invalid = || err("NATIVE_JOURNAL_INVALID");
+    if !installations::uuid(generation) { return Err(invalid()); }
+    let relative = format!("native-runs/{generation}/state.json");
+    let mut record: Value = serde_json::from_slice(&installation_backup::source_bytes(root, &relative, 8192, true)?)
+        .map_err(|_| invalid())?;
+    let proof = record.as_object_mut().ok_or_else(invalid)?.remove("furnishingCompletion")
+        .map(serde_json::from_value).transpose().map_err(|_| invalid())?;
+    let context: Context = serde_json::from_value(record).map_err(|_| invalid())?;
+    if context.format != 1 || context.job_id.as_deref() != Some(generation) {
+        return Err(invalid());
+    }
+    Ok((context, proof))
+}
+
+fn write_run(root: &Path, context: &Context, completion: Option<FurnishingCompletion>) -> Result<()> {
+    if let Some(completion) = completion {
+        let mut record = serde_json::to_value(context).map_err(|_| err("NATIVE_JOURNAL_INVALID"))?;
+        record["furnishingCompletion"] = serde_json::to_value(completion).map_err(|_| err("NATIVE_JOURNAL_INVALID"))?;
+        write_json(root, "state.json", &record)?;
+    } else {
+        write_json(root, "state.json", context)?;
+    }
+    File::open(root).and_then(|file| file.sync_all()).map_err(|_| err("STATE_UNAVAILABLE"))
+}
+
+fn consume_furnishing_completion(root: &Path, prior: &Binding, next: &str) -> Result<()> {
+    let invalid = || err(furnishing_lifecycle::ERROR);
+    let (context, completion) = read_run(root, &prior.generation)?;
+    let mut proof = completion.ok_or_else(invalid)?;
+    if !installations::uuid(next) || next == prior.generation || proof.consumed_by.is_some()
+        || proof.binding_sha256 != prior.sha256()? || context.state != "stopped"
+        || context.failure_code.is_some() || context.exits.get("postgres") != Some(&0)
+        || context.node_pid.is_some() || context.postgres_pid.is_some() || context.auxiliary_pid.is_some()
+        || (prior.phase == Phase::Clean && context.exits.get("node") != Some(&0))
+        || (prior.phase == Phase::ActivatedRestore && context.exits.contains_key("node"))
+        || prior.phase == Phase::Active
+    {
+        return Err(invalid());
+    }
+    proof.consumed_by = Some(next.into());
+    write_run(&root.join("native-runs").join(&prior.generation), &context, Some(proof))
 }
 
 pub struct Session {
@@ -276,6 +350,12 @@ pub struct Session {
     local_authority: Option<LocalAuthority>,
     owner_channel: Option<owner_channel::Connection>,
     furnishing_writer_lifetime: Option<furnishing_lifetime::WriterLifetime>,
+    furnishing_binding: Option<Binding>,
+    furnishing_drain_attempted: bool,
+    furnishing_drain_ack: bool,
+    furnishing_drain_deadline: Option<Instant>,
+    furnishing_clean_checked: bool,
+    furnishing_keep_fences: bool,
     fresh_oex_test: bool,
     normal_oex_selected: bool,
     fresh_oex_started: bool,
@@ -315,33 +395,9 @@ fn exists(path: &Path) -> Result<bool> {
 /// Read-only orphan guard. Callers must hold the root operation fence; it does
 /// not inspect environment credentials, start a process, or confer authority.
 pub(crate) fn check_interrupted_root(root: &Path) -> Result<()> {
-    let pointer = root.join("native-current-run.json");
-    if exists(&pointer)? {
-        let current: Current = serde_json::from_slice(&installation_backup::source_bytes(
-            root,
-            "native-current-run.json",
-            4096,
-            true,
-        )?)
-        .map_err(|_| err("NATIVE_JOURNAL_INVALID"))?;
-        if current.format != 1
-            || Uuid::parse_str(&current.id)
-                .ok()
-                .is_none_or(|id| id.to_string() != current.id)
-        {
-            return Err(err("NATIVE_JOURNAL_INVALID"));
-        }
-        let relative = format!("native-runs/{}/state.json", current.id);
-        let prior: Context = serde_json::from_slice(&installation_backup::source_bytes(
-            root,
-            &relative,
-            8192,
-            true,
-        )?)
-        .map_err(|_| err("NATIVE_JOURNAL_INVALID"))?;
-        if prior.format != 1
-            || prior.job_id.as_deref() != Some(&current.id)
-            || [prior.postgres_pid, prior.node_pid, prior.auxiliary_pid]
+    if let Some(current) = current_run(root)? {
+        let (prior, _) = read_run(root, &current.id)?;
+        if [prior.postgres_pid, prior.node_pid, prior.auxiliary_pid]
                 .into_iter()
                 .flatten()
                 .any(alive)
@@ -381,13 +437,8 @@ pub(crate) fn check_cold_transition_root(root: &Path, drained_failure: Option<&s
     if exists(&root.join("native-database/postmaster.pid"))? {
         return Err(cold());
     }
-    let current: Current = serde_json::from_slice(&installation_backup::source_bytes(
-        root, "native-current-run.json", 4096, true,
-    )?).map_err(|_| cold())?;
-    let relative = format!("native-runs/{}/state.json", current.id);
-    let prior: Context = serde_json::from_slice(&installation_backup::source_bytes(
-        root, &relative, 8192, true,
-    )?).map_err(|_| cold())?;
+    let current = current_run(root).map_err(|_| cold())?.ok_or_else(cold)?;
+    let (prior, _) = read_run(root, &current.id).map_err(|_| cold())?;
     let terminal = if let Some(confirmed) = drained_failure {
         prior.state == "failed" && confirmed == current.id
     } else {
@@ -635,6 +686,12 @@ impl Session {
             local_authority: None,
             owner_channel: None,
             furnishing_writer_lifetime: None,
+            furnishing_binding: None,
+            furnishing_drain_attempted: false,
+            furnishing_drain_ack: false,
+            furnishing_drain_deadline: None,
+            furnishing_clean_checked: false,
+            furnishing_keep_fences: false,
             fresh_oex_test: false,
             normal_oex_selected: false,
             fresh_oex_started: false,
@@ -690,10 +747,44 @@ impl Session {
         Ok(Some(FurnishingStart::Reopen))
     }
 
+    fn furnishing_binding_for(&self, generation: String, phase: Phase, admission_kind: Admission) -> Result<Binding> {
+        let (workspace_id, tenant_id, principal_id) = self.service.personal_identity()?;
+        let payload = self.payload.context();
+        let physical = self.furnishing_writer_lifetime.as_ref()
+            .ok_or_else(|| err(furnishing_lifecycle::ERROR))?.identity()?;
+        Ok(Binding {
+            version: 1, phase, generation, previous_generation: None, admission_kind,
+            owner: FurnishingOwner { workspace_id, tenant_id, principal_id, owner_uid: unsafe { libc::geteuid() } },
+            source_commit: payload.source_commit, producer_sha256: self.payload.producer_sha256().into(),
+            payload_manifest_sha256: payload.manifest_sha256, catalog: 37, physical, restore: None,
+        })
+    }
+
+    fn publish_current(&self, furnishing: Option<Binding>) -> Result<()> {
+        if let Some(binding) = &furnishing {
+            binding.check()?;
+            self.check_native_observation_fence()?;
+            let lifetime = self.furnishing_writer_lifetime.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+            if lifetime.identity()? != binding.physical { return Err(err(furnishing_lifecycle::ERROR)); }
+        }
+        let current = Current { format: 1, id: self.job_id.clone().ok_or_else(|| err("NATIVE_JOURNAL_INVALID"))?, furnishing };
+        write_json(&self.service.root, "native-current-run.json", &current)?;
+        File::open(&self.service.root).and_then(|file| file.sync_all()).map_err(|_| err("STATE_UNAVAILABLE"))
+    }
+
+    fn active_furnishing_binding(&self) -> Option<&Binding> {
+        self.furnishing_binding.as_ref().filter(|binding| binding.phase == Phase::Active
+            && self.job_id.as_deref() == Some(binding.generation.as_str()))
+    }
+
     fn verify_workspace_furnishing_ledger(&mut self) -> Result<()> {
+        self.verify_furnishing_ledger_before(Instant::now() + Duration::from_secs(60))
+    }
+
+    fn verify_furnishing_ledger_before(&mut self, deadline: Instant) -> Result<()> {
         let catalog = self.payload.workspace_furnishing_catalog()?.ok_or_else(|| err("NATIVE_RUNTIME_UNQUALIFIED"))?;
         let expected = self.payload.workspace_furnishing_ledger(catalog)?;
-        let observed = self.query_database("exhibitos", "SELECT name,sha256 FROM public.schema_migrations ORDER BY name")?;
+        let observed = self.query_database_before("exhibitos", "SELECT name,sha256 FROM public.schema_migrations ORDER BY name", deadline)?;
         if observed != expected { return Err(err("NATIVE_WORKSPACE_FURNISHING_CATALOG")); }
         Ok(())
     }
@@ -705,10 +796,17 @@ impl Session {
         if self.status()?.state != "database_ready" || self.node.is_some() || self.auxiliary.is_some() {
             return Err(err("NATIVE_QUIESCENCE_UNCONFIRMED"));
         }
+        self.verify_furnishing_db_quiescence(Instant::now() + Duration::from_secs(60))
+    }
+
+    fn verify_furnishing_db_quiescence(&mut self, deadline: Instant) -> Result<()> {
+        if self.postgres.is_none() || self.node.is_some() || self.auxiliary.is_some() {
+            return Err(err("NATIVE_QUIESCENCE_UNCONFIRMED"));
+        }
         self.check_native_observation_fence()?;
         self.furnishing_writer_lifetime.as_ref().ok_or_else(|| err("NATIVE_FURNISHING_WRITER_LOCK_INVALID"))?.identity()?;
-        self.verify_workspace_furnishing_ledger()?;
-        if self.query_database("exhibitos", "SELECT NOT EXISTS (SELECT 1 FROM public.workspace_furnishing_intakes WHERE worker_token IS NOT NULL)")? != "t" {
+        self.verify_furnishing_ledger_before(deadline)?;
+        if self.query_database_before("exhibitos", "SELECT NOT EXISTS (SELECT 1 FROM public.workspace_furnishing_intakes WHERE worker_token IS NOT NULL)", deadline)? != "t" {
             return Err(err("NATIVE_FURNISHING_WRITER_CLAIM_PENDING"));
         }
         Ok(())
@@ -868,12 +966,19 @@ const { isDeepStrictEqual } = require('node:util');
     }
     fn record(&self) -> Result<()> {
         if let Some(run) = &self.run {
-            write_json(run, "state.json", &self.snapshot())?;
-            File::open(run)
-                .and_then(|f| f.sync_all())
-                .map_err(|_| err("STATE_UNAVAILABLE"))?;
+            write_run(run, &self.snapshot(), None)?;
         }
         Ok(())
+    }
+    fn seal_furnishing_completion(&self, binding: &Binding) -> Result<()> {
+        self.check_native_observation_fence()?;
+        if self.job_id.as_deref() != Some(binding.generation.as_str()) {
+            return Err(err(furnishing_lifecycle::ERROR));
+        }
+        let run = self.run.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+        write_run(run, &self.snapshot(), Some(FurnishingCompletion {
+            binding_sha256: binding.sha256()?, consumed_by: None,
+        }))
     }
     fn poll(&mut self) -> Result<bool> {
         let mut changed = false;
@@ -1078,13 +1183,18 @@ const { isDeepStrictEqual } = require('node:util');
         self.query_database("postgres", sql)
     }
     fn query_database(&mut self, database: &str, sql: &str) -> Result<String> {
+        self.query_database_before(database, sql, Instant::now() + Duration::from_secs(60))
+    }
+    fn query_database_before(&mut self, database: &str, sql: &str, deadline: Instant) -> Result<String> {
+        let timeout = deadline.checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero()).ok_or_else(|| err("NATIVE_DATABASE_UNAVAILABLE"))?;
         let password = self
             .environment
             .0
             .get("POSTGRES_PASSWORD")
             .ok_or_else(|| err("NATIVE_CONFIGURATION_INVALID"))?
             .clone();
-        let (code, bytes) = self.auxiliary(
+        let (code, bytes) = self.auxiliary_timed(
             self.pg_tool("psql")?,
             vec![
                 "-h".into(),
@@ -1103,7 +1213,7 @@ const { isDeepStrictEqual } = require('node:util');
                 sql.into(),
             ],
             vec![("PGPASSWORD", password)],
-            None,
+            None, timeout,
         )?;
         if code != 0 {
             return Err(err("NATIVE_DATABASE_UNAVAILABLE"));
@@ -1127,7 +1237,9 @@ const { isDeepStrictEqual } = require('node:util');
         }
         let reopen_import = self.payload.workspace_import_version()
             .filter(|_| services && !self.normal_oex_selected);
-        let furnishing = if services { self.workspace_furnishing_start()? } else { None };
+        let furnishing = self.active_furnishing_binding().map(|binding| {
+            if binding.admission_kind == Admission::FreshEmpty { FurnishingStart::Initialize } else { FurnishingStart::Reopen }
+        });
         let require_existing = reopen_import.is_some() || furnishing == Some(FurnishingStart::Reopen);
         let database = self.service.root.join("native-database");
         if !exists(&database)? {
@@ -1292,7 +1404,16 @@ const { isDeepStrictEqual } = require('node:util');
             // Ordinary reopen has no selected owner channel or claim.
             self.check_oex_catalog_ledger(version.into())?;
         }
-        if furnishing == Some(FurnishingStart::Reopen) { self.verify_workspace_furnishing_ledger()?; }
+        if furnishing == Some(FurnishingStart::Reopen) {
+            self.verify_workspace_furnishing_ledger()?;
+            let restore_system = self.active_furnishing_binding().and_then(|binding| binding.restore.as_ref())
+                .map(|restore| restore.target_system_identifier.clone());
+            if let Some(expected) = restore_system {
+                if self.query_database("exhibitos", "SELECT system_identifier::text FROM pg_control_system()")? != expected {
+                    return Err(err(furnishing_lifecycle::ERROR));
+                }
+            }
+        }
         self.state = "starting_services".into();
         self.record()?;
         let mut environment = vec![
@@ -1401,7 +1522,8 @@ const { isDeepStrictEqual } = require('node:util');
             let mut channel = setup.handshake(authority, generation, &self.cancellation)?;
             if let Some(lease) = furnishing_lease {
                 let cancellation = self.cancellation.clone();
-                channel.bind_furnishing_lease(&lease, &cancellation, &mut || {
+                let binding = self.active_furnishing_binding().ok_or_else(|| err(furnishing_lifecycle::ERROR))?.clone();
+                channel.bind_ordinary_furnishing(&lease, &binding, &cancellation, &mut || {
                     self.check_native_observation_fence()?;
                     self.poll()?;
                     if self.node.is_none() || self.postgres.is_none() {
@@ -1526,17 +1648,54 @@ const { isDeepStrictEqual } = require('node:util');
                 self.service.native_start_environment(&self.payload, self.ports)?,
             );
         }
-        // Check before publishing a new current pointer, including orphaned jobs.
+        // Keep the last writer binding when a DB-only job rotates the diagnostic pointer.
         check_interrupted_root(&self.service.root)?;
-        if self.payload.workspace_furnishing_validation()? {
+        let prior = current_run(&self.service.root)?;
+        let id = Uuid::new_v4().to_string();
+        let prior_binding = prior.as_ref().and_then(|current| current.furnishing.clone());
+        let catalog = self.payload.workspace_furnishing_catalog()?;
+        let mut binding = prior_binding.clone();
+        if catalog == Some(WorkspaceFurnishingCatalog::Writer037) {
             self.check_native_observation_fence()?;
-            // A new generation always acquires a distinct open description.
-            // Closing our prior FD cannot unlock a writer descendant's copy.
+            let has_database = exists(&self.service.root.join("native-database"))?;
+            let start = if services { self.workspace_furnishing_start()? } else { None };
+            let create_lock = match start {
+                Some(FurnishingStart::Initialize) if prior.is_none() && !has_database => true,
+                Some(FurnishingStart::Reopen) if has_database && prior_binding.is_some() => false,
+                None if !services => prior_binding.is_none() && !has_database,
+                _ => return Err(err(furnishing_lifecycle::ERROR)),
+            };
             self.furnishing_writer_lifetime = None;
-            self.furnishing_writer_lifetime = Some(furnishing_lifetime::WriterLifetime::acquire(&self.service.root)?);
+            self.furnishing_writer_lifetime = Some(if create_lock {
+                furnishing_lifetime::WriterLifetime::acquire(&self.service.root)?
+            } else {
+                furnishing_lifetime::WriterLifetime::acquire_existing(&self.service.root)?
+            });
+            let mut active = self.furnishing_binding_for(id.clone(), Phase::Active, Admission::FreshEmpty)?;
+            if services {
+                match start {
+                    Some(FurnishingStart::Initialize) => (),
+                    Some(FurnishingStart::Reopen) => {
+                        active.consume(prior_binding.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?)?;
+                        if let Some(proof) = &active.restore {
+                            crate::installations::native_restore::verify_ordinary_activation(
+                                &self.service.root, &proof.id, &proof.backup_id, &proof.archive_manifest_sha256,
+                                &proof.target_system_identifier, &active.payload_manifest_sha256,
+                            )?;
+                        }
+                    }
+                    _ => return Err(err(furnishing_lifecycle::ERROR)),
+                }
+                binding = Some(active);
+            } else if let Some(prior) = &prior_binding {
+                if prior.phase == Phase::Active || !active.same_installation(prior) {
+                    return Err(err(furnishing_lifecycle::ERROR));
+                }
+            }
+        } else if catalog.is_some() || prior_binding.is_some() {
+            return Err(err(furnishing_lifecycle::ERROR));
         }
         let parent = directory(&self.service.root, "native-runs")?;
-        let id = Uuid::new_v4().to_string();
         let run = directory(&parent, &id)?;
         let file = private_options()
             .open(run.join("process.log"))
@@ -1551,16 +1710,22 @@ const { isDeepStrictEqual } = require('node:util');
         self.exits.clear();
         self.node_started.store(false, Ordering::SeqCst);
         self.node_drain_requested = false;
+        self.furnishing_drain_attempted = false;
+        self.furnishing_drain_ack = false;
+        self.furnishing_drain_deadline = None;
+        self.furnishing_clean_checked = false;
+        self.furnishing_keep_fences = false;
         self.state = "starting".into();
         self.record()?;
-        write_json(
-            &self.service.root,
-            "native-current-run.json",
-            &Current { format: 1, id },
-        )?;
-        File::open(&self.service.root)
-            .and_then(|f| f.sync_all())
-            .map_err(|_| err("STATE_UNAVAILABLE"))?;
+        // No process or mutable bootstrap may start before Active is durable.
+        if services {
+            if let Some(prior) = &prior_binding {
+                let generation = self.job_id.as_deref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+                consume_furnishing_completion(&self.service.root, prior, generation)?;
+            }
+        }
+        self.publish_current(binding.clone())?;
+        self.furnishing_binding = binding;
         // The current pointer now describes this owned attempt; it has no PIDs yet.
         let result = self.start_inner(services);
         if let Err(error) = result {
@@ -1570,6 +1735,99 @@ const { isDeepStrictEqual } = require('node:util');
         }
         Ok(self.snapshot())
     }
+    fn request_node_drain(&mut self, deadline: Instant) -> Result<()> {
+        if self.active_furnishing_binding().is_some() && !self.furnishing_drain_attempted {
+            self.furnishing_drain_attempted = true;
+            if let Some(mut channel) = self.owner_channel.take() {
+                let cancellation = self.cancellation.clone();
+                let physical = self.active_furnishing_binding().ok_or_else(|| err(furnishing_lifecycle::ERROR))?.physical;
+                self.furnishing_drain_ack = channel.drain_ordinary_furnishing(
+                    deadline.min(Instant::now() + Duration::from_secs(20)), &cancellation,
+                    &mut || {
+                        self.check_native_observation_fence()?;
+                        let lifetime = self.furnishing_writer_lifetime.as_ref()
+                            .ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+                        if lifetime.identity()? != physical { return Err(err(furnishing_lifecycle::ERROR)); }
+                        Ok(())
+                    },
+                ).is_ok();
+                if self.furnishing_drain_ack {
+                    self.owner_channel = Some(channel);
+                    self.node_drain_requested = true;
+                    self.furnishing_drain_deadline = Some(deadline);
+                }
+            }
+        }
+        if self.furnishing_drain_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            self.furnishing_drain_ack = false;
+        }
+        if !self.furnishing_drain_ack {
+            if let Some(node) = self.node.as_mut() {
+                node.signal()?;
+                self.node_drain_requested |= node.term_delivered;
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_furnishing_clean_stop(&mut self, deadline: Instant) -> Result<()> {
+        if self.active_furnishing_binding().is_none() || self.furnishing_clean_checked {
+            return Ok(());
+        }
+        if !self.furnishing_drain_ack || self.exits.get("node") != Some(&0) || self.failure.is_some() {
+            return Err(err(furnishing_lifecycle::ERROR));
+        }
+        let deadline = self.furnishing_drain_deadline.map_or(deadline, |drain| drain.min(deadline));
+        self.verify_furnishing_db_quiescence(deadline)?;
+        self.furnishing_clean_checked = true;
+        Ok(())
+    }
+
+    pub(crate) fn stop_with_furnishing_activation_fences(&mut self) -> Result<Context> {
+        if self.payload.workspace_furnishing_catalog()? == Some(WorkspaceFurnishingCatalog::Writer037) {
+            if self.furnishing_binding.as_ref().is_some_and(|binding| binding.phase != Phase::ActivatedRestore)
+                || self.state != "database_ready" {
+                return Err(err(furnishing_lifecycle::ERROR));
+            }
+            self.verify_furnishing_db_quiescence(Instant::now() + Duration::from_secs(60))?;
+            self.furnishing_keep_fences = true;
+        }
+        self.stop()
+    }
+
+    pub(crate) fn record_furnishing_activation(
+        &mut self, id: &str, backup_id: &str, archive_manifest_sha256: &str, target_system_identifier: &str,
+    ) -> Result<()> {
+        if self.payload.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::Writer037) {
+            return Ok(());
+        }
+        if !self.furnishing_keep_fences || self.any_owned() || self.state != "stopped"
+            || self.exits.get("postgres") != Some(&0)
+            || self.exits.contains_key("node")
+        {
+            return Err(err(furnishing_lifecycle::ERROR));
+        }
+        let generation = self.job_id.clone().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+        let mut restored = self.furnishing_binding_for(generation, Phase::ActivatedRestore, Admission::VerifiedRestore)?;
+        restored.restore = Some(FurnishingRestore {
+            id: id.into(), backup_id: backup_id.into(), archive_manifest_sha256: archive_manifest_sha256.into(),
+            target_system_identifier: target_system_identifier.into(),
+        });
+        if let Some(prior) = &self.furnishing_binding {
+            if prior.phase != Phase::ActivatedRestore || prior.restore != restored.restore || !restored.same_installation(prior) {
+                return Err(err(furnishing_lifecycle::ERROR));
+            }
+            // An interrupted activation may resume the same pending plan only.
+            restored = prior.clone();
+        }
+        if self.furnishing_binding.is_none() {
+            self.seal_furnishing_completion(&restored)?;
+        }
+        self.publish_current(Some(restored.clone()))?;
+        self.furnishing_binding = Some(restored);
+        Ok(())
+    }
+
     /// Stop and reap the owned API/worker process while retaining PostgreSQL
     /// and the root operation fence for the authenticated backup transaction.
     /// No successful quiescence is reported while an owned writer remains.
@@ -1602,13 +1860,13 @@ const { isDeepStrictEqual } = require('node:util');
             if self.cancelled() {
                 return Err(err("NATIVE_CANCELLED"));
             }
-            if let Some(node) = self.node.as_mut() {
-                node.signal()?;
-                self.node_drain_requested |= node.term_delivered;
+            if self.node.is_some() {
+                self.request_node_drain(deadline)?;
             } else {
                 if !clean_node_quiescence(service_expected, self.node_drain_requested, &self.exits) {
                     return Err(err("NATIVE_QUIESCENCE_UNCONFIRMED"));
                 }
+                self.verify_furnishing_clean_stop(deadline)?;
                 self.state = "database_ready".into();
                 self.record()?;
                 return Ok(self.snapshot());
@@ -1901,42 +2159,65 @@ const { isDeepStrictEqual } = require('node:util');
             }
         }
     }
+    fn advance_stop(&mut self, deadline: Instant) -> Result<bool> {
+        let changed = self.poll()?;
+        if let Some(child) = self.auxiliary.as_mut() {
+            child.signal()?;
+        } else if self.node.is_some() {
+            self.request_node_drain(deadline)?;
+        } else if self.postgres.is_some() {
+            if let Err(error) = self.verify_furnishing_clean_stop(deadline) {
+                self.failure.get_or_insert(error.code);
+            }
+            if self.auxiliary.is_none() {
+                if let Some(child) = self.postgres.as_mut() { child.signal()?; }
+            }
+        } else {
+            if self.active_furnishing_binding().is_some()
+                && (!self.furnishing_clean_checked || self.exits.get("postgres") != Some(&0))
+            {
+                self.failure.get_or_insert_with(|| furnishing_lifecycle::ERROR.into());
+            }
+            self.state = if self.failure.is_some() { "failed" } else { "stopped" }.into();
+            if let Err(error) = self.record() {
+                self.state = "stopping".into();
+                return Err(error);
+            }
+            if self.furnishing_clean_checked && self.failure.is_none() && self.exits.get("postgres") == Some(&0) {
+                if let Some(active) = self.active_furnishing_binding() {
+                    let mut clean = active.clone();
+                    clean.phase = Phase::Clean;
+                    if let Err(error) = self.seal_furnishing_completion(&clean)
+                        .and_then(|()| self.publish_current(Some(clean.clone()))) {
+                        self.state = "stopping".into();
+                        return Err(error);
+                    }
+                    self.furnishing_binding = Some(clean);
+                }
+            }
+            if !self.furnishing_keep_fences {
+                self.furnishing_writer_lifetime = None;
+                if self.transition_fence.is_none() { self.guard = None; }
+            }
+            self.local_authority = None;
+            return Ok(true);
+        }
+        if changed { let _ = self.record(); }
+        Ok(false)
+    }
+
     pub fn stop(&mut self) -> Result<Context> {
+        if self.furnishing_binding.is_some() && !self.any_owned()
+            && matches!(self.state.as_str(), "stopped" | "failed")
+        {
+            return Ok(self.snapshot());
+        }
         self.state = "stopping".into();
         self.readiness = Readiness::default();
         let _ = self.record();
         let deadline = Instant::now() + Duration::from_secs(25);
         loop {
-            let changed = self.poll()?;
-            if let Some(child) = self.auxiliary.as_mut() {
-                child.signal()?;
-            } else if let Some(child) = self.node.as_mut() {
-                child.signal()?;
-                self.node_drain_requested |= child.term_delivered;
-            } else if let Some(child) = self.postgres.as_mut() {
-                child.signal()?;
-            } else {
-                self.state = if self.failure.is_some() {
-                    "failed"
-                } else {
-                    "stopped"
-                }
-                .into();
-                if let Err(error) = self.record() {
-                    self.state = "stopping".into();
-                    return Err(error);
-                }
-                if self.transition_fence.is_none() {
-                    self.guard = None;
-                }
-                self.furnishing_writer_lifetime = None;
-                self.local_authority = None;
-                return Ok(self.snapshot());
-            }
-            if changed {
-                let _ = self.record();
-            }
-            if Instant::now() >= deadline {
+            if self.advance_stop(deadline)? || Instant::now() >= deadline {
                 return Ok(self.snapshot());
             }
             thread::sleep(Duration::from_millis(100));
@@ -1956,32 +2237,7 @@ const { isDeepStrictEqual } = require('node:util');
     pub fn status(&mut self) -> Result<Context> {
         self.poll()?;
         if self.state == "stopping" {
-            // Advance ordered shutdown without waiting a full stop deadline
-            // inside an IPC status request. The ownership fence stays held.
-            if let Some(child) = self.auxiliary.as_mut() {
-                child.signal()?;
-            } else if let Some(child) = self.node.as_mut() {
-                child.signal()?;
-                self.node_drain_requested |= child.term_delivered;
-            } else if let Some(child) = self.postgres.as_mut() {
-                child.signal()?;
-            } else {
-                self.state = if self.failure.is_some() {
-                    "failed"
-                } else {
-                    "stopped"
-                }
-                .into();
-                if let Err(error) = self.record() {
-                    self.state = "stopping".into();
-                    return Err(error);
-                }
-                if self.transition_fence.is_none() {
-                    self.guard = None;
-                }
-                self.furnishing_writer_lifetime = None;
-                self.local_authority = None;
-            }
+            self.advance_stop(Instant::now() + Duration::from_secs(20))?;
             return Ok(self.snapshot());
         }
         if (matches!(self.state.as_str(), "ready" | "unavailable")

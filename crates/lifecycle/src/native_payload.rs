@@ -1151,6 +1151,9 @@ impl Payload {
             official_signed: self.manifest.official_signed,
         }
     }
+    pub(crate) fn producer_sha256(&self) -> &str {
+        &self.manifest.producer_sha256
+    }
     pub fn node(&self) -> PathBuf {
         self.root.join(&self.manifest.entry.node)
     }
