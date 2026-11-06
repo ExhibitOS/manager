@@ -145,7 +145,7 @@ public enum NativeImagePreparation {
                     let profile = selectedAlgorithm == iccAlgorithm ? try embeddedICC(input.jpeg, isCurrent: isCurrent) : nil
                     if selectedAlgorithm == iccAlgorithm && profile == nil { throw Failure.unsupportedJPEG }
                     return try prepareImage(input, profile: profile, allowSpatialSampling: sampling.boolValue,
-                        isCurrent: isCurrent)
+                        isCurrent: isCurrent).image
                 }
                 images.append(image)
             }
@@ -164,10 +164,13 @@ public enum NativeImagePreparation {
         let width: Int
         let height: Int
     }
+    private typealias PNGEncoder = (Data, Int, Int, @Sendable () -> Bool) throws -> Data
+
     private static func prepareImage(_ input: Source, profile: Data?, allowSpatialSampling: Bool,
                                      sourceSize: Size? = nil, outputSize: Size? = nil,
                                      maximumEdge: Int = 2048, maximumPixels: Int = 4_194_304,
-                                     isCurrent: @Sendable () -> Bool) throws -> Image {
+                                     pngEncoder: PNGEncoder? = nil,
+                                     isCurrent: @Sendable () -> Bool) throws -> (image: Image, decodedPNGHash: String?) {
         let source = try decodeJPEG(input, profile: profile, expectedSize: sourceSize, isCurrent: isCurrent)
         let scale = min(1, 2048 / Double(max(source.width, source.height)))
         let width = outputSize?.width ?? max(1, Int(floor(Double(source.width) * scale)))
@@ -176,7 +179,9 @@ public enum NativeImagePreparation {
         guard !resized || allowSpatialSampling else { throw Failure.settings }
         let rgb = try resample(source.rgb, sourceWidth: source.width, sourceHeight: source.height,
             width: width, height: height, maximumEdge: maximumEdge, isCurrent: isCurrent)
-        let png = try encode(rgb, width: width, height: height, role: input.role, maximumEdge: maximumEdge, maximumPixels: maximumPixels, isCurrent: isCurrent)
+        let png = try pngEncoder?(rgb, width, height, isCurrent)
+            ?? encode(rgb, width: width, height: height, role: input.role, maximumEdge: maximumEdge,
+                maximumPixels: maximumPixels, isCurrent: isCurrent)
         let verified = try decodePNG(png, width: width, height: height, isCurrent: isCurrent)
         guard verified == rgb else { throw Failure.outputMismatch }
         let report = ImageReport(role: input.role, sourceImageIndex: input.imageIndex,
@@ -189,7 +194,7 @@ public enum NativeImagePreparation {
             colourMeaning: profile != nil ? "ICC-converted sRGB; not physical colour calibration" : (input.role == .baseColor ? "decoded source RGB codes; display sRGB assumed, not calibrated" : "linear numeric RGB codes; no transfer conversion"),
             sourceICCSHA256: profile.map(hash), colourTransferConverted: profile == nil ? nil : true,
             explicitBufferPayloadBytes: input.jpeg.count + source.samples.count + source.rgb.count + (profile == nil ? 0 : source.sourceRGB.count + source.width * source.height * 4) + rgb.count + png.count + verified.count)
-        return Image(png: png, report: report)
+        return (Image(png: png, report: report), pngEncoder == nil ? nil : hash(verified))
     }
     // Internal for the focused numeric recipe test; no format/registration API.
     static func resample(_ source: Data, sourceWidth: Int, sourceHeight: Int, width: Int, height: Int,
@@ -364,10 +369,15 @@ public enum NativeImagePreparation {
     }
     struct EncodedPNGLimit: Error {
         static let maximumBytes = 8_388_608
+        enum Stage: String {
+            case imageIO = "imageio-encoded-png"
+            case lossless = "lossless-encoded-png"
+        }
         let observedBytes: Int
+        let stage: Stage
     }
-    static func checkEncodedPNGSize(_ byteCount: Int) throws {
-        guard byteCount <= EncodedPNGLimit.maximumBytes else { throw EncodedPNGLimit(observedBytes: byteCount) }
+    static func checkEncodedPNGSize(_ byteCount: Int, stage: EncodedPNGLimit.Stage = .imageIO) throws {
+        guard byteCount <= EncodedPNGLimit.maximumBytes else { throw EncodedPNGLimit(observedBytes: byteCount, stage: stage) }
     }
 
     private static func encode(_ rgb: Data, width: Int, height: Int, role: Role,
@@ -439,7 +449,7 @@ public enum NativeImagePreparation {
         guard ended, result.count <= 8_388_608 else { throw Failure.encoding }
         return result
     }
-    private static func decodePNG(_ png: Data, width: Int, height: Int, isCurrent: @Sendable () -> Bool) throws -> Data {
+    static func decodePNG(_ png: Data, width: Int, height: Int, isCurrent: @Sendable () -> Bool) throws -> Data {
         try check(isCurrent)
         guard let source = CGImageSourceCreateWithData(png as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil), image.width == width, image.height == height else { throw Failure.outputMismatch }
@@ -526,6 +536,15 @@ extension NativeImagePreparation {
         let sourceIccSha256: String?
     }
 
+    private struct PrivatePaintingPNGEncoding: Encodable {
+        let algorithm = "png-rgb8-adaptive-zlib-v1"
+        let version = 1
+        let tool = "zlib"
+        let toolVersion = String(cString: zlibVersion())
+        let beforeRGB8SHA256: String
+        let afterRGB8SHA256: String
+    }
+
     private struct PrivatePaintingReceipt: Encodable {
         let recipeID = "native-private-demo-painting-rgb8"
         let recipeVersion = 1
@@ -538,6 +557,99 @@ extension NativeImagePreparation {
         let toolVersion: String
         let decoderOS = ProcessInfo.processInfo.operatingSystemVersionString
         let image: ImageReport
+        let pngEncoding: PrivatePaintingPNGEncoding?
+    }
+
+    /// The larger private Aristotle raster gets one deterministic adaptive
+    /// filter/DEFLATE pass. It never passes an oversize PNG to the consumer.
+    static func losslessPaintingPNG(_ rgb: Data, _ width: Int, _ height: Int,
+                                    _ isCurrent: @Sendable () -> Bool) throws -> Data {
+        guard (1...2419).contains(width), (1...2552).contains(height),
+              rgb.count == width * height * 3 else { throw Failure.limits }
+        let stride = width * 3
+        var filtered = Data(count: (stride + 1) * height)
+        try filtered.withUnsafeMutableBytes { destination in
+            try rgb.withUnsafeBytes { source in
+                let input = source.bindMemory(to: UInt8.self)
+                let output = destination.bindMemory(to: UInt8.self)
+                for y in 0..<height {
+                    try check(isCurrent)
+                    let row = y * stride
+                    let preceding = row - stride
+                    let filteredRow = y * (stride + 1)
+                    var scores = [0, 0, 0, 0, 0]
+                    for x in 0..<stride {
+                        let value = Int(input[row + x])
+                        let left = x >= 3 ? Int(input[row + x - 3]) : 0
+                        let above = y > 0 ? Int(input[preceding + x]) : 0
+                        let corner = y > 0 && x >= 3 ? Int(input[preceding + x - 3]) : 0
+                        for kind in scores.indices {
+                            let difference = value - pngPredictor(kind, left, above, corner)
+                            scores[kind] += abs(Int(Int8(truncatingIfNeeded: difference)))
+                        }
+                    }
+                    let filter = scores.indices.min { scores[$0] < scores[$1] }!
+                    output[filteredRow] = UInt8(filter)
+                    for x in 0..<stride {
+                        let left = x >= 3 ? Int(input[row + x - 3]) : 0
+                        let above = y > 0 ? Int(input[preceding + x]) : 0
+                        let corner = y > 0 && x >= 3 ? Int(input[preceding + x - 3]) : 0
+                        output[filteredRow + x + 1] = UInt8(truncatingIfNeeded: Int(input[row + x]) - pngPredictor(filter, left, above, corner))
+                    }
+                }
+            }
+        }
+        try check(isCurrent)
+        var length = compressBound(uLong(filtered.count))
+        var compressed = Data(count: Int(length))
+        let code = compressed.withUnsafeMutableBytes { output in
+            filtered.withUnsafeBytes { source in
+                compress2(output.bindMemory(to: Bytef.self).baseAddress, &length,
+                    source.bindMemory(to: Bytef.self).baseAddress, uLong(source.count), Z_BEST_COMPRESSION)
+            }
+        }
+        guard code == Z_OK else { throw Failure.encoding }
+        try check(isCurrent)
+        // Signature + IHDR + sRGB + IDAT overhead + IEND = 70 bytes.
+        try checkEncodedPNGSize(Int(length) + 70, stage: .lossless)
+        compressed.count = Int(length)
+        var png = Data([137, 80, 78, 71, 13, 10, 26, 10])
+        let header = pngWord(UInt32(width)) + pngWord(UInt32(height)) + Data([8, 2, 0, 0, 0])
+        appendPNGChunk("IHDR", header, to: &png)
+        appendPNGChunk("sRGB", Data([0]), to: &png)
+        appendPNGChunk("IDAT", compressed, to: &png)
+        appendPNGChunk("IEND", Data(), to: &png)
+        return png
+    }
+
+    private static func pngPredictor(_ filter: Int, _ left: Int, _ above: Int, _ corner: Int) -> Int {
+        switch filter {
+        case 0: return 0
+        case 1: return left
+        case 2: return above
+        case 3: return (left + above) / 2
+        default:
+            let estimate = left + above - corner
+            let leftDistance = abs(estimate - left), aboveDistance = abs(estimate - above), cornerDistance = abs(estimate - corner)
+            if leftDistance <= aboveDistance && leftDistance <= cornerDistance { return left }
+            return aboveDistance <= cornerDistance ? above : corner
+        }
+    }
+
+    private static func pngWord(_ value: UInt32) -> Data {
+        Data((0..<4).reversed().map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) })
+    }
+
+    private static func appendPNGChunk(_ name: String, _ bytes: Data, to output: inout Data) {
+        let type = Data(name.utf8)
+        let seed = type.withUnsafeBytes { crc32(0, $0.bindMemory(to: Bytef.self).baseAddress, uInt(type.count)) }
+        let crc = bytes.isEmpty ? seed : bytes.withUnsafeBytes {
+            crc32(seed, $0.bindMemory(to: Bytef.self).baseAddress, uInt(bytes.count))
+        }
+        output.append(pngWord(UInt32(bytes.count)))
+        output.append(type)
+        output.append(bytes)
+        output.append(pngWord(UInt32(crc)))
     }
 
     static func preparePrivatePainting(_ painting: PrivatePainting, jpeg: Data,
@@ -550,10 +662,11 @@ extension NativeImagePreparation {
         let dimensions = painting.outputDimensions
         let output = Size(width: dimensions.width, height: dimensions.height)
         let input = Source(role: .baseColor, imageIndex: 0, jpeg: jpeg, sha256: painting.sourceSHA256)
-        let image = try autoreleasepool {
+        let pngEncoder: PNGEncoder? = painting == .aristotle ? losslessPaintingPNG : nil
+        let (image, decodedPNGHash) = try autoreleasepool {
             try prepareImage(input, profile: profile, allowSpatialSampling: true,
                 sourceSize: painting.sourceSize, outputSize: output, maximumEdge: painting.maximumEdge,
-                maximumPixels: output.width * output.height, isCurrent: isCurrent)
+                maximumPixels: output.width * output.height, pngEncoder: pngEncoder, isCurrent: isCurrent)
         }
         guard image.report.sourceChannels == 3 else { throw Failure.unsupportedPixels }
 
@@ -567,7 +680,10 @@ extension NativeImagePreparation {
         encoder.outputFormatting = [.sortedKeys]
         let receipt = PrivatePaintingReceipt(sourceID: painting.rawValue, settings: painting.settings,
             settingsSHA256: hash(try painting.canonicalSettings()), colour: colour,
-            toolVersion: profile == nil ? toolVersion : iccToolVersion, image: image.report)
+            toolVersion: profile == nil ? toolVersion : iccToolVersion, image: image.report,
+            pngEncoding: decodedPNGHash.map {
+                PrivatePaintingPNGEncoding(beforeRGB8SHA256: image.report.outputRGB8SHA256, afterRGB8SHA256: $0)
+            })
         try check(isCurrent)
         return (image.png, try encoder.encode(receipt))
     }

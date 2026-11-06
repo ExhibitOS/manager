@@ -59,7 +59,7 @@ struct PreparePrivatePainting {
             try run()
         } catch let limit as NativeImagePreparation.EncodedPNGLimit {
             let maximum = NativeImagePreparation.EncodedPNGLimit.maximumBytes
-            let message = "PRIVATE_PAINTING_PREPARATION_FAILED: limits stage=imageio-encoded-png observedBytes=\(limit.observedBytes) limitBytes=\(maximum)\n"
+            let message = "PRIVATE_PAINTING_PREPARATION_FAILED: limits stage=\(limit.stage.rawValue) observedBytes=\(limit.observedBytes) limitBytes=\(maximum)\n"
             FileHandle.standardError.write(Data(message.utf8))
             exit(1)
         } catch {

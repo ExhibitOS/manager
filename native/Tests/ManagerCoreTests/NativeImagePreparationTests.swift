@@ -98,6 +98,23 @@ final class NativeImagePreparationTests: XCTestCase {
         return result
     }
     #if DEBUG
+    func testPrivatePaintingLosslessEncodingPreservesTwoAxisRGBAndChunks() throws {
+        let width = 19, height = 11
+        let rgb = Data((0..<(width * height * 3)).map {
+            UInt8(($0 % (width * 3) * 19 + $0 / (width * 3) * 29) % 251)
+        })
+        let png = try Prep.losslessPaintingPNG(rgb, width, height, { true })
+        XCTAssertEqual(chunkNames(png), ["IHDR", "sRGB", "IDAT", "IEND"])
+        XCTAssertEqual(try Prep.cleanPNG(png, width: width, height: height, role: .baseColor, isCurrent: { true }), png)
+        XCTAssertEqual(try Prep.decodePNG(png, width: width, height: height, isCurrent: { true }), rgb)
+        XCTAssertThrowsError(try Prep.losslessPaintingPNG(rgb, 2420, height, { true })) {
+            XCTAssertEqual($0 as? Prep.Failure, .limits)
+        }
+        XCTAssertThrowsError(try Prep.losslessPaintingPNG(rgb.dropLast(), width, height, { true })) {
+            XCTAssertEqual($0 as? Prep.Failure, .limits)
+        }
+    }
+
     func testPrivatePaintingProfilesPinFloorSizesAndCanonicalSettings() throws {
         let cases: [(Prep.PrivatePainting, Int, Int, String)] = [
             (.matterhorn, 1925, 2634, "ffa52ac59f13137456e5c9e82b2c1172bb962de250f9d87dfbc22e471214803a"),
