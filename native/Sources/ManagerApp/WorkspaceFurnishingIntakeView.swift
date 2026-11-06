@@ -29,7 +29,11 @@ struct WorkspaceFurnishingIntakeView: View {
     @State private var catalogCursor: String?
     @State private var target: WorkspaceFurnishingSummary?
     @State private var room = ""
-    @State private var x = "0", y = "0", z = "0", yaw = "0", scale = "1"
+    @State private var x = "0"
+    @State private var y = "0"
+    @State private var z = "0"
+    @State private var yaw = "0"
+    @State private var scale = "1"
     @State private var placementId = UUID().uuidString.lowercased()
 
     var body: some View {
