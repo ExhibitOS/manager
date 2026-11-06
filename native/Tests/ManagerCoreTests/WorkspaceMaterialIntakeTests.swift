@@ -37,6 +37,22 @@ final class WorkspaceMaterialIntakeTests: XCTestCase {
         }
     }
 
+    func testExactValidationManifestStillRequiresAuthenticatedNativeCapability() async throws {
+        let tenantId = UUID().uuidString
+        let manifest = "40ca49e65e769c4c034eea69300ff65ce8af46ef9b081a9a2b4b1ade12ed9415"
+        let api = try AuthoringAPI(port: 65535, tenantId: tenantId, nativeRuntimeManifestSHA256: manifest)
+        #if DEBUG
+        XCTAssertTrue(api.workspaceMaterialRuntimeQualified)
+        #else
+        XCTAssertFalse(api.workspaceMaterialRuntimeQualified)
+        #endif
+        let changed = try AuthoringAPI(port: 65535, tenantId: tenantId,
+            nativeRuntimeManifestSHA256: String(manifest.dropLast()) + "0")
+        XCTAssertFalse(changed.workspaceMaterialRuntimeQualified)
+        let admitted = await api.admitsWorkspaceMaterials
+        XCTAssertFalse(admitted)
+    }
+
     func testOnlyDefinitiveCreateRejectionsReleasePendingDeclaration() {
         let declaration = WorkspaceMaterialDeclaration(requestId: UUID().uuidString.lowercased(), kind: .floor,
             name: "Fixture", rights: ArtworkMetadata().rights, provenance: "Synthetic input", maps: [:])
