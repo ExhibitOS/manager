@@ -109,8 +109,10 @@ Operations:
   audio observation.
 - Workspace material intake requires a qualified native runtime and an ordinary
   authenticated owner session advertising `workspace-material-intake-v1`.
-  The runtime admission list is pending a verified package. The commands below
-  return `WORKSPACE_MATERIAL_UNAVAILABLE` until admission is configured.
+  Debug Manager accepts the exact local-validation v5 runtime from Platform
+  source `742412c152037c20a4c32e5ccce8535be46822aa`, with manifest SHA-256
+  `40ca49e65e769c4c034eea69300ff65ce8af46ef9b081a9a2b4b1ade12ed9415`.
+  Other packages and release builds return `WORKSPACE_MATERIAL_UNAVAILABLE`.
   - `workspace-material-intake-create` takes `kind` (`floor` or `wall`),
     `name`, `rights`, `provenance`, and `maps` in `command`. The outer
     request UUID is the create idempotency key. Use the same UUID and declaration

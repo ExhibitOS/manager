@@ -260,8 +260,15 @@ public actor AuthoringAPI {
     private let tenant: String
     private let transport: URLSession
     public nonisolated let admitsICCJPEG: Bool
-    // Admission remains closed until a reviewed native owner/runtime tuple is paired.
+    // This reviewed v5 tuple is a local-validation payload. Release admission
+    // requires separate package qualification.
+    #if DEBUG
+    private static let workspaceMaterialManifestPins: Set<String> = [
+        "40ca49e65e769c4c034eea69300ff65ce8af46ef9b081a9a2b4b1ade12ed9415"
+    ]
+    #else
     private static let workspaceMaterialManifestPins: Set<String> = []
+    #endif
     public nonisolated let workspaceMaterialRuntimeQualified: Bool
     private var nativeSession = false
     private var session: AuthoringSession?
