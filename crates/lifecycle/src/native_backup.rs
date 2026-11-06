@@ -177,6 +177,7 @@ impl AuthenticatedNativeBackup {
     fn observe_locked(&self, session: &mut Session, check_selection: &mut impl FnMut(&Path, &str, &Path) -> Result<()>) -> Result<NativeSourceEvidence> {
         check_selection(&self.profile_root, &self.installation_id, &self.source_root)?;
         self.check(session)?;
+        session.verify_workspace_furnishing_writer_quiescence()?;
         let observed = session.backup_tool(
             vec![
                 "check-source-inventory".into(),
@@ -408,6 +409,7 @@ impl InstallationController {
             drop(retained_key); drop(key);
             // No snapshot is taken until the actual owned API/worker is reaped.
             session.quiesce_for_backup()?;
+            session.verify_workspace_furnishing_writer_quiescence()?;
             let id = Uuid::new_v4().to_string();
             let directory = service.root.join(format!("native-backup-{id}"));
             new_directory(&directory)?;

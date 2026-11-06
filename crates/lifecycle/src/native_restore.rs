@@ -980,6 +980,7 @@ fn observe(
     budget: u64,
     scratch: &Path,
 ) -> Result<()> {
+    session.verify_workspace_furnishing_writer_quiescence()?;
     session.backup_tool(
         vec![
             "check-restored-inventory".into(),

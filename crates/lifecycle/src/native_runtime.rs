@@ -2,7 +2,7 @@
 //! Owned PostgreSQL/Node lifecycle for a prepared native installation. No shell,
 //! container engine, PATH lookup, PID adoption, or destructive recovery.
 use super::*;
-use super::{native_installation::Ports, native_payload::Payload};
+use super::{native_installation::Ports, native_payload::{Payload, WorkspaceFurnishingCatalog}};
 #[path = "native_runtime_oex_worker.rs"] mod oex_worker;
 #[path = "native_runtime_oex_worker_v2.rs"] mod oex_worker_v2;
 #[path = "native_runtime_oex_preflight.rs"] mod oex_preflight;
@@ -653,13 +653,13 @@ impl Session {
 
     fn workspace_furnishing_start(&self) -> Result<Option<FurnishingStart>> {
         use std::os::unix::fs::MetadataExt;
-        if !self.payload.workspace_furnishing_validation()? { return Ok(None); }
+        let Some(catalog) = self.payload.workspace_furnishing_catalog()? else { return Ok(None); };
         if self.normal_oex_selected || self.transition_fence.is_some() {
             return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
         }
         self.check_native_observation_fence()?;
         self.payload.recheck()?;
-        self.payload.workspace_furnishing_ledger()?;
+        self.payload.workspace_furnishing_ledger(catalog)?;
         let (workspace, tenant, principal) = self.service.personal_identity()?;
         let root = &self.service.root;
         let metadata = fs::symlink_metadata(root).map_err(|_| err("STATE_UNAVAILABLE"))?;
@@ -691,9 +691,26 @@ impl Session {
     }
 
     fn verify_workspace_furnishing_ledger(&mut self) -> Result<()> {
-        let expected = self.payload.workspace_furnishing_ledger()?;
+        let catalog = self.payload.workspace_furnishing_catalog()?.ok_or_else(|| err("NATIVE_RUNTIME_UNQUALIFIED"))?;
+        let expected = self.payload.workspace_furnishing_ledger(catalog)?;
         let observed = self.query_database("exhibitos", "SELECT name,sha256 FROM public.schema_migrations ORDER BY name")?;
         if observed != expected { return Err(err("NATIVE_WORKSPACE_FURNISHING_CATALOG")); }
+        Ok(())
+    }
+
+    pub(crate) fn verify_workspace_furnishing_writer_quiescence(&mut self) -> Result<()> {
+        if self.payload.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::Writer037) {
+            return Ok(());
+        }
+        if self.status()?.state != "database_ready" || self.node.is_some() || self.auxiliary.is_some() {
+            return Err(err("NATIVE_QUIESCENCE_UNCONFIRMED"));
+        }
+        self.check_native_observation_fence()?;
+        self.furnishing_writer_lifetime.as_ref().ok_or_else(|| err("NATIVE_FURNISHING_WRITER_LOCK_INVALID"))?.identity()?;
+        self.verify_workspace_furnishing_ledger()?;
+        if self.query_database("exhibitos", "SELECT NOT EXISTS (SELECT 1 FROM public.workspace_furnishing_intakes WHERE worker_token IS NOT NULL)")? != "t" {
+            return Err(err("NATIVE_FURNISHING_WRITER_CLAIM_PENDING"));
+        }
         Ok(())
     }
 
