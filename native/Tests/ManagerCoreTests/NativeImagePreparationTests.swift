@@ -97,6 +97,31 @@ final class NativeImagePreparationTests: XCTestCase {
         }
         return result
     }
+    #if DEBUG
+    func testPrivatePaintingProfilesPinFloorSizesAndCanonicalSettings() throws {
+        let cases: [(Prep.PrivatePainting, Int, Int, String)] = [
+            (.matterhorn, 1925, 2634, "ffa52ac59f13137456e5c9e82b2c1172bb962de250f9d87dfbc22e471214803a"),
+            (.aristotle, 2419, 2552, "ff901dcbbd35c64520edcfd5ec8e2777fae9d84ea709d37733d8fe6c89d4afdd"),
+            (.fishing, 2135, 1361, "efe4a921875cd7b2375bbdc269357ca5955560473c1f50009a56c3b4fdd59a2a"),
+        ]
+        XCTAssertEqual(Prep.PrivatePainting.allCases.count, cases.count)
+        for (painting, width, height, settingsSHA256) in cases {
+            XCTAssertEqual(painting.outputDimensions.width, width)
+            XCTAssertEqual(painting.outputDimensions.height, height)
+            let canonicalSettings = try painting.canonicalSettings()
+            XCTAssertEqual(hash(canonicalSettings), settingsSHA256)
+            // A private profile cannot authorize arbitrary ordinary preparation.
+            XCTAssertThrowsError(try Prep.prepareSynchronously(sources: [source(try jpeg())],
+                binding: binding(canonicalSettings), settingsBytes: canonicalSettings, isCurrent: { true })) {
+                XCTAssertEqual($0 as? Prep.Failure, .settings)
+            }
+        }
+        let forged = Data(count: Prep.PrivatePainting.matterhorn.sourceBytes)
+        XCTAssertThrowsError(try Prep.preparePrivatePainting(.matterhorn, jpeg: forged, isCurrent: { true })) {
+            XCTAssertEqual($0 as? Prep.Failure, .binding)
+        }
+    }
+    #endif
     func testManyConsecutiveIDATChunksKeepTheExactCompressedStream() throws {
         let candidate = try Prep.prepareSynchronously(sources: [source(try jpeg())], binding: binding(), settingsBytes: settings, isCurrent: { true })
         let png = try XCTUnwrap(candidate.images.first?.png), parts = chunks(png)

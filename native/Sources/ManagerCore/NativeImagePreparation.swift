@@ -144,28 +144,8 @@ public enum NativeImagePreparation {
                 let image = try autoreleasepool {
                     let profile = selectedAlgorithm == iccAlgorithm ? try embeddedICC(input.jpeg, isCurrent: isCurrent) : nil
                     if selectedAlgorithm == iccAlgorithm && profile == nil { throw Failure.unsupportedJPEG }
-                    let source = try decodeJPEG(input, profile: profile, isCurrent: isCurrent)
-                    let scale = min(1, 2048 / Double(max(source.width, source.height)))
-                    let width = max(1, Int(floor(Double(source.width) * scale)))
-                    let height = max(1, Int(floor(Double(source.height) * scale)))
-                    let resized = width != source.width || height != source.height
-                    guard !resized || sampling.boolValue else { throw Failure.settings }
-                    let rgb = try resample(source.rgb, sourceWidth: source.width, sourceHeight: source.height,
-                        width: width, height: height, isCurrent: isCurrent)
-                    let png = try encode(rgb, width: width, height: height, role: input.role, isCurrent: isCurrent)
-                    let verified = try decodePNG(png, width: width, height: height, isCurrent: isCurrent)
-                    guard verified == rgb else { throw Failure.outputMismatch }
-                    let report = ImageReport(role: input.role, sourceImageIndex: input.imageIndex,
-                        sourceJPEGSHA256: input.sha256, sourceBytes: input.jpeg.count,
-                        sourceWidth: source.width, sourceHeight: source.height, sourceChannels: source.channels,
-                        sourceDecodedSamplesSHA256: hash(source.samples), sourceRGB8SHA256: hash(source.sourceRGB),
-                        outputWidth: width, outputHeight: height, outputRGB8SHA256: hash(rgb),
-                        outputPNGSHA256: hash(png), outputBytes: png.count, spatialSampling: resized,
-                        grayExpandedToRGB: source.channels == 1,
-                        colourMeaning: profile != nil ? "ICC-converted sRGB; not physical colour calibration" : (input.role == .baseColor ? "decoded source RGB codes; display sRGB assumed, not calibrated" : "linear numeric RGB codes; no transfer conversion"),
-                        sourceICCSHA256: profile.map(hash), colourTransferConverted: profile == nil ? nil : true,
-                        explicitBufferPayloadBytes: input.jpeg.count + source.samples.count + source.rgb.count + (profile == nil ? 0 : source.sourceRGB.count + source.width * source.height * 4) + rgb.count + png.count + verified.count)
-                    return Image(png: png, report: report)
+                    return try prepareImage(input, profile: profile, allowSpatialSampling: sampling.boolValue,
+                        isCurrent: isCurrent)
                 }
                 images.append(image)
             }
@@ -179,11 +159,47 @@ public enum NativeImagePreparation {
             throw error
         }
     }
+    fileprivate struct Size: Equatable {
+        let width: Int
+        let height: Int
+    }
+    private static func prepareImage(_ input: Source, profile: Data?, allowSpatialSampling: Bool,
+                                     sourceSize: Size? = nil, outputSize: Size? = nil,
+                                     maximumEdge: Int = 2048, maximumPixels: Int = 4_194_304,
+                                     isCurrent: @Sendable () -> Bool) throws -> Image {
+        let source = try decodeJPEG(input, profile: profile, expectedSize: sourceSize, isCurrent: isCurrent)
+        let scale = min(1, 2048 / Double(max(source.width, source.height)))
+        let width = outputSize?.width ?? max(1, Int(floor(Double(source.width) * scale)))
+        let height = outputSize?.height ?? max(1, Int(floor(Double(source.height) * scale)))
+        let resized = width != source.width || height != source.height
+        guard !resized || allowSpatialSampling else { throw Failure.settings }
+        let rgb = try resample(source.rgb, sourceWidth: source.width, sourceHeight: source.height,
+            width: width, height: height, maximumEdge: maximumEdge, isCurrent: isCurrent)
+        let png = try encode(rgb, width: width, height: height, role: input.role, maximumEdge: maximumEdge, maximumPixels: maximumPixels, isCurrent: isCurrent)
+        let verified = try decodePNG(png, width: width, height: height, isCurrent: isCurrent)
+        guard verified == rgb else { throw Failure.outputMismatch }
+        let report = ImageReport(role: input.role, sourceImageIndex: input.imageIndex,
+            sourceJPEGSHA256: input.sha256, sourceBytes: input.jpeg.count,
+            sourceWidth: source.width, sourceHeight: source.height, sourceChannels: source.channels,
+            sourceDecodedSamplesSHA256: hash(source.samples), sourceRGB8SHA256: hash(source.sourceRGB),
+            outputWidth: width, outputHeight: height, outputRGB8SHA256: hash(rgb),
+            outputPNGSHA256: hash(png), outputBytes: png.count, spatialSampling: resized,
+            grayExpandedToRGB: source.channels == 1,
+            colourMeaning: profile != nil ? "ICC-converted sRGB; not physical colour calibration" : (input.role == .baseColor ? "decoded source RGB codes; display sRGB assumed, not calibrated" : "linear numeric RGB codes; no transfer conversion"),
+            sourceICCSHA256: profile.map(hash), colourTransferConverted: profile == nil ? nil : true,
+            explicitBufferPayloadBytes: input.jpeg.count + source.samples.count + source.rgb.count + (profile == nil ? 0 : source.sourceRGB.count + source.width * source.height * 4) + rgb.count + png.count + verified.count)
+        return Image(png: png, report: report)
+    }
     // Internal for the focused numeric recipe test; no format/registration API.
     static func resample(_ source: Data, sourceWidth: Int, sourceHeight: Int, width: Int, height: Int,
                          isCurrent: @Sendable () -> Bool) throws -> Data {
+        try resample(source, sourceWidth: sourceWidth, sourceHeight: sourceHeight, width: width, height: height,
+                     maximumEdge: 2048, isCurrent: isCurrent)
+    }
+    private static func resample(_ source: Data, sourceWidth: Int, sourceHeight: Int, width: Int, height: Int,
+                                 maximumEdge: Int, isCurrent: @Sendable () -> Bool) throws -> Data {
         guard (1...4096).contains(sourceWidth), (1...4096).contains(sourceHeight),
-              (1...2048).contains(width), (1...2048).contains(height), width <= sourceWidth, height <= sourceHeight,
+              (1...maximumEdge).contains(width), (1...maximumEdge).contains(height), width <= sourceWidth, height <= sourceHeight,
               source.count == sourceWidth * sourceHeight * 3 else { throw Failure.limits }
         var output = Data(count: width * height * 3)
         try output.withUnsafeMutableBytes { targetRaw in
@@ -202,7 +218,7 @@ public enum NativeImagePreparation {
         }
         return output
     }
-    private static func decodeJPEG(_ input: Source, profile: Data?, isCurrent: @Sendable () -> Bool) throws -> Pixels {
+    private static func decodeJPEG(_ input: Source, profile: Data?, expectedSize: Size?, isCurrent: @Sendable () -> Bool) throws -> Pixels {
         if profile == nil { try rejectICC(input.jpeg) }
         let options = [kCGImageSourceShouldCache: false, kCGImageSourceShouldAllowFloat: false] as CFDictionary
         guard let source = CGImageSourceCreateWithData(input.jpeg as CFData, options),
@@ -212,6 +228,9 @@ public enum NativeImagePreparation {
               let w = props[kCGImagePropertyPixelWidth] as? NSNumber, let h = props[kCGImagePropertyPixelHeight] as? NSNumber,
               w.intValue > 0, h.intValue > 0, w.intValue <= 4096, h.intValue <= 4096,
               ((props[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1) == 1 else { throw Failure.unsupportedJPEG }
+        if let expectedSize {
+            guard Size(width: w.intValue, height: h.intValue) == expectedSize else { throw Failure.binding }
+        }
         if let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any],
            let orientation = tiff[kCGImagePropertyTIFFOrientation] as? NSNumber, orientation.intValue != 1 { throw Failure.unsupportedJPEG }
         try check(isCurrent)
@@ -342,9 +361,10 @@ public enum NativeImagePreparation {
         }
         throw Failure.unsupportedJPEG
     }
-    private static func encode(_ rgb: Data, width: Int, height: Int, role: Role, isCurrent: @Sendable () -> Bool) throws -> Data {
+    private static func encode(_ rgb: Data, width: Int, height: Int, role: Role,
+                               maximumEdge: Int, maximumPixels: Int, isCurrent: @Sendable () -> Bool) throws -> Data {
         try check(isCurrent)
-        guard width <= 2048, height <= 2048, width * height <= 4_194_304,
+        guard width <= maximumEdge, height <= maximumEdge, width * height <= maximumPixels,
               let provider = CGDataProvider(data: rgb as CFData),
               let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 24,
                 bytesPerRow: width * 3, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
@@ -417,3 +437,130 @@ public enum NativeImagePreparation {
         return try pixels(image, allowGray: false, isCurrent: isCurrent).rgb
     }
 }
+
+#if DEBUG
+extension NativeImagePreparation {
+    /// Debug-only source preparation for the three reviewed demo originals.
+    /// The caller selects an identity, never an edge, pixel or colour setting.
+    enum PrivatePainting: String, CaseIterable {
+        case matterhorn = "met-10158"
+        case aristotle = "met-437394"
+        case fishing = "met-436951"
+
+        var sourceBytes: Int {
+            switch self {
+            case .matterhorn: 2_000_787
+            case .aristotle: 3_486_903
+            case .fishing: 3_419_265
+            }
+        }
+
+        var sourceSHA256: String {
+            switch self {
+            case .matterhorn: "3a44b61de7e0d92d7b02c2df0c487c56e87e6167ac38e3ab6d5bec7f82a82df3"
+            case .aristotle: "55dc9232dd6b412cea4964f19e98a56f6bd1fa7213e4e947834413cf65d8776a"
+            case .fishing: "4bda0d825e8a247035de34a5cc4d9afad0ab22448cea66e4270ff48861b286a3"
+            }
+        }
+
+        fileprivate var sourceSize: Size {
+            switch self {
+            case .matterhorn: Size(width: 2721, height: 3722)
+            case .aristotle: Size(width: 3792, height: 4000)
+            case .fishing: Size(width: 4000, height: 2551)
+            }
+        }
+
+        var maximumEdge: Int {
+            switch self {
+            case .matterhorn: 2634
+            case .aristotle: 2552
+            case .fishing: 2135
+            }
+        }
+
+        var sourceIccSha256: String? {
+            self == .matterhorn ? nil : "f6bd2776ef85c5a0a9313989eb60f3db7996bc4af48453353f53840643d8e32b"
+        }
+
+        var outputDimensions: (width: Int, height: Int) {
+            let source = sourceSize
+            let longest = max(source.width, source.height)
+            let edge = min(maximumEdge, longest)
+            return (source.width * edge / longest, source.height * edge / longest)
+        }
+
+        fileprivate var settings: PrivatePaintingSettings {
+            PrivatePaintingSettings(algorithm: sourceIccSha256 == nil ? NativeImagePreparation.algorithm : NativeImagePreparation.iccAlgorithm,
+                maximumEdge: maximumEdge)
+        }
+
+        func canonicalSettings() throws -> Data {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            return try encoder.encode(settings)
+        }
+    }
+
+    fileprivate struct PrivatePaintingSettings: Encodable {
+        let algorithm: String
+        let maximumEdge: Int
+        let rounding = "floor"
+        let sampling = "nearest-centre"
+        let maximumEncodedBytes = 8_388_608
+    }
+
+    private struct PrivatePaintingColour: Encodable {
+        let kind: String
+        let version: Int?
+        let algorithm: String?
+        let sourceIccSha256: String?
+    }
+
+    private struct PrivatePaintingReceipt: Encodable {
+        let recipeID = "native-private-demo-painting-rgb8"
+        let recipeVersion = 1
+        let sourceID: String
+        let effectiveSourceOrientation = 1
+        let settings: PrivatePaintingSettings
+        let settingsSHA256: String
+        let colour: PrivatePaintingColour
+        let tool = NativeImagePreparation.tool
+        let toolVersion: String
+        let decoderOS = ProcessInfo.processInfo.operatingSystemVersionString
+        let image: ImageReport
+    }
+
+    static func preparePrivatePainting(_ painting: PrivatePainting, jpeg: Data,
+                                       isCurrent: @Sendable () -> Bool) throws -> (png: Data, receipt: Data) {
+        try check(isCurrent)
+        guard jpeg.count == painting.sourceBytes, hash(jpeg) == painting.sourceSHA256 else { throw Failure.binding }
+        let profile = try embeddedICC(jpeg, isCurrent: isCurrent)
+        guard profile.map(hash) == painting.sourceIccSha256 else { throw Failure.binding }
+
+        let dimensions = painting.outputDimensions
+        let output = Size(width: dimensions.width, height: dimensions.height)
+        let input = Source(role: .baseColor, imageIndex: 0, jpeg: jpeg, sha256: painting.sourceSHA256)
+        let image = try autoreleasepool {
+            try prepareImage(input, profile: profile, allowSpatialSampling: true,
+                sourceSize: painting.sourceSize, outputSize: output, maximumEdge: painting.maximumEdge,
+                maximumPixels: output.width * output.height, isCurrent: isCurrent)
+        }
+        guard image.report.sourceChannels == 3 else { throw Failure.unsupportedPixels }
+
+        let colour: PrivatePaintingColour
+        if let icc = image.report.sourceICCSHA256 {
+            colour = PrivatePaintingColour(kind: "icc-to-srgb", version: 1, algorithm: iccAlgorithm, sourceIccSha256: icc)
+        } else {
+            colour = PrivatePaintingColour(kind: "no-profile-srgb-assumed", version: nil, algorithm: nil, sourceIccSha256: nil)
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let receipt = PrivatePaintingReceipt(sourceID: painting.rawValue, settings: painting.settings,
+            settingsSHA256: hash(try painting.canonicalSettings()), colour: colour,
+            toolVersion: profile == nil ? toolVersion : iccToolVersion, image: image.report)
+        try check(isCurrent)
+        return (image.png, try encoder.encode(receipt))
+    }
+}
+#endif
