@@ -463,6 +463,35 @@ impl InstallationController {
         }
         Self::managed(profile)
     }
+    /// Bind a returned validation profile without initializing or recovering
+    /// either the profile or its selected installation.
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub(crate) fn open_existing_managed(profile: PathBuf) -> Result<Self> {
+        private_directory(&profile)?;
+        // Fast refusal avoids leaving lock files in an empty directory. The
+        // guarded read below is authoritative if a registry was present here.
+        if load(&profile)?.is_none() {
+            return Err(err("NATIVE_NOT_READY"));
+        }
+        let (path, anchor) = super::profile_backup::anchor_lock(&profile, true)?;
+        if path != profile { return Err(err("PROFILE_PATH_INVALID")); }
+        let session = super::profile_backup::anchored_session(&path, anchor, true)?;
+        let profile = LifecycleService::bound_existing(path)?;
+        let lock = profile_lock(&profile)?;
+        session.check_exclusive(&profile.root)?;
+        let (registry, _) = load(&profile.root)?.ok_or_else(|| err("NATIVE_NOT_READY"))?;
+        let entry = registry.installations.into_iter().find(|entry| entry.id == registry.active_id)
+            .ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
+        let path = root(&profile.root, &entry);
+        private_directory(&path)?;
+        let service = LifecycleService::bound_existing(path.clone())?;
+        let current = Selected { token: Uuid::new_v4().to_string(), entry, path, service: Some(service), error_code: None };
+        drop(lock);
+        Ok(Self {
+            profile: Some(profile), _profile_session: Some(session), mode: "managed".into(),
+            current: RwLock::new(current), maintenance_destination: RwLock::new(None),
+        })
+    }
     // Default profiles use the same guarded registry on Windows and Unix.
     // Explicit root overrides retain their separate pinned mode.
     fn managed(profile: PathBuf) -> Result<Self> {

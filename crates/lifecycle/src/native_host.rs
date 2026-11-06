@@ -194,7 +194,7 @@ impl Host {
             return Err(err("NATIVE_PROFILE_REQUIRED"));
         }
         let payload = Arc::new(Payload::open_workspace_v5_validation(&resources, false)?);
-        let controller = InstallationController::new(profile, None)?;
+        let controller = InstallationController::open_existing_managed(profile)?;
         let token = controller.context()?.selection_token;
         let prepared = controller.with_current(&token, |service| service.native_prepared())?
             .ok_or_else(|| err("NATIVE_NOT_READY"))?;
