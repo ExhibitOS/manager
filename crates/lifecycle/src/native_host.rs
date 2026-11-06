@@ -38,6 +38,7 @@ pub struct Status {
     pub selected_oex: bool,
     pub oex_027_qualified: bool,
     pub oex_028_qualified: bool,
+    pub oex_workspace_v6_qualified: bool,
     pub oex_save_offer: Option<OexSaveOffer>,
 }
 struct State {
@@ -193,11 +194,27 @@ impl Host {
         Self::from_fresh_selected_payload(profile, resources, ports, payload)
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub fn new_fresh_workspace_v6_validation(profile: PathBuf, resources: PathBuf, ports: Ports) -> Result<Self> {
+        ports.validate()?;
+        let payload = Arc::new(Payload::open_workspace_v6_validation(&resources, true)?);
+        Self::from_fresh_selected_payload(profile, resources, ports, payload)
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     pub fn reopen_workspace_v5_validation(profile: PathBuf, resources: PathBuf) -> Result<Self> {
+        let payload = Payload::open_workspace_v5_validation(&resources, false)?;
+        Self::reopen_workspace_validation(profile, resources, payload)
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub fn reopen_workspace_v6_validation(profile: PathBuf, resources: PathBuf) -> Result<Self> {
+        let payload = Payload::open_workspace_v6_validation(&resources, false)?;
+        Self::reopen_workspace_validation(profile, resources, payload)
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    fn reopen_workspace_validation(profile: PathBuf, resources: PathBuf, payload: Payload) -> Result<Self> {
         if !profile.is_absolute() || !fs::symlink_metadata(&profile).is_ok_and(|m| m.is_dir()) {
             return Err(err("NATIVE_PROFILE_REQUIRED"));
         }
-        let payload = Arc::new(Payload::open_workspace_v5_validation(&resources, false)?);
+        let payload = Arc::new(payload);
         let controller = InstallationController::open_existing_managed(profile)?;
         let token = controller.context()?.selection_token;
         let prepared = controller.with_current(&token, |service| service.native_prepared())?
@@ -320,6 +337,8 @@ impl Host {
             selected_oex: state.selected_oex,
             oex_027_qualified: state.oex_027_qualified,
             oex_028_qualified: state.oex_028_qualified,
+            oex_workspace_v6_qualified: state.selected_oex && state.runtime.as_ref().is_some_and(|r| r.state == "ready")
+                && state.payload.as_ref().is_some_and(|p| p.workspace_v6_selected_input()),
             oex_save_offer: state.oex_save_offer.clone(),
         })
     }

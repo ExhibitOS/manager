@@ -169,7 +169,7 @@ pub(super) struct UploadSelection {
 impl UploadSelection {
     pub(super) fn encode(&self)->Result<Vec<u8>> {
         if self.version!=1||self.kind!="upload-selection"||[&self.correlation_id,&self.runtime_generation,&self.workspace_id,&self.tenant_id,&self.principal_id,&self.request_id].iter().any(|v|!valid_id(v))
-            || self.archive_format.as_deref().is_some_and(|f| !matches!(f,"1.0.0-draft.9"|"1.0.0-draft.10"))
+            || self.archive_format.as_deref().is_some_and(|f| !matches!(f,"1.0.0-draft.9"|"1.0.0-draft.10"|"1.0.0-draft.12"))
             || !(1..=512*1024*1024).contains(&self.archive_bytes)||!hash_valid(&self.archive_sha256){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         let bytes=serde_json::to_vec(self).map_err(|_|err("NATIVE_OEX_ATTEMPT_INVALID"))?;
         if bytes.len()>LIMIT{return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}Ok(bytes)
@@ -267,7 +267,7 @@ impl ClaimReady {
         Self::parse_for_format(bytes,c,mac,expected_request,expected_bytes,expected_sha256,kinds,"1.0.0-draft.9")
     }
     fn parse_for_format(bytes:&[u8],c:&ClaimChallenge,mac:&str,expected_request:&str,expected_bytes:u64,expected_sha256:&str,kinds:(&str,&str),format:&str)->Result<Self> {
-        if !matches!(format,"1.0.0-draft.9"|"1.0.0-draft.10") {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        if !matches!(format,"1.0.0-draft.9"|"1.0.0-draft.10"|"1.0.0-draft.12") {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         let (challenge_kind,ready_kind)=kinds;
         if bytes.is_empty()||bytes.len()>LIMIT||!hash_valid(mac)||!hash_valid(expected_sha256)
             || !valid_id(expected_request) || !(1..=512*1024*1024).contains(&expected_bytes) {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}

@@ -125,7 +125,7 @@ public struct NativeOEXArchive: Sendable {
     }
     /// Provisional metadata from the same sealed snapshot. Platform still hashes
     /// and validates the complete archive under the independently held import lease.
-    func selectedFormat(helper: URL, workspaceV5ValidationRuntime: URL? = nil) async throws -> String {
+    func selectedFormat(helper: URL, workspaceV5ValidationRuntime: URL? = nil, workspaceV6ValidationRuntime: URL? = nil) async throws -> String {
         let ownedFile = file, identity = stamp, expectedCount = count
         let work = Task.detached(priority: .userInitiated) {
             let fd = Darwin.open(ownedFile.url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
@@ -136,7 +136,11 @@ public struct NativeOEXArchive: Sendable {
             guard fstat(fd, &before) == 0, identity.matches(before), before.st_size == Int64(expectedCount) else { throw AuthoringFailure("FILE_CHANGED") }
             let child = Process(), pipe = Pipe()
             child.executableURL = helper
-            child.arguments = workspaceV5ValidationRuntime.map { ["--oex-selected-format-v5-validation", $0.path] } ?? ["--oex-selected-format"]
+            if let runtime = workspaceV6ValidationRuntime {
+                child.arguments = ["--oex-selected-format-v6-validation", runtime.path]
+            } else {
+                child.arguments = workspaceV5ValidationRuntime.map { ["--oex-selected-format-v5-validation", $0.path] } ?? ["--oex-selected-format"]
+            }
             child.environment = ["PATH": "/usr/bin:/bin", "LANG": "C"]
             child.standardInput = source; child.standardOutput = pipe; child.standardError = FileHandle.nullDevice
             try Task.checkCancellation(); try child.run()
@@ -168,7 +172,7 @@ public struct NativeOEXArchive: Sendable {
             guard child.terminationStatus == 0, fstat(fd, &after) == 0, identity.matches(after), result.last == 10 else { throw AuthoringFailure("OEX_FORMAT_INVALID") }
             result.removeLast()
             let hint = try JSONDecoder().decode(OEXSelectedFormatHint.self, from: result)
-            try hint.check(bytes: result, count: expectedCount, device: before.st_dev, inode: before.st_ino)
+            try hint.check(bytes: result, count: expectedCount, device: before.st_dev, inode: before.st_ino, workspaceV6: workspaceV6ValidationRuntime != nil)
             return hint.archiveFormat
         }
         return try await withTaskCancellationHandler {
@@ -291,10 +295,11 @@ public struct NativeOEXArchive: Sendable {
 struct OEXSelectedFormatHint: Decodable {
     let version: Int, kind: String, archiveFormat: String, archiveBytes: Int
     let manifestSha256: String, inputDevice: String, inputInode: String
-    func check(bytes: Data, count: Int, device: dev_t, inode: ino_t) throws {
+    func check(bytes: Data, count: Int, device: dev_t, inode: ino_t, workspaceV6: Bool = false) throws {
+        let supportedFormats = workspaceV6 ? ["1.0.0-draft.12"] : ["1.0.0-draft.9", "1.0.0-draft.10"]
         guard let object = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
               Set(object.keys) == Set(["version", "kind", "archiveFormat", "archiveBytes", "manifestSha256", "inputDevice", "inputInode"]),
-              version == 1, kind == "oex-format-hint", ["1.0.0-draft.9", "1.0.0-draft.10"].contains(archiveFormat),
+              version == 1, kind == "oex-format-hint", supportedFormats.contains(archiveFormat),
               archiveBytes == count, inputDevice == String(UInt32(bitPattern: device)), inputInode == String(inode),
               manifestSha256.utf8.count == 64, manifestSha256.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { throw AuthoringFailure("OEX_FORMAT_INVALID") }
     }

@@ -21,6 +21,17 @@ fn main() {
         return;
     }
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    if args.len() == 3 && args[1] == "--oex-selected-format-v6-validation" {
+        run_format_hint(|| exhibitos_lifecycle::native_runtime::selected_oex_format_v6_validation(
+            std::path::Path::new(&args[2]), libc::STDIN_FILENO, &STOP).map_err(|_| ()));
+        return;
+    }
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    if args.len() == 5 && args[1] == "--profile" && args[3] == "--reopen-workspace-v6-validation" {
+        let result = exhibitos_lifecycle::native_host::Host::reopen_workspace_v6_validation((&args[2]).into(), (&args[4]).into());
+        match result { Ok(host) => std::process::exit(run_host(host)), Err(error) => { eprintln!("{}", error.code); std::process::exit(1); } }
+    }
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
     if args.len() == 5 && args[1] == "--profile" && args[3] == "--reopen-workspace-v5-validation" {
         let result = exhibitos_lifecycle::native_host::Host::reopen_workspace_v5_validation((&args[2]).into(), (&args[4]).into());
         match result { Ok(host) => std::process::exit(run_host(host)), Err(error) => { eprintln!("{}", error.code); std::process::exit(1); } }
@@ -38,7 +49,7 @@ fn main() {
     #[cfg(target_os = "macos")]
     if (args.len() == 5 || (args.len() == 6 && args[5] == "--selected-oex9")
         || (cfg!(all(feature = "workspace-v5-owner-validation", debug_assertions))
-            && args.len() == 7 && args[5] == "--selected-oex-v5-validation"))
+            && args.len() == 7 && (args[5] == "--selected-oex-v5-validation" || args[5] == "--selected-oex-v6-validation")))
         && args[1] == "--profile" && args[3] == "--fresh-workspace-ports" {
         let profile = std::path::PathBuf::from(&args[2]);
         let ports = args[4].to_str().and_then(|v| serde_json::from_str::<exhibitos_lifecycle::native_installation::Ports>(v).ok());
@@ -55,7 +66,11 @@ fn main() {
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
         if args.len() == 7 {
             let runtime = std::path::PathBuf::from(&args[6]);
-            let result = exhibitos_lifecycle::native_host::Host::new_fresh_workspace_v5_validation(profile, runtime, ports);
+            let result = if args[5] == "--selected-oex-v6-validation" {
+                exhibitos_lifecycle::native_host::Host::new_fresh_workspace_v6_validation(profile, runtime, ports)
+            } else {
+                exhibitos_lifecycle::native_host::Host::new_fresh_workspace_v5_validation(profile, runtime, ports)
+            };
             match result { Ok(host) => std::process::exit(run_host(host)), Err(error) => { eprintln!("{}", error.code); std::process::exit(1); } }
         }
         if args.len() == 6 {

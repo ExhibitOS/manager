@@ -26,7 +26,7 @@ pub(crate) fn validate(s: &Transfer) -> Result<()> {
         || s.intent.as_ref().is_some_and(|i| {
             let limit = match (i.profile.as_deref(), i.oex_format.as_deref()) {
                 (None, None) => 64 * 1024 * 1024,
-                (Some("bounded-file-v1"), Some("1.0.0-draft.9" | "1.0.0-draft.10")) => 512 * 1024 * 1024,
+                (Some("bounded-file-v1"), Some("1.0.0-draft.9" | "1.0.0-draft.10" | "1.0.0-draft.12")) => 512 * 1024 * 1024,
                 _ => return true,
             };
             !uuid(&i.request_id) || !hash_valid(&i.sha256) || i.bytes == 0 || i.bytes > limit
