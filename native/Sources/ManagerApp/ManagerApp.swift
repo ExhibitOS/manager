@@ -8,6 +8,7 @@ final class ManagerModel: ObservableObject {
     @Published private var selection = PresentationSelection()
     var presentation: Presentation? { selection.value }
     private var presentationSave: Task<Void, Never>?
+    private var presentationSaveFailure: BridgeFailure?
     var presentationPending: Bool { selection.hasPendingSave }
     @Published private(set) var context: Context? {
         didSet { if oldValue?.selectionToken != context?.selectionToken || oldValue?.activeId != context?.activeId { invalidateRetainedAuthoring() } }
@@ -469,7 +470,10 @@ final class ManagerModel: ObservableObject {
         while busy || exhibitions.oexImport.busy { try? await Task.sleep(for: .milliseconds(100)) }
         await authoring.cancelImportAndWait()
         await presentationSave?.value
-        guard !presentationPending else { failure = BridgeFailure("NATIVE_SAVE_FAILED"); return false }
+        guard !presentationPending else {
+            failure = presentationSaveFailure ?? BridgeFailure("NATIVE_SAVE_FAILED")
+            return false
+        }
         guard let bridge, let context else { return !serviceRequested }
         while hosting.busy { try? await Task.sleep(for: .milliseconds(100)) }
         guard await hosting.cancelAndWait() else { failure = BridgeFailure("HOSTED_OPERATION_UNCERTAIN"); return false }
@@ -502,7 +506,8 @@ final class ManagerModel: ObservableObject {
         }
     }
     private func savePresentation() {
-        guard presentationSave == nil, let bridge else { return }
+        guard presentationSave == nil, presentationPending, let bridge else { return }
+        presentationSaveFailure = nil
         presentationSave = Task { [weak self] in
             guard let self else { return }
             defer { self.presentationSave = nil }
@@ -523,6 +528,7 @@ final class ManagerModel: ObservableObject {
                         catch { return }
                         continue
                     }
+                    self.presentationSaveFailure = failure
                     self.failure = failure
                     return
                 }
