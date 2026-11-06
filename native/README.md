@@ -215,9 +215,17 @@ under the existing root operation guard before publishing a new run pointer.
 Missing, partial or conflicting evidence, a remaining resource anchor, or
 replaced directories prevent recovery. Platform must separately verify ACK
 acceptance, committed finalization, decoder drain, prior Node termination and
-current owner and database fences. The selected Draft 12 pipeline and its
-restart transport are pending integration. The existing API and CLI admit the
-existing formats through their unchanged paths.
+current owner and database fences. The recovery witness is retained for the
+future authenticated restart transport.
+
+The debug automation configuration accepts `workspaceV6ValidationRuntime` for
+a fresh selected Draft 12 profile once the exact Platform source, producer and
+payload manifest are admitted. `import-oex12` writes its completion receipt
+after the live save and settlement, normal runtime stop and a fresh helper's
+Studio readback. The receipt records both runtime generations and the verified
+Studio revision. A failed reopen returns an error and leaves the requested
+completion receipt absent. Keep the profile for inspection. The Draft 9 and 10
+automation paths use their existing formats and receipt behavior.
 
 Local publication uses its own affirmative `nativePublicationProfile:
 "bounded-local-v1"` session advertisement and an explicit per-call profile

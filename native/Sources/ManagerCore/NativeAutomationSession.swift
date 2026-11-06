@@ -249,6 +249,23 @@ public actor NativeAutomationSession {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         return .object(["path": .string(url.path), "sha256": .string(Self.digest(bytes)), "bytes": .integer(Int64(bytes.count))])
     }
+    static func recordCompletedDraft12Import(
+        receipt: [String: DocumentValue],
+        reopen: () async throws -> DocumentValue,
+        record: (DocumentValue) throws -> DocumentValue,
+        isolation: isolated (any Actor)? = #isolation
+    ) async throws -> DocumentValue {
+        let reopened = try await reopen()
+        try Task.checkCancellation()
+        var completed = receipt
+        completed["reopen"] = .object([
+            "previousRuntimeJobId": reopened["previousRuntimeJobId"],
+            "runtimeJobId": reopened["runtimeJobId"],
+            "studioRevision": reopened["studioRevision"]
+        ])
+        return try record(.object(completed))
+    }
+
     // These existing CMS create endpoints have no idempotency key. Preserve
     // the exact attempt before POST and never automatically repeat an uncertain
     // creation. The consumer inspects catalog-read and this durable receipt.
@@ -414,20 +431,26 @@ public actor NativeAutomationSession {
             _ = try await bridge.runBoundedOEX(context)
             let stored = try await NativeSelectedOEXCompletion.finish(bridge: bridge, context: context, api: api, original: original, jobId: transfer.1.id)
             let receipt = try await api.oexImportReceipt(transfer.1.id)
-            let recorded = try write(.object(["archiveSHA256": .string(expectedHash), "archiveFormat": .string(archiveFormat),
-                "jobId": .string(transfer.1.id), "requestId": .string(id), "document": try value(stored), "importReceipt": receipt]), to: outputPath)
-            // The supported selected-owner transition must drain normally
-            // before ordinary editing can start in the imported workspace.
+            let storedValue = try value(stored)
+            let receiptFields: [String: DocumentValue] = [
+                "archiveSHA256": .string(expectedHash), "archiveFormat": .string(archiveFormat),
+                "jobId": .string(transfer.1.id), "requestId": .string(id),
+                "document": storedValue, "importReceipt": receipt
+            ]
+            let recorded: DocumentValue
             if archiveFormat == "1.0.0-draft.12" {
                 selectedOEXFormat = nil
-                _ = try await reopenSaved(stored, context: context, api: api)
+                recorded = try await Self.recordCompletedDraft12Import(receipt: receiptFields, reopen: {
+                    try await reopenSaved(stored, context: context, api: api)
+                }, record: { try write($0, to: outputPath) })
             } else {
+                recorded = try write(.object(receiptFields), to: outputPath)
                 _ = try await bridge.stop(context); _ = try await waitReady()
                 _ = try await bridge.start(context); _ = try await waitReady()
                 authoringSession = try await api.connect(bridge.authoringSession(context))
                 selectedOEXFormat = nil
             }
-            result = .object(["document": try value(stored), "receipt": recorded])
+            result = .object(["document": storedValue, "receipt": recorded])
         case "floor-appearance-apply":
             try checkedRevision(request, current)
             let policy = try await checkSavedSurfacePolicy(current, api: api)

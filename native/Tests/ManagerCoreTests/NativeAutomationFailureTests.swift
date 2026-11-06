@@ -40,6 +40,40 @@ final class NativeAutomationFailureTests: XCTestCase {
         XCTAssertThrowsError(try invalid.check())
     }
 
+    func testDraft12CompletionReceiptRequiresSuccessfulReopen() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let output = folder.appendingPathComponent("receipt.json")
+        let receipt: [String: DocumentValue] = ["archiveFormat": .string("1.0.0-draft.12")]
+        let record: (DocumentValue) throws -> DocumentValue = { value in
+            try JSONEncoder().encode(value).write(to: output, options: .withoutOverwriting)
+            return value
+        }
+
+        do {
+            _ = try await NativeAutomationSession.recordCompletedDraft12Import(receipt: receipt, reopen: {
+                throw BridgeFailure("AUTOMATION_DRAIN_UNCERTAIN")
+            }, record: record)
+            XCTFail("A failed reopen must propagate the error")
+        } catch let error as BridgeFailure {
+            XCTAssertEqual(error.code, "AUTOMATION_DRAIN_UNCERTAIN")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+
+        let reopen: DocumentValue = .object([
+            "previousRuntimeJobId": .string(UUID().uuidString),
+            "runtimeJobId": .string(UUID().uuidString),
+            "studioRevision": .integer(2)
+        ])
+        let result = try await NativeAutomationSession.recordCompletedDraft12Import(receipt: receipt, reopen: {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+            return reopen
+        }, record: record)
+        XCTAssertEqual(result["reopen"], reopen)
+        XCTAssertEqual(try JSONDecoder().decode(DocumentValue.self, from: Data(contentsOf: output)), result)
+    }
+
     func testCloseOnlyReplaysConfirmedHelperExit() async throws {
         let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
