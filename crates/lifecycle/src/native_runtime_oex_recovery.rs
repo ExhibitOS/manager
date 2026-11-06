@@ -904,7 +904,8 @@ mod tests {
                 .spawn()
                 .unwrap();
             let marker = format!("RECOVERY-CHILD:{mode}");
-            let seen = BufReader::new(child.stdout.take().unwrap())
+            let mut stdout = BufReader::new(child.stdout.take().unwrap());
+            let seen = stdout.by_ref()
                 .lines()
                 .map_while(std::result::Result::ok)
                 .any(|line| line.contains(&marker));
@@ -928,6 +929,9 @@ mod tests {
             }
             if mode != "normal" || !seen {
                 let _ = child.kill();
+            } else {
+                // Let the test harness finish writing before closing its pipe.
+                std::io::copy(&mut stdout, &mut std::io::sink()).unwrap();
             }
             let status = child.wait().unwrap();
             assert!(seen, "{mode} did not reach its isolation checkpoint");
