@@ -63,6 +63,31 @@ The Manager implementation and Platform wire must be qualified together before
 adding a manifest pin. Source regression checks do not qualify actual startup,
 owner-loss recovery or EXB restoration.
 
+## Private demo painting preparation
+
+The standalone debug tool accepts only the three pinned official JPEGs. It
+verifies source bytes, dimensions, orientation and the exact embedded ICC
+profile or its absence. Run one case at a time in a private work directory.
+
+```sh
+xcrun swiftc -D DEBUG -O native/Sources/ManagerCore/NativeImagePreparation.swift \
+  scripts/prepare-private-painting.swift -o "$PRIVATE_TOOL"
+"$PRIVATE_TOOL" met-437394 "$SOURCE_JPEG" "$NEW_OUTPUT_DIRECTORY"
+```
+
+Use canonical absolute paths and a new output directory under a separate
+mode-0700 parent. Select `met-10158`, `met-437394` or `met-436951` to obtain
+1925 × 2634, 2419 × 2552 or 2135 × 1361 respectively. The tool publishes
+`full.png` and `receipt.json` together after checking the RGB8 readback. The
+encoded limit is 8 MiB.
+
+The Aristotle profile uses one bounded adaptive PNG filter pass and zlib's
+best-compression level. The receipt's optional `pngEncoding` object identifies
+that encoding and records RGB8 hashes before encoding and after decoding. The
+PNG SHA and byte count are in `image`. The separate pixel recipe still uses
+nearest-centre sampling and floor rounding. Each output needs its own exact
+review before registration or publication.
+
 ## Saved workspace runtime transition
 
 The macOS debug helper built with `--features workspace-v5-owner-validation`
