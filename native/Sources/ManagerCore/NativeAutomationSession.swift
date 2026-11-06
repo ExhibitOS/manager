@@ -28,6 +28,7 @@ public actor NativeAutomationSession {
     private let ports: [String: UInt16]
     private let workspaceV5ValidationRuntime: URL?
     private let workspaceV6ValidationRuntime: URL?
+    private let workspaceV7ValidationRuntime: URL?
     private let existingWorkspaceV5: ExistingWorkspaceV5?
     private let root: URL
     private let inputs: [String: String]
@@ -48,9 +49,11 @@ public actor NativeAutomationSession {
     private var selectedOEXFormat: String?
     private var runtimeStopped = false
 
-    public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false, workspaceV5ValidationRuntime: URL? = nil, existingWorkspaceV5: ExistingWorkspaceV5? = nil, workspaceV6ValidationRuntime: URL? = nil) throws {
+    public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false, workspaceV5ValidationRuntime: URL? = nil, existingWorkspaceV5: ExistingWorkspaceV5? = nil, workspaceV6ValidationRuntime: URL? = nil, workspaceV7ValidationRuntime: URL? = nil) throws {
+        let draft12 = workspaceV6ValidationRuntime != nil || workspaceV7ValidationRuntime != nil
         guard !(selectedOEX9 && selectedOEX10),
-              workspaceV6ValidationRuntime == nil || (!selectedOEX9 && !selectedOEX10 && workspaceV5ValidationRuntime == nil && existingWorkspaceV5 == nil),
+              workspaceV6ValidationRuntime == nil || workspaceV7ValidationRuntime == nil,
+              !draft12 || (!selectedOEX9 && !selectedOEX10 && workspaceV5ValidationRuntime == nil && existingWorkspaceV5 == nil),
               existingWorkspaceV5 == nil || (!selectedOEX9 && !selectedOEX10 && workspaceV5ValidationRuntime != nil),
               workspaceV5ValidationRuntime == nil || selectedOEX10 || existingWorkspaceV5 != nil else {
             throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID")
@@ -66,7 +69,8 @@ public actor NativeAutomationSession {
         self.workspaceV5ValidationRuntime = workspaceV5ValidationRuntime
         self.workspaceV6ValidationRuntime = workspaceV6ValidationRuntime
         self.existingWorkspaceV5 = existingWorkspaceV5
-        selectedOEXFormat = workspaceV6ValidationRuntime != nil ? "1.0.0-draft.12" : selectedOEX10 ? "1.0.0-draft.10" : selectedOEX9 ? "1.0.0-draft.9" : nil
+        self.workspaceV7ValidationRuntime = workspaceV7ValidationRuntime
+        selectedOEXFormat = draft12 ? "1.0.0-draft.12" : selectedOEX10 ? "1.0.0-draft.10" : selectedOEX9 ? "1.0.0-draft.9" : nil
         for url in [outputRoot, temporaryRoot] {
             let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
             guard attributes[.type] as? FileAttributeType == .typeDirectory,
@@ -76,7 +80,8 @@ public actor NativeAutomationSession {
         }
         bridge = try NativeBridge(helper: helper, profile: profile, freshSelectedOEX: selectedOEXFormat != nil,
                                   freshWorkspacePorts: existingWorkspaceV5 == nil ? ports : nil, temporaryDirectory: temporaryRoot,
-                                  workspaceV5ValidationRuntime: workspaceV5ValidationRuntime, workspaceV6ValidationRuntime: workspaceV6ValidationRuntime)
+                                  workspaceV5ValidationRuntime: workspaceV5ValidationRuntime, workspaceV6ValidationRuntime: workspaceV6ValidationRuntime,
+                                  workspaceV7ValidationRuntime: workspaceV7ValidationRuntime)
     }
     private func value<T: Encodable>(_ v: T) throws -> DocumentValue {
         try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(v))
@@ -155,14 +160,15 @@ public actor NativeAutomationSession {
         _ = try await bridge.stop(context)
         let stopped = try await waitReady()
         guard let runtime = stopped.runtime, runtime.state == "stopped", !runtime.hasOwnedProcesses,
-              workspaceV6ValidationRuntime == nil || (runtime.exits["node"] == 0 && runtime.exits["postgres"] == 0) else {
+              (workspaceV6ValidationRuntime == nil && workspaceV7ValidationRuntime == nil) || (runtime.exits["node"] == 0 && runtime.exits["postgres"] == 0) else {
             throw BridgeFailure("AUTOMATION_DRAIN_UNCERTAIN")
         }
         try await closeBridge()
         try Task.checkCancellation()
         guard try profileIdentity() == directory else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
         bridge = try NativeBridge(helper: helper, profile: profile, temporaryDirectory: temporaryRoot,
-                                  workspaceV5ValidationRuntime: workspaceV5ValidationRuntime, workspaceV6ValidationRuntime: workspaceV6ValidationRuntime)
+                                  workspaceV5ValidationRuntime: workspaceV5ValidationRuntime, workspaceV6ValidationRuntime: workspaceV6ValidationRuntime,
+                                  workspaceV7ValidationRuntime: workspaceV7ValidationRuntime)
         bridgeOpen = true
         let reopened = try await bridge.context()
         self.context = reopened
@@ -407,7 +413,7 @@ public actor NativeAutomationSession {
             let status = try await bridge.nativeStatus(context)
             guard status.selectedOex == true, status.oex027Qualified == true,
                   archiveFormat != "1.0.0-draft.10" || status.oex028Qualified == true,
-                  archiveFormat != "1.0.0-draft.12" || status.oexWorkspaceV6Qualified == true else {
+                  archiveFormat != "1.0.0-draft.12" || (workspaceV7ValidationRuntime == nil ? status.oexWorkspaceV6Qualified : status.oexWorkspaceV7Qualified) == true else {
                 throw BridgeFailure("NATIVE_OEX_RELEASE_UNAVAILABLE")
             }
             let source = URL(fileURLWithPath: path)

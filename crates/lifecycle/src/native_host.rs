@@ -39,6 +39,8 @@ pub struct Status {
     pub oex_027_qualified: bool,
     pub oex_028_qualified: bool,
     pub oex_workspace_v6_qualified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oex_workspace_v7_qualified: Option<bool>,
     pub oex_save_offer: Option<OexSaveOffer>,
 }
 struct State {
@@ -196,7 +198,13 @@ impl Host {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     pub fn new_fresh_workspace_v6_validation(profile: PathBuf, resources: PathBuf, ports: Ports) -> Result<Self> {
         ports.validate()?;
-        let payload = Arc::new(Payload::open_workspace_v6_validation(&resources, true)?);
+        let payload = Arc::new(Payload::open_workspace_import_validation(&resources, crate::native_payload::WorkspaceImport::V6, true)?);
+        Self::from_fresh_selected_payload(profile, resources, ports, payload)
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub fn new_fresh_workspace_v7_validation(profile: PathBuf, resources: PathBuf, ports: Ports) -> Result<Self> {
+        ports.validate()?;
+        let payload = Arc::new(Payload::open_workspace_import_validation(&resources, crate::native_payload::WorkspaceImport::V7, true)?);
         Self::from_fresh_selected_payload(profile, resources, ports, payload)
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -206,7 +214,12 @@ impl Host {
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     pub fn reopen_workspace_v6_validation(profile: PathBuf, resources: PathBuf) -> Result<Self> {
-        let payload = Payload::open_workspace_v6_validation(&resources, false)?;
+        let payload = Payload::open_workspace_import_validation(&resources, crate::native_payload::WorkspaceImport::V6, false)?;
+        Self::reopen_workspace_validation(profile, resources, payload)
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub fn reopen_workspace_v7_validation(profile: PathBuf, resources: PathBuf) -> Result<Self> {
+        let payload = Payload::open_workspace_import_validation(&resources, crate::native_payload::WorkspaceImport::V7, false)?;
         Self::reopen_workspace_validation(profile, resources, payload)
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -321,6 +334,13 @@ impl Host {
             .state
             .lock()
             .map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+        let selected_workspace_import = if state.selected_oex
+            && state.runtime.as_ref().is_some_and(|runtime| runtime.state == "ready")
+        {
+            state.payload.as_ref().and_then(|payload| payload.selected_workspace_import_version())
+        } else {
+            None
+        };
         Ok(Status {
             busy: state.busy,
             operation: state.operation.clone(),
@@ -337,8 +357,8 @@ impl Host {
             selected_oex: state.selected_oex,
             oex_027_qualified: state.oex_027_qualified,
             oex_028_qualified: state.oex_028_qualified,
-            oex_workspace_v6_qualified: state.selected_oex && state.runtime.as_ref().is_some_and(|r| r.state == "ready")
-                && state.payload.as_ref().is_some_and(|p| p.workspace_v6_selected_input()),
+            oex_workspace_v6_qualified: selected_workspace_import == Some(crate::native_payload::WorkspaceImport::V6),
+            oex_workspace_v7_qualified: (selected_workspace_import == Some(crate::native_payload::WorkspaceImport::V7)).then_some(true),
             oex_save_offer: state.oex_save_offer.clone(),
         })
     }

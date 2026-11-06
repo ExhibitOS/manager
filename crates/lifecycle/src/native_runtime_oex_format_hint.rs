@@ -16,9 +16,9 @@ fn invalid()->LifecycleError {err("NATIVE_OEX_FORMAT_INVALID")}
 fn stamp(m:&fs::Metadata)->(u64,u64,u64,i64,i64,i64,i64) {
     (m.dev(),m.ino(),m.len(),m.mtime(),m.mtime_nsec(),m.ctime(),m.ctime_nsec())
 }
-fn check_hint(bytes:&[u8],before:&fs::Metadata,workspace_v6:bool)->Result<()> {
+fn check_hint(bytes:&[u8],before:&fs::Metadata,workspace_import:bool)->Result<()> {
     let h:Hint=serde_json::from_slice(bytes).map_err(|_|invalid())?;
-    let format_valid = if workspace_v6 {
+    let format_valid = if workspace_import {
         h.archive_format == "1.0.0-draft.12"
     } else {
         matches!(h.archive_format.as_str(), "1.0.0-draft.9" | "1.0.0-draft.10")
@@ -32,9 +32,9 @@ pub(super) fn run(payload:&Payload, input_fd:i32, cancelled:&AtomicBool)->Result
     let fd=unsafe{libc::fcntl(input_fd,libc::F_DUPFD_CLOEXEC,64)};
     if fd<0{return Err(invalid());}
     let source=unsafe{File::from_raw_fd(fd)};
-    run_owned(&node,&script,&root,source,cancelled,payload.workspace_v6_selected_input())
+    run_owned(&node,&script,&root,source,cancelled,payload.workspace_import_selected_input())
 }
-fn run_owned(node:&Path,script:&Path,root:&Path,source:File,cancelled:&AtomicBool,workspace_v6:bool)->Result<Vec<u8>> {
+fn run_owned(node:&Path,script:&Path,root:&Path,source:File,cancelled:&AtomicBool,workspace_import:bool)->Result<Vec<u8>> {
     let before=source.metadata().map_err(|_|invalid())?;
     let flags=unsafe{libc::fcntl(source.as_raw_fd(),libc::F_GETFL)};
     if !before.is_file()||before.uid()!=unsafe{libc::geteuid()}||before.mode()&0o777!=0o600||before.nlink()!=1
@@ -79,7 +79,7 @@ fn run_owned(node:&Path,script:&Path,root:&Path,source:File,cancelled:&AtomicBoo
     let after=source.metadata().map_err(|_|invalid())?;
     if stamp(&before)!=stamp(&after)||after.mode()&0o777!=0o600||after.uid()!=before.uid()||after.nlink()!=1{return Err(invalid());}
     if reply.pop()!=Some(b'\n'){return Err(invalid());}
-    check_hint(&reply,&before,workspace_v6)?;
+    check_hint(&reply,&before,workspace_import)?;
     if cancelled.load(Ordering::SeqCst){return Err(err("NATIVE_CANCELLED"));} Ok(reply)
 }
 

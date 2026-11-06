@@ -112,8 +112,8 @@ impl Setup {
     pub(super) fn workspace_v5_bootstrap(&self, auth: &LocalAuthority, generation: &str) -> Result<Vec<u8>> {
         self.normal_selected_v3_bootstrap(auth, generation, "normal-oex-workspace-v5")
     }
-    pub(super) fn workspace_v6_bootstrap(&self, auth: &LocalAuthority, generation: &str) -> Result<Vec<u8>> {
-        self.normal_selected_v3_bootstrap(auth, generation, "normal-oex-workspace-import-v6")
+    pub(super) fn workspace_import_bootstrap(&self, auth: &LocalAuthority, generation: &str, version: crate::native_payload::WorkspaceImport) -> Result<Vec<u8>> {
+        self.normal_selected_v3_bootstrap(auth, generation, super::oex_catalog_frames::Protocol::from(version).owner_mode())
     }
     fn normal_selected_v3_bootstrap(&self, auth: &LocalAuthority, generation: &str, mode: &'static str) -> Result<Vec<u8>> {
         let value=FreshOwnerBootstrap {workspace:auth,owner_channel:FreshOwnerBinding {version:3,runtime_generation:generation,secret:&self.secret,mode}};
@@ -473,6 +473,30 @@ pub(super) fn worker_control_notice(control: &super::oex_control_v2::Control,
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn workspace_v7_bootstrap_matches_exact_owner_channel_bytes() {
+        use crate::native_payload::WorkspaceImport;
+        use sha2::{Digest, Sha256};
+
+        let mut setup = Setup::new().unwrap();
+        setup.secret = "b".repeat(64);
+        let authority = LocalAuthority {
+            format: 1,
+            workspace_id: "10000000-0000-4000-8000-000000000001".into(),
+            tenant_id: "10000000-0000-4000-8000-000000000002".into(),
+            principal_id: "10000000-0000-4000-8000-000000000003".into(),
+            owner_uid: 501,
+            session_token: "synthetic".into(),
+            csrf_token: "synthetic".into(),
+        };
+        let generation = "10000000-0000-4000-8000-000000000004";
+        let wire = setup.workspace_import_bootstrap(&authority, generation, WorkspaceImport::V7).unwrap();
+        let wire = std::str::from_utf8(&wire).unwrap();
+        let channel = wire.split_once(r#","ownerChannel":"#).unwrap().1.strip_suffix('}').unwrap();
+        assert_eq!(format!("{:x}", Sha256::digest(channel.as_bytes())), "c5892688797b237f8c9ec235ce49d1f73843ee16c5377b1c6f6137d04696ab03");
+        let legacy = setup.workspace_import_bootstrap(&authority, generation, WorkspaceImport::V6).unwrap();
+        assert_eq!(legacy, wire.replace("normal-oex-workspace-import-v7", "normal-oex-workspace-import-v6").into_bytes());
+    }
     #[test]
     fn v3_claim_completion_keeps_session_socket_but_abandonment_closes_it() {
         for completed in [true, false] {

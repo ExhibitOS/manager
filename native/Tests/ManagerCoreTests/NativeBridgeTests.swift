@@ -10,33 +10,39 @@ final class NativeBridgeTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: profile.path))
     }
     #if DEBUG
-    func testWorkspaceV5ValidationPassesTheRuntimeToSelectedAndReopenHelpers() async throws {
+    func testWorkspaceValidationPassesTheRuntimeToSelectedAndReopenHelpers() async throws {
         let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: root) }
-        let helper = root.appendingPathComponent("helper")
-        let runtime = root.appendingPathComponent("runtime")
         let profile = root.appendingPathComponent("profile")
-        try """
-        #!/bin/sh
-        [ "$1" = --profile ] || exit 2
-        case "$3" in
-          --fresh-workspace-ports)
-            [ "$#" = 6 ] && [ "$5" = --selected-oex-v5-validation ] && [ "$6" = "${0%/*}/runtime" ];;
-          --reopen-workspace-v5-validation)
-            [ "$#" = 4 ] && [ "$4" = "${0%/*}/runtime" ];;
-          *) exit 2;;
-        esac
-        """.write(to: helper, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
         let ports: [String: UInt16] = ["web": 19101, "api": 19102, "database": 19103]
-        let selected = try NativeBridge(helper: helper, profile: profile, freshSelectedOEX: true, freshWorkspacePorts: ports,
-                                        workspaceV5ValidationRuntime: runtime)
-        try await selected.close()
-        let reopened = try NativeBridge(helper: helper, profile: profile, workspaceV5ValidationRuntime: runtime)
-        try await reopened.close()
-        XCTAssertThrowsError(try NativeBridge(helper: helper, profile: profile, freshWorkspacePorts: ports,
-                                              workspaceV5ValidationRuntime: runtime))
+        for version in ["v5", "v6", "v7"] {
+            let helper = root.appendingPathComponent("helper-\(version)")
+            let runtime = root.appendingPathComponent("runtime-\(version)")
+            try """
+            #!/bin/sh
+            [ "$1" = --profile ] || exit 2
+            case "$3" in
+              --fresh-workspace-ports)
+                [ "$#" = 6 ] && [ "$5" = --selected-oex-\(version)-validation ] && [ "$6" = "${0%/*}/runtime-\(version)" ];;
+              --reopen-workspace-\(version)-validation)
+                [ "$#" = 4 ] && [ "$4" = "${0%/*}/runtime-\(version)" ];;
+              *) exit 2;;
+            esac
+            """.write(to: helper, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+            func bridge(selected: Bool = false, ports: [String: UInt16]? = nil) throws -> NativeBridge {
+                try NativeBridge(helper: helper, profile: profile, freshSelectedOEX: selected, freshWorkspacePorts: ports,
+                                 workspaceV5ValidationRuntime: version == "v5" ? runtime : nil,
+                                 workspaceV6ValidationRuntime: version == "v6" ? runtime : nil,
+                                 workspaceV7ValidationRuntime: version == "v7" ? runtime : nil)
+            }
+            try await bridge(selected: true, ports: ports).close()
+            try await bridge().close()
+            XCTAssertThrowsError(try bridge(ports: ports))
+            XCTAssertThrowsError(try NativeBridge(helper: helper, profile: profile, workspaceV6ValidationRuntime: runtime,
+                                                  workspaceV7ValidationRuntime: runtime))
+        }
     }
     #endif
     func testActualRustStateRoundtripAndSharedSelection() async throws {
