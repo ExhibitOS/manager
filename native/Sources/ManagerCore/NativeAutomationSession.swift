@@ -338,6 +338,63 @@ public actor NativeAutomationSession {
         }
     }
 
+    private func executeWorkspaceFurnishing(_ operation: String, request: DocumentValue,
+                                            api: AuthoringAPI) async throws -> DocumentValue {
+        switch operation {
+        case "workspace-furnishing-intake-create":
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["kind", "name", "rights", "provenance", "model"])
+            let details = try JSONDecoder().decode(WorkspaceFurnishingDetails.self, from: JSONEncoder().encode(command))
+            guard let id = request["requestId"].string, try value(details) == command else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            return try value(await api.createWorkspaceFurnishing(requestId: id, details: details))
+        case "workspace-furnishing-intake-list", "workspace-furnishing-list":
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["cursor"])
+            guard command["cursor"] == .null || command["cursor"].string != nil else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            if operation == "workspace-furnishing-intake-list" {
+                let page = try await api.workspaceFurnishingIntakes(cursor: command["cursor"].string)
+                return .object(["items": try value(page.items), "nextCursor": page.nextCursor.map(DocumentValue.string) ?? .null])
+            }
+            let page = try await api.workspaceFurnishings(cursor: command["cursor"].string)
+            return .object(["items": try value(page.items), "nextCursor": page.nextCursor.map(DocumentValue.string) ?? .null])
+        case "workspace-furnishing-intake-status", "workspace-furnishing-intake-upload",
+             "workspace-furnishing-intake-complete", "workspace-furnishing-intake-cancel", "workspace-furnishing-intake-retry":
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["intakeId"])
+            guard let id = command["intakeId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let intake = try await api.workspaceFurnishingIntake(id)
+            if operation == "workspace-furnishing-intake-status" { return try value(intake) }
+            if operation == "workspace-furnishing-intake-upload" {
+                guard let path = request["inputPath"].string, let pin = inputs[path] else {
+                    throw BridgeFailure("AUTOMATION_INPUT_INVALID")
+                }
+                let url = URL(fileURLWithPath: path)
+                guard url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+                let snapshot = try await ImportFileSnapshot.load(url, byteLimit: WorkspaceFurnishingModel.byteLimit)
+                guard snapshot.sha256 == pin else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
+                return try value(await api.uploadWorkspaceFurnishing(intake, snapshot: snapshot))
+            }
+            guard let name = operation.split(separator: "-").last,
+                  let action = WorkspaceFurnishingIntakeAction(rawValue: String(name)) else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            return try value(await api.workspaceFurnishingAction(intake, action))
+        case "workspace-furnishing-read", "workspace-furnishing-model-check":
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["id", "version"])
+            guard let id = command["id"].string, command["version"] == .integer(1) else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            let furnishing = try await api.workspaceFurnishing(id, version: 1)
+            if operation == "workspace-furnishing-read" { return try value(furnishing) }
+            let bytes = try await api.workspaceFurnishingModel(furnishing)
+            return .object(["id": .string(id), "version": .integer(1), "bytes": .integer(Int64(bytes.count)),
+                            "sha256": .string(Self.digest(bytes))])
+        default:
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        }
+    }
+
     public func execute(_ request: DocumentValue) async throws -> DocumentValue {
         guard request["version"] == .integer(1), let id = request["requestId"].string, UUID(uuidString: id) != nil,
               let operation = request["operation"].string, case .object(let fields) = request,
@@ -371,6 +428,28 @@ public actor NativeAutomationSession {
                 throw BridgeFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
             }
             result = try await executeWorkspaceMaterial(operation, request: request, api: api)
+        case "workspace-furnishing-intake-create", "workspace-furnishing-intake-list", "workspace-furnishing-intake-status",
+             "workspace-furnishing-intake-upload", "workspace-furnishing-intake-complete", "workspace-furnishing-intake-cancel",
+             "workspace-furnishing-intake-retry", "workspace-furnishing-list", "workspace-furnishing-read", "workspace-furnishing-model-check":
+            guard selectedOEXFormat == nil, await api.admitsWorkspaceFurnishings else {
+                throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+            }
+            result = try await executeWorkspaceFurnishing(operation, request: request, api: api)
+        case "workspace-furnishing-place":
+            guard selectedOEXFormat == nil, await api.admitsWorkspaceFurnishings else {
+                throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+            }
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["id", "roomId", "furnishingId", "furnishingVersion", "position", "yaw", "scale"])
+            let placement = try JSONDecoder().decode(WorkspaceFurnishingPlacement.self, from: JSONEncoder().encode(command))
+            guard try value(placement) == command else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            if let draft = try await api.prepareWorkspaceFurnishingPlacement(placement, in: current) {
+                var next = current
+                next.draft = draft
+                result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
+            } else {
+                result = .object(["changed": .bool(false), "document": try value(current)])
+            }
         case "workspace-material-floor-apply", "workspace-material-wall-apply":
             guard selectedOEXFormat == nil else { throw BridgeFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
             try checkedRevision(request, current)

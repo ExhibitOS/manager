@@ -1204,6 +1204,41 @@ final class ExhibitionModel: ObservableObject {
     var workspaceWallMaterialAvailable: Bool {
         workspaceMaterialIntakeAvailable && api?.workspaceWallMaterialRuntimeQualified == true
     }
+    var workspaceFurnishingIntakeAvailable: Bool {
+        viewportCredentials != nil && !selectedBoundedPolicy && api?.workspaceFurnishingRuntimeQualified == true
+            && session?.workspaceFurnishingProfile == "workspace-furnishing-intake-v1"
+    }
+    func withWorkspaceFurnishingAccess<T>(_ access: UUID, _ body: (AuthoringAPI) async throws -> T) async throws -> T {
+        guard workspaceFurnishingIntakeAvailable, access == viewportAccessID, !busy, !entrancePreviewActive,
+              !placingArtwork, !architectureApplying, !pending, let api else {
+            throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+        }
+        busy = true
+        defer { busy = false }
+        guard await api.admitsWorkspaceFurnishings else { throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
+        let result = try await body(api)
+        guard access == viewportAccessID else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return result
+    }
+    func placeWorkspaceFurnishing(_ placement: WorkspaceFurnishingPlacement, access: UUID) async throws -> Bool {
+        try await withWorkspaceFurnishingAccess(access) { api in
+            guard !immutable, !formDirty, !positionDirty, !architectureDirty,
+                  viewportController.editingContextActive, var current = state else {
+                throw AuthoringFailure("ARCHITECTURE_APPLY_REQUIRED")
+            }
+            let revision = current.revision
+            let next = try await api.prepareWorkspaceFurnishingPlacement(placement, in: current)
+            guard access == viewportAccessID, state?.revision == revision, state?.draft == current.draft else {
+                throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            guard let next else { return false }
+            current.draft = next
+            try await persist(current)
+            syncFields()
+            notice = "비품 배치 입력을 이 Mac에 보관했습니다. 전시를 저장하세요."
+            return true
+        }
+    }
     func withWorkspaceMaterialAccess<T>(_ access: UUID, _ body: (AuthoringAPI) async throws -> T) async throws -> T {
         guard workspaceMaterialIntakeAvailable, access == viewportAccessID, !busy, !entrancePreviewActive,
               !placingArtwork, !architectureApplying, !pending, let api else {

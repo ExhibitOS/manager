@@ -19,6 +19,7 @@ struct NativeExhibitionView: View {
     var createOEXWorkspace: () async -> Void = {}
     @State private var confirmOEXWorkspace = false
     @State private var workspaceMaterialAccess: UUID?
+    @State private var workspaceFurnishingAccess: UUID?
     var connectionAllowed = true
     var edit: () -> Void = {}
     var publish: () -> Void = {}
@@ -120,6 +121,9 @@ struct NativeExhibitionView: View {
         .sheet(isPresented: Binding(get: { workspaceMaterialAccess != nil }, set: { if !$0 { workspaceMaterialAccess = nil } })) {
             if let workspaceMaterialAccess { WorkspaceMaterialIntakeView(model: model, access: workspaceMaterialAccess) }
         }
+        .sheet(isPresented: Binding(get: { workspaceFurnishingAccess != nil }, set: { if !$0 { workspaceFurnishingAccess = nil } })) {
+            if let workspaceFurnishingAccess { WorkspaceFurnishingIntakeView(model: model, access: workspaceFurnishingAccess) }
+        }
         .inspector(isPresented: inspectorPresented) { inspector }
         .inspectorColumnWidth(min: 240, ideal: 300, max: 420)
         .onChange(of: model.selectedPlaqueId) { _, id in if !id.isEmpty { showSelection() } }
@@ -167,6 +171,10 @@ struct NativeExhibitionView: View {
                 ForEach(InspectorScope.allCases) { value in Button(value.title) { inspect(value) }.disabled(value == .cover && model.placingArtwork) }
                 if model.workspaceMaterialIntakeAvailable {
                     Button("작업공간 재질 등록") { workspaceMaterialAccess = model.viewportAccessID }
+                        .disabled(formLocked || editRestricted)
+                }
+                if model.workspaceFurnishingIntakeAvailable {
+                    Button("작업 공간 비품 등록·배치") { workspaceFurnishingAccess = model.viewportAccessID }
                         .disabled(formLocked || editRestricted)
                 }
                 Divider()
