@@ -401,7 +401,7 @@ impl InstallationController {
     pub(crate) fn with_personal_transition(
         &self,
         token: &str,
-        task: impl FnOnce(&LifecycleService, &Path) -> Result<()>,
+        task: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState) -> Result<()>,
     ) -> Result<()> {
         self.with_current_mutation(token, |service| {
             match fs::symlink_metadata(service.root.join("native-restore-current.json")) {
@@ -420,7 +420,7 @@ impl InstallationController {
                 return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
             }
             let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
-            task(service, &profile.root)
+            task(service, &profile.root, &document)
         })
     }
 

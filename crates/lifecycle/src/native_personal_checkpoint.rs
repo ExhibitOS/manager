@@ -976,17 +976,17 @@ impl InstallationController {
         token: &str,
         key_path: &Path,
         staging: &Path,
-        task: impl FnOnce(&LifecycleService, &[u8; 32]) -> Result<()>,
+        task: impl FnOnce(&LifecycleService, &Path, &super::installations::native_document::DocumentState, &[u8; 32]) -> Result<()>,
     ) -> Result<()> {
         if key_path.starts_with(staging) {
             return Err(invalid());
         }
-        self.with_personal_transition(token, |service, profile| {
+        self.with_personal_transition(token, |service, profile, document| {
             if key_path.starts_with(&service.root) {
                 return Err(invalid());
             }
             let key = Bytes(crate::profile_backup::external_key(profile, key_path)?);
-            task(service, key.0.as_slice().try_into().map_err(|_| invalid())?)
+            task(service, profile, document, key.0.as_slice().try_into().map_err(|_| invalid())?)
         })
     }
 
@@ -998,7 +998,7 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, |service, key| {
+        self.with_transition_key(token, key_path, staging, |service, _, _, key| {
             if !present(staging, ENVELOPE)? {
                 service.authenticate_local_personal_checkpoint(source, target, staging, key, None)?;
             }
@@ -1020,16 +1020,14 @@ impl InstallationController {
         {
             return Err(invalid());
         }
-        self.with_transition_key(token, key_path, staging, |service, key| {
-            let profile = &self.profile.as_ref().ok_or_else(invalid)?.root;
+        self.with_transition_key(token, key_path, staging, |service, profile, document, key| {
             if !staging.is_absolute() || staging.starts_with(profile) || profile.starts_with(staging) {
                 return Err(invalid());
             }
-            let document = self.document_unlocked(service)?.1;
             if document.draft.is_none() || document.etag.is_none() {
                 return Err(err("NATIVE_PHYSICAL_CHECKPOINT_SAVED_DOCUMENT_REQUIRED"));
             }
-            let document_sha256 = saved_document_digest(&document)?;
+            let document_sha256 = saved_document_digest(document)?;
             if present(staging, ENVELOPE)? {
                 let envelope = installation_backup::source_bytes(staging, ENVELOPE, ENVELOPE_LIMIT as u64, true)?;
                 let checkpoint = service.transition_checkpoint(&envelope, key)?;
@@ -1054,7 +1052,7 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, |service, key| {
+        self.with_transition_key(token, key_path, staging, |service, _, _, key| {
             service.authenticate_local_personal_checkpoint(source, target, staging, key, None)
         })
     }
@@ -1068,7 +1066,7 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, |service, key| {
+        self.with_transition_key(token, key_path, staging, |service, _, _, key| {
             service.stage_local_personal_runtime_transition(source, target, staging, key)
         })
     }
@@ -1080,9 +1078,8 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, |service, key| {
-            let document = self.document_unlocked(service)?.1;
-            service.activate_local_personal_runtime_transition(target, staging, key, &document)
+        self.with_transition_key(token, key_path, staging, |service, _, document, key| {
+            service.activate_local_personal_runtime_transition(target, staging, key, document)
         })
     }
 
@@ -1093,7 +1090,7 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, |service, key| {
+        self.with_transition_key(token, key_path, staging, |service, _, _, key| {
             service.recover_local_personal_runtime_transition(staging, key, Some(WORKSPACE_V5_TRANSITION))
         })
     }
@@ -1104,7 +1101,7 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, |service, key| {
+        self.with_transition_key(token, key_path, staging, |service, _, _, key| {
             service.recover_local_personal_runtime_transition(staging, key, None)
         })
     }
