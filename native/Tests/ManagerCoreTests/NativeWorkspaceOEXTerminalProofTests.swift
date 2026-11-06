@@ -158,6 +158,28 @@ final class NativeWorkspaceOEXTerminalProofTests: XCTestCase {
         }
     }
 
+    func testAcceptsWallAndMixedColorBindingsOnlyOnMatchingSurfaces() throws {
+        _ = try Fixture(kinds: [.wall]).verify()
+        let input = try Fixture(kinds: [.floor, .wall])
+        _ = try input.verify()
+
+        let namespace = WorkspaceSurfaceMaterialBinding.namespace
+        var candidate = input.held.draft.candidate
+        var bindings = try XCTUnwrap(candidate["extensions"][namespace]["bindings"].items)
+        let floorID = bindings[0]["materialId"]
+        bindings[0]["materialId"] = bindings[1]["materialId"]
+        bindings[1]["materialId"] = floorID
+        candidate["extensions"][namespace]["bindings"] = .array(bindings)
+        var draft = input.held.draft
+        try draft.replaceCandidate(candidate)
+        var result = input.result
+        result["draft"] = draft.document
+        let bytes = try JSONEncoder().encode(result)
+        rejects(try input.verify(proof: input.proof(for: bytes), result: bytes,
+            held: NativeStudioResponse(revision: 1, etag: input.held.etag, draft: draft),
+            reopened: NativeStudioResponse(revision: 2, etag: input.reopened.etag, draft: draft)))
+    }
+
     private func rejects(_ expression: @autoclosure () throws -> Terminal.Verified, line: UInt = #line) {
         XCTAssertThrowsError(try expression(), line: line) {
             XCTAssertEqual(($0 as? AuthoringFailure)?.code, "OEX_TERMINAL_PROOF_INVALID", line: line)
@@ -173,30 +195,38 @@ final class NativeWorkspaceOEXTerminalProofTests: XCTestCase {
         let result: DocumentValue
         let resultBytes: Data
 
-        init() throws {
-            let floor = uuid(), materialId = uuid()
-            let material = try JSONDecoder().decode(WorkspaceMaterial.self, from: Data(
-                """
-                {"id":"\(materialId)","version":1,"kind":"floor","name":"Synthetic","provenance":"Synthetic",
-                 "rights":{"holder":"Synthetic","ownership":"owner","creditLine":"Synthetic",
-                   "permissions":{"display":true,"download":false,"export":true,"commercial":false}},
-                 "maps":{"color":{"mime":"image/png","bytes":68,"sha256":"\(scope.sourceArchiveSha256)",
-                   "width":2,"height":2,"colorSpace":"srgb"}}}
-                """.utf8))
+        init(kinds: [WorkspaceMaterialKind] = [.floor]) throws {
+            let identities = kinds.map { (kind: $0, surfaceId: uuid(), materialId: uuid()) }
             var draft = try NativeExhibitionDraft.new()
             var candidate = draft.candidate
-            candidate["surfaces"] = .array([.object(["id": .string(floor), "type": .string("floor")])])
+            candidate["surfaces"] = .array(identities.map {
+                .object(["id": .string($0.surfaceId), "type": .string($0.kind.rawValue)])
+            })
             try draft.replaceCandidate(candidate)
-            let binding = try WorkspaceFloorMaterialBinding(surfaceId: floor, materialId: materialId, materialVersion: 1,
-                                                            repeatMeters: [2, 2], rotation: 0)
-            draft = try XCTUnwrap(binding.applying(material, to: draft))
+
+            var idMap: [String: DocumentValue] = [:]
+            for (kind, surfaceId, materialId) in identities {
+                let material = try JSONDecoder().decode(WorkspaceMaterial.self, from: Data(
+                    """
+                    {"id":"\(materialId)","version":1,"kind":"\(kind.rawValue)","name":"Synthetic","provenance":"Synthetic",
+                     "rights":{"holder":"Synthetic","ownership":"owner","creditLine":"Synthetic",
+                       "permissions":{"display":true,"download":false,"export":true,"commercial":false}},
+                     "maps":{"color":{"mime":"image/png","bytes":68,"sha256":"\(scope.sourceArchiveSha256)",
+                       "width":2,"height":2,"colorSpace":"srgb"}}}
+                    """.utf8))
+                let binding = try WorkspaceSurfaceMaterialBinding(surfaceKind: kind, surfaceId: surfaceId, materialId: materialId,
+                                                                  materialVersion: 1, repeatMeters: [2, 2], rotation: 0)
+                draft = try XCTUnwrap(binding.applying(material, to: draft))
+                idMap[uuid()] = .string(surfaceId)
+                idMap[uuid()] = .string(materialId)
+            }
             let etag = "\"studio-r1-\(scope.sourceArchiveSha256)\""
             held = NativeStudioResponse(revision: 1, etag: etag, draft: draft)
             reopened = NativeStudioResponse(revision: 2, etag: "\"studio-r2-\(scope.sourceArchiveSha256)\"", draft: draft)
             offer = NativeOEXSaveOffer(attemptId: scope.attemptId, exhibitionId: draft.id, etag: etag, requestId: uuid())
             result = .object(["exhibitionId": .string(draft.id), "etag": .string(etag), "revision": .integer(1),
                               "draft": draft.document, "assetAliases": .array([]),
-                              "idMap": .object([uuid(): .string(floor), uuid(): .string(materialId)])])
+                              "idMap": .object(idMap)])
             resultBytes = try JSONEncoder().encode(result)
         }
 

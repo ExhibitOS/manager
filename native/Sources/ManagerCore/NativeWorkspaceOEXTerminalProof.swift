@@ -174,7 +174,7 @@ public enum NativeWorkspaceOEXTerminalProof {
     }
 
     private static func validMaterials(in draft: NativeExhibitionDraft, destinations: Set<String>) -> Bool {
-        let value = draft.candidate["extensions"][WorkspaceFloorMaterialBinding.namespace]
+        let value = draft.candidate["extensions"][WorkspaceSurfaceMaterialBinding.namespace]
         guard case .object(let fields) = value, Set(fields.keys) == ["version", "materials", "bindings"],
               value["version"].integer == 1,
               let materials = value["materials"].items, (1...64).contains(materials.count),
@@ -182,13 +182,13 @@ public enum NativeWorkspaceOEXTerminalProof {
               let surfaces = draft.candidate["surfaces"].items else { return false }
 
         let encoder = JSONEncoder(), decoder = JSONDecoder()
-        var known = Set<MaterialVersion>()
+        var known: [MaterialVersion: WorkspaceMaterialKind] = [:]
         for descriptor in materials {
             guard let data = try? encoder.encode(descriptor),
                   let material = try? decoder.decode(WorkspaceMaterial.self, from: data),
-                  (try? material.check()) != nil, material.kind == .floor, Set(material.maps.keys) == ["color"],
+                  (try? material.check()) != nil, Set(material.maps.keys) == ["color"],
                   material.rights.permissions.display, destinations.contains(material.id),
-                  known.insert(MaterialVersion(id: material.id, version: material.version)).inserted else { return false }
+                  known.updateValue(material.kind, forKey: MaterialVersion(id: material.id, version: material.version)) == nil else { return false }
         }
 
         var surfaceTypes: [String: String] = [:]
@@ -208,14 +208,14 @@ public enum NativeWorkspaceOEXTerminalProof {
                   let version = row["materialVersion"].integer.flatMap(Int.init(exactly:)),
                   let repeatMeters = row["repeatMeters"].items, let rotation = row["rotation"].double,
                   repeatMeters.allSatisfy({ $0.double != nil }),
-                  let binding = try? WorkspaceFloorMaterialBinding(surfaceId: surfaceId, materialId: materialId,
-                        materialVersion: version, repeatMeters: repeatMeters.compactMap(\.double), rotation: rotation),
-                  surfaceTypes[binding.surfaceId] == "floor", destinations.contains(binding.surfaceId),
+                  let kind = known[MaterialVersion(id: materialId, version: version)],
+                  let binding = try? WorkspaceSurfaceMaterialBinding(surfaceKind: kind, surfaceId: surfaceId,
+                        materialId: materialId, materialVersion: version,
+                        repeatMeters: repeatMeters.compactMap(\.double), rotation: rotation),
+                  surfaceTypes[binding.surfaceId] == kind.rawValue, destinations.contains(binding.surfaceId),
                   bound.insert(binding.surfaceId).inserted else { return false }
-            let material = MaterialVersion(id: binding.materialId, version: binding.materialVersion)
-            guard known.contains(material) else { return false }
-            used.insert(material)
+            used.insert(MaterialVersion(id: binding.materialId, version: binding.materialVersion))
         }
-        return used == known
+        return used == Set(known.keys)
     }
 }
