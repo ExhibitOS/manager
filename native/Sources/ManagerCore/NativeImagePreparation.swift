@@ -156,6 +156,7 @@ public enum NativeImagePreparation {
             return candidate
         } catch {
             try check(isCurrent) // cancellation/staleness takes precedence over format errors
+            if error is EncodedPNGLimit { throw Failure.limits }
             throw error
         }
     }
@@ -361,6 +362,14 @@ public enum NativeImagePreparation {
         }
         throw Failure.unsupportedJPEG
     }
+    struct EncodedPNGLimit: Error {
+        static let maximumBytes = 8_388_608
+        let observedBytes: Int
+    }
+    static func checkEncodedPNGSize(_ byteCount: Int) throws {
+        guard byteCount <= EncodedPNGLimit.maximumBytes else { throw EncodedPNGLimit(observedBytes: byteCount) }
+    }
+
     private static func encode(_ rgb: Data, width: Int, height: Int, role: Role,
                                maximumEdge: Int, maximumPixels: Int, isCurrent: @Sendable () -> Bool) throws -> Data {
         try check(isCurrent)
@@ -374,7 +383,7 @@ public enum NativeImagePreparation {
         CGImageDestinationAddImage(destination, image, nil)
         guard CGImageDestinationFinalize(destination) else { throw Failure.encoding }
         try check(isCurrent)
-        guard encoded.length <= 8_388_608 else { throw Failure.limits }
+        try checkEncodedPNGSize(encoded.length)
         return try cleanPNG(encoded as Data, width: width, height: height, role: role, isCurrent: isCurrent)
     }
     private static func u32(_ data: Data, _ at: Int) -> Int { (0..<4).reduce(0) { ($0 << 8) | Int(data[at + $1]) } }
@@ -507,7 +516,7 @@ extension NativeImagePreparation {
         let maximumEdge: Int
         let rounding = "floor"
         let sampling = "nearest-centre"
-        let maximumEncodedBytes = 8_388_608
+        let maximumEncodedBytes = EncodedPNGLimit.maximumBytes
     }
 
     private struct PrivatePaintingColour: Encodable {

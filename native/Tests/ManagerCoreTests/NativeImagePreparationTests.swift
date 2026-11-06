@@ -122,6 +122,14 @@ final class NativeImagePreparationTests: XCTestCase {
         }
     }
     #endif
+    func testEncodedPNGSizeLimitPreservesExactByteCount() throws {
+        XCTAssertEqual(Prep.EncodedPNGLimit.maximumBytes, 8_388_608)
+        XCTAssertNoThrow(try Prep.checkEncodedPNGSize(8_388_608))
+        XCTAssertThrowsError(try Prep.checkEncodedPNGSize(8_388_609)) {
+            XCTAssertEqual(($0 as? Prep.EncodedPNGLimit)?.observedBytes, 8_388_609)
+        }
+    }
+
     func testManyConsecutiveIDATChunksKeepTheExactCompressedStream() throws {
         let candidate = try Prep.prepareSynchronously(sources: [source(try jpeg())], binding: binding(), settingsBytes: settings, isCurrent: { true })
         let png = try XCTUnwrap(candidate.images.first?.png), parts = chunks(png)

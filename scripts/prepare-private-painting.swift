@@ -57,6 +57,11 @@ struct PreparePrivatePainting {
         _ = umask(0o077)
         do {
             try run()
+        } catch let limit as NativeImagePreparation.EncodedPNGLimit {
+            let maximum = NativeImagePreparation.EncodedPNGLimit.maximumBytes
+            let message = "PRIVATE_PAINTING_PREPARATION_FAILED: limits stage=imageio-encoded-png observedBytes=\(limit.observedBytes) limitBytes=\(maximum)\n"
+            FileHandle.standardError.write(Data(message.utf8))
+            exit(1)
         } catch {
             // File-system errors can contain private paths. Report a fixed diagnostic.
             let detail = (error as? Failure).map { String(describing: $0) }
