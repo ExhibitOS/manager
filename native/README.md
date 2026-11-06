@@ -241,8 +241,13 @@ V6 parent marker, V7 marker and schema 035. The owned PostgreSQL ledger must
 match 026–035 for V7 or 026–034 with 035 absent for V6. After settlement,
 the existing stop and reopen flow uses the same payload and checks the ledger
 before starting services. The reopened helper uses the ordinary session.
-Existing profiles keep their original payload binding. V7 source validation
-leaves the complete payload allowlist empty until a separate qualification.
+Existing profiles keep their original payload binding. The macOS debug helper
+built with `workspace-v5-owner-validation` admits one isolated V7 payload. It
+requires Platform source `d28df69ae941084c3ab46c8b8bc06d6789b30c3b`, its
+producer SHA-256 `809ae0bd70b5702b325e0607324d53423474b453242e72a222a22fc08e970f34`,
+and manifest SHA-256 `085d9ea464376ad9347a9c5c7a52ad096650c6ff0bf642b01bf455a2a6494a7a`.
+Use this payload in a fresh synthetic validation profile. The V6 and release
+admission tables are unchanged.
 
 Local publication uses its own affirmative `nativePublicationProfile:
 "bounded-local-v1"` session advertisement and an explicit per-call profile

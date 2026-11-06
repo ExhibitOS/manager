@@ -159,7 +159,11 @@ const WORKSPACE_WALL_SCHEMA_PATH: &str =
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const WORKSPACE_V6_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[];
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const WORKSPACE_V7_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[];
+const WORKSPACE_V7_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[(
+    "d28df69ae941084c3ab46c8b8bc06d6789b30c3b",
+    "809ae0bd70b5702b325e0607324d53423474b453242e72a222a22fc08e970f34",
+    "085d9ea464376ad9347a9c5c7a52ad096650c6ff0bf642b01bf455a2a6494a7a",
+)];
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 fn workspace_import_validation_matches(
@@ -456,8 +460,31 @@ mod normal_oex_release_declaration_tests {
             assert!(!check(&manifest, WorkspaceImport::V7));
             manifest.files.iter_mut().find(|file| file.path == path).unwrap().sha256 = original;
         }
+        let [(source, producer, pinned_manifest)] = WORKSPACE_V7_VALIDATION_PROVENANCE else {
+            panic!("expected one isolated V7 validation payload");
+        };
+        manifest.source_commit = source.to_string();
+        manifest.producer_sha256 = producer.to_string();
+        let admitted = |manifest: &Manifest, hash| workspace_import_validation_matches(
+            manifest, hash, WorkspaceImport::V7, WORKSPACE_V7_VALIDATION_PROVENANCE,
+        );
+        assert!(admitted(&manifest, pinned_manifest));
+        assert!(!admitted(&manifest, &sha));
+        let original = std::mem::replace(&mut manifest.source_commit, "0".repeat(40));
+        assert!(!admitted(&manifest, pinned_manifest));
+        manifest.source_commit = original;
+        let original = std::mem::replace(&mut manifest.producer_sha256, sha.clone());
+        assert!(!admitted(&manifest, pinned_manifest));
+        manifest.producer_sha256 = original;
+        manifest.mode = "release".into();
+        assert!(!admitted(&manifest, pinned_manifest));
+        manifest.mode = "local-validation".into();
+        assert!(!workspace_import_validation_matches(
+            &manifest, pinned_manifest, WorkspaceImport::V6, WORKSPACE_V6_VALIDATION_PROVENANCE,
+        ));
+
         let mut payload = Payload {
-            root: PathBuf::new(), manifest, manifest_sha256: sha,
+            root: PathBuf::new(), manifest, manifest_sha256: pinned_manifest.to_string(),
             workspace_v5_validation: false, workspace_import: Some((WorkspaceImport::V7, false)),
         };
         assert!(payload.workspace_import_version() == Some(WorkspaceImport::V7));
