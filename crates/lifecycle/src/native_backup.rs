@@ -370,20 +370,21 @@ impl InstallationController {
             let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
             let _profile = profile_lock(profile)?;
             self.ensure_active_creation_unlocked(service)?;
-            // This new workspace type has not yet qualified completion-marker
-            // rebinding on restore. Never emit a backup we cannot reopen.
             let (registry,_) = load(&profile.root)?.ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
-            if registry.installations.iter().any(|e|e.id==registry.active_id && e.kind=="oex-import") {
-                return Err(err("NATIVE_OEX_WORKSPACE_BACKUP_UNAVAILABLE"));
-            }
+            let active = registry.installations.iter().find(|entry| entry.id == registry.active_id)
+                .ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
             let prepared = service.native_prepared()?.ok_or_else(|| err("NATIVE_NOT_READY"))?;
-            // Keep the established four-journal archive compatible with older
-            // readers. An unfinished OEX request is never silently omitted.
             let oex_name = format!("native-oex-import-{}.json", digest(service.root.as_os_str().as_encoded_bytes()));
-            if let Some(bytes) = optional(&profile.root, &oex_name, 65536).map_err(|_| err("NATIVE_OEX_IMPORT_INVALID"))? {
+            let oex_state = optional(&profile.root, &oex_name, 65536).map_err(|_| err("NATIVE_OEX_IMPORT_INVALID"))?;
+            if let Some(bytes) = &oex_state {
                 let identity = service.personal_identity().map_err(|_| err("NATIVE_OEX_IMPORT_SCOPE_CHANGED"))?;
                 check_oex_backup_guard(&bytes.0, &identity)?;
             }
+            let completion = if active.kind == "oex-import" {
+                let (_, transfer) = self.oex_import_unlocked(service)?;
+                if transfer.intent.is_some() { return Err(err("NATIVE_OEX_IMPORT_PENDING")); }
+                Some(self.verified_oex_workspace_completion_unlocked(service, &transfer)?)
+            } else { None };
             session.backup_available()?;
             session.backup_source_current()?;
             absent_destination(&input.destination)?;
@@ -447,6 +448,17 @@ impl InstallationController {
                 for (name, limit) in [("document",2_200_000),("upload",128*1024),("publication",2_200_000),("static-export",65536)] {
                     capture(&profile.root, &format!("native-{name}-{suffix}.json"), limit, &format!("{name}.json"), false, true)?;
                 }
+                if let Some(bytes) = &completion {
+                    let name = native_oex_import::workspace_completion_name(&service.root);
+                    let logical = native_oex_import::WORKSPACE_COMPLETION_ARCHIVE_NAME;
+                    capture(&profile.root, &name, 4096, logical, true, true)?;
+                    if digest(bytes) != digest(&installation_backup::source_bytes(&directory, logical, 4096, true)?) {
+                        return Err(err("NATIVE_BACKUP_SOURCE_CHANGED"));
+                    }
+                }
+                // Pending transfer state is a source fence, not portable data.
+                sources.push(Source {root:profile.root.clone(), name:oex_name, limit:65536,
+                    sha256:oex_state.as_ref().map(|bytes| digest(&bytes.0))});
                 let map = SourceMap {format:1, source_root:service.root.clone(), owner_kind:prepared.kind.clone(), manifest_sha256:prepared.manifest_sha256.clone(), journal_names};
                 write_json(&directory, "native-source.json", &map)?;
                 configuration.insert("native-source.json".into(), text(&directory.join("native-source.json"))?);
