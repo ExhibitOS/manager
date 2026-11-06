@@ -134,6 +134,10 @@ pub(crate) const WORKSPACE_WALL_SCHEMA_NAME: &str = "035_workspace_material_wall
 pub(crate) const WORKSPACE_WALL_SCHEMA_SHA256: &str =
     "c347183b3e58805c46d1dde7ae6e2defc37762af52f585846357181b9635a544";
 
+const WORKSPACE_FURNISHING_CAPABILITY: &str = "platform/scripts/native-workspace-furnishing-capability-v1.json";
+// An independently verified full payload tuple is required before native use.
+const WORKSPACE_FURNISHING_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[];
+
 const WORKSPACE_IMPORT_FORMAT_HINT: &str = "platform/apps/api/dist/oex-workspace-format-hint.js";
 const WORKSPACE_IMPORT_PREFLIGHT: &str = "platform/apps/api/dist/oex-owned-workspace-preflight.js";
 const WORKSPACE_IMPORT_MATERIALIZER: &str = "platform/apps/api/dist/oex-owned-workspace-chunk-materializer.js";
@@ -425,6 +429,34 @@ mod normal_oex_release_declaration_tests {
             m.files.push(serde_json::from_value(serde_json::json!({"path":path,"bytes":bytes,"sha256":sha,"executable":false})).unwrap());
         }
         m
+    }
+
+    #[test]
+    fn workspace_furnishing_draft_payload_stays_closed_and_ledger_requires_all_rows() {
+        let mut payload = Payload { root: PathBuf::new(), manifest: local_fixture(), manifest_sha256: "a".repeat(64), workspace_v5_validation: false, workspace_import: None };
+        assert!(!payload.workspace_furnishing_validation().unwrap());
+        let regular = |path| Item { path, bytes: Some(1), sha256: Some("b".repeat(64)), executable: Some(false), link: None };
+        payload.manifest.files.push(regular(WORKSPACE_FURNISHING_CAPABILITY.into()));
+        assert_eq!(payload.workspace_furnishing_validation().unwrap_err().code, "NATIVE_RUNTIME_UNQUALIFIED");
+        for index in (1..=36).rev() {
+            let dir = match index {
+                1..=25 => "migrations",
+                26..=32 => "native-oex-normal",
+                33..=34 => "native-oex-workspace-import",
+                35 => "native-oex-workspace-import-wall",
+                _ => "native-workspace-furnishing",
+            };
+            payload.manifest.files.push(regular(format!("platform/database/{dir}/{index:03}_fixture.sql")));
+        }
+        let ledger = payload.workspace_furnishing_ledger().unwrap();
+        assert_eq!(ledger.lines().count(), 36);
+        assert!(ledger.starts_with("001_fixture.sql|"));
+        assert!(ledger.lines().last().unwrap().starts_with("036_fixture.sql|"));
+        payload.manifest.files.push(regular("platform/database/native-workspace-furnishing/036_other.sql".into()));
+        assert!(payload.workspace_furnishing_ledger().is_err());
+        payload.manifest.files.pop();
+        payload.manifest.files.pop();
+        assert!(payload.workspace_furnishing_ledger().is_err());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -927,6 +959,50 @@ impl Payload {
     }
     pub(crate) fn workspace_v5_selected_input(&self) -> bool {
         self.workspace_v5_validation
+    }
+    pub(crate) fn workspace_furnishing_validation(&self) -> Result<bool> {
+        let Some(marker) = self.manifest.files.iter().find(|file| file.path == WORKSPACE_FURNISHING_CAPABILITY) else {
+            return Ok(false);
+        };
+        if !cfg!(debug_assertions) || self.manifest.mode != "local-validation"
+            || self.manifest.redistribution_qualified || self.manifest.official_signed
+            || marker.link.is_some() || marker.executable != Some(false)
+            || !WORKSPACE_FURNISHING_VALIDATION_PROVENANCE.contains(&(
+                self.manifest.source_commit.as_str(), self.manifest.producer_sha256.as_str(), self.manifest_sha256.as_str(),
+            ))
+        {
+            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn workspace_furnishing_ledger(&self) -> Result<String> {
+        let directories = [
+            ("migrations", 1..=25),
+            ("native-oex-normal", 26..=32),
+            ("native-oex-workspace-import", 33..=34),
+            ("native-oex-workspace-import-wall", 35..=35),
+            ("native-workspace-furnishing", 36..=36),
+        ];
+        let mut rows = std::collections::BTreeMap::new();
+        for file in &self.manifest.files {
+            let Some((directory, name)) = file.path.strip_prefix("platform/database/").and_then(|path| path.split_once('/')) else {
+                continue;
+            };
+            let Some((_, range)) = directories.iter().find(|(expected, _)| *expected == directory) else { continue; };
+            if !name.ends_with(".sql") { continue; }
+            let Some(number) = name.split_once('_').and_then(|(number, _)| number.parse::<usize>().ok()) else { return Err(invalid()); };
+            let hash = file.sha256.as_deref().filter(|hash| hash_valid(hash)).ok_or_else(invalid)?;
+            if !range.contains(&number) || !name.starts_with(&format!("{number:03}_"))
+                || !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+                || file.link.is_some() || file.executable != Some(false)
+                || rows.insert(number, format!("{name}|{hash}")).is_some()
+            {
+                return Err(invalid());
+            }
+        }
+        if rows.len() != 36 { return Err(invalid()); }
+        Ok(rows.into_values().collect::<Vec<_>>().join("\n"))
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn open_workspace_import_validation(root: &Path, version: WorkspaceImport, selected: bool) -> Result<Self> {
