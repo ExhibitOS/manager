@@ -164,12 +164,17 @@ public enum NativeImagePreparation {
         let width: Int
         let height: Int
     }
-    private typealias PNGEncoder = (Data, Int, Int, @Sendable () -> Bool) throws -> Data
+    private enum PNGEncoding {
+        case imageIO
+        #if DEBUG
+        case losslessPrivatePainting
+        #endif
+    }
 
     private static func prepareImage(_ input: Source, profile: Data?, allowSpatialSampling: Bool,
                                      sourceSize: Size? = nil, outputSize: Size? = nil,
                                      maximumEdge: Int = 2048, maximumPixels: Int = 4_194_304,
-                                     pngEncoder: PNGEncoder? = nil,
+                                     pngEncoding: PNGEncoding = .imageIO,
                                      isCurrent: @Sendable () -> Bool) throws -> (image: Image, decodedPNGHash: String?) {
         let source = try decodeJPEG(input, profile: profile, expectedSize: sourceSize, isCurrent: isCurrent)
         let scale = min(1, 2048 / Double(max(source.width, source.height)))
@@ -179,9 +184,16 @@ public enum NativeImagePreparation {
         guard !resized || allowSpatialSampling else { throw Failure.settings }
         let rgb = try resample(source.rgb, sourceWidth: source.width, sourceHeight: source.height,
             width: width, height: height, maximumEdge: maximumEdge, isCurrent: isCurrent)
-        let png = try pngEncoder?(rgb, width, height, isCurrent)
-            ?? encode(rgb, width: width, height: height, role: input.role, maximumEdge: maximumEdge,
+        let png: Data
+        switch pngEncoding {
+        case .imageIO:
+            png = try encode(rgb, width: width, height: height, role: input.role, maximumEdge: maximumEdge,
                 maximumPixels: maximumPixels, isCurrent: isCurrent)
+        #if DEBUG
+        case .losslessPrivatePainting:
+            png = try losslessPaintingPNG(rgb, width, height, isCurrent)
+        #endif
+        }
         let verified = try decodePNG(png, width: width, height: height, isCurrent: isCurrent)
         guard verified == rgb else { throw Failure.outputMismatch }
         let report = ImageReport(role: input.role, sourceImageIndex: input.imageIndex,
@@ -194,7 +206,7 @@ public enum NativeImagePreparation {
             colourMeaning: profile != nil ? "ICC-converted sRGB; not physical colour calibration" : (input.role == .baseColor ? "decoded source RGB codes; display sRGB assumed, not calibrated" : "linear numeric RGB codes; no transfer conversion"),
             sourceICCSHA256: profile.map(hash), colourTransferConverted: profile == nil ? nil : true,
             explicitBufferPayloadBytes: input.jpeg.count + source.samples.count + source.rgb.count + (profile == nil ? 0 : source.sourceRGB.count + source.width * source.height * 4) + rgb.count + png.count + verified.count)
-        return (Image(png: png, report: report), pngEncoder == nil ? nil : hash(verified))
+        return (Image(png: png, report: report), pngEncoding == .imageIO ? nil : hash(verified))
     }
     // Internal for the focused numeric recipe test; no format/registration API.
     static func resample(_ source: Data, sourceWidth: Int, sourceHeight: Int, width: Int, height: Int,
@@ -662,11 +674,11 @@ extension NativeImagePreparation {
         let dimensions = painting.outputDimensions
         let output = Size(width: dimensions.width, height: dimensions.height)
         let input = Source(role: .baseColor, imageIndex: 0, jpeg: jpeg, sha256: painting.sourceSHA256)
-        let pngEncoder: PNGEncoder? = painting == .aristotle ? losslessPaintingPNG : nil
+        let pngEncoding: PNGEncoding = painting == .aristotle ? .losslessPrivatePainting : .imageIO
         let (image, decodedPNGHash) = try autoreleasepool {
             try prepareImage(input, profile: profile, allowSpatialSampling: true,
                 sourceSize: painting.sourceSize, outputSize: output, maximumEdge: painting.maximumEdge,
-                maximumPixels: output.width * output.height, pngEncoder: pngEncoder, isCurrent: isCurrent)
+                maximumPixels: output.width * output.height, pngEncoding: pngEncoding, isCurrent: isCurrent)
         }
         guard image.report.sourceChannels == 3 else { throw Failure.unsupportedPixels }
 
