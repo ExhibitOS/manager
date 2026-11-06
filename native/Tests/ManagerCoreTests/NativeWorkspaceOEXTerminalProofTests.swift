@@ -78,13 +78,13 @@ final class NativeWorkspaceOEXTerminalProofTests: XCTestCase {
             XCTAssertEqual(fixture.scope, scope)
             let offer = NativeOEXSaveOffer(
                 attemptId: scope.attemptId, exhibitionId: "d8d4f1e9-34c1-4e3b-a7d0-2cdb6914d66d",
-                etag: ""studio-r1-\(sample.etag)"", requestId: "33333333-3333-4333-8333-333333333333"
+                etag: #""studio-r1-\#(sample.etag)""#, requestId: "33333333-3333-4333-8333-333333333333"
             )
             XCTAssertEqual(fixture.offer.attemptId, offer.attemptId)
             XCTAssertEqual(fixture.offer.exhibitionId, offer.exhibitionId)
             XCTAssertEqual(fixture.offer.etag, offer.etag)
             XCTAssertEqual(fixture.offer.requestId, offer.requestId)
-            XCTAssertEqual(fixture.saved.etag, ""studio-r2-\(sample.etag)"")
+            XCTAssertEqual(fixture.saved.etag, #""studio-r2-\#(sample.etag)""#)
             let result = try Data(contentsOf: root.appendingPathComponent("\(sample.name).result.utf8"))
             let proof = try Data(contentsOf: root.appendingPathComponent("\(sample.name).proof.utf8"))
             XCTAssertEqual(result, Data(fixture.resultUtf8.utf8))
