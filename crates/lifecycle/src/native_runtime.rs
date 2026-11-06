@@ -37,6 +37,7 @@ pub fn selected_oex_format_v7_validation(resources: &Path, input_fd: i32, cancel
 #[path = "native_runtime_oex_materializer.rs"] mod oex_materializer;
 #[path = "native_runtime_owner_channel.rs"] mod owner_channel;
 #[path = "native_runtime_furnishing_lifetime.rs"] mod furnishing_lifetime;
+#[path = "native_runtime_furnishing_lease.rs"] mod furnishing_lease;
 #[path = "native_runtime_oex_owner.rs"] mod oex_owner;
 #[path = "native_runtime_oex_recovery.rs"] mod oex_recovery;
 #[path = "native_runtime_oex_catalog_frames.rs"] mod oex_catalog_frames;
@@ -697,7 +698,9 @@ impl Session {
     }
 
     fn check_workspace_furnishing_channel(&mut self) -> Result<()> {
-        self.owner_channel.as_mut().ok_or_else(|| err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?.check_authenticated_idle()
+        self.check_native_observation_fence()?;
+        self.furnishing_writer_lifetime.as_ref().ok_or_else(|| err("NATIVE_FURNISHING_WRITER_LOCK_INVALID"))?.identity()?;
+        self.owner_channel.as_mut().ok_or_else(|| err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?.check_furnishing_idle()
     }
     /// Explicit private IPC only, never part of status/journal/log output.
     pub fn authoring_session(&mut self) -> Result<Value> {
@@ -705,7 +708,8 @@ impl Session {
         if self.status()?.state != "ready" {
             return Err(err("NATIVE_NOT_READY"));
         }
-        if self.payload.workspace_furnishing_validation()? { self.check_workspace_furnishing_channel()?; }
+        let furnishing = self.payload.workspace_furnishing_validation()?;
+        if furnishing { self.check_workspace_furnishing_channel()?; }
         if self.auxiliary.is_some() { return Err(err("NATIVE_OPERATION_ACTIVE")); }
         self.observation_root.check()?;
         let identity = self.service.personal_identity()?;
@@ -744,6 +748,7 @@ impl Session {
         if code != 0 || receipt.workspace_id != next.workspace_id || receipt.tenant_id != next.tenant_id || receipt.principal_id != next.principal_id {
             return Err(err("NATIVE_AUTHORING_RENEWAL_UNCERTAIN"));
         }
+        if furnishing { self.check_workspace_furnishing_channel()?; }
         self.local_authority = Some(next);
         let a = self
             .local_authority
@@ -1333,17 +1338,21 @@ const { isDeepStrictEqual } = require('node:util');
         } else {
             None
         };
-        let mut owner_setup = if furnishing.is_some() {
-            if self.local_authority.is_none() { return Err(err("NATIVE_PERSONAL_SESSION_REQUIRED")); }
+        let generation = self.job_id.as_deref().ok_or_else(|| err("NATIVE_JOURNAL_INVALID"))?;
+        let mut furnishing_lease = None;
+        let mut owner_setup = if let Some(start) = furnishing {
+            let authority = self.local_authority.as_ref().ok_or_else(|| err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
             let lifetime = self.furnishing_writer_lifetime.as_ref().ok_or_else(|| err("NATIVE_FURNISHING_WRITER_LOCK_INVALID"))?;
-            Some(owner_channel::Setup::new()?.with_furnishing_writer(lifetime.duplicate_for_writer()?))
+            let writer = lifetime.duplicate_for_writer()?;
+            furnishing_lease = Some(furnishing_lease::Lease::new(authority, generation, start,
+                self.payload.context().manifest_sha256, writer.identity));
+            Some(owner_channel::Setup::new()?.with_furnishing_writer(writer))
         } else if self.normal_oex_selected {
             if self.local_authority.is_none() || !self.payload.normal_oex_selected_input()? {
                 return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));
             }
             Some(owner_channel::Setup::new()?)
         } else { None };
-        let generation = self.job_id.as_deref().ok_or_else(|| err("NATIVE_JOURNAL_INVALID"))?;
         let mut private_input = match (&self.local_authority, &owner_setup, self.payload.workspace_import_version(), furnishing) {
             (Some(a), Some(setup), _, Some(start)) => Some(setup.workspace_furnishing_bootstrap(a, generation, start)?),
             (Some(a), Some(setup), Some(version), _) => Some(setup.workspace_import_bootstrap(a, generation, version)?),
@@ -1372,7 +1381,22 @@ const { isDeepStrictEqual } = require('node:util');
         if let Some(setup) = owner_setup {
             let authority = self.local_authority.as_ref().ok_or_else(|| err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
             let generation = self.job_id.as_deref().ok_or_else(|| err("NATIVE_JOURNAL_INVALID"))?;
-            self.owner_channel = Some(setup.handshake(authority, generation, &self.cancellation)?);
+            let mut channel = setup.handshake(authority, generation, &self.cancellation)?;
+            if let Some(lease) = furnishing_lease {
+                let cancellation = self.cancellation.clone();
+                channel.bind_furnishing_lease(&lease, &cancellation, &mut || {
+                    self.check_native_observation_fence()?;
+                    self.poll()?;
+                    if self.node.is_none() || self.postgres.is_none() {
+                        return Err(err("NATIVE_PROCESS_EXITED"));
+                    }
+                    let current = self.furnishing_writer_lifetime.as_ref()
+                        .ok_or_else(|| err("NATIVE_FURNISHING_WRITER_LOCK_INVALID"))?.identity()?;
+                    if current != lease.identity { return Err(err("NATIVE_FURNISHING_WRITER_LOCK_INVALID")); }
+                    Ok(())
+                })?;
+            }
+            self.owner_channel = Some(channel);
         }
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {

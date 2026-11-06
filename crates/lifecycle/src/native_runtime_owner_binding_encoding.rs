@@ -54,16 +54,21 @@ impl Fields<'_> {
 #[cfg(target_os="macos")]
 #[allow(dead_code)]
 pub(super) fn correlation_mac(key:&[u8;32],fields:&Fields<'_>)->Result<[u8;32]> {
+    Ok(hmac_sha256(key, &fields.encode()?))
+}
+
+#[cfg(target_os="macos")]
+pub(super) fn hmac_sha256(key: &[u8; 32], message: &[u8]) -> [u8; 32] {
     #[link(name="System")]
     unsafe extern "C" {
         fn CCHmac(algorithm:u32,key:*const libc::c_void,key_length:usize,
             data:*const libc::c_void,data_length:usize,out:*mut libc::c_void);
     }
-    let message=fields.encode()?;let mut output=[0u8;32];
+    let mut output=[0u8;32];
     // CommonCrypto kCCHmacAlgSHA256=2; all input and output buffers remain
     // valid for the duration of this synchronous system-library call.
     unsafe {CCHmac(2,key.as_ptr().cast(),key.len(),message.as_ptr().cast(),message.len(),output.as_mut_ptr().cast());}
-    Ok(output)
+    output
 }
 
 #[cfg(not(target_os="macos"))]
