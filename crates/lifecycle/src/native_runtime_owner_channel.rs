@@ -112,6 +112,9 @@ impl Setup {
     pub(super) fn workspace_v5_bootstrap(&self, auth: &LocalAuthority, generation: &str) -> Result<Vec<u8>> {
         self.normal_selected_v3_bootstrap(auth, generation, "normal-oex-workspace-v5")
     }
+    pub(super) fn workspace_v6_bootstrap(&self, auth: &LocalAuthority, generation: &str) -> Result<Vec<u8>> {
+        self.normal_selected_v3_bootstrap(auth, generation, "normal-oex-workspace-import-v6")
+    }
     fn normal_selected_v3_bootstrap(&self, auth: &LocalAuthority, generation: &str, mode: &'static str) -> Result<Vec<u8>> {
         let value=FreshOwnerBootstrap {workspace:auth,owner_channel:FreshOwnerBinding {version:3,runtime_generation:generation,secret:&self.secret,mode}};
         let bytes=serde_json::to_vec(&value).map_err(|_|err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
@@ -224,8 +227,6 @@ impl Connection {
         v3:Option<&super::oex_preflight_frames::Bound>,cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>) -> Result<()> {
         use std::os::unix::fs::{FileExt,MetadataExt};
         let PackedServe{control,prepared,output}=packed;
-        #[derive(Serialize)] #[serde(rename_all="camelCase")]
-        struct Notice<'a>{version:u32,kind:&'static str,correlation_id:&'a str,attempt_id:&'a str,control:&'a super::oex_control_v2::Control}
         #[derive(Serialize,Deserialize)] #[serde(rename_all="camelCase",deny_unknown_fields)]
         struct Read {version:u32,kind:String,correlation_id:String,attempt_id:String,index:usize,offset:u64,length:usize}
         #[derive(Serialize)] #[serde(rename_all="camelCase")]
@@ -243,8 +244,7 @@ impl Connection {
             if stamp(&before)!=prepared.verified.output_stamp || !before.is_file()||before.uid()!=unsafe{libc::geteuid()}||before.mode()&0o777!=0o600||before.nlink()!=1
                 || before.dev().to_string()!=control.output_device||before.ino().to_string()!=control.output_inode {return Err(bad());}
             check()?;
-            let notice=Notice{version:1,kind:if v3.is_some(){"worker-control-v3"}else{"worker-control"},correlation_id:correlation,attempt_id:attempt,control};
-            let bytes=serde_json::to_vec(&notice).map_err(|_|bad())?;
+            let bytes = worker_control_notice(control, correlation, attempt, v3.is_some())?;
             self.send_frame(&bytes,Instant::now()+Duration::from_secs(30),cancellation,check)?;
             self.serve_metadata(&prepared.verified.raw_ack,attempt,correlation,cancellation,check)?;
             for (index,entry) in prepared.verified.entries.iter().enumerate() {
@@ -455,6 +455,19 @@ fn read_bounded(stream:&mut UnixStream, bytes:&mut [u8], deadline:Instant, cance
         }
     }
     progress(deadline,cancellation)?;check()
+}
+
+pub(super) fn worker_control_notice(control: &super::oex_control_v2::Control,
+    correlation_id: &str, attempt_id: &str, v3: bool) -> Result<Vec<u8>> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Notice<'a> {
+        version: u32, kind: &'static str, correlation_id: &'a str, attempt_id: &'a str,
+        control: &'a super::oex_control_v2::Control,
+    }
+    let kind = if v3 { "worker-control-v3" } else { "worker-control" };
+    serde_json::to_vec(&Notice { version: 1, kind, correlation_id, attempt_id, control })
+        .map_err(|_| err("NATIVE_OEX_WORKER_UNCERTAIN"))
 }
 
 #[cfg(test)]

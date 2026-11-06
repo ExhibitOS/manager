@@ -41,6 +41,9 @@ pub(super) fn run_direct(payload:&Payload,journal:&File,input:&super::oex_read_f
         || request.worker_digest!=payload.context().manifest_sha256
         || af<0||bf<0||af&libc::O_ACCMODE!=libc::O_RDONLY||bf&libc::O_ACCMODE!=libc::O_RDWR||bf&libc::O_APPEND!=0
         || (a.dev(),a.ino())==(b.dev(),b.ino()){return Err(bad());}
+    if !payload.admits_selected_oex_format(&request.format)? {
+        return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));
+    }
     let (node,script,root)=payload.oex_packed_worker_v2()?;
     let (mut control,control_child)=UnixStream::pair().map_err(|_|bad())?;
     let (mut ack,ack_child)=UnixStream::pair().map_err(|_|bad())?;

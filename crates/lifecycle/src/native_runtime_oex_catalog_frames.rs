@@ -20,10 +20,28 @@ pub(super) const WORKSPACE_V5_LEDGER: [(&str, &str); 7] = [
     ("032_oex_workspace_material.sql", SCHEMA_032),
 ];
 
+const SCHEMA_033: &str = "f69d3dc12d7b89f1a342daef1d7bca08787667efacdfca3d214d3101b051d1dd";
+const SCHEMA_034: &str = "ebf2300ef875b635617d82369f4c7cad4cbe6d8fa43677bdbd2e5e21dd74da21";
+const WORKSPACE_IMPORT_LEDGER: [(&str, &str); 2] = [
+    ("033_workspace_material_import_provenance.sql", SCHEMA_033),
+    ("034_workspace_material_terminal_proof.sql", SCHEMA_034),
+];
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Protocol {
     V2,
     WorkspaceV5,
+    WorkspaceV6,
+}
+impl Protocol {
+    pub(super) fn ledger(self) -> impl Iterator<Item = (&'static str, &'static str)> {
+        let base = match self {
+            Self::V2 => &WORKSPACE_V5_LEDGER[..2],
+            _ => &WORKSPACE_V5_LEDGER[..],
+        };
+        let import = if self == Self::WorkspaceV6 { &WORKSPACE_IMPORT_LEDGER[..] } else { &[] };
+        base.iter().chain(import).copied()
+    }
 }
 
 fn bad() -> LifecycleError { err("NATIVE_OWNER_CHANNEL_UNAVAILABLE") }
@@ -51,6 +69,10 @@ struct CatalogFrame {
     schema031_sha256: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     schema032_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema033_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema034_sha256: Option<String>,
 }
 /// Captured independently from the owned session, PostgreSQL and pinned store.
 pub(super) struct Observation<'a> {
@@ -60,12 +82,14 @@ pub(super) struct Observation<'a> {
 pub(super) fn acknowledge(bytes: &[u8], observed: &Observation<'_>, protocol: Protocol) -> Result<Vec<u8>> {
     if bytes.is_empty() || bytes.len() > 8192 { return Err(bad()); }
     let mut f: CatalogFrame = serde_json::from_slice(bytes).map_err(|_| bad())?;
-    let (version, ready, ack, owner_mode, extra_schemas) = match protocol {
-        Protocol::V2 => (2, "catalog-ready-v2", "catalog-ack-v2", "normal-oex-027-v2", [None; 5]),
-        Protocol::WorkspaceV5 => (5, "catalog-ready-v5", "catalog-ack-v5", "normal-oex-workspace-v5",
-            [Some(NORMAL_OEX_028_SCHEMA_SHA256), Some(NORMAL_OEX_029_FLOOR_SCHEMA_SHA256),
-             Some(NORMAL_OEX_030_CONCRETE_SCHEMA_SHA256), Some(SCHEMA_031), Some(SCHEMA_032)]),
+    let (version, ready, ack, owner_mode) = match protocol {
+        Protocol::V2 => (2, "catalog-ready-v2", "catalog-ack-v2", "normal-oex-027-v2"),
+        Protocol::WorkspaceV5 => (5, "catalog-ready-v5", "catalog-ack-v5", "normal-oex-workspace-v5"),
+        Protocol::WorkspaceV6 => (6, "catalog-ready-v6", "catalog-ack-v6", "normal-oex-workspace-import-v6"),
     };
+    let mut ledger = protocol.ledger().map(|(_, digest)| digest).skip(2);
+    let extras = [f.schema028_sha256.as_deref(), f.schema029_sha256.as_deref(), f.schema030_sha256.as_deref(),
+        f.schema031_sha256.as_deref(), f.schema032_sha256.as_deref(), f.schema033_sha256.as_deref(), f.schema034_sha256.as_deref()];
     if serde_json::to_vec(&f).map_err(|_| bad())? != bytes || f.version != version || f.kind != ready
         || f.protocol != owner_mode || !uuid(&f.correlation_id)
         || [&f.workspace_id, &f.tenant_id, &f.principal_id, &f.runtime_generation].iter().any(|v| !uuid(v))
@@ -75,8 +99,7 @@ pub(super) fn acknowledge(bytes: &[u8], observed: &Observation<'_>, protocol: Pr
         || f.database_system_id != observed.system || f.database_oid != observed.oid
         || f.store_device != observed.device.to_string() || f.store_inode != observed.inode.to_string()
         || f.schema026_sha256 != SCHEMA_026 || f.schema027_sha256 != SCHEMA_027
-        || [f.schema028_sha256.as_deref(), f.schema029_sha256.as_deref(), f.schema030_sha256.as_deref(),
-            f.schema031_sha256.as_deref(), f.schema032_sha256.as_deref()] != extra_schemas { return Err(bad()); }
+        || extras.into_iter().any(|value| value != ledger.next()) { return Err(bad()); }
     f.kind = ack.into();
     serde_json::to_vec(&f).map_err(|_| bad())
 }
@@ -90,7 +113,7 @@ mod tests {
             runtime_generation:Uuid::new_v4().to_string(),payload_manifest_sha256:"a".repeat(64),
             database_system_id:"123".into(),database_oid:"456".into(),store_device:"7".into(),store_inode:"8".into(),
             schema026_sha256:SCHEMA_026.into(),schema027_sha256:SCHEMA_027.into(),
-            schema028_sha256:None,schema029_sha256:None,schema030_sha256:None,schema031_sha256:None,schema032_sha256:None}
+            schema028_sha256:None,schema029_sha256:None,schema030_sha256:None,schema031_sha256:None,schema032_sha256:None,schema033_sha256:None,schema034_sha256:None}
     }
     fn observation(frame: &CatalogFrame) -> Observation<'_> {
         Observation {workspace:&frame.workspace_id,tenant:&frame.tenant_id,principal:&frame.principal_id,
@@ -136,4 +159,31 @@ mod tests {
         assert!(check(&extra).is_err());
         assert!(check(&wire.replace("catalog-ready-v5", "catalog-ready-v2")).is_err());
     }
+    #[test]
+    fn workspace_v6_ack_requires_all_nine_ledger_rows_and_live_identity() {
+        let mut frame = fixture();
+        frame.version = 6;
+        frame.kind = "catalog-ready-v6".into();
+        frame.protocol = "normal-oex-workspace-import-v6".into();
+        frame.schema028_sha256 = Some(NORMAL_OEX_028_SCHEMA_SHA256.into());
+        frame.schema029_sha256 = Some(NORMAL_OEX_029_FLOOR_SCHEMA_SHA256.into());
+        frame.schema030_sha256 = Some(NORMAL_OEX_030_CONCRETE_SCHEMA_SHA256.into());
+        frame.schema031_sha256 = Some(SCHEMA_031.into());
+        frame.schema032_sha256 = Some(SCHEMA_032.into());
+        frame.schema033_sha256 = Some(SCHEMA_033.into());
+        frame.schema034_sha256 = Some(SCHEMA_034.into());
+        let observed = observation(&frame);
+        let wire = serde_json::to_string(&frame).unwrap();
+        let check = |wire: &str| acknowledge(wire.as_bytes(), &observed, Protocol::WorkspaceV6);
+        assert_eq!(check(&wire).unwrap(), wire.replacen("catalog-ready-v6", "catalog-ack-v6", 1).into_bytes());
+        assert_eq!(Protocol::WorkspaceV6.ledger().count(), 9);
+        for (_, digest) in Protocol::WorkspaceV6.ledger() {
+            assert!(check(&wire.replacen(digest, &"0".repeat(64), 1)).is_err());
+        }
+        let incomplete = wire.replace(&format!(r#","schema034Sha256":"{SCHEMA_034}""#), "");
+        assert!(check(&incomplete).is_err());
+        assert!(check(&wire.replace(r#""storeInode":"8""#, r#""storeInode":"9""#)).is_err());
+        assert!(acknowledge(wire.as_bytes(), &observed, Protocol::WorkspaceV5).is_err());
+    }
+
 }

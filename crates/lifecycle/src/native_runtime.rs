@@ -15,6 +15,10 @@ pub fn selected_oex_format(resources:&Path,input_fd:i32,cancelled:&AtomicBool)->
 pub fn selected_oex_format_v5_validation(resources: &Path, input_fd: i32, cancelled: &AtomicBool) -> Result<Vec<u8>> {
     oex_format_hint::run(&Payload::open_workspace_v5_validation(resources, true)?, input_fd, cancelled)
 }
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+pub fn selected_oex_format_v6_validation(resources: &Path, input_fd: i32, cancelled: &AtomicBool) -> Result<Vec<u8>> {
+    oex_format_hint::run(&Payload::open_workspace_v6_validation(resources, true)?, input_fd, cancelled)
+}
 #[path = "native_runtime_oex_preflight_frames.rs"] mod oex_preflight_frames;
 #[path = "native_runtime_oex_binding.rs"] mod oex_binding;
 #[path = "native_runtime_oex_read_fd.rs"] mod oex_read_fd;
@@ -41,6 +45,9 @@ fn native_port_bind_code(error: &std::io::Error) -> &'static str {
         _ => "NATIVE_PORT_BIND_FAILED",
     }
 }
+#[cfg(test)]
+#[path = "native_runtime_oex_v6_wire_tests.rs"]
+mod oex_v6_wire_tests;
 #[cfg(test)]
 mod port_bind_diagnostic_tests {
     #[test]
@@ -1238,6 +1245,7 @@ const { isDeepStrictEqual } = require('node:util');
         } else { None };
         let generation = self.job_id.as_deref().ok_or_else(|| err("NATIVE_JOURNAL_INVALID"))?;
         let mut private_input = match (&self.local_authority, &owner_setup) {
+            (Some(a), Some(setup)) if self.payload.workspace_v6_selected_input() => Some(setup.workspace_v6_bootstrap(a, generation)?),
             (Some(a), Some(setup)) if self.payload.workspace_v5_selected_input() => Some(setup.workspace_v5_bootstrap(a, generation)?),
             (Some(a), Some(setup)) if self.payload.normal_oex_028_selected_input()? => Some(setup.normal_028_bootstrap(a, generation)?),
             (Some(a), Some(setup)) if self.payload.normal_oex_027_selected_input()? => Some(setup.normal_027_bootstrap(a, generation)?),
@@ -1286,7 +1294,9 @@ const { isDeepStrictEqual } = require('node:util');
                     self.readiness = ready;
                     self.state = "ready".into();
                     if self.normal_oex_selected {
-                        if self.payload.workspace_v5_selected_input() {
+                        if self.payload.workspace_v6_selected_input() {
+                            self.accept_oex_catalog(oex_catalog_frames::Protocol::WorkspaceV6)?;
+                        } else if self.payload.workspace_v5_selected_input() {
                             self.accept_oex_catalog(oex_catalog_frames::Protocol::WorkspaceV5)?;
                         } else if self.payload.normal_oex_027_selected_input()? {
                             self.accept_oex_catalog(oex_catalog_frames::Protocol::V2)?;
@@ -1871,15 +1881,11 @@ impl Session {
             owner.recheck_database_identity(self)?;
             self.payload.recheck()?;
             owner.check(self)?;
-            let required = match protocol {
-                oex_catalog_frames::Protocol::V2 => &oex_catalog_frames::WORKSPACE_V5_LEDGER[..2],
-                oex_catalog_frames::Protocol::WorkspaceV5 => &oex_catalog_frames::WORKSPACE_V5_LEDGER[..],
-            };
-            let names = required.iter().map(|(name, _)| format!("'{name}'")).collect::<Vec<_>>().join(",");
+            let names = protocol.ledger().map(|(name, _)| format!("'{name}'")).collect::<Vec<_>>().join(",");
             let sql = format!("SELECT name,sha256 FROM public.schema_migrations WHERE name IN ({names}) ORDER BY name");
             let rows = self.query_database("exhibitos", &sql)?;
             owner.check(self)?;
-            let expected = required.iter().map(|(name, hash)| format!("{name}|{hash}")).collect::<Vec<_>>().join("\n");
+            let expected = protocol.ledger().map(|(name, hash)| format!("{name}|{hash}")).collect::<Vec<_>>().join("\n");
             if rows != expected { return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
             if protocol == oex_catalog_frames::Protocol::V2 && self.payload.normal_oex_028_selected_input()? {
                 let row=self.query_database("exhibitos","SELECT sha256 FROM public.schema_migrations WHERE name='028_oex_material_catalogue.sql'")?;
@@ -1949,7 +1955,10 @@ impl Session {
         if (state.workspace_id.as_str(),state.tenant_id.as_str(),state.principal_id.as_str())!=(auth.workspace_id.as_str(),auth.tenant_id.as_str(),auth.principal_id.as_str())
             || state.job_id.is_some() {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         let intent=state.intent.as_ref().ok_or_else(||err("NATIVE_OEX_ATTEMPT_INVALID"))?;
-        if intent.profile.as_deref()!=Some("bounded-file-v1")||!matches!(intent.oex_format.as_deref(),Some("1.0.0-draft.9"|"1.0.0-draft.10"))||(intent.oex_format.as_deref()==Some("1.0.0-draft.10")&&!self.payload.normal_oex_028_selected_input()?){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        if intent.profile.as_deref() != Some("bounded-file-v1")
+            || !self.payload.admits_selected_oex_format(intent.oex_format.as_deref().unwrap_or_default())? {
+            return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));
+        }
         self.select_oex_upload_format(&intent.request_id,intent.bytes,&intent.sha256,intent.oex_format.as_deref().ok_or_else(||err("NATIVE_OEX_ATTEMPT_INVALID"))?)
     }
     /// Inactive until the host binds this to the exact durably saved intent
@@ -1958,8 +1967,8 @@ impl Session {
     #[allow(dead_code)]
     fn select_oex_upload(&mut self,request:&str,bytes:u64,sha256:&str)->Result<()> { self.select_oex_upload_format(request,bytes,sha256,"1.0.0-draft.9") }
     fn select_oex_upload_format(&mut self,request:&str,bytes:u64,sha256:&str,format:&str)->Result<()> {
-        let v4=self.payload.normal_oex_028_selected_input()?;
-        if !matches!(format,"1.0.0-draft.9"|"1.0.0-draft.10")||(!v4&&format!="1.0.0-draft.9"){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        let v4=self.payload.workspace_v6_selected_input() || self.payload.normal_oex_028_selected_input()?;
+        if !self.payload.admits_selected_oex_format(format)? { return Err(err("NATIVE_OEX_ATTEMPT_INVALID")); }
         if !(self.fresh_oex_test || self.normal_oex_selected)||self.oex_upload_selection_started||self.state!="ready"||self.node.is_none()||self.postgres.is_none(){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         self.oex_upload_selection_started=true;
         let auth=match self.local_authority.as_ref(){Some(value)=>value,None=>{
@@ -2035,7 +2044,7 @@ impl Session {
         let cancel=self.cancellation.clone();
         let mut channel=self.owner_channel.take().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
         let format=self.oex_upload_selected.as_ref().ok_or_else(||err("NATIVE_OEX_ATTEMPT_INVALID"))?.3.clone();
-        let v4=self.payload.normal_oex_028_selected_input()?;
+        let v4=self.payload.workspace_v6_selected_input() || self.payload.normal_oex_028_selected_input()?;
         let archive=owner_channel::SelectedArchive{request_id:request,bytes,sha256,format:if v4{Some(&format)}else{None}};
         let scope=oex_reservation::V3PlanScope::from_owner(&owner,stage_root.path(),stage_root.device());
         let mut check=|| {owner.check(self)?;stage_root.check_empty(self)};
@@ -2092,7 +2101,10 @@ impl Session {
         let auth=self.local_authority.as_ref().ok_or_else(||err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
         if (state.workspace_id.as_str(),state.tenant_id.as_str(),state.principal_id.as_str())!=(auth.workspace_id.as_str(),auth.tenant_id.as_str(),auth.principal_id.as_str()) {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
         let intent=state.intent.as_ref().ok_or_else(||err("NATIVE_OEX_ATTEMPT_INVALID"))?;
-        if intent.profile.as_deref()!=Some("bounded-file-v1")||!matches!(intent.oex_format.as_deref(),Some("1.0.0-draft.9"|"1.0.0-draft.10"))||(intent.oex_format.as_deref()==Some("1.0.0-draft.10")&&!self.payload.normal_oex_028_selected_input()?){return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+        if intent.profile.as_deref() != Some("bounded-file-v1")
+            || !self.payload.admits_selected_oex_format(intent.oex_format.as_deref().unwrap_or_default())? {
+            return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));
+        }
         let job=state.job_id.as_deref().ok_or_else(||err("NATIVE_OEX_ATTEMPT_INVALID"))?;
         if self.cancelled()||cancelled.load(Ordering::SeqCst)||self.oex_upload_selected.as_ref().is_none_or(|v|v.0!=intent.request_id||v.1!=intent.bytes||v.2!=intent.sha256||Some(v.3.as_str())!=intent.oex_format.as_deref()) {
             return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));
@@ -2532,7 +2544,7 @@ impl OwnedOexV3Claim<'_> {
             if let Err(error)=accepted {channel.invalidate();return Err(error);}
             self.session.owner_channel=Some(channel);
             let payload=self.session.payload.clone();
-            let v4=payload.normal_oex_028_selected_input()?;
+            let v4=payload.workspace_v6_selected_input() || payload.normal_oex_028_selected_input()?;
             let mut check=|| {self.owner.check(self.session)?;self.stage_root.check_input(self.session,&r.stage_id,device,inode)?;
                 self.session.owner_channel.as_mut().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?.check_idle()?;
                 if cancelled.load(Ordering::SeqCst){return Err(err("NATIVE_CANCELLED"));}Ok(())};

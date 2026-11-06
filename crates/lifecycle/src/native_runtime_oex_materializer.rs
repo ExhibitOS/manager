@@ -70,6 +70,9 @@ pub(super) fn run_direct(
     check_owner()?;
     if cancelled.load(Ordering::SeqCst) {return Err(err("NATIVE_CANCELLED"));}
     if request.worker_digest != payload.context().manifest_sha256 {return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));}
+    if !payload.admits_selected_oex_format(&request.format)? {
+        return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));
+    }
     let (node,script,root)=payload.oex_materializer()?;
     let (mut control,parent_control_child)=UnixStream::pair().map_err(|_|uncertain())?;
     let (mut ack,parent_ack_child)=UnixStream::pair().map_err(|_|uncertain())?;

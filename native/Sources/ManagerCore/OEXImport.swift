@@ -14,7 +14,7 @@ public struct NativeOEXImportIntent: Codable, Equatable, Sendable {
     public var hasSupportedProfile: Bool {
         switch (profile, oexFormat) {
         case (nil, nil): return (1...64 * 1024 * 1024).contains(bytes)
-        case ("bounded-file-v1"?, "1.0.0-draft.9"?), ("bounded-file-v1"?, "1.0.0-draft.10"?): return (1...512 * 1024 * 1024).contains(bytes)
+        case ("bounded-file-v1"?, "1.0.0-draft.9"?), ("bounded-file-v1"?, "1.0.0-draft.10"?), ("bounded-file-v1"?, "1.0.0-draft.12"?): return (1...512 * 1024 * 1024).contains(bytes)
         default: return false
         }
     }
