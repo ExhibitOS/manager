@@ -167,7 +167,7 @@ public actor NativeBridge {
     private let process: Process
     private let input: FileHandle
     private let output: FileHandle
-    private let selectedOEXFormatArguments: [String]
+    private let selectedOEXFormatValidation: (version: String, runtime: URL)?
     private var sequence: UInt64 = 0
     private var buffered = Data()
 
@@ -219,9 +219,7 @@ public actor NativeBridge {
         self.process = process
         self.input = incoming.fileHandleForWriting
         self.output = outgoing.fileHandleForReading
-        self.selectedOEXFormatArguments = validation.first.map { version, runtime in
-            ["--oex-selected-format-\(version)-validation", runtime.path]
-        } ?? ["--oex-selected-format"]
+        self.selectedOEXFormatValidation = validation.first
         try process.run()
     }
 
@@ -243,7 +241,7 @@ public actor NativeBridge {
     /// A separate read-only helper receives only the held private snapshot FD.
     public func selectedOEXFormat(_ archive: NativeOEXArchive) async throws -> String {
         guard let helper = process.executableURL else { throw BridgeFailure("NATIVE_HELPER_MISSING") }
-        return try await archive.selectedFormat(helper: helper, arguments: selectedOEXFormatArguments)
+        return try await archive.selectedFormat(helper: helper, validation: selectedOEXFormatValidation)
     }
     public func context() throws -> Context { try request("context") }
     public func presentation() throws -> Presentation { try request("presentation") }

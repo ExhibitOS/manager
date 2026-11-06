@@ -125,7 +125,7 @@ public struct NativeOEXArchive: Sendable {
     }
     /// Provisional metadata from the same sealed snapshot. Platform still hashes
     /// and validates the complete archive under the independently held import lease.
-    func selectedFormat(helper: URL, arguments: [String] = ["--oex-selected-format"]) async throws -> String {
+    func selectedFormat(helper: URL, validation: (version: String, runtime: URL)? = nil) async throws -> String {
         let ownedFile = file, identity = stamp, expectedCount = count
         let work = Task.detached(priority: .userInitiated) {
             let fd = Darwin.open(ownedFile.url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
@@ -136,7 +136,9 @@ public struct NativeOEXArchive: Sendable {
             guard fstat(fd, &before) == 0, identity.matches(before), before.st_size == Int64(expectedCount) else { throw AuthoringFailure("FILE_CHANGED") }
             let child = Process(), pipe = Pipe()
             child.executableURL = helper
-            child.arguments = arguments
+            child.arguments = validation.map { version, runtime in
+                ["--oex-selected-format-\(version)-validation", runtime.path]
+            } ?? ["--oex-selected-format"]
             child.environment = ["PATH": "/usr/bin:/bin", "LANG": "C"]
             child.standardInput = source; child.standardOutput = pipe; child.standardError = FileHandle.nullDevice
             try Task.checkCancellation(); try child.run()
@@ -168,7 +170,8 @@ public struct NativeOEXArchive: Sendable {
             guard child.terminationStatus == 0, fstat(fd, &after) == 0, identity.matches(after), result.last == 10 else { throw AuthoringFailure("OEX_FORMAT_INVALID") }
             result.removeLast()
             let hint = try JSONDecoder().decode(OEXSelectedFormatHint.self, from: result)
-            try hint.check(bytes: result, count: expectedCount, device: before.st_dev, inode: before.st_ino, workspaceV6: workspaceV6ValidationRuntime != nil)
+            let workspaceImport = validation?.version == "v6" || validation?.version == "v7"
+            try hint.check(bytes: result, count: expectedCount, device: before.st_dev, inode: before.st_ino, workspaceV6: workspaceImport)
             return hint.archiveFormat
         }
         return try await withTaskCancellationHandler {
