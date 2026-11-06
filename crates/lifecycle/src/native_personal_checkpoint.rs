@@ -88,6 +88,13 @@ fn saved_document_digest(document: &super::installations::native_document::Docum
     Ok(digest(&serde_json::to_vec(document).map_err(|_| invalid())?))
 }
 
+fn check_transition_host(checkpoint: &Checkpoint, saved_workspace_host: bool) -> Result<()> {
+    if checkpoint.saved_document_sha256.is_some() != saved_workspace_host {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 fn invalid() -> LifecycleError {
     err("NATIVE_PHYSICAL_CHECKPOINT_INVALID")
 }
@@ -132,6 +139,15 @@ fn inventory_with_limit(
     root: &Path,
     staged: bool,
     max_bytes: u64,
+) -> Result<BTreeMap<PathBuf, Entry>> {
+    inventory_with_sync(root, staged, max_bytes, File::sync_all)
+}
+
+fn inventory_with_sync(
+    root: &Path,
+    staged: bool,
+    max_bytes: u64,
+    sync: impl Fn(&File) -> std::io::Result<()>,
 ) -> Result<BTreeMap<PathBuf, Entry>> {
     let root_pin = crate::maintenance_source::DirectoryPin::open(root)?;
     let mut files = BTreeMap::new();
@@ -223,7 +239,7 @@ fn inventory_with_limit(
         }
         chunk.fill(0);
         if staged {
-            file.sync_all().map_err(|_| invalid())?;
+            sync(&file).map_err(|_| invalid())?;
         }
         if bytes != held.len()
             || identity(&held) != identity(&file.metadata().map_err(|_| invalid())?)
@@ -240,17 +256,16 @@ fn inventory_with_limit(
             },
         );
     }
+    // The walk visits each parent before its children. Flush the completed
+    // files first, then the directory entries from the leaves to the root.
     for pin in directories.iter().rev() {
         if staged {
-            pin.try_clone_file()?.sync_all().map_err(|_| invalid())?;
+            sync(&pin.try_clone_file()?).map_err(|_| invalid())?;
         }
         pin.check()?;
     }
     if staged {
-        root_pin
-            .try_clone_file()?
-            .sync_all()
-            .map_err(|_| invalid())?;
+        sync(&root_pin.try_clone_file()?).map_err(|_| invalid())?;
     }
     root_pin.check()?;
     Ok(files)
@@ -495,6 +510,8 @@ fn copy_beforeimages(
             .set_permissions(fs::Permissions::from_mode(entry.mode))
             .map_err(|_| invalid())?;
     }
+    // Staged inventory verifies and flushes the final-mode files and nested
+    // directories before the caller can publish a seal or a recovery plan.
     if inventory(destination, true)? != *files {
         return Err(invalid());
     }
@@ -643,6 +660,7 @@ impl LifecycleService {
         target: &Payload,
         staging: &Path,
         key: &[u8; 32],
+        saved_workspace_host: bool,
     ) -> Result<()> {
         let guard = self.lock()?;
         self.check_prepare_guard(&guard)?;
@@ -668,12 +686,7 @@ impl LifecycleService {
         {
             return Err(invalid());
         }
-        #[cfg(feature = "workspace-v5-owner-validation")]
-        if (checkpoint.old_manifest.as_str(), checkpoint.new_manifest.as_str()) == WORKSPACE_V5_TRANSITION
-            && checkpoint.saved_document_sha256.is_none()
-        {
-            return Err(invalid());
-        }
+        check_transition_host(&checkpoint, saved_workspace_host)?;
         let binding = bindings(&checkpoint)?;
         verify_beforeimage(&checkpoint, ENVIRONMENT, &binding.old_env.0)?;
         verify_beforeimage(&checkpoint, RECORD, &binding.old_record)?;
@@ -692,7 +705,7 @@ impl LifecycleService {
         &self,
         staging: &Path,
         key: &[u8; 32],
-        pair: Option<(&str, &str)>,
+        saved_workspace_host: bool,
     ) -> Result<()> {
         let guard = self.lock()?;
         self.check_prepare_guard(&guard)?;
@@ -702,10 +715,8 @@ impl LifecycleService {
             .ok_or_else(invalid)?
             .to_vec();
         let mut checkpoint = self.transition_checkpoint(&envelope, key)?;
-        if checkpoint.staged != staging
-            || pair.is_some_and(|(source, target)|
-                source != checkpoint.old_manifest || target != checkpoint.new_manifest)
-        {
+        check_transition_host(&checkpoint, saved_workspace_host)?;
+        if checkpoint.staged != staging {
             return Err(invalid());
         }
         crate::native_runtime::check_cold_transition_root(
@@ -752,6 +763,7 @@ impl LifecycleService {
         target: Arc<Payload>,
         staging: &Path,
         key: &[u8; 32],
+        saved_workspace_host: bool,
     ) -> Result<(
         crate::native_runtime::Session,
         Checkpoint,
@@ -772,6 +784,7 @@ impl LifecycleService {
         let pending = read_pending(&self.root)?;
         let envelope = pending.strip_prefix(PENDING_PREFIX).ok_or_else(invalid)?;
         let mut checkpoint = self.transition_checkpoint(envelope, key)?;
+        check_transition_host(&checkpoint, saved_workspace_host)?;
         if checkpoint.new_manifest != target_context.manifest_sha256
             || checkpoint.trial || checkpoint.staged != staging {
             return Err(invalid());
@@ -805,10 +818,11 @@ impl LifecycleService {
         target: Arc<Payload>,
         staging: &Path,
         key: &[u8; 32],
+        saved_workspace_host: bool,
         document: &super::installations::native_document::DocumentState,
     ) -> Result<()> {
         let (mut session, mut checkpoint, binding, envelope) =
-            self.trial_local_personal_runtime(target, staging, key)?;
+            self.trial_local_personal_runtime(target, staging, key, saved_workspace_host)?;
         let qualified = (|| {
             if session.start()?.state != "ready" {
                 return Err(invalid());
@@ -1002,7 +1016,7 @@ impl InstallationController {
             if !present(staging, ENVELOPE)? {
                 service.authenticate_local_personal_checkpoint(source, target, staging, key, None)?;
             }
-            service.stage_local_personal_runtime_transition(source, target, staging, key)
+            service.stage_local_personal_runtime_transition(source, target, staging, key, false)
         })
     }
 
@@ -1039,7 +1053,7 @@ impl InstallationController {
                     source, target, staging, key, Some(document_sha256),
                 )?;
             }
-            service.stage_local_personal_runtime_transition(source, target, staging, key)
+            service.stage_local_personal_runtime_transition(source, target, staging, key, true)
         })
     }
 
@@ -1067,7 +1081,7 @@ impl InstallationController {
         key_path: &Path,
     ) -> Result<()> {
         self.with_transition_key(token, key_path, staging, |service, _, _, key| {
-            service.stage_local_personal_runtime_transition(source, target, staging, key)
+            service.stage_local_personal_runtime_transition(source, target, staging, key, false)
         })
     }
 
@@ -1077,21 +1091,12 @@ impl InstallationController {
         target: Arc<Payload>,
         staging: &Path,
         key_path: &Path,
+        saved_workspace_host: bool,
     ) -> Result<()> {
         self.with_transition_key(token, key_path, staging, |service, _, document, key| {
-            service.activate_local_personal_runtime_transition(target, staging, key, document)
-        })
-    }
-
-    #[cfg(feature = "workspace-v5-owner-validation")]
-    pub(crate) fn recover_saved_workspace_v5_transition(
-        &self,
-        token: &str,
-        staging: &Path,
-        key_path: &Path,
-    ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, |service, _, _, key| {
-            service.recover_local_personal_runtime_transition(staging, key, Some(WORKSPACE_V5_TRANSITION))
+            service.activate_local_personal_runtime_transition(
+                target, staging, key, saved_workspace_host, document,
+            )
         })
     }
 
@@ -1100,11 +1105,13 @@ impl InstallationController {
         token: &str,
         staging: &Path,
         key_path: &Path,
+        saved_workspace_host: bool,
     ) -> Result<()> {
         self.with_transition_key(token, key_path, staging, |service, _, _, key| {
-            service.recover_local_personal_runtime_transition(staging, key, None)
+            service.recover_local_personal_runtime_transition(staging, key, saved_workspace_host)
         })
     }
+
 }
 
 #[cfg(test)]
@@ -1137,7 +1144,7 @@ mod tests {
         let target = Arc::new(Payload::open(&path("EXHIBITOS_TEST_TARGET_PAYLOAD")).unwrap());
         let service = LifecycleService::bound_existing(root.clone()).unwrap();
         let (mut session, checkpoint, binding, _) = service
-            .trial_local_personal_runtime(target, &staging, key.0.as_slice().try_into().unwrap())
+            .trial_local_personal_runtime(target, &staging, key.0.as_slice().try_into().unwrap(), false)
             .unwrap();
         assert_eq!(session.start().unwrap().state, "ready");
         let authoring = session.authoring_session().unwrap();
@@ -1190,6 +1197,44 @@ mod tests {
         )
         .unwrap();
         std::process::exit(99);
+    }
+
+    #[test]
+    fn transition_staged_inventory_requires_durable_files_and_nested_directories() {
+        let root = std::env::temp_dir().join(format!("transition-sync-{}", Uuid::new_v4()));
+        installations::new_directory(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        for name in DATA_DIRECTORIES {
+            installations::new_directory(&root.join(name)).unwrap();
+        }
+        let nested = root.join("blobs/nested");
+        installations::new_directory(&nested).unwrap();
+        write_private_new(&nested, "asset", b"proof", 128).unwrap();
+        for name in [RECORD, ENVIRONMENT] {
+            write_private_new(&root, staged_name(name), b"before", 128).unwrap();
+        }
+        let inode = |path: &Path| fs::metadata(path).unwrap().ino();
+        let visited = std::cell::RefCell::new(Vec::new());
+        inventory_with_sync(&root, true, MAX_BYTES, |file| {
+            visited.borrow_mut().push(file.metadata()?.ino());
+            file.sync_all()
+        }).unwrap();
+        let order = visited.into_inner();
+        let position = |path: &Path| order.iter().position(|value| *value == inode(path)).unwrap();
+        assert!(position(&nested.join("asset")) < position(&nested));
+        assert!(position(&nested) < position(&root.join("blobs")));
+        assert!(position(&root.join("blobs")) < position(&root));
+        for failure in [inode(&nested.join("asset")), inode(&nested)] {
+            assert!(inventory_with_sync(&root, true, MAX_BYTES, |file| {
+                if file.metadata()?.ino() == failure {
+                    return Err(std::io::Error::other("injected checkpoint flush failure"));
+                }
+                file.sync_all()
+            }).is_err());
+            assert!(!root.join(ENVELOPE).exists());
+            assert!(!root.join(ENVIRONMENT).exists());
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1391,7 +1436,7 @@ mod tests {
             }
             assert!(
                 controller
-                    .recover_local_personal_runtime_transition(token, &staged, &wrong_key_path)
+                    .recover_local_personal_runtime_transition(token, &staged, &wrong_key_path, false)
                     .is_err()
             );
             assert!(
@@ -1410,7 +1455,7 @@ mod tests {
                 assert!(inventory_with_limit(&root, false, original_bytes + pending_bytes).is_ok());
             }
             controller
-                .recover_local_personal_runtime_transition(token, &staged, &key_path)
+                .recover_local_personal_runtime_transition(token, &staged, &key_path, false)
                 .unwrap();
             assert_eq!(inventory(&root, false).unwrap(), checkpoint.files);
             assert!(service.personal_environment(&old, ports).is_ok());

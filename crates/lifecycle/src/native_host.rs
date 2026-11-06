@@ -380,8 +380,13 @@ impl Host {
         }
         let shared = self.state.clone();
         let controller = self.controller.clone();
-        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
-        let workspace_v5_maintenance_only = self.workspace_v5_maintenance_only;
+        #[cfg(debug_assertions)]
+        let saved_workspace_host = {
+            #[cfg(feature = "workspace-v5-owner-validation")]
+            { self.workspace_v5_maintenance_only }
+            #[cfg(not(feature = "workspace-v5-owner-validation"))]
+            { false }
+        };
         let resources = self.resources.clone();
         let prepare_ports = self.prepare_ports;
         self.worker = Some(thread::spawn(move || {
@@ -479,23 +484,12 @@ impl Host {
                                 LocalPersonalTransition::Activate { staging, key_file } => {
                                     let target = Arc::new(Payload::open(&resources)?);
                                     controller.activate_local_personal_runtime_transition(
-                                        &token, target, &staging, &key_file,
+                                        &token, target, &staging, &key_file, saved_workspace_host,
                                     )?;
                                 }
                                 LocalPersonalTransition::Recover { staging, key_file } => {
-                                    #[cfg(feature = "workspace-v5-owner-validation")]
-                                    if workspace_v5_maintenance_only {
-                                        controller.recover_saved_workspace_v5_transition(
-                                            &token, &staging, &key_file,
-                                        )?;
-                                    } else {
-                                        controller.recover_local_personal_runtime_transition(
-                                            &token, &staging, &key_file,
-                                        )?;
-                                    }
-                                    #[cfg(not(feature = "workspace-v5-owner-validation"))]
                                     controller.recover_local_personal_runtime_transition(
-                                        &token, &staging, &key_file,
+                                        &token, &staging, &key_file, saved_workspace_host,
                                     )?;
                                 }
                             }
