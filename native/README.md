@@ -194,6 +194,26 @@ fixture at `apps/api/test-fixtures/workspace-oex-terminal-native-v1.json` when
 running `swift test --filter NativeWorkspaceOEXTerminalProofTests` to check the
 producer's original proof and result bytes.
 
+The Manager Rust owner has a Draft 12 recovery witness boundary for the
+selected owner protocol. After matching the exact settlement receipt, it checks
+the held worker reaping results and retired stage, binds the prior claim and
+provider records to the pinned directories, and creates
+`native-oex-recovery-<jobId>.json` under the private workspace root. It
+syncs the file and directory before sending the settlement receipt ACK. The
+32 KiB v1 JSON witness records the attempt and claim, prior generation and
+journal/provider identity, database owner, source SHA-256, exact receipt
+SHA-256 and r2 save identity. Hash its original bytes for comparison.
+
+The restart check uses an independently held pending transfer and expected
+attempt, generation, claim digest and r2 save. It pins the prior generation
+under the existing root operation guard before publishing a new run pointer.
+Missing, partial or conflicting evidence, a remaining resource anchor, or
+replaced directories prevent recovery. Platform must separately verify ACK
+acceptance, committed finalization, decoder drain, prior Node termination and
+current owner and database fences. The selected Draft 12 pipeline and its
+restart transport are pending integration. The existing API and CLI admit the
+existing formats through their unchanged paths.
+
 Local publication uses its own affirmative `nativePublicationProfile:
 "bounded-local-v1"` session advertisement and an explicit per-call profile
 header. Ordinary readiness/publish requests retain their existing behavior.
