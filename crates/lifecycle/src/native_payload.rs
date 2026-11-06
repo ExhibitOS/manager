@@ -135,8 +135,20 @@ pub(crate) const WORKSPACE_WALL_SCHEMA_SHA256: &str =
     "c347183b3e58805c46d1dde7ae6e2defc37762af52f585846357181b9635a544";
 
 const WORKSPACE_FURNISHING_CAPABILITY: &str = "platform/scripts/native-workspace-furnishing-capability-v1.json";
+const WORKSPACE_FURNISHING_WRITER_DIRECTORY: &str = "platform/database/native-workspace-furnishing-writer/";
+const WORKSPACE_FURNISHING_WRITER_SCHEMA: &str =
+    "platform/database/native-workspace-furnishing-writer/037_workspace_furnishing_writer_generation.sql";
 // An independently verified full payload tuple is required before native use.
 const WORKSPACE_FURNISHING_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[];
+// The fourth field must name the independently reviewed writer capability.
+// The exact manifest binds its bytes and the complete SQL inventory.
+const WORKSPACE_FURNISHING_WRITER_VALIDATION_PROVENANCE: &[(&str, &str, &str, &str)] = &[];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkspaceFurnishingCatalog {
+    Schema036,
+    Writer037,
+}
 
 const WORKSPACE_IMPORT_FORMAT_HINT: &str = "platform/apps/api/dist/oex-workspace-format-hint.js";
 const WORKSPACE_IMPORT_PREFLIGHT: &str = "platform/apps/api/dist/oex-owned-workspace-preflight.js";
@@ -431,13 +443,12 @@ mod normal_oex_release_declaration_tests {
         m
     }
 
-    #[test]
-    fn workspace_furnishing_draft_payload_stays_closed_and_ledger_requires_all_rows() {
+    fn furnishing_ledger_file(path: String) -> Item {
+        Item { path, bytes: Some(1), sha256: Some("b".repeat(64)), executable: Some(false), link: None }
+    }
+
+    fn furnishing_ledger_fixture() -> Payload {
         let mut payload = Payload { root: PathBuf::new(), manifest: local_fixture(), manifest_sha256: "a".repeat(64), workspace_v5_validation: false, workspace_import: None };
-        assert!(!payload.workspace_furnishing_validation().unwrap());
-        let regular = |path| Item { path, bytes: Some(1), sha256: Some("b".repeat(64)), executable: Some(false), link: None };
-        payload.manifest.files.push(regular(WORKSPACE_FURNISHING_CAPABILITY.into()));
-        assert_eq!(payload.workspace_furnishing_validation().unwrap_err().code, "NATIVE_RUNTIME_UNQUALIFIED");
         for index in (1..=36).rev().filter(|index| !matches!(*index, 26 | 27)) {
             let dir = match index {
                 1..=25 => "migrations",
@@ -446,17 +457,70 @@ mod normal_oex_release_declaration_tests {
                 35 => "native-oex-workspace-import-wall",
                 _ => "native-workspace-furnishing",
             };
-            payload.manifest.files.push(regular(format!("platform/database/{dir}/{index:03}_fixture.sql")));
+            payload.manifest.files.push(furnishing_ledger_file(format!("platform/database/{dir}/{index:03}_fixture.sql")));
         }
-        let ledger = payload.workspace_furnishing_ledger().unwrap();
+        payload
+    }
+
+    #[test]
+    fn workspace_furnishing_draft_payload_stays_closed_and_ledger_requires_all_rows() {
+        let mut payload = furnishing_ledger_fixture();
+        assert!(!payload.workspace_furnishing_validation().unwrap());
+        payload.manifest.files.push(furnishing_ledger_file(WORKSPACE_FURNISHING_CAPABILITY.into()));
+        assert_eq!(payload.workspace_furnishing_validation().unwrap_err().code, "NATIVE_RUNTIME_UNQUALIFIED");
+        let ledger = payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::Schema036).unwrap();
         assert_eq!(ledger.lines().count(), 36);
         assert!(ledger.starts_with("001_fixture.sql|"));
         assert!(ledger.lines().last().unwrap().starts_with("036_fixture.sql|"));
-        payload.manifest.files.push(regular("platform/database/native-workspace-furnishing/036_other.sql".into()));
-        assert!(payload.workspace_furnishing_ledger().is_err());
+        payload.manifest.files.push(furnishing_ledger_file("platform/database/native-workspace-furnishing/036_other.sql".into()));
+        assert!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::Schema036).is_err());
         payload.manifest.files.pop();
+        payload.manifest.files.retain(|file| !file.path.ends_with("001_fixture.sql"));
+        assert!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::Schema036).is_err());
+    }
+
+    #[test]
+    fn workspace_furnishing_writer_ledger_requires_exact_037_path_and_all_36_prior_rows() {
+        let mut payload = furnishing_ledger_fixture();
+        let writer = WorkspaceFurnishingCatalog::Writer037;
+        assert!(payload.workspace_furnishing_ledger(writer).is_err());
+        payload.manifest.files.push(furnishing_ledger_file(WORKSPACE_FURNISHING_WRITER_SCHEMA.into()));
+        assert_eq!(payload.workspace_furnishing_validation().unwrap_err().code, "NATIVE_RUNTIME_UNQUALIFIED");
+        let ledger = payload.workspace_furnishing_ledger(writer).unwrap();
+        assert_eq!(ledger.lines().count(), 37);
+        assert_eq!(ledger.lines().last().unwrap(), format!("037_workspace_furnishing_writer_generation.sql|{}", "b".repeat(64)));
+        assert!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::Schema036).is_err());
+        payload.manifest.files.push(furnishing_ledger_file(format!("{WORKSPACE_FURNISHING_WRITER_DIRECTORY}037_other.sql")));
+        assert!(payload.workspace_furnishing_ledger(writer).is_err());
         payload.manifest.files.pop();
-        assert!(payload.workspace_furnishing_ledger().is_err());
+        payload.manifest.files.retain(|file| !file.path.ends_with("035_fixture.sql"));
+        assert!(payload.workspace_furnishing_ledger(writer).is_err());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn workspace_furnishing_writer_needs_separate_exact_tuple_and_regular_marker() {
+        const WRITER_FIXTURE_MARKER: &str = "platform/scripts/fixture-writer-capability.json";
+        let mut payload = furnishing_ledger_fixture();
+        let source = payload.manifest.source_commit.clone();
+        let producer = payload.manifest.producer_sha256.clone();
+        let manifest = payload.manifest_sha256.clone();
+        let legacy_pin = [(source.as_str(), producer.as_str(), manifest.as_str())];
+        let writer_pin = [(source.as_str(), producer.as_str(), manifest.as_str(), WRITER_FIXTURE_MARKER)];
+        payload.manifest.files.push(furnishing_ledger_file(WORKSPACE_FURNISHING_CAPABILITY.into()));
+        assert_eq!(payload.workspace_furnishing_catalog_for(&legacy_pin, &[]).unwrap(), Some(WorkspaceFurnishingCatalog::Schema036));
+        assert!(payload.workspace_furnishing_catalog_for(&legacy_pin, &writer_pin).is_err());
+        payload.manifest.files.push(furnishing_ledger_file(WORKSPACE_FURNISHING_WRITER_SCHEMA.into()));
+        assert!(payload.workspace_furnishing_catalog_for(&legacy_pin, &[]).is_err());
+        assert!(payload.workspace_furnishing_catalog_for(&legacy_pin, &writer_pin).is_err());
+        payload.manifest.files.push(furnishing_ledger_file(WRITER_FIXTURE_MARKER.into()));
+        assert_eq!(payload.workspace_furnishing_catalog_for(&legacy_pin, &writer_pin).unwrap(), Some(WorkspaceFurnishingCatalog::Writer037));
+        payload.manifest.producer_sha256.replace_range(0..1, "e");
+        assert!(payload.workspace_furnishing_catalog_for(&legacy_pin, &writer_pin).is_err());
+        payload.manifest.producer_sha256 = producer.clone();
+        payload.manifest.files.last_mut().unwrap().link = Some("other".into());
+        assert!(payload.workspace_furnishing_catalog_for(&legacy_pin, &writer_pin).is_err());
+        assert!(payload.workspace_furnishing_catalog().is_err());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -961,22 +1025,44 @@ impl Payload {
         self.workspace_v5_validation
     }
     pub(crate) fn workspace_furnishing_validation(&self) -> Result<bool> {
-        let Some(marker) = self.manifest.files.iter().find(|file| file.path == WORKSPACE_FURNISHING_CAPABILITY) else {
-            return Ok(false);
-        };
-        if !cfg!(debug_assertions) || self.manifest.mode != "local-validation"
-            || self.manifest.redistribution_qualified || self.manifest.official_signed
-            || marker.link.is_some() || marker.executable != Some(false)
-            || !WORKSPACE_FURNISHING_VALIDATION_PROVENANCE.contains(&(
-                self.manifest.source_commit.as_str(), self.manifest.producer_sha256.as_str(), self.manifest_sha256.as_str(),
-            ))
-        {
-            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
-        }
-        Ok(true)
+        Ok(self.workspace_furnishing_catalog()?.is_some())
     }
 
-    pub(crate) fn workspace_furnishing_ledger(&self) -> Result<String> {
+    pub(crate) fn workspace_furnishing_catalog(&self) -> Result<Option<WorkspaceFurnishingCatalog>> {
+        self.workspace_furnishing_catalog_for(WORKSPACE_FURNISHING_VALIDATION_PROVENANCE,
+            WORKSPACE_FURNISHING_WRITER_VALIDATION_PROVENANCE)
+    }
+
+    fn workspace_furnishing_catalog_for(&self, legacy: &[(&str, &str, &str)],
+                                        writer: &[(&str, &str, &str, &str)]) -> Result<Option<WorkspaceFurnishingCatalog>> {
+        let unqualified = || err("NATIVE_RUNTIME_UNQUALIFIED");
+        let tuple = (self.manifest.source_commit.as_str(), self.manifest.producer_sha256.as_str(), self.manifest_sha256.as_str());
+        let regular = |path: &str| self.manifest.files.iter().any(|file| file.path == path
+            && file.link.is_none() && file.executable == Some(false));
+        let marker = self.manifest.files.iter().any(|file| file.path == WORKSPACE_FURNISHING_CAPABILITY);
+        let writer_schema = self.manifest.files.iter().any(|file| file.path.starts_with(WORKSPACE_FURNISHING_WRITER_DIRECTORY));
+        let writer_pin = writer.iter().find(|&&(source, producer, manifest, _)| (source, producer, manifest) == tuple);
+        if !marker && !writer_schema && writer_pin.is_none() { return Ok(None); }
+        if !cfg!(debug_assertions) || self.manifest.mode != "local-validation"
+            || self.manifest.redistribution_qualified || self.manifest.official_signed
+            || !regular(WORKSPACE_FURNISHING_CAPABILITY)
+        {
+            return Err(unqualified());
+        }
+        if writer_schema || writer_pin.is_some() {
+            let &(_, _, _, writer_marker) = writer_pin.ok_or_else(unqualified)?;
+            if writer_marker == WORKSPACE_FURNISHING_CAPABILITY || !regular(writer_marker)
+                || !regular(WORKSPACE_FURNISHING_WRITER_SCHEMA)
+            {
+                return Err(unqualified());
+            }
+            return Ok(Some(WorkspaceFurnishingCatalog::Writer037));
+        }
+        if !legacy.contains(&tuple) { return Err(unqualified()); }
+        Ok(Some(WorkspaceFurnishingCatalog::Schema036))
+    }
+
+    pub(crate) fn workspace_furnishing_ledger(&self, catalog: WorkspaceFurnishingCatalog) -> Result<String> {
         let directories = [
             ("migrations", 1..=25),
             ("native-oex-normal", 26..=32),
@@ -989,19 +1075,31 @@ impl Payload {
             let Some((directory, name)) = file.path.strip_prefix("platform/database/").and_then(|path| path.split_once('/')) else {
                 continue;
             };
-            let Some((_, range)) = directories.iter().find(|(expected, _)| *expected == directory) else { continue; };
             if !name.ends_with(".sql") { continue; }
-            let Some(number) = name.split_once('_').and_then(|(number, _)| number.parse::<usize>().ok()) else { return Err(invalid()); };
+            let number = if file.path.starts_with(WORKSPACE_FURNISHING_WRITER_DIRECTORY) {
+                if catalog != WorkspaceFurnishingCatalog::Writer037 || file.path != WORKSPACE_FURNISHING_WRITER_SCHEMA {
+                    return Err(invalid());
+                }
+                37
+            } else {
+                let Some((_, range)) = directories.iter().find(|(expected, _)| *expected == directory) else { continue; };
+                let Some(number) = name.split_once('_').and_then(|(number, _)| number.parse::<usize>().ok()) else { return Err(invalid()); };
+                if !range.contains(&number) || !name.starts_with(&format!("{number:03}_")) { return Err(invalid()); }
+                number
+            };
             let hash = file.sha256.as_deref().filter(|hash| hash_valid(hash)).ok_or_else(invalid)?;
-            if !range.contains(&number) || !name.starts_with(&format!("{number:03}_"))
-                || !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+            if !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
                 || file.link.is_some() || file.executable != Some(false)
                 || rows.insert(number, format!("{name}|{hash}")).is_some()
             {
                 return Err(invalid());
             }
         }
-        if rows.len() != 36 { return Err(invalid()); }
+        let expected = match catalog {
+            WorkspaceFurnishingCatalog::Schema036 => 36,
+            WorkspaceFurnishingCatalog::Writer037 => 37,
+        };
+        if rows.len() != expected { return Err(invalid()); }
         Ok(rows.into_values().collect::<Vec<_>>().join("\n"))
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
