@@ -29,6 +29,21 @@ struct WorkspaceMaterialIntakeView: View {
     @State private var library: [WorkspaceMaterialSummary] = []
     @State private var nextCursor: String?
     @State private var loadedLibrary = false
+    @State private var floorMaterial: WorkspaceMaterialSummary?
+    @State private var floorSurfaceId = ""
+    @State private var repeatWidth = "2"
+    @State private var repeatLength = "2"
+    @State private var rotationDegrees = "0"
+    @State private var bindingNotice: String?
+
+    private var floorSurfaces: [(id: String, name: String)] {
+        guard let draft = model.draft else { return [] }
+        return (draft.candidate["surfaces"].items ?? []).enumerated().compactMap { index, surface in
+            guard surface["type"].string == "floor", let id = surface["id"].string else { return nil }
+            let room = draft.rooms.first(where: { $0["id"] == surface["roomId"] })?["name"].string ?? "공간"
+            return (id, "\(room) · 바닥 \(index + 1)")
+        }
+    }
 
     private var readyToStart: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -112,8 +127,17 @@ struct WorkspaceMaterialIntakeView: View {
                     Section("등록한 재질") {
                         ForEach(library.indices, id: \.self) { index in
                             let item = library[index]
-                            Button(item.name) { Task { await previewLibraryItem(item) } }
-                                .disabled(!item.rightsAvailability.display)
+                            HStack {
+                                Button(item.name) { Task { await previewLibraryItem(item) } }
+                                    .disabled(!item.rightsAvailability.display)
+                                if item.kind == .floor && item.rightsAvailability.display {
+                                    Spacer()
+                                    Button("바닥 연결 설정") {
+                                        floorMaterial = item; floorSurfaceId = ""; bindingNotice = nil
+                                    }
+                                    .accessibilityLabel("\(item.name) 바닥 연결 설정")
+                                }
+                            }
                         }
                         if !loadedLibrary || nextCursor != nil {
                             Button(loadedLibrary ? "재질 더 보기" : "등록 목록 보기") {
@@ -121,6 +145,22 @@ struct WorkspaceMaterialIntakeView: View {
                             }
                         }
                         if loadedLibrary && library.isEmpty { Text("등록된 재질이 없습니다.").foregroundStyle(.secondary) }
+                    }
+                    if let floorMaterial {
+                        Section("바닥 연결") {
+                            Text(floorMaterial.name)
+                            Picker("바닥", selection: $floorSurfaceId) {
+                                Text("바닥 선택").tag("")
+                                ForEach(floorSurfaces, id: \.id) { surface in Text(surface.name).tag(surface.id) }
+                            }
+                            TextField("가로 반복 (m)", text: $repeatWidth)
+                            TextField("세로 반복 (m)", text: $repeatLength)
+                            TextField("회전 (°)", text: $rotationDegrees)
+                            Text("색상 맵 한 장을 연결합니다. 현재 런타임에서 표면 미리보기는 지원하지 않습니다.")
+                                .foregroundStyle(.secondary)
+                            Button("바닥에 연결") { Task { await applyFloorMaterial(floorMaterial) } }
+                                .disabled(floorSurfaceId.isEmpty)
+                        }
                     }
                 }
             }
@@ -132,6 +172,7 @@ struct WorkspaceMaterialIntakeView: View {
                 Text(status).accessibilityAddTraits(.updatesFrequently)
             }
             if let errorMessage { Text(errorMessage).foregroundStyle(.secondary) }
+            if let bindingNotice { Text(bindingNotice).accessibilityAddTraits(.updatesFrequently) }
             if let preview {
                 Image(nsImage: preview).resizable().scaledToFit().frame(maxHeight: 120)
                     .accessibilityLabel("등록된 재질의 색상 맵")
@@ -184,7 +225,7 @@ struct WorkspaceMaterialIntakeView: View {
         defer { busy = false }
         do { try await work() }
         catch {
-            let failure = error as? AuthoringFailure ?? AuthoringFailure("CONNECTION_FAILED")
+            let failure = error as? AuthoringFailure ?? AuthoringFailure((error as? BridgeFailure)?.code ?? "CONNECTION_FAILED")
             let map = failure.role.flatMap(WorkspaceMaterialRole.init(rawValue:))
             let message = failure.errorDescription ?? "등록 상태를 다시 확인하세요."
             errorMessage = map.map { label($0) + " 파일 · " + message } ?? message
@@ -281,6 +322,20 @@ struct WorkspaceMaterialIntakeView: View {
             }
             guard let image = NSImage(data: data) else { throw AuthoringFailure("FORMAT_REJECTED") }
             preview = image
+        }
+    }
+
+    private func applyFloorMaterial(_ material: WorkspaceMaterialSummary) async {
+        bindingNotice = nil
+        await perform {
+            guard let width = Double(repeatWidth), let length = Double(repeatLength),
+                  let degrees = Double(rotationDegrees), (-180...180).contains(degrees) else {
+                throw AuthoringFailure("WORKSPACE_MATERIAL_BINDING_INVALID")
+            }
+            let binding = try WorkspaceFloorMaterialBinding(surfaceId: floorSurfaceId, materialId: material.id,
+                materialVersion: material.version, repeatMeters: [width, length], rotation: degrees * (.pi / 180))
+            let changed = try await model.applyWorkspaceFloorMaterial(binding, access: access)
+            bindingNotice = changed ? "바닥 연결을 보관했습니다. 닫은 뒤 전시를 저장하세요." : "이 바닥에 같은 재질과 설정이 이미 저장되어 있습니다."
         }
     }
 }

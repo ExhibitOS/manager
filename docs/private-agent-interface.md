@@ -165,6 +165,23 @@ Operations:
     byte count and SHA-256 after verifying the authorized inline PNG.
   - Registration stores a workspace material version. Surface application
     and export are separate operations.
+  - `workspace-material-floor-apply` takes the current `expectedRevision` and
+    `expectedEditVersion` plus a `command` such as
+    `{"surfaceId":"<floor UUID>","materialId":"<material UUID>","materialVersion":1,"repeatMeters":[2,2],"rotation":0}`.
+    The selected floor must exist in a clean saved draft. The command checks
+    its saved Studio policy and the exact registered descriptor. It accepts
+    color-only floor materials with display permission, repeats from 0.05 to
+    20 metres per axis, and rotation from −π to π radians. The result contains
+    `changed` and the native `document`. An identical saved binding returns
+    `changed: false` without writing a revision. Otherwise use the returned
+    revision and edit version with the existing `save` command.
+    Existing sampling settings survive an edit to the same material. A
+    replacement that would discard those settings is refused.
+  - In Manager, open the registration sheet, load the registered library,
+    choose **바닥 연결 설정**, select a floor, and enter repeats and rotation
+    in degrees. **바닥에 연결** stages the change. Close the sheet and save
+    the exhibition. The current runtime can save the binding. Surface
+    rendering and portable outputs require a runtime that supports them.
 - `bench-prepare`: accept the existing `add-bench` command and optional fresh
   viewpoint; write the existing frame/request packet to a new `outputPath`.
 - `bench-apply`: provide its `proposalId` and a fixed shared-renderer reply at

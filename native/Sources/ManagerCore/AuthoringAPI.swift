@@ -129,6 +129,12 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "SURFACE_MATERIAL_TEXTURE_INVALID": return "무늬 반복은 0.05–20 m, 회전은 −180–180도, 요철 강도는 0–2로 입력하세요. 입력과 기존 재질은 유지됩니다."
         case "MATERIAL_CATALOG_INVALID": return "재질 목록을 확인하지 못했습니다. 기존 재질과 입력은 유지됩니다."
         case "MATERIAL_DECLARATION": return "재질 이름, 출처와 권리 입력을 확인하세요."
+        case "WORKSPACE_MATERIAL_BINDING_INVALID": return "바닥과 반복 크기, 회전 값을 확인하세요."
+        case "WORKSPACE_MATERIAL_BINDING_UNSUPPORTED": return "지금은 색상 맵 한 장만 등록한 바닥 재질을 연결할 수 있습니다."
+        case "WORKSPACE_MATERIAL_BINDING_SAMPLING_UNSUPPORTED": return "이 바닥에 기존 요철 또는 주변광 차폐 설정이 있어 다른 재질로 교체할 수 없습니다."
+        case "WORKSPACE_MATERIAL_SAVED_DRAFT_REQUIRED": return "현재 전시를 저장한 뒤 재질을 연결하세요."
+        case "NATIVE_SURFACE_CAPABILITY_UNAVAILABLE": return "현재 저장본의 편집 정책에서는 바닥 재질을 연결할 수 없습니다."
+        case "NATIVE_DOCUMENT_STATE_CHANGED": return "저장 문서가 바뀌었습니다. 전시를 다시 확인하세요."
         case "MATERIAL_INTAKE_LIMIT": return "진행 중인 재질 등록이 한도에 도달했습니다. 기존 등록을 마친 뒤 다시 시도하세요."
         case "MATERIAL_MAP_DESCRIPTOR", "MATERIAL_MAP_DIMENSIONS", "PNG_PIXEL_LIMIT_EXCEEDED", "FORMAT_REJECTED":
             return "크기가 8 MiB 이하이고 픽셀이 419만 개 이하인 8비트 RGB 또는 RGBA PNG를 선택하세요."
@@ -975,6 +981,38 @@ public actor AuthoringAPI {
         guard let map = material.maps[role.rawValue] else { throw AuthoringFailure("MATERIAL_MAP_NOT_FOUND") }
         let path = try workspaceMaterialVersionPath(material.id, version: material.version) + "/maps/" + role.rawValue
         return try await floorPreviewFile(.init(path: path, bytes: map.bytes, sha256: map.sha256), requireDigestHeader: true)
+    }
+
+    public func prepareWorkspaceFloorMaterial(_ binding: WorkspaceFloorMaterialBinding, in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        guard admitsWorkspaceMaterials, document.tenantId == tenant, document.principalId == session?.userId else {
+            throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
+        }
+        guard !document.dirty, let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("WORKSPACE_MATERIAL_SAVED_DRAFT_REQUIRED")
+        }
+        let heldGeneration = generation
+        let policy = try await nativeViewportPolicy(draft.id)
+        try SurfaceMaterialTextureRequest.requireEditingPolicy(policy, document: document)
+        let saved = try await exhibition(draft.id)
+        guard saved.etag == etag, saved.draft == draft else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        let material = try await workspaceMaterial(binding.materialId, version: binding.materialVersion)
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let next = try binding.applying(material, to: draft)
+        if let next, policy.boundedProfile == true {
+            struct Input: Encodable { let requestId: String; let draft: NativeExhibitionDraft }
+            struct Validation: Decodable { let valid: Bool }
+            let body = try encoded(Input(requestId: UUID().uuidString.lowercased(), draft: next))
+            guard body.count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
+            let path = studioPrefix + "/exhibitions/" + (try identifier(draft.id)) + "/native-viewport-check"
+            let response: Validation = try await request(path, method: "POST", body: body, ifMatch: etag)
+            guard response.valid else { throw AuthoringFailure("DRAFT_INVALID") }
+        } else {
+            // The descriptor alone may carry a future or expired display grant.
+            // Reuse the authorized color endpoint for ordinary edits and no-ops.
+            _ = try await workspaceMaterialPreview(material, role: .color)
+        }
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return next
     }
 
     private func workspaceMaterialVersionPath(_ id: String, version: Int) throws -> String {

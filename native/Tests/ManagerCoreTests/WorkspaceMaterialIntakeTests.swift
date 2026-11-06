@@ -64,4 +64,69 @@ final class WorkspaceMaterialIntakeTests: XCTestCase {
         XCTAssertEqual(declaration.pendingAfterCreateFailure(AuthoringFailure("JOB_STATE", status: 409)), declaration)
         XCTAssertEqual(declaration.pendingAfterCreateFailure(AuthoringFailure("CONNECTION")), declaration)
     }
+
+    func testWorkspaceFloorBindingKeepsOtherFloorsAndExtensionsAndIsIdempotent() throws {
+        let target = UUID().uuidString.lowercased(), other = UUID().uuidString.lowercased(), wall = UUID().uuidString.lowercased()
+        let first = try floorMaterialFixture(), replacement = try floorMaterialFixture()
+        let namespace = "org.exhibitos.studio/workspace-materials"
+        var draft = try NativeExhibitionDraft.new()
+        var candidate = draft.candidate
+        candidate["surfaces"] = .array([target, other, wall].map { id in
+            .object(["id": .string(id), "type": .string(id == wall ? "wall" : "floor")])
+        })
+        let sound: DocumentValue = .object(["entrance": .string("concrete")])
+        candidate["extensions"] = .object(["org.exhibitos.viewer/experience": sound])
+        try draft.replaceCandidate(candidate)
+        func binding(_ surface: String, _ material: WorkspaceMaterial) throws -> WorkspaceFloorMaterialBinding {
+            try WorkspaceFloorMaterialBinding(surfaceId: surface, materialId: material.id, materialVersion: 1,
+                                               repeatMeters: [2, 2], rotation: 0)
+        }
+        let one = try XCTUnwrap(binding(target, first).applying(first, to: draft))
+        let both = try XCTUnwrap(binding(other, first).applying(first, to: one))
+        let selected = try binding(target, replacement)
+        let changed = try XCTUnwrap(selected.applying(replacement, to: both))
+        let saved = changed.candidate["extensions"][namespace]
+        XCTAssertEqual(saved["bindings"].items?.map { $0["materialId"].string }, [replacement.id, first.id])
+        XCTAssertEqual(saved["materials"].items?.count, 2)
+        XCTAssertEqual(changed.candidate["extensions"]["org.exhibitos.viewer/experience"], sound)
+        XCTAssertEqual(changed.candidate["surfaces"], draft.candidate["surfaces"])
+        XCTAssertNil(try selected.applying(replacement, to: changed))
+        XCTAssertThrowsError(try binding(wall, replacement).applying(replacement, to: both))
+        XCTAssertThrowsError(try selected.applying(first, to: both))
+
+        var withSampling = changed
+        var sampled = changed.candidate
+        var rows = try XCTUnwrap(sampled["extensions"][namespace]["bindings"].items)
+        rows[0]["normalScale"] = .number(0.5)
+        rows[0]["aoStrength"] = .number(0)
+        sampled["extensions"][namespace]["bindings"] = .array(rows)
+        try withSampling.replaceCandidate(sampled)
+        XCTAssertNil(try selected.applying(replacement, to: withSampling))
+        let resized = try WorkspaceFloorMaterialBinding(surfaceId: target, materialId: replacement.id, materialVersion: 1,
+                                                        repeatMeters: [3, 2], rotation: 0)
+        let updated = try XCTUnwrap(resized.applying(replacement, to: withSampling))
+        let updatedRows = try XCTUnwrap(updated.candidate["extensions"][namespace]["bindings"].items)
+        XCTAssertEqual(updatedRows[0]["normalScale"], .number(0.5))
+        XCTAssertEqual(updatedRows[0]["aoStrength"], .integer(0))
+        XCTAssertEqual(updatedRows[1], rows[1])
+        XCTAssertThrowsError(try binding(target, first).applying(first, to: withSampling))
+    }
+
+    func testWorkspaceFloorBindingRejectsNonFiniteOrOutOfRangeValues() throws {
+        let target = UUID().uuidString.lowercased(), material = try floorMaterialFixture()
+        XCTAssertThrowsError(try WorkspaceFloorMaterialBinding(surfaceId: target, materialId: material.id, materialVersion: 1,
+                                                               repeatMeters: [.nan, 2], rotation: 0))
+        XCTAssertThrowsError(try WorkspaceFloorMaterialBinding(surfaceId: target, materialId: material.id, materialVersion: 1,
+                                                               repeatMeters: [2, 2], rotation: 4))
+    }
+
+    private func floorMaterialFixture() throws -> WorkspaceMaterial {
+        let id = UUID().uuidString.lowercased(), sha = String(repeating: "a", count: 64)
+        return try JSONDecoder().decode(WorkspaceMaterial.self, from: Data("""
+            {"id":"\(id)","version":1,"kind":"floor","name":"Fixture","provenance":"Synthetic",
+             "rights":{"holder":"Fixture","ownership":"owner","licenseId":"CC0-1.0","creditLine":"",
+             "permissions":{"display":true,"download":true,"export":true,"commercial":true}},
+             "maps":{"color":{"mime":"image/png","bytes":128,"sha256":"\(sha)","width":4,"height":4,"colorSpace":"srgb"}}}
+            """.utf8))
+    }
 }
