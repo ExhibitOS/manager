@@ -111,6 +111,8 @@ pub struct Host {
     controller: Arc<InstallationController>,
     resources: PathBuf,
     prepare_ports: Ports,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    workspace_v5_maintenance_only: bool,
     state: Arc<Mutex<State>>,
     worker: Option<thread::JoinHandle<()>>,
     exporter: super::installations::native_static_export::Exporter,
@@ -135,6 +137,8 @@ impl Host {
             controller,
             resources,
             prepare_ports: Ports::default(),
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+            workspace_v5_maintenance_only: false,
             state: Arc::new(Mutex::new(State {
                 root: None,
                 busy: false,
@@ -203,6 +207,17 @@ impl Host {
         }
         let host = Self::new(Arc::new(controller), resources);
         host.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.payload = Some(payload);
+        Ok(host)
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub fn maintain_workspace_v5_transition(profile: PathBuf, resources: PathBuf) -> Result<Self> {
+        let target = Payload::open_workspace_v5_validation(&resources, false)?;
+        if target.context().manifest_sha256 != crate::native_payload::WORKSPACE_V5_TRANSITION.1 {
+            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        }
+        let controller = InstallationController::open_existing_managed(profile)?;
+        let mut host = Self::new(Arc::new(controller), resources);
+        host.workspace_v5_maintenance_only = true;
         Ok(host)
     }
     fn from_fresh_selected_payload(profile: PathBuf, resources: PathBuf, ports: Ports, payload: Arc<Payload>) -> Result<Self> {
@@ -365,6 +380,13 @@ impl Host {
         }
         let shared = self.state.clone();
         let controller = self.controller.clone();
+        #[cfg(debug_assertions)]
+        let saved_workspace_host = {
+            #[cfg(feature = "workspace-v5-owner-validation")]
+            { self.workspace_v5_maintenance_only }
+            #[cfg(not(feature = "workspace-v5-owner-validation"))]
+            { false }
+        };
         let resources = self.resources.clone();
         let prepare_ports = self.prepare_ports;
         self.worker = Some(thread::spawn(move || {
@@ -451,15 +473,23 @@ impl Host {
                                         &token, &source, &target, &staging, &key_file,
                                     )?;
                                 }
+                                #[cfg(feature = "workspace-v5-owner-validation")]
+                                LocalPersonalTransition::StageSaved { source_payload, staging, key_file } => {
+                                    let source = Payload::open_workspace_v5_validation(&source_payload, false)?;
+                                    let target = Payload::open_workspace_v5_validation(&resources, false)?;
+                                    controller.prepare_saved_workspace_v5_transition(
+                                        &token, &source, &target, &staging, &key_file,
+                                    )?;
+                                }
                                 LocalPersonalTransition::Activate { staging, key_file } => {
                                     let target = Arc::new(Payload::open(&resources)?);
                                     controller.activate_local_personal_runtime_transition(
-                                        &token, target, &staging, &key_file,
+                                        &token, target, &staging, &key_file, saved_workspace_host,
                                     )?;
                                 }
                                 LocalPersonalTransition::Recover { staging, key_file } => {
                                     controller.recover_local_personal_runtime_transition(
-                                        &token, &staging, &key_file,
+                                        &token, &staging, &key_file, saved_workspace_host,
                                     )?;
                                 }
                             }
@@ -796,6 +826,31 @@ impl Host {
     pub fn handle(&mut self, request: Request) -> Result<Value> {
         if request.version != 1 || request.id > 9_007_199_254_740_991 {
             return Err(err("NATIVE_PROTOCOL_INVALID"));
+        }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        {
+            use super::installations::native_maintenance::{Input, LocalPersonalTransition};
+            let transition_entry = matches!(
+                &request.command,
+                UiCommand::NativeMaintenance { maintenance: Input::LocalPersonalTransition {
+                    transition: LocalPersonalTransition::StageSaved { .. }, ..
+                }, .. }
+            );
+            if transition_entry && !self.workspace_v5_maintenance_only {
+                return Err(err("NATIVE_PROTOCOL_INVALID"));
+            }
+            if self.workspace_v5_maintenance_only && !matches!(
+                &request.command,
+                UiCommand::Context | UiCommand::NativeStatus { .. } |
+                UiCommand::NativeMaintenance { maintenance: Input::CreateKey { .. }, .. } |
+                UiCommand::NativeMaintenance { maintenance: Input::LocalPersonalTransition {
+                    transition: LocalPersonalTransition::StageSaved { .. }
+                        | LocalPersonalTransition::Activate { .. }
+                        | LocalPersonalTransition::Recover { .. }, ..
+                }, .. }
+            ) {
+                return Err(err("NATIVE_PROTOCOL_INVALID"));
+            }
         }
         let (selected_busy, selected_import_busy) = {
             let state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;

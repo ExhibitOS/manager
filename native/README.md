@@ -30,6 +30,64 @@ Rust helper explicitly. The validation-profile Info key is recognized only in
 debug builds. Use an isolated profile for validation and retain original apps.
 Release delivery/signing is a separate existing distribution pipeline.
 
+## Saved workspace runtime transition
+
+The macOS debug helper built with `--features workspace-v5-owner-validation`
+supports the reviewed local-validation transition from manifest
+`40ca49e65e769c4c034eea69300ff65ce8af46ef9b081a9a2b4b1ade12ed9415` to
+`cfe1faba63dc6d41e2451ad8bf8870d197a48e1b6d234850bdbad16c23083b59`.
+Use absolute canonical paths and a stopped, existing managed profile with a
+saved Studio draft. Quit the profile owner and verify that Postgres, Node and
+the auxiliary process have exited cleanly. Resolve any pending import, upload,
+publication, document edit, archive or restore through its owner before staging.
+Use a private directory owned by the current user for each external input and
+keep the profile, staging and rollback data on the same local APFS volume.
+Start with an empty mode-0700 staging directory outside the entire profile and
+an unused key path in another private directory outside the profile and staging.
+Allow space for two copies of the protected data and 256 MiB plus the manifest
+budget.
+
+```sh
+exhibitos-native --profile "$PROFILE" --maintain-workspace-v5-transition "$TARGET_RUNTIME"
+```
+
+Send version-1 JSON lines on stdin and read one reply per request ID. Replace
+the placeholders with actual absolute paths and the `selectionToken` returned
+by the context request. The key command creates a 32-byte private key file.
+Use a new request ID for each poll.
+
+```jsonl
+{"version":1,"id":1,"command":"context"}
+{"version":1,"id":2,"command":"native_maintenance","selection_token":"TOKEN","maintenance":{"action":"create_key","path":"/absolute/private-key-dir/checkpoint.key"}}
+{"version":1,"id":3,"command":"native_maintenance","selection_token":"TOKEN","maintenance":{"action":"local_personal_transition","acknowledged":true,"transition":{"phase":"stage_saved","sourcePayload":"/absolute/source-runtime","staging":"/absolute/private-staging","keyFile":"/absolute/private-key-dir/checkpoint.key"}}}
+{"version":1,"id":4,"command":"native_status","selection_token":"TOKEN"}
+{"version":1,"id":5,"command":"native_maintenance","selection_token":"TOKEN","maintenance":{"action":"local_personal_transition","acknowledged":true,"transition":{"phase":"activate","staging":"/absolute/private-staging","keyFile":"/absolute/private-key-dir/checkpoint.key"}}}
+```
+
+Wait for `native_status` to report `busy: false` and no `errorCode` after each
+phase. Staging prepares and rereads the five protected members
+(`native-database`, `blobs`, `config`, `native-personal.before` and
+`runtime-env.before`), seals the inventory as `physical-checkpoint.gcm`,
+and fences ordinary startup. The staged before-images contain private
+plaintext data. Keep the staging directory and key in their original locations
+through activation or recovery. If copying stops before the seal is written,
+retain the incomplete directory and retry staging with a new empty directory.
+
+Activation starts the target under the fence. It verifies the workspace and
+account binding, the saved journal digest, the complete Studio draft and
+HTTP/body ETag, and unchanged blob and config inventories after the trial stops.
+This covers the saved draft's placements, floor bindings and counts. A rendered
+preview, export and other exhibitions require their own qualification.
+On a staged or trial error, wait for the processes to drain and send
+`phase: "recover"` with the same `staging` and `keyFile` in a transition request.
+Recovery requires the pending fence. It verifies the authenticated before-images
+and restores the source inventory before ordinary source reopen is possible.
+An unconfirmed runtime stop requires owner diagnostics before recovery.
+After successful activation, close the helper with EOF and reopen the profile
+against the exact target with `--reopen-workspace-v5-validation`.
+The completed transition clears the fence. This command set has no post-commit
+rollback path.
+
 Scene snapshots are returned in-process by the existing live native exhibition
 model's `captureSceneSnapshot(camera:placementId:)` method, before the optional
 GUI save panel. It requires that model's authenticated, clean saved document and

@@ -37,6 +37,8 @@ pub enum LocalPersonalTransition {
         upload_job_id: String,
     },
     Stage { source_payload: PathBuf, staging: PathBuf, key_file: PathBuf },
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    StageSaved { source_payload: PathBuf, staging: PathBuf, key_file: PathBuf },
     Activate { staging: PathBuf, key_file: PathBuf },
     Recover { staging: PathBuf, key_file: PathBuf },
 }

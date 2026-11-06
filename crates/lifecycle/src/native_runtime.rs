@@ -665,6 +665,60 @@ impl Session {
             serde_json::json!({"tenantId":a.tenant_id,"principalId":a.principal_id,"origin":format!("http://127.0.0.1:{}",self.ports.web),"token":a.session_token}),
         )
     }
+    #[cfg(debug_assertions)]
+    pub(crate) fn verify_transition_studio(
+        &mut self,
+        authoring: &Value,
+        document: &super::installations::native_document::DocumentState,
+    ) -> Result<()> {
+        let mismatch = || err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED");
+        let draft = document.draft.as_ref().ok_or_else(mismatch)?;
+        let exhibition = draft["exhibitionId"].as_str().ok_or_else(mismatch)?;
+        let mut input = serde_json::to_vec(&serde_json::json!({
+            "origin": authoring["origin"],
+            "tenant": document.tenant_id,
+            "token": authoring["token"],
+            "exhibition": exhibition,
+            "etag": document.etag,
+            "draft": draft,
+        })).map_err(|_| mismatch())?;
+        // Credentials travel on stdin. The owned child's only output is its
+        // decision; even a malformed response cannot enter the runtime log.
+        let script = r#"
+const { readFileSync } = require('node:fs');
+const { isDeepStrictEqual } = require('node:util');
+(async () => {
+  const { origin, tenant, token, exhibition, etag, draft } = JSON.parse(readFileSync(0, 'utf8'));
+  const response = await fetch(origin + '/api/v1/tenants/' + tenant + '/studio/exhibitions/' + exhibition, {
+    redirect: 'error',
+    signal: AbortSignal.timeout(7000),
+    headers: { origin, accept: 'application/json', cookie: 'exhibitos_local_session=' + token },
+  });
+  if (!response.ok || response.headers.get('etag') !== etag) return false;
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of response.body) {
+    length += chunk.length;
+    if (length > 4 * 1024 * 1024) return false;
+    chunks.push(chunk);
+  }
+  const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  return value.etag === etag && isDeepStrictEqual(value.draft, draft);
+})().then(ok => process.stdout.write(ok ? 'ok' : 'changed'), () => process.stdout.write('changed'));
+"#;
+        let result = self.auxiliary_timed(
+            self.payload.node(),
+            vec!["-e".into(), script.into()],
+            vec![],
+            Some(&input),
+            Duration::from_secs(15),
+        );
+        input.fill(0);
+        match result {
+            Ok((0, reply)) if reply == b"ok" => Ok(()),
+            _ => Err(mismatch()),
+        }
+    }
     pub fn cancellation(&self) -> Arc<AtomicBool> {
         self.cancellation.clone()
     }
