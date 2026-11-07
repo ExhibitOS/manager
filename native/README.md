@@ -248,6 +248,15 @@ source, activate the reviewed target, and reopen with that target before
 creating a service EXB. Restore the authenticated archive using the same
 target payload and a fresh physical profile.
 
+An occupied 040 source on the reviewed `ebbf0aea` runtime can refresh to
+`7f76b19894fe3a9824a640cf1856ba7c828d5bd3201ede0da5d1c53a501bd1e7`
+using the same checkpoint commands and unchanged SQL ledger. Use the new
+payload to create and restore a service EXB. If the authenticated backup's
+import provenance all belongs to its source database, the activated target
+can reopen those imported exhibitions across restarts. New imports use the
+target's current database identity. An archive with mixed historical
+database identities remains outside this provenance admission.
+
 ### Private floor rendering
 
 The reviewed `cfe1` local-validation runtime also admits the existing Quiet

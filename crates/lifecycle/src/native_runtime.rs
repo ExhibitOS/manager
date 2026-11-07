@@ -2004,11 +2004,13 @@ const { isDeepStrictEqual } = require('node:util');
                         }
                         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
                         active.consume(source)?;
-                        if active.admission_kind == Admission::VerifiedRestore {
+                        if active.admission_kind == Admission::VerifiedRestore
+                            || active.restore.as_ref().is_some_and(|restore| restore.provenance.is_some())
+                        {
                             let proof = active.restore.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
                             crate::installations::native_restore::verify_ordinary_activation(
                                 &self.service.root, &proof.id, &proof.backup_id, &proof.archive_manifest_sha256,
-                                &proof.target_system_identifier, &active.payload_manifest_sha256,
+                                &proof.target_system_identifier, &active.payload_manifest_sha256, proof.provenance.as_ref(),
                             )?;
                         }
                     }
@@ -2166,6 +2168,7 @@ const { isDeepStrictEqual } = require('node:util');
 
     pub(crate) fn record_furnishing_activation(
         &mut self, id: &str, backup_id: &str, archive_manifest_sha256: &str, target_system_identifier: &str,
+        provenance: Option<crate::installations::native_restore::RestoreProof>,
     ) -> Result<()> {
         if !self.payload.workspace_furnishing_catalog()?.is_some_and(WorkspaceFurnishingCatalog::uses_writer_lease) {
             return Ok(());
@@ -2181,6 +2184,7 @@ const { isDeepStrictEqual } = require('node:util');
         restored.restore = Some(FurnishingRestore {
             id: id.into(), backup_id: backup_id.into(), archive_manifest_sha256: archive_manifest_sha256.into(),
             target_system_identifier: target_system_identifier.into(),
+            provenance,
         });
         if let Some(prior) = &self.furnishing_binding {
             if prior.phase != Phase::ActivatedRestore || prior.restore != restored.restore || !restored.same_installation(prior) {

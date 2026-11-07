@@ -23,6 +23,52 @@ pub struct Receipt {
     pub backup_id: String,
     pub state: String,
 }
+
+/// The ordered fields are also the canonical proof on the owner channel.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RestoreProof {
+    restore_id: String,
+    backup_id: String,
+    authenticated_manifest_sha256: String,
+    source_database_system_id: String,
+    source_database_oid: String,
+    target_database_system_id: String,
+    target_database_oid: String,
+    provenance_row_count: u64,
+    provenance_table_sha256: String,
+}
+
+impl RestoreProof {
+    pub(crate) fn matches(&self, id: &str, backup: &str, manifest: &str, target: &str) -> bool {
+        let system = |value: &str| value.parse::<u64>().is_ok_and(|n| n != 0 && n.to_string() == value);
+        let oid = |value: &str| value.parse::<u32>().is_ok_and(|n| n != 0 && n.to_string() == value);
+        self.restore_id == id && uuid(id) && self.backup_id == backup && uuid(backup)
+            && self.authenticated_manifest_sha256 == manifest && hash_valid(manifest)
+            && self.target_database_system_id == target && system(target)
+            && system(&self.source_database_system_id) && self.source_database_system_id != target
+            && oid(&self.source_database_oid) && oid(&self.target_database_oid)
+            && self.provenance_row_count <= 9_007_199_254_740_991
+            && hash_valid(&self.provenance_table_sha256)
+    }
+
+    fn matches_manifest(&self, manifest: &Value) -> Result<()> {
+        let source = &manifest["sourceIdentity"];
+        let mut rows = manifest["inventory"]["tables"].as_array().ok_or_else(bad)?
+            .iter().filter(|entry| entry["name"] == "native_oex_exhibition_provenance");
+        let table = rows.next().ok_or_else(bad)?;
+        if rows.next().is_some()
+            || manifest["id"].as_str() != Some(self.backup_id.as_str())
+            || source["systemIdentifier"].as_str() != Some(self.source_database_system_id.as_str())
+            || source["databaseOid"].as_str() != Some(self.source_database_oid.as_str())
+            || table["rowCount"].as_u64() != Some(self.provenance_row_count)
+            || table["sha256"].as_str() != Some(self.provenance_table_sha256.as_str())
+        {
+            return Err(bad());
+        }
+        Ok(())
+    }
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Pending {
@@ -89,6 +135,8 @@ struct Plan {
     ports: Ports,
     files: Vec<ActivationFile>,
     attempt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    restore_proof: Option<RestoreProof>,
 }
 struct Fields(BTreeMap<String, String>);
 impl Drop for Fields {
@@ -467,6 +515,8 @@ fn valid_plan(plan: &Plan, target: &Path) -> Result<()> {
         || !hash_valid(&plan.payload_sha256)
         || plan.files.len() < 3
         || plan.files.len() > 8
+        || plan.restore_proof.as_ref().is_some_and(|proof|
+            plan.kind != "personal" || !proof.matches(&plan.id, &plan.backup_id, &plan.manifest_sha256, &plan.system_identifier))
     {
         return Err(bad());
     }
@@ -619,7 +669,13 @@ impl InstallationController {
                     return Err(err("NATIVE_RESTORE_TARGET_NOT_EMPTY"));
                 }
             }
-            let source_manifest_sha256=digest(&installation_backup::source_bytes(&input.source,"manifest.gcm",17*1024*1024,true)?);
+            let source_manifest = installation_backup::source_bytes(&input.source, "manifest.gcm", 17*1024*1024, true)?;
+            let (source_manifest_bytes, source_manifest_pin) =
+                crate::hosted_runtime_file::bounded(&input.source.join("manifest.gcm"), 17*1024*1024)?;
+            if source_manifest_bytes != source_manifest { return Err(bad()); }
+            let source_manifest_sha256 = digest(&source_manifest);
+            drop(source_manifest_bytes);
+            drop(source_manifest);
             let system_identifier=session.maintenance_system_identifier()?;
             let furnishing_target = session.furnishing_restore_target_identity()?;
             let pending:Option<Pending>=if exists(&service.root,MARKER)?{Some(json(&service.root,MARKER,4096)?)}else{None};
@@ -654,7 +710,7 @@ impl InstallationController {
             write_private_new(&directory,&format!("attempt-{attempt}.json"),&serde_json::to_vec(&serde_json::json!({"format":1,"id":id,"attempt":attempt,"operation":operation})).map_err(|_|bad())?,4096)?;
             // Existing codec authenticates the entire archive before DB/blob writes,
             // refuses original/nonempty DB, then verifies the original inventory.
-            session.backup_tool(
+            let codec = session.backup_tool(
                 vec![
                     operation.into(),
                     "--key-file".into(),
@@ -671,6 +727,17 @@ impl InstallationController {
                 budget,
                 &scratch,
             )?;
+            source_manifest_pin.check()?;
+            let manifest = installation_backup::source_bytes(&restored, "manifest.json", 16*1024*1024, true)?;
+            let (manifest_bytes, manifest_pin) =
+                crate::hosted_runtime_file::bounded(&restored.join("manifest.json"), 16*1024*1024)?;
+            if manifest_bytes != manifest { return Err(bad()); }
+            let manifest_value: Value = serde_json::from_slice(&manifest).map_err(|_| bad())?;
+            let backup_id = manifest_value["id"].as_str().filter(|value| uuid(value)).ok_or_else(bad)?.to_owned();
+            let manifest_sha256 = digest(&manifest);
+            let codec_authenticated = check_codec_restore_output(&codec, &backup_id, &manifest_sha256)?;
+            drop(manifest_bytes);
+            drop(manifest);
             let configuration = restored.join("configuration");
             authenticated_configuration(&restored, &prepared.kind)?;
             names(
@@ -779,29 +846,18 @@ impl InstallationController {
                     &bytes,
                 )?);
             }
-            let manifest = installation_backup::source_bytes(
-                &restored,
-                "manifest.json",
-                16 * 1024 * 1024,
-                true,
-            )?;
-            let manifest_value: Value = serde_json::from_slice(&manifest).map_err(|_| bad())?;
-            let backup_id = manifest_value["id"]
-                .as_str()
-                .filter(|v| uuid(v))
-                .ok_or_else(bad)?
-                .to_owned();
-            let plan = Plan {
+            let mut plan = Plan {
                 format: 1,
                 id: id.clone(),
                 backup_id: backup_id.clone(),
-                manifest_sha256: digest(&manifest),
+                manifest_sha256,
                 payload_sha256: payload.context().manifest_sha256,
                 system_identifier: session.maintenance_system_identifier()?,
                 kind: source.owner_kind,
                 ports: prepared.ports,
                 files,
                 attempt,
+                restore_proof: None,
             };
             File::open(&activation).and_then(|v|v.sync_all()).map_err(|_|bad())?;
             valid_plan(&plan, &service.root)?;
@@ -809,7 +865,10 @@ impl InstallationController {
             let rebound_fields =
                 Fields(rebound.native_start_environment(&payload, prepared.ports)?);
             rebound_identity(&plan.kind, &original_fields, &rebound_fields)?;
-            observe(session, &directory, &plan, budget, &scratch)?;
+            plan.restore_proof = observe(session, &directory, &plan, &manifest_value, budget, &scratch)?;
+            if plan.restore_proof.is_some() && !codec_authenticated { return Err(bad()); }
+            source_manifest_pin.check()?;
+            manifest_pin.check()?;
             write_json(&directory, "stage.json", &plan)?;
             let receipt = Receipt {
                 id,
@@ -879,6 +938,7 @@ impl InstallationController {
             if digest(&manifest) != plan.manifest_sha256 {
                 return Err(bad());
             }
+            let manifest_value: Value = serde_json::from_slice(&manifest).map_err(|_| bad())?;
             authenticated_configuration(&restored, &plan.kind)?;
             let source: SourceMap =
                 json(&restored.join("configuration"), "native-source.json", 65536)?;
@@ -944,7 +1004,9 @@ impl InstallationController {
                 if session.maintenance_system_identifier()? != plan.system_identifier {
                     return Err(bad());
                 }
-                observe(&mut session, &directory, &plan, budget, &scratch)?;
+                if observe(&mut session, &directory, &plan, &manifest_value, budget, &scratch)? != plan.restore_proof {
+                    return Err(bad());
+                }
                 session.maintenance_owner(&plan.kind, &original_fields.0)?;
                 for (index, file) in plan.files.iter().enumerate().filter(|(_, f)| f.profile) {
                     install_file(&directory, &activation, &profile.root, file, index)?;
@@ -996,6 +1058,7 @@ impl InstallationController {
             }
             session.record_furnishing_activation(
                 id, &receipt.backup_id, &plan.manifest_sha256, &plan.system_identifier,
+                plan.restore_proof,
             )?;
             fs::remove_file(service.root.join(MARKER)).map_err(|_| bad())?;
             File::open(&service.root)
@@ -1007,6 +1070,7 @@ impl InstallationController {
 }
 pub(crate) fn verify_ordinary_activation(
     root: &Path, id: &str, backup_id: &str, manifest_sha256: &str, system_identifier: &str, payload_sha256: &str,
+    restore_proof: Option<&RestoreProof>,
 ) -> Result<()> {
     if !uuid(id) || exists(root, MARKER)? { return Err(bad()); }
     let directory = root.join(format!("native-restore-{id}"));
@@ -1018,8 +1082,15 @@ pub(crate) fn verify_ordinary_activation(
         || plan.backup_id != backup_id || receipt.backup_id != backup_id
         || plan.manifest_sha256 != manifest_sha256 || plan.system_identifier != system_identifier
         || plan.payload_sha256 != payload_sha256 || plan.kind != "personal"
+        || plan.restore_proof.as_ref() != restore_proof
     {
         return Err(bad());
+    }
+    if let Some(proof) = restore_proof {
+        let restored = directory.join(format!("restored-{}", plan.attempt));
+        let manifest = installation_backup::source_bytes(&restored, "manifest.json", 16 * 1024 * 1024, true)?;
+        if digest(&manifest) != manifest_sha256 { return Err(bad()); }
+        proof.matches_manifest(&serde_json::from_slice(&manifest).map_err(|_| bad())?)?;
     }
     Ok(())
 }
@@ -1028,11 +1099,12 @@ fn observe(
     session: &mut Session,
     directory: &Path,
     plan: &Plan,
+    manifest: &Value,
     budget: u64,
     scratch: &Path,
-) -> Result<()> {
+) -> Result<Option<RestoreProof>> {
     session.verify_furnishing_restore_target(&plan.id)?;
-    session.backup_tool(
+    let result = session.backup_tool(
         vec![
             "check-restored-inventory".into(),
             "--manifest-file".into(),
@@ -1048,7 +1120,43 @@ fn observe(
         budget,
         scratch,
     )?;
-    Ok(())
+    if plan.kind != "personal" || session.maintenance_payload().workspace_furnishing_catalog()?.map(|catalog| catalog.version()) != Some(40) {
+        return Ok(None);
+    }
+    restore_proof_from_observation(plan, manifest, &result)
+}
+
+fn restore_proof_from_observation(plan: &Plan, manifest: &Value, result: &Value) -> Result<Option<RestoreProof>> {
+    let Some(observation) = result.get("restoredProvenanceInventory") else { return Ok(None); };
+    if plan.kind != "personal"
+        || result["operation"] != "restored-inventory-matched"
+        || result["backupId"].as_str() != Some(plan.backup_id.as_str())
+        || result["authenticatedManifestSha256"].as_str() != Some(plan.manifest_sha256.as_str())
+        || result["currentInventoryVerified"] != true
+    {
+        return Err(bad());
+    }
+    let mut fields = observation.as_object().ok_or_else(bad)?.clone();
+    for (key, value) in [("restoreId", &plan.id), ("backupId", &plan.backup_id),
+        ("authenticatedManifestSha256", &plan.manifest_sha256)]
+    {
+        if fields.insert(key.into(), Value::String(value.clone())).is_some() { return Err(bad()); }
+    }
+    let proof: RestoreProof = serde_json::from_value(Value::Object(fields)).map_err(|_| bad())?;
+    if !proof.matches(&plan.id, &plan.backup_id, &plan.manifest_sha256, &plan.system_identifier) {
+        return Err(bad());
+    }
+    proof.matches_manifest(manifest)?;
+    Ok(Some(proof))
+}
+
+fn check_codec_restore_output(codec: &Value, backup_id: &str, manifest_sha256: &str) -> Result<bool> {
+    match (codec.get("backupId"), codec.get("authenticatedManifestSha256")) {
+        (None, None) => Ok(false),
+        (Some(id), Some(sha)) if codec["operation"] == "restored-and-verified"
+            && id.as_str() == Some(backup_id) && sha.as_str() == Some(manifest_sha256) => Ok(true),
+        _ => Err(bad()),
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -1067,6 +1175,59 @@ mod tests {
             ("TENANT_ID".into(), Uuid::new_v4().to_string()),
             ("OWNER_UID".into(), unsafe { libc::geteuid() }.to_string()),
         ]))
+    }
+
+    #[test]
+    fn restored_provenance_requires_the_observed_target_and_authenticated_manifest() {
+        let plan = Plan {
+            format: 1, id: Uuid::new_v4().to_string(), backup_id: Uuid::new_v4().to_string(),
+            manifest_sha256: "a".repeat(64), payload_sha256: "b".repeat(64),
+            system_identifier: "220".into(), kind: "personal".into(), ports: Ports::default(),
+            files: vec![], attempt: Uuid::new_v4().to_string(), restore_proof: None,
+        };
+        let manifest = serde_json::json!({
+            "id": plan.backup_id, "sourceIdentity": {"systemIdentifier":"110","databaseOid":"16000"},
+            "inventory":{"tables":[{"name":"native_oex_exhibition_provenance","rowCount":1,"sha256":"c".repeat(64)}]}
+        });
+        let result = serde_json::json!({
+            "operation":"restored-inventory-matched","backupId":plan.backup_id,
+            "authenticatedManifestSha256":plan.manifest_sha256,"currentInventoryVerified":true,
+            "restoredProvenanceInventory": {
+                "sourceDatabaseSystemId":"110","sourceDatabaseOid":"16000",
+                "targetDatabaseSystemId":"220","targetDatabaseOid":"16002",
+                "provenanceRowCount":1,"provenanceTableSha256":"c".repeat(64)
+            }
+        });
+        assert!(restore_proof_from_observation(&plan,&manifest,&result).unwrap().is_some());
+        for (key, value) in [
+            ("sourceDatabaseOid", "16001".into()), ("targetDatabaseSystemId", "110".into()),
+            ("targetDatabaseOid", "016002".into()), ("provenanceTableSha256", "d".repeat(64).into()),
+            ("provenanceRowCount", 2.into()), ("extra", true.into()),
+        ] {
+            let mut invalid = result.clone();
+            invalid["restoredProvenanceInventory"][key] = value;
+            assert!(restore_proof_from_observation(&plan,&manifest,&invalid).is_err(), "{key}");
+        }
+        let mut wrong_manifest = manifest;
+        wrong_manifest["inventory"]["tables"][0]["rowCount"] = 2.into();
+        assert!(restore_proof_from_observation(&plan,&wrong_manifest,&result).is_err());
+        assert!(restore_proof_from_observation(&plan,&wrong_manifest,&serde_json::json!({})).unwrap().is_none());
+    }
+
+    #[test]
+    fn restore_proof_requires_the_manifest_bytes_authenticated_by_the_codec() {
+        let id = Uuid::new_v4().to_string();
+        let raw = b"{\"authenticated\":true}\n";
+        let sha = digest(raw);
+        let mut codec = serde_json::json!({
+            "operation":"restored-and-verified","backupId":id,"authenticatedManifestSha256":sha
+        });
+        assert!(check_codec_restore_output(&codec, &id, &sha).unwrap());
+        assert!(check_codec_restore_output(&codec, &id, &digest(b"{\"authenticated\":false}\n")).is_err());
+        assert!(check_codec_restore_output(&codec, &Uuid::new_v4().to_string(), &sha).is_err());
+        codec.as_object_mut().unwrap().remove("backupId");
+        assert!(check_codec_restore_output(&codec, &id, &sha).is_err());
+        assert!(!check_codec_restore_output(&serde_json::json!({"operation":"restored-and-verified"}), &id, &sha).unwrap());
     }
     #[test]
     fn environment_rebind_preserves_account_fields_and_identity_rejects_conversion() {
@@ -1327,6 +1488,7 @@ mod tests {
             kind: "personal".into(),
             ports: Ports::default(),
             files,
+            restore_proof: None,
         };
         valid_plan(&plan, &root).unwrap();
         plan.files[0].name = "../runtime.env".into();
