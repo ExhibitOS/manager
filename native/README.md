@@ -217,6 +217,25 @@ from the clean source. An unconfirmed stop keeps the transition fenced. This pat
 payloads for each step and the current catalog. It does not support
 reversing or skipping a step.
 
+The debug helper has a separate occupied-catalog upgrade path for 039 to
+040. It uses the same `stage_saved`, `activate` and `recover` commands,
+with the previously reviewed 039 runtime as the source. This path remains
+disabled until the target runtime that implements the occupied upgrade
+has an exact reviewed pin. Catalog 40-to-40 transitions use their existing
+unchanged-ledger check.
+
+The occupied upgrade pins the stopped source and its saved Studio draft
+in the checkpoint. The trial checks the full 039 ledger before starting
+Platform, which upgrades the existing database under the writer lock.
+Activation requires a verified 040 ledger, the same owner and saved draft,
+and normal drain and shutdown. A completed upgrade opens normally using
+the exact target runtime. If activation is interrupted, the pending
+checkpoint blocks ordinary start. Recover the authenticated 039
+before-images only after proving no process was started or the trial
+drained safely. Retry from the restored 039 source in a new trial.
+An unproved stop or a 040 database with a pending checkpoint is not
+eligible for another upgrade attempt.
+
 ### Private floor rendering
 
 The reviewed `cfe1` local-validation runtime also admits the existing Quiet

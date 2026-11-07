@@ -96,6 +96,7 @@ impl Lease {
             FurnishingStart::SelectedImport038 => 3,
             FurnishingStart::SelectedImport039 => 4,
             FurnishingStart::SelectedImport040 => 5,
+            FurnishingStart::Upgrade039To040 => 6,
         });
         if !hash_valid(&self.manifest_sha256)
             || self.identity.root_inode == 0

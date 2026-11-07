@@ -717,6 +717,7 @@ mod tests {
             (super::super::FurnishingStart::SelectedImport038, "workspace-furnishing-038-selected-import-v7"),
             (super::super::FurnishingStart::SelectedImport039, "workspace-furnishing-039-selected-import-v7"),
             (super::super::FurnishingStart::SelectedImport040, "workspace-furnishing-040-selected-import-v7"),
+            (super::super::FurnishingStart::Upgrade039To040, "workspace-furnishing-039-to-040-upgrade-v1"),
         ] {
             let wire = setup.workspace_furnishing_bootstrap(&auth, &generation, start).unwrap();
             let value: Value = serde_json::from_slice(&wire).unwrap();

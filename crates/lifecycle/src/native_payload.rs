@@ -172,6 +172,10 @@ const WORKSPACE_MATERIAL_PUBLICATION_CAPABILITY: (&str, u64, &str) = (
     163,
     "c93117acc9cc397cb978bcb5d4bbc5732699af983f2f3c0413e9b4205455339c",
 );
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const WORKSPACE_MATERIAL_PUBLICATION_VALIDATION_PROVENANCE: &[(&str, &str, &str)] =
+    if CATALOG39_UPGRADE_TARGET.is_some() { &[CATALOG39_UPGRADE_SOURCE] } else { &[] };
+#[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
 const WORKSPACE_MATERIAL_PUBLICATION_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[];
 const WORKSPACE_MATERIAL_MULTIMAP_DIRECTORY: &str =
     "platform/database/native-workspace-material-multimap/";
@@ -212,10 +216,40 @@ pub(crate) const CATALOG40_TANGENT_TRANSITION: (&str, &str) =
     (CATALOG40_FRAME_TARGET.2, CATALOG40_TANGENT_TARGET.2);
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+type RuntimeTuple = (&'static str, &'static str, &'static str);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG39_UPGRADE_SOURCE: RuntimeTuple = (
+    "66d70f701a76d043f06ef4ce0933aad3669f8230",
+    "927324495d06cba996cb4e718fbc09b386f646b4fd91e155af01ba18e6bf4ac0",
+    "caf4d4d25245cfddbae8db2b80595250b3f08baceb715c66855a46537a88ef63",
+);
+// Only an independently qualified build with the occupied-upgrade writer
+// may fill this pin. The earlier tangent payload cannot perform this step.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG39_UPGRADE_TARGET: Option<RuntimeTuple> = None;
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Catalog39Upgrade(RuntimeTuple);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) fn saved_workspace_transition_supported(pair: (&str, &str)) -> bool {
+    WORKSPACE_V5_SAVED_TRANSITIONS.contains(&pair) || Catalog40Transition::from_manifests(pair).is_some()
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
+    WORKSPACE_V5_SAVED_TRANSITIONS.iter().any(|(_, target)| *target == manifest)
+        || CATALOG39_UPGRADE_TARGET.is_some_and(|target| target.2 == manifest)
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Catalog40Transition {
     White,
     Tangent,
+    Upgrade39(Catalog39Upgrade),
 }
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 impl Catalog40Transition {
@@ -223,14 +257,43 @@ impl Catalog40Transition {
         match pair {
             CATALOG40_FRAME_TRANSITION => Some(Self::White),
             CATALOG40_TANGENT_TRANSITION => Some(Self::Tangent),
-            _ => None,
+            _ => Self::upgrade_from_manifests(pair, CATALOG39_UPGRADE_TARGET),
         }
+    }
+
+    fn upgrade_from_manifests(pair: (&str, &str), target: Option<RuntimeTuple>) -> Option<Self> {
+        let target = target?;
+        (pair == (CATALOG39_UPGRADE_SOURCE.2, target.2)).then_some(Self::Upgrade39(Catalog39Upgrade(target)))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_upgrade() -> Self {
+        Self::Upgrade39(Catalog39Upgrade((
+            "aabb0000aabb0000aabb0000aabb0000aabb0000",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        )))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn upgrade_pin_is_closed() -> bool {
+        CATALOG39_UPGRADE_TARGET.is_none()
+    }
+
+    pub(crate) fn upgrades_catalog(self) -> bool {
+        matches!(self, Self::Upgrade39(_))
+    }
+
+    pub(crate) fn source_catalog(self) -> WorkspaceFurnishingCatalog {
+        if self.upgrades_catalog() { WorkspaceFurnishingCatalog::MaterialPublication039 }
+        else { WorkspaceFurnishingCatalog::MaterialMultimap040 }
     }
 
     pub(crate) fn source(self) -> (&'static str, &'static str, &'static str) {
         match self {
             Self::White => CATALOG40_FRAME_SOURCE,
             Self::Tangent => CATALOG40_FRAME_TARGET,
+            Self::Upgrade39(_) => CATALOG39_UPGRADE_SOURCE,
         }
     }
 
@@ -238,6 +301,7 @@ impl Catalog40Transition {
         match self {
             Self::White => CATALOG40_FRAME_TARGET,
             Self::Tangent => CATALOG40_TANGENT_TARGET,
+            Self::Upgrade39(target) => target.0,
         }
     }
 }
@@ -1311,6 +1375,19 @@ impl Payload {
     pub(crate) fn open_saved_workspace_transition(root: &Path) -> Result<Self> {
         let payload = Self::open(root)?;
         let context = payload.context();
+        if let Some(target) = CATALOG39_UPGRADE_TARGET {
+            let catalog = if context.manifest_sha256 == CATALOG39_UPGRADE_SOURCE.2 {
+                Some(WorkspaceFurnishingCatalog::MaterialPublication039)
+            } else if context.manifest_sha256 == target.2 {
+                Some(WorkspaceFurnishingCatalog::MaterialMultimap040)
+            } else { None };
+            if let Some(expected) = catalog {
+                if payload.workspace_furnishing_catalog()? == Some(expected) {
+                    return Ok(payload);
+                }
+                return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+            }
+        }
         if [Catalog40Transition::White, Catalog40Transition::Tangent].iter().any(|pair|
             context.manifest_sha256 == pair.source().2 || context.manifest_sha256 == pair.target().2)
         {
@@ -1330,11 +1407,20 @@ impl Payload {
     }
 
     pub(crate) fn workspace_furnishing_catalog(&self) -> Result<Option<WorkspaceFurnishingCatalog>> {
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        let upgrade = CATALOG39_UPGRADE_TARGET.map(|target| [
+            CATALOG40_FRAME_SOURCE, CATALOG40_FRAME_TARGET, CATALOG40_TANGENT_TARGET, target,
+        ]);
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        let multimap = upgrade.as_ref().map(|pins| pins.as_slice())
+            .unwrap_or(WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE);
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        let multimap = WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE;
         self.workspace_furnishing_catalog_for(WORKSPACE_FURNISHING_VALIDATION_PROVENANCE,
             WORKSPACE_FURNISHING_WRITER_VALIDATION_PROVENANCE,
             WORKSPACE_FURNISHING_PUBLICATION_VALIDATION_PROVENANCE,
             WORKSPACE_MATERIAL_PUBLICATION_VALIDATION_PROVENANCE,
-            WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE)
+            multimap)
     }
 
     fn workspace_furnishing_catalog_for(&self, legacy: &[(&str, &str, &str)],
@@ -1492,6 +1578,16 @@ impl Payload {
         if rows.len() != catalog.version() as usize { return Err(invalid()); }
         Ok(rows.into_values().collect::<Vec<_>>().join("\n"))
     }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn catalog39_upgrade_source_ledger(&self) -> Result<String> {
+        let full = self.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::MaterialMultimap040)?;
+        let (source, last) = full.rsplit_once('\n').ok_or_else(invalid)?;
+        let (path, _, sha) = WORKSPACE_MATERIAL_MULTIMAP_SCHEMA;
+        let name = path.rsplit('/').next().ok_or_else(invalid)?;
+        if last != format!("{name}|{sha}") { return Err(invalid()); }
+        Ok(source.into())
+    }
+
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn open_workspace_import_validation(root: &Path, version: WorkspaceImport, selected: bool) -> Result<Self> {
         let mut payload = Self::open(root)?;

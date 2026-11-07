@@ -18,7 +18,8 @@ const NEW_MANIFEST: &str = "10a21f3b7a73a66011e077f7927f951f917e604720591acbcc2c
 #[cfg(feature = "workspace-v5-owner-validation")]
 use crate::native_payload::{
     CATALOG40_FRAME_TRANSITION, CATALOG40_TANGENT_TRANSITION, Catalog40Transition,
-    WORKSPACE_V5_SAVED_TRANSITIONS, WORKSPACE_V5_TRANSITION, WORKSPACE_WALL_PREVIEW_TRANSITION,
+    saved_workspace_transition_supported, saved_workspace_transition_target,
+    WORKSPACE_V5_TRANSITION, WORKSPACE_WALL_PREVIEW_TRANSITION,
 };
 
 // Development-only transitions are admitted as directed, exact pairs. Keep
@@ -39,6 +40,8 @@ const TRANSITION_PAIRS: &[(&str, &str)] = &[
      "7ff6e64700cbe7324b634d2cb11e0acc87288ce27ab90ae18e675ae5fa899eb2"),
 ];
 fn admitted_pair(source: &str, target: &str) -> bool {
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    if saved_workspace_transition_supported((source, target)) { return true; }
     TRANSITION_PAIRS.contains(&(source, target))
 }
 
@@ -106,7 +109,7 @@ fn check_transition_host(
     saved_workspace_host: bool,
 ) -> Result<()> {
     #[cfg(feature = "workspace-v5-owner-validation")]
-    let is_saved_workspace_pair = WORKSPACE_V5_SAVED_TRANSITIONS.contains(&pair);
+    let is_saved_workspace_pair = saved_workspace_transition_supported(pair);
     #[cfg(not(feature = "workspace-v5-owner-validation"))]
     let is_saved_workspace_pair = false;
     if !admitted_pair(pair.0, pair.1)
@@ -836,9 +839,12 @@ impl LifecycleService {
         self.check_prepare_guard(&guard)?;
         crate::native_runtime::check_cold_checkpoint_root(&self.root)?;
         let target_context = target.context();
-        if !TRANSITION_PAIRS.iter().any(|(_, target)| *target == target_context.manifest_sha256)
-            || target_context.official_signed
-            || target_context.redistribution_qualified
+        #[cfg(feature = "workspace-v5-owner-validation")]
+        let saved_target = saved_workspace_transition_target(&target_context.manifest_sha256);
+        #[cfg(not(feature = "workspace-v5-owner-validation"))]
+        let saved_target = false;
+        if (!saved_target && !TRANSITION_PAIRS.iter().any(|(_, target)| *target == target_context.manifest_sha256))
+            || target_context.official_signed || target_context.redistribution_qualified
         {
             return Err(invalid());
         }
@@ -978,7 +984,7 @@ impl LifecycleService {
             return Err(invalid());
         }
         #[cfg(feature = "workspace-v5-owner-validation")]
-        if WORKSPACE_V5_SAVED_TRANSITIONS.contains(&(source.manifest_sha256.as_str(), target.manifest_sha256.as_str()))
+        if saved_workspace_transition_supported((&source.manifest_sha256, &target.manifest_sha256))
             != saved_document_sha256.is_some()
         {
             return Err(invalid());
@@ -998,11 +1004,18 @@ impl LifecycleService {
         #[cfg(feature = "workspace-v5-owner-validation")]
         let catalog40 = if let Some(transition) = transition {
             use crate::native_payload::WorkspaceFurnishingCatalog::MaterialMultimap040;
-            if source_payload.workspace_furnishing_catalog()? != Some(MaterialMultimap040)
+            let source_catalog = transition.source_catalog();
+            if source_payload.workspace_furnishing_catalog()? != Some(source_catalog)
                 || target_payload.workspace_furnishing_catalog()? != Some(MaterialMultimap040)
-                || source_payload.workspace_furnishing_ledger(MaterialMultimap040)?
-                    != target_payload.workspace_furnishing_ledger(MaterialMultimap040)?
             {
+                return Err(invalid());
+            }
+            let target_expected_source = if transition.upgrades_catalog() {
+                target_payload.catalog39_upgrade_source_ledger()?
+            } else {
+                target_payload.workspace_furnishing_ledger(MaterialMultimap040)?
+            };
+            if source_payload.workspace_furnishing_ledger(source_catalog)? != target_expected_source {
                 return Err(invalid());
             }
             Some(crate::native_runtime::Catalog40Trial::capture(self, transition)?)
@@ -1121,7 +1134,7 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
     ) -> Result<()> {
-        if !WORKSPACE_V5_SAVED_TRANSITIONS.contains(&(
+        if !saved_workspace_transition_supported((
             source.context().manifest_sha256.as_str(), target.context().manifest_sha256.as_str(),
         ))
         {
@@ -1294,12 +1307,23 @@ mod tests {
 
     #[cfg(feature = "workspace-v5-owner-validation")]
     #[test]
+    fn catalog39_upgrade_cannot_target_the_earlier_tangent_package() {
+        let upgrade = Catalog40Transition::test_upgrade();
+        let old_target = crate::native_payload::CATALOG40_TANGENT_TARGET.2;
+        assert!(!admitted_pair(upgrade.source().2, old_target));
+        assert!(!admitted_pair(old_target, upgrade.source().2));
+        if Catalog40Transition::upgrade_pin_is_closed() {
+            assert!(!admitted_pair(upgrade.source().2, upgrade.target().2));
+        }
+    }
+
+    #[test]
     fn transition_scope_requires_pair_saved_proof_and_dedicated_host() {
         let legacy = (OLD_MANIFEST, NEW_MANIFEST);
         let proof = "a".repeat(64);
         assert!(check_transition_host(legacy, None, false).is_ok());
         assert!(check_transition_host(legacy, None, true).is_err());
-        for &saved in WORKSPACE_V5_SAVED_TRANSITIONS {
+        for &saved in crate::native_payload::WORKSPACE_V5_SAVED_TRANSITIONS {
             assert!(check_transition_host(saved, Some(&proof), true).is_ok());
             for host in [false, true] {
                 assert!(check_transition_host(legacy, Some(&proof), host).is_err());

@@ -13,6 +13,8 @@ pub(super) enum Admission {
     FreshEmpty,
     CleanReopen,
     VerifiedRestore,
+    #[serde(rename = "catalog-upgrade-039-to-040")]
+    CatalogUpgrade039To040,
 }
 
 impl Admission {
@@ -21,6 +23,7 @@ impl Admission {
             Self::FreshEmpty => 1,
             Self::CleanReopen => 2,
             Self::VerifiedRestore => 3,
+            Self::CatalogUpgrade039To040 => 4,
         }
     }
 }
@@ -110,6 +113,9 @@ impl Binding {
             (Phase::Active | Phase::Clean, Admission::VerifiedRestore) => {
                 self.previous_generation.is_some() && self.restore.is_some()
             }
+            (Phase::Active | Phase::Clean, Admission::CatalogUpgrade039To040) => {
+                self.catalog == 40 && self.previous_generation.is_some() && self.restore.is_none()
+            }
             (Phase::ActivatedRestore, Admission::VerifiedRestore) => {
                 self.previous_generation.is_none() && self.restore.is_some()
             }
@@ -164,19 +170,25 @@ impl Binding {
         if prior.phase != Phase::Clean || self.phase != Phase::Active || prior.restore.is_some()
             || self.generation == prior.generation || self.owner != prior.owner
             || self.physical != prior.physical
-            || !prior.matches_catalog40_tuple(transition.source())
-            || !self.matches_catalog40_tuple(transition.target())
+            || !prior.matches_catalog_tuple(transition.source_catalog().version(), transition.source())
+            || !self.matches_catalog_tuple(40, transition.target())
         {
             return Err(err(ERROR));
         }
-        self.admission_kind = Admission::CleanReopen;
+        self.admission_kind = Self::transition_admission(transition);
         self.previous_generation = Some(prior.generation.clone());
         self.check()
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    pub(super) fn matches_catalog40_tuple(&self, tuple: (&str, &str, &str)) -> bool {
-        self.catalog == 40 && tuple == (
+    pub(super) fn transition_admission(transition: Catalog40Transition) -> Admission {
+        if transition.upgrades_catalog() { Admission::CatalogUpgrade039To040 }
+        else { Admission::CleanReopen }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(super) fn matches_catalog_tuple(&self, catalog: u32, tuple: (&str, &str, &str)) -> bool {
+        self.catalog == catalog && tuple == (
             self.source_commit.as_str(),
             self.producer_sha256.as_str(),
             self.payload_manifest_sha256.as_str(),
@@ -492,8 +504,45 @@ mod tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    fn catalog39_upgrade_uses_a_distinct_admission_and_reopens_normally_after_stop() {
+        let transition = Catalog40Transition::test_upgrade();
+        let mut prior = catalog40_binding(GENERATION, transition.source());
+        prior.catalog = 39;
+        prior.phase = Phase::Clean;
+        let target = catalog40_binding(NEXT, transition.target());
+        assert!(target.clone().consume(&prior).is_err());
+        assert!(target.clone().consume_catalog40_transition(&prior, Catalog40Transition::Tangent).is_err());
+        let mut active = target.clone();
+        active.consume_catalog40_transition(&prior, transition).unwrap();
+        assert_eq!(active.admission_kind, Admission::CatalogUpgrade039To040);
+        assert_eq!(active.admission_kind.tag(), 4);
+        assert_eq!(serde_json::to_value(active.admission_kind).unwrap(), "catalog-upgrade-039-to-040");
+        assert_eq!(active.previous_generation.as_deref(), Some(GENERATION));
+        assert!(catalog40_binding(LATER, transition.target()).consume(&active).is_err());
+        active.phase = Phase::Clean;
+        let mut reopened = catalog40_binding(LATER, transition.target());
+        reopened.consume(&active).unwrap();
+        assert_eq!(reopened.admission_kind, Admission::CleanReopen);
+        assert!(catalog40_binding(LATER, transition.target()).consume_catalog40_transition(&active, transition).is_err());
+
+        let mut invalid = prior;
+        invalid.catalog = 40;
+        assert!(target.clone().consume_catalog40_transition(&invalid, transition).is_err());
+        invalid.catalog = 39;
+        invalid.owner.principal_id = NEXT.into();
+        assert!(target.clone().consume_catalog40_transition(&invalid, transition).is_err());
+        invalid.owner.principal_id = target.owner.principal_id.clone();
+        invalid.physical.lock_inode += 1;
+        assert!(target.clone().consume_catalog40_transition(&invalid, transition).is_err());
+        invalid.physical = target.physical;
+        invalid.phase = Phase::Active;
+        assert!(target.clone().consume_catalog40_transition(&invalid, transition).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     fn catalog40_transition_recovers_only_its_own_consumption_and_keeps_trial_record() {
-        for transition in [Catalog40Transition::White, Catalog40Transition::Tangent] {
+        for transition in [Catalog40Transition::White, Catalog40Transition::Tangent, Catalog40Transition::test_upgrade()] {
             check_catalog40_recovery(transition);
         }
     }
@@ -507,6 +556,7 @@ mod tests {
         let service = LifecycleService::bound_existing(root.clone()).unwrap();
         let writer = furnishing_lifetime::WriterLifetime::acquire(&root).unwrap();
         let mut prior = catalog40_binding(GENERATION, transition.source());
+        prior.catalog = transition.source_catalog().version();
         prior.physical = writer.identity().unwrap();
         prior.phase = Phase::Clean;
         let source = Current { format: 1, id: GENERATION.into(), furnishing: Some(prior.clone()) };
@@ -553,6 +603,14 @@ mod tests {
         context.state = "starting_database".into();
         write_run(&trial_run, &context, None).unwrap();
         assert!(trial.check_recovery_root(&root, &writer, transition).is_err());
+        if transition.upgrades_catalog() {
+            // This state covers a committed SQL transaction before Runtime Ready.
+            // The PostgreSQL ledger alone cannot authorize an old-runtime reopen.
+            context.state = "starting_services".into();
+            write_run(&trial_run, &context, None).unwrap();
+            assert!(trial.check_recovery_root(&root, &writer, transition).is_err());
+            assert!(catalog40_binding(LATER, transition.target()).consume_catalog40_transition(&target, transition).is_err());
+        }
 
         // The helper drained the failed trial and exited before sealing the
         // supplemental checkpoint journal. Only the matching drain proof works.
