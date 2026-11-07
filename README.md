@@ -163,6 +163,12 @@ Source integration does not establish actual native GUI/Studio import/export qua
 OEX connection validation at source `9b52e367044082ecfce5233844af3f0e5b46f023`: TypeScript and the existing ESLint scope passed; three focused IPC tests passed (selection token only, native readiness refusal, malformed selection refusal). The existing release desktop URL regression passed (1 passed, 13 filtered), including the fixed Studio route and remote URL refusals; it compiled the native command with locked offline dependencies. These checks do not launch the native app/browser or run an OEX upload, export or server job. Actual native GUI/Studio job qualification remains NOT_RUN.
 
 
+### Same-owner reviewed image replacement
+
+The macOS native client uses the qualified local runtime and its authenticated owner session for an existing artwork. Persist the exact JPEG import intent, including `coarsePreparation`, in the private upload journal before creating the job. Record the returned job ID before uploading the original and prepared PNG. Keep the same intent and idempotency key on retry. Continue only after the approved job reports the reviewed coarse hash, `ready` and `workerDrained: true`.
+
+Retain the selected Studio comparison, replacement request ID and original ETag before calling `replaceReviewedArtwork`. Replay these exact inputs after an uncertain response. The client compares the replacement receipt against a fresh Studio read before returning a result suitable for the local saved document. A later Studio edit requires a new comparison. Native runtime admission and isolated end-to-end qualification are separate from this source interface.
+
 ## Registered Prepared update application
 
 The update panel lists only references bound to the selected installation, current Prepared operation, trust generation and registry bytes. It exposes version/schema summaries and opaque IDs, never native file paths or key contents. Applying requires explicit external-writer quiescence and app-close/data-preservation acknowledgements. These acknowledgements do not replace native engine observation. Changed-schema application remains unqualified and cannot be dispatched from this UI.

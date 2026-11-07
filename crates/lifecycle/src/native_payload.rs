@@ -277,6 +277,12 @@ const CATALOG40_FRAME_RECORD_TARGET: Option<RuntimeTuple> = Some((
     "b97c87c4f0017db1caaed97d012ee7e5c0c60ebd6f4cad136b57657e3de18725",
     "d31372305fd54f8d42cec1ebc76bf0ec4d47cf36cb4ece658bca08195687748e",
 ));
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG40_ARTWORK_REPLACEMENT_TARGET: Option<RuntimeTuple> = Some((
+    "660acf0920716242cf22a8e2822b22ec5a0b0764",
+    "ee5a94b613031e2cea918dead21c885c42fce4d585a03e55a2f3799af4e6991c",
+    "73a491c071ae5c6f10c786793733968549ab400333569d8427530b6e81606c9b",
+));
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -294,6 +300,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG40_EXB_TARGET.is_some_and(|target| target.2 == manifest)
         || CATALOG40_RESTORE_PROVENANCE_TARGET.is_some_and(|target| target.2 == manifest)
         || CATALOG40_FRAME_RECORD_TARGET.is_some_and(|target| target.2 == manifest)
+        || CATALOG40_ARTWORK_REPLACEMENT_TARGET.is_some_and(|target| target.2 == manifest)
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -313,7 +320,8 @@ impl Catalog40Transition {
             _ => Self::upgrade_from_manifests(pair, CATALOG39_UPGRADE_TARGET)
                 .or_else(|| Self::same_catalog_from_manifests(pair, CATALOG39_UPGRADE_TARGET, CATALOG40_EXB_TARGET))
                 .or_else(|| Self::same_catalog_from_manifests(pair, CATALOG40_EXB_TARGET, CATALOG40_RESTORE_PROVENANCE_TARGET))
-                .or_else(|| Self::same_catalog_from_manifests(pair, CATALOG40_RESTORE_PROVENANCE_TARGET, CATALOG40_FRAME_RECORD_TARGET)),
+                .or_else(|| Self::same_catalog_from_manifests(pair, CATALOG40_RESTORE_PROVENANCE_TARGET, CATALOG40_FRAME_RECORD_TARGET))
+                .or_else(|| Self::same_catalog_from_manifests(pair, CATALOG40_FRAME_RECORD_TARGET, CATALOG40_ARTWORK_REPLACEMENT_TARGET)),
         }
     }
 
@@ -961,6 +969,14 @@ mod normal_oex_release_declaration_tests {
         let frame_preparation = WORKSPACE_FRAME_PREPARATION_VALIDATION_PROVENANCE[0];
         assert!(Catalog40Transition::from_manifests((frame_preparation.2, frames.2)).is_none());
         assert!(Catalog40Transition::from_manifests((frames.2, frame_preparation.2)).is_none());
+        let replacement = CATALOG40_ARTWORK_REPLACEMENT_TARGET.unwrap();
+        let transition = Catalog40Transition::from_manifests((frames.2, replacement.2)).unwrap();
+        assert_eq!(transition.source(), frames);
+        assert_eq!(transition.target(), replacement);
+        assert!(!transition.upgrades_catalog());
+        assert!(saved_workspace_transition_target(replacement.2));
+        assert!(Catalog40Transition::from_manifests((restore.2, replacement.2)).is_none());
+        assert!(Catalog40Transition::from_manifests((replacement.2, frames.2)).is_none());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -1497,7 +1513,8 @@ impl Payload {
             } else if context.manifest_sha256 == target.2
                 || CATALOG40_EXB_TARGET.is_some_and(|exb| context.manifest_sha256 == exb.2)
                 || CATALOG40_RESTORE_PROVENANCE_TARGET.is_some_and(|restore| context.manifest_sha256 == restore.2)
-                || CATALOG40_FRAME_RECORD_TARGET.is_some_and(|frames| context.manifest_sha256 == frames.2) {
+                || CATALOG40_FRAME_RECORD_TARGET.is_some_and(|frames| context.manifest_sha256 == frames.2)
+                || CATALOG40_ARTWORK_REPLACEMENT_TARGET.is_some_and(|replacement| context.manifest_sha256 == replacement.2) {
                 Some(WorkspaceFurnishingCatalog::MaterialMultimap040)
             } else { None };
             if let Some(expected) = catalog {
@@ -1535,7 +1552,11 @@ impl Payload {
         ));
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
         let portal: Option<(&str, &str, &str)> = None;
-        let pinned_portal = portal.is_some_and(|(source, producer, manifest)|
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        let artwork_replacement = CATALOG40_ARTWORK_REPLACEMENT_TARGET;
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        let artwork_replacement: Option<(&str, &str, &str)> = None;
+        let pinned_portal = portal.into_iter().chain(artwork_replacement).any(|(source, producer, manifest)|
             self.manifest.source_commit == source && self.manifest.producer_sha256 == producer
                 && self.manifest_sha256 == manifest);
         let portal_marker = self.manifest.files.iter().find(|file| file.path == PORTAL_MARKER);
@@ -1550,7 +1571,7 @@ impl Payload {
         let multimap = WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE.iter().copied()
             .chain(CATALOG39_UPGRADE_TARGET).chain(CATALOG40_EXB_TARGET)
             .chain(CATALOG40_RESTORE_PROVENANCE_TARGET).chain(CATALOG40_FRAME_RECORD_TARGET)
-            .chain(portal).collect::<Vec<_>>();
+            .chain(portal).chain(artwork_replacement).collect::<Vec<_>>();
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         let multimap = multimap.as_slice();
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]

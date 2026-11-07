@@ -320,6 +320,7 @@ public actor AuthoringAPI {
     private let tenant: String
     private let transport: URLSession
     public nonisolated let admitsICCJPEG: Bool
+    public nonisolated let admitsSameOwnerArtworkReplacement: Bool
     // These reviewed v5 tuples are local-validation payloads. Release admission
     // requires separate package qualification.
     #if DEBUG
@@ -390,9 +391,12 @@ public actor AuthoringAPI {
         base = URL(string: "http://127.0.0.1:\(port)")!
         tenant = id.uuidString.lowercased()
         admitsICCJPEG = NativeJPEGImportRuntime.supportsICC(manifestSHA256: nativeRuntimeManifestSHA256, ready: true)
+        admitsSameOwnerArtworkReplacement = NativeJPEGImportRuntime.supportsSameOwnerArtworkReplacement(
+            manifestSHA256: nativeRuntimeManifestSHA256, ready: true
+        )
         let manifest = nativeRuntimeManifestSHA256 ?? ""
         #if DEBUG
-        let portalQualified = manifest == Self.workspacePortalFinishManifestPin
+        let portalQualified = manifest == Self.workspacePortalFinishManifestPin || admitsSameOwnerArtworkReplacement
         let multimapQualified = portalQualified || Self.workspaceMaterialMultimapManifestPins.contains(manifest)
         #else
         let portalQualified = false
@@ -620,6 +624,51 @@ public actor AuthoringAPI {
         let response: NativeStudioResponse = try await request(path, method: etag == nil ? "POST" : "PUT", body: body, ifMatch: etag)
         guard response.draft.id == draft.id, response.draft == draft else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
         return response
+    }
+    /// Use the original comparison and request ID on replay. A historical
+    /// receipt becomes a local save only if it still matches a fresh GET.
+    public func replaceReviewedArtwork(
+        in previous: NativeStudioResponse, requestId: String, importJobId: String,
+        intent: NativeImportIntent, expectedCoarseSHA256: String
+    ) async throws -> NativeStudioResponse {
+        guard admitsSameOwnerArtworkReplacement, nativeSession else {
+            throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
+        }
+        guard let coarse = intent.coarsePreparation, coarse.valid, nativeImportDigest(expectedCoarseSHA256),
+              (1..<2_147_483_647).contains(previous.revision),
+              previous.etag.hasPrefix("\"studio-r\(previous.revision)-") else {
+            throw AuthoringFailure("IMPORT_INPUT_INVALID")
+        }
+        struct Input: Encodable {
+            let requestId: String
+            let artworkId: String
+            let artworkRevision: Int
+            let importJobId: String
+        }
+        let current = generation
+        let exhibitionId = try identifier(previous.draft.id)
+        let input = try Input(requestId: identifier(requestId), artworkId: identifier(intent.artworkId),
+                              artworkRevision: coarse.artworkRevision, importJobId: identifier(importJobId))
+        let job = try await importJob(input.importJobId)
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard job.id.lowercased() == input.importJobId, job.state == "approved",
+              job.imagePreparation?.matches(intent) == true,
+              let prepared = job.coarsePreparation, prepared.matches(coarse, job: job),
+              prepared.workerDrained, prepared.sha256 == expectedCoarseSHA256 else {
+            throw AuthoringFailure("COARSE_JOB_NOT_READY")
+        }
+        try Task.checkCancellation()
+        let path = studioPrefix + "/exhibitions/" + exhibitionId + "/native-artwork-replacement"
+        let saved: NativeStudioResponse = try await request(path, method: "POST", body: encoded(input),
+                                                            ifMatch: previous.etag, timeout: 120)
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard saved.revision == previous.revision + 1, saved.draft.id.lowercased() == exhibitionId else {
+            throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
+        }
+        let reopened = try await exhibition(exhibitionId)
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        try saved.requireSameComparison(reopened)
+        return reopened
     }
     /// One selected-session save. Persist and revalidate the exact pending
     /// request before the single PUT; uncertainty is never retried here.
@@ -1002,6 +1051,15 @@ public actor AuthoringAPI {
     }
     public func createImport(_ input: NativeImportIntent) async throws -> NativeImportJob {
         guard input.derived?.recipe.colourConversion == nil || admitsICCJPEG else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
+        if let coarse = input.coarsePreparation {
+            guard admitsSameOwnerArtworkReplacement, nativeSession else {
+                throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
+            }
+            guard coarse.valid, input.mime == "image/jpeg", input.scaleMeters == 1,
+                  input.derived?.recipe.colourConversion != nil, input.modelDerivation == nil else {
+                throw AuthoringFailure("IMPORT_INPUT_INVALID")
+            }
+        }
         guard input.bytes > 0, input.bytes <= 32 * 1024 * 1024,
               input.scaleMeters.isFinite, input.scaleMeters > 0, input.scaleMeters <= 1_000_000,
               ((["model/gltf-binary", "image/png"].contains(input.mime) && input.derived == nil)
@@ -1011,7 +1069,14 @@ public actor AuthoringAPI {
               input.sha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil,
               UUID(uuidString: input.idempotencyKey) != nil else { throw AuthoringFailure("IMPORT_INPUT_INVALID") }
         _ = try identifier(input.artworkId)
-        return try await request("/api/v1/tenants/\(tenant)/imports", method: "POST", body: encoded(input))
+        let job: NativeImportJob = try await request("/api/v1/tenants/\(tenant)/imports", method: "POST", body: encoded(input))
+        if let coarse = input.coarsePreparation {
+            guard job.coarsePreparation?.matches(coarse, job: job) == true,
+                  job.imagePreparation?.matches(input) == true else {
+                throw AuthoringFailure("IMPORT_RECEIPT_INVALID")
+            }
+        }
+        return job
     }
     public func uploadImport(_ id: String, bytes: Data) async throws {
         guard !bytes.isEmpty, bytes.count <= 32 * 1024 * 1024 else { throw AuthoringFailure("IMPORT_SIZE_INVALID") }
@@ -1467,10 +1532,11 @@ public struct NativeImportJob: Decodable, Sendable {
     public let originalAssetId: String?
     public let modelDerivation: NativeModelDerivationStatus?
     public let imagePreparation: NativeImagePreparationStatus?
+    public let coarsePreparation: NativeCoarsePreparationStatus?
     public let workerDrainVersion: Int?
     public let workerDrained: Bool?
     private enum CodingKeys: String, CodingKey {
-        case id, state, progress, attempts, errorCode, assetId, retryAt, originalAssetId, modelDerivation, imagePreparation, workerDrainVersion, workerDrained
+        case id, state, progress, attempts, errorCode, assetId, retryAt, originalAssetId, modelDerivation, imagePreparation, coarsePreparation, workerDrainVersion, workerDrained
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -1486,12 +1552,14 @@ public struct NativeImportJob: Decodable, Sendable {
         // Legacy clients ignored this field. A malformed future field remains
         // absent here; selected ICC validation then rejects that absence.
         imagePreparation = try? values.decode(NativeImagePreparationStatus.self, forKey: .imagePreparation)
+        coarsePreparation = try values.decodeIfPresent(NativeCoarsePreparationStatus.self, forKey: .coarsePreparation)
         workerDrainVersion = try? values.decode(Int.self, forKey: .workerDrainVersion)
         workerDrained = try? values.decode(Bool.self, forKey: .workerDrained)
     }
     public init(id: String, state: String, progress: Int, attempts: Int, errorCode: String?, assetId: String?, retryAt: String?, originalAssetId: String? = nil, modelDerivation: NativeModelDerivationStatus? = nil, imagePreparation: NativeImagePreparationStatus? = nil) {
         self.id = id; self.state = state; self.progress = progress; self.attempts = attempts; self.errorCode = errorCode
         self.assetId = assetId; self.retryAt = retryAt; self.originalAssetId = originalAssetId; self.modelDerivation = modelDerivation; self.imagePreparation = imagePreparation
+        self.coarsePreparation = nil
         self.workerDrainVersion = nil; self.workerDrained = nil
     }
     public var terminal: Bool { ["approved", "cancelled"].contains(state) }
@@ -1499,12 +1567,14 @@ public struct NativeImportJob: Decodable, Sendable {
         switch mime {
         case "image/png": workerDrainVersion == 1 && workerDrained == true
         case "model/gltf-binary": modelDerivation?.workerDrained == true
+        case "image/jpeg": coarsePreparation?.workerDrained == true
         default: false
         }
     }
     public var canRetry: Bool {
         let optionalModelFailure = state == "approved" && modelDerivation?.status == "failed" && modelDerivation?.workerDrained == true
-        guard state == "failed" || optionalModelFailure, attempts < 5 else { return false }
+        guard state == "failed" || optionalModelFailure, attempts < 5,
+              coarsePreparation?.workerDrained != false else { return false }
         guard let retryAt else { return true }
         let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let date = formatter.date(from: retryAt) ?? ISO8601DateFormatter().date(from: retryAt)
@@ -1523,7 +1593,9 @@ public struct NativeImportIntent: Codable, Equatable, Sendable {
     public let rights: ArtworkMetadata.Rights
     public let derived: NativeImportDerived?
     public let modelDerivation: NativeModelDerivationIntent?
-    public init(artworkId: String, idempotencyKey: String = UUID().uuidString.lowercased(), mime: String, sha256: String, bytes: Int, scaleMeters: Double, rights: ArtworkMetadata.Rights, derived: NativeImportDerived? = nil, modelDerivation: NativeModelDerivationIntent? = nil) {
+    public let coarsePreparation: NativeCoarsePreparationIntent?
+    public init(artworkId: String, idempotencyKey: String = UUID().uuidString.lowercased(), mime: String, sha256: String, bytes: Int, scaleMeters: Double, rights: ArtworkMetadata.Rights, derived: NativeImportDerived? = nil, modelDerivation: NativeModelDerivationIntent? = nil, coarsePreparation: NativeCoarsePreparationIntent? = nil) {
         self.artworkId = artworkId; self.idempotencyKey = idempotencyKey; self.mime = mime; self.sha256 = sha256; self.bytes = bytes; self.scaleMeters = scaleMeters; self.rights = rights; self.derived = derived; self.modelDerivation = modelDerivation
+        self.coarsePreparation = coarsePreparation
     }
 }
