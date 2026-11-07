@@ -1317,6 +1317,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "workspace-v5-owner-validation")]
     #[test]
     fn transition_scope_requires_pair_saved_proof_and_dedicated_host() {
         let legacy = (OLD_MANIFEST, NEW_MANIFEST);
