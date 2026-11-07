@@ -90,8 +90,7 @@ public struct NativePreparedJPEG: Sendable {
                 try NativeImagePreparation.embeddedICC(original.data, isCurrent: isCurrent)
             }
             let profile = try await withTaskCancellationHandler { try await detection.value } onCancel: { detection.cancel() }
-            // Callers must establish a reviewed compatible runtime capability;
-            // the existing UI supplies no such admission and stays fail-closed.
+            // Callers establish the exact compatible runtime before allowing ICC.
             guard profile == nil || allowICC else { throw NativeImagePreparation.Failure.unsupportedJPEG }
             let settings = profile == nil ? settingsBytes : iccSettingsBytes
             let binding = NativeImagePreparation.Binding(operationID: operationID, generation: generation,

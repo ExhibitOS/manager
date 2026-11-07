@@ -418,7 +418,8 @@ public actor NativeAutomationSession {
         // Scope is checked even for replay: correlation is not authorization.
         let (context, api, current) = try await checked(request)
         if let seen = seenRequests[id], seen != bytes { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
-        if let prior = replay[id] {
+        // ICC qualification needs a fresh journal and server read on every request.
+        if operation != "artwork-icc-validation-status", let prior = replay[id] {
             guard prior.0 == bytes else { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
             return prior.1
         }
@@ -922,7 +923,7 @@ public actor NativeAutomationSession {
             }
         default: throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
         }
-        replay[id] = (bytes, result)
+        if operation != "artwork-icc-validation-status" { replay[id] = (bytes, result) }
         return result
     }
     public func close() async throws {
