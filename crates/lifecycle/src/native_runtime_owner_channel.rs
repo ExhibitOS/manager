@@ -230,7 +230,7 @@ impl Connection {
             exchange.check_frame(&self.key, Kind::AdmissionAck, &reply)?;
             check()?;
             // The selected peer sends its catalog proof after admission.
-            if lease.start != super::FurnishingStart::SelectedImport {
+            if !lease.start.is_selected_import() {
                 self.check_authenticated_idle()?;
             }
             Ok(exchange)
@@ -267,7 +267,7 @@ impl Connection {
     /// personal identity. Any mismatch or transport error closes permanently.
     pub(super) fn receive_ready(&mut self,cancellation:&AtomicBool,check:&mut dyn FnMut()->Result<()>,
         workspace:&str,tenant:&str,principal:&str,generation:&str)->Result<()> {
-        let selected_furnishing = self.furnishing_bound == Some(super::FurnishingStart::SelectedImport)
+        let selected_furnishing = self.furnishing_bound.is_some_and(super::FurnishingStart::is_selected_import)
             && self.ordinary.is_some();
         if !self.valid || self.ready || (self.furnishing_bound.is_some() && !selected_furnishing) {
             self.fail();
@@ -633,7 +633,7 @@ mod tests {
         let auth = authority();
         let generation = Uuid::new_v4().to_string();
         let physical = WriterIdentity { root_device: 1, root_inode: 2, lock_device: 1, lock_inode: 3 };
-        for start in [FurnishingStart::SelectedImport, FurnishingStart::Initialize] {
+        for start in [FurnishingStart::SelectedImport038, FurnishingStart::SelectedImport039, FurnishingStart::Initialize] {
             let lease = furnishing_lease::Lease::new(&auth, &generation, start, "a".repeat(64), physical);
             let active = furnishing_lifecycle::Binding {
                 version: 1,
@@ -650,7 +650,7 @@ mod tests {
                 source_commit: "1".repeat(40),
                 producer_sha256: "2".repeat(64),
                 payload_manifest_sha256: "a".repeat(64),
-                catalog: 38,
+                catalog: if start == FurnishingStart::SelectedImport039 { 39 } else { 38 },
                 physical,
                 restore: None,
             };
@@ -686,7 +686,7 @@ mod tests {
                 furnishing_bound: None, ordinary: None, claim_started: false, metadata_started: false };
             let cancel = AtomicBool::new(false);
             let result = channel.bind_ordinary_furnishing(&lease, &active, &cancel, &mut || Ok(()));
-            if start == FurnishingStart::SelectedImport {
+            if start.is_selected_import() {
                 result.unwrap();
                 let next = channel.read_frame(Instant::now() + Duration::from_secs(2), &cancel, &mut || Ok(())).unwrap();
                 assert_eq!(next, b"next-v7-catalog-frame");
@@ -706,7 +706,8 @@ mod tests {
         for (start, mode) in [
             (super::super::FurnishingStart::Initialize, "workspace-furnishing-036-initialize-v1"),
             (super::super::FurnishingStart::Reopen, "workspace-furnishing-036-reopen-v1"),
-            (super::super::FurnishingStart::SelectedImport, "workspace-furnishing-038-selected-import-v7"),
+            (super::super::FurnishingStart::SelectedImport038, "workspace-furnishing-038-selected-import-v7"),
+            (super::super::FurnishingStart::SelectedImport039, "workspace-furnishing-039-selected-import-v7"),
         ] {
             let wire = setup.workspace_furnishing_bootstrap(&auth, &generation, start).unwrap();
             let value: Value = serde_json::from_slice(&wire).unwrap();

@@ -93,7 +93,8 @@ impl Lease {
         bytes.push(match self.start {
             FurnishingStart::Initialize => 1,
             FurnishingStart::Reopen => 2,
-            FurnishingStart::SelectedImport => 3,
+            FurnishingStart::SelectedImport038 => 3,
+            FurnishingStart::SelectedImport039 => 4,
         });
         if !hash_valid(&self.manifest_sha256)
             || self.identity.root_inode == 0
@@ -219,11 +220,11 @@ mod tests {
     }
 
     #[test]
-    fn furnishing_selected_import_lease_matches_mode_three_vectors() {
+    fn furnishing_selected_import_lease_matches_catalog_vectors() {
         let mut lease = golden();
         let key = std::array::from_fn(|index| index as u8);
         let ordinary = lease.signed(&key, Kind::Ack).unwrap();
-        lease.start = FurnishingStart::SelectedImport;
+        lease.start = FurnishingStart::SelectedImport038;
         for (kind, expected_mac) in [
             (Kind::Lease, "813f55583aa1cd1b00dc638b206228e6fac1b2bddd51600a94a0a8cdb0cc07e2"),
             (Kind::Ack, "4e65a50d15bb2e610bce5bf35f04c2172374a32b160b2fc083df439bc544f7af"),
@@ -234,6 +235,18 @@ mod tests {
             assert_eq!(frame["mac"], expected_mac);
         }
         assert!(lease.check_ack(&key, &ordinary).is_err());
+
+        let selected_038 = lease.signed(&key, Kind::Ack).unwrap();
+        lease.start = FurnishingStart::SelectedImport039;
+        for (kind, expected_mac) in [
+            (Kind::Lease, "88e2a5d1cdc86eaac30f63b83c4587aedfd9f397ad5b8cae7db0921a6bc5f75c"),
+            (Kind::Ack, "a212cd112ad2a15d4951cf4899f4142770bcdbbfdf3d34c107c0125f7bcb6856"),
+        ] {
+            let frame: Value = serde_json::from_slice(&lease.signed(&key, kind).unwrap()).unwrap();
+            assert_eq!(frame["mode"], "workspace-furnishing-039-selected-import-v7");
+            assert_eq!(frame["mac"], expected_mac);
+        }
+        assert!(lease.check_ack(&key, &selected_038).is_err());
     }
 
     #[test]

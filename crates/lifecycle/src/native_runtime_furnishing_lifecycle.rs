@@ -74,7 +74,7 @@ pub(super) struct Binding {
 impl Binding {
     pub(super) fn check(&self) -> Result<()> {
         if self.version != 1
-            || !matches!(self.catalog, 37 | 38)
+            || !matches!(self.catalog, 37 | 38 | 39)
             || !installations::uuid(&self.generation)
             || self
                 .previous_generation
@@ -407,6 +407,21 @@ mod tests {
         assert_eq!(next.previous_generation.as_deref(), Some(GENERATION));
         assert_eq!(next.catalog, 38);
         assert!(binding(LATER).consume(&next).is_err());
+    }
+
+    #[test]
+    fn ordinary_furnishing_material_publication_requires_its_own_completion() {
+        let mut prior = binding(GENERATION);
+        prior.phase = Phase::Clean;
+        prior.catalog = 38;
+        let mut next = binding(NEXT);
+        next.catalog = 39;
+        assert!(next.consume(&prior).is_err());
+        prior.catalog = 39;
+        next.consume(&prior).unwrap();
+        assert_eq!(next.catalog, 39);
+        assert_eq!(next.admission_kind, Admission::CleanReopen);
+        assert_eq!(next.previous_generation.as_deref(), Some(GENERATION));
     }
 
     #[test]
