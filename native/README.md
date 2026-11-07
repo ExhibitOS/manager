@@ -777,16 +777,22 @@ The private native automation command uses the same intake and catalog API:
 - `workspace-furnishing-place` takes `id`, `roomId`, `furnishingId`,
   `furnishingVersion`, `position` (metres), `yaw` (radians) and `scale`.
   Supply the expected document revision and edit version, then save normally.
-- In a qualified session with the artwork frame capability, register the
-  supported thin-brass GLB as `kind: "artwork-frame"`. Save the draft with
+- In a qualified session with the artwork frame capability, register a
+  supported GLB as `kind: "artwork-frame"`. The original capability admits
+  thin brass. The additional `workspace-artwork-frame-models-v1` profile
+  admits the ordinary models recognized by Platform. Save the draft with
   the approved artwork already placed. `workspace-frame-attach` takes
   `placementId`, `artworkRevisionId`, `assetId`, `furnishingId`,
-  `furnishingVersion` and `modelSha256`. It can replace the attachment at
-  the same placement. `workspace-frame-detach` takes `placementId`.
+  `furnishingVersion` and the registered descriptor's `modelSha256`. It can
+  replace the attachment at the same placement. `workspace-frame-detach`
+  takes `placementId`.
   Supply the expected document revision and edit version. After the server
   validates the change against the saved ETag, run `save` and `reopen-saved`.
   In the native app, select the placed artwork and open the workspace
-  furnishings panel to make the same change, then save the exhibition.
+  furnishings panel to make the same change, then save the exhibition. The
+  first attachment or replacement with an additional model upgrades the
+  furnishing extension to v5 and selects OEX draft.17 on export. Later edits
+  retain v5 while the draft has furnishing rows.
 
 The planned live qualification uses a newly created workspace and a separate
 fresh EXB recovery workspace on the same paired payload. An existing V7 profile

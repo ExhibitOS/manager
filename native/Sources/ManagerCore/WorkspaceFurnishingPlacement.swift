@@ -64,8 +64,8 @@ public struct WorkspaceFurnishingPlacement: Codable, Equatable, Sendable {
         var frameAttachments: [DocumentValue]?
         if let existing = extensions[Self.namespace] {
             guard case .object(let fields) = existing,
-                  let existingVersion = existing["version"].integer, (1...4).contains(existingVersion),
-                  Set(fields.keys) == (existingVersion == 4
+                  let existingVersion = existing["version"].integer, (1...5).contains(existingVersion),
+                  Set(fields.keys) == (existingVersion >= 4
                     ? ["version", "furnishings", "placements", "frameAttachments"]
                     : ["version", "furnishings", "placements"]),
                   let assets = existing["furnishings"].items,
@@ -74,7 +74,7 @@ public struct WorkspaceFurnishingPlacement: Codable, Equatable, Sendable {
                 throw AuthoringFailure("WORKSPACE_FURNISHING_INVALID")
             }
             frameAttachments = existing["frameAttachments"].items
-            guard existingVersion == 4 ? frameAttachments != nil : !rows.isEmpty else {
+            guard existingVersion >= 4 ? frameAttachments != nil : !rows.isEmpty else {
                 throw AuthoringFailure("WORKSPACE_FURNISHING_INVALID")
             }
             guard existingVersion <= supportedExtensionVersion else {

@@ -136,6 +136,60 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         XCTAssertEqual(remaining["frameAttachments"], .array([]))
         XCTAssertEqual(remaining["placements"], mixedExtension["placements"])
         XCTAssertEqual(remaining["furnishings"].items?.map { $0["id"].string }, [pedestal.id])
+
+        let walnutHash = "b3f0bf2e6dbe659b1484ea6425848ad96b88d0be4b61ca82f5a4694462a7e03e"
+        frameWire["id"] = .string("10000000-0000-4000-8000-000000000007")
+        frameWire["model"]["bytes"] = .integer(196_160)
+        frameWire["model"]["sha256"] = .string(walnutHash)
+        let walnut = try JSONDecoder().decode(WorkspaceFurnishing.self, from: JSONEncoder().encode(frameWire))
+        let replace = WorkspaceArtworkFrameCommand.attach(.init(placementId: placementId,
+            artworkRevisionId: requestId, assetId: assetId, furnishingId: walnut.id,
+            furnishingVersion: 1, modelSha256: walnutHash))
+        XCTAssertThrowsError(try replace.applying(to: mixed, furnishing: walnut)) {
+            XCTAssertEqual(($0 as? AuthoringFailure)?.code, "FRAME_ASSET_UNSUPPORTED")
+        }
+        let upgraded = try XCTUnwrap(replace.applying(to: mixed, furnishing: walnut, supportedExtensionVersion: 5))
+        let v5 = upgraded.candidate["extensions"][namespace]
+        XCTAssertEqual(v5["version"], .integer(5))
+        XCTAssertEqual(v5["frameAttachments"].items?.map { $0["modelSha256"].string }, [walnutHash])
+        XCTAssertEqual(v5["furnishings"].items?.map { $0["id"].string }, [pedestal.id, walnut.id])
+        XCTAssertEqual(v5["placements"], mixedExtension["placements"])
+        XCTAssertNil(try replace.applying(to: upgraded, furnishing: walnut, supportedExtensionVersion: 5))
+        XCTAssertThrowsError(try detach.applying(to: upgraded, furnishing: nil)) {
+            XCTAssertEqual(($0 as? AuthoringFailure)?.code, "WORKSPACE_FURNISHING_UNAVAILABLE")
+        }
+        let restoredThinBrass = try XCTUnwrap(attach.applying(to: upgraded, furnishing: frame, supportedExtensionVersion: 5))
+        XCTAssertEqual(restoredThinBrass.candidate["extensions"][namespace]["version"], .integer(5))
+        let secondRoomPlacement = WorkspaceFurnishingPlacement(id: "10000000-0000-4000-8000-000000000008",
+            roomId: roomId, furnishingId: pedestal.id, furnishingVersion: 1, position: [1, 0, 0], yaw: 0, scale: 1)
+        let afterRoomEdit = try XCTUnwrap(secondRoomPlacement.applying(pedestal, to: upgraded, supportedExtensionVersion: 5))
+        XCTAssertEqual(afterRoomEdit.candidate["extensions"][namespace]["frameAttachments"], v5["frameAttachments"])
+        let v5Remaining = try XCTUnwrap(detach.applying(to: upgraded, furnishing: nil, supportedExtensionVersion: 5))
+        XCTAssertEqual(v5Remaining.candidate["extensions"][namespace]["version"], .integer(5))
+        XCTAssertEqual(v5Remaining.candidate["extensions"][namespace]["frameAttachments"], .array([]))
+        let onlyFrame = try XCTUnwrap(replace.applying(to: draft, furnishing: walnut, supportedExtensionVersion: 5))
+        let detachedOnlyFrame = try XCTUnwrap(detach.applying(to: onlyFrame, furnishing: nil, supportedExtensionVersion: 5))
+        XCTAssertEqual(detachedOnlyFrame.candidate, draft.candidate)
+    }
+
+    func testAdditionalFrameModelsRequireBothSessionAdvertisements() throws {
+        var session: DocumentValue = .object([
+            "userId": .string(intakeId), "tenantId": .string(requestId), "role": .string("artist"),
+            "csrfToken": .string("fixture"), "expiresAt": .string("2026-12-01T00:00:00Z"),
+            "workspaceFurnishingProfile": .string("workspace-furnishing-intake-v1"),
+            "workspaceFurnishingStoolProfile": .string("workspace-furnishing-stool-v1"),
+            "workspaceFurnishingRoomVisualProfile": .string("workspace-furnishing-room-visual-v1"),
+            "workspaceArtworkFrameModelsProfile": .string("workspace-artwork-frame-models-v1")
+        ])
+        func advertised() throws -> Bool {
+            try JSONDecoder().decode(AuthoringSession.self, from: JSONEncoder().encode(session))
+                .advertisesWorkspaceArtworkFrameModels
+        }
+        XCTAssertFalse(try advertised())
+        session["workspaceArtworkFrameProfile"] = .string("workspace-artwork-frame-v1")
+        XCTAssertTrue(try advertised())
+        session["workspaceArtworkFrameModelsProfile"] = .string("workspace-artwork-frame-models-v2")
+        XCTAssertFalse(try advertised())
     }
 
     func testStoolUsesExistingIntakeWireAndRequiresExactSessionAdvertisement() throws {

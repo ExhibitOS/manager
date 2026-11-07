@@ -1255,17 +1255,13 @@ final class ExhibitionModel: ObservableObject {
             return true
         }
     }
-    func applyWorkspaceArtworkFrame(_ command: WorkspaceArtworkFrameCommand, access: UUID) async throws -> Bool {
+    func applyWorkspaceArtworkFrame(to target: String, access: UUID,
+                                    prepare: (AuthoringAPI, NativeDocumentState) async throws -> NativeExhibitionDraft?) async throws -> Bool {
         guard canEditWorkspaceArtworkFrame else { throw AuthoringFailure("FRAME_SAVED_DRAFT_REQUIRED") }
         return try await withWorkspaceFurnishingAccess(access) { api in
             guard var current = state else { throw AuthoringFailure("FRAME_SAVED_DRAFT_REQUIRED") }
-            let target: String
-            switch command {
-            case .attach(let attachment): target = attachment.placementId
-            case .detach(let placementId): target = placementId
-            }
             guard target == placementId else { throw AuthoringFailure("FRAME_TARGET_STALE") }
-            let next = try await api.prepareWorkspaceArtworkFrame(command, in: current)
+            let next = try await prepare(api, current)
             guard access == viewportAccessID, state?.revision == current.revision, state?.draft == current.draft,
                   !formDirty, !positionDirty, !architectureDirty, !viewingPlanDirty, !immutable,
                   viewportController.editingContextActive, target == placementId else {

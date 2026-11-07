@@ -5,6 +5,12 @@ public struct WorkspaceArtworkFrameAttachment: Codable, Equatable, Sendable {
     public static let thinBrassSHA256 = "4b14e45ccf14ed38eea90c50553733a0b97b1671b9ec377d900e5a947545f8b4"
     static let thinBrassBytes = 7_892
 
+    static func extensionVersion(for model: WorkspaceFurnishingModel) throws -> Int64 {
+        guard model.sha256 == thinBrassSHA256 else { return 5 }
+        guard model.bytes == thinBrassBytes else { throw AuthoringFailure("FRAME_ASSET_UNSUPPORTED") }
+        return 4
+    }
+
     public let placementId: String
     public let artworkRevisionId: String
     public let assetId: String
@@ -45,7 +51,8 @@ public enum WorkspaceArtworkFrameCommand: Sendable {
     }
 
     // Build a closed delta. Platform owns fit, transforms and rights.
-    func applying(to draft: NativeExhibitionDraft, furnishing: WorkspaceFurnishing?) throws -> NativeExhibitionDraft? {
+    func applying(to draft: NativeExhibitionDraft, furnishing: WorkspaceFurnishing?,
+                  supportedExtensionVersion: Int64 = 4) throws -> NativeExhibitionDraft? {
         let namespace = WorkspaceFurnishingPlacement.namespace
         var candidate = draft.candidate
         if candidate["extensions"] == .null { candidate["extensions"] = .object([:]) }
@@ -55,16 +62,21 @@ public enum WorkspaceArtworkFrameCommand: Sendable {
         var furnishings: [DocumentValue] = []
         var placements: [DocumentValue] = []
         var attachments: [DocumentValue] = []
+        var extensionVersion: Int64 = 4
         if let existing = extensions[namespace] {
             guard case .object(let fields) = existing, let version = existing["version"].integer,
-                  (1...4).contains(version),
-                  Set(fields.keys) == (version == 4
+                  (1...5).contains(version),
+                  Set(fields.keys) == (version >= 4
                     ? ["version", "furnishings", "placements", "frameAttachments"]
                     : ["version", "furnishings", "placements"]),
                   let descriptors = existing["furnishings"].items, let rows = existing["placements"].items,
-                  version != 4 || existing["frameAttachments"].items != nil else {
+                  version < 4 || existing["frameAttachments"].items != nil else {
                 throw AuthoringFailure("VIEWPORT_COMMAND_DENIED")
             }
+            guard version <= supportedExtensionVersion else {
+                throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+            }
+            extensionVersion = max(extensionVersion, version)
             furnishings = descriptors
             placements = rows
             attachments = existing["frameAttachments"].items ?? []
@@ -82,11 +94,14 @@ public enum WorkspaceArtworkFrameCommand: Sendable {
             try attachment.checkTarget(in: draft)
             guard let furnishing, furnishing.id == attachment.furnishingId, furnishing.version == attachment.furnishingVersion,
                   furnishing.details.kind == .artworkFrame,
-                  furnishing.details.model.bytes == WorkspaceArtworkFrameAttachment.thinBrassBytes,
-                  attachment.modelSha256 == WorkspaceArtworkFrameAttachment.thinBrassSHA256,
                   furnishing.details.model.sha256 == attachment.modelSha256 else {
                 throw AuthoringFailure("FRAME_ASSET_UNSUPPORTED")
             }
+            let requiredVersion = try WorkspaceArtworkFrameAttachment.extensionVersion(for: furnishing.details.model)
+            guard requiredVersion <= supportedExtensionVersion else {
+                throw AuthoringFailure("FRAME_ASSET_UNSUPPORTED")
+            }
+            extensionVersion = max(extensionVersion, requiredVersion)
             let descriptor = try decoder.decode(DocumentValue.self, from: encoder.encode(furnishing))
             let row = try decoder.decode(DocumentValue.self, from: encoder.encode(attachment))
             let existing = furnishings.filter { $0["id"].string == attachment.furnishingId }
@@ -116,7 +131,7 @@ public enum WorkspaceArtworkFrameCommand: Sendable {
             extensions.removeValue(forKey: namespace)
         } else {
             extensions[namespace] = .object([
-                "version": .integer(4), "furnishings": .array(furnishings),
+                "version": .integer(extensionVersion), "furnishings": .array(furnishings),
                 "placements": .array(placements), "frameAttachments": .array(attachments)
             ])
         }

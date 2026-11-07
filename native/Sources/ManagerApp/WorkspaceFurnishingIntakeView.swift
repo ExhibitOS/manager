@@ -194,11 +194,12 @@ struct WorkspaceFurnishingIntakeView: View {
                 if let target, target.kind == .artworkFrame {
                     LabeledContent("선택한 액자", value: target.name)
                     Button(attached ? "선택한 액자로 교체" : "작품에 액자 연결") {
-                        let attachment = WorkspaceArtworkFrameAttachment(placementId: placementId,
-                            artworkRevisionId: artworkRevisionId, assetId: assetId,
-                            furnishingId: target.id, furnishingVersion: target.version,
-                            modelSha256: WorkspaceArtworkFrameAttachment.thinBrassSHA256)
-                        Task { await applyFrame(.attach(attachment)) }
+                        Task {
+                            await applyFrame(to: placementId) { api, state in
+                                try await api.prepareSelectedWorkspaceArtworkFrame(target, placementId: placementId,
+                                    artworkRevisionId: artworkRevisionId, assetId: assetId, in: state)
+                            }
+                        }
                     }
                     .disabled(!model.canEditWorkspaceArtworkFrame)
                 } else if !attached {
@@ -206,7 +207,11 @@ struct WorkspaceFurnishingIntakeView: View {
                 }
                 if attached {
                     Button("작품에서 액자 해제") {
-                        Task { await applyFrame(.detach(placementId: placementId)) }
+                        Task {
+                            await applyFrame(to: placementId) { api, state in
+                                try await api.prepareWorkspaceArtworkFrame(.detach(placementId: placementId), in: state)
+                            }
+                        }
                     }
                     .disabled(!model.canEditWorkspaceArtworkFrame)
                 }
@@ -219,9 +224,10 @@ struct WorkspaceFurnishingIntakeView: View {
         }
     }
 
-    private func applyFrame(_ command: WorkspaceArtworkFrameCommand) async {
+    private func applyFrame(to placementId: String,
+                            prepare: (AuthoringAPI, NativeDocumentState) async throws -> NativeExhibitionDraft?) async {
         await perform {
-            let changed = try await model.applyWorkspaceArtworkFrame(command, access: access)
+            let changed = try await model.applyWorkspaceArtworkFrame(to: placementId, access: access, prepare: prepare)
             message = changed ? "액자 변경을 보관했습니다. 전시를 저장하세요." : "선택한 액자가 이미 연결되어 있습니다."
         }
     }
