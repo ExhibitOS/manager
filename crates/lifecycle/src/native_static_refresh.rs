@@ -40,8 +40,12 @@ const SOURCE_PUBLICATION: (&str, &str, &str, &str) = (
     "40197a09b809e8a46fc45ef1eb2fb9f701e05dd4b5273499aac0b8b083604a0a",
 );
 
-// Filled only after independent verification of the integrated package.
-const RUNTIME: Option<(&str, &str, &str)> = None;
+// Independently verified Platform PR #415 validation package.
+const RUNTIME: Option<(&str, &str, &str)> = Some((
+    "b9f8a1d716db67f2820b3ca552b781092d12ef3d",
+    "ee5a94b613031e2cea918dead21c885c42fce4d585a03e55a2f3799af4e6991c",
+    "5efbca58c9ca7f081746d30d3c56d7c8992b415f5f23a9420d4b03ecdb901f6b",
+));
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

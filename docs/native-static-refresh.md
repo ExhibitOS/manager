@@ -1,6 +1,6 @@
 # Native static publication refresh
 
-The macOS development helper provides a fixed offline operation for the exact retained publication approved for local refresh. It uses a reviewed runtime bundled with the helper. Source and target runtime admission require exact pins. The target runtime pin remains closed until the integrated package is independently verified.
+The macOS development helper provides a fixed offline operation for the exact retained publication approved for local refresh. It uses a reviewed runtime bundled with the helper. Source and target runtime admission require exact pins. The target runtime pin admits the independently verified macOS validation package built from Platform commit `b9f8a1d716db67f2820b3ca552b781092d12ef3d`.
 
 Pass one JSON object, at most 64 KiB, to `exhibitos-native --refresh-static-publication` on standard input and close standard input. Use a new operation UUID and an absolute, canonical path for each directory. The output parent must be owned by the running user and exclude group and other write access. The destination itself must be absent.
 
