@@ -254,8 +254,7 @@ impl Host {
     pub fn maintain_workspace_v5_transition(profile: PathBuf, resources: PathBuf) -> Result<Self> {
         let target = Payload::open_saved_workspace_transition(&resources)?;
         let target_hash = target.context().manifest_sha256;
-        if !crate::native_payload::WORKSPACE_V5_SAVED_TRANSITIONS.iter()
-            .any(|(_, hash)| *hash == target_hash)
+        if !crate::native_payload::saved_workspace_transition_target(&target_hash)
         {
             return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
         }
