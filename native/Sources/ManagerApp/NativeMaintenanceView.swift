@@ -65,7 +65,13 @@ struct NativeMaintenanceView: View {
                 }
             }
             Button("취소", role: .cancel) { archive = nil; key = nil }
-        } message: { Text("로컬 제작을 정지하고 선택한 백업을 확인합니다. 원래 데이터와 백업 파일은 보관됩니다.") }
+        } message: {
+            if !model.pendingRestoration, model.context?.installations.first(where: { $0.id == model.context?.activeId })?.kind == "recovery" {
+                Text("복원 준비가 중단됐다면 ‘새 작업 공간에 복원’을 선택하세요. 이전 복구 공간과 원래 데이터, 백업 파일은 보관됩니다.")
+            } else {
+                Text("로컬 제작을 정지하고 선택한 백업을 확인합니다. 원래 데이터와 백업 파일은 보관됩니다.")
+            }
+        }
         .confirmationDialog("복원한 작업 공간을 사용할까요?", isPresented: $confirmActivation) {
             Button("확인하고 사용") { Task { await model.activateRestoration() } }
             Button("취소", role: .cancel) {}

@@ -30,6 +30,39 @@ Rust helper explicitly. The validation-profile Info key is recognized only in
 debug builds. Use an isolated profile for validation and retain original apps.
 Release delivery/signing is a separate existing distribution pipeline.
 
+## Ordinary furnishing workspace lifecycle
+
+The 037 ordinary path requires one qualified local runtime manifest shared by
+the native helper and Swift authoring. It uses a fresh empty installation,
+a clean reopen on the same physical root and lock, or an authenticated EXB
+restore activation into a separate physical installation. Restore preserves
+the logical workspace and owner IDs. Payload changes require a separately
+qualified transition.
+
+The current-run record keeps the writer generation and physical binding when
+database-only maintenance advances the diagnostic run ID. Before ordinary
+startup, the helper durably consumes the prior clean or restored completion
+and records the new active generation. Normal stop requires authenticated
+completion from the owned Node process, its successful exit, the exact
+ledger and zero worker claims while PostgreSQL is still available, and
+successful PostgreSQL shutdown under the same writer fence. Interrupted or
+incomplete transitions preserve the active state and refuse ordinary reopen.
+An EXB source requires either this session's verified writer drain or an
+unconsumed clean completion for the same physical root and lock. A database-only
+restore may initialize a new empty target or resume the exact pending restore
+intent bound to the target lock and PostgreSQL system identifier. The restored
+database identifier is checked on the first start and later clean reopens.
+
+If restore preparation fails before a pending restore appears, reopen Backup
+and Restore and choose Restore to a New Workspace (새 작업 공간에 복원). This
+creates a fresh target and preserves the earlier candidate, original workspace,
+and backup. Once a pending restore appears, use Resume Restore with the same
+backup and the correct key.
+
+The Manager implementation and Platform wire must be qualified together before
+adding a manifest pin. Source regression checks do not qualify actual startup,
+owner-loss recovery or EXB restoration.
+
 ## Private demo painting preparation
 
 The standalone debug tool accepts only the three pinned official JPEGs. It
