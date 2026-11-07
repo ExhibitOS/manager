@@ -22,7 +22,11 @@ public struct WorkspaceFurnishingPlacement: Codable, Equatable, Sendable {
         self.scale = scale
     }
 
-    func applying(_ furnishing: WorkspaceFurnishing, to draft: NativeExhibitionDraft) throws -> NativeExhibitionDraft? {
+    func applying(_ furnishing: WorkspaceFurnishing, to draft: NativeExhibitionDraft,
+                  stool: Bool = false) throws -> NativeExhibitionDraft? {
+        guard furnishing.details.kind.admitted(stool: stool) else {
+            throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+        }
         let matches = draft.rooms.filter { $0["id"].string == roomId }
         guard [id, roomId, furnishingId].allSatisfy(workspaceFurnishingID), id != furnishingId,
               furnishingId == furnishing.id, furnishingVersion == furnishing.version,
@@ -56,15 +60,22 @@ public struct WorkspaceFurnishingPlacement: Codable, Equatable, Sendable {
         }
         var furnishings: [DocumentValue] = []
         var placements: [DocumentValue] = []
+        var version: Int64 = furnishing.details.kind == .stool ? 2 : 1
         if let existing = extensions[Self.namespace] {
+            let existingVersion = existing["version"]
+            if existingVersion == .integer(2) && !stool {
+                throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+            }
             guard case .object(let fields) = existing, Set(fields.keys) == ["version", "furnishings", "placements"],
-                  existing["version"] == .integer(1), let assets = existing["furnishings"].items,
+                  [.integer(1), .integer(2)].contains(existingVersion), let assets = existing["furnishings"].items,
                   let rows = existing["placements"].items, !assets.isEmpty, !rows.isEmpty,
+                  existingVersion == .integer(2) || !assets.contains(where: { $0["kind"] == .string("stool") }),
                   assets.count <= 64, rows.count <= 128 else {
                 throw AuthoringFailure("WORKSPACE_FURNISHING_INVALID")
             }
             furnishings = assets
             placements = rows
+            if existingVersion == .integer(2) { version = 2 }
         }
         let matching = furnishings.filter { $0["id"].string == furnishingId }
         guard matching.isEmpty || matching == [descriptor] else {
@@ -80,7 +91,7 @@ public struct WorkspaceFurnishingPlacement: Codable, Equatable, Sendable {
         if matching.isEmpty { furnishings.append(descriptor) }
         placements.append(placement)
         candidate["extensions"][Self.namespace] = .object([
-            "version": .integer(1), "furnishings": .array(furnishings), "placements": .array(placements)
+            "version": .integer(version), "furnishings": .array(furnishings), "placements": .array(placements)
         ])
         var result = draft
         try result.replaceCandidate(candidate)

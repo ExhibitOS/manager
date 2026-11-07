@@ -17,6 +17,12 @@ public struct AuthoringSession: Decodable, Sendable {
     public var nativePublicationProfile: String? = nil
     public var workspaceMaterialProfile: String? = nil
     public var workspaceFurnishingProfile: String? = nil
+    public var workspaceFurnishingStoolProfile: String? = nil
+
+    public var advertisesWorkspaceFurnishingStool: Bool {
+        workspaceFurnishingProfile == "workspace-furnishing-intake-v1"
+            && workspaceFurnishingStoolProfile == "workspace-furnishing-stool-v1"
+    }
 }
 public struct AuthoringPage<Item: Decodable & Sendable>: Decodable, Sendable {
     public let items: [Item]
@@ -144,6 +150,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "WORKSPACE_MATERIAL_UNAVAILABLE": return "이 작업공간에서 재질을 등록할 수 없습니다. 연결 상태를 확인하세요."
         case "ROLE_CONFLICT", "MODEL_CONFLICT", "UPLOAD_INTEGRITY": return "선언한 파일과 받은 파일이 다릅니다. 원래 파일로 등록을 이어가거나 새로 등록하세요."
         case "FURNISHING_DECLARATION": return "비품 이름, 출처, 권리와 32 MiB 이하 GLB 파일을 확인하세요."
+        case "WORKSPACE_FURNISHING_UNAVAILABLE": return "현재 작업공간에서 이 비품을 등록하거나 배치할 수 없습니다."
         case "FURNISHING_VALIDATION_UNAVAILABLE": return "비품 검증이 중단됐습니다. 등록 기록에서 상태를 확인하고 검증을 다시 시도하세요."
         case "WORKSPACE_FURNISHING_INVALID": return "선택한 공간과 비품의 위치, 방향, 크기를 확인하세요."
         case "ARCHITECTURE_SELECTION_CHANGED": return "선택한 대상이 바뀌었습니다. 입력을 취소한 뒤 대상을 다시 선택하세요."
@@ -1089,6 +1096,10 @@ public actor AuthoringAPI {
             && ["admin", "artist", "curator"].contains(session?.role ?? "")
     }
 
+    private var admitsWorkspaceFurnishingStool: Bool {
+        admitsWorkspaceFurnishings && session?.advertisesWorkspaceFurnishingStool == true
+    }
+
     private func workspaceFurnishingPath(_ suffix: String) throws -> String {
         guard admitsWorkspaceFurnishings else { throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
         return "/api/v1/tenants/\(tenant)/workspace/" + suffix
@@ -1101,36 +1112,41 @@ public actor AuthoringAPI {
 
     public func createWorkspaceFurnishing(requestId: String, details: WorkspaceFurnishingDetails) async throws -> WorkspaceFurnishingIntake {
         guard workspaceFurnishingID(requestId), details.isValid else { throw AuthoringFailure("FURNISHING_DECLARATION") }
+        guard details.kind.admitted(stool: admitsWorkspaceFurnishingStool) else {
+            throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+        }
         let body = try encoded(WorkspaceFurnishingRequest(requestId: requestId, details: details))
         let intake: WorkspaceFurnishingIntake = try await request(workspaceFurnishingPath("furnishing-intakes"), method: "POST", body: body)
-        try intake.check(requestId: requestId, details: details)
+        try intake.check(requestId: requestId, details: details, stool: admitsWorkspaceFurnishingStool)
         return intake
     }
 
     public func workspaceFurnishingIntake(_ id: String) async throws -> WorkspaceFurnishingIntake {
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(id))
-        try intake.check(id: id)
+        try intake.check(id: id, stool: admitsWorkspaceFurnishingStool)
         return intake
     }
 
     public func uploadWorkspaceFurnishing(_ previous: WorkspaceFurnishingIntake,
                                           snapshot: ImportFileSnapshot) async throws -> WorkspaceFurnishingIntake {
-        try previous.check()
+        try previous.check(stool: admitsWorkspaceFurnishingStool)
         let model = try WorkspaceFurnishingModel(snapshot: snapshot)
         guard model == previous.declaration.model else { throw AuthoringFailure("MODEL_CONFLICT") }
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(previous.intakeId) + "/model",
             method: "PUT", body: snapshot.data, contentType: "application/octet-stream", timeout: 120)
-        try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration)
+        try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration,
+                         stool: admitsWorkspaceFurnishingStool)
         guard intake.received != nil else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
         return intake
     }
 
     public func workspaceFurnishingAction(_ previous: WorkspaceFurnishingIntake,
                                           _ action: WorkspaceFurnishingIntakeAction) async throws -> WorkspaceFurnishingIntake {
-        try previous.check()
+        try previous.check(stool: admitsWorkspaceFurnishingStool)
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(previous.intakeId) + "/" + action.rawValue,
             method: "POST", body: Data("{}".utf8))
-        try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration)
+        try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration,
+                         stool: admitsWorkspaceFurnishingStool)
         return intake
     }
 
@@ -1149,14 +1165,16 @@ public actor AuthoringAPI {
 
     public func workspaceFurnishingIntakes(cursor: String? = nil) async throws -> AuthoringPage<WorkspaceFurnishingIntake> {
         let page: AuthoringPage<WorkspaceFurnishingIntake> = try await furnishingPage("furnishing-intakes", cursor: cursor)
-        for intake in page.items { try intake.check() }
+        for intake in page.items { try intake.check(stool: admitsWorkspaceFurnishingStool) }
         guard Set(page.items.map(\.intakeId)).count == page.items.count else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
         return page
     }
 
     public func workspaceFurnishings(cursor: String? = nil) async throws -> AuthoringPage<WorkspaceFurnishingSummary> {
         let page: AuthoringPage<WorkspaceFurnishingSummary> = try await furnishingPage("furnishings", cursor: cursor)
-        guard page.items.allSatisfy(\.isValid), Set(page.items.map(\.id)).count == page.items.count else {
+        let stool = admitsWorkspaceFurnishingStool
+        guard page.items.allSatisfy({ $0.isValid && $0.kind.admitted(stool: stool) }),
+              Set(page.items.map(\.id)).count == page.items.count else {
             throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
         }
         return page
@@ -1169,11 +1187,16 @@ public actor AuthoringAPI {
 
     public func workspaceFurnishing(_ id: String, version: Int) async throws -> WorkspaceFurnishing {
         let furnishing: WorkspaceFurnishing = try await request(workspaceFurnishingVersionPath(id, version: version))
-        guard furnishing.id == id else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
+        guard furnishing.id == id, furnishing.details.kind.admitted(stool: admitsWorkspaceFurnishingStool) else {
+            throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
+        }
         return furnishing
     }
 
     public func workspaceFurnishingModel(_ furnishing: WorkspaceFurnishing) async throws -> Data {
+        guard furnishing.details.kind.admitted(stool: admitsWorkspaceFurnishingStool) else {
+            throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+        }
         let path = try workspaceFurnishingVersionPath(furnishing.id, version: furnishing.version) + "/model"
         let model = furnishing.details.model
         return try await readPreviewBytes(path: path, expectedBytes: model.bytes, sha256: model.sha256,
@@ -1186,7 +1209,7 @@ public actor AuthoringAPI {
               let draft = document.draft else { throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
         let heldGeneration = generation
         let furnishing = try await workspaceFurnishing(placement.furnishingId, version: placement.furnishingVersion)
-        let next = try placement.applying(furnishing, to: draft)
+        let next = try placement.applying(furnishing, to: draft, stool: admitsWorkspaceFurnishingStool)
         _ = try await workspaceFurnishingModel(furnishing)
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next

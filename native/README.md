@@ -719,8 +719,8 @@ notices match the existing catalog identities and bytes.
 
 ### Workspace furnishing registration (source integration)
 
-The Manager client has a separate workspace furnishing catalog for pedestal and
-bench GLBs. It requires an exact qualified native payload and an authenticated
+The Manager client has a separate workspace furnishing catalog for pedestal,
+bench and, on supported runtimes, stool GLBs. It requires an exact qualified native payload and an authenticated
 ordinary session advertising `workspace-furnishing-intake-v1`. The current
 source has an empty payload admission list. The existing bundled catalog
 continues to use its own IDs and files.
@@ -733,6 +733,14 @@ validation or a permitted retry with the server's copy. After registration,
 select the catalog version and room, enter the room-local position, angle and
 scale, then save the exhibition. The placement records a visual model and pose.
 
+The GUI offers **스툴** when the authenticated session also advertises
+`workspaceFurnishingStoolProfile: workspace-furnishing-stool-v1`. The first
+stool placement upgrades that scene's workspace furnishing extension to
+version 2 while retaining existing descriptors and placements. A scene using
+only the existing furnishing kinds can continue using extension version 1.
+The descriptor version stays 1. Export a version 2 scene as OEX draft.14.
+Selected import retains its existing draft.12 format.
+
 In that authenticated workspace, the 3D editor can read the registered
 version's display check and model on the current loopback origin and tenant.
 The viewport keeps these same two URL exceptions during saved-scene capture.
@@ -744,6 +752,7 @@ The private native automation command uses the same intake and catalog API:
 - `workspace-furnishing-intake-create` takes `kind`, `name`, `rights`,
   `provenance` and `model` (`mime`, `bytes`, `sha256`). The envelope request
   ID is the idempotency key. Reuse the same declaration if the create reply is lost.
+  Use `kind: "stool"` only in an authenticated session with the stool capability.
 - `workspace-furnishing-intake-list` and `workspace-furnishing-list` take
   `cursor` (null for the first page). Intake `status`, `upload`, `complete`,
   `cancel` and `retry` take `intakeId`. Upload also takes the configured

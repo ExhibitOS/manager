@@ -103,6 +103,9 @@ struct WorkspaceFurnishingIntakeView: View {
             Picker("종류", selection: $kind) {
                 Text("받침").tag(WorkspaceFurnishingKind.pedestal)
                 Text("벤치").tag(WorkspaceFurnishingKind.bench)
+                if model.workspaceFurnishingStoolAvailable {
+                    Text("스툴").tag(WorkspaceFurnishingKind.stool)
+                }
             }
             TextField("이름", text: $name)
             TextField("출처", text: $provenance, axis: .vertical)
