@@ -51,7 +51,7 @@ use furnishing_lifecycle::{Admission, Binding, Owner as FurnishingOwner, Phase, 
 pub(crate) const WORKSPACE_FURNISHING_INITIALIZATION: &str = "native-workspace-furnishing-initialization.json";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum FurnishingStart { Initialize, Reopen, SelectedImport038, SelectedImport039 }
+enum FurnishingStart { Initialize, Reopen, SelectedImport038, SelectedImport039, SelectedImport040 }
 
 #[derive(Clone, Copy)]
 enum StartMode<'a> {
@@ -66,12 +66,13 @@ impl FurnishingStart {
         match catalog {
             WorkspaceFurnishingCatalog::Publication038 => Some(Self::SelectedImport038),
             WorkspaceFurnishingCatalog::MaterialPublication039 => Some(Self::SelectedImport039),
+            WorkspaceFurnishingCatalog::MaterialMultimap040 => Some(Self::SelectedImport040),
             _ => None,
         }
     }
 
     fn is_selected_import(self) -> bool {
-        matches!(self, Self::SelectedImport038 | Self::SelectedImport039)
+        matches!(self, Self::SelectedImport038 | Self::SelectedImport039 | Self::SelectedImport040)
     }
 
     fn owner_mode(self) -> &'static str {
@@ -80,6 +81,7 @@ impl FurnishingStart {
             Self::Reopen => "workspace-furnishing-036-reopen-v1",
             Self::SelectedImport038 => "workspace-furnishing-038-selected-import-v7",
             Self::SelectedImport039 => "workspace-furnishing-039-selected-import-v7",
+            Self::SelectedImport040 => "workspace-furnishing-040-selected-import-v7",
         }
     }
 }
@@ -1780,7 +1782,7 @@ const { isDeepStrictEqual } = require('node:util');
             }
             let restore_pending = exists(&self.service.root.join("native-restore-current.json"))?;
             let create_lock = match (mode, furnishing, has_database, restore_pending) {
-                (StartMode::Services, Some(FurnishingStart::Initialize | FurnishingStart::SelectedImport038 | FurnishingStart::SelectedImport039), false, false)
+                (StartMode::Services, Some(FurnishingStart::Initialize | FurnishingStart::SelectedImport038 | FurnishingStart::SelectedImport039 | FurnishingStart::SelectedImport040), false, false)
                     if prior.is_none() => true,
                 (StartMode::Services, Some(FurnishingStart::Reopen), true, false) if prior_binding.is_some() => false,
                 (StartMode::Database, None, true, false) if prior_binding.is_some() => false,
@@ -1800,7 +1802,7 @@ const { isDeepStrictEqual } = require('node:util');
             let mut active = self.furnishing_binding_for(id.clone(), Phase::Active, Admission::FreshEmpty)?;
             if services {
                 match furnishing {
-                    Some(FurnishingStart::Initialize | FurnishingStart::SelectedImport038 | FurnishingStart::SelectedImport039) => (),
+                    Some(FurnishingStart::Initialize | FurnishingStart::SelectedImport038 | FurnishingStart::SelectedImport039 | FurnishingStart::SelectedImport040) => (),
                     Some(FurnishingStart::Reopen) => {
                         active.consume(prior_binding.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?)?;
                         if active.admission_kind == Admission::VerifiedRestore {

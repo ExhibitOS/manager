@@ -74,7 +74,7 @@ pub(super) struct Binding {
 impl Binding {
     pub(super) fn check(&self) -> Result<()> {
         if self.version != 1
-            || !matches!(self.catalog, 37 | 38 | 39)
+            || !matches!(self.catalog, 37..=40)
             || !installations::uuid(&self.generation)
             || self
                 .previous_generation
@@ -422,6 +422,14 @@ mod tests {
         assert_eq!(next.catalog, 39);
         assert_eq!(next.admission_kind, Admission::CleanReopen);
         assert_eq!(next.previous_generation.as_deref(), Some(GENERATION));
+
+        let mut multimap = binding(LATER);
+        multimap.catalog = 40;
+        assert!(multimap.consume(&prior).is_err());
+        prior.catalog = 40;
+        multimap.consume(&prior).unwrap();
+        assert_eq!(multimap.catalog, 40);
+        assert_eq!(multimap.admission_kind, Admission::CleanReopen);
     }
 
     #[test]

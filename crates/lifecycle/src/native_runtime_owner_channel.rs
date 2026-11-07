@@ -636,7 +636,12 @@ mod tests {
         let auth = authority();
         let generation = Uuid::new_v4().to_string();
         let physical = WriterIdentity { root_device: 1, root_inode: 2, lock_device: 1, lock_inode: 3 };
-        for start in [FurnishingStart::SelectedImport038, FurnishingStart::SelectedImport039, FurnishingStart::Initialize] {
+        for (start, catalog) in [
+            (FurnishingStart::SelectedImport038, 38),
+            (FurnishingStart::SelectedImport039, 39),
+            (FurnishingStart::SelectedImport040, 40),
+            (FurnishingStart::Initialize, 38),
+        ] {
             let lease = furnishing_lease::Lease::new(&auth, &generation, start, "a".repeat(64), physical);
             let active = furnishing_lifecycle::Binding {
                 version: 1,
@@ -653,7 +658,7 @@ mod tests {
                 source_commit: "1".repeat(40),
                 producer_sha256: "2".repeat(64),
                 payload_manifest_sha256: "a".repeat(64),
-                catalog: if start == FurnishingStart::SelectedImport039 { 39 } else { 38 },
+                catalog,
                 physical,
                 restore: None,
             };
@@ -711,6 +716,7 @@ mod tests {
             (super::super::FurnishingStart::Reopen, "workspace-furnishing-036-reopen-v1"),
             (super::super::FurnishingStart::SelectedImport038, "workspace-furnishing-038-selected-import-v7"),
             (super::super::FurnishingStart::SelectedImport039, "workspace-furnishing-039-selected-import-v7"),
+            (super::super::FurnishingStart::SelectedImport040, "workspace-furnishing-040-selected-import-v7"),
         ] {
             let wire = setup.workspace_furnishing_bootstrap(&auth, &generation, start).unwrap();
             let value: Value = serde_json::from_slice(&wire).unwrap();

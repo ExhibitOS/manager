@@ -95,6 +95,7 @@ impl Lease {
             FurnishingStart::Reopen => 2,
             FurnishingStart::SelectedImport038 => 3,
             FurnishingStart::SelectedImport039 => 4,
+            FurnishingStart::SelectedImport040 => 5,
         });
         if !hash_valid(&self.manifest_sha256)
             || self.identity.root_inode == 0
@@ -247,6 +248,18 @@ mod tests {
             assert_eq!(frame["mac"], expected_mac);
         }
         assert!(lease.check_ack(&key, &selected_038).is_err());
+
+        let selected_039 = lease.signed(&key, Kind::Ack).unwrap();
+        lease.start = FurnishingStart::SelectedImport040;
+        for (kind, expected_mac) in [
+            (Kind::Lease, "8a5c381cc24eead3e6ad958d2135451279663125c7ebe804ecad97c50a6ecd49"),
+            (Kind::Ack, "d7104e907555f17101778cf6920455649f57c1382942cc0828b0e4c44d02f5d4"),
+        ] {
+            let frame: Value = serde_json::from_slice(&lease.signed(&key, kind).unwrap()).unwrap();
+            assert_eq!(frame["mode"], "workspace-furnishing-040-selected-import-v7");
+            assert_eq!(frame["mac"], expected_mac);
+        }
+        assert!(lease.check_ack(&key, &selected_039).is_err());
     }
 
     #[test]

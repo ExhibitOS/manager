@@ -90,6 +90,11 @@ to import draft.12. After settlement and normal stop, reopen with the same
 039 payload. Use that exact payload for backups and restores of a 039
 workspace.
 
+Workspace material multimap (040) has its own payload and 40-row ledger.
+Initialize a separate workspace for this catalog. The selected debug v7
+entry verifies the 040 draft.12 marker and its distinct writer lease mode.
+After the selected run settles, reopen with the same qualified 040 payload.
+
 ## Private demo painting preparation
 
 The standalone debug tool accepts only the three pinned official JPEGs. It
