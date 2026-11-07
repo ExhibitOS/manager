@@ -391,6 +391,7 @@ mod tests {
             rights: serde_json::json!({}),
             derived: None,
             model_derivation: None,
+            coarse_preparation: None,
         });
         controller.save_native_upload(token, transfer).unwrap();
         let upload_path = profile.join(format!(

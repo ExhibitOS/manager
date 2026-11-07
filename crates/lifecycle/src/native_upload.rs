@@ -3,7 +3,7 @@
 //! No source path, asset bytes, password, cookie or service token is stored here.
 use super::*;
 const LIMIT: u64 = 128 * 1024;
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Intent {
     pub artwork_id: String,
@@ -17,8 +17,48 @@ pub struct Intent {
     pub derived: Option<Derived>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_derivation: Option<ModelDerivation>,
+    #[serde(
+        default,
+        deserialize_with = "CoarsePreparation::deserialize_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub coarse_preparation: Option<CoarsePreparation>,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CoarsePreparation {
+    pub version: u32,
+    pub profile: String,
+    pub approval_id: String,
+    pub artwork_revision: u32,
+}
+impl CoarsePreparation {
+    fn deserialize_present<'de, D: serde::Deserializer<'de>>(
+        decoder: D,
+    ) -> std::result::Result<Option<Self>, D::Error> {
+        Self::deserialize(decoder).map(Some)
+    }
+
+    fn valid(&self, intent: &Intent) -> bool {
+        let approval = Uuid::parse_str(&self.approval_id).is_ok_and(|id| {
+            id.to_string().eq_ignore_ascii_case(&self.approval_id)
+                && (1..=8).contains(&id.get_version_num())
+                && id.get_variant() == uuid::Variant::RFC4122
+        });
+        self.version == 1
+            && self.profile == "viewer-png-box-512-v1"
+            && approval
+            && (1..=i32::MAX as u32).contains(&self.artwork_revision)
+            && intent.mime == "image/jpeg"
+            && intent.scale_meters == 1.0
+            && intent.model_derivation.is_none()
+            && intent
+                .derived
+                .as_ref()
+                .is_some_and(|derived| derived.recipe.colour_conversion.is_some())
+    }
+}
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelDerivation {
     pub version: u32,
@@ -44,7 +84,7 @@ impl ModelDerivation {
             && intent.derived.is_none()
     }
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Derived {
     pub mime: String,
@@ -52,7 +92,7 @@ pub struct Derived {
     pub sha256: String,
     pub recipe: DerivedRecipe,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DerivedRecipe {
     pub version: u32,
@@ -67,7 +107,7 @@ pub struct DerivedRecipe {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub colour_conversion: Option<ColourConversion>,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ColourConversion {
     pub version: u32,
@@ -148,6 +188,9 @@ pub(crate) fn validate(s: &Transfer) -> Result<()> {
             }
             || !hash_valid(&i.sha256)
             || i.model_derivation.as_ref().is_some_and(|model| !model.valid(i))
+            || i.coarse_preparation
+                .as_ref()
+                .is_some_and(|coarse| !coarse.valid(i))
             || i.bytes == 0
             || i.bytes > 32 * 1024 * 1024
             || !i.scale_meters.is_finite()
@@ -228,6 +271,16 @@ impl InstallationController {
             if state.revision != current.revision {
                 return Err(err("NATIVE_UPLOAD_STATE_CHANGED"));
             }
+            // Retrying a coarse preparation reuses the exact request and any
+            // recorded server job. A new intent must use a different key.
+            if let (Some(previous), Some(next)) = (&current.intent, &state.intent)
+                && previous.idempotency_key == next.idempotency_key
+                && (previous.coarse_preparation.is_some() || next.coarse_preparation.is_some())
+                && (previous != next
+                    || current.job_id.is_some() && current.job_id != state.job_id)
+            {
+                return Err(err("NATIVE_UPLOAD_STATE_CHANGED"));
+            }
             state.revision = state
                 .revision
                 .checked_add(1)
@@ -306,6 +359,140 @@ mod tests {
         let canonical = br#"{"colourMeaning":"srgb-assumed","role":"baseColor","sampling":"nearest-centre","version":1}"#;
         serde_json::json!({"mime":"image/png","bytes":200,"sha256":"b".repeat(64),"recipe":{"version":1,"role":"baseColor","sampling":"nearest-centre","colourMeaning":"srgb-assumed","recipeSha256":digest(canonical),"settingsSha256":"c".repeat(64),"sourcePixelsSha256":"d".repeat(64),"outputPixelsSha256":"e".repeat(64),"toolVersion":"ExhibitOSManager.ImageIO/1/macOS-27.0.1"}})
     }
+
+    fn icc_derived() -> Value {
+        let canonical = br#"{"colourMeaning":"srgb","role":"baseColor","sampling":"nearest-centre","version":1}"#;
+        let mut value = derived();
+        value["recipe"]["colourMeaning"] = serde_json::json!("srgb");
+        value["recipe"]["recipeSha256"] = serde_json::json!(digest(canonical));
+        value["recipe"]["colourConversion"] = serde_json::json!({
+            "version": 1,
+            "algorithm": "icc-to-srgb-jpeg-rgb8-v1",
+            "sourceIccSha256": "f".repeat(64)
+        });
+        value
+    }
+
+    fn coarse_fixture() -> Value {
+        let mut input = fixture();
+        input["fileName"] = serde_json::json!("synthetic.jpg");
+        input["intent"]["mime"] = serde_json::json!("image/jpeg");
+        input["intent"]["derived"] = icc_derived();
+        input["intent"]["coarsePreparation"] = serde_json::json!({
+            "version": 1,
+            "profile": "viewer-png-box-512-v1",
+            "approvalId": Uuid::new_v4().to_string(),
+            "artworkRevision": 1
+        });
+        input
+    }
+
+    #[test]
+    fn coarse_intent_is_closed_and_requires_an_icc_jpeg() {
+        let input = coarse_fixture();
+        let state: Transfer = serde_json::from_value(input.clone()).unwrap();
+        validate(&state).unwrap();
+        assert_eq!(serde_json::to_value(state).unwrap(), input);
+        for (pointer, value) in [
+            ("/intent/coarsePreparation/version", serde_json::json!(2)),
+            ("/intent/coarsePreparation/profile", serde_json::json!("other")),
+            ("/intent/coarsePreparation/approvalId", serde_json::json!("invalid")),
+            ("/intent/coarsePreparation/approvalId", serde_json::json!(Uuid::nil())),
+            ("/intent/coarsePreparation/artworkRevision", serde_json::json!(0)),
+            ("/intent/coarsePreparation/artworkRevision", serde_json::json!(2_147_483_648_u32)),
+            ("/intent/mime", serde_json::json!("image/png")),
+            ("/intent/derived", derived()),
+            ("/intent/scaleMeters", serde_json::json!(2.0)),
+        ] {
+            let mut changed = input.clone();
+            *changed.pointer_mut(pointer).unwrap() = value;
+            assert!(
+                validate(&serde_json::from_value(changed).unwrap()).is_err(),
+                "{pointer}"
+            );
+        }
+        for invalid in [Value::Null, serde_json::json!({"version": 1})] {
+            let mut changed = input.clone();
+            changed["intent"]["coarsePreparation"] = invalid;
+            assert!(serde_json::from_value::<Transfer>(changed).is_err());
+        }
+        let mut changed = input;
+        changed["intent"]["coarsePreparation"]["assetId"] = serde_json::json!(Uuid::new_v4());
+        assert!(serde_json::from_value::<Transfer>(changed).is_err());
+    }
+
+    #[test]
+    fn coarse_intent_and_job_binding_survive_controller_restart() {
+        struct OwnedFixture(PathBuf);
+        impl Drop for OwnedFixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let parent = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("exhibitos-coarse-upload-{}", Uuid::new_v4()));
+        new_directory(&parent).unwrap();
+        let fixture = OwnedFixture(parent);
+        let profile = fixture.0.join("profile");
+        let mut state: Transfer = serde_json::from_value(coarse_fixture()).unwrap();
+        let controller = InstallationController::new(profile.clone(), None).unwrap();
+        let token = controller.context().unwrap().selection_token;
+        controller
+            .with_current(&token, |service| {
+                let owner = serde_json::json!({
+                    "format": 1, "workspaceId": state.workspace_id, "tenantId": state.tenant_id,
+                    "principalId": state.principal_id, "ownerUid": unsafe { libc::geteuid() },
+                    "ports": {"web": 13200, "api": 13201, "database": 15432},
+                    "manifestSha256": "a".repeat(64), "environmentSha256": "b".repeat(64)
+                });
+                write_private_new(
+                    &service.root,
+                    "native-personal.json",
+                    &serde_json::to_vec(&owner).unwrap(),
+                    4096,
+                )
+            })
+            .unwrap();
+        state = controller.save_native_upload(&token, state).unwrap();
+        let intent_before_job = serde_json::to_value(&state).unwrap()["intent"].clone();
+        state.job_id = Some(Uuid::new_v4().to_string());
+        state = controller.save_native_upload(&token, state).unwrap();
+        let persisted = serde_json::to_value(&state).unwrap();
+        assert_eq!(persisted["intent"], intent_before_job);
+        drop(controller);
+
+        let reopened = InstallationController::open_existing_managed(profile).unwrap();
+        let token = reopened.context().unwrap().selection_token;
+        let resumed = reopened.native_upload(&token).unwrap();
+        assert_eq!(serde_json::to_value(&resumed).unwrap(), persisted);
+        let mut changed = resumed.clone();
+        let coarse = changed
+            .intent
+            .as_mut()
+            .unwrap()
+            .coarse_preparation
+            .as_mut()
+            .unwrap();
+        coarse.artwork_revision += 1;
+        assert_eq!(
+            reopened.save_native_upload(&token, changed).err().unwrap().code,
+            "NATIVE_UPLOAD_STATE_CHANGED"
+        );
+        let mut changed = resumed.clone();
+        changed.job_id = Some(Uuid::new_v4().to_string());
+        assert_eq!(
+            reopened.save_native_upload(&token, changed).err().unwrap().code,
+            "NATIVE_UPLOAD_STATE_CHANGED"
+        );
+        assert_eq!(
+            serde_json::to_value(reopened.native_upload(&token).unwrap()).unwrap(),
+            persisted
+        );
+        let saved = reopened.save_native_upload(&token, resumed).unwrap();
+        assert_eq!(serde_json::to_value(saved).unwrap()["intent"], intent_before_job);
+    }
+
     #[test]
     fn legacy_original_intent_has_no_new_field_and_retains_validation() {
         let input = fixture();
@@ -321,10 +508,7 @@ mod tests {
         let old: Transfer = serde_json::from_value(input.clone()).unwrap();
         validate(&old).unwrap();
         assert_eq!(serde_json::to_value(&old).unwrap(), input);
-        let canonical = br#"{"colourMeaning":"srgb","role":"baseColor","sampling":"nearest-centre","version":1}"#;
-        input["intent"]["derived"]["recipe"]["colourMeaning"] = serde_json::json!("srgb");
-        input["intent"]["derived"]["recipe"]["recipeSha256"] = serde_json::json!(digest(canonical));
-        input["intent"]["derived"]["recipe"]["colourConversion"] = serde_json::json!({"version":1,"algorithm":"icc-to-srgb-jpeg-rgb8-v1","sourceIccSha256":"f".repeat(64)});
+        input["intent"]["derived"] = icc_derived();
         let state: Transfer = serde_json::from_value(input.clone()).unwrap();
         validate(&state).unwrap();
         assert_eq!(serde_json::to_value(&state).unwrap(), input);
