@@ -271,15 +271,24 @@ impl InstallationController {
             if state.revision != current.revision {
                 return Err(err("NATIVE_UPLOAD_STATE_CHANGED"));
             }
-            // Retrying a coarse preparation reuses the exact request and any
-            // recorded server job. A new intent must use a different key.
-            if let (Some(previous), Some(next)) = (&current.intent, &state.intent)
-                && previous.idempotency_key == next.idempotency_key
-                && (previous.coarse_preparation.is_some() || next.coarse_preparation.is_some())
-                && (previous != next
-                    || current.job_id.is_some() && current.job_id != state.job_id)
+            if let Some(next) = &state.intent
+                && (next.coarse_preparation.is_some()
+                    || current.intent.as_ref().is_some_and(|prior| prior.coarse_preparation.is_some()))
             {
-                return Err(err("NATIVE_UPLOAD_STATE_CHANGED"));
+                let prior = current
+                    .intent
+                    .as_ref()
+                    .filter(|prior| prior.idempotency_key == next.idempotency_key);
+                // Persist a new intent before recording its first server job.
+                // Retrying then keeps both the exact intent and any bound job.
+                let matches = match prior {
+                    None => state.job_id.is_none(),
+                    Some(prior) => prior == next
+                        && (current.job_id.is_none() || current.job_id == state.job_id),
+                };
+                if !matches {
+                    return Err(err("NATIVE_UPLOAD_STATE_CHANGED"));
+                }
             }
             state.revision = state
                 .revision
@@ -454,6 +463,12 @@ mod tests {
                 )
             })
             .unwrap();
+        let mut prebound = state.clone();
+        prebound.job_id = Some(Uuid::new_v4().to_string());
+        assert_eq!(
+            controller.save_native_upload(&token, prebound).err().unwrap().code,
+            "NATIVE_UPLOAD_STATE_CHANGED"
+        );
         state = controller.save_native_upload(&token, state).unwrap();
         let intent_before_job = serde_json::to_value(&state).unwrap()["intent"].clone();
         state.job_id = Some(Uuid::new_v4().to_string());
@@ -475,6 +490,12 @@ mod tests {
             .as_mut()
             .unwrap();
         coarse.artwork_revision += 1;
+        assert_eq!(
+            reopened.save_native_upload(&token, changed).err().unwrap().code,
+            "NATIVE_UPLOAD_STATE_CHANGED"
+        );
+        let mut changed = resumed.clone();
+        changed.intent.as_mut().unwrap().idempotency_key = Uuid::new_v4().to_string();
         assert_eq!(
             reopened.save_native_upload(&token, changed).err().unwrap().code,
             "NATIVE_UPLOAD_STATE_CHANGED"
