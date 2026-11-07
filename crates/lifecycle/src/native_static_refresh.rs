@@ -880,6 +880,45 @@ fn copy_runtime_file(
     Ok(())
 }
 
+fn verify_runtime_link(
+    directory: &File,
+    relative: &Path,
+    target: &str,
+    declared_links: &BTreeMap<&Path, &str>,
+) -> Result<()> {
+    let parent = relative.parent().ok_or_else(invalid)?;
+    let mut name = relative.file_name().ok_or_else(invalid)?.to_owned();
+    for _ in 0..DEPTH_LIMIT {
+        let raw = c_name(&name)?;
+        let mut buffer = [0u8; 2049];
+        let count = unsafe {
+            libc::readlinkat(
+                directory.as_raw_fd(),
+                raw.as_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+            )
+        };
+        if count <= 0 || count as usize >= buffer.len() {
+            return Err(invalid());
+        }
+        let link = &buffer[..count as usize];
+        if link == target.as_bytes() {
+            return Ok(());
+        }
+        // The producer records canonical targets. A sibling alias can lead
+        // there if the manifest also declares that alias and the same target.
+        let hop = Path::new(OsStr::from_bytes(link));
+        if hop.file_name() != Some(hop.as_os_str())
+            || declared_links.get(parent.join(hop).as_path()) != Some(&target)
+        {
+            return Err(invalid());
+        }
+        name = hop.as_os_str().to_owned();
+    }
+    Err(invalid())
+}
+
 fn snapshot_runtime(
     root: &File,
     target: &File,
@@ -897,9 +936,19 @@ fn snapshot_runtime(
     if bytes.len() as u64 > maximum {
         return Err(invalid());
     }
-    for entry in Payload::static_refresh_inventory(&bytes, tuple)? {
+    let inventory = Payload::static_refresh_inventory(&bytes, tuple)?;
+    let declared_links = inventory
+        .iter()
+        .filter_map(|entry| match entry {
+            StaticRefreshRuntimeFile::Link { path, target } => {
+                Some((Path::new(path), target.as_str()))
+            }
+            StaticRefreshRuntimeFile::Regular { .. } => None,
+        })
+        .collect();
+    for entry in &inventory {
         check_cancelled(stop)?;
-        let relative = match &entry {
+        let relative = match entry {
             StaticRefreshRuntimeFile::Regular { path, .. }
             | StaticRefreshRuntimeFile::Link { path, .. } => Path::new(path),
         };
@@ -907,7 +956,7 @@ fn snapshot_runtime(
         let prefix = relative.parent().ok_or_else(invalid)?;
         let from = runtime_parent(root, prefix, false)?;
         let to = runtime_parent(target, prefix, true)?;
-        match &entry {
+        match entry {
             StaticRefreshRuntimeFile::Regular {
                 bytes, executable, ..
             } => {
@@ -921,20 +970,9 @@ fn snapshot_runtime(
                 )?;
             }
             StaticRefreshRuntimeFile::Link { target, .. } => {
+                verify_runtime_link(&from, relative, target, &declared_links)?;
                 let name = c_name(name)?;
-                let mut link = [0u8; 2049];
-                let count = unsafe {
-                    libc::readlinkat(
-                        from.as_raw_fd(),
-                        name.as_ptr(),
-                        link.as_mut_ptr().cast(),
-                        link.len(),
-                    )
-                };
-                if count < 0 || link.get(..count as usize) != Some(target.as_bytes()) {
-                    return Err(invalid());
-                }
-                let target = c_name(OsStr::new(&target))?;
+                let target = c_name(OsStr::new(target))?;
                 if unsafe { libc::symlinkat(target.as_ptr(), to.as_raw_fd(), name.as_ptr()) } != 0 {
                     return Err(invalid());
                 }
@@ -1384,7 +1422,8 @@ mod tests {
         fs::create_dir(&bundled).unwrap();
         fs::create_dir(bundled.join("bin")).unwrap();
         fs::write(bundled.join("bin/node"), b"verified").unwrap();
-        symlink("node", bundled.join("bin/alias")).unwrap();
+        symlink("intermediate", bundled.join("bin/alias")).unwrap();
+        symlink("node", bundled.join("bin/intermediate")).unwrap();
         let source_commit = "a".repeat(40);
         let producer = "b".repeat(64);
         let manifest = serde_json::to_vec(&serde_json::json!({
@@ -1396,7 +1435,8 @@ mod tests {
                 "postgres": "postgres/bin/postgres", "initdb": "postgres/bin/initdb"},
             "files": [
                 {"path": "bin/node", "bytes": 8, "sha256": digest(b"verified"), "executable": true},
-                {"path": "bin/alias", "link": "node"}
+                {"path": "bin/alias", "link": "node"},
+                {"path": "bin/intermediate", "link": "node"}
             ]
         })).unwrap();
         fs::write(bundled.join("manifest.json"), &manifest).unwrap();
@@ -1427,6 +1467,21 @@ mod tests {
                 & 0o777,
             0o500
         );
+    }
+
+    #[test]
+    fn runtime_link_rejects_undeclared_hops_escape_and_cycles() {
+        let fixture = Fixture::new();
+        let parent = open_directory(&fixture.0).unwrap();
+        let alias = Path::new("alias");
+        let intermediate = Path::new("intermediate");
+        let declared = BTreeMap::from([(alias, "node"), (intermediate, "node")]);
+        symlink("alias", fixture.0.join(intermediate)).unwrap();
+        for hop in ["unlisted", "../outside", "intermediate"] {
+            symlink(hop, fixture.0.join(alias)).unwrap();
+            assert!(verify_runtime_link(&parent, alias, "node", &declared).is_err());
+            fs::remove_file(fixture.0.join(alias)).unwrap();
+        }
     }
 
     #[test]
