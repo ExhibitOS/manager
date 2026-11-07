@@ -80,7 +80,10 @@ pub(super) struct Binding {
 impl Binding {
     pub(super) fn check(&self) -> Result<()> {
         if self.version != 1
-            || !matches!(self.catalog, 37..=40)
+            || !matches!(self.catalog, 37..=41)
+            || (self.catalog == 41
+                && (self.restore.is_some()
+                    || !matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)))
             || !installations::uuid(&self.generation)
             || self
                 .previous_generation
@@ -749,6 +752,22 @@ mod tests {
         multimap.consume(&prior).unwrap();
         assert_eq!(multimap.catalog, 40);
         assert_eq!(multimap.admission_kind, Admission::CleanReopen);
+    }
+
+    #[test]
+    fn ordinary_frame_preparation_admits_only_fresh_and_same_catalog_reopen() {
+        let mut prior = binding(GENERATION);
+        prior.phase = Phase::Clean;
+        prior.catalog = 40;
+        let mut next = binding(NEXT);
+        next.catalog = 41;
+        next.check().unwrap();
+        assert!(next.consume(&prior).is_err());
+        prior.catalog = 41;
+        next.consume(&prior).unwrap();
+        assert_eq!(next.admission_kind, Admission::CleanReopen);
+        next.admission_kind = Admission::VerifiedRestore;
+        assert!(next.check().is_err());
     }
 
     #[test]

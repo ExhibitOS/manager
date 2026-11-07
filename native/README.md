@@ -806,6 +806,14 @@ validation or a permitted retry with the server's copy. After registration,
 select the catalog version and room, enter the room-local position, angle and
 scale, then save the exhibition. The placement records a visual model and pose.
 
+When the qualified session advertises
+`workspaceArtworkFramePreparationProfile: workspace-artwork-frame-preparation-v1`,
+selecting one of the three reviewed original artwork-frame GLBs enables server
+preparation during registration. The source GLB stays the upload and resume
+file. Registration history shows the recipe and both SHA-256 digests. Use the
+registered model's digest when attaching the frame. Other GLBs follow the
+ordinary registration flow.
+
 The GUI offers **스툴** when the authenticated session also advertises
 `workspaceFurnishingStoolProfile: workspace-furnishing-stool-v1`. The first
 stool placement upgrades that scene's workspace furnishing extension to
@@ -835,6 +843,14 @@ The private native automation command uses the same intake and catalog API:
   ID is the idempotency key. Reuse the same declaration if the create reply is lost.
   Use `kind: "stool"` only in an authenticated session with the stool capability.
   The four additional kinds require the room visual capability.
+  In a session with artwork-frame preparation, add
+  `"preparationPolicy": "omit-unused-invalid-tangent-r1"` to the command for a
+  reviewed original `kind: "artwork-frame"` GLB. Declare the original model and
+  upload the same digest-pinned original. Keep the policy and declaration when
+  replaying the request ID. A registered response includes
+  `preparation.sourceModel`, `preparation.recipe` and
+  `preparation.renderableModel`. The registered `furnishing.model` matches the
+  renderable model. Omit the policy for direct registration.
 - `workspace-furnishing-intake-list` and `workspace-furnishing-list` take
   `cursor` (null for the first page). Intake `status`, `upload`, `complete`,
   `cancel` and `retry` take `intakeId`. Upload also takes the configured
