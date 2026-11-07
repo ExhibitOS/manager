@@ -21,7 +21,7 @@ struct WorkspaceFurnishingIntakeView: View {
     @State private var choosing = false
     @State private var busy = false
     @State private var message: String?
-    @State private var request: (id: String, details: WorkspaceFurnishingDetails)?
+    @State private var request: (id: String, details: WorkspaceFurnishingDetails, policy: WorkspaceArtworkFramePreparationPolicy?)?
     @State private var selected: WorkspaceFurnishingIntake?
     @State private var intakes: [WorkspaceFurnishingIntake] = []
     @State private var intakeCursor: String?
@@ -121,6 +121,10 @@ struct WorkspaceFurnishingIntakeView: View {
             TextField("출처", text: $provenance, axis: .vertical)
             Button("GLB 선택") { choosing = true }
             if let snapshot { Text(snapshot.name).lineLimit(1).truncationMode(.middle) }
+            if let snapshot, let descriptor = try? WorkspaceFurnishingModel(snapshot: snapshot),
+               preparationPolicy(for: descriptor) != nil {
+                Text("등록할 때 서버에서 표시용 액자 모델을 만들고 원본도 보관합니다.").foregroundStyle(.secondary)
+            }
             TextField("권리자", text: $rights.holder)
             Picker("권리 근거", selection: $rights.ownership) {
                 Text("내가 권리자").tag("owner")
@@ -145,6 +149,15 @@ struct WorkspaceFurnishingIntakeView: View {
         Section(intake.declaration.name) {
             Text(status(intake.phase))
             Text(intake.declaration.provenance).foregroundStyle(.secondary)
+            if let preparation = intake.preparation {
+                LabeledContent("보정 방식", value: "사용하지 않는 탄젠트 속성 제거")
+                LabeledContent("원본 SHA-256") {
+                    Text(preparation.sourceModel.sha256).font(.caption.monospaced()).textSelection(.enabled)
+                }
+                LabeledContent("등록 모델 SHA-256") {
+                    Text(preparation.renderableModel.sha256).font(.caption.monospaced()).textSelection(.enabled)
+                }
+            }
             if intake.phase == .uploading {
                 if intake.received == nil {
                     Button("같은 GLB 다시 선택") { choosing = true }
@@ -290,6 +303,11 @@ struct WorkspaceFurnishingIntakeView: View {
         }
     }
 
+    private func preparationPolicy(for model: WorkspaceFurnishingModel) -> WorkspaceArtworkFramePreparationPolicy? {
+        guard kind == .artworkFrame, self.model.workspaceArtworkFramePreparationAvailable else { return nil }
+        return WorkspaceArtworkFramePreparationPolicy.matching(model)
+    }
+
     private func submit() async {
         await perform {
             if selected == nil && request == nil {
@@ -297,7 +315,8 @@ struct WorkspaceFurnishingIntakeView: View {
                 let descriptor = try WorkspaceFurnishingModel(snapshot: snapshot)
                 request = (UUID().uuidString.lowercased(), .init(kind: kind,
                     name: name.trimmingCharacters(in: .whitespacesAndNewlines), rights: rights,
-                    provenance: provenance.trimmingCharacters(in: .whitespacesAndNewlines), model: descriptor))
+                    provenance: provenance.trimmingCharacters(in: .whitespacesAndNewlines), model: descriptor),
+                    preparationPolicy(for: descriptor))
             }
             try await model.withWorkspaceFurnishingAccess(access) { api in
                 var intake: WorkspaceFurnishingIntake
@@ -305,9 +324,11 @@ struct WorkspaceFurnishingIntakeView: View {
                     intake = try await api.workspaceFurnishingIntake(selected.id)
                 } else if let request {
                     do {
-                        intake = try await api.createWorkspaceFurnishing(requestId: request.id, details: request.details)
+                        intake = try await api.createWorkspaceFurnishing(requestId: request.id, details: request.details,
+                                                                        preparationPolicy: request.policy)
                     } catch let failure as AuthoringFailure {
-                        if failure.code == "FURNISHING_DECLARATION" || failure.code == "FURNISHING_INTAKE_LIMIT" { self.request = nil }
+                        if ["FURNISHING_DECLARATION", "FURNISHING_INTAKE_LIMIT", "FRAME_PREPARATION_SOURCE_UNSUPPORTED",
+                            "FRAME_PREPARATION_RIGHTS_DENIED"].contains(failure.code) { self.request = nil }
                         throw failure
                     }
                 } else { return }
@@ -336,7 +357,9 @@ struct WorkspaceFurnishingIntakeView: View {
 
     private func remember(_ intake: WorkspaceFurnishingIntake, reportFailure: Bool = true) throws {
         guard access == model.viewportAccessID else { throw AuthoringFailure("ACCOUNT_CHANGED") }
-        if let selected, selected.id != intake.id || selected.requestId != intake.requestId || selected.declaration != intake.declaration {
+        if let selected, selected.id != intake.id || selected.requestId != intake.requestId
+            || selected.declaration != intake.declaration || selected.preparationPolicy != intake.preparationPolicy
+            || (selected.phase == .registered && (intake.preparation != selected.preparation || intake.furnishing != selected.furnishing)) {
             throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
         }
         selected = intake

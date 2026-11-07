@@ -21,6 +21,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var workspaceFurnishingRoomVisualProfile: String? = nil
     public var workspaceArtworkFrameProfile: String? = nil
     public var workspaceArtworkFrameModelsProfile: String? = nil
+    public var workspaceArtworkFramePreparationProfile: String? = nil
 
     public var advertisesWorkspaceFurnishingStool: Bool {
         workspaceFurnishingProfile == "workspace-furnishing-intake-v1"
@@ -38,6 +39,11 @@ public struct AuthoringSession: Decodable, Sendable {
 
     public var advertisesWorkspaceArtworkFrameModels: Bool {
         advertisesWorkspaceArtworkFrame && workspaceArtworkFrameModelsProfile == "workspace-artwork-frame-models-v1"
+    }
+
+    public var advertisesWorkspaceArtworkFramePreparation: Bool {
+        advertisesWorkspaceArtworkFrameModels
+            && workspaceArtworkFramePreparationProfile == WorkspaceArtworkFramePreparationPolicy.profile
     }
 }
 public struct AuthoringPage<Item: Decodable & Sendable>: Decodable, Sendable {
@@ -168,6 +174,9 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "FURNISHING_DECLARATION": return "비품 이름, 출처, 권리와 32 MiB 이하 GLB 파일을 확인하세요."
         case "WORKSPACE_FURNISHING_UNAVAILABLE": return "현재 작업공간에서 이 비품을 등록하거나 배치할 수 없습니다."
         case "FURNISHING_VALIDATION_UNAVAILABLE": return "비품 검증이 중단됐습니다. 등록 기록에서 상태를 확인하고 검증을 다시 시도하세요."
+        case "FRAME_PREPARATION_SOURCE_UNSUPPORTED": return "이 원본 GLB는 자동 보정을 지원하지 않습니다. 지원되는 원본을 선택하세요."
+        case "FRAME_PREPARATION_RIGHTS_DENIED": return "자동 보정에 필요한 원본 권리 정보를 확인하세요."
+        case "FRAME_PREPARATION_UNSAFE": return "액자 보정본이 검증을 통과하지 못했습니다. 등록 기록에서 상태를 확인하세요."
         case "WORKSPACE_FURNISHING_INVALID": return "선택한 공간과 비품의 위치, 방향, 크기를 확인하세요."
         case "FRAME_SAVED_DRAFT_REQUIRED": return "전시를 저장한 뒤 액자를 연결하거나 해제하세요."
         case "FRAME_TARGET_STALE": return "저장된 작품 배치가 바뀌었습니다. 전시를 다시 열고 작품을 선택하세요."
@@ -1134,6 +1143,10 @@ public actor AuthoringAPI {
         admitsWorkspaceFurnishings && session?.advertisesWorkspaceArtworkFrame == true
     }
 
+    private var admitsWorkspaceArtworkFramePreparation: Bool {
+        admitsWorkspaceFurnishings && session?.advertisesWorkspaceArtworkFramePreparation == true
+    }
+
     private var supportedFurnishingExtensionVersion: Int64 {
         guard admitsWorkspaceFurnishings, let session else { return 0 }
         if session.advertisesWorkspaceArtworkFrameModels { return 5 }
@@ -1152,7 +1165,8 @@ public actor AuthoringAPI {
         return try workspaceFurnishingPath("furnishing-intakes/" + id)
     }
 
-    public func createWorkspaceFurnishing(requestId: String, details: WorkspaceFurnishingDetails) async throws -> WorkspaceFurnishingIntake {
+    public func createWorkspaceFurnishing(requestId: String, details: WorkspaceFurnishingDetails,
+                                          preparationPolicy: WorkspaceArtworkFramePreparationPolicy? = nil) async throws -> WorkspaceFurnishingIntake {
         guard workspaceFurnishingID(requestId), details.isValid else { throw AuthoringFailure("FURNISHING_DECLARATION") }
         guard details.kind.minimumExtensionVersion <= supportedFurnishingExtensionVersion else {
             throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
@@ -1163,38 +1177,51 @@ public actor AuthoringAPI {
                 throw AuthoringFailure("FRAME_ASSET_UNSUPPORTED")
             }
         }
-        let body = try encoded(WorkspaceFurnishingRequest(requestId: requestId, details: details))
+        if let preparationPolicy {
+            guard admitsWorkspaceArtworkFramePreparation else { throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
+            guard details.kind == .artworkFrame,
+                  WorkspaceArtworkFramePreparationPolicy.matching(details.model) == preparationPolicy else {
+                throw AuthoringFailure("FRAME_PREPARATION_SOURCE_UNSUPPORTED")
+            }
+        }
+        let body = try encoded(WorkspaceFurnishingRequest(requestId: requestId, details: details, preparationPolicy: preparationPolicy))
         let intake: WorkspaceFurnishingIntake = try await request(workspaceFurnishingPath("furnishing-intakes"), method: "POST", body: body)
-        try intake.check(requestId: requestId, details: details, supportedExtensionVersion: supportedFurnishingExtensionVersion)
+        try intake.check(requestId: requestId, details: details, expectedPolicy: preparationPolicy,
+                         supportedExtensionVersion: supportedFurnishingExtensionVersion, admitsPreparation: admitsWorkspaceArtworkFramePreparation)
         return intake
     }
 
     public func workspaceFurnishingIntake(_ id: String) async throws -> WorkspaceFurnishingIntake {
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(id))
-        try intake.check(id: id, supportedExtensionVersion: supportedFurnishingExtensionVersion)
+        try intake.check(id: id, supportedExtensionVersion: supportedFurnishingExtensionVersion,
+                         admitsPreparation: admitsWorkspaceArtworkFramePreparation)
         return intake
     }
 
     public func uploadWorkspaceFurnishing(_ previous: WorkspaceFurnishingIntake,
                                           snapshot: ImportFileSnapshot) async throws -> WorkspaceFurnishingIntake {
-        try previous.check(supportedExtensionVersion: supportedFurnishingExtensionVersion)
+        try previous.check(supportedExtensionVersion: supportedFurnishingExtensionVersion,
+                           admitsPreparation: admitsWorkspaceArtworkFramePreparation)
         let model = try WorkspaceFurnishingModel(snapshot: snapshot)
         guard model == previous.declaration.model else { throw AuthoringFailure("MODEL_CONFLICT") }
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(previous.intakeId) + "/model",
             method: "PUT", body: snapshot.data, contentType: "application/octet-stream", timeout: 120)
         try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration,
-                         supportedExtensionVersion: supportedFurnishingExtensionVersion)
+                         expectedPolicy: previous.preparationPolicy, supportedExtensionVersion: supportedFurnishingExtensionVersion,
+                         admitsPreparation: admitsWorkspaceArtworkFramePreparation)
         guard intake.received != nil else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
         return intake
     }
 
     public func workspaceFurnishingAction(_ previous: WorkspaceFurnishingIntake,
                                           _ action: WorkspaceFurnishingIntakeAction) async throws -> WorkspaceFurnishingIntake {
-        try previous.check(supportedExtensionVersion: supportedFurnishingExtensionVersion)
+        try previous.check(supportedExtensionVersion: supportedFurnishingExtensionVersion,
+                           admitsPreparation: admitsWorkspaceArtworkFramePreparation)
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(previous.intakeId) + "/" + action.rawValue,
             method: "POST", body: Data("{}".utf8))
         try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration,
-                         supportedExtensionVersion: supportedFurnishingExtensionVersion)
+                         expectedPolicy: previous.preparationPolicy, supportedExtensionVersion: supportedFurnishingExtensionVersion,
+                         admitsPreparation: admitsWorkspaceArtworkFramePreparation)
         return intake
     }
 
@@ -1213,7 +1240,10 @@ public actor AuthoringAPI {
 
     public func workspaceFurnishingIntakes(cursor: String? = nil) async throws -> AuthoringPage<WorkspaceFurnishingIntake> {
         let page: AuthoringPage<WorkspaceFurnishingIntake> = try await furnishingPage("furnishing-intakes", cursor: cursor)
-        for intake in page.items { try intake.check(supportedExtensionVersion: supportedFurnishingExtensionVersion) }
+        for intake in page.items {
+            try intake.check(supportedExtensionVersion: supportedFurnishingExtensionVersion,
+                             admitsPreparation: admitsWorkspaceArtworkFramePreparation)
+        }
         guard Set(page.items.map(\.intakeId)).count == page.items.count else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
         return page
     }

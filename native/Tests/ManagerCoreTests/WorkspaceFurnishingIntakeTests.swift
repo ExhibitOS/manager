@@ -68,6 +68,54 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         try intake(wire).check()
     }
 
+    func testOptInPreparationBindsOriginalAndRegisteredRenderable() throws {
+        let policy = WorkspaceArtworkFramePreparationPolicy.omitUnusedInvalidTangent
+        let source: DocumentValue = .object(["mime": .string("model/gltf-binary"), "bytes": .integer(101_768),
+            "sha256": .string("17c571accc4ed2554731d4ce89f3cad4faa66cf2bca83321ecd92ad2537093d9")])
+        let renderable: DocumentValue = .object(["mime": .string("model/gltf-binary"), "bytes": .integer(101_720),
+            "sha256": .string("2fb941a9f6ed030638512e917e348a0a3000e29c1133fe3f9670268ff1c4169c")])
+        var wire = try registered()
+        wire["preparationPolicy"] = .string(policy.rawValue)
+        wire["preparation"] = .object(["sourceModel": source, "recipe": .string(policy.rawValue), "renderableModel": renderable])
+        wire["declaration"]["kind"] = .string("artwork-frame")
+        wire["declaration"]["model"] = source
+        wire["received"] = .object(["bytes": source["bytes"], "sha256": source["sha256"]])
+        wire["furnishing"]["kind"] = .string("artwork-frame")
+        wire["furnishing"]["model"] = renderable
+        let value = try intake(wire)
+        XCTAssertEqual(WorkspaceArtworkFramePreparationPolicy.matching(value.declaration.model), policy)
+        XCTAssertThrowsError(try value.check(supportedExtensionVersion: 5))
+        try value.check(details: value.declaration, expectedPolicy: policy, supportedExtensionVersion: 5, admitsPreparation: true)
+        XCTAssertThrowsError(try value.check(details: value.declaration, supportedExtensionVersion: 5, admitsPreparation: true))
+        let request = WorkspaceFurnishingRequest(requestId: requestId, details: value.declaration, preparationPolicy: policy)
+        let encoded = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(request))
+        XCTAssertEqual(encoded["preparationPolicy"], .string(policy.rawValue))
+        XCTAssertEqual(encoded["model"], source)
+        let response = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(value))
+        XCTAssertEqual(response["preparation"], wire["preparation"])
+
+        var changed = wire
+        changed["preparation"]["renderableModel"] = source
+        XCTAssertThrowsError(try intake(changed).check(supportedExtensionVersion: 5, admitsPreparation: true))
+        changed = wire
+        changed["preparation"]["sourceModel"]["extra"] = .bool(true)
+        XCTAssertThrowsError(try intake(changed))
+        changed = wire
+        changed["furnishing"]["provenance"] = .string("Substituted")
+        XCTAssertThrowsError(try intake(changed).check(supportedExtensionVersion: 5, admitsPreparation: true))
+        changed = wire
+        changed["preparation"] = .null
+        XCTAssertThrowsError(try intake(changed))
+        changed = wire
+        changed["phase"] = .string("validating")
+        changed["furnishing"] = .null
+        XCTAssertThrowsError(try intake(changed).check(supportedExtensionVersion: 5, admitsPreparation: true))
+        if case .object(var fields) = changed {
+            fields.removeValue(forKey: "preparation")
+            try intake(.object(fields)).check(supportedExtensionVersion: 5, admitsPreparation: true)
+        }
+    }
+
     func testVisualPlacementIsRoomLocalAndReplaysExactly() throws {
         let furnishing = try XCTUnwrap(intake(registered()).furnishing)
         var draft = try NativeExhibitionDraft.new()

@@ -344,12 +344,24 @@ public actor NativeAutomationSession {
                                             api: AuthoringAPI) async throws -> DocumentValue {
         switch operation {
         case "workspace-furnishing-intake-create":
-            let command = try NativeAutomationArtworkRules.command(request, keys: ["kind", "name", "rights", "provenance", "model"])
+            let commandKeys: Set<String> = ["kind", "name", "rights", "provenance", "model"]
+            guard case .object(var fields) = request["command"] else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let policy: WorkspaceArtworkFramePreparationPolicy?
+            if let input = fields.removeValue(forKey: "preparationPolicy") {
+                guard let name = input.string, let selected = WorkspaceArtworkFramePreparationPolicy(rawValue: name) else {
+                    throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+                }
+                policy = selected
+            } else {
+                policy = nil
+            }
+            guard Set(fields.keys) == commandKeys else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let command = DocumentValue.object(fields)
             let details = try JSONDecoder().decode(WorkspaceFurnishingDetails.self, from: JSONEncoder().encode(command))
             guard let id = request["requestId"].string, try value(details) == command else {
                 throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
             }
-            return try value(await api.createWorkspaceFurnishing(requestId: id, details: details))
+            return try value(await api.createWorkspaceFurnishing(requestId: id, details: details, preparationPolicy: policy))
         case "workspace-furnishing-intake-list", "workspace-furnishing-list":
             let command = try NativeAutomationArtworkRules.command(request, keys: ["cursor"])
             guard command["cursor"] == .null || command["cursor"].string != nil else {
