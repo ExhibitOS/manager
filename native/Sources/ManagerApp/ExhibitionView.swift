@@ -1214,6 +1214,9 @@ final class ExhibitionModel: ObservableObject {
     var workspaceFurnishingStoolAvailable: Bool {
         workspaceFurnishingIntakeAvailable && session?.advertisesWorkspaceFurnishingStool == true
     }
+    var workspaceFurnishingRoomVisualAvailable: Bool {
+        workspaceFurnishingIntakeAvailable && session?.advertisesWorkspaceFurnishingRoomVisual == true
+    }
     func withWorkspaceFurnishingAccess<T>(_ access: UUID, _ body: (AuthoringAPI) async throws -> T) async throws -> T {
         guard workspaceFurnishingIntakeAvailable, access == viewportAccessID, !busy, !entrancePreviewActive,
               !placingArtwork, !architectureApplying, !pending, let api else {

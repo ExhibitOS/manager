@@ -114,7 +114,7 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         wire["furnishing"]["kind"] = .string("stool")
         let value = try intake(wire)
         XCTAssertThrowsError(try value.check())
-        try value.check(stool: true)
+        try value.check(supportedExtensionVersion: 2)
         let request = WorkspaceFurnishingRequest(requestId: requestId, details: value.declaration)
         var expected = wire["declaration"]
         expected["requestId"] = .string(requestId)
@@ -134,24 +134,24 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
             furnishingVersion: 1, position: [-1, 0, 0], yaw: 0, scale: 1)
         let addStool = WorkspaceFurnishingPlacement(id: "10000000-0000-4000-8000-000000000006",
             roomId: room, furnishingId: stool.id, furnishingVersion: 1, position: [1, 0, 0], yaw: 0, scale: 1)
-        let legacy = try XCTUnwrap(first.applying(pedestal, to: draft, stool: true))
+        let legacy = try XCTUnwrap(first.applying(pedestal, to: draft, supportedExtensionVersion: 2))
         let namespace = WorkspaceFurnishingPlacement.namespace
         let v1 = legacy.candidate["extensions"][namespace]
         XCTAssertEqual(v1["version"], .integer(1))
         XCTAssertThrowsError(try addStool.applying(stool, to: legacy)) {
             XCTAssertEqual(($0 as? AuthoringFailure)?.code, "WORKSPACE_FURNISHING_UNAVAILABLE")
         }
-        let upgraded = try XCTUnwrap(addStool.applying(stool, to: legacy, stool: true))
+        let upgraded = try XCTUnwrap(addStool.applying(stool, to: legacy, supportedExtensionVersion: 2))
         let v2 = upgraded.candidate["extensions"][namespace]
         XCTAssertEqual(v2["version"], .integer(2))
         XCTAssertEqual(v2["furnishings"].items?.first, v1["furnishings"].items?.first)
         XCTAssertEqual(v2["placements"].items?.first, v1["placements"].items?.first)
         XCTAssertEqual(v2["furnishings"].items?.last, wire["furnishing"])
-        XCTAssertNil(try addStool.applying(stool, to: upgraded, stool: true))
+        XCTAssertNil(try addStool.applying(stool, to: upgraded, supportedExtensionVersion: 2))
         XCTAssertThrowsError(try first.applying(pedestal, to: upgraded))
         let another = WorkspaceFurnishingPlacement(id: "10000000-0000-4000-8000-000000000007",
             roomId: room, furnishingId: pedestal.id, furnishingVersion: 1, position: [0, 0, 1], yaw: 0, scale: 1)
-        let kept = try XCTUnwrap(another.applying(pedestal, to: upgraded, stool: true))
+        let kept = try XCTUnwrap(another.applying(pedestal, to: upgraded, supportedExtensionVersion: 2))
         XCTAssertEqual(kept.candidate["extensions"][namespace]["version"], .integer(2))
     }
 
@@ -163,6 +163,69 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
             XCTFail("Unqualified runtime admitted")
         } catch let failure as AuthoringFailure {
             XCTAssertEqual(failure.code, "WORKSPACE_FURNISHING_UNAVAILABLE")
+        }
+    }
+
+    func testRoomVisualAdvertisementRequiresBothParentProfiles() throws {
+        var fields: DocumentValue = .object([
+            "userId": .string(intakeId), "tenantId": .string(requestId), "role": .string("artist"),
+            "csrfToken": .string("fixture"), "expiresAt": .string("2026-12-01T00:00:00Z"),
+            "workspaceFurnishingRoomVisualProfile": .string("workspace-furnishing-room-visual-v1")
+        ])
+        func advertised() throws -> Bool {
+            try JSONDecoder().decode(AuthoringSession.self, from: JSONEncoder().encode(fields))
+                .advertisesWorkspaceFurnishingRoomVisual
+        }
+        XCTAssertFalse(try advertised())
+        fields["workspaceFurnishingProfile"] = .string("workspace-furnishing-intake-v1")
+        XCTAssertFalse(try advertised())
+        fields["workspaceFurnishingStoolProfile"] = .string("workspace-furnishing-stool-v1")
+        XCTAssertTrue(try advertised())
+        fields["workspaceFurnishingRoomVisualProfile"] = .string("workspace-furnishing-room-visual-v2")
+        XCTAssertFalse(try advertised())
+    }
+
+    func testRoomVisualKindsKeepTheIntakeWireAndUpgradeOnlyWhenPlaced() throws {
+        let draft = try NativeExhibitionDraft.new()
+        let room = try XCTUnwrap(draft.rooms.first?["id"].string)
+        let namespace = WorkspaceFurnishingPlacement.namespace
+        var stoolWire = try registered()
+        stoolWire["furnishing"]["kind"] = .string("stool")
+        let stool = try XCTUnwrap(intake(stoolWire).furnishing)
+        let oldPose = WorkspaceFurnishingPlacement(id: placementId, roomId: room, furnishingId: stool.id,
+            furnishingVersion: 1, position: [-1, 0, 0], yaw: 0, scale: 1)
+        let oldDraft = try XCTUnwrap(oldPose.applying(stool, to: draft, supportedExtensionVersion: 3))
+        let v2 = oldDraft.candidate["extensions"][namespace]
+        XCTAssertEqual(v2["version"], .integer(2))
+        for name in ["partition", "info-stand", "barrier", "display-case"] {
+            var wire = try registered()
+            wire["declaration"]["kind"] = .string(name)
+            wire["furnishing"]["kind"] = .string(name)
+            wire["furnishing"]["id"] = .string("10000000-0000-4000-8000-000000000005")
+            let response = try intake(wire)
+            XCTAssertThrowsError(try response.check(supportedExtensionVersion: 2))
+            try response.check(supportedExtensionVersion: 3)
+            let request = WorkspaceFurnishingRequest(requestId: requestId, details: response.declaration)
+            var expected = wire["declaration"]
+            expected["requestId"] = .string(requestId)
+            XCTAssertEqual(try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(request)), expected)
+            let furnishing = try XCTUnwrap(response.furnishing)
+            let pose = WorkspaceFurnishingPlacement(id: "10000000-0000-4000-8000-000000000006",
+                roomId: room, furnishingId: furnishing.id, furnishingVersion: 1, position: [1, 0, 0], yaw: 0, scale: 1)
+            XCTAssertThrowsError(try pose.applying(furnishing, to: oldDraft, supportedExtensionVersion: 2))
+            let upgraded = try XCTUnwrap(pose.applying(furnishing, to: oldDraft, supportedExtensionVersion: 3))
+            let v3 = upgraded.candidate["extensions"][namespace]
+            XCTAssertEqual(v3["version"], .integer(3))
+            XCTAssertEqual(v3["furnishings"].items, [stoolWire["furnishing"], wire["furnishing"]])
+            XCTAssertEqual(v3["placements"].items?.first, v2["placements"].items?.first)
+            XCTAssertNil(try pose.applying(furnishing, to: upgraded, supportedExtensionVersion: 3))
+            XCTAssertThrowsError(try oldPose.applying(stool, to: upgraded, supportedExtensionVersion: 2)) {
+                XCTAssertEqual(($0 as? AuthoringFailure)?.code, "WORKSPACE_FURNISHING_UNAVAILABLE")
+            }
+            let another = WorkspaceFurnishingPlacement(id: "10000000-0000-4000-8000-000000000007",
+                roomId: room, furnishingId: stool.id, furnishingVersion: 1, position: [0, 0, 1], yaw: 0, scale: 1)
+            let kept = try XCTUnwrap(another.applying(stool, to: upgraded, supportedExtensionVersion: 3))
+            XCTAssertEqual(kept.candidate["extensions"][namespace]["version"], .integer(3))
         }
     }
 }

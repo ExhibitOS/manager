@@ -2,9 +2,18 @@
 import Foundation
 
 public enum WorkspaceFurnishingKind: String, Codable, CaseIterable, Sendable {
-    case pedestal, bench, stool
+    case pedestal, bench, stool, partition
+    case infoStand = "info-stand"
+    case barrier
+    case displayCase = "display-case"
 
-    func admitted(stool: Bool) -> Bool { self != .stool || stool }
+    var minimumExtensionVersion: Int64 {
+        switch self {
+        case .pedestal, .bench: 1
+        case .stool: 2
+        case .partition, .infoStand, .barrier, .displayCase: 3
+        }
+    }
 }
 
 public struct WorkspaceFurnishingModel: Codable, Equatable, Sendable {
@@ -115,10 +124,11 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
     public let furnishing: WorkspaceFurnishing?
 
     func check(id: String? = nil, requestId: String? = nil, details: WorkspaceFurnishingDetails? = nil,
-               stool: Bool = false) throws {
+               supportedExtensionVersion: Int64 = 1) throws {
         guard workspaceFurnishingID(intakeId), workspaceFurnishingID(self.requestId),
               id.map({ $0 == intakeId }) ?? true, requestId.map({ $0 == self.requestId }) ?? true,
-              declaration.isValid, declaration.kind.admitted(stool: stool), details.map({ $0 == declaration }) ?? true,
+              declaration.isValid, declaration.kind.minimumExtensionVersion <= supportedExtensionVersion,
+              details.map({ $0 == declaration }) ?? true,
               received.map({ $0.bytes == declaration.model.bytes && $0.sha256 == declaration.model.sha256 }) ?? true,
               !retryable || (phase == .failed && received != nil),
               phase != .validating || received != nil,

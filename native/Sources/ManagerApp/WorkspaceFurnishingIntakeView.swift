@@ -106,6 +106,12 @@ struct WorkspaceFurnishingIntakeView: View {
                 if model.workspaceFurnishingStoolAvailable {
                     Text("스툴").tag(WorkspaceFurnishingKind.stool)
                 }
+                if model.workspaceFurnishingRoomVisualAvailable {
+                    Text("칸막이").tag(WorkspaceFurnishingKind.partition)
+                    Text("안내 스탠드").tag(WorkspaceFurnishingKind.infoStand)
+                    Text("차단대").tag(WorkspaceFurnishingKind.barrier)
+                    Text("진열장").tag(WorkspaceFurnishingKind.displayCase)
+                }
             }
             TextField("이름", text: $name)
             TextField("출처", text: $provenance, axis: .vertical)

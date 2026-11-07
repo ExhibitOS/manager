@@ -18,10 +18,16 @@ public struct AuthoringSession: Decodable, Sendable {
     public var workspaceMaterialProfile: String? = nil
     public var workspaceFurnishingProfile: String? = nil
     public var workspaceFurnishingStoolProfile: String? = nil
+    public var workspaceFurnishingRoomVisualProfile: String? = nil
 
     public var advertisesWorkspaceFurnishingStool: Bool {
         workspaceFurnishingProfile == "workspace-furnishing-intake-v1"
             && workspaceFurnishingStoolProfile == "workspace-furnishing-stool-v1"
+    }
+
+    public var advertisesWorkspaceFurnishingRoomVisual: Bool {
+        advertisesWorkspaceFurnishingStool
+            && workspaceFurnishingRoomVisualProfile == "workspace-furnishing-room-visual-v1"
     }
 }
 public struct AuthoringPage<Item: Decodable & Sendable>: Decodable, Sendable {
@@ -1096,8 +1102,10 @@ public actor AuthoringAPI {
             && ["admin", "artist", "curator"].contains(session?.role ?? "")
     }
 
-    private var admitsWorkspaceFurnishingStool: Bool {
-        admitsWorkspaceFurnishings && session?.advertisesWorkspaceFurnishingStool == true
+    private var supportedFurnishingExtensionVersion: Int64 {
+        guard admitsWorkspaceFurnishings, let session else { return 0 }
+        if session.advertisesWorkspaceFurnishingRoomVisual { return 3 }
+        return session.advertisesWorkspaceFurnishingStool ? 2 : 1
     }
 
     private func workspaceFurnishingPath(_ suffix: String) throws -> String {
@@ -1112,41 +1120,41 @@ public actor AuthoringAPI {
 
     public func createWorkspaceFurnishing(requestId: String, details: WorkspaceFurnishingDetails) async throws -> WorkspaceFurnishingIntake {
         guard workspaceFurnishingID(requestId), details.isValid else { throw AuthoringFailure("FURNISHING_DECLARATION") }
-        guard details.kind.admitted(stool: admitsWorkspaceFurnishingStool) else {
+        guard details.kind.minimumExtensionVersion <= supportedFurnishingExtensionVersion else {
             throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
         }
         let body = try encoded(WorkspaceFurnishingRequest(requestId: requestId, details: details))
         let intake: WorkspaceFurnishingIntake = try await request(workspaceFurnishingPath("furnishing-intakes"), method: "POST", body: body)
-        try intake.check(requestId: requestId, details: details, stool: admitsWorkspaceFurnishingStool)
+        try intake.check(requestId: requestId, details: details, supportedExtensionVersion: supportedFurnishingExtensionVersion)
         return intake
     }
 
     public func workspaceFurnishingIntake(_ id: String) async throws -> WorkspaceFurnishingIntake {
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(id))
-        try intake.check(id: id, stool: admitsWorkspaceFurnishingStool)
+        try intake.check(id: id, supportedExtensionVersion: supportedFurnishingExtensionVersion)
         return intake
     }
 
     public func uploadWorkspaceFurnishing(_ previous: WorkspaceFurnishingIntake,
                                           snapshot: ImportFileSnapshot) async throws -> WorkspaceFurnishingIntake {
-        try previous.check(stool: admitsWorkspaceFurnishingStool)
+        try previous.check(supportedExtensionVersion: supportedFurnishingExtensionVersion)
         let model = try WorkspaceFurnishingModel(snapshot: snapshot)
         guard model == previous.declaration.model else { throw AuthoringFailure("MODEL_CONFLICT") }
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(previous.intakeId) + "/model",
             method: "PUT", body: snapshot.data, contentType: "application/octet-stream", timeout: 120)
         try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration,
-                         stool: admitsWorkspaceFurnishingStool)
+                         supportedExtensionVersion: supportedFurnishingExtensionVersion)
         guard intake.received != nil else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
         return intake
     }
 
     public func workspaceFurnishingAction(_ previous: WorkspaceFurnishingIntake,
                                           _ action: WorkspaceFurnishingIntakeAction) async throws -> WorkspaceFurnishingIntake {
-        try previous.check(stool: admitsWorkspaceFurnishingStool)
+        try previous.check(supportedExtensionVersion: supportedFurnishingExtensionVersion)
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(previous.intakeId) + "/" + action.rawValue,
             method: "POST", body: Data("{}".utf8))
         try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration,
-                         stool: admitsWorkspaceFurnishingStool)
+                         supportedExtensionVersion: supportedFurnishingExtensionVersion)
         return intake
     }
 
@@ -1165,15 +1173,15 @@ public actor AuthoringAPI {
 
     public func workspaceFurnishingIntakes(cursor: String? = nil) async throws -> AuthoringPage<WorkspaceFurnishingIntake> {
         let page: AuthoringPage<WorkspaceFurnishingIntake> = try await furnishingPage("furnishing-intakes", cursor: cursor)
-        for intake in page.items { try intake.check(stool: admitsWorkspaceFurnishingStool) }
+        for intake in page.items { try intake.check(supportedExtensionVersion: supportedFurnishingExtensionVersion) }
         guard Set(page.items.map(\.intakeId)).count == page.items.count else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
         return page
     }
 
     public func workspaceFurnishings(cursor: String? = nil) async throws -> AuthoringPage<WorkspaceFurnishingSummary> {
         let page: AuthoringPage<WorkspaceFurnishingSummary> = try await furnishingPage("furnishings", cursor: cursor)
-        let stool = admitsWorkspaceFurnishingStool
-        guard page.items.allSatisfy({ $0.isValid && $0.kind.admitted(stool: stool) }),
+        let version = supportedFurnishingExtensionVersion
+        guard page.items.allSatisfy({ $0.isValid && $0.kind.minimumExtensionVersion <= version }),
               Set(page.items.map(\.id)).count == page.items.count else {
             throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
         }
@@ -1187,14 +1195,14 @@ public actor AuthoringAPI {
 
     public func workspaceFurnishing(_ id: String, version: Int) async throws -> WorkspaceFurnishing {
         let furnishing: WorkspaceFurnishing = try await request(workspaceFurnishingVersionPath(id, version: version))
-        guard furnishing.id == id, furnishing.details.kind.admitted(stool: admitsWorkspaceFurnishingStool) else {
+        guard furnishing.id == id, furnishing.details.kind.minimumExtensionVersion <= supportedFurnishingExtensionVersion else {
             throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
         }
         return furnishing
     }
 
     public func workspaceFurnishingModel(_ furnishing: WorkspaceFurnishing) async throws -> Data {
-        guard furnishing.details.kind.admitted(stool: admitsWorkspaceFurnishingStool) else {
+        guard furnishing.details.kind.minimumExtensionVersion <= supportedFurnishingExtensionVersion else {
             throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
         }
         let path = try workspaceFurnishingVersionPath(furnishing.id, version: furnishing.version) + "/model"
@@ -1209,7 +1217,7 @@ public actor AuthoringAPI {
               let draft = document.draft else { throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
         let heldGeneration = generation
         let furnishing = try await workspaceFurnishing(placement.furnishingId, version: placement.furnishingVersion)
-        let next = try placement.applying(furnishing, to: draft, stool: admitsWorkspaceFurnishingStool)
+        let next = try placement.applying(furnishing, to: draft, supportedExtensionVersion: supportedFurnishingExtensionVersion)
         _ = try await workspaceFurnishingModel(furnishing)
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next
