@@ -669,7 +669,13 @@ impl InstallationController {
                     return Err(err("NATIVE_RESTORE_TARGET_NOT_EMPTY"));
                 }
             }
-            let source_manifest_sha256=digest(&installation_backup::source_bytes(&input.source,"manifest.gcm",17*1024*1024,true)?);
+            let source_manifest = installation_backup::source_bytes(&input.source, "manifest.gcm", 17*1024*1024, true)?;
+            let (source_manifest_bytes, source_manifest_pin) =
+                crate::hosted_runtime_file::bounded(&input.source.join("manifest.gcm"), 17*1024*1024)?;
+            if source_manifest_bytes != source_manifest { return Err(bad()); }
+            let source_manifest_sha256 = digest(&source_manifest);
+            drop(source_manifest_bytes);
+            drop(source_manifest);
             let system_identifier=session.maintenance_system_identifier()?;
             let furnishing_target = session.furnishing_restore_target_identity()?;
             let pending:Option<Pending>=if exists(&service.root,MARKER)?{Some(json(&service.root,MARKER,4096)?)}else{None};
@@ -704,7 +710,7 @@ impl InstallationController {
             write_private_new(&directory,&format!("attempt-{attempt}.json"),&serde_json::to_vec(&serde_json::json!({"format":1,"id":id,"attempt":attempt,"operation":operation})).map_err(|_|bad())?,4096)?;
             // Existing codec authenticates the entire archive before DB/blob writes,
             // refuses original/nonempty DB, then verifies the original inventory.
-            session.backup_tool(
+            let codec = session.backup_tool(
                 vec![
                     operation.into(),
                     "--key-file".into(),
@@ -721,6 +727,17 @@ impl InstallationController {
                 budget,
                 &scratch,
             )?;
+            source_manifest_pin.check()?;
+            let manifest = installation_backup::source_bytes(&restored, "manifest.json", 16*1024*1024, true)?;
+            let (manifest_bytes, manifest_pin) =
+                crate::hosted_runtime_file::bounded(&restored.join("manifest.json"), 16*1024*1024)?;
+            if manifest_bytes != manifest { return Err(bad()); }
+            let manifest_value: Value = serde_json::from_slice(&manifest).map_err(|_| bad())?;
+            let backup_id = manifest_value["id"].as_str().filter(|value| uuid(value)).ok_or_else(bad)?.to_owned();
+            let manifest_sha256 = digest(&manifest);
+            let codec_authenticated = check_codec_restore_output(&codec, &backup_id, &manifest_sha256)?;
+            drop(manifest_bytes);
+            drop(manifest);
             let configuration = restored.join("configuration");
             authenticated_configuration(&restored, &prepared.kind)?;
             names(
@@ -829,23 +846,11 @@ impl InstallationController {
                     &bytes,
                 )?);
             }
-            let manifest = installation_backup::source_bytes(
-                &restored,
-                "manifest.json",
-                16 * 1024 * 1024,
-                true,
-            )?;
-            let manifest_value: Value = serde_json::from_slice(&manifest).map_err(|_| bad())?;
-            let backup_id = manifest_value["id"]
-                .as_str()
-                .filter(|v| uuid(v))
-                .ok_or_else(bad)?
-                .to_owned();
             let mut plan = Plan {
                 format: 1,
                 id: id.clone(),
                 backup_id: backup_id.clone(),
-                manifest_sha256: digest(&manifest),
+                manifest_sha256,
                 payload_sha256: payload.context().manifest_sha256,
                 system_identifier: session.maintenance_system_identifier()?,
                 kind: source.owner_kind,
@@ -861,7 +866,9 @@ impl InstallationController {
                 Fields(rebound.native_start_environment(&payload, prepared.ports)?);
             rebound_identity(&plan.kind, &original_fields, &rebound_fields)?;
             plan.restore_proof = observe(session, &directory, &plan, &manifest_value, budget, &scratch)?;
-            valid_plan(&plan, &service.root)?;
+            if plan.restore_proof.is_some() && !codec_authenticated { return Err(bad()); }
+            source_manifest_pin.check()?;
+            manifest_pin.check()?;
             write_json(&directory, "stage.json", &plan)?;
             let receipt = Receipt {
                 id,
@@ -1142,6 +1149,15 @@ fn restore_proof_from_observation(plan: &Plan, manifest: &Value, result: &Value)
     proof.matches_manifest(manifest)?;
     Ok(Some(proof))
 }
+
+fn check_codec_restore_output(codec: &Value, backup_id: &str, manifest_sha256: &str) -> Result<bool> {
+    match (codec.get("backupId"), codec.get("authenticatedManifestSha256")) {
+        (None, None) => Ok(false),
+        (Some(id), Some(sha)) if codec["operation"] == "restored-and-verified"
+            && id.as_str() == Some(backup_id) && sha.as_str() == Some(manifest_sha256) => Ok(true),
+        _ => Err(bad()),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1196,6 +1212,22 @@ mod tests {
         wrong_manifest["inventory"]["tables"][0]["rowCount"] = 2.into();
         assert!(restore_proof_from_observation(&plan,&wrong_manifest,&result).is_err());
         assert!(restore_proof_from_observation(&plan,&wrong_manifest,&serde_json::json!({})).unwrap().is_none());
+    }
+
+    #[test]
+    fn restore_proof_requires_the_manifest_bytes_authenticated_by_the_codec() {
+        let id = Uuid::new_v4().to_string();
+        let raw = b"{\"authenticated\":true}\n";
+        let sha = digest(raw);
+        let mut codec = serde_json::json!({
+            "operation":"restored-and-verified","backupId":id,"authenticatedManifestSha256":sha
+        });
+        assert!(check_codec_restore_output(&codec, &id, &sha).unwrap());
+        assert!(check_codec_restore_output(&codec, &id, &digest(b"{\"authenticated\":false}\n")).is_err());
+        assert!(check_codec_restore_output(&codec, &Uuid::new_v4().to_string(), &sha).is_err());
+        codec.as_object_mut().unwrap().remove("backupId");
+        assert!(check_codec_restore_output(&codec, &id, &sha).is_err());
+        assert!(!check_codec_restore_output(&serde_json::json!({"operation":"restored-and-verified"}), &id, &sha).unwrap());
     }
     #[test]
     fn environment_rebind_preserves_account_fields_and_identity_rejects_conversion() {
