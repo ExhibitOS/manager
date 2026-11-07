@@ -76,6 +76,13 @@ PostgreSQL system identifier before starting services. Backup and restore
 require writer quiescence and the exact 038 ledger. The Manager and Swift
 authoring pin lists stay empty pending qualification of the exact artifact.
 
+For a separately qualified 038 package with the selected-import marker, the
+debug v7 entry can import one bounded draft.12 archive in a new workspace.
+The writer lease stays live through selected save and settlement. After the
+Manager records the completed save, Stop drains the runtime and publishes the
+clean proof for an ordinary 038 reopen. An interrupted selected run keeps the
+active proof and its import records for inspection.
+
 ## Private demo painting preparation
 
 The standalone debug tool accepts only the three pinned official JPEGs. It

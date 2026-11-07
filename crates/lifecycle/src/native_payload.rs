@@ -199,6 +199,12 @@ const WORKSPACE_V7_CAPABILITY: (&str, u64, &str) = (
     "7229cba9fbf98301960f44d39927c8d528ed55c3eb5e5fbdf203341261f342d5",
 );
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const WORKSPACE_FURNISHING_SELECTED_OEX_CAPABILITY: (&str, u64, &str) = (
+    "platform/scripts/native-workspace-furnishing-selected-oex-v1.json",
+    209,
+    "2792fac7aba1e053a9a43849e2899ad27e447be9fc58114f316a8a4c9d23d0ce",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const WORKSPACE_WALL_SCHEMA_PATH: &str =
     "platform/database/native-oex-workspace-import-wall/035_workspace_material_wall_import.sql";
 
@@ -220,6 +226,13 @@ fn workspace_import_validation_matches(
     version: WorkspaceImport,
     approved: &[(&str, &str, &str)],
 ) -> bool {
+    manifest.mode == "local-validation" && !manifest.redistribution_qualified && !manifest.official_signed
+        && approved.contains(&(manifest.source_commit.as_str(), manifest.producer_sha256.as_str(), manifest_sha256))
+        && workspace_import_files_match(manifest, version, false)
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+fn workspace_import_files_match(manifest: &Manifest, version: WorkspaceImport, furnishing: bool) -> bool {
     let regular_file = |path: &str| {
         manifest.files.iter().find(|file| file.path == path && file.link.is_none()
             && file.executable == Some(false))
@@ -228,18 +241,17 @@ fn workspace_import_validation_matches(
         regular_file(path).is_some_and(|file| file.bytes == Some(bytes)
             && file.sha256.as_deref() == Some(hash))
     };
-    manifest.mode == "local-validation" && !manifest.redistribution_qualified && !manifest.official_signed
-        && approved.contains(&(manifest.source_commit.as_str(), manifest.producer_sha256.as_str(), manifest_sha256))
-        && exact_file(WORKSPACE_V6_CAPABILITY)
+    exact_file(WORKSPACE_V6_CAPABILITY)
         && [WORKSPACE_IMPORT_FORMAT_HINT, WORKSPACE_IMPORT_MATERIALIZER, WORKSPACE_IMPORT_PREFLIGHT, WORKSPACE_IMPORT_PACKED]
             .into_iter().all(|path| regular_file(path).is_some())
         && match version {
-            WorkspaceImport::V6 => !manifest.files.iter().any(|file| {
+            WorkspaceImport::V6 => !furnishing && !manifest.files.iter().any(|file| {
                 file.path == WORKSPACE_V7_CAPABILITY.0
                     || file.path.rsplit('/').next() == Some(WORKSPACE_WALL_SCHEMA_NAME)
             }),
             WorkspaceImport::V7 => exact_file(WORKSPACE_V7_CAPABILITY)
-                && exact_file((WORKSPACE_WALL_SCHEMA_PATH, 3720, WORKSPACE_WALL_SCHEMA_SHA256)),
+                && exact_file((WORKSPACE_WALL_SCHEMA_PATH, 3720, WORKSPACE_WALL_SCHEMA_SHA256))
+                && (!furnishing || exact_file(WORKSPACE_FURNISHING_SELECTED_OEX_CAPABILITY)),
         }
 }
 
@@ -630,6 +642,16 @@ mod normal_oex_release_declaration_tests {
         }
         assert!(check(&manifest, WorkspaceImport::V7));
         assert!(!check(&manifest, WorkspaceImport::V6));
+        assert!(!workspace_import_files_match(&manifest, WorkspaceImport::V7, true));
+        let (path, bytes, hash) = WORKSPACE_FURNISHING_SELECTED_OEX_CAPABILITY;
+        manifest.files.push(serde_json::from_value(serde_json::json!({
+            "path": path, "bytes": bytes, "sha256": hash, "executable": false
+        })).unwrap());
+        assert!(workspace_import_files_match(&manifest, WorkspaceImport::V7, true));
+        let selected_marker = manifest.files.last_mut().unwrap();
+        selected_marker.bytes = Some(bytes + 1);
+        assert!(!workspace_import_files_match(&manifest, WorkspaceImport::V7, true));
+        manifest.files.pop();
         assert!(!workspace_import_validation_matches(&manifest, &sha, WorkspaceImport::V7, &[]));
         for path in [WORKSPACE_V6_CAPABILITY.0, WORKSPACE_V7_CAPABILITY.0, WORKSPACE_WALL_SCHEMA_PATH] {
             let file = manifest.files.iter_mut().find(|file| file.path == path).unwrap();
@@ -1221,7 +1243,15 @@ impl Payload {
             WorkspaceImport::V6 => WORKSPACE_V6_VALIDATION_PROVENANCE,
             WorkspaceImport::V7 => WORKSPACE_V7_VALIDATION_PROVENANCE,
         };
-        if !workspace_import_validation_matches(&payload.manifest, &payload.manifest_sha256, version, approved) {
+        let combined = version == WorkspaceImport::V7
+            && payload.workspace_furnishing_catalog()? == Some(WorkspaceFurnishingCatalog::Publication038)
+            && workspace_import_files_match(&payload.manifest, version, true);
+        if combined {
+            payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::Publication038)?;
+            if !selected {
+                return Ok(payload);
+            }
+        } else if !workspace_import_validation_matches(&payload.manifest, &payload.manifest_sha256, version, approved) {
             return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
         }
         payload.workspace_import = Some((version, selected));
