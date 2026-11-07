@@ -172,6 +172,20 @@ const WORKSPACE_MATERIAL_PUBLICATION_CAPABILITY: (&str, u64, &str) = (
     "c93117acc9cc397cb978bcb5d4bbc5732699af983f2f3c0413e9b4205455339c",
 );
 const WORKSPACE_MATERIAL_PUBLICATION_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[];
+const WORKSPACE_MATERIAL_MULTIMAP_DIRECTORY: &str =
+    "platform/database/native-workspace-material-multimap/";
+const WORKSPACE_MATERIAL_MULTIMAP_SCHEMA: (&str, u64, &str) = (
+    "platform/database/native-workspace-material-multimap/040_workspace_material_multimap.sql",
+    5544,
+    "db01d1910ba01a0a2e223829b92f9fbc0e4ce0240c21d3a8ae6b70963a84ef21",
+);
+const WORKSPACE_MATERIAL_MULTIMAP_CAPABILITY: (&str, u64, &str) = (
+    "platform/scripts/native-workspace-material-multimap-capability-v1.json",
+    160,
+    "14203083f3e9e735bba46a5dcc436c3f797aea168e5c91f428f28c134c1b3f84",
+);
+// The final source, producer and manifest tuple is admitted separately.
+const WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[];
 
 
 
@@ -181,6 +195,7 @@ pub(crate) enum WorkspaceFurnishingCatalog {
     Writer037,
     Publication038,
     MaterialPublication039,
+    MaterialMultimap040,
 }
 
 impl WorkspaceFurnishingCatalog {
@@ -190,11 +205,13 @@ impl WorkspaceFurnishingCatalog {
             Self::Writer037 => 37,
             Self::Publication038 => 38,
             Self::MaterialPublication039 => 39,
+            Self::MaterialMultimap040 => 40,
         }
     }
 
     pub(crate) fn uses_writer_lease(self) -> bool {
-        matches!(self, Self::Writer037 | Self::Publication038 | Self::MaterialPublication039)
+        matches!(self, Self::Writer037 | Self::Publication038 | Self::MaterialPublication039
+            | Self::MaterialMultimap040)
     }
 }
 
@@ -223,6 +240,11 @@ const WORKSPACE_FURNISHING_SELECTED_OEX_039_CAPABILITY: (&str, u64, &str) = (
     "platform/scripts/native-workspace-furnishing-selected-oex-039-v1.json",
     209,
     "4bded824d2c2eaab8be1f165903ed79b08f5182bb873065c9934226e135e6225",
+);
+const WORKSPACE_FURNISHING_SELECTED_OEX_040_CAPABILITY: (&str, u64, &str) = (
+    "platform/scripts/native-workspace-furnishing-selected-oex-040-v1.json",
+    209,
+    "08eddd08e0a17921a0cc4ac733258b70580e400ced004a582dac3d057a22a979",
 );
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const WORKSPACE_WALL_SCHEMA_PATH: &str =
@@ -576,18 +598,18 @@ mod normal_oex_release_declaration_tests {
         let legacy_pin = [(source.as_str(), producer.as_str(), manifest.as_str())];
         let writer_pin = [(source.as_str(), producer.as_str(), manifest.as_str(), WRITER_FIXTURE_MARKER)];
         payload.manifest.files.push(furnishing_ledger_file(WORKSPACE_FURNISHING_CAPABILITY.into()));
-        assert_eq!(payload.workspace_furnishing_catalog_for(&legacy_pin, &[], &[], &[]).unwrap(), Some(WorkspaceFurnishingCatalog::Schema036));
-        assert!(payload.workspace_furnishing_catalog_for(&legacy_pin, &writer_pin, &[], &[]).is_err());
+        assert_eq!(payload.workspace_furnishing_catalog_for(&legacy_pin, &[], &[], &[], &[]).unwrap(), Some(WorkspaceFurnishingCatalog::Schema036));
+        assert!(payload.workspace_furnishing_catalog_for(&legacy_pin, &writer_pin, &[], &[], &[]).is_err());
         payload.manifest.files.push(furnishing_ledger_file(WORKSPACE_FURNISHING_WRITER_SCHEMA.into()));
-        assert!(payload.workspace_furnishing_catalog_for(&legacy_pin, &[], &[], &[]).is_err());
-        assert!(payload.workspace_furnishing_catalog_for(&legacy_pin, &writer_pin, &[], &[]).is_err());
+        assert!(payload.workspace_furnishing_catalog_for(&legacy_pin, &[], &[], &[], &[]).is_err());
+        assert!(payload.workspace_furnishing_catalog_for(&legacy_pin, &writer_pin, &[], &[], &[]).is_err());
         payload.manifest.files.push(furnishing_ledger_file(WRITER_FIXTURE_MARKER.into()));
-        assert_eq!(payload.workspace_furnishing_catalog_for(&legacy_pin, &writer_pin, &[], &[]).unwrap(), Some(WorkspaceFurnishingCatalog::Writer037));
+        assert_eq!(payload.workspace_furnishing_catalog_for(&legacy_pin, &writer_pin, &[], &[], &[]).unwrap(), Some(WorkspaceFurnishingCatalog::Writer037));
         payload.manifest.producer_sha256.replace_range(0..1, "e");
-        assert!(payload.workspace_furnishing_catalog_for(&legacy_pin, &writer_pin, &[], &[]).is_err());
+        assert!(payload.workspace_furnishing_catalog_for(&legacy_pin, &writer_pin, &[], &[], &[]).is_err());
         payload.manifest.producer_sha256 = producer.clone();
         payload.manifest.files.last_mut().unwrap().link = Some("other".into());
-        assert!(payload.workspace_furnishing_catalog_for(&legacy_pin, &writer_pin, &[], &[]).is_err());
+        assert!(payload.workspace_furnishing_catalog_for(&legacy_pin, &writer_pin, &[], &[], &[]).is_err());
         assert!(payload.workspace_furnishing_catalog().is_err());
     }
 
@@ -606,22 +628,22 @@ mod normal_oex_release_declaration_tests {
             WORKSPACE_FURNISHING_WRITER_SCHEMA] {
             payload.manifest.files.push(furnishing_ledger_file(path.into()));
         }
-        assert_eq!(payload.workspace_furnishing_catalog_for(&[], &writer_pin, &[], &[]).unwrap(),
+        assert_eq!(payload.workspace_furnishing_catalog_for(&[], &writer_pin, &[], &[], &[]).unwrap(),
             Some(WorkspaceFurnishingCatalog::Writer037));
         let mut marker = furnishing_ledger_file(WORKSPACE_FURNISHING_PUBLICATION_CAPABILITY.into());
         marker.bytes = Some(WORKSPACE_FURNISHING_PUBLICATION_CAPABILITY_BYTES);
         marker.sha256 = Some(WORKSPACE_FURNISHING_PUBLICATION_CAPABILITY_SHA256.into());
         payload.manifest.files.push(marker);
-        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &publication_pin, &[]).is_err());
+        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &publication_pin, &[], &[]).is_err());
 
         let mut sql = furnishing_ledger_file(WORKSPACE_FURNISHING_PUBLICATION_SCHEMA.into());
         sql.bytes = Some(WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_BYTES);
         sql.sha256 = Some(WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_SHA256.into());
         payload.manifest.files.push(sql);
         assert!(payload.workspace_furnishing_catalog().is_err());
-        assert!(payload.workspace_furnishing_catalog_for(&[], &writer_pin, &[], &[]).is_err());
-        assert!(payload.workspace_furnishing_catalog_for(&[], &writer_pin, &publication_pin, &[]).is_err());
-        assert_eq!(payload.workspace_furnishing_catalog_for(&[], &[], &publication_pin, &[]).unwrap(), Some(catalog));
+        assert!(payload.workspace_furnishing_catalog_for(&[], &writer_pin, &[], &[], &[]).is_err());
+        assert!(payload.workspace_furnishing_catalog_for(&[], &writer_pin, &publication_pin, &[], &[]).is_err());
+        assert_eq!(payload.workspace_furnishing_catalog_for(&[], &[], &publication_pin, &[], &[]).unwrap(), Some(catalog));
         let ledger = payload.workspace_furnishing_ledger(catalog).unwrap();
         assert_eq!(ledger.lines().count(), 38);
         assert_eq!(ledger.lines().last().unwrap(),
@@ -632,18 +654,18 @@ mod normal_oex_release_declaration_tests {
         assert!(payload.workspace_furnishing_ledger(catalog).is_err());
         payload.manifest.files.pop();
         payload.manifest.files.last_mut().unwrap().bytes = Some(WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_BYTES + 1);
-        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &publication_pin, &[]).is_err());
+        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &publication_pin, &[], &[]).is_err());
         assert!(payload.workspace_furnishing_ledger(catalog).is_err());
         payload.manifest.files.last_mut().unwrap().bytes = Some(WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_BYTES);
         payload.manifest.files.last_mut().unwrap().sha256 = Some("f".repeat(64));
-        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &publication_pin, &[]).is_err());
+        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &publication_pin, &[], &[]).is_err());
         assert!(payload.workspace_furnishing_ledger(catalog).is_err());
     }
 
     #[cfg(debug_assertions)]
     #[test]
-    fn workspace_furnishing_material_publication_requires_exact_038_ancestry_and_039_pin() {
-        use WorkspaceFurnishingCatalog::{MaterialPublication039, Publication038};
+    fn workspace_furnishing_material_catalog_requires_exact_ancestry_and_pin() {
+        use WorkspaceFurnishingCatalog::{MaterialMultimap040, MaterialPublication039, Publication038};
         let mut payload = furnishing_ledger_fixture();
         let source = payload.manifest.source_commit.clone();
         let producer = payload.manifest.producer_sha256.clone();
@@ -665,19 +687,40 @@ mod normal_oex_release_declaration_tests {
                 path: path.into(), bytes: Some(bytes), sha256: Some(sha256.into()), executable: Some(false), link: None,
             });
         }
-        assert_eq!(payload.workspace_furnishing_catalog_for(&[], &[], &[], &pin).unwrap(), Some(MaterialPublication039));
-        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &pin, &[]).is_err());
-        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &pin, &pin).is_err());
+        assert_eq!(payload.workspace_furnishing_catalog_for(&[], &[], &[], &pin, &[]).unwrap(), Some(MaterialPublication039));
+        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &pin, &[], &[]).is_err());
+        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &pin, &pin, &[]).is_err());
         assert!(payload.workspace_furnishing_catalog().is_err());
         let ledger = payload.workspace_furnishing_ledger(MaterialPublication039).unwrap();
         assert_eq!(ledger.lines().count(), 39);
         assert_eq!(ledger.lines().last().unwrap(), format!("039_workspace_material_publication.sql|{}", WORKSPACE_MATERIAL_PUBLICATION_SCHEMA.2));
         assert!(payload.workspace_furnishing_ledger(Publication038).is_err());
         payload.manifest.files.push(furnishing_ledger_file(WORKSPACE_FURNISHING_SELECTED_OEX_CAPABILITY.0.into()));
-        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &[], &pin).is_err());
+        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &[], &pin, &[]).is_err());
         payload.manifest.files.pop();
-        payload.manifest.files.retain(|file| file.path != WORKSPACE_FURNISHING_PUBLICATION_CAPABILITY);
-        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &[], &pin).is_err());
+        payload.manifest.files.push(furnishing_ledger_file(WORKSPACE_FURNISHING_SELECTED_OEX_040_CAPABILITY.0.into()));
+        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &[], &pin, &[]).is_err());
+        payload.manifest.files.pop();
+
+        for (path, bytes, sha256) in [WORKSPACE_MATERIAL_MULTIMAP_CAPABILITY, WORKSPACE_MATERIAL_MULTIMAP_SCHEMA] {
+            payload.manifest.files.push(Item {
+                path: path.into(), bytes: Some(bytes), sha256: Some(sha256.into()), executable: Some(false), link: None,
+            });
+        }
+        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &[], &pin, &[]).is_err());
+        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &[], &pin, &pin).is_err());
+        assert_eq!(payload.workspace_furnishing_catalog_for(&[], &[], &[], &[], &pin).unwrap(), Some(MaterialMultimap040));
+        let ledger = payload.workspace_furnishing_ledger(MaterialMultimap040).unwrap();
+        assert_eq!(ledger.lines().count(), 40);
+        assert_eq!(ledger.lines().last().unwrap(), format!("040_workspace_material_multimap.sql|{}", WORKSPACE_MATERIAL_MULTIMAP_SCHEMA.2));
+        assert!(payload.workspace_furnishing_ledger(MaterialPublication039).is_err());
+
+        payload.manifest.files.push(furnishing_ledger_file(WORKSPACE_FURNISHING_SELECTED_OEX_039_CAPABILITY.0.into()));
+        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &[], &[], &pin).is_err());
+        payload.manifest.files.pop();
+        payload.manifest.files.retain(|file| file.path != WORKSPACE_MATERIAL_PUBLICATION_SCHEMA.0);
+        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &[], &[], &pin).is_err());
+        assert!(payload.workspace_furnishing_ledger(MaterialMultimap040).is_err());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -723,6 +766,14 @@ mod normal_oex_release_declaration_tests {
         })).unwrap());
         assert!(workspace_import_files_match(&manifest, WorkspaceImport::V7, Some(WORKSPACE_FURNISHING_SELECTED_OEX_039_CAPABILITY)));
         assert!(!workspace_import_files_match(&manifest, WorkspaceImport::V7, Some(WORKSPACE_FURNISHING_SELECTED_OEX_CAPABILITY)));
+        manifest.files.pop();
+        let (path, bytes, hash) = WORKSPACE_FURNISHING_SELECTED_OEX_040_CAPABILITY;
+        manifest.files.push(Item {
+            path: path.into(), bytes: Some(bytes), sha256: Some(hash.into()), executable: Some(false), link: None,
+        });
+        assert!(workspace_import_files_match(&manifest, WorkspaceImport::V7, Some(WORKSPACE_FURNISHING_SELECTED_OEX_040_CAPABILITY)));
+        assert!(!workspace_import_files_match(&manifest, WorkspaceImport::V7, Some(WORKSPACE_FURNISHING_SELECTED_OEX_039_CAPABILITY)));
+        assert!(!workspace_import_files_match(&manifest, WorkspaceImport::V6, Some(WORKSPACE_FURNISHING_SELECTED_OEX_040_CAPABILITY)));
         manifest.files.pop();
         assert!(!workspace_import_validation_matches(&manifest, &sha, WorkspaceImport::V7, &[]));
         for path in [WORKSPACE_V6_CAPABILITY.0, WORKSPACE_V7_CAPABILITY.0, WORKSPACE_WALL_SCHEMA_PATH] {
@@ -1207,13 +1258,15 @@ impl Payload {
         self.workspace_furnishing_catalog_for(WORKSPACE_FURNISHING_VALIDATION_PROVENANCE,
             WORKSPACE_FURNISHING_WRITER_VALIDATION_PROVENANCE,
             WORKSPACE_FURNISHING_PUBLICATION_VALIDATION_PROVENANCE,
-            WORKSPACE_MATERIAL_PUBLICATION_VALIDATION_PROVENANCE)
+            WORKSPACE_MATERIAL_PUBLICATION_VALIDATION_PROVENANCE,
+            WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE)
     }
 
     fn workspace_furnishing_catalog_for(&self, legacy: &[(&str, &str, &str)],
                                         writer: &[(&str, &str, &str, &str)],
                                         publication: &[(&str, &str, &str)],
-                                        material: &[(&str, &str, &str)]) -> Result<Option<WorkspaceFurnishingCatalog>> {
+                                        material: &[(&str, &str, &str)],
+                                        multimap: &[(&str, &str, &str)]) -> Result<Option<WorkspaceFurnishingCatalog>> {
         let unqualified = || err("NATIVE_RUNTIME_UNQUALIFIED");
         let tuple = (self.manifest.source_commit.as_str(), self.manifest.producer_sha256.as_str(), self.manifest_sha256.as_str());
         let regular = |path: &str| self.manifest.files.iter().any(|file| file.path == path
@@ -1230,7 +1283,12 @@ impl Payload {
                 || file.path.starts_with(WORKSPACE_MATERIAL_PUBLICATION_DIRECTORY)
                 || file.path == WORKSPACE_FURNISHING_SELECTED_OEX_039_CAPABILITY.0);
         let material_pinned = material.contains(&tuple);
-        let wants_material = material_declared || material_pinned;
+        let multimap_pinned = multimap.contains(&tuple);
+        let wants_multimap = multimap_pinned || self.manifest.files.iter().any(|file|
+            file.path == WORKSPACE_MATERIAL_MULTIMAP_CAPABILITY.0
+                || file.path.starts_with(WORKSPACE_MATERIAL_MULTIMAP_DIRECTORY)
+                || file.path == WORKSPACE_FURNISHING_SELECTED_OEX_040_CAPABILITY.0);
+        let wants_material = material_declared || material_pinned || wants_multimap;
         if !marker && !writer_schema && writer_pin.is_none()
             && !publication_declared && !publication_pinned && !wants_material
         {
@@ -1248,8 +1306,14 @@ impl Payload {
                     && file.executable == Some(false) && file.bytes == Some(bytes)
                     && file.sha256.as_deref() == Some(hash))
             };
-            if !(if wants_material { material_pinned && !publication_pinned } else { publication_pinned })
-                || writer_pin.is_some() || legacy.contains(&tuple)
+            let pinned = if wants_multimap {
+                multimap_pinned && !material_pinned && !publication_pinned
+            } else if wants_material {
+                material_pinned && !publication_pinned
+            } else {
+                publication_pinned
+            };
+            if !pinned || writer_pin.is_some() || legacy.contains(&tuple)
                 || !regular(WORKSPACE_FURNISHING_PUBLICATION_WRITER_CAPABILITY)
                 || !regular(WORKSPACE_FURNISHING_WRITER_SCHEMA)
                 || !pinned_file((WORKSPACE_FURNISHING_PUBLICATION_CAPABILITY,
@@ -1265,6 +1329,15 @@ impl Payload {
                     || self.manifest.files.iter().any(|file| file.path == WORKSPACE_FURNISHING_SELECTED_OEX_CAPABILITY.0)
                 {
                     return Err(unqualified());
+                }
+                if wants_multimap {
+                    if !pinned_file(WORKSPACE_MATERIAL_MULTIMAP_CAPABILITY)
+                        || !pinned_file(WORKSPACE_MATERIAL_MULTIMAP_SCHEMA)
+                        || self.manifest.files.iter().any(|file| file.path == WORKSPACE_FURNISHING_SELECTED_OEX_039_CAPABILITY.0)
+                    {
+                        return Err(unqualified());
+                    }
+                    return Ok(Some(WorkspaceFurnishingCatalog::MaterialMultimap040));
                 }
                 return Ok(Some(WorkspaceFurnishingCatalog::MaterialPublication039));
             }
@@ -1303,7 +1376,7 @@ impl Payload {
                 }
                 37
             } else if file.path.starts_with(WORKSPACE_FURNISHING_PUBLICATION_DIRECTORY) {
-                if !matches!(catalog, WorkspaceFurnishingCatalog::Publication038 | WorkspaceFurnishingCatalog::MaterialPublication039)
+                if catalog.version() < 38
                     || file.path != WORKSPACE_FURNISHING_PUBLICATION_SCHEMA
                     || file.bytes != Some(WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_BYTES)
                     || file.sha256.as_deref() != Some(WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_SHA256)
@@ -1313,12 +1386,20 @@ impl Payload {
                 38
             } else if file.path.starts_with(WORKSPACE_MATERIAL_PUBLICATION_DIRECTORY) {
                 let (path, bytes, hash) = WORKSPACE_MATERIAL_PUBLICATION_SCHEMA;
-                if catalog != WorkspaceFurnishingCatalog::MaterialPublication039
+                if catalog.version() < 39
                     || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
                 {
                     return Err(invalid());
                 }
                 39
+            } else if file.path.starts_with(WORKSPACE_MATERIAL_MULTIMAP_DIRECTORY) {
+                let (path, bytes, hash) = WORKSPACE_MATERIAL_MULTIMAP_SCHEMA;
+                if catalog != WorkspaceFurnishingCatalog::MaterialMultimap040
+                    || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
+                {
+                    return Err(invalid());
+                }
+                40
             } else {
                 let Some((_, range)) = directories.iter().find(|(expected, _)| *expected == directory) else { continue; };
                 let Some(number) = name.split_once('_').and_then(|(number, _)| number.parse::<usize>().ok()) else { return Err(invalid()); };
@@ -1347,6 +1428,7 @@ impl Payload {
             let marker = match catalog {
                 WorkspaceFurnishingCatalog::Publication038 => WORKSPACE_FURNISHING_SELECTED_OEX_CAPABILITY,
                 WorkspaceFurnishingCatalog::MaterialPublication039 => WORKSPACE_FURNISHING_SELECTED_OEX_039_CAPABILITY,
+                WorkspaceFurnishingCatalog::MaterialMultimap040 => WORKSPACE_FURNISHING_SELECTED_OEX_040_CAPABILITY,
                 _ => return Err(err("NATIVE_RUNTIME_UNQUALIFIED")),
             };
             if version != WorkspaceImport::V7 || !workspace_import_files_match(&payload.manifest, version, Some(marker)) {
