@@ -169,7 +169,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "FRAME_ASSET_UNSUPPORTED": return "등록된 얇은 황동 액자와 승인된 평면 이미지를 선택하세요."
         case "FRAME_SIZE_UNSUPPORTED": return "폭 60 cm, 높이 80 cm로 승인된 작품을 선택하세요."
         case "FRAME_DEPTH_UNSUPPORTED": return "깊이 정보가 없는 평면 작품을 선택하세요."
-        case "FRAME_TRANSFORM_UNSUPPORTED": return "작품 배치를 원래 크기로 돌린 뒤 전시를 저장하세요."
+        case "FRAME_TRANSFORM_UNSUPPORTED": return "공간과 작품 배치의 배율을 확인하세요. 액자를 연결하려면 작품이 승인된 크기로 표시되어야 합니다."
         case "FRAME_PROCEDURAL_CONFLICT": return "기존 액자 설정을 해제하고 전시를 저장한 뒤 다시 시도하세요."
         case "ARCHITECTURE_SELECTION_CHANGED": return "선택한 대상이 바뀌었습니다. 입력을 취소한 뒤 대상을 다시 선택하세요."
         case "PLACEMENT_APPLY_REQUIRED": return "배치와 위치 입력을 먼저 적용하거나 취소하세요. 입력과 기존 전시는 그대로 유지됩니다."
