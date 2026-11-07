@@ -741,6 +741,14 @@ only the existing furnishing kinds can continue using extension version 1.
 The descriptor version stays 1. Export a version 2 scene as OEX draft.14.
 Selected import retains its existing draft.12 format.
 
+When the same session also advertises
+`workspaceFurnishingRoomVisualProfile: workspace-furnishing-room-visual-v1`,
+the GUI and CLI accept `partition`, `info-stand`, `barrier` and `display-case`.
+Placing the first of these visual models upgrades the scene extension to
+version 3 and retains existing descriptors and poses. Existing version 1 and
+2 scenes keep their versions until a new kind is placed, and later edits to a
+version 3 scene retain version 3. Version 3 scenes export as OEX draft.15.
+
 In that authenticated workspace, the 3D editor can read the registered
 version's display check and model on the current loopback origin and tenant.
 The viewport keeps these same two URL exceptions during saved-scene capture.
@@ -753,6 +761,7 @@ The private native automation command uses the same intake and catalog API:
   `provenance` and `model` (`mime`, `bytes`, `sha256`). The envelope request
   ID is the idempotency key. Reuse the same declaration if the create reply is lost.
   Use `kind: "stool"` only in an authenticated session with the stool capability.
+  The four additional kinds require the room visual capability.
 - `workspace-furnishing-intake-list` and `workspace-furnishing-list` take
   `cursor` (null for the first page). Intake `status`, `upload`, `complete`,
   `cancel` and `retry` take `intakeId`. Upload also takes the configured

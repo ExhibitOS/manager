@@ -23,8 +23,9 @@ public struct WorkspaceFurnishingPlacement: Codable, Equatable, Sendable {
     }
 
     func applying(_ furnishing: WorkspaceFurnishing, to draft: NativeExhibitionDraft,
-                  stool: Bool = false) throws -> NativeExhibitionDraft? {
-        guard furnishing.details.kind.admitted(stool: stool) else {
+                  supportedExtensionVersion: Int64 = 1) throws -> NativeExhibitionDraft? {
+        var version = furnishing.details.kind.minimumExtensionVersion
+        guard version <= supportedExtensionVersion else {
             throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
         }
         let matches = draft.rooms.filter { $0["id"].string == roomId }
@@ -60,22 +61,24 @@ public struct WorkspaceFurnishingPlacement: Codable, Equatable, Sendable {
         }
         var furnishings: [DocumentValue] = []
         var placements: [DocumentValue] = []
-        var version: Int64 = furnishing.details.kind == .stool ? 2 : 1
         if let existing = extensions[Self.namespace] {
-            let existingVersion = existing["version"]
-            if existingVersion == .integer(2) && !stool {
-                throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
-            }
             guard case .object(let fields) = existing, Set(fields.keys) == ["version", "furnishings", "placements"],
-                  [.integer(1), .integer(2)].contains(existingVersion), let assets = existing["furnishings"].items,
+                  let existingVersion = existing["version"].integer, (1...3).contains(existingVersion),
+                  let assets = existing["furnishings"].items,
                   let rows = existing["placements"].items, !assets.isEmpty, !rows.isEmpty,
-                  existingVersion == .integer(2) || !assets.contains(where: { $0["kind"] == .string("stool") }),
                   assets.count <= 64, rows.count <= 128 else {
                 throw AuthoringFailure("WORKSPACE_FURNISHING_INVALID")
             }
+            guard existingVersion <= supportedExtensionVersion else {
+                throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+            }
+            guard assets.allSatisfy({ row in
+                guard let value = row["kind"].string, let kind = WorkspaceFurnishingKind(rawValue: value) else { return false }
+                return kind.minimumExtensionVersion <= existingVersion
+            }) else { throw AuthoringFailure("WORKSPACE_FURNISHING_INVALID") }
             furnishings = assets
             placements = rows
-            if existingVersion == .integer(2) { version = 2 }
+            version = max(version, existingVersion)
         }
         let matching = furnishings.filter { $0["id"].string == furnishingId }
         guard matching.isEmpty || matching == [descriptor] else {
