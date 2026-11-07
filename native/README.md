@@ -237,6 +237,17 @@ drained safely. Retry from the restored 039 source in a new trial.
 An unproved stop or a 040 database with a pending checkpoint is not
 eligible for another upgrade attempt.
 
+For current catalog 040 service EXB, the same saved-workspace commands
+admit a directed refresh from
+`bdfc8202d851f9f8983440b9475da3fc3ddc6ee1f0bf4cf2c0d4bf1995dde338`
+to
+`ebbf0aeabf013f5071151580495c9c7e5ff6812cbd995769b5e347e01ae92c0b`.
+Reopen and stop the source normally before staging if a prior backup tool
+failed. Both payloads have the same verified 040 SQL ledger. Stage the
+source, activate the reviewed target, and reopen with that target before
+creating a service EXB. Restore the authenticated archive using the same
+target payload and a fresh physical profile.
+
 ### Private floor rendering
 
 The reviewed `cfe1` local-validation runtime also admits the existing Quiet

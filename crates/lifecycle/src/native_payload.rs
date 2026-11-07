@@ -232,6 +232,14 @@ const CATALOG39_UPGRADE_TARGET: Option<RuntimeTuple> = Some((
     "bdfc8202d851f9f8983440b9475da3fc3ddc6ee1f0bf4cf2c0d4bf1995dde338",
 ));
 
+// Independently reviewed catalog 040 runtime with service backup support.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG40_EXB_TARGET: Option<RuntimeTuple> = Some((
+    "394ca8bdb6b9ef9e4d5f298557f975c01ac36563",
+    "afe2d4e6cc881733a218b2bc3354e026b5492adbd3a7dc0acf13e6bb66f9c178",
+    "ebbf0aeabf013f5071151580495c9c7e5ff6812cbd995769b5e347e01ae92c0b",
+));
+
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Catalog39Upgrade(RuntimeTuple);
@@ -245,6 +253,7 @@ pub(crate) fn saved_workspace_transition_supported(pair: (&str, &str)) -> bool {
 pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
     WORKSPACE_V5_SAVED_TRANSITIONS.iter().any(|(_, target)| *target == manifest)
         || CATALOG39_UPGRADE_TARGET.is_some_and(|target| target.2 == manifest)
+        || CATALOG40_EXB_TARGET.is_some_and(|target| target.2 == manifest)
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -253,6 +262,7 @@ pub(crate) enum Catalog40Transition {
     White,
     Tangent,
     Upgrade39(Catalog39Upgrade),
+    ExbRepair { source: RuntimeTuple, target: RuntimeTuple },
 }
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 impl Catalog40Transition {
@@ -260,13 +270,20 @@ impl Catalog40Transition {
         match pair {
             CATALOG40_FRAME_TRANSITION => Some(Self::White),
             CATALOG40_TANGENT_TRANSITION => Some(Self::Tangent),
-            _ => Self::upgrade_from_manifests(pair, CATALOG39_UPGRADE_TARGET),
+            _ => Self::upgrade_from_manifests(pair, CATALOG39_UPGRADE_TARGET)
+                .or_else(|| Self::exb_from_manifests(pair, CATALOG40_EXB_TARGET)),
         }
     }
 
     fn upgrade_from_manifests(pair: (&str, &str), target: Option<RuntimeTuple>) -> Option<Self> {
         let target = target?;
         (pair == (CATALOG39_UPGRADE_SOURCE.2, target.2)).then_some(Self::Upgrade39(Catalog39Upgrade(target)))
+    }
+
+    fn exb_from_manifests(pair: (&str, &str), target: Option<RuntimeTuple>) -> Option<Self> {
+        let source = CATALOG39_UPGRADE_TARGET?;
+        let target = target?;
+        (pair == (source.2, target.2)).then_some(Self::ExbRepair { source, target })
     }
 
     #[cfg(test)]
@@ -292,6 +309,7 @@ impl Catalog40Transition {
             Self::White => CATALOG40_FRAME_SOURCE,
             Self::Tangent => CATALOG40_FRAME_TARGET,
             Self::Upgrade39(_) => CATALOG39_UPGRADE_SOURCE,
+            Self::ExbRepair { source, .. } => source,
         }
     }
 
@@ -300,6 +318,7 @@ impl Catalog40Transition {
             Self::White => CATALOG40_FRAME_TARGET,
             Self::Tangent => CATALOG40_TANGENT_TARGET,
             Self::Upgrade39(target) => target.0,
+            Self::ExbRepair { target, .. } => target,
         }
     }
 }
@@ -845,6 +864,29 @@ mod normal_oex_release_declaration_tests {
         assert!(payload.workspace_furnishing_ledger(MaterialMultimap040).is_err());
     }
 
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn catalog40_exb_refresh_requires_an_exact_directed_same_catalog_pair() {
+        let source = CATALOG39_UPGRADE_TARGET.unwrap();
+        let target = (
+            "1111111111111111111111111111111111111111",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            "3333333333333333333333333333333333333333333333333333333333333333",
+        );
+        let transition = Catalog40Transition::exb_from_manifests((source.2, target.2), Some(target)).unwrap();
+        assert_eq!(transition.source(), source);
+        assert_eq!(transition.target(), target);
+        assert_eq!(transition.source_catalog(), WorkspaceFurnishingCatalog::MaterialMultimap040);
+        assert!(!transition.upgrades_catalog());
+        assert!(Catalog40Transition::exb_from_manifests((target.2, source.2), Some(target)).is_none());
+        assert!(Catalog40Transition::exb_from_manifests((CATALOG40_TANGENT_TARGET.2, target.2), Some(target)).is_none());
+        assert!(Catalog40Transition::exb_from_manifests((source.2, target.2), None).is_none());
+        let reviewed = CATALOG40_EXB_TARGET.unwrap();
+        assert!(saved_workspace_transition_target(reviewed.2));
+        assert_eq!(Catalog40Transition::from_manifests((source.2, reviewed.2)).unwrap().target(), reviewed);
+        assert!(Catalog40Transition::from_manifests((reviewed.2, source.2)).is_none());
+    }
+
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     #[test]
     fn workspace_import_validation_distinguishes_v6_v7_and_preserves_reopen() {
@@ -1376,7 +1418,8 @@ impl Payload {
         if let Some(target) = CATALOG39_UPGRADE_TARGET {
             let catalog = if context.manifest_sha256 == CATALOG39_UPGRADE_SOURCE.2 {
                 Some(WorkspaceFurnishingCatalog::MaterialPublication039)
-            } else if context.manifest_sha256 == target.2 {
+            } else if context.manifest_sha256 == target.2
+                || CATALOG40_EXB_TARGET.is_some_and(|exb| context.manifest_sha256 == exb.2) {
                 Some(WorkspaceFurnishingCatalog::MaterialMultimap040)
             } else { None };
             if let Some(expected) = catalog {
@@ -1406,12 +1449,10 @@ impl Payload {
 
     pub(crate) fn workspace_furnishing_catalog(&self) -> Result<Option<WorkspaceFurnishingCatalog>> {
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-        let upgrade = CATALOG39_UPGRADE_TARGET.map(|target| [
-            CATALOG40_FRAME_SOURCE, CATALOG40_FRAME_TARGET, CATALOG40_TANGENT_TARGET, target,
-        ]);
+        let multimap = WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE.iter().copied()
+            .chain(CATALOG39_UPGRADE_TARGET).chain(CATALOG40_EXB_TARGET).collect::<Vec<_>>();
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-        let multimap = upgrade.as_ref().map(|pins| pins.as_slice())
-            .unwrap_or(WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE);
+        let multimap = multimap.as_slice();
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
         let multimap = WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE;
         self.workspace_furnishing_catalog_for(WORKSPACE_FURNISHING_VALIDATION_PROVENANCE,
