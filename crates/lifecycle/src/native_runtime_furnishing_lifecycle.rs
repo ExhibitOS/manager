@@ -74,7 +74,7 @@ pub(super) struct Binding {
 impl Binding {
     pub(super) fn check(&self) -> Result<()> {
         if self.version != 1
-            || self.catalog != 37
+            || !matches!(self.catalog, 37 | 38)
             || !installations::uuid(&self.generation)
             || self
                 .previous_generation
@@ -390,6 +390,52 @@ mod tests {
         assert_eq!(next.previous_generation.as_deref(), Some(GENERATION));
         assert_eq!(next.admission_kind, Admission::CleanReopen);
         assert!(binding(LATER).consume(&next).is_err());
+    }
+
+    #[test]
+    fn ordinary_furnishing_publication_reopen_cannot_consume_a_037_completion() {
+        let mut prior = binding(GENERATION);
+        prior.phase = Phase::Clean;
+        let mut next = binding(NEXT);
+        next.catalog = 38;
+        next.check().unwrap();
+        assert!(next.consume(&prior).is_err());
+
+        prior.catalog = 38;
+        next.consume(&prior).unwrap();
+        assert_eq!(next.admission_kind, Admission::CleanReopen);
+        assert_eq!(next.previous_generation.as_deref(), Some(GENERATION));
+        assert_eq!(next.catalog, 38);
+        assert!(binding(LATER).consume(&next).is_err());
+    }
+
+    #[test]
+    fn ordinary_furnishing_publication_consumes_only_same_payload_and_physical_restore() {
+        let mut restored = binding(GENERATION);
+        restored.catalog = 38;
+        restored.phase = Phase::ActivatedRestore;
+        restored.admission_kind = Admission::VerifiedRestore;
+        restored.restore = Some(Restore {
+            id: "10000000-0000-4000-8000-000000000007".into(),
+            backup_id: "10000000-0000-4000-8000-000000000008".into(),
+            archive_manifest_sha256: "5".repeat(64),
+            target_system_identifier: "123".into(),
+        });
+        let mut next = binding(NEXT);
+        next.catalog = 38;
+        let mut foreign = restored.clone();
+        foreign.catalog = 37;
+        assert!(next.consume(&foreign).is_err());
+        foreign = restored.clone();
+        foreign.payload_manifest_sha256 = "4".repeat(64);
+        assert!(next.consume(&foreign).is_err());
+        foreign = restored.clone();
+        foreign.physical.root_inode += 1;
+        assert!(next.consume(&foreign).is_err());
+        next.consume(&restored).unwrap();
+        assert_eq!(next.admission_kind, Admission::VerifiedRestore);
+        assert_eq!(next.owner, restored.owner);
+        assert_eq!(next.restore, restored.restore);
     }
 
     #[test]

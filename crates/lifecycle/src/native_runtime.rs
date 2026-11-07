@@ -781,13 +781,15 @@ impl Session {
     fn furnishing_binding_for(&self, generation: String, phase: Phase, admission_kind: Admission) -> Result<Binding> {
         let (workspace_id, tenant_id, principal_id) = self.service.personal_identity()?;
         let payload = self.payload.context();
+        let catalog = self.payload.workspace_furnishing_catalog()?
+            .filter(|catalog| catalog.uses_writer_lease()).ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
         let physical = self.furnishing_writer_lifetime.as_ref()
             .ok_or_else(|| err(furnishing_lifecycle::ERROR))?.identity()?;
         Ok(Binding {
             version: 1, phase, generation, previous_generation: None, admission_kind,
             owner: FurnishingOwner { workspace_id, tenant_id, principal_id, owner_uid: unsafe { libc::geteuid() } },
             source_commit: payload.source_commit, producer_sha256: self.payload.producer_sha256().into(),
-            payload_manifest_sha256: payload.manifest_sha256, catalog: 37, physical, restore: None,
+            payload_manifest_sha256: payload.manifest_sha256, catalog: catalog.version(), physical, restore: None,
         })
     }
 
@@ -821,7 +823,7 @@ impl Session {
     }
 
     pub(crate) fn verify_workspace_furnishing_writer_quiescence(&mut self) -> Result<()> {
-        if self.payload.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::Writer037) {
+        if !self.payload.workspace_furnishing_catalog()?.is_some_and(WorkspaceFurnishingCatalog::uses_writer_lease) {
             return Ok(());
         }
         if self.status()?.state != "database_ready" || self.node.is_some() || self.auxiliary.is_some() {
@@ -840,7 +842,7 @@ impl Session {
     }
 
     pub(crate) fn furnishing_restore_target_identity(&self) -> Result<Option<FurnishingWriterIdentity>> {
-        if self.payload.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::Writer037) {
+        if !self.payload.workspace_furnishing_catalog()?.is_some_and(WorkspaceFurnishingCatalog::uses_writer_lease) {
             return Ok(None);
         }
         if self.state != "database_ready"
@@ -1736,7 +1738,7 @@ const { isDeepStrictEqual } = require('node:util');
         let mut binding = prior_binding.clone();
         let mut maintenance_system = None;
         let mut existing_database = false;
-        if catalog == Some(WorkspaceFurnishingCatalog::Writer037) {
+        if catalog.is_some_and(WorkspaceFurnishingCatalog::uses_writer_lease) {
             self.check_native_observation_fence()?;
             let has_database = exists(&self.service.root.join("native-database"))?;
             let start = if services { self.workspace_furnishing_start()? } else { None };
@@ -1892,7 +1894,7 @@ const { isDeepStrictEqual } = require('node:util');
     }
 
     pub(crate) fn stop_with_furnishing_activation_fences(&mut self, id: &str) -> Result<Context> {
-        if self.payload.workspace_furnishing_catalog()? == Some(WorkspaceFurnishingCatalog::Writer037) {
+        if self.payload.workspace_furnishing_catalog()?.is_some_and(WorkspaceFurnishingCatalog::uses_writer_lease) {
             if self.furnishing_binding.as_ref().is_some_and(|binding| binding.phase != Phase::ActivatedRestore)
                 || self.state != "database_ready" {
                 return Err(err(furnishing_lifecycle::ERROR));
@@ -1906,7 +1908,7 @@ const { isDeepStrictEqual } = require('node:util');
     pub(crate) fn record_furnishing_activation(
         &mut self, id: &str, backup_id: &str, archive_manifest_sha256: &str, target_system_identifier: &str,
     ) -> Result<()> {
-        if self.payload.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::Writer037) {
+        if !self.payload.workspace_furnishing_catalog()?.is_some_and(WorkspaceFurnishingCatalog::uses_writer_lease) {
             return Ok(());
         }
         if !self.furnishing_keep_fences || self.any_owned() || self.state != "stopped"
