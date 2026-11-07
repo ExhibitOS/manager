@@ -83,6 +83,13 @@ Manager records the completed save, Stop drains the runtime and publishes the
 clean proof for an ordinary 038 reopen. An interrupted selected run keeps the
 active proof and its import records for inspection.
 
+Workspace material publication (039) requires its own qualified payload and
+complete 39-row ledger, including the 038 publication migration. Start from
+a new workspace. The debug v7 entry requires the 039 selected-import marker
+to import draft.12. After settlement and normal stop, reopen with the same
+039 payload. Use that exact payload for backups and restores of a 039
+workspace.
+
 ## Private demo painting preparation
 
 The standalone debug tool accepts only the three pinned official JPEGs. It

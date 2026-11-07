@@ -51,7 +51,7 @@ use furnishing_lifecycle::{Admission, Binding, Owner as FurnishingOwner, Phase, 
 pub(crate) const WORKSPACE_FURNISHING_INITIALIZATION: &str = "native-workspace-furnishing-initialization.json";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum FurnishingStart { Initialize, Reopen, SelectedImport }
+enum FurnishingStart { Initialize, Reopen, SelectedImport038, SelectedImport039 }
 
 #[derive(Clone, Copy)]
 enum StartMode<'a> {
@@ -62,11 +62,24 @@ enum StartMode<'a> {
 }
 
 impl FurnishingStart {
+    fn selected_import(catalog: WorkspaceFurnishingCatalog) -> Option<Self> {
+        match catalog {
+            WorkspaceFurnishingCatalog::Publication038 => Some(Self::SelectedImport038),
+            WorkspaceFurnishingCatalog::MaterialPublication039 => Some(Self::SelectedImport039),
+            _ => None,
+        }
+    }
+
+    fn is_selected_import(self) -> bool {
+        matches!(self, Self::SelectedImport038 | Self::SelectedImport039)
+    }
+
     fn owner_mode(self) -> &'static str {
         match self {
             Self::Initialize => "workspace-furnishing-036-initialize-v1",
             Self::Reopen => "workspace-furnishing-036-reopen-v1",
-            Self::SelectedImport => "workspace-furnishing-038-selected-import-v7",
+            Self::SelectedImport038 => "workspace-furnishing-038-selected-import-v7",
+            Self::SelectedImport039 => "workspace-furnishing-039-selected-import-v7",
         }
     }
 }
@@ -661,7 +674,7 @@ impl Session {
         let mut session = Self::new_with_guard(&service, payload, ports, guard)?;
         session.check_native_observation_fence()?;
         session.normal_oex_selected = true;
-        if session.payload.workspace_furnishing_catalog()? == Some(WorkspaceFurnishingCatalog::Publication038)
+        if session.payload.workspace_furnishing_catalog()?.and_then(FurnishingStart::selected_import).is_some()
             && session.payload.selected_workspace_import_version() == Some(crate::native_payload::WorkspaceImport::V7)
         {
             session.authorize_fresh_workspace_furnishing(&root_pin)?;
@@ -751,12 +764,12 @@ impl Session {
         use std::os::unix::fs::MetadataExt;
         let Some(catalog) = self.payload.workspace_furnishing_catalog()? else { return Ok(None); };
         let initialize = if self.normal_oex_selected {
-            if catalog != WorkspaceFurnishingCatalog::Publication038 || !self.fresh_ordinary_furnishing
+            if !self.fresh_ordinary_furnishing
                 || self.payload.selected_workspace_import_version() != Some(crate::native_payload::WorkspaceImport::V7)
             {
                 return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
             }
-            FurnishingStart::SelectedImport
+            FurnishingStart::selected_import(catalog).ok_or_else(|| err("NATIVE_RUNTIME_UNQUALIFIED"))?
         } else {
             FurnishingStart::Initialize
         };
@@ -1316,7 +1329,9 @@ const { isDeepStrictEqual } = require('node:util');
             .map(|s| s.trim().into())
             .map_err(|_| err("NATIVE_DATABASE_UNAVAILABLE"))
     }
-    fn start_inner(&mut self, services: bool, maintenance_system: Option<&str>, existing_database: bool) -> Result<()> {
+    fn start_inner(&mut self, services: bool, maintenance_system: Option<&str>, existing_database: bool,
+        furnishing: Option<FurnishingStart>,
+    ) -> Result<()> {
         let mut reservations = Vec::new();
         for port in [self.ports.web, self.ports.api, self.ports.database] {
             reservations.push(
@@ -1331,13 +1346,6 @@ const { isDeepStrictEqual } = require('node:util');
         }
         let reopen_import = self.payload.workspace_import_version()
             .filter(|_| services && !self.normal_oex_selected);
-        let furnishing = self.active_furnishing_binding().map(|binding| {
-            match (binding.admission_kind, self.normal_oex_selected) {
-                (Admission::FreshEmpty, true) => FurnishingStart::SelectedImport,
-                (Admission::FreshEmpty, false) => FurnishingStart::Initialize,
-                _ => FurnishingStart::Reopen,
-            }
-        });
         let require_existing = existing_database || reopen_import.is_some() || furnishing == Some(FurnishingStart::Reopen);
         let database = self.service.root.join("native-database");
         if !exists(&database)? {
@@ -1656,7 +1664,7 @@ const { isDeepStrictEqual } = require('node:util');
                 if ready.ready {
                     if let Some(start) = furnishing {
                         if start != FurnishingStart::Reopen { self.verify_workspace_furnishing_ledger()?; }
-                        if start != FurnishingStart::SelectedImport { self.check_workspace_furnishing_channel()?; }
+                        if !start.is_selected_import() { self.check_workspace_furnishing_channel()?; }
                         if start != FurnishingStart::Reopen {
                             fs::remove_file(self.service.root.join(WORKSPACE_FURNISHING_INITIALIZATION))
                                 .map_err(|_| err("STATE_UNAVAILABLE"))?;
@@ -1763,13 +1771,16 @@ const { isDeepStrictEqual } = require('node:util');
         let mut binding = prior_binding.clone();
         let mut maintenance_system = None;
         let mut existing_database = false;
+        let mut furnishing = None;
         if catalog.is_some_and(WorkspaceFurnishingCatalog::uses_writer_lease) {
             self.check_native_observation_fence()?;
             let has_database = exists(&self.service.root.join("native-database"))?;
-            let start = if services { self.workspace_furnishing_start()? } else { None };
+            if services {
+                furnishing = self.workspace_furnishing_start()?;
+            }
             let restore_pending = exists(&self.service.root.join("native-restore-current.json"))?;
-            let create_lock = match (mode, start, has_database, restore_pending) {
-                (StartMode::Services, Some(FurnishingStart::Initialize | FurnishingStart::SelectedImport), false, false)
+            let create_lock = match (mode, furnishing, has_database, restore_pending) {
+                (StartMode::Services, Some(FurnishingStart::Initialize | FurnishingStart::SelectedImport038 | FurnishingStart::SelectedImport039), false, false)
                     if prior.is_none() => true,
                 (StartMode::Services, Some(FurnishingStart::Reopen), true, false) if prior_binding.is_some() => false,
                 (StartMode::Database, None, true, false) if prior_binding.is_some() => false,
@@ -1788,8 +1799,8 @@ const { isDeepStrictEqual } = require('node:util');
             });
             let mut active = self.furnishing_binding_for(id.clone(), Phase::Active, Admission::FreshEmpty)?;
             if services {
-                match start {
-                    Some(FurnishingStart::Initialize | FurnishingStart::SelectedImport) => (),
+                match furnishing {
+                    Some(FurnishingStart::Initialize | FurnishingStart::SelectedImport038 | FurnishingStart::SelectedImport039) => (),
                     Some(FurnishingStart::Reopen) => {
                         active.consume(prior_binding.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?)?;
                         if active.admission_kind == Admission::VerifiedRestore {
@@ -1864,7 +1875,7 @@ const { isDeepStrictEqual } = require('node:util');
         self.publish_current(binding.clone())?;
         self.furnishing_binding = binding;
         // The current pointer now describes this owned attempt; it has no PIDs yet.
-        let result = self.start_inner(services, maintenance_system.as_deref(), existing_database);
+        let result = self.start_inner(services, maintenance_system.as_deref(), existing_database, furnishing);
         if let Err(error) = result {
             self.failure = Some(error.code.clone());
             let _ = self.stop();
@@ -1873,7 +1884,7 @@ const { isDeepStrictEqual } = require('node:util');
         Ok(self.snapshot())
     }
     pub(crate) fn selected_furnishing_import(&self) -> bool {
-        self.normal_oex_selected && self.furnishing_binding.as_ref().is_some_and(|binding| binding.catalog == 38)
+        self.normal_oex_selected && self.furnishing_binding.as_ref().is_some_and(|binding| matches!(binding.catalog, 38 | 39))
     }
 
     /// The host calls this after the selected operation completes and its
