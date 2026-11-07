@@ -8,6 +8,31 @@ use std::io::{BufRead, Read};
 
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    if args.len() == 2 && args[1] == "--refresh-static-publication" {
+        unsafe {
+            libc::signal(libc::SIGTERM, shutdown_signal as *const () as libc::sighandler_t);
+            libc::signal(libc::SIGINT, shutdown_signal as *const () as libc::sighandler_t);
+        }
+        let result = native_resources()
+            .ok_or_else(|| "NATIVE_HELPER_MISSING".to_string())
+            .and_then(|runtime| exhibitos_lifecycle::native_static_refresh::read_request(libc::STDIN_FILENO, &STOP)
+                .and_then(|request| exhibitos_lifecycle::native_static_refresh::run(&request, &runtime, &STOP))
+                .map_err(|error| error.code));
+        match result {
+            Ok(bytes) => {
+                let mut out = io::stdout().lock();
+                if out.write_all(&bytes).and_then(|_| out.write_all(b"\n")).is_err() {
+                    std::process::exit(1);
+                }
+            }
+            Err(code) => {
+                eprintln!("{code}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     #[cfg(target_os = "macos")]
     if args.len() == 2 && args[1] == "--oex-selected-format" {
         run_format_hint(|| native_resources().ok_or(()).and_then(|root|

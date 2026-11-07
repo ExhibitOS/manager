@@ -1812,6 +1812,16 @@ impl Payload {
     pub(crate) fn producer_sha256(&self) -> &str {
         &self.manifest.producer_sha256
     }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub(crate) fn static_refresh_script(&self, path: &str) -> Result<PathBuf> {
+        if !self.manifest.files.iter().any(|item| item.path == path && item.link.is_none()
+            && item.executable == Some(false) && item.bytes.is_some_and(|len| len > 0)
+            && item.sha256.as_deref().is_some_and(hash_valid)) {
+            return Err(err("NATIVE_STATIC_REFRESH_RUNTIME_UNQUALIFIED"));
+        }
+        contained(&self.root, path)
+    }
+
     pub fn node(&self) -> PathBuf {
         self.root.join(&self.manifest.entry.node)
     }
