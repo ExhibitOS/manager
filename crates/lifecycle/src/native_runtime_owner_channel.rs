@@ -605,7 +605,10 @@ mod tests {
                 if attempt == 3 { peer.write_all(&2049_u32.to_be_bytes()).unwrap(); return; }
                 peer.write_all(&(reply.len() as u32).to_be_bytes()).unwrap();
                 peer.write_all(&reply).unwrap();
-                if attempt == 0 { let _ = wait.recv_timeout(Duration::from_secs(5)); }
+                if attempt == 0 {
+                    let _ = wait.recv_timeout(Duration::from_secs(5));
+                    peer.shutdown(std::net::Shutdown::Both).unwrap();
+                }
             });
             let mut connection = Connection { socket: parent, key, valid: true, ready: false,
                 furnishing_bound: None, ordinary: None, claim_started: false, metadata_started: false };
