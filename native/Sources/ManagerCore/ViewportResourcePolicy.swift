@@ -38,7 +38,7 @@ public enum ViewportResourcePolicy {
     ]
     /// WK content blockers accept a strict regex subset: anchors occur only at
     /// the start/end, and each resource gets its own rule (no disjunction).
-    public static func encodedRules(origin: String, tenantId: String, savedExhibitionId: String? = nil, privateFloor: Bool = false, workspaceMaterials: Bool = false, workspaceFurnishings: Bool = false) throws -> String {
+    public static func encodedRules(origin: String, tenantId: String, savedExhibitionId: String? = nil, privateFloor: Bool = false, workspaceMaterials: Bool = false, workspaceMaterialMultimap: Bool = false, workspaceFurnishings: Bool = false) throws -> String {
         guard let url = URL(string: origin), let port = url.port, (1024...65535).contains(port), origin == "http://127.0.0.1:\(port)", let tenant = UUID(uuidString: tenantId)?.uuidString.lowercased() else { throw AuthoringFailure("LOCAL_SCOPE_INVALID") }
         let base = "^http://127\\.0\\.0\\.1:\(port)/"
         let artwork = "api/v1/tenants/\(tenant)/cms/artworks/[a-fA-F0-9-]+"
@@ -56,7 +56,9 @@ public enum ViewportResourcePolicy {
             let material = "api/v1/tenants/\(tenant)/workspace/materials/\(workspaceResourceId)/versions/\(version)"
             // These URL exceptions serve the two read-only Platform routes.
             // WebKit filters URLs; the server still enforces methods and ownership.
-            suffixes += [material + "$", material + "/maps/color$"]
+            suffixes.append(material + "$")
+            suffixes += WorkspaceSurfaceMaterialBinding.supportedMapRoles(multimap: workspaceMaterialMultimap)
+                .map { material + "/maps/" + $0.rawValue + "$" }
         }
         if workspaceFurnishings {
             let furnishing = "api/v1/tenants/\(tenant)/workspace/furnishings/\(workspaceResourceId)/versions/1"

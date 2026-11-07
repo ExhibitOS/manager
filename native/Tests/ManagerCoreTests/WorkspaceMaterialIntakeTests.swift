@@ -166,6 +166,57 @@ final class WorkspaceMaterialIntakeTests: XCTestCase {
                                                                repeatMeters: [2, 2], rotation: 4))
     }
 
+    func testMultimapBindingPreservesAllSupportedMapsAndRejectsAO() throws {
+        let surfaceId = UUID().uuidString.lowercased()
+        var draft = try NativeExhibitionDraft.new()
+        var candidate = draft.candidate
+        candidate["surfaces"] = .array([.object(["id": .string(surfaceId), "type": .string("floor")])])
+        try draft.replaceCandidate(candidate)
+        let colorOnly = try floorMaterialFixture()
+        var descriptor = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(colorOnly))
+        var normal = descriptor["maps"]["color"]
+        normal["colorSpace"] = .string("linear")
+        var roughness = normal
+        roughness["sha256"] = .string(String(repeating: "b", count: 64))
+        normal["normalY"] = .string("up")
+        descriptor["maps"]["normal"] = normal
+        descriptor["maps"]["roughness"] = roughness
+        let material = try JSONDecoder().decode(WorkspaceMaterial.self, from: JSONEncoder().encode(descriptor))
+        try material.check()
+        let binding = try WorkspaceSurfaceMaterialBinding(surfaceKind: .floor, surfaceId: surfaceId,
+            materialId: material.id, materialVersion: 1, repeatMeters: [2, 2], rotation: 0)
+        XCTAssertThrowsError(try binding.applying(material, to: draft)) {
+            XCTAssertEqual(($0 as? AuthoringFailure)?.code, "WORKSPACE_MATERIAL_BINDING_UNSUPPORTED")
+        }
+        let applied = try XCTUnwrap(binding.applying(material, to: draft, multimap: true))
+        XCTAssertEqual(applied.candidate["extensions"][WorkspaceSurfaceMaterialBinding.namespace]["materials"].items, [descriptor])
+        XCTAssertNil(try binding.applying(material, to: applied, multimap: true))
+
+        descriptor["maps"]["ao"] = roughness
+        let withAO = try JSONDecoder().decode(WorkspaceMaterial.self, from: JSONEncoder().encode(descriptor))
+        try withAO.check()
+        XCTAssertThrowsError(try binding.applying(withAO, to: draft, multimap: true)) {
+            XCTAssertEqual(($0 as? AuthoringFailure)?.code, "WORKSPACE_MATERIAL_BINDING_UNSUPPORTED")
+        }
+    }
+
+    func testMultimapPinRequiresExactDebugManifestAndAuthenticatedSession() async throws {
+        let tenant = UUID().uuidString
+        let manifest = "72a13c526fb422c106f8eefaa7e277e5ab003f3c2085ebd09b2814c0a19ef904"
+        let exact = try AuthoringAPI(port: 65535, tenantId: tenant, nativeRuntimeManifestSHA256: manifest)
+        #if DEBUG
+        XCTAssertTrue(exact.workspaceMaterialMultimapRuntimeQualified)
+        XCTAssertTrue(exact.workspaceWallMaterialRuntimeQualified)
+        #else
+        XCTAssertFalse(exact.workspaceMaterialMultimapRuntimeQualified)
+        #endif
+        let admitted = await exact.admitsWorkspaceMaterials
+        XCTAssertFalse(admitted)
+        let changed = try AuthoringAPI(port: 65535, tenantId: tenant,
+            nativeRuntimeManifestSHA256: String(manifest.dropLast()) + "0")
+        XCTAssertFalse(changed.workspaceMaterialMultimapRuntimeQualified)
+    }
+
     func testWorkspaceWallBindingChangesOnlyTheSelectedWallAndKeepsFloorAndSound() throws {
         let floor = UUID().uuidString.lowercased()
         let wall = UUID().uuidString.lowercased()

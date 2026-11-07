@@ -220,6 +220,16 @@ final class ViewportResourcePolicyTests: XCTestCase {
         try await store.removeContentRuleList(forIdentifier: identifier)
         let added = try rules(scoped).subtracting(rules(base))
         XCTAssertEqual(added.count, 2)
+        let multimap = try ViewportResourcePolicy.encodedRules(origin: origin, tenantId: tenant,
+            workspaceMaterials: true, workspaceMaterialMultimap: true)
+        let multimapId = "ExhibitOSWorkspaceMultimap-" + UUID().uuidString
+        let compiledMultimap = try await store.compileContentRuleList(forIdentifier: multimapId, encodedContentRuleList: multimap)
+        XCTAssertNotNil(compiledMultimap)
+        try await store.removeContentRuleList(forIdentifier: multimapId)
+        let multimapExtra = try rules(multimap).subtracting(rules(scoped))
+        XCTAssertEqual(multimapExtra, Set(added.filter { $0.hasSuffix("/maps/color$") }.flatMap { color in
+            ["normal", "roughness"].map { color.replacingOccurrences(of: "/maps/color$", with: "/maps/\($0)$") }
+        }))
         let expressions = try added.map { try NSRegularExpression(pattern: $0) }
         func allows(_ url: String) -> Bool {
             expressions.contains { $0.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil }

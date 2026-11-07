@@ -162,8 +162,8 @@ struct WorkspaceMaterialIntakeView: View {
                             TextField("가로 반복 (m)", text: $repeatWidth)
                             TextField("세로 반복 (m)", text: $repeatLength)
                             TextField("회전 (°)", text: $rotationDegrees)
-                            Text(surfaceMaterial.kind == .floor
-                                 ? "색상 맵 한 장을 연결합니다. 현재 런타임에서 표면 미리보기는 지원하지 않습니다."
+                            Text(model.workspaceMaterialMultimapAvailable
+                                 ? "색상 맵과 등록된 노멀·거칠기 맵을 연결합니다."
                                  : "색상 맵 한 장을 연결합니다.")
                                 .foregroundStyle(.secondary)
                             Button("\(label)에 연결") { Task { await applySurfaceMaterial(surfaceMaterial) } }

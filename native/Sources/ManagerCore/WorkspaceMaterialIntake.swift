@@ -200,9 +200,15 @@ public struct WorkspaceSurfaceMaterialBinding: Sendable {
         self.repeatMeters = repeatMeters; self.rotation = rotation
     }
 
-    func applying(_ material: WorkspaceMaterial, to draft: NativeExhibitionDraft) throws -> NativeExhibitionDraft? {
+    static func supportedMapRoles(multimap: Bool) -> [WorkspaceMaterialRole] {
+        multimap ? [.color, .normal, .roughness] : [.color]
+    }
+
+    func applying(_ material: WorkspaceMaterial, to draft: NativeExhibitionDraft, multimap: Bool = false) throws -> NativeExhibitionDraft? {
         guard material.id == materialId, material.version == materialVersion else { throw AuthoringFailure("MATERIAL_RESPONSE_INVALID") }
-        guard material.kind == surfaceKind, Set(material.maps.keys) == ["color"] else {
+        let supportedRoles = Self.supportedMapRoles(multimap: multimap).map(\.rawValue)
+        guard material.kind == surfaceKind, material.maps["color"] != nil,
+              material.maps.keys.allSatisfy(supportedRoles.contains) else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_BINDING_UNSUPPORTED")
         }
         guard material.rights.permissions.display else { throw AuthoringFailure("DISPLAY_PERMISSION_REQUIRED") }

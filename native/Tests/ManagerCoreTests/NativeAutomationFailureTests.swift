@@ -34,6 +34,16 @@ final class NativeAutomationFailureTests: XCTestCase {
                 XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_CONFIGURATION_INVALID")
             }
         }
+        XCTAssertThrowsError(try NativeAutomationSession(helper: missing, profile: missing,
+            ports: [:], outputRoot: missing, temporaryRoot: missing, inputs: [:],
+            existingWorkspaceV5: identity, workspaceV6ValidationRuntime: missing)) {
+            XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_CONFIGURATION_INVALID")
+        }
+        XCTAssertThrowsError(try NativeAutomationSession(helper: missing, profile: missing,
+            ports: [:], outputRoot: missing, temporaryRoot: missing, inputs: [:],
+            workspaceV5ValidationRuntime: missing, existingWorkspaceV5: identity, workspaceV7ValidationRuntime: missing)) {
+            XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_CONFIGURATION_INVALID")
+        }
         let invalid = try JSONDecoder().decode(NativeAutomationSession.ExistingWorkspaceV5.self, from: Data("""
             {"workspaceId":"wrong","tenantId":"\(workspace)","principalId":"\(workspace)","manifestSHA256":"\(String(repeating: "a", count: 64))"}
             """.utf8))
