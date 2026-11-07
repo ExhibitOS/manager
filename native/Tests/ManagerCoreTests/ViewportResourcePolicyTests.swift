@@ -241,6 +241,66 @@ final class ViewportResourcePolicyTests: XCTestCase {
         }
     }
 
+    func testWorkspaceFurnishingReadsAreLimitedToQualifiedViewportAndCapture() async throws {
+        let origin = "http://127.0.0.1:13200", tenant = UUID().uuidString.lowercased()
+        let furnishing = "a0000000-0000-4000-8000-000000000001", exhibition = UUID().uuidString.lowercased()
+        let path = "/api/v1/tenants/\(tenant)/workspace/furnishings/\(furnishing)/versions/1"
+        let source = origin + "/api/v1/tenants/\(tenant)/studio/exhibitions/\(exhibition)"
+
+        func filters(_ encoded: String) throws -> Set<String> {
+            let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [[String: Any]])
+            XCTAssertEqual((rules.first?["action"] as? [String: String])?["type"], "block")
+            return Set(try rules.dropFirst().map { rule in
+                let trigger = try XCTUnwrap(rule["trigger"] as? [String: Any])
+                XCTAssertEqual(trigger["url-filter-is-case-sensitive"] as? Bool, true)
+                return try XCTUnwrap(trigger["url-filter"] as? String)
+            })
+        }
+
+        let disabled = try filters(ViewportResourcePolicy.encodedRules(origin: origin, tenantId: tenant))
+        let enabled = try ViewportResourcePolicy.encodedRules(origin: origin, tenantId: tenant, workspaceFurnishings: true)
+        let capture = try ViewportResourcePolicy.encodedRules(origin: origin, tenantId: tenant, savedExhibitionId: exhibition, workspaceFurnishings: true)
+        let inactiveCapture = try filters(ViewportResourcePolicy.encodedRules(origin: origin, tenantId: tenant, savedExhibitionId: exhibition))
+        let enabledFilters = try filters(enabled), captureFilters = try filters(capture)
+        XCTAssertEqual(enabledFilters.subtracting(disabled).count, 2)
+        XCTAssertEqual(captureFilters.subtracting(enabledFilters), inactiveCapture.subtracting(disabled))
+        let store = WKContentRuleListStore.default()!
+        for encoded in [enabled, capture] {
+            let identifier = "ExhibitOSWorkspaceFurnishing-" + UUID().uuidString
+            let compiled = try await store.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: encoded)
+            XCTAssertNotNil(compiled)
+            try await store.removeContentRuleList(forIdentifier: identifier)
+        }
+
+        func allows(_ url: String, _ rules: Set<String>) -> Bool {
+            rules.contains { url.range(of: $0, options: .regularExpression) != nil }
+        }
+        for route in ["/display-check", "/model"] {
+            let url = origin + path + route
+            XCTAssertTrue(allows(url, enabledFilters))
+            XCTAssertTrue(allows(url, captureFilters))
+            XCTAssertFalse(allows(url, disabled))
+            XCTAssertFalse(allows(url, inactiveCapture))
+        }
+        XCTAssertFalse(allows(source, enabledFilters))
+        XCTAssertTrue(allows(source, captureFilters))
+        for url in [
+            "http://127.0.0.1:13201" + path + "/model", "http://localhost:13200" + path + "/model",
+            "https://127.0.0.1:13200" + path + "/model", "https://example.invalid" + path + "/model",
+            origin + path.replacingOccurrences(of: tenant, with: UUID().uuidString.lowercased()) + "/model",
+            origin + path.replacingOccurrences(of: furnishing, with: furnishing.uppercased()) + "/model",
+            origin + path.replacingOccurrences(of: furnishing, with: "a0000000-0000-0000-0000-000000000001") + "/model",
+            origin + path.replacingOccurrences(of: "/versions/1", with: "/versions/2") + "/model",
+            origin + path.replacingOccurrences(of: "/versions/1", with: "/versions/01") + "/model",
+            origin + path.replacingOccurrences(of: "/workspace/furnishings/", with: "/workspace/furnishing-intakes/") + "/model",
+            origin + path, origin + path + "/model/", origin + path + "/model?extra=1",
+            origin + path + "/display", origin + path + "/complete"
+        ] {
+            XCTAssertFalse(allows(url, enabledFilters), url)
+            XCTAssertFalse(allows(url, captureFilters), url)
+        }
+    }
+
     func testActualWebKitCompilerAcceptsPinnedSeparateRulesAndRefusesOriginalDisjunction() async throws {
         let tenant = UUID().uuidString.lowercased()
         let encoded = try ViewportResourcePolicy.encodedRules(origin: "http://127.0.0.1:13200", tenantId: tenant)
