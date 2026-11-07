@@ -6,15 +6,16 @@ public enum WorkspacePortalFinish {
 
     public static func hasAttachment(openingId: String, in draft: NativeExhibitionDraft) -> Bool {
         draft.candidate["extensions"][WorkspaceFurnishingPlacement.namespace]["openingAttachments"].items?
-            .contains { $0["openingId"].string == openingId } == true
+            .contains { $0["openingId"].string?.lowercased() == openingId.lowercased() } == true
     }
 
     // Platform validates dimensions, host transforms, fit, rights and the saved revision.
     // The client constructs only the current v5/v6 visual delta.
     static func applying(to draft: NativeExhibitionDraft, openingId: String,
                          furnishing: WorkspaceFurnishing?) throws -> NativeExhibitionDraft? {
-        guard workspaceFurnishingID(openingId),
-              draft.candidate["openings"].items?.filter({ $0["id"].string == openingId && $0["type"].string == "door" }).count == 1 else {
+        let openingId = openingId.lowercased()
+        let hosts = draft.candidate["openings"].items?.filter { $0["id"].string?.lowercased() == openingId }
+        guard workspaceFurnishingID(openingId), hosts?.count == 1, hosts?.first?["type"].string == "door" else {
             throw AuthoringFailure("PORTAL_TARGET_STALE")
         }
         let namespace = WorkspaceFurnishingPlacement.namespace
@@ -45,11 +46,11 @@ public enum WorkspacePortalFinish {
             frames = attachedFrames
             openings = existing["openingAttachments"].items ?? []
         }
-        let targets = openings.compactMap { $0["openingId"].string }
+        let targets = openings.compactMap { $0["openingId"].string?.lowercased() }
         guard targets.count == openings.count, Set(targets).count == targets.count else {
             throw AuthoringFailure("VIEWPORT_COMMAND_DENIED")
         }
-        let existing = openings.firstIndex { $0["openingId"].string == openingId }
+        let existing = targets.firstIndex(of: openingId)
         if let furnishing {
             let model = furnishing.details.model
             guard furnishing.details.kind == .portalFinish, furnishing.version == 1, workspaceFurnishingID(furnishing.id),

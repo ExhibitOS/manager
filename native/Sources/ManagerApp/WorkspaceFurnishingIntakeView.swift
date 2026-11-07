@@ -207,8 +207,10 @@ struct WorkspaceFurnishingIntakeView: View {
                     Text("문 선택").tag("")
                     ForEach(Array(doors.enumerated()), id: \.offset) { index, door in
                         if let id = door["id"].string {
-                            let wall = draft.candidate["surfaces"].items?.first { $0["id"].string == door["surfaceId"].string }
-                            let room = draft.rooms.first { $0["id"].string == wall?["roomId"].string }
+                            let wallID = door["surfaceId"].string?.lowercased()
+                            let wall = draft.candidate["surfaces"].items?.first { $0["id"].string?.lowercased() == wallID }
+                            let roomID = wall?["roomId"].string?.lowercased()
+                            let room = draft.rooms.first { $0["id"].string?.lowercased() == roomID }
                             Text("\(room?["name"].string ?? "공간") · 문 \(index + 1)").tag(id)
                         }
                     }
