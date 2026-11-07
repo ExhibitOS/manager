@@ -1211,6 +1211,9 @@ final class ExhibitionModel: ObservableObject {
         viewportCredentials != nil && !selectedBoundedPolicy && api?.workspaceFurnishingRuntimeQualified == true
             && session?.workspaceFurnishingProfile == "workspace-furnishing-intake-v1"
     }
+    var workspaceFurnishingStoolAvailable: Bool {
+        workspaceFurnishingIntakeAvailable && session?.advertisesWorkspaceFurnishingStool == true
+    }
     func withWorkspaceFurnishingAccess<T>(_ access: UUID, _ body: (AuthoringAPI) async throws -> T) async throws -> T {
         guard workspaceFurnishingIntakeAvailable, access == viewportAccessID, !busy, !entrancePreviewActive,
               !placingArtwork, !architectureApplying, !pending, let api else {

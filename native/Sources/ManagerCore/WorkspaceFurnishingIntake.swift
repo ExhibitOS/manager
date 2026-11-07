@@ -2,7 +2,9 @@
 import Foundation
 
 public enum WorkspaceFurnishingKind: String, Codable, CaseIterable, Sendable {
-    case pedestal, bench
+    case pedestal, bench, stool
+
+    func admitted(stool: Bool) -> Bool { self != .stool || stool }
 }
 
 public struct WorkspaceFurnishingModel: Codable, Equatable, Sendable {
@@ -112,10 +114,11 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
     public let error: Failure?
     public let furnishing: WorkspaceFurnishing?
 
-    func check(id: String? = nil, requestId: String? = nil, details: WorkspaceFurnishingDetails? = nil) throws {
+    func check(id: String? = nil, requestId: String? = nil, details: WorkspaceFurnishingDetails? = nil,
+               stool: Bool = false) throws {
         guard workspaceFurnishingID(intakeId), workspaceFurnishingID(self.requestId),
               id.map({ $0 == intakeId }) ?? true, requestId.map({ $0 == self.requestId }) ?? true,
-              declaration.isValid, details.map({ $0 == declaration }) ?? true,
+              declaration.isValid, declaration.kind.admitted(stool: stool), details.map({ $0 == declaration }) ?? true,
               received.map({ $0.bytes == declaration.model.bytes && $0.sha256 == declaration.model.sha256 }) ?? true,
               !retryable || (phase == .failed && received != nil),
               phase != .validating || received != nil,
