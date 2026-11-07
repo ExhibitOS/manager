@@ -1272,7 +1272,8 @@ public actor AuthoringAPI {
         }
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         let next = try command.applying(to: saved.draft, furnishing: furnishing)
-        if let next { try await validateNativeViewportEdit(next, etag: etag) }
+        // A repeat attach still checks current rights and model integrity.
+        try await validateNativeViewportEdit(next ?? saved.draft, etag: etag)
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next
     }
