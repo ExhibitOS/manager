@@ -1167,6 +1167,7 @@ pub fn run(input: &[u8], runtime: &Path, stop: &AtomicBool, output: &mut dyn Wri
         journal
             .sync_all()
             .and_then(|_| op.root.sync_all())
+            .and_then(|_| op.parent.sync_all())
             .map_err(|_| invalid())?;
         check_cancelled(stop)?;
         promote(&worker, OsStr::new("candidate"), &op.parent, name)?;
@@ -1198,7 +1199,7 @@ pub fn run(input: &[u8], runtime: &Path, stop: &AtomicBool, output: &mut dyn Wri
     result
 }
 
-fn write_receipt(receipt: &Receipt, output: &mut dyn Write) -> Result<()> {
+fn write_receipt(receipt: &impl Serialize, output: &mut dyn Write) -> Result<()> {
     let bytes = serde_json::to_vec(receipt).map_err(|_| invalid())?;
     output
         .write_all(&bytes)
@@ -1265,7 +1266,20 @@ pub fn recover(input: &[u8], stop: &AtomicBool, output: &mut dyn Write) -> Resul
     }
     verify_named(&request.output_dir, &target)?;
     check_cancelled(stop)?;
-    write_receipt(&receipt, output)
+    #[derive(Serialize)]
+    struct ObservedCommit<'a> {
+        state: &'static str,
+        durability: &'static str,
+        receipt: &'a Receipt,
+    }
+    write_receipt(
+        &ObservedCommit {
+            state: "observed",
+            durability: "unknown",
+            receipt: &receipt,
+        },
+        output,
+    )
 }
 
 #[cfg(test)]
