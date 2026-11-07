@@ -3,6 +3,7 @@
 //! the existing native current-run record, separate from its diagnostic ID.
 use super::furnishing_lifetime::WriterIdentity;
 use super::*;
+use crate::installations::native_restore::RestoreProof;
 
 pub(super) const LIMIT: usize = 2048;
 pub(super) const ERROR: &str = "NATIVE_FURNISHING_ORDINARY_UNQUALIFIED";
@@ -52,6 +53,8 @@ pub(super) struct Restore {
     pub(super) backup_id: String,
     pub(super) archive_manifest_sha256: String,
     pub(super) target_system_identifier: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) provenance: Option<RestoreProof>,
 }
 
 /// Canonical Active bytes are serde's compact JSON for this closed structure
@@ -132,6 +135,8 @@ impl Binding {
                         .is_ok_and(|value| {
                             value != 0 && value.to_string() == proof.target_system_identifier
                         })
+                    || proof.provenance.as_ref().is_some_and(|provenance| self.catalog != 40
+                        || !provenance.matches(&proof.id, &proof.backup_id, &proof.archive_manifest_sha256, &proof.target_system_identifier))
             })
         {
             return Err(err(ERROR));
@@ -231,6 +236,7 @@ pub(super) struct Exchange {
     lease_transcript_sha256: String,
     admission_kind: Admission,
     active_binding_sha256: String,
+    restore_proof: Option<RestoreProof>,
 }
 
 #[derive(Serialize)]
@@ -244,6 +250,8 @@ struct Frame<'a> {
     admission_kind: Admission,
     #[serde(rename = "activeBindingSHA256")]
     active_binding_sha256: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restore_proof: Option<&'a RestoreProof>,
     mac: String,
 }
 
@@ -254,7 +262,12 @@ impl Exchange {
             lease_transcript_sha256: digest(lease_body),
             admission_kind: binding.admission_kind,
             active_binding_sha256: binding.active_sha256()?,
+            restore_proof: binding.restore.as_ref().and_then(|restore| restore.provenance.clone()),
         })
+    }
+
+    fn version(&self) -> u32 {
+        if self.restore_proof.is_some() { 2 } else { 1 }
     }
 
     fn message(&self, kind: Kind) -> Result<Vec<u8>> {
@@ -265,7 +278,7 @@ impl Exchange {
         {
             return Err(err(ERROR));
         }
-        let mut bytes = format!("ExhibitOS/workspace-furnishing/{}/v1\0", kind.name()).into_bytes();
+        let mut bytes = format!("ExhibitOS/workspace-furnishing/{}/v{}\0", kind.name(), self.version()).into_bytes();
         bytes.extend_from_slice(id.as_bytes());
         let decode = |digest: &str| {
             (0..digest.len())
@@ -278,6 +291,10 @@ impl Exchange {
         bytes.extend(decode(&self.lease_transcript_sha256)?);
         bytes.push(self.admission_kind.tag());
         bytes.extend(decode(&self.active_binding_sha256)?);
+        if let Some(proof) = &self.restore_proof {
+            let canonical = serde_json::to_vec(proof).map_err(|_| err(ERROR))?;
+            bytes.extend(decode(&digest(&canonical))?);
+        }
         Ok(bytes)
     }
 
@@ -287,12 +304,13 @@ impl Exchange {
             .map(|byte| format!("{byte:02x}"))
             .collect();
         serde_json::to_vec(&Frame {
-            version: 1,
+            version: self.version(),
             kind: kind.name(),
             runtime_generation: &self.generation,
             lease_transcript_sha256: &self.lease_transcript_sha256,
             admission_kind: self.admission_kind,
             active_binding_sha256: &self.active_binding_sha256,
+            restore_proof: self.restore_proof.as_ref(),
             mac,
         })
         .map_err(|_| err(ERROR))
@@ -346,6 +364,62 @@ mod tests {
             },
             restore: None,
         }
+    }
+
+    #[test]
+    fn ordinary_restore_v2_authenticates_proof_in_all_four_frames() {
+        let proof: RestoreProof = serde_json::from_value(serde_json::json!({
+            "restoreId":"10000000-0000-4000-8000-000000000007",
+            "backupId":"10000000-0000-4000-8000-000000000008",
+            "authenticatedManifestSha256":"c".repeat(64),
+            "sourceDatabaseSystemId":"110", "sourceDatabaseOid":"16000",
+            "targetDatabaseSystemId":"220", "targetDatabaseOid":"16002",
+            "provenanceRowCount":1, "provenanceTableSha256":"d".repeat(64)
+        })).unwrap();
+        let exchange = Exchange {
+            generation: GENERATION.into(), lease_transcript_sha256: "a".repeat(64),
+            admission_kind: Admission::VerifiedRestore, active_binding_sha256: "b".repeat(64),
+            restore_proof: Some(proof.clone()),
+        };
+        for (kind, mac) in [
+            (Kind::Admission, "2a5aec78c967db201a7574b194e89f8f66db707d31709dd8b8ebbadbf4a9178c"),
+            (Kind::AdmissionAck, "f243163bf2bfb722608c71f467bbf6a65414f3866af5fbc2706a456a7621237d"),
+            (Kind::Stop, "8b8b053f0a6726e4b6b09e1c82eb732d2af1a273f4c3a37487e176a7637d0584"),
+            (Kind::Drained, "b5fa66a62a03edfd394dd9433d0b8b73d71055d12acfcac4988dd8963cd26bdf"),
+        ] {
+            let key = [7; 32];
+            let bytes = exchange.signed(&key, kind).unwrap();
+            assert!(bytes.len() < LIMIT);
+            let frame: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(frame["version"], 2);
+            assert_eq!(frame["mac"], mac);
+            exchange.check_frame(&key, kind, &bytes).unwrap();
+            let mut altered = frame;
+            altered["restoreProof"]["targetDatabaseOid"] = "16003".into();
+            assert!(exchange.check_frame(&key, kind, &serde_json::to_vec(&altered).unwrap()).is_err());
+        }
+
+        let mut restored = binding(GENERATION);
+        restored.catalog = 40;
+        restored.phase = Phase::ActivatedRestore;
+        restored.admission_kind = Admission::VerifiedRestore;
+        restored.restore = Some(Restore {
+            id: "10000000-0000-4000-8000-000000000007".into(),
+            backup_id: "10000000-0000-4000-8000-000000000008".into(),
+            archive_manifest_sha256: "c".repeat(64), target_system_identifier: "220".into(),
+            provenance: Some(proof),
+        });
+        let mut active = binding(NEXT);
+        active.catalog = 40;
+        active.consume(&restored).unwrap();
+        assert_eq!(active.admission_kind, Admission::VerifiedRestore);
+        assert_eq!(Exchange::new(&active, b"lease").unwrap().restore_proof, exchange.restore_proof);
+        active.phase = Phase::Clean;
+        let mut reopened = binding(LATER);
+        reopened.catalog = 40;
+        reopened.consume(&active).unwrap();
+        assert_eq!(reopened.admission_kind, Admission::CleanReopen);
+        assert_eq!(Exchange::new(&reopened, b"new lease").unwrap().restore_proof, exchange.restore_proof);
     }
 
     #[test]
@@ -688,6 +762,7 @@ mod tests {
             backup_id: "10000000-0000-4000-8000-000000000008".into(),
             archive_manifest_sha256: "5".repeat(64),
             target_system_identifier: "123".into(),
+            provenance: None,
         });
         let mut next = binding(NEXT);
         next.catalog = 38;
@@ -786,6 +861,7 @@ mod tests {
             backup_id: "10000000-0000-4000-8000-000000000009".into(),
             archive_manifest_sha256: "6".repeat(64),
             target_system_identifier: "1234".into(),
+            provenance: None,
         });
         let mut copied = binding(NEXT);
         copied.physical.root_inode += 1;
