@@ -207,9 +207,11 @@ exact target runtime for subsequent starts of this profile.
 
 If a drained trial fails, use `recover` with the same staging directory and
 key. Recovery restores the source's data, runtime binding and writer
-completion while retaining the trial run for diagnosis. After recovery,
-retry by staging again from the clean source. An unconfirmed stop keeps
-the transition fenced. This path is for the two reviewed local validation
+completion while retaining the trial run for diagnosis. A restart before
+the first possible spawn can recover from the durable starting record.
+A failed trial that ran processes needs the target run's drain record and
+no live writer or database process. After recovery, retry by staging again
+from the clean source. An unconfirmed stop keeps the transition fenced. This path is for the two reviewed local validation
 payloads and the current catalog. It does not support a reverse transition
 or other payloads.
 

@@ -444,8 +444,43 @@ impl Catalog40Trial {
         Ok(guard)
     }
 
-    pub(crate) fn source_is_current(&self, service: &LifecycleService) -> Result<bool> {
-        Ok(current_run(&service.root)?.as_ref() == Some(&self.source))
+    pub(crate) fn check_recovery_root(&self, root: &Path, guard: &Catalog40WriterGuard) -> Result<()> {
+        let cold = || err("NATIVE_PHYSICAL_CHECKPOINT_NOT_COLD");
+        if guard.identity()? != self.source_binding()?.physical {
+            return Err(cold());
+        }
+        check_interrupted_root(root)?;
+        if exists(&root.join("native-database/postmaster.pid"))? {
+            return Err(cold());
+        }
+        let current = current_run(root)?.ok_or_else(cold)?;
+        if current == self.source {
+            return check_cold_checkpoint_root(root);
+        }
+        if current.id != self.generation {
+            return Err(cold());
+        }
+        let binding = current.furnishing.as_ref().ok_or_else(cold)?;
+        let (context, _) = read_run(root, &current.id)?;
+        if check_cold_checkpoint_root(root).is_ok() {
+            return Ok(());
+        }
+        // Starting is durable before consuming the source. start_inner records
+        // starting_database before its first possible spawn for an existing DB.
+        if binding.phase == Phase::Active && context.state == "starting"
+            && context.exits.is_empty() && context.failure_code.is_none()
+            && context.postgres_pid.is_none() && context.node_pid.is_none() && context.auxiliary_pid.is_none()
+        {
+            return Ok(());
+        }
+        let marker = format!("native-runs/{}/catalog40-drained.json", self.generation);
+        let proof = installation_backup::source_bytes(root, &marker, 128, true).map_err(|_| cold())?;
+        if binding.phase == Phase::Active
+            && serde_json::from_slice::<String>(&proof).map_err(|_| cold())? == binding.sha256()?
+        {
+            return Ok(());
+        }
+        Err(cold())
     }
 
     fn recoverable_source_completion(&self, root: &Path) -> Result<(Context, FurnishingCompletion)> {
@@ -2493,6 +2528,19 @@ const { isDeepStrictEqual } = require('node:util');
                 && (!self.furnishing_clean_checked || self.exits.get("postgres") != Some(&0))
             {
                 self.failure.get_or_insert_with(|| furnishing_lifecycle::ERROR.into());
+            }
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            if self.catalog40_trial.is_some() && self.failure.is_some()
+                && (!self.exits.contains_key("node") || self.furnishing_drain_ack)
+                && self.exits.values().all(|code| *code == 0)
+            {
+                if let Some(binding) = self.active_furnishing_binding() {
+                    // Record the owned drain before publishing Failed, so recovery
+                    // can distinguish it from an interrupted or unverified stop.
+                    let run = self.run.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+                    write_json(run, "catalog40-drained.json", &binding.sha256()?)?;
+                    File::open(run).and_then(|file| file.sync_all()).map_err(|_| err("STATE_UNAVAILABLE"))?;
+                }
             }
             self.state = if self.failure.is_some() { "failed" } else { "stopped" }.into();
             if let Err(error) = self.record() {

@@ -501,14 +501,39 @@ mod tests {
         assert!(unconsumed_furnishing_completion(&root, &prior).is_err());
 
         write_run(&prior_run, &context, proof(NEXT)).unwrap();
-        context.job_id = Some(NEXT.into());
-        write_run(&trial_run, &context, None).unwrap();
         let mut target = catalog40_binding(NEXT, CATALOG40_FRAME_TARGET);
         target.physical = prior.physical;
         target.consume_catalog40_transition(&prior).unwrap();
         write_json(&root, "native-current-run.json", &Current {
-            format: 1, id: NEXT.into(), furnishing: Some(target),
+            format: 1, id: NEXT.into(), furnishing: Some(target.clone()),
         }).unwrap();
+
+        // The helper crashed after publishing Active and before it could spawn.
+        context.job_id = Some(NEXT.into());
+        context.state = "starting".into();
+        context.exits.clear();
+        write_run(&trial_run, &context, None).unwrap();
+        trial.check_recovery_root(&root, &writer).unwrap();
+        context.state = "starting_database".into();
+        write_run(&trial_run, &context, None).unwrap();
+        assert!(trial.check_recovery_root(&root, &writer).is_err());
+
+        // The helper drained the failed trial and exited before sealing the
+        // supplemental checkpoint journal. Only the matching drain proof works.
+        context.state = "failed".into();
+        context.failure_code = Some("NATIVE_TEST_FAILURE".into());
+        context.exits.insert("postgres".into(), 0);
+        write_run(&trial_run, &context, None).unwrap();
+        assert!(trial.check_recovery_root(&root, &writer).is_err());
+        write_json(&trial_run, "catalog40-drained.json", &"a".repeat(64)).unwrap();
+        assert!(trial.check_recovery_root(&root, &writer).is_err());
+        write_json(&trial_run, "catalog40-drained.json", &target.sha256().unwrap()).unwrap();
+        context.node_pid = Some(std::process::id());
+        write_run(&trial_run, &context, None).unwrap();
+        assert!(trial.check_recovery_root(&root, &writer).is_err());
+        context.node_pid = None;
+        write_run(&trial_run, &context, None).unwrap();
+        trial.check_recovery_root(&root, &writer).unwrap();
         trial.recover_source(&service, &writer).unwrap();
         trial.recover_source(&service, &writer).unwrap();
         assert_eq!(current_run(&root).unwrap(), Some(source));

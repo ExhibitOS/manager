@@ -757,14 +757,17 @@ impl LifecycleService {
         let writer = checkpoint.catalog40.as_ref().map(|trial| {
             if checkpoint.trial { trial.hold_recovery(self) } else { trial.hold_source(self) }
         }).transpose()?;
-        // Recovery can resume after the source pointer has already been restored.
+        let ordinary_cold_check = || crate::native_runtime::check_cold_transition_root(
+            &self.root, checkpoint.drained_failure.as_deref(),
+        );
         #[cfg(feature = "workspace-v5-owner-validation")]
-        let drained_failure = if checkpoint.catalog40.as_ref()
-            .map(|trial| trial.source_is_current(self)).transpose()?.unwrap_or(false)
-        { None } else { checkpoint.drained_failure.as_deref() };
+        if let (Some(trial), Some(writer)) = (&checkpoint.catalog40, &writer) {
+            trial.check_recovery_root(&self.root, writer)?;
+        } else {
+            ordinary_cold_check()?;
+        }
         #[cfg(not(feature = "workspace-v5-owner-validation"))]
-        let drained_failure = checkpoint.drained_failure.as_deref();
-        crate::native_runtime::check_cold_transition_root(&self.root, drained_failure)?;
+        ordinary_cold_check()?;
         let binding = bindings(&checkpoint)?;
         verify_beforeimage(&checkpoint, ENVIRONMENT, &binding.old_env.0)?;
         verify_beforeimage(&checkpoint, RECORD, &binding.old_record)?;
