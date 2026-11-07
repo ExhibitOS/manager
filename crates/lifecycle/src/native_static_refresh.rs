@@ -585,8 +585,11 @@ fn clear_tree(directory: &File, depth: usize, visited: &mut usize) -> Result<()>
     if depth > DEPTH_LIMIT {
         return Err(invalid());
     }
-    let names = list(directory, 200_000 - *visited)?;
+    let mut names = list(directory, 200_000 - *visited)?;
     *visited += names.len();
+    if depth == 0 {
+        names.sort_by_key(|name| name == "commit.json");
+    }
     for name in names {
         let raw = c_name(OsStr::new(&name))?;
         let flags = if let Ok(child) = open_at(
@@ -1138,7 +1141,7 @@ pub fn run(input: &[u8], runtime: &Path, stop: &AtomicBool, output: &mut dyn Wri
         verify_named(&candidate, &candidate_fd)?;
         read_manifest(&candidate_fd, &child.manifest_sha256, &request)?;
         let receipt = Receipt {
-            operation_id: request.operation_id,
+            operation_id: request.operation_id.clone(),
             publication_id: child.publication_id,
             revision_sha256: child.revision_sha256,
             index_sha256: child.index_sha256,
@@ -1186,7 +1189,11 @@ pub fn run(input: &[u8], runtime: &Path, stop: &AtomicBool, output: &mut dyn Wri
         return result;
     }
     if !op.clean() {
-        return Err(err("NATIVE_STATIC_REFRESH_CLEANUP_PENDING"));
+        return Err(err(if result.is_ok() {
+            "NATIVE_STATIC_REFRESH_COMMITTED_CLEANUP_PENDING"
+        } else {
+            "NATIVE_STATIC_REFRESH_CLEANUP_PENDING"
+        }));
     }
     result
 }
