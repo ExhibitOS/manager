@@ -317,7 +317,8 @@ public actor AuthoringAPI {
         "c42e9657015695601ffb0c4ea493ae9ae6df9c954fce032db3212a1b20d309ee",
         "2645f013b8dcef5bb33f138dc0fac9789bbb508306cca722112f222a7476e871",
         "bdfc8202d851f9f8983440b9475da3fc3ddc6ee1f0bf4cf2c0d4bf1995dde338",
-        "ebbf0aeabf013f5071151580495c9c7e5ff6812cbd995769b5e347e01ae92c0b"
+        "ebbf0aeabf013f5071151580495c9c7e5ff6812cbd995769b5e347e01ae92c0b",
+        "7f76b19894fe3a9824a640cf1856ba7c828d5bd3201ede0da5d1c53a501bd1e7"
     ]
     private static let workspaceCatalogReadManifest = "aad7ddf920dc64b02b916166e829d9638fca11b585cd0cb9157bc49a0f09e0d9"
     #else
@@ -335,7 +336,8 @@ public actor AuthoringAPI {
         "c42e9657015695601ffb0c4ea493ae9ae6df9c954fce032db3212a1b20d309ee",
         "2645f013b8dcef5bb33f138dc0fac9789bbb508306cca722112f222a7476e871",
         "bdfc8202d851f9f8983440b9475da3fc3ddc6ee1f0bf4cf2c0d4bf1995dde338",
-        "ebbf0aeabf013f5071151580495c9c7e5ff6812cbd995769b5e347e01ae92c0b"
+        "ebbf0aeabf013f5071151580495c9c7e5ff6812cbd995769b5e347e01ae92c0b",
+        "7f76b19894fe3a9824a640cf1856ba7c828d5bd3201ede0da5d1c53a501bd1e7"
     ]
     #else
     private static let workspaceFurnishingManifestPins: Set<String> = []
