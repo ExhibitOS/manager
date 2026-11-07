@@ -12,6 +12,19 @@ final class NativeJPEGImportRuntimeTests: XCTestCase {
         }
     }
 
+    func testPortalICCValidationIsExactReadyAndDebugOnly() {
+        let manifest = "0bea16fb7d61aa3b0e60921a7f4d8d702025e4857f779fd763b9633f4884b330"
+        #if DEBUG && os(macOS)
+        XCTAssertTrue(NativeJPEGImportRuntime.supportsICC(manifestSHA256: manifest, ready: true))
+        #else
+        XCTAssertFalse(NativeJPEGImportRuntime.supportsICC(manifestSHA256: manifest, ready: true))
+        #endif
+        XCTAssertFalse(NativeJPEGImportRuntime.supportsICC(manifestSHA256: manifest, ready: false))
+        XCTAssertFalse(NativeJPEGImportRuntime.supportsICC(manifestSHA256: manifest.uppercased(), ready: true))
+        XCTAssertFalse(NativeJPEGImportRuntime.supportsPortalICCValidation(
+            manifestSHA256: "253de8963ec9f0e0a2884a27d8e756b453cf61899e38c31571d9993a7d6ecff4", ready: true))
+    }
+
     func testExistingJPEGPacketsRetainedWithoutEnablingOtherFeatures() throws {
         let watermarkPacket = try XCTUnwrap(PublicationWatermarkRuntime.qualifiedManifestSHA256)
         for manifest in ["74b08c7899d74ad989bbb61e47fc86fe9fa25c8853ab27ce57e9135c4932e96a",

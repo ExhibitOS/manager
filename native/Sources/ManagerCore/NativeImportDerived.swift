@@ -9,9 +9,18 @@ public enum NativeJPEGImportRuntime {
     private static let qualifiedICCManifests: Set<String> = [
         "253de8963ec9f0e0a2884a27d8e756b453cf61899e38c31571d9993a7d6ecff4",
     ]
+    // This exact development pair is used to qualify the existing ICC workflow.
+    static func supportsPortalICCValidation(manifestSHA256: String?, ready: Bool) -> Bool {
+        #if DEBUG && os(macOS)
+        ready && manifestSHA256 == "0bea16fb7d61aa3b0e60921a7f4d8d702025e4857f779fd763b9633f4884b330"
+        #else
+        false
+        #endif
+    }
     public static func supportsICC(manifestSHA256: String?, ready: Bool) -> Bool {
         guard ready, let manifestSHA256 else { return false }
         return qualifiedICCManifests.contains(manifestSHA256)
+            || supportsPortalICCValidation(manifestSHA256: manifestSHA256, ready: ready)
     }
     public static func supports(manifestSHA256: String?, ready: Bool) -> Bool {
         guard ready else { return false }
@@ -81,8 +90,7 @@ public struct NativePreparedJPEG: Sendable {
                 try NativeImagePreparation.embeddedICC(original.data, isCurrent: isCurrent)
             }
             let profile = try await withTaskCancellationHandler { try await detection.value } onCancel: { detection.cancel() }
-            // Callers must establish a reviewed compatible runtime capability;
-            // the existing UI supplies no such admission and stays fail-closed.
+            // Callers establish the exact compatible runtime before allowing ICC.
             guard profile == nil || allowICC else { throw NativeImagePreparation.Failure.unsupportedJPEG }
             let settings = profile == nil ? settingsBytes : iccSettingsBytes
             let binding = NativeImagePreparation.Binding(operationID: operationID, generation: generation,

@@ -418,7 +418,8 @@ public actor NativeAutomationSession {
         // Scope is checked even for replay: correlation is not authorization.
         let (context, api, current) = try await checked(request)
         if let seen = seenRequests[id], seen != bytes { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
-        if let prior = replay[id] {
+        // ICC qualification needs a fresh journal and server read on every request.
+        if operation != "artwork-icc-validation-status", let prior = replay[id] {
             guard prior.0 == bytes else { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
             return prior.1
         }
@@ -718,6 +719,30 @@ public actor NativeAutomationSession {
                 fields["job"] = NativeAutomationArtworkRules.jobValue(observed)
             }
             result = .object(fields)
+        case "artwork-icc-validation-status":
+            guard selectedOEXFormat == nil, api.admitsICCJPEG,
+                  NativeJPEGImportRuntime.supportsPortalICCValidation(manifestSHA256: runtimeManifest, ready: !runtimeStopped) else {
+                throw BridgeFailure("IMPORT_ICC_UNAVAILABLE")
+            }
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "artworkRevision", "jobId", "originalSha256"])
+            let transfer = try await bridge.uploadState(context)
+            try NativeAutomationArtworkRules.checkUploadScope(transfer, document: current)
+            guard let intent = transfer.intent, intent.artworkId == command["artworkId"].string,
+                  intent.sha256 == command["originalSha256"].string,
+                  let revision = command["artworkRevision"].integer, revision > 0,
+                  let jobId = transfer.jobId, jobId == command["jobId"].string else {
+                throw BridgeFailure("IMPORT_INTENT_CHANGED")
+            }
+            let artwork = try await api.artwork(intent.artworkId)
+            let job = try await api.importJob(jobId)
+            let preparation = try NativeAutomationArtworkRules.checkICCReadback(
+                artwork: artwork, job: job, jobId: jobId, intent: intent, revision: revision)
+            var wire = NativeAutomationArtworkRules.jobValue(job)
+            wire["imagePreparation"] = .object(["provenance": .string(preparation.provenance),
+                "originalSha256": .string(preparation.originalSha256), "derivedSha256": .string(preparation.derivedSha256),
+                "recipe": try value(preparation.recipe)])
+            result = .object(["artwork": try value(artwork), "job": wire])
         case "artwork-approve":
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "revision", "assetId", "acknowledgeRights"])
@@ -898,7 +923,7 @@ public actor NativeAutomationSession {
             }
         default: throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
         }
-        replay[id] = (bytes, result)
+        if operation != "artwork-icc-validation-status" { replay[id] = (bytes, result) }
         return result
     }
     public func close() async throws {
