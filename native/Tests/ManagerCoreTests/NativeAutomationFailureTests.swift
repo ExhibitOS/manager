@@ -3,6 +3,24 @@ import XCTest
 @testable import ManagerCore
 
 final class NativeAutomationFailureTests: XCTestCase {
+    func testStaticExportReusesMatchingStatusAndAllowsNewExportAfterTerminalStatus() throws {
+        let id = UUID().uuidString.lowercased()
+        func status(_ state: String) -> NativeStaticExportStatus {
+            .init(format: 1, jobId: id, workspaceId: id, tenantId: id, principalId: id,
+                  publicationId: id, revisionSha256: String(repeating: "a", count: 64),
+                  output: "/exports/first", state: state, receipt: nil, errorCode: nil, privateEditor: true)
+        }
+        for state in ["completed", "failed", "cancelled", "interrupted"] {
+            XCTAssertTrue(try status(state).canReuse(publicationId: id, output: "/exports/first"))
+            XCTAssertFalse(try status(state).canReuse(publicationId: id, output: "/exports/second"))
+        }
+        XCTAssertTrue(try status("running").canReuse(publicationId: id, output: "/exports/first"))
+        XCTAssertThrowsError(try status("running").canReuse(publicationId: id, output: "/exports/second")) {
+            XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_EXPORT_CHANGED")
+        }
+        XCTAssertFalse(try status("completed").canReuse(publicationId: UUID().uuidString.lowercased(), output: "/exports/first"))
+    }
+
     func testSelectedCreateLossAndKnownJobPersistenceUncertaintyKeepSafeScopedIDs() throws {
         let scope = (0..<4).map { _ in UUID().uuidString.lowercased() }, job = UUID().uuidString.lowercased()
         for jobID in [nil, job] {

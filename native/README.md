@@ -356,6 +356,12 @@ A negotiated pending request commits the selected profile in its existing plan
 binding, keeping the same snapshot, ETag and publish request ID on cold retry.
 This does not grant watermark support or enlarge the ordinary draft-create limit.
 
+After editing and saving an exhibition, use a new `export-static` request ID
+with the current revision, edit version and an unused output path. A finished
+export to another destination does not prevent the new export. Repeating the
+same request in its session reuses its result. A different active export must
+finish before the new export can start.
+
 An optional `--runtime-payload /absolute/newly-produced-runtime` embeds the
 Platform producer's local validation payload under `Contents/Resources/native-runtime`.
 The helper's closed `runtime_payload` query resolves that fixed app-relative path,
