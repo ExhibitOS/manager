@@ -28,7 +28,7 @@ impl AsRawFd for ProbedWriter {
 
 fn invalid() -> LifecycleError { err("NATIVE_FURNISHING_WRITER_LOCK_INVALID") }
 
-pub(super) struct WriterLifetime {
+pub(crate) struct WriterLifetime {
     file: File,
     path: PathBuf,
     root: crate::maintenance_source::DirectoryPin,

@@ -157,6 +157,33 @@ impl Binding {
         self.check()
     }
 
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(super) fn consume_catalog40_transition(&mut self, prior: &Self) -> Result<()> {
+        use crate::native_payload::{CATALOG40_FRAME_SOURCE, CATALOG40_FRAME_TARGET};
+        prior.check()?;
+        self.check()?;
+        if prior.phase != Phase::Clean || self.phase != Phase::Active || prior.restore.is_some()
+            || self.generation == prior.generation || self.owner != prior.owner
+            || self.physical != prior.physical
+            || !prior.matches_catalog40_tuple(CATALOG40_FRAME_SOURCE)
+            || !self.matches_catalog40_tuple(CATALOG40_FRAME_TARGET)
+        {
+            return Err(err(ERROR));
+        }
+        self.admission_kind = Admission::CleanReopen;
+        self.previous_generation = Some(prior.generation.clone());
+        self.check()
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(super) fn matches_catalog40_tuple(&self, tuple: (&str, &str, &str)) -> bool {
+        self.catalog == 40 && tuple == (
+            self.source_commit.as_str(),
+            self.producer_sha256.as_str(),
+            self.payload_manifest_sha256.as_str(),
+        )
+    }
+
     pub(super) fn active_sha256(&self) -> Result<String> {
         if self.phase != Phase::Active {
             return Err(err(ERROR));
@@ -390,6 +417,130 @@ mod tests {
         assert_eq!(next.previous_generation.as_deref(), Some(GENERATION));
         assert_eq!(next.admission_kind, Admission::CleanReopen);
         assert!(binding(LATER).consume(&next).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn catalog40_binding(generation: &str, tuple: (&str, &str, &str)) -> Binding {
+        let mut result = binding(generation);
+        result.catalog = 40;
+        result.source_commit = tuple.0.into();
+        result.producer_sha256 = tuple.1.into();
+        result.payload_manifest_sha256 = tuple.2.into();
+        result
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn catalog40_transition_refuses_unqualified_or_unclean_bindings() {
+        use crate::native_payload::{CATALOG40_FRAME_SOURCE, CATALOG40_FRAME_TARGET};
+        let mut prior = catalog40_binding(GENERATION, CATALOG40_FRAME_SOURCE);
+        let target = catalog40_binding(NEXT, CATALOG40_FRAME_TARGET);
+        assert!(target.clone().consume_catalog40_transition(&prior).is_err());
+        prior.phase = Phase::Clean;
+        assert!(target.clone().consume(&prior).is_err());
+        let mut next = target.clone();
+        next.consume_catalog40_transition(&prior).unwrap();
+        assert_eq!(next.admission_kind, Admission::CleanReopen);
+        assert_eq!(next.previous_generation.as_deref(), Some(GENERATION));
+
+        let mut bad = prior.clone();
+        bad.owner.principal_id = NEXT.into();
+        assert!(target.clone().consume_catalog40_transition(&bad).is_err());
+        bad = prior.clone();
+        bad.physical.lock_inode += 1;
+        assert!(target.clone().consume_catalog40_transition(&bad).is_err());
+        bad = prior.clone();
+        bad.producer_sha256 = "a".repeat(64);
+        assert!(target.clone().consume_catalog40_transition(&bad).is_err());
+        bad = target.clone();
+        bad.payload_manifest_sha256 = "a".repeat(64);
+        assert!(bad.consume_catalog40_transition(&prior).is_err());
+        bad = target;
+        bad.catalog = 39;
+        assert!(bad.consume_catalog40_transition(&prior).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn catalog40_transition_recovers_only_its_own_consumption_and_keeps_trial_record() {
+        use crate::native_payload::{CATALOG40_FRAME_SOURCE, CATALOG40_FRAME_TARGET};
+        use std::os::unix::fs::DirBuilderExt;
+        let root = std::env::temp_dir().join(format!("catalog40-transition-{}", Uuid::new_v4()));
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let service = LifecycleService::bound_existing(root.clone()).unwrap();
+        let writer = furnishing_lifetime::WriterLifetime::acquire(&root).unwrap();
+        let mut prior = catalog40_binding(GENERATION, CATALOG40_FRAME_SOURCE);
+        prior.physical = writer.identity().unwrap();
+        prior.phase = Phase::Clean;
+        let source = Current { format: 1, id: GENERATION.into(), furnishing: Some(prior.clone()) };
+        let trial = Catalog40Trial { source: source.clone(), generation: NEXT.into() };
+        let runs = directory(&root, "native-runs").unwrap();
+        let prior_run = directory(&runs, GENERATION).unwrap();
+        let trial_run = directory(&runs, NEXT).unwrap();
+        let mut context = Context {
+            format: 1,
+            job_id: Some(GENERATION.into()),
+            state: "stopped".into(),
+            ports: Ports::default(),
+            readiness: Readiness::default(),
+            error_code: None,
+            failure_code: None,
+            postgres_pid: None,
+            node_pid: None,
+            auxiliary_pid: None,
+            exits: [("node".into(), 0), ("postgres".into(), 0)].into(),
+            log_truncated: false,
+        };
+        let proof = |consumed: &str| Some(FurnishingCompletion {
+            binding_sha256: prior.sha256().unwrap(), consumed_by: Some(consumed.into()),
+        });
+        write_run(&prior_run, &context, proof(LATER)).unwrap();
+        write_json(&root, "native-current-run.json", &source).unwrap();
+        assert!(trial.recover_source(&service, &writer).is_err());
+        assert!(unconsumed_furnishing_completion(&root, &prior).is_err());
+
+        write_run(&prior_run, &context, proof(NEXT)).unwrap();
+        let mut target = catalog40_binding(NEXT, CATALOG40_FRAME_TARGET);
+        target.physical = prior.physical;
+        target.consume_catalog40_transition(&prior).unwrap();
+        write_json(&root, "native-current-run.json", &Current {
+            format: 1, id: NEXT.into(), furnishing: Some(target.clone()),
+        }).unwrap();
+
+        // The helper crashed after publishing Active and before it could spawn.
+        context.job_id = Some(NEXT.into());
+        context.state = "starting".into();
+        context.exits.clear();
+        write_run(&trial_run, &context, None).unwrap();
+        trial.check_recovery_root(&root, &writer).unwrap();
+        context.state = "starting_database".into();
+        write_run(&trial_run, &context, None).unwrap();
+        assert!(trial.check_recovery_root(&root, &writer).is_err());
+
+        // The helper drained the failed trial and exited before sealing the
+        // supplemental checkpoint journal. Only the matching drain proof works.
+        context.state = "failed".into();
+        context.failure_code = Some("NATIVE_TEST_FAILURE".into());
+        context.exits.insert("postgres".into(), 0);
+        write_run(&trial_run, &context, None).unwrap();
+        assert!(trial.check_recovery_root(&root, &writer).is_err());
+        write_json(&trial_run, "catalog40-drained.json", &"a".repeat(64)).unwrap();
+        assert!(trial.check_recovery_root(&root, &writer).is_err());
+        write_json(&trial_run, "catalog40-drained.json", &target.sha256().unwrap()).unwrap();
+        context.node_pid = Some(std::process::id());
+        write_run(&trial_run, &context, None).unwrap();
+        assert!(trial.check_recovery_root(&root, &writer).is_err());
+        context.node_pid = None;
+        write_run(&trial_run, &context, None).unwrap();
+        trial.check_recovery_root(&root, &writer).unwrap();
+        trial.recover_source(&service, &writer).unwrap();
+        trial.recover_source(&service, &writer).unwrap();
+        assert_eq!(current_run(&root).unwrap(), Some(source));
+        unconsumed_furnishing_completion(&root, &prior).unwrap();
+        assert!(read_run(&root, NEXT).is_ok());
+        drop(writer);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

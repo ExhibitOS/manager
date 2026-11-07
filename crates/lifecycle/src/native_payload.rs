@@ -85,7 +85,7 @@ pub(crate) const WORKSPACE_WALL_PREVIEW_TRANSITION: (&str, &str) = (
 );
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const WORKSPACE_V5_SAVED_TRANSITIONS: &[(&str, &str)] =
-    &[WORKSPACE_V5_TRANSITION, WORKSPACE_WALL_PREVIEW_TRANSITION];
+    &[WORKSPACE_V5_TRANSITION, WORKSPACE_WALL_PREVIEW_TRANSITION, CATALOG40_FRAME_TRANSITION];
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const WORKSPACE_V5_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[
@@ -184,7 +184,26 @@ const WORKSPACE_MATERIAL_MULTIMAP_CAPABILITY: (&str, u64, &str) = (
     160,
     "14203083f3e9e735bba46a5dcc436c3f797aea168e5c91f428f28c134c1b3f84",
 );
-// The final source, producer and manifest tuple is admitted separately.
+// Keep this exact physical transition local to the debug validation helper.
+#[cfg(debug_assertions)]
+pub(crate) const CATALOG40_FRAME_SOURCE: (&str, &str, &str) = (
+    "bb003b24492c0ee2de6c402dd555ab3e72b6c809",
+    "89d47502358275e4ccbba4ff05740752021c074b8ef7c35eca98a73f2720dd8c",
+    "df6efc23ea2d9aab790fc25fab9833db9f5b48b3cb0c5417a1bd7c5ef609ac2a",
+);
+#[cfg(debug_assertions)]
+pub(crate) const CATALOG40_FRAME_TARGET: (&str, &str, &str) = (
+    "7a70a7c742fc8e7eeeaf75f8429e23682c68c43c",
+    "d0f03a339b7e65934a27f0a51210c28205b6dfbb98769d9deca10fa22cc05380",
+    "c42e9657015695601ffb0c4ea493ae9ae6df9c954fce032db3212a1b20d309ee",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const CATALOG40_FRAME_TRANSITION: (&str, &str) =
+    (CATALOG40_FRAME_SOURCE.2, CATALOG40_FRAME_TARGET.2);
+#[cfg(debug_assertions)]
+const WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE: &[(&str, &str, &str)] =
+    &[CATALOG40_FRAME_SOURCE, CATALOG40_FRAME_TARGET];
+#[cfg(not(debug_assertions))]
 const WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[];
 
 
@@ -1247,6 +1266,21 @@ impl Payload {
         payload.workspace_v5_validation = selected;
         Ok(payload)
     }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn open_saved_workspace_transition(root: &Path) -> Result<Self> {
+        let payload = Self::open(root)?;
+        let context = payload.context();
+        if matches!(context.manifest_sha256.as_str(), hash if hash == CATALOG40_FRAME_TRANSITION.0
+            || hash == CATALOG40_FRAME_TRANSITION.1)
+        {
+            if payload.workspace_furnishing_catalog()? == Some(WorkspaceFurnishingCatalog::MaterialMultimap040) {
+                return Ok(payload);
+            }
+            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        }
+        Self::open_workspace_v5_validation(root, false)
+    }
+
     pub(crate) fn workspace_v5_selected_input(&self) -> bool {
         self.workspace_v5_validation
     }

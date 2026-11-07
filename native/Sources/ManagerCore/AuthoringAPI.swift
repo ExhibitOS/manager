@@ -312,7 +312,9 @@ public actor AuthoringAPI {
         "6be2d5969462e4961e9ecbd3b6417936f2f075de1fbc3626d1b4f19cde7e65ec"
     ]
     private static let workspaceMaterialMultimapManifestPins: Set<String> = [
-        "72a13c526fb422c106f8eefaa7e277e5ab003f3c2085ebd09b2814c0a19ef904"
+        "72a13c526fb422c106f8eefaa7e277e5ab003f3c2085ebd09b2814c0a19ef904",
+        "df6efc23ea2d9aab790fc25fab9833db9f5b48b3cb0c5417a1bd7c5ef609ac2a",
+        "c42e9657015695601ffb0c4ea493ae9ae6df9c954fce032db3212a1b20d309ee"
     ]
     private static let workspaceCatalogReadManifest = "aad7ddf920dc64b02b916166e829d9638fca11b585cd0cb9157bc49a0f09e0d9"
     #else
@@ -324,7 +326,14 @@ public actor AuthoringAPI {
     public nonisolated let workspaceMaterialMultimapRuntimeQualified: Bool
     private let workspaceCatalogReadRuntimeQualified: Bool
     // Add the paired manifest only after the native 036 owner path is qualified.
+    #if DEBUG
+    private static let workspaceFurnishingManifestPins: Set<String> = [
+        "df6efc23ea2d9aab790fc25fab9833db9f5b48b3cb0c5417a1bd7c5ef609ac2a",
+        "c42e9657015695601ffb0c4ea493ae9ae6df9c954fce032db3212a1b20d309ee"
+    ]
+    #else
     private static let workspaceFurnishingManifestPins: Set<String> = []
+    #endif
     public nonisolated let workspaceFurnishingRuntimeQualified: Bool
     private var nativeSession = false
     private var session: AuthoringSession?

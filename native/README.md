@@ -190,6 +190,31 @@ transition from the exact `cfe1` manifest to the reviewed `6be2` manifest.
 It uses the same authenticated checkpoint and saved-draft trial. The new
 payload is admitted for ordinary reopen after the transition.
 
+The same debug maintenance commands support the directed catalog 40 frame
+validation transition from manifest
+`df6efc23ea2d9aab790fc25fab9833db9f5b48b3cb0c5417a1bd7c5ef609ac2a`
+to `c42e9657015695601ffb0c4ea493ae9ae6df9c954fce032db3212a1b20d309ee`.
+Both payloads must match the exact pinned source commit and producer and
+have the same catalog 40 SQL ledger. The source must have a saved draft,
+an unconsumed clean writer completion and the original profile root,
+writer lock and logical owner. Pending edits, imports, uploads, publication
+and restore must settle before staging. Use the target runtime for
+`--maintain-workspace-v5-transition` and the source runtime for
+`stage_saved` as above. The trial uses the normal owner admission and
+shutdown, and verifies the saved Studio draft before committing the target
+binding. After successful activation, use the regular helper with the
+exact target runtime for subsequent starts of this profile.
+
+If a drained trial fails, use `recover` with the same staging directory and
+key. Recovery restores the source's data, runtime binding and writer
+completion while retaining the trial run for diagnosis. A restart before
+the first possible spawn can recover from the durable starting record.
+A failed trial that ran processes needs the target run's drain record and
+no live writer or database process. After recovery, retry by staging again
+from the clean source. An unconfirmed stop keeps the transition fenced. This path is for the two reviewed local validation
+payloads and the current catalog. It does not support a reverse transition
+or other payloads.
+
 ### Private floor rendering
 
 The reviewed `cfe1` local-validation runtime also admits the existing Quiet
