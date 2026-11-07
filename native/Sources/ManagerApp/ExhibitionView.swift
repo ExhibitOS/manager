@@ -1221,7 +1221,8 @@ final class ExhibitionModel: ObservableObject {
         workspaceFurnishingIntakeAvailable && session?.advertisesWorkspaceArtworkFrame == true
     }
     var workspaceArtworkFramePreparationAvailable: Bool {
-        workspaceArtworkFrameAvailable && session?.advertisesWorkspaceArtworkFramePreparation == true
+        workspaceArtworkFrameAvailable && api?.workspaceFramePreparationRuntimeQualified == true
+            && session?.advertisesWorkspaceArtworkFramePreparation == true
     }
     var canEditWorkspaceArtworkFrame: Bool {
         workspaceArtworkFrameAvailable && canSelectCatalog && !immutable && !dirty && !viewingPlanDirty

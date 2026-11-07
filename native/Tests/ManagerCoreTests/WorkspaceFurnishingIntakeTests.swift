@@ -307,6 +307,7 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
     func testUnqualifiedRuntimeRejectsFurnishingReadBeforeNetwork() async throws {
         let api = try AuthoringAPI(port: 49151, tenantId: intakeId, nativeRuntimeManifestSHA256: modelSHA256)
         XCTAssertFalse(api.workspaceFurnishingRuntimeQualified)
+        XCTAssertFalse(api.workspaceFramePreparationRuntimeQualified)
         do {
             _ = try await api.workspaceFurnishingIntakes()
             XCTFail("Unqualified runtime admitted")
@@ -314,6 +315,19 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
             XCTAssertEqual(failure.code, "WORKSPACE_FURNISHING_UNAVAILABLE")
         }
     }
+
+    #if DEBUG
+    func testFramePreparationRuntimePinDoesNotChangeEarlierFurnishingAdmission() throws {
+        let earlier = try AuthoringAPI(port: 49151, tenantId: intakeId,
+            nativeRuntimeManifestSHA256: "7f76b19894fe3a9824a640cf1856ba7c828d5bd3201ede0da5d1c53a501bd1e7")
+        let preparation = try AuthoringAPI(port: 49151, tenantId: intakeId,
+            nativeRuntimeManifestSHA256: "1c1f3cbddae02e2c0a1053da99362f0fc110558aa5b5bd4f00cded2eec948a63")
+        XCTAssertTrue(earlier.workspaceFurnishingRuntimeQualified)
+        XCTAssertFalse(earlier.workspaceFramePreparationRuntimeQualified)
+        XCTAssertTrue(preparation.workspaceFurnishingRuntimeQualified)
+        XCTAssertTrue(preparation.workspaceFramePreparationRuntimeQualified)
+    }
+    #endif
 
     func testRoomVisualAdvertisementRequiresBothParentProfiles() throws {
         var fields: DocumentValue = .object([

@@ -340,6 +340,8 @@ public actor AuthoringAPI {
     private let workspaceCatalogReadRuntimeQualified: Bool
     // Add the paired manifest only after the native 036 owner path is qualified.
     #if DEBUG
+    private static let workspaceFramePreparationManifestPin =
+        "1c1f3cbddae02e2c0a1053da99362f0fc110558aa5b5bd4f00cded2eec948a63"
     private static let workspaceFurnishingManifestPins: Set<String> = [
         "df6efc23ea2d9aab790fc25fab9833db9f5b48b3cb0c5417a1bd7c5ef609ac2a",
         "c42e9657015695601ffb0c4ea493ae9ae6df9c954fce032db3212a1b20d309ee",
@@ -352,6 +354,7 @@ public actor AuthoringAPI {
     private static let workspaceFurnishingManifestPins: Set<String> = []
     #endif
     public nonisolated let workspaceFurnishingRuntimeQualified: Bool
+    public nonisolated let workspaceFramePreparationRuntimeQualified: Bool
     private var nativeSession = false
     private var session: AuthoringSession?
     private var generation: UInt64 = 0
@@ -381,12 +384,15 @@ public actor AuthoringAPI {
         workspaceMaterialMultimapRuntimeQualified = multimapQualified
         workspaceWallMaterialRuntimeQualified = wallQualified
         workspaceMaterialRuntimeQualified = wallQualified || Self.workspaceMaterialManifestPins.contains(manifest)
-        workspaceFurnishingRuntimeQualified = Self.workspaceFurnishingManifestPins.contains(manifest)
         #if DEBUG
+        let framePreparationQualified = manifest == Self.workspaceFramePreparationManifestPin
         workspaceCatalogReadRuntimeQualified = manifest == Self.workspaceCatalogReadManifest
         #else
+        let framePreparationQualified = false
         workspaceCatalogReadRuntimeQualified = false
         #endif
+        workspaceFramePreparationRuntimeQualified = framePreparationQualified
+        workspaceFurnishingRuntimeQualified = framePreparationQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -1144,7 +1150,8 @@ public actor AuthoringAPI {
     }
 
     private var admitsWorkspaceArtworkFramePreparation: Bool {
-        admitsWorkspaceFurnishings && session?.advertisesWorkspaceArtworkFramePreparation == true
+        workspaceFramePreparationRuntimeQualified && admitsWorkspaceFurnishings
+            && session?.advertisesWorkspaceArtworkFramePreparation == true
     }
 
     private var supportedFurnishingExtensionVersion: Int64 {
