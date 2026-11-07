@@ -224,10 +224,13 @@ const CATALOG39_UPGRADE_SOURCE: RuntimeTuple = (
     "927324495d06cba996cb4e718fbc09b386f646b4fd91e155af01ba18e6bf4ac0",
     "caf4d4d25245cfddbae8db2b80595250b3f08baceb715c66855a46537a88ef63",
 );
-// Only an independently qualified build with the occupied-upgrade writer
-// may fill this pin. The earlier tangent payload cannot perform this step.
+// Reviewed local validation build with the occupied-upgrade writer.
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const CATALOG39_UPGRADE_TARGET: Option<RuntimeTuple> = None;
+const CATALOG39_UPGRADE_TARGET: Option<RuntimeTuple> = Some((
+    "71985bef3d9ac13b417cc7f9a9ccc7ffc6315f17",
+    "afe2d4e6cc881733a218b2bc3354e026b5492adbd3a7dc0acf13e6bb66f9c178",
+    "bdfc8202d851f9f8983440b9475da3fc3ddc6ee1f0bf4cf2c0d4bf1995dde338",
+));
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -273,11 +276,6 @@ impl Catalog40Transition {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         )))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn upgrade_pin_is_closed() -> bool {
-        CATALOG39_UPGRADE_TARGET.is_none()
     }
 
     pub(crate) fn upgrades_catalog(self) -> bool {

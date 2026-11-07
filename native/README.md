@@ -219,10 +219,11 @@ reversing or skipping a step.
 
 The debug helper has a separate occupied-catalog upgrade path for 039 to
 040. It uses the same `stage_saved`, `activate` and `recover` commands,
-with the previously reviewed 039 runtime as the source. This path remains
-disabled until the target runtime that implements the occupied upgrade
-has an exact reviewed pin. Catalog 40-to-40 transitions use their existing
-unchanged-ledger check.
+with the reviewed local validation runtime manifests
+`caf4d4d25245cfddbae8db2b80595250b3f08baceb715c66855a46537a88ef63`
+as source and
+`bdfc8202d851f9f8983440b9475da3fc3ddc6ee1f0bf4cf2c0d4bf1995dde338`
+as target. Catalog 40-to-40 transitions use their existing unchanged-ledger check.
 
 The occupied upgrade pins the stopped source and its saved Studio draft
 in the checkpoint. The trial checks the full 039 ledger before starting

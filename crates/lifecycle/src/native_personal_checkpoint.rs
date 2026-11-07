@@ -1312,9 +1312,12 @@ mod tests {
         let old_target = crate::native_payload::CATALOG40_TANGENT_TARGET.2;
         assert!(!admitted_pair(upgrade.source().2, old_target));
         assert!(!admitted_pair(old_target, upgrade.source().2));
-        if Catalog40Transition::upgrade_pin_is_closed() {
-            assert!(!admitted_pair(upgrade.source().2, upgrade.target().2));
-        }
+        assert!(!admitted_pair(upgrade.source().2, upgrade.target().2));
+        let target = "bdfc8202d851f9f8983440b9475da3fc3ddc6ee1f0bf4cf2c0d4bf1995dde338";
+        assert!(Catalog40Transition::from_manifests((upgrade.source().2, target))
+            .is_some_and(Catalog40Transition::upgrades_catalog));
+        assert!(!admitted_pair(target, upgrade.source().2));
+        assert!(!admitted_pair(old_target, target));
     }
 
     #[cfg(feature = "workspace-v5-owner-validation")]
