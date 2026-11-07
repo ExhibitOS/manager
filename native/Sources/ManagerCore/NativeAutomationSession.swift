@@ -831,9 +831,8 @@ public actor NativeAutomationSession {
                 publication.completed = NativePublicationCompleted(pending: pending, publication: frozen); publication.pending = nil
                 publication = try await bridge.savePublicationState(context, state: publication)
             }
-            if let existing = try await bridge.staticExportStatus(context) {
-                guard existing.publicationId == frozen.publicationId, existing.output == path else { throw BridgeFailure("AUTOMATION_EXPORT_CHANGED") }
-            } else {
+            let existing = try await bridge.staticExportStatus(context)
+            if try existing?.canReuse(publicationId: frozen.publicationId, output: path) != true {
                 guard !FileManager.default.fileExists(atPath: path) else { throw BridgeFailure("AUTOMATION_OUTPUT_INVALID") }
                 _ = try await bridge.startStaticExport(context, publicationId: frozen.publicationId, output: destination, privateEditor: true)
             }

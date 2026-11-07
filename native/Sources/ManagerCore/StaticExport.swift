@@ -12,4 +12,10 @@ public struct NativeStaticExportStatus: Codable, Sendable {
     public let errorCode: String?
     public let privateEditor: Bool?
     public var running: Bool { state == "running" }
+
+    func canReuse(publicationId: String, output: String) throws -> Bool {
+        let matches = self.publicationId == publicationId && self.output == output
+        guard matches || !running else { throw BridgeFailure("AUTOMATION_EXPORT_CHANGED") }
+        return matches
+    }
 }
