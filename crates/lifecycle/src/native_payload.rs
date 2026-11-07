@@ -40,6 +40,11 @@ struct Item {
     executable: Option<bool>,
     link: Option<String>,
 }
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+pub(crate) enum StaticRefreshRuntimeFile {
+    Regular { path: String, bytes: u64, executable: bool },
+    Link { path: String, target: String },
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FreezeBudgetDescriptor {
@@ -1812,6 +1817,48 @@ impl Payload {
     pub(crate) fn producer_sha256(&self) -> &str {
         &self.manifest.producer_sha256
     }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub(crate) fn static_refresh_inventory(bytes: &[u8], expected: (&str, &str, &str))
+        -> Result<Vec<StaticRefreshRuntimeFile>> {
+        let reject = || err("NATIVE_STATIC_REFRESH_RUNTIME_UNQUALIFIED");
+        if digest(bytes) != expected.2 {
+            return Err(reject());
+        }
+        let manifest: Manifest = serde_json::from_slice(bytes).map_err(|_| reject())?;
+        if manifest.source_commit != expected.0 || manifest.producer_sha256 != expected.1
+            || manifest.files.is_empty() || manifest.files.len() > 50_000 {
+            return Err(reject());
+        }
+        let mut names = BTreeSet::new();
+        let mut total = 0u64;
+        manifest.files.into_iter().map(|file| {
+            if !relative_name(&file.path) || file.path == "manifest.json" || !names.insert(file.path.clone()) {
+                return Err(reject());
+            }
+            match (file.link, file.bytes, file.sha256, file.executable) {
+                (None, Some(bytes), Some(hash), Some(executable)) if hash_valid(&hash) => {
+                    total = total.checked_add(bytes).filter(|sum| *sum <= 2 * 1024 * 1024 * 1024).ok_or_else(reject)?;
+                    Ok(StaticRefreshRuntimeFile::Regular { path: file.path, bytes, executable })
+                }
+                (Some(target), None, None, None) if !target.is_empty() && target.len() <= 2048
+                    && !Path::new(&target).is_absolute() => {
+                    Ok(StaticRefreshRuntimeFile::Link { path: file.path, target })
+                }
+                _ => Err(reject()),
+            }
+        }).collect()
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub(crate) fn static_refresh_script(&self, path: &str) -> Result<PathBuf> {
+        if !self.manifest.files.iter().any(|item| item.path == path && item.link.is_none()
+            && item.executable == Some(false) && item.bytes.is_some_and(|len| len > 0)
+            && item.sha256.as_deref().is_some_and(hash_valid)) {
+            return Err(err("NATIVE_STATIC_REFRESH_RUNTIME_UNQUALIFIED"));
+        }
+        contained(&self.root, path)
+    }
+
     pub fn node(&self) -> PathBuf {
         self.root.join(&self.manifest.entry.node)
     }
