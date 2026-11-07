@@ -22,6 +22,11 @@ public struct AuthoringSession: Decodable, Sendable {
     public var workspaceArtworkFrameProfile: String? = nil
     public var workspaceArtworkFrameModelsProfile: String? = nil
     public var workspaceArtworkFramePreparationProfile: String? = nil
+    public var workspacePortalFinishProfile: String? = nil
+
+    public var advertisesWorkspacePortalFinish: Bool {
+        advertisesWorkspaceArtworkFrameModels && workspacePortalFinishProfile == "workspace-portal-finish-v1"
+    }
 
     public var advertisesWorkspaceFurnishingStool: Bool {
         workspaceFurnishingProfile == "workspace-furnishing-intake-v1"
@@ -185,6 +190,12 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "FRAME_DEPTH_UNSUPPORTED": return "깊이 정보가 없는 평면 작품을 선택하세요."
         case "FRAME_TRANSFORM_UNSUPPORTED": return "공간과 작품 배치의 배율을 확인하세요. 액자를 연결하려면 작품이 승인된 크기로 표시되어야 합니다."
         case "FRAME_PROCEDURAL_CONFLICT": return "기존 액자 설정을 해제하고 전시를 저장한 뒤 다시 시도하세요."
+        case "PORTAL_SAVED_DRAFT_REQUIRED": return "전시를 저장한 뒤 출입구 마감을 연결하거나 해제하세요."
+        case "PORTAL_TARGET_STALE": return "저장된 문을 다시 확인하세요."
+        case "PORTAL_ASSET_UNSUPPORTED": return "지원되는 출입구 마감 원본 GLB를 선택하세요."
+        case "PORTAL_SIZE_UNSUPPORTED": return "폭 2.4 m, 높이 2.6 m인 문을 선택하세요."
+        case "PORTAL_TRANSFORM_UNSUPPORTED": return "문이 바닥에서 시작하며 벽과 공간의 배율이 1인지 확인하세요."
+        case "PORTAL_WALL_DEPTH_UNSUPPORTED": return "선택한 문이 속한 벽의 두께를 확인하세요. 지원되는 두께는 0.2 m입니다."
         case "ARCHITECTURE_SELECTION_CHANGED": return "선택한 대상이 바뀌었습니다. 입력을 취소한 뒤 대상을 다시 선택하세요."
         case "PLACEMENT_APPLY_REQUIRED": return "배치와 위치 입력을 먼저 적용하거나 취소하세요. 입력과 기존 전시는 그대로 유지됩니다."
         case "ARCHITECTURE_APPLY_REQUIRED": return "공간·재질 변경을 적용하거나 입력을 취소한 뒤 전시를 저장하세요."
@@ -320,6 +331,8 @@ public actor AuthoringAPI {
     private static let workspaceWallMaterialManifestPins: Set<String> = [
         "6be2d5969462e4961e9ecbd3b6417936f2f075de1fbc3626d1b4f19cde7e65ec"
     ]
+    private static let workspacePortalFinishManifestPin =
+        "0bea16fb7d61aa3b0e60921a7f4d8d702025e4857f779fd763b9633f4884b330"
     private static let workspaceMaterialMultimapManifestPins: Set<String> = [
         "72a13c526fb422c106f8eefaa7e277e5ab003f3c2085ebd09b2814c0a19ef904",
         "df6efc23ea2d9aab790fc25fab9833db9f5b48b3cb0c5417a1bd7c5ef609ac2a",
@@ -357,6 +370,7 @@ public actor AuthoringAPI {
     #endif
     public nonisolated let workspaceFurnishingRuntimeQualified: Bool
     public nonisolated let workspaceFramePreparationRuntimeQualified: Bool
+    public nonisolated let workspacePortalFinishRuntimeQualified: Bool
     private var nativeSession = false
     private var session: AuthoringSession?
     private var generation: UInt64 = 0
@@ -378,8 +392,10 @@ public actor AuthoringAPI {
         admitsICCJPEG = NativeJPEGImportRuntime.supportsICC(manifestSHA256: nativeRuntimeManifestSHA256, ready: true)
         let manifest = nativeRuntimeManifestSHA256 ?? ""
         #if DEBUG
-        let multimapQualified = Self.workspaceMaterialMultimapManifestPins.contains(manifest)
+        let portalQualified = manifest == Self.workspacePortalFinishManifestPin
+        let multimapQualified = portalQualified || Self.workspaceMaterialMultimapManifestPins.contains(manifest)
         #else
+        let portalQualified = false
         let multimapQualified = false
         #endif
         let wallQualified = multimapQualified || Self.workspaceWallMaterialManifestPins.contains(manifest)
@@ -394,7 +410,8 @@ public actor AuthoringAPI {
         workspaceCatalogReadRuntimeQualified = false
         #endif
         workspaceFramePreparationRuntimeQualified = framePreparationQualified
-        workspaceFurnishingRuntimeQualified = framePreparationQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
+        workspacePortalFinishRuntimeQualified = portalQualified
+        workspaceFurnishingRuntimeQualified = portalQualified || framePreparationQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -1156,8 +1173,13 @@ public actor AuthoringAPI {
             && session?.advertisesWorkspaceArtworkFramePreparation == true
     }
 
+    public var admitsWorkspacePortalFinish: Bool {
+        workspacePortalFinishRuntimeQualified && admitsWorkspaceFurnishings && session?.advertisesWorkspacePortalFinish == true
+    }
+
     private var supportedFurnishingExtensionVersion: Int64 {
         guard admitsWorkspaceFurnishings, let session else { return 0 }
+        if admitsWorkspacePortalFinish { return 6 }
         if session.advertisesWorkspaceArtworkFrameModels { return 5 }
         if session.advertisesWorkspaceArtworkFrame { return 4 }
         if session.advertisesWorkspaceFurnishingRoomVisual { return 3 }
@@ -1357,6 +1379,34 @@ public actor AuthoringAPI {
                                         supportedExtensionVersion: supportedFurnishingExtensionVersion)
         // A repeat attach still checks current rights and model integrity.
         try await validateNativeViewportEdit(next ?? saved.draft, etag: etag)
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return next
+    }
+
+    public func prepareWorkspacePortalFinish(openingId: String, furnishingId: String?,
+                                             expectedModelSHA256: String? = nil,
+                                             in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        guard admitsWorkspacePortalFinish, document.tenantId == tenant, document.principalId == session?.userId else {
+            throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+        }
+        guard !document.dirty, document.pending == nil, let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("PORTAL_SAVED_DRAFT_REQUIRED")
+        }
+        let heldGeneration = generation
+        let saved = try await exhibition(draft.id)
+        guard saved.etag == etag, saved.draft == draft else { throw AuthoringFailure("REMOTE_CONFLICT", status: 412) }
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        var furnishing: WorkspaceFurnishing?
+        if let furnishingId {
+            let selected = try await workspaceFurnishing(furnishingId, version: 1)
+            guard expectedModelSHA256.map({ $0 == selected.details.model.sha256 }) ?? true else {
+                throw AuthoringFailure("PORTAL_ASSET_UNSUPPORTED")
+            }
+            furnishing = selected
+        }
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let next = try WorkspacePortalFinish.applying(to: draft, openingId: openingId, furnishing: furnishing)
+        if next != nil || furnishing != nil { try await validateNativeViewportEdit(next ?? draft, etag: etag) }
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next
     }

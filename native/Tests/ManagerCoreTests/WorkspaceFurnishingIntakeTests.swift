@@ -116,6 +116,38 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         }
     }
 
+    func testPortalFinishRoundTripPreservesV5FurnishingsAndDoor() throws {
+        var wire = try registered()
+        wire["furnishing"]["kind"] = .string("portal-finish")
+        wire["furnishing"]["model"]["sha256"] = .string(WorkspacePortalFinish.modelSHA256)
+        wire["furnishing"]["model"]["bytes"] = .integer(164_044)
+        let portal = try XCTUnwrap(intake(wire).furnishing)
+        var pedestal = try registered()["furnishing"]
+        pedestal["id"] = .string(intakeId)
+        var draft = try NativeExhibitionDraft.new()
+        var candidate = draft.candidate
+        let host = "10000000-0000-4000-8000-00000000000A"
+        let door: DocumentValue = .object(["id": .string(host), "type": .string("door")])
+        candidate["openings"] = .array([door])
+        let namespace = WorkspaceFurnishingPlacement.namespace
+        candidate["extensions"] = .object(["example": .bool(true), namespace: .object([
+            "version": .integer(5), "furnishings": .array([pedestal]),
+            "placements": .array([]), "frameAttachments": .array([])
+        ])])
+        try draft.replaceCandidate(candidate)
+
+        let attached = try XCTUnwrap(WorkspacePortalFinish.applying(to: draft, openingId: host, furnishing: portal))
+        XCTAssertEqual(attached.candidate["openings"], .array([door]))
+        XCTAssertEqual(attached.candidate["extensions"][namespace]["version"], .integer(6))
+        XCTAssertEqual(attached.candidate["extensions"][namespace]["openingAttachments"].items?.first?["openingId"], .string(host.lowercased()))
+        XCTAssertTrue(WorkspacePortalFinish.hasAttachment(openingId: host, in: attached))
+        XCTAssertNil(try WorkspacePortalFinish.applying(to: attached, openingId: host, furnishing: portal))
+        XCTAssertThrowsError(try WorkspacePortalFinish.applying(to: attached, openingId: requestId, furnishing: portal))
+        let detached = try XCTUnwrap(WorkspacePortalFinish.applying(to: attached, openingId: host, furnishing: nil))
+        XCTAssertEqual(detached.candidate, draft.candidate)
+        XCTAssertNil(try WorkspacePortalFinish.applying(to: detached, openingId: host, furnishing: nil))
+    }
+
     func testVisualPlacementIsRoomLocalAndReplaysExactly() throws {
         let furnishing = try XCTUnwrap(intake(registered()).furnishing)
         var draft = try NativeExhibitionDraft.new()

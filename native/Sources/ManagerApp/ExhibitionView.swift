@@ -1224,6 +1224,14 @@ final class ExhibitionModel: ObservableObject {
         workspaceArtworkFrameAvailable && api?.workspaceFramePreparationRuntimeQualified == true
             && session?.advertisesWorkspaceArtworkFramePreparation == true
     }
+    var workspacePortalFinishAvailable: Bool {
+        workspaceFurnishingIntakeAvailable && api?.workspacePortalFinishRuntimeQualified == true
+            && session?.advertisesWorkspacePortalFinish == true
+    }
+    var canEditWorkspacePortalFinish: Bool {
+        workspacePortalFinishAvailable && canSelectCatalog && !immutable && !dirty && !viewingPlanDirty
+            && !architectureDirty && !formDirty && !positionDirty && state?.etag != nil && viewportController.editingContextActive
+    }
     var canEditWorkspaceArtworkFrame: Bool {
         workspaceArtworkFrameAvailable && canSelectCatalog && !immutable && !dirty && !viewingPlanDirty
             && state?.etag != nil && viewportController.editingContextActive
@@ -1276,6 +1284,22 @@ final class ExhibitionModel: ObservableObject {
             try await persist(current)
             syncFields()
             notice = "액자 변경을 이 Mac에 보관했습니다. 전시를 저장하세요."
+            return true
+        }
+    }
+    func applyWorkspacePortalFinish(openingId: String, furnishingId: String?, access: UUID) async throws -> Bool {
+        guard canEditWorkspacePortalFinish else { throw AuthoringFailure("PORTAL_SAVED_DRAFT_REQUIRED") }
+        return try await withWorkspaceFurnishingAccess(access) { api in
+            guard var current = state else { throw AuthoringFailure("PORTAL_SAVED_DRAFT_REQUIRED") }
+            let next = try await api.prepareWorkspacePortalFinish(openingId: openingId, furnishingId: furnishingId, in: current)
+            guard access == viewportAccessID, state?.revision == current.revision, state?.draft == current.draft,
+                  !formDirty, !positionDirty, !architectureDirty, !viewingPlanDirty, !immutable,
+                  viewportController.editingContextActive else { throw AuthoringFailure("PORTAL_TARGET_STALE") }
+            guard let next else { return false }
+            current.draft = next
+            try await persist(current)
+            syncFields()
+            notice = "출입구 마감 변경을 이 Mac에 보관했습니다. 전시를 저장하세요."
             return true
         }
     }

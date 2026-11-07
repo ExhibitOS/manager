@@ -1521,10 +1521,31 @@ impl Payload {
     }
 
     pub(crate) fn workspace_furnishing_catalog(&self) -> Result<Option<WorkspaceFurnishingCatalog>> {
+        const PORTAL_MARKER: &str = "platform/scripts/native-workspace-portal-finish-capability-v1.json";
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        let portal = Some((
+            "0403f9c3df008a95772291ac41dae77db2cd4af4",
+            "cf0558967fd6966053c164b336974f3a99b08f90264d41eee622ee637c80e5dd",
+            "0bea16fb7d61aa3b0e60921a7f4d8d702025e4857f779fd763b9633f4884b330",
+        ));
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        let portal: Option<(&str, &str, &str)> = None;
+        let pinned_portal = portal.is_some_and(|(source, producer, manifest)|
+            self.manifest.source_commit == source && self.manifest.producer_sha256 == producer
+                && self.manifest_sha256 == manifest);
+        let portal_marker = self.manifest.files.iter().find(|file| file.path == PORTAL_MARKER);
+        if (pinned_portal || portal_marker.is_some())
+            && !(pinned_portal && portal_marker.is_some_and(|file| file.link.is_none()
+                && file.executable == Some(false) && file.bytes == Some(300)
+                && file.sha256.as_deref() == Some("6a7e94ccd178ec05d57a120d77de28d7fcc6fb54f2069c18ead5beb52cd9aebc")))
+        {
+            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        }
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         let multimap = WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE.iter().copied()
             .chain(CATALOG39_UPGRADE_TARGET).chain(CATALOG40_EXB_TARGET)
-            .chain(CATALOG40_RESTORE_PROVENANCE_TARGET).chain(CATALOG40_FRAME_RECORD_TARGET).collect::<Vec<_>>();
+            .chain(CATALOG40_RESTORE_PROVENANCE_TARGET).chain(CATALOG40_FRAME_RECORD_TARGET)
+            .chain(portal).collect::<Vec<_>>();
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         let multimap = multimap.as_slice();
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]

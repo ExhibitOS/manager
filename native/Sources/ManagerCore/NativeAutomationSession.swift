@@ -488,6 +488,27 @@ public actor NativeAutomationSession {
             } else {
                 result = .object(["changed": .bool(false), "document": try value(current)])
             }
+        case "workspace-portal-attach", "workspace-portal-detach":
+            guard selectedOEXFormat == nil, await api.admitsWorkspacePortalFinish else {
+                throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+            }
+            try checkedRevision(request, current)
+            let attaching = operation == "workspace-portal-attach"
+            let fields = try NativeAutomationArtworkRules.command(request, keys: attaching
+                ? ["openingId", "furnishingId", "furnishingVersion", "modelSha256"] : ["openingId"])
+            guard let opening = fields["openingId"].string,
+                  !attaching || (fields["furnishingId"].string != nil && fields["furnishingVersion"] == .integer(1)
+                    && fields["modelSha256"].string == WorkspacePortalFinish.modelSHA256) else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            if let draft = try await api.prepareWorkspacePortalFinish(openingId: opening,
+                furnishingId: fields["furnishingId"].string, expectedModelSHA256: fields["modelSha256"].string, in: current) {
+                var next = current
+                next.draft = draft
+                result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
+            } else {
+                result = .object(["changed": .bool(false), "document": try value(current)])
+            }
         case "workspace-material-floor-apply", "workspace-material-wall-apply":
             guard selectedOEXFormat == nil else { throw BridgeFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
             try checkedRevision(request, current)
