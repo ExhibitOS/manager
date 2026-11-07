@@ -17,7 +17,8 @@ const OLD_MANIFEST: &str = "253de8963ec9f0e0a2884a27d8e756b453cf61899e38c31571d9
 const NEW_MANIFEST: &str = "10a21f3b7a73a66011e077f7927f951f917e604720591acbcc2cdb47222f4032";
 #[cfg(feature = "workspace-v5-owner-validation")]
 use crate::native_payload::{
-    CATALOG40_FRAME_TRANSITION, WORKSPACE_V5_SAVED_TRANSITIONS, WORKSPACE_V5_TRANSITION, WORKSPACE_WALL_PREVIEW_TRANSITION,
+    CATALOG40_FRAME_TRANSITION, CATALOG40_TANGENT_TRANSITION, Catalog40Transition,
+    WORKSPACE_V5_SAVED_TRANSITIONS, WORKSPACE_V5_TRANSITION, WORKSPACE_WALL_PREVIEW_TRANSITION,
 };
 
 // Development-only transitions are admitted as directed, exact pairs. Keep
@@ -30,6 +31,8 @@ const TRANSITION_PAIRS: &[(&str, &str)] = &[
     WORKSPACE_WALL_PREVIEW_TRANSITION,
     #[cfg(feature = "workspace-v5-owner-validation")]
     CATALOG40_FRAME_TRANSITION,
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    CATALOG40_TANGENT_TRANSITION,
     ("35b07cfc4c89abeaab518fd72c5be5f55569c03ae99906ff7220edf7d9712bf8",
      "9b9d6b1cba4b5722a8710471283e9f693f14883f5da950c4504ca7bbf00efeb7"),
     ("9b9d6b1cba4b5722a8710471283e9f693f14883f5da950c4504ca7bbf00efeb7",
@@ -120,10 +123,15 @@ impl Checkpoint {
     fn check_host(&self, saved_workspace_host: bool) -> Result<()> {
         let pair = (self.old_manifest.as_str(), self.new_manifest.as_str());
         #[cfg(feature = "workspace-v5-owner-validation")]
-        if (pair == CATALOG40_FRAME_TRANSITION) != self.catalog40.is_some() {
+        if Catalog40Transition::from_manifests(pair).is_some() != self.catalog40.is_some() {
             return Err(invalid());
         }
         check_transition_host(pair, self.saved_document_sha256.as_deref(), saved_workspace_host)
+    }
+
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    fn catalog40_transition(&self) -> Option<Catalog40Transition> {
+        Catalog40Transition::from_manifests((&self.old_manifest, &self.new_manifest))
     }
 }
 
@@ -720,7 +728,8 @@ impl LifecycleService {
         }
         checkpoint.check_host(saved_workspace_host)?;
         #[cfg(feature = "workspace-v5-owner-validation")]
-        let _writer = checkpoint.catalog40.as_ref().map(|trial| trial.hold_source(self)).transpose()?;
+        let _writer = checkpoint.catalog40.as_ref().zip(checkpoint.catalog40_transition())
+            .map(|(trial, transition)| trial.hold_source(self, transition)).transpose()?;
         let binding = bindings(&checkpoint)?;
         verify_beforeimage(&checkpoint, ENVIRONMENT, &binding.old_env.0)?;
         verify_beforeimage(&checkpoint, RECORD, &binding.old_record)?;
@@ -754,15 +763,17 @@ impl LifecycleService {
             return Err(invalid());
         }
         #[cfg(feature = "workspace-v5-owner-validation")]
-        let writer = checkpoint.catalog40.as_ref().map(|trial| {
-            if checkpoint.trial { trial.hold_recovery(self) } else { trial.hold_source(self) }
+        let catalog40 = checkpoint.catalog40.as_ref().zip(checkpoint.catalog40_transition());
+        #[cfg(feature = "workspace-v5-owner-validation")]
+        let writer = catalog40.map(|(trial, transition)| {
+            if checkpoint.trial { trial.hold_recovery(self, transition) } else { trial.hold_source(self, transition) }
         }).transpose()?;
         let ordinary_cold_check = || crate::native_runtime::check_cold_transition_root(
             &self.root, checkpoint.drained_failure.as_deref(),
         );
         #[cfg(feature = "workspace-v5-owner-validation")]
-        if let (Some(trial), Some(writer)) = (&checkpoint.catalog40, &writer) {
-            trial.check_recovery_root(&self.root, writer)?;
+        if let (Some((trial, transition)), Some(writer)) = (catalog40, &writer) {
+            trial.check_recovery_root(&self.root, writer, transition)?;
         } else {
             ordinary_cold_check()?;
         }
@@ -797,8 +808,10 @@ impl LifecycleService {
         verify_unchanged(&self.root, &checkpoint, &pending)?;
         keep_receipt(&self.root, "recovery", &envelope)?;
         #[cfg(feature = "workspace-v5-owner-validation")]
-        if let (Some(trial), Some(writer)) = (&checkpoint.catalog40, &writer) {
-            trial.recover_source(self, writer)?;
+        if let (Some((trial, transition)), Some(writer)) = (
+            checkpoint.catalog40.as_ref().zip(checkpoint.catalog40_transition()), &writer,
+        ) {
+            trial.recover_source(self, writer, transition)?;
         }
         replace_private(&self.root, ENVIRONMENT, &binding.old_env.0, 4096)?;
         if inventory(&self.root, false)? != checkpoint.files {
@@ -846,9 +859,11 @@ impl LifecycleService {
             serde_json::from_slice(&binding.new_record).map_err(|_| invalid())?;
         let fields = personal_environment_fields(&proposed, &binding.new_env.0)?;
         #[cfg(feature = "workspace-v5-owner-validation")]
-        let _writer = checkpoint.catalog40.as_mut().map(|trial| {
+        let transition = checkpoint.catalog40_transition();
+        #[cfg(feature = "workspace-v5-owner-validation")]
+        let _writer = checkpoint.catalog40.as_mut().zip(transition).map(|(trial, transition)| {
             trial.renew_generation();
-            trial.hold_source(self)
+            trial.hold_source(self, transition)
         }).transpose()?;
         checkpoint.trial = true;
         let envelope = seal(&checkpoint, key)?;
@@ -865,8 +880,8 @@ impl LifecycleService {
             },
         )?;
         #[cfg(feature = "workspace-v5-owner-validation")]
-        let session = if let Some(trial) = checkpoint.catalog40.clone() {
-            session.with_catalog40_trial(trial)
+        let session = if let Some((trial, transition)) = checkpoint.catalog40.clone().zip(transition) {
+            session.with_catalog40_trial(trial, transition)
         } else { session };
         Ok((session, checkpoint, binding, envelope))
     }
@@ -979,7 +994,9 @@ impl LifecycleService {
             std::mem::take(value).into_bytes().fill(0);
         }
         #[cfg(feature = "workspace-v5-owner-validation")]
-        let catalog40 = if (source.manifest_sha256.as_str(), target.manifest_sha256.as_str()) == CATALOG40_FRAME_TRANSITION {
+        let transition = Catalog40Transition::from_manifests((&source.manifest_sha256, &target.manifest_sha256));
+        #[cfg(feature = "workspace-v5-owner-validation")]
+        let catalog40 = if let Some(transition) = transition {
             use crate::native_payload::WorkspaceFurnishingCatalog::MaterialMultimap040;
             if source_payload.workspace_furnishing_catalog()? != Some(MaterialMultimap040)
                 || target_payload.workspace_furnishing_catalog()? != Some(MaterialMultimap040)
@@ -988,10 +1005,11 @@ impl LifecycleService {
             {
                 return Err(invalid());
             }
-            Some(crate::native_runtime::Catalog40Trial::capture(self)?)
+            Some(crate::native_runtime::Catalog40Trial::capture(self, transition)?)
         } else { None };
         #[cfg(feature = "workspace-v5-owner-validation")]
-        let _writer = catalog40.as_ref().map(|trial| trial.hold_source(self)).transpose()?;
+        let _writer = catalog40.as_ref().zip(transition)
+            .map(|(trial, transition)| trial.hold_source(self, transition)).transpose()?;
         let files = inventory(&self.root, false)?;
         if saved_document_sha256.is_some() {
             let device = directory_identity(&self.root)?.0;

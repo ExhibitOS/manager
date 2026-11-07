@@ -85,7 +85,8 @@ pub(crate) const WORKSPACE_WALL_PREVIEW_TRANSITION: (&str, &str) = (
 );
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const WORKSPACE_V5_SAVED_TRANSITIONS: &[(&str, &str)] =
-    &[WORKSPACE_V5_TRANSITION, WORKSPACE_WALL_PREVIEW_TRANSITION, CATALOG40_FRAME_TRANSITION];
+    &[WORKSPACE_V5_TRANSITION, WORKSPACE_WALL_PREVIEW_TRANSITION,
+        CATALOG40_FRAME_TRANSITION, CATALOG40_TANGENT_TRANSITION];
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const WORKSPACE_V5_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[
@@ -197,12 +198,52 @@ pub(crate) const CATALOG40_FRAME_TARGET: (&str, &str, &str) = (
     "d0f03a339b7e65934a27f0a51210c28205b6dfbb98769d9deca10fa22cc05380",
     "c42e9657015695601ffb0c4ea493ae9ae6df9c954fce032db3212a1b20d309ee",
 );
+#[cfg(debug_assertions)]
+pub(crate) const CATALOG40_TANGENT_TARGET: (&str, &str, &str) = (
+    "dcde70254b4bd5f93487ee16c7147db1f97debc1",
+    "afe2d4e6cc881733a218b2bc3354e026b5492adbd3a7dc0acf13e6bb66f9c178",
+    "2645f013b8dcef5bb33f138dc0fac9789bbb508306cca722112f222a7476e871",
+);
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const CATALOG40_FRAME_TRANSITION: (&str, &str) =
     (CATALOG40_FRAME_SOURCE.2, CATALOG40_FRAME_TARGET.2);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const CATALOG40_TANGENT_TRANSITION: (&str, &str) =
+    (CATALOG40_FRAME_TARGET.2, CATALOG40_TANGENT_TARGET.2);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Catalog40Transition {
+    White,
+    Tangent,
+}
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+impl Catalog40Transition {
+    pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
+        match pair {
+            CATALOG40_FRAME_TRANSITION => Some(Self::White),
+            CATALOG40_TANGENT_TRANSITION => Some(Self::Tangent),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn source(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::White => CATALOG40_FRAME_SOURCE,
+            Self::Tangent => CATALOG40_FRAME_TARGET,
+        }
+    }
+
+    pub(crate) fn target(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::White => CATALOG40_FRAME_TARGET,
+            Self::Tangent => CATALOG40_TANGENT_TARGET,
+        }
+    }
+}
 #[cfg(debug_assertions)]
 const WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE: &[(&str, &str, &str)] =
-    &[CATALOG40_FRAME_SOURCE, CATALOG40_FRAME_TARGET];
+    &[CATALOG40_FRAME_SOURCE, CATALOG40_FRAME_TARGET, CATALOG40_TANGENT_TARGET];
 #[cfg(not(debug_assertions))]
 const WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[];
 
@@ -1270,8 +1311,8 @@ impl Payload {
     pub(crate) fn open_saved_workspace_transition(root: &Path) -> Result<Self> {
         let payload = Self::open(root)?;
         let context = payload.context();
-        if matches!(context.manifest_sha256.as_str(), hash if hash == CATALOG40_FRAME_TRANSITION.0
-            || hash == CATALOG40_FRAME_TRANSITION.1)
+        if [Catalog40Transition::White, Catalog40Transition::Tangent].iter().any(|pair|
+            context.manifest_sha256 == pair.source().2 || context.manifest_sha256 == pair.target().2)
         {
             if payload.workspace_furnishing_catalog()? == Some(WorkspaceFurnishingCatalog::MaterialMultimap040) {
                 return Ok(payload);

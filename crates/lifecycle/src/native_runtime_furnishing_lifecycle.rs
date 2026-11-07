@@ -158,15 +158,14 @@ impl Binding {
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    pub(super) fn consume_catalog40_transition(&mut self, prior: &Self) -> Result<()> {
-        use crate::native_payload::{CATALOG40_FRAME_SOURCE, CATALOG40_FRAME_TARGET};
+    pub(super) fn consume_catalog40_transition(&mut self, prior: &Self, transition: Catalog40Transition) -> Result<()> {
         prior.check()?;
         self.check()?;
         if prior.phase != Phase::Clean || self.phase != Phase::Active || prior.restore.is_some()
             || self.generation == prior.generation || self.owner != prior.owner
             || self.physical != prior.physical
-            || !prior.matches_catalog40_tuple(CATALOG40_FRAME_SOURCE)
-            || !self.matches_catalog40_tuple(CATALOG40_FRAME_TARGET)
+            || !prior.matches_catalog40_tuple(transition.source())
+            || !self.matches_catalog40_tuple(transition.target())
         {
             return Err(err(ERROR));
         }
@@ -435,42 +434,79 @@ mod tests {
         use crate::native_payload::{CATALOG40_FRAME_SOURCE, CATALOG40_FRAME_TARGET};
         let mut prior = catalog40_binding(GENERATION, CATALOG40_FRAME_SOURCE);
         let target = catalog40_binding(NEXT, CATALOG40_FRAME_TARGET);
-        assert!(target.clone().consume_catalog40_transition(&prior).is_err());
+        assert!(target.clone().consume_catalog40_transition(&prior, Catalog40Transition::White).is_err());
         prior.phase = Phase::Clean;
         assert!(target.clone().consume(&prior).is_err());
         let mut next = target.clone();
-        next.consume_catalog40_transition(&prior).unwrap();
+        next.consume_catalog40_transition(&prior, Catalog40Transition::White).unwrap();
         assert_eq!(next.admission_kind, Admission::CleanReopen);
         assert_eq!(next.previous_generation.as_deref(), Some(GENERATION));
 
         let mut bad = prior.clone();
         bad.owner.principal_id = NEXT.into();
-        assert!(target.clone().consume_catalog40_transition(&bad).is_err());
+        assert!(target.clone().consume_catalog40_transition(&bad, Catalog40Transition::White).is_err());
         bad = prior.clone();
         bad.physical.lock_inode += 1;
-        assert!(target.clone().consume_catalog40_transition(&bad).is_err());
+        assert!(target.clone().consume_catalog40_transition(&bad, Catalog40Transition::White).is_err());
         bad = prior.clone();
         bad.producer_sha256 = "a".repeat(64);
-        assert!(target.clone().consume_catalog40_transition(&bad).is_err());
+        assert!(target.clone().consume_catalog40_transition(&bad, Catalog40Transition::White).is_err());
         bad = target.clone();
         bad.payload_manifest_sha256 = "a".repeat(64);
-        assert!(bad.consume_catalog40_transition(&prior).is_err());
+        assert!(bad.consume_catalog40_transition(&prior, Catalog40Transition::White).is_err());
         bad = target;
         bad.catalog = 39;
-        assert!(bad.consume_catalog40_transition(&prior).is_err());
+        assert!(bad.consume_catalog40_transition(&prior, Catalog40Transition::White).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn catalog40_transition_requires_the_exact_directed_tangent_step() {
+        use crate::native_payload::{CATALOG40_FRAME_SOURCE, CATALOG40_FRAME_TARGET, CATALOG40_TANGENT_TARGET};
+        let mut white = catalog40_binding(GENERATION, CATALOG40_FRAME_TARGET);
+        white.phase = Phase::Clean;
+        let tangent = catalog40_binding(NEXT, CATALOG40_TANGENT_TARGET);
+        let step = Catalog40Transition::Tangent;
+        assert_eq!(Catalog40Transition::from_manifests((
+            &white.payload_manifest_sha256, &tangent.payload_manifest_sha256,
+        )), Some(step));
+        let mut next = tangent.clone();
+        next.consume_catalog40_transition(&white, step).unwrap();
+        assert_eq!(next.previous_generation.as_deref(), Some(GENERATION));
+        assert!(tangent.clone().consume(&white).is_err());
+        assert!(tangent.clone().consume_catalog40_transition(&white, Catalog40Transition::White).is_err());
+
+        let mut original = catalog40_binding(GENERATION, CATALOG40_FRAME_SOURCE);
+        original.phase = Phase::Clean;
+        assert!(tangent.clone().consume_catalog40_transition(&original, step).is_err());
+        assert_eq!(Catalog40Transition::from_manifests((
+            &original.payload_manifest_sha256, &tangent.payload_manifest_sha256,
+        )), None);
+        assert_eq!(Catalog40Transition::from_manifests((
+            &tangent.payload_manifest_sha256, &white.payload_manifest_sha256,
+        )), None);
+        let mut bad = tangent;
+        bad.producer_sha256 = white.producer_sha256.clone();
+        assert!(bad.consume_catalog40_transition(&white, step).is_err());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
     fn catalog40_transition_recovers_only_its_own_consumption_and_keeps_trial_record() {
-        use crate::native_payload::{CATALOG40_FRAME_SOURCE, CATALOG40_FRAME_TARGET};
+        for transition in [Catalog40Transition::White, Catalog40Transition::Tangent] {
+            check_catalog40_recovery(transition);
+        }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn check_catalog40_recovery(transition: Catalog40Transition) {
         use std::os::unix::fs::DirBuilderExt;
         let root = std::env::temp_dir().join(format!("catalog40-transition-{}", Uuid::new_v4()));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let root = fs::canonicalize(root).unwrap();
         let service = LifecycleService::bound_existing(root.clone()).unwrap();
         let writer = furnishing_lifetime::WriterLifetime::acquire(&root).unwrap();
-        let mut prior = catalog40_binding(GENERATION, CATALOG40_FRAME_SOURCE);
+        let mut prior = catalog40_binding(GENERATION, transition.source());
         prior.physical = writer.identity().unwrap();
         prior.phase = Phase::Clean;
         let source = Current { format: 1, id: GENERATION.into(), furnishing: Some(prior.clone()) };
@@ -497,13 +533,13 @@ mod tests {
         });
         write_run(&prior_run, &context, proof(LATER)).unwrap();
         write_json(&root, "native-current-run.json", &source).unwrap();
-        assert!(trial.recover_source(&service, &writer).is_err());
+        assert!(trial.recover_source(&service, &writer, transition).is_err());
         assert!(unconsumed_furnishing_completion(&root, &prior).is_err());
 
         write_run(&prior_run, &context, proof(NEXT)).unwrap();
-        let mut target = catalog40_binding(NEXT, CATALOG40_FRAME_TARGET);
+        let mut target = catalog40_binding(NEXT, transition.target());
         target.physical = prior.physical;
-        target.consume_catalog40_transition(&prior).unwrap();
+        target.consume_catalog40_transition(&prior, transition).unwrap();
         write_json(&root, "native-current-run.json", &Current {
             format: 1, id: NEXT.into(), furnishing: Some(target.clone()),
         }).unwrap();
@@ -513,10 +549,10 @@ mod tests {
         context.state = "starting".into();
         context.exits.clear();
         write_run(&trial_run, &context, None).unwrap();
-        trial.check_recovery_root(&root, &writer).unwrap();
+        trial.check_recovery_root(&root, &writer, transition).unwrap();
         context.state = "starting_database".into();
         write_run(&trial_run, &context, None).unwrap();
-        assert!(trial.check_recovery_root(&root, &writer).is_err());
+        assert!(trial.check_recovery_root(&root, &writer, transition).is_err());
 
         // The helper drained the failed trial and exited before sealing the
         // supplemental checkpoint journal. Only the matching drain proof works.
@@ -524,18 +560,18 @@ mod tests {
         context.failure_code = Some("NATIVE_TEST_FAILURE".into());
         context.exits.insert("postgres".into(), 0);
         write_run(&trial_run, &context, None).unwrap();
-        assert!(trial.check_recovery_root(&root, &writer).is_err());
+        assert!(trial.check_recovery_root(&root, &writer, transition).is_err());
         write_json(&trial_run, "catalog40-drained.json", &"a".repeat(64)).unwrap();
-        assert!(trial.check_recovery_root(&root, &writer).is_err());
+        assert!(trial.check_recovery_root(&root, &writer, transition).is_err());
         write_json(&trial_run, "catalog40-drained.json", &target.sha256().unwrap()).unwrap();
         context.node_pid = Some(std::process::id());
         write_run(&trial_run, &context, None).unwrap();
-        assert!(trial.check_recovery_root(&root, &writer).is_err());
+        assert!(trial.check_recovery_root(&root, &writer, transition).is_err());
         context.node_pid = None;
         write_run(&trial_run, &context, None).unwrap();
-        trial.check_recovery_root(&root, &writer).unwrap();
-        trial.recover_source(&service, &writer).unwrap();
-        trial.recover_source(&service, &writer).unwrap();
+        trial.check_recovery_root(&root, &writer, transition).unwrap();
+        trial.recover_source(&service, &writer, transition).unwrap();
+        trial.recover_source(&service, &writer, transition).unwrap();
         assert_eq!(current_run(&root).unwrap(), Some(source));
         unconsumed_furnishing_completion(&root, &prior).unwrap();
         assert!(read_run(&root, NEXT).is_ok());
