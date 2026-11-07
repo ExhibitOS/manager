@@ -51,7 +51,7 @@ use furnishing_lifecycle::{Admission, Binding, Owner as FurnishingOwner, Phase, 
 pub(crate) const WORKSPACE_FURNISHING_INITIALIZATION: &str = "native-workspace-furnishing-initialization.json";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum FurnishingStart { Initialize, Reopen }
+enum FurnishingStart { Initialize, Reopen, SelectedImport }
 
 #[derive(Clone, Copy)]
 enum StartMode<'a> {
@@ -66,6 +66,7 @@ impl FurnishingStart {
         match self {
             Self::Initialize => "workspace-furnishing-036-initialize-v1",
             Self::Reopen => "workspace-furnishing-036-reopen-v1",
+            Self::SelectedImport => "workspace-furnishing-038-selected-import-v7",
         }
     }
 }
@@ -391,6 +392,7 @@ pub struct Session {
     normal_oex_selected: bool,
     fresh_oex_started: bool,
     fresh_ordinary_furnishing: bool,
+    furnishing_selected_saved: bool,
     oex_upload_selection_started: bool,
     oex_upload_selected: Option<(String, u64, String, String)>,
     maintenance_space: Vec<PathBuf>,
@@ -659,6 +661,11 @@ impl Session {
         let mut session = Self::new_with_guard(&service, payload, ports, guard)?;
         session.check_native_observation_fence()?;
         session.normal_oex_selected = true;
+        if session.payload.workspace_furnishing_catalog()? == Some(WorkspaceFurnishingCatalog::Publication038)
+            && session.payload.selected_workspace_import_version() == Some(crate::native_payload::WorkspaceImport::V7)
+        {
+            session.authorize_fresh_workspace_furnishing(&root_pin)?;
+        }
         Ok(session)
     }
     pub(crate) fn new_with_guard(
@@ -727,6 +734,7 @@ impl Session {
             normal_oex_selected: false,
             fresh_oex_started: false,
             fresh_ordinary_furnishing: false,
+            furnishing_selected_saved: false,
             oex_upload_selection_started: false,
             oex_upload_selected: None,
             maintenance_space: Vec::new(),
@@ -742,7 +750,17 @@ impl Session {
     fn workspace_furnishing_start(&self) -> Result<Option<FurnishingStart>> {
         use std::os::unix::fs::MetadataExt;
         let Some(catalog) = self.payload.workspace_furnishing_catalog()? else { return Ok(None); };
-        if self.normal_oex_selected || self.transition_fence.is_some() {
+        let initialize = if self.normal_oex_selected {
+            if catalog != WorkspaceFurnishingCatalog::Publication038 || !self.fresh_ordinary_furnishing
+                || self.payload.selected_workspace_import_version() != Some(crate::native_payload::WorkspaceImport::V7)
+            {
+                return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+            }
+            FurnishingStart::SelectedImport
+        } else {
+            FurnishingStart::Initialize
+        };
+        if self.transition_fence.is_some() {
             return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
         }
         self.check_native_observation_fence()?;
@@ -765,7 +783,7 @@ impl Session {
         if exists(&root.join(name))? {
             let saved = installation_backup::source_bytes(root, name, 4096, true)?;
             if saved != expected { return Err(err("NATIVE_CONFIGURATION_CHANGED")); }
-            return Ok(Some(FurnishingStart::Initialize));
+            return Ok(Some(initialize));
         }
         if self.fresh_ordinary_furnishing && !exists(&root.join("native-database"))? {
             if exists(&root.join("blobs"))? || exists(&root.join("config"))? {
@@ -773,7 +791,10 @@ impl Session {
             }
             write_private_new(root, name, &expected, 4096)?;
             File::open(root).and_then(|file| file.sync_all()).map_err(|_| err("STATE_UNAVAILABLE"))?;
-            return Ok(Some(FurnishingStart::Initialize));
+            return Ok(Some(initialize));
+        }
+        if self.normal_oex_selected {
+            return Err(err("NATIVE_OEX_FRESH_ROOT_REQUIRED"));
         }
         Ok(Some(FurnishingStart::Reopen))
     }
@@ -1311,7 +1332,11 @@ const { isDeepStrictEqual } = require('node:util');
         let reopen_import = self.payload.workspace_import_version()
             .filter(|_| services && !self.normal_oex_selected);
         let furnishing = self.active_furnishing_binding().map(|binding| {
-            if binding.admission_kind == Admission::FreshEmpty { FurnishingStart::Initialize } else { FurnishingStart::Reopen }
+            match (binding.admission_kind, self.normal_oex_selected) {
+                (Admission::FreshEmpty, true) => FurnishingStart::SelectedImport,
+                (Admission::FreshEmpty, false) => FurnishingStart::Initialize,
+                _ => FurnishingStart::Reopen,
+            }
         });
         let require_existing = existing_database || reopen_import.is_some() || furnishing == Some(FurnishingStart::Reopen);
         let database = self.service.root.join("native-database");
@@ -1630,9 +1655,9 @@ const { isDeepStrictEqual } = require('node:util');
                 );
                 if ready.ready {
                     if let Some(start) = furnishing {
-                        if start == FurnishingStart::Initialize { self.verify_workspace_furnishing_ledger()?; }
-                        self.check_workspace_furnishing_channel()?;
-                        if start == FurnishingStart::Initialize {
+                        if start != FurnishingStart::Reopen { self.verify_workspace_furnishing_ledger()?; }
+                        if start != FurnishingStart::SelectedImport { self.check_workspace_furnishing_channel()?; }
+                        if start != FurnishingStart::Reopen {
                             fs::remove_file(self.service.root.join(WORKSPACE_FURNISHING_INITIALIZATION))
                                 .map_err(|_| err("STATE_UNAVAILABLE"))?;
                             File::open(&self.service.root).and_then(|file| file.sync_all()).map_err(|_| err("STATE_UNAVAILABLE"))?;
@@ -1744,7 +1769,8 @@ const { isDeepStrictEqual } = require('node:util');
             let start = if services { self.workspace_furnishing_start()? } else { None };
             let restore_pending = exists(&self.service.root.join("native-restore-current.json"))?;
             let create_lock = match (mode, start, has_database, restore_pending) {
-                (StartMode::Services, Some(FurnishingStart::Initialize), false, false) if prior.is_none() => true,
+                (StartMode::Services, Some(FurnishingStart::Initialize | FurnishingStart::SelectedImport), false, false)
+                    if prior.is_none() => true,
                 (StartMode::Services, Some(FurnishingStart::Reopen), true, false) if prior_binding.is_some() => false,
                 (StartMode::Database, None, true, false) if prior_binding.is_some() => false,
                 (StartMode::RestoreStage, None, _, _) => furnishing_restore_stage_creates_lock(
@@ -1763,7 +1789,7 @@ const { isDeepStrictEqual } = require('node:util');
             let mut active = self.furnishing_binding_for(id.clone(), Phase::Active, Admission::FreshEmpty)?;
             if services {
                 match start {
-                    Some(FurnishingStart::Initialize) => (),
+                    Some(FurnishingStart::Initialize | FurnishingStart::SelectedImport) => (),
                     Some(FurnishingStart::Reopen) => {
                         active.consume(prior_binding.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?)?;
                         if active.admission_kind == Admission::VerifiedRestore {
@@ -1824,6 +1850,7 @@ const { isDeepStrictEqual } = require('node:util');
         self.furnishing_drain_ack = false;
         self.furnishing_drain_deadline = None;
         self.furnishing_clean_checked = false;
+        self.furnishing_selected_saved = false;
         self.furnishing_keep_fences = false;
         self.state = "starting".into();
         self.record()?;
@@ -1845,9 +1872,25 @@ const { isDeepStrictEqual } = require('node:util');
         }
         Ok(self.snapshot())
     }
+    pub(crate) fn selected_furnishing_import(&self) -> bool {
+        self.normal_oex_selected && self.furnishing_binding.as_ref().is_some_and(|binding| binding.catalog == 38)
+    }
+
+    /// The host calls this after the selected operation completes and its
+    /// terminal receipt, document, and cleared transfer are durable.
+    pub(crate) fn note_selected_oex_saved(&mut self) {
+        self.furnishing_selected_saved = self.selected_furnishing_import();
+    }
+
     fn request_node_drain(&mut self, deadline: Instant) -> Result<()> {
         if self.active_furnishing_binding().is_some() && !self.furnishing_drain_attempted {
             self.furnishing_drain_attempted = true;
+            if self.selected_furnishing_import() && !self.furnishing_selected_saved {
+                if let Some(mut channel) = self.owner_channel.take() {
+                    channel.invalidate();
+                }
+                self.failure.get_or_insert_with(|| "NATIVE_OEX_WORKER_UNCERTAIN".into());
+            }
             if let Some(mut channel) = self.owner_channel.take() {
                 let cancellation = self.cancellation.clone();
                 let physical = self.active_furnishing_binding().ok_or_else(|| err(furnishing_lifecycle::ERROR))?.physical;
@@ -2417,6 +2460,9 @@ impl Session {
             self.payload.recheck()?;
             owner.check(self)?;
             self.check_oex_catalog_ledger(protocol)?;
+            if self.active_furnishing_binding().is_some() {
+                self.verify_workspace_furnishing_ledger()?;
+            }
             owner.check(self)?;
             if protocol == oex_catalog_frames::Protocol::V2 && self.payload.normal_oex_028_selected_input()? {
                 let row=self.query_database("exhibitos","SELECT sha256 FROM public.schema_migrations WHERE name='028_oex_material_catalogue.sql'")?;

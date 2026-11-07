@@ -75,6 +75,11 @@ impl State {
             && self.runtime.as_ref().is_some_and(is_drained)
         {
             let session = self.session.take()?;
+            if session.selected_furnishing_import() {
+                self.payload = None;
+                self.oex_027_qualified = false;
+                self.oex_028_qualified = false;
+            }
             self.selected_oex = false;
             self.selected_oex_completed = false;
             self.selected_oex_stop_accepted = false;
@@ -984,6 +989,7 @@ impl Host {
                   } }
                 let stored = self.controller.finish_selected_oex(selection_token, &transfer, &offer, &saved_etag, document)?;
                 let mut state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+                state.session.as_mut().ok_or_else(|| err("NATIVE_OEX_WORKER_UNCERTAIN"))?.note_selected_oex_saved();
                 state.oex_terminal = None;
                 state.selected_oex_completed = true;
                 return serde_json::to_value(stored).map_err(|_| err("STATE_INVALID"));

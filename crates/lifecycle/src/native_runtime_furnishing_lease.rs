@@ -25,7 +25,7 @@ pub(super) struct Lease {
     tenant: String,
     principal: String,
     generation: String,
-    start: FurnishingStart,
+    pub(super) start: FurnishingStart,
     manifest_sha256: String,
     pub(super) identity: WriterIdentity,
 }
@@ -93,6 +93,7 @@ impl Lease {
         bytes.push(match self.start {
             FurnishingStart::Initialize => 1,
             FurnishingStart::Reopen => 2,
+            FurnishingStart::SelectedImport => 3,
         });
         if !hash_valid(&self.manifest_sha256)
             || self.identity.root_inode == 0
@@ -215,6 +216,24 @@ mod tests {
                 .check_ack(&key, &lease.signed(&key, Kind::Ack).unwrap())
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn furnishing_selected_import_lease_matches_mode_three_vectors() {
+        let mut lease = golden();
+        let key = std::array::from_fn(|index| index as u8);
+        let ordinary = lease.signed(&key, Kind::Ack).unwrap();
+        lease.start = FurnishingStart::SelectedImport;
+        for (kind, expected_mac) in [
+            (Kind::Lease, "813f55583aa1cd1b00dc638b206228e6fac1b2bddd51600a94a0a8cdb0cc07e2"),
+            (Kind::Ack, "4e65a50d15bb2e610bce5bf35f04c2172374a32b160b2fc083df439bc544f7af"),
+        ] {
+            let body = lease.signed(&key, kind).unwrap();
+            let frame: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(frame["mode"], "workspace-furnishing-038-selected-import-v7");
+            assert_eq!(frame["mac"], expected_mac);
+        }
+        assert!(lease.check_ack(&key, &ordinary).is_err());
     }
 
     #[test]

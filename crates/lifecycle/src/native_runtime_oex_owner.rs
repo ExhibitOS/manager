@@ -81,6 +81,12 @@ impl Owner {
     pub(super) fn check(&self, session: &mut Session) -> Result<()> {
         session.poll()?;
         session.check_native_observation_fence()?;
+        if let Some(binding) = session.active_furnishing_binding() {
+            let writer = session.furnishing_writer_lifetime.as_ref().ok_or_else(invalid)?;
+            if writer.identity()? != binding.physical {
+                return Err(invalid());
+            }
+        }
         self.pin.check_path(&self.path)?;
         let stat = self.pin.try_clone_file()?.metadata().map_err(|_| invalid())?;
         let authority = session.local_authority.as_ref().ok_or_else(invalid)?;
