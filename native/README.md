@@ -771,6 +771,16 @@ The private native automation command uses the same intake and catalog API:
 - `workspace-furnishing-place` takes `id`, `roomId`, `furnishingId`,
   `furnishingVersion`, `position` (metres), `yaw` (radians) and `scale`.
   Supply the expected document revision and edit version, then save normally.
+- In a qualified session with the artwork frame capability, register the
+  supported thin-brass GLB as `kind: "artwork-frame"`. Save the draft with
+  the approved artwork already placed. `workspace-frame-attach` takes
+  `placementId`, `artworkRevisionId`, `assetId`, `furnishingId`,
+  `furnishingVersion` and `modelSha256`. It can replace the attachment at
+  the same placement. `workspace-frame-detach` takes `placementId`.
+  Supply the expected document revision and edit version. After the server
+  validates the change against the saved ETag, run `save` and `reopen-saved`.
+  In the native app, select the placed artwork and open the workspace
+  furnishings panel to make the same change, then save the exhibition.
 
 The planned live qualification uses a newly created workspace and a separate
 fresh EXB recovery workspace on the same paired payload. An existing V7 profile

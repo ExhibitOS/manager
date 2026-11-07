@@ -1217,6 +1217,13 @@ final class ExhibitionModel: ObservableObject {
     var workspaceFurnishingRoomVisualAvailable: Bool {
         workspaceFurnishingIntakeAvailable && session?.advertisesWorkspaceFurnishingRoomVisual == true
     }
+    var workspaceArtworkFrameAvailable: Bool {
+        workspaceFurnishingIntakeAvailable && session?.advertisesWorkspaceArtworkFrame == true
+    }
+    var canEditWorkspaceArtworkFrame: Bool {
+        workspaceArtworkFrameAvailable && canSelectCatalog && !immutable && !dirty && !viewingPlanDirty
+            && state?.etag != nil && viewportController.editingContextActive
+    }
     func withWorkspaceFurnishingAccess<T>(_ access: UUID, _ body: (AuthoringAPI) async throws -> T) async throws -> T {
         guard workspaceFurnishingIntakeAvailable, access == viewportAccessID, !busy, !entrancePreviewActive,
               !placingArtwork, !architectureApplying, !pending, let api else {
@@ -1245,6 +1252,30 @@ final class ExhibitionModel: ObservableObject {
             try await persist(current)
             syncFields()
             notice = "비품 배치 입력을 이 Mac에 보관했습니다. 전시를 저장하세요."
+            return true
+        }
+    }
+    func applyWorkspaceArtworkFrame(_ command: WorkspaceArtworkFrameCommand, access: UUID) async throws -> Bool {
+        guard canEditWorkspaceArtworkFrame else { throw AuthoringFailure("FRAME_SAVED_DRAFT_REQUIRED") }
+        return try await withWorkspaceFurnishingAccess(access) { api in
+            guard var current = state else { throw AuthoringFailure("FRAME_SAVED_DRAFT_REQUIRED") }
+            let target: String
+            switch command {
+            case .attach(let attachment): target = attachment.placementId
+            case .detach(let placementId): target = placementId
+            }
+            guard target == placementId else { throw AuthoringFailure("FRAME_TARGET_STALE") }
+            let next = try await api.prepareWorkspaceArtworkFrame(command, in: current)
+            guard access == viewportAccessID, state?.revision == current.revision, state?.draft == current.draft,
+                  !formDirty, !positionDirty, !architectureDirty, !viewingPlanDirty, !immutable,
+                  viewportController.editingContextActive, target == placementId else {
+                throw AuthoringFailure("FRAME_TARGET_STALE")
+            }
+            guard let next else { return false }
+            current.draft = next
+            try await persist(current)
+            syncFields()
+            notice = "액자 변경을 이 Mac에 보관했습니다. 전시를 저장하세요."
             return true
         }
     }

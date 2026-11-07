@@ -452,6 +452,30 @@ public actor NativeAutomationSession {
             } else {
                 result = .object(["changed": .bool(false), "document": try value(current)])
             }
+        case "workspace-frame-attach", "workspace-frame-detach":
+            guard selectedOEXFormat == nil, await api.admitsWorkspaceArtworkFrames else {
+                throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+            }
+            try checkedRevision(request, current)
+            let command: WorkspaceArtworkFrameCommand
+            if operation == "workspace-frame-attach" {
+                guard let input = try? NativeAutomationArtworkRules.command(request, keys: [
+                    "placementId", "artworkRevisionId", "assetId", "furnishingId", "furnishingVersion", "modelSha256"
+                ]), let attachment = try? JSONDecoder().decode(WorkspaceArtworkFrameAttachment.self, from: JSONEncoder().encode(input)),
+                      try value(attachment) == input else { throw BridgeFailure("VIEWPORT_COMMAND_DENIED") }
+                command = .attach(attachment)
+            } else {
+                guard let input = try? NativeAutomationArtworkRules.command(request, keys: ["placementId"]),
+                      let placementId = input["placementId"].string else { throw BridgeFailure("VIEWPORT_COMMAND_DENIED") }
+                command = .detach(placementId: placementId)
+            }
+            if let draft = try await api.prepareWorkspaceArtworkFrame(command, in: current) {
+                var next = current
+                next.draft = draft
+                result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
+            } else {
+                result = .object(["changed": .bool(false), "document": try value(current)])
+            }
         case "workspace-material-floor-apply", "workspace-material-wall-apply":
             guard selectedOEXFormat == nil else { throw BridgeFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
             try checkedRevision(request, current)

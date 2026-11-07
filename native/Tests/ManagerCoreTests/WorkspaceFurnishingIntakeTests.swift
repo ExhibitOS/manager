@@ -91,6 +91,53 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         XCTAssertThrowsError(try outside.applying(furnishing, to: draft))
     }
 
+    func testFrameAttachmentSurvivesRoomPlacementAndDetachesOnlyItsDescriptor() throws {
+        let pedestal = try XCTUnwrap(intake(registered()).furnishing)
+        var frameWire = try registered()["furnishing"]
+        frameWire["id"] = .string(intakeId)
+        frameWire["kind"] = .string("artwork-frame")
+        frameWire["model"]["bytes"] = .integer(Int64(WorkspaceArtworkFrameAttachment.thinBrassBytes))
+        frameWire["model"]["sha256"] = .string(WorkspaceArtworkFrameAttachment.thinBrassSHA256)
+        let frame = try JSONDecoder().decode(WorkspaceFurnishing.self, from: JSONEncoder().encode(frameWire))
+        var draft = try NativeExhibitionDraft.new()
+        let roomId = try XCTUnwrap(draft.rooms.first?["id"].string)
+        let assetId = "10000000-0000-4000-8000-000000000005"
+        let artwork: DocumentValue = .object([
+            "kind": .string("artwork"), "revisionId": .string(requestId), "primaryAssetId": .string(assetId)
+        ])
+        try draft.addApprovedArtwork(artwork, roomId: roomId, placementId: placementId, transform: NativeExhibitionDraft.identity)
+        var candidate = draft.candidate
+        candidate["extensions"] = .object(["example": .string("kept")])
+        try draft.replaceCandidate(candidate)
+
+        let attach = WorkspaceArtworkFrameCommand.attach(.init(placementId: placementId,
+            artworkRevisionId: requestId, assetId: assetId, furnishingId: frame.id,
+            furnishingVersion: 1, modelSha256: WorkspaceArtworkFrameAttachment.thinBrassSHA256))
+        let detach = WorkspaceArtworkFrameCommand.detach(placementId: placementId)
+        let namespace = WorkspaceFurnishingPlacement.namespace
+        let attached = try XCTUnwrap(attach.applying(to: draft, furnishing: frame))
+        XCTAssertEqual(attached.placements, draft.placements)
+        XCTAssertEqual(attached.candidate["extensions"][namespace]["placements"], .array([]))
+        XCTAssertNil(try attach.applying(to: attached, furnishing: frame))
+        let empty = try XCTUnwrap(detach.applying(to: attached, furnishing: nil))
+        XCTAssertEqual(empty.candidate, draft.candidate)
+        XCTAssertThrowsError(try detach.applying(to: empty, furnishing: nil)) {
+            XCTAssertEqual(($0 as? AuthoringFailure)?.code, "FRAME_TARGET_STALE")
+        }
+
+        let roomPlacement = WorkspaceFurnishingPlacement(id: "10000000-0000-4000-8000-000000000006",
+            roomId: roomId, furnishingId: pedestal.id, furnishingVersion: 1, position: [0, 0, 0], yaw: 0, scale: 1)
+        let mixed = try XCTUnwrap(roomPlacement.applying(pedestal, to: attached, supportedExtensionVersion: 4))
+        let mixedExtension = mixed.candidate["extensions"][namespace]
+        XCTAssertEqual(mixedExtension["frameAttachments"], attached.candidate["extensions"][namespace]["frameAttachments"])
+        let detached = try XCTUnwrap(detach.applying(to: mixed, furnishing: nil))
+        let remaining = detached.candidate["extensions"][namespace]
+        XCTAssertEqual(remaining["version"], .integer(4))
+        XCTAssertEqual(remaining["frameAttachments"], .array([]))
+        XCTAssertEqual(remaining["placements"], mixedExtension["placements"])
+        XCTAssertEqual(remaining["furnishings"].items?.map { $0["id"].string }, [pedestal.id])
+    }
+
     func testStoolUsesExistingIntakeWireAndRequiresExactSessionAdvertisement() throws {
         var session: DocumentValue = .object([
             "userId": .string(intakeId), "tenantId": .string(requestId), "role": .string("artist"),
