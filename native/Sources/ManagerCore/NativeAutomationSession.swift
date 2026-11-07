@@ -53,8 +53,9 @@ public actor NativeAutomationSession {
         let draft12 = workspaceV6ValidationRuntime != nil || workspaceV7ValidationRuntime != nil
         guard !(selectedOEX9 && selectedOEX10),
               workspaceV6ValidationRuntime == nil || workspaceV7ValidationRuntime == nil,
-              !draft12 || (!selectedOEX9 && !selectedOEX10 && workspaceV5ValidationRuntime == nil && existingWorkspaceV5 == nil),
-              existingWorkspaceV5 == nil || (!selectedOEX9 && !selectedOEX10 && workspaceV5ValidationRuntime != nil),
+              !draft12 || (!selectedOEX9 && !selectedOEX10 && workspaceV5ValidationRuntime == nil),
+              existingWorkspaceV5 == nil || (!selectedOEX9 && !selectedOEX10
+                  && (workspaceV5ValidationRuntime != nil || workspaceV7ValidationRuntime != nil)),
               workspaceV5ValidationRuntime == nil || selectedOEX10 || existingWorkspaceV5 != nil else {
             throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID")
         }
@@ -70,7 +71,8 @@ public actor NativeAutomationSession {
         self.workspaceV6ValidationRuntime = workspaceV6ValidationRuntime
         self.existingWorkspaceV5 = existingWorkspaceV5
         self.workspaceV7ValidationRuntime = workspaceV7ValidationRuntime
-        selectedOEXFormat = draft12 ? "1.0.0-draft.12" : selectedOEX10 ? "1.0.0-draft.10" : selectedOEX9 ? "1.0.0-draft.9" : nil
+        let selectedDraft12 = draft12 && existingWorkspaceV5 == nil
+        selectedOEXFormat = selectedDraft12 ? "1.0.0-draft.12" : selectedOEX10 ? "1.0.0-draft.10" : selectedOEX9 ? "1.0.0-draft.9" : nil
         for url in [outputRoot, temporaryRoot] {
             let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
             guard attributes[.type] as? FileAttributeType == .typeDirectory,

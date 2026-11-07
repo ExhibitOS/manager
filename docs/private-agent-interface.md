@@ -57,6 +57,10 @@ session confirms the material capability and the Studio draft and ETag match
 the saved document. A mismatched scope or manifest refuses startup. The CLI
 skips preparation and import in this mode. Use the scoped `close` request to
 drain the owned runtime.
+For the paired 040 local-validation workspace, use
+`workspaceV7ValidationRuntime` in place of `workspaceV5ValidationRuntime`
+and give `existingWorkspaceV5.manifestSHA256` the exact 040 manifest. The
+`existingWorkspaceV5` key retains its name and holds the same saved scope.
 
 The first `ready` event returns workspace, tenant, principal, a session capability
 and the current native document. Keep the process and inherited pipes open. All
