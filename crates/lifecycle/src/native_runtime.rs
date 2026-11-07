@@ -272,7 +272,7 @@ pub struct Context {
     pub exits: BTreeMap<String, i32>,
     pub log_truncated: bool,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Current {
     format: u32,
@@ -365,6 +365,120 @@ fn validate_cold_furnishing_source(root: &Path, prior: Option<&Binding>, live: &
     Ok(())
 }
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Catalog40Trial {
+    source: Current,
+    generation: String,
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) use furnishing_lifetime::WriterLifetime as Catalog40WriterGuard;
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+impl Catalog40Trial {
+    pub(crate) fn capture(service: &LifecycleService) -> Result<Self> {
+        let source = current_run(&service.root)?.ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+        let trial = Self { source, generation: Uuid::new_v4().to_string() };
+        trial.hold_source(service)?;
+        Ok(trial)
+    }
+
+    pub(crate) fn renew_generation(&mut self) {
+        self.generation = Uuid::new_v4().to_string();
+    }
+
+    fn source_binding(&self) -> Result<&Binding> {
+        let prior = self.source.furnishing.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+        prior.check()?;
+        if self.source.format != 1 || !installations::uuid(&self.source.id)
+            || !installations::uuid(&self.generation) || self.generation == prior.generation
+            || prior.phase != Phase::Clean || prior.restore.is_some()
+            || !prior.matches_catalog40_tuple(crate::native_payload::CATALOG40_FRAME_SOURCE)
+        {
+            return Err(err(furnishing_lifecycle::ERROR));
+        }
+        Ok(prior)
+    }
+
+    pub(crate) fn hold_source(&self, service: &LifecycleService) -> Result<Catalog40WriterGuard> {
+        let (guard, observed) = self.hold(service)?;
+        if observed != self.source {
+            return Err(err(furnishing_lifecycle::ERROR));
+        }
+        unconsumed_furnishing_completion(&service.root, self.source_binding()?)?;
+        Ok(guard)
+    }
+
+    fn hold(&self, service: &LifecycleService) -> Result<(Catalog40WriterGuard, Current)> {
+        let guard = Catalog40WriterGuard::acquire_existing(&service.root)?;
+        let prior = self.source_binding()?;
+        let (workspace_id, tenant_id, principal_id) = service.personal_identity()?;
+        if prior.physical != guard.identity()? || prior.owner != (FurnishingOwner {
+            workspace_id, tenant_id, principal_id, owner_uid: unsafe { libc::geteuid() },
+        }) {
+            return Err(err(furnishing_lifecycle::ERROR));
+        }
+        let observed = current_run(&service.root)?.ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+        if observed != self.source {
+            let target = observed.furnishing.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+            if observed.id != self.generation || target.generation != self.generation
+                || !matches!(target.phase, Phase::Active | Phase::Clean)
+                || target.owner != prior.owner || target.physical != prior.physical
+                || target.previous_generation.as_deref() != Some(prior.generation.as_str())
+                || !target.matches_catalog40_tuple(crate::native_payload::CATALOG40_FRAME_TARGET)
+                || target.admission_kind != Admission::CleanReopen || target.restore.is_some()
+            {
+                return Err(err(furnishing_lifecycle::ERROR));
+            }
+        }
+        Ok((guard, observed))
+    }
+
+    // Called with the operation fence held and after the trial's processes
+    // have drained. Never remove the trial run or its diagnostic evidence.
+    pub(crate) fn hold_recovery(&self, service: &LifecycleService) -> Result<Catalog40WriterGuard> {
+        let (guard, _) = self.hold(service)?;
+        self.recoverable_source_completion(&service.root)?;
+        Ok(guard)
+    }
+
+    pub(crate) fn source_is_current(&self, service: &LifecycleService) -> Result<bool> {
+        Ok(current_run(&service.root)?.as_ref() == Some(&self.source))
+    }
+
+    fn recoverable_source_completion(&self, root: &Path) -> Result<(Context, FurnishingCompletion)> {
+        let prior = self.source_binding()?;
+        let (context, proof) = read_run(root, &prior.generation)?;
+        let proof = proof.ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+        if proof.binding_sha256 != prior.sha256()?
+            || proof.consumed_by.as_ref().is_some_and(|generation| generation != &self.generation)
+            || context.state != "stopped" || context.failure_code.is_some()
+            || context.exits.get("postgres") != Some(&0) || context.exits.get("node") != Some(&0)
+            || context.node_pid.is_some() || context.postgres_pid.is_some() || context.auxiliary_pid.is_some()
+        {
+            return Err(err(furnishing_lifecycle::ERROR));
+        }
+        Ok((context, proof))
+    }
+
+    pub(crate) fn recover_source(&self, service: &LifecycleService, guard: &Catalog40WriterGuard) -> Result<()> {
+        let prior = self.source_binding()?;
+        if guard.identity()? != prior.physical {
+            return Err(err(furnishing_lifecycle::ERROR));
+        }
+        let (context, mut proof) = self.recoverable_source_completion(&service.root)?;
+        if proof.consumed_by.is_some() {
+            proof.consumed_by = None;
+            write_run(&service.root.join("native-runs").join(&prior.generation), &context, Some(proof))?;
+        }
+        unconsumed_furnishing_completion(&service.root, prior)?;
+        write_json(&service.root, "native-current-run.json", &self.source)?;
+        File::open(&service.root).and_then(|file| file.sync_all()).map_err(|_| err("STATE_UNAVAILABLE"))
+    }
+}
+
 fn furnishing_restore_stage_creates_lock(prior: Option<&Current>, has_database: bool, restore_pending: bool) -> Result<bool> {
     match (prior, has_database, restore_pending) {
         (None, false, false) => Ok(true),
@@ -380,6 +494,8 @@ pub struct Session {
     ports: Ports,
     environment: Environment,
     transition_fence: Option<String>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    catalog40_trial: Option<Catalog40Trial>,
     guard: Option<OperationGuard>,
     postgres: Option<Owned>,
     node: Option<Owned>,
@@ -707,6 +823,11 @@ impl Session {
         let (fields, fence) = binding.into_parts();
         Self::bound_session(service, payload, ports, guard, Environment(fields), Some(fence))
     }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn with_catalog40_trial(mut self, trial: Catalog40Trial) -> Self {
+        self.catalog40_trial = Some(trial);
+        self
+    }
     fn bound_session(
         service: &LifecycleService,
         payload: Arc<Payload>,
@@ -722,6 +843,8 @@ impl Session {
             ports,
             environment,
             transition_fence,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            catalog40_trial: None,
             guard: Some(guard),
             postgres: None,
             node: None,
@@ -776,6 +899,14 @@ impl Session {
             FurnishingStart::Initialize
         };
         if self.transition_fence.is_some() {
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            if self.catalog40_trial.is_some() && catalog == WorkspaceFurnishingCatalog::MaterialMultimap040
+                && !exists(&self.service.root.join(WORKSPACE_FURNISHING_INITIALIZATION))?
+                && exists(&self.service.root.join("native-database"))?
+            {
+                self.payload.recheck()?;
+                return Ok(Some(FurnishingStart::Reopen));
+            }
             return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
         }
         self.check_native_observation_fence()?;
@@ -1768,6 +1899,13 @@ const { isDeepStrictEqual } = require('node:util');
         check_interrupted_root(&self.service.root)?;
         let prior = current_run(&self.service.root)?;
         let id = Uuid::new_v4().to_string();
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        let id = if let Some(trial) = &self.catalog40_trial {
+            if self.transition_fence.is_none() || !services || prior.as_ref() != Some(&trial.source) {
+                return Err(err(furnishing_lifecycle::ERROR));
+            }
+            trial.generation.clone()
+        } else { id };
         let prior_binding = prior.as_ref().and_then(|current| current.furnishing.clone());
         let catalog = self.payload.workspace_furnishing_catalog()?;
         let mut binding = prior_binding.clone();
@@ -1804,7 +1942,15 @@ const { isDeepStrictEqual } = require('node:util');
                 match furnishing {
                     Some(FurnishingStart::Initialize | FurnishingStart::SelectedImport038 | FurnishingStart::SelectedImport039 | FurnishingStart::SelectedImport040) => (),
                     Some(FurnishingStart::Reopen) => {
-                        active.consume(prior_binding.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?)?;
+                        let source = prior_binding.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+                        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                        if self.catalog40_trial.is_some() {
+                            active.consume_catalog40_transition(source)?;
+                        } else {
+                            active.consume(source)?;
+                        }
+                        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+                        active.consume(source)?;
                         if active.admission_kind == Admission::VerifiedRestore {
                             let proof = active.restore.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
                             crate::installations::native_restore::verify_ordinary_activation(
@@ -1865,6 +2011,10 @@ const { isDeepStrictEqual } = require('node:util');
         self.furnishing_clean_checked = false;
         self.furnishing_selected_saved = false;
         self.furnishing_keep_fences = false;
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        if self.catalog40_trial.is_some() {
+            self.furnishing_keep_fences = true;
+        }
         self.state = "starting".into();
         self.record()?;
         // No process or mutable bootstrap may start before Active is durable.
