@@ -147,10 +147,12 @@ const WORKSPACE_FURNISHING_PUBLICATION_DIRECTORY: &str =
     "platform/database/native-workspace-furnishing-publication/";
 const WORKSPACE_FURNISHING_PUBLICATION_SCHEMA: &str =
     "platform/database/native-workspace-furnishing-publication/038_workspace_furnishing_publication.sql";
+const WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_BYTES: u64 = 1032;
 const WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_SHA256: &str =
     "cbee8e1f2a7af5daa1aec498d014ad25934b116aa5d578966b23efef2e110a98";
 const WORKSPACE_FURNISHING_PUBLICATION_CAPABILITY: &str =
     "platform/scripts/native-workspace-furnishing-publication-capability-v1.json";
+const WORKSPACE_FURNISHING_PUBLICATION_CAPABILITY_BYTES: u64 = 165;
 const WORKSPACE_FURNISHING_PUBLICATION_CAPABILITY_SHA256: &str =
     "968dec2c1d4312b3e8a50194fa13d961c3bfb47ec4df17800f94e353a682daf3";
 const WORKSPACE_FURNISHING_PUBLICATION_WRITER_CAPABILITY: &str =
@@ -571,11 +573,13 @@ mod normal_oex_release_declaration_tests {
         assert_eq!(payload.workspace_furnishing_catalog_for(&[], &writer_pin, &[]).unwrap(),
             Some(WorkspaceFurnishingCatalog::Writer037));
         let mut marker = furnishing_ledger_file(WORKSPACE_FURNISHING_PUBLICATION_CAPABILITY.into());
+        marker.bytes = Some(WORKSPACE_FURNISHING_PUBLICATION_CAPABILITY_BYTES);
         marker.sha256 = Some(WORKSPACE_FURNISHING_PUBLICATION_CAPABILITY_SHA256.into());
         payload.manifest.files.push(marker);
         assert!(payload.workspace_furnishing_catalog_for(&[], &[], &publication_pin).is_err());
 
         let mut sql = furnishing_ledger_file(WORKSPACE_FURNISHING_PUBLICATION_SCHEMA.into());
+        sql.bytes = Some(WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_BYTES);
         sql.sha256 = Some(WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_SHA256.into());
         payload.manifest.files.push(sql);
         assert!(payload.workspace_furnishing_catalog().is_err());
@@ -591,6 +595,10 @@ mod normal_oex_release_declaration_tests {
         payload.manifest.files.push(furnishing_ledger_file(format!("{WORKSPACE_FURNISHING_PUBLICATION_DIRECTORY}038_extra.sql")));
         assert!(payload.workspace_furnishing_ledger(catalog).is_err());
         payload.manifest.files.pop();
+        payload.manifest.files.last_mut().unwrap().bytes = Some(WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_BYTES + 1);
+        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &publication_pin).is_err());
+        assert!(payload.workspace_furnishing_ledger(catalog).is_err());
+        payload.manifest.files.last_mut().unwrap().bytes = Some(WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_BYTES);
         payload.manifest.files.last_mut().unwrap().sha256 = Some("f".repeat(64));
         assert!(payload.workspace_furnishing_catalog_for(&[], &[], &publication_pin).is_err());
         assert!(payload.workspace_furnishing_ledger(catalog).is_err());
@@ -1131,14 +1139,18 @@ impl Payload {
             return Err(unqualified());
         }
         if publication_declared || publication_pinned {
-            let pinned_file = |path: &str, hash: &str| self.manifest.files.iter().any(|file|
-                file.path == path && file.link.is_none() && file.executable == Some(false)
-                    && file.sha256.as_deref() == Some(hash));
+            let pinned_file = |path: &str, bytes: u64, hash: &str| {
+                self.manifest.files.iter().any(|file| file.path == path && file.link.is_none()
+                    && file.executable == Some(false) && file.bytes == Some(bytes)
+                    && file.sha256.as_deref() == Some(hash))
+            };
             if !publication_pinned || writer_pin.is_some() || legacy.contains(&tuple)
                 || !regular(WORKSPACE_FURNISHING_PUBLICATION_WRITER_CAPABILITY)
                 || !regular(WORKSPACE_FURNISHING_WRITER_SCHEMA)
-                || !pinned_file(WORKSPACE_FURNISHING_PUBLICATION_CAPABILITY, WORKSPACE_FURNISHING_PUBLICATION_CAPABILITY_SHA256)
-                || !pinned_file(WORKSPACE_FURNISHING_PUBLICATION_SCHEMA, WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_SHA256)
+                || !pinned_file(WORKSPACE_FURNISHING_PUBLICATION_CAPABILITY,
+                    WORKSPACE_FURNISHING_PUBLICATION_CAPABILITY_BYTES, WORKSPACE_FURNISHING_PUBLICATION_CAPABILITY_SHA256)
+                || !pinned_file(WORKSPACE_FURNISHING_PUBLICATION_SCHEMA,
+                    WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_BYTES, WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_SHA256)
             {
                 return Err(unqualified());
             }
@@ -1179,6 +1191,7 @@ impl Payload {
             } else if file.path.starts_with(WORKSPACE_FURNISHING_PUBLICATION_DIRECTORY) {
                 if catalog != WorkspaceFurnishingCatalog::Publication038
                     || file.path != WORKSPACE_FURNISHING_PUBLICATION_SCHEMA
+                    || file.bytes != Some(WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_BYTES)
                     || file.sha256.as_deref() != Some(WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_SHA256)
                 {
                     return Err(invalid());

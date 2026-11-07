@@ -63,14 +63,18 @@ The Manager implementation and Platform wire must be qualified together before
 adding a manifest pin. Source regression checks do not qualify actual startup,
 owner-loss recovery or EXB restoration.
 
-The publication catalog (038) uses the same ordinary owner exchange and a
-separate exact payload pin, publication capability and 38-row ledger. A
-qualified 038 payload can initialize a new empty workspace. Ordinary reopen
-checks the complete 038 ledger before launching services and consumes a clean
-completion for the same payload and installation. A 037 completion or EXB
-does not authorize a 038 reopen. The 038 pin list is empty pending a reviewed
-artifact. Upgrading an occupied 037 installation is a separate explicit
-operation on a restored candidate.
+The publication catalog (038) reuses the ordinary owner exchange with its own
+exact payload pin, publication capability and 38-row ledger. Start with an
+empty workspace. A clean reopen requires the same payload and physical
+installation and checks the complete ledger before launching services.
+
+Create the EXB with the qualified 038 payload and restore it with the same
+payload through Restore to a New Workspace (새 작업 공간에 복원). Activation
+preserves the workspace, tenant and principal IDs in the new physical
+installation. The first reopen checks the activation receipt and restored
+PostgreSQL system identifier before starting services. Backup and restore
+require writer quiescence and the exact 038 ledger. The Manager and Swift
+authoring pin lists stay empty pending qualification of the exact artifact.
 
 ## Private demo painting preparation
 

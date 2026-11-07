@@ -410,6 +410,35 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_furnishing_publication_consumes_only_same_payload_and_physical_restore() {
+        let mut restored = binding(GENERATION);
+        restored.catalog = 38;
+        restored.phase = Phase::ActivatedRestore;
+        restored.admission_kind = Admission::VerifiedRestore;
+        restored.restore = Some(Restore {
+            id: "10000000-0000-4000-8000-000000000007".into(),
+            backup_id: "10000000-0000-4000-8000-000000000008".into(),
+            archive_manifest_sha256: "5".repeat(64),
+            target_system_identifier: "123".into(),
+        });
+        let mut next = binding(NEXT);
+        next.catalog = 38;
+        let mut foreign = restored.clone();
+        foreign.catalog = 37;
+        assert!(next.consume(&foreign).is_err());
+        foreign = restored.clone();
+        foreign.payload_manifest_sha256 = "4".repeat(64);
+        assert!(next.consume(&foreign).is_err());
+        foreign = restored.clone();
+        foreign.physical.root_inode += 1;
+        assert!(next.consume(&foreign).is_err());
+        next.consume(&restored).unwrap();
+        assert_eq!(next.admission_kind, Admission::VerifiedRestore);
+        assert_eq!(next.owner, restored.owner);
+        assert_eq!(next.restore, restored.restore);
+    }
+
+    #[test]
     fn ordinary_furnishing_consumption_survives_db_only_pointer_rotation_and_refuses_replay() {
         use std::os::unix::fs::DirBuilderExt;
         let root = std::env::temp_dir().join(format!("furnishing-binding-{}", Uuid::new_v4()));
