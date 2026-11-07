@@ -20,6 +20,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var workspaceFurnishingStoolProfile: String? = nil
     public var workspaceFurnishingRoomVisualProfile: String? = nil
     public var workspaceArtworkFrameProfile: String? = nil
+    public var workspaceArtworkFrameModelsProfile: String? = nil
 
     public var advertisesWorkspaceFurnishingStool: Bool {
         workspaceFurnishingProfile == "workspace-furnishing-intake-v1"
@@ -33,6 +34,10 @@ public struct AuthoringSession: Decodable, Sendable {
 
     public var advertisesWorkspaceArtworkFrame: Bool {
         advertisesWorkspaceFurnishingRoomVisual && workspaceArtworkFrameProfile == "workspace-artwork-frame-v1"
+    }
+
+    public var advertisesWorkspaceArtworkFrameModels: Bool {
+        advertisesWorkspaceArtworkFrame && workspaceArtworkFrameModelsProfile == "workspace-artwork-frame-models-v1"
     }
 }
 public struct AuthoringPage<Item: Decodable & Sendable>: Decodable, Sendable {
@@ -166,7 +171,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "WORKSPACE_FURNISHING_INVALID": return "선택한 공간과 비품의 위치, 방향, 크기를 확인하세요."
         case "FRAME_SAVED_DRAFT_REQUIRED": return "전시를 저장한 뒤 액자를 연결하거나 해제하세요."
         case "FRAME_TARGET_STALE": return "저장된 작품 배치가 바뀌었습니다. 전시를 다시 열고 작품을 선택하세요."
-        case "FRAME_ASSET_UNSUPPORTED": return "등록된 얇은 황동 액자와 승인된 평면 이미지를 선택하세요."
+        case "FRAME_ASSET_UNSUPPORTED": return "이 작업공간에서 지원하는 등록 액자와 승인된 평면 이미지를 선택하세요."
         case "FRAME_SIZE_UNSUPPORTED": return "폭 60 cm, 높이 80 cm로 승인된 작품을 선택하세요."
         case "FRAME_DEPTH_UNSUPPORTED": return "깊이 정보가 없는 평면 작품을 선택하세요."
         case "FRAME_TRANSFORM_UNSUPPORTED": return "공간과 작품 배치의 배율을 확인하세요. 액자를 연결하려면 작품이 승인된 크기로 표시되어야 합니다."
@@ -1114,6 +1119,7 @@ public actor AuthoringAPI {
 
     private var supportedFurnishingExtensionVersion: Int64 {
         guard admitsWorkspaceFurnishings, let session else { return 0 }
+        if session.advertisesWorkspaceArtworkFrameModels { return 5 }
         if session.advertisesWorkspaceArtworkFrame { return 4 }
         if session.advertisesWorkspaceFurnishingRoomVisual { return 3 }
         return session.advertisesWorkspaceFurnishingStool ? 2 : 1
@@ -1135,8 +1141,8 @@ public actor AuthoringAPI {
             throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
         }
         if details.kind == .artworkFrame {
-            guard details.model.bytes == WorkspaceArtworkFrameAttachment.thinBrassBytes,
-                  details.model.sha256 == WorkspaceArtworkFrameAttachment.thinBrassSHA256 else {
+            let version = try WorkspaceArtworkFrameAttachment.extensionVersion(for: details.model)
+            guard version <= supportedFurnishingExtensionVersion else {
                 throw AuthoringFailure("FRAME_ASSET_UNSUPPORTED")
             }
         }
@@ -1252,6 +1258,33 @@ public actor AuthoringAPI {
 
     public func prepareWorkspaceArtworkFrame(_ command: WorkspaceArtworkFrameCommand,
                                              in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        try await prepareWorkspaceArtworkFrame(in: document) { draft in
+            switch command {
+            case .attach(let attachment):
+                try attachment.checkTarget(in: draft)
+                let furnishing = try await workspaceFurnishing(attachment.furnishingId, version: attachment.furnishingVersion)
+                return (command, furnishing)
+            case .detach:
+                return (command, nil)
+            }
+        }
+    }
+
+    public func prepareSelectedWorkspaceArtworkFrame(_ selection: WorkspaceFurnishingSummary,
+                                                      placementId: String, artworkRevisionId: String, assetId: String,
+                                                      in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        try await prepareWorkspaceArtworkFrame(in: document) { _ in
+            guard selection.kind == .artworkFrame else { throw AuthoringFailure("FRAME_ASSET_UNSUPPORTED") }
+            let furnishing = try await workspaceFurnishing(selection.id, version: selection.version)
+            let attachment = WorkspaceArtworkFrameAttachment(placementId: placementId,
+                artworkRevisionId: artworkRevisionId, assetId: assetId, furnishingId: furnishing.id,
+                furnishingVersion: furnishing.version, modelSha256: furnishing.details.model.sha256)
+            return (.attach(attachment), furnishing)
+        }
+    }
+
+    private func prepareWorkspaceArtworkFrame(in document: NativeDocumentState,
+        resolve: (NativeExhibitionDraft) async throws -> (WorkspaceArtworkFrameCommand, WorkspaceFurnishing?)) async throws -> NativeExhibitionDraft? {
         guard admitsWorkspaceArtworkFrames, document.tenantId == tenant, document.principalId == session?.userId else {
             throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
         }
@@ -1262,16 +1295,10 @@ public actor AuthoringAPI {
         let saved = try await exhibition(draft.id)
         guard saved.etag == etag, saved.draft == draft else { throw AuthoringFailure("REMOTE_CONFLICT", status: 412) }
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
-        let furnishing: WorkspaceFurnishing?
-        switch command {
-        case .attach(let attachment):
-            try attachment.checkTarget(in: saved.draft)
-            furnishing = try await workspaceFurnishing(attachment.furnishingId, version: attachment.furnishingVersion)
-        case .detach:
-            furnishing = nil
-        }
+        let (command, furnishing) = try await resolve(saved.draft)
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
-        let next = try command.applying(to: saved.draft, furnishing: furnishing)
+        let next = try command.applying(to: saved.draft, furnishing: furnishing,
+                                        supportedExtensionVersion: supportedFurnishingExtensionVersion)
         // A repeat attach still checks current rights and model integrity.
         try await validateNativeViewportEdit(next ?? saved.draft, etag: etag)
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
