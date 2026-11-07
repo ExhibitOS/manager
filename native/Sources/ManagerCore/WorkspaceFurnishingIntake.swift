@@ -7,6 +7,7 @@ public enum WorkspaceFurnishingKind: String, Codable, CaseIterable, Sendable {
     case barrier
     case displayCase = "display-case"
     case artworkFrame = "artwork-frame"
+    case portalFinish = "portal-finish"
 
     var minimumExtensionVersion: Int64 {
         switch self {
@@ -14,6 +15,7 @@ public enum WorkspaceFurnishingKind: String, Codable, CaseIterable, Sendable {
         case .stool: 2
         case .partition, .infoStand, .barrier, .displayCase: 3
         case .artworkFrame: 4
+        case .portalFinish: 6
         }
     }
 }

@@ -29,6 +29,7 @@ struct WorkspaceFurnishingIntakeView: View {
     @State private var catalogCursor: String?
     @State private var target: WorkspaceFurnishingSummary?
     @State private var room = ""
+    @State private var portalOpening = ""
     @State private var x = "0"
     @State private var y = "0"
     @State private var z = "0"
@@ -73,8 +74,9 @@ struct WorkspaceFurnishingIntakeView: View {
                         Button("비품 더 보기") { Task { await loadMore(intake: false) } }
                     }
                 }
-                if let target, target.kind != .artworkFrame { placementSection(target) }
+                if let target, target.kind != .artworkFrame, target.kind != .portalFinish { placementSection(target) }
                 if model.workspaceArtworkFrameAvailable { artworkFrameSection }
+                if model.workspacePortalFinishAvailable { portalSection }
             }.disabled(busy || access != model.viewportAccessID)
             if let message { Text(message).accessibilityAddTraits(.updatesFrequently) }
             HStack {
@@ -115,6 +117,9 @@ struct WorkspaceFurnishingIntakeView: View {
                 }
                 if model.workspaceArtworkFrameAvailable {
                     Text("작품 액자").tag(WorkspaceFurnishingKind.artworkFrame)
+                }
+                if model.workspacePortalFinishAvailable {
+                    Text("출입구 마감").tag(WorkspaceFurnishingKind.portalFinish)
                 }
             }
             TextField("이름", text: $name)
@@ -191,6 +196,45 @@ struct WorkspaceFurnishingIntakeView: View {
             TextField("방향 (°)", text: $yaw)
             TextField("비례 크기", text: $scale)
             Button("전시에 배치") { Task { await place(entry) } }.disabled(room.isEmpty)
+        }
+    }
+
+    private var portalSection: some View {
+        Section("출입구 마감") {
+            if let draft = model.draft {
+                let doors = (draft.candidate["openings"].items ?? []).filter { $0["type"].string == "door" }
+                Picker("대상 문", selection: $portalOpening) {
+                    Text("문 선택").tag("")
+                    ForEach(Array(doors.enumerated()), id: \.offset) { index, door in
+                        if let id = door["id"].string {
+                            let wall = draft.candidate["surfaces"].items?.first { $0["id"].string == door["surfaceId"].string }
+                            let room = draft.rooms.first { $0["id"].string == wall?["roomId"].string }
+                            Text("\(room?["name"].string ?? "공간") · 문 \(index + 1)").tag(id)
+                        }
+                    }
+                }
+                if let target, target.kind == .portalFinish {
+                    Button("문에 마감 연결") {
+                        let opening = portalOpening
+                        Task { await applyPortal(openingId: opening, furnishingId: target.id) }
+                    }.disabled(portalOpening.isEmpty || !model.canEditWorkspacePortalFinish)
+                } else {
+                    Text("등록한 비품 목록에서 출입구 마감을 선택하세요.").foregroundStyle(.secondary)
+                }
+                if WorkspacePortalFinish.hasAttachment(openingId: portalOpening, in: draft) {
+                    Button("문에서 마감 해제") {
+                        let opening = portalOpening
+                        Task { await applyPortal(openingId: opening, furnishingId: nil) }
+                    }.disabled(!model.canEditWorkspacePortalFinish)
+                }
+            }
+        }
+    }
+
+    private func applyPortal(openingId: String, furnishingId: String?) async {
+        await perform {
+            let changed = try await model.applyWorkspacePortalFinish(openingId: openingId, furnishingId: furnishingId, access: access)
+            message = changed ? "출입구 마감 변경을 보관했습니다. 전시를 저장하세요." : "선택한 문의 마감은 이미 이 상태입니다."
         }
     }
 

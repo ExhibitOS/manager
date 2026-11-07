@@ -62,15 +62,20 @@ public enum WorkspaceArtworkFrameCommand: Sendable {
         var furnishings: [DocumentValue] = []
         var placements: [DocumentValue] = []
         var attachments: [DocumentValue] = []
+        var openingAttachments: [DocumentValue]?
         var extensionVersion: Int64 = 4
         if let existing = extensions[namespace] {
             guard case .object(let fields) = existing, let version = existing["version"].integer,
-                  (1...5).contains(version),
-                  Set(fields.keys) == (version >= 4
-                    ? ["version", "furnishings", "placements", "frameAttachments"]
-                    : ["version", "furnishings", "placements"]),
+                  (1...6).contains(version),
                   let descriptors = existing["furnishings"].items, let rows = existing["placements"].items,
                   version < 4 || existing["frameAttachments"].items != nil else {
+                throw AuthoringFailure("VIEWPORT_COMMAND_DENIED")
+            }
+            var expected: Set<String> = ["version", "furnishings", "placements"]
+            if version >= 4 { expected.insert("frameAttachments") }
+            if version == 6 { expected.insert("openingAttachments") }
+            openingAttachments = existing["openingAttachments"].items
+            guard Set(fields.keys) == expected, version != 6 || openingAttachments?.isEmpty == false else {
                 throw AuthoringFailure("VIEWPORT_COMMAND_DENIED")
             }
             guard version <= supportedExtensionVersion else {
@@ -130,10 +135,12 @@ public enum WorkspaceArtworkFrameCommand: Sendable {
         if furnishings.isEmpty, placements.isEmpty, attachments.isEmpty {
             extensions.removeValue(forKey: namespace)
         } else {
-            extensions[namespace] = .object([
+            var fields: [String: DocumentValue] = [
                 "version": .integer(extensionVersion), "furnishings": .array(furnishings),
                 "placements": .array(placements), "frameAttachments": .array(attachments)
-            ])
+            ]
+            if let openingAttachments { fields["openingAttachments"] = .array(openingAttachments) }
+            extensions[namespace] = .object(fields)
         }
         candidate["extensions"] = .object(extensions)
         var result = draft
