@@ -1201,6 +1201,9 @@ final class ExhibitionModel: ObservableObject {
     var workspaceMaterialIntakeAvailable: Bool {
         workspaceMaterialPreviewAvailable && !selectedBoundedPolicy
     }
+    var workspaceMaterialMultimapAvailable: Bool {
+        workspaceMaterialPreviewAvailable && api?.workspaceMaterialMultimapRuntimeQualified == true
+    }
     var workspaceWallMaterialAvailable: Bool {
         workspaceMaterialIntakeAvailable && api?.workspaceWallMaterialRuntimeQualified == true
     }

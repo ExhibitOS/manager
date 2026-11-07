@@ -94,6 +94,13 @@ Workspace material multimap (040) has its own payload and 40-row ledger.
 Initialize a separate workspace for this catalog. The selected debug v7
 entry verifies the 040 draft.12 marker and its distinct writer lease mode.
 After the selected run settles, reopen with the same qualified 040 payload.
+On the local-validation 040 payload with manifest
+`72a13c526fb422c106f8eefaa7e277e5ab003f3c2085ebd09b2814c0a19ef904`,
+the debug Manager and automation CLI can connect registered floor and wall
+materials with color, optional normal and optional roughness maps. Both
+require an authenticated owner session and a clean saved draft. Apply the
+binding, then save the exhibition. The native viewport uses the same
+owner-scoped read routes for these maps.
 
 ## Private demo painting preparation
 

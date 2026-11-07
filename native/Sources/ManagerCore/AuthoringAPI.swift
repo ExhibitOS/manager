@@ -131,7 +131,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "MATERIAL_CATALOG_INVALID": return "재질 목록을 확인하지 못했습니다. 기존 재질과 입력은 유지됩니다."
         case "MATERIAL_DECLARATION": return "재질 이름, 출처와 권리 입력을 확인하세요."
         case "WORKSPACE_MATERIAL_BINDING_INVALID": return "바닥과 반복 크기, 회전 값을 확인하세요."
-        case "WORKSPACE_MATERIAL_BINDING_UNSUPPORTED": return "지금은 색상 맵 한 장만 등록한 바닥 재질을 연결할 수 있습니다."
+        case "WORKSPACE_MATERIAL_BINDING_UNSUPPORTED": return "이 표면이나 재질 맵 조합은 현재 런타임에서 연결할 수 없습니다."
         case "WORKSPACE_MATERIAL_BINDING_SAMPLING_UNSUPPORTED": return "이 바닥에 기존 요철 또는 주변광 차폐 설정이 있어 다른 재질로 교체할 수 없습니다."
         case "WORKSPACE_MATERIAL_SAVED_DRAFT_REQUIRED": return "현재 전시를 저장한 뒤 재질을 연결하세요."
         case "NATIVE_SURFACE_CAPABILITY_UNAVAILABLE": return "현재 저장본의 편집 정책에서는 바닥 재질을 연결할 수 없습니다."
@@ -281,6 +281,9 @@ public actor AuthoringAPI {
     private static let workspaceWallMaterialManifestPins: Set<String> = [
         "6be2d5969462e4961e9ecbd3b6417936f2f075de1fbc3626d1b4f19cde7e65ec"
     ]
+    private static let workspaceMaterialMultimapManifestPins: Set<String> = [
+        "72a13c526fb422c106f8eefaa7e277e5ab003f3c2085ebd09b2814c0a19ef904"
+    ]
     private static let workspaceCatalogReadManifest = "aad7ddf920dc64b02b916166e829d9638fca11b585cd0cb9157bc49a0f09e0d9"
     #else
     private static let workspaceMaterialManifestPins: Set<String> = []
@@ -288,6 +291,7 @@ public actor AuthoringAPI {
     #endif
     public nonisolated let workspaceMaterialRuntimeQualified: Bool
     public nonisolated let workspaceWallMaterialRuntimeQualified: Bool
+    public nonisolated let workspaceMaterialMultimapRuntimeQualified: Bool
     private let workspaceCatalogReadRuntimeQualified: Bool
     // Add the paired manifest only after the native 036 owner path is qualified.
     private static let workspaceFurnishingManifestPins: Set<String> = []
@@ -312,7 +316,13 @@ public actor AuthoringAPI {
         tenant = id.uuidString.lowercased()
         admitsICCJPEG = NativeJPEGImportRuntime.supportsICC(manifestSHA256: nativeRuntimeManifestSHA256, ready: true)
         let manifest = nativeRuntimeManifestSHA256 ?? ""
-        let wallQualified = Self.workspaceWallMaterialManifestPins.contains(manifest)
+        #if DEBUG
+        let multimapQualified = Self.workspaceMaterialMultimapManifestPins.contains(manifest)
+        #else
+        let multimapQualified = false
+        #endif
+        let wallQualified = multimapQualified || Self.workspaceWallMaterialManifestPins.contains(manifest)
+        workspaceMaterialMultimapRuntimeQualified = multimapQualified
         workspaceWallMaterialRuntimeQualified = wallQualified
         workspaceMaterialRuntimeQualified = wallQualified || Self.workspaceMaterialManifestPins.contains(manifest)
         workspaceFurnishingRuntimeQualified = Self.workspaceFurnishingManifestPins.contains(manifest)
@@ -1045,7 +1055,8 @@ public actor AuthoringAPI {
         guard saved.etag == etag, saved.draft == draft else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
         let material = try await workspaceMaterial(binding.materialId, version: binding.materialVersion)
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
-        let next = try binding.applying(material, to: draft)
+        let multimap = workspaceMaterialMultimapRuntimeQualified
+        let next = try binding.applying(material, to: draft, multimap: multimap)
         if let next, policy.boundedProfile == true {
             struct Input: Encodable { let requestId: String; let draft: NativeExhibitionDraft }
             struct Validation: Decodable { let valid: Bool }
@@ -1054,10 +1065,15 @@ public actor AuthoringAPI {
             let path = studioPrefix + "/exhibitions/" + (try identifier(draft.id)) + "/native-viewport-check"
             let response: Validation = try await request(path, method: "POST", body: body, ifMatch: etag)
             guard response.valid else { throw AuthoringFailure("DRAFT_INVALID") }
-        } else {
+        }
+        if multimap || next == nil || policy.boundedProfile != true {
             // The descriptor alone may carry a future or expired display grant.
-            // Reuse the authorized color endpoint for ordinary edits and no-ops.
-            _ = try await workspaceMaterialPreview(material, role: .color)
+            // Recheck each 040 map's bytes even when the Studio check verified the descriptor.
+            for role in WorkspaceSurfaceMaterialBinding.supportedMapRoles(multimap: multimap)
+                where material.maps[role.rawValue] != nil {
+                guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+                _ = try await workspaceMaterialPreview(material, role: role)
+            }
         }
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next

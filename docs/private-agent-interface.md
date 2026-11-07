@@ -170,7 +170,7 @@ Operations:
     `{"surfaceId":"<floor UUID>","materialId":"<material UUID>","materialVersion":1,"repeatMeters":[2,2],"rotation":0}`.
     The selected floor must exist in a clean saved draft. The command checks
     its saved Studio policy and the exact registered descriptor. It accepts
-    color-only floor materials with display permission, repeats from 0.05 to
+    floor materials with display permission, repeats from 0.05 to
     20 metres per axis, and rotation from −π to π radians. The result contains
     `changed` and the native `document`. An identical saved binding returns
     `changed: false` without writing a revision. Otherwise use the returned
@@ -183,7 +183,7 @@ Operations:
     the exhibition. The current runtime can save the binding. Surface
     rendering and portable outputs require a runtime that supports them.
   - `workspace-material-wall-apply` uses the same command fields and saved
-    Studio checks. Pass a wall surface UUID and the exact registered color-only
+    Studio checks. Pass a wall surface UUID and the exact registered
     wall material. Use `save` after a change. In Manager, the corresponding
     actions are **벽 연결 설정** and **벽에 연결**.
     Wall application is available to an ordinary authenticated owner session
@@ -192,6 +192,11 @@ Operations:
     `6be2d5969462e4961e9ecbd3b6417936f2f075de1fbc3626d1b4f19cde7e65ec`.
     Floor-only runtime pins keep wall application unavailable in the GUI, and
     CLI attempts return `WORKSPACE_MATERIAL_BINDING_UNSUPPORTED`.
+  - The qualified local 040 debug payload supports a required color map plus
+    optional normal and roughness maps for both floor and wall bindings. Both
+    interfaces check display access and verify each declared map before staging
+    the binding. Ambient occlusion (AO) is unavailable for surface application.
+    Earlier qualified runtimes keep their color-only application rules.
 - `bench-prepare`: accept the existing `add-bench` command and optional fresh
   viewpoint; write the existing frame/request packet to a new `outputPath`.
 - `bench-apply`: provide its `proposalId` and a fixed shared-renderer reply at
