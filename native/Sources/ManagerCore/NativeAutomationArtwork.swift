@@ -29,6 +29,26 @@ enum NativeAutomationArtworkRules {
             try checkDisplayAsset(metadata, sha256: intent.sha256, scaleMeters: intent.scaleMeters)
         }
     }
+    static func checkICCReadback(artwork: NativeArtwork, job: NativeImportJob, jobId: String,
+                                 intent: NativeImportIntent, revision: Int64) throws -> NativeImagePreparationStatus {
+        guard intent.mime == "image/jpeg", intent.modelDerivation == nil,
+              let derived = intent.derived, derived.valid, derived.recipe.colourConversion != nil,
+              job.id == jobId, UUID(uuidString: jobId) != nil, job.modelDerivation == nil,
+              job.state == "approved", job.progress == 100, job.attempts >= 0,
+              let preparation = job.imagePreparation, preparation.matches(intent),
+              let original = job.originalAssetId, UUID(uuidString: original) != nil,
+              let display = job.assetId, UUID(uuidString: display) != nil, original.lowercased() != display.lowercased(),
+              artwork.id == intent.artworkId, Int64(artwork.revision) == revision, !artwork.archived,
+              artwork.approvedRevision == artwork.revision, artwork.approvedAssetId == display,
+              artwork.metadata?.rights == intent.rights,
+              artwork.assets.contains(where: { $0.id == original && $0.state == "quarantine"
+                  && $0.mime == intent.mime && $0.sha256 == intent.sha256 && $0.bytes == intent.bytes }),
+              artwork.assets.contains(where: { $0.id == display && $0.state == "approved"
+                  && $0.mime == derived.mime && $0.sha256 == derived.sha256 && $0.bytes == derived.bytes }) else {
+            throw BridgeFailure("IMPORT_RECEIPT_INVALID")
+        }
+        return preparation
+    }
     static func checkDisplayAsset(_ metadata: ArtworkMetadata, sha256: String, scaleMeters: Double) throws {
         guard metadata.provenance.sourceUnits == "unknown" || metadata.displayReference != nil else { return }
         guard metadata.provenance.sourceUnits == "unknown", !metadata.provenance.scaleApplied,
