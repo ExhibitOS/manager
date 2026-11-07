@@ -73,7 +73,8 @@ struct WorkspaceFurnishingIntakeView: View {
                         Button("비품 더 보기") { Task { await loadMore(intake: false) } }
                     }
                 }
-                if let target { placementSection(target) }
+                if let target, target.kind != .artworkFrame { placementSection(target) }
+                if model.workspaceArtworkFrameAvailable { artworkFrameSection }
             }.disabled(busy || access != model.viewportAccessID)
             if let message { Text(message).accessibilityAddTraits(.updatesFrequently) }
             HStack {
@@ -111,6 +112,9 @@ struct WorkspaceFurnishingIntakeView: View {
                     Text("안내 스탠드").tag(WorkspaceFurnishingKind.infoStand)
                     Text("차단대").tag(WorkspaceFurnishingKind.barrier)
                     Text("진열장").tag(WorkspaceFurnishingKind.displayCase)
+                }
+                if model.workspaceArtworkFrameAvailable {
+                    Text("작품 액자").tag(WorkspaceFurnishingKind.artworkFrame)
                 }
             }
             TextField("이름", text: $name)
@@ -174,6 +178,51 @@ struct WorkspaceFurnishingIntakeView: View {
             TextField("방향 (°)", text: $yaw)
             TextField("비례 크기", text: $scale)
             Button("전시에 배치") { Task { await place(entry) } }.disabled(room.isEmpty)
+        }
+    }
+
+    private var artworkFrameSection: some View {
+        Section("작품 액자") {
+            if let draft = model.draft,
+               let placement = draft.placements.first(where: { $0["id"].string == model.placementId }),
+               let placementId = placement["id"].string,
+               let artworkRevisionId = placement["artworkRevisionId"].string,
+               let assetId = placement["assetId"].string {
+                let artwork = draft.artworks.first { $0["revisionId"].string == artworkRevisionId }
+                let attached = WorkspaceArtworkFrameCommand.hasAttachment(for: placementId, in: draft)
+                LabeledContent("선택한 작품", value: artwork?["metadata"]["title"].string ?? "작품")
+                if let target, target.kind == .artworkFrame {
+                    LabeledContent("선택한 액자", value: target.name)
+                    Button(attached ? "선택한 액자로 교체" : "작품에 액자 연결") {
+                        let attachment = WorkspaceArtworkFrameAttachment(placementId: placementId,
+                            artworkRevisionId: artworkRevisionId, assetId: assetId,
+                            furnishingId: target.id, furnishingVersion: target.version,
+                            modelSha256: WorkspaceArtworkFrameAttachment.thinBrassSHA256)
+                        Task { await applyFrame(.attach(attachment)) }
+                    }
+                    .disabled(!model.canEditWorkspaceArtworkFrame)
+                } else if !attached {
+                    Text("등록한 비품 목록에서 액자를 선택하세요.").foregroundStyle(.secondary)
+                }
+                if attached {
+                    Button("작품에서 액자 해제") {
+                        Task { await applyFrame(.detach(placementId: placementId)) }
+                    }
+                    .disabled(!model.canEditWorkspaceArtworkFrame)
+                }
+                if model.dirty {
+                    Text("액자를 변경하려면 현재 전시를 먼저 저장하세요.").foregroundStyle(.secondary)
+                }
+            } else {
+                Text("전시에서 액자를 연결할 작품을 먼저 선택하세요.").foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func applyFrame(_ command: WorkspaceArtworkFrameCommand) async {
+        await perform {
+            let changed = try await model.applyWorkspaceArtworkFrame(command, access: access)
+            message = changed ? "액자 변경을 보관했습니다. 전시를 저장하세요." : "선택한 액자가 이미 연결되어 있습니다."
         }
     }
 

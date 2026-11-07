@@ -19,6 +19,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var workspaceFurnishingProfile: String? = nil
     public var workspaceFurnishingStoolProfile: String? = nil
     public var workspaceFurnishingRoomVisualProfile: String? = nil
+    public var workspaceArtworkFrameProfile: String? = nil
 
     public var advertisesWorkspaceFurnishingStool: Bool {
         workspaceFurnishingProfile == "workspace-furnishing-intake-v1"
@@ -28,6 +29,10 @@ public struct AuthoringSession: Decodable, Sendable {
     public var advertisesWorkspaceFurnishingRoomVisual: Bool {
         advertisesWorkspaceFurnishingStool
             && workspaceFurnishingRoomVisualProfile == "workspace-furnishing-room-visual-v1"
+    }
+
+    public var advertisesWorkspaceArtworkFrame: Bool {
+        advertisesWorkspaceFurnishingRoomVisual && workspaceArtworkFrameProfile == "workspace-artwork-frame-v1"
     }
 }
 public struct AuthoringPage<Item: Decodable & Sendable>: Decodable, Sendable {
@@ -159,6 +164,13 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "WORKSPACE_FURNISHING_UNAVAILABLE": return "현재 작업공간에서 이 비품을 등록하거나 배치할 수 없습니다."
         case "FURNISHING_VALIDATION_UNAVAILABLE": return "비품 검증이 중단됐습니다. 등록 기록에서 상태를 확인하고 검증을 다시 시도하세요."
         case "WORKSPACE_FURNISHING_INVALID": return "선택한 공간과 비품의 위치, 방향, 크기를 확인하세요."
+        case "FRAME_SAVED_DRAFT_REQUIRED": return "전시를 저장한 뒤 액자를 연결하거나 해제하세요."
+        case "FRAME_TARGET_STALE": return "저장된 작품 배치가 바뀌었습니다. 전시를 다시 열고 작품을 선택하세요."
+        case "FRAME_ASSET_UNSUPPORTED": return "등록된 얇은 황동 액자와 승인된 평면 이미지를 선택하세요."
+        case "FRAME_SIZE_UNSUPPORTED": return "폭 60 cm, 높이 80 cm로 승인된 작품을 선택하세요."
+        case "FRAME_DEPTH_UNSUPPORTED": return "깊이 정보가 없는 평면 작품을 선택하세요."
+        case "FRAME_TRANSFORM_UNSUPPORTED": return "작품 배치를 원래 크기로 돌린 뒤 전시를 저장하세요."
+        case "FRAME_PROCEDURAL_CONFLICT": return "기존 액자 설정을 해제하고 전시를 저장한 뒤 다시 시도하세요."
         case "ARCHITECTURE_SELECTION_CHANGED": return "선택한 대상이 바뀌었습니다. 입력을 취소한 뒤 대상을 다시 선택하세요."
         case "PLACEMENT_APPLY_REQUIRED": return "배치와 위치 입력을 먼저 적용하거나 취소하세요. 입력과 기존 전시는 그대로 유지됩니다."
         case "ARCHITECTURE_APPLY_REQUIRED": return "공간·재질 변경을 적용하거나 입력을 취소한 뒤 전시를 저장하세요."
@@ -1071,13 +1083,7 @@ public actor AuthoringAPI {
         let multimap = workspaceMaterialMultimapRuntimeQualified
         let next = try binding.applying(material, to: draft, multimap: multimap)
         if let next, policy.boundedProfile == true {
-            struct Input: Encodable { let requestId: String; let draft: NativeExhibitionDraft }
-            struct Validation: Decodable { let valid: Bool }
-            let body = try encoded(Input(requestId: UUID().uuidString.lowercased(), draft: next))
-            guard body.count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
-            let path = studioPrefix + "/exhibitions/" + (try identifier(draft.id)) + "/native-viewport-check"
-            let response: Validation = try await request(path, method: "POST", body: body, ifMatch: etag)
-            guard response.valid else { throw AuthoringFailure("DRAFT_INVALID") }
+            try await validateNativeViewportEdit(next, etag: etag)
         }
         if multimap || next == nil || policy.boundedProfile != true {
             // The descriptor alone may carry a future or expired display grant.
@@ -1102,8 +1108,13 @@ public actor AuthoringAPI {
             && ["admin", "artist", "curator"].contains(session?.role ?? "")
     }
 
+    public var admitsWorkspaceArtworkFrames: Bool {
+        admitsWorkspaceFurnishings && session?.advertisesWorkspaceArtworkFrame == true
+    }
+
     private var supportedFurnishingExtensionVersion: Int64 {
         guard admitsWorkspaceFurnishings, let session else { return 0 }
+        if session.advertisesWorkspaceArtworkFrame { return 4 }
         if session.advertisesWorkspaceFurnishingRoomVisual { return 3 }
         return session.advertisesWorkspaceFurnishingStool ? 2 : 1
     }
@@ -1122,6 +1133,12 @@ public actor AuthoringAPI {
         guard workspaceFurnishingID(requestId), details.isValid else { throw AuthoringFailure("FURNISHING_DECLARATION") }
         guard details.kind.minimumExtensionVersion <= supportedFurnishingExtensionVersion else {
             throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+        }
+        if details.kind == .artworkFrame {
+            guard details.model.bytes == WorkspaceArtworkFrameAttachment.thinBrassBytes,
+                  details.model.sha256 == WorkspaceArtworkFrameAttachment.thinBrassSHA256 else {
+                throw AuthoringFailure("FRAME_ASSET_UNSUPPORTED")
+            }
         }
         let body = try encoded(WorkspaceFurnishingRequest(requestId: requestId, details: details))
         let intake: WorkspaceFurnishingIntake = try await request(workspaceFurnishingPath("furnishing-intakes"), method: "POST", body: body)
@@ -1219,6 +1236,43 @@ public actor AuthoringAPI {
         let furnishing = try await workspaceFurnishing(placement.furnishingId, version: placement.furnishingVersion)
         let next = try placement.applying(furnishing, to: draft, supportedExtensionVersion: supportedFurnishingExtensionVersion)
         _ = try await workspaceFurnishingModel(furnishing)
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return next
+    }
+
+    private func validateNativeViewportEdit(_ draft: NativeExhibitionDraft, etag: String) async throws {
+        struct Input: Encodable { let requestId: String; let draft: NativeExhibitionDraft }
+        struct Validation: Decodable { let valid: Bool }
+        let body = try encoded(Input(requestId: UUID().uuidString.lowercased(), draft: draft))
+        guard body.count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
+        let path = studioPrefix + "/exhibitions/" + (try identifier(draft.id)) + "/native-viewport-check"
+        let response: Validation = try await request(path, method: "POST", body: body, ifMatch: etag)
+        guard response.valid else { throw AuthoringFailure("DRAFT_INVALID") }
+    }
+
+    public func prepareWorkspaceArtworkFrame(_ command: WorkspaceArtworkFrameCommand,
+                                             in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        guard admitsWorkspaceArtworkFrames, document.tenantId == tenant, document.principalId == session?.userId else {
+            throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+        }
+        guard !document.dirty, let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("FRAME_SAVED_DRAFT_REQUIRED")
+        }
+        let heldGeneration = generation
+        let saved = try await exhibition(draft.id)
+        guard saved.etag == etag, saved.draft == draft else { throw AuthoringFailure("REMOTE_CONFLICT", status: 412) }
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let furnishing: WorkspaceFurnishing?
+        switch command {
+        case .attach(let attachment):
+            try attachment.checkTarget(in: saved.draft)
+            furnishing = try await workspaceFurnishing(attachment.furnishingId, version: attachment.furnishingVersion)
+        case .detach:
+            furnishing = nil
+        }
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let next = try command.applying(to: saved.draft, furnishing: furnishing)
+        if let next { try await validateNativeViewportEdit(next, etag: etag) }
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next
     }
