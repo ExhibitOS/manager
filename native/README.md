@@ -63,6 +63,15 @@ The Manager implementation and Platform wire must be qualified together before
 adding a manifest pin. Source regression checks do not qualify actual startup,
 owner-loss recovery or EXB restoration.
 
+The publication catalog (038) uses the same ordinary owner exchange and a
+separate exact payload pin, publication capability and 38-row ledger. A
+qualified 038 payload can initialize a new empty workspace. Ordinary reopen
+checks the complete 038 ledger before launching services and consumes a clean
+completion for the same payload and installation. A 037 completion or EXB
+does not authorize a 038 reopen. The 038 pin list is empty pending a reviewed
+artifact. Upgrading an occupied 037 installation is a separate explicit
+operation on a restored candidate.
+
 ## Private demo painting preparation
 
 The standalone debug tool accepts only the three pinned official JPEGs. It
