@@ -1597,6 +1597,7 @@ impl Payload {
                 || CATALOG40_RESTORE_PROVENANCE_TARGET.is_some_and(|restore| context.manifest_sha256 == restore.2)
                 || CATALOG40_FRAME_RECORD_TARGET.is_some_and(|frames| context.manifest_sha256 == frames.2)
                 || CATALOG40_ARTWORK_REPLACEMENT_TARGET.is_some_and(|replacement| context.manifest_sha256 == replacement.2)
+                || CATALOG40_WHEAT_GRANT.is_some_and(|grant| context.manifest_sha256 == grant.2)
                 || CATALOG40_WHEAT_DETAIL.is_some_and(|detail| context.manifest_sha256 == detail.2) {
                 Some(WorkspaceFurnishingCatalog::MaterialMultimap040)
             } else { None };
