@@ -20,6 +20,8 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "native_runtime_hayes_generation.rs"]
+mod generation;
 #[path = "native_runtime_hayes_launch.rs"]
 mod launch;
 #[path = "native_runtime_hayes_transfer.rs"]
@@ -372,8 +374,9 @@ pub(super) struct Attempt {
 
 /// Pinned Manager-only input. The API cannot supply its path or open handle.
 pub(super) struct SourceStage {
-    pub(super) binding: Binding,
-    pub(super) observed: super::oex_read_fd::ObservedStage,
+    binding: Binding,
+    correlation: Uuid,
+    observed: super::oex_read_fd::ObservedStage,
 }
 
 impl Attempt {
@@ -431,6 +434,21 @@ impl Attempt {
             &mut || frames.check(),
         )?;
         self.check()?;
+        self.check_stage_file(binding.attempt, &observed)?;
+        frames.check()?;
+        flow.accept(frames)?;
+        Ok(SourceStage {
+            binding,
+            correlation,
+            observed,
+        })
+    }
+
+    fn check_stage_file(
+        &self,
+        stage_id: Uuid,
+        observed: &super::oex_read_fd::ObservedStage,
+    ) -> Result<()> {
         let name = format!(".oex-stage-{stage_id}");
         let named = self
             .stage
@@ -443,10 +461,7 @@ impl Attempt {
         if private_file(&named)? != identity {
             return Err(custody_error());
         }
-        observed.check_unchanged()?;
-        frames.check()?;
-        flow.accept(frames)?;
-        Ok(SourceStage { binding, observed })
+        observed.check_unchanged()
     }
 
     pub(super) fn before_spawn(&mut self, role: Role) -> Result<LaunchPermit> {
@@ -487,13 +502,26 @@ impl Attempt {
     /// Reads from the exact spawn's private channel and durably registers
     /// it. A transport or storage error consumes the channel without GO.
     pub(super) fn register_ready(&mut self, child: &mut SpawnedWorker) -> Result<()> {
+        self.register_ready_until(
+            child,
+            Instant::now() + std::time::Duration::from_secs(5),
+            &mut || Ok(()),
+        )
+    }
+
+    fn register_ready_until(
+        &mut self,
+        child: &mut SpawnedWorker,
+        deadline: Instant,
+        check: &mut dyn FnMut() -> Result<()>,
+    ) -> Result<()> {
         if child.phase != Phase::Awaiting {
             return Err(channel_error());
         }
-        let mut owner = child.owner.take().ok_or_else(channel_error)?;
+        let owner = child.owner.take().ok_or_else(channel_error)?;
         let record = self.worker_record(child)?;
         child.require_live()?;
-        launch::receive_ready(&mut owner, record.worker)?;
+        launch::receive_ready(&owner, record.worker, deadline, check)?;
         child.require_live()?;
         self.journal.create(record.worker.role.files().1, &record)?;
         self.check()?;

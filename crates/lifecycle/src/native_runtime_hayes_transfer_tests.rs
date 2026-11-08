@@ -217,6 +217,7 @@ fn api_interop_fixture() {
             )
         });
     assert_eq!(source.binding, binding);
+    assert_eq!(source.correlation, correlation);
     assert_eq!(source.observed.bytes, SOURCE_BYTES);
     source.observed.check_unchanged().unwrap();
     let output = sample();

@@ -5,14 +5,14 @@ use super::{custody_error, cvt, err, private_file, Result, Worker};
 use std::{
     ffi::{CString, OsStr},
     fs::File,
-    io::{self, Read},
+    io,
     os::{
         fd::{AsRawFd, FromRawFd},
         unix::{ffi::OsStrExt, net::UnixStream, process::ExitStatusExt},
     },
     path::Path,
     process::ExitStatus,
-    ptr,
+    ptr, thread,
     time::{Duration, Instant},
 };
 
@@ -37,7 +37,12 @@ impl LaunchPermit {
     /// in this draft. The child inherits the owner's process group.
     // A production caller must construct fixed argv from an admitted payload.
     // Keep this implementation private until that constructor exists.
-    fn spawn(self, program: &Path, args: &[&OsStr]) -> Result<SpawnedWorker> {
+    fn spawn(
+        self,
+        program: &Path,
+        args: &[&OsStr],
+        stdio: Option<(&UnixStream, &UnixStream)>,
+    ) -> Result<SpawnedWorker> {
         if !program.is_absolute() {
             return Err(err("HAYES_WORKER_START_FAILED"));
         }
@@ -51,7 +56,7 @@ impl LaunchPermit {
             .map(|arg| CString::new(arg.as_bytes()))
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|_| err("HAYES_WORKER_START_FAILED"))?;
-        let pid = spawn_leaf(&argv, &child, &self.lock)?;
+        let pid = spawn_leaf(&argv, &child, &self.lock, stdio)?;
         Ok(SpawnedWorker {
             worker: self.worker,
             pid,
@@ -61,13 +66,38 @@ impl LaunchPermit {
         })
     }
 
+    /// Internal producer. The caller must select the fixed admitted payload.
+    pub(super) fn spawn_staged(
+        self,
+        program: &Path,
+        args: &[&OsStr],
+    ) -> Result<(SpawnedWorker, WorkerStdio)> {
+        let (input, child_input) = UnixStream::pair().map_err(|_| channel_error())?;
+        let (output, child_output) = UnixStream::pair().map_err(|_| channel_error())?;
+        input.set_nonblocking(true).map_err(|_| channel_error())?;
+        output.set_nonblocking(true).map_err(|_| channel_error())?;
+        let child = self.spawn(program, args, Some((&child_input, &child_output)))?;
+        Ok((child, WorkerStdio { input, output }))
+    }
+
     #[cfg(test)]
     pub(in super::super) fn spawn_fixture(
         self,
         program: &Path,
         args: &[&OsStr],
     ) -> Result<SpawnedWorker> {
-        self.spawn(program, args)
+        self.spawn(program, args, None)
+    }
+}
+
+pub(super) struct WorkerStdio {
+    pub(super) input: UnixStream,
+    pub(super) output: UnixStream,
+}
+
+impl WorkerStdio {
+    pub(super) fn check_quiet_output(&self) -> Result<()> {
+        require_idle(&self.output).map_err(|_| err("HAYES_WORKER_IO_INVALID"))
     }
 }
 
@@ -117,31 +147,45 @@ pub(super) fn channel_error() -> crate::LifecycleError {
     err("HAYES_WORKER_CHANNEL_UNAVAILABLE")
 }
 
-pub(super) fn receive_ready(owner: &mut UnixStream, worker: Worker) -> Result<()> {
+pub(super) fn receive_ready(
+    owner: &UnixStream,
+    worker: Worker,
+    deadline: Instant,
+    check: &mut dyn FnMut() -> Result<()>,
+) -> Result<()> {
     let expected = format!("READY {}\n", worker.nonce.simple());
-    // Read up to one extra byte, with one absolute deadline for all fragments.
-    let deadline = Instant::now() + READY_DEADLINE;
+    let deadline = deadline.min(Instant::now() + READY_DEADLINE);
     let mut frame = [0; 40]; // 6 byte prefix, 32 hex digits, LF, extra byte
     let mut length = 0;
     while length < expected.len() {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
+        check()?;
+        if Instant::now() >= deadline {
             return Err(channel_error());
         }
-        owner
-            .set_read_timeout(Some(remaining))
-            .map_err(|_| channel_error())?;
-        let n = owner
-            .read(&mut frame[length..])
-            .map_err(|_| channel_error())?;
-        if n == 0 {
-            return Err(channel_error());
+        let destination = &mut frame[length..];
+        let n = unsafe {
+            libc::recv(
+                owner.as_raw_fd(),
+                destination.as_mut_ptr().cast(),
+                destination.len(),
+                libc::MSG_DONTWAIT,
+            )
+        };
+        match cvt(n as i32) {
+            Ok(0) => return Err(channel_error()),
+            Ok(n) => length += n as usize,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(2));
+                continue;
+            }
+            Err(_) => return Err(channel_error()),
         }
-        length += n;
         if !expected.as_bytes().starts_with(&frame[..length]) {
             return Err(err("HAYES_READY_INVALID"));
         }
     }
+    check()?;
     require_idle(owner)
 }
 
@@ -235,7 +279,12 @@ fn spawn_ok(status: libc::c_int) -> Result<()> {
     }
 }
 
-fn spawn_leaf(argv: &[CString], peer: &UnixStream, lock: &File) -> Result<libc::pid_t> {
+fn spawn_leaf(
+    argv: &[CString],
+    peer: &UnixStream,
+    lock: &File,
+    stdio: Option<(&UnixStream, &UnixStream)>,
+) -> Result<libc::pid_t> {
     let mut options = SpawnOptions::new()?;
     // Keep both sources above all target FDs until posix_spawn returns.
     // dup2 only happens in the child; unrelated inherited FDs are closed.
@@ -244,10 +293,21 @@ fn spawn_leaf(argv: &[CString], peer: &UnixStream, lock: &File) -> Result<libc::
             .map_err(|_| custody_error())?;
         Ok(unsafe { File::from_raw_fd(copy) })
     };
-    let sources = [duplicate(peer.as_raw_fd())?, duplicate(lock.as_raw_fd())?];
-    for (source, target) in sources.iter().zip([OWNER_FD, LOCK_FD]) {
+    let mut sources = vec![
+        (duplicate(peer.as_raw_fd())?, OWNER_FD),
+        (duplicate(lock.as_raw_fd())?, LOCK_FD),
+    ];
+    if let Some((input, output)) = stdio {
+        sources.push((duplicate(input.as_raw_fd())?, libc::STDIN_FILENO));
+        sources.push((duplicate(output.as_raw_fd())?, libc::STDOUT_FILENO));
+    }
+    for (source, target) in &sources {
         spawn_ok(unsafe {
-            libc::posix_spawn_file_actions_adddup2(&mut options.actions, source.as_raw_fd(), target)
+            libc::posix_spawn_file_actions_adddup2(
+                &mut options.actions,
+                source.as_raw_fd(),
+                *target,
+            )
         })?;
     }
     let mut args: Vec<_> = argv.iter().map(|arg| arg.as_ptr().cast_mut()).collect();
