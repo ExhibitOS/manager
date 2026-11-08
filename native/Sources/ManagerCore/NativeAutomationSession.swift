@@ -160,8 +160,9 @@ public actor NativeAutomationSession {
             throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
         }
         if stored.draft != draft || stored.etag != etag {
-            guard api.admitsSameOwnerArtworkReplacement, let attempt = try replacementAttempt(),
+            guard let attempt = try replacementAttempt(),
                   let command = try? NativeAutomationReplacementCommand(attempt),
+                  await admitsReplacement(command, api: api),
                   attempt["operation"] == .string("artwork-replace-reviewed"),
                   attempt["workspaceId"] == .string(saved.workspaceId),
                   attempt["tenantId"] == .string(saved.tenantId),
@@ -426,9 +427,16 @@ public actor NativeAutomationSession {
                         "transfer": try value(await bridge.uploadState(context))])
     }
 
-    private func replaceReviewedArtwork(_ request: DocumentValue, id: String, context: Context,
-                                        api: AuthoringAPI, current: NativeDocumentState) async throws -> DocumentValue {
-        let command = try NativeAutomationReplacementCommand(request)
+    private func admitsReplacement(_ command: NativeAutomationReplacementCommand, api: AuthoringAPI) async -> Bool {
+        switch command.target {
+        case .image: api.admitsSameOwnerArtworkReplacement
+        case .approvedModel: await api.admitsApprovedModelCandidateReplacement
+        }
+    }
+
+    private func replaceReviewedArtwork(_ request: DocumentValue, command: NativeAutomationReplacementCommand,
+                                        id: String, context: Context, api: AuthoringAPI,
+                                        current: NativeDocumentState) async throws -> DocumentValue {
         guard !current.dirty, let draft = current.draft, let currentETag = current.etag,
               let oldLocalRevision = request["expectedRevision"].integer,
               (0..<Int64.max).contains(oldLocalRevision), case .object(let fields) = request,
@@ -437,9 +445,17 @@ public actor NativeAutomationSession {
         }
         let state = try await bridge.uploadState(context)
         try NativeAutomationArtworkRules.checkUploadScope(state, document: current)
-        guard let intent = state.intent, intent.artworkId == command.artworkId, state.jobId == command.importJobId,
-              intent.coarsePreparation?.artworkRevision == command.artworkRevision else {
-            throw BridgeFailure("IMPORT_INTENT_CHANGED")
+        switch command.target {
+        case .image:
+            guard let intent = state.intent, intent.artworkId == command.artworkId, state.jobId == command.importJobId,
+                  intent.coarsePreparation?.artworkRevision == command.artworkRevision else {
+                throw BridgeFailure("IMPORT_INTENT_CHANGED")
+            }
+        case .approvedModel:
+            let empty = state.intent == nil && state.jobId == nil
+            let same = state.intent?.artworkId == command.artworkId && state.jobId == command.importJobId
+                && state.intent?.modelPreparation?.artworkRevision == command.artworkRevision
+            guard current.pending == nil, empty || same else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
         }
         var durableFields = fields.filter { $0.key != "capability" }
         durableFields["exhibitionId"] = .string(draft.id)
@@ -459,10 +475,21 @@ public actor NativeAutomationSession {
             try saveReplacementAttempt(attempt)
         }
         try syncReplacementAttempt()
-        let stored = try await api.replaceReviewedArtwork(
-            exhibitionId: draft.id, studioRevision: command.studioRevision, etag: command.etag, requestId: id,
-            importJobId: command.importJobId, intent: intent, expectedCoarseSHA256: command.coarseSHA256
-        )
+        let stored: NativeStudioResponse
+        switch command.target {
+        case .image(let coarseSHA256):
+            guard let intent = state.intent else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
+            stored = try await api.replaceReviewedArtwork(
+                exhibitionId: draft.id, studioRevision: command.studioRevision, etag: command.etag, requestId: id,
+                importJobId: command.importJobId, intent: intent, expectedCoarseSHA256: coarseSHA256
+            )
+        case .approvedModel(let placementID):
+            stored = try await api.replaceApprovedModelCandidate(
+                draft: draft, studioRevision: command.studioRevision, etag: command.etag, requestId: id,
+                artworkId: command.artworkId, artworkRevision: command.artworkRevision,
+                importJobId: command.importJobId, placementId: placementID
+            )
+        }
         try Task.checkCancellation()
         if !onOriginal {
             guard stored.draft == draft, stored.etag == currentETag else {
@@ -683,16 +710,19 @@ public actor NativeAutomationSession {
                 original = snapshot
             }
             result = try value(await api.registeredFrameLineage(history, workspaceId: current.workspaceId, original: original))
-        case "artwork-prepare-reviewed", "artwork-replace-reviewed":
+        case "artwork-prepare-reviewed":
             guard selectedOEXFormat == nil, api.admitsSameOwnerArtworkReplacement,
                   UUID(uuidString: id)?.uuidString.lowercased() == id else {
                 throw BridgeFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
             }
-            if operation == "artwork-prepare-reviewed" {
-                result = try await prepareReviewedArtwork(request, id: id, context: context, api: api, current: current)
-            } else {
-                result = try await replaceReviewedArtwork(request, id: id, context: context, api: api, current: current)
+            result = try await prepareReviewedArtwork(request, id: id, context: context, api: api, current: current)
+        case "artwork-replace-reviewed":
+            guard selectedOEXFormat == nil, UUID(uuidString: id)?.uuidString.lowercased() == id else {
+                throw BridgeFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
             }
+            let command = try NativeAutomationReplacementCommand(request)
+            guard await admitsReplacement(command, api: api) else { throw BridgeFailure("ARTWORK_REPLACEMENT_UNAVAILABLE") }
+            result = try await replaceReviewedArtwork(request, command: command, id: id, context: context, api: api, current: current)
         case "workspace-material-intake-create", "workspace-material-intake-status",
              "workspace-material-intake-upload", "workspace-material-intake-complete",
              "workspace-material-intake-cancel", "workspace-material-intake-retry",

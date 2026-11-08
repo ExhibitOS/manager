@@ -2,25 +2,43 @@
 import Foundation
 
 struct NativeAutomationReplacementCommand {
+    enum Target {
+        case image(coarseSHA256: String)
+        case approvedModel(placementID: String)
+    }
+
+    static let modelProfile = NativeApprovedModelCandidateReplacement.profile
     let artworkId: String
     let artworkRevision: Int
     let importJobId: String
     let studioRevision: Int
     let etag: String
-    let coarseSHA256: String
+    let target: Target
 
     init(_ request: DocumentValue) throws {
-        let command = try NativeAutomationArtworkRules.command(request, keys: [
-            "artworkId", "artworkRevision", "importJobId", "studioRevision", "etag", "coarseSha256"
-        ])
+        let common: Set<String> = ["artworkId", "artworkRevision", "importJobId", "studioRevision", "etag"]
+        let command: DocumentValue
+        if request["command"]["kind"] == .string(Self.modelProfile) {
+            command = try NativeAutomationArtworkRules.command(request, keys: common.union(["kind", "placementId"]))
+            guard let placement = command["placementId"].string,
+                  UUID(uuidString: placement)?.uuidString.lowercased() == placement else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            target = .approvedModel(placementID: placement)
+        } else {
+            command = try NativeAutomationArtworkRules.command(request, keys: common.union(["coarseSha256"]))
+            guard let sha256 = command["coarseSha256"].string, nativeImportDigest(sha256) else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            target = .image(coarseSHA256: sha256)
+        }
         guard let artworkId = command["artworkId"].string, UUID(uuidString: artworkId)?.uuidString.lowercased() == artworkId,
               let job = command["importJobId"].string, UUID(uuidString: job)?.uuidString.lowercased() == job,
               let revision = command["artworkRevision"].integer, (1...2_147_483_647).contains(revision),
               let studio = command["studioRevision"].integer, (1..<2_147_483_647).contains(studio),
               let etag = command["etag"].string,
               etag.hasPrefix("\"studio-r\(studio)-"),
-              etag.range(of: #"^"studio-r[1-9][0-9]*-[a-f0-9]{64}"$"#, options: .regularExpression) != nil,
-              let sha256 = command["coarseSha256"].string, nativeImportDigest(sha256) else {
+              etag.range(of: #"^"studio-r[1-9][0-9]*-[a-f0-9]{64}"$"#, options: .regularExpression) != nil else {
             throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
         }
         self.artworkId = artworkId
@@ -28,7 +46,6 @@ struct NativeAutomationReplacementCommand {
         importJobId = job
         studioRevision = Int(studio)
         self.etag = etag
-        coarseSHA256 = sha256
     }
 }
 
