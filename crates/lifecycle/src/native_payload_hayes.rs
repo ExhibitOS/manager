@@ -90,6 +90,14 @@ impl ReadOnlyHayesGenerate {
     pub(crate) fn environment(&self) -> &std::ffi::CStr {
         &self.environment
     }
+
+    pub(crate) fn validate_command(&self, payload: &Payload) -> Result<HayesCommand> {
+        self.root
+            .check_path(&payload.root)
+            .map_err(|_| unavailable())?;
+        self.check()?;
+        payload.hayes_fixed_command(HayesPhase::Validate)
+    }
 }
 
 fn readonly_device(file: &File) -> Result<u64> {

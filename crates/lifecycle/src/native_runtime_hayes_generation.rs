@@ -78,16 +78,33 @@ pub(super) struct GenerationReadback {
     source: SourceStage,
     stdout: ObservedStage,
     watched: bool,
+    worker_pin: Option<ReadOnlyHayesGenerate>,
 }
 
 pub(super) struct SelectedBody {
-    _readback: GenerationReadback,
+    readback: GenerationReadback,
     pub(super) id: Uuid,
     pub(super) observed: ObservedStage,
     pub(super) telemetry: GenerateTelemetry,
 }
 
 impl GenerationReadback {
+    fn check(&self, attempt: &Attempt) -> Result<()> {
+        if !self.watched
+            || attempt.journal.read::<Prepared>(PREPARED)? != self.prepared
+            || self.prepared.binding != attempt.intent.binding
+            || self.source.binding != self.prepared.binding
+            || self.source.correlation != self.prepared.correlation_id
+            || StageBinding::from(&self.source.observed) != self.prepared.source
+        {
+            return Err(custody_error());
+        }
+        attempt.check()?;
+        attempt.check_stage_file(self.source.binding.attempt, &self.source.observed)?;
+        attempt.check_stage_file(self.prepared.output_stage_id, &self.stdout)?;
+        Ok(())
+    }
+
     pub(super) fn stage_selected_body(
         self,
         attempt: &Attempt,
@@ -101,18 +118,7 @@ impl GenerationReadback {
             check_owner()
         };
         progress()?;
-        if !self.watched
-            || attempt.journal.read::<Prepared>(PREPARED)? != self.prepared
-            || self.prepared.binding != attempt.intent.binding
-            || self.source.binding != self.prepared.binding
-            || self.source.correlation != self.prepared.correlation_id
-            || StageBinding::from(&self.source.observed) != self.prepared.source
-        {
-            return Err(custody_error());
-        }
-        attempt.check()?;
-        attempt.check_stage_file(self.source.binding.attempt, &self.source.observed)?;
-        attempt.check_stage_file(self.prepared.output_stage_id, &self.stdout)?;
+        self.check(attempt)?;
 
         let mut raw = self.stdout.file();
         raw.seek(SeekFrom::Start(0)).map_err(|_| io_error())?;
@@ -137,12 +143,10 @@ impl GenerationReadback {
         buffer.fill(0);
         copied?;
         let observed = observe_stage(stage, BODY_BYTES.into(), BODY_SHA, cancelled, &mut progress)?;
-        attempt.check()?;
-        attempt.check_stage_file(self.prepared.output_stage_id, &self.stdout)?;
-        attempt.check_stage_file(self.source.binding.attempt, &self.source.observed)?;
+        self.check(attempt)?;
         attempt.check_stage_file(id, &observed)?;
         Ok(SelectedBody {
-            _readback: self,
+            readback: self,
             id,
             observed,
             telemetry,
@@ -288,7 +292,8 @@ impl Attempt {
         cancelled: &AtomicBool,
         check_owner: &mut dyn FnMut() -> Result<()>,
     ) -> Result<()> {
-        self.observe_generation(run, deadline, cancelled, check_owner)?;
+        let mut readback = self.observe_generation(run, deadline, cancelled, check_owner)?;
+        run.pinned_generate = readback.worker_pin.take();
         Err(err("HAYES_DRAIN_UNCONFIRMED"))
     }
 
@@ -385,6 +390,7 @@ impl Attempt {
             source: staging.source,
             stdout: observed,
             watched: watch.is_some(),
+            worker_pin: run.pinned_generate.take(),
         })
     }
 }
@@ -499,6 +505,9 @@ fn retry(error: &io::Error) -> bool {
 fn io_error() -> crate::LifecycleError {
     err("HAYES_WORKER_IO_INVALID")
 }
+
+#[path = "native_runtime_hayes_validation.rs"]
+mod validation;
 
 #[cfg(test)]
 #[path = "native_runtime_hayes_selected_probe.rs"]
