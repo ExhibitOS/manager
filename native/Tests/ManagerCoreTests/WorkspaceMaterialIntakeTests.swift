@@ -217,6 +217,32 @@ final class WorkspaceMaterialIntakeTests: XCTestCase {
         XCTAssertFalse(changed.workspaceMaterialMultimapRuntimeQualified)
     }
 
+    func testConnectedRuntimeAdmissionForRequiredOriginal() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let port = environment["EXHIBITOS_TEST_WORKSPACE_CATALOG_PORT"].flatMap(UInt16.init),
+              let manifest = environment["EXHIBITOS_TEST_REQUIRED_ORIGINAL_MANIFEST"] else {
+            throw XCTSkip("Requires the isolated loopback session and sealed runtime manifest")
+        }
+        let tenantId = "10000000-0000-4000-8000-000000000001"
+        let principalId = "10000000-0000-4000-8000-000000000002"
+        let credentials = LocalAuthoringSession(tenantId: tenantId, principalId: principalId,
+            origin: "http://127.0.0.1:\(port)", token: String(repeating: "a", count: 43))
+        let api = try AuthoringAPI(port: port, tenantId: tenantId, nativeRuntimeManifestSHA256: manifest)
+        let anonymousMaterials = await api.admitsWorkspaceMaterials
+        let anonymousInspection = await api.admitsModelOriginalInspection
+        XCTAssertFalse(anonymousMaterials)
+        XCTAssertFalse(anonymousInspection)
+        _ = try await api.connect(credentials)
+        let materials = await api.admitsWorkspaceMaterials
+        let inspection = await api.admitsModelOriginalInspection
+        #if DEBUG
+        XCTAssertTrue(materials)
+        #else
+        XCTAssertFalse(materials)
+        #endif
+        XCTAssertTrue(inspection)
+    }
+
     func testWorkspaceWallBindingChangesOnlyTheSelectedWallAndKeepsFloorAndSound() throws {
         let floor = UUID().uuidString.lowercased()
         let wall = UUID().uuidString.lowercased()

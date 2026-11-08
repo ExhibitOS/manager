@@ -532,9 +532,18 @@ const CATALOG45_COMPACT_AND_CANDIDATE_TARGET: RuntimeTuple = (
     "a7cab3643e4b6554c70ef4c1fda7bfb2ce5234273dead44711be9f72df9ff34c",
 );
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_CURRENT_ORIGINAL_TARGET: RuntimeTuple = (
+    "9297ba5b94a385a108fc4d9f356a7cc4b915a529",
+    "f166f37f9323ea557bfc229feaa7b0f0e7b19472908f21ef3b5862578aedee25",
+    "3ef0cf579846cfd682e63cf1bf89c8735c042b46a711569b4ec6d6c10870c76c",
+);
+
 pub(crate) fn required_model_preparation_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return CATALOG45_BC96_REQUIRED_MODEL_TARGET == tuple || CATALOG45_COMPACT_AND_CANDIDATE_TARGET == tuple;
+    return CATALOG45_BC96_REQUIRED_MODEL_TARGET == tuple
+        || CATALOG45_COMPACT_AND_CANDIDATE_TARGET == tuple
+        || CATALOG45_CURRENT_ORIGINAL_TARGET == tuple;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -577,6 +586,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG44_BC96_FRAME_LINEAGE_TARGET.2 == manifest
         || CATALOG45_BC96_REQUIRED_MODEL_TARGET.2 == manifest
         || CATALOG45_COMPACT_AND_CANDIDATE_TARGET.2 == manifest
+        || CATALOG45_CURRENT_ORIGINAL_TARGET.2 == manifest
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -608,6 +618,13 @@ impl FurnishingTransition {
             return Some(Self::SameCatalog {
                 source: CATALOG45_BC96_REQUIRED_MODEL_TARGET,
                 target: CATALOG45_COMPACT_AND_CANDIDATE_TARGET,
+                catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
+            });
+        }
+        if pair == (CATALOG45_COMPACT_AND_CANDIDATE_TARGET.2, CATALOG45_CURRENT_ORIGINAL_TARGET.2) {
+            return Some(Self::SameCatalog {
+                source: CATALOG45_COMPACT_AND_CANDIDATE_TARGET,
+                target: CATALOG45_CURRENT_ORIGINAL_TARGET,
                 catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             });
         }
@@ -1519,6 +1536,29 @@ mod normal_oex_release_declaration_tests {
             assert!(FurnishingTransition::from_manifests((&manifest, &source_manifest)).is_none());
         }
         assert!(FurnishingTransition::from_manifests((CATALOG44_BC96_FRAME_LINEAGE_TARGET.2, &manifest)).is_none());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact sealed combined and current-original 045 packages"]
+    fn opens_reviewed_current_original_runtime_for_retained_catalog45() {
+        let old_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_COMPACT_CATALOG45_RUNTIME").unwrap());
+        let new_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_CURRENT_ORIGINAL_CATALOG45_RUNTIME").unwrap());
+        let source = Payload::open_saved_workspace_transition(&old_root).unwrap();
+        let target = Payload::open_workspace_v5_validation(&new_root, false).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        assert_eq!(source.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(target.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(source.workspace_furnishing_ledger(catalog).unwrap(), target.workspace_furnishing_ledger(catalog).unwrap());
+        let old = source.context().manifest_sha256;
+        let new = target.context().manifest_sha256;
+        let step = FurnishingTransition::from_manifests((&old, &new)).unwrap();
+        assert!(!step.upgrades_catalog());
+        assert_eq!(step.source_catalog(), catalog);
+        assert_eq!(step.target_catalog(), catalog);
+        assert!(saved_workspace_transition_target(&new));
+        assert!(FurnishingTransition::from_manifests((&new, &old)).is_none());
+        assert!(Payload::open_workspace_v5_validation(&new_root, true).is_err());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
