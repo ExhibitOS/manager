@@ -1223,6 +1223,22 @@ public actor NativeAutomationSession {
             let preview = try proposal.checkedReply(reply, selectedBenchId: proposal.command.benchId)
             var next = current; next.draft = try preview.apply(to: draft, selectedBenchId: proposal.command.benchId, command: proposal.command)
             result = try value(await bridge.saveDocumentState(context, state: next))
+        case "artwork-placement-rotate":
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["placementId", "rotation", "etag"])
+            guard existingWorkspaceV5 != nil, selectedOEXFormat == nil, !current.dirty, current.pending == nil,
+                  fields["inputPath"] == nil, fields["outputPath"] == nil,
+                  let etag = current.etag, command["etag"] == .string(etag), var draft = current.draft,
+                  let placementId = command["placementId"].string, let items = command["rotation"].items,
+                  items.count == 4 else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            try await checkSavedEditPolicy(current, api: api)
+            try draft.rotatePlacement(placementId, rotation: items.compactMap(\.double))
+            try await api.validateNativeViewportEdit(draft, etag: etag)
+            var next = current
+            next.draft = draft
+            result = try value(await bridge.saveDocumentState(context, state: next))
         case "save":
             guard let draft = current.draft else { throw BridgeFailure("EXHIBITION_REQUIRED") }
             var next = current
