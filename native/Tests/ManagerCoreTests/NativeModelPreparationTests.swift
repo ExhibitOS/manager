@@ -53,8 +53,14 @@ final class NativeModelPreparationTests: XCTestCase {
         }
         let revision = status.intent.artworkRevision
         let approved = artwork(approvedRevision: revision, approvedAsset: display.assetId)
+        let scopeId = UUID().uuidString.lowercased()
+        var transfer = NativeUploadState(format: 1, revision: 1, workspaceId: scopeId, tenantId: scopeId,
+                                         principalId: scopeId, intent: request, jobId: job.id, fileName: "fixture.glb")
         XCTAssertTrue(status.permitsReview(of: artwork(), request: request, job: job))
         XCTAssertFalse(status.permitsClearingTransfer(artwork: artwork(), request: request, job: job))
+        XCTAssertTrue(transfer.holdsRequiredModelMetadata(for: request.artworkId.uppercased()))
+        XCTAssertFalse(transfer.holdsRequiredModelMetadata(for: UUID().uuidString))
+        XCTAssertFalse(transfer.holdsRequiredModelMetadata(for: nil))
         XCTAssertFalse(status.permitsClearingTransfer(
             artwork: artwork(approvedRevision: revision + 1, approvedAsset: display.assetId), request: request, job: job))
         XCTAssertFalse(status.permitsClearingTransfer(
@@ -62,6 +68,7 @@ final class NativeModelPreparationTests: XCTestCase {
         XCTAssertFalse(status.permitsClearingTransfer(
             artwork: artwork(approvedRevision: revision, approvedAsset: display.assetId, rightsChanged: true), request: request, job: job))
         XCTAssertTrue(status.permitsClearingTransfer(artwork: approved, request: request, job: job))
+        XCTAssertTrue(transfer.holdsRequiredModelMetadata(for: request.artworkId))
 
         var response = try JSONDecoder().decode(DocumentValue.self, from: bytes)
         response["modelPreparation"]["serverReceipt"]["generation"] = .string("another-generation")
@@ -80,5 +87,7 @@ final class NativeModelPreparationTests: XCTestCase {
             let preparation = try XCTUnwrap(cancelled.modelPreparation)
             XCTAssertEqual(preparation.permitsClearingTransfer(artwork: nil, request: request, job: cancelled), drained)
         }
+        transfer.intent = nil; transfer.jobId = nil; transfer.fileName = nil
+        XCTAssertFalse(transfer.holdsRequiredModelMetadata(for: request.artworkId))
     }
 }

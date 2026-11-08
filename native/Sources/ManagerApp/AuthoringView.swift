@@ -121,6 +121,7 @@ final class AuthoringModel: ObservableObject {
     private var runtimeJobID: String?
     private var available = false
     var metadataDirty: Bool { editing && (draft != original || selected == nil || creationYearText != (original.creationYear.map(String.init) ?? "")) }
+    var requiredModelMetadataHeld: Bool { transfer?.holdsRequiredModelMetadata(for: selected?.id) == true }
 
     var dirty: Bool { metadataDirty || (importFile != nil && transfer?.intent == nil) }
 
@@ -253,6 +254,7 @@ final class AuthoringModel: ObservableObject {
     func save() async {
         await action {
             guard let api else { return }
+            guard !requiredModelMetadataHeld else { throw AuthoringFailure("IMPORT_MODEL_METADATA_HELD") }
             if let selected, let intent = transfer?.intent, intent.derived?.recipe.colourConversion != nil,
                selected.id.lowercased() == intent.artworkId.lowercased() {
                 throw AuthoringFailure(iccImportAdmitted ? "IMPORT_ACTIVE" : "IMPORT_ICC_UNAVAILABLE")
@@ -914,7 +916,13 @@ struct NativeAuthoringView: View {
                     TextField("작가 소개", text: $model.artistBio, axis: .vertical)
                     Button("작가 추가") { Task { await model.createArtist() } }.disabled(model.artistName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.busy || !ready)
                 }
-                if model.editing { NativeImportControls(model: model, ready: ready, mode: mode, openArtwork: { select($0) }); editor }
+                if model.editing {
+                    NativeImportControls(model: model, ready: ready, mode: mode, openArtwork: { select($0) })
+                    if model.requiredModelMetadataHeld {
+                        Text(AuthoringFailure("IMPORT_MODEL_METADATA_HELD").localizedDescription).foregroundStyle(.secondary)
+                    }
+                    editor.disabled(model.requiredModelMetadataHeld)
+                }
             }
             if model.busy { ProgressView("제작 내용을 확인하고 있습니다…") }
             if let failure = model.failure {

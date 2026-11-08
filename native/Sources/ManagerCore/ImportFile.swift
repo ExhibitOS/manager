@@ -12,6 +12,11 @@ public struct NativeUploadState: Codable, Sendable {
     public var intent: NativeImportIntent?
     public var jobId: String?
     public var fileName: String?
+
+    public func holdsRequiredModelMetadata(for artworkId: String?) -> Bool {
+        guard let artworkId, let intent, intent.modelPreparation != nil else { return false }
+        return artworkId.caseInsensitiveCompare(intent.artworkId) == .orderedSame
+    }
 }
 /// A bounded immutable copy. The selected source is opened read-only without
 /// following a final symlink; paths/bookmarks and file bytes never enter IPC.
