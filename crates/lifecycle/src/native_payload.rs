@@ -318,6 +318,7 @@ pub(crate) fn hayes_bootstrap_validation_tuple() -> Option<(&'static str, &'stat
 }
 
 const HAYES_SESSION_PROBE_SCRIPT: &str = "platform/scripts/native-hayes-session-probe.mjs";
+const HAYES_DISPOSITION_PROBE_SCRIPT: &str = "platform/scripts/native-hayes-disposition-probe.mjs";
 
 #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) struct HayesSessionProbePin {
@@ -1810,9 +1811,9 @@ impl Payload {
         if disposition_declared != disposition_pinned {
             return Err(unqualified());
         }
-        let probe_pinned = hayes_session_probe_matches(tuple) || disposition_pinned;
         let probe_declared = self.manifest.files.iter().any(|file| file.path == HAYES_SESSION_PROBE_SCRIPT);
-        if probe_declared != probe_pinned {
+        let disposition_probe_declared = self.manifest.files.iter().any(|file| file.path == HAYES_DISPOSITION_PROBE_SCRIPT);
+        if probe_declared != hayes_session_probe_matches(tuple) || disposition_probe_declared != disposition_pinned {
             return Err(unqualified());
         }
         let hayes_pinned = hayes_validation_host_matches(tuple) || disposition_pinned;
@@ -2376,17 +2377,19 @@ impl Payload {
     #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn hayes_session_probe_script(&self) -> Result<Option<PathBuf>> {
         let tuple = (self.manifest.source_commit.as_str(), self.manifest.producer_sha256.as_str(), self.manifest_sha256.as_str());
-        let Some(pin) = [HAYES_SESSION_PROBE_PIN.as_ref(), HAYES_DISPOSITION_PROBE_PIN.as_ref()]
-            .into_iter().flatten().find(|pin| pin.host == tuple) else {
+        let Some((path, pin)) = [
+            (HAYES_SESSION_PROBE_SCRIPT, HAYES_SESSION_PROBE_PIN.as_ref()),
+            (HAYES_DISPOSITION_PROBE_SCRIPT, HAYES_DISPOSITION_PROBE_PIN.as_ref()),
+        ].into_iter().find_map(|(path, pin)| pin.filter(|pin| pin.host == tuple).map(|pin| (path, pin))) else {
             return Ok(None);
         };
-        if !self.manifest.files.iter().any(|file| file.path == HAYES_SESSION_PROBE_SCRIPT
+        if !self.manifest.files.iter().any(|file| file.path == path
             && file.link.is_none() && file.executable == Some(false) && file.bytes == Some(pin.script_bytes)
             && file.sha256.as_deref() == Some(pin.script_sha256))
         {
             return Err(err("HAYES_OPERATION_UNAVAILABLE"));
         }
-        Ok(Some(contained(&self.root, HAYES_SESSION_PROBE_SCRIPT)?))
+        Ok(Some(contained(&self.root, path)?))
     }
 
     pub(crate) fn authoring_session_script(&self) -> Result<PathBuf> {
