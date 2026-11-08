@@ -30,6 +30,23 @@ Rust helper explicitly. The validation-profile Info key is recognized only in
 debug builds. Use an isolated profile for validation and retain original apps.
 Release delivery/signing is a separate existing distribution pipeline.
 
+For the shared local Manager GUI validation workflow, use
+`scripts/manager-validation-gui.py` under the normal desktop resource lease.
+Supply the intended existing profile and the reviewed `--gui-sha`,
+`--helper-sha`, and `--runtime-manifest-sha` pins to every action. Use
+`prepare` with the original `--gui`, `--helper`, and `--runtime` paths
+when the fixed bundle needs updating. The launcher retains the previous
+bundle and verifies the app and native helper against their approved
+designated requirements before reuse.
+
+Run `launch` once. It verifies the fixed bundle before opening it through
+Launch Services and returns the owned PID. For CUA, run `attach --pid <PID>`
+with the same pins and confirm that the exact bundle is already running in
+the app inventory before selecting it. If the process disappeared, inspect
+the result and use the launcher for any next start. Confirm the same PID
+again after attaching. Stop owned work and quit normally before another
+prepare or launch.
+
 An authenticated existing-workspace automation session can stage one artwork
 rotation with the version 1 `artwork-placement-rotate` operation. Supply the
 current document and edit revisions in the ordinary envelope. The command
