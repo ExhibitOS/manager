@@ -726,6 +726,12 @@ impl FurnishingTransition {
         }
     }
 }
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG40_DRAFT2_OEX_SELECTED: RuntimeTuple = (
+    "9297ba5b94a385a108fc4d9f356a7cc4b915a529",
+    "f166f37f9323ea557bfc229feaa7b0f0e7b19472908f21ef3b5862578aedee25",
+    "d8daa29b32a9fd27d932047e055286f5a78522d8d7b0cec5eb0f7abddfe706c2",
+);
 #[cfg(debug_assertions)]
 const WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE: &[(&str, &str, &str)] =
     &[CATALOG40_FRAME_SOURCE, CATALOG40_FRAME_TARGET, CATALOG40_TANGENT_TARGET];
@@ -1515,6 +1521,24 @@ mod normal_oex_release_declaration_tests {
         assert!(FurnishingTransition::from_manifests((CATALOG44_BC96_FRAME_LINEAGE_TARGET.2, &manifest)).is_none());
     }
 
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact sealed draft.2 OEX selected 040 package"]
+    fn opens_reviewed_draft2_oex_package_for_selection_and_reopen() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_DRAFT2_OEX_SELECTED_RUNTIME").unwrap());
+        let selected = Payload::open_workspace_import_validation(&root, WorkspaceImport::V7, true).unwrap();
+        assert_eq!(selected.workspace_furnishing_catalog().unwrap(), Some(WorkspaceFurnishingCatalog::MaterialMultimap040));
+        assert_eq!(selected.selected_workspace_import_version(), Some(WorkspaceImport::V7));
+        assert!(selected.admits_selected_oex_format("1.0.0-draft.12").unwrap());
+        assert!(!selected.admits_selected_oex_format("1.0.0-draft.10").unwrap());
+
+        let reopened = Payload::open_workspace_import_validation(&root, WorkspaceImport::V7, false).unwrap();
+        assert_eq!(reopened.workspace_furnishing_catalog().unwrap(), Some(WorkspaceFurnishingCatalog::MaterialMultimap040));
+        assert!(!reopened.workspace_import_selected_input());
+        assert_eq!(reopened.context().manifest_sha256, CATALOG40_DRAFT2_OEX_SELECTED.2);
+        assert_eq!(reopened.context().manifest_sha256, selected.context().manifest_sha256);
+    }
+
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     #[test]
     fn workspace_import_validation_distinguishes_v6_v7_and_preserves_reopen() {
@@ -2145,7 +2169,8 @@ impl Payload {
         let multimap = WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE.iter().copied()
             .chain(CATALOG39_UPGRADE_TARGET).chain(CATALOG40_EXB_TARGET)
             .chain(CATALOG40_RESTORE_PROVENANCE_TARGET).chain(CATALOG40_FRAME_RECORD_TARGET)
-            .chain(portal).chain(artwork_replacement).chain(wheat_grant).chain(CATALOG40_WHEAT_DETAIL).collect::<Vec<_>>();
+            .chain(portal).chain(artwork_replacement).chain(wheat_grant).chain(CATALOG40_WHEAT_DETAIL)
+            .chain([CATALOG40_DRAFT2_OEX_SELECTED]).collect::<Vec<_>>();
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         let multimap = multimap.as_slice();
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
