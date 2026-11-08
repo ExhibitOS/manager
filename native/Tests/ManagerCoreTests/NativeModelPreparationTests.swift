@@ -65,6 +65,24 @@ final class NativeModelPreparationTests: XCTestCase {
         XCTAssertFalse(NativeHayesOriginalIntent.matchesSourceArtwork(artwork(String(repeating: "b", count: 64))))
     }
 
+    func testOrdinaryJobActionsDoNotFollowASelectedArtworkAwayFromRetainedHayes() {
+        let scopeId = UUID().uuidString, artwork = UUID().uuidString, other = UUID().uuidString
+        let job = UUID().uuidString, request = UUID().uuidString
+        let hash = NativeHayesOriginalIntent.sourceSHA256, bytes = NativeHayesOriginalIntent.sourceBytes
+        var transfer = NativeUploadState(format: 1, revision: 1, workspaceId: scopeId, tenantId: scopeId,
+                                         principalId: scopeId, intent: nil, jobId: job, fileName: "model.glb")
+        transfer.intent = .init(artworkId: artwork, idempotencyKey: request, mime: "model/gltf-binary",
+            sha256: hash, bytes: bytes, scaleMeters: 1, rights: .init(),
+            hayesOriginal: .init(artworkRevision: 1, displayReferenceSha256: hash))
+        XCTAssertFalse(transfer.permitsOrdinaryJobAction(job, selectedArtworkId: artwork))
+        XCTAssertFalse(transfer.permitsOrdinaryJobAction(job, selectedArtworkId: other))
+        transfer.intent = .init(artworkId: artwork, idempotencyKey: request, mime: "model/gltf-binary",
+            sha256: hash, bytes: bytes, scaleMeters: 1, rights: .init())
+        XCTAssertFalse(transfer.permitsOrdinaryJobAction(job, selectedArtworkId: other))
+        XCTAssertFalse(transfer.permitsOrdinaryJobAction(UUID().uuidString, selectedArtworkId: artwork))
+        XCTAssertTrue(transfer.permitsOrdinaryJobAction(job, selectedArtworkId: artwork))
+    }
+
     func testInspectedOriginalBuildsOnlyAnAuthoredProvisionalReference() throws {
         let hash = String(repeating: "b", count: 64)
         let file = ImportFileSnapshot(name: "synthetic.glb", mime: "model/gltf-binary",

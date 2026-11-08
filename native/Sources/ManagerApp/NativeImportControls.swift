@@ -78,7 +78,7 @@ struct NativeImportControls: View {
                 if (!model.hasUnknownSourceUnits || model.ordinaryUnknownModel) && model.transfer?.intent != nil && model.importJob == nil {
                     Button("이전 검사 요청 찾기") { Task { await model.recoverImport() } }
                 }
-                if let job = model.importJob {
+                if belongs, let job = model.importJob {
                     let visibleState = job.modelPreparation?.status == .processing ? "processing" : job.state
                     Label(stateTitle(visibleState), systemImage: visibleState == "approved" ? "checkmark.circle" : "doc.text.magnifyingglass")
                     if model.jpegOriginalStored { Text("JPEG 원본과 감상용 PNG를 이 Mac에 보관했습니다.").foregroundStyle(.secondary) }
@@ -110,7 +110,9 @@ struct NativeImportControls: View {
                             Button("감상용 파일 재시도") { Task { await model.changeImport(.retry) } }
                                 .disabled(!job.canRetry || !model.modelDerivationEnabled || model.modelWorkerPending)
                         }
-                        if !job.terminal, !model.hasHayesIntent { Button("검사 중단") { Task { await model.changeImport(.cancel) } } }
+                        if !job.terminal, model.transfer?.permitsOrdinaryJobAction(job.id, selectedArtworkId: model.selected?.id) == true {
+                            Button("검사 중단") { Task { await model.changeImport(.cancel) } }
+                        }
                         if job.terminal { Button("다른 파일 검사 준비") { Task { await model.clearImport() } }.disabled(model.intakeDrainPending || model.modelWorkerPending || job.modelDerivation?.workerDrained == false) }
                     }
                     if model.intakeDrainPending { Text("현재 파일 검사 작업이 실제로 끝날 때까지 다음 파일은 대기합니다.").foregroundStyle(.secondary) }

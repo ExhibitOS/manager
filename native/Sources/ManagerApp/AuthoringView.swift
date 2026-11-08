@@ -735,7 +735,10 @@ extension AuthoringModel {
     }
     func changeImport(_ change: NativeImportAction) async {
         await action {
-            guard let api, let job = importJob else { return }
+            guard let api, let job = importJob,
+                  transfer?.permitsOrdinaryJobAction(job.id, selectedArtworkId: selected?.id) == true else {
+                throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
+            }
             if change == .retry {
                 guard let intent = transfer?.intent, transfer?.jobId == job.id else {
                     throw AuthoringFailure("IMPORT_RECEIPT_INVALID")
