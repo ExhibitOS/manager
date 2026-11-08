@@ -45,7 +45,9 @@ final class AuthoringModel: ObservableObject {
     private var intakeTarget: (artworkID: String, revision: Int)?
     private var intakeWorkspaceCheck: (() async throws -> Bool)?
     var hasWaitingIntake: Bool { intakeRows.contains { $0.result == nil && $0.id != activeIntakeID } }
-    private var requiredModelPreparationEnabled: Bool { api?.admitsRequiredModelPreparation == true }
+    private var requiredModelPreparationEnabled: Bool {
+        session?.modelPreparationProfile == NativeModelPreparationIntent.profile
+    }
     private var modelIntakeEnabled: Bool { modelDerivationEnabled || requiredModelPreparationEnabled }
     var canSelectIntake: Bool {
         intakeWritesAvailable && (modelIntakeEnabled || iccImportAdmitted) && available && session != nil && !busy
@@ -529,7 +531,7 @@ extension AuthoringModel {
             throw AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID")
         }
         if let preparation = intent.modelPreparation {
-            guard api.admitsRequiredModelPreparation, artwork.revision == preparation.artworkRevision,
+            guard requiredModelPreparationEnabled, artwork.revision == preparation.artworkRevision,
                   !artwork.archived, metadata.rights == intent.rights else {
                 throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
             }

@@ -5,16 +5,12 @@ import Foundation
 /// rechecks the durable original's length/hash before the server queues work.
 public protocol NativeImportTransport: Sendable {
     var admitsICCJPEG: Bool { get }
-    @MainActor var admitsRequiredModelPreparation: Bool { get }
     func createImport(_ input: NativeImportIntent) async throws -> NativeImportJob
     func uploadImport(_ id: String, bytes: Data) async throws
     func uploadDerivedImport(_ id: String, bytes: Data) async throws
     func importAction(_ id: String, action: NativeImportAction) async throws -> NativeImportJob
 }
-extension NativeImportTransport {
-    public var admitsICCJPEG: Bool { false }
-    public var admitsRequiredModelPreparation: Bool { false }
-}
+extension NativeImportTransport { public var admitsICCJPEG: Bool { false } }
 extension AuthoringAPI: NativeImportTransport {}
 
 /// The same import API, with observation of the server-owned worker. A cancel
@@ -62,7 +58,6 @@ public final class NativeImportTransfer {
         // cannot preserve the colour provenance on the exact same job.
         guard intent.derived?.recipe.colourConversion == nil || transport.admitsICCJPEG else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
         if let preparation = intent.modelPreparation {
-            guard transport.admitsRequiredModelPreparation else { throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE") }
             guard preparation.matches(intent) else { throw AuthoringFailure("IMPORT_MODEL_BINDING_INVALID") }
         }
         guard task == nil, modelDrainTask == nil,
