@@ -603,4 +603,4 @@ impl Attempt {
 
 #[cfg(test)]
 #[path = "native_runtime_hayes_tests.rs"]
-mod tests;
+pub(super) mod tests;

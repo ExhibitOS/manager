@@ -43,6 +43,8 @@ pub(super) struct Setup {
     furnishing_writer: Option<super::furnishing_lifetime::ProbedWriter>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     hayes: Option<HayesSetup>,
+    #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    probe_source: Option<super::hayes_probe_source::ProbeSourceFd>,
 }
 /// Intended to stay inside the owning Session; this type does not enforce
 /// that lifetime. It is not a claim, readiness, fence or authorization; loss
@@ -92,6 +94,8 @@ impl Setup {
         Ok(Self {parent,child:Some(child),secret,furnishing_writer:None,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             hayes: None,
+            #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            probe_source: None,
         })
     }
     pub(super) fn with_furnishing_writer(mut self, file: super::furnishing_lifetime::ProbedWriter) -> Self {
@@ -161,6 +165,15 @@ impl Setup {
         self.hayes.take()
     }
 
+    #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(super) fn with_hayes_probe_source(mut self, source: super::hayes_probe_source::ProbeSourceFd) -> Result<Self> {
+        if self.hayes.is_none() || self.furnishing_writer.is_none() || self.probe_source.is_some() {
+            return Err(err("HAYES_PROBE_SOURCE_INVALID"));
+        }
+        self.probe_source = Some(source);
+        Ok(self)
+    }
+
     pub(super) fn configure(&self, command:&mut Command) -> Result<()> {
         let fd=self.child.as_ref().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?.as_raw_fd();
         command.env("EXHIBITOS_NATIVE_OWNER_FD",fd.to_string());
@@ -182,8 +195,18 @@ impl Setup {
             }
             command.env("EXHIBITOS_NATIVE_HAYES_OWNER_FD", hayes_fd.to_string());
         }
+        #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        let probe_source = self.probe_source.as_ref().map(super::hayes_probe_source::ProbeSourceFd::child_fd).transpose()?;
+        #[cfg(not(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        let probe_source: Option<i32> = None;
+        if let Some(source) = probe_source {
+            if hayes_fd.is_none() || source == fd || writer == Some(source) || hayes_fd == Some(source) {
+                return Err(err("HAYES_PROBE_SOURCE_INVALID"));
+            }
+            command.env("EXHIBITOS_TEST_HAYES_SOURCE_FD", source.to_string());
+        }
         unsafe { command.pre_exec(move || {
-            for descriptor in std::iter::once(fd).chain(writer).chain(hayes_fd) {
+            for descriptor in std::iter::once(fd).chain(writer).chain(hayes_fd).chain(probe_source) {
                 let flags = libc::fcntl(descriptor, libc::F_GETFD);
                 if flags < 0 || libc::fcntl(descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
                     return Err(std::io::Error::last_os_error());
@@ -196,6 +219,8 @@ impl Setup {
     pub(super) fn close_child(&mut self) {
         self.child.take();
         self.furnishing_writer.take();
+        #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        self.probe_source.take();
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
         if let Some(hayes) = self.hayes.as_mut() {
             hayes.close_child();

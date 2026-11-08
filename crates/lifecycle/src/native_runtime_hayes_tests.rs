@@ -11,10 +11,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(super) struct Fixture(PathBuf);
+pub(in super::super) struct Fixture(PathBuf);
 
 impl Fixture {
-    pub(super) fn new() -> Self {
+    pub(in super::super) fn new() -> Self {
         let path = env::temp_dir()
             .canonicalize()
             .unwrap()
@@ -22,7 +22,7 @@ impl Fixture {
         Self::provision(path)
     }
 
-    pub(super) fn provision(path: PathBuf) -> Self {
+    pub(in super::super) fn provision(path: PathBuf) -> Self {
         fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
         fs::OpenOptions::new()
             .create_new(true)
@@ -33,7 +33,7 @@ impl Fixture {
         Self(path)
     }
 
-    pub(super) fn authority(&self) -> Authority {
+    pub(in super::super) fn authority(&self) -> Authority {
         Authority {
             uid: effective_uid(),
             root: Physical::from(&fs::metadata(&self.0).unwrap()),
@@ -41,11 +41,11 @@ impl Fixture {
         }
     }
 
-    pub(super) fn path(&self) -> &Path {
+    pub(in super::super) fn path(&self) -> &Path {
         &self.0
     }
 
-    pub(super) fn acquire(&self) -> Lease {
+    pub(in super::super) fn acquire(&self) -> Lease {
         Lease::acquire(&self.0, self.authority()).unwrap()
     }
 }

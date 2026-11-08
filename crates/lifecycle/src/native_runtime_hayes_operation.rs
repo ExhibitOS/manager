@@ -173,6 +173,38 @@ impl HayesSessionPin {
     }
 }
 
+#[cfg(all(
+    test,
+    feature = "workspace-v5-owner-validation",
+    debug_assertions,
+    target_os = "macos"
+))]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionProbeArm<'a> {
+    version: u8,
+    kind: &'static str,
+    runtime_generation: Uuid,
+    native_owner_id: Uuid,
+    runtime_manifest_sha256: &'a str,
+}
+
+#[cfg(all(
+    test,
+    feature = "workspace-v5-owner-validation",
+    debug_assertions,
+    target_os = "macos"
+))]
+pub(in super::super) fn session_probe_arm(pin: &HayesSessionPin) -> Result<Vec<u8>> {
+    encode(&SessionProbeArm {
+        version: 1,
+        kind: "hayes-session-probe-start",
+        runtime_generation: pin.runtime_generation(),
+        native_owner_id: pin.native_owner_id(),
+        runtime_manifest_sha256: pin.host_manifest_sha256(),
+    })
+}
+
 pub(in super::super) struct AuthenticatedHayes {
     pub(in super::super) pin: HayesSessionPin,
     pub(in super::super) channel: Connection,
@@ -261,33 +293,101 @@ impl Session {
         &'a mut self,
         lease: Lease,
     ) -> Result<OwnedHayesOpen<'a>> {
-        if self.retained_hayes.is_some() {
+        self.begin_owned_hayes_open_until(lease, Instant::now() + Duration::from_secs(30))
+    }
+
+    pub(in super::super) fn begin_owned_hayes_open_until<'a>(
+        &'a mut self,
+        lease: Lease,
+        deadline: Instant,
+    ) -> Result<OwnedHayesOpen<'a>> {
+        self.begin_owned_hayes_open_inner(lease, deadline, &mut |_| {}, None)
+    }
+
+    #[cfg(all(
+        test,
+        feature = "workspace-v5-owner-validation",
+        debug_assertions,
+        target_os = "macos"
+    ))]
+    pub(in super::super) fn begin_owned_hayes_probe_open<'a>(
+        &'a mut self,
+        lease: Lease,
+        deadline: Instant,
+        observe: &mut dyn FnMut(&'static str),
+    ) -> Result<OwnedHayesOpen<'a>> {
+        if self.payload.hayes_session_probe_script()?.is_none() {
             return Err(unavailable());
         }
-        let AuthenticatedHayes { pin, mut channel } = self.hayes_bootstrap.consume()?;
+        self.begin_owned_hayes_open_inner(lease, deadline, observe, Some(session_probe_arm))
+    }
+
+    fn begin_owned_hayes_open_inner<'a>(
+        &'a mut self,
+        lease: Lease,
+        deadline: Instant,
+        observe: &mut dyn FnMut(&'static str),
+        probe_arm: Option<fn(&HayesSessionPin) -> Result<Vec<u8>>>,
+    ) -> Result<OwnedHayesOpen<'a>> {
+        if self.retained_hayes.is_some() || Instant::now() >= deadline {
+            observe("open-unavailable");
+            return Err(unavailable());
+        }
+        let AuthenticatedHayes { pin, mut channel } = self
+            .hayes_bootstrap
+            .consume()
+            .inspect_err(|_| observe("open-session-pin-unavailable"))?;
         let result = (|| {
-            channel.claim_hayes()?;
+            channel
+                .claim_hayes()
+                .inspect_err(|_| observe("open-channel-claim-failed"))?;
             let host = self.payload.context();
             if host.manifest_sha256 != pin.host_manifest_sha256
                 || self.job_id.as_deref() != Some(pin.runtime_generation.to_string().as_str())
             {
+                observe("open-session-pin-mismatch");
                 return Err(unavailable());
             }
-            self.payload.recheck()?;
-            let owner = Owner::capture(self)?;
+            observe("open-payload-recheck-start");
+            self.payload
+                .recheck()
+                .inspect_err(|_| observe("open-payload-recheck-failed"))?;
+            observe("open-payload-recheck-done");
+            observe("open-owner-capture-start");
+            let owner = Owner::capture_observed(self, observe)?;
+            observe("open-owner-capture-done");
             let cancellation = self.cancellation.clone();
-            let deadline = Instant::now() + Duration::from_secs(30);
-            let raw = channel.read_frame(deadline, &cancellation, &mut || owner.check(self))?;
-            let open = parse_open(&raw)?;
+            if let Some(probe_arm) = probe_arm {
+                let arm = probe_arm(&pin)?;
+                observe("probe-arm-send-start");
+                channel
+                    .send_frame(&arm, deadline, &cancellation, &mut || {
+                        owner.check_observed(self, observe)
+                    })
+                    .inspect_err(|_| observe("probe-arm-send-failed"))?;
+                observe("probe-arm-send-done");
+            }
+            observe("open-frame-read-start");
+            let raw = channel
+                .read_frame(deadline, &cancellation, &mut || {
+                    owner.check_observed(self, observe)
+                })
+                .inspect_err(|_| observe("open-frame-read-failed"))?;
+            observe("open-frame-read-done");
+            let open = parse_open(&raw).inspect_err(|_| observe("open-frame-binding-invalid"))?;
             let auth = self.local_authority.as_ref().ok_or_else(unavailable)?;
             open.check_session(
                 &auth.workspace_id,
                 &auth.tenant_id,
                 &auth.principal_id,
                 self.job_id.as_deref().ok_or_else(unavailable)?,
-            )?;
-            owner.recheck_database_identity(self)?;
+            )
+            .inspect_err(|_| observe("open-frame-session-mismatch"))?;
+            owner
+                .recheck_database_identity(self)
+                .inspect_err(|_| observe("open-frame-database-identity-failed"))?;
             if open.lease_id == pin.native_owner_id {
+                observe("open-frame-lease-alias");
                 return Err(unavailable());
             }
             let record = Record {
@@ -300,11 +400,17 @@ impl Session {
                 database_system_id: owner.system_id.clone(),
                 database_oid: owner.database_oid.clone(),
             };
-            let attempt = record.persist(lease)?;
+            let attempt = record
+                .persist(lease)
+                .inspect_err(|_| observe("open-intent-persist-failed"))?;
             let accepted = record.accepted()?;
-            channel.send_frame(&accepted, deadline, &cancellation, &mut || {
-                owner.check(self)
-            })?;
+            observe("open-accept-send-start");
+            channel
+                .send_frame(&accepted, deadline, &cancellation, &mut || {
+                    owner.check_observed(self, observe)
+                })
+                .inspect_err(|_| observe("open-accept-send-failed"))?;
+            observe("open-accept-send-done");
             Ok((attempt, owner, record))
         })();
         match result {
