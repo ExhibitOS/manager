@@ -1528,7 +1528,7 @@ mod normal_oex_release_declaration_tests {
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_DRAFT2_OEX_SELECTED_RUNTIME").unwrap());
         let selected = Payload::open_workspace_import_validation(&root, WorkspaceImport::V7, true).unwrap();
         assert_eq!(selected.workspace_furnishing_catalog().unwrap(), Some(WorkspaceFurnishingCatalog::MaterialMultimap040));
-        assert_eq!(selected.selected_workspace_import_version(), Some(WorkspaceImport::V7));
+        assert!(matches!(selected.selected_workspace_import_version(), Some(WorkspaceImport::V7)));
         assert!(selected.admits_selected_oex_format("1.0.0-draft.12").unwrap());
         assert!(!selected.admits_selected_oex_format("1.0.0-draft.10").unwrap());
 
