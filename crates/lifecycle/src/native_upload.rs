@@ -205,6 +205,31 @@ impl Derived {
             && recipe.tool_version.bytes().all(|b| (32..=126).contains(&b))
     }
 }
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompactVariantTransfer {
+    artwork_id: String,
+    request: CompactVariantRequest,
+}
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompactVariantRequest {
+    revision: u32,
+    asset_id: String,
+    sha256: String,
+    bytes: u64,
+    idempotency_key: String,
+    generation: String,
+}
+impl CompactVariantTransfer {
+    fn valid(&self) -> bool {
+        let request = &self.request;
+        uuid(&self.artwork_id) && uuid(&request.asset_id) && uuid(&request.idempotency_key)
+            && uuid(&request.generation) && hash_valid(&request.sha256)
+            && (1..i32::MAX as u32).contains(&request.revision)
+            && (28..=32 * 1024 * 1024).contains(&request.bytes)
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Transfer {
@@ -216,6 +241,8 @@ pub struct Transfer {
     pub intent: Option<Intent>,
     pub job_id: Option<String>,
     pub file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_variant: Option<CompactVariantTransfer>,
 }
 pub(crate) fn validate(s: &Transfer) -> Result<()> {
     if s.format != 1
@@ -230,7 +257,9 @@ pub(crate) fn validate(s: &Transfer) -> Result<()> {
                 || name.contains('/')
                 || name.contains('\\')
         })
-        || (s.intent.is_none() && (s.job_id.is_some() || s.file_name.is_some()))
+        || (s.intent.is_none() && s.compact_variant.is_none() && (s.job_id.is_some() || s.file_name.is_some()))
+        || s.compact_variant.as_ref().is_some_and(|compact|
+            s.intent.is_some() || s.file_name.is_some() || !compact.valid())
     {
         return Err(err("NATIVE_UPLOAD_STATE_INVALID"));
     }
@@ -280,6 +309,7 @@ impl InstallationController {
             intent: None,
             job_id: None,
             file_name: None,
+            compact_variant: None,
         };
         let saved = match fs::symlink_metadata(profile.root.join(&file)) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => default.clone(),
@@ -329,6 +359,16 @@ impl InstallationController {
             if state.revision != current.revision {
                 return Err(err("NATIVE_UPLOAD_STATE_CHANGED"));
             }
+            let compact_matches = match (&current.compact_variant, &state.compact_variant) {
+                (Some(prior), Some(next)) => prior == next
+                    && (current.job_id.is_none() || current.job_id == state.job_id),
+                (None, Some(_)) => current.intent.is_none() && state.job_id.is_none(),
+                (Some(_), None) => state.intent.is_none() && state.job_id.is_none(),
+                (None, None) => true,
+            };
+            if !compact_matches {
+                return Err(err("NATIVE_UPLOAD_STATE_CHANGED"));
+            }
             if let Some(next) = &state.intent
                 && (next.coarse_preparation.is_some() || next.hayes_original.is_some()
                     || current.intent.as_ref().is_some_and(|prior|
@@ -369,6 +409,32 @@ impl InstallationController {
 #[cfg(test)]
 mod model_derivation_tests {
     use super::*;
+
+    #[test]
+    fn compact_variant_round_trips_without_an_upload_intent() {
+        let mut value = serde_json::json!({
+            "format":1,"revision":1,"workspaceId":Uuid::new_v4().to_string(),
+            "tenantId":Uuid::new_v4().to_string(),"principalId":Uuid::new_v4().to_string(),
+            "intent":null,"jobId":Uuid::new_v4().to_string(),"fileName":null,
+            "compactVariant":{"artworkId":Uuid::new_v4().to_string(),"request":{
+                "revision":1,"assetId":Uuid::new_v4().to_string(),"sha256":"a".repeat(64),
+                "bytes":4096,"idempotencyKey":Uuid::new_v4().to_string(),"generation":Uuid::new_v4().to_string()}}
+        });
+        let state: Transfer = serde_json::from_value(value.clone()).unwrap();
+        validate(&state).unwrap();
+        assert_eq!(serde_json::to_value(state).unwrap(), value);
+
+        let mut mixed = value.clone();
+        mixed["fileName"] = serde_json::json!("file.glb");
+        assert!(validate(&serde_json::from_value(mixed).unwrap()).is_err());
+
+        let mut corrupt = value.clone();
+        corrupt["compactVariant"]["request"]["sha256"] = serde_json::json!("invalid");
+        assert!(validate(&serde_json::from_value(corrupt).unwrap()).is_err());
+
+        value.as_object_mut().unwrap().remove("compactVariant");
+        assert!(validate(&serde_json::from_value(value).unwrap()).is_err());
+    }
 
     #[test]
     fn durable_required_model_intent_is_separate_and_restart_safe() {

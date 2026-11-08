@@ -2451,6 +2451,38 @@ final class ExhibitionModel: ObservableObject {
             notice = "현재 전시 입력을 이 Mac에 보관했습니다. 아직 전시 저장본에 반영하지 않았습니다."
         }
     }
+    var canRefreshApprovedCompactArtwork: Bool {
+        guard session?.compactModelVariantProfile == NativeCompactModelVariantRequest.profile,
+              !busy, !dirty, !immutable, !pending, !placingArtwork, !entrancePreviewActive,
+              let draft, state?.etag != nil,
+              let placement = draft.placements.first(where: { $0["id"].string == placementId }),
+              let placed = draft.artworks.first(where: { $0["revisionId"] == placement["artworkRevisionId"] })
+        else { return false }
+        return placed["artworkType"] == .string("sculpture") && placed["extensions"]["org.exhibitos.viewer/lod"] == .null
+    }
+
+    func refreshApprovedCompactArtwork() async {
+        guard canRefreshApprovedCompactArtwork else { return }
+        await work {
+            guard let api, var local = state, var draft = local.draft, let etag = local.etag,
+                  await api.admitsCompactModelVariant else { throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE") }
+            let target = placementId, access = viewportAccessID
+            guard let row = draft.placements.first(where: { $0["id"].string == target }),
+                  let artworkId = draft.artworks.first(where: { $0["revisionId"] == row["artworkRevisionId"] })?["id"].string
+            else { throw AuthoringFailure("PLACEMENT_INVALID") }
+            let saved = try await api.exhibition(draft.id)
+            guard saved.draft == draft, saved.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+            let approved = try await api.studioArtwork(artworkId)
+            guard self.api === api, viewportAccessID == access, placementId == target,
+                  state?.revision == local.revision, !dirty else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+            try draft.refreshApprovedCompactArtwork(approved.artwork, placementId: target)
+            local.draft = draft
+            try await persist(local)
+            syncFields()
+            notice = "승인한 축소본을 기존 배치에 반영했습니다. 전시를 저장해 확정하세요."
+        }
+    }
+
     var hasPendingModelCandidateReplacement: Bool { state?.pending?.modelCandidate != nil }
 
     var canReplaceWithSelectedModelCandidate: Bool {

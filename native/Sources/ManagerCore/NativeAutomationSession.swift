@@ -9,7 +9,8 @@ public actor NativeAutomationSession {
     private static let freshResponseOperations: Set<String> = [
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
         "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status",
-        "workspace-frame-lineage-prepare", "export-static-native-original"
+        "workspace-frame-lineage-prepare", "export-static-native-original",
+        "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement"
     ]
 
     static func replayResponse(for operation: String, prior: (Data, DocumentValue)?, matching request: Data) throws -> DocumentValue? {
@@ -160,7 +161,7 @@ public actor NativeAutomationSession {
             throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
         }
         if stored.draft != draft || stored.etag != etag {
-            guard let attempt = try replacementAttempt(),
+            guard let attempt = try artworkAttempt(at: replacementAttemptPath),
                   let command = try? NativeAutomationReplacementCommand(attempt),
                   await admitsReplacement(command, api: api),
                   attempt["operation"] == .string("artwork-replace-reviewed"),
@@ -339,11 +340,11 @@ public actor NativeAutomationSession {
         root.appendingPathComponent(".automation-artwork-replacement.json").path
     }
 
-    private func replacementAttempt() throws -> DocumentValue? {
-        let fd = Darwin.open(replacementAttemptPath, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+    private func artworkAttempt(at path: String, errorCode: String = "ARTWORK_REPLACEMENT_UNCERTAIN") throws -> DocumentValue? {
+        let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else {
             if errno == ENOENT { return nil }
-            throw BridgeFailure("ARTWORK_REPLACEMENT_UNCERTAIN")
+            throw BridgeFailure(errorCode)
         }
         let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         defer { try? file.close() }
@@ -351,7 +352,7 @@ public actor NativeAutomationSession {
         guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1,
               info.st_uid == getuid(), info.st_mode & 0o077 == 0, (1...8192).contains(info.st_size),
               let bytes = try file.read(upToCount: 8193), bytes.count == info.st_size else {
-            throw BridgeFailure("ARTWORK_REPLACEMENT_UNCERTAIN")
+            throw BridgeFailure(errorCode)
         }
         return try JSONDecoder().decode(DocumentValue.self, from: bytes)
     }
@@ -363,13 +364,87 @@ public actor NativeAutomationSession {
         _ = try write(attempt, to: replacementAttemptPath)
     }
 
-    private func syncReplacementAttempt() throws {
-        for path in [replacementAttemptPath, root.path] {
+    private func syncArtworkAttempt(at attemptPath: String, errorCode: String = "ARTWORK_REPLACEMENT_UNCERTAIN") throws {
+        for path in [attemptPath, root.path] {
             let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-            guard fd >= 0 else { throw BridgeFailure("ARTWORK_REPLACEMENT_UNCERTAIN") }
+            guard fd >= 0 else { throw BridgeFailure(errorCode) }
             let synced = Darwin.fsync(fd)
             _ = Darwin.close(fd)
-            guard synced == 0 else { throw BridgeFailure("ARTWORK_REPLACEMENT_UNCERTAIN") }
+            guard synced == 0 else { throw BridgeFailure(errorCode) }
+        }
+    }
+
+    private func executeCompactModel(_ operation: String, request: DocumentValue, id: String,
+                                     context: Context, current: NativeDocumentState, api: AuthoringAPI) async throws -> DocumentValue {
+        guard selectedOEXFormat == nil, !current.dirty, current.pending == nil,
+              request["inputPath"] == .null, request["outputPath"] == .null,
+              await api.admitsCompactModelVariant else { throw BridgeFailure("IMPORT_MODEL_UNAVAILABLE") }
+        try checkedRevision(request, current)
+        let creates = operation == "compact-model-prepare"
+        var keys: Set<String> = creates ? ["artworkId", "input"] : ["artworkId", "input", "jobId"]
+        if operation == "compact-model-refresh-placement" { keys.insert("placementId") }
+        let command = try NativeAutomationArtworkRules.command(request, keys: keys)
+        guard let artworkId = command["artworkId"].string, NativeCompactModelVariantRequest.validID(artworkId) else {
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        }
+        let input = try JSONDecoder().decode(NativeCompactModelVariantRequest.self,
+            from: JSONEncoder().encode(command["input"]))
+        guard input.valid, NativeCompactModelVariantRequest.validID(input.idempotencyKey),
+              try value(input) == command["input"], !creates || id == input.idempotencyKey else {
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        }
+        let path = root.appendingPathComponent(".automation-compact-" + input.idempotencyKey + ".json").path
+        let jobPath = root.appendingPathComponent(".automation-compact-" + input.idempotencyKey + ".job.json").path
+        let errorCode = "COMPACT_VARIANT_CONTEXT_CHANGED"
+        let attempt: DocumentValue = .object(["workspaceId": .string(current.workspaceId),
+            "tenantId": .string(current.tenantId), "principalId": .string(current.principalId),
+            "artworkId": .string(artworkId), "input": command["input"]])
+        if let retained = try artworkAttempt(at: path, errorCode: errorCode) {
+            guard retained == attempt else { throw BridgeFailure(errorCode) }
+        } else {
+            guard creates else { throw BridgeFailure(errorCode) }
+            _ = try write(attempt, to: path)
+        }
+        try syncArtworkAttempt(at: path, errorCode: errorCode)
+        if creates {
+            let job = try await api.createCompactModelVariant(artworkId: artworkId, input: input)
+            let binding: DocumentValue = .object(["jobId": .string(job.id)])
+            if let retainedJob = try artworkAttempt(at: jobPath, errorCode: errorCode) {
+                guard retainedJob == binding else { throw BridgeFailure(errorCode) }
+            } else {
+                _ = try write(binding, to: jobPath)
+            }
+            try syncArtworkAttempt(at: jobPath, errorCode: errorCode)
+            return job.automationValue
+        }
+        guard let jobId = command["jobId"].string, NativeCompactModelVariantRequest.validID(jobId),
+              try artworkAttempt(at: jobPath, errorCode: errorCode)?["jobId"] == .string(jobId) else {
+            throw BridgeFailure(errorCode)
+        }
+        switch operation {
+        case "compact-model-status":
+            return try await api.compactModelVariantJob(jobId, artworkId: artworkId, input: input).automationValue
+        case "compact-model-retry", "compact-model-cancel":
+            let action: NativeImportAction = operation == "compact-model-retry" ? .retry : .cancel
+            return try await api.changeCompactModelVariant(action, jobId: jobId, artworkId: artworkId,
+                                                           input: input).automationValue
+        case "compact-model-refresh-placement":
+            guard var draft = current.draft, let etag = current.etag, let placement = command["placementId"].string,
+                  NativeCompactModelVariantRequest.validID(placement) else { throw BridgeFailure("PLACEMENT_INVALID") }
+            let saved = try await api.exhibition(draft.id)
+            guard saved.draft == draft, saved.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            _ = try await api.verifyApprovedCompactModelVariant(artworkId: artworkId, jobId: jobId, input: input)
+            let snapshot = try await api.studioArtwork(artworkId)
+            try NativeAutomationArtworkRules.checkRegistration(snapshot.artwork, artworkId: artworkId,
+                revision: Int64(input.revision + 1), tenantId: current.tenantId)
+            try draft.refreshApprovedCompactArtwork(snapshot.artwork, placementId: placement)
+            var next = current
+            next.draft = draft
+            return try value(await bridge.saveDocumentState(context, state: next))
+        case "compact-model-approve":
+            return try value(await api.approveCompactModelVariant(artworkId: artworkId, jobId: jobId, input: input))
+        default:
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
         }
     }
 
@@ -452,7 +527,7 @@ public actor NativeAutomationSession {
                 throw BridgeFailure("IMPORT_INTENT_CHANGED")
             }
         case .approvedModel:
-            let empty = state.intent == nil && state.jobId == nil
+            let empty = state.intent == nil && state.jobId == nil && state.compactVariant == nil
             let same = state.intent?.artworkId == command.artworkId && state.jobId == command.importJobId
                 && state.intent?.modelPreparation?.artworkRevision == command.artworkRevision
             guard current.pending == nil, empty || same else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
@@ -462,7 +537,7 @@ public actor NativeAutomationSession {
         let attempt = DocumentValue.object(durableFields)
         let onOriginal = currentETag == command.etag
         if onOriginal { try checkedRevision(request, current) }
-        if let pending = try replacementAttempt() {
+        if let pending = try artworkAttempt(at: replacementAttemptPath) {
             guard pending == attempt, onOriginal || current.revision == UInt64(oldLocalRevision + 1) else {
                 throw BridgeFailure("AUTOMATION_REQUEST_CHANGED")
             }
@@ -474,7 +549,7 @@ public actor NativeAutomationSession {
             }
             try saveReplacementAttempt(attempt)
         }
-        try syncReplacementAttempt()
+        try syncArtworkAttempt(at: replacementAttemptPath)
         let stored: NativeStudioResponse
         switch command.target {
         case .image(let coarseSHA256):
@@ -1110,6 +1185,8 @@ public actor NativeAutomationSession {
             } else {
                 result = try value(finished.receipt)
             }
+        case "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement":
+            result = try await executeCompactModel(operation, request: request, id: id, context: context, current: current, api: api)
         case "import-glb":
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "artworkRevision", "scaleMeters"])
@@ -1125,6 +1202,7 @@ public actor NativeAutomationSession {
             try NativeAutomationArtworkRules.checkDisplayAsset(metadata, sha256: file.sha256, scaleMeters: scale)
             let state = try await bridge.uploadState(context)
             try NativeAutomationArtworkRules.checkUploadScope(state, document: current)
+            guard state.compactVariant == nil else { throw BridgeFailure("IMPORT_ACTIVE") }
             let preparation: NativeModelPreparationIntent?
             if let retained = state.intent {
                 preparation = retained.modelPreparation

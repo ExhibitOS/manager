@@ -197,6 +197,57 @@ public struct NativeExhibitionDraft: Codable, Equatable, Sendable {
         try change(c)
     }
 
+    /// Adopt the next approved snapshot of the same full model. Keep the
+    /// existing placement and primary asset, adding only the approved LOD pair.
+    public mutating func refreshApprovedCompactArtwork(_ artwork: DocumentValue, placementId: String) throws {
+        let invalid = AuthoringFailure("ARTWORK_REVISION_CHANGED")
+        var inventory = artworks, rows = placements
+        guard let i = inventory.firstIndex(where: { $0["id"] == artwork["id"] }),
+              let p = rows.firstIndex(where: { $0["id"].string == placementId }) else { throw invalid }
+        let prior = inventory[i], oldRevision = prior["revisionId"], newRevision = artwork["revisionId"]
+        let lodKey = "org.exhibitos.viewer/lod", cmsKey = "org.exhibitos.studio/cms"
+        let lod = artwork["extensions"][lodKey]
+        guard let revision = prior["revision"].integer, (1..<2_147_483_647).contains(revision),
+              artwork["revision"].integer == revision + 1,
+              let next = newRevision.string, NativeCompactModelVariantRequest.validID(next), newRevision != oldRevision,
+              prior["artworkType"] == .string("sculpture"),
+              prior["extensions"][lodKey] == .null,
+              let fullId = prior["primaryAssetId"].string, artwork["primaryAssetId"].string == fullId,
+              rows[p]["artworkRevisionId"] == oldRevision, rows[p]["assetId"].string == fullId,
+              rows.filter({ $0["artworkRevisionId"] == oldRevision }).count == 1,
+              inventory.filter({ $0["id"] == prior["id"] }).count == 1,
+              !inventory.contains(where: { $0["revisionId"] == newRevision }),
+              let priorAssets = prior["assets"].items, let assets = artwork["assets"].items,
+              assets.count == priorAssets.count + 1, Array(assets.dropLast()) == priorAssets,
+              let coarse = assets.last, let coarseId = coarse["id"].string,
+              NativeCompactModelVariantRequest.validID(coarseId), coarseId != fullId,
+              coarse["mime"] == .string("model/gltf-binary"), coarse["role"] == .string("model"),
+              lod["version"] == .integer(1), lod["profile"] == .string(NativeCompactModelVariantRequest.profile),
+              let variants = lod["variants"].items, variants.count == 2,
+              variants.contains(where: { $0["detail"] == .string("full") && $0["assetId"].string == fullId }),
+              variants.contains(where: { $0["detail"] == .string("coarse") && $0["assetId"].string == coarseId }),
+              artwork["extensions"][cmsKey]["revision"].integer == revision + 1,
+              prior["extensions"][cmsKey]["revision"].integer == revision,
+              case .object(var extensions) = artwork["extensions"],
+              case .object(var comparison) = artwork,
+              case .object(let original) = prior else { throw invalid }
+        extensions.removeValue(forKey: lodKey)
+        var cms = artwork["extensions"][cmsKey]
+        cms["revision"] = .integer(revision)
+        extensions[cmsKey] = cms
+        comparison["extensions"] = .object(extensions)
+        let changing: Set<String> = ["revision", "revisionId", "createdAt", "provenance", "assets"]
+        guard comparison.filter({ !changing.contains($0.key) }) == original.filter({ !changing.contains($0.key) }),
+              artwork["provenance"]["authorship"] == prior["provenance"]["authorship"] else { throw invalid }
+
+        inventory[i] = artwork
+        rows[p]["artworkRevisionId"] = newRevision
+        var nextCandidate = candidate
+        nextCandidate["artworks"] = .array(inventory)
+        nextCandidate["placements"] = .array(rows)
+        try change(nextCandidate)
+    }
+
     public mutating func movePlacement(_ id: String, position: [Double]) throws {
         guard position.count == 3, position.allSatisfy({ $0.isFinite && abs($0) <= 1_000_000 }), var rows = candidate["placements"].items, let i = rows.firstIndex(where: { $0["id"].string == id }) else { throw AuthoringFailure("PLACEMENT_INVALID") }
         rows[i]["transform"]["position"] = .vector(position)
