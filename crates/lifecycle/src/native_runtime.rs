@@ -1505,6 +1505,8 @@ const { isDeepStrictEqual } = require('node:util');
             let mut stream = stdout;
             let mut block = [0u8; 4096];
             let mut line = Vec::new();
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            let mut line_overflow = false;
             while let Ok(count) = stream.read(&mut block) {
                 if count == 0 {
                     break;
@@ -1520,8 +1522,11 @@ const { isDeepStrictEqual } = require('node:util');
                     for byte in &block[..count] {
                         if *byte == b'\n' {
                             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-                            if let Some(cleanup) = &retained_cleanup {
-                                cleanup.observe(&line, started.load(Ordering::SeqCst));
+                            {
+                                if let Some(cleanup) = &retained_cleanup {
+                                    cleanup.observe(&line, line_overflow, started.load(Ordering::SeqCst));
+                                }
+                                line_overflow = false;
                             }
                             if line == b"ExhibitOS local runtime started." {
                                 started.store(true, Ordering::SeqCst);
@@ -1529,6 +1534,11 @@ const { isDeepStrictEqual } = require('node:util');
                             line.clear();
                         } else if line.len() < 1024 {
                             line.push(*byte);
+                        } else {
+                            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                            {
+                                line_overflow = true;
+                            }
                         }
                     }
                 }
