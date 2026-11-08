@@ -32,8 +32,12 @@ const FILES_LIMIT: usize = 20_000;
 const ENTRIES_LIMIT: usize = 40_000;
 const DEPTH_LIMIT: usize = 32;
 
-// Offline export rights were reviewed for these retained publication bytes.
-const SOURCE_PUBLICATION: (&str, &str, &str, &str) = (
+type PublicationPin = (&'static str, &'static str, &'static str, &'static str);
+type RuntimePin = (&'static str, &'static str, &'static str);
+
+// Each independently reviewed offline publication is paired with one exact
+// validation runtime. These pins do not admit an authoring profile or release.
+const SOURCE_PUBLICATION: PublicationPin = (
     "625618bf-8b63-448c-abd6-08f1bb7dd68e",
     "34024d16fdce3c1fe44a550217352df6545f6821d26fcaf0893350c70a5311f2",
     "896f66289538e47f9bc182a0458089b5308c4535babbd998e84cdeaa7b34a1c9",
@@ -41,11 +45,22 @@ const SOURCE_PUBLICATION: (&str, &str, &str, &str) = (
 );
 
 // Independently verified Platform PR #415 validation package.
-const RUNTIME: Option<(&str, &str, &str)> = Some((
+const RUNTIME: RuntimePin = (
     "b9f8a1d716db67f2820b3ca552b781092d12ef3d",
     "ee5a94b613031e2cea918dead21c885c42fce4d585a03e55a2f3799af4e6991c",
     "5efbca58c9ca7f081746d30d3c56d7c8992b415f5f23a9420d4b03ecdb901f6b",
-));
+);
+const HAYES_R5_PUBLICATION: PublicationPin = (
+    "01ccb3ba-9951-4ce5-97bf-68c8079b8ea0",
+    "af46cc20d7aae7189f99d939f6a1d2d21ae6e6057ffcc03ad9115fc10a42331e",
+    "78d4837e048dd8ad79270000a00d62bcf16c6be185bda600c9b3839112eaa226",
+    "bc2d637914b33a010f95eab8ea0bd3a8964bf51e6901ee7fde2f9e229d98d8ce",
+);
+const HAYES_KNOWN_MEMORY_RUNTIME: RuntimePin = (
+    "516d3b18618b3d07fe9205a914a2908e335ec35c",
+    "2627954c7ac6c083bed01470db1e3ccec94e857ea2858babca1b4ed1e740adad",
+    "c5cff38ec91c2f4429880a99421d5dcd3225e160e587223e9e2b1ea2d08990f5",
+);
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1017,24 +1032,28 @@ fn validate_request(input: &[u8]) -> Result<Request> {
     Ok(request)
 }
 
-pub fn run(input: &[u8], runtime: &Path, stop: &AtomicBool, output: &mut dyn Write) -> Result<()> {
-    let request = validate_request(input)?;
-    check_cancelled(stop)?;
-    if (
+fn reviewed_runtime(request: &Request) -> Result<RuntimePin> {
+    let source = (
         request.publication_id.as_str(),
         request.revision_sha256.as_str(),
         request.index_sha256.as_str(),
         request.source_manifest_sha256.as_str(),
-    ) != SOURCE_PUBLICATION
-    {
-        return Err(err("NATIVE_STATIC_REFRESH_SOURCE_UNQUALIFIED"));
-    }
-    let Some((source_commit, producer, manifest_digest)) = RUNTIME else {
-        return Err(err("NATIVE_STATIC_REFRESH_RUNTIME_UNQUALIFIED"));
+    );
+    let runtime = match source {
+        SOURCE_PUBLICATION => RUNTIME,
+        HAYES_R5_PUBLICATION => HAYES_KNOWN_MEMORY_RUNTIME,
+        _ => return Err(err("NATIVE_STATIC_REFRESH_SOURCE_UNQUALIFIED")),
     };
-    if request.target_manifest_sha256 != manifest_digest {
+    if request.target_manifest_sha256 != runtime.2 {
         return Err(err("NATIVE_STATIC_REFRESH_RUNTIME_UNQUALIFIED"));
     }
+    Ok(runtime)
+}
+
+pub fn run(input: &[u8], runtime: &Path, stop: &AtomicBool, output: &mut dyn Write) -> Result<()> {
+    let request = validate_request(input)?;
+    check_cancelled(stop)?;
+    let (source_commit, producer, manifest_digest) = reviewed_runtime(&request)?;
     let runtime_root = open_directory(runtime)?;
     let source = open_directory(&request.source_dir)?;
     let parent_path = request.output_dir.parent().ok_or_else(invalid)?;
@@ -1278,14 +1297,7 @@ pub fn recover(input: &[u8], stop: &AtomicBool, output: &mut dyn Write) -> Resul
     }
     let record: CommitRecord = serde_json::from_slice(&wire).map_err(|_| missing())?;
     let receipt = record.receipt;
-    if (
-        request.publication_id.as_str(),
-        request.revision_sha256.as_str(),
-        request.index_sha256.as_str(),
-        request.source_manifest_sha256.as_str(),
-    ) != SOURCE_PUBLICATION
-        || !RUNTIME.is_some_and(|(_, _, manifest)| manifest == request.target_manifest_sha256)
-        || receipt.operation_id != request.operation_id
+    if reviewed_runtime(&request).is_err() || receipt.operation_id != request.operation_id
         || receipt.output != request.output_dir
         || receipt.source_manifest_sha256 != request.source_manifest_sha256
         || receipt.target_manifest_sha256 != request.target_manifest_sha256
@@ -1328,6 +1340,44 @@ pub fn recover(input: &[u8], stop: &AtomicBool, output: &mut dyn Write) -> Resul
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
+
+    #[test]
+    fn static_refresh_admits_only_the_two_reviewed_pairs() {
+        let request = |source: PublicationPin, runtime: RuntimePin| Request {
+            operation_id: Uuid::new_v4().to_string(),
+            source_dir: "/unused/source".into(),
+            source_manifest_sha256: source.3.into(),
+            index_sha256: source.2.into(),
+            publication_id: source.0.into(),
+            revision_sha256: source.1.into(),
+            target_manifest_sha256: runtime.2.into(),
+            output_dir: "/unused/output".into(),
+        };
+        assert_eq!(reviewed_runtime(&request(SOURCE_PUBLICATION, RUNTIME)).unwrap(), RUNTIME);
+        assert_eq!(
+            reviewed_runtime(&request(HAYES_R5_PUBLICATION, HAYES_KNOWN_MEMORY_RUNTIME)).unwrap(),
+            HAYES_KNOWN_MEMORY_RUNTIME,
+        );
+        for (source, runtime) in [(SOURCE_PUBLICATION, HAYES_KNOWN_MEMORY_RUNTIME), (HAYES_R5_PUBLICATION, RUNTIME)] {
+            assert_eq!(reviewed_runtime(&request(source, runtime)).unwrap_err().code, "NATIVE_STATIC_REFRESH_RUNTIME_UNQUALIFIED");
+        }
+        let mut changed = request(HAYES_R5_PUBLICATION, HAYES_KNOWN_MEMORY_RUNTIME);
+        changed.index_sha256 = "a".repeat(64);
+        assert_eq!(reviewed_runtime(&changed).unwrap_err().code, "NATIVE_STATIC_REFRESH_SOURCE_UNQUALIFIED");
+    }
+
+    #[test]
+    #[ignore = "requires the sealed Hayes static refresh runtime directory"]
+    fn opens_sealed_hayes_runtime_and_refresh_entry_offline() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_HAYES_REFRESH_RUNTIME").unwrap());
+        let bytes = fs::read(root.join("manifest.json")).unwrap();
+        assert!(!Payload::static_refresh_inventory(&bytes, HAYES_KNOWN_MEMORY_RUNTIME).unwrap().is_empty());
+        let payload = Payload::open(&root).unwrap();
+        let context = payload.context();
+        assert_eq!((context.source_commit.as_str(), payload.producer_sha256(), context.manifest_sha256.as_str()),
+            HAYES_KNOWN_MEMORY_RUNTIME);
+        assert_eq!(payload.static_refresh_script(SCRIPT).unwrap(), root.join(SCRIPT));
+    }
 
     struct Fixture(PathBuf);
     impl Fixture {
