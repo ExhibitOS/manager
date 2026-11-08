@@ -580,7 +580,7 @@ public actor NativeAutomationSession {
         // Scope is checked even for replay: correlation is not authorization.
         let (context, api, current) = try await checked(request)
         if let seen = seenRequests[id], seen != bytes { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
-        let requiresFreshRead = ["artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed"].contains(operation)
+        let requiresFreshRead = ["artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed", "hayes-original-release"].contains(operation)
         if !requiresFreshRead, let prior = replay[id] {
             guard prior.0 == bytes else { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
             return prior.1
@@ -925,11 +925,15 @@ public actor NativeAutomationSession {
                               "receipt": try value(receipt)])
         case "hayes-original-release":
             try checkedRevision(request, current)
-            let command = try NativeAutomationArtworkRules.command(request, keys: ["jobId"])
+            var keys: Set<String> = ["jobId"]
+            if request["command"]["currentArtworkRevision"] != .null { keys.insert("currentArtworkRevision") }
+            let command = try NativeAutomationArtworkRules.command(request, keys: keys)
+            let revision = command["currentArtworkRevision"].integer.flatMap(Int.init(exactly:))
             guard api.hayesOriginalRuntimeQualified, let jobId = command["jobId"].string else {
                 throw BridgeFailure("AUTOMATION_INPUT_INVALID")
             }
-            result = try value(await bridge.hayesRelease(context, jobId: jobId))
+            if keys.contains("currentArtworkRevision"), revision == nil { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+            result = try value(await bridge.hayesRelease(context, jobId: jobId, currentArtworkRevision: revision))
         case "import-glb":
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "artworkRevision", "scaleMeters"])
@@ -997,11 +1001,11 @@ public actor NativeAutomationSession {
                   intent.derived == nil, intent.modelDerivation == nil, let jobId = state.jobId else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
             let job = try await api.importJob(jobId), artwork = try await api.artwork(artworkId)
             if let hayes = intent.hayesOriginal {
-                let receipt = try await bridge.hayesRelease(context, jobId: jobId)
-                guard receipt.jobId == jobId, job.id == jobId, job.assetId == assetId,
-                      Int64(hayes.artworkRevision) == revision, hayes.confirmsDisplay(artwork, job: job, intent: intent) else {
+                guard job.id == jobId, job.assetId == assetId, Int64(artwork.revision) == revision,
+                      hayes.matchesReleasedDisplay(artwork, job: job, intent: intent) else {
                     throw BridgeFailure("APPROVAL_REVIEW_REQUIRED")
                 }
+                _ = try await bridge.hayesRelease(context, jobId: jobId, currentArtworkRevision: artwork.revision)
             } else {
                 try NativeAutomationArtworkRules.checkApproval(artwork: artwork, job: job, jobId: jobId,
                     intent: intent, revision: revision, assetId: assetId)
@@ -1023,6 +1027,31 @@ public actor NativeAutomationSession {
             let approved = try await api.studioArtwork(artworkId)
             try NativeAutomationArtworkRules.checkRegistration(approved.artwork, artworkId: artworkId, revision: revision, tenantId: current.tenantId)
             try draft.addApprovedArtwork(approved.artwork, roomId: room, placementId: placement, transform: command["transform"])
+            var next = current; next.draft = draft
+            result = try value(await bridge.saveDocumentState(context, state: next))
+        case "hayes-refresh-placed-artwork":
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "placementId"])
+            let transfer = try await bridge.uploadState(context)
+            try NativeAutomationArtworkRules.checkUploadScope(transfer, document: current)
+            guard selectedOEXFormat == nil, api.hayesOriginalRuntimeQualified, !current.dirty,
+                  var draft = current.draft, let etag = current.etag,
+                  let artworkId = command["artworkId"].string, let placementId = command["placementId"].string,
+                  let intent = transfer.intent, intent.artworkId == artworkId,
+                  let hayes = intent.hayesOriginal, let jobId = transfer.jobId else {
+                throw BridgeFailure("AUTOMATION_INPUT_INVALID")
+            }
+            let saved = try await api.exhibition(draft.id)
+            guard saved.draft == draft, saved.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            let artwork = try await api.artwork(artworkId), job = try await api.importJob(jobId)
+            guard artwork.revision == 2, artwork.approvedRevision == artwork.revision, artwork.approvedAssetId == job.assetId,
+                  job.id == jobId, hayes.matchesReleasedDisplay(artwork, job: job, intent: intent) else {
+                throw BridgeFailure("APPROVAL_REVIEW_REQUIRED")
+            }
+            _ = try await bridge.hayesRelease(context, jobId: jobId, currentArtworkRevision: artwork.revision)
+            let snapshot = try await api.studioArtwork(artworkId)
+            try NativeAutomationArtworkRules.checkRegistration(snapshot.artwork, artworkId: artworkId, revision: 2, tenantId: current.tenantId)
+            try draft.refreshHayesArtwork(snapshot.artwork, placementId: placementId)
             var next = current; next.draft = draft
             result = try value(await bridge.saveDocumentState(context, state: next))
         case "bench-prepare":

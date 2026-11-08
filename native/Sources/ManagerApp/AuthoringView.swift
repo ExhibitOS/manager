@@ -73,7 +73,7 @@ final class AuthoringModel: ObservableObject {
     @Published private var hayesSessionReady = false
     @Published private(set) var hayesReceipt: NativeHayesReceipt?
     private var executeHayes: ((String, String, Int) async throws -> NativeHayesReceipt)?
-    private var recoverHayes: ((String) async throws -> NativeHayesReceipt)?
+    private var recoverHayes: ((String, Int) async throws -> NativeHayesReceipt)?
     var hayesOriginalAvailable: Bool {
         hayesSessionReady && api?.hayesOriginalRuntimeQualified == true
             && hasUnknownSourceUnits && selected?.metadata?.displayReference?.status == "provisional-uncalibrated"
@@ -339,18 +339,23 @@ extension AuthoringModel {
         readTransfer = read; writeTransfer = save
     }
     func bindHayesOriginal(ready: Bool, execute: @escaping (String, String, Int) async throws -> NativeHayesReceipt,
-                           recover: @escaping (String) async throws -> NativeHayesReceipt) {
+                           recover: @escaping (String, Int) async throws -> NativeHayesReceipt) {
         hayesSessionReady = ready
         executeHayes = execute
         recoverHayes = recover
     }
 
     private func recoverHayesIfApproved(_ job: NativeImportJob) async {
-        guard job.state == "approved", let intent = transfer?.intent, intent.hayesOriginal != nil,
-              let recoverHayes else { return }
+        guard job.state == "approved", let intent = transfer?.intent, let hayes = intent.hayesOriginal,
+              let recoverHayes, let api else { return }
         let generation = importStatusGeneration
         do {
-            let receipt = try await recoverHayes(job.id)
+            let artwork = try await api.artwork(intent.artworkId)
+            guard hayes.matchesReleasedDisplay(artwork, job: job, intent: intent),
+                  generation == importStatusGeneration, transfer?.intent == intent, transfer?.jobId == job.id else {
+                throw AuthoringFailure("HAYES_RELEASE_UNCONFIRMED")
+            }
+            let receipt = try await recoverHayes(job.id, artwork.revision)
             guard generation == importStatusGeneration, transfer?.intent == intent, transfer?.jobId == job.id else { return }
             hayesReceipt = receipt
         } catch {
@@ -683,11 +688,12 @@ extension AuthoringModel {
             }
             let completed = importJob
             if state.intent?.hayesOriginal != nil, let job = completed, job.state == "approved" {
-                guard let api, let intent = state.intent, let revision = intent.hayesOriginal?.artworkRevision else {
+                guard let api, let intent = state.intent, let hayes = intent.hayesOriginal else {
                     throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
                 }
                 let artwork = try await api.artwork(intent.artworkId)
-                guard artwork.approvedRevision == revision, artwork.approvedAssetId == job.assetId else {
+                guard artwork.approvedRevision == artwork.revision, artwork.approvedAssetId == job.assetId,
+                      hayes.matchesReleasedDisplay(artwork, job: job, intent: intent) else {
                     throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
                 }
             }
@@ -739,10 +745,10 @@ extension AuthoringModel {
             if hasUnknownSourceUnits {
                 guard let recoverHayes, let intent = transfer?.intent, let job = importJob,
                       job.assetId == assetId,
-                      intent.hayesOriginal?.confirmsDisplay(selected, job: job, intent: intent) == true else {
+                      intent.hayesOriginal?.matchesReleasedDisplay(selected, job: job, intent: intent) == true else {
                     throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
                 }
-                hayesReceipt = try await recoverHayes(job.id)
+                hayesReceipt = try await recoverHayes(job.id, selected.revision)
                 guard transfer?.intent == intent, importJob?.id == job.id else {
                     throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
                 }

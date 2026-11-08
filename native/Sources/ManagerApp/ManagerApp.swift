@@ -183,8 +183,8 @@ final class ManagerModel: ObservableObject {
             guard status.runtime?.jobId == runtimeJobID else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
             authoring.bindHayesOriginal(ready: status.hayesOriginalReady == true, execute: { job, artwork, revision in
                 try await bridge.executeHayesAndWait(context, jobId: job, artworkId: artwork, artworkRevision: revision)
-            }, recover: { job in
-                try await bridge.hayesRelease(context, jobId: job)
+            }, recover: { job, revision in
+                try await bridge.hayesRelease(context, jobId: job, currentArtworkRevision: revision)
             })
             authoring.bindIntakeWorkspace(available: status.selectedOex == false) { [weak self] in
                 guard let self, self.context?.selectionToken == context.selectionToken else { return false }

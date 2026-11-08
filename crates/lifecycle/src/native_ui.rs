@@ -207,6 +207,7 @@ pub enum Command {
     NativeHayesRelease {
         selection_token: String,
         job_id: String,
+        current_artwork_revision: Option<u32>,
     },
     #[cfg(target_os = "macos")]
     NativeAuthoringSession {
@@ -266,6 +267,8 @@ struct WireRequest {
     hayes_execute: Option<crate::native_runtime::hayes_ordinary::Input>,
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
     hayes_job_id: Option<String>,
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    hayes_current_artwork_revision: Option<u32>,
 }
 impl TryFrom<WireRequest> for Request {
     type Error = &'static str;
@@ -279,16 +282,18 @@ impl TryFrom<WireRequest> for Request {
                 return Err("NATIVE_PROTOCOL_INVALID");
             }
             let selection_token = wire.selection_token.ok_or("NATIVE_PROTOCOL_INVALID")?;
-            let command = match (wire.command.as_str(), wire.hayes_execute, wire.hayes_job_id) {
-                ("native_hayes_execute", Some(input), None) => Command::NativeHayesExecute { selection_token, input },
-                ("native_hayes_release", None, Some(job_id)) if crate::installations::uuid(&job_id) =>
-                    Command::NativeHayesRelease { selection_token, job_id },
+            let command = match (wire.command.as_str(), wire.hayes_execute, wire.hayes_job_id, wire.hayes_current_artwork_revision) {
+                ("native_hayes_execute", Some(input), None, None) => Command::NativeHayesExecute { selection_token, input },
+                ("native_hayes_release", None, Some(job_id), current_artwork_revision)
+                    if crate::installations::uuid(&job_id)
+                        && current_artwork_revision.is_none_or(|revision| (1..=i32::MAX as u32).contains(&revision)) =>
+                    Command::NativeHayesRelease { selection_token, job_id, current_artwork_revision },
                 _ => return Err("NATIVE_PROTOCOL_INVALID"),
             };
             return Ok(Self { version: wire.version, id: wire.id, command });
         }
         #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
-        if wire.hayes_execute.is_some() || wire.hayes_job_id.is_some() { return Err("NATIVE_PROTOCOL_INVALID"); }
+        if wire.hayes_execute.is_some() || wire.hayes_job_id.is_some() || wire.hayes_current_artwork_revision.is_some() { return Err("NATIVE_PROTOCOL_INVALID"); }
         #[cfg(target_os = "macos")]
         if matches!(wire.command.as_str(), "native_oex_save_observed" | "native_oex_save_authorize") {
             if wire.state.is_some() || wire.account.is_some() || wire.transfer.is_some() || wire.oex_import.is_some()

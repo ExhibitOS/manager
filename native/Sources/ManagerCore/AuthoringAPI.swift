@@ -1623,6 +1623,7 @@ public struct NativeHayesOriginalIntent: Codable, Equatable, Sendable {
     public static func supports(manifest: String) -> Bool {
         #if DEBUG
         return manifest == "c0565112569fc1b1b95f8ada72b2b7cacabc8ea3e24b58a61dc9aa138c8bb406"
+            || manifest == "af9c141f071d84ba4e9397798759e1cb13b2cde4d350f2fcf0a4b852ce3a09b5"
         #else
         return false
         #endif
@@ -1639,7 +1640,13 @@ public struct NativeHayesOriginalIntent: Codable, Equatable, Sendable {
     }
 
     public func confirmsDisplay(_ artwork: NativeArtwork, job: NativeImportJob, intent: NativeImportIntent) -> Bool {
-        guard matches(intent), artwork.id == intent.artworkId, artwork.revision == artworkRevision,
+        artwork.revision == artworkRevision && matchesReleasedDisplay(artwork, job: job, intent: intent)
+    }
+
+    /// A release still needs native recovery for the requested current revision.
+    public func matchesReleasedDisplay(_ artwork: NativeArtwork, job: NativeImportJob, intent: NativeImportIntent) -> Bool {
+        guard matches(intent), artwork.id == intent.artworkId, !artwork.archived,
+              artwork.revision == artworkRevision || (artworkRevision == 1 && artwork.revision == 2),
               artwork.metadata?.rights == intent.rights,
               artwork.metadata?.displayReference?.assetSha256 == displayReferenceSha256,
               job.state == "approved", let display = job.assetId, UUID(uuidString: display) != nil else { return false }

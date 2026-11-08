@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Read-only continuation after durable native release and before CMS approval.
+//! Read-only recovery of durable native release evidence for CMS approval.
 
 use super::{
     hayes::{operation::{ExecuteBinding, VerifiedRelease}, provision},
@@ -27,6 +27,7 @@ impl Session {
         &mut self,
         job_id: &str,
         saved: &crate::installations::native_upload::Transfer,
+        current_artwork_revision: Option<u32>,
     ) -> Result<Value> {
         let unavailable = || err("HAYES_RELEASE_UNCONFIRMED");
         if !self.status()?.readiness.ready || !self.payload.ordinary_hayes_release()
@@ -41,6 +42,12 @@ impl Session {
             job_id: Uuid::parse_str(job_id).map_err(|_| unavailable())?,
             artwork_id: Uuid::parse_str(&intent.artwork_id).map_err(|_| unavailable())?,
             artwork_revision: hayes.artwork_revision,
+        };
+        let current_revision = current_artwork_revision.unwrap_or(binding.artwork_revision);
+        let text_successor = match (binding.artwork_revision, current_revision) {
+            (historical, current) if historical == current => false,
+            (1, 2) => true,
+            _ => return Err(unavailable()),
         };
         let auth = self.local_authority.as_ref().ok_or_else(unavailable)?;
         if (auth.workspace_id.as_str(), auth.tenant_id.as_str(), auth.principal_id.as_str())
@@ -66,19 +73,33 @@ impl Session {
                JOIN assets v ON (v.tenant_id,v.id,v.artwork_id)=(d.tenant_id,d.display_asset_id,w.id)
                JOIN rights rights ON (rights.tenant_id,rights.id)=(o.tenant_id,o.rights_id)
               WHERE (r.tenant_id,a.workspace_id,a.principal_id,j.user_id)=('{tenant}','{workspace}','{principal}','{principal}')
-                AND (j.id,w.id,w.revision)=('{job}','{artwork}',{revision})
-                AND (a.artwork_id,a.artwork_revision)=(w.id,w.revision)
+                AND (j.id,w.id,w.revision)=('{job}','{artwork}',{current_revision})
+                AND (a.artwork_id,a.artwork_revision)=(w.id,{historical_revision})
                 AND j.state='approved' AND j.asset_id=v.id AND w.deleted_at IS NULL
                 AND o.state='quarantine' AND o.deleted_at IS NULL AND (o.sha256,o.bytes)=(a.source_sha256,a.source_bytes)
                 AND v.state='approved' AND v.deleted_at IS NULL AND v.sha256='{display}' AND v.rights_id=o.rights_id
                 AND rights.deleted_at IS NULL AND rights.metadata=j.rights AND j.rights=w.metadata->'rights'
                 AND w.metadata->'displayReference'->>'assetSha256'='{display}'
-                AND r.runtime_manifest_sha256='{manifest}' AND r.worker_manifest_sha256='{worker}'
+                AND r.runtime_manifest_sha256 IN ('{manifest}','{predecessor}')
+                AND (NOT {text_successor} OR (
+                    r.runtime_manifest_sha256='{predecessor}'
+                    AND EXISTS (
+                        SELECT 1 FROM artwork_approvals approved
+                         WHERE (approved.tenant_id,approved.artwork_id,approved.revision,approved.asset_id)
+                             = (a.tenant_id,a.artwork_id,a.artwork_revision,v.id)
+                           AND approved.snapshot->'asset'->>'sha256'=v.sha256
+                           AND approved.snapshot->'asset'->>'bytes'=v.bytes::text
+                           AND ((approved.snapshot->'metadata') #- '{{provenance,notes}}') - 'description'
+                               = (w.metadata #- '{{provenance,notes}}') - 'description'
+                    )
+                ))
+                AND r.worker_manifest_sha256='{worker}'
                 AND r.receipt_sha256=d.receipt_sha256
                 AND encode(sha256(d.receipt_canonical),'hex')=r.receipt_sha256",
             tenant=auth.tenant_id, workspace=auth.workspace_id, principal=auth.principal_id,
-            job=binding.job_id, artwork=binding.artwork_id, revision=binding.artwork_revision,
+            job=binding.job_id, artwork=binding.artwork_id, historical_revision=binding.artwork_revision,
             display=hayes.display_reference_sha256, manifest=self.payload.context().manifest_sha256,
+            predecessor=crate::native_payload::HAYES_ORIGINAL_RELEASE_MANIFEST,
             worker=crate::native_payload::hayes::WORKER_MANIFEST_SHA256,
         );
         let owner = Owner::capture(self)?;
