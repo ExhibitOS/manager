@@ -8,7 +8,6 @@ use crate::{
         Payload,
     },
     native_runtime::hayes::{
-        frame::{inspect_selected_frame, BODY_BYTES, BODY_SHA},
         tests::{binding, wait_for, Fixture},
         transfer::Transfer,
         Lease, Worker,
@@ -17,7 +16,6 @@ use crate::{
 use std::{
     env,
     fs::{self, OpenOptions},
-    io::{Seek, SeekFrom},
     os::unix::fs::OpenOptionsExt,
     process::{Command, ExitStatus, Stdio},
 };
@@ -237,33 +235,30 @@ fn selected_package_generate_and_validate_retains_exact_private_stages() {
     let mut attempt = root.acquire().begin(expected).unwrap();
     let payload = Payload::open(&path("HAYES_FIXED_PACKAGE")).unwrap();
     let mut run = start_generate(&mut attempt, &payload);
-    let observed = attempt.drive_generation(
+    let cancellation = AtomicBool::new(false);
+    let generated = attempt.observe_generation(
         &mut run,
         Instant::now() + Duration::from_secs(16),
-        &AtomicBool::new(false),
+        &cancellation,
         &mut || Ok(()),
     );
-    let status = reap(&mut run.child);
-    assert_eq!(observed.unwrap_err().code, "HAYES_DRAIN_UNCONFIRMED");
-    assert!(status.success());
+    assert!(reap(&mut run.child).success());
+    let generated = generated.unwrap();
     let diagnostics: serde_json::Value = attempt.journal.read(OBSERVED).unwrap();
     assert_eq!(
         diagnostics["watched_direct_exit_without_fork_or_exec"],
         true
     );
-    let prepared: Prepared = attempt.journal.read(PREPARED).unwrap();
-    let name = format!(".oex-stage-{}", prepared.output_stage_id);
-    let mut raw = attempt.stage.open_file(&name, libc::O_RDONLY).unwrap();
-    assert_eq!(private_file(&raw).unwrap(), prepared.output);
-    assert_eq!(raw.metadata().unwrap().len(), BODY_BYTES as u64 + 8);
-    let telemetry = inspect_selected_frame(&mut raw).unwrap();
-    raw.seek(SeekFrom::Start(8)).unwrap();
-    let body_id = Uuid::new_v4();
-    let body = stage_exact(&attempt, &mut raw, body_id, BODY_BYTES.into(), BODY_SHA);
+    let selected = generated
+        .stage_selected_body(&attempt, &cancellation, &mut || Ok(()))
+        .unwrap();
+    let body_id = selected.id;
+    let body = &selected.observed;
+    let telemetry = &selected.telemetry;
 
     let pin = run.pinned_generate.as_ref().unwrap();
     let (validate_rss, validate_stdout_sha) =
-        validate_exact(&mut attempt, &payload, pin, &body, body_id).unwrap();
+        validate_exact(&mut attempt, &payload, pin, body, body_id).unwrap();
     pin.check().unwrap();
     attempt.check().unwrap();
     let body_stage = format!(".oex-stage-{body_id}");
@@ -277,7 +272,7 @@ fn selected_package_generate_and_validate_retains_exact_private_stages() {
         "selected-nominal.json",
         serde_json::json!({
             "binding": expected, "generateRaw": diagnostics["stdout"],
-            "body": StageBinding::from(&body), "bodyStage": body_stage,
+            "body": StageBinding::from(body), "bodyStage": body_stage,
             "simplifierRelativeError": telemetry.relative_error, "generatePeakRssKiB": telemetry.peak_rss_kib,
             "validatePeakRssKiB": validate_rss, "validateStdoutSha256": validate_stdout_sha,
             "scope": "Exact package, both direct exits/EOF observed; held private custody; no product authority."

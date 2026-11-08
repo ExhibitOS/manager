@@ -3,6 +3,7 @@
 
 use super::{
     channel_error, custody_error, cvt, err,
+    frame::{inspect_selected_frame, GenerateTelemetry, BODY_BYTES, BODY_SHA},
     launch::{LaunchPermit, SpawnedWorker, WorkerStdio},
     private_file,
     watch::DirectWatch,
@@ -17,7 +18,7 @@ use sha2::{Digest, Sha256};
 use std::{
     ffi::OsStr,
     fs::File,
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     net::Shutdown,
     os::{fd::AsRawFd, unix::fs::FileExt},
     path::Path,
@@ -68,6 +69,85 @@ struct DirectObservation<'a> {
     prepared: &'a Prepared,
     stdout: StageBinding,
     watched_direct_exit_without_fork_or_exec: bool,
+}
+
+/// Direct-child readback under the retained Attempt. Its descriptors bind
+/// the original and raw stdout until the next local qualification step.
+pub(super) struct GenerationReadback {
+    prepared: Prepared,
+    source: SourceStage,
+    stdout: ObservedStage,
+    watched: bool,
+}
+
+pub(super) struct SelectedBody {
+    _readback: GenerationReadback,
+    pub(super) id: Uuid,
+    pub(super) observed: ObservedStage,
+    pub(super) telemetry: GenerateTelemetry,
+}
+
+impl GenerationReadback {
+    pub(super) fn stage_selected_body(
+        self,
+        attempt: &Attempt,
+        cancelled: &AtomicBool,
+        check_owner: &mut dyn FnMut() -> Result<()>,
+    ) -> Result<SelectedBody> {
+        let mut progress = || {
+            if cancelled.load(Ordering::SeqCst) || super::super::cancelled() {
+                return Err(err("NATIVE_CANCELLED"));
+            }
+            check_owner()
+        };
+        progress()?;
+        if !self.watched
+            || attempt.journal.read::<Prepared>(PREPARED)? != self.prepared
+            || self.prepared.binding != attempt.intent.binding
+            || self.source.binding != self.prepared.binding
+            || self.source.correlation != self.prepared.correlation_id
+            || StageBinding::from(&self.source.observed) != self.prepared.source
+        {
+            return Err(custody_error());
+        }
+        attempt.check()?;
+        attempt.check_stage_file(self.source.binding.attempt, &self.source.observed)?;
+        attempt.check_stage_file(self.prepared.output_stage_id, &self.stdout)?;
+
+        let mut raw = self.stdout.file();
+        raw.seek(SeekFrom::Start(0)).map_err(|_| io_error())?;
+        let telemetry = inspect_selected_frame(&mut raw)?;
+        progress()?;
+        let id = Uuid::new_v4();
+        let stage = Stage::create(&attempt.stage.fd, &id.to_string())?;
+        let mut writer = stage.materializer_write();
+        let mut buffer = [0; 16 * 1024];
+        let copied: Result<()> = (|| {
+            let mut offset = 0;
+            while offset < u64::from(BODY_BYTES) {
+                progress()?;
+                let size = (u64::from(BODY_BYTES) - offset).min(buffer.len() as u64) as usize;
+                raw.read_exact_at(&mut buffer[..size], 8 + offset)
+                    .map_err(|_| io_error())?;
+                writer.write_all(&buffer[..size]).map_err(|_| io_error())?;
+                offset += size as u64;
+            }
+            Ok(())
+        })();
+        buffer.fill(0);
+        copied?;
+        let observed = observe_stage(stage, BODY_BYTES.into(), BODY_SHA, cancelled, &mut progress)?;
+        attempt.check()?;
+        attempt.check_stage_file(self.prepared.output_stage_id, &self.stdout)?;
+        attempt.check_stage_file(self.source.binding.attempt, &self.source.observed)?;
+        attempt.check_stage_file(id, &observed)?;
+        Ok(SelectedBody {
+            _readback: self,
+            id,
+            observed,
+            telemetry,
+        })
+    }
 }
 
 pub(super) struct GenerationPermit {
@@ -208,6 +288,17 @@ impl Attempt {
         cancelled: &AtomicBool,
         check_owner: &mut dyn FnMut() -> Result<()>,
     ) -> Result<()> {
+        self.observe_generation(run, deadline, cancelled, check_owner)?;
+        Err(err("HAYES_DRAIN_UNCONFIRMED"))
+    }
+
+    pub(super) fn observe_generation(
+        &mut self,
+        run: &mut RunningGeneration,
+        deadline: Instant,
+        cancelled: &AtomicBool,
+        check_owner: &mut dyn FnMut() -> Result<()>,
+    ) -> Result<GenerationReadback> {
         let (staging, mut stdio) = run.work.take().ok_or_else(channel_error)?;
         let deadline = deadline.min(Instant::now() + Duration::from_secs(16));
         let mut progress = || {
@@ -289,7 +380,12 @@ impl Attempt {
                 watched_direct_exit_without_fork_or_exec: watch.is_some(),
             },
         )?;
-        Err(err("HAYES_DRAIN_UNCONFIRMED"))
+        Ok(GenerationReadback {
+            prepared: staging.prepared,
+            source: staging.source,
+            stdout: observed,
+            watched: watch.is_some(),
+        })
     }
 }
 
