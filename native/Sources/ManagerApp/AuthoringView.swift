@@ -103,6 +103,35 @@ final class AuthoringModel: ObservableObject {
             && hasUnknownSourceUnits && selected?.metadata?.displayReference?.status == "provisional-uncalibrated"
     }
     var hasHayesIntent: Bool { transfer?.intent?.hayesOriginal != nil }
+    private var usesHayesOriginal: Bool { hasHayesIntent || hayesOriginalAvailable }
+    var modelOriginalInspectionAvailable: Bool {
+        requiredModelPreparationEnabled && session?.modelOriginalInspectionProfile == NativeModelOriginalInspection.profile
+    }
+    var ordinaryUnknownModel: Bool {
+        hasUnknownSourceUnits && modelOriginalInspectionAvailable && !usesHayesOriginal
+    }
+    var canInspectUnknownModel: Bool {
+        modelOriginalInspectionAvailable && !usesHayesOriginal && transfer != nil && transfer?.intent == nil
+            && compactTransfer == nil && activeIntakeID == nil && selected?.archived != true
+            && (selected == nil || selected?.approvedRevision != selected?.revision)
+    }
+    @Published private(set) var modelOriginalInspection: NativeModelOriginalInspection?
+    @Published var provisionalHeight: Double?
+    var inspectedReferencePending: Bool {
+        modelOriginalInspection != nil && (!hasUnknownSourceUnits || draft.displayReference?.assetSha256 != importFile?.sha256)
+    }
+
+    func applyInspectedDisplayReference() {
+        guard canInspectUnknownModel, let modelOriginalInspection, let provisionalHeight else { return }
+        do {
+            draft = try modelOriginalInspection.applying(to: draft, height: provisionalHeight)
+            importScale = 1
+            failure = nil
+            notice = "임시 표시 높이를 설정했습니다. 작품 정보와 권리를 저장하세요."
+        } catch {
+            failure = error as? AuthoringFailure ?? AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID")
+        }
+    }
     private let importTransfer = NativeImportTransfer()
     private var importRead: Task<ImportFileSnapshot, Error>?
     private var imagePreparation: Task<NativePreparedJPEG, Error>?
@@ -183,7 +212,7 @@ final class AuthoringModel: ObservableObject {
         importStatusGeneration = UUID()
         guard !busy, !dirty, !hasWaitingIntake else { api = nil; session = nil; failure = AuthoringFailure("LOCAL_SCOPE_CHANGED"); return false }
         importPoll?.cancel(); importPoll = nil; importPollID = nil
-        transfer = nil; importJob = nil; importFile = nil; compactJob = nil; assetId = ""
+        transfer = nil; importJob = nil; importFile = nil; compactJob = nil; modelOriginalInspection = nil; provisionalHeight = nil; assetId = ""
         intakeRows = []; activeIntakeID = nil; intakeTarget = nil; intakeWritesAvailable = false; intakeWorkspaceCheck = nil
         readTransfer = nil; writeTransfer = nil
         scope = next; session = nil; artworks = []; artists = []; selected = nil; editing = false
@@ -261,6 +290,7 @@ final class AuthoringModel: ObservableObject {
             guard let api else { return }
             let value = try await api.artwork(id)
             if transfer?.intent == nil { importFile = nil }
+            modelOriginalInspection = nil; provisionalHeight = nil
             approvalAcknowledged = false
             selected = value; draft = value.metadata ?? ArtworkMetadata(); original = draft; creationYearText = draft.creationYear.map(String.init) ?? ""
             assetId = value.approvedAssetId
@@ -270,11 +300,12 @@ final class AuthoringModel: ObservableObject {
             if !artists.contains(where: { $0.id == value.artistId }) { artists.append(try await api.artist(value.artistId)) }
         }
     }
-    func newArtwork() { assetId = ""; if transfer?.intent == nil { importFile = nil }; approvalAcknowledged = false; editingUser = session?.userId; creationYearText = ""; selected = nil; draft = ArtworkMetadata(); original = draft; artistId = artists.first(where: { !$0.archived })?.id ?? ""; editing = true; failure = nil; notice = "" }
+    func newArtwork() { assetId = ""; if transfer?.intent == nil { importFile = nil }; modelOriginalInspection = nil; provisionalHeight = nil; approvalAcknowledged = false; editingUser = session?.userId; creationYearText = ""; selected = nil; draft = ArtworkMetadata(); original = draft; artistId = artists.first(where: { !$0.archived })?.id ?? ""; editing = true; failure = nil; notice = "" }
     func save() async {
         await action {
             guard let api else { return }
             guard !requiredModelMetadataHeld else { throw AuthoringFailure("IMPORT_MODEL_METADATA_HELD") }
+            guard !inspectedReferencePending else { throw AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID") }
             if let selected, let intent = transfer?.intent, intent.derived?.recipe.colourConversion != nil,
                selected.id.lowercased() == intent.artworkId.lowercased() {
                 throw AuthoringFailure(iccImportAdmitted ? "IMPORT_ACTIVE" : "IMPORT_ICC_UNAVAILABLE")
@@ -420,10 +451,11 @@ extension AuthoringModel {
         guard let writeTransfer else { throw AuthoringFailure("IMPORT_STORE_REQUIRED") }
         transfer = try await writeTransfer(state)
     }
-    func chooseImportFile() async {
-        guard compactTransfer == nil else { return }
-        let hayes = hasUnknownSourceUnits
-        guard !hayes || hayesOriginalAvailable else { return }
+    func chooseImportFile(inspectUnknown: Bool = false) async {
+        guard compactTransfer == nil, !inspectUnknown || canInspectUnknownModel,
+              !hasUnknownSourceUnits || usesHayesOriginal || ordinaryUnknownModel else { return }
+        let hayes = usesHayesOriginal
+        let unknown = inspectUnknown || ordinaryUnknownModel
         guard !busy, available, session != nil, activeIntakeID == nil || transfer?.intent != nil else { return }
         let panel = NSOpenPanel()
         panel.title = "작품 파일 가져오기"
@@ -432,6 +464,8 @@ extension AuthoringModel {
         panel.allowedContentTypes = [UTType(filenameExtension: "glb") ?? .data]
         if hayes {
             panel.message = "등록할 Hayes GLB 원본을 선택하세요."
+        } else if unknown {
+            panel.message = "원본 단위를 확인할 수 없는 GLB를 선택하세요. 구조와 좌표 범위를 확인합니다."
         } else {
             panel.allowedContentTypes += [.png] + (jpegImportsEnabled ? [.jpeg] : [])
         }
@@ -456,16 +490,29 @@ extension AuthoringModel {
                 }
             }
             if let intent = transfer?.intent, !snapshot.matches(intent) { throw AuthoringFailure("IMPORT_INTENT_CHANGED") }
+            if inspectUnknown {
+                guard let api, canInspectUnknownModel else { throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE") }
+                let scope = importStatusGeneration
+                let inspection = try await api.inspectModelOriginal(snapshot)
+                guard self.api === api, scope == importStatusGeneration, canInspectUnknownModel else {
+                    throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
+                }
+                modelOriginalInspection = inspection
+                provisionalHeight = draft.displayReference?.referenceHeightMeters
+            } else if ordinaryUnknownModel, draft.displayReference?.assetSha256 != snapshot.sha256 {
+                throw AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID")
+            }
             importFile = snapshot
             if draft.title.isEmpty && selected == nil { draft.title = url.deletingPathExtension().lastPathComponent }
-            notice = "파일을 선택했습니다. 작품 정보와 권리를 저장한 뒤 파일 검사를 시작하세요."
+            notice = inspectUnknown ? "구조와 좌표 범위를 확인했습니다. 임시 표시 높이를 입력하세요."
+                : "파일을 선택했습니다. 작품 정보와 권리를 저장한 뒤 파일 검사를 시작하세요."
         }
     }
     func uploadImportFile() async {
         await action {
             guard let api, let selected, !metadataDirty, let file = importFile, let state = transfer,
-                  state.compactVariant == nil else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
-            if hasUnknownSourceUnits {
+                  !inspectedReferencePending, state.compactVariant == nil else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
+            if usesHayesOriginal {
                 guard hayesOriginalAvailable, let reference = selected.metadata?.displayReference,
                       file.sha256 == NativeHayesOriginalIntent.sourceSHA256,
                       file.data.count == NativeHayesOriginalIntent.sourceBytes else {
@@ -479,6 +526,13 @@ extension AuthoringModel {
                 approvalAcknowledged = false
                 notice = "원본을 등록했습니다. 저장한 작품 정보와 권리를 확인한 뒤 감상용 파일을 준비할 수 있습니다."
                 return
+            }
+            if hasUnknownSourceUnits {
+                guard ordinaryUnknownModel, file.mime == "model/gltf-binary", !draft.provenance.scaleApplied,
+                      selected.metadata?.displayReference?.assetSha256 == file.sha256,
+                      state.intent == nil || state.intent?.modelPreparation != nil else {
+                    throw AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID")
+                }
             }
             let generation = importStatusGeneration, currentScope = scope, manifest = runtimeManifestSHA256
             let target = intakeTarget
@@ -503,7 +557,7 @@ extension AuthoringModel {
                     }
                 }
             }
-            let rights = draft.rights, scale = importScale
+            let rights = draft.rights, scale = ordinaryUnknownModel ? 1 : importScale
             let requestKey = state.intent?.idempotencyKey ?? UUID().uuidString.lowercased()
             let derived: NativePreparedJPEG?
             if file.mime == "image/jpeg" {
@@ -514,7 +568,7 @@ extension AuthoringModel {
             guard generation == importStatusGeneration, currentScope == scope, available,
                   file.mime != "image/jpeg" || (jpegImportsEnabled && manifest == runtimeManifestSHA256),
                   self.selected?.id == selected.id, self.selected?.revision == selected.revision,
-                  !metadataDirty, draft.rights == rights, importScale == scale,
+                  !metadataDirty, draft.rights == rights, ordinaryUnknownModel || importScale == scale,
                   transfer?.revision == state.revision, transfer?.workspaceId == state.workspaceId,
                   importFile?.sha256 == file.sha256 else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
             let modelPreparation: NativeModelPreparationIntent?
@@ -564,8 +618,15 @@ extension AuthoringModel {
             }
             return
         }
-        guard artwork.id == intent.artworkId, let metadata = artwork.metadata,
-              ["m", "cm", "mm"].contains(metadata.provenance.sourceUnits) else {
+        guard artwork.id == intent.artworkId, let metadata = artwork.metadata else {
+            throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
+        }
+        if metadata.provenance.sourceUnits == "unknown" {
+            guard modelOriginalInspectionAvailable, intent.modelPreparation != nil, intent.scaleMeters == 1,
+                  !metadata.provenance.scaleApplied, metadata.displayReference?.assetSha256 == intent.sha256 else {
+                throw AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID")
+            }
+        } else if !["m", "cm", "mm"].contains(metadata.provenance.sourceUnits) {
             throw AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID")
         }
         if let preparation = intent.modelPreparation {
@@ -817,7 +878,7 @@ extension AuthoringModel {
         await action {
             guard let api, let selected, !metadataDirty, approvalAcknowledged,
                   selected.assets.contains(where: { $0.id == assetId && $0.state == "approved" }) else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
-            if hasUnknownSourceUnits {
+            if usesHayesOriginal {
                 guard let recoverHayes, let intent = transfer?.intent, let job = importJob,
                       job.assetId == assetId,
                       intent.hayesOriginal?.matchesReleasedDisplay(selected, job: job, intent: intent) == true else {
@@ -837,6 +898,7 @@ extension AuthoringModel {
             if transfer?.intent?.derived != nil, transfer?.intent?.artworkId == selected.id, importJob?.assetId == assetId {
                 guard jpegOriginalStored else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
             }
+            let approved: NativeArtwork
             if let intent = transfer?.intent, intent.modelPreparation != nil, intent.artworkId == selected.id {
                 guard requiredModelPreparationEnabled, let jobId = transfer?.jobId else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
                 let job = try await api.importJob(jobId)
@@ -845,9 +907,13 @@ extension AuthoringModel {
                       job.assetId == assetId, job.modelPreparation?.permitsReview(of: current, request: intent, job: job) == true else {
                     throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
                 }
+                approved = try await api.approvePreparedModel(job, request: intent, current: current)
+            } else {
+                guard !hasUnknownSourceUnits || usesHayesOriginal else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+                approved = try await api.approveArtwork(selected.id, revision: selected.revision, assetId: assetId)
             }
-            let approved = try await api.approveArtwork(selected.id, revision: selected.revision, assetId: assetId)
             self.selected = approved
+            if let metadata = approved.metadata { draft = metadata; original = metadata }
             approvalAcknowledged = false
             notice = "파일과 저장한 정보·권리를 승인했습니다. 전시에서 사용할 준비가 되었습니다."
         }
@@ -1162,13 +1228,25 @@ struct NativeAuthoringView: View {
                     Toggle("크기를 조정했음", isOn: $model.draft.provenance.scaleApplied)
                 }
                 TextField("출처 설명", text: $model.draft.provenance.notes, axis: .vertical)
+                if model.canInspectUnknownModel {
+                    Button("단위 미확인 GLB 검사…") { Task { await model.chooseImportFile(inspectUnknown: true) } }
+                    if let inspection = model.modelOriginalInspection {
+                        LabeledContent("확인한 삼각형", value: inspection.triangles.formatted())
+                        Text("GLB 구조와 좌표 범위만 확인했습니다. 실물 단위·정면·바닥 접점은 미확인입니다.")
+                            .foregroundStyle(.secondary)
+                        TextField("임시 표시 높이 (m)", value: $model.provisionalHeight, format: .number)
+                        Button("임시 표시 높이 설정") { model.applyInspectedDisplayReference() }
+                            .disabled(model.provisionalHeight == nil)
+                    }
+                }
             }
             if let selected = model.selected {
                 Text("저장된 revision \(selected.revision) · 파일 \(selected.assets.count)개")
                 Text("변경한 작품 버전은 정보·파일·권리를 다시 확인해 승인해야 합니다.").foregroundStyle(.secondary)
             }
             Button("작품 정보 저장") { Task { await model.save() } }.buttonStyle(.borderedProminent)
-                .disabled(model.draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.artistId.isEmpty || model.draft.rights.holder.isEmpty)
+                .disabled(model.draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.artistId.isEmpty
+                    || model.draft.rights.holder.isEmpty || model.inspectedReferencePending)
         }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true).disabled(model.busy || !ready)
     }
 }

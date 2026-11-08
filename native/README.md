@@ -342,6 +342,26 @@ and keeps the placement ID, room, transform and full asset. Use the ordinary
 exhibition save, reopen and export controls to persist and verify it. Render
 quality and the Viewer GPU budgets are verified separately.
 
+### Original GLBs with unknown source units
+
+In a session advertising `bounded-compact-source-inspection-v1`, choose
+**단위 미확인 GLB 검사…** in the artwork’s provenance controls. The runtime
+checks the selected file’s structure and coordinate bounds. Enter an authored
+provisional display height and apply it before saving artwork information.
+Keep the original units unknown. Structure inspection makes no claim about
+physical scale, orientation, floor contact or rendered appearance.
+
+Automation uses `artwork-create` with the usual `artistId` and `metadata`,
+plus `provisionalHeightMeters` and an allowed, digest-pinned GLB `inputPath`.
+Set metadata source units to `unknown` and `scaleApplied` to false. Manager
+constructs the reference from the inspection and chosen height. Continue
+with `import-glb` using that same file, saved revision and `scaleMeters: 1`.
+Wait for a ready, drained job before the separate `artwork-approve` command.
+Approve using the source revision and actual prepared asset ID. When the
+prepared bytes differ, the result advances the artwork revision and binds the
+reference to the prepared asset hash. Use the returned revision when
+registering the artwork or saving and exporting a placement.
+
 ### Private floor rendering
 
 The reviewed `cfe1` local-validation runtime also admits the existing Quiet

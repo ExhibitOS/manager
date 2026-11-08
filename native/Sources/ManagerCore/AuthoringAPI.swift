@@ -16,6 +16,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var nativeOexExportProfile: String? = nil
     public var nativePublicationProfile: String? = nil
     public var modelPreparationProfile: String? = nil
+    public var modelOriginalInspectionProfile: String? = nil
     public var compactModelVariantProfile: String? = nil
     public var nativeModelCandidateReplacementProfile: String? = nil
     public var workspaceMaterialProfile: String? = nil
@@ -155,6 +156,8 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch code {
         case "ARTWORK_DISPLAY_REFERENCE_INVALID": return "원본 단위 미확인 작품의 임시 표시 기준과 파일을 확인하세요. 배치 위치는 숫자로 입력할 수 있습니다."
+        case "MODEL_PREPARATION_PROFILE_UNSUPPORTED": return "선택한 GLB의 구조가 이 파일 검사에서 지원하는 범위와 맞지 않습니다."
+        case "MODEL_PREPARATION_DISPLAY_REFERENCE_INVALID": return "준비된 파일의 좌표와 임시 표시 기준을 확인하지 못했습니다."
         case "EXHIBITION_COMPARISON_STALE": return "저장본이 비교 후 바뀌었습니다. 현재 입력은 유지됩니다. 저장본을 다시 비교하세요."
         case "ARCHITECTURE_FIELDS_INVALID": return "공간 이름·크기·위치를 확인하세요. 크기는 0보다 큰 값, 위치는 숫자로 입력하세요."
         case "FURNISHING_FIELDS_INVALID": return "받침의 위치·회전·비례 크기를 확인하세요. 위치는 미터, 회전은 −180–180도, 비율은 0.1–4입니다. 입력과 기존 전시는 유지됩니다."
@@ -1282,6 +1285,22 @@ public actor AuthoringAPI {
     public var admitsRequiredModelPreparation: Bool {
         session?.modelPreparationProfile == NativeModelPreparationIntent.profile
     }
+    public var admitsModelOriginalInspection: Bool {
+        admitsRequiredModelPreparation && session?.modelOriginalInspectionProfile == NativeModelOriginalInspection.profile
+    }
+
+    public func inspectModelOriginal(_ file: ImportFileSnapshot) async throws -> NativeModelOriginalInspection {
+        guard admitsModelOriginalInspection, file.mime == "model/gltf-binary",
+              (28...ImportFileSnapshot.limit).contains(file.data.count) else {
+            throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE")
+        }
+        let inspection: NativeModelOriginalInspection = try await request(
+            "/api/v1/tenants/\(tenant)/imports/model-inspection",
+            method: "POST", body: file.data, contentType: "application/octet-stream")
+        try inspection.check(file: file)
+        return inspection
+    }
+
     public func createImport(_ input: NativeImportIntent) async throws -> NativeImportJob {
         if let hayes = input.hayesOriginal {
             guard nativeSession, hayesOriginalRuntimeQualified, hayes.matches(input) else {
@@ -1766,6 +1785,23 @@ public actor AuthoringAPI {
         if next != nil || furnishing != nil { try await validateNativeViewportEdit(next ?? draft, etag: etag) }
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next
+    }
+
+    public func approvePreparedModel(_ job: NativeImportJob, request: NativeImportIntent,
+                                     current: NativeArtwork) async throws -> NativeArtwork {
+        guard admitsRequiredModelPreparation, let preparation = job.modelPreparation, let display = preparation.display,
+              let metadata = current.metadata, preparation.permitsReview(of: current, request: request, job: job),
+              preparation.approvalRevision <= 2_147_483_647 else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+        let expected = preparation.approvedMetadata(from: metadata)
+        let heldGeneration = generation
+        let approval = try await approveArtwork(current.id, revision: preparation.intent.artworkRevision, assetId: display.assetId)
+        let observed = try await artwork(current.id)
+        guard generation == heldGeneration, approval.id == current.id, approval.revision == preparation.approvalRevision,
+              observed.metadata == expected, approval.metadata == expected,
+              preparation.permitsClearingTransfer(artwork: observed, request: request, job: job) else {
+            throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+        }
+        return observed
     }
 
     public func approveArtwork(_ id: String, revision: Int, assetId: String) async throws -> NativeArtwork {

@@ -49,6 +49,78 @@ final class NativeModelPreparationTests: XCTestCase {
         XCTAssertFalse(draining.confirmsIntakeDrain(for: request))
     }
 
+    func testInspectedOriginalBuildsOnlyAnAuthoredProvisionalReference() throws {
+        let hash = String(repeating: "b", count: 64)
+        let file = ImportFileSnapshot(name: "synthetic.glb", mime: "model/gltf-binary",
+                                      sha256: hash, data: Data(repeating: 0, count: 64))
+        var response: DocumentValue = .object([
+            "version": .integer(1), "profileId": .string(NativeModelPreparationIntent.profile),
+            "original": .object(["mime": .string(file.mime), "sha256": .string(hash), "bytes": .integer(64)]),
+            "rawBounds": .object(["min": .vector([0, 0, 0]), "max": .vector([1, 2, 3])]),
+            "triangles": .integer(4), "vertices": .integer(4), "sourceUnits": .string("unknown"),
+            "qualification": .string("structure-only")
+        ])
+        let inspected = try JSONDecoder().decode(NativeModelOriginalInspection.self, from: JSONEncoder().encode(response))
+        try inspected.check(file: file)
+        let original = ArtworkMetadata()
+        let metadata = try inspected.applying(to: original, height: 1.513)
+        XCTAssertEqual(metadata.provenance.sourceUnits, "unknown")
+        XCTAssertFalse(metadata.provenance.scaleApplied)
+        XCTAssertEqual(metadata.dimensions, original.dimensions)
+        XCTAssertEqual(metadata.displayReference?.assetSha256, hash)
+        XCTAssertEqual(metadata.displayReference?.pose.scale, Array(repeating: 1.513 / 2, count: 3))
+        XCTAssertThrowsError(try inspected.applying(to: original, height: 0))
+        response["original"]["bytes"] = .integer(63)
+        let mismatched = try JSONDecoder().decode(NativeModelOriginalInspection.self, from: JSONEncoder().encode(response))
+        XCTAssertThrowsError(try mismatched.check(file: file))
+    }
+
+    func testUnknownUnitApprovalRequiresActualDisplayReferenceAndNextRevision() throws {
+        let (bytes, _, original, request) = try readyFixture()
+        let display = try XCTUnwrap(original.display)
+        let originalId = try XCTUnwrap(original.original.assetId)
+        var response = try JSONDecoder().decode(DocumentValue.self, from: bytes)
+        let bounds = ArtworkMetadata.DisplayReference.Bounds(min: [0, 0, 0], max: [1, 1, 1])
+        let reference = ArtworkMetadata.DisplayReference(version: 1, status: "provisional-uncalibrated",
+            assetSha256: display.sha256, rawBounds: bounds, referenceHeightMeters: 1.5,
+            pose: .init(position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1.5, 1.5, 1.5]))
+        let receiptKey = "serverReceipt"
+        response["modelPreparation"][receiptKey]["producer"]["source"]["bounds"]["max"] = .vector(bounds.max)
+        response["modelPreparation"][receiptKey]["producer"]["output"]["bounds"]["max"] = .vector(bounds.max)
+        response["modelPreparation"][receiptKey]["displayReference"] = try JSONDecoder().decode(
+            DocumentValue.self, from: JSONEncoder().encode(reference))
+        let job = try JSONDecoder().decode(NativeImportJob.self, from: JSONEncoder().encode(response))
+        let status = try XCTUnwrap(job.modelPreparation)
+        XCTAssertTrue(status.matches(request, job: job))
+        XCTAssertEqual(status.approvalRevision, status.intent.artworkRevision + 1)
+        let assets: [NativeArtwork.Asset] = [
+            .init(id: display.assetId, mime: display.mime, state: "approved", sha256: display.sha256, bytes: Int64(display.bytes)),
+            .init(id: originalId, mime: status.original.mime, state: "quarantine", sha256: status.original.sha256,
+                  bytes: Int64(status.original.bytes))
+        ]
+        var metadata = ArtworkMetadata()
+        metadata.provenance.sourceUnits = "unknown"
+        metadata.rights = request.rights
+        let artist = UUID().uuidString
+        func artwork(_ revision: Int, approved: Bool, reference: ArtworkMetadata.DisplayReference) -> NativeArtwork {
+            var snapshot = metadata
+            snapshot.displayReference = reference
+            return .init(id: request.artworkId, artistId: artist, revision: revision, approvedRevision: approved ? revision : nil,
+                         approvedAssetId: approved ? display.assetId : nil, metadata: snapshot, assets: assets, archived: false)
+        }
+        let sourceReference = reference.binding(to: status.original.sha256)
+        let source = artwork(status.intent.artworkRevision, approved: false, reference: sourceReference)
+        let rebound = artwork(status.approvalRevision, approved: true, reference: reference)
+        XCTAssertTrue(status.permitsReview(of: source, request: request, job: job))
+        XCTAssertFalse(status.permitsClearingTransfer(artwork: source, request: request, job: job))
+        XCTAssertTrue(status.permitsClearingTransfer(artwork: rebound, request: request, job: job))
+        XCTAssertFalse(status.permitsClearingTransfer(
+            artwork: artwork(status.approvalRevision, approved: true, reference: sourceReference), request: request, job: job))
+        response["modelPreparation"][receiptKey]["producer"]["output"]["bounds"]["max"] = .vector([1, 1, 2])
+        let changed = try JSONDecoder().decode(NativeImportJob.self, from: JSONEncoder().encode(response))
+        XCTAssertEqual(changed.modelPreparation?.matches(request, job: changed), false)
+    }
+
     func testRequiredTransferRemainsUntilExactApprovalOrDrainedCancellation() throws {
         let (bytes, job, status, request) = try readyFixture()
         let display = try XCTUnwrap(status.display)
