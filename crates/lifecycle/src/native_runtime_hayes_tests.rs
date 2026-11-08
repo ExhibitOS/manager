@@ -19,6 +19,10 @@ impl Fixture {
             .canonicalize()
             .unwrap()
             .join(format!("hayes-{}", Uuid::new_v4()));
+        Self::provision(path)
+    }
+
+    fn provision(path: PathBuf) -> Self {
         fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
         fs::OpenOptions::new()
             .create_new(true)
@@ -640,4 +644,51 @@ fn generation_does_not_authorize_a_replaced_output_inode() {
     assert!(!root.0.join("descendant-alive").exists());
     assert!(!attempt.journal.path.join(Role::Generate.files().1).exists());
     assert_eq!(code(attempt.retire_unstarted()), "HAYES_DRAIN_UNCONFIRMED");
+}
+
+/// Exercises the exact packaged Node/leaf with no GO or artwork bytes.
+#[test]
+#[ignore]
+fn fixed_package_inert_leaf_exits_on_owner_loss() {
+    use crate::native_payload::{hayes::HayesPhase, Payload};
+    let package =
+        PathBuf::from(env::var_os("HAYES_FIXED_PACKAGE").expect("private candidate path"));
+    let payload = Payload::open(&package).unwrap();
+    let command = payload.hayes_fixed_command(HayesPhase::Generate).unwrap();
+    let args: Vec<_> = command.args.iter().map(|arg| arg.as_os_str()).collect();
+
+    let custody =
+        PathBuf::from(env::var_os("HAYES_INERT_CUSTODY_ROOT").expect("new private custody path"));
+    // The exact leaf launch remains unresolved for custody purposes even
+    // after direct exit. Keep this dedicated evidence on failure too.
+    let root = std::mem::ManuallyDrop::new(Fixture::provision(custody));
+    let expected = binding();
+    let mut attempt = root.acquire().begin(expected).unwrap();
+    let mut run = attempt
+        .prepare_generation(synthetic_source(&attempt))
+        .unwrap()
+        .spawn_fixture(&command.program, &args)
+        .unwrap();
+    let output = generation_output_path(&attempt);
+    attempt.register_ready(&mut run.child).unwrap();
+    assert!(attempt
+        .journal
+        .path
+        .join(Role::Generate.files().1)
+        .is_file());
+    assert_eq!(fs::metadata(&output).unwrap().len(), 0);
+    drop(attempt);
+
+    assert_eq!(
+        code(Lease::acquire(&root.0, root.authority())),
+        "HAYES_RESERVATION_BUSY"
+    );
+    run.child.owner.take();
+    wait_for(|| run.child.try_wait().unwrap().is_some());
+    assert_eq!(run.child.try_wait().unwrap().unwrap().code(), Some(70));
+    assert_eq!(fs::metadata(output).unwrap().len(), 0);
+    assert_eq!(
+        code(root.acquire().check_interrupted(expected)),
+        "HAYES_DRAIN_UNCONFIRMED"
+    );
 }
