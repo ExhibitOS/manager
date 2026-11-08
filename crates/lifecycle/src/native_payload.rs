@@ -485,7 +485,11 @@ const CATALOG40_WHEAT_DETAIL: Option<(&str, &str, &str)> = None;
 
 // The ordinary package is admitted only after its sealed inventory is reviewed.
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const CATALOG44_WHEAT_TARGET: Option<RuntimeTuple> = None;
+const CATALOG44_WHEAT_TARGET: Option<RuntimeTuple> = Some((
+    "e4702f67a8eb2f8c9fd3d344c344f463a70e39e0",
+    "2627954c7ac6c083bed01470db1e3ccec94e857ea2858babca1b4ed1e740adad",
+    "c0565112569fc1b1b95f8ada72b2b7cacabc8ea3e24b58a61dc9aa138c8bb406",
+));
 
 pub(crate) fn ordinary_hayes_release_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -560,6 +564,15 @@ impl FurnishingTransition {
         let source = source?;
         let target = target?;
         (pair == (source.2, target.2)).then_some(Self::SameCatalog { source, target })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reviewed_catalog40_to_44() -> Self {
+        let source = CATALOG40_WHEAT_DETAIL.expect("reviewed catalog 40 source");
+        let target = CATALOG44_WHEAT_TARGET.expect("reviewed ordinary catalog 44 target");
+        assert!(Self::from_manifests((target.2, source.2)).is_none());
+        assert!(Self::from_manifests((source.2, HAYES_RELEASE_PROBE_PIN.as_ref().unwrap().host.2)).is_none());
+        Self::from_manifests((source.2, target.2)).expect("exact directed catalog 40 to 44 transition")
     }
 
     #[cfg(test)]

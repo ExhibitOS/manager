@@ -638,14 +638,63 @@ mod tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    fn catalog40_to_44_requires_exact_clean_owner_and_reopens_after_stop() {
+        let transition = FurnishingTransition::reviewed_catalog40_to_44();
+        let mut source = catalog40_binding(GENERATION, transition.source());
+        source.phase = Phase::Clean;
+        let mut target = catalog40_binding(NEXT, transition.target());
+        target.catalog = 44;
+        assert!(target.check().is_err());
+        assert!(target.clone().consume(&source).is_err());
+
+        let mut wrong_source = source.clone();
+        wrong_source.payload_manifest_sha256 = "d".repeat(64);
+        assert!(target.clone().consume_furnishing_transition(&wrong_source, transition).is_err());
+        wrong_source = source.clone();
+        wrong_source.owner.principal_id = NEXT.into();
+        assert!(target.clone().consume_furnishing_transition(&wrong_source, transition).is_err());
+        wrong_source = source.clone();
+        wrong_source.physical.lock_inode += 1;
+        assert!(target.clone().consume_furnishing_transition(&wrong_source, transition).is_err());
+        wrong_source = source.clone();
+        wrong_source.phase = Phase::Active;
+        assert!(target.clone().consume_furnishing_transition(&wrong_source, transition).is_err());
+
+        let mut wrong_target = target.clone();
+        wrong_target.producer_sha256 = "d".repeat(64);
+        assert!(wrong_target.consume_furnishing_transition(&source, transition).is_err());
+        target.consume_furnishing_transition(&source, transition).unwrap();
+        assert_eq!(target.previous_generation.as_deref(), Some(GENERATION));
+        assert_eq!(target.admission_kind, Admission::CatalogUpgrade040To044);
+        assert_eq!(target.admission_kind.tag(), 5);
+        assert_eq!(serde_json::to_value(target.admission_kind).unwrap(), "catalog-upgrade-040-to-044");
+
+        target.phase = Phase::Clean;
+        let mut reopen = catalog40_binding(LATER, transition.target());
+        reopen.catalog = 44;
+        assert!(reopen.clone().consume_furnishing_transition(&target, transition).is_err());
+        reopen.consume(&target).unwrap();
+        assert_eq!(reopen.previous_generation.as_deref(), Some(NEXT));
+        assert_eq!(reopen.admission_kind, Admission::CleanReopen);
+        assert!(catalog40_binding(LATER, transition.source()).consume(&target).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn catalog40_to_44_recovery_retains_the_failed_trial_and_restores_source() {
+        check_furnishing_recovery(FurnishingTransition::reviewed_catalog40_to_44());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     fn catalog40_transition_recovers_only_its_own_consumption_and_keeps_trial_record() {
         for transition in [FurnishingTransition::White, FurnishingTransition::Tangent, FurnishingTransition::test_upgrade()] {
-            check_catalog40_recovery(transition);
+            check_furnishing_recovery(transition);
         }
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    fn check_catalog40_recovery(transition: FurnishingTransition) {
+    fn check_furnishing_recovery(transition: FurnishingTransition) {
         use std::os::unix::fs::DirBuilderExt;
         let root = std::env::temp_dir().join(format!("catalog40-transition-{}", Uuid::new_v4()));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
@@ -685,6 +734,7 @@ mod tests {
 
         write_run(&prior_run, &context, proof(NEXT)).unwrap();
         let mut target = catalog40_binding(NEXT, transition.target());
+        target.catalog = transition.target_catalog().version();
         target.physical = prior.physical;
         target.consume_furnishing_transition(&prior, transition).unwrap();
         write_json(&root, "native-current-run.json", &Current {
@@ -706,7 +756,9 @@ mod tests {
             context.state = "starting_services".into();
             write_run(&trial_run, &context, None).unwrap();
             assert!(trial.check_recovery_root(&root, &writer, transition).is_err());
-            assert!(catalog40_binding(LATER, transition.target()).consume_furnishing_transition(&target, transition).is_err());
+            let mut next = catalog40_binding(LATER, transition.target());
+            next.catalog = transition.target_catalog().version();
+            assert!(next.consume_furnishing_transition(&target, transition).is_err());
         }
 
         // The helper drained the failed trial and exited before sealing the
@@ -725,11 +777,14 @@ mod tests {
         context.node_pid = None;
         write_run(&trial_run, &context, None).unwrap();
         trial.check_recovery_root(&root, &writer, transition).unwrap();
+        let trial_state = fs::read(trial_run.join("state.json")).unwrap();
+        let trial_drain = fs::read(trial_run.join("catalog40-drained.json")).unwrap();
         trial.recover_source(&service, &writer, transition).unwrap();
         trial.recover_source(&service, &writer, transition).unwrap();
         assert_eq!(current_run(&root).unwrap(), Some(source));
         unconsumed_furnishing_completion(&root, &prior).unwrap();
-        assert!(read_run(&root, NEXT).is_ok());
+        assert_eq!(fs::read(trial_run.join("state.json")).unwrap(), trial_state);
+        assert_eq!(fs::read(trial_run.join("catalog40-drained.json")).unwrap(), trial_drain);
         drop(writer);
         fs::remove_dir_all(root).unwrap();
     }
