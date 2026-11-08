@@ -6,7 +6,7 @@ use crate::{
     maintenance_source::DirectoryPin, native_payload::Payload, native_runtime::StaticDetailAuthority,
 };
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ffi::{CStr, CString, OsStr, OsString},
     os::{
         fd::{AsRawFd, FromRawFd},
@@ -254,16 +254,7 @@ fn verify_export(status: &Status, check: &impl Fn() -> Result<()>) -> Result<Rec
         "static-export-manifest.json",
         8 * 1024 * 1024,
     )?;
-    let manifest: Manifest = serde_json::from_slice(&raw).map_err(|_| bad())?;
-    if manifest.format != "exhibitos-static-publication-v1"
-        || manifest.publication_id != status.publication_id
-        || manifest.revision_sha256 != status.revision_sha256
-        || !hash_valid(&manifest.index_sha256)
-        || manifest.files.is_empty()
-        || manifest.files.len() >= 20_000
-    {
-        return Err(bad());
-    }
+    let manifest = export_manifest(status, &raw)?;
     let mut expected = BTreeSet::from(["static-export-manifest.json".to_string()]);
     let mut bytes = raw.len() as u64;
     for item in &manifest.files {
@@ -321,25 +312,12 @@ fn verify_export(status: &Status, check: &impl Fn() -> Result<()>) -> Result<Rec
     if actual != expected
         || !expected.contains("index.html")
         || expected.contains("studio.html") != status.private_editor
-        || digest(&bounded(
-            &status.output,
-            "static-publication-index.json",
-            1024 * 1024,
-        )?) != manifest.index_sha256
     {
         return Err(bad());
     }
-    let html = bounded(&status.output, "index.html", 1024 * 1024)?;
-    let html = String::from_utf8_lossy(&html);
-    let private_marker = "<meta name=\"exhibitos-private-editor\" content=\"enabled\">";
-    if !html.contains(&manifest.index_sha256) || html.contains(private_marker) != status.private_editor {
-        return Err(bad());
-    }
-    if status.private_editor && !String::from_utf8_lossy(&bounded(&status.output, "studio.html", 1024 * 1024)?)
-        .contains(&manifest.index_sha256)
-    {
-        return Err(bad());
-    }
+    verify_export_controls(status, &manifest, |name| {
+        bounded(&status.output, name, 1024 * 1024)
+    })?;
     Ok(Receipt {
         publication_id: status.publication_id.clone(),
         revision_sha256: status.revision_sha256.clone(),
@@ -350,6 +328,44 @@ fn verify_export(status: &Status, check: &impl Fn() -> Result<()>) -> Result<Rec
         output: status.output.clone(),
     })
 }
+fn export_manifest(status: &Status, raw: &[u8]) -> Result<Manifest> {
+    let manifest: Manifest = serde_json::from_slice(raw).map_err(|_| bad())?;
+    if manifest.format != "exhibitos-static-publication-v1"
+        || manifest.publication_id != status.publication_id
+        || manifest.revision_sha256 != status.revision_sha256
+        || !hash_valid(&manifest.index_sha256)
+        || manifest.files.is_empty()
+        || manifest.files.len() >= 20_000
+    {
+        return Err(bad());
+    }
+    Ok(manifest)
+}
+
+fn verify_export_controls(
+    status: &Status,
+    manifest: &Manifest,
+    mut read: impl FnMut(&str) -> Result<Vec<u8>>,
+) -> Result<()> {
+    if digest(&read("static-publication-index.json")?) != manifest.index_sha256 {
+        return Err(bad());
+    }
+    let html = read("index.html")?;
+    let html = String::from_utf8_lossy(&html);
+    let private_marker = "<meta name=\"exhibitos-private-editor\" content=\"enabled\">";
+    if !html.contains(&manifest.index_sha256)
+        || html.contains(private_marker) != status.private_editor
+    {
+        return Err(bad());
+    }
+    if status.private_editor
+        && !String::from_utf8_lossy(&read("studio.html")?).contains(&manifest.index_sha256)
+    {
+        return Err(bad());
+    }
+    Ok(())
+}
+
 const DETAIL_UNCONFIRMED: &str = "NATIVE_STATIC_DETAIL_CLEANUP_UNCONFIRMED";
 const DETAIL_DURABILITY: &str = "NATIVE_STATIC_DETAIL_DURABILITY_UNCERTAIN";
 const DETAIL_CANCELLED: &str = "NATIVE_STATIC_CANCELLED";
@@ -711,33 +727,301 @@ fn promoted_identity(
     Ok(DirectoryIdentity::read(&destination)? == journal.stage)
 }
 
-// Bound directory traversal and sync only single-link files from the pinned stage.
-fn sync_detail_tree(
-    directory: &File,
-    depth: usize,
-    remaining: &mut usize,
-    check: &impl Fn() -> Result<()>,
-) -> Result<()> {
-    check()?;
-    if depth > 16 {
-        return Err(bad());
-    }
-    let names = detail_directory_names(directory, *remaining)?;
-    *remaining -= names.len();
-    for name in names {
-        check()?;
-        let item = open_detail_at(directory, &name, libc::O_RDONLY)?;
-        let stat = item.metadata().map_err(|_| bad())?;
-        if stat.is_dir() {
-            sync_detail_tree(&item, depth + 1, remaining, check)?;
-        } else if stat.is_file() && stat.nlink() == 1 {
-            item.sync_all().map_err(|_| bad())?;
-        } else {
-            return Err(bad());
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct DetailStamp {
+    device: u64,
+    inode: u64,
+    mode: libc::mode_t,
+    uid: u32,
+    gid: u32,
+    links: u64,
+    size: i64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+
+impl From<libc::stat> for DetailStamp {
+    fn from(stat: libc::stat) -> Self {
+        Self {
+            device: stat.st_dev as u64,
+            inode: stat.st_ino,
+            mode: stat.st_mode,
+            uid: stat.st_uid,
+            gid: stat.st_gid,
+            links: u64::from(stat.st_nlink),
+            size: stat.st_size,
+            modified: (stat.st_mtime, stat.st_mtime_nsec),
+            changed: (stat.st_ctime, stat.st_ctime_nsec),
         }
     }
-    directory.sync_all().map_err(|_| bad())
 }
+
+impl DetailStamp {
+    fn held(file: &File) -> Result<Self> {
+        let mut stat = std::mem::MaybeUninit::uninit();
+        if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+            return Err(bad());
+        }
+        Ok(unsafe { stat.assume_init() }.into())
+    }
+
+    fn check_named(self, parent: &File, name: &OsStr) -> Result<()> {
+        if detail_stat_at(parent, name)?.map(Self::from) != Some(self) {
+            return Err(bad());
+        }
+        Ok(())
+    }
+
+    fn is_directory(self) -> bool {
+        self.mode & libc::S_IFMT == libc::S_IFDIR
+    }
+}
+
+fn open_stage_entry(parent: &File, name: &OsStr) -> Result<(File, DetailStamp)> {
+    let stamp = DetailStamp::from(detail_stat_at(parent, name)?.ok_or_else(bad)?);
+    let flags = match stamp.mode & libc::S_IFMT {
+        libc::S_IFDIR => libc::O_RDONLY | libc::O_DIRECTORY,
+        libc::S_IFREG => libc::O_RDONLY,
+        _ => return Err(bad()),
+    };
+    let file = open_detail_at(parent, name, flags)?;
+    if DetailStamp::held(&file)? != stamp {
+        return Err(bad());
+    }
+    Ok((file, stamp))
+}
+
+struct DetailTree {
+    stamp: DetailStamp,
+    entries: BTreeMap<OsString, DetailNode>,
+}
+
+enum DetailNode {
+    File(DetailStamp),
+    Directory(DetailTree),
+}
+
+impl DetailNode {
+    fn stamp(&self) -> DetailStamp {
+        match self {
+            Self::File(stamp) => *stamp,
+            Self::Directory(tree) => tree.stamp,
+        }
+    }
+}
+
+impl DetailTree {
+    fn recheck(&self, directory: &File, check: &impl Fn() -> Result<()>) -> Result<()> {
+        check()?;
+        let names = detail_directory_names(directory, self.entries.len())?;
+        if DetailStamp::held(directory)? != self.stamp || names.len() != self.entries.len() {
+            return Err(bad());
+        }
+        for name in names {
+            check()?;
+            let entry = self.entries.get(&name).ok_or_else(bad)?;
+            if let DetailNode::Directory(tree) = entry {
+                let child = open_detail_at(directory, &name, libc::O_RDONLY | libc::O_DIRECTORY)?;
+                tree.recheck(&child, check)?;
+            }
+            entry.stamp().check_named(directory, &name)?;
+        }
+        if DetailStamp::held(directory)? != self.stamp {
+            return Err(bad());
+        }
+        Ok(())
+    }
+}
+
+fn verify_and_sync_detail_file(
+    file: &File,
+    stamp: DetailStamp,
+    limit: u64,
+    check: &impl Fn() -> Result<()>,
+    sync: &impl Fn(&File) -> std::io::Result<()>,
+) -> Result<(Vec<u8>, String)> {
+    if stamp.mode & libc::S_IFMT != libc::S_IFREG
+        || stamp.links != 1
+        || stamp.size <= 0
+        || stamp.size as u64 > limit
+    {
+        return Err(bad());
+    }
+    let mut bytes = Vec::new();
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| bad())?;
+    if bytes.len() as i64 != stamp.size || DetailStamp::held(file)? != stamp {
+        return Err(bad());
+    }
+    let hash = digest(&bytes);
+    check()?;
+    sync(file).map_err(|_| err(DETAIL_DURABILITY))?;
+    if DetailStamp::held(file)? != stamp {
+        return Err(bad());
+    }
+    Ok((bytes, hash))
+}
+
+struct DetailVerifier<'a> {
+    root: DetailStamp,
+    manifest: DetailStamp,
+    expected: BTreeMap<&'a str, &'a ManifestFile>,
+    controls: BTreeMap<String, Vec<u8>>,
+    remaining: usize,
+}
+
+impl DetailVerifier<'_> {
+    fn capture(
+        &mut self,
+        directory: &File,
+        prefix: &str,
+        depth: usize,
+        check: &impl Fn() -> Result<()>,
+    ) -> Result<DetailTree> {
+        check()?;
+        let stamp = DetailStamp::held(directory)?;
+        if depth > 16
+            || !stamp.is_directory()
+            || stamp.device != self.root.device
+            || stamp.uid != self.root.uid
+            || stamp.mode & 0o022 != 0
+            || depth == 0 && stamp != self.root
+        {
+            return Err(bad());
+        }
+        let names = detail_directory_names(directory, self.remaining)?;
+        self.remaining -= names.len();
+        let mut entries = BTreeMap::new();
+        for name in names {
+            check()?;
+            let leaf = name.to_str().ok_or_else(bad)?;
+            let path = format!("{prefix}{leaf}");
+            if !safe_name(&path) {
+                return Err(bad());
+            }
+            let (item, held) = open_stage_entry(directory, &name)?;
+            let entry = if held.is_directory() {
+                DetailNode::Directory(self.capture(&item, &format!("{path}/"), depth + 1, check)?)
+            } else if path == "static-export-manifest.json" {
+                if held != self.manifest {
+                    return Err(bad());
+                }
+                DetailNode::File(held)
+            } else {
+                let expected = self.expected.remove(path.as_str()).ok_or_else(bad)?;
+                let control = matches!(
+                    path.as_str(),
+                    "index.html" | "studio.html" | "static-publication-index.json"
+                );
+                let limit = if control {
+                    1024 * 1024
+                } else {
+                    25 * 1024 * 1024
+                };
+                if held.device != self.root.device
+                    || held.uid != self.root.uid
+                    || held.mode & 0o022 != 0
+                    || held.size as u64 != expected.bytes
+                {
+                    return Err(bad());
+                }
+                let (bytes, hash) =
+                    verify_and_sync_detail_file(&item, held, limit, check, &File::sync_all)?;
+                if hash != expected.sha256 {
+                    return Err(bad());
+                }
+                if control {
+                    self.controls.insert(path, bytes);
+                }
+                DetailNode::File(held)
+            };
+            entry.stamp().check_named(directory, &name)?;
+            entries.insert(name, entry);
+        }
+        check()?;
+        directory.sync_all().map_err(|_| err(DETAIL_DURABILITY))?;
+        if DetailStamp::held(directory)? != stamp {
+            return Err(bad());
+        }
+        Ok(DetailTree { stamp, entries })
+    }
+}
+
+fn verify_detail_stage(
+    stage: &DetailStage,
+    journal: &DetailJournal,
+    expected_manifest: &str,
+    check: &impl Fn() -> Result<()>,
+) -> Result<(Receipt, DetailTree)> {
+    check()?;
+    stage.check(journal)?;
+    let root = DetailStamp::held(&stage.directory)?;
+    let manifest_name = OsStr::new("static-export-manifest.json");
+    let (manifest_file, stamp) = open_stage_entry(&stage.directory, manifest_name)?;
+    if stamp.device != root.device || stamp.uid != root.uid || stamp.mode & 0o022 != 0 {
+        return Err(bad());
+    }
+    let (raw, manifest_hash) = verify_and_sync_detail_file(
+        &manifest_file,
+        stamp,
+        8 * 1024 * 1024,
+        check,
+        &File::sync_all,
+    )?;
+    if manifest_hash != expected_manifest {
+        return Err(bad());
+    }
+    stamp.check_named(&stage.directory, manifest_name)?;
+    let manifest = export_manifest(&journal.status, &raw)?;
+    let mut verifier = DetailVerifier {
+        root,
+        manifest: stamp,
+        expected: BTreeMap::new(),
+        controls: BTreeMap::new(),
+        remaining: 40_000,
+    };
+    let mut bytes = raw.len() as u64;
+    for item in &manifest.files {
+        if !safe_name(&item.path)
+            || item.path == "static-export-manifest.json"
+            || !hash_valid(&item.sha256)
+            || item.bytes > 25 * 1024 * 1024
+            || verifier.expected.insert(&item.path, item).is_some()
+        {
+            return Err(bad());
+        }
+        bytes = bytes.checked_add(item.bytes).ok_or_else(bad)?;
+    }
+    let tree = verifier.capture(&stage.directory, "", 0, check)?;
+    if !verifier.expected.is_empty()
+        || !matches!(tree.entries.get(manifest_name), Some(DetailNode::File(stamp)) if *stamp == verifier.manifest)
+        || verifier.controls.contains_key("studio.html") != journal.status.private_editor
+    {
+        return Err(bad());
+    }
+    verify_export_controls(&journal.status, &manifest, |name| {
+        verifier.controls.remove(name).ok_or_else(bad)
+    })?;
+    check()?;
+    stage
+        .wrapper
+        .sync_all()
+        .map_err(|_| err(DETAIL_DURABILITY))?;
+    Ok((
+        Receipt {
+            publication_id: journal.status.publication_id.clone(),
+            revision_sha256: journal.status.revision_sha256.clone(),
+            index_sha256: manifest.index_sha256,
+            manifest_sha256: manifest_hash,
+            files: manifest.files.len() as u64 + 1,
+            bytes,
+            output: journal.status.output.clone(),
+        },
+        tree,
+    ))
+}
+
 fn clear_detail_tree(directory: &File, depth: usize, remaining: &mut usize) -> Result<()> {
     if depth > 16 {
         return Err(bad());
@@ -1058,7 +1342,7 @@ impl DetailRun {
             })
         })();
         drop(startup);
-        let verified = (|| -> Result<Receipt> {
+        let verified = (|| -> Result<(Receipt, DetailTree)> {
             started?;
             let input = stdin.as_mut().ok_or_else(bad)?;
             let output = stdout.as_mut().ok_or_else(bad)?;
@@ -1067,16 +1351,8 @@ impl DetailRun {
             if staged.kind != FrameKind::Staged || staged.job_id != journal.status.job_id {
                 return Err(bad());
             }
-            stage.check(&journal)?;
-            let mut staged_status = journal.status.clone();
-            staged_status.output = stage.path.clone();
-            let mut receipt = verify_export(&staged_status, &check)?;
-            if receipt.manifest_sha256 != staged.manifest_sha256 {
-                return Err(bad());
-            }
-            sync_detail_tree(&stage.directory, 0, &mut 40_000, &check)?;
-            stage.wrapper.sync_all().map_err(|_| bad())?;
-            stage.check(&journal)?;
+            // STAGED relinquishes all child writes to this tree.
+            let (receipt, tree) = verify_detail_stage(&stage, &journal, &staged.manifest_sha256, &check)?;
             journal.manifest_sha256 = Some(staged.manifest_sha256);
             controller.write_detail_journal(token, &journal, false)?;
             let ack = serde_json::to_vec(&DetailFrame {
@@ -1086,6 +1362,8 @@ impl DetailRun {
                 manifest_sha256: receipt.manifest_sha256.clone(),
             })
             .map_err(|_| bad())?;
+            tree.recheck(&stage.directory, &check)?;
+            stage.check(&journal)?;
             detail_write(input, &(ack.len() as u32).to_be_bytes(), &check)?;
             detail_write(input, &ack, &check)?;
             let ready = read_detail_frame(output, &check)?;
@@ -1100,13 +1378,12 @@ impl DetailRun {
             if !owned_child_group_absent(group) {
                 return Err(err(DETAIL_UNCONFIRMED));
             }
-            receipt.output = journal.status.output.clone();
-            Ok(receipt)
+            Ok((receipt, tree))
         })();
         drop(stdin);
         drop(stdout);
-        let receipt = match verified {
-            Ok(receipt) => receipt,
+        let (receipt, tree) = match verified {
+            Ok(verified) => verified,
             Err(_) => {
                 // Reaping is necessary but a lost READY is never server settlement.
                 if stop_detail_child(&mut child.0) && owned_child_group_absent(group) {
@@ -1117,7 +1394,10 @@ impl DetailRun {
             }
         };
         journal.child_returned = true;
-        let promoted = commit_detail(&stage, &journal, commit_gate, &check);
+        let promoted = commit_detail(&stage, &journal, commit_gate, &|| {
+            tree.recheck(&stage.directory, &check)?;
+            check()
+        });
         if let Err(error) = promoted {
             return finish_detail_failure(controller, token, &mut journal, error);
         }
@@ -1913,6 +2193,117 @@ mod detail_tests {
         (root, stage, journal)
     }
 
+    fn write_detail_fixture(stage: &DetailStage, journal: &DetailJournal) -> String {
+        let index = b"{}";
+        let index_hash = digest(index);
+        let html = format!("<meta content=\"{index_hash}\">");
+        fs::create_dir(stage.path.join("assets")).unwrap();
+        let files = [
+            ("index.html", html.as_bytes()),
+            ("static-publication-index.json", index),
+            ("assets/payload", b"original"),
+        ];
+        let files: Vec<_> = files
+            .into_iter()
+            .map(|(path, bytes)| {
+                fs::write(stage.path.join(path), bytes).unwrap();
+                serde_json::json!({"path":path, "bytes":bytes.len(), "sha256":digest(bytes)})
+            })
+            .collect();
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "format": "exhibitos-static-publication-v1",
+            "publicationId": journal.status.publication_id,
+            "revisionSha256": journal.status.revision_sha256,
+            "indexSha256": index_hash,
+            "files": files,
+        }))
+        .unwrap();
+        fs::write(stage.path.join("static-export-manifest.json"), &manifest).unwrap();
+        digest(&manifest)
+    }
+
+    #[test]
+    fn static_detail_recheck_refuses_replaced_ancestor_with_matching_bytes() {
+        let (root, stage, journal) = stage_fixture();
+        let manifest = write_detail_fixture(&stage, &journal);
+        let (receipt, tree) = verify_detail_stage(&stage, &journal, &manifest, &|| Ok(())).unwrap();
+        assert_eq!(receipt.manifest_sha256, manifest);
+        assert_eq!(receipt.files, 4);
+        tree.recheck(&stage.directory, &|| Ok(())).unwrap();
+        stage.check(&journal).unwrap();
+
+        fs::rename(stage.path.join("assets"), root.join("displaced-assets")).unwrap();
+        fs::create_dir(stage.path.join("assets")).unwrap();
+        fs::write(stage.path.join("assets/payload"), b"original").unwrap();
+        assert!(tree.recheck(&stage.directory, &|| Ok(())).is_err());
+        assert!(!journal.status.output.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn static_detail_recheck_refuses_same_inode_change_before_commit() {
+        let (root, stage, journal) = stage_fixture();
+        let manifest = write_detail_fixture(&stage, &journal);
+        let (_, tree) = verify_detail_stage(&stage, &journal, &manifest, &|| Ok(())).unwrap();
+        let payload = stage.path.join("assets/payload");
+        let original_inode = fs::metadata(&payload).unwrap().ino();
+        fs::write(&payload, b"modified").unwrap();
+        let changed = File::open(&payload).unwrap();
+        changed
+            .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(60))
+            .unwrap();
+        assert_eq!(changed.metadata().unwrap().ino(), original_inode);
+        let gate = Mutex::new(());
+        assert!(
+            commit_detail(&stage, &journal, &gate, &|| {
+                tree.recheck(&stage.directory, &|| Ok(()))
+            })
+            .is_err()
+        );
+        assert!(!journal.status.output.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn static_detail_file_refuses_failed_sync_and_same_inode_mutation_during_sync() {
+        let (root, stage, _) = stage_fixture();
+        let payload = stage.path.join("payload");
+        fs::write(&payload, b"original").unwrap();
+        let file = open_detail_at(&stage.directory, OsStr::new("payload"), libc::O_RDONLY).unwrap();
+        let stamp = DetailStamp::held(&file).unwrap();
+        let failed = verify_and_sync_detail_file(&file, stamp, 8, &|| Ok(()), &|synced| {
+            assert_eq!(synced.as_raw_fd(), file.as_raw_fd());
+            Err(std::io::Error::other("injected sync failure"))
+        });
+        assert_eq!(failed.unwrap_err().code, DETAIL_DURABILITY);
+
+        let file = open_detail_at(&stage.directory, OsStr::new("payload"), libc::O_RDONLY).unwrap();
+        let changed = verify_and_sync_detail_file(&file, stamp, 8, &|| Ok(()), &|synced| {
+            assert_eq!(synced.as_raw_fd(), file.as_raw_fd());
+            fs::write(&payload, b"modified").unwrap();
+            synced.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(60)).unwrap();
+            synced.sync_all().unwrap();
+            Ok(())
+        });
+        assert!(changed.is_err());
+        assert_eq!(file.metadata().unwrap().ino(), stamp.inode);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn static_detail_cancel_before_sync_stops_durability_work() {
+        let (root, stage, _) = stage_fixture();
+        fs::write(stage.path.join("payload"), b"original").unwrap();
+        let file = open_detail_at(&stage.directory, OsStr::new("payload"), libc::O_RDONLY).unwrap();
+        let stamp = DetailStamp::held(&file).unwrap();
+        let cancelled =
+            verify_and_sync_detail_file(&file, stamp, 8, &|| Err(err(DETAIL_CANCELLED)), &|_| {
+                panic!("sync after cancellation")
+            });
+        assert_eq!(cancelled.unwrap_err().code, DETAIL_CANCELLED);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn static_detail_stage_cancel_and_collision_leave_destination_untouched() {
         let (root, stage, journal) = stage_fixture();
@@ -1929,7 +2320,6 @@ mod detail_tests {
                 .is_err()
         );
         fs::write(stage.path.join("payload"), b"approved").unwrap();
-        sync_detail_tree(&stage.directory, 0, &mut 3, &|| Ok(())).unwrap();
         let gate = Mutex::new(());
         let error =
             commit_detail(&stage, &journal, &gate, &|| Err(err(DETAIL_CANCELLED))).unwrap_err();
