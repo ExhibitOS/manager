@@ -21,6 +21,14 @@ public enum NativeJPEGImportRuntime {
         guard ready, let manifestSHA256 else { return false }
         return qualifiedICCManifests.contains(manifestSHA256)
             || supportsPortalICCValidation(manifestSHA256: manifestSHA256, ready: ready)
+            || supportsSameOwnerArtworkReplacement(manifestSHA256: manifestSHA256, ready: ready)
+    }
+    static func supportsSameOwnerArtworkReplacement(manifestSHA256: String?, ready: Bool) -> Bool {
+        #if DEBUG && os(macOS)
+        ready && manifestSHA256 == "73a491c071ae5c6f10c786793733968549ab400333569d8427530b6e81606c9b"
+        #else
+        false
+        #endif
     }
     public static func supports(manifestSHA256: String?, ready: Bool) -> Bool {
         guard ready else { return false }
@@ -28,6 +36,104 @@ public enum NativeJPEGImportRuntime {
             || manifestSHA256 == currentManifestSHA256
             || manifestSHA256 == "74b08c7899d74ad989bbb61e47fc86fe9fa25c8853ab27ce57e9135c4932e96a"
             || PublicationWatermarkRuntime.supports(manifestSHA256: manifestSHA256, ready: ready)
+    }
+}
+
+/// An intent to prepare the server-owned coarse member of a reviewed image pair.
+public struct NativeCoarsePreparationIntent: Codable, Equatable, Sendable {
+    public let version: Int
+    public let profile: String
+    public let approvalId: String
+    public let artworkRevision: Int
+
+    public init(approvalId: String, artworkRevision: Int) {
+        version = 1
+        profile = "viewer-png-box-512-v1"
+        self.approvalId = approvalId
+        self.artworkRevision = artworkRevision
+    }
+    private enum CodingKeys: String, CodingKey, CaseIterable { case version, profile, approvalId, artworkRevision }
+
+    public init(from decoder: Decoder) throws {
+        try checkCoarseKeys(decoder, required: Set(CodingKeys.allCases.map(\.stringValue)))
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decode(Int.self, forKey: .version)
+        profile = try values.decode(String.self, forKey: .profile)
+        approvalId = try values.decode(String.self, forKey: .approvalId)
+        artworkRevision = try values.decode(Int.self, forKey: .artworkRevision)
+        guard valid else { throw AuthoringFailure("IMPORT_INPUT_INVALID") }
+    }
+
+    var valid: Bool {
+        version == 1 && profile == "viewer-png-box-512-v1"
+            && (1...2_147_483_647).contains(artworkRevision)
+            && approvalId.range(
+                of: #"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"#,
+                options: [.regularExpression, .caseInsensitive]
+            ) != nil
+    }
+}
+
+private struct CoarseWireKey: CodingKey {
+    let stringValue: String
+    let intValue: Int? = nil
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
+}
+
+private func checkCoarseKeys(_ decoder: Decoder, required: Set<String>, complete: Set<String>? = nil) throws {
+    let container = try decoder.container(keyedBy: CoarseWireKey.self)
+    let keys = Set(container.allKeys.map(\.stringValue))
+    guard keys == required || keys == complete else {
+        throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unexpected coarse preparation shape"))
+    }
+}
+
+public struct NativeCoarsePreparationStatus: Decodable, Sendable {
+    public let profile: String
+    public let approvalId: String
+    public let artworkRevision: Int
+    public let status: String
+    public let workerDrained: Bool
+    public let assetId: String?
+    public let sha256: String?
+    public let bytes: Int?
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case profile, approvalId, artworkRevision, status, workerDrained, assetId, sha256, bytes
+    }
+
+    public init(from decoder: Decoder) throws {
+        try checkCoarseKeys(decoder, required: ["profile", "approvalId", "artworkRevision", "status", "workerDrained"],
+                            complete: Set(CodingKeys.allCases.map(\.stringValue)))
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        profile = try values.decode(String.self, forKey: .profile)
+        approvalId = try values.decode(String.self, forKey: .approvalId)
+        artworkRevision = try values.decode(Int.self, forKey: .artworkRevision)
+        status = try values.decode(String.self, forKey: .status)
+        workerDrained = try values.decode(Bool.self, forKey: .workerDrained)
+        assetId = values.contains(.assetId) ? try values.decode(String.self, forKey: .assetId) : nil
+        sha256 = values.contains(.sha256) ? try values.decode(String.self, forKey: .sha256) : nil
+        bytes = values.contains(.bytes) ? try values.decode(Int.self, forKey: .bytes) : nil
+    }
+
+    func matches(_ intent: NativeCoarsePreparationIntent, job: NativeImportJob) -> Bool {
+        guard intent.valid, profile == intent.profile, approvalId.lowercased() == intent.approvalId.lowercased(),
+              artworkRevision == intent.artworkRevision else { return false }
+        switch job.state {
+        case "approved":
+            guard status == "ready", let assetId, let primary = job.assetId, let original = job.originalAssetId,
+                  let coarse = UUID(uuidString: assetId), let full = UUID(uuidString: primary),
+                  let source = UUID(uuidString: original), Set([coarse, full, source]).count == 3,
+                  let sha256, nativeImportDigest(sha256), let bytes, (1...8_388_608).contains(bytes)
+            else { return false }
+            return true
+        case "uploading", "queued", "processing":
+            return status == "pending" && !workerDrained && assetId == nil && sha256 == nil && bytes == nil
+        case "failed", "cancelled":
+            return status == "failed" && assetId == nil && sha256 == nil && bytes == nil
+        default:
+            return false
+        }
     }
 }
 
