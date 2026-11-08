@@ -241,6 +241,10 @@ fn actual_042_session_holds_checked_worker_output() {
     assert_eq!(held["binding"]["attemptId"], binding.attempt.to_string());
     assert_eq!(held["binding"]["jobId"], binding.job.to_string());
     assert_eq!(held["runtimeManifestSha256"], manifest);
+    assert_eq!(
+        held["workerManifestSha256"],
+        "94a6551d16af3fb134f94549d9f087ee8ccb9fd2372d914de5f738a78d3505c6"
+    );
     assert_eq!(held["outputBytes"], 16_036_864);
     let tenant = Uuid::parse_str(held["binding"]["tenantId"].as_str().unwrap()).unwrap();
     let lease = Uuid::parse_str(held["binding"]["leaseId"].as_str().unwrap()).unwrap();
@@ -249,15 +253,18 @@ fn actual_042_session_holds_checked_worker_output() {
             "exhibitos",
             &format!(
                 "SELECT state,hayes_attempt_id::text,asset_id IS NULL,original_asset_id IS NULL,
-          GREATEST(0,floor(EXTRACT(EPOCH FROM (lease_until-clock_timestamp()))*1000))::bigint
-          FROM import_jobs WHERE tenant_id='{tenant}' AND id='{}' AND lease_id='{lease}'",
+          GREATEST(0,floor(EXTRACT(EPOCH FROM (lease_until-clock_timestamp()))*1000))::bigint,
+          (SELECT count(*) FROM assets a WHERE (a.tenant_id,a.artwork_id)=(j.tenant_id,j.artwork_id)
+            AND a.state='approved' AND a.deleted_at IS NULL)
+          FROM import_jobs j WHERE tenant_id='{tenant}' AND id='{}' AND lease_id='{lease}'",
                 binding.job
             ),
             Instant::now() + Duration::from_secs(10),
         )
         .unwrap();
     let fields: Vec<_> = snapshot.split('|').collect();
-    assert_eq!(fields.len(), 5);
+    assert_eq!(fields.len(), 6);
+    assert_eq!(fields[5], "0");
     assert_eq!(
         &fields[..4],
         &["processing", binding.attempt.to_string().as_str(), "t", "t"]
