@@ -7,6 +7,34 @@ final class NativeAutomationArtworkTests: XCTestCase {
     private let assetId = "22222222-2222-4222-8222-222222222222"
     private let jobId = "33333333-3333-4333-8333-333333333333"
     private let tenantId = "44444444-4444-4444-8444-444444444444"
+    func testReviewedReplacementKeepsJPEGAndModelCommandsDisjoint() throws {
+        let placement = "55555555-5555-4555-8555-555555555555"
+        let hash = String(repeating: "a", count: 64)
+        let common: [String: DocumentValue] = [
+            "artworkId": .string(artworkId), "artworkRevision": .integer(1),
+            "importJobId": .string(jobId), "studioRevision": .integer(4),
+            "etag": .string("\"studio-r4-\(hash)\"")
+        ]
+        func parse(_ extra: [String: DocumentValue]) throws -> NativeAutomationReplacementCommand {
+            try .init(.object(["command": .object(common.merging(extra) { _, value in value })]))
+        }
+        let image = try parse(["coarseSha256": .string(hash)])
+        guard case .image(let digest) = image.target else { return XCTFail("Expected legacy image command") }
+        XCTAssertEqual(digest, hash)
+
+        let model = ["kind": DocumentValue.string("approved-model-candidate-v1"),
+                     "placementId": .string(placement)]
+        let command = try parse(model)
+        guard case .approvedModel(let placementID) = command.target else { return XCTFail("Expected approved model command") }
+        XCTAssertEqual(placementID, placement)
+        XCTAssertEqual(command.artworkId, artworkId)
+        XCTAssertEqual(command.importJobId, jobId)
+        XCTAssertThrowsError(try parse(["kind": .string("approved-model-candidate-v1")]))
+        XCTAssertThrowsError(try parse(["placementId": .string(placement), "coarseSha256": .string(hash)]))
+        XCTAssertThrowsError(try parse(model.merging(["coarseSha256": .string(hash)]) { _, value in value }))
+        XCTAssertThrowsError(try parse(model.merging(["etag": .string("\"studio-r3-\(hash)\"")]) { _, value in value }))
+    }
+
     private func approvalFixture() throws -> (NativeArtwork, NativeImportJob, NativeImportIntent, DocumentValue) {
         let metadata = ArtworkMetadata()
         let encoded = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(metadata))

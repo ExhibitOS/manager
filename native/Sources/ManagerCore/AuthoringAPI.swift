@@ -16,6 +16,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var nativeOexExportProfile: String? = nil
     public var nativePublicationProfile: String? = nil
     public var modelPreparationProfile: String? = nil
+    public var nativeModelCandidateReplacementProfile: String? = nil
     public var workspaceMaterialProfile: String? = nil
     public var workspaceFurnishingProfile: String? = nil
     public var workspaceFurnishingStoolProfile: String? = nil
@@ -685,6 +686,77 @@ public actor AuthoringAPI {
         try saved.requireSameComparison(reopened)
         return reopened
     }
+    var admitsApprovedModelCandidateReplacement: Bool {
+        nativeSession && !authenticationBusy && admitsRequiredModelPreparation
+            && session?.nativeModelCandidateReplacementProfile == NativeAutomationReplacementCommand.modelProfile
+    }
+
+    func replaceApprovedModelCandidate(
+        draft: NativeExhibitionDraft, studioRevision: Int, etag: String, requestId: String,
+        artworkId: String, artworkRevision: Int, importJobId: String, placementId: String
+    ) async throws -> NativeStudioResponse {
+        guard admitsApprovedModelCandidateReplacement else { throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE") }
+        struct Input: Encodable {
+            let kind = NativeAutomationReplacementCommand.modelProfile
+            let requestId: String
+            let artworkId: String
+            let artworkRevision: Int
+            let importJobId: String
+            let placementId: String
+        }
+        let current = generation
+        let exhibitionId = try identifier(draft.id)
+        let input = try Input(requestId: identifier(requestId), artworkId: identifier(artworkId),
+                              artworkRevision: artworkRevision, importJobId: identifier(importJobId),
+                              placementId: identifier(placementId))
+        guard let placement = draft.placements.first(where: { $0["id"].string == input.placementId }) else {
+            throw AuthoringFailure("PLACEMENT_INVALID")
+        }
+        let job = try await importJob(input.importJobId)
+        let artwork = try await self.artwork(input.artworkId)
+        guard generation == current, admitsApprovedModelCandidateReplacement else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard let preparation = job.modelPreparation, let rights = artwork.metadata?.rights,
+              let display = preparation.display, job.id == input.importJobId,
+              artwork.revision == input.artworkRevision else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+        let intent = NativeImportIntent(artworkId: artwork.id, idempotencyKey: preparation.intent.operationID,
+                                       mime: preparation.original.mime, sha256: preparation.original.sha256,
+                                       bytes: preparation.original.bytes, scaleMeters: 1, rights: rights,
+                                       modelPreparation: preparation.intent)
+        guard preparation.permitsClearingTransfer(artwork: artwork, request: intent, job: job) else {
+            throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+        }
+        let approved = try await studioArtwork(input.artworkId)
+        guard generation == current, admitsApprovedModelCandidateReplacement else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        try NativeAutomationArtworkRules.checkRegistration(approved.artwork, artworkId: input.artworkId,
+            revision: Int64(input.artworkRevision), tenantId: tenant)
+        guard approved.artwork["primaryAssetId"].string == display.assetId,
+              let revisionId = approved.artwork["revisionId"].string,
+              let asset = approved.artwork["assets"].items?.first(where: { $0["id"].string == display.assetId }),
+              asset["sha256"].string == display.sha256, asset["bytes"].integer == Int64(display.bytes),
+              asset["mime"].string == display.mime else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+
+        try Task.checkCancellation()
+        let path = studioPrefix + "/exhibitions/" + exhibitionId + "/native-artwork-replacement"
+        let saved: NativeStudioResponse = try await request(path, method: "POST", body: encoded(input),
+                                                            ifMatch: etag, timeout: 120)
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard saved.revision == studioRevision + 1, saved.draft.id == exhibitionId else {
+            throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
+        }
+        let reopened = try await exhibition(exhibitionId)
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        try saved.requireSameComparison(reopened)
+        var expectedPlacement = placement
+        expectedPlacement["artworkRevisionId"] = .string(revisionId)
+        expectedPlacement["assetId"] = .string(display.assetId)
+        let placements = draft.placements.map { $0["id"].string == input.placementId ? expectedPlacement : $0 }
+        guard reopened.draft.placements == placements,
+              reopened.draft.artworks.contains(approved.artwork) else {
+            throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
+        }
+        return reopened
+    }
+
     /// One selected-session save. Persist and revalidate the exact pending
     /// request before the single PUT; uncertainty is never retried here.
     public func saveAndReopenSelectedOEX(exhibitionId: String, expectedETag: String, requestId: String,
