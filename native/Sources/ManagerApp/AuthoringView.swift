@@ -906,12 +906,12 @@ struct NativeAuthoringView: View {
                 TextField("재료·매체", text: Binding(get: { model.draft.medium ?? "" }, set: { model.draft.medium = $0.isEmpty ? nil : $0 }))
                 TextField("제작 연도 (선택)", text: $model.creationYearText)
                 if model.draft.provenance.sourceUnits == "unknown" {
-                    LabeledContent("기관 표기 높이 (m)", value: model.draft.dimensions.height.formatted())
-                    LabeledContent("기관 표기 폭 (m)", value: model.draft.dimensions.width.formatted())
+                    LabeledContent("등록된 높이 (m)", value: model.draft.dimensions.height.formatted())
+                    LabeledContent("등록된 너비 (m)", value: model.draft.dimensions.width.formatted())
                     if let depth = model.draft.dimensions.depth {
-                        LabeledContent("기관 표기 깊이 (m)", value: depth.formatted())
+                        LabeledContent("등록된 깊이 (m)", value: depth.formatted())
                     }
-                    Text("기관 치수의 GLB 좌표축 대응은 미확인입니다.").foregroundStyle(.secondary)
+                    Text("GLB 원본 단위와 실물 치수의 좌표축 대응은 미확인입니다.").foregroundStyle(.secondary)
                 } else {
                     TextField("가로 (m)", value: $model.draft.dimensions.width, format: .number)
                     TextField("세로 (m)", value: $model.draft.dimensions.height, format: .number)

@@ -66,9 +66,9 @@ struct SelectedPlacementInspector: View {
                     Text("선택한 작품 배치").font(.headline).accessibilityAddTraits(.isHeader)
                     Text(selected.artwork["metadata"]["title"].string ?? "제목 없는 작품").font(.title3.weight(.semibold))
                     Text(selected.artwork["metadata"]["artist"].string ?? "작가 미상").foregroundStyle(.secondary)
-                    LabeledContent(size.sourceUnitsUnknown ? "기관 표기 치수" : "기록된 크기", value: sourceDimensions(size))
+                    LabeledContent(size.sourceUnitsUnknown ? "등록된 크기" : "기록된 크기", value: sourceDimensions(size))
                     if size.sourceUnitsUnknown {
-                        Text("GLB 원본 단위와 기관 치수의 좌표축 대응은 미확인입니다.").font(.caption).foregroundStyle(.secondary)
+                        Text("GLB 원본 단위와 실물 치수의 좌표축 대응은 미확인입니다.").font(.caption).foregroundStyle(.secondary)
                     }
                     if let height = size.provisionalHeightMeters {
                         LabeledContent("임시 표시 높이 · 미보정", value: number(height) + " m")
