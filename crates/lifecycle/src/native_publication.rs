@@ -2,7 +2,9 @@
 //! One durable publication-copy preparation per personal workspace. No credential,
 //! token, filesystem target or asset bytes enter this revision-checked journal.
 use super::*;
+use std::collections::BTreeMap;
 const LIMIT: u64 = 2_200_000;
+const ORIGINAL_ATTEMPT_LIMIT: usize = 256;
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Pending {
@@ -43,6 +45,12 @@ pub struct Completed {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeOriginalAttempt {
+    pub plan_binding_sha256: String,
+    pub export_claimed: bool,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PublicationState {
     pub format: u32,
     pub revision: u64,
@@ -51,6 +59,8 @@ pub struct PublicationState {
     pub principal_id: String,
     pub pending: Option<Pending>,
     pub completed: Option<Completed>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub native_original_attempts: BTreeMap<String, NativeOriginalAttempt>,
 }
 fn valid_etag(value: &str) -> bool {
     value
@@ -68,6 +78,11 @@ pub(crate) fn validate(s: &PublicationState) -> Result<()> {
     if s.format != 1 || !uuid(&s.workspace_id) || !uuid(&s.tenant_id) || !uuid(&s.principal_id) {
         return Err(bad());
     }
+    if s.native_original_attempts.len() > ORIGINAL_ATTEMPT_LIMIT
+        || s.native_original_attempts.iter().any(|(id, attempt)| !uuid(id) || !hash_valid(&attempt.plan_binding_sha256))
+    {
+        return Err(bad());
+    }
     if let Some(p) = &s.pending {
         let id = p.snapshot["exhibitionId"].as_str().unwrap_or("");
         let reusable = p.mode.as_deref() == Some("reusable-draft-v1");
@@ -76,6 +91,9 @@ pub(crate) fn validate(s: &PublicationState) -> Result<()> {
         if (p.mode.is_some() && !direct)
             || (reusable && !p.capability_publication_id.as_deref().is_some_and(uuid))
             || (native_original && (p.capability_publication_id.is_some() || p.plan_binding_sha256.is_none() || p.save_request_id != p.publish_request_id))
+            || (native_original && !s.native_original_attempts.get(&p.publish_request_id).is_some_and(|attempt| {
+                !attempt.export_claimed && Some(&attempt.plan_binding_sha256) == p.plan_binding_sha256.as_ref()
+            }))
             || (direct && (id != p.source_exhibition_id || p.snapshot_etag.as_deref() != Some(p.source_etag.as_str()) || !p.snapshot["editVersion"].as_u64().is_some_and(|v| v > 0 && v <= 2_147_483_647)))
             || (!direct && (p.capability_publication_id.is_some() || id == p.source_exhibition_id || p.snapshot["editVersion"] != 1))
             || !uuid(&p.source_exhibition_id)
@@ -97,6 +115,9 @@ pub(crate) fn validate(s: &PublicationState) -> Result<()> {
         if (c.mode.is_some() && !direct)
             || (direct != (c.snapshot_exhibition_id == c.source_exhibition_id))
             || (native_original && c.plan_binding_sha256.is_none())
+            || (native_original && !s.native_original_attempts.get(&c.publish_request_id).is_some_and(|attempt| {
+                Some(&attempt.plan_binding_sha256) == c.plan_binding_sha256.as_ref()
+            }))
             || !uuid(&c.source_exhibition_id)
             || !valid_etag(&c.source_etag)
             || !uuid(&c.snapshot_exhibition_id)
@@ -113,6 +134,39 @@ pub(crate) fn validate(s: &PublicationState) -> Result<()> {
             return Err(bad());
         }
     }
+    Ok(())
+}
+
+fn validate_original_attempt_change(current: &PublicationState, next: &PublicationState) -> Result<()> {
+    let invalid = || err("NATIVE_PUBLICATION_REQUEST_CHANGED");
+    let mut changes = 0;
+    for (id, old) in &current.native_original_attempts {
+        let attempt = next.native_original_attempts.get(id).ok_or_else(invalid)?;
+        if attempt.plan_binding_sha256 != old.plan_binding_sha256 || (old.export_claimed && !attempt.export_claimed) {
+            return Err(invalid());
+        }
+        if old.export_claimed != attempt.export_claimed {
+            changes += 1;
+            if next.pending.is_some() || !next.completed.as_ref().is_some_and(|completed| {
+                completed.mode.as_deref() == Some("native-original-v1") && completed.publish_request_id == *id
+                    && completed.plan_binding_sha256.as_ref() == Some(&attempt.plan_binding_sha256)
+            }) {
+                return Err(invalid());
+            }
+        }
+    }
+    for (id, attempt) in &next.native_original_attempts {
+        if !current.native_original_attempts.contains_key(id) {
+            changes += 1;
+            if attempt.export_claimed || !next.pending.as_ref().is_some_and(|pending| {
+                pending.mode.as_deref() == Some("native-original-v1") && pending.publish_request_id == *id
+                    && pending.plan_binding_sha256.as_ref() == Some(&attempt.plan_binding_sha256)
+            }) {
+                return Err(invalid());
+            }
+        }
+    }
+    if changes > 1 { return Err(invalid()); }
     Ok(())
 }
 impl InstallationController {
@@ -137,6 +191,7 @@ impl InstallationController {
             principal_id,
             pending: None,
             completed: None,
+            native_original_attempts: BTreeMap::new(),
         };
         let saved = match fs::symlink_metadata(profile.root.join(&file)) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => default.clone(),
@@ -198,6 +253,7 @@ impl InstallationController {
             if state.revision != current.revision {
                 return Err(err("NATIVE_PUBLICATION_STATE_CHANGED"));
             }
+            validate_original_attempt_change(&current, &state)?;
             state.revision = state
                 .revision
                 .checked_add(1)
@@ -266,7 +322,47 @@ mod tests {
         original["pending"]["planBindingSha256"] = serde_json::json!("d".repeat(64));
         assert!(validate(&serde_json::from_value(original.clone()).unwrap()).is_err());
         original["pending"]["saveRequestId"] = original["pending"]["publishRequestId"].clone();
-        validate(&serde_json::from_value(original.clone()).unwrap()).unwrap();
+        let request_id = original["pending"]["publishRequestId"].as_str().unwrap().to_owned();
+        let mut empty: PublicationState = serde_json::from_value(wire).unwrap();
+        empty.pending = None;
+        original["nativeOriginalAttempts"][&request_id] =
+            serde_json::json!({"planBindingSha256":"d".repeat(64),"exportClaimed":false});
+        let staged: PublicationState = serde_json::from_value(original.clone()).unwrap();
+        validate(&staged).unwrap();
+        validate_original_attempt_change(&empty, &staged).unwrap();
+        let mut discarded = staged.clone();
+        discarded.native_original_attempts.clear();
+        assert!(validate_original_attempt_change(&staged, &discarded).is_err());
+        let mut rebound = staged.clone();
+        rebound.native_original_attempts.get_mut(&request_id).unwrap().plan_binding_sha256 = "e".repeat(64);
+        assert!(validate_original_attempt_change(&staged, &rebound).is_err());
+        let mut claimed_without_completion = staged.clone();
+        claimed_without_completion.native_original_attempts.get_mut(&request_id).unwrap().export_claimed = true;
+        assert!(validate_original_attempt_change(&staged, &claimed_without_completion).is_err());
+        let mut ready = staged.clone();
+        ready.pending = None;
+        ready.completed = Some(Completed {
+            mode: Some("native-original-v1".into()),
+            source_exhibition_id: source.clone(),
+            source_etag: etag.clone(),
+            snapshot_exhibition_id: source,
+            publish_request_id: request_id.clone(),
+            publication: Publication {
+                public_url: format!("/p/{publication}"),
+                publication_id: publication,
+                revision_sha256: "f".repeat(64),
+                published_at: "2026-11-08T00:00:00Z".into(),
+                status: "published".into(),
+            },
+            plan_binding_sha256: Some("d".repeat(64)),
+        });
+        validate(&ready).unwrap();
+        validate_original_attempt_change(&staged, &ready).unwrap();
+        let mut claimed = ready.clone();
+        claimed.native_original_attempts.get_mut(&request_id).unwrap().export_claimed = true;
+        validate(&claimed).unwrap();
+        validate_original_attempt_change(&ready, &claimed).unwrap();
+        assert!(validate_original_attempt_change(&claimed, &ready).is_err());
         original["pending"]["snapshotEtag"] = serde_json::Value::Null;
         assert!(validate(&serde_json::from_value(original).unwrap()).is_err());
     }

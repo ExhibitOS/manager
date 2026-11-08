@@ -53,6 +53,37 @@ final class PublicationTests: XCTestCase {
         XCTAssertTrue(status("cancelled").confirmsDetailTerminal(jobId: "job", publicationId: "publication", output: "/candidate"))
     }
 
+    func testNativeOriginalClaimSurvivesLaterPublicationAndRejectsColdReplay() throws {
+        let draft = try NativeExhibitionDraft.new()
+        let etag = "\"studio-r6-" + String(repeating: "a", count: 64) + "\""
+        func intent(id: String = UUID().uuidString, plan: Character) throws -> NativePublicationPending {
+            try .init(nativeOriginalSource: draft, etag: etag, requestId: id,
+                      planBindingSha256: String(repeating: plan, count: 64))
+        }
+        let a = try intent(plan: "a"), b = try intent(plan: "b")
+        let publicId = UUID().uuidString
+        let publication = NativePublication(publicationId: publicId, publicUrl: "/p/" + publicId,
+            revisionSha256: String(repeating: "c", count: 64), publishedAt: "2026-11-08T00:00:00Z", status: "published")
+        var state = NativePublicationState(format: 1, revision: 1, workspaceId: UUID().uuidString,
+            tenantId: UUID().uuidString, principalId: UUID().uuidString, pending: nil, completed: nil)
+        for operation in [a, b] {
+            try state.stageNativeOriginal(operation)
+            state.pending = nil
+            state.completed = NativePublicationCompleted(pending: operation, publication: publication)
+            try state.claimNativeOriginalExport(operation)
+        }
+        var cold = try JSONDecoder().decode(NativePublicationState.self, from: JSONEncoder().encode(state))
+        XCTAssertEqual(cold.completed?.publishRequestId, b.publishRequestId)
+        let changedDestination = try intent(id: a.publishRequestId, plan: "d")
+        XCTAssertThrowsError(try cold.stageNativeOriginal(changedDestination)) { error in
+            XCTAssertEqual((error as? AuthoringFailure)?.code, "PUBLICATION_PLAN_CHANGED")
+        }
+        XCTAssertThrowsError(try cold.stageNativeOriginal(a)) { error in
+            XCTAssertEqual((error as? AuthoringFailure)?.code, "NATIVE_DETAIL_EXPORT_REPLAY_UNAVAILABLE")
+        }
+        XCTAssertEqual(cold, state)
+    }
+
     func testPublicationCopyRetainsGeometryRightsAndOpaqueDataWhileChangingOnlyDocumentIdentity() throws {
         let authoredTitle = String(repeating: "가", count: 500) + " · 공개용 저장본"
         var source = try NativeExhibitionDraft.new(title: authoredTitle)

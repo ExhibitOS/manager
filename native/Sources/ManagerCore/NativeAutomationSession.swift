@@ -327,14 +327,10 @@ public actor NativeAutomationSession {
     }
 
     private func replacementAttempt() throws -> DocumentValue? {
-        try readPrivateAttempt(replacementAttemptPath, failure: "ARTWORK_REPLACEMENT_UNCERTAIN")
-    }
-
-    private func readPrivateAttempt(_ path: String, failure: String) throws -> DocumentValue? {
-        let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        let fd = Darwin.open(replacementAttemptPath, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else {
             if errno == ENOENT { return nil }
-            throw BridgeFailure(failure)
+            throw BridgeFailure("ARTWORK_REPLACEMENT_UNCERTAIN")
         }
         let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         defer { try? file.close() }
@@ -342,7 +338,7 @@ public actor NativeAutomationSession {
         guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1,
               info.st_uid == getuid(), info.st_mode & 0o077 == 0, (1...8192).contains(info.st_size),
               let bytes = try file.read(upToCount: 8193), bytes.count == info.st_size else {
-            throw BridgeFailure(failure)
+            throw BridgeFailure("ARTWORK_REPLACEMENT_UNCERTAIN")
         }
         return try JSONDecoder().decode(DocumentValue.self, from: bytes)
     }
@@ -355,32 +351,13 @@ public actor NativeAutomationSession {
     }
 
     private func syncReplacementAttempt() throws {
-        try syncPrivateAttempt(replacementAttemptPath, failure: "ARTWORK_REPLACEMENT_UNCERTAIN")
-    }
-
-    private func syncPrivateAttempt(_ attempt: String, failure: String) throws {
-        for path in [attempt, root.path] {
+        for path in [replacementAttemptPath, root.path] {
             let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-            guard fd >= 0 else { throw BridgeFailure(failure) }
+            guard fd >= 0 else { throw BridgeFailure("ARTWORK_REPLACEMENT_UNCERTAIN") }
             let synced = Darwin.fsync(fd)
             _ = Darwin.close(fd)
-            guard synced == 0 else { throw BridgeFailure(failure) }
+            guard synced == 0 else { throw BridgeFailure("ARTWORK_REPLACEMENT_UNCERTAIN") }
         }
-    }
-
-    private func bindNativeOriginalAttempt(_ id: String, requestSHA256: String, outputPath: String, planBinding: String) throws {
-        let path = root.appendingPathComponent(".automation-static-" + id + ".json").path
-        let failure = "NATIVE_PUBLICATION_PENDING"
-        let attempt: DocumentValue = .object(["version": .integer(1), "requestId": .string(id),
-            "requestSHA256": .string(requestSHA256), "outputPath": .string(outputPath),
-            "planBindingSHA256": .string(planBinding)])
-        if let prior = try readPrivateAttempt(path, failure: failure) {
-            guard prior == attempt else { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
-        } else {
-            _ = try output(outputPath)
-            _ = try write(attempt, to: path)
-        }
-        try syncPrivateAttempt(path, failure: failure)
     }
 
     private func prepareReviewedArtwork(_ request: DocumentValue, id: String, context: Context,
@@ -1327,13 +1304,15 @@ public actor NativeAutomationSession {
                 runtimeManifestSha256: $0, watermark: draft.publicationWatermark(), publicationProfile: publicationProfile,
                 nativeOriginalRequestSHA256: originalRequestSHA256) }
             if nativeOriginal {
-                guard let planBinding, let originalRequestSHA256 else { throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE") }
+                guard let planBinding else { throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE") }
                 let intent = try NativePublicationPending(nativeOriginalSource: draft, etag: etag, requestId: id, planBindingSha256: planBinding)
-                guard publication.pending == nil || publication.pending == intent else { throw BridgeFailure("NATIVE_PUBLICATION_PENDING") }
                 if let completed = publication.completed, completed.publishRequestId == id {
                     try completed.refuseNativeOriginalExportReplay(intent)
                 }
-                try bindNativeOriginalAttempt(id, requestSHA256: originalRequestSHA256, outputPath: path, planBinding: planBinding)
+                let before = publication
+                try publication.stageNativeOriginal(intent)
+                _ = try output(path)
+                if publication != before { publication = try await bridge.savePublicationState(context, state: publication) }
                 staticIntents[id] = intent
             } else if staticIntents[id] == nil {
                 guard publication.pending == nil else { throw BridgeFailure("NATIVE_PUBLICATION_PENDING") }
@@ -1384,6 +1363,10 @@ public actor NativeAutomationSession {
             let detailJobId: String?
             if !reuse {
                 guard !FileManager.default.fileExists(atPath: path) else { throw BridgeFailure("AUTOMATION_OUTPUT_INVALID") }
+                if nativeOriginal {
+                    try publication.claimNativeOriginalExport(intent)
+                    publication = try await bridge.savePublicationState(context, state: publication)
+                }
                 let started = try await bridge.startStaticExport(context, publicationId: frozen.publicationId, output: destination,
                                                                  privateEditor: true, nativeOriginalDetail: nativeOriginal)
                 detailJobId = nativeOriginal ? started.jobId : nil

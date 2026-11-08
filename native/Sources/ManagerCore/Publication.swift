@@ -110,12 +110,44 @@ public struct NativePublicationCompleted: Codable, Equatable, Sendable {
         throw AuthoringFailure("NATIVE_DETAIL_EXPORT_REPLAY_UNAVAILABLE")
     }
 }
+struct NativeOriginalExportAttempt: Codable, Equatable, Sendable {
+    let planBindingSha256: String
+    var exportClaimed: Bool
+}
+
 public struct NativePublicationState: Codable, Equatable, Sendable {
     public let format: Int
     public var revision: UInt64
     public let workspaceId: String, tenantId: String, principalId: String
     public var pending: NativePublicationPending?
     public var completed: NativePublicationCompleted?
+    var nativeOriginalAttempts: [String: NativeOriginalExportAttempt]? = nil
+
+    mutating func stageNativeOriginal(_ intent: NativePublicationPending) throws {
+        guard intent.mode == "native-original-v1", let plan = intent.planBindingSha256,
+              pending == nil || pending == intent else { throw AuthoringFailure("NATIVE_PUBLICATION_PENDING") }
+        let id = intent.publishRequestId
+        if let attempt = nativeOriginalAttempts?[id] {
+            guard attempt.planBindingSha256 == plan else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
+            guard !attempt.exportClaimed else { throw AuthoringFailure("NATIVE_DETAIL_EXPORT_REPLAY_UNAVAILABLE") }
+        } else {
+            guard (nativeOriginalAttempts?.count ?? 0) < 256 else { throw AuthoringFailure("NATIVE_DETAIL_EXPORT_HISTORY_FULL") }
+            if nativeOriginalAttempts == nil { nativeOriginalAttempts = [:] }
+            nativeOriginalAttempts?[id] = .init(planBindingSha256: plan, exportClaimed: false)
+        }
+        pending = intent
+    }
+
+    mutating func claimNativeOriginalExport(_ intent: NativePublicationPending) throws {
+        let id = intent.publishRequestId
+        guard pending == nil, completed?.mode == "native-original-v1", completed?.publishRequestId == id,
+              completed?.planBindingSha256 == intent.planBindingSha256,
+              let attempt = nativeOriginalAttempts?[id], !attempt.exportClaimed,
+              attempt.planBindingSha256 == intent.planBindingSha256 else {
+            throw AuthoringFailure("NATIVE_DETAIL_EXPORT_REPLAY_UNAVAILABLE")
+        }
+        nativeOriginalAttempts?[id]?.exportClaimed = true
+    }
 }
 
 /// Local correspondence only. Authentication belongs to AuthoringAPI and the
