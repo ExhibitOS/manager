@@ -22,6 +22,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var workspaceArtworkFrameProfile: String? = nil
     public var workspaceArtworkFrameModelsProfile: String? = nil
     public var workspaceArtworkFramePreparationProfile: String? = nil
+    public var workspaceRegisteredFrameLineageProfile: String? = nil
     public var workspacePortalFinishProfile: String? = nil
 
     public var advertisesWorkspacePortalFinish: Bool {
@@ -1319,6 +1320,39 @@ public actor AuthoringAPI {
         return intake
     }
 
+    func registeredFrameLineage(_ history: WorkspaceFurnishingIntake, workspaceId: String,
+                                original: ImportFileSnapshot? = nil) async throws -> WorkspaceRegisteredFrameLineage {
+        guard admitsWorkspaceFurnishings, let session, session.advertisesWorkspaceArtworkFramePreparation,
+              session.workspaceRegisteredFrameLineageProfile == WorkspaceRegisteredFrameLineage.profile else {
+            throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+        }
+        let path = try furnishingIntakePath(history.intakeId) + "/original-lineage"
+        let heldGeneration = generation
+        var state: WorkspaceRegisteredFrameLineage = try await request(path)
+        try state.check(history: history, workspace: workspaceId, tenant: tenant, principal: session.userId)
+        guard let original else { return state }
+        let model = try WorkspaceFurnishingModel(snapshot: original)
+        guard model == state.sourceModel else { throw AuthoringFailure("UPLOAD_INTEGRITY") }
+        let baseline = state
+        if state.phase == .notStarted {
+            guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+            state = try await request(path, method: "POST", body: encoded(state.begin))
+            try state.check(history: history, workspace: workspaceId, tenant: tenant, principal: session.userId, previous: baseline)
+        }
+        if state.phase == .awaitingOriginal {
+            guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+            state = try await request(path + "/model", method: "PUT", body: original.data, contentType: "application/octet-stream")
+            try state.check(history: history, workspace: workspaceId, tenant: tenant, principal: session.userId, previous: baseline)
+        }
+        if state.phase == .readyToPrepare {
+            guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+            state = try await request(path + "/complete", method: "POST", body: Data("{}".utf8), timeout: 120)
+            try state.check(history: history, workspace: workspaceId, tenant: tenant, principal: session.userId, previous: baseline)
+        }
+        guard state.phase == .registered else { throw AuthoringFailure("FRAME_LINEAGE_RESPONSE_INVALID") }
+        return state
+    }
+
     public func uploadWorkspaceFurnishing(_ previous: WorkspaceFurnishingIntake,
                                           snapshot: ImportFileSnapshot) async throws -> WorkspaceFurnishingIntake {
         try previous.check(supportedExtensionVersion: supportedFurnishingExtensionVersion,
@@ -1624,6 +1658,7 @@ public struct NativeHayesOriginalIntent: Codable, Equatable, Sendable {
         #if DEBUG
         return manifest == "c0565112569fc1b1b95f8ada72b2b7cacabc8ea3e24b58a61dc9aa138c8bb406"
             || manifest == "af9c141f071d84ba4e9397798759e1cb13b2cde4d350f2fcf0a4b852ce3a09b5"
+            || manifest == "aa7534f2165c5d8a28a3e54dc5da4c8e1f026c16e806f28df52d35598d84bf27"
         #else
         return false
         #endif

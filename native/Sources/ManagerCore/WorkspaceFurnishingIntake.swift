@@ -64,9 +64,64 @@ public enum WorkspaceArtworkFramePreparationPolicy: String, Codable, Sendable {
         return policy.renderable(for: model) == nil ? nil : policy
     }
 
-    fileprivate func renderable(for source: WorkspaceFurnishingModel) -> WorkspaceFurnishingModel? {
+    func renderable(for source: WorkspaceFurnishingModel) -> WorkspaceFurnishingModel? {
         switch self {
         case .omitUnusedInvalidTangent: Self.models.first { $0.source == source }?.renderable
+        }
+    }
+}
+
+struct WorkspaceRegisteredFrameLineage: Codable, Sendable {
+    static let profile = "registered-frame-original-lineage-v1"
+    static let originalByteLimit = 177_500
+    enum Phase: String, Codable, Sendable {
+        case notStarted = "not-started", awaitingOriginal = "awaiting-original", readyToPrepare = "ready-to-prepare", registered
+    }
+    struct Receipt: Codable, Sendable {
+        let workspaceId: String, intakeId: String
+        let recipe: WorkspaceArtworkFramePreparationPolicy
+        let sourceSHA256: String, renderableSHA256: String
+    }
+    struct Begin: Encodable {
+        let requestId: String, furnishingId: String, furnishingVersion: Int
+        let sourceModel: WorkspaceFurnishingModel
+        let recipe: WorkspaceArtworkFramePreparationPolicy
+    }
+
+    let version: Int, kind: String
+    let workspaceId: String, tenantId: String, principalId: String
+    let intakeId: String, requestId: String, furnishingId: String, furnishingVersion: Int
+    let recipe: WorkspaceArtworkFramePreparationPolicy, phase: Phase
+    let sourceModel: WorkspaceFurnishingModel, renderableModel: WorkspaceFurnishingModel
+    let historicalRequestSHA256: String, descriptorSHA256: String
+    let receipt: Receipt?, workerDrained: Bool?
+
+    var begin: Begin {
+        Begin(requestId: requestId, furnishingId: furnishingId, furnishingVersion: furnishingVersion,
+              sourceModel: sourceModel, recipe: recipe)
+    }
+
+    func check(history: WorkspaceFurnishingIntake, workspace: String, tenant: String, principal: String,
+               previous: Self? = nil) throws {
+        guard version == 1, kind == Self.profile, workspaceFurnishingID(workspace), workspaceId == workspace,
+              tenantId == tenant, principalId == principal, intakeId == history.intakeId, requestId == history.requestId,
+              history.phase == .registered, history.preparationPolicy == nil, history.declaration.kind == .artworkFrame,
+              history.furnishing?.id == furnishingId, history.furnishing?.version == furnishingVersion,
+              furnishingVersion == 1, history.declaration.model == renderableModel,
+              recipe.renderable(for: sourceModel) == renderableModel,
+              nativeImportDigest(historicalRequestSHA256), nativeImportDigest(descriptorSHA256),
+              previous.map({ $0.historicalRequestSHA256 == historicalRequestSHA256
+                  && $0.descriptorSHA256 == descriptorSHA256 && $0.sourceModel == sourceModel }) ?? true else {
+            throw AuthoringFailure("FRAME_LINEAGE_RESPONSE_INVALID")
+        }
+        if phase == .registered {
+            guard workerDrained == true, let receipt, receipt.workspaceId == workspaceId,
+                  receipt.intakeId == intakeId, receipt.recipe == recipe,
+                  receipt.sourceSHA256 == sourceModel.sha256, receipt.renderableSHA256 == renderableModel.sha256 else {
+                throw AuthoringFailure("FRAME_LINEAGE_RESPONSE_INVALID")
+            }
+        } else if receipt != nil || workerDrained != nil {
+            throw AuthoringFailure("FRAME_LINEAGE_RESPONSE_INVALID")
         }
     }
 }
