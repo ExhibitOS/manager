@@ -156,6 +156,47 @@ public struct NativeExhibitionDraft: Codable, Equatable, Sendable {
         try change(c)
         document["schemaVersion"] = c["schemaVersion"]
     }
+
+    /// Refresh the placed, approved Hayes text revision without changing its
+    /// renderable inventory or treating an authored description as a CMS mirror.
+    mutating func refreshHayesArtwork(_ artwork: DocumentValue, placementId: String) throws {
+        let invalid = AuthoringFailure("ARTWORK_REVISION_CHANGED")
+        var inventory = artworks, rows = placements
+        guard let i = inventory.firstIndex(where: { $0["id"] == artwork["id"] }),
+              let p = rows.firstIndex(where: { $0["id"].string == placementId }) else { throw invalid }
+        let prior = inventory[i], previousRevision = prior["revisionId"], nextRevision = artwork["revisionId"]
+        guard prior["revision"] == .integer(1), artwork["revision"] == .integer(2),
+              prior["schemaVersion"] == Self.qualifiedSchema, prior["artworkType"].string == "sculpture",
+              let next = nextRevision.string, UUID(uuidString: next) != nil, nextRevision != previousRevision,
+              inventory.filter({ $0["id"] == prior["id"] }).count == 1,
+              !inventory.contains(where: { $0["revisionId"] == nextRevision }),
+              rows[p]["artworkRevisionId"] == previousRevision, rows[p]["assetId"] == prior["primaryAssetId"],
+              rows.filter({ $0["artworkRevisionId"] == previousRevision }).count == 1,
+              let beforeDescription = prior["metadata"]["description"].string,
+              let description = artwork["metadata"]["description"].string, description != beforeDescription else { throw invalid }
+
+        // The ordinary approval projection changes only these revision fields
+        // and the description. Compare the remaining snapshot in full.
+        var comparison = artwork
+        for key in ["revision", "revisionId", "createdAt", "provenance"] { comparison[key] = prior[key] }
+        comparison["extensions"]["org.exhibitos.studio/cms"]["revision"] = prior["extensions"]["org.exhibitos.studio/cms"]["revision"]
+        comparison["metadata"]["description"] = prior["metadata"]["description"]
+        guard comparison == prior, artwork["provenance"]["authorship"] == prior["provenance"]["authorship"] else { throw invalid }
+
+        var c = candidate
+        guard var descriptions = c["accessibility"]["artworkDescriptions"].items,
+              descriptions.filter({ $0["placementId"].string == placementId }).count == 1,
+              let d = descriptions.firstIndex(where: { $0["placementId"].string == placementId }),
+              descriptions[d]["text"].string == beforeDescription else { throw invalid }
+        descriptions[d]["text"] = .string(description)
+        inventory[i] = artwork
+        rows[p]["artworkRevisionId"] = nextRevision
+        c["accessibility"]["artworkDescriptions"] = .array(descriptions)
+        c["artworks"] = .array(inventory)
+        c["placements"] = .array(rows)
+        try change(c)
+    }
+
     public mutating func movePlacement(_ id: String, position: [Double]) throws {
         guard position.count == 3, position.allSatisfy({ $0.isFinite && abs($0) <= 1_000_000 }), var rows = candidate["placements"].items, let i = rows.firstIndex(where: { $0["id"].string == id }) else { throw AuthoringFailure("PLACEMENT_INVALID") }
         rows[i]["transform"]["position"] = .vector(position)

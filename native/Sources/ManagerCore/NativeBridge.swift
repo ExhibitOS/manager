@@ -349,9 +349,10 @@ public actor NativeBridge {
         }
         return try request("native_hayes_execute", fields: ["selection_token": context.selectionToken, "hayes_execute": input])
     }
-    public func hayesRelease(_ context: Context, jobId: String) throws -> NativeHayesReceipt {
-        let receipt: NativeHayesReceipt = try request("native_hayes_release",
-            fields: ["selection_token": context.selectionToken, "hayes_job_id": jobId])
+    public func hayesRelease(_ context: Context, jobId: String, currentArtworkRevision: Int? = nil) throws -> NativeHayesReceipt {
+        var fields: [String: Any] = ["selection_token": context.selectionToken, "hayes_job_id": jobId]
+        if let currentArtworkRevision { fields["hayes_current_artwork_revision"] = currentArtworkRevision }
+        let receipt: NativeHayesReceipt = try request("native_hayes_release", fields: fields)
         guard receipt.jobId == jobId else { throw BridgeFailure("HAYES_RELEASE_UNCONFIRMED") }
         return receipt
     }
