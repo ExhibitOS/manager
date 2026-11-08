@@ -339,6 +339,13 @@ const CATALOG40_ARTWORK_REPLACEMENT_TARGET: Option<RuntimeTuple> = Some((
     "ee5a94b613031e2cea918dead21c885c42fce4d585a03e55a2f3799af4e6991c",
     "73a491c071ae5c6f10c786793733968549ab400333569d8427530b6e81606c9b",
 ));
+// Fresh ordinary validation of the private Wheat grant with detail export disabled.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG40_WHEAT_GRANT: Option<RuntimeTuple> = Some((
+    "3e1c83e8939889c552606198edc5363a020c6d50",
+    "153558a719595549071e9bf6dd06950a0bfba9549c463601c1c6ac0ff51cc3ba",
+    "ab297cadff8a0348c402f937fc95851315e595e8b93dea2b43c2b40cfd22b851",
+));
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1612,7 +1619,11 @@ impl Payload {
         let artwork_replacement = CATALOG40_ARTWORK_REPLACEMENT_TARGET;
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
         let artwork_replacement: Option<(&str, &str, &str)> = None;
-        let pinned_portal = portal.into_iter().chain(artwork_replacement).any(|(source, producer, manifest)|
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        let wheat_grant = CATALOG40_WHEAT_GRANT;
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        let wheat_grant: Option<(&str, &str, &str)> = None;
+        let pinned_portal = portal.into_iter().chain(artwork_replacement).chain(wheat_grant).any(|(source, producer, manifest)|
             self.manifest.source_commit == source && self.manifest.producer_sha256 == producer
                 && self.manifest_sha256 == manifest);
         let portal_marker = self.manifest.files.iter().find(|file| file.path == PORTAL_MARKER);
@@ -1627,7 +1638,7 @@ impl Payload {
         let multimap = WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE.iter().copied()
             .chain(CATALOG39_UPGRADE_TARGET).chain(CATALOG40_EXB_TARGET)
             .chain(CATALOG40_RESTORE_PROVENANCE_TARGET).chain(CATALOG40_FRAME_RECORD_TARGET)
-            .chain(portal).chain(artwork_replacement).collect::<Vec<_>>();
+            .chain(portal).chain(artwork_replacement).chain(wheat_grant).collect::<Vec<_>>();
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         let multimap = multimap.as_slice();
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
