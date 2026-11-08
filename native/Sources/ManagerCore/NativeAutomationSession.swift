@@ -6,6 +6,18 @@ import Darwin
 /// Private agent adapter to the same native document journal and authenticated
 /// API used by ManagerApp. No credentials or arbitrary executable are exposed.
 public actor NativeAutomationSession {
+    private static let freshResponseOperations: Set<String> = [
+        "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
+        "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status",
+        "workspace-frame-lineage-prepare", "export-static-native-original"
+    ]
+
+    static func replayResponse(for operation: String, prior: (Data, DocumentValue)?, matching request: Data) throws -> DocumentValue? {
+        guard !freshResponseOperations.contains(operation), let prior else { return nil }
+        guard prior.0 == request else { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
+        return prior.1
+    }
+
     public struct ExistingWorkspaceV5: Decodable, Sendable {
         public let workspaceId: String
         public let tenantId: String
@@ -601,13 +613,7 @@ public actor NativeAutomationSession {
         // Scope is checked even for replay: correlation is not authorization.
         let (context, api, current) = try await checked(request)
         if let seen = seenRequests[id], seen != bytes { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
-        let requiresFreshRead = ["artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
-                                 "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status",
-                                 "workspace-frame-lineage-prepare", "export-static-native-original"].contains(operation)
-        if !requiresFreshRead, let prior = replay[id] {
-            guard prior.0 == bytes else { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
-            return prior.1
-        }
+        if let prior = try Self.replayResponse(for: operation, prior: replay[id], matching: bytes) { return prior }
         guard !busy, seenRequests.count < 128 else { throw BridgeFailure("AUTOMATION_BUSY") }
         guard !runtimeStopped || operation == "read" else { throw BridgeFailure("NATIVE_NOT_READY") }
         guard !artworkReplacementRecoveryOnly || ["read", "artwork-replace-reviewed"].contains(operation) else {
@@ -1459,7 +1465,7 @@ public actor NativeAutomationSession {
             }
         default: throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
         }
-        if !requiresFreshRead { replay[id] = (bytes, result) }
+        if !Self.freshResponseOperations.contains(operation) { replay[id] = (bytes, result) }
         return result
     }
     public func close() async throws {

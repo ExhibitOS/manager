@@ -149,4 +149,10 @@ public struct NativeModelPreparationStatus: Decodable, Equatable, Sendable {
         return display.reusedOriginal || artwork.assets.contains(where: { $0.id == originalId && $0.state == "quarantine"
             && $0.mime == original.mime && $0.sha256 == original.sha256 && $0.bytes == original.bytes })
     }
+
+    public func permitsClearingTransfer(artwork: NativeArtwork?, request: NativeImportIntent, job: NativeImportJob) -> Bool {
+        if status == .cancelled { return workerDrained && matches(request, job: job) }
+        guard let artwork, permitsReview(of: artwork, request: request, job: job) else { return false }
+        return artwork.approvedRevision == artwork.revision && artwork.approvedAssetId == job.assetId
+    }
 }

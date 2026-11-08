@@ -715,6 +715,15 @@ extension AuthoringModel {
                 }
             }
             let completed = importJob
+            if let intent = state.intent, intent.modelPreparation != nil {
+                guard let api, let job = completed, let preparation = job.modelPreparation else {
+                    throw AuthoringFailure("IMPORT_RECEIPT_INVALID")
+                }
+                let artwork = job.state == "approved" ? try await api.artwork(intent.artworkId) : nil
+                guard preparation.permitsClearingTransfer(artwork: artwork, request: intent, job: job) else {
+                    throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+                }
+            }
             if state.intent?.hayesOriginal != nil, let job = completed, job.state == "approved" {
                 guard let api, let intent = state.intent, let hayes = intent.hayesOriginal else {
                     throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
