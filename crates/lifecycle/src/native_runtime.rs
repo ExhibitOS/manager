@@ -142,6 +142,16 @@ struct LocalAuthority {
     session_token: String,
     csrf_token: String,
 }
+/// A synchronous borrow used only to construct the owned exporter's private startup frame.
+pub(crate) struct StaticDetailAuthority<'a> {
+    pub(crate) workspace_id: &'a str,
+    pub(crate) tenant_id: &'a str,
+    pub(crate) principal_id: &'a str,
+    pub(crate) runtime_generation: &'a str,
+    pub(crate) port: u16,
+    pub(crate) session_token: &'a str,
+    pub(crate) csrf_token: &'a str,
+}
 impl Drop for LocalAuthority {
     fn drop(&mut self) {
         for value in [&mut self.session_token, &mut self.csrf_token] {
@@ -658,6 +668,39 @@ pub(crate) fn check_cold_transition_root(root: &Path, drained_failure: Option<&s
     Ok(())
 }
 
+/// Positive server/DB drain for an interrupted export whose child was reaped.
+/// The detail-admitted Platform must include its scoped handlers in native drain.
+pub(crate) struct DetailDrainFence {
+    _operation: OperationGuard,
+    _writer: furnishing_lifetime::WriterLifetime,
+}
+
+pub(crate) fn detail_drained_generation(
+    service: &LifecycleService,
+    generation: &str,
+) -> Result<DetailDrainFence> {
+    let unconfirmed = || err("NATIVE_STATIC_DETAIL_CLEANUP_UNCONFIRMED");
+    let operation = service.lock()?;
+    let writer = furnishing_lifetime::WriterLifetime::acquire_existing(&service.root)?;
+    check_interrupted_root(&service.root)?;
+    if exists(&service.root.join("native-database/postmaster.pid"))? {
+        return Err(unconfirmed());
+    }
+    let binding = current_run(&service.root)?.and_then(|current| current.furnishing)
+        .ok_or_else(unconfirmed)?;
+    let owner = service.personal_identity()?;
+    if binding.phase != Phase::Clean || binding.generation != generation
+        || binding.physical != writer.identity()?
+        || (&binding.owner.workspace_id, &binding.owner.tenant_id, &binding.owner.principal_id)
+            != (&owner.0, &owner.1, &owner.2)
+        || binding.owner.owner_uid != unsafe { libc::geteuid() }
+    {
+        return Err(unconfirmed());
+    }
+    unconsumed_furnishing_completion(&service.root, &binding)?;
+    Ok(DetailDrainFence { _operation: operation, _writer: writer })
+}
+
 #[cfg(test)]
 mod interrupted_root_tests {
     use super::*;
@@ -1101,6 +1144,40 @@ impl Session {
         self.check_native_observation_fence()?;
         self.furnishing_writer_lifetime.as_ref().ok_or_else(|| err("NATIVE_FURNISHING_WRITER_LOCK_INVALID"))?.identity()?;
         self.owner_channel.as_mut().ok_or_else(|| err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?.check_furnishing_idle()
+    }
+    pub(crate) fn static_detail_authority(&mut self) -> Result<StaticDetailAuthority<'_>> {
+        if self.oex_upload_selection_started
+            || self.state != "ready"
+            || !self.readiness.ready
+            || self.auxiliary.is_some()
+        {
+            return Err(err("NATIVE_NOT_READY"));
+        }
+        if !self.payload.workspace_furnishing_validation()?
+            || self.active_furnishing_binding().is_none()
+            || self.selected_furnishing_import()
+        {
+            return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));
+        }
+        self.check_workspace_furnishing_channel()?;
+        self.check_native_observation_fence()?;
+        let identity = self.service.personal_identity()?;
+        let authority = self.local_authority.as_ref().ok_or_else(|| err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
+        if (&identity.0, &identity.1, &identity.2)
+            != (&authority.workspace_id, &authority.tenant_id, &authority.principal_id)
+            || authority.owner_uid != unsafe { libc::geteuid() }
+        {
+            return Err(err("NATIVE_PERSONAL_OWNER_MISMATCH"));
+        }
+        Ok(StaticDetailAuthority {
+            workspace_id: &authority.workspace_id,
+            tenant_id: &authority.tenant_id,
+            principal_id: &authority.principal_id,
+            runtime_generation: self.job_id.as_deref().ok_or_else(|| err("NATIVE_NOT_READY"))?,
+            port: self.ports.web,
+            session_token: &authority.session_token,
+            csrf_token: &authority.csrf_token,
+        })
     }
     /// Explicit private IPC only, never part of status/journal/log output.
     pub fn authoring_session(&mut self) -> Result<Value> {

@@ -55,6 +55,7 @@ struct State {
     session: Option<Session>,
     cancel: Option<Arc<AtomicBool>>,
     stop_requested: bool,
+    detail_closing: bool,
     backup: Option<super::installations::native_backup::Receipt>,
     restoration: Option<super::installations::native_maintenance::Restoration>,
     selected_oex: bool,
@@ -161,6 +162,7 @@ impl Host {
                 session: None,
                 cancel: None,
                 stop_requested: false,
+                detail_closing: false,
                 backup: None,
                 restoration: None,
                 selected_oex: false,
@@ -914,6 +916,21 @@ impl Host {
                 return Err(err("NATIVE_PROTOCOL_INVALID"));
             }
         }
+        let detail_fenced = match &request.command {
+            UiCommand::NativePrepare { selection_token, .. }
+            | UiCommand::NativeStart { selection_token }
+            | UiCommand::NativeBackup { selection_token, .. }
+            | UiCommand::NativeMaintenance { selection_token, .. }
+            | UiCommand::NativeOexSelect { selection_token }
+            | UiCommand::NativeOexRun { selection_token }
+            | UiCommand::NativeHosting { selection_token, .. }
+            | UiCommand::SavePublicationState { selection_token, .. }
+            | UiCommand::NativeAuthoringSession { selection_token }
+            | UiCommand::StaticExport { selection_token, .. } =>
+                self.exporter.detail_held(selection_token)?,
+            _ => false,
+        };
+        if detail_fenced { return Err(err("NATIVE_STATIC_DETAIL_BUSY")); }
         let (selected_busy, selected_import_busy) = {
             let state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
             (state.selected_oex && state.busy, state.selected_oex && state.busy && state.operation == "importing_oex")
@@ -1094,6 +1111,7 @@ impl Host {
                 let payload=Payload::open(&self.resources)?;
                 return serde_json::to_value(payload.normal_oex_027_selected_input()?).map_err(|_|err("STATE_INVALID"));
             }
+            self.exporter.stop_detail_child(Some(&selection_token))?;
             self.detach_stopped()?;
             return match maintenance {
                 Input::CheckOexWorkspace => Err(err("NATIVE_PROTOCOL_INVALID")),
@@ -1180,32 +1198,43 @@ impl Host {
                     .state
                     .lock()
                     .map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
-                if state.root.as_ref() != Some(&root) || state.busy {
+                if state.root.as_ref() != Some(&root) || state.busy || state.detail_closing {
                     return Err(err("NATIVE_NOT_READY"));
                 }
-                let current = state
-                    .session
-                    .as_mut()
-                    .ok_or_else(|| err("NATIVE_NOT_READY"))?
-                    .status()?;
+                let payload = state.payload.clone().ok_or_else(|| err("NATIVE_NOT_READY"))?;
+                let session = state.session.as_mut().ok_or_else(|| err("NATIVE_NOT_READY"))?;
+                let current = session.status()?;
                 if !current.readiness.ready {
                     return Err(err("NATIVE_NOT_READY"));
                 }
-                let payload = state
-                    .payload
-                    .clone()
-                    .ok_or_else(|| err("NATIVE_NOT_READY"))?;
+                let authority = if export.detail_mode.is_some() {
+                    Some(session.static_detail_authority()?)
+                } else {
+                    None
+                };
                 return serde_json::to_value(self.exporter.start(
                     selection_token.clone(),
                     export.clone(),
                     payload,
                     current.ports.web,
+                    authority,
                 )?)
                 .map_err(|_| err("STATE_INVALID"));
             }
             UiCommand::NativeStop { selection_token } => {
-                self.selected(selection_token)?;
-                self.exporter.cancel(); self.hoster.cancel();
+                let root = self.selected(selection_token)?;
+                if self.exporter.detail_held(selection_token)? {
+                    let mut state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+                    if state.root.as_ref().is_some_and(|selected| selected != &root) {
+                        return Err(err("NATIVE_OTHER_INSTALLATION_ACTIVE"));
+                    }
+                    state.detail_closing = true;
+                    drop(state);
+                    self.exporter.stop_detail_child(Some(selection_token))?;
+                } else {
+                    self.exporter.cancel();
+                }
+                self.hoster.cancel();
             },
             _ => {}
         }
@@ -1215,7 +1244,7 @@ impl Host {
                 .state
                 .lock()
                 .map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
-            if state.root.as_ref() != Some(&root) || state.busy {
+            if state.root.as_ref() != Some(&root) || state.busy || state.detail_closing {
                 return Err(err("NATIVE_NOT_READY"));
             }
             return state
@@ -1245,7 +1274,18 @@ impl Host {
                 self.launch(selection_token, Work::Start)?
             }
             UiCommand::NativeOexRun { selection_token } => self.launch(selection_token, Work::RunSelectedOex)?,
-            UiCommand::NativeStatus { selection_token } => self.status(&selection_token)?,
+            UiCommand::NativeStatus { selection_token } => {
+                let status = self.status(&selection_token)?;
+                if !status.busy && status.runtime.as_ref().is_none_or(is_drained)
+                    && self.exporter.detail_held(&selection_token)?
+                {
+                    self.exporter.reconcile_detail_stop(&selection_token)?;
+                }
+                if !status.busy && !self.exporter.detail_held(&selection_token)? {
+                    self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.detail_closing = false;
+                }
+                status
+            },
             UiCommand::NativeStop { selection_token } => {
                 self.launch(selection_token, Work::Stop)?
             }
@@ -1261,7 +1301,11 @@ impl Host {
         serde_json::to_value(status).map_err(|_| err("STATE_INVALID"))
     }
     pub fn shutdown(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.detail_closing = true;
+        }
         self.exporter.cancel();
+        let detail_child_returned = self.exporter.stop_detail_child(None).is_ok();
         self.hoster.shutdown();
         if let Ok(mut state) = self.state.lock() {
             state.stop_requested = true;
@@ -1276,7 +1320,13 @@ impl Host {
             && let Some(session) = state.session.take()
         {
             drop(state);
-            drop(session);
+            if detail_child_returned {
+                drop(session);
+            } else {
+                // The durable detail record still holds the reservation.
+                // Do not stop the server under a child whose exit is unknown.
+                std::mem::forget(session);
+            }
         }
     }
 }

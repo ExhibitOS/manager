@@ -2105,6 +2105,30 @@ impl Payload {
             self.root.join("platform/apps/web/dist-static"),
         ))
     }
+    pub(crate) fn static_detail_export_resources(
+        &self,
+        private_editor: bool,
+    ) -> Result<(PathBuf, PathBuf)> {
+        const MARKER: &str = "platform/scripts/native-detail-static-export-capability-v1.json";
+        const MARKER_HASH: &str = "9663e0fb346c78ebbd1b9e883bbd2400a1b968368d101102f0e0285c8e7deaef";
+        const API: &str = "platform/apps/api/dist/native-detail-static-export.js";
+        let regular = |path| {
+            self.manifest.files.iter().find(|item| {
+                item.path == path && item.link.is_none() && item.executable == Some(false)
+            })
+        };
+        if !regular(MARKER).is_some_and(|marker| {
+            marker.bytes == Some(177) && marker.sha256.as_deref() == Some(MARKER_HASH)
+        }) || regular(API).is_none()
+        {
+            return Err(err("NATIVE_STATIC_DETAIL_UNAVAILABLE"));
+        }
+        let resources = self.static_export_resources(private_editor)?;
+        if !private_editor {
+            self.recheck()?;
+        }
+        Ok(resources)
+    }
     pub fn script(&self) -> PathBuf {
         self.root.join(&self.manifest.entry.script)
     }
