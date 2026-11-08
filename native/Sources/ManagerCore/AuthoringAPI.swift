@@ -16,6 +16,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var nativeOexExportProfile: String? = nil
     public var nativePublicationProfile: String? = nil
     public var modelPreparationProfile: String? = nil
+    public var compactModelVariantProfile: String? = nil
     public var nativeModelCandidateReplacementProfile: String? = nil
     public var workspaceMaterialProfile: String? = nil
     public var workspaceFurnishingProfile: String? = nil
@@ -1168,6 +1169,66 @@ public actor AuthoringAPI {
               response.previewUrl == prefix + "/artworks/" + id + "/preview" else { throw AuthoringFailure("ARTWORK_SCOPE_CHANGED") }
         return response
     }
+    public var admitsCompactModelVariant: Bool {
+        nativeSession && !authenticationBusy && admitsRequiredModelPreparation
+            && session?.compactModelVariantProfile == NativeCompactModelVariantRequest.profile
+    }
+
+    /// Persist the exact request before calling create. Repeating the same
+    /// operation and generation observes the same server job without upload.
+    public func createCompactModelVariant(artworkId: String, input: NativeCompactModelVariantRequest) async throws
+        -> NativeCompactModelVariantJob {
+        guard admitsCompactModelVariant else { throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE") }
+        let current = generation, artworkId = try identifier(artworkId)
+        let full = try await artwork(artworkId)
+        guard generation == current, admitsCompactModelVariant else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard input.matchesFull(full, artworkId: artworkId, revision: input.revision) else {
+            throw AuthoringFailure("COMPACT_VARIANT_CONTEXT_CHANGED")
+        }
+        let path = prefix + "/artworks/" + artworkId + "/compact-preparations"
+        let job: NativeCompactModelVariantJob = try await request(path, method: "POST", body: encoded(input))
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        try job.check(request: input, artworkId: artworkId)
+        return job
+    }
+
+    public func compactModelVariantJob(_ id: String, artworkId: String, input: NativeCompactModelVariantRequest) async throws
+        -> NativeCompactModelVariantJob {
+        guard admitsCompactModelVariant else { throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE") }
+        let current = generation, id = try identifier(id), artworkId = try identifier(artworkId)
+        let job: NativeCompactModelVariantJob = try await request("/api/v1/tenants/\(tenant)/imports/\(id)")
+        guard generation == current, job.id == id else { throw AuthoringFailure("COMPACT_VARIANT_RECEIPT_INVALID") }
+        try job.check(request: input, artworkId: artworkId)
+        return job
+    }
+
+    public func approveCompactModelVariant(artworkId: String, jobId: String, input: NativeCompactModelVariantRequest) async throws
+        -> NativeCompactModelVariantApproval {
+        guard admitsCompactModelVariant else { throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE") }
+        struct Approval: Encodable { let revision: Int; let jobId: String }
+        let current = generation, artworkId = try identifier(artworkId)
+        let job = try await compactModelVariantJob(jobId, artworkId: artworkId, input: input)
+        let full = try await artwork(artworkId)
+        guard generation == current, admitsCompactModelVariant else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard let receipt = job.modelPreparation.serverReceipt,
+              (full.revision == input.revision || full.revision == input.revision + 1),
+              input.matchesFull(full, artworkId: artworkId, revision: full.revision),
+              full.assets.contains(where: receipt.coarse.matches) else {
+            throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+        }
+        let path = prefix + "/artworks/" + artworkId + "/compact-preparations/approve"
+        let approval: NativeCompactModelVariantApproval = try await request(
+            path, method: "POST", body: encoded(Approval(revision: input.revision, jobId: job.id)))
+        let refreshed = try await artwork(artworkId)
+        guard generation == current, approval.artworkId == artworkId, approval.jobId == job.id,
+              approval.revision == input.revision + 1, approval.receiptSHA256 == receipt.sha256,
+              input.matchesFull(refreshed, artworkId: artworkId, revision: approval.revision),
+              refreshed.metadata == full.metadata, refreshed.assets.contains(where: receipt.coarse.matches) else {
+            throw AuthoringFailure("COMPACT_VARIANT_RECEIPT_INVALID")
+        }
+        return approval
+    }
+
     public func importJob(_ id: String) async throws -> NativeImportJob {
         try await request("/api/v1/tenants/\(tenant)/imports/" + identifier(id))
     }
