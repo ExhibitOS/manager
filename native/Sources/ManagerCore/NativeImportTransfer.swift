@@ -5,7 +5,7 @@ import Foundation
 /// rechecks the durable original's length/hash before the server queues work.
 public protocol NativeImportTransport: Sendable {
     var admitsICCJPEG: Bool { get }
-    var admitsRequiredModelPreparation: Bool { get }
+    @MainActor var admitsRequiredModelPreparation: Bool { get }
     func createImport(_ input: NativeImportIntent) async throws -> NativeImportJob
     func uploadImport(_ id: String, bytes: Data) async throws
     func uploadDerivedImport(_ id: String, bytes: Data) async throws
