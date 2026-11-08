@@ -2,10 +2,24 @@
 //! Inactive authenticated operation admission. The API owns the DB lease
 //! and rights transaction. Neither a binding nor a fresh reply proves drain.
 
-use super::{err, transfer::Transfer, Attempt, Binding, Lease, Result, SourceStage};
+use super::{
+    err,
+    generation::{
+        validation::{RunningValidation, ValidatedReadback},
+        RunningGeneration, WorkerCheckpoint,
+    },
+    launch::SpawnedWorker,
+    transfer::Transfer,
+    Attempt, Binding, Lease, Result, SourceStage,
+};
 use crate::{
     hash_valid,
-    native_runtime::{oex_owner::Owner, owner_channel::Connection, Session},
+    native_payload::Payload,
+    native_runtime::{
+        oex_owner::{Owner, DATABASE_IDENTITY_SQL},
+        owner_channel::Connection,
+        Session,
+    },
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::time::{Duration, Instant};
@@ -13,6 +27,7 @@ use uuid::Uuid;
 
 const OPEN_RECORD: &str = "operation-open.json";
 const REVALIDATED_RECORD: &str = "operation-revalidated.json";
+const WORKERS_HELD_RECORD: &str = "operation-workers-held.json";
 const CONTROL_LIMIT: usize = 8192;
 const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 
@@ -85,11 +100,39 @@ struct Record {
     database_oid: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HeldWorkers<'a> {
+    version: u8,
+    binding: &'a OperationBinding,
+    native_owner_id: Uuid,
+    runtime_manifest_sha256: &'a str,
+    worker_manifest_sha256: &'a str,
+    revalidation_challenge: Uuid,
+    output_stage_id: Uuid,
+    output_bytes: u64,
+    output_sha256: &'a str,
+    milliseconds_since_open_accepted: WorkerTimings,
+}
+
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkerTimings {
+    source_held: u64,
+    revalidated: u64,
+    generate_before_go: u64,
+    generate_observed: u64,
+    validate_before_go: u64,
+    validate_observed: u64,
+    checked: u64,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Phase {
     Opened,
     SourceHeld,
     Revalidated,
+    OutputHeld,
     Failed,
 }
 
@@ -153,13 +196,60 @@ impl HayesBootstrap {
     }
 }
 
+enum RunningWorker {
+    Generate(RunningGeneration),
+    Validate(RunningValidation),
+}
+
+impl RunningWorker {
+    fn into_child(self) -> SpawnedWorker {
+        match self {
+            Self::Generate(run) => run.child,
+            Self::Validate(run) => run.child,
+        }
+    }
+}
+
+/// The Session retains the attempt and any direct child after the exchange
+/// closes. Reaping only updates direct-child ownership. It cannot retire the
+/// reservation or authorize output.
+pub(in super::super) struct RetainedHayes {
+    _attempt: Attempt,
+    _source: Option<SourceStage>,
+    _validated: Option<ValidatedReadback>,
+    child: Option<SpawnedWorker>,
+}
+
+impl RetainedHayes {
+    pub(in super::super) fn has_child(&self) -> bool {
+        self.child.is_some()
+    }
+
+    pub(in super::super) fn poll(&mut self) -> Result<bool> {
+        let Some(child) = self.child.as_mut() else {
+            return Ok(false);
+        };
+        if child.try_wait().map_err(|_| unavailable())?.is_none() {
+            return Ok(false);
+        }
+        self.child = None;
+        Ok(true)
+    }
+}
+
 pub(in super::super) struct OwnedHayesOpen<'a> {
     session: &'a mut Session,
     owner: Owner,
     channel: Connection,
-    attempt: Attempt,
+    attempt: Option<Attempt>,
     record: Record,
     source: Option<SourceStage>,
+    revalidation_challenge: Option<Uuid>,
+    worker: Option<RunningWorker>,
+    validated: Option<ValidatedReadback>,
+    retain_attempt: bool,
+    open_accepted_at: Instant,
+    timings: WorkerTimings,
     phase: Phase,
 }
 
@@ -170,6 +260,9 @@ impl Session {
         &'a mut self,
         lease: Lease,
     ) -> Result<OwnedHayesOpen<'a>> {
+        if self.retained_hayes.is_some() {
+            return Err(unavailable());
+        }
         let AuthenticatedHayes { pin, mut channel } = self.hayes_bootstrap.consume()?;
         let result = (|| {
             channel.claim_hayes()?;
@@ -218,9 +311,15 @@ impl Session {
                 session: self,
                 owner,
                 channel,
-                attempt,
+                attempt: Some(attempt),
                 record,
                 source: None,
+                revalidation_challenge: None,
+                worker: None,
+                validated: None,
+                retain_attempt: false,
+                open_accepted_at: Instant::now(),
+                timings: WorkerTimings::default(),
                 phase: Phase::Opened,
             }),
             Err(error) => {
@@ -245,9 +344,10 @@ impl OwnedHayesOpen<'_> {
     pub(in super::super) fn receive_source(&mut self, deadline: Instant) -> Result<()> {
         self.start(Phase::Opened)?;
         let result = (|| {
-            check_record(&self.attempt, &self.record)?;
+            let attempt = self.attempt.as_mut().ok_or_else(unavailable)?;
+            check_record(attempt, &self.record)?;
             let cancel = self.session.cancellation.clone();
-            self.attempt.receive_source(
+            attempt.receive_source(
                 &mut self.channel,
                 self.record.binding.correlation_id,
                 deadline,
@@ -258,6 +358,7 @@ impl OwnedHayesOpen<'_> {
         match result {
             Ok(source) => {
                 self.source = Some(source);
+                self.timings.source_held = self.open_accepted_at.elapsed().as_millis() as u64;
                 self.phase = Phase::SourceHeld;
                 Ok(())
             }
@@ -269,14 +370,14 @@ impl OwnedHayesOpen<'_> {
     }
 
     /// Fresh same-binding API transaction attestation. A successful result
-    /// records revalidation only. There is no worker GO consumer here.
+    /// records revalidation. Both worker GO boundaries recheck the claim.
     pub(in super::super) fn revalidate(&mut self) -> Result<()> {
         self.start(Phase::SourceHeld)?;
         let result = (|| {
-            check_record(&self.attempt, &self.record)?;
+            let attempt = self.attempt.as_ref().ok_or_else(unavailable)?;
+            check_record(attempt, &self.record)?;
             let source = self.source.as_ref().ok_or_else(unavailable)?;
-            self.attempt
-                .check_stage_file(source.binding.attempt, &source.observed)?;
+            attempt.check_stage_file(source.binding.attempt, &source.observed)?;
             if self.session.payload.context().manifest_sha256 != self.record.runtime_manifest_sha256
             {
                 return Err(unavailable());
@@ -292,14 +393,15 @@ impl OwnedHayesOpen<'_> {
             let response = self.channel.read_frame(deadline, &cancel, &mut check)?;
             check_revalidated(&response, &mut frame)?;
             self.owner.recheck_database_identity(self.session)?;
-            check_record(&self.attempt, &self.record)?;
-            self.attempt
-                .check_stage_file(source.binding.attempt, &source.observed)?;
-            self.attempt.journal.create(REVALIDATED_RECORD, &frame)?;
-            Ok(())
+            check_record(attempt, &self.record)?;
+            attempt.check_stage_file(source.binding.attempt, &source.observed)?;
+            attempt.journal.create(REVALIDATED_RECORD, &frame)?;
+            Ok(frame.challenge)
         })();
         match result {
-            Ok(()) => {
+            Ok(challenge) => {
+                self.revalidation_challenge = Some(challenge);
+                self.timings.revalidated = self.open_accepted_at.elapsed().as_millis() as u64;
                 self.phase = Phase::Revalidated;
                 Ok(())
             }
@@ -309,12 +411,217 @@ impl OwnedHayesOpen<'_> {
             }
         }
     }
+
+    /// Drive only the fixed private worker pair after authenticated source and
+    /// revalidation. Successful observation leaves the output held locally.
+    pub(in super::super) fn observe_revalidated_workers(
+        &mut self,
+        worker_payload: &Payload,
+        deadline: Instant,
+    ) -> Result<()> {
+        self.start(Phase::Revalidated)?;
+        self.retain_attempt = true;
+        let result = self.run_revalidated_workers(worker_payload, deadline);
+        match result {
+            Ok(()) => {
+                self.phase = Phase::OutputHeld;
+                Ok(())
+            }
+            Err(error) => {
+                self.channel.invalidate();
+                Err(error)
+            }
+        }
+    }
+
+    fn run_revalidated_workers(
+        &mut self,
+        worker_payload: &Payload,
+        deadline: Instant,
+    ) -> Result<()> {
+        let attempt = self.attempt.as_mut().ok_or_else(unavailable)?;
+        let challenge = self.revalidation_challenge.ok_or_else(unavailable)?;
+        let deadline = deadline.min(Instant::now() + Duration::from_secs(300));
+        let cancellation = self.session.cancellation.clone();
+        let owner = &self.owner;
+        let channel = &self.channel;
+        let record = &self.record;
+        let session = &mut *self.session;
+        let elapsed = || self.open_accepted_at.elapsed().as_millis() as u64;
+        if session.payload.context().manifest_sha256 != record.runtime_manifest_sha256 {
+            return Err(unavailable());
+        }
+        session.payload.recheck()?;
+        let mut check = |checkpoint: WorkerCheckpoint<'_>, deadline: Instant| {
+            if Instant::now() >= deadline {
+                return Err(err("HAYES_WORKER_TIMEOUT"));
+            }
+            channel.check_hayes_idle()?;
+            match checkpoint {
+                WorkerCheckpoint::Observe => owner.check(session)?,
+                WorkerCheckpoint::BeforeGo(attempt) => {
+                    check_revalidation_record(attempt, record, challenge)?;
+                    check_live_claim(owner, session, &record.binding, deadline)?;
+                    channel.check_hayes_idle()?;
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(err("HAYES_WORKER_TIMEOUT"));
+            }
+            Ok(())
+        };
+        check(WorkerCheckpoint::BeforeGo(attempt), deadline)?;
+        let source = self.source.take().ok_or_else(unavailable)?;
+        let pin = worker_payload.hayes_read_only_generate()?;
+        check(WorkerCheckpoint::Observe, deadline)?;
+        self.worker = Some(RunningWorker::Generate(
+            attempt
+                .prepare_generation(source)?
+                .spawn_fixed_generate(pin)?,
+        ));
+        let Some(RunningWorker::Generate(run)) = self.worker.as_mut() else {
+            return Err(unavailable());
+        };
+        let generate_deadline = deadline.min(Instant::now() + Duration::from_secs(16));
+        let generated = attempt.observe_generation(
+            run,
+            generate_deadline,
+            &cancellation,
+            &mut |checkpoint| {
+                check(checkpoint, generate_deadline)?;
+                if matches!(checkpoint, WorkerCheckpoint::BeforeGo(_)) {
+                    self.timings.generate_before_go = elapsed();
+                }
+                Ok(())
+            },
+        )?;
+        if !run
+            .child
+            .try_wait()
+            .map_err(|_| unavailable())?
+            .is_some_and(|status| status.success())
+        {
+            return Err(unavailable());
+        }
+        self.worker = None;
+        self.timings.generate_observed = elapsed();
+        let body = generated.stage_selected_body(attempt, &cancellation, &mut || {
+            check(WorkerCheckpoint::Observe, deadline)
+        })?;
+        self.worker = Some(RunningWorker::Validate(attempt.spawn_retained_validation(
+            worker_payload,
+            body,
+            &cancellation,
+            &mut || check(WorkerCheckpoint::Observe, deadline),
+        )?));
+        let Some(RunningWorker::Validate(run)) = self.worker.as_mut() else {
+            return Err(unavailable());
+        };
+        let validate_deadline = deadline.min(Instant::now() + Duration::from_secs(16));
+        self.validated = Some(attempt.observe_retained_validation(
+            run,
+            validate_deadline,
+            &cancellation,
+            &mut |checkpoint| {
+                check(checkpoint, validate_deadline)?;
+                if matches!(checkpoint, WorkerCheckpoint::BeforeGo(_)) {
+                    self.timings.validate_before_go = elapsed();
+                }
+                Ok(())
+            },
+        )?);
+        self.worker = None;
+        self.timings.validate_observed = elapsed();
+        check(WorkerCheckpoint::BeforeGo(attempt), deadline)?;
+        self.timings.checked = elapsed();
+        let validated = self.validated.as_ref().ok_or_else(unavailable)?;
+        let worker = worker_payload.context();
+        attempt.journal.create(
+            WORKERS_HELD_RECORD,
+            &HeldWorkers {
+                version: 1,
+                binding: &record.binding,
+                native_owner_id: record.native_owner_id,
+                runtime_manifest_sha256: &record.runtime_manifest_sha256,
+                worker_manifest_sha256: &worker.manifest_sha256,
+                revalidation_challenge: challenge,
+                output_stage_id: validated.selected.id,
+                output_bytes: validated.selected.observed.bytes,
+                output_sha256: &validated.selected.observed.sha256,
+                milliseconds_since_open_accepted: std::mem::take(&mut self.timings),
+            },
+        )?;
+        check(WorkerCheckpoint::Observe, deadline)
+    }
 }
 
 impl Drop for OwnedHayesOpen<'_> {
     fn drop(&mut self) {
         self.channel.invalidate();
+        if self.retain_attempt {
+            if let Some(attempt) = self.attempt.take() {
+                let child = self.worker.take().map(|worker| {
+                    let mut child = worker.into_child();
+                    child.owner.take();
+                    child
+                });
+                self.session.retained_hayes = Some(RetainedHayes {
+                    _attempt: attempt,
+                    _source: self.source.take(),
+                    _validated: self.validated.take(),
+                    child,
+                });
+            }
+        }
     }
+}
+
+fn check_revalidation_record(attempt: &Attempt, record: &Record, challenge: Uuid) -> Result<()> {
+    check_record(attempt, record)?;
+    let expected = Revalidation {
+        version: 1,
+        kind: Kind::HayesOperationRevalidated,
+        binding: &record.binding,
+        challenge,
+        runtime_manifest_sha256: &record.runtime_manifest_sha256,
+    };
+    if attempt.journal.read_bytes(REVALIDATED_RECORD)? != encode(&expected)? {
+        return Err(unavailable());
+    }
+    Ok(())
+}
+
+fn check_live_claim(
+    owner: &Owner,
+    session: &mut Session,
+    b: &OperationBinding,
+    deadline: Instant,
+) -> Result<()> {
+    owner.check(session)?;
+    // All interpolated values are typed UUIDs, bounded integers, or the
+    // exact lowercase source digest admitted by parse_open.
+    let sql = format!(
+        "SELECT db.system_id,db.database_oid FROM ({DATABASE_IDENTITY_SQL}) db WHERE EXISTS (
+          SELECT 1 FROM hayes_original_attempts a
+          JOIN import_jobs j ON (j.tenant_id,j.id,j.hayes_attempt_id)=(a.tenant_id,a.job_id,a.id)
+          JOIN artworks w ON (w.tenant_id,w.id)=(a.tenant_id,a.artwork_id)
+          WHERE (a.tenant_id,a.workspace_id,a.principal_id)=('{tenant}','{workspace}','{principal}')
+            AND (a.job_id,a.lease_id,a.id)=('{job}','{lease}','{attempt}')
+            AND (a.runtime_generation,a.artwork_id,a.correlation_id)=('{generation}','{artwork}','{correlation}')
+            AND (a.artwork_revision,a.source_bytes,a.source_sha256)=({revision},{bytes},'{sha}')
+            AND (j.user_id,j.artwork_id,j.lease_id)=(a.principal_id,a.artwork_id,a.lease_id)
+            AND j.state='processing' AND j.lease_until>clock_timestamp()
+            AND j.expected_hash=a.source_sha256 AND j.expected_bytes=a.source_bytes
+            AND j.mime='model/gltf-binary'
+            AND w.revision=a.artwork_revision AND w.deleted_at IS NULL)",
+        tenant=b.tenant_id, workspace=b.workspace_id, principal=b.principal_id,
+        job=b.job_id, lease=b.lease_id, attempt=b.attempt_id, generation=b.runtime_generation,
+        artwork=b.artwork_id, correlation=b.correlation_id, revision=b.artwork_revision,
+        bytes=b.source_bytes, sha=b.source_sha256,
+    );
+    let identity = session.query_database_before("exhibitos", &sql, deadline)?;
+    owner.check_database_identity_result(&identity)?;
+    owner.check(session)
 }
 
 impl Record {

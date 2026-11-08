@@ -116,7 +116,7 @@ fn selected_package_generate_and_validate_retains_exact_private_stages() {
         &mut run,
         Instant::now() + Duration::from_secs(16),
         &cancellation,
-        &mut || Ok(()),
+        &mut |_| Ok(()),
     );
     assert!(reap(&mut run.child).success());
     let generated = generated.unwrap();
@@ -135,7 +135,7 @@ fn selected_package_generate_and_validate_retains_exact_private_stages() {
         &mut validation,
         Instant::now() + Duration::from_secs(16),
         &cancellation,
-        &mut || Ok(()),
+        &mut |_| Ok(()),
     );
     assert!(reap(&mut validation.child).success());
     let validated = validated.unwrap();

@@ -722,3 +722,34 @@ fn direct_watch_observes_exit_and_vetoes_a_fork_even_if_exit_follows() {
         assert_eq!(code(attempt.retire_unstarted()), "HAYES_DRAIN_UNCONFIRMED");
     }
 }
+
+#[test]
+fn failed_fresh_worker_checkpoint_vetoes_go() {
+    use super::generation::WorkerCheckpoint;
+    let root = Fixture::new();
+    let mut attempt = root.acquire().begin(binding()).unwrap();
+    let mut run = generation_fixture(&mut attempt, root.path(), "valid");
+    run.require_fixture_watch();
+    let result = attempt.observe_generation(
+        &mut run,
+        Instant::now() + Duration::from_secs(8),
+        &AtomicBool::new(false),
+        &mut |checkpoint| match checkpoint {
+            WorkerCheckpoint::Observe => Ok(()),
+            WorkerCheckpoint::BeforeGo(_) => Err(err("HAYES_TEST_LEASE_EXPIRED")),
+        },
+    );
+    assert_eq!(code(result), "HAYES_TEST_LEASE_EXPIRED");
+    wait_for(|| run.child.try_wait().unwrap().is_some());
+    assert_eq!(
+        fs::metadata(generation_output_path(&attempt))
+            .unwrap()
+            .len(),
+        0
+    );
+    assert!(!attempt
+        .journal
+        .exists("generate-direct-observed.json")
+        .unwrap());
+    assert_eq!(code(attempt.retire_unstarted()), "HAYES_DRAIN_UNCONFIRMED");
+}

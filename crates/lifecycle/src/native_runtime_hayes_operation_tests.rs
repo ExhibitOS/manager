@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::*;
-use crate::native_runtime::hayes::tests::Fixture;
+use crate::native_runtime::hayes::{
+    tests::{wait_for, Fixture},
+    Role,
+};
 use std::{
-    env, fs,
-    io::Read,
+    env,
+    ffi::OsStr,
+    fs,
+    io::{Read, Write},
     os::unix::net::{UnixListener, UnixStream},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::AtomicBool,
     thread,
 };
@@ -217,4 +222,66 @@ fn api_control_interop_fixture() {
     connection.invalidate();
     drop(listener);
     fs::remove_file(socket).unwrap();
+}
+
+#[test]
+fn worker_owner_socket_vetoes_eof_and_premature_frames_without_consuming() {
+    let (socket, mut peer) = UnixStream::pair().unwrap();
+    let mut channel = Connection::hayes_fixture(socket).unwrap();
+    assert!(channel.check_hayes_idle().is_err());
+    channel.claim_hayes().unwrap();
+    assert!(channel.check_hayes_idle().is_ok());
+    peer.write_all(&[0, 0, 0, 1, b'x']).unwrap();
+    assert!(channel.check_hayes_idle().is_err());
+    let frame = channel
+        .read_frame(
+            Instant::now() + Duration::from_secs(1),
+            &AtomicBool::new(false),
+            &mut || Ok(()),
+        )
+        .unwrap();
+    assert_eq!(frame, b"x");
+    drop(peer);
+    assert!(channel.check_hayes_idle().is_err());
+}
+
+#[test]
+fn session_retained_attempt_outlives_direct_child_reap() {
+    let root = Fixture::new();
+    let record = record(binding());
+    let mut attempt = record.persist(root.acquire()).unwrap();
+    let expected = attempt.intent.binding;
+    let permit = attempt.before_spawn(Role::Generate).unwrap();
+    let child = permit
+        .spawn_fixture(
+            Path::new("/bin/sh"),
+            &[OsStr::new("-c"), OsStr::new("read -r line <&3 || exit 0")],
+        )
+        .unwrap();
+    let mut retained = RetainedHayes {
+        _attempt: attempt,
+        _source: None,
+        _validated: None,
+        child: Some(child),
+    };
+    assert!(!retained.poll().unwrap());
+    retained.child.as_mut().unwrap().owner.take();
+    wait_for(|| retained.poll().unwrap());
+    assert!(!retained.has_child());
+    assert_eq!(
+        Lease::acquire(root.path(), root.authority())
+            .err()
+            .unwrap()
+            .code,
+        "HAYES_RESERVATION_BUSY"
+    );
+    drop(retained);
+    assert_eq!(
+        root.acquire()
+            .check_interrupted(expected)
+            .err()
+            .unwrap()
+            .code,
+        "HAYES_DRAIN_UNCONFIRMED"
+    );
 }

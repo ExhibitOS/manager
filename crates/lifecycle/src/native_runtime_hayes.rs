@@ -205,6 +205,10 @@ impl PrivateDirectory {
     }
 
     fn read<T: DeserializeOwned>(&self, name: &str) -> Result<T> {
+        serde_json::from_slice(&self.read_bytes(name)?).map_err(|_| custody_error())
+    }
+
+    fn read_bytes(&self, name: &str) -> Result<Vec<u8>> {
         self.identity()?;
         let file = self
             .open_file(name, libc::O_RDONLY)
@@ -217,7 +221,7 @@ impl PrivateDirectory {
         if bytes.len() as u64 > MAX_RECORD {
             return Err(custody_error());
         }
-        serde_json::from_slice(&bytes).map_err(|_| custody_error())
+        Ok(bytes)
     }
 
     fn create<T: Serialize>(&self, name: &str, record: &T) -> Result<()> {
