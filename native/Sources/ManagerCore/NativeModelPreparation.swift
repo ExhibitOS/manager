@@ -90,6 +90,7 @@ public struct NativeModelPreparationStatus: Decodable, Equatable, Sendable {
         public let artworkRevision: Int
         public let operationID: String, generation: String, rightsSHA256: String
         public let original: Asset, display: Display, producer: Producer
+        public let displayReference: ArtworkMetadata.DisplayReference?
         public let sha256: String
     }
 
@@ -144,11 +145,39 @@ public struct NativeModelPreparationStatus: Decodable, Equatable, Sendable {
             && producer.recipeSHA256 == receipt.recipeSHA256 && producer.source.sha256 == original.sha256
             && producer.source.bytes == original.bytes && producer.output.sha256 == display.sha256
             && producer.output.bytes == display.bytes && producer.output.reusedOriginal == display.reusedOriginal
+            && (receipt.displayReference?.matches(display: display, producer: producer) ?? true)
+    }
+
+    var approvalRevision: Int {
+        guard let reference = serverReceipt?.displayReference, reference.assetSha256 != original.sha256 else {
+            return intent.artworkRevision
+        }
+        return intent.artworkRevision + 1
+    }
+
+    func approvedMetadata(from metadata: ArtworkMetadata) -> ArtworkMetadata {
+        var approved = metadata
+        if let reference = serverReceipt?.displayReference { approved.displayReference = reference }
+        return approved
+    }
+
+    private func matchesArtworkRevision(_ artwork: NativeArtwork) -> Bool {
+        guard let metadata = artwork.metadata else { return false }
+        guard let reference = serverReceipt?.displayReference else {
+            return metadata.displayReference == nil && metadata.provenance.sourceUnits != "unknown"
+                && artwork.revision == intent.artworkRevision
+        }
+        guard metadata.provenance.sourceUnits == "unknown", !metadata.provenance.scaleApplied else { return false }
+        if artwork.revision == intent.artworkRevision {
+            return metadata.displayReference == reference.binding(to: original.sha256)
+        }
+        return artwork.revision == approvalRevision && artwork.approvedRevision == approvalRevision
+            && artwork.approvedAssetId == display?.assetId && metadata.displayReference == reference
     }
 
     public func permitsReview(of artwork: NativeArtwork, request: NativeImportIntent, job: NativeImportJob) -> Bool {
         guard matches(request, job: job), status == .ready, let display, let originalId = original.assetId,
-              artwork.id == request.artworkId, artwork.revision == intent.artworkRevision, !artwork.archived,
+              artwork.id == request.artworkId, matchesArtworkRevision(artwork), !artwork.archived,
               artwork.metadata?.rights == request.rights,
               artwork.assets.contains(where: { $0.id == display.assetId && $0.state == "approved"
                   && $0.mime == display.mime && $0.sha256 == display.sha256 && $0.bytes == display.bytes }) else { return false }
@@ -160,5 +189,28 @@ public struct NativeModelPreparationStatus: Decodable, Equatable, Sendable {
         if status == .cancelled { return workerDrained && matches(request, job: job) }
         guard let artwork, permitsReview(of: artwork, request: request, job: job) else { return false }
         return artwork.approvedRevision == artwork.revision && artwork.approvedAssetId == job.assetId
+    }
+}
+
+extension ArtworkMetadata.DisplayReference {
+    func binding(to sha256: String) -> Self {
+        .init(version: version, status: status, assetSha256: sha256, rawBounds: rawBounds,
+              referenceHeightMeters: referenceHeightMeters, pose: pose)
+    }
+
+    fileprivate func matches(display: NativeModelPreparationStatus.Display,
+                             producer: NativeModelPreparationStatus.Receipt.Producer) -> Bool {
+        guard version == 1, status == "provisional-uncalibrated", assetSha256 == display.sha256,
+              producer.source.bounds == producer.output.bounds,
+              rawBounds.min.count == 3, rawBounds.max.count == 3,
+              (rawBounds.min + rawBounds.max).allSatisfy({ $0.isFinite && abs($0) <= 1_000_000 }),
+              rawBounds.min.map({ Double(Float($0)) }) == producer.source.bounds.min,
+              rawBounds.max.map({ Double(Float($0)) }) == producer.source.bounds.max,
+              zip(rawBounds.min, rawBounds.max).allSatisfy({ $0.1 > $0.0 && $0.1 - $0.0 <= 10_000 }),
+              referenceHeightMeters.isFinite, referenceHeightMeters > 0, referenceHeightMeters <= 10_000, pose.position == [0, 0, 0], pose.rotation == [0, 0, 0, 1],
+              pose.scale.count == 3 else { return false }
+        let scale = referenceHeightMeters / (rawBounds.max[1] - rawBounds.min[1])
+        let tolerance = max(1e-12, abs(scale) * 1e-9)
+        return pose.scale.allSatisfy { (0.000_001...100).contains($0) && abs($0 - scale) <= tolerance }
     }
 }

@@ -14,6 +14,11 @@ public struct NativeUploadState: Codable, Sendable {
     public var fileName: String?
     public var compactVariant: NativeCompactModelVariantTransfer? = nil
 
+    public func permitsOrdinaryJobAction(_ jobId: String, selectedArtworkId: String?) -> Bool {
+        guard let intent, let selectedArtworkId else { return false }
+        return self.jobId == jobId && intent.artworkId == selectedArtworkId && intent.hayesOriginal == nil
+    }
+
     public func holdsRequiredModelMetadata(for artworkId: String?) -> Bool {
         guard let artworkId else { return false }
         if let compactVariant { return artworkId.caseInsensitiveCompare(compactVariant.artworkId) == .orderedSame }

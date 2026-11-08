@@ -1047,10 +1047,28 @@ public actor NativeAutomationSession {
             result = created
         case "artwork-create":
             try checkedRevision(request, current)
-            let command = try NativeAutomationArtworkRules.command(request, keys: ["artistId", "metadata"])
+            let provisional = request["command"]["provisionalHeightMeters"] != .null
+            var keys: Set<String> = ["artistId", "metadata"]
+            if provisional { keys.insert("provisionalHeightMeters") }
+            let command = try NativeAutomationArtworkRules.command(request, keys: keys)
             guard let artist = command["artistId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
-            let metadata = try JSONDecoder().decode(ArtworkMetadata.self, from: JSONEncoder().encode(command["metadata"]))
+            var metadata = try JSONDecoder().decode(ArtworkMetadata.self, from: JSONEncoder().encode(command["metadata"]))
             guard try value(metadata) == command["metadata"] else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            if provisional {
+                guard selectedOEXFormat == nil, current.pending == nil, !current.dirty,
+                      request["outputPath"] == .null, metadata.displayReference == nil,
+                      metadata.provenance.sourceUnits == "unknown", !metadata.provenance.scaleApplied,
+                      let height = command["provisionalHeightMeters"].double,
+                      let path = request["inputPath"].string, let hash = inputs[path] else {
+                    throw BridgeFailure("AUTOMATION_INPUT_INVALID")
+                }
+                let url = URL(fileURLWithPath: path)
+                guard url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+                let file = try await ImportFileSnapshot.load(url)
+                guard file.sha256 == hash else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
+                let inspection = try await api.inspectModelOriginal(file)
+                metadata = try inspection.applying(to: metadata, height: height)
+            }
             try beginCatalogCreation(request, id: id)
             let created = try value(await api.saveArtwork(id: nil, revision: nil, artistId: artist, metadata: metadata))
             _ = try write(created, to: root.appendingPathComponent(".automation-catalog-" + id + ".result.json").path)
@@ -1203,6 +1221,12 @@ public actor NativeAutomationSession {
             let state = try await bridge.uploadState(context)
             try NativeAutomationArtworkRules.checkUploadScope(state, document: current)
             guard state.compactVariant == nil else { throw BridgeFailure("IMPORT_ACTIVE") }
+            if metadata.provenance.sourceUnits == "unknown" {
+                guard await api.admitsModelOriginalInspection,
+                      state.intent == nil || state.intent?.modelPreparation != nil else {
+                    throw BridgeFailure("IMPORT_MODEL_UNAVAILABLE")
+                }
+            }
             let preparation: NativeModelPreparationIntent?
             if let retained = state.intent {
                 preparation = retained.modelPreparation
@@ -1291,12 +1315,12 @@ public actor NativeAutomationSession {
                     throw BridgeFailure("APPROVAL_REVIEW_REQUIRED")
                 }
                 _ = try await bridge.hayesRelease(context, jobId: jobId, currentArtworkRevision: artwork.revision)
-            } else if intent.modelPreparation != nil {
-                guard await api.admitsRequiredModelPreparation, job.id == jobId, job.assetId == assetId,
-                      Int64(artwork.revision) == revision,
-                      job.modelPreparation?.permitsReview(of: artwork, request: intent, job: job) == true else {
+            } else if let preparation = intent.modelPreparation {
+                guard job.id == jobId, job.assetId == assetId, Int64(preparation.artworkRevision) == revision else {
                     throw BridgeFailure("APPROVAL_REVIEW_REQUIRED")
                 }
+                result = try value(await api.approvePreparedModel(job, request: intent, current: artwork))
+                break
             } else {
                 try NativeAutomationArtworkRules.checkApproval(artwork: artwork, job: job, jobId: jobId,
                     intent: intent, revision: revision, assetId: assetId)

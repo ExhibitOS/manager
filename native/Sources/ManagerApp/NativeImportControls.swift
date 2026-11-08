@@ -23,7 +23,7 @@ struct NativeImportControls: View {
                 } else if !belongs, let id = model.transfer?.intent?.artworkId {
                     Text("다른 작품에 시작한 파일 검사가 있습니다.")
                     Button("검사 중인 작품 열기") { openArtwork(id) }
-                } else if model.hasUnknownSourceUnits {
+                } else if model.hasUnknownSourceUnits && !model.ordinaryUnknownModel {
                     if model.hayesOriginalAvailable, model.importJob?.terminal != true {
                         if model.importJob == nil || model.importJob?.state == "uploading" {
                             Button("Hayes GLB 원본 선택…") { Task { await model.chooseImportFile() } }
@@ -62,19 +62,23 @@ struct NativeImportControls: View {
                         }
                     }
                     else if let name = model.transfer?.fileName { Text("저장한 요청: \(name)").textSelection(.enabled) }
-                    TextField("파일 1단위의 길이 (m)", value: $model.importScale, format: .number).disabled(model.transfer?.intent != nil)
-                    if model.metadataDirty || model.selected == nil {
+                    if !model.ordinaryUnknownModel {
+                        TextField("파일 1단위의 길이 (m)", value: $model.importScale, format: .number)
+                            .disabled(model.transfer?.intent != nil)
+                    }
+                    if model.metadataDirty || model.selected == nil || model.inspectedReferencePending {
                         Text("작품 정보와 권리를 먼저 저장하세요.").foregroundStyle(.secondary)
                     }
                     if model.importJob == nil || model.importJob?.state == "uploading" {
                         Button("파일 검사 시작·계속") { Task { await model.uploadImportFile() } }
-                            .disabled(model.metadataDirty || model.selected == nil || model.importFile == nil || model.transfer == nil || !model.importScale.isFinite || model.importScale <= 0)
+                            .disabled(model.metadataDirty || model.selected == nil || model.importFile == nil || model.transfer == nil
+                                || model.inspectedReferencePending || (!model.ordinaryUnknownModel && (!model.importScale.isFinite || model.importScale <= 0)))
                     }
                 }
-                if !model.hasUnknownSourceUnits && model.transfer?.intent != nil && model.importJob == nil {
+                if (!model.hasUnknownSourceUnits || model.ordinaryUnknownModel) && model.transfer?.intent != nil && model.importJob == nil {
                     Button("이전 검사 요청 찾기") { Task { await model.recoverImport() } }
                 }
-                if let job = model.importJob {
+                if belongs, let job = model.importJob {
                     let visibleState = job.modelPreparation?.status == .processing ? "processing" : job.state
                     Label(stateTitle(visibleState), systemImage: visibleState == "approved" ? "checkmark.circle" : "doc.text.magnifyingglass")
                     if model.jpegOriginalStored { Text("JPEG 원본과 감상용 PNG를 이 Mac에 보관했습니다.").foregroundStyle(.secondary) }
@@ -100,13 +104,15 @@ struct NativeImportControls: View {
                     if ["queued", "processing"].contains(job.state) { ProgressView(value: Double(job.progress), total: 100).accessibilityLabel("파일 검사 진행") }
                     HStack {
                         Button("상태 다시 확인") { Task { await model.refreshImport() } }
-                        if !model.hasUnknownSourceUnits && job.state == "uploading" { Button("받은 원본으로 검사 계속") { Task { await model.recoverImport() } } }
-                        if !model.hasUnknownSourceUnits && job.state == "failed" { Button("검사 재시도") { Task { await model.changeImport(.retry) } }.disabled(!job.canRetry || model.intakeDrainPending) }
+                        if (!model.hasUnknownSourceUnits || model.ordinaryUnknownModel) && job.state == "uploading" { Button("받은 원본으로 검사 계속") { Task { await model.recoverImport() } } }
+                        if (!model.hasUnknownSourceUnits || model.ordinaryUnknownModel) && job.state == "failed" { Button("검사 재시도") { Task { await model.changeImport(.retry) } }.disabled(!job.canRetry || model.intakeDrainPending) }
                         if !model.hasUnknownSourceUnits, job.state == "approved", job.modelDerivation?.status == "failed" {
                             Button("감상용 파일 재시도") { Task { await model.changeImport(.retry) } }
                                 .disabled(!job.canRetry || !model.modelDerivationEnabled || model.modelWorkerPending)
                         }
-                        if !job.terminal, !model.hasHayesIntent { Button("검사 중단") { Task { await model.changeImport(.cancel) } } }
+                        if !job.terminal, model.transfer?.permitsOrdinaryJobAction(job.id, selectedArtworkId: model.selected?.id) == true {
+                            Button("검사 중단") { Task { await model.changeImport(.cancel) } }
+                        }
                         if job.terminal { Button("다른 파일 검사 준비") { Task { await model.clearImport() } }.disabled(model.intakeDrainPending || model.modelWorkerPending || job.modelDerivation?.workerDrained == false) }
                     }
                     if model.intakeDrainPending { Text("현재 파일 검사 작업이 실제로 끝날 때까지 다음 파일은 대기합니다.").foregroundStyle(.secondary) }
@@ -124,7 +130,7 @@ struct NativeImportControls: View {
                     }
                 }
                 if !approvedAssets.isEmpty {
-                    if !model.hasUnknownSourceUnits {
+                    if !model.hasUnknownSourceUnits || model.ordinaryUnknownModel {
                         Picker("전시에 쓸 파일", selection: $model.assetId) {
                             Text("파일 선택").tag("")
                             ForEach(approvedAssets) { asset in Text("\(asset.mime == "model/gltf-binary" ? "GLB" : "PNG") · \(asset.id.prefix(8))").tag(asset.id) }
