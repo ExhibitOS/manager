@@ -1258,6 +1258,38 @@ fn wait_detail_child(child: &mut Child, check: &impl Fn() -> Result<()>) -> Resu
     }
 }
 
+fn detail_child_command(
+    node: &Path,
+    script: &Path,
+    origin: &str,
+    publication_id: &str,
+    runtime: &Path,
+    private_editor: bool,
+) -> Command {
+    let mut command = Command::new(node);
+    command.args([
+        script.as_os_str(),
+        OsStr::new(origin),
+        OsStr::new(publication_id),
+        runtime.as_os_str(),
+        OsStr::new("."),
+    ]);
+    if private_editor {
+        command.arg("--private-editor");
+    }
+    // Child diagnostics may contain fetch errors; no detail stderr is retained.
+    command
+        .arg("--native-detail-v1")
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("LANG", "en_US.UTF-8")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0);
+    command
+}
+
 fn spawn_detail_child(mut command: Command, stage: &File) -> std::io::Result<Child> {
     let stage_fd = stage.as_raw_fd();
     // The borrowed stage stays open until spawn returns. The child changes cwd
@@ -1301,27 +1333,14 @@ impl DetailRun {
         } = self;
         let deadline = Instant::now() + DETAIL_DEADLINE;
         let check = || check_detail(deadline, cancel);
-        let mut command = Command::new(payload.node());
-        command.args([
-            script.as_os_str(),
-            OsStr::new(&origin),
-            OsStr::new(&journal.status.publication_id),
-            viewer.as_os_str(),
-            OsStr::new("."),
-        ]);
-        if journal.status.private_editor {
-            command.arg("--private-editor");
-        }
-        // Child diagnostics may contain fetch errors; no detail stderr is retained.
-        command
-            .arg("--native-detail-v1")
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
-            .env("LANG", "en_US.UTF-8")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .process_group(0);
+        let command = detail_child_command(
+            &payload.node(),
+            &script,
+            &origin,
+            &journal.status.publication_id,
+            &viewer,
+            journal.status.private_editor,
+        );
         let startup_deadline = deadline.min(Instant::now() + Duration::from_secs(5));
         let mut child = match check()
             .and_then(|_| stage.check(&journal))
@@ -2273,6 +2292,119 @@ mod detail_tests {
             .arg(&unexpected);
         assert!(spawn_detail_child(command, &file).is_err());
         assert!(!unexpected.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CandidateFreeFixture {
+        node: PathBuf,
+        cli: PathBuf,
+        runtime: PathBuf,
+        group_evidence: PathBuf,
+        origin: String,
+        publication_id: String,
+        revision_sha256: String,
+        runtime_generation: String,
+    }
+
+    #[test]
+    #[ignore = "requires the queued Platform CLI and candidate-free loopback fixture"]
+    fn static_detail_platform_cli_interop() {
+        let fixture_path = std::env::var_os("EXHIBITOS_DETAIL_INTEROP_FIXTURE").unwrap();
+        let fixture: CandidateFreeFixture =
+            serde_json::from_slice(&fs::read(fixture_path).unwrap()).unwrap();
+        let (root, stage, mut journal) = stage_fixture();
+        journal.status.publication_id = fixture.publication_id;
+        journal.status.revision_sha256 = fixture.revision_sha256;
+        journal.runtime_generation = fixture.runtime_generation;
+        let status = &journal.status;
+        let authority = StaticDetailAuthority {
+            workspace_id: &status.workspace_id,
+            tenant_id: &status.tenant_id,
+            principal_id: &status.principal_id,
+            runtime_generation: &journal.runtime_generation,
+            port: fixture.origin.rsplit_once(':').unwrap().1.parse().unwrap(),
+            session_token: &"s".repeat(43),
+            csrf_token: &"c".repeat(43),
+        };
+        let startup = StartupFrame::encode(status, &authority, &fixture.origin).unwrap();
+        let command = detail_child_command(
+            &fixture.node,
+            &fixture.cli,
+            &fixture.origin,
+            &status.publication_id,
+            &fixture.runtime,
+            false,
+        );
+        let mut child = OwnedChild(spawn_detail_child(command, &stage.directory).unwrap());
+        let group = child.0.id();
+        fs::write(fixture.group_evidence, group.to_string()).unwrap();
+        let mut input = child.0.stdin.take().unwrap();
+        let mut output = child.0.stdout.take().unwrap();
+        detail_nonblocking(input.as_raw_fd()).unwrap();
+        detail_nonblocking(output.as_raw_fd()).unwrap();
+        let cancel = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let check = || check_detail(deadline, &cancel);
+
+        let wrapper = stage.path.parent().unwrap();
+        let moved = root.join("moved-wrapper");
+        fs::rename(wrapper, &moved).unwrap();
+        fs::create_dir_all(&stage.path).unwrap();
+        fs::write(stage.path.join("keep"), b"unrelated").unwrap();
+        detail_write(&mut input, &startup.0, &check).unwrap();
+        drop(startup);
+        let staged = read_detail_frame(&mut output, &check).unwrap();
+        assert!(staged.kind == FrameKind::Staged);
+        assert_eq!(staged.job_id, status.job_id);
+        assert!(moved.join("output/static-export-manifest.json").is_file());
+        assert_eq!(fs::read(stage.path.join("keep")).unwrap(), b"unrelated");
+        assert_eq!(fs::read_dir(&stage.path).unwrap().count(), 1);
+        assert!(verify_detail_stage(&stage, &journal, &staged.manifest_sha256, &check).is_err());
+        let unrelated = root.join("unrelated-wrapper");
+        fs::rename(wrapper, &unrelated).unwrap();
+        fs::rename(moved, wrapper).unwrap();
+        let (receipt, tree) =
+            verify_detail_stage(&stage, &journal, &staged.manifest_sha256, &check).unwrap();
+        tree.recheck(&stage.directory, &check).unwrap();
+        stage.check(&journal).unwrap();
+
+        let ack = serde_json::to_vec(&DetailFrame {
+            version: 1,
+            kind: FrameKind::VerifiedStaging,
+            job_id: status.job_id.clone(),
+            manifest_sha256: receipt.manifest_sha256.clone(),
+        })
+        .unwrap();
+        detail_write(&mut input, &(ack.len() as u32).to_be_bytes(), &check).unwrap();
+        detail_write(&mut input, &ack, &check).unwrap();
+        let ready = read_detail_frame(&mut output, &check).unwrap();
+        assert!(ready.kind == FrameKind::Ready);
+        assert_eq!(ready.job_id, status.job_id);
+        assert_eq!(ready.manifest_sha256, receipt.manifest_sha256);
+        detail_stdout_end(&mut output, &check).unwrap();
+        wait_detail_child(&mut child.0, &check).unwrap();
+        assert!(owned_child_group_absent(group));
+        let gate = Mutex::new(());
+        commit_detail(&stage, &journal, &gate, &|| {
+            tree.recheck(&stage.directory, &check)?;
+            check()
+        })
+        .unwrap();
+        stage.sync_parents().unwrap();
+        assert_eq!(
+            verify_output(status).unwrap().manifest_sha256,
+            receipt.manifest_sha256
+        );
+        assert_eq!(
+            fs::read(unrelated.join("output/keep")).unwrap(),
+            b"unrelated"
+        );
+        println!(
+            "candidate-free CLI settled, child group {group} drained, Manager promoted {} files",
+            receipt.files
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -78,6 +78,62 @@ pub struct Payload {
     workspace_v5_validation: bool,
     workspace_import: Option<(WorkspaceImport, bool)>,
 }
+const STATIC_DETAIL_MARKER: &str = "platform/scripts/native-detail-static-export-capability-v1.json";
+const STATIC_DETAIL_MARKER_SHA256: &str = "9663e0fb346c78ebbd1b9e883bbd2400a1b968368d101102f0e0285c8e7deaef";
+const STATIC_DETAIL_MODULES: &[&str] = &[
+    "platform/apps/api/dist/native-detail-static-export.js",
+    "platform/apps/api/dist/native-detail-http.js",
+    "platform/apps/api/dist/native-detail-context.js",
+    "platform/scripts/native-detail-capability.mjs",
+    "platform/scripts/native-detail-pipe.mjs",
+    "platform/scripts/native-detail-control.mjs",
+    "platform/scripts/native-detail-export-runner.mjs",
+    "platform/apps/web/src/static-json.mjs",
+];
+
+fn static_detail_inventory_matches(files: &[Item]) -> bool {
+    let regular = |path| {
+        files.iter().find(|item| {
+            item.path == path && item.link.is_none() && item.executable == Some(false)
+        })
+    };
+    regular(STATIC_DETAIL_MARKER).is_some_and(|marker| {
+        marker.bytes == Some(177) && marker.sha256.as_deref() == Some(STATIC_DETAIL_MARKER_SHA256)
+    }) && STATIC_DETAIL_MODULES.iter().all(|path| regular(*path).is_some())
+}
+
+#[cfg(test)]
+#[test]
+fn static_detail_requires_every_regular_nonexecutable_dependency() {
+    let file = |path: &str| Item {
+        path: path.into(),
+        bytes: Some(1),
+        sha256: Some("a".repeat(64)),
+        executable: Some(false),
+        link: None,
+    };
+    let mut files: Vec<_> = STATIC_DETAIL_MODULES.iter().map(|path| file(path)).collect();
+    assert!(!static_detail_inventory_matches(&files));
+    files.push(Item {
+        bytes: Some(177),
+        sha256: Some(STATIC_DETAIL_MARKER_SHA256.into()),
+        ..file(STATIC_DETAIL_MARKER)
+    });
+    assert!(static_detail_inventory_matches(&files));
+    for index in 0..STATIC_DETAIL_MODULES.len() {
+        let dependency = files.remove(index);
+        assert!(!static_detail_inventory_matches(&files));
+        files.insert(index, dependency);
+        files[index].link = Some("substitute".into());
+        assert!(!static_detail_inventory_matches(&files));
+        files[index].link = None;
+        files[index].executable = Some(true);
+        assert!(!static_detail_inventory_matches(&files));
+        files[index].executable = Some(false);
+    }
+    assert!(static_detail_inventory_matches(&files));
+}
+
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const WORKSPACE_V5_TRANSITION: (&str, &str) = (
     "40ca49e65e769c4c034eea69300ff65ce8af46ef9b081a9a2b4b1ade12ed9415",
@@ -2109,18 +2165,7 @@ impl Payload {
         &self,
         private_editor: bool,
     ) -> Result<(PathBuf, PathBuf)> {
-        const MARKER: &str = "platform/scripts/native-detail-static-export-capability-v1.json";
-        const MARKER_HASH: &str = "9663e0fb346c78ebbd1b9e883bbd2400a1b968368d101102f0e0285c8e7deaef";
-        const API: &str = "platform/apps/api/dist/native-detail-static-export.js";
-        let regular = |path| {
-            self.manifest.files.iter().find(|item| {
-                item.path == path && item.link.is_none() && item.executable == Some(false)
-            })
-        };
-        if !regular(MARKER).is_some_and(|marker| {
-            marker.bytes == Some(177) && marker.sha256.as_deref() == Some(MARKER_HASH)
-        }) || regular(API).is_none()
-        {
+        if !static_detail_inventory_matches(&self.manifest.files) {
             return Err(err("NATIVE_STATIC_DETAIL_UNAVAILABLE"));
         }
         let resources = self.static_export_resources(private_editor)?;
