@@ -20,6 +20,8 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "native_runtime_hayes_frame.rs"]
+mod frame;
 #[path = "native_runtime_hayes_generation.rs"]
 mod generation;
 #[path = "native_runtime_hayes_launch.rs"]

@@ -4,6 +4,11 @@
 use super::*;
 use std::collections::BTreeSet;
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+#[allow(dead_code)] // Local candidate preflight. Worker activation remains gated.
+#[path = "native_payload_hayes.rs"]
+pub(crate) mod hayes;
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Manifest {
