@@ -15,11 +15,15 @@ use std::{
         unix::fs::MetadataExt,
     },
     path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
+    time::Instant,
 };
 use uuid::Uuid;
 
 #[path = "native_runtime_hayes_launch.rs"]
 mod launch;
+#[path = "native_runtime_hayes_transfer.rs"]
+mod transfer;
 use launch::{channel_error, LaunchPermit, Phase, SpawnedWorker};
 
 pub(super) const RESERVATION_BYTES: u64 = 512 * 1024 * 1024;
@@ -329,6 +333,7 @@ impl Lease {
             journal,
             stage,
             launch_possible: false,
+            source_started: false,
         };
         attempt.check()?;
         Ok(attempt)
@@ -362,6 +367,13 @@ pub(super) struct Attempt {
     journal: PrivateDirectory,
     stage: PrivateDirectory,
     launch_possible: bool,
+    source_started: bool,
+}
+
+/// Pinned Manager-only input. The API cannot supply its path or open handle.
+pub(super) struct SourceStage {
+    pub(super) binding: Binding,
+    pub(super) observed: super::oex_read_fd::ObservedStage,
 }
 
 impl Attempt {
@@ -374,6 +386,67 @@ impl Attempt {
             return Err(custody_error());
         }
         Ok(())
+    }
+
+    /// The caller must own the authenticated operation and live DB lease.
+    /// The same correlation and absolute deadline bind both data directions.
+    pub(super) fn receive_source(
+        &mut self,
+        connection: &mut super::owner_channel::Connection,
+        correlation: Uuid,
+        deadline: Instant,
+        cancelled: &AtomicBool,
+        check_owner: &mut dyn FnMut() -> Result<()>,
+    ) -> Result<SourceStage> {
+        let mut frames = transfer::OwnerFrames::new(connection, deadline, cancelled, check_owner);
+        let result = self.capture_source(&mut frames, correlation, cancelled);
+        if result.is_err() {
+            frames.invalidate();
+        }
+        result
+    }
+
+    fn capture_source(
+        &mut self,
+        frames: &mut impl transfer::Frames,
+        correlation: Uuid,
+        cancelled: &AtomicBool,
+    ) -> Result<SourceStage> {
+        self.check()?;
+        if self.source_started || self.launch_possible {
+            return Err(err("HAYES_TRANSFER_INVALID"));
+        }
+        self.source_started = true;
+        let binding = self.intent.binding;
+        let stage_id = binding.attempt.to_string();
+        let flow = transfer::Transfer::source(binding.attempt, correlation)?;
+        frames.check()?;
+        let stage = super::oex_read_fd::Stage::create(&self.stage.fd, &stage_id)?;
+        flow.receive(frames, &mut stage.materializer_write())?;
+        let observed = super::oex_read_fd::observe_stage(
+            stage,
+            flow.bytes(),
+            flow.sha256(),
+            cancelled,
+            &mut || frames.check(),
+        )?;
+        self.check()?;
+        let name = format!(".oex-stage-{stage_id}");
+        let named = self
+            .stage
+            .open_file(&name, libc::O_RDONLY)
+            .map_err(|_| custody_error())?;
+        let identity = Physical {
+            dev: observed.device,
+            ino: observed.inode,
+        };
+        if private_file(&named)? != identity {
+            return Err(custody_error());
+        }
+        observed.check_unchanged()?;
+        frames.check()?;
+        flow.accept(frames)?;
+        Ok(SourceStage { binding, observed })
     }
 
     pub(super) fn before_spawn(&mut self, role: Role) -> Result<LaunchPermit> {
