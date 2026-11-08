@@ -56,7 +56,13 @@ const HAYES_R5_PUBLICATION: PublicationPin = (
     "78d4837e048dd8ad79270000a00d62bcf16c6be185bda600c9b3839112eaa226",
     "bc2d637914b33a010f95eab8ea0bd3a8964bf51e6901ee7fde2f9e229d98d8ce",
 );
-const HAYES_R5_EDITOR_CONTENT: [&str; 4] = [
+const HAYES_ROTATED_PUBLICATION: PublicationPin = (
+    "ddb30826-98b2-43e3-a997-5e08281ead46",
+    "4c8b7ce8a01011b9ce1ae55eeec6629d017357c4f604d8fe807141b0ba3c0a19",
+    "d736114b558e7578c4edac5ddba44bc8778740b27b78e6f74769fb261f9db997",
+    "a7aaf885534b62c98df436cea6d6a0b7f51c25add58d9652b3572981e52d6762",
+);
+const HAYES_EDITOR_CONTENT: [&str; 4] = [
     "furnish-catalog/backless-oak-bench/1/LICENSE-NOTICE.txt",
     "furnish-catalog/backless-oak-bench/1/model.glb",
     "material-catalogue-thumbnails/fine-gallery-concrete/1/preview-82b907f0df15.png",
@@ -494,7 +500,8 @@ fn verify_tree(
 }
 
 fn unchanged_content(before: &Manifest, after: &Manifest) -> Result<()> {
-    let hayes_r5 = before.publication_id == HAYES_R5_PUBLICATION.0;
+    let hayes_editor = [HAYES_R5_PUBLICATION.0, HAYES_ROTATED_PUBLICATION.0]
+        .contains(&before.publication_id.as_str());
     let content = |path: &str| {
         path == INDEX
             || path.starts_with("data/")
@@ -502,7 +509,7 @@ fn unchanged_content(before: &Manifest, after: &Manifest) -> Result<()> {
             || path == "floor-texture-notices.txt"
             || path.starts_with("surface-material-textures/")
             || path.starts_with("surface-material-notices/")
-            || (hayes_r5 && HAYES_R5_EDITOR_CONTENT.contains(&path))
+            || (hayes_editor && HAYES_EDITOR_CONTENT.contains(&path))
     };
     let shell = |path: &str| {
         matches!(
@@ -1049,7 +1056,7 @@ fn reviewed_runtime(request: &Request) -> Result<RuntimePin> {
     );
     let runtime = match source {
         SOURCE_PUBLICATION => RUNTIME,
-        HAYES_R5_PUBLICATION => HAYES_KNOWN_MEMORY_RUNTIME,
+        HAYES_R5_PUBLICATION | HAYES_ROTATED_PUBLICATION => HAYES_KNOWN_MEMORY_RUNTIME,
         _ => return Err(err("NATIVE_STATIC_REFRESH_SOURCE_UNQUALIFIED")),
     };
     if request.target_manifest_sha256 != runtime.2 {
@@ -1350,7 +1357,7 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     #[test]
-    fn static_refresh_admits_only_the_two_reviewed_pairs() {
+    fn static_refresh_admits_only_reviewed_pairs() {
         let request = |source: PublicationPin, runtime: RuntimePin| Request {
             operation_id: Uuid::new_v4().to_string(),
             source_dir: "/unused/source".into(),
@@ -1366,7 +1373,21 @@ mod tests {
             reviewed_runtime(&request(HAYES_R5_PUBLICATION, HAYES_KNOWN_MEMORY_RUNTIME)).unwrap(),
             HAYES_KNOWN_MEMORY_RUNTIME,
         );
-        for (source, runtime) in [(SOURCE_PUBLICATION, HAYES_KNOWN_MEMORY_RUNTIME), (HAYES_R5_PUBLICATION, RUNTIME)] {
+        assert_eq!(
+            reviewed_runtime(&request(HAYES_ROTATED_PUBLICATION, HAYES_KNOWN_MEMORY_RUNTIME)).unwrap(),
+            HAYES_KNOWN_MEMORY_RUNTIME,
+        );
+        let mut mixed_hayes = request(HAYES_ROTATED_PUBLICATION, HAYES_KNOWN_MEMORY_RUNTIME);
+        mixed_hayes.source_manifest_sha256 = HAYES_R5_PUBLICATION.3.into();
+        assert_eq!(
+            reviewed_runtime(&mixed_hayes).unwrap_err().code,
+            "NATIVE_STATIC_REFRESH_SOURCE_UNQUALIFIED"
+        );
+        for (source, runtime) in [
+            (SOURCE_PUBLICATION, HAYES_KNOWN_MEMORY_RUNTIME),
+            (HAYES_R5_PUBLICATION, RUNTIME),
+            (HAYES_ROTATED_PUBLICATION, RUNTIME),
+        ] {
             assert_eq!(reviewed_runtime(&request(source, runtime)).unwrap_err().code, "NATIVE_STATIC_REFRESH_RUNTIME_UNQUALIFIED");
         }
         let mut obsolete = request(HAYES_R5_PUBLICATION, HAYES_KNOWN_MEMORY_RUNTIME);
@@ -1482,7 +1503,7 @@ mod tests {
 
     #[test]
     fn hayes_r5_editor_catalogue_is_immutable_and_scoped() {
-        for path in HAYES_R5_EDITOR_CONTENT {
+        for path in HAYES_EDITOR_CONTENT {
             let mut before = manifest();
             let mut after = manifest();
             for value in [&mut before, &mut after] {
