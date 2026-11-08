@@ -148,6 +148,24 @@ fn canonical_receipt_must_match_native_evidence_and_independent_db_row() {
 }
 
 #[test]
+fn release_uses_the_smaller_current_lease_and_operation_budget() {
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(90);
+    assert_eq!(
+        live_release_deadline(started, deadline, "120000").unwrap(),
+        deadline
+    );
+    assert_eq!(
+        live_release_deadline(started, deadline, "60000").unwrap(),
+        started + Duration::from_secs(60)
+    );
+    for invalid in ["0", "-1", "060000", "300001", ""] {
+        assert!(live_release_deadline(started, deadline, invalid).is_err());
+    }
+    assert!(live_release_deadline(started - Duration::from_secs(2), deadline, "1000").is_err());
+}
+
+#[test]
 #[ignore = "emits exact disposition protocol and SQL vectors for isolated fixtures"]
 fn api_disposition_vectors() {
     let mut notice = notice();
@@ -166,6 +184,10 @@ fn api_disposition_vectors() {
     );
     println!(
         "HAYES_DISPOSITION_SQL_BEGIN\n{}\nHAYES_DISPOSITION_SQL_END",
-        committed_sql(&notice, &pins)
+        committed_sql(
+            &notice,
+            &pins,
+            std::env::var_os("EXHIBITOS_TEST_HAYES_RELEASE_LEASE").is_some()
+        )
     );
 }

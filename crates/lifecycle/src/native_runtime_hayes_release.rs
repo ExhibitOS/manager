@@ -118,7 +118,8 @@ impl OwnedHayesOpen<'_> {
         validated.check_leaves(attempt)?;
         attempt.journal.confirmed_digest(OBSERVED_RECORD, notice)?;
         self.channel.check_hayes_idle()?;
-        verify_committed_receipt(&self.owner, self.session, notice, pins, deadline)?;
+        let deadline =
+            verify_committed_receipt(&self.owner, self.session, notice, pins, deadline, true)?;
         if Instant::now() >= deadline {
             return Err(unavailable());
         }
