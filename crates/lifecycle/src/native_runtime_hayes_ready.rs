@@ -21,6 +21,9 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "native_runtime_hayes_disposition.rs"]
+mod disposition;
+
 #[cfg(test)]
 #[path = "native_runtime_hayes_reservation_tests.rs"]
 mod reservation_tests;
@@ -32,14 +35,16 @@ const RESERVATION_RECORD: &str = "operation-output-reservation.json";
 
 pub(super) struct ReadyPins {
     evidence_sha256: String,
-    containment_sha256: String,
+    frame_sha256: String,
+    worker_manifest_sha256: &'static str,
+    attestation: Attestation,
 }
 
 impl ReadyPins {
     fn check(&self, attempt: &Attempt) -> Result<()> {
         if crate::digest(&attempt.journal.read_bytes(EVIDENCE_RECORD)?) != self.evidence_sha256
             || crate::digest(&attempt.journal.read_bytes(CONTAINMENT_RECORD)?)
-                != self.containment_sha256
+                != self.attestation.containment.receipt_sha256
         {
             return Err(unavailable());
         }
@@ -77,19 +82,19 @@ struct ContainmentRecord<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Containment<'a> {
+struct Containment {
     kind: &'static str,
-    receipt_sha256: &'a str,
+    receipt_sha256: String,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Attestation<'a> {
-    source: &'a ReadyStage,
-    output: &'a ReadyStage,
-    workers: &'a [LeafEvidence; 2],
-    lock: &'a LockIdentity,
-    containment: Containment<'a>,
+struct Attestation {
+    source: ReadyStage,
+    output: ReadyStage,
+    workers: [LeafEvidence; 2],
+    lock: LockIdentity,
+    containment: Containment,
 }
 
 #[derive(Serialize)]
@@ -101,7 +106,7 @@ struct Evidence<'a> {
     runtime_manifest_sha256: &'a str,
     worker_manifest_sha256: &'a str,
     revalidation_challenge: Uuid,
-    attestation: &'a Attestation<'a>,
+    attestation: &'a Attestation,
     database: &'a Database<'a>,
 }
 
@@ -115,7 +120,7 @@ struct Ready<'a> {
     runtime_manifest_sha256: &'a str,
     worker_manifest_sha256: &'a str,
     native_evidence_sha256: &'a str,
-    attestation: &'a Attestation<'a>,
+    attestation: &'a Attestation,
     database: &'a Database<'a>,
 }
 
@@ -235,13 +240,13 @@ impl OwnedHayesOpen<'_> {
             .journal
             .confirmed_digest(CONTAINMENT_RECORD, &containment_record)?;
         let attestation = Attestation {
-            source: &material.source,
-            output: &material.output,
-            workers: &material.workers,
-            lock: &lock,
+            source: material.source,
+            output: material.output,
+            workers: material.workers,
+            lock,
             containment: Containment {
                 kind: CONTAINMENT_KIND,
-                receipt_sha256: &containment_sha,
+                receipt_sha256: containment_sha,
             },
         };
         let evidence = Evidence {
@@ -281,7 +286,9 @@ impl OwnedHayesOpen<'_> {
             })?;
         Ok(ReadyPins {
             evidence_sha256: native_evidence_sha256,
-            containment_sha256: containment_sha,
+            frame_sha256: crate::digest(&ready),
+            worker_manifest_sha256: material.worker_manifest_sha256,
+            attestation,
         })
     }
 
@@ -438,13 +445,13 @@ fn api_ready_codec_fixture() {
         inode: "10".into(),
     };
     let attestation = Attestation {
-        source: &source,
-        output: &output,
-        workers: &workers,
-        lock: &lock,
+        source,
+        output,
+        workers,
+        lock,
         containment: Containment {
             kind: CONTAINMENT_KIND,
-            receipt_sha256: &"d".repeat(64),
+            receipt_sha256: "d".repeat(64),
         },
     };
     let database = Database {
