@@ -4,17 +4,42 @@
 //! follows GO. The proof covers only those two exact leaves and this custody.
 
 use super::{
-    check_live_claim, check_revalidation_record, encode, unavailable, OperationBinding,
-    OwnedHayesOpen, Phase, Result,
+    canonical, canonical_uuid, check_live_claim, check_live_claim_stage, check_revalidation_record,
+    encode, unavailable, Kind, OperationBinding, OwnedHayesOpen, Phase, Result, BODY_BYTES,
+    BODY_SHA,
 };
-use crate::native_runtime::hayes::{generation::validation::ReadyStage, watch::LeafEvidence};
-use serde::Serialize;
+use crate::native_runtime::hayes::{
+    generation::validation::ReadyStage, watch::LeafEvidence, Attempt,
+};
+use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use uuid::Uuid;
+
+#[cfg(test)]
+#[path = "native_runtime_hayes_reservation_tests.rs"]
+mod reservation_tests;
 
 const CONTAINMENT_KIND: &str = "darwin-fixed-hayes-leaves-v1";
 const CONTAINMENT_RECORD: &str = "operation-leaf-containment.json";
 const EVIDENCE_RECORD: &str = "operation-ready-evidence.json";
+const RESERVATION_RECORD: &str = "operation-output-reservation.json";
+
+pub(super) struct ReadyPins {
+    evidence_sha256: String,
+    containment_sha256: String,
+}
+
+impl ReadyPins {
+    fn check(&self, attempt: &Attempt) -> Result<()> {
+        if crate::digest(&attempt.journal.read_bytes(EVIDENCE_RECORD)?) != self.evidence_sha256
+            || crate::digest(&attempt.journal.read_bytes(CONTAINMENT_RECORD)?)
+                != self.containment_sha256
+        {
+            return Err(unavailable());
+        }
+        Ok(())
+    }
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,6 +113,46 @@ struct Ready<'a> {
     database: &'a Database<'a>,
 }
 
+#[derive(Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReservedOutput {
+    stage_id: Uuid,
+    bytes: u64,
+    sha256: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Reservation {
+    version: u8,
+    kind: Kind,
+    binding: OperationBinding,
+    native_evidence_sha256: String,
+    db_stage_id: Uuid,
+    output: ReservedOutput,
+}
+
+fn check_reservation(
+    raw: &[u8],
+    binding: &OperationBinding,
+    evidence_sha256: &str,
+    output: &ReservedOutput,
+) -> Result<Reservation> {
+    let frame: Reservation = canonical(raw)?;
+    if frame.version != 1
+        || frame.kind != Kind::HayesOutputReservationReady
+        || &frame.binding != binding
+        || frame.native_evidence_sha256 != evidence_sha256
+        || !canonical_uuid(&frame.db_stage_id)
+        || frame.db_stage_id == binding.attempt_id
+        || frame.db_stage_id == output.stage_id
+        || &frame.output != output
+    {
+        return Err(unavailable());
+    }
+    Ok(frame)
+}
+
 impl OwnedHayesOpen<'_> {
     /// Emits once on this operation's private channel, while retaining the
     /// attempt, original open lock description and all pinned stage handles.
@@ -95,16 +160,20 @@ impl OwnedHayesOpen<'_> {
     /// before serving any output.
     pub(in crate::native_runtime) fn emit_output_ready(&mut self, deadline: Instant) -> Result<()> {
         self.start(Phase::OutputHeld)?;
-        let result = self.send_output_ready(deadline);
-        if result.is_ok() {
-            self.phase = Phase::ReadySent;
-        } else {
-            self.channel.invalidate();
+        match self.send_output_ready(deadline) {
+            Ok(pins) => {
+                self.ready_pins = Some(pins);
+                self.phase = Phase::ReadySent;
+                Ok(())
+            }
+            Err(error) => {
+                self.channel.invalidate();
+                Err(error)
+            }
         }
-        result
     }
 
-    fn send_output_ready(&mut self, deadline: Instant) -> Result<()> {
+    fn send_output_ready(&mut self, deadline: Instant) -> Result<ReadyPins> {
         if self.worker.is_some() || !self.retain_attempt || Instant::now() >= deadline {
             return Err(unavailable());
         }
@@ -188,7 +257,76 @@ impl OwnedHayesOpen<'_> {
                 self.owner.check(self.session)?;
                 attempt.check()?;
                 validated.check_leaves(attempt)
-            })
+            })?;
+        Ok(ReadyPins {
+            evidence_sha256: native_evidence_sha256,
+            containment_sha256: containment_sha,
+        })
+    }
+
+    /// Accept one post-commit reservation on the channel that sent READY.
+    /// The response is a selector for the Manager's own DB read, not authority
+    /// to serve bytes by itself.
+    pub(in crate::native_runtime) fn receive_output_reservation(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<()> {
+        self.start(Phase::ReadySent)?;
+        match self.read_output_reservation(deadline) {
+            Ok(db_stage_id) => {
+                self.db_stage_id = Some(db_stage_id);
+                self.phase = Phase::Reserved;
+                Ok(())
+            }
+            Err(error) => {
+                self.channel.invalidate();
+                Err(error)
+            }
+        }
+    }
+
+    fn read_output_reservation(&mut self, deadline: Instant) -> Result<Uuid> {
+        let attempt = self.attempt.as_ref().ok_or_else(unavailable)?;
+        let pins = self.ready_pins.as_ref().ok_or_else(unavailable)?;
+        let validated = self.validated.as_ref().ok_or_else(unavailable)?;
+        let challenge = self.revalidation_challenge.ok_or_else(unavailable)?;
+        let record = &self.record;
+        let selected = &validated.selected;
+        if selected.observed.bytes != u64::from(BODY_BYTES) || selected.observed.sha256 != BODY_SHA
+        {
+            return Err(unavailable());
+        }
+        let expected = ReservedOutput {
+            stage_id: selected.id,
+            bytes: selected.observed.bytes,
+            sha256: selected.observed.sha256.clone(),
+        };
+        check_revalidation_record(attempt, record, challenge)?;
+        pins.check(attempt)?;
+        let cancellation = self.session.cancellation.clone();
+        let raw = self.channel.read_frame(deadline, &cancellation, &mut || {
+            self.owner.check(self.session)?;
+            attempt.check_stage_file(selected.id, &selected.observed)
+        })?;
+        let reservation =
+            check_reservation(&raw, &record.binding, &pins.evidence_sha256, &expected)?;
+        check_live_claim_stage(
+            &self.owner,
+            self.session,
+            &record.binding,
+            Some(reservation.db_stage_id),
+            deadline,
+        )?;
+        check_revalidation_record(attempt, record, challenge)?;
+        pins.check(attempt)?;
+        validated.check_leaves(attempt)?;
+        self.channel.check_hayes_idle()?;
+        attempt.journal.create(RESERVATION_RECORD, &reservation)?;
+        self.owner.check(self.session)?;
+        if Instant::now() >= deadline {
+            return Err(unavailable());
+        }
+        Ok(reservation.db_stage_id)
     }
 }
 
