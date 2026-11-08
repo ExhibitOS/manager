@@ -641,6 +641,7 @@ impl OwnedHayesOpen<'_> {
         check(WorkerCheckpoint::BeforeGo(attempt), deadline)?;
         self.timings.checked = elapsed();
         let validated = self.validated.as_ref().ok_or_else(unavailable)?;
+        validated.check_leaves(attempt)?;
         let worker = worker_payload.context();
         attempt.journal.create(
             WORKERS_HELD_RECORD,

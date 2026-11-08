@@ -47,6 +47,14 @@ pub(in super::super) struct ValidatedReadback {
     pub(in super::super) selected: SelectedBody,
     pub(super) stdout: ObservedStage,
     pub(super) peak_rss_kib: u32,
+    exit: ObservedExit,
+}
+
+impl ValidatedReadback {
+    pub(in super::super) fn check_leaves(&self, attempt: &Attempt) -> Result<()> {
+        self.selected.readback.check(attempt)?;
+        self.exit.check(attempt, Role::Validate)
+    }
 }
 
 impl Attempt {
@@ -185,16 +193,7 @@ impl Attempt {
                     watch.poll()
                 },
             )?;
-            watch.require_exit()?;
-            if !run
-                .child
-                .try_wait()
-                .map_err(|_| io_error())?
-                .is_some_and(|status| status.success())
-            {
-                return Err(io_error());
-            }
-            Ok(output)
+            Ok((output, watch.observe_success(&mut run.child)?))
         })();
         run.child.owner.take();
         drop(stdio);
@@ -202,7 +201,7 @@ impl Attempt {
             .materializer_write()
             .sync_all()
             .map_err(|_| custody_error())?;
-        let (bytes, sha256) = result?;
+        let ((bytes, sha256), exit) = result?;
         let stdout = observe_stage(output, bytes, &sha256, cancelled, &mut || {
             progress(WorkerCheckpoint::Observe)
         })?;
@@ -238,6 +237,7 @@ impl Attempt {
             selected,
             stdout,
             peak_rss_kib,
+            exit,
         })
     }
 }

@@ -2,7 +2,7 @@
 //! Same-owner observation of one already spawned direct child. Darwin does
 //! not attach this watch to descendants or to unrelated delegated work.
 
-use super::{cvt, err, launch::SpawnedWorker, Result};
+use super::{cvt, err, launch::SpawnedWorker, Attempt, Phase, Registration, Result, Role, Worker};
 use std::{
     cell::Cell,
     fs::File,
@@ -28,6 +28,25 @@ pub(super) struct DirectWatch {
     queue: File,
     pid: libc::pid_t,
     state: Cell<State>,
+}
+
+/// In-memory evidence from the direct-child handle and its armed watch.
+/// The journal alone cannot construct this value after a restart.
+pub(super) struct ObservedExit(Registration);
+
+impl ObservedExit {
+    pub(super) fn check(&self, attempt: &Attempt, role: Role) -> Result<()> {
+        let registration = self.0;
+        let (launch, ready) = role.files();
+        if registration.worker.binding != attempt.intent.binding
+            || registration.worker.role != role
+            || attempt.journal.read::<Worker>(launch)? != registration.worker
+            || attempt.journal.read::<Registration>(ready)? != registration
+        {
+            return Err(unknown());
+        }
+        Ok(())
+    }
 }
 
 impl DirectWatch {
@@ -130,6 +149,23 @@ impl DirectWatch {
             return Err(unknown());
         }
         Ok(())
+    }
+
+    pub(super) fn observe_success(&self, child: &mut SpawnedWorker) -> Result<ObservedExit> {
+        self.require_exit()?;
+        if child.phase != Phase::Authorized
+            || child.diagnostic_pid() != self.pid
+            || !child
+                .try_wait()
+                .map_err(|_| unknown())?
+                .is_some_and(|exit| exit.success())
+        {
+            return Err(unknown());
+        }
+        Ok(ObservedExit(Registration {
+            worker: child.worker,
+            child_pid: self.pid,
+        }))
     }
 }
 
