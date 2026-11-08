@@ -1433,6 +1433,11 @@ mod normal_oex_release_declaration_tests {
         assert_eq!(target.workspace_furnishing_ledger(to).unwrap().lines().count(), 45);
         assert!(!target.ordinary_hayes_release());
 
+        let reopened = Payload::open_workspace_v5_validation(&target_root, false).unwrap();
+        assert_eq!(reopened.context().manifest_sha256, target.context().manifest_sha256);
+        assert!(!reopened.workspace_v5_selected_input());
+        assert!(Payload::open_workspace_v5_validation(&target_root, true).is_err());
+
         let source_context = source.context();
         let target_context = target.context();
         let pair = (source_context.manifest_sha256.as_str(), target_context.manifest_sha256.as_str());
@@ -1962,7 +1967,13 @@ impl Payload {
     pub(crate) fn open_workspace_v5_validation(root: &Path, selected: bool) -> Result<Self> {
         let mut payload = Self::open(root)?;
         if !workspace_v5_validation_matches(&payload.manifest, &payload.manifest_sha256, selected) {
-            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+            // This selector admits catalog 045 only for an existing workspace.
+            let expected = Some(WorkspaceFurnishingCatalog::RequiredModelPreparation045);
+            if selected || payload.retained_furnishing_catalog() != expected
+                || payload.workspace_furnishing_catalog()? != expected
+            {
+                return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+            }
         }
         payload.workspace_v5_validation = selected;
         Ok(payload)
