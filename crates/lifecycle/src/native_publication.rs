@@ -70,9 +70,13 @@ pub(crate) fn validate(s: &PublicationState) -> Result<()> {
     }
     if let Some(p) = &s.pending {
         let id = p.snapshot["exhibitionId"].as_str().unwrap_or("");
-        let direct = p.mode.as_deref() == Some("reusable-draft-v1");
+        let reusable = p.mode.as_deref() == Some("reusable-draft-v1");
+        let native_original = p.mode.as_deref() == Some("native-original-v1");
+        let direct = reusable || native_original;
         if (p.mode.is_some() && !direct)
-            || (direct && (!p.capability_publication_id.as_deref().is_some_and(uuid) || id != p.source_exhibition_id || p.snapshot_etag.as_deref() != Some(p.source_etag.as_str()) || !p.snapshot["editVersion"].as_u64().is_some_and(|v| v > 0 && v <= 2_147_483_647)))
+            || (reusable && !p.capability_publication_id.as_deref().is_some_and(uuid))
+            || (native_original && (p.capability_publication_id.is_some() || p.plan_binding_sha256.is_none() || p.save_request_id != p.publish_request_id))
+            || (direct && (id != p.source_exhibition_id || p.snapshot_etag.as_deref() != Some(p.source_etag.as_str()) || !p.snapshot["editVersion"].as_u64().is_some_and(|v| v > 0 && v <= 2_147_483_647)))
             || (!direct && (p.capability_publication_id.is_some() || id == p.source_exhibition_id || p.snapshot["editVersion"] != 1))
             || !uuid(&p.source_exhibition_id)
             || !valid_etag(&p.source_etag)
@@ -88,9 +92,11 @@ pub(crate) fn validate(s: &PublicationState) -> Result<()> {
     }
     if let Some(c) = &s.completed {
         let p = &c.publication;
-        let direct = c.mode.as_deref() == Some("reusable-draft-v1");
+        let native_original = c.mode.as_deref() == Some("native-original-v1");
+        let direct = native_original || c.mode.as_deref() == Some("reusable-draft-v1");
         if (c.mode.is_some() && !direct)
             || (direct != (c.snapshot_exhibition_id == c.source_exhibition_id))
+            || (native_original && c.plan_binding_sha256.is_none())
             || !uuid(&c.source_exhibition_id)
             || !valid_etag(&c.source_etag)
             || !uuid(&c.snapshot_exhibition_id)
@@ -252,6 +258,17 @@ mod tests {
         validate(&serde_json::from_value(completed.clone()).unwrap()).unwrap();
         completed["completed"]["mode"]=serde_json::Value::Null;
         assert!(validate(&serde_json::from_value(completed).unwrap()).is_err());
+
+        let mut original = wire.clone();
+        original["pending"]["mode"] = serde_json::json!("native-original-v1");
+        assert!(validate(&serde_json::from_value(original.clone()).unwrap()).is_err());
+        original["pending"].as_object_mut().unwrap().remove("capabilityPublicationId");
+        original["pending"]["planBindingSha256"] = serde_json::json!("d".repeat(64));
+        assert!(validate(&serde_json::from_value(original.clone()).unwrap()).is_err());
+        original["pending"]["saveRequestId"] = original["pending"]["publishRequestId"].clone();
+        validate(&serde_json::from_value(original.clone()).unwrap()).unwrap();
+        original["pending"]["snapshotEtag"] = serde_json::Value::Null;
+        assert!(validate(&serde_json::from_value(original).unwrap()).is_err());
     }
 
     #[test]

@@ -56,6 +56,16 @@ public struct NativePublicationPending: Codable, Equatable, Sendable {
         self.planBindingSha256 = planBindingSha256; snapshot = source; snapshotEtag = etag
         saveRequestId = UUID().uuidString.lowercased(); publishRequestId = UUID().uuidString.lowercased()
     }
+    init(nativeOriginalSource source: NativeExhibitionDraft, etag: String, requestId: String, planBindingSha256: String) throws {
+        guard UUID(uuidString: requestId) != nil, validPublicationETag(etag), nativeImportDigest(planBindingSha256),
+              source.document["editVersion"].integer.map({ $0 > 0 && $0 <= 2_147_483_647 }) == true else {
+            throw AuthoringFailure("PUBLICATION_PLAN_CHANGED")
+        }
+        mode = "native-original-v1"; capabilityPublicationId = nil; sourceExhibitionId = source.id; sourceEtag = etag
+        self.planBindingSha256 = planBindingSha256; snapshot = source; snapshotEtag = etag
+        // The authored source already exists. Its save request is never executed.
+        saveRequestId = requestId; publishRequestId = requestId
+    }
     public func requirePlanBinding(_ expected: String?) throws {
         guard validPublicationPlanBinding(planBindingSha256), validPublicationPlanBinding(expected), planBindingSha256 == expected else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
     }
@@ -145,7 +155,9 @@ func validPublicationPlanBinding(_ value: String?) -> Bool { value.map(nativeImp
 public func nativePublicationPlanBinding(sourceExhibitionId: String, etag: String, runtimeManifestSha256: String, watermark: PublicationWatermark?, publicationProfile: String? = nil) throws -> String {
     guard UUID(uuidString: sourceExhibitionId) != nil, validPublicationETag(etag), nativeImportDigest(runtimeManifestSha256) else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
     let settings = watermark ?? PublicationWatermark(); try settings.validate()
-    guard publicationProfile == nil || publicationProfile == "bounded-local-v1" else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
+    guard publicationProfile == nil || publicationProfile == "bounded-local-v1" || publicationProfile == "native-original-v1" else {
+        throw AuthoringFailure("PUBLICATION_PLAN_CHANGED")
+    }
     var fields: [String: DocumentValue] = ["version": .integer(publicationProfile == nil ? 1 : 2), "sourceExhibitionId": .string(sourceExhibitionId), "sourceEtag": .string(etag),
         "runtimeManifestSha256": .string(runtimeManifestSha256), "effectiveWatermark": settings.value]
     if let publicationProfile { fields["publicationProfile"] = .string(publicationProfile) }

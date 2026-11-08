@@ -2,6 +2,25 @@
 import XCTest
 @testable import ManagerCore
 final class PublicationTests: XCTestCase {
+    func testNativeOriginalIntentBindsTheSavedSourceAndReplayID() throws {
+        let draft = try NativeExhibitionDraft.new()
+        let etag = "\"studio-r6-" + String(repeating: "a", count: 64) + "\""
+        let manifest = String(repeating: "b", count: 64)
+        let requestId = UUID().uuidString.lowercased()
+        let plan = try nativePublicationPlanBinding(sourceExhibitionId: draft.id, etag: etag,
+            runtimeManifestSha256: manifest, watermark: nil, publicationProfile: "native-original-v1")
+        let ordinary = try nativePublicationPlanBinding(sourceExhibitionId: draft.id, etag: etag,
+            runtimeManifestSha256: manifest, watermark: nil, publicationProfile: "bounded-local-v1")
+        XCTAssertNotEqual(plan, ordinary)
+        let intent = try NativePublicationPending(nativeOriginalSource: draft, etag: etag, requestId: requestId, planBindingSha256: plan)
+        XCTAssertEqual(intent, try NativePublicationPending(nativeOriginalSource: draft, etag: etag, requestId: requestId, planBindingSha256: plan))
+        XCTAssertEqual(intent.snapshot, draft)
+        XCTAssertEqual(intent.snapshotEtag, etag)
+        XCTAssertEqual(intent.publishRequestId, requestId)
+        XCTAssertNil(intent.capabilityPublicationId)
+        XCTAssertThrowsError(try intent.requirePlanBinding(ordinary))
+    }
+
     func testPublicationCopyRetainsGeometryRightsAndOpaqueDataWhileChangingOnlyDocumentIdentity() throws {
         let authoredTitle = String(repeating: "가", count: 500) + " · 공개용 저장본"
         var source = try NativeExhibitionDraft.new(title: authoredTitle)
