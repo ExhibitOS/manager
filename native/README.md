@@ -237,6 +237,19 @@ drained safely. Retry from the restored 039 source in a new trial.
 An unproved stop or a 040 database with a pending checkpoint is not
 eligible for another upgrade attempt.
 
+The same debug maintenance commands admit one explicit occupied upgrade from
+the Wheat catalog 040 runtime manifest
+`074719930770137f954302e1d27f0035b4d25f6489fa4e61391d96f6d25d90f1`
+to the ordinary catalog 044 runtime manifest
+`c0565112569fc1b1b95f8ada72b2b7cacabc8ea3e24b58a61dc9aa138c8bb406`.
+Staging requires the exact 040 ledger, clean writer completion, saved draft
+and original owner and writer lock. The trial uses separate authenticated
+furnishing and Hayes owner channels. Activation verifies the complete 044
+ledger, saved draft and unchanged blob and config inventories. After the trial
+stops cleanly, reopen with the exact 044 runtime through the ordinary helper
+or Manager app. The trial starts no Hayes import. Use the same checkpoint and
+key for recovery if activation fails and the trial has drained.
+
 For current catalog 040 service EXB, the same saved-workspace commands
 admit a directed refresh from
 `bdfc8202d851f9f8983440b9475da3fc3ddc6ee1f0bf4cf2c0d4bf1995dde338`

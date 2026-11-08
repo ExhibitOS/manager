@@ -483,13 +483,35 @@ const CATALOG40_WHEAT_DETAIL: Option<RuntimeTuple> = Some((
 #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
 const CATALOG40_WHEAT_DETAIL: Option<(&str, &str, &str)> = None;
 
+// The ordinary package is admitted only after its sealed inventory is reviewed.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG44_WHEAT_TARGET: Option<RuntimeTuple> = Some((
+    "e4702f67a8eb2f8c9fd3d344c344f463a70e39e0",
+    "2627954c7ac6c083bed01470db1e3ccec94e857ea2858babca1b4ed1e740adad",
+    "c0565112569fc1b1b95f8ada72b2b7cacabc8ea3e24b58a61dc9aa138c8bb406",
+));
+
+pub(crate) fn ordinary_hayes_release_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return CATALOG44_WHEAT_TARGET == Some(tuple);
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Catalog39Upgrade(RuntimeTuple);
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Catalog40Upgrade {
+    source: RuntimeTuple,
+    target: RuntimeTuple,
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) fn saved_workspace_transition_supported(pair: (&str, &str)) -> bool {
-    WORKSPACE_V5_SAVED_TRANSITIONS.contains(&pair) || Catalog40Transition::from_manifests(pair).is_some()
+    WORKSPACE_V5_SAVED_TRANSITIONS.contains(&pair) || FurnishingTransition::from_manifests(pair).is_some()
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -501,19 +523,26 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG40_FRAME_RECORD_TARGET.is_some_and(|target| target.2 == manifest)
         || CATALOG40_ARTWORK_REPLACEMENT_TARGET.is_some_and(|target| target.2 == manifest)
         || CATALOG40_WHEAT_DETAIL.is_some_and(|target| target.2 == manifest)
+        || CATALOG44_WHEAT_TARGET.is_some_and(|target| target.2 == manifest)
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Catalog40Transition {
+pub(crate) enum FurnishingTransition {
     White,
     Tangent,
     Upgrade39(Catalog39Upgrade),
+    Upgrade40(Catalog40Upgrade),
     SameCatalog { source: RuntimeTuple, target: RuntimeTuple },
 }
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-impl Catalog40Transition {
+impl FurnishingTransition {
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
+        if let Some((source, target)) = CATALOG40_WHEAT_DETAIL.zip(CATALOG44_WHEAT_TARGET)
+            && pair == (source.2, target.2)
+        {
+            return Some(Self::Upgrade40(Catalog40Upgrade { source, target }));
+        }
         match pair {
             CATALOG40_FRAME_TRANSITION => Some(Self::White),
             CATALOG40_TANGENT_TRANSITION => Some(Self::Tangent),
@@ -538,6 +567,15 @@ impl Catalog40Transition {
     }
 
     #[cfg(test)]
+    pub(crate) fn reviewed_catalog40_to_44() -> Self {
+        let source = CATALOG40_WHEAT_DETAIL.expect("reviewed catalog 40 source");
+        let target = CATALOG44_WHEAT_TARGET.expect("reviewed ordinary catalog 44 target");
+        assert!(Self::from_manifests((target.2, source.2)).is_none());
+        assert!(Self::from_manifests((source.2, HAYES_RELEASE_PROBE_PIN.as_ref().unwrap().host.2)).is_none());
+        Self::from_manifests((source.2, target.2)).expect("exact directed catalog 40 to 44 transition")
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_upgrade() -> Self {
         Self::Upgrade39(Catalog39Upgrade((
             "aabb0000aabb0000aabb0000aabb0000aabb0000",
@@ -546,13 +584,23 @@ impl Catalog40Transition {
         )))
     }
 
+    #[cfg(test)]
     pub(crate) fn upgrades_catalog(self) -> bool {
-        matches!(self, Self::Upgrade39(_))
+        matches!(self, Self::Upgrade39(_) | Self::Upgrade40(_))
     }
 
     pub(crate) fn source_catalog(self) -> WorkspaceFurnishingCatalog {
-        if self.upgrades_catalog() { WorkspaceFurnishingCatalog::MaterialPublication039 }
-        else { WorkspaceFurnishingCatalog::MaterialMultimap040 }
+        match self {
+            Self::Upgrade39(_) => WorkspaceFurnishingCatalog::MaterialPublication039,
+            _ => WorkspaceFurnishingCatalog::MaterialMultimap040,
+        }
+    }
+
+    pub(crate) fn target_catalog(self) -> WorkspaceFurnishingCatalog {
+        match self {
+            Self::Upgrade40(_) => WorkspaceFurnishingCatalog::HayesRelease044,
+            _ => WorkspaceFurnishingCatalog::MaterialMultimap040,
+        }
     }
 
     pub(crate) fn source(self) -> (&'static str, &'static str, &'static str) {
@@ -560,6 +608,7 @@ impl Catalog40Transition {
             Self::White => CATALOG40_FRAME_SOURCE,
             Self::Tangent => CATALOG40_FRAME_TARGET,
             Self::Upgrade39(_) => CATALOG39_UPGRADE_SOURCE,
+            Self::Upgrade40(step) => step.source,
             Self::SameCatalog { source, .. } => source,
         }
     }
@@ -569,6 +618,7 @@ impl Catalog40Transition {
             Self::White => CATALOG40_FRAME_TARGET,
             Self::Tangent => CATALOG40_TANGENT_TARGET,
             Self::Upgrade39(target) => target.0,
+            Self::Upgrade40(step) => step.target,
             Self::SameCatalog { target, .. } => target,
         }
     }
@@ -1180,50 +1230,50 @@ mod normal_oex_release_declaration_tests {
             "2222222222222222222222222222222222222222222222222222222222222222",
             "3333333333333333333333333333333333333333333333333333333333333333",
         );
-        let transition = Catalog40Transition::same_catalog_from_manifests((source.2, target.2), Some(source), Some(target)).unwrap();
+        let transition = FurnishingTransition::same_catalog_from_manifests((source.2, target.2), Some(source), Some(target)).unwrap();
         assert_eq!(transition.source(), source);
         assert_eq!(transition.target(), target);
         assert_eq!(transition.source_catalog(), WorkspaceFurnishingCatalog::MaterialMultimap040);
         assert!(!transition.upgrades_catalog());
-        assert!(Catalog40Transition::same_catalog_from_manifests((target.2, source.2), Some(source), Some(target)).is_none());
-        assert!(Catalog40Transition::same_catalog_from_manifests((CATALOG40_TANGENT_TARGET.2, target.2), Some(source), Some(target)).is_none());
-        assert!(Catalog40Transition::same_catalog_from_manifests((source.2, target.2), Some(source), None).is_none());
+        assert!(FurnishingTransition::same_catalog_from_manifests((target.2, source.2), Some(source), Some(target)).is_none());
+        assert!(FurnishingTransition::same_catalog_from_manifests((CATALOG40_TANGENT_TARGET.2, target.2), Some(source), Some(target)).is_none());
+        assert!(FurnishingTransition::same_catalog_from_manifests((source.2, target.2), Some(source), None).is_none());
         let reviewed = CATALOG40_EXB_TARGET.unwrap();
         assert!(saved_workspace_transition_target(reviewed.2));
-        assert_eq!(Catalog40Transition::from_manifests((source.2, reviewed.2)).unwrap().target(), reviewed);
-        assert!(Catalog40Transition::from_manifests((reviewed.2, source.2)).is_none());
+        assert_eq!(FurnishingTransition::from_manifests((source.2, reviewed.2)).unwrap().target(), reviewed);
+        assert!(FurnishingTransition::from_manifests((reviewed.2, source.2)).is_none());
         let restore = CATALOG40_RESTORE_PROVENANCE_TARGET.unwrap();
         assert!(saved_workspace_transition_target(restore.2));
-        assert_eq!(Catalog40Transition::from_manifests((reviewed.2, restore.2)).unwrap().source(), reviewed);
-        assert!(Catalog40Transition::from_manifests((restore.2, reviewed.2)).is_none());
-        assert!(Catalog40Transition::from_manifests((source.2, restore.2)).is_none());
+        assert_eq!(FurnishingTransition::from_manifests((reviewed.2, restore.2)).unwrap().source(), reviewed);
+        assert!(FurnishingTransition::from_manifests((restore.2, reviewed.2)).is_none());
+        assert!(FurnishingTransition::from_manifests((source.2, restore.2)).is_none());
         let frames = CATALOG40_FRAME_RECORD_TARGET.unwrap();
-        let refresh = Catalog40Transition::from_manifests((restore.2, frames.2)).unwrap();
+        let refresh = FurnishingTransition::from_manifests((restore.2, frames.2)).unwrap();
         assert_eq!(refresh.target(), frames);
         assert_eq!(refresh.source_catalog(), WorkspaceFurnishingCatalog::MaterialMultimap040);
         assert!(saved_workspace_transition_target(frames.2));
-        assert!(Catalog40Transition::from_manifests((frames.2, restore.2)).is_none());
-        assert!(Catalog40Transition::from_manifests((reviewed.2, frames.2)).is_none());
+        assert!(FurnishingTransition::from_manifests((frames.2, restore.2)).is_none());
+        assert!(FurnishingTransition::from_manifests((reviewed.2, frames.2)).is_none());
         let frame_preparation = WORKSPACE_FRAME_PREPARATION_VALIDATION_PROVENANCE[0];
-        assert!(Catalog40Transition::from_manifests((frame_preparation.2, frames.2)).is_none());
-        assert!(Catalog40Transition::from_manifests((frames.2, frame_preparation.2)).is_none());
+        assert!(FurnishingTransition::from_manifests((frame_preparation.2, frames.2)).is_none());
+        assert!(FurnishingTransition::from_manifests((frames.2, frame_preparation.2)).is_none());
         let replacement = CATALOG40_ARTWORK_REPLACEMENT_TARGET.unwrap();
-        let transition = Catalog40Transition::from_manifests((frames.2, replacement.2)).unwrap();
+        let transition = FurnishingTransition::from_manifests((frames.2, replacement.2)).unwrap();
         assert_eq!(transition.source(), frames);
         assert_eq!(transition.target(), replacement);
         assert!(!transition.upgrades_catalog());
         assert!(saved_workspace_transition_target(replacement.2));
-        assert!(Catalog40Transition::from_manifests((restore.2, replacement.2)).is_none());
-        assert!(Catalog40Transition::from_manifests((replacement.2, frames.2)).is_none());
+        assert!(FurnishingTransition::from_manifests((restore.2, replacement.2)).is_none());
+        assert!(FurnishingTransition::from_manifests((replacement.2, frames.2)).is_none());
         let grant = CATALOG40_WHEAT_GRANT.unwrap();
         let detail = CATALOG40_WHEAT_DETAIL.unwrap();
-        let transition = Catalog40Transition::from_manifests((grant.2, detail.2)).unwrap();
+        let transition = FurnishingTransition::from_manifests((grant.2, detail.2)).unwrap();
         assert_eq!(transition.source(), grant);
         assert_eq!(transition.target(), detail);
         assert!(!transition.upgrades_catalog());
         assert!(saved_workspace_transition_target(detail.2));
-        assert!(Catalog40Transition::from_manifests((detail.2, grant.2)).is_none());
-        assert!(Catalog40Transition::from_manifests((replacement.2, detail.2)).is_none());
+        assert!(FurnishingTransition::from_manifests((detail.2, grant.2)).is_none());
+        assert!(FurnishingTransition::from_manifests((replacement.2, detail.2)).is_none());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -1754,6 +1804,13 @@ impl Payload {
     pub(crate) fn open_saved_workspace_transition(root: &Path) -> Result<Self> {
         let payload = Self::open(root)?;
         let context = payload.context();
+        if CATALOG44_WHEAT_TARGET.is_some_and(|target| target.2 == context.manifest_sha256) {
+            return if payload.workspace_furnishing_catalog()? == Some(WorkspaceFurnishingCatalog::HayesRelease044) {
+                Ok(payload)
+            } else {
+                Err(err("NATIVE_RUNTIME_UNQUALIFIED"))
+            };
+        }
         if let Some(target) = CATALOG39_UPGRADE_TARGET {
             let catalog = if context.manifest_sha256 == CATALOG39_UPGRADE_SOURCE.2 {
                 Some(WorkspaceFurnishingCatalog::MaterialPublication039)
@@ -1773,7 +1830,7 @@ impl Payload {
                 return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
             }
         }
-        if [Catalog40Transition::White, Catalog40Transition::Tangent].iter().any(|pair|
+        if [FurnishingTransition::White, FurnishingTransition::Tangent].iter().any(|pair|
             context.manifest_sha256 == pair.source().2 || context.manifest_sha256 == pair.target().2)
         {
             if payload.workspace_furnishing_catalog()? == Some(WorkspaceFurnishingCatalog::MaterialMultimap040) {
@@ -1782,6 +1839,12 @@ impl Payload {
             return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
         }
         Self::open_workspace_v5_validation(root, false)
+    }
+
+    pub(crate) fn ordinary_hayes_release(&self) -> bool {
+        ordinary_hayes_release_host_matches((
+            &self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256,
+        ))
     }
 
     pub(crate) fn workspace_v5_selected_input(&self) -> bool {
@@ -1859,7 +1922,8 @@ impl Payload {
                 || file.path == WORKSPACE_FURNISHING_SELECTED_OEX_039_CAPABILITY.0);
         let material_pinned = material.contains(&tuple);
         let multimap_pinned = multimap.contains(&tuple);
-        let release_pinned = hayes_release_host_matches(tuple);
+        let release_probe_pinned = hayes_release_host_matches(tuple);
+        let release_pinned = release_probe_pinned || ordinary_hayes_release_host_matches(tuple);
         let release_declared = self.manifest.files.iter().any(|file|
             file.path == HAYES_RELEASE_CAPABILITY.0 || file.path.starts_with(HAYES_RELEASE_DIRECTORY));
         if release_declared != release_pinned {
@@ -1876,7 +1940,7 @@ impl Payload {
         let disposition_probe_declared = self.manifest.files.iter().any(|file| file.path == HAYES_DISPOSITION_PROBE_SCRIPT);
         let release_probe_declared = self.manifest.files.iter().any(|file| file.path == HAYES_RELEASE_PROBE_SCRIPT);
         if probe_declared != hayes_session_probe_matches(tuple) || disposition_probe_declared != disposition_probe_pinned
-            || release_probe_declared != release_pinned {
+            || release_probe_declared != release_probe_pinned {
             return Err(unqualified());
         }
         let hayes_pinned = hayes_validation_host_matches(tuple) || disposition_pinned;
@@ -2093,6 +2157,12 @@ impl Payload {
         let name = path.rsplit('/').next().ok_or_else(invalid)?;
         if last != format!("{name}|{sha}") { return Err(invalid()); }
         Ok(source.into())
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn catalog40_upgrade_source_ledger(&self) -> Result<String> {
+        let full = self.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::HayesRelease044)?;
+        Ok(full.lines().take(40).collect::<Vec<_>>().join("\n"))
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -2437,7 +2507,7 @@ impl Payload {
             self.manifest.producer_sha256.as_str(),
             self.manifest_sha256.as_str(),
         );
-        if CATALOG40_WHEAT_DETAIL != Some(provenance)
+        if (CATALOG40_WHEAT_DETAIL != Some(provenance) && !ordinary_hayes_release_host_matches(provenance))
             || !static_detail_inventory_matches(&self.manifest.files)
         {
             return Err(err("NATIVE_STATIC_DETAIL_UNAVAILABLE"));

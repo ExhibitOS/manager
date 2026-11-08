@@ -97,6 +97,7 @@ impl Lease {
             FurnishingStart::SelectedImport039 => 4,
             FurnishingStart::SelectedImport040 => 5,
             FurnishingStart::Upgrade039To040 => 6,
+            FurnishingStart::Upgrade040To044 => 7,
         });
         if !hash_valid(&self.manifest_sha256)
             || self.identity.root_inode == 0
@@ -261,6 +262,21 @@ mod tests {
             assert_eq!(frame["mac"], expected_mac);
         }
         assert!(lease.check_ack(&key, &selected_039).is_err());
+    }
+
+    #[test]
+    fn catalog40_to_44_lease_matches_platform_vector() {
+        let mut lease = golden();
+        let key = std::array::from_fn(|index| index as u8);
+        let earlier_upgrade = {
+            lease.start = FurnishingStart::Upgrade039To040;
+            lease.signed(&key, Kind::Ack).unwrap()
+        };
+        lease.start = FurnishingStart::Upgrade040To044;
+        let frame: Value = serde_json::from_slice(&lease.signed(&key, Kind::Lease).unwrap()).unwrap();
+        assert_eq!(frame["mode"], "workspace-furnishing-040-to-044-upgrade-v1");
+        assert_eq!(frame["mac"], "cc8c234c73a7f91af49cae357cde27b613ef80d5cb885eb03e368a67a5787209");
+        assert!(lease.check_ack(&key, &earlier_upgrade).is_err());
     }
 
     #[test]

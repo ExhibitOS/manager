@@ -17,7 +17,7 @@ const OLD_MANIFEST: &str = "253de8963ec9f0e0a2884a27d8e756b453cf61899e38c31571d9
 const NEW_MANIFEST: &str = "10a21f3b7a73a66011e077f7927f951f917e604720591acbcc2cdb47222f4032";
 #[cfg(feature = "workspace-v5-owner-validation")]
 use crate::native_payload::{
-    CATALOG40_FRAME_TRANSITION, CATALOG40_TANGENT_TRANSITION, Catalog40Transition,
+    CATALOG40_FRAME_TRANSITION, CATALOG40_TANGENT_TRANSITION, FurnishingTransition,
     saved_workspace_transition_supported, saved_workspace_transition_target,
     WORKSPACE_V5_TRANSITION, WORKSPACE_WALL_PREVIEW_TRANSITION,
 };
@@ -93,7 +93,8 @@ struct Checkpoint {
     saved_document_sha256: Option<String>,
     #[cfg(feature = "workspace-v5-owner-validation")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    catalog40: Option<crate::native_runtime::Catalog40Trial>,
+    #[serde(rename = "catalog40")]
+    furnishing: Option<crate::native_runtime::FurnishingTransitionTrial>,
     trial: bool,
     drained_failure: Option<String>,
     restore: Option<RestorePlan>,
@@ -126,15 +127,15 @@ impl Checkpoint {
     fn check_host(&self, saved_workspace_host: bool) -> Result<()> {
         let pair = (self.old_manifest.as_str(), self.new_manifest.as_str());
         #[cfg(feature = "workspace-v5-owner-validation")]
-        if Catalog40Transition::from_manifests(pair).is_some() != self.catalog40.is_some() {
+        if FurnishingTransition::from_manifests(pair).is_some() != self.furnishing.is_some() {
             return Err(invalid());
         }
         check_transition_host(pair, self.saved_document_sha256.as_deref(), saved_workspace_host)
     }
 
     #[cfg(feature = "workspace-v5-owner-validation")]
-    fn catalog40_transition(&self) -> Option<Catalog40Transition> {
-        Catalog40Transition::from_manifests((&self.old_manifest, &self.new_manifest))
+    fn furnishing_transition(&self) -> Option<FurnishingTransition> {
+        FurnishingTransition::from_manifests((&self.old_manifest, &self.new_manifest))
     }
 }
 
@@ -731,7 +732,7 @@ impl LifecycleService {
         }
         checkpoint.check_host(saved_workspace_host)?;
         #[cfg(feature = "workspace-v5-owner-validation")]
-        let _writer = checkpoint.catalog40.as_ref().zip(checkpoint.catalog40_transition())
+        let _writer = checkpoint.furnishing.as_ref().zip(checkpoint.furnishing_transition())
             .map(|(trial, transition)| trial.hold_source(self, transition)).transpose()?;
         let binding = bindings(&checkpoint)?;
         verify_beforeimage(&checkpoint, ENVIRONMENT, &binding.old_env.0)?;
@@ -766,16 +767,16 @@ impl LifecycleService {
             return Err(invalid());
         }
         #[cfg(feature = "workspace-v5-owner-validation")]
-        let catalog40 = checkpoint.catalog40.as_ref().zip(checkpoint.catalog40_transition());
+        let furnishing = checkpoint.furnishing.as_ref().zip(checkpoint.furnishing_transition());
         #[cfg(feature = "workspace-v5-owner-validation")]
-        let writer = catalog40.map(|(trial, transition)| {
+        let writer = furnishing.map(|(trial, transition)| {
             if checkpoint.trial { trial.hold_recovery(self, transition) } else { trial.hold_source(self, transition) }
         }).transpose()?;
         let ordinary_cold_check = || crate::native_runtime::check_cold_transition_root(
             &self.root, checkpoint.drained_failure.as_deref(),
         );
         #[cfg(feature = "workspace-v5-owner-validation")]
-        if let (Some((trial, transition)), Some(writer)) = (catalog40, &writer) {
+        if let (Some((trial, transition)), Some(writer)) = (furnishing, &writer) {
             trial.check_recovery_root(&self.root, writer, transition)?;
         } else {
             ordinary_cold_check()?;
@@ -812,7 +813,7 @@ impl LifecycleService {
         keep_receipt(&self.root, "recovery", &envelope)?;
         #[cfg(feature = "workspace-v5-owner-validation")]
         if let (Some((trial, transition)), Some(writer)) = (
-            checkpoint.catalog40.as_ref().zip(checkpoint.catalog40_transition()), &writer,
+            checkpoint.furnishing.as_ref().zip(checkpoint.furnishing_transition()), &writer,
         ) {
             trial.recover_source(self, writer, transition)?;
         }
@@ -865,9 +866,9 @@ impl LifecycleService {
             serde_json::from_slice(&binding.new_record).map_err(|_| invalid())?;
         let fields = personal_environment_fields(&proposed, &binding.new_env.0)?;
         #[cfg(feature = "workspace-v5-owner-validation")]
-        let transition = checkpoint.catalog40_transition();
+        let transition = checkpoint.furnishing_transition();
         #[cfg(feature = "workspace-v5-owner-validation")]
-        let _writer = checkpoint.catalog40.as_mut().zip(transition).map(|(trial, transition)| {
+        let _writer = checkpoint.furnishing.as_mut().zip(transition).map(|(trial, transition)| {
             trial.renew_generation();
             trial.hold_source(self, transition)
         }).transpose()?;
@@ -886,8 +887,8 @@ impl LifecycleService {
             },
         )?;
         #[cfg(feature = "workspace-v5-owner-validation")]
-        let session = if let Some((trial, transition)) = checkpoint.catalog40.clone().zip(transition) {
-            session.with_catalog40_trial(trial, transition)
+        let session = if let Some((trial, transition)) = checkpoint.furnishing.clone().zip(transition) {
+            session.with_furnishing_transition_trial(trial, transition)
         } else { session };
         Ok((session, checkpoint, binding, envelope))
     }
@@ -1000,28 +1001,28 @@ impl LifecycleService {
             std::mem::take(value).into_bytes().fill(0);
         }
         #[cfg(feature = "workspace-v5-owner-validation")]
-        let transition = Catalog40Transition::from_manifests((&source.manifest_sha256, &target.manifest_sha256));
+        let transition = FurnishingTransition::from_manifests((&source.manifest_sha256, &target.manifest_sha256));
         #[cfg(feature = "workspace-v5-owner-validation")]
-        let catalog40 = if let Some(transition) = transition {
-            use crate::native_payload::WorkspaceFurnishingCatalog::MaterialMultimap040;
+        let furnishing = if let Some(transition) = transition {
             let source_catalog = transition.source_catalog();
+            let target_catalog = transition.target_catalog();
             if source_payload.workspace_furnishing_catalog()? != Some(source_catalog)
-                || target_payload.workspace_furnishing_catalog()? != Some(MaterialMultimap040)
+                || target_payload.workspace_furnishing_catalog()? != Some(target_catalog)
             {
                 return Err(invalid());
             }
-            let target_expected_source = if transition.upgrades_catalog() {
-                target_payload.catalog39_upgrade_source_ledger()?
-            } else {
-                target_payload.workspace_furnishing_ledger(MaterialMultimap040)?
+            let target_expected_source = match transition {
+                FurnishingTransition::Upgrade39(_) => target_payload.catalog39_upgrade_source_ledger()?,
+                FurnishingTransition::Upgrade40(_) => target_payload.catalog40_upgrade_source_ledger()?,
+                _ => target_payload.workspace_furnishing_ledger(target_catalog)?,
             };
             if source_payload.workspace_furnishing_ledger(source_catalog)? != target_expected_source {
                 return Err(invalid());
             }
-            Some(crate::native_runtime::Catalog40Trial::capture(self, transition)?)
+            Some(crate::native_runtime::FurnishingTransitionTrial::capture(self, transition)?)
         } else { None };
         #[cfg(feature = "workspace-v5-owner-validation")]
-        let _writer = catalog40.as_ref().zip(transition)
+        let _writer = furnishing.as_ref().zip(transition)
             .map(|(trial, transition)| trial.hold_source(self, transition)).transpose()?;
         let files = inventory(&self.root, false)?;
         if saved_document_sha256.is_some() {
@@ -1063,7 +1064,7 @@ impl LifecycleService {
             files,
             saved_document_sha256,
             #[cfg(feature = "workspace-v5-owner-validation")]
-            catalog40,
+            furnishing,
             trial: false,
             drained_failure: None,
             restore: None,
@@ -1308,14 +1309,14 @@ mod tests {
     #[cfg(feature = "workspace-v5-owner-validation")]
     #[test]
     fn catalog39_upgrade_cannot_target_the_earlier_tangent_package() {
-        let upgrade = Catalog40Transition::test_upgrade();
+        let upgrade = FurnishingTransition::test_upgrade();
         let old_target = crate::native_payload::CATALOG40_TANGENT_TARGET.2;
         assert!(!admitted_pair(upgrade.source().2, old_target));
         assert!(!admitted_pair(old_target, upgrade.source().2));
         assert!(!admitted_pair(upgrade.source().2, upgrade.target().2));
         let target = "bdfc8202d851f9f8983440b9475da3fc3ddc6ee1f0bf4cf2c0d4bf1995dde338";
-        assert!(Catalog40Transition::from_manifests((upgrade.source().2, target))
-            .is_some_and(Catalog40Transition::upgrades_catalog));
+        assert!(FurnishingTransition::from_manifests((upgrade.source().2, target))
+            .is_some_and(FurnishingTransition::upgrades_catalog));
         assert!(!admitted_pair(target, upgrade.source().2));
         assert!(!admitted_pair(old_target, target));
     }

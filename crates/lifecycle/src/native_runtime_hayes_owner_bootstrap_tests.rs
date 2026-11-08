@@ -79,6 +79,23 @@ fn selected_bootstrap_is_closed_and_legacy_has_no_hayes_pin() {
 }
 
 #[test]
+fn catalog40_to_44_upgrade_requires_both_owner_channels() {
+    let auth = authority();
+    let ordinary = Setup::new().unwrap();
+    assert!(ordinary.workspace_furnishing_bootstrap(&auth, GENERATION, FurnishingStart::Upgrade040To044).is_err());
+
+    let hayes = HayesSetup::new(pin()).unwrap();
+    assert!(hayes.bootstrap(&auth, GENERATION, FurnishingStart::Upgrade039To040, &ordinary.secret).is_err());
+    let wire = hayes.bootstrap(&auth, GENERATION, FurnishingStart::Upgrade040To044, &ordinary.secret).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&wire).unwrap();
+    assert_eq!(value["ownerChannel"]["mode"], "workspace-furnishing-040-to-044-upgrade-v1");
+    assert_eq!(value["ownerChannel"]["runtimeGeneration"], GENERATION);
+    assert_eq!(value["hayesOwnerChannel"]["runtimeGeneration"], GENERATION);
+    assert_eq!(value["hayesOwnerChannel"]["runtimeManifestSha256"], MANIFEST);
+    assert_ne!(value["ownerChannel"]["secret"], value["hayesOwnerChannel"]["secret"]);
+}
+
+#[test]
 fn dedicated_ack_requires_exact_bytes_and_consumes_once() {
     for altered in [false, true] {
         let auth = authority();
