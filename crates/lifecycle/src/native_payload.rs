@@ -539,6 +539,20 @@ const CATALOG45_CURRENT_ORIGINAL_TARGET: RuntimeTuple = (
     "3ef0cf579846cfd682e63cf1bf89c8735c042b46a711569b4ec6d6c10870c76c",
 );
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const CATALOG45_DEFAULT_FRAME: RuntimeTuple = (
+    "df34e11e5335e170c66f5b160a51b92b530e42d1",
+    "29cdc6fd07e1c5d4e5fda06a2c37270d7023024d76a7cc3d31596af9f1c7a921",
+    "a70e062ea7f1d0aa799e4dd924cfe6043bde06ffe11960e2967e60c0ab8285be",
+);
+
+pub(crate) fn ordinary_default_frame_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return CATALOG45_DEFAULT_FRAME == tuple;
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+
 pub(crate) fn required_model_preparation_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CATALOG45_BC96_REQUIRED_MODEL_TARGET == tuple
@@ -1577,6 +1591,25 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    #[ignore = "requires the exact sealed default frame 045 package"]
+    fn opens_reviewed_default_frame_runtime_for_ordinary_catalog45() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_DEFAULT_FRAME_CATALOG45_RUNTIME").unwrap());
+        let payload = Payload::open(&root).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        let manifest = payload.context().manifest_sha256;
+        assert!(payload.ordinary_default_frame_validation());
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 45);
+        assert!(payload.retained_furnishing_catalog().is_none());
+        assert!(!saved_workspace_transition_target(&manifest));
+        assert!(!workspace_v5_validation_matches(&payload.manifest, &manifest, true));
+        assert!(!payload.normal_oex_selected_input().unwrap());
+        assert!(payload.static_export_resources(false).is_ok());
+        assert!(payload.static_detail_export_resources(false).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the exact sealed draft.2 OEX selected 040 package"]
     fn opens_reviewed_draft2_oex_package_for_selection_and_reopen() {
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_DRAFT2_OEX_SELECTED_RUNTIME").unwrap());
@@ -2204,6 +2237,12 @@ impl Payload {
         ))
     }
 
+    pub(crate) fn ordinary_default_frame_validation(&self) -> bool {
+        ordinary_default_frame_host_matches((
+            &self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256,
+        ))
+    }
+
     pub(crate) fn retained_furnishing_catalog(&self) -> Option<WorkspaceFurnishingCatalog> {
         if self.ordinary_hayes_release() {
             Some(WorkspaceFurnishingCatalog::HayesRelease044)
@@ -2250,6 +2289,7 @@ impl Payload {
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
         let wheat_grant: Option<(&str, &str, &str)> = None;
         let pinned_portal = self.retained_furnishing_catalog().is_some()
+            || self.ordinary_default_frame_validation()
             || portal.into_iter().chain(artwork_replacement).chain(wheat_grant).chain(CATALOG40_WHEAT_DETAIL).any(|(source, producer, manifest)|
                 self.manifest.source_commit == source && self.manifest.producer_sha256 == producer
                     && self.manifest_sha256 == manifest);
@@ -2302,7 +2342,8 @@ impl Payload {
         let material_pinned = material.contains(&tuple);
         let multimap_pinned = multimap.contains(&tuple);
         let release_probe_pinned = hayes_release_host_matches(tuple);
-        let model_preparation_pinned = required_model_preparation_host_matches(tuple);
+        let model_preparation_pinned = required_model_preparation_host_matches(tuple)
+            || self.ordinary_default_frame_validation();
         let model_preparation_declared = self.manifest.files.iter().any(|file|
             file.path == MODEL_PREPARATION_CAPABILITY.0 || file.path.starts_with(MODEL_PREPARATION_DIRECTORY));
         if model_preparation_declared != model_preparation_pinned {

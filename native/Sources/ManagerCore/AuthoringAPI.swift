@@ -373,6 +373,7 @@ public actor AuthoringAPI {
     private static let workspaceFramePreparationManifestPin =
         "1c1f3cbddae02e2c0a1053da99362f0fc110558aa5b5bd4f00cded2eec948a63"
     private static let workspaceFurnishingManifestPins: Set<String> = [
+        "a70e062ea7f1d0aa799e4dd924cfe6043bde06ffe11960e2967e60c0ab8285be",
         "df6efc23ea2d9aab790fc25fab9833db9f5b48b3cb0c5417a1bd7c5ef609ac2a",
         "c42e9657015695601ffb0c4ea493ae9ae6df9c954fce032db3212a1b20d309ee",
         "2645f013b8dcef5bb33f138dc0fac9789bbb508306cca722112f222a7476e871",

@@ -99,7 +99,10 @@ impl Binding {
                     && crate::native_payload::ordinary_hayes_release_host_matches(tuple))
                 || (self.catalog == 45 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade044To045)
-                    && crate::native_payload::required_model_preparation_host_matches(tuple)))
+                    && crate::native_payload::required_model_preparation_host_matches(tuple))
+                || (self.catalog == 45 && self.restore.is_none()
+                    && matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)
+                    && crate::native_payload::ordinary_default_frame_host_matches(tuple)))
             || (self.catalog == 41
                 && (self.restore.is_some()
                     || !matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)))
@@ -730,6 +733,33 @@ mod tests {
         reopen.consume(&target).unwrap();
         assert_eq!(reopen.previous_generation.as_deref(), Some(NEXT));
         assert_eq!(reopen.admission_kind, Admission::CleanReopen);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn furnishing_default_frame_catalog45_admits_fresh_and_same_owner_reopen() {
+        let (source, producer, manifest) = crate::native_payload::CATALOG45_DEFAULT_FRAME;
+        let mut fresh = binding(GENERATION);
+        fresh.catalog = 45;
+        fresh.source_commit = source.into();
+        fresh.producer_sha256 = producer.into();
+        fresh.payload_manifest_sha256 = manifest.into();
+        fresh.check().unwrap();
+        fresh.phase = Phase::Clean;
+        fresh.check().unwrap();
+
+        let mut next = fresh.clone();
+        next.generation = NEXT.into();
+        next.phase = Phase::Active;
+        let mut unrelated = next.clone();
+        unrelated.payload_manifest_sha256 = "0".repeat(64);
+        assert!(unrelated.check().is_err());
+        assert!(unrelated.consume(&fresh).is_err());
+
+        next.consume(&fresh).unwrap();
+        assert_eq!(next.admission_kind, Admission::CleanReopen);
+        next.admission_kind = Admission::CatalogUpgrade044To045;
+        assert!(next.check().is_err());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
