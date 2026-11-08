@@ -4,7 +4,7 @@
 
 use super::{
     err,
-    frame::BODY_SHA,
+    frame::{BODY_BYTES, BODY_SHA},
     generation::{
         validation::{RunningValidation, ValidatedReadback},
         RunningGeneration, WorkerCheckpoint,
@@ -58,6 +58,7 @@ enum Kind {
     HayesOperationRevalidate,
     HayesOperationRevalidated,
     HayesOperationAbort,
+    HayesOutputReservationReady,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -135,6 +136,7 @@ enum Phase {
     Revalidated,
     OutputHeld,
     ReadySent,
+    Reserved,
     Failed,
 }
 
@@ -281,6 +283,8 @@ pub(in super::super) struct OwnedHayesOpen<'a> {
     revalidation_challenge: Option<Uuid>,
     worker: Option<RunningWorker>,
     validated: Option<ValidatedReadback>,
+    ready_pins: Option<ready::ReadyPins>,
+    db_stage_id: Option<Uuid>,
     retain_attempt: bool,
     open_accepted_at: Instant,
     timings: WorkerTimings,
@@ -425,6 +429,8 @@ impl Session {
                 revalidation_challenge: None,
                 worker: None,
                 validated: None,
+                ready_pins: None,
+                db_stage_id: None,
                 retain_attempt: false,
                 open_accepted_at: Instant::now(),
                 timings: WorkerTimings::default(),
@@ -705,12 +711,37 @@ fn check_live_claim(
     b: &OperationBinding,
     deadline: Instant,
 ) -> Result<()> {
+    check_live_claim_stage(owner, session, b, None, deadline)
+}
+
+fn check_live_claim_stage(
+    owner: &Owner,
+    session: &mut Session,
+    b: &OperationBinding,
+    db_stage_id: Option<Uuid>,
+    deadline: Instant,
+) -> Result<()> {
     owner.check(session)?;
+    let sql = live_claim_sql(b, db_stage_id);
+    let identity = session.query_database_before("exhibitos", &sql, deadline)?;
+    owner.check_database_identity_result(&identity)?;
+    owner.check(session)
+}
+
+fn live_claim_sql(b: &OperationBinding, db_stage_id: Option<Uuid>) -> String {
     // All interpolated values are typed UUIDs, bounded integers, or the
     // exact lowercase source digest admitted by parse_open. The API already
     // validated the immutable job rights schema and bound it at revalidation.
     // Here equality and clock_timestamp recheck current rights and expiry.
-    let sql = format!(
+    let reservation = db_stage_id.map_or_else(String::new, |id| {
+        format!(
+            " AND EXISTS (SELECT 1 FROM hayes_output_stages s
+               WHERE (s.tenant_id,s.attempt_id,s.job_id)=(a.tenant_id,a.id,a.job_id)
+                 AND s.id='{id}' AND s.output_sha256='{BODY_SHA}' AND s.output_bytes={BODY_BYTES}
+                 AND s.object_key=a.tenant_id::text || '/hayes-output/' || a.id::text || '/{BODY_SHA}')"
+        )
+    });
+    format!(
         "SELECT db.system_id,db.database_oid FROM ({DATABASE_IDENTITY_SQL}) db WHERE EXISTS (
           SELECT 1 FROM hayes_original_attempts a
           JOIN import_jobs j ON (j.tenant_id,j.id,j.hayes_attempt_id)=(a.tenant_id,a.job_id,a.id)
@@ -738,15 +769,12 @@ fn check_live_claim(
             AND CASE WHEN NOT j.rights ? 'expiresAt' THEN true
                      WHEN jsonb_typeof(j.rights->'expiresAt')='string'
                      THEN (j.rights->>'expiresAt')::timestamptz > clock_timestamp()
-                     ELSE false END)",
+                     ELSE false END{reservation})",
         tenant=b.tenant_id, workspace=b.workspace_id, principal=b.principal_id,
         job=b.job_id, lease=b.lease_id, attempt=b.attempt_id, generation=b.runtime_generation,
         artwork=b.artwork_id, correlation=b.correlation_id, revision=b.artwork_revision,
         bytes=b.source_bytes, sha=b.source_sha256,
-    );
-    let identity = session.query_database_before("exhibitos", &sql, deadline)?;
-    owner.check_database_identity_result(&identity)?;
-    owner.check(session)
+    )
 }
 
 impl Record {
