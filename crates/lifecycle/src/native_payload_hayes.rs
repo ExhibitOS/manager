@@ -3,7 +3,14 @@
 //! This module does not launch a worker or certify runtime containment.
 
 use super::{contained, err, fs, PathBuf, Payload, Result};
-use std::{ffi::OsString, path::Path};
+use crate::maintenance_source::DirectoryPin;
+use std::{
+    ffi::{CString, OsString},
+    fs::File,
+    mem::MaybeUninit,
+    os::{fd::AsRawFd, unix::fs::MetadataExt},
+    path::Path,
+};
 
 const SOURCE: &str = "77e8e4dc1c8489f42c3f1dd0a6d858eecc96bf1c";
 const PRODUCER: &str = "153558a719595549071e9bf6dd06950a0bfba9549c463601c1c6ac0ff51cc3ba";
@@ -16,6 +23,9 @@ const WORKER: &str = "platform/apps/api/dist/hayes-original-worker.js";
 const WORKER_SHA: &str = "c20f1a2f8720eec316695e1021c281141d4219252a0c28489167b68ed63e5cdf";
 const VALIDATOR: &str = "platform/apps/api/dist/validation-worker.js";
 const VALIDATOR_SHA: &str = "ffa24f35ad2e3358651f10610cbea372fcf709cfb6636128ea5fb7d9b670ff2c";
+const VIPS: &str =
+    "platform/node_modules/@img/sharp-libvips-darwin-arm64/lib/libvips-cpp.8.18.6.dylib";
+const VIPS_SHA: &str = "bba7a98f1c4b10f4c31f92e12264e5d41a7ab484b864feae535ac8919c548d01";
 const LOCKFILE_SHA: &str = "3f402eddf68ca77d5ce3ee72e4ee1ade4ffbdbf954f5f10e0414e5ead98408be";
 
 const GENERATE_MODULES: &[&str] = &[
@@ -47,6 +57,50 @@ pub(crate) struct HayesCommand {
     pub(crate) program: PathBuf,
     /// Arguments before the native launcher appends lock identity and nonce.
     pub(crate) args: Vec<OsString>,
+}
+
+/// Owns the mounted directory identities across spawn and READY. Only the
+/// exact, local Generate command may carry its one fixed environment key.
+pub(crate) struct ReadOnlyHayesGenerate {
+    root: DirectoryPin,
+    notices: DirectoryPin,
+    libdir: PathBuf,
+    device: u64,
+    command: HayesCommand,
+    environment: CString,
+}
+
+impl ReadOnlyHayesGenerate {
+    pub(crate) fn check(&self) -> Result<()> {
+        let root = self.root.try_clone_file().map_err(|_| unavailable())?;
+        let notices = self.notices.try_clone_file().map_err(|_| unavailable())?;
+        if readonly_device(&root)? != self.device || readonly_device(&notices)? != self.device {
+            return Err(unavailable());
+        }
+        match fs::symlink_metadata(&self.libdir) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(unavailable()),
+        }
+    }
+
+    pub(crate) fn command(&self) -> &HayesCommand {
+        &self.command
+    }
+
+    pub(crate) fn environment(&self) -> &std::ffi::CStr {
+        &self.environment
+    }
+}
+
+fn readonly_device(file: &File) -> Result<u64> {
+    let mut stat = MaybeUninit::<libc::statfs>::uninit();
+    if unsafe { libc::fstatfs(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+        return Err(unavailable());
+    }
+    if unsafe { stat.assume_init() }.f_flags & libc::MNT_RDONLY as u32 == 0 {
+        return Err(unavailable());
+    }
+    Ok(file.metadata().map_err(|_| unavailable())?.dev())
 }
 
 impl Payload {
@@ -121,6 +175,39 @@ impl Payload {
         Ok(HayesCommand { program, args })
     }
 
+    pub(crate) fn hayes_read_only_generate(&self) -> Result<ReadOnlyHayesGenerate> {
+        let root = DirectoryPin::open(&self.root).map_err(|_| unavailable())?;
+        let device = readonly_device(&root.try_clone_file().map_err(|_| unavailable())?)?;
+        let command = self.hayes_fixed_command(HayesPhase::Generate)?;
+        self.hayes_file(VIPS, false, Some(VIPS_SHA))?;
+        // A separate mount under the package is outside this guard, even if
+        // that path happened to contain matching bytes during the recheck.
+        for item in &self.manifest.files {
+            if fs::metadata(self.root.join(&item.path))
+                .map_err(|_| unavailable())?
+                .dev()
+                != device
+            {
+                return Err(unavailable());
+            }
+        }
+        let notices_path = self.hayes_directory("notices")?;
+        let notices = DirectoryPin::open(&notices_path).map_err(|_| unavailable())?;
+        let mut env = b"VIPSHOME=".to_vec();
+        env.extend_from_slice(notices_path.as_os_str().as_encoded_bytes());
+        let environment = CString::new(env).map_err(|_| unavailable())?;
+        let guard = ReadOnlyHayesGenerate {
+            root,
+            notices,
+            libdir: notices_path.join("lib"),
+            device,
+            command,
+            environment,
+        };
+        guard.check()?;
+        Ok(guard)
+    }
+
     fn hayes_file(&self, relative: &str, executable: bool, sha: Option<&str>) -> Result<PathBuf> {
         let path = self.root.join(relative);
         if !self.manifest.files.iter().any(|item| {
@@ -177,6 +264,28 @@ mod tests {
             read_flag(Path::new("/tmp/fixed path")).unwrap(),
             "--allow-fs-read=/tmp/fixed path"
         );
+    }
+
+    #[test]
+    #[ignore]
+    fn generate_environment_requires_the_exact_read_only_candidate() {
+        let mount =
+            PathBuf::from(std::env::var_os("HAYES_FIXED_PACKAGE").expect("mounted candidate"));
+        let writable =
+            PathBuf::from(std::env::var_os("HAYES_WRITABLE_PACKAGE").expect("writable original"));
+        let payload = Payload::open(&mount).unwrap();
+        let pinned = payload.hayes_read_only_generate().unwrap();
+        pinned.check().unwrap();
+        assert_eq!(
+            pinned.environment().to_bytes(),
+            format!("VIPSHOME={}", mount.join("notices").display()).as_bytes(),
+        );
+        assert_eq!(pinned.command.program, mount.join(NODE));
+        assert_eq!(pinned.command.args.last().unwrap(), "generate");
+        assert!(Payload::open(&writable)
+            .unwrap()
+            .hayes_read_only_generate()
+            .is_err());
     }
 
     /// Exercise the actual package through the existing complete Payload

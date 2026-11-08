@@ -6,7 +6,10 @@ use super::{
     launch::{LaunchPermit, SpawnedWorker, WorkerStdio},
     private_file, Attempt, Binding, Physical, Result, Role, SourceStage,
 };
-use crate::native_runtime::oex_read_fd::{observe_stage, ObservedStage, Stage};
+use crate::{
+    native_payload::hayes::ReadOnlyHayesGenerate,
+    native_runtime::oex_read_fd::{observe_stage, ObservedStage, Stage},
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -78,16 +81,29 @@ struct Staging {
 pub(super) struct RunningGeneration {
     pub(super) child: SpawnedWorker,
     work: Option<(Staging, WorkerStdio)>,
+    pinned_generate: Option<ReadOnlyHayesGenerate>,
 }
 
 impl GenerationPermit {
-    // Only the fixed-payload adapter may eventually expose this call outside
-    // this module. For now it can be exercised with a synthetic leaf only.
-    fn spawn(self, program: &Path, args: &[&OsStr]) -> Result<RunningGeneration> {
-        let (child, stdio) = self.launch.spawn_staged(program, args)?;
+    /// The private exact-candidate lane keeps its read-only mount and
+    /// derived VIPSHOME pinned through launch and authorization.
+    pub(super) fn spawn_fixed_generate(
+        self,
+        candidate: ReadOnlyHayesGenerate,
+    ) -> Result<RunningGeneration> {
+        if self.launch.worker.role != Role::Generate {
+            return Err(custody_error());
+        }
+        candidate.check()?;
+        let command = candidate.command();
+        let args: Vec<_> = command.args.iter().map(|arg| arg.as_os_str()).collect();
+        let (child, stdio) =
+            self.launch
+                .spawn_staged(&command.program, &args, Some(candidate.environment()))?;
         Ok(RunningGeneration {
             child,
             work: Some((self.staging, stdio)),
+            pinned_generate: Some(candidate),
         })
     }
 
@@ -97,7 +113,12 @@ impl GenerationPermit {
         program: &Path,
         args: &[&OsStr],
     ) -> Result<RunningGeneration> {
-        self.spawn(program, args)
+        let (child, stdio) = self.launch.spawn_staged(program, args, None)?;
+        Ok(RunningGeneration {
+            child,
+            work: Some((self.staging, stdio)),
+            pinned_generate: None,
+        })
     }
 }
 
@@ -179,6 +200,9 @@ impl Attempt {
             self.check_generation(&staging)?;
             self.register_ready_until(&mut run.child, deadline, &mut progress)?;
             self.check_generation(&staging)?;
+            if let Some(candidate) = &run.pinned_generate {
+                candidate.check()?;
+            }
             stdio.check_quiet_output()?;
             progress()?;
             self.send_go(&mut run.child)?;
@@ -201,6 +225,9 @@ impl Attempt {
             .sync_all()
             .map_err(|_| custody_error())?;
         let (bytes, sha256) = result?;
+        if let Some(candidate) = &run.pinned_generate {
+            candidate.check()?;
+        }
 
         // Only Manager has written this inode. This establishes the current
         // bytes, and confers no release or descendant-drain authority.

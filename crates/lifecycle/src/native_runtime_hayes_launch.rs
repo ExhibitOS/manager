@@ -3,7 +3,7 @@
 
 use super::{custody_error, cvt, err, private_file, Result, Worker};
 use std::{
-    ffi::{CString, OsStr},
+    ffi::{CStr, CString, OsStr},
     fs::File,
     io,
     os::{
@@ -42,6 +42,7 @@ impl LaunchPermit {
         program: &Path,
         args: &[&OsStr],
         stdio: Option<(&UnixStream, &UnixStream)>,
+        environment: Option<&CStr>,
     ) -> Result<SpawnedWorker> {
         if !program.is_absolute() {
             return Err(err("HAYES_WORKER_START_FAILED"));
@@ -56,7 +57,7 @@ impl LaunchPermit {
             .map(|arg| CString::new(arg.as_bytes()))
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|_| err("HAYES_WORKER_START_FAILED"))?;
-        let pid = spawn_leaf(&argv, &child, &self.lock, stdio)?;
+        let pid = spawn_leaf(&argv, &child, &self.lock, stdio, environment)?;
         Ok(SpawnedWorker {
             worker: self.worker,
             pid,
@@ -71,12 +72,18 @@ impl LaunchPermit {
         self,
         program: &Path,
         args: &[&OsStr],
+        environment: Option<&CStr>,
     ) -> Result<(SpawnedWorker, WorkerStdio)> {
         let (input, child_input) = UnixStream::pair().map_err(|_| channel_error())?;
         let (output, child_output) = UnixStream::pair().map_err(|_| channel_error())?;
         input.set_nonblocking(true).map_err(|_| channel_error())?;
         output.set_nonblocking(true).map_err(|_| channel_error())?;
-        let child = self.spawn(program, args, Some((&child_input, &child_output)))?;
+        let child = self.spawn(
+            program,
+            args,
+            Some((&child_input, &child_output)),
+            environment,
+        )?;
         Ok((child, WorkerStdio { input, output }))
     }
 
@@ -86,7 +93,7 @@ impl LaunchPermit {
         program: &Path,
         args: &[&OsStr],
     ) -> Result<SpawnedWorker> {
-        self.spawn(program, args, None)
+        self.spawn(program, args, None, None)
     }
 }
 
@@ -284,6 +291,7 @@ fn spawn_leaf(
     peer: &UnixStream,
     lock: &File,
     stdio: Option<(&UnixStream, &UnixStream)>,
+    environment: Option<&CStr>,
 ) -> Result<libc::pid_t> {
     let mut options = SpawnOptions::new()?;
     // Keep both sources above all target FDs until posix_spawn returns.
@@ -312,7 +320,10 @@ fn spawn_leaf(
     }
     let mut args: Vec<_> = argv.iter().map(|arg| arg.as_ptr().cast_mut()).collect();
     args.push(ptr::null_mut());
-    let env = [ptr::null_mut()];
+    let env = match environment {
+        Some(value) => [value.as_ptr().cast_mut(), ptr::null_mut()],
+        None => [ptr::null_mut(), ptr::null_mut()],
+    };
     let mut pid = 0;
     spawn_ok(unsafe {
         libc::posix_spawn(
