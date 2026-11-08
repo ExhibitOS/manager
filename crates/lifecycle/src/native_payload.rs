@@ -298,6 +298,17 @@ const HAYES_DISPOSITION_CAPABILITY: (&str, u64, &str) = (
     287,
     "5815c26a4439aa868f1e7ff012a6aa3b79ecbf35e3824e35e6af7a525b69f098",
 );
+const HAYES_RELEASE_DIRECTORY: &str = "platform/database/native-hayes-release/";
+const HAYES_RELEASE_SCHEMA: (&str, u64, &str) = (
+    "platform/database/native-hayes-release/044_hayes_native_release.sql",
+    4726,
+    "83a4f49ea7e2a114494166c590a179eb40f19a7379b887871f81c307a0b038ca",
+);
+const HAYES_RELEASE_CAPABILITY: (&str, u64, &str) = (
+    "platform/scripts/native-hayes-release-capability-v1.json",
+    285,
+    "b21403370f5f9088207d0d9a5aa4a74c7b2eb33e8692d0d61b617e40f08947c0",
+);
 const HAYES_FRAME_PREPARATION_CAPABILITY: (&str, u64, &str) = (
     WORKSPACE_FRAME_PREPARATION_CAPABILITY.0,
     WORKSPACE_FRAME_PREPARATION_CAPABILITY.1,
@@ -319,6 +330,7 @@ pub(crate) fn hayes_bootstrap_validation_tuple() -> Option<(&'static str, &'stat
 
 const HAYES_SESSION_PROBE_SCRIPT: &str = "platform/scripts/native-hayes-session-probe.mjs";
 const HAYES_DISPOSITION_PROBE_SCRIPT: &str = "platform/scripts/native-hayes-disposition-probe.mjs";
+const HAYES_RELEASE_PROBE_SCRIPT: &str = "platform/scripts/native-hayes-release-probe.mjs";
 
 #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) struct HayesSessionProbePin {
@@ -351,6 +363,17 @@ pub(crate) const HAYES_DISPOSITION_PROBE_PIN: Option<HayesSessionProbePin> = Som
     script_sha256: "1de14b2af1e31b733132df57d1a7c919396c2850be993611292d610e5816140a",
 });
 
+#[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const HAYES_RELEASE_PROBE_PIN: Option<HayesSessionProbePin> = Some(HayesSessionProbePin {
+    host: (
+        "71f116bdac0e0bb0dd327659fd4407048fa100e4",
+        "c3912c3251a22f32292a7317e0ad1b980aedb5318a0008aab439947db95a89a2",
+        "14bf2a6175cef712c2d5c48679ae8f0d01d894158854061c943353559f61462f",
+    ),
+    script_bytes: 8196,
+    script_sha256: "89a77022b0d88aae45e1f0256d2b15f95d7221308d899faaeee57a144b559384",
+});
+
 pub(crate) fn hayes_validation_host_matches(tuple: (&str, &str, &str)) -> bool {
     hayes_bootstrap_validation_tuple() == Some(tuple) || hayes_session_probe_matches(tuple)
 }
@@ -365,6 +388,13 @@ fn hayes_session_probe_matches(tuple: (&str, &str, &str)) -> bool {
 pub(crate) fn hayes_disposition_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return HAYES_DISPOSITION_PROBE_PIN.as_ref().is_some_and(|pin| pin.host == tuple);
+    #[cfg(not(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+
+pub(crate) fn hayes_release_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return HAYES_RELEASE_PROBE_PIN.as_ref().is_some_and(|pin| pin.host == tuple);
     #[cfg(not(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -561,6 +591,7 @@ pub(crate) enum WorkspaceFurnishingCatalog {
     FramePreparation041,
     HayesOriginal042,
     HayesDisposition043,
+    HayesRelease044,
 }
 
 impl WorkspaceFurnishingCatalog {
@@ -574,12 +605,14 @@ impl WorkspaceFurnishingCatalog {
             Self::FramePreparation041 => 41,
             Self::HayesOriginal042 => 42,
             Self::HayesDisposition043 => 43,
+            Self::HayesRelease044 => 44,
         }
     }
 
     pub(crate) fn uses_writer_lease(self) -> bool {
         matches!(self, Self::Writer037 | Self::Publication038 | Self::MaterialPublication039
-            | Self::MaterialMultimap040 | Self::FramePreparation041 | Self::HayesOriginal042 | Self::HayesDisposition043)
+            | Self::MaterialMultimap040 | Self::FramePreparation041 | Self::HayesOriginal042
+            | Self::HayesDisposition043 | Self::HayesRelease044)
     }
 }
 
@@ -1113,6 +1146,19 @@ mod normal_oex_release_declaration_tests {
         assert_eq!(ledger.lines().last().unwrap(), format!("043_hayes_output_stage.sql|{}", HAYES_DISPOSITION_SCHEMA.2));
         payload.manifest.files.last_mut().unwrap().bytes = Some(HAYES_DISPOSITION_SCHEMA.1 - 1);
         assert!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::HayesDisposition043).is_err());
+        payload.manifest.files.last_mut().unwrap().bytes = Some(HAYES_DISPOSITION_SCHEMA.1);
+        for (path, bytes, sha256) in [HAYES_RELEASE_CAPABILITY, HAYES_RELEASE_SCHEMA] {
+            payload.manifest.files.push(Item {
+                path: path.into(), bytes: Some(bytes), sha256: Some(sha256.into()), executable: Some(false), link: None,
+            });
+        }
+        assert!(payload.workspace_furnishing_catalog_for(&[], &[], &[], &[], &[], &pin).is_err());
+        assert!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::HayesDisposition043).is_err());
+        let ledger = payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::HayesRelease044).unwrap();
+        assert_eq!(ledger.lines().count(), 44);
+        assert_eq!(ledger.lines().last().unwrap(), format!("044_hayes_native_release.sql|{}", HAYES_RELEASE_SCHEMA.2));
+        payload.manifest.files.last_mut().unwrap().sha256 = Some("f".repeat(64));
+        assert!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::HayesRelease044).is_err());
         payload.manifest.files.truncate(parent_inventory);
 
         payload.manifest.files.last_mut().unwrap().sha256 = Some("f".repeat(64));
@@ -1813,7 +1859,14 @@ impl Payload {
                 || file.path == WORKSPACE_FURNISHING_SELECTED_OEX_039_CAPABILITY.0);
         let material_pinned = material.contains(&tuple);
         let multimap_pinned = multimap.contains(&tuple);
-        let disposition_pinned = hayes_disposition_host_matches(tuple);
+        let release_pinned = hayes_release_host_matches(tuple);
+        let release_declared = self.manifest.files.iter().any(|file|
+            file.path == HAYES_RELEASE_CAPABILITY.0 || file.path.starts_with(HAYES_RELEASE_DIRECTORY));
+        if release_declared != release_pinned {
+            return Err(unqualified());
+        }
+        let disposition_probe_pinned = hayes_disposition_host_matches(tuple);
+        let disposition_pinned = disposition_probe_pinned || release_pinned;
         let disposition_declared = self.manifest.files.iter().any(|file|
             file.path == HAYES_DISPOSITION_CAPABILITY.0 || file.path.starts_with(HAYES_DISPOSITION_DIRECTORY));
         if disposition_declared != disposition_pinned {
@@ -1821,7 +1874,9 @@ impl Payload {
         }
         let probe_declared = self.manifest.files.iter().any(|file| file.path == HAYES_SESSION_PROBE_SCRIPT);
         let disposition_probe_declared = self.manifest.files.iter().any(|file| file.path == HAYES_DISPOSITION_PROBE_SCRIPT);
-        if probe_declared != hayes_session_probe_matches(tuple) || disposition_probe_declared != disposition_pinned {
+        let release_probe_declared = self.manifest.files.iter().any(|file| file.path == HAYES_RELEASE_PROBE_SCRIPT);
+        if probe_declared != hayes_session_probe_matches(tuple) || disposition_probe_declared != disposition_probe_pinned
+            || release_probe_declared != release_pinned {
             return Err(unqualified());
         }
         let hayes_pinned = hayes_validation_host_matches(tuple) || disposition_pinned;
@@ -1905,6 +1960,12 @@ impl Payload {
                             if disposition_pinned {
                                 if !pinned_file(HAYES_DISPOSITION_CAPABILITY) || !pinned_file(HAYES_DISPOSITION_SCHEMA) {
                                     return Err(unqualified());
+                                }
+                                if release_pinned {
+                                    if !pinned_file(HAYES_RELEASE_CAPABILITY) || !pinned_file(HAYES_RELEASE_SCHEMA) {
+                                        return Err(unqualified());
+                                    }
+                                    return Ok(Some(WorkspaceFurnishingCatalog::HayesRelease044));
                                 }
                                 return Ok(Some(WorkspaceFurnishingCatalog::HayesDisposition043));
                             }
@@ -1993,12 +2054,20 @@ impl Payload {
                 42
             } else if file.path.starts_with(HAYES_DISPOSITION_DIRECTORY) {
                 let (path, bytes, hash) = HAYES_DISPOSITION_SCHEMA;
-                if catalog != WorkspaceFurnishingCatalog::HayesDisposition043
+                if catalog.version() < 43
                     || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
                 {
                     return Err(invalid());
                 }
                 43
+            } else if file.path.starts_with(HAYES_RELEASE_DIRECTORY) {
+                let (path, bytes, hash) = HAYES_RELEASE_SCHEMA;
+                if catalog != WorkspaceFurnishingCatalog::HayesRelease044
+                    || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
+                {
+                    return Err(invalid());
+                }
+                44
             } else {
                 let Some((_, range)) = directories.iter().find(|(expected, _)| *expected == directory) else { continue; };
                 let Some(number) = name.split_once('_').and_then(|(number, _)| number.parse::<usize>().ok()) else { return Err(invalid()); };
@@ -2388,6 +2457,7 @@ impl Payload {
         let Some((path, pin)) = [
             (HAYES_SESSION_PROBE_SCRIPT, HAYES_SESSION_PROBE_PIN.as_ref()),
             (HAYES_DISPOSITION_PROBE_SCRIPT, HAYES_DISPOSITION_PROBE_PIN.as_ref()),
+            (HAYES_RELEASE_PROBE_SCRIPT, HAYES_RELEASE_PROBE_PIN.as_ref()),
         ].into_iter().find_map(|(path, pin)| pin.filter(|pin| pin.host == tuple).map(|pin| (path, pin))) else {
             return Ok(None);
         };
