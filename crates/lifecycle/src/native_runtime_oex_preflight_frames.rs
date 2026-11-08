@@ -5,7 +5,7 @@ use super::*;
 use super::oex_reservation::V3PlanScope;
 
 fn invalid()->LifecycleError {err("NATIVE_OEX_PREFLIGHT_INVALID")}
-fn uuid(s:&str)->bool {Uuid::parse_str(s).is_ok_and(|v|v.to_string()==s&&v.get_variant()==uuid::Variant::RFC4122&&(1..=8).contains(&v.get_version_num()))}
+pub(super) fn uuid(s:&str)->bool {Uuid::parse_str(s).is_ok_and(|v|v.to_string()==s&&v.get_variant()==uuid::Variant::RFC4122&&(1..=8).contains(&v.get_version_num()))}
 
 #[derive(Serialize,Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
