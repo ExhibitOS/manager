@@ -346,6 +346,14 @@ const CATALOG40_WHEAT_GRANT: Option<RuntimeTuple> = Some((
     "153558a719595549071e9bf6dd06950a0bfba9549c463601c1c6ac0ff51cc3ba",
     "ab297cadff8a0348c402f937fc95851315e595e8b93dea2b43c2b40cfd22b851",
 ));
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG40_WHEAT_DETAIL: Option<RuntimeTuple> = Some((
+    "7aba217f521f30c5587febfc4ad910989f050649",
+    "5433a44ab03bedbf9dc300f11f8304396169707417ea7460ea581c2f648f8230",
+    "074719930770137f954302e1d27f0035b4d25f6489fa4e61391d96f6d25d90f1",
+));
+#[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+const CATALOG40_WHEAT_DETAIL: Option<(&str, &str, &str)> = None;
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -364,6 +372,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG40_RESTORE_PROVENANCE_TARGET.is_some_and(|target| target.2 == manifest)
         || CATALOG40_FRAME_RECORD_TARGET.is_some_and(|target| target.2 == manifest)
         || CATALOG40_ARTWORK_REPLACEMENT_TARGET.is_some_and(|target| target.2 == manifest)
+        || CATALOG40_WHEAT_DETAIL.is_some_and(|target| target.2 == manifest)
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -384,7 +393,8 @@ impl Catalog40Transition {
                 .or_else(|| Self::same_catalog_from_manifests(pair, CATALOG39_UPGRADE_TARGET, CATALOG40_EXB_TARGET))
                 .or_else(|| Self::same_catalog_from_manifests(pair, CATALOG40_EXB_TARGET, CATALOG40_RESTORE_PROVENANCE_TARGET))
                 .or_else(|| Self::same_catalog_from_manifests(pair, CATALOG40_RESTORE_PROVENANCE_TARGET, CATALOG40_FRAME_RECORD_TARGET))
-                .or_else(|| Self::same_catalog_from_manifests(pair, CATALOG40_FRAME_RECORD_TARGET, CATALOG40_ARTWORK_REPLACEMENT_TARGET)),
+                .or_else(|| Self::same_catalog_from_manifests(pair, CATALOG40_FRAME_RECORD_TARGET, CATALOG40_ARTWORK_REPLACEMENT_TARGET))
+                .or_else(|| Self::same_catalog_from_manifests(pair, CATALOG40_WHEAT_GRANT, CATALOG40_WHEAT_DETAIL)),
         }
     }
 
@@ -1040,6 +1050,15 @@ mod normal_oex_release_declaration_tests {
         assert!(saved_workspace_transition_target(replacement.2));
         assert!(Catalog40Transition::from_manifests((restore.2, replacement.2)).is_none());
         assert!(Catalog40Transition::from_manifests((replacement.2, frames.2)).is_none());
+        let grant = CATALOG40_WHEAT_GRANT.unwrap();
+        let detail = CATALOG40_WHEAT_DETAIL.unwrap();
+        let transition = Catalog40Transition::from_manifests((grant.2, detail.2)).unwrap();
+        assert_eq!(transition.source(), grant);
+        assert_eq!(transition.target(), detail);
+        assert!(!transition.upgrades_catalog());
+        assert!(saved_workspace_transition_target(detail.2));
+        assert!(Catalog40Transition::from_manifests((detail.2, grant.2)).is_none());
+        assert!(Catalog40Transition::from_manifests((replacement.2, detail.2)).is_none());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -1577,7 +1596,9 @@ impl Payload {
                 || CATALOG40_EXB_TARGET.is_some_and(|exb| context.manifest_sha256 == exb.2)
                 || CATALOG40_RESTORE_PROVENANCE_TARGET.is_some_and(|restore| context.manifest_sha256 == restore.2)
                 || CATALOG40_FRAME_RECORD_TARGET.is_some_and(|frames| context.manifest_sha256 == frames.2)
-                || CATALOG40_ARTWORK_REPLACEMENT_TARGET.is_some_and(|replacement| context.manifest_sha256 == replacement.2) {
+                || CATALOG40_ARTWORK_REPLACEMENT_TARGET.is_some_and(|replacement| context.manifest_sha256 == replacement.2)
+                || CATALOG40_WHEAT_GRANT.is_some_and(|grant| context.manifest_sha256 == grant.2)
+                || CATALOG40_WHEAT_DETAIL.is_some_and(|detail| context.manifest_sha256 == detail.2) {
                 Some(WorkspaceFurnishingCatalog::MaterialMultimap040)
             } else { None };
             if let Some(expected) = catalog {
@@ -1623,7 +1644,7 @@ impl Payload {
         let wheat_grant = CATALOG40_WHEAT_GRANT;
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
         let wheat_grant: Option<(&str, &str, &str)> = None;
-        let pinned_portal = portal.into_iter().chain(artwork_replacement).chain(wheat_grant).any(|(source, producer, manifest)|
+        let pinned_portal = portal.into_iter().chain(artwork_replacement).chain(wheat_grant).chain(CATALOG40_WHEAT_DETAIL).any(|(source, producer, manifest)|
             self.manifest.source_commit == source && self.manifest.producer_sha256 == producer
                 && self.manifest_sha256 == manifest);
         let portal_marker = self.manifest.files.iter().find(|file| file.path == PORTAL_MARKER);
@@ -1638,7 +1659,7 @@ impl Payload {
         let multimap = WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE.iter().copied()
             .chain(CATALOG39_UPGRADE_TARGET).chain(CATALOG40_EXB_TARGET)
             .chain(CATALOG40_RESTORE_PROVENANCE_TARGET).chain(CATALOG40_FRAME_RECORD_TARGET)
-            .chain(portal).chain(artwork_replacement).chain(wheat_grant).collect::<Vec<_>>();
+            .chain(portal).chain(artwork_replacement).chain(wheat_grant).chain(CATALOG40_WHEAT_DETAIL).collect::<Vec<_>>();
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         let multimap = multimap.as_slice();
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
@@ -2176,7 +2197,14 @@ impl Payload {
         &self,
         private_editor: bool,
     ) -> Result<(PathBuf, PathBuf)> {
-        if !static_detail_inventory_matches(&self.manifest.files) {
+        let provenance = (
+            self.manifest.source_commit.as_str(),
+            self.manifest.producer_sha256.as_str(),
+            self.manifest_sha256.as_str(),
+        );
+        if CATALOG40_WHEAT_DETAIL != Some(provenance)
+            || !static_detail_inventory_matches(&self.manifest.files)
+        {
             return Err(err("NATIVE_STATIC_DETAIL_UNAVAILABLE"));
         }
         let resources = self.static_export_resources(private_editor)?;
