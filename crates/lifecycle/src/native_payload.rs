@@ -1570,6 +1570,8 @@ mod normal_oex_release_declaration_tests {
         assert_eq!(step.target_catalog(), catalog);
         assert!(saved_workspace_transition_target(&new));
         assert!(FurnishingTransition::from_manifests((&new, &old)).is_none());
+        assert!(source.static_detail_export_resources(true).is_ok());
+        assert!(target.static_detail_export_resources(true).is_ok());
         assert!(Payload::open_workspace_v5_validation(&new_root, true).is_err());
     }
 
@@ -2915,7 +2917,8 @@ impl Payload {
             self.manifest_sha256.as_str(),
         );
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-        let combined_local_validation = CATALOG45_COMPACT_AND_CANDIDATE_TARGET == provenance;
+        let combined_local_validation = CATALOG45_COMPACT_AND_CANDIDATE_TARGET == provenance
+            || CATALOG45_CURRENT_ORIGINAL_TARGET == provenance;
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
         let combined_local_validation = false;
         if (CATALOG40_WHEAT_DETAIL != Some(provenance)
