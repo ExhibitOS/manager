@@ -70,7 +70,7 @@ mod hayes_probe_source;
 pub(crate) const WORKSPACE_FURNISHING_INITIALIZATION: &str = "native-workspace-furnishing-initialization.json";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum FurnishingStart { Initialize, Reopen, SelectedImport038, SelectedImport039, SelectedImport040, Upgrade039To040, Upgrade040To044 }
+enum FurnishingStart { Initialize, Reopen, SelectedImport038, SelectedImport039, SelectedImport040, Upgrade039To040, Upgrade040To044, Upgrade044To045 }
 
 #[derive(Clone, Copy)]
 enum StartMode<'a> {
@@ -95,7 +95,7 @@ impl FurnishingStart {
     }
 
     fn opens_existing(self) -> bool {
-        matches!(self, Self::Reopen | Self::Upgrade039To040 | Self::Upgrade040To044)
+        matches!(self, Self::Reopen | Self::Upgrade039To040 | Self::Upgrade040To044 | Self::Upgrade044To045)
     }
 
     fn owner_mode(self) -> &'static str {
@@ -107,6 +107,7 @@ impl FurnishingStart {
             Self::SelectedImport040 => "workspace-furnishing-040-selected-import-v7",
             Self::Upgrade039To040 => "workspace-furnishing-039-to-040-upgrade-v1",
             Self::Upgrade040To044 => "workspace-furnishing-040-to-044-upgrade-v1",
+            Self::Upgrade044To045 => "workspace-furnishing-044-to-045-upgrade-v1",
         }
     }
 }
@@ -1024,6 +1025,7 @@ impl Session {
                     return Ok(Some(match transition {
                         FurnishingTransition::Upgrade39(_) => FurnishingStart::Upgrade039To040,
                         FurnishingTransition::Upgrade40(_) => FurnishingStart::Upgrade040To044,
+                        FurnishingTransition::Upgrade44 => FurnishingStart::Upgrade044To045,
                         _ => FurnishingStart::Reopen,
                     }));
                 }
@@ -1035,7 +1037,7 @@ impl Session {
         self.payload.workspace_furnishing_ledger(catalog)?;
         let (workspace, tenant, principal) = self.service.personal_identity()?;
         let root = &self.service.root;
-        if self.payload.ordinary_hayes_release() {
+        if self.payload.retained_furnishing_catalog().is_some() {
             if exists(&root.join(WORKSPACE_FURNISHING_INITIALIZATION))? {
                 return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
             }
@@ -1833,9 +1835,10 @@ const { isDeepStrictEqual } = require('node:util');
             }
         }
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-        if matches!(furnishing, Some(FurnishingStart::Upgrade039To040 | FurnishingStart::Upgrade040To044)) {
+        if matches!(furnishing, Some(FurnishingStart::Upgrade039To040 | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045)) {
             let expected = match furnishing {
                 Some(FurnishingStart::Upgrade040To044) => self.payload.catalog40_upgrade_source_ledger()?,
+                Some(FurnishingStart::Upgrade044To045) => self.payload.catalog44_upgrade_source_ledger()?,
                 _ => self.payload.catalog39_upgrade_source_ledger()?,
             };
             let observed = self.query_database_before("exhibitos",
@@ -1921,8 +1924,8 @@ const { isDeepStrictEqual } = require('node:util');
             Some(owner_channel::Setup::new()?)
         } else { None };
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
-        if self.payload.ordinary_hayes_release()
-            && matches!(furnishing, Some(FurnishingStart::Reopen | FurnishingStart::Upgrade040To044))
+        if self.payload.retained_furnishing_catalog().is_some()
+            && matches!(furnishing, Some(FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045))
         {
             self.payload.recheck()?;
             let generation_id = Uuid::parse_str(generation).map_err(|_| err("HAYES_OPERATION_UNAVAILABLE"))?;
@@ -2190,7 +2193,7 @@ const { isDeepStrictEqual } = require('node:util');
             if services {
                 match furnishing {
                     Some(FurnishingStart::Initialize | FurnishingStart::SelectedImport038 | FurnishingStart::SelectedImport039 | FurnishingStart::SelectedImport040) => (),
-                    Some(FurnishingStart::Reopen | FurnishingStart::Upgrade039To040 | FurnishingStart::Upgrade040To044) => {
+                    Some(FurnishingStart::Reopen | FurnishingStart::Upgrade039To040 | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045) => {
                         let source = prior_binding.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
                         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
                         if let Some((_, transition)) = &self.furnishing_transition_trial {

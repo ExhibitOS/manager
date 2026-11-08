@@ -338,6 +338,8 @@ public actor AuthoringAPI {
     ]
     private static let workspacePortalFinishManifestPin =
         "0bea16fb7d61aa3b0e60921a7f4d8d702025e4857f779fd763b9633f4884b330"
+    private static let requiredModelPreparationManifestPin =
+        "af4e787a5fa5c714d60bf24cba23a1b2e7015946d1f4bea9a5777a3af3c8b2d0"
     private static let workspaceMaterialMultimapManifestPins: Set<String> = [
         "72a13c526fb422c106f8eefaa7e277e5ab003f3c2085ebd09b2814c0a19ef904",
         "df6efc23ea2d9aab790fc25fab9833db9f5b48b3cb0c5417a1bd7c5ef609ac2a",
@@ -402,7 +404,9 @@ public actor AuthoringAPI {
         let manifest = nativeRuntimeManifestSHA256 ?? ""
         #if DEBUG
         hayesOriginalRuntimeQualified = NativeHayesOriginalIntent.supports(manifest: manifest)
-        let portalQualified = manifest == Self.workspacePortalFinishManifestPin || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
+        let portalQualified = manifest == Self.workspacePortalFinishManifestPin
+            || manifest == Self.requiredModelPreparationManifestPin
+            || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
         let multimapQualified = portalQualified || Self.workspaceMaterialMultimapManifestPins.contains(manifest)
         #else
         hayesOriginalRuntimeQualified = false

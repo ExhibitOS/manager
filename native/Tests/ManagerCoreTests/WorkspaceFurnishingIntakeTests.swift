@@ -407,6 +407,18 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         XCTAssertTrue(preparation.workspaceFurnishingRuntimeQualified)
         XCTAssertTrue(preparation.workspaceFramePreparationRuntimeQualified)
     }
+    func testRequiredModelRuntimeRetainsWorkspaceReadCapabilities() throws {
+        let selected = try AuthoringAPI(port: 49151, tenantId: intakeId,
+            nativeRuntimeManifestSHA256: "af4e787a5fa5c714d60bf24cba23a1b2e7015946d1f4bea9a5777a3af3c8b2d0")
+        let other = try AuthoringAPI(port: 49151, tenantId: intakeId,
+            nativeRuntimeManifestSHA256: "af4e787a5fa5c714d60bf24cba23a1b2e7015946d1f4bea9a5777a3af3c8b2d1")
+        XCTAssertTrue(selected.workspaceMaterialRuntimeQualified)
+        XCTAssertTrue(selected.workspaceFurnishingRuntimeQualified)
+        XCTAssertTrue(selected.workspacePortalFinishRuntimeQualified)
+        XCTAssertFalse(selected.hayesOriginalRuntimeQualified)
+        XCTAssertFalse(other.workspaceMaterialRuntimeQualified)
+        XCTAssertFalse(other.workspaceFurnishingRuntimeQualified)
+    }
     #endif
 
     func testRoomVisualAdvertisementRequiresBothParentProfiles() throws {

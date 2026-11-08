@@ -18,6 +18,8 @@ pub(super) enum Admission {
     CatalogUpgrade039To040,
     #[serde(rename = "catalog-upgrade-040-to-044")]
     CatalogUpgrade040To044,
+    #[serde(rename = "catalog-upgrade-044-to-045")]
+    CatalogUpgrade044To045,
 }
 
 impl Admission {
@@ -28,6 +30,7 @@ impl Admission {
             Self::VerifiedRestore => 3,
             Self::CatalogUpgrade039To040 => 4,
             Self::CatalogUpgrade040To044 => 5,
+            Self::CatalogUpgrade044To045 => 6,
         }
     }
 }
@@ -93,7 +96,10 @@ impl Binding {
             || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap
                 || (self.catalog == 44 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade040To044)
-                    && crate::native_payload::ordinary_hayes_release_host_matches(tuple)))
+                    && crate::native_payload::ordinary_hayes_release_host_matches(tuple))
+                || (self.catalog == 45 && self.restore.is_none()
+                    && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade044To045)
+                    && crate::native_payload::required_model_preparation_host_matches(tuple)))
             || (self.catalog == 41
                 && (self.restore.is_some()
                     || !matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)))
@@ -137,6 +143,9 @@ impl Binding {
             }
             (Phase::Active | Phase::Clean, Admission::CatalogUpgrade040To044) => {
                 self.catalog == 44 && self.previous_generation.is_some() && self.restore.is_none()
+            }
+            (Phase::Active | Phase::Clean, Admission::CatalogUpgrade044To045) => {
+                self.catalog == 45 && self.previous_generation.is_some() && self.restore.is_none()
             }
             (Phase::ActivatedRestore, Admission::VerifiedRestore) => {
                 self.previous_generation.is_none() && self.restore.is_some()
@@ -210,6 +219,7 @@ impl Binding {
         match transition {
             FurnishingTransition::Upgrade39(_) => Admission::CatalogUpgrade039To040,
             FurnishingTransition::Upgrade40(_) => Admission::CatalogUpgrade040To044,
+            FurnishingTransition::Upgrade44 => Admission::CatalogUpgrade044To045,
             _ => Admission::CleanReopen,
         }
     }
@@ -681,6 +691,55 @@ mod tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    fn furnishing_catalog44_to_45_requires_exact_clean_owner_and_reopens_after_stop() {
+        let transition = FurnishingTransition::Upgrade44;
+        let mut source = catalog40_binding(GENERATION, transition.source());
+        source.catalog = 44;
+        source.phase = Phase::Clean;
+        source.admission_kind = Admission::CleanReopen;
+        source.previous_generation = Some(LATER.into());
+
+        let mut target = catalog40_binding(NEXT, transition.target());
+        target.catalog = 45;
+        assert!(target.check().is_err());
+        assert!(target.clone().consume(&source).is_err());
+
+        let mut wrong_source = source.clone();
+        wrong_source.owner.principal_id = NEXT.into();
+        assert!(target.clone().consume_furnishing_transition(&wrong_source, transition).is_err());
+        wrong_source = source.clone();
+        wrong_source.physical.lock_inode += 1;
+        assert!(target.clone().consume_furnishing_transition(&wrong_source, transition).is_err());
+        wrong_source = source.clone();
+        wrong_source.phase = Phase::Active;
+        assert!(target.clone().consume_furnishing_transition(&wrong_source, transition).is_err());
+
+        let mut wrong_target = target.clone();
+        wrong_target.producer_sha256 = "d".repeat(64);
+        assert!(wrong_target.consume_furnishing_transition(&source, transition).is_err());
+        target.consume_furnishing_transition(&source, transition).unwrap();
+        assert_eq!(target.previous_generation.as_deref(), Some(GENERATION));
+        assert_eq!(target.admission_kind.tag(), 6);
+        assert_eq!(serde_json::to_value(target.admission_kind).unwrap(), "catalog-upgrade-044-to-045");
+
+        let mut reopen = catalog40_binding(LATER, transition.target());
+        reopen.catalog = 45;
+        assert!(reopen.clone().consume(&target).is_err());
+        target.phase = Phase::Clean;
+        assert!(reopen.clone().consume_furnishing_transition(&target, transition).is_err());
+        reopen.consume(&target).unwrap();
+        assert_eq!(reopen.previous_generation.as_deref(), Some(NEXT));
+        assert_eq!(reopen.admission_kind, Admission::CleanReopen);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn furnishing_catalog44_to_45_recovery_retains_the_failed_trial_and_restores_source() {
+        check_furnishing_recovery(FurnishingTransition::Upgrade44);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     fn catalog40_to_44_recovery_retains_the_failed_trial_and_restores_source() {
         check_furnishing_recovery(FurnishingTransition::reviewed_catalog40_to_44());
     }
@@ -703,6 +762,10 @@ mod tests {
         let writer = furnishing_lifetime::WriterLifetime::acquire(&root).unwrap();
         let mut prior = catalog40_binding(GENERATION, transition.source());
         prior.catalog = transition.source_catalog().version();
+        if transition == FurnishingTransition::Upgrade44 {
+            prior.admission_kind = Admission::CleanReopen;
+            prior.previous_generation = Some(LATER.into());
+        }
         prior.physical = writer.identity().unwrap();
         prior.phase = Phase::Clean;
         let source = Current { format: 1, id: GENERATION.into(), furnishing: Some(prior.clone()) };
