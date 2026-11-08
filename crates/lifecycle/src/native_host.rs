@@ -43,6 +43,9 @@ pub struct Status {
     pub oex_workspace_v7_qualified: Option<bool>,
     pub oex_save_offer: Option<OexSaveOffer>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retained_oex_cleanup: Option<crate::native_runtime::oex_retained_cleanup::Receipt>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     pub hayes_original_ready: bool,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -130,6 +133,8 @@ pub struct Host {
     fresh_ordinary_root: Option<(PathBuf, Arc<crate::maintenance_source::DirectoryPin>)>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     workspace_v5_maintenance_only: bool,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    retained_oex_cleanup: Option<(crate::native_runtime::oex_retained_cleanup::Selection, bool)>,
     state: Arc<Mutex<State>>,
     worker: Option<thread::JoinHandle<()>>,
     exporter: super::installations::native_static_export::Exporter,
@@ -159,6 +164,8 @@ impl Host {
             fresh_ordinary_root: None,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             workspace_v5_maintenance_only: false,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+            retained_oex_cleanup: None,
             state: Arc::new(Mutex::new(State {
                 root: None,
                 busy: false,
@@ -245,6 +252,19 @@ impl Host {
     pub fn reopen_workspace_v7_validation(profile: PathBuf, resources: PathBuf) -> Result<Self> {
         let payload = Payload::open_workspace_import_validation(&resources, crate::native_payload::WorkspaceImport::V7, false)?;
         Self::reopen_workspace_validation(profile, resources, payload)
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub fn reopen_workspace_v7_retained_oex_cleanup(
+        profile: PathBuf, resources: PathBuf, job_id: &str, import_runtime_generation: &str,
+    ) -> Result<Self> {
+        let selection = crate::native_runtime::oex_retained_cleanup::Selection::new(job_id, import_runtime_generation)?;
+        let payload = Payload::open_workspace_import_validation(&resources, crate::native_payload::WorkspaceImport::V7, false)?;
+        if !payload.retained_oex_cleanup_hook() {
+            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        }
+        let mut host = Self::reopen_workspace_validation(profile, resources, payload)?;
+        host.retained_oex_cleanup = Some((selection, false));
+        Ok(host)
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     fn reopen_workspace_validation(profile: PathBuf, resources: PathBuf, payload: Payload) -> Result<Self> {
@@ -386,6 +406,9 @@ impl Host {
             oex_workspace_v7_qualified: (selected_workspace_import == Some(crate::native_payload::WorkspaceImport::V7)).then_some(true),
             oex_save_offer: state.oex_save_offer.clone(),
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+            retained_oex_cleanup: (!state.busy && state.error.is_none())
+                .then(|| state.session.as_ref().and_then(Session::oex_retained_cleanup_receipt)).flatten(),
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             hayes_original_ready: !state.busy && state.session.as_ref().is_some_and(Session::ordinary_hayes_available),
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             hayes_receipt: state.hayes_receipt.clone(),
@@ -426,6 +449,15 @@ impl Host {
         if let Some(worker) = self.worker.take() {
             worker.join().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
         }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        let retained_cleanup = match &mut self.retained_oex_cleanup {
+            Some((selection, used)) if matches!(&work, Work::Start) => {
+                if *used { return Err(err("NATIVE_PROTOCOL_INVALID")); }
+                *used = true;
+                Some(selection.clone())
+            }
+            _ => None,
+        };
         {
             let mut state = self
                 .state
@@ -704,6 +736,8 @@ impl Host {
                             };
                             let mut lease = SessionLease { shared: shared.clone(), session: Some(session) };
                             let session = lease.session.as_mut().ok_or_else(|| err("NATIVE_HOST_UNAVAILABLE"))?;
+                            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+                            if let Some(selection) = retained_cleanup { session.arm_oex_retained_cleanup(selection)?; }
                             {
                                 let mut state =
                                     shared.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
@@ -965,6 +999,14 @@ impl Host {
             ) {
                 return Err(err("NATIVE_PROTOCOL_INVALID"));
             }
+        }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        if self.retained_oex_cleanup.is_some() && !matches!(
+            &request.command,
+            UiCommand::Context | UiCommand::NativeStart { .. } |
+            UiCommand::NativeStatus { .. } | UiCommand::NativeStop { .. }
+        ) {
+            return Err(err("NATIVE_PROTOCOL_INVALID"));
         }
         let detail_fenced = match &request.command {
             UiCommand::NativePrepare { selection_token, .. }

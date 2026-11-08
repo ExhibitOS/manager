@@ -65,6 +65,16 @@ fn main() {
         match result { Ok(host) => std::process::exit(run_host(host)), Err(error) => { eprintln!("{}", error.code); std::process::exit(1); } }
     }
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    if args.len() == 8 && args[1] == "--profile" && args[3] == "--reopen-workspace-v7-validation"
+        && args[5] == "--settle-retained-oex"
+    {
+        let result = exhibitos_lifecycle::native_host::Host::reopen_workspace_v7_retained_oex_cleanup(
+            (&args[2]).into(), (&args[4]).into(),
+            args[6].to_str().unwrap_or_default(), args[7].to_str().unwrap_or_default(),
+        );
+        match result { Ok(host) => std::process::exit(run_host(host)), Err(error) => { eprintln!("{}", error.code); std::process::exit(1); } }
+    }
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
     if args.len() == 5 && args[1] == "--profile" && args[3] == "--reopen-workspace-v5-validation" {
         let result = exhibitos_lifecycle::native_host::Host::reopen_workspace_v5_validation((&args[2]).into(), (&args[4]).into());
         match result { Ok(host) => std::process::exit(run_host(host)), Err(error) => { eprintln!("{}", error.code); std::process::exit(1); } }

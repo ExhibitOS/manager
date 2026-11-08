@@ -56,6 +56,8 @@ pub(crate) use furnishing_lifetime::WriterIdentity as FurnishingWriterIdentity;
 use furnishing_lifecycle::{Admission, Binding, Owner as FurnishingOwner, Phase, Restore as FurnishingRestore};
 #[path = "native_runtime_oex_owner.rs"] mod oex_owner;
 #[path = "native_runtime_oex_recovery.rs"] mod oex_recovery;
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[path = "native_runtime_oex_retained_cleanup.rs"] pub(crate) mod oex_retained_cleanup;
 #[path = "native_runtime_oex_catalog_frames.rs"] mod oex_catalog_frames;
 #[path = "native_runtime_owner_claim_frames.rs"] mod owner_claim_frames;
 #[path = "native_runtime_owner_metadata_frames.rs"] mod owner_metadata_frames;
@@ -573,6 +575,8 @@ pub struct Session {
     auxiliary: Option<Owned>,
     log: Option<Arc<Log>>,
     node_started: Arc<AtomicBool>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    oex_retained_cleanup: Option<oex_retained_cleanup::Run>,
     node_drain_requested: bool,
     job_id: Option<String>,
     run: Option<PathBuf>,
@@ -961,6 +965,8 @@ impl Session {
             auxiliary: None,
             log: None,
             node_started: Arc::new(AtomicBool::new(false)),
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            oex_retained_cleanup: None,
             node_drain_requested: false,
             job_id: None,
             run: None,
@@ -1339,6 +1345,20 @@ const { isDeepStrictEqual } = require('node:util');
     fn cancelled(&self) -> bool {
         cancelled() || self.cancellation.load(Ordering::SeqCst)
     }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn arm_oex_retained_cleanup(&mut self, selection: oex_retained_cleanup::Selection) -> Result<()> {
+        if self.job_id.is_some() || self.oex_retained_cleanup.is_some()
+            || !self.payload.retained_oex_cleanup_hook()
+        {
+            return Err(err(oex_retained_cleanup::ERROR));
+        }
+        self.oex_retained_cleanup = Some(oex_retained_cleanup::Run::new(selection));
+        Ok(())
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn oex_retained_cleanup_receipt(&self) -> Option<oex_retained_cleanup::Receipt> {
+        self.oex_retained_cleanup.as_ref().and_then(|run| run.receipt().ok())
+    }
     fn snapshot(&self) -> Context {
         let readiness = if self.state == "ready" {
             self.readiness.clone()
@@ -1479,6 +1499,8 @@ const { isDeepStrictEqual } = require('node:util');
         let captured = capture.clone();
         let stdout_log = log.clone();
         let started = self.node_started.clone();
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        let retained_cleanup = self.oex_retained_cleanup.clone();
         let stdout_thread = thread::spawn(move || {
             let mut stream = stdout;
             let mut block = [0u8; 4096];
@@ -1497,6 +1519,10 @@ const { isDeepStrictEqual } = require('node:util');
                 if marker {
                     for byte in &block[..count] {
                         if *byte == b'\n' {
+                            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                            if let Some(cleanup) = &retained_cleanup {
+                                cleanup.observe(&line, started.load(Ordering::SeqCst));
+                            }
                             if line == b"ExhibitOS local runtime started." {
                                 started.store(true, Ordering::SeqCst);
                             }
@@ -1970,6 +1996,16 @@ const { isDeepStrictEqual } = require('node:util');
             (Some(a), None, _, _) => Some(serde_json::to_vec(a).map_err(|_| err("STATE_INVALID"))?),
             (None, _, _, _) => None,
         };
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        if let Some(cleanup) = &self.oex_retained_cleanup {
+            if !personal || furnishing != Some(FurnishingStart::Reopen) || furnishing_lease.is_none()
+                || !self.active_furnishing_binding().is_some_and(|binding|
+                    binding.admission_kind == Admission::CleanReopen && binding.restore.is_none())
+            {
+                return Err(err(oex_retained_cleanup::ERROR));
+            }
+            environment.push((oex_retained_cleanup::ENV, cleanup.environment()?));
+        }
         let spawned = self.spawn(
             &self.payload.node(),
             &[script.to_string_lossy().into()],
@@ -2025,6 +2061,8 @@ const { isDeepStrictEqual } = require('node:util');
                 return Err(err("NATIVE_PROCESS_EXITED"));
             }
             if self.node_started.load(Ordering::SeqCst) {
+                #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                if let Some(cleanup) = &self.oex_retained_cleanup { cleanup.receipt()?; }
                 let ready = readiness_target(
                     &format!("http://127.0.0.1:{}/api/v1/readiness", self.ports.web),
                     &[self.ports.web],
@@ -2152,6 +2190,16 @@ const { isDeepStrictEqual } = require('node:util');
         } else { id };
         let prior_binding = prior.as_ref().and_then(|current| current.furnishing.clone());
         let catalog = self.payload.workspace_furnishing_catalog()?;
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        if self.oex_retained_cleanup.is_some() {
+            if !services || self.normal_oex_selected || self.transition_fence.is_some()
+                || !catalog.is_some_and(WorkspaceFurnishingCatalog::uses_writer_lease)
+                || !prior_binding.as_ref().is_some_and(|binding| binding.phase == Phase::Clean && binding.restore.is_none())
+                || !self.environment.0.get("EXHIBITOS_AUTHORING_MODE").is_some_and(|mode| mode == "personal")
+            {
+                return Err(err(oex_retained_cleanup::ERROR));
+            }
+        }
         #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         if matches!(catalog, Some(WorkspaceFurnishingCatalog::HayesOriginal042 | WorkspaceFurnishingCatalog::HayesDisposition043 | WorkspaceFurnishingCatalog::HayesRelease044))
             && !self.payload.ordinary_hayes_release()
@@ -2169,6 +2217,10 @@ const { isDeepStrictEqual } = require('node:util');
             let has_database = exists(&self.service.root.join("native-database"))?;
             if services {
                 furnishing = self.workspace_furnishing_start()?;
+            }
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            if self.oex_retained_cleanup.is_some() && furnishing != Some(FurnishingStart::Reopen) {
+                return Err(err(oex_retained_cleanup::ERROR));
             }
             let restore_pending = exists(&self.service.root.join("native-restore-current.json"))?;
             let create_lock = match (mode, furnishing, has_database, restore_pending) {

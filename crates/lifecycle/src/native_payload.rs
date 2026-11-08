@@ -2174,6 +2174,10 @@ impl Payload {
     pub(crate) fn workspace_furnishing_validation(&self) -> Result<bool> {
         Ok(self.workspace_furnishing_catalog()?.is_some())
     }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn retained_oex_cleanup_hook(&self) -> bool {
+        self.manifest.files.iter().any(|file| file.path == "platform/apps/api/dist/native-oex-cleanup.js")
+    }
 
     pub(crate) fn workspace_furnishing_catalog(&self) -> Result<Option<WorkspaceFurnishingCatalog>> {
         const PORTAL_MARKER: &str = "platform/scripts/native-workspace-portal-finish-capability-v1.json";
