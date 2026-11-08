@@ -79,11 +79,12 @@ pub(super) struct Binding {
 
 impl Binding {
     pub(super) fn check(&self) -> Result<()> {
-        let private_hayes_bootstrap = self.catalog == 42
-            && self.admission_kind == Admission::FreshEmpty
-            && crate::native_payload::hayes_validation_host_matches((
-                self.source_commit.as_str(), self.producer_sha256.as_str(), self.payload_manifest_sha256.as_str(),
-            ));
+        let tuple = (self.source_commit.as_str(), self.producer_sha256.as_str(), self.payload_manifest_sha256.as_str());
+        let private_hayes_bootstrap = self.admission_kind == Admission::FreshEmpty && match self.catalog {
+            42 => crate::native_payload::hayes_validation_host_matches(tuple),
+            43 => crate::native_payload::hayes_disposition_host_matches(tuple),
+            _ => false,
+        };
         if self.version != 1
             || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap)
             || (self.catalog == 41
