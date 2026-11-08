@@ -43,6 +43,16 @@ public struct NativeCompactModelVariantRequest: Codable, Equatable, Sendable {
     }
 }
 
+public struct NativeCompactModelVariantTransfer: Codable, Equatable, Sendable {
+    public let artworkId: String
+    public let request: NativeCompactModelVariantRequest
+
+    public init(artworkId: String, request: NativeCompactModelVariantRequest) {
+        self.artworkId = artworkId
+        self.request = request
+    }
+}
+
 public struct NativeCompactModelVariantJob: Decodable, Equatable, Sendable {
     public struct Asset: Decodable, Equatable, Sendable {
         public let assetId: String

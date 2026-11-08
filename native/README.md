@@ -315,6 +315,33 @@ can reopen those imported exhibitions across restarts. New imports use the
 target's current database identity. An archive with mixed historical
 database identities remains outside this provenance admission.
 
+### Compact variant of an approved model
+
+An authenticated owner session must advertise `exhibitos-budget-geometry-pair-v1`.
+In the approved artwork’s file controls, start compact preparation from its
+current full model. The runtime reads the already approved bytes and uses its
+packaged compact producer. Manager retains the exact request and job in its
+local transfer journal, reads status again after reopening, and offers retry
+after a failed job drains or cancellation before approval. Approving a ready,
+drained job is a separate action. It creates the next artwork revision with the
+same full primary asset and one coarse model. Clearing the local transfer
+requires confirmed cancellation and drain or fresh approval readback.
+
+In native automation, use a clean saved document context. Each command supplies
+`artworkId` and `input` with the exact approved `revision`, `assetId`,
+`sha256`, `bytes`, and caller-retained `idempotencyKey` and `generation`
+UUIDs. `compact-model-prepare` durably binds that request to the returned job.
+`compact-model-status`, `compact-model-retry`, `compact-model-cancel`, and
+`compact-model-approve` also require its `jobId` and the identical request.
+These commands take no local file paths and perform no client upload.
+
+In the exhibition editor, select the existing placement and apply the approved
+compact variant. Automation uses `compact-model-refresh-placement` with the
+same request, job and `placementId`. Manager stages the next approved snapshot
+and keeps the placement ID, room, transform and full asset. Use the ordinary
+exhibition save, reopen and export controls to persist and verify it. Render
+quality and the Viewer GPU budgets are verified separately.
+
 ### Private floor rendering
 
 The reviewed `cfe1` local-validation runtime also admits the existing Quiet

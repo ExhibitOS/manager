@@ -90,6 +90,53 @@ final class ExhibitionDocumentTests: XCTestCase {
         XCTAssertEqual(draft.document["editVersion"].integer, before.document["editVersion"].integer.map { $0 + 1 })
     }
 
+    func testApprovedCompactRefreshKeepsPlacementAndFullModel() throws {
+        var draft = try NativeExhibitionDraft.new()
+        let room = try XCTUnwrap(draft.rooms.first?["id"].string)
+        let full = UUID().uuidString.lowercased(), coarse = UUID().uuidString.lowercased()
+        let lodKey = "org.exhibitos.viewer/lod"
+        let original: DocumentValue = .object([
+            "id": .string(UUID().uuidString.lowercased()), "kind": .string("artwork"),
+            "artworkType": .string("sculpture"), "revision": .integer(1),
+            "revisionId": .string(UUID().uuidString.lowercased()), "primaryAssetId": .string(full),
+            "assets": .array([.object(["id": .string(full), "sha256": .string(String(repeating: "a", count: 64))])]),
+            "transform": NativeExhibitionDraft.identity,
+            "extensions": .object(["org.exhibitos.studio/cms": .object(["revision": .integer(1)])])
+        ])
+        try draft.addApprovedArtwork(original, roomId: room, position: [1, 2, 3])
+        let before = draft
+        let id = try XCTUnwrap(draft.placements.first?["id"].string)
+        var approved = original
+        approved["revision"] = .integer(2)
+        approved["revisionId"] = .string(UUID().uuidString.lowercased())
+        approved["extensions"]["org.exhibitos.studio/cms"]["revision"] = .integer(2)
+        approved["assets"] = .array(try XCTUnwrap(original["assets"].items) + [
+            .object(["id": .string(coarse), "mime": .string("model/gltf-binary"), "role": .string("model")])
+        ])
+        approved["extensions"][lodKey] = .object([
+            "version": .integer(1), "profile": .string(NativeCompactModelVariantRequest.profile),
+            "variants": .array([
+                .object(["detail": .string("full"), "assetId": .string(full)]),
+                .object(["detail": .string("coarse"), "assetId": .string(coarse)])
+            ])
+        ])
+        var invalid = approved
+        invalid["primaryAssetId"] = .string(coarse)
+        XCTAssertThrowsError(try draft.refreshApprovedCompactArtwork(invalid, placementId: id))
+        invalid = approved
+        invalid["transform"]["scale"] = .vector([2, 2, 2])
+        XCTAssertThrowsError(try draft.refreshApprovedCompactArtwork(invalid, placementId: id))
+        XCTAssertEqual(draft, before)
+
+        try draft.refreshApprovedCompactArtwork(approved, placementId: id)
+        var expected = before.candidate
+        var placement = before.placements[0]
+        placement["artworkRevisionId"] = approved["revisionId"]
+        expected["placements"] = .array([placement])
+        expected["artworks"] = .array([approved])
+        XCTAssertEqual(draft.candidate, expected)
+    }
+
     func testHayesTextRefreshPreservesAssetPoseAndUnrelatedPlacements() throws {
         var draft = try NativeExhibitionDraft.new()
         let room = try XCTUnwrap(draft.rooms.first?["id"].string)

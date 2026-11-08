@@ -51,6 +51,7 @@ final class AuthoringModel: ObservableObject {
     private var modelIntakeEnabled: Bool { modelDerivationEnabled || requiredModelPreparationEnabled }
     var canSelectIntake: Bool {
         intakeWritesAvailable && (modelIntakeEnabled || iccImportAdmitted) && available && session != nil && !busy
+            && compactTransfer == nil
     }
     var canOpenIntakeRow: Bool {
         canSelectIntake && !hasUnknownSourceUnits && activeIntakeID == nil && selected?.archived == false
@@ -69,6 +70,25 @@ final class AuthoringModel: ObservableObject {
         activeIntakeID != nil || intent.modelDerivation != nil || intent.modelPreparation != nil || intent.coarsePreparation != nil
             || (intent.mime == "image/png" && (iccImportAdmitted || (job.workerDrainVersion ?? 0) > 0))
     }
+    @Published private(set) var compactJob: NativeCompactModelVariantJob?
+    var compactTransfer: NativeCompactModelVariantTransfer? { transfer?.compactVariant }
+    var compactAvailable: Bool {
+        session?.compactModelVariantProfile == NativeCompactModelVariantRequest.profile
+    }
+    private var approvedFullModel: NativeArtwork.Asset? {
+        guard let selected, !selected.archived, selected.approvedRevision == selected.revision else { return nil }
+        return selected.assets.first { $0.id == selected.approvedAssetId && $0.state == "approved" && $0.mime == "model/gltf-binary" }
+    }
+    var canPrepareCompactVariant: Bool {
+        compactAvailable && transfer != nil && transfer?.intent == nil && compactTransfer == nil
+            && importFile == nil && activeIntakeID == nil && !metadataDirty && approvedFullModel != nil
+    }
+    var compactApprovalVisible: Bool {
+        guard let compactTransfer, let compactJob, let selected, selected.id == compactTransfer.artworkId else { return false }
+        return compactJob.modelPreparation.status == .ready && compactJob.modelPreparation.workerDrained
+            && selected.approvedRevision == compactTransfer.request.revision
+    }
+
     @Published var importScale = 1.0
     @Published var approvalAcknowledged = false
     @Published var assetId = ""
@@ -163,7 +183,7 @@ final class AuthoringModel: ObservableObject {
         importStatusGeneration = UUID()
         guard !busy, !dirty, !hasWaitingIntake else { api = nil; session = nil; failure = AuthoringFailure("LOCAL_SCOPE_CHANGED"); return false }
         importPoll?.cancel(); importPoll = nil; importPollID = nil
-        transfer = nil; importJob = nil; importFile = nil; assetId = ""
+        transfer = nil; importJob = nil; importFile = nil; compactJob = nil; assetId = ""
         intakeRows = []; activeIntakeID = nil; intakeTarget = nil; intakeWritesAvailable = false; intakeWorkspaceCheck = nil
         readTransfer = nil; writeTransfer = nil
         scope = next; session = nil; artworks = []; artists = []; selected = nil; editing = false
@@ -377,7 +397,14 @@ extension AuthoringModel {
         guard state.tenantId.lowercased() == session.tenantId.lowercased(), state.principalId.lowercased() == session.userId.lowercased() else { throw AuthoringFailure("IMPORT_SCOPE_CHANGED") }
         if transfer == nil, let intent = state.intent { importScale = intent.scaleMeters }
         transfer = state
-        importJob = nil
+        importJob = nil; compactJob = nil
+        if let compact = state.compactVariant {
+            if let id = state.jobId, let api {
+                compactJob = try await api.compactModelVariantJob(id, artworkId: compact.artworkId, input: compact.request)
+            }
+            scheduleImportPoll()
+            return
+        }
         if let intent = state.intent, intent.modelDerivation != nil, let api {
             try importTransfer.restoreModel(intent: intent, jobID: state.jobId, transport: api)
         }
@@ -394,6 +421,7 @@ extension AuthoringModel {
         transfer = try await writeTransfer(state)
     }
     func chooseImportFile() async {
+        guard compactTransfer == nil else { return }
         let hayes = hasUnknownSourceUnits
         guard !hayes || hayesOriginalAvailable else { return }
         guard !busy, available, session != nil, activeIntakeID == nil || transfer?.intent != nil else { return }
@@ -435,7 +463,8 @@ extension AuthoringModel {
     }
     func uploadImportFile() async {
         await action {
-            guard let api, let selected, !metadataDirty, let file = importFile, let state = transfer else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
+            guard let api, let selected, !metadataDirty, let file = importFile, let state = transfer,
+                  state.compactVariant == nil else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
             if hasUnknownSourceUnits {
                 guard hayesOriginalAvailable, let reference = selected.metadata?.displayReference,
                       file.sha256 == NativeHayesOriginalIntent.sourceSHA256,
@@ -823,6 +852,114 @@ extension AuthoringModel {
             notice = "파일과 저장한 정보·권리를 승인했습니다. 전시에서 사용할 준비가 되었습니다."
         }
     }
+    func prepareCompactVariant() async {
+        let allowed = canPrepareCompactVariant
+        await action {
+            guard let api, let selected, var state = transfer, !metadataDirty,
+                  await api.admitsCompactModelVariant else { throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE") }
+            let compact: NativeCompactModelVariantTransfer
+            if let retained = state.compactVariant {
+                guard retained.artworkId == selected.id, state.jobId == nil else {
+                    throw AuthoringFailure("COMPACT_VARIANT_CONTEXT_CHANGED")
+                }
+                compact = retained
+            } else {
+                guard allowed, let full = approvedFullModel, let bytes = Int(exactly: full.bytes) else {
+                    throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+                }
+                let request = NativeCompactModelVariantRequest(revision: selected.revision, assetId: full.id,
+                                                               sha256: full.sha256, bytes: bytes)
+                let approved = try await api.studioArtwork(selected.id).artwork
+                guard approved["id"].string == selected.id, approved["revision"].integer == Int64(selected.revision),
+                      approved["primaryAssetId"].string == full.id,
+                      approved["extensions"]["org.exhibitos.viewer/lod"] == .null else {
+                    throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+                }
+                guard self.api === api, self.selected?.id == selected.id, transfer?.revision == state.revision else {
+                    throw AuthoringFailure("COMPACT_VARIANT_CONTEXT_CHANGED")
+                }
+                compact = .init(artworkId: selected.id, request: request)
+                state.compactVariant = compact
+                try await persistImport(state)
+            }
+            guard self.api === api, self.selected?.id == selected.id,
+                  transfer?.compactVariant == compact, transfer?.jobId == nil else {
+                throw AuthoringFailure("COMPACT_VARIANT_CONTEXT_CHANGED")
+            }
+            let job = try await api.createCompactModelVariant(artworkId: compact.artworkId, input: compact.request)
+            guard self.api === api, var retained = transfer, retained.compactVariant == compact, retained.jobId == nil else {
+                throw AuthoringFailure("COMPACT_VARIANT_CONTEXT_CHANGED")
+            }
+            retained.jobId = job.id
+            try await persistImport(retained)
+            compactJob = job; approvalAcknowledged = false
+            scheduleImportPoll()
+        }
+    }
+
+    func refreshCompactVariant() async {
+        await action {
+            guard let api, let compact = compactTransfer, let id = transfer?.jobId else {
+                throw AuthoringFailure("COMPACT_VARIANT_CONTEXT_CHANGED")
+            }
+            let observed = try await api.compactModelVariantJob(id, artworkId: compact.artworkId, input: compact.request)
+            guard self.api === api, compactTransfer == compact, transfer?.jobId == id else {
+                throw AuthoringFailure("COMPACT_VARIANT_CONTEXT_CHANGED")
+            }
+            compactJob = observed
+            scheduleImportPoll()
+        }
+    }
+
+    func changeCompactVariant(_ change: NativeImportAction) async {
+        await action {
+            guard let api, let compact = compactTransfer, let id = transfer?.jobId else {
+                throw AuthoringFailure("COMPACT_VARIANT_CONTEXT_CHANGED")
+            }
+            let job = try await api.changeCompactModelVariant(change, jobId: id, artworkId: compact.artworkId,
+                                                             input: compact.request)
+            guard self.api === api, compactTransfer == compact, transfer?.jobId == id else {
+                throw AuthoringFailure("COMPACT_VARIANT_CONTEXT_CHANGED")
+            }
+            compactJob = job; approvalAcknowledged = false
+            scheduleImportPoll()
+        }
+    }
+
+    func approveCompactVariant() async {
+        await action {
+            guard approvalAcknowledged, !metadataDirty, let api, let compact = compactTransfer, let id = transfer?.jobId,
+                  selected?.id == compact.artworkId else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+            _ = try await api.approveCompactModelVariant(artworkId: compact.artworkId, jobId: id, input: compact.request)
+            let artwork = try await api.artwork(compact.artworkId)
+            guard self.api === api, compactTransfer == compact, transfer?.jobId == id,
+                  selected?.id == artwork.id, artwork.approvedRevision == compact.request.revision + 1,
+                  artwork.approvedAssetId == compact.request.assetId else { throw AuthoringFailure("COMPACT_VARIANT_CONTEXT_CHANGED") }
+            selected = artwork; assetId = compact.request.assetId
+            approvalAcknowledged = false
+            notice = "전체 모델을 유지하고 축소본을 다음 작품 버전에 승인했습니다."
+        }
+    }
+
+    func clearCompactVariant() async {
+        await action {
+            guard let api, let compact = compactTransfer, var state = transfer, let id = state.jobId else {
+                throw AuthoringFailure("COMPACT_VARIANT_CONTEXT_CHANGED")
+            }
+            let job = try await api.compactModelVariantJob(id, artworkId: compact.artworkId, input: compact.request)
+            if job.state != "cancelled" || !job.modelPreparation.workerDrained {
+                _ = try await api.verifyApprovedCompactModelVariant(artworkId: compact.artworkId, jobId: id,
+                                                                   input: compact.request)
+            }
+            guard self.api === api, transfer?.revision == state.revision, compactTransfer == compact else {
+                throw AuthoringFailure("COMPACT_VARIANT_CONTEXT_CHANGED")
+            }
+            state.compactVariant = nil; state.jobId = nil
+            try await persistImport(state)
+            compactJob = nil; approvalAcknowledged = false
+        }
+    }
+
     private func scheduleImportPoll() {
         guard importPoll == nil, shouldPollImport else { return }
         let owner = UUID()
@@ -851,6 +988,12 @@ extension AuthoringModel {
                 && self.session?.userId == session.userId && !Task.isCancelled
         }
         do {
+            if let compact = compactTransfer {
+                let job = try await api.compactModelVariantJob(id, artworkId: compact.artworkId, input: compact.request)
+                guard current(), compactTransfer == compact else { return }
+                compactJob = job
+                return
+            }
             let observed = try await api.importJob(id)
             guard current() else { return }
             if let intent = transfer?.intent { try importTransfer.observe(observed, intent: intent) }
@@ -870,6 +1013,10 @@ extension AuthoringModel {
         }
     }
     private var shouldPollImport: Bool {
+        if let compactJob {
+            return compactJob.modelPreparation.status == .pending || compactJob.modelPreparation.status == .processing
+                || (["failed", "cancelled"].contains(compactJob.state) && !compactJob.modelPreparation.workerDrained)
+        }
         guard let job = importJob else { return false }
         return ["queued", "processing"].contains(job.state) || (job.state == "failed" && job.attempts < 5 && !job.canRetry)
             || intakeDrainPending || job.modelDerivation?.workerDrained == false || (job.state == "approved" && job.modelDerivation?.status == "pending")

@@ -324,6 +324,11 @@ struct NativeExhibitionView: View {
             } else {
                 Button(model.pending ? "저장 응답 다시 확인" : "전시 저장") { Task { if controller.editingContextActive { await model.save() } } }.buttonStyle(.borderedProminent).disabled(saveLocked)
             }
+            if model.canRefreshApprovedCompactArtwork {
+                Button("승인한 축소본을 기존 배치에 반영") {
+                    Task { if controller.editingContextActive { await model.refreshApprovedCompactArtwork() } }
+                }.disabled(!ready)
+            }
             if model.canReplaceWithSelectedModelCandidate {
                 Button("배치 작품을 선택한 승인 모델로 교체") { confirmModelCandidateReplacement = true }
                     .disabled(!ready)

@@ -10,7 +10,7 @@ public actor NativeAutomationSession {
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
         "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status",
         "workspace-frame-lineage-prepare", "export-static-native-original",
-        "compact-model-prepare", "compact-model-status", "compact-model-approve"
+        "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement"
     ]
 
     static func replayResponse(for operation: String, prior: (Data, DocumentValue)?, matching request: Data) throws -> DocumentValue? {
@@ -375,13 +375,14 @@ public actor NativeAutomationSession {
     }
 
     private func executeCompactModel(_ operation: String, request: DocumentValue, id: String,
-                                     current: NativeDocumentState, api: AuthoringAPI) async throws -> DocumentValue {
+                                     context: Context, current: NativeDocumentState, api: AuthoringAPI) async throws -> DocumentValue {
         guard selectedOEXFormat == nil, !current.dirty, current.pending == nil,
               request["inputPath"] == .null, request["outputPath"] == .null,
               await api.admitsCompactModelVariant else { throw BridgeFailure("IMPORT_MODEL_UNAVAILABLE") }
         try checkedRevision(request, current)
         let creates = operation == "compact-model-prepare"
-        let keys: Set<String> = creates ? ["artworkId", "input"] : ["artworkId", "input", "jobId"]
+        var keys: Set<String> = creates ? ["artworkId", "input"] : ["artworkId", "input", "jobId"]
+        if operation == "compact-model-refresh-placement" { keys.insert("placementId") }
         let command = try NativeAutomationArtworkRules.command(request, keys: keys)
         guard let artworkId = command["artworkId"].string, NativeCompactModelVariantRequest.validID(artworkId) else {
             throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
@@ -420,10 +421,31 @@ public actor NativeAutomationSession {
               try artworkAttempt(at: jobPath, errorCode: errorCode)?["jobId"] == .string(jobId) else {
             throw BridgeFailure(errorCode)
         }
-        if operation == "compact-model-status" {
+        switch operation {
+        case "compact-model-status":
             return try await api.compactModelVariantJob(jobId, artworkId: artworkId, input: input).automationValue
+        case "compact-model-retry", "compact-model-cancel":
+            let action: NativeImportAction = operation == "compact-model-retry" ? .retry : .cancel
+            return try await api.changeCompactModelVariant(action, jobId: jobId, artworkId: artworkId,
+                                                           input: input).automationValue
+        case "compact-model-refresh-placement":
+            guard var draft = current.draft, let etag = current.etag, let placement = command["placementId"].string,
+                  NativeCompactModelVariantRequest.validID(placement) else { throw BridgeFailure("PLACEMENT_INVALID") }
+            let saved = try await api.exhibition(draft.id)
+            guard saved.draft == draft, saved.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            _ = try await api.verifyApprovedCompactModelVariant(artworkId: artworkId, jobId: jobId, input: input)
+            let snapshot = try await api.studioArtwork(artworkId)
+            try NativeAutomationArtworkRules.checkRegistration(snapshot.artwork, artworkId: artworkId,
+                revision: Int64(input.revision + 1), tenantId: current.tenantId)
+            try draft.refreshApprovedCompactArtwork(snapshot.artwork, placementId: placement)
+            var next = current
+            next.draft = draft
+            return try value(await bridge.saveDocumentState(context, state: next))
+        case "compact-model-approve":
+            return try value(await api.approveCompactModelVariant(artworkId: artworkId, jobId: jobId, input: input))
+        default:
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
         }
-        return try value(await api.approveCompactModelVariant(artworkId: artworkId, jobId: jobId, input: input))
     }
 
     private func prepareReviewedArtwork(_ request: DocumentValue, id: String, context: Context,
@@ -505,7 +527,7 @@ public actor NativeAutomationSession {
                 throw BridgeFailure("IMPORT_INTENT_CHANGED")
             }
         case .approvedModel:
-            let empty = state.intent == nil && state.jobId == nil
+            let empty = state.intent == nil && state.jobId == nil && state.compactVariant == nil
             let same = state.intent?.artworkId == command.artworkId && state.jobId == command.importJobId
                 && state.intent?.modelPreparation?.artworkRevision == command.artworkRevision
             guard current.pending == nil, empty || same else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
@@ -1163,8 +1185,8 @@ public actor NativeAutomationSession {
             } else {
                 result = try value(finished.receipt)
             }
-        case "compact-model-prepare", "compact-model-status", "compact-model-approve":
-            result = try await executeCompactModel(operation, request: request, id: id, current: current, api: api)
+        case "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement":
+            result = try await executeCompactModel(operation, request: request, id: id, context: context, current: current, api: api)
         case "import-glb":
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "artworkRevision", "scaleMeters"])
@@ -1180,6 +1202,7 @@ public actor NativeAutomationSession {
             try NativeAutomationArtworkRules.checkDisplayAsset(metadata, sha256: file.sha256, scaleMeters: scale)
             let state = try await bridge.uploadState(context)
             try NativeAutomationArtworkRules.checkUploadScope(state, document: current)
+            guard state.compactVariant == nil else { throw BridgeFailure("IMPORT_ACTIVE") }
             let preparation: NativeModelPreparationIntent?
             if let retained = state.intent {
                 preparation = retained.modelPreparation

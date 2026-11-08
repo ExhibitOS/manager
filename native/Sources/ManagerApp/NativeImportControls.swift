@@ -18,7 +18,9 @@ struct NativeImportControls: View {
         Form {
           Section("작품 파일") {
             VStack(alignment: .leading, spacing: 12) {
-                if !belongs, let id = model.transfer?.intent?.artworkId {
+                if let compact = model.compactTransfer {
+                    compactControls(compact)
+                } else if !belongs, let id = model.transfer?.intent?.artworkId {
                     Text("다른 작품에 시작한 파일 검사가 있습니다.")
                     Button("검사 중인 작품 열기") { openArtwork(id) }
                 } else if model.hasUnknownSourceUnits {
@@ -136,6 +138,14 @@ struct NativeImportControls: View {
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).disabled(model.busy || !ready)
           }
+          if model.canPrepareCompactVariant {
+            Section("승인된 3D 모델의 축소본") {
+                Text("승인된 전체 모델과 원본을 유지하면서 작은 감상용 파일을 준비합니다.")
+                    .foregroundStyle(.secondary)
+                Button("축소본 준비") { Task { await model.prepareCompactVariant() } }
+                    .disabled(!ready || model.busy)
+            }
+          }
           if model.canSelectIntake || !model.intakeRows.isEmpty {
             Section("작품 파일 대기 목록") {
                 Text("이 목록은 앱을 열어 두는 동안 유지됩니다. 파일마다 저장한 작품과 권리를 확인하고 하나씩 검사하세요.")
@@ -196,6 +206,55 @@ struct NativeImportControls: View {
         }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true)
         .onChange(of: model.assetId) { _, _ in model.approvalAcknowledged = false }
     }
+    @ViewBuilder
+    private func compactControls(_ transfer: NativeCompactModelVariantTransfer) -> some View {
+        if model.selected?.id != transfer.artworkId {
+            Text("다른 작품에 시작한 축소본 준비가 있습니다.")
+            Button("준비 중인 작품 열기") { openArtwork(transfer.artworkId) }
+        } else if let job = model.compactJob {
+            Text(compactStateTitle(job)).font(.headline)
+            Text("전체 모델은 그대로 유지됩니다. 축소본은 준비 후 별도로 승인합니다.")
+                .foregroundStyle(.secondary)
+            if let coarse = job.modelPreparation.coarse {
+                Text("준비된 축소본 · \(coarse.bytes.formatted())바이트")
+            }
+            if model.compactApprovalVisible {
+                Toggle("축소본과 작품 정보·권리를 확인했습니다", isOn: $model.approvalAcknowledged)
+                Button("축소본 승인") { Task { await model.approveCompactVariant() } }
+                    .disabled(!model.approvalAcknowledged || model.metadataDirty)
+            }
+            if job.state == "failed" && job.attempts < 5 {
+                Button("축소본 다시 준비") { Task { await model.changeCompactVariant(.retry) } }
+                    .disabled(!job.modelPreparation.workerDrained)
+            }
+            if ["queued", "processing", "failed"].contains(job.state) {
+                Button("축소본 준비 중단") { Task { await model.changeCompactVariant(.cancel) } }
+            }
+            let approved = job.modelPreparation.status == .ready
+                && model.selected?.approvedRevision == transfer.request.revision + 1
+            if approved || (job.state == "cancelled" && job.modelPreparation.workerDrained) {
+                Button("다른 파일 검사 준비") { Task { await model.clearCompactVariant() } }
+            }
+            if let code = job.errorCode {
+                DisclosureGroup("축소본 준비 오류 상세") { Text(code).textSelection(.enabled) }
+            }
+        } else if model.transfer?.jobId != nil {
+            Button("같은 축소본 작업 확인") { Task { await model.refreshCompactVariant() } }
+        } else {
+            Button("저장된 축소본 준비 요청 확인") { Task { await model.prepareCompactVariant() } }
+        }
+    }
+
+    private func compactStateTitle(_ job: NativeCompactModelVariantJob) -> String {
+        switch job.modelPreparation.status {
+        case .pending: "축소본 준비 대기"
+        case .processing: "축소본 준비 중"
+        case .ready: model.compactApprovalVisible ? "축소본 준비 완료 · 승인 대기" : "축소본 준비 완료"
+        case .failed: "축소본 준비 실패"
+        case .cancelled: job.modelPreparation.workerDrained ? "축소본 준비 중단됨" : "축소본 준비 정리 중"
+        }
+    }
+
     private func stateTitle(_ state: String) -> String {
         switch state { case "uploading": "파일 전송 대기"; case "queued": "파일 검사 대기"; case "processing": "파일 검사 중"; case "approved": "파일 검사 완료"; case "failed": "파일 검사 실패"; case "cancelled": "파일 검사 중단됨"; default: "검사 상태 확인 필요" }
     }

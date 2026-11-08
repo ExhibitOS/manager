@@ -1202,6 +1202,54 @@ public actor AuthoringAPI {
         return job
     }
 
+    public func changeCompactModelVariant(_ action: NativeImportAction, jobId: String, artworkId: String,
+                                          input: NativeCompactModelVariantRequest) async throws -> NativeCompactModelVariantJob {
+        let current = generation
+        let prior = try await compactModelVariantJob(jobId, artworkId: artworkId, input: input)
+        switch action {
+        case .retry:
+            guard prior.state == "failed", prior.modelPreparation.workerDrained, prior.attempts < 5 else {
+                throw AuthoringFailure("IMPORT_DRAIN_PENDING")
+            }
+        case .cancel:
+            if prior.state == "cancelled" { return prior }
+            guard ["queued", "processing", "failed"].contains(prior.state) else {
+                throw AuthoringFailure("IMPORT_ACTIVE")
+            }
+        case .complete:
+            throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE")
+        }
+        guard generation == current, admitsCompactModelVariant else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let result: NativeCompactModelVariantJob = try await request(
+            "/api/v1/tenants/\(tenant)/imports/\(prior.id)/" + action.rawValue,
+            method: "POST", body: Data("{}".utf8))
+        guard generation == current, result.id == prior.id else { throw AuthoringFailure("COMPACT_VARIANT_RECEIPT_INVALID") }
+        try result.check(request: input, artworkId: artworkId)
+        return result
+    }
+
+    public func verifyApprovedCompactModelVariant(artworkId: String, jobId: String,
+                                                   input: NativeCompactModelVariantRequest) async throws -> NativeArtwork {
+        let current = generation
+        let job = try await compactModelVariantJob(jobId, artworkId: artworkId, input: input)
+        let refreshed = try await artwork(artworkId)
+        let studio = try await studioArtwork(artworkId)
+        guard generation == current, let receipt = job.modelPreparation.serverReceipt,
+              input.matchesFull(refreshed, artworkId: artworkId, revision: input.revision + 1),
+              refreshed.assets.contains(where: receipt.coarse.matches) else {
+            throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+        }
+        let artwork = studio.artwork
+        let lod = artwork["extensions"]["org.exhibitos.viewer/lod"]
+        let variants = lod["variants"].items ?? []
+        guard artwork["id"].string == artworkId, artwork["revision"].integer == Int64(refreshed.revision),
+              artwork["primaryAssetId"].string == input.assetId, lod["profile"].string == receipt.publicationProfile,
+              variants.count == 2, variants.contains(where: { $0["detail"] == .string("full") && $0["assetId"].string == input.assetId }),
+              variants.contains(where: { $0["detail"] == .string("coarse") && $0["assetId"].string == receipt.coarse.assetId })
+        else { throw AuthoringFailure("COMPACT_VARIANT_RECEIPT_INVALID") }
+        return refreshed
+    }
+
     public func approveCompactModelVariant(artworkId: String, jobId: String, input: NativeCompactModelVariantRequest) async throws
         -> NativeCompactModelVariantApproval {
         guard admitsCompactModelVariant else { throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE") }
@@ -1219,11 +1267,10 @@ public actor AuthoringAPI {
         let path = prefix + "/artworks/" + artworkId + "/compact-preparations/approve"
         let approval: NativeCompactModelVariantApproval = try await request(
             path, method: "POST", body: encoded(Approval(revision: input.revision, jobId: job.id)))
-        let refreshed = try await artwork(artworkId)
+        let refreshed = try await verifyApprovedCompactModelVariant(artworkId: artworkId, jobId: job.id, input: input)
         guard generation == current, approval.artworkId == artworkId, approval.jobId == job.id,
               approval.revision == input.revision + 1, approval.receiptSHA256 == receipt.sha256,
-              input.matchesFull(refreshed, artworkId: artworkId, revision: approval.revision),
-              refreshed.metadata == full.metadata, refreshed.assets.contains(where: receipt.coarse.matches) else {
+              refreshed.metadata == full.metadata else {
             throw AuthoringFailure("COMPACT_VARIANT_RECEIPT_INVALID")
         }
         return approval
