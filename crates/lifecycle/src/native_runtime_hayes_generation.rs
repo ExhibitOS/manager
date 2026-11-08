@@ -349,7 +349,13 @@ impl Attempt {
             stdio.check_quiet_output()?;
             watched_progress(WorkerCheckpoint::BeforeGo(self))?;
             self.check_generation(&staging)?;
-            self.send_go(&mut run.child)?;
+            if let Some(candidate) = &run.pinned_generate {
+                candidate.check()?;
+            }
+            stdio.check_quiet_output()?;
+            self.send_go_checked(&mut run.child, &mut || {
+                watched_progress(WorkerCheckpoint::Observe)
+            })?;
             capture(
                 &mut run.child,
                 &mut stdio,

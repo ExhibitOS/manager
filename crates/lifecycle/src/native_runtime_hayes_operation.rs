@@ -4,6 +4,7 @@
 
 use super::{
     err,
+    frame::BODY_SHA,
     generation::{
         validation::{RunningValidation, ValidatedReadback},
         RunningGeneration, WorkerCheckpoint,
@@ -456,19 +457,18 @@ impl OwnedHayesOpen<'_> {
             if Instant::now() >= deadline {
                 return Err(err("HAYES_WORKER_TIMEOUT"));
             }
-            channel.check_hayes_idle()?;
             match checkpoint {
                 WorkerCheckpoint::Observe => owner.check(session)?,
                 WorkerCheckpoint::BeforeGo(attempt) => {
+                    channel.check_hayes_idle()?;
                     check_revalidation_record(attempt, record, challenge)?;
                     check_live_claim(owner, session, &record.binding, deadline)?;
-                    channel.check_hayes_idle()?;
                 }
             }
             if Instant::now() >= deadline {
                 return Err(err("HAYES_WORKER_TIMEOUT"));
             }
-            Ok(())
+            channel.check_hayes_idle()
         };
         check(WorkerCheckpoint::BeforeGo(attempt), deadline)?;
         let source = self.source.take().ok_or_else(unavailable)?;
@@ -599,7 +599,9 @@ fn check_live_claim(
 ) -> Result<()> {
     owner.check(session)?;
     // All interpolated values are typed UUIDs, bounded integers, or the
-    // exact lowercase source digest admitted by parse_open.
+    // exact lowercase source digest admitted by parse_open. The API already
+    // validated the immutable job rights schema and bound it at revalidation.
+    // Here equality and clock_timestamp recheck current rights and expiry.
     let sql = format!(
         "SELECT db.system_id,db.database_oid FROM ({DATABASE_IDENTITY_SQL}) db WHERE EXISTS (
           SELECT 1 FROM hayes_original_attempts a
@@ -613,7 +615,22 @@ fn check_live_claim(
             AND j.state='processing' AND j.lease_until>clock_timestamp()
             AND j.expected_hash=a.source_sha256 AND j.expected_bytes=a.source_bytes
             AND j.mime='model/gltf-binary'
-            AND w.revision=a.artwork_revision AND w.deleted_at IS NULL)",
+            AND w.revision=a.artwork_revision AND w.deleted_at IS NULL
+            AND w.metadata #>> '{{displayReference,status}}' = 'provisional-uncalibrated'
+            AND w.metadata #>> '{{displayReference,assetSha256}}' = '{BODY_SHA}'
+            AND w.metadata #>> '{{provenance,sourceUnits}}' = 'unknown'
+            AND w.metadata #> '{{provenance,scaleApplied}}' = 'false'::jsonb
+            AND w.metadata->'rights' = j.rights
+            AND j.rights #> '{{permissions,display}}' = 'true'::jsonb
+            AND j.rights #> '{{permissions,export}}' = 'true'::jsonb
+            AND CASE WHEN NOT j.rights ? 'validFrom' THEN true
+                     WHEN jsonb_typeof(j.rights->'validFrom')='string'
+                     THEN (j.rights->>'validFrom')::timestamptz <= clock_timestamp()
+                     ELSE false END
+            AND CASE WHEN NOT j.rights ? 'expiresAt' THEN true
+                     WHEN jsonb_typeof(j.rights->'expiresAt')='string'
+                     THEN (j.rights->>'expiresAt')::timestamptz > clock_timestamp()
+                     ELSE false END)",
         tenant=b.tenant_id, workspace=b.workspace_id, principal=b.principal_id,
         job=b.job_id, lease=b.lease_id, attempt=b.attempt_id, generation=b.runtime_generation,
         artwork=b.artwork_id, correlation=b.correlation_id, revision=b.artwork_revision,

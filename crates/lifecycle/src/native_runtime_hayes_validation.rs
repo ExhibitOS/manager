@@ -132,13 +132,13 @@ impl Attempt {
             if Instant::now() >= deadline {
                 return Err(err("HAYES_WORKER_TIMEOUT"));
             }
-            check_owner(checkpoint)?;
             selected
                 .readback
                 .worker_pin
                 .as_ref()
                 .ok_or_else(custody_error)?
-                .check()
+                .check()?;
+            check_owner(checkpoint)
         };
         let result = (|| {
             progress(WorkerCheckpoint::Observe)?;
@@ -169,8 +169,11 @@ impl Attempt {
             if self.journal.read::<ValidateIo>(PREPARED)? != prepared {
                 return Err(custody_error());
             }
-            watch.poll()?;
-            self.send_go(&mut run.child)?;
+            stdio.check_quiet_output()?;
+            self.send_go_checked(&mut run.child, &mut || {
+                progress(WorkerCheckpoint::Observe)?;
+                watch.poll()
+            })?;
             let output = capture(
                 &mut run.child,
                 &mut stdio,

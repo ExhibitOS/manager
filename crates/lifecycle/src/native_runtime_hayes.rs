@@ -543,6 +543,14 @@ impl Attempt {
     /// GO stays on that same channel and is attempted at most once, even
     /// when send fails. No raw authorization frame is returned to a caller.
     pub(super) fn send_go(&mut self, child: &mut SpawnedWorker) -> Result<()> {
+        self.send_go_checked(child, &mut || Ok(()))
+    }
+
+    fn send_go_checked(
+        &mut self,
+        child: &mut SpawnedWorker,
+        check: &mut dyn FnMut() -> Result<()>,
+    ) -> Result<()> {
         if child.phase != Phase::Registered {
             return Err(channel_error());
         }
@@ -556,6 +564,7 @@ impl Attempt {
             return Err(custody_error());
         }
         child.require_live()?;
+        check()?;
         launch::send_go(&owner, record.worker)?;
         child.phase = Phase::Authorized;
         child.owner = Some(owner);
