@@ -191,3 +191,60 @@ impl OwnedHayesOpen<'_> {
             })
     }
 }
+
+#[cfg(test)]
+#[test]
+#[ignore = "emits a synthetic vector for the Platform codec"]
+fn api_ready_codec_fixture() {
+    use super::super::{
+        frame::{BODY_BYTES, BODY_SHA},
+        Role,
+    };
+    use super::tests::{binding, id, record};
+    let record = record(binding());
+    let source = ReadyStage::fixture(
+        record.binding.attempt_id,
+        8,
+        record.binding.source_bytes,
+        &record.binding.source_sha256,
+    );
+    let output = ReadyStage::fixture(id(11), 9, u64::from(BODY_BYTES), BODY_SHA);
+    let workers = [
+        LeafEvidence::fixture(Role::Generate, id(12)),
+        LeafEvidence::fixture(Role::Validate, id(13)),
+    ];
+    let lock = LockIdentity {
+        device: "7".into(),
+        inode: "10".into(),
+    };
+    let attestation = Attestation {
+        source: &source,
+        output: &output,
+        workers: &workers,
+        lock: &lock,
+        containment: Containment {
+            kind: CONTAINMENT_KIND,
+            receipt_sha256: &"d".repeat(64),
+        },
+    };
+    let database = Database {
+        system_identifier: &record.database_system_id,
+        database_oid: &record.database_oid,
+    };
+    let frame = encode(&Ready {
+        version: 1,
+        kind: "hayes-output-ready",
+        binding: &record.binding,
+        native_owner_id: record.native_owner_id,
+        runtime_manifest_sha256: &record.runtime_manifest_sha256,
+        worker_manifest_sha256: "94a6551d16af3fb134f94549d9f087ee8ccb9fd2372d914de5f738a78d3505c6",
+        native_evidence_sha256: &"e".repeat(64),
+        attestation: &attestation,
+        database: &database,
+    })
+    .unwrap();
+    println!(
+        "HAYES_READY_VECTOR {}",
+        std::str::from_utf8(&frame).unwrap()
+    );
+}

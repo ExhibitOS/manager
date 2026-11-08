@@ -46,6 +46,20 @@ pub(super) struct LeafEvidence {
     exit_code: u8,
 }
 
+#[cfg(test)]
+impl LeafEvidence {
+    pub(super) fn fixture(role: Role, nonce: uuid::Uuid) -> Self {
+        Self {
+            role,
+            nonce,
+            launch_record_sha256: "a".repeat(64),
+            ready_record_sha256: "b".repeat(64),
+            observation_record_sha256: "c".repeat(64),
+            exit_code: 0,
+        }
+    }
+}
+
 impl ObservedExit {
     pub(super) fn check(&self, attempt: &Attempt, role: Role) -> Result<()> {
         let registration = self.0;

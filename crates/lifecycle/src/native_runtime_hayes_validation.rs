@@ -71,6 +71,17 @@ impl ReadyStage {
             sha256: stage.sha256.clone(),
         }
     }
+
+    #[cfg(test)]
+    pub(in super::super) fn fixture(stage_id: Uuid, inode: u64, bytes: u64, sha256: &str) -> Self {
+        Self {
+            stage_id,
+            device: "7".into(),
+            inode: inode.to_string(),
+            bytes,
+            sha256: sha256.into(),
+        }
+    }
 }
 
 pub(in super::super) struct ReadyMaterial {
