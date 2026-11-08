@@ -317,6 +317,17 @@ database identities remains outside this provenance admission.
 
 ### Compact variant of an approved model
 
+The local-validation runtime with manifest
+`a7cab3643e4b6554c70ef4c1fda7bfb2ce5234273dead44711be9f72df9ff34c`
+admits a checkpointed upgrade from the retained Hayes catalog 044 payload
+`af9c141f071d84ba4e9397798759e1cb13b2cde4d350f2fcf0a4b852ce3a09b5`
+and a same-catalog refresh from the retained required-model 045 payload
+`af4e787a5fa5c714d60bf24cba23a1b2e7015946d1f4bea9a5777a3af3c8b2d0`.
+Use the exact source and target with a clean existing owner workspace. The
+normal checkpoint operation verifies the source ledger and saved document
+before activating the target. Stop the trial cleanly and reopen the target
+before preparing or replacing a model.
+
 An authenticated owner session must advertise `exhibitos-budget-geometry-pair-v1`.
 In the approved artwork’s file controls, start compact preparation from its
 current full model. The runtime reads the already approved bytes and uses its

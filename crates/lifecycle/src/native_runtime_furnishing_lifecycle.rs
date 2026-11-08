@@ -219,7 +219,7 @@ impl Binding {
         match transition {
             FurnishingTransition::Upgrade39(_) => Admission::CatalogUpgrade039To040,
             FurnishingTransition::Upgrade40(_) => Admission::CatalogUpgrade040To044,
-            FurnishingTransition::Upgrade44 => Admission::CatalogUpgrade044To045,
+            FurnishingTransition::Upgrade44 { .. } => Admission::CatalogUpgrade044To045,
             _ => Admission::CleanReopen,
         }
     }
@@ -692,7 +692,7 @@ mod tests {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
     fn furnishing_catalog44_to_45_requires_exact_clean_owner_and_reopens_after_stop() {
-        let transition = FurnishingTransition::Upgrade44;
+        let transition = FurnishingTransition::reviewed_catalog44_to_45();
         let mut source = catalog40_binding(GENERATION, transition.source());
         source.catalog = 44;
         source.phase = Phase::Clean;
@@ -735,7 +735,7 @@ mod tests {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
     fn furnishing_catalog44_to_45_recovery_retains_the_failed_trial_and_restores_source() {
-        check_furnishing_recovery(FurnishingTransition::Upgrade44);
+        check_furnishing_recovery(FurnishingTransition::reviewed_catalog44_to_45());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -762,7 +762,7 @@ mod tests {
         let writer = furnishing_lifetime::WriterLifetime::acquire(&root).unwrap();
         let mut prior = catalog40_binding(GENERATION, transition.source());
         prior.catalog = transition.source_catalog().version();
-        if transition == FurnishingTransition::Upgrade44 {
+        if matches!(transition, FurnishingTransition::Upgrade44 { .. }) {
             prior.admission_kind = Admission::CleanReopen;
             prior.previous_generation = Some(LATER.into());
         }
