@@ -75,9 +75,13 @@ final class ExhibitionDocumentTests: XCTestCase {
             "schemaVersion": .string("1.0.0-draft.2"), "units": .string("unknown"),
             "artworkType": .string("sculpture"), "revision": .integer(1),
             "revisionId": .string(UUID().uuidString), "primaryAssetId": .string(asset),
+            "createdAt": .string("2026-01-01T00:00:00Z"),
             "metadata": .object(["description": .string("Original description")]),
             "rights": .string("retained rights"), "provenance": .object(["authorship": .string("human-authored")]),
-            "extensions": .object(["org.exhibitos.studio/cms": .object(["revision": .integer(1)])])
+            "extensions": .object([
+                "org.exhibitos.studio/cms": .object(["revision": .integer(1)]),
+                "org.exhibitos.studio/display-reference": .object(["referenceHeightMeters": .number(0.273)])
+            ])
         ])
         prior["transform"] = NativeExhibitionDraft.identity
         try draft.addApprovedArtwork(prior, roomId: room, position: [1, 2, 3])
@@ -91,16 +95,25 @@ final class ExhibitionDocumentTests: XCTestCase {
         var approved = prior
         approved["revision"] = .integer(2)
         approved["revisionId"] = .string(UUID().uuidString)
+        approved["createdAt"] = .string("2026-01-02T00:00:00Z")
         approved["extensions"]["org.exhibitos.studio/cms"]["revision"] = .integer(2)
         approved["metadata"]["description"] = .string("Attributed catalogue dimensions")
         var changed = approved
         changed["rights"] = .string("different rights")
         XCTAssertThrowsError(try draft.refreshHayesArtwork(changed, placementId: placement))
         changed = approved
-        changed["transform"]["scale"] = .vector([2, 2, 2])
+        changed["extensions"]["org.exhibitos.studio/display-reference"]["referenceHeightMeters"] = .number(1)
         XCTAssertThrowsError(try draft.refreshHayesArtwork(changed, placementId: placement))
         XCTAssertThrowsError(try draft.refreshHayesArtwork(approved, placementId: UUID().uuidString))
         XCTAssertEqual(draft, before)
+
+        var withAuthoredDescription = draft.document
+        var authoredDescriptions = try XCTUnwrap(draft.candidate["accessibility"]["artworkDescriptions"].items)
+        authoredDescriptions[0]["text"] = .string("A separate description written for this placement")
+        withAuthoredDescription["candidate"]["accessibility"]["artworkDescriptions"] = .array(authoredDescriptions)
+        var authored = try NativeExhibitionDraft(document: withAuthoredDescription)
+        XCTAssertThrowsError(try authored.refreshHayesArtwork(approved, placementId: placement))
+        XCTAssertEqual(authored.document, withAuthoredDescription)
 
         try draft.refreshHayesArtwork(approved, placementId: placement)
         XCTAssertEqual(draft.artworks, [approved, other])
