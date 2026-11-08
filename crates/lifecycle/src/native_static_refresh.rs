@@ -56,10 +56,16 @@ const HAYES_R5_PUBLICATION: PublicationPin = (
     "78d4837e048dd8ad79270000a00d62bcf16c6be185bda600c9b3839112eaa226",
     "bc2d637914b33a010f95eab8ea0bd3a8964bf51e6901ee7fde2f9e229d98d8ce",
 );
+const HAYES_R5_EDITOR_CONTENT: [&str; 4] = [
+    "furnish-catalog/backless-oak-bench/1/LICENSE-NOTICE.txt",
+    "furnish-catalog/backless-oak-bench/1/model.glb",
+    "material-catalogue-thumbnails/fine-gallery-concrete/1/preview-82b907f0df15.png",
+    "material-catalogue-thumbnails/quiet-oak-herringbone/1/preview-4423a1fc11dc.png",
+];
 const HAYES_KNOWN_MEMORY_RUNTIME: RuntimePin = (
-    "516d3b18618b3d07fe9205a914a2908e335ec35c",
+    "bf3b4929aab96baf4ec896ee23e318ea70e6c78b",
     "2627954c7ac6c083bed01470db1e3ccec94e857ea2858babca1b4ed1e740adad",
-    "c5cff38ec91c2f4429880a99421d5dcd3225e160e587223e9e2b1ea2d08990f5",
+    "29e0c0685bd279fce60268ff9a1d99299ce223dbecff3930106d39def8c8202f",
 );
 
 #[derive(Deserialize)]
@@ -488,6 +494,7 @@ fn verify_tree(
 }
 
 fn unchanged_content(before: &Manifest, after: &Manifest) -> Result<()> {
+    let hayes_r5 = before.publication_id == HAYES_R5_PUBLICATION.0;
     let content = |path: &str| {
         path == INDEX
             || path.starts_with("data/")
@@ -495,6 +502,7 @@ fn unchanged_content(before: &Manifest, after: &Manifest) -> Result<()> {
             || path == "floor-texture-notices.txt"
             || path.starts_with("surface-material-textures/")
             || path.starts_with("surface-material-notices/")
+            || (hayes_r5 && HAYES_R5_EDITOR_CONTENT.contains(&path))
     };
     let shell = |path: &str| {
         matches!(
@@ -1361,6 +1369,13 @@ mod tests {
         for (source, runtime) in [(SOURCE_PUBLICATION, HAYES_KNOWN_MEMORY_RUNTIME), (HAYES_R5_PUBLICATION, RUNTIME)] {
             assert_eq!(reviewed_runtime(&request(source, runtime)).unwrap_err().code, "NATIVE_STATIC_REFRESH_RUNTIME_UNQUALIFIED");
         }
+        let mut obsolete = request(HAYES_R5_PUBLICATION, HAYES_KNOWN_MEMORY_RUNTIME);
+        obsolete.target_manifest_sha256 =
+            "c5cff38ec91c2f4429880a99421d5dcd3225e160e587223e9e2b1ea2d08990f5".into();
+        assert_eq!(
+            reviewed_runtime(&obsolete).unwrap_err().code,
+            "NATIVE_STATIC_REFRESH_RUNTIME_UNQUALIFIED"
+        );
         let mut changed = request(HAYES_R5_PUBLICATION, HAYES_KNOWN_MEMORY_RUNTIME);
         changed.index_sha256 = "a".repeat(64);
         assert_eq!(reviewed_runtime(&changed).unwrap_err().code, "NATIVE_STATIC_REFRESH_SOURCE_UNQUALIFIED");
@@ -1463,6 +1478,35 @@ mod tests {
         let mut after = manifest();
         after.files[2].path = "unknown.txt".into();
         assert!(unchanged_content(&before, &after).is_err());
+    }
+
+    #[test]
+    fn hayes_r5_editor_catalogue_is_immutable_and_scoped() {
+        for path in HAYES_R5_EDITOR_CONTENT {
+            let mut before = manifest();
+            let mut after = manifest();
+            for value in [&mut before, &mut after] {
+                value.publication_id = HAYES_R5_PUBLICATION.0.into();
+                value.files.push(Entry {
+                    path: path.into(),
+                    bytes: 7,
+                    sha256: digest(b"content"),
+                });
+            }
+            unchanged_content(&before, &after).unwrap();
+            let entry = after.files.last_mut().unwrap();
+            entry.sha256 = digest(b"changed");
+            assert!(unchanged_content(&before, &after).is_err());
+            let entry = after.files.pop().unwrap();
+            assert!(unchanged_content(&before, &after).is_err());
+            after.files.push(Entry {
+                path: "furnish-catalog/other/1/model.glb".into(),
+                ..entry
+            });
+            assert!(unchanged_content(&before, &after).is_err());
+            before.publication_id = SOURCE_PUBLICATION.0.into();
+            assert!(unchanged_content(&before, &before).is_err());
+        }
     }
 
     #[test]
