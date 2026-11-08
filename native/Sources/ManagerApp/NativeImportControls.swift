@@ -73,7 +73,8 @@ struct NativeImportControls: View {
                     Button("이전 검사 요청 찾기") { Task { await model.recoverImport() } }
                 }
                 if let job = model.importJob {
-                    Label(stateTitle(job.state), systemImage: job.state == "approved" ? "checkmark.circle" : "doc.text.magnifyingglass")
+                    let visibleState = job.modelPreparation?.status == .processing ? "processing" : job.state
+                    Label(stateTitle(visibleState), systemImage: visibleState == "approved" ? "checkmark.circle" : "doc.text.magnifyingglass")
                     if model.jpegOriginalStored { Text("JPEG 원본과 감상용 PNG를 이 Mac에 보관했습니다.").foregroundStyle(.secondary) }
                     if let near = job.modelDerivation {
                         if !near.workerDrained, job.state == "cancelled" {

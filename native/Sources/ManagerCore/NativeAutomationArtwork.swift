@@ -97,13 +97,28 @@ enum NativeAutomationArtworkRules {
               artwork["rights"]["permissions"]["display"] == .bool(true) else { throw BridgeFailure("ARTWORK_SCOPE_CHANGED") }
     }
     static func jobValue(_ job: NativeImportJob) -> DocumentValue {
-        .object(["id": .string(job.id), "state": .string(job.state), "progress": .integer(Int64(job.progress)),
+        var value: DocumentValue = .object(["id": .string(job.id), "state": .string(job.state), "progress": .integer(Int64(job.progress)),
                  "attempts": .integer(Int64(job.attempts)), "assetId": job.assetId.map(DocumentValue.string) ?? .null,
                  "errorCode": job.errorCode.map(DocumentValue.string) ?? .null,
                  "retryAt": job.retryAt.map(DocumentValue.string) ?? .null,
                  "originalAssetId": job.originalAssetId.map(DocumentValue.string) ?? .null,
                  "workerDrainVersion": job.workerDrainVersion.map { .integer(Int64($0)) } ?? .null,
                  "workerDrained": job.workerDrained.map(DocumentValue.bool) ?? .null])
+        if let preparation = job.modelPreparation {
+            var detail: [String: DocumentValue] = [
+                "profileId": .string(preparation.intent.profileId), "status": .string(preparation.status.rawValue),
+                "required": .bool(preparation.required), "workerDrained": .bool(preparation.workerDrained)
+            ]
+            if let display = preparation.display, let receipt = preparation.serverReceipt {
+                detail["assetId"] = .string(display.assetId)
+                detail["displaySha256"] = .string(display.sha256)
+                detail["originalSha256"] = .string(preparation.original.sha256)
+                detail["serverReceiptSha256"] = .string(receipt.sha256)
+                detail["reusedOriginal"] = .bool(display.reusedOriginal)
+            }
+            value["modelPreparation"] = .object(detail)
+        }
+        return value
     }
     static func reviewedJobValue(_ job: NativeImportJob, intent: NativeImportIntent) throws -> DocumentValue {
         guard let coarse = intent.coarsePreparation, let status = job.coarsePreparation,

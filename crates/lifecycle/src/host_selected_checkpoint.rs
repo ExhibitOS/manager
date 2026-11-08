@@ -391,6 +391,7 @@ mod tests {
             rights: serde_json::json!({}),
             derived: None,
             model_derivation: None,
+            model_preparation: None,
             coarse_preparation: None,
             hayes_original: None,
         });
