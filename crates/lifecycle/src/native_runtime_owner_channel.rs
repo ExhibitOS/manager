@@ -255,6 +255,26 @@ impl Connection {
         Ok(())
     }
 
+    /// During private worker execution the API sends no data. EOF or any
+    /// premature input cancels the operation without consuming a frame.
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub(super) fn check_hayes_idle(&self) -> Result<()> {
+        if !self.valid || !self.claim_started || self.metadata_started
+            || self.furnishing_bound.is_some() || self.ordinary.is_some()
+        {
+            return Err(err("HAYES_OPERATION_UNAVAILABLE"));
+        }
+        let mut byte = 0u8;
+        let received = unsafe {
+            libc::recv(self.socket.as_raw_fd(), (&mut byte as *mut u8).cast(), 1,
+                libc::MSG_DONTWAIT | libc::MSG_PEEK)
+        };
+        if received < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock {
+            return Ok(());
+        }
+        Err(err("HAYES_OPERATION_UNAVAILABLE"))
+    }
+
     // No MAC accessor yet: cached `valid` alone cannot prove the owned peer or
     // fence is live. A typed, single-use Session-bound challenge is required.
     fn fail(&mut self) {self.valid=false;self.key.fill(0);let _=self.socket.shutdown(std::net::Shutdown::Both);}

@@ -31,8 +31,8 @@ struct ValidateObservation {
 
 /// The caller owns this handle even if READY, GO, watch or stdout fails.
 /// Dropping the worker channel requests cancellation, without proving drain.
-pub(super) struct RunningValidation {
-    pub(super) child: SpawnedWorker,
+pub(in super::super) struct RunningValidation {
+    pub(in super::super) child: SpawnedWorker,
     work: Option<ValidateWork>,
 }
 
@@ -43,14 +43,14 @@ struct ValidateWork {
     stdio: WorkerStdio,
 }
 
-pub(super) struct ValidatedReadback {
-    pub(super) selected: SelectedBody,
+pub(in super::super) struct ValidatedReadback {
+    pub(in super::super) selected: SelectedBody,
     pub(super) stdout: ObservedStage,
     pub(super) peak_rss_kib: u32,
 }
 
 impl Attempt {
-    pub(super) fn spawn_retained_validation(
+    pub(in super::super) fn spawn_retained_validation(
         &mut self,
         payload: &Payload,
         selected: SelectedBody,
@@ -111,12 +111,12 @@ impl Attempt {
         })
     }
 
-    pub(super) fn observe_retained_validation(
+    pub(in super::super) fn observe_retained_validation(
         &mut self,
         run: &mut RunningValidation,
         deadline: Instant,
         cancelled: &AtomicBool,
-        check_owner: &mut dyn FnMut() -> Result<()>,
+        check_owner: &mut dyn FnMut(WorkerCheckpoint<'_>) -> Result<()>,
     ) -> Result<ValidatedReadback> {
         let ValidateWork {
             selected,
@@ -125,24 +125,26 @@ impl Attempt {
             mut stdio,
         } = run.work.take().ok_or_else(channel_error)?;
         let deadline = deadline.min(Instant::now() + Duration::from_secs(16));
-        let mut progress = || {
+        let mut progress = |checkpoint: WorkerCheckpoint<'_>| {
             if cancelled.load(Ordering::SeqCst) || super::super::super::cancelled() {
                 return Err(err("NATIVE_CANCELLED"));
             }
             if Instant::now() >= deadline {
                 return Err(err("HAYES_WORKER_TIMEOUT"));
             }
-            check_owner()?;
             selected
                 .readback
                 .worker_pin
                 .as_ref()
                 .ok_or_else(custody_error)?
-                .check()
+                .check()?;
+            check_owner(checkpoint)
         };
         let result = (|| {
-            progress()?;
-            self.register_ready_until(&mut run.child, deadline, &mut progress)?;
+            progress(WorkerCheckpoint::Observe)?;
+            self.register_ready_until(&mut run.child, deadline, &mut || {
+                progress(WorkerCheckpoint::Observe)
+            })?;
             let watch = DirectWatch::arm(&mut run.child)?;
             selected.readback.check(self)?;
             self.check_stage_file(selected.id, &selected.observed)?;
@@ -161,9 +163,17 @@ impl Attempt {
                 return Err(custody_error());
             }
             stdio.check_quiet_output()?;
-            progress()?;
-            watch.poll()?;
-            self.send_go(&mut run.child)?;
+            progress(WorkerCheckpoint::BeforeGo(self))?;
+            selected.readback.check(self)?;
+            self.check_stage_file(selected.id, &selected.observed)?;
+            if self.journal.read::<ValidateIo>(PREPARED)? != prepared {
+                return Err(custody_error());
+            }
+            stdio.check_quiet_output()?;
+            self.send_go_checked(&mut run.child, &mut || {
+                progress(WorkerCheckpoint::Observe)?;
+                watch.poll()
+            })?;
             let output = capture(
                 &mut run.child,
                 &mut stdio,
@@ -171,7 +181,7 @@ impl Attempt {
                 output.materializer_write(),
                 STDOUT_LIMIT,
                 &mut || {
-                    progress()?;
+                    progress(WorkerCheckpoint::Observe)?;
                     watch.poll()
                 },
             )?;
@@ -193,7 +203,9 @@ impl Attempt {
             .sync_all()
             .map_err(|_| custody_error())?;
         let (bytes, sha256) = result?;
-        let stdout = observe_stage(output, bytes, &sha256, cancelled, &mut progress)?;
+        let stdout = observe_stage(output, bytes, &sha256, cancelled, &mut || {
+            progress(WorkerCheckpoint::Observe)
+        })?;
         selected.readback.check(self)?;
         self.check_stage_file(selected.id, &selected.observed)?;
         self.check_stage_file(prepared.stdout_stage_id, &stdout)?;
@@ -212,7 +224,7 @@ impl Attempt {
                     .filter(|n| *n > 0 && n.to_string() == text)
             })
             .ok_or_else(io_error)?;
-        progress()?;
+        progress(WorkerCheckpoint::Observe)?;
         self.journal.create(
             OBSERVED,
             &ValidateObservation {

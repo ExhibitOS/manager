@@ -42,7 +42,7 @@ pub fn selected_oex_format_v7_validation(resources: &Path, input_fd: i32, cancel
 #[allow(dead_code)] // Inactive pending native containment and owner-channel integration.
 #[path = "native_runtime_hayes.rs"] mod hayes;
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
-use hayes::operation::{HayesBootstrap, HayesSessionPin};
+use hayes::operation::{HayesBootstrap, HayesSessionPin, RetainedHayes};
 #[path = "native_runtime_furnishing_lifetime.rs"] mod furnishing_lifetime;
 pub(crate) use furnishing_lifetime::WriterIdentity as FurnishingWriterIdentity;
 #[path = "native_runtime_furnishing_lease.rs"] mod furnishing_lease;
@@ -574,6 +574,8 @@ pub struct Session {
     owner_channel: Option<owner_channel::Connection>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     hayes_bootstrap: HayesBootstrap,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    retained_hayes: Option<RetainedHayes>,
     furnishing_writer_lifetime: Option<furnishing_lifetime::WriterLifetime>,
     furnishing_binding: Option<Binding>,
     furnishing_drain_attempted: bool,
@@ -958,6 +960,8 @@ impl Session {
             owner_channel: None,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             hayes_bootstrap: HayesBootstrap::Disabled,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+            retained_hayes: None,
             furnishing_writer_lifetime: None,
             furnishing_binding: None,
             furnishing_drain_attempted: false,
@@ -1369,6 +1373,10 @@ const { isDeepStrictEqual } = require('node:util');
                 changed = true;
             }
         }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        if let Some(retained) = self.retained_hayes.as_mut() {
+            changed |= retained.poll()?;
+        }
         if self.node.is_none() {
             self.owner_channel = None;
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -1379,7 +1387,10 @@ const { isDeepStrictEqual } = require('node:util');
         Ok(changed)
     }
     fn any_owned(&self) -> bool {
-        self.postgres.is_some() || self.node.is_some() || self.auxiliary.is_some()
+        let owned = self.postgres.is_some() || self.node.is_some() || self.auxiliary.is_some();
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        let owned = owned || self.retained_hayes.as_ref().is_some_and(RetainedHayes::has_child);
+        owned
     }
     fn spawn(
         &self,
@@ -2338,6 +2349,10 @@ const { isDeepStrictEqual } = require('node:util');
     /// and the root operation fence for the authenticated backup transaction.
     /// No successful quiescence is reported while an owned writer remains.
     pub fn quiesce_for_backup(&mut self) -> Result<Context> {
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        if self.retained_hayes.is_some() {
+            return Err(err("NATIVE_QUIESCENCE_UNCONFIRMED"));
+        }
         self.poll()?;
         if !matches!(
             self.state.as_str(),
@@ -2667,6 +2682,10 @@ const { isDeepStrictEqual } = require('node:util');
     }
     fn advance_stop(&mut self, deadline: Instant) -> Result<bool> {
         let changed = self.poll()?;
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        if self.retained_hayes.as_ref().is_some_and(RetainedHayes::has_child) {
+            return Ok(false);
+        }
         if let Some(child) = self.auxiliary.as_mut() {
             child.signal()?;
         } else if self.node.is_some() {

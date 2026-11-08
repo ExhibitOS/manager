@@ -32,6 +32,12 @@ const STDOUT_LIMIT: u64 = 16 * 1024 * 1024 + 8; // GLB + binary error/RSS teleme
 const PREPARED: &str = "generate-io.json";
 const OBSERVED: &str = "generate-direct-observed.json";
 
+#[derive(Clone, Copy)]
+pub(super) enum WorkerCheckpoint<'a> {
+    Observe,
+    BeforeGo(&'a Attempt),
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StageBinding {
@@ -292,7 +298,8 @@ impl Attempt {
         cancelled: &AtomicBool,
         check_owner: &mut dyn FnMut() -> Result<()>,
     ) -> Result<()> {
-        let mut readback = self.observe_generation(run, deadline, cancelled, check_owner)?;
+        let mut readback =
+            self.observe_generation(run, deadline, cancelled, &mut |_| check_owner())?;
         run.pinned_generate = readback.worker_pin.take();
         Err(err("HAYES_DRAIN_UNCONFIRMED"))
     }
@@ -302,23 +309,25 @@ impl Attempt {
         run: &mut RunningGeneration,
         deadline: Instant,
         cancelled: &AtomicBool,
-        check_owner: &mut dyn FnMut() -> Result<()>,
+        check_owner: &mut dyn FnMut(WorkerCheckpoint<'_>) -> Result<()>,
     ) -> Result<GenerationReadback> {
         let (staging, mut stdio) = run.work.take().ok_or_else(channel_error)?;
         let deadline = deadline.min(Instant::now() + Duration::from_secs(16));
-        let mut progress = || {
+        let mut progress = |checkpoint: WorkerCheckpoint<'_>| {
             if cancelled.load(Ordering::SeqCst) || super::super::cancelled() {
                 return Err(err("NATIVE_CANCELLED"));
             }
             if Instant::now() >= deadline {
                 return Err(err("HAYES_WORKER_TIMEOUT"));
             }
-            check_owner()
+            check_owner(checkpoint)
         };
         let result = (|| {
-            progress()?;
+            progress(WorkerCheckpoint::Observe)?;
             self.check_generation(&staging)?;
-            self.register_ready_until(&mut run.child, deadline, &mut progress)?;
+            self.register_ready_until(&mut run.child, deadline, &mut || {
+                progress(WorkerCheckpoint::Observe)
+            })?;
             // The trusted inert entry has executed and completed READY. Darwin
             // can still queue the initial exec after posix_spawn returns.
             // Start the witness here, before the first possible GO.
@@ -326,8 +335,8 @@ impl Attempt {
                 run.arm_watch()?;
             }
             let watch = run.watch.as_ref();
-            let mut watched_progress = || {
-                progress()?;
+            let mut watched_progress = |checkpoint: WorkerCheckpoint<'_>| {
+                progress(checkpoint)?;
                 if let Some(watch) = watch {
                     watch.poll()?;
                 }
@@ -338,15 +347,22 @@ impl Attempt {
                 candidate.check()?;
             }
             stdio.check_quiet_output()?;
-            watched_progress()?;
-            self.send_go(&mut run.child)?;
+            watched_progress(WorkerCheckpoint::BeforeGo(self))?;
+            self.check_generation(&staging)?;
+            if let Some(candidate) = &run.pinned_generate {
+                candidate.check()?;
+            }
+            stdio.check_quiet_output()?;
+            self.send_go_checked(&mut run.child, &mut || {
+                watched_progress(WorkerCheckpoint::Observe)
+            })?;
             capture(
                 &mut run.child,
                 &mut stdio,
                 &staging.source.observed,
                 staging.output.materializer_write(),
                 staging.prepared.stdout_limit,
-                &mut watched_progress,
+                &mut || watched_progress(WorkerCheckpoint::Observe),
             )
         })();
         // Closing the dedicated owner channel is the cancellation request.
@@ -369,7 +385,9 @@ impl Attempt {
 
         // Only Manager has written this inode. This establishes the current
         // bytes, and confers no release or descendant-drain authority.
-        let observed = observe_stage(staging.output, bytes, &sha256, cancelled, &mut progress)?;
+        let observed = observe_stage(staging.output, bytes, &sha256, cancelled, &mut || {
+            progress(WorkerCheckpoint::Observe)
+        })?;
         self.check()?;
         self.check_stage_file(staging.prepared.output_stage_id, &observed)?;
         if Physical::from(&observed.file().metadata().map_err(|_| custody_error())?)
@@ -507,7 +525,7 @@ fn io_error() -> crate::LifecycleError {
 }
 
 #[path = "native_runtime_hayes_validation.rs"]
-mod validation;
+pub(super) mod validation;
 
 #[cfg(test)]
 #[path = "native_runtime_hayes_selected_probe.rs"]

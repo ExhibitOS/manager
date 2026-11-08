@@ -4,7 +4,7 @@ use super::*;
 use std::os::unix::fs::MetadataExt;
 
 fn invalid() -> LifecycleError { err("NATIVE_OEX_ATTEMPT_INVALID") }
-const DATABASE_IDENTITY_SQL: &str = "SELECT system_identifier::text AS system_id,(SELECT oid::text FROM pg_database WHERE datname=current_database()) AS database_oid FROM pg_control_system()";
+pub(super) const DATABASE_IDENTITY_SQL: &str = "SELECT system_identifier::text AS system_id,(SELECT oid::text FROM pg_database WHERE datname=current_database()) AS database_oid FROM pg_control_system()";
 
 fn parse_database_identity(value: &str) -> Result<(String, String)> {
     let (system, oid) = value.split_once('|').ok_or_else(invalid)?;
@@ -71,10 +71,15 @@ impl Owner {
     pub(super) fn recheck_database_identity(&self, session: &mut Session) -> Result<()> {
         self.check(session)?;
         let value = session.query_database("exhibitos", DATABASE_IDENTITY_SQL)?;
-        if parse_database_identity(&value)? != (self.system_id.clone(), self.database_oid.clone()) {
+        self.check_database_identity_result(&value)?;
+        self.check(session)
+    }
+
+    pub(super) fn check_database_identity_result(&self, value: &str) -> Result<()> {
+        if parse_database_identity(value)? != (self.system_id.clone(), self.database_oid.clone()) {
             return Err(invalid());
         }
-        self.check(session)
+        Ok(())
     }
 
     /// Checks the retained runtime and directory pins, not current DB identity.
