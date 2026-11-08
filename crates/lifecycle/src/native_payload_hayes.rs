@@ -71,6 +71,10 @@ pub(crate) struct ReadOnlyHayesGenerate {
 }
 
 impl ReadOnlyHayesGenerate {
+    pub(crate) fn manifest_sha256(&self) -> &'static str {
+        MANIFEST
+    }
+
     pub(crate) fn check(&self) -> Result<()> {
         let root = self.root.try_clone_file().map_err(|_| unavailable())?;
         let notices = self.notices.try_clone_file().map_err(|_| unavailable())?;

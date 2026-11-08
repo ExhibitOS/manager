@@ -134,6 +134,7 @@ enum Phase {
     SourceHeld,
     Revalidated,
     OutputHeld,
+    ReadySent,
     Failed,
 }
 
@@ -879,6 +880,9 @@ fn encode(value: &impl Serialize) -> Result<Vec<u8>> {
 fn unavailable() -> crate::LifecycleError {
     err("HAYES_OPERATION_UNAVAILABLE")
 }
+
+#[path = "native_runtime_hayes_ready.rs"]
+mod ready;
 
 #[cfg(test)]
 #[path = "native_runtime_hayes_operation_tests.rs"]

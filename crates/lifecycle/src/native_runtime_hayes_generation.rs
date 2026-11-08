@@ -6,7 +6,7 @@ use super::{
     frame::{inspect_selected_frame, GenerateTelemetry, BODY_BYTES, BODY_SHA},
     launch::{LaunchPermit, SpawnedWorker, WorkerStdio},
     private_file,
-    watch::{DirectWatch, ObservedExit},
+    watch::{DirectWatch, LeafEvidence, ObservedExit},
     Attempt, Binding, Physical, Result, Role, SourceStage,
 };
 use crate::{
@@ -95,6 +95,19 @@ pub(super) struct SelectedBody {
 }
 
 impl GenerationReadback {
+    fn leaf_evidence(&self, attempt: &Attempt) -> Result<LeafEvidence> {
+        self.exit.as_ref().ok_or_else(custody_error)?.evidence(
+            attempt,
+            Role::Generate,
+            OBSERVED,
+            &DirectObservation {
+                prepared: &self.prepared,
+                stdout: (&self.stdout).into(),
+                watched_direct_exit_without_fork_or_exec: true,
+            },
+        )
+    }
+
     fn check(&self, attempt: &Attempt) -> Result<()> {
         self.exit
             .as_ref()

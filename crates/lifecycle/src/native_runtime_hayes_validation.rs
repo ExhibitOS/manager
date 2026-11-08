@@ -48,12 +48,84 @@ pub(in super::super) struct ValidatedReadback {
     pub(super) stdout: ObservedStage,
     pub(super) peak_rss_kib: u32,
     exit: ObservedExit,
+    prepared: ValidateIo,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in super::super) struct ReadyStage {
+    stage_id: Uuid,
+    device: String,
+    inode: String,
+    bytes: u64,
+    sha256: String,
+}
+
+impl ReadyStage {
+    fn from_readback(stage_id: Uuid, stage: &ObservedStage) -> Self {
+        Self {
+            stage_id,
+            device: stage.device.to_string(),
+            inode: stage.inode.to_string(),
+            bytes: stage.bytes,
+            sha256: stage.sha256.clone(),
+        }
+    }
+}
+
+pub(in super::super) struct ReadyMaterial {
+    pub(in super::super) worker_manifest_sha256: &'static str,
+    pub(in super::super) source: ReadyStage,
+    pub(in super::super) output: ReadyStage,
+    pub(in super::super) workers: [LeafEvidence; 2],
 }
 
 impl ValidatedReadback {
     pub(in super::super) fn check_leaves(&self, attempt: &Attempt) -> Result<()> {
         self.selected.readback.check(attempt)?;
-        self.exit.check(attempt, Role::Validate)
+        self.exit.check(attempt, Role::Validate)?;
+        self.selected
+            .readback
+            .worker_pin
+            .as_ref()
+            .ok_or_else(custody_error)?
+            .check()?;
+        attempt.check_stage_file(self.selected.id, &self.selected.observed)?;
+        attempt.check_stage_file(self.prepared.stdout_stage_id, &self.stdout)?;
+        if attempt.journal.read::<ValidateIo>(PREPARED)? != self.prepared {
+            return Err(custody_error());
+        }
+        Ok(())
+    }
+
+    pub(in super::super) fn ready_material(&self, attempt: &Attempt) -> Result<ReadyMaterial> {
+        self.check_leaves(attempt)?;
+        let generated = &self.selected.readback;
+        let pin = generated.worker_pin.as_ref().ok_or_else(custody_error)?;
+        let original = &generated.source.observed;
+        let output = &self.selected.observed;
+        if generated.source.binding.attempt == self.selected.id
+            || (original.device, original.inode) == (output.device, output.inode)
+        {
+            return Err(custody_error());
+        }
+        let validate = self.exit.evidence(
+            attempt,
+            Role::Validate,
+            OBSERVED,
+            &ValidateObservation {
+                binding: attempt.intent.binding,
+                stdout: (&self.stdout).into(),
+                peak_rss_kib: self.peak_rss_kib,
+                direct_exit_without_observed_fork_or_exec: true,
+            },
+        )?;
+        Ok(ReadyMaterial {
+            worker_manifest_sha256: pin.manifest_sha256(),
+            source: ReadyStage::from_readback(generated.source.binding.attempt, original),
+            output: ReadyStage::from_readback(self.selected.id, output),
+            workers: [generated.leaf_evidence(attempt)?, validate],
+        })
     }
 }
 
@@ -238,6 +310,7 @@ impl Attempt {
             stdout,
             peak_rss_kib,
             exit,
+            prepared,
         })
     }
 }

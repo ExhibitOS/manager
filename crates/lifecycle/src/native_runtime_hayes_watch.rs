@@ -3,6 +3,7 @@
 //! not attach this watch to descendants or to unrelated delegated work.
 
 use super::{cvt, err, launch::SpawnedWorker, Attempt, Phase, Registration, Result, Role, Worker};
+use serde::Serialize;
 use std::{
     cell::Cell,
     fs::File,
@@ -34,6 +35,17 @@ pub(super) struct DirectWatch {
 /// The journal alone cannot construct this value after a restart.
 pub(super) struct ObservedExit(Registration);
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LeafEvidence {
+    role: Role,
+    nonce: uuid::Uuid,
+    launch_record_sha256: String,
+    ready_record_sha256: String,
+    observation_record_sha256: String,
+    exit_code: u8,
+}
+
 impl ObservedExit {
     pub(super) fn check(&self, attempt: &Attempt, role: Role) -> Result<()> {
         let registration = self.0;
@@ -46,6 +58,28 @@ impl ObservedExit {
             return Err(unknown());
         }
         Ok(())
+    }
+
+    pub(super) fn evidence(
+        &self,
+        attempt: &Attempt,
+        role: Role,
+        observation: &str,
+        expected: &impl Serialize,
+    ) -> Result<LeafEvidence> {
+        self.check(attempt, role)?;
+        let registration = self.0;
+        let (launch, ready) = role.files();
+        Ok(LeafEvidence {
+            role,
+            nonce: registration.worker.nonce,
+            launch_record_sha256: attempt
+                .journal
+                .confirmed_digest(launch, &registration.worker)?,
+            ready_record_sha256: attempt.journal.confirmed_digest(ready, &registration)?,
+            observation_record_sha256: attempt.journal.confirmed_digest(observation, expected)?,
+            exit_code: 0,
+        })
     }
 }
 
