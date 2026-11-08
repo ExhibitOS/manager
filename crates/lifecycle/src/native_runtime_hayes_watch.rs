@@ -2,7 +2,8 @@
 //! Same-owner observation of one already spawned direct child. Darwin does
 //! not attach this watch to descendants or to unrelated delegated work.
 
-use super::{cvt, err, launch::SpawnedWorker, Result};
+use super::{cvt, err, launch::SpawnedWorker, Attempt, Phase, Registration, Result, Role, Worker};
+use serde::Serialize;
 use std::{
     cell::Cell,
     fs::File,
@@ -28,6 +29,72 @@ pub(super) struct DirectWatch {
     queue: File,
     pid: libc::pid_t,
     state: Cell<State>,
+}
+
+/// In-memory evidence from the direct-child handle and its armed watch.
+/// The journal alone cannot construct this value after a restart.
+pub(super) struct ObservedExit(Registration);
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LeafEvidence {
+    role: Role,
+    nonce: uuid::Uuid,
+    launch_record_sha256: String,
+    ready_record_sha256: String,
+    observation_record_sha256: String,
+    exit_code: u8,
+}
+
+#[cfg(test)]
+impl LeafEvidence {
+    pub(super) fn fixture(role: Role, nonce: uuid::Uuid) -> Self {
+        Self {
+            role,
+            nonce,
+            launch_record_sha256: "a".repeat(64),
+            ready_record_sha256: "b".repeat(64),
+            observation_record_sha256: "c".repeat(64),
+            exit_code: 0,
+        }
+    }
+}
+
+impl ObservedExit {
+    pub(super) fn check(&self, attempt: &Attempt, role: Role) -> Result<()> {
+        let registration = self.0;
+        let (launch, ready) = role.files();
+        if registration.worker.binding != attempt.intent.binding
+            || registration.worker.role != role
+            || attempt.journal.read::<Worker>(launch)? != registration.worker
+            || attempt.journal.read::<Registration>(ready)? != registration
+        {
+            return Err(unknown());
+        }
+        Ok(())
+    }
+
+    pub(super) fn evidence(
+        &self,
+        attempt: &Attempt,
+        role: Role,
+        observation: &str,
+        expected: &impl Serialize,
+    ) -> Result<LeafEvidence> {
+        self.check(attempt, role)?;
+        let registration = self.0;
+        let (launch, ready) = role.files();
+        Ok(LeafEvidence {
+            role,
+            nonce: registration.worker.nonce,
+            launch_record_sha256: attempt
+                .journal
+                .confirmed_digest(launch, &registration.worker)?,
+            ready_record_sha256: attempt.journal.confirmed_digest(ready, &registration)?,
+            observation_record_sha256: attempt.journal.confirmed_digest(observation, expected)?,
+            exit_code: 0,
+        })
+    }
 }
 
 impl DirectWatch {
@@ -130,6 +197,23 @@ impl DirectWatch {
             return Err(unknown());
         }
         Ok(())
+    }
+
+    pub(super) fn observe_success(&self, child: &mut SpawnedWorker) -> Result<ObservedExit> {
+        self.require_exit()?;
+        if child.phase != Phase::Authorized
+            || child.diagnostic_pid() != self.pid
+            || !child
+                .try_wait()
+                .map_err(|_| unknown())?
+                .is_some_and(|exit| exit.success())
+        {
+            return Err(unknown());
+        }
+        Ok(ObservedExit(Registration {
+            worker: child.worker,
+            child_pid: self.pid,
+        }))
     }
 }
 

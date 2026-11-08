@@ -6,7 +6,7 @@ use super::{
     frame::{inspect_selected_frame, GenerateTelemetry, BODY_BYTES, BODY_SHA},
     launch::{LaunchPermit, SpawnedWorker, WorkerStdio},
     private_file,
-    watch::DirectWatch,
+    watch::{DirectWatch, LeafEvidence, ObservedExit},
     Attempt, Binding, Physical, Result, Role, SourceStage,
 };
 use crate::{
@@ -83,7 +83,7 @@ pub(super) struct GenerationReadback {
     prepared: Prepared,
     source: SourceStage,
     stdout: ObservedStage,
-    watched: bool,
+    exit: Option<ObservedExit>,
     worker_pin: Option<ReadOnlyHayesGenerate>,
 }
 
@@ -95,9 +95,25 @@ pub(super) struct SelectedBody {
 }
 
 impl GenerationReadback {
+    fn leaf_evidence(&self, attempt: &Attempt) -> Result<LeafEvidence> {
+        self.exit.as_ref().ok_or_else(custody_error)?.evidence(
+            attempt,
+            Role::Generate,
+            OBSERVED,
+            &DirectObservation {
+                prepared: &self.prepared,
+                stdout: (&self.stdout).into(),
+                watched_direct_exit_without_fork_or_exec: true,
+            },
+        )
+    }
+
     fn check(&self, attempt: &Attempt) -> Result<()> {
-        if !self.watched
-            || attempt.journal.read::<Prepared>(PREPARED)? != self.prepared
+        self.exit
+            .as_ref()
+            .ok_or_else(custody_error)?
+            .check(attempt, Role::Generate)?;
+        if attempt.journal.read::<Prepared>(PREPARED)? != self.prepared
             || self.prepared.binding != attempt.intent.binding
             || self.source.binding != self.prepared.binding
             || self.source.correlation != self.prepared.correlation_id
@@ -375,10 +391,11 @@ impl Attempt {
             .sync_all()
             .map_err(|_| custody_error())?;
         let (bytes, sha256) = result?;
-        let watch = run.watch.as_ref();
-        if let Some(watch) = watch {
-            watch.require_exit()?;
-        }
+        let exit = run
+            .watch
+            .as_ref()
+            .map(|watch| watch.observe_success(&mut run.child))
+            .transpose()?;
         if let Some(candidate) = &run.pinned_generate {
             candidate.check()?;
         }
@@ -400,14 +417,14 @@ impl Attempt {
             &DirectObservation {
                 prepared: &staging.prepared,
                 stdout: (&observed).into(),
-                watched_direct_exit_without_fork_or_exec: watch.is_some(),
+                watched_direct_exit_without_fork_or_exec: exit.is_some(),
             },
         )?;
         Ok(GenerationReadback {
             prepared: staging.prepared,
             source: staging.source,
             stdout: observed,
-            watched: watch.is_some(),
+            exit,
             worker_pin: run.pinned_generate.take(),
         })
     }

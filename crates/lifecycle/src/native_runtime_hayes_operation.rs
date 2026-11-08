@@ -134,6 +134,7 @@ enum Phase {
     SourceHeld,
     Revalidated,
     OutputHeld,
+    ReadySent,
     Failed,
 }
 
@@ -641,6 +642,7 @@ impl OwnedHayesOpen<'_> {
         check(WorkerCheckpoint::BeforeGo(attempt), deadline)?;
         self.timings.checked = elapsed();
         let validated = self.validated.as_ref().ok_or_else(unavailable)?;
+        validated.check_leaves(attempt)?;
         let worker = worker_payload.context();
         attempt.journal.create(
             WORKERS_HELD_RECORD,
@@ -878,6 +880,9 @@ fn encode(value: &impl Serialize) -> Result<Vec<u8>> {
 fn unavailable() -> crate::LifecycleError {
     err("HAYES_OPERATION_UNAVAILABLE")
 }
+
+#[path = "native_runtime_hayes_ready.rs"]
+mod ready;
 
 #[cfg(test)]
 #[path = "native_runtime_hayes_operation_tests.rs"]

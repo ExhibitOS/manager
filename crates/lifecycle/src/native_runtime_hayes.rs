@@ -224,6 +224,14 @@ impl PrivateDirectory {
         Ok(bytes)
     }
 
+    fn confirmed_digest(&self, name: &str, expected: &impl Serialize) -> Result<String> {
+        let bytes = self.read_bytes(name)?;
+        if serde_json::to_vec(expected).map_err(|_| custody_error())? != bytes {
+            return Err(custody_error());
+        }
+        Ok(crate::digest(&bytes))
+    }
+
     fn create<T: Serialize>(&self, name: &str, record: &T) -> Result<()> {
         self.identity()?;
         let bytes = serde_json::to_vec(record).map_err(|_| custody_error())?;

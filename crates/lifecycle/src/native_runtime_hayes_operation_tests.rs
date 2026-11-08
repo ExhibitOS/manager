@@ -15,11 +15,11 @@ use std::{
     thread,
 };
 
-fn id(index: u32) -> Uuid {
+pub(super) fn id(index: u32) -> Uuid {
     Uuid::parse_str(&format!("10000000-0000-4000-8000-{index:012}")).unwrap()
 }
 
-fn binding() -> OperationBinding {
+pub(super) fn binding() -> OperationBinding {
     let flow = Transfer::source(id(6), id(9)).unwrap();
     OperationBinding {
         version: 1,
@@ -38,7 +38,7 @@ fn binding() -> OperationBinding {
     }
 }
 
-fn record(binding: OperationBinding) -> Record {
+pub(super) fn record(binding: OperationBinding) -> Record {
     Record {
         version: 1,
         binding,
