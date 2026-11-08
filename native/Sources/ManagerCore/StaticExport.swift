@@ -18,4 +18,9 @@ public struct NativeStaticExportStatus: Codable, Sendable {
         guard matches || !running else { throw BridgeFailure("AUTOMATION_EXPORT_CHANGED") }
         return matches
     }
+
+    func confirmsDetailTerminal(jobId: String?, publicationId: String, output: String) -> Bool {
+        self.jobId == jobId && self.publicationId == publicationId && self.output == output
+            && ["completed", "cancelled", "failed"].contains(state)
+    }
 }

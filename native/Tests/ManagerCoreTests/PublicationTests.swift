@@ -7,8 +7,12 @@ final class PublicationTests: XCTestCase {
         let etag = "\"studio-r6-" + String(repeating: "a", count: 64) + "\""
         let manifest = String(repeating: "b", count: 64)
         let requestId = UUID().uuidString.lowercased()
-        let plan = try nativePublicationPlanBinding(sourceExhibitionId: draft.id, etag: etag,
-            runtimeManifestSha256: manifest, watermark: nil, publicationProfile: "native-original-v1")
+        func originalPlan(etag: String, request: String) throws -> String {
+            try nativePublicationPlanBinding(sourceExhibitionId: draft.id, etag: etag,
+                runtimeManifestSha256: manifest, watermark: nil, publicationProfile: "native-original-v1",
+                nativeOriginalRequestSHA256: request)
+        }
+        let plan = try originalPlan(etag: etag, request: String(repeating: "c", count: 64))
         let ordinary = try nativePublicationPlanBinding(sourceExhibitionId: draft.id, etag: etag,
             runtimeManifestSha256: manifest, watermark: nil, publicationProfile: "bounded-local-v1")
         XCTAssertNotEqual(plan, ordinary)
@@ -19,6 +23,34 @@ final class PublicationTests: XCTestCase {
         XCTAssertEqual(intent.publishRequestId, requestId)
         XCTAssertNil(intent.capabilityPublicationId)
         XCTAssertThrowsError(try intent.requirePlanBinding(ordinary))
+        let publicationID = UUID().uuidString.lowercased()
+        let publication = NativePublication(publicationId: publicationID, publicUrl: "/p/" + publicationID,
+            revisionSha256: String(repeating: "e", count: 64), publishedAt: "2026-11-08T00:00:00Z", status: "published")
+        let completed = NativePublicationCompleted(pending: intent, publication: publication)
+        XCTAssertThrowsError(try completed.refuseNativeOriginalExportReplay(intent)) { error in
+            XCTAssertEqual((error as? AuthoringFailure)?.code, "NATIVE_DETAIL_EXPORT_REPLAY_UNAVAILABLE")
+        }
+        let newer = etag.replacingOccurrences(of: "studio-r6-", with: "studio-r7-")
+        let otherRequest = String(repeating: "d", count: 64)
+        for otherEtag in [etag, newer] {
+            let changed = try NativePublicationPending(nativeOriginalSource: draft, etag: otherEtag, requestId: requestId,
+                planBindingSha256: originalPlan(etag: otherEtag, request: otherRequest))
+            XCTAssertThrowsError(try completed.refuseNativeOriginalExportReplay(changed)) { error in
+                XCTAssertEqual((error as? AuthoringFailure)?.code, "PUBLICATION_PLAN_CHANGED")
+            }
+        }
+    }
+
+    func testDetailTerminalRejectsInterruptedOrDifferentJob() {
+        func status(_ state: String) -> NativeStaticExportStatus {
+            .init(format: 1, jobId: "job", workspaceId: "workspace", tenantId: "tenant", principalId: "owner",
+                publicationId: "publication", revisionSha256: "revision", output: "/candidate",
+                state: state, receipt: nil, errorCode: nil, privateEditor: true)
+        }
+        XCTAssertFalse(status("interrupted").confirmsDetailTerminal(jobId: "job", publicationId: "publication", output: "/candidate"))
+        XCTAssertFalse(status("completed").confirmsDetailTerminal(jobId: "other", publicationId: "publication", output: "/candidate"))
+        XCTAssertFalse(status("completed").confirmsDetailTerminal(jobId: "job", publicationId: "publication", output: "/missing"))
+        XCTAssertTrue(status("cancelled").confirmsDetailTerminal(jobId: "job", publicationId: "publication", output: "/candidate"))
     }
 
     func testPublicationCopyRetainsGeometryRightsAndOpaqueDataWhileChangingOnlyDocumentIdentity() throws {
