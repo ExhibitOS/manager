@@ -4,7 +4,7 @@ use super::super::{Containment, LeafEvidence, LockIdentity, ReadyStage, CONTAINM
 use super::*;
 use crate::native_runtime::hayes::Role;
 
-fn pins(b: &OperationBinding) -> ReadyPins {
+pub(super) fn pins(b: &OperationBinding) -> ReadyPins {
     ReadyPins {
         evidence_sha256: "e".repeat(64),
         frame_sha256: "f".repeat(64),
@@ -28,7 +28,7 @@ fn pins(b: &OperationBinding) -> ReadyPins {
     }
 }
 
-fn notice() -> Notice {
+pub(super) fn notice() -> Notice {
     Notice {
         version: 1,
         kind: Kind::HayesDispositionCommitted,

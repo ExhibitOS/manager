@@ -5,6 +5,7 @@ use crate::native_runtime::{
     hayes::{stage_return::RetainedStages, tests::Fixture, Binding, Lease, ACTIVE},
     oex_read_fd::{observe_stage, Stage},
 };
+use base64::{engine::general_purpose::STANDARD, Engine};
 use std::{fs, io::Write, sync::atomic::AtomicBool};
 
 fn scope(binding: &OperationBinding) -> ReleaseScope<'_> {
@@ -171,16 +172,71 @@ fn extra_replaced_or_partially_returned_stages_hold_active_custody() {
 fn api_release_completion_vector() {
     let binding = binding();
     let scope = scope(&binding);
-    let frame = encode(&CompletedFrame {
-        version: 1,
-        kind: "hayes-release-completed",
-        scope: &scope,
-        intent_sha256: &"b".repeat(64),
-        completion_sha256: &"d".repeat(64),
-    })
-    .unwrap();
+    let frame = encode(&completion(&scope)).unwrap();
     println!(
         "HAYES_RELEASE_VECTOR {}",
         std::str::from_utf8(&frame).unwrap()
     );
+}
+
+fn completion<'a>(scope: &'a ReleaseScope<'a>) -> CompletedFrame<'a> {
+    CompletedFrame {
+        version: 1,
+        kind: "hayes-release-completed",
+        scope,
+        intent_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        completion_sha256: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    }
+}
+
+#[test]
+fn release_recording_needs_exact_ack_and_exact_owned_db_bytes() {
+    let binding = binding();
+    let scope = scope(&binding);
+    let frame = encode(&completion(&scope)).unwrap();
+    let sha = crate::digest(&frame);
+    let ack = format!(concat!(
+        "{{\"version\":1,\"kind\":\"hayes-release-recorded\",\"binding\":{},",
+        "\"nativeOwnerId\":\"{}\",\"runtimeManifestSha256\":\"{}\",\"readyFrameSha256\":\"{}\",",
+        "\"dbStageId\":\"{}\",\"challenge\":\"{}\",\"receiptId\":\"{}\",\"completionFrameSha256\":\"{}\"}}"
+    ), serde_json::to_string(&binding).unwrap(), scope.native_owner_id, scope.runtime_manifest_sha256,
+        scope.ready_frame_sha256, scope.db_stage_id, scope.challenge, scope.receipt_id, sha);
+    assert!(recording::check_ack(ack.as_bytes(), &scope, &sha).is_ok());
+    assert!(recording::check_ack(ack.as_bytes(), &scope, &"a".repeat(64)).is_err());
+    let swapped = ack.replace(&scope.challenge.to_string(), &id(99).to_string());
+    assert!(recording::check_ack(swapped.as_bytes(), &scope, &sha).is_err());
+    let wrong = ack.replace(
+        "\"binding\":{\"version\":1,",
+        "\"binding\":{ \"version\":1,",
+    );
+    assert!(recording::check_ack(wrong.as_bytes(), &scope, &sha).is_err());
+    let row = format!("123|456|{}", STANDARD.encode(&frame));
+    assert_eq!(recording::check_row(&row, &frame).unwrap(), "123|456");
+    assert!(recording::check_row(&row, b"other frame").is_err());
+}
+
+#[test]
+#[ignore = "validates the exact ACK produced by the Platform encoder"]
+fn api_release_recorded_ack_fixture() {
+    let path = std::env::var_os("EXHIBITOS_TEST_HAYES_RECORDED_ACK").unwrap();
+    let binding = binding();
+    let scope = scope(&binding);
+    let sha = crate::digest(&encode(&completion(&scope)).unwrap());
+    assert!(recording::check_ack(&fs::read(path).unwrap(), &scope, &sha).is_ok());
+}
+
+#[test]
+#[ignore = "emits exact 044 recording readback SQL for an isolated fixture"]
+fn api_release_recorded_sql_fixture() {
+    use super::super::tests::{notice, pins};
+    let receipt_sha = std::env::var("EXHIBITOS_TEST_HAYES_RECEIPT_SHA256").unwrap();
+    let frame_sha = std::env::var("EXHIBITOS_TEST_HAYES_RELEASE_FRAME_SHA256").unwrap();
+    assert!(crate::hash_valid(&receipt_sha) && crate::hash_valid(&frame_sha));
+    let mut notice = notice();
+    notice.receipt_sha256 = receipt_sha;
+    let pins = pins(&notice.binding);
+    let mut scope = scope(&notice.binding);
+    scope.receipt_sha256 = &notice.receipt_sha256;
+    let sql = recording::recorded_sql(&completion(&scope), &notice, &pins, &frame_sha);
+    println!("HAYES_RELEASE_SQL_BEGIN\n{sql}\nHAYES_RELEASE_SQL_END");
 }

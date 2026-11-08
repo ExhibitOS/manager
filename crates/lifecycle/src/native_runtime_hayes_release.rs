@@ -14,12 +14,16 @@ use serde::Serialize;
 use std::time::Instant;
 use uuid::Uuid;
 
+#[path = "native_runtime_hayes_release_recording.rs"]
+mod recording;
+
 #[cfg(test)]
 #[path = "native_runtime_hayes_release_tests.rs"]
 mod tests;
 
 const INTENT_RECORD: &str = "operation-release-intent.json";
 const COMPLETION_RECORD: &str = "operation-release-completed.json";
+const RECORDED_RECORD: &str = "operation-release-recorded.json";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,24 +72,23 @@ struct CompletedFrame<'a> {
 }
 
 impl OwnedHayesOpen<'_> {
-    /// Only the current exchange can return its native custody. The local
-    /// completion is durable before sending; socket success alone cannot
-    /// establish the API's separate durable completion.
+    /// Only the current exchange can return native custody and observe the
+    /// API's separate durable recording on the same live channel.
     pub(in crate::native_runtime) fn return_committed_custody(
         &mut self,
         deadline: Instant,
     ) -> Result<()> {
         self.start(Phase::DispositionObserved)?;
-        let result = self.release_and_notify(deadline);
+        let result = self.release_and_verify_recording(deadline);
         if result.is_ok() {
-            self.phase = Phase::ReleaseNotified;
+            self.phase = Phase::ReleaseRecorded;
         } else {
             self.channel.invalidate();
         }
         result
     }
 
-    fn release_and_notify(&mut self, deadline: Instant) -> Result<()> {
+    fn release_and_verify_recording(&mut self, deadline: Instant) -> Result<()> {
         if !self.retain_attempt || self.worker.is_some() || self.source.is_some() {
             return Err(unavailable());
         }
@@ -179,24 +182,49 @@ impl OwnedHayesOpen<'_> {
             return Err(unavailable());
         }
         let completion_sha256 = persist_completion(&closed, &intent, &intent_sha256)?;
-        let frame = encode(&CompletedFrame {
+        let completion = CompletedFrame {
             version: 1,
             kind: "hayes-release-completed",
             scope: &scope,
             intent_sha256: &intent_sha256,
             completion_sha256: &completion_sha256,
-        })?;
+        };
+        let frame = encode(&completion)?;
+        let frame_sha256 = crate::digest(&frame);
         let cancellation = self.session.cancellation.clone();
+        let mut check = || {
+            self.owner.check(self.session)?;
+            if crate::digest(&closed.journal().read_bytes(COMPLETION_RECORD)?) != completion_sha256
+            {
+                return Err(unavailable());
+            }
+            Ok(())
+        };
         self.channel
-            .send_frame(&frame, deadline, &cancellation, &mut || {
-                self.owner.check(self.session)?;
-                if crate::digest(&closed.journal().read_bytes(COMPLETION_RECORD)?)
-                    != completion_sha256
-                {
-                    return Err(unavailable());
-                }
-                Ok(())
-            })
+            .send_frame(&frame, deadline, &cancellation, &mut check)?;
+        let raw = self
+            .channel
+            .read_frame(deadline, &cancellation, &mut check)?;
+        let ack = recording::check_ack(&raw, &scope, &frame_sha256)?;
+        let sql = recording::recorded_sql(&completion, notice, pins, &frame_sha256);
+        self.owner.check(self.session)?;
+        let row = self
+            .session
+            .query_database_before("exhibitos", &sql, deadline)?;
+        self.owner
+            .check_database_identity_result(recording::check_row(&row, &frame)?)?;
+        self.owner.check(self.session)?;
+        if Instant::now() >= deadline
+            || crate::digest(&closed.journal().read_bytes(COMPLETION_RECORD)?) != completion_sha256
+        {
+            return Err(unavailable());
+        }
+        closed.journal().create(RECORDED_RECORD, &ack)?;
+        self.owner.check(self.session)?;
+        if Instant::now() >= deadline {
+            return Err(unavailable());
+        }
+        Ok(())
     }
 }
 

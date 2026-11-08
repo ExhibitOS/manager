@@ -141,7 +141,7 @@ enum Phase {
     Reserved,
     OutputAcknowledged,
     DispositionObserved,
-    ReleaseNotified,
+    ReleaseRecorded,
     Failed,
 }
 
