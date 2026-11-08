@@ -3,14 +3,11 @@
 
 use super::*;
 use crate::{
-    native_payload::{
-        hayes::{HayesPhase, ReadOnlyHayesGenerate},
-        Payload,
-    },
+    native_payload::Payload,
     native_runtime::hayes::{
         tests::{binding, wait_for, Fixture},
         transfer::Transfer,
-        Lease, Worker,
+        Lease,
     },
 };
 use std::{
@@ -106,127 +103,6 @@ fn proof(parent: &Path, name: &str, value: serde_json::Value) {
     file.sync_all().unwrap();
 }
 
-fn validate_exact(
-    attempt: &mut Attempt,
-    payload: &Payload,
-    pin: &ReadOnlyHayesGenerate,
-    body: &ObservedStage,
-    body_id: Uuid,
-) -> Result<(u32, String)> {
-    pin.check()?;
-    attempt.check_stage_file(body_id, body)?;
-    let command = payload.hayes_fixed_command(HayesPhase::Validate)?;
-    let args: Vec<_> = command.args.iter().map(|arg| arg.as_os_str()).collect();
-    let output_id = Uuid::new_v4();
-    let output = Stage::create(&attempt.stage.fd, &output_id.to_string())?;
-    let (dev, ino) = output.identity()?;
-    let staged = serde_json::json!({
-        "binding": attempt.intent.binding, "role": "validate",
-        "bodyStageId": body_id, "body": StageBinding::from(body),
-        "stdoutStageId": output_id, "stdoutPhysical": Physical { dev, ino }, "stdoutLimit":256
-    });
-    attempt
-        .journal
-        .create("validate-qualification-io.json", &staged)?;
-    // Fixture-only successor. It is reachable only from the exact Generate
-    // readback below, while the original Attempt and OFD remain held.
-    let worker = Worker {
-        binding: attempt.intent.binding,
-        role: Role::Validate,
-        nonce: Uuid::new_v4(),
-    };
-    attempt.journal.create(Role::Validate.files().0, &worker)?;
-    let permit = LaunchPermit::new(
-        worker,
-        attempt
-            .lease
-            .lock
-            .try_clone()
-            .map_err(|_| custody_error())?,
-    );
-    let (mut child, mut stdio) = permit.spawn_staged(&command.program, &args, None)?;
-    let deadline = Instant::now() + Duration::from_secs(16);
-    let mut progress = || {
-        if Instant::now() >= deadline {
-            return Err(err("HAYES_WORKER_TIMEOUT"));
-        }
-        pin.check()
-    };
-    let result = (|| {
-        attempt.register_ready_until(&mut child, deadline, &mut progress)?;
-        let watch = DirectWatch::arm(&mut child)?;
-        attempt.check()?;
-        attempt.check_stage_file(body_id, body)?;
-        let named = attempt
-            .stage
-            .open_file(&format!(".oex-stage-{output_id}"), libc::O_RDONLY)
-            .map_err(|_| custody_error())?;
-        if private_file(&named)? != (Physical { dev, ino })
-            || output.identity()? != (dev, ino)
-            || attempt
-                .journal
-                .read::<serde_json::Value>("validate-qualification-io.json")?
-                != staged
-        {
-            return Err(custody_error());
-        }
-        stdio.check_quiet_output()?;
-        progress()?;
-        watch.poll()?;
-        attempt.send_go(&mut child)?;
-        let (bytes, sha256) = capture(
-            &mut child,
-            &mut stdio,
-            body,
-            output.materializer_write(),
-            256,
-            &mut || {
-                progress()?;
-                watch.poll()
-            },
-        )?;
-        watch.require_exit()?;
-        Ok((bytes, sha256))
-    })();
-    child.owner.take();
-    drop(stdio);
-    output
-        .materializer_write()
-        .sync_all()
-        .map_err(|_| custody_error())?;
-    let status = reap(&mut child);
-    let (bytes, sha256) = result?;
-    if !status.success() {
-        return Err(io_error());
-    }
-    let stdout = observe_stage(
-        output,
-        bytes,
-        &sha256,
-        &AtomicBool::new(false),
-        &mut progress,
-    )?;
-    attempt.check_stage_file(output_id, &stdout)?;
-    let mut response = Vec::new();
-    let mut reader = stdout.file();
-    reader.read_to_end(&mut response).map_err(|_| io_error())?;
-    let rss = std::str::from_utf8(&response)
-        .ok()
-        .and_then(|text| text.strip_prefix("VALID\nRSS "))
-        .and_then(|text| text.strip_suffix('\n'))
-        .and_then(|text| {
-            text.parse::<u32>()
-                .ok()
-                .filter(|n| *n > 0 && n.to_string() == text)
-        })
-        .ok_or_else(io_error)?;
-    attempt.journal.create("validate-qualification-observed.json", &serde_json::json!({
-        "binding": attempt.intent.binding, "stdout": StageBinding::from(&stdout), "peakRssKiB": rss,
-        "directExitWithoutObservedForkOrExec": true
-    }))?;
-    Ok((rss, sha256))
-}
-
 #[test]
 #[ignore]
 fn selected_package_generate_and_validate_retains_exact_private_stages() {
@@ -252,14 +128,22 @@ fn selected_package_generate_and_validate_retains_exact_private_stages() {
     let selected = generated
         .stage_selected_body(&attempt, &cancellation, &mut || Ok(()))
         .unwrap();
-    let body_id = selected.id;
-    let body = &selected.observed;
-    let telemetry = &selected.telemetry;
-
-    let pin = run.pinned_generate.as_ref().unwrap();
-    let (validate_rss, validate_stdout_sha) =
-        validate_exact(&mut attempt, &payload, pin, body, body_id).unwrap();
-    pin.check().unwrap();
+    let mut validation = attempt
+        .spawn_retained_validation(&payload, selected, &cancellation, &mut || Ok(()))
+        .unwrap();
+    let validated = attempt.observe_retained_validation(
+        &mut validation,
+        Instant::now() + Duration::from_secs(16),
+        &cancellation,
+        &mut || Ok(()),
+    );
+    assert!(reap(&mut validation.child).success());
+    let validated = validated.unwrap();
+    let body_id = validated.selected.id;
+    let body = &validated.selected.observed;
+    let telemetry = &validated.selected.telemetry;
+    let validate_rss = validated.peak_rss_kib;
+    let validate_stdout_sha = &validated.stdout.sha256;
     attempt.check().unwrap();
     let body_stage = format!(".oex-stage-{body_id}");
     drop(attempt);
