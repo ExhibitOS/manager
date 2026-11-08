@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::*;
-use std::{
-    collections::VecDeque,
-    env, fs,
-    os::unix::net::{UnixListener, UnixStream},
-    path::PathBuf,
-    thread,
-};
+use std::{collections::VecDeque, env, fs, os::unix::net::UnixListener, path::PathBuf, thread};
 
 fn ids() -> (Uuid, Uuid) {
     (
@@ -54,14 +48,44 @@ fn wire_header_and_chunk_order_match_api_contract() {
     assert!(Transfer::output(Uuid::nil(), correlation, 1, SOURCE_SHA256).is_err());
 }
 
+fn requested(flow: Transfer<'_>, include_accepted: bool) -> MemoryFrames {
+    let mut wire = MemoryFrames::default();
+    for offset in (0..flow.bytes).step_by(CHUNK).chain([flow.bytes]) {
+        wire.input.push_back(flow.next(offset).unwrap());
+    }
+    if include_accepted {
+        wire.input
+            .push_back(flow.header(HeaderKind::HayesTransferAccepted).unwrap());
+    }
+    wire
+}
+
 #[test]
-fn transfers_exact_total_and_hash_and_requires_the_final_ack() {
+fn serves_exact_output_one_requested_frame_at_a_time_and_requires_the_final_ack() {
     let (attempt, correlation) = ids();
     let bytes = sample();
     let sha = format!("{:x}", Sha256::digest(&bytes));
     let flow = Transfer::output(attempt, correlation, bytes.len() as u64, &sha).unwrap();
-    let mut wire = MemoryFrames::default();
-    assert!(flow.send(&mut wire, &mut bytes.as_slice()).is_err());
+    assert_eq!(
+        flow.next(4096).unwrap(),
+        br#"{"version":1,"kind":"hayes-transfer-next","attemptId":"10000000-0000-4000-8000-000000000001","correlationId":"10000000-0000-4000-8000-000000000002","direction":"output","offset":4096}"#
+    );
+
+    let mut unsolicited = MemoryFrames::default();
+    assert!(flow
+        .serve_output(&mut unsolicited, &mut bytes.as_slice())
+        .is_err());
+    assert_eq!(unsolicited.output.len(), 1);
+
+    let mut wrong = requested(flow, true);
+    wrong.input[1] = flow.next(0).unwrap();
+    assert!(flow
+        .serve_output(&mut wrong, &mut bytes.as_slice())
+        .is_err());
+    assert_eq!(wrong.output.len(), 2);
+
+    let mut wire = requested(flow, false);
+    assert!(flow.serve_output(&mut wire, &mut bytes.as_slice()).is_err());
     assert_eq!(wire.output.len(), 4);
     wire.input.extend(wire.output.drain(..));
     let mut received = Vec::new();
@@ -69,8 +93,12 @@ fn transfers_exact_total_and_hash_and_requires_the_final_ack() {
     assert!(wire.output.is_empty());
     assert_eq!(received, bytes);
     flow.accept(&mut wire).unwrap();
-    wire.input.extend(wire.output.drain(..));
-    flow.send(&mut wire, &mut bytes.as_slice()).unwrap();
+    assert_eq!(
+        wire.output,
+        [flow.header(HeaderKind::HayesTransferAccepted).unwrap()]
+    );
+    flow.serve_output(&mut requested(flow, true), &mut bytes.as_slice())
+        .unwrap();
 }
 
 #[test]
@@ -79,8 +107,8 @@ fn rejects_short_extra_reordered_and_hash_mismatched_data_without_accepting() {
     let bytes = sample();
     let sha = format!("{:x}", Sha256::digest(&bytes));
     let flow = Transfer::output(attempt, correlation, bytes.len() as u64, &sha).unwrap();
-    let mut sent = MemoryFrames::default();
-    assert!(flow.send(&mut sent, &mut bytes.as_slice()).is_err());
+    let mut sent = requested(flow, true);
+    flow.serve_output(&mut sent, &mut bytes.as_slice()).unwrap();
     for scenario in ["short", "extra", "reordered", "noncanonical", "hash"] {
         let mut frames = MemoryFrames {
             input: sent.output.clone().into(),
@@ -108,48 +136,32 @@ fn rejects_short_extra_reordered_and_hash_mismatched_data_without_accepting() {
     }
     let mut with_trailing_byte = bytes.clone();
     with_trailing_byte.push(0);
-    let mut frames = MemoryFrames::default();
+    let mut frames = requested(flow, true);
     assert!(flow
-        .send(&mut frames, &mut with_trailing_byte.as_slice())
+        .serve_output(&mut frames, &mut with_trailing_byte.as_slice())
         .is_err());
     assert_eq!(frames.output.len(), 3); // No END on an overlong source.
 }
 
-struct FixtureSocket {
-    socket: UnixStream,
-    deadline: Instant,
+struct TraceFrames<'a> {
+    owner: OwnerFrames<'a>,
+    received: usize,
+    sent: usize,
 }
 
-impl Frames for FixtureSocket {
+impl Frames for TraceFrames<'_> {
     fn check(&mut self) -> Result<()> {
-        let timeout = self.deadline.saturating_duration_since(Instant::now());
-        if timeout.is_zero() {
-            return Err(invalid());
-        }
-        self.socket
-            .set_read_timeout(Some(timeout))
-            .and_then(|()| self.socket.set_write_timeout(Some(timeout)))
-            .map_err(|_| invalid())
+        self.owner.check()
     }
     fn receive(&mut self) -> Result<Vec<u8>> {
-        self.check()?;
-        let mut prefix = [0; 4];
-        self.socket.read_exact(&mut prefix).map_err(|_| invalid())?;
-        let size = u32::from_be_bytes(prefix) as usize;
-        if !(1..=FRAME_LIMIT).contains(&size) {
-            return Err(invalid());
-        }
-        self.check()?;
-        let mut body = vec![0; size];
-        self.socket.read_exact(&mut body).map_err(|_| invalid())?;
-        Ok(body)
+        let frame = self.owner.receive()?;
+        self.received += 1;
+        Ok(frame)
     }
     fn send(&mut self, frame: &[u8]) -> Result<()> {
-        self.check()?;
-        self.socket
-            .write_all(&(frame.len() as u32).to_be_bytes())
-            .and_then(|()| self.socket.write_all(frame))
-            .map_err(|_| invalid())
+        self.owner.send(frame)?;
+        self.sent += 1;
+        Ok(())
     }
 }
 
@@ -175,9 +187,14 @@ fn api_interop_fixture() {
             Err(error) => panic!("{error}"),
         }
     };
-    let mut socket = FixtureSocket {
-        socket: stream,
-        deadline,
+    let mut connection =
+        crate::native_runtime::owner_channel::Connection::hayes_fixture(stream).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let mut check = || Ok(());
+    let mut frames = TraceFrames {
+        owner: OwnerFrames::new(&mut connection, deadline, &cancelled, &mut check),
+        received: 0,
+        sent: 0,
     };
     let fixture = Fixture::new();
     let (attempt_id, correlation) = ids();
@@ -192,8 +209,13 @@ fn api_interop_fixture() {
         .begin(binding)
         .unwrap();
     let source = attempt
-        .capture_source(&mut socket, correlation, &AtomicBool::new(false))
-        .unwrap();
+        .capture_source(&mut frames, correlation, &cancelled)
+        .unwrap_or_else(|error| {
+            panic!(
+                "source: {error}; received {}, sent {}",
+                frames.received, frames.sent
+            )
+        });
     assert_eq!(source.binding, binding);
     assert_eq!(source.observed.bytes, SOURCE_BYTES);
     source.observed.check_unchanged().unwrap();
@@ -201,8 +223,13 @@ fn api_interop_fixture() {
     let sha = format!("{:x}", Sha256::digest(&output));
     Transfer::output(attempt_id, correlation, output.len() as u64, &sha)
         .unwrap()
-        .send(&mut socket, &mut output.as_slice())
-        .unwrap();
+        .serve_output(&mut frames, &mut output.as_slice())
+        .unwrap_or_else(|error| {
+            panic!(
+                "output: {error}; received {}, sent {}",
+                frames.received, frames.sent
+            )
+        });
     drop(listener);
     fs::remove_file(path).unwrap();
 }

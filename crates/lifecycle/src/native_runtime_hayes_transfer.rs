@@ -65,6 +65,16 @@ struct Data {
     data: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Next {
+    version: u8,
+    kind: &'static str,
+    #[serde(flatten)]
+    identity: DataIdentity,
+    offset: u64,
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct Transfer<'a> {
     identity: DataIdentity,
@@ -214,6 +224,22 @@ impl<'a> Transfer<'a> {
         Ok(())
     }
 
+    fn next(self, offset: u64) -> Result<Vec<u8>> {
+        encode(&Next {
+            version: 1,
+            kind: "hayes-transfer-next",
+            identity: self.identity,
+            offset,
+        })
+    }
+
+    fn check_next(self, frames: &mut impl Frames, offset: u64) -> Result<()> {
+        if frames.receive()? != self.next(offset)? {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
     /// Write only into an unpublished stage. The caller sends ACCEPTED
     /// separately, after it has synced and re-read its exact stage.
     pub(super) fn receive(self, frames: &mut impl Frames, sink: &mut impl Write) -> Result<()> {
@@ -254,15 +280,23 @@ impl<'a> Transfer<'a> {
         frames.send(&self.header(HeaderKind::HayesTransferAccepted)?)
     }
 
-    /// The caller must already hold verified output custody and an immutable
-    /// readback. This framing routine cannot establish either prerequisite.
-    pub(super) fn send(self, frames: &mut impl Frames, source: &mut impl Read) -> Result<()> {
+    /// Serve one frame for each exact NEXT after START. The caller must
+    /// already hold verified output custody and an immutable readback.
+    pub(super) fn serve_output(
+        self,
+        frames: &mut impl Frames,
+        source: &mut impl Read,
+    ) -> Result<()> {
+        if self.identity.direction != Direction::Output {
+            return Err(invalid());
+        }
         frames.send(&self.header(HeaderKind::HayesTransferStart)?)?;
         let mut hasher = Sha256::new();
         let mut offset = 0;
         let mut buffer = [0u8; CHUNK];
         let result = (|| {
             while offset < self.bytes {
+                self.check_next(frames, offset)?;
                 let n = (self.bytes - offset).min(CHUNK as u64) as usize;
                 source.read_exact(&mut buffer[..n]).map_err(|_| invalid())?;
                 hasher.update(&buffer[..n]);
@@ -274,6 +308,7 @@ impl<'a> Transfer<'a> {
             {
                 return Err(invalid());
             }
+            self.check_next(frames, offset)?;
             frames.send(&self.header(HeaderKind::HayesTransferEnd)?)?;
             self.check_header(frames, HeaderKind::HayesTransferAccepted)
         })();

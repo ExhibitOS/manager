@@ -185,6 +185,15 @@ impl Setup {
 
 #[allow(dead_code)]
 impl Connection {
+    #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub(super) fn hayes_fixture(socket: UnixStream) -> Result<Self> {
+        socket.set_nonblocking(true).map_err(|_| err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
+        Ok(Self {
+            socket, key: [0; 32], valid: true, ready: true, furnishing_bound: None,
+            ordinary: None, claim_started: false, metadata_started: false,
+        })
+    }
+
     // No MAC accessor yet: cached `valid` alone cannot prove the owned peer or
     // fence is live. A typed, single-use Session-bound challenge is required.
     fn fail(&mut self) {self.valid=false;self.key.fill(0);let _=self.socket.shutdown(std::net::Shutdown::Both);}
