@@ -1867,9 +1867,7 @@ impl Payload {
     pub(crate) fn open_saved_workspace_transition(root: &Path) -> Result<Self> {
         let payload = Self::open(root)?;
         let context = payload.context();
-        if ordinary_hayes_release_host_matches((
-            &context.source_commit, &context.producer_sha256, &context.manifest_sha256,
-        )) {
+        if payload.ordinary_hayes_release() {
             return if payload.workspace_furnishing_catalog()? == Some(WorkspaceFurnishingCatalog::HayesRelease044) {
                 Ok(payload)
             } else {

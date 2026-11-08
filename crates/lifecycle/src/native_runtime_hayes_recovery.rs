@@ -89,8 +89,8 @@ impl Session {
                              = (a.tenant_id,a.artwork_id,a.artwork_revision,v.id)
                            AND approved.snapshot->'asset'->>'sha256'=v.sha256
                            AND approved.snapshot->'asset'->>'bytes'=v.bytes::text
-                           AND (approved.snapshot->'metadata' #- '{{provenance,notes}}' - 'description')
-                               = (w.metadata #- '{{provenance,notes}}' - 'description')
+                           AND ((approved.snapshot->'metadata') #- '{{provenance,notes}}') - 'description'
+                               = (w.metadata #- '{{provenance,notes}}') - 'description'
                     )
                 ))
                 AND r.worker_manifest_sha256='{worker}'
