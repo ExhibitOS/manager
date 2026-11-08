@@ -30,6 +30,15 @@ Rust helper explicitly. The validation-profile Info key is recognized only in
 debug builds. Use an isolated profile for validation and retain original apps.
 Release delivery/signing is a separate existing distribution pipeline.
 
+An authenticated existing-workspace automation session can stage one artwork
+rotation with the version 1 `artwork-placement-rotate` operation. Supply the
+current document and edit revisions in the ordinary envelope. The command
+accepts the placement ID, the saved ETag and a normalized xyzw quaternion.
+Studio checks the candidate against that ETag before the native journal stages
+the edit. Use the existing `save` operation to commit it, then
+`reopen-saved` to read it back. This operation adds no fields to the draft or
+journal formats.
+
 ## Ordinary furnishing workspace lifecycle
 
 The 037 ordinary path requires one qualified local runtime manifest shared by

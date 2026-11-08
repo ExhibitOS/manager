@@ -202,6 +202,19 @@ public struct NativeExhibitionDraft: Codable, Equatable, Sendable {
         rows[i]["transform"]["position"] = .vector(position)
         var c = candidate; c["placements"] = .array(rows); try change(c)
     }
+
+    mutating func rotatePlacement(_ id: String, rotation: [Double]) throws {
+        guard rotation.count == 4, rotation.allSatisfy(\.isFinite),
+              abs(rotation.reduce(0) { $0 + $1 * $1 } - 1) <= 1e-6,
+              var rows = candidate["placements"].items,
+              let index = rows.firstIndex(where: { $0["id"].string == id }) else {
+            throw AuthoringFailure("PLACEMENT_INVALID")
+        }
+        rows[index]["transform"]["rotation"] = .vector(rotation)
+        var next = candidate
+        next["placements"] = .array(rows)
+        try acceptBoundedPlacement(next, selection: .init(kind: "placement", id: id), savedBaseline: self)
+    }
 }
 public struct NativeStudioResponse: Decodable, Sendable {
     public let revision: Int

@@ -1448,7 +1448,7 @@ public actor AuthoringAPI {
         return next
     }
 
-    private func validateNativeViewportEdit(_ draft: NativeExhibitionDraft, etag: String) async throws {
+    func validateNativeViewportEdit(_ draft: NativeExhibitionDraft, etag: String) async throws {
         struct Input: Encodable { let requestId: String; let draft: NativeExhibitionDraft }
         struct Validation: Decodable { let valid: Bool }
         let body = try encoded(Input(requestId: UUID().uuidString.lowercased(), draft: draft))

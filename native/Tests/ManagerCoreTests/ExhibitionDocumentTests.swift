@@ -66,6 +66,30 @@ final class ExhibitionDocumentTests: XCTestCase {
         XCTAssertEqual(draft, saved)
     }
 
+    func testPlacementRotationChangesOnlyTheSelectedQuaternion() throws {
+        var draft = try NativeExhibitionDraft.new()
+        let room = try XCTUnwrap(draft.rooms.first?["id"].string)
+        let artwork: DocumentValue = .object([
+            "kind": .string("artwork"), "revisionId": .string(UUID().uuidString),
+            "primaryAssetId": .string(UUID().uuidString)
+        ])
+        try draft.addApprovedArtwork(artwork, roomId: room, position: [1, 2, 3])
+        try draft.addApprovedArtwork(artwork, roomId: room, position: [2, 3, 4])
+        let id = try XCTUnwrap(draft.placements.first?["id"].string)
+        let before = draft
+        XCTAssertThrowsError(try draft.rotatePlacement(id, rotation: [0, 2, 0, 0]))
+        XCTAssertThrowsError(try draft.rotatePlacement(id, rotation: [0, .nan, 0, 0]))
+        XCTAssertThrowsError(try draft.rotatePlacement(UUID().uuidString, rotation: [0, 1, 0, 0]))
+        XCTAssertEqual(draft, before)
+        try draft.rotatePlacement(id, rotation: [0, 1, 0, 0])
+        var expected = before.candidate
+        var placements = before.placements
+        placements[0]["transform"]["rotation"] = .vector([0, 1, 0, 0])
+        expected["placements"] = .array(placements)
+        XCTAssertEqual(draft.candidate, expected)
+        XCTAssertEqual(draft.document["editVersion"].integer, before.document["editVersion"].integer.map { $0 + 1 })
+    }
+
     func testHayesTextRefreshPreservesAssetPoseAndUnrelatedPlacements() throws {
         var draft = try NativeExhibitionDraft.new()
         let room = try XCTUnwrap(draft.rooms.first?["id"].string)
