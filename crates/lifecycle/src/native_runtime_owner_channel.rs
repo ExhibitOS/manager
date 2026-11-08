@@ -28,6 +28,12 @@ struct Hello<'a> { version: u32, kind: &'static str, workspace_id: &'a str, tena
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Ack { version: u32, kind: String, workspace_id: String, tenant_id: String, principal_id: String, runtime_generation: String }
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+#[path = "native_runtime_hayes_owner_bootstrap.rs"]
+mod hayes_bootstrap;
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+use hayes_bootstrap::HayesSetup;
+
 /// Holds both original endpoints until spawn. Only the duplicated child
 /// descriptor is made inheritable in the forked API child.
 pub(super) struct Setup {
@@ -35,6 +41,8 @@ pub(super) struct Setup {
     child: Option<File>,
     secret: String,
     furnishing_writer: Option<super::furnishing_lifetime::ProbedWriter>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    hayes: Option<HayesSetup>,
 }
 /// Intended to stay inside the owning Session; this type does not enforce
 /// that lifetime. It is not a claim, readiness, fence or authorization; loss
@@ -81,7 +89,10 @@ impl Setup {
         if unsafe { libc::getentropy(bytes.as_mut_ptr().cast(),bytes.len()) }!=0 { return Err(err("NATIVE_RANDOM_UNAVAILABLE")); }
         let secret=bytes.iter().map(|v|format!("{v:02x}")).collect::<String>();bytes.fill(0);
         parent.set_nonblocking(true).map_err(|_| err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
-        Ok(Self {parent,child:Some(child),secret,furnishing_writer:None})
+        Ok(Self {parent,child:Some(child),secret,furnishing_writer:None,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+            hayes: None,
+        })
     }
     pub(super) fn with_furnishing_writer(mut self, file: super::furnishing_lifetime::ProbedWriter) -> Self {
         self.furnishing_writer = Some(file);
@@ -125,6 +136,10 @@ impl Setup {
         self.normal_selected_v3_bootstrap(auth, generation, super::oex_catalog_frames::Protocol::from(version).owner_mode())
     }
     pub(super) fn workspace_furnishing_bootstrap(&self, auth: &LocalAuthority, generation: &str, start: super::FurnishingStart) -> Result<Vec<u8>> {
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        if let Some(hayes) = &self.hayes {
+            return hayes.bootstrap(auth, generation, start, &self.secret);
+        }
         self.normal_selected_v3_bootstrap(auth, generation, start.owner_mode())
     }
     fn normal_selected_v3_bootstrap(&self, auth: &LocalAuthority, generation: &str, mode: &'static str) -> Result<Vec<u8>> {
@@ -132,6 +147,20 @@ impl Setup {
         let bytes=serde_json::to_vec(&value).map_err(|_|err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
         if bytes.len()>4096 {return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));} Ok(bytes)
     }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub(super) fn with_hayes(mut self, pin: super::hayes::operation::HayesSessionPin) -> Result<Self> {
+        if self.hayes.is_some() || self.furnishing_writer.is_none() {
+            return Err(err("HAYES_OPERATION_UNAVAILABLE"));
+        }
+        self.hayes = Some(HayesSetup::new(pin)?);
+        Ok(self)
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub(super) fn take_hayes(&mut self) -> Option<HayesSetup> {
+        self.hayes.take()
+    }
+
     pub(super) fn configure(&self, command:&mut Command) -> Result<()> {
         let fd=self.child.as_ref().ok_or_else(||err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?.as_raw_fd();
         command.env("EXHIBITOS_NATIVE_OWNER_FD",fd.to_string());
@@ -143,8 +172,18 @@ impl Setup {
             }
             command.env("EXHIBITOS_NATIVE_FURNISHING_WRITER_FD", writer.to_string());
         }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        let hayes_fd = self.hayes.as_ref().map(HayesSetup::child_fd).transpose()?;
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions)))]
+        let hayes_fd: Option<i32> = None;
+        if let Some(hayes_fd) = hayes_fd {
+            if hayes_fd == fd || writer == Some(hayes_fd) {
+                return Err(err("HAYES_OPERATION_UNAVAILABLE"));
+            }
+            command.env("EXHIBITOS_NATIVE_HAYES_OWNER_FD", hayes_fd.to_string());
+        }
         unsafe { command.pre_exec(move || {
-            for descriptor in std::iter::once(fd).chain(writer) {
+            for descriptor in std::iter::once(fd).chain(writer).chain(hayes_fd) {
                 let flags = libc::fcntl(descriptor, libc::F_GETFD);
                 if flags < 0 || libc::fcntl(descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
                     return Err(std::io::Error::last_os_error());
@@ -157,6 +196,10 @@ impl Setup {
     pub(super) fn close_child(&mut self) {
         self.child.take();
         self.furnishing_writer.take();
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        if let Some(hayes) = self.hayes.as_mut() {
+            hayes.close_child();
+        }
     }
     /// A successful hello proves only possession of this inherited socket and
     /// agreement on the launch identity. The operation still needs live claim,
@@ -173,6 +216,10 @@ impl Setup {
         let mut reply=vec![0u8;n];read_bounded(&mut self.parent,&mut reply,deadline,cancellation,&mut ||Ok(()))?;
         let ack:Ack=serde_json::from_slice(&reply).map_err(|_|err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
         if ack.version!=1||ack.kind!="hello-ack"||ack.workspace_id!=auth.workspace_id||ack.tenant_id!=auth.tenant_id||ack.principal_id!=auth.principal_id||ack.runtime_generation!=generation {return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));}
+        self.authenticated_connection()
+    }
+
+    fn authenticated_connection(&self) -> Result<Connection> {
         let socket=self.parent.try_clone().map_err(|_|err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
         let mut key=[0u8;32];
         for (i,pair) in self.secret.as_bytes().chunks_exact(2).enumerate() {
