@@ -318,9 +318,9 @@ pub(crate) struct HayesSessionProbePin {
 #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const HAYES_SESSION_PROBE_PIN: Option<HayesSessionProbePin> = Some(HayesSessionProbePin {
     host: (
-        "8cd9e8e1ccc622f4d228eaf5e25dda9b9128a260",
+        "2da5c0448bfb102c8039038b72c5f61b084b484e",
         "1d46b4eb7bfd5b774aebad364a3131b09c3c42427dd633bb6622434b21bb60a3",
-        "a756b012b20fea4485a38f8a7acd2d2eefa475bc96047aafca271778fc7847a4",
+        "4a8422b0d5ee20fb1d67ddcf3aaec942470c9fb26f1239c96274e5ff98f3e498",
     ),
     script_bytes: 7307,
     script_sha256: "cf761453a0567ec1a9e2d0be8e336bec757ac8af323a47541a73080f3aa8f7f8",
