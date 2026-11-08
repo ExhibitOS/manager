@@ -6,11 +6,20 @@ use super::{
     Attestation, Database, Kind, OperationBinding, OwnedHayesOpen, Phase, ReadyPins,
     ReservedOutput, Result, BODY_BYTES, BODY_SHA, RESERVATION_RECORD,
 };
-use crate::{hash_valid, native_runtime::oex_owner::DATABASE_IDENTITY_SQL};
+use crate::{
+    hash_valid,
+    native_runtime::{
+        oex_owner::{Owner, DATABASE_IDENTITY_SQL},
+        Session,
+    },
+};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
+
+#[path = "native_runtime_hayes_release.rs"]
+mod release;
 
 #[cfg(test)]
 #[path = "native_runtime_hayes_disposition_tests.rs"]
@@ -34,7 +43,7 @@ struct Challenge<'a> {
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Notice {
+pub(in super::super) struct Notice {
     version: u8,
     kind: Kind,
     binding: OperationBinding,
@@ -157,16 +166,20 @@ impl OwnedHayesOpen<'_> {
         deadline: Instant,
     ) -> Result<()> {
         self.start(Phase::OutputAcknowledged)?;
-        let result = self.read_committed_disposition(deadline);
-        if result.is_ok() {
-            self.phase = Phase::DispositionObserved;
-        } else {
-            self.channel.invalidate();
+        match self.read_committed_disposition(deadline) {
+            Ok(notice) => {
+                self.disposition = Some(notice);
+                self.phase = Phase::DispositionObserved;
+                Ok(())
+            }
+            Err(error) => {
+                self.channel.invalidate();
+                Err(error)
+            }
         }
-        result
     }
 
-    fn read_committed_disposition(&mut self, deadline: Instant) -> Result<()> {
+    fn read_committed_disposition(&mut self, deadline: Instant) -> Result<Notice> {
         let attempt = self.attempt.as_ref().ok_or_else(unavailable)?;
         let pins = self.ready_pins.as_ref().ok_or_else(unavailable)?;
         let validated = self.validated.as_ref().ok_or_else(unavailable)?;
@@ -212,18 +225,7 @@ impl OwnedHayesOpen<'_> {
             .channel
             .read_frame(deadline, &cancellation, &mut check)?;
         let notice = check_notice(&raw, &challenge)?;
-        let sql = committed_sql(&notice, pins);
-        self.owner.check(self.session)?;
-        let value = self
-            .session
-            .query_database_before("exhibitos", &sql, deadline)?;
-        let readback = Readback::parse(&value)?;
-        self.owner.check_database_identity_result(&format!(
-            "{}|{}",
-            readback.system_id, readback.database_oid
-        ))?;
-        readback.check_receipt(&notice, pins)?;
-        self.owner.check(self.session)?;
+        verify_committed_receipt(&self.owner, self.session, &notice, pins, deadline, false)?;
         check_revalidation_record(attempt, record, revalidation)?;
         pins.check(attempt)?;
         validated.check_leaves(attempt)?;
@@ -233,16 +235,68 @@ impl OwnedHayesOpen<'_> {
             return Err(unavailable());
         }
         self.channel.check_hayes_idle()?;
-        attempt.journal.create(OBSERVED_RECORD, &notice)
+        attempt.journal.create(OBSERVED_RECORD, &notice)?;
+        Ok(notice)
     }
 }
 
-fn committed_sql(notice: &Notice, pins: &ReadyPins) -> String {
+fn verify_committed_receipt(
+    owner: &Owner,
+    session: &mut Session,
+    notice: &Notice,
+    pins: &ReadyPins,
+    deadline: Instant,
+    require_live_lease: bool,
+) -> Result<Instant> {
+    owner.check(session)?;
+    let started = Instant::now();
+    let value = session.query_database_before(
+        "exhibitos",
+        &committed_sql(notice, pins, require_live_lease),
+        deadline,
+    )?;
+    let (row, deadline) = if require_live_lease {
+        let (row, remaining) = value.rsplit_once('|').ok_or_else(unavailable)?;
+        (row, live_release_deadline(started, deadline, remaining)?)
+    } else {
+        (value.as_str(), deadline)
+    };
+    let readback = Readback::parse(row)?;
+    owner.check_database_identity_result(&format!(
+        "{}|{}",
+        readback.system_id, readback.database_oid
+    ))?;
+    readback.check_receipt(notice, pins)?;
+    owner.check(session)?;
+    Ok(deadline)
+}
+
+fn live_release_deadline(started: Instant, deadline: Instant, remaining: &str) -> Result<Instant> {
+    let milliseconds = remaining
+        .parse::<u64>()
+        .ok()
+        .filter(|ms| (1..=300_000).contains(ms) && ms.to_string() == remaining)
+        .ok_or_else(unavailable)?;
+    // The DB samples after this local start, so charging the full query
+    // duration is conservative and never extends the existing operation.
+    let deadline = deadline.min(started + Duration::from_millis(milliseconds));
+    if deadline <= Instant::now() {
+        return Err(unavailable());
+    }
+    Ok(deadline)
+}
+
+fn committed_sql(notice: &Notice, pins: &ReadyPins, require_live_lease: bool) -> String {
     let b = &notice.binding;
+    let lease_budget = if require_live_lease {
+        ",floor(EXTRACT(EPOCH FROM (j.lease_until-clock_timestamp()))*1000)::bigint"
+    } else {
+        ""
+    };
     // Interpolated values come from typed IDs, validated digests and the fixed
     // current native pin. A committed claim keeps its lease ID after approval.
     format!(
-        "SELECT db.system_id,db.database_oid,o.id,dsp.id,x.id,replace(encode(d.receipt_canonical,'base64'),chr(10),'')
+        "SELECT db.system_id,db.database_oid,o.id,dsp.id,x.id,replace(encode(d.receipt_canonical,'base64'),chr(10),''){lease_budget}
          FROM ({DATABASE_IDENTITY_SQL}) db
          JOIN hayes_original_dispositions d ON (d.database_system_identifier,d.database_oid)=(db.system_id,db.database_oid)
          JOIN hayes_original_attempts a ON (a.tenant_id,a.id,a.job_id)=(d.tenant_id,d.attempt_id,d.job_id)
