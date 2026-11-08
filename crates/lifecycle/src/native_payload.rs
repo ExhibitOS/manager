@@ -276,6 +276,36 @@ const WORKSPACE_FRAME_PREPARATION_VALIDATION_PROVENANCE: &[(&str, &str, &str)] =
 )];
 #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
 const WORKSPACE_FRAME_PREPARATION_VALIDATION_PROVENANCE: &[(&str, &str, &str)] = &[];
+const HAYES_ORIGINAL_DIRECTORY: &str = "platform/database/native-hayes-original/";
+const HAYES_ORIGINAL_SCHEMA: (&str, u64, &str) = (
+    "platform/database/native-hayes-original/042_hayes_original_attempt.sql",
+    3617,
+    "074de4171572039f2f400d49d07aff8a3ec83ec222c1684cbc5452c6cc8b3ece",
+);
+const HAYES_ORIGINAL_CAPABILITY: (&str, u64, &str) = (
+    "platform/scripts/native-hayes-original-capability-v1.json",
+    288,
+    "89bcf960b415e5601cdf345be7c763975744f3d6e45f6772a90d8d1a0f991762",
+);
+const HAYES_FRAME_PREPARATION_CAPABILITY: (&str, u64, &str) = (
+    WORKSPACE_FRAME_PREPARATION_CAPABILITY.0,
+    WORKSPACE_FRAME_PREPARATION_CAPABILITY.1,
+    "c1fe667c80a3b36ddb124fddb5ce427131bae3018c47ecfce7238be556955f92",
+);
+
+// The private actual-host probe uses one reviewed local package. Ordinary
+// Manager binaries have no admitted 042 host tuple.
+pub(crate) fn hayes_bootstrap_validation_tuple() -> Option<(&'static str, &'static str, &'static str)> {
+    #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return Some((
+        "2ebddaab6c68f07f8f0da5338f43993524830589",
+        "032fc0e28994987ed6fcb8f2adbc01e3e349b0e7e076b5c570d47c75c7a45048",
+        "1eb6203060fd0ac598eda8c64e49b513b028c17debc3675f5d2e5f646fc5f98f",
+    ));
+    #[cfg(not(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    None
+}
+
 // Keep this exact physical transition local to the debug validation helper.
 #[cfg(debug_assertions)]
 pub(crate) const CATALOG40_FRAME_SOURCE: (&str, &str, &str) = (
@@ -466,6 +496,7 @@ pub(crate) enum WorkspaceFurnishingCatalog {
     MaterialPublication039,
     MaterialMultimap040,
     FramePreparation041,
+    HayesOriginal042,
 }
 
 impl WorkspaceFurnishingCatalog {
@@ -477,12 +508,13 @@ impl WorkspaceFurnishingCatalog {
             Self::MaterialPublication039 => 39,
             Self::MaterialMultimap040 => 40,
             Self::FramePreparation041 => 41,
+            Self::HayesOriginal042 => 42,
         }
     }
 
     pub(crate) fn uses_writer_lease(self) -> bool {
         matches!(self, Self::Writer037 | Self::Publication038 | Self::MaterialPublication039
-            | Self::MaterialMultimap040 | Self::FramePreparation041)
+            | Self::MaterialMultimap040 | Self::FramePreparation041 | Self::HayesOriginal042)
     }
 }
 
@@ -1699,7 +1731,13 @@ impl Payload {
                 || file.path == WORKSPACE_FURNISHING_SELECTED_OEX_039_CAPABILITY.0);
         let material_pinned = material.contains(&tuple);
         let multimap_pinned = multimap.contains(&tuple);
-        let preparation_pinned = frame_preparation.contains(&tuple);
+        let hayes_pinned = hayes_bootstrap_validation_tuple() == Some(tuple);
+        let hayes_declared = self.manifest.files.iter().any(|file|
+            file.path == HAYES_ORIGINAL_CAPABILITY.0 || file.path.starts_with(HAYES_ORIGINAL_DIRECTORY));
+        if hayes_declared != hayes_pinned {
+            return Err(unqualified());
+        }
+        let preparation_pinned = frame_preparation.contains(&tuple) || hayes_pinned;
         let wants_preparation = preparation_pinned || self.manifest.files.iter().any(|file|
             file.path == WORKSPACE_FRAME_PREPARATION_CAPABILITY.0
                 || file.path.starts_with(WORKSPACE_FRAME_PREPARATION_DIRECTORY));
@@ -1759,11 +1797,19 @@ impl Payload {
                         return Err(unqualified());
                     }
                     if wants_preparation {
-                        if !pinned_file(WORKSPACE_FRAME_PREPARATION_CAPABILITY)
+                        let marker = if hayes_pinned { HAYES_FRAME_PREPARATION_CAPABILITY }
+                            else { WORKSPACE_FRAME_PREPARATION_CAPABILITY };
+                        if !pinned_file(marker)
                             || !pinned_file(WORKSPACE_FRAME_PREPARATION_SCHEMA)
                             || self.manifest.files.iter().any(|file| file.path == WORKSPACE_FURNISHING_SELECTED_OEX_040_CAPABILITY.0)
                         {
                             return Err(unqualified());
+                        }
+                        if hayes_pinned {
+                            if !pinned_file(HAYES_ORIGINAL_CAPABILITY) || !pinned_file(HAYES_ORIGINAL_SCHEMA) {
+                                return Err(unqualified());
+                            }
+                            return Ok(Some(WorkspaceFurnishingCatalog::HayesOriginal042));
                         }
                         return Ok(Some(WorkspaceFurnishingCatalog::FramePreparation041));
                     }
@@ -1832,12 +1878,20 @@ impl Payload {
                 40
             } else if file.path.starts_with(WORKSPACE_FRAME_PREPARATION_DIRECTORY) {
                 let (path, bytes, hash) = WORKSPACE_FRAME_PREPARATION_SCHEMA;
-                if catalog != WorkspaceFurnishingCatalog::FramePreparation041
+                if !matches!(catalog, WorkspaceFurnishingCatalog::FramePreparation041 | WorkspaceFurnishingCatalog::HayesOriginal042)
                     || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
                 {
                     return Err(invalid());
                 }
                 41
+            } else if file.path.starts_with(HAYES_ORIGINAL_DIRECTORY) {
+                let (path, bytes, hash) = HAYES_ORIGINAL_SCHEMA;
+                if catalog != WorkspaceFurnishingCatalog::HayesOriginal042
+                    || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
+                {
+                    return Err(invalid());
+                }
+                42
             } else {
                 let Some((_, range)) = directories.iter().find(|(expected, _)| *expected == directory) else { continue; };
                 let Some(number) = name.split_once('_').and_then(|(number, _)| number.parse::<usize>().ok()) else { return Err(invalid()); };

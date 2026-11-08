@@ -54,6 +54,9 @@ use furnishing_lifecycle::{Admission, Binding, Owner as FurnishingOwner, Phase, 
 #[path = "native_runtime_owner_claim_frames.rs"] mod owner_claim_frames;
 #[path = "native_runtime_owner_metadata_frames.rs"] mod owner_metadata_frames;
 #[path = "native_runtime_owner_binding_encoding.rs"] mod owner_binding_encoding;
+#[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[path = "native_runtime_hayes_042_probe.rs"]
+mod hayes_042_probe;
 
 pub(crate) const WORKSPACE_FURNISHING_INITIALIZATION: &str = "native-workspace-furnishing-initialization.json";
 
@@ -2085,6 +2088,12 @@ const { isDeepStrictEqual } = require('node:util');
         } else { id };
         let prior_binding = prior.as_ref().and_then(|current| current.furnishing.clone());
         let catalog = self.payload.workspace_furnishing_catalog()?;
+        #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        if catalog == Some(WorkspaceFurnishingCatalog::HayesOriginal042)
+            && (!matches!(self.hayes_bootstrap, HayesBootstrap::Armed(_)) || prior.is_some())
+        {
+            return Err(err("HAYES_OPERATION_UNAVAILABLE"));
+        }
         let mut binding = prior_binding.clone();
         let mut maintenance_system = None;
         let mut existing_database = false;
