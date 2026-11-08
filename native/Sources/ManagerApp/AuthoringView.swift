@@ -56,13 +56,13 @@ final class AuthoringModel: ObservableObject {
     var intakeDrainPending: Bool {
         guard let intent = transfer?.intent, let job = importJob else { return false }
         return (job.terminal || job.state == "failed") && requiresIntakeDrain(intent, job: job)
-            && !job.confirmsIntakeDrain(for: intent.mime)
+            && !job.confirmsIntakeDrain(for: intent)
     }
     private func requiresIntakeDrain(_ intent: NativeImportIntent, job: NativeImportJob) -> Bool {
         // A restarted queue loses its in-memory row, but keeps this intent and
         // the runtime's drain contract. Unknown older single-file runtimes
         // retain their existing behavior.
-        activeIntakeID != nil || intent.modelDerivation != nil
+        activeIntakeID != nil || intent.modelDerivation != nil || intent.coarsePreparation != nil
             || (intent.mime == "image/png" && (iccImportAdmitted || (job.workerDrainVersion ?? 0) > 0))
     }
     @Published var importScale = 1.0
@@ -534,6 +534,14 @@ extension AuthoringModel {
                 }
                 try await checkGUIImportContinuation(intent, api: api)
                 guard importJob?.id == job.id, transfer?.jobId == job.id else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+                if intent.coarsePreparation != nil {
+                    let observed = try await api.importJob(job.id)
+                    guard observed.id == job.id, transfer?.jobId == job.id, transfer?.intent == intent,
+                          observed.canRetryReviewedImport(intent) else {
+                        throw AuthoringFailure("IMPORT_DRAIN_PENDING")
+                    }
+                    importJob = observed
+                }
             }
             if let intent = transfer?.intent, intent.derived?.recipe.colourConversion != nil {
                 guard iccImportAdmitted else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
@@ -584,7 +592,7 @@ extension AuthoringModel {
                 let observed = try await api.importJob(job.id)
                 try importTransfer.observe(observed, intent: intent)
                 importJob = observed
-                guard observed.id == job.id, observed.terminal, observed.confirmsIntakeDrain(for: intent.mime),
+                guard observed.id == job.id, observed.terminal, observed.confirmsIntakeDrain(for: intent),
                       transfer?.revision == state.revision else { throw AuthoringFailure("IMPORT_DRAIN_PENDING") }
             }
             if let intent = state.intent, intent.derived?.recipe.colourConversion != nil {

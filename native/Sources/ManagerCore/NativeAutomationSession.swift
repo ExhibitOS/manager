@@ -382,7 +382,7 @@ public actor NativeAutomationSession {
             derived: derived.derived, coarsePreparation: coarse)
         var job = try await NativeAutomationArtworkTransfer.run(bridge: bridge, context: context, state: state,
             intent: intent, file: original, derived: derived, transport: api)
-        if retryFailed, job.state == "failed", job.canRetry(coarse: coarse) {
+        if retryFailed, job.state == "failed", job.canRetryReviewedImport(intent) {
             let id = job.id
             job = try await api.importAction(id, action: .retry)
             guard job.id == id else { throw BridgeFailure("IMPORT_RECEIPT_INVALID") }

@@ -1568,9 +1568,16 @@ public struct NativeImportJob: Decodable, Sendable {
         switch mime {
         case "image/png": workerDrainVersion == 1 && workerDrained == true
         case "model/gltf-binary": modelDerivation?.workerDrained == true
-        case "image/jpeg": coarsePreparation?.workerDrained == true
         default: false
         }
+    }
+    public func confirmsIntakeDrain(for intent: NativeImportIntent) -> Bool {
+        if let coarse = intent.coarsePreparation {
+            return imagePreparation?.matches(intent) == true
+                && coarsePreparation?.matches(coarse, job: self) == true
+                && coarsePreparation?.workerDrained == true
+        }
+        return confirmsIntakeDrain(for: intent.mime)
     }
     public var canRetry: Bool {
         let optionalModelFailure = state == "approved" && modelDerivation?.status == "failed" && modelDerivation?.workerDrained == true
@@ -1581,9 +1588,8 @@ public struct NativeImportJob: Decodable, Sendable {
         let date = formatter.date(from: retryAt) ?? ISO8601DateFormatter().date(from: retryAt)
         return date.map { $0 <= Date() } ?? false
     }
-    func canRetry(coarse intent: NativeCoarsePreparationIntent) -> Bool {
-        retryAt != nil && canRetry && coarsePreparation?.matches(intent, job: self) == true
-            && coarsePreparation?.workerDrained == true
+    public func canRetryReviewedImport(_ intent: NativeImportIntent) -> Bool {
+        intent.coarsePreparation != nil && retryAt != nil && canRetry && confirmsIntakeDrain(for: intent)
     }
 }
 /// Retain this exact intent/key on uncertain responses; changing bytes/rights
