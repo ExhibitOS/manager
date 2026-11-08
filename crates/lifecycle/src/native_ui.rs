@@ -198,6 +198,11 @@ pub enum Command {
         selection_token: String,
         account: Option<crate::initial_account::InitialAccountInput>,
     },
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    NativeHayesExecute {
+        selection_token: String,
+        input: crate::native_runtime::hayes_ordinary::Input,
+    },
     #[cfg(target_os = "macos")]
     NativeAuthoringSession {
         selection_token: String,
@@ -252,10 +257,26 @@ struct WireRequest {
     backup: Option<super::native_backup::Input>,
     #[cfg(target_os = "macos")]
     oex_save: Option<crate::native_host::OexSaveObservation>,
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    hayes_execute: Option<crate::native_runtime::hayes_ordinary::Input>,
 }
 impl TryFrom<WireRequest> for Request {
     type Error = &'static str;
     fn try_from(wire: WireRequest) -> std::result::Result<Self, Self::Error> {
+        #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+        if wire.command == "native_hayes_execute" {
+            if wire.state.is_some() || wire.account.is_some() || wire.transfer.is_some() || wire.oex_import.is_some()
+                || wire.document.is_some() || wire.publication.is_some() || wire.export.is_some() || wire.backup.is_some()
+                || wire.hosting.is_some() || wire.maintenance.is_some() || wire.oex_save.is_some()
+            {
+                return Err("NATIVE_PROTOCOL_INVALID");
+            }
+            let selection_token = wire.selection_token.ok_or("NATIVE_PROTOCOL_INVALID")?;
+            let input = wire.hayes_execute.ok_or("NATIVE_PROTOCOL_INVALID")?;
+            return Ok(Self { version: wire.version, id: wire.id, command: Command::NativeHayesExecute { selection_token, input } });
+        }
+        #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+        if wire.hayes_execute.is_some() { return Err("NATIVE_PROTOCOL_INVALID"); }
         #[cfg(target_os = "macos")]
         if matches!(wire.command.as_str(), "native_oex_save_observed" | "native_oex_save_authorize") {
             if wire.state.is_some() || wire.account.is_some() || wire.transfer.is_some() || wire.oex_import.is_some()
@@ -589,6 +610,8 @@ impl Request {
             Command::OEXImportState { selection_token } => serde_json::to_value(controller.native_oex_import(&selection_token)?),
             #[cfg(target_os = "macos")]
             Command::SaveOEXImportState { selection_token, transfer } => serde_json::to_value(controller.save_native_oex_import(&selection_token, *transfer)?),
+            #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+            Command::NativeHayesExecute { .. } => return Err(err("NATIVE_HOST_REQUIRED")),
             #[cfg(target_os = "macos")]
             Command::NativeAuthoringSession { .. }
             | Command::NativeHosting { .. }

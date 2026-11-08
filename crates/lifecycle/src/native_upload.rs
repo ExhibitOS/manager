@@ -23,6 +23,27 @@ pub struct Intent {
         skip_serializing_if = "Option::is_none"
     )]
     pub coarse_preparation: Option<CoarsePreparation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hayes_original: Option<HayesOriginal>,
+}
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HayesOriginal {
+    pub artwork_revision: u32,
+    pub display_reference_sha256: String,
+}
+impl HayesOriginal {
+    fn valid(&self, intent: &Intent) -> bool {
+        (1..=i32::MAX as u32).contains(&self.artwork_revision)
+            && hash_valid(&self.display_reference_sha256)
+            && intent.mime == "model/gltf-binary"
+            && intent.bytes == 8_383_096
+            && intent.sha256 == "e66715a51c9cad0b904d2715d5b27fb80b97d43fe8c2a3cd10276c1b336a2cf6"
+            && intent.scale_meters == 1.0
+            && intent.derived.is_none()
+            && intent.model_derivation.is_none()
+            && intent.coarse_preparation.is_none()
+    }
 }
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -191,6 +212,7 @@ pub(crate) fn validate(s: &Transfer) -> Result<()> {
             || i.coarse_preparation
                 .as_ref()
                 .is_some_and(|coarse| !coarse.valid(i))
+            || i.hayes_original.as_ref().is_some_and(|hayes| !hayes.valid(i))
             || i.bytes == 0
             || i.bytes > 32 * 1024 * 1024
             || !i.scale_meters.is_finite()
@@ -272,8 +294,9 @@ impl InstallationController {
                 return Err(err("NATIVE_UPLOAD_STATE_CHANGED"));
             }
             if let Some(next) = &state.intent
-                && (next.coarse_preparation.is_some()
-                    || current.intent.as_ref().is_some_and(|prior| prior.coarse_preparation.is_some()))
+                && (next.coarse_preparation.is_some() || next.hayes_original.is_some()
+                    || current.intent.as_ref().is_some_and(|prior|
+                        prior.coarse_preparation.is_some() || prior.hayes_original.is_some()))
             {
                 let prior = current
                     .intent

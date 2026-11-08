@@ -369,6 +369,7 @@ public actor AuthoringAPI {
     #else
     private static let workspaceFurnishingManifestPins: Set<String> = []
     #endif
+    public nonisolated let hayesOriginalRuntimeQualified: Bool
     public nonisolated let workspaceFurnishingRuntimeQualified: Bool
     public nonisolated let workspaceFramePreparationRuntimeQualified: Bool
     public nonisolated let workspacePortalFinishRuntimeQualified: Bool
@@ -396,9 +397,11 @@ public actor AuthoringAPI {
         )
         let manifest = nativeRuntimeManifestSHA256 ?? ""
         #if DEBUG
-        let portalQualified = manifest == Self.workspacePortalFinishManifestPin || admitsSameOwnerArtworkReplacement
+        hayesOriginalRuntimeQualified = manifest == "c0565112569fc1b1b95f8ada72b2b7cacabc8ea3e24b58a61dc9aa138c8bb406"
+        let portalQualified = manifest == Self.workspacePortalFinishManifestPin || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
         let multimapQualified = portalQualified || Self.workspaceMaterialMultimapManifestPins.contains(manifest)
         #else
+        hayesOriginalRuntimeQualified = false
         let portalQualified = false
         let multimapQualified = false
         #endif
@@ -1050,6 +1053,28 @@ public actor AuthoringAPI {
         try await request("/api/v1/tenants/\(tenant)/imports/" + identifier(id))
     }
     public func createImport(_ input: NativeImportIntent) async throws -> NativeImportJob {
+        if let hayes = input.hayesOriginal {
+            guard nativeSession, hayesOriginalRuntimeQualified, hayes.matches(input) else {
+                throw AuthoringFailure("HAYES_OPERATION_UNAVAILABLE")
+            }
+            struct Create: Encodable {
+                let artworkId: String
+                let artworkRevision: Int
+                let displayReferenceSha256: String
+                let idempotencyKey: String
+            }
+            struct Created: Decodable, Sendable { let id: String; let state: String }
+            let requestGeneration = generation
+            let result: Created = try await request("/api/v1/tenants/\(tenant)/imports/native-hayes-original", method: "POST",
+                body: encoded(Create(artworkId: try identifier(input.artworkId), artworkRevision: hayes.artworkRevision,
+                                     displayReferenceSha256: hayes.displayReferenceSha256, idempotencyKey: try identifier(input.idempotencyKey))))
+            let id = try identifier(result.id)
+            let job = try await importJob(id)
+            guard generation == requestGeneration, try identifier(job.id) == id else {
+                throw AuthoringFailure("IMPORT_RECEIPT_INVALID")
+            }
+            return job
+        }
         guard input.derived?.recipe.colourConversion == nil || admitsICCJPEG else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
         if let coarse = input.coarsePreparation {
             guard admitsSameOwnerArtworkReplacement, nativeSession else {
@@ -1594,6 +1619,26 @@ public struct NativeImportJob: Decodable, Sendable {
 }
 /// Retain this exact intent/key on uncertain responses; changing bytes/rights
 /// requires an explicit new intent rather than replaying a different payload.
+public struct NativeHayesOriginalIntent: Codable, Equatable, Sendable {
+    public static let sourceBytes = 8_383_096
+    public static let sourceSHA256 = "e66715a51c9cad0b904d2715d5b27fb80b97d43fe8c2a3cd10276c1b336a2cf6"
+    public let artworkRevision: Int
+    public let displayReferenceSha256: String
+
+    public init(artworkRevision: Int, displayReferenceSha256: String) {
+        self.artworkRevision = artworkRevision
+        self.displayReferenceSha256 = displayReferenceSha256
+    }
+
+    func matches(_ intent: NativeImportIntent) -> Bool {
+        (1...Int(Int32.max)).contains(artworkRevision)
+            && displayReferenceSha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil
+            && intent.mime == "model/gltf-binary" && intent.sha256 == Self.sourceSHA256
+            && intent.bytes == Self.sourceBytes && intent.scaleMeters == 1
+            && intent.derived == nil && intent.modelDerivation == nil && intent.coarsePreparation == nil
+    }
+}
+
 public struct NativeImportIntent: Codable, Equatable, Sendable {
     public let artworkId: String
     public let idempotencyKey: String
@@ -1605,8 +1650,9 @@ public struct NativeImportIntent: Codable, Equatable, Sendable {
     public let derived: NativeImportDerived?
     public let modelDerivation: NativeModelDerivationIntent?
     public let coarsePreparation: NativeCoarsePreparationIntent?
+    public let hayesOriginal: NativeHayesOriginalIntent?
     private enum CodingKeys: String, CodingKey {
-        case artworkId, idempotencyKey, mime, sha256, bytes, scaleMeters, rights, derived, modelDerivation, coarsePreparation
+        case artworkId, idempotencyKey, mime, sha256, bytes, scaleMeters, rights, derived, modelDerivation, coarsePreparation, hayesOriginal
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -1621,9 +1667,11 @@ public struct NativeImportIntent: Codable, Equatable, Sendable {
         modelDerivation = try values.decodeIfPresent(NativeModelDerivationIntent.self, forKey: .modelDerivation)
         coarsePreparation = values.contains(.coarsePreparation)
             ? try values.decode(NativeCoarsePreparationIntent.self, forKey: .coarsePreparation) : nil
+        hayesOriginal = try values.decodeIfPresent(NativeHayesOriginalIntent.self, forKey: .hayesOriginal)
     }
-    public init(artworkId: String, idempotencyKey: String = UUID().uuidString.lowercased(), mime: String, sha256: String, bytes: Int, scaleMeters: Double, rights: ArtworkMetadata.Rights, derived: NativeImportDerived? = nil, modelDerivation: NativeModelDerivationIntent? = nil, coarsePreparation: NativeCoarsePreparationIntent? = nil) {
+    public init(artworkId: String, idempotencyKey: String = UUID().uuidString.lowercased(), mime: String, sha256: String, bytes: Int, scaleMeters: Double, rights: ArtworkMetadata.Rights, derived: NativeImportDerived? = nil, modelDerivation: NativeModelDerivationIntent? = nil, coarsePreparation: NativeCoarsePreparationIntent? = nil, hayesOriginal: NativeHayesOriginalIntent? = nil) {
         self.artworkId = artworkId; self.idempotencyKey = idempotencyKey; self.mime = mime; self.sha256 = sha256; self.bytes = bytes; self.scaleMeters = scaleMeters; self.rights = rights; self.derived = derived; self.modelDerivation = modelDerivation
         self.coarsePreparation = coarsePreparation
+        self.hayesOriginal = hayesOriginal
     }
 }

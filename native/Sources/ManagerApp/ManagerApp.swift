@@ -181,6 +181,10 @@ final class ManagerModel: ObservableObject {
             authoring.bindImportStore(read: { try await bridge.uploadState(context) }, save: { state in try await bridge.saveUploadState(context, state: state) })
             let status = try await bridge.nativeStatus(context)
             guard status.runtime?.jobId == runtimeJobID else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
+            authoring.bindHayesOriginal(ready: status.hayesOriginalReady == true) { job, artwork, revision, worker in
+                try await bridge.executeHayesAndWait(context, jobId: job, artworkId: artwork,
+                                                     artworkRevision: revision, workerRuntime: worker)
+            }
             authoring.bindIntakeWorkspace(available: status.selectedOex == false) { [weak self] in
                 guard let self, self.context?.selectionToken == context.selectionToken else { return false }
                 let observed = try await bridge.nativeStatus(context)

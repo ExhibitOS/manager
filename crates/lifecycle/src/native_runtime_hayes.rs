@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Inactive custody for the native Hayes helper. No runtime entry point is wired.
-//! Production must provision one canonical root per effective UID and retain its
-//! identity independently of the namespace opened here. Profile paths and HOME
-//! are not authority for choosing a root. Open never provisions or repairs it.
+//! Native Hayes custody uses one canonical root per effective UID. Its
+//! authority is kept outside that root. Opening a lease never repairs custody.
 
 use crate::{err, maintenance_source::DirectoryPin, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -35,6 +33,9 @@ mod transfer;
 #[path = "native_runtime_hayes_watch.rs"]
 mod watch;
 use launch::{channel_error, LaunchPermit, Phase, SpawnedWorker};
+#[cfg(target_os = "macos")]
+#[path = "native_runtime_hayes_provision.rs"]
+pub(super) mod provision;
 
 pub(super) const RESERVATION_BYTES: u64 = 512 * 1024 * 1024;
 const LOCK: &str = "hayes.lock";

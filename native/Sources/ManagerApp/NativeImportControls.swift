@@ -22,8 +22,28 @@ struct NativeImportControls: View {
                     Text("다른 작품에 시작한 파일 검사가 있습니다.")
                     Button("검사 중인 작품 열기") { openArtwork(id) }
                 } else if model.hasUnknownSourceUnits {
-                    Text("원본 단위 미확인 GLB의 파일 검사와 승인은 지정된 입고 절차에서 진행합니다.")
-                        .foregroundStyle(.secondary)
+                    if model.hayesOriginalAvailable, model.importJob?.terminal != true {
+                        if model.importJob == nil || model.importJob?.state == "uploading" {
+                            Button("Hayes GLB 원본 선택…") { Task { await model.chooseImportFile() } }
+                            if let file = model.importFile { Text(file.name).textSelection(.enabled) }
+                            Button("원본 등록") { Task { await model.uploadImportFile() } }
+                                .disabled(model.importFile == nil || model.metadataDirty || model.transfer == nil)
+                            if model.hasHayesIntent, model.importFile == nil {
+                                Button("이전 원본 등록 확인") { Task { await model.recoverImport() } }
+                            }
+                        }
+                        if model.hasHayesIntent, model.importJob?.state == "queued" {
+                            Toggle("저장한 작품 정보와 원본의 사용 권리를 확인했습니다", isOn: $model.approvalAcknowledged)
+                            Button("감상용 파일 준비 및 승인…") { Task { await model.prepareHayesOriginal() } }
+                                .disabled(!model.approvalAcknowledged || model.metadataDirty)
+                        }
+                    } else if !model.hasHayesIntent {
+                        Text("원본 단위 미확인 GLB의 파일 검사와 승인은 지정된 입고 절차에서 진행합니다.")
+                            .foregroundStyle(.secondary)
+                    }
+                    if model.hayesReceipt != nil {
+                        Label("원본 보관과 감상용 파일 승인을 확인했습니다.", systemImage: "checkmark.circle")
+                    }
                 } else {
                     Button(model.importFile == nil ? "\(model.importFormats) 파일 선택…" : "같은 파일 다시 선택…", systemImage: "doc.badge.plus") { Task { await model.chooseImportFile() } }
                         .disabled(model.activeIntakeID != nil && model.transfer?.intent == nil)
@@ -78,7 +98,7 @@ struct NativeImportControls: View {
                             Button("감상용 파일 재시도") { Task { await model.changeImport(.retry) } }
                                 .disabled(!job.canRetry || !model.modelDerivationEnabled || model.modelWorkerPending)
                         }
-                        if !job.terminal { Button("검사 중단") { Task { await model.changeImport(.cancel) } } }
+                        if !job.terminal, !model.hasHayesIntent { Button("검사 중단") { Task { await model.changeImport(.cancel) } } }
                         if job.terminal { Button("다른 파일 검사 준비") { Task { await model.clearImport() } }.disabled(model.intakeDrainPending || model.modelWorkerPending || job.modelDerivation?.workerDrained == false) }
                     }
                     if model.intakeDrainPending { Text("현재 파일 검사 작업이 실제로 끝날 때까지 다음 파일은 대기합니다.").foregroundStyle(.secondary) }
