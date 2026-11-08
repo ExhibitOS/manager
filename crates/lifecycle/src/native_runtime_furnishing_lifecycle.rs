@@ -83,6 +83,7 @@ impl Binding {
         let private_hayes_bootstrap = self.admission_kind == Admission::FreshEmpty && match self.catalog {
             42 => crate::native_payload::hayes_validation_host_matches(tuple),
             43 => crate::native_payload::hayes_disposition_host_matches(tuple),
+            44 => crate::native_payload::hayes_release_host_matches(tuple),
             _ => false,
         };
         if self.version != 1

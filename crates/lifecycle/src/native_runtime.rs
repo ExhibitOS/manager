@@ -2118,7 +2118,7 @@ const { isDeepStrictEqual } = require('node:util');
         let prior_binding = prior.as_ref().and_then(|current| current.furnishing.clone());
         let catalog = self.payload.workspace_furnishing_catalog()?;
         #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-        if matches!(catalog, Some(WorkspaceFurnishingCatalog::HayesOriginal042 | WorkspaceFurnishingCatalog::HayesDisposition043))
+        if matches!(catalog, Some(WorkspaceFurnishingCatalog::HayesOriginal042 | WorkspaceFurnishingCatalog::HayesDisposition043 | WorkspaceFurnishingCatalog::HayesRelease044))
             && (!matches!(self.hayes_bootstrap, HayesBootstrap::Armed(_)) || prior.is_some()
                 || self.payload.hayes_session_probe_script()?.is_some() != self.hayes_probe_source.is_some())
         {

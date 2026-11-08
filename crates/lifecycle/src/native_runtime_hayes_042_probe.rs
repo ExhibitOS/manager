@@ -147,6 +147,12 @@ fn actual_043_session_stages_output_and_retains_native_custody() {
     actual_session_probe(WorkspaceFurnishingCatalog::HayesDisposition043);
 }
 
+#[test]
+#[ignore = "requires the exact reviewed 044 pair and a new isolated profile and custody"]
+fn actual_044_session_commits_and_returns_native_custody() {
+    actual_session_probe(WorkspaceFurnishingCatalog::HayesRelease044);
+}
+
 fn actual_session_probe(catalog: WorkspaceFurnishingCatalog) {
     use super::{
         hayes::{tests::Fixture, Lease},
@@ -154,17 +160,22 @@ fn actual_session_probe(catalog: WorkspaceFurnishingCatalog) {
     };
     use std::mem::ManuallyDrop;
 
-    let stages_output = catalog == WorkspaceFurnishingCatalog::HayesDisposition043;
-    let (pin, prefix) = if stages_output {
-        (
+    let releases_output = catalog == WorkspaceFurnishingCatalog::HayesRelease044;
+    let stages_output = catalog.version() >= 43;
+    let (pin, prefix) = match catalog {
+        WorkspaceFurnishingCatalog::HayesRelease044 => (
+            &crate::native_payload::HAYES_RELEASE_PROBE_PIN,
+            "EXHIBITOS_TEST_HAYES_044_PROBE_",
+        ),
+        WorkspaceFurnishingCatalog::HayesDisposition043 => (
             &crate::native_payload::HAYES_DISPOSITION_PROBE_PIN,
             "EXHIBITOS_TEST_HAYES_043_PROBE_",
-        )
-    } else {
-        (
+        ),
+        WorkspaceFurnishingCatalog::HayesOriginal042 => (
             &crate::native_payload::HAYES_SESSION_PROBE_PIN,
             "EXHIBITOS_TEST_HAYES_PROBE_",
-        )
+        ),
+        _ => unreachable!(),
     };
     let pin = pin
         .as_ref()
@@ -180,8 +191,8 @@ fn actual_session_probe(catalog: WorkspaceFurnishingCatalog) {
         Some(catalog)
     );
     let worker = Payload::open(&path("WORKER")).unwrap();
-    let original =
-        ProbeSourceFd::open_original(&probe_path("EXHIBITOS_TEST_HAYES_ORIGINAL")).unwrap();
+    let original_path = probe_path("EXHIBITOS_TEST_HAYES_ORIGINAL");
+    let original = ProbeSourceFd::open_original(&original_path).unwrap();
 
     let root = path("ROOT");
     let custody_path = path("CUSTODY");
@@ -237,10 +248,52 @@ fn actual_session_probe(catalog: WorkspaceFurnishingCatalog) {
             .receive_output_reservation(worker_deadline)
             .unwrap();
         exchange.transfer_reserved_output(worker_deadline).unwrap();
-        Some(await_staged_probe_event(&root, generation, worker_deadline))
+        Some(await_probe_event(
+            &root,
+            generation,
+            "hayes-probe-output-staged",
+            worker_deadline,
+        ))
     } else {
         None
     };
+    if releases_output {
+        let proof = release_probe::before_release(&custody_path, staged.as_ref().unwrap());
+        exchange
+            .observe_committed_disposition(worker_deadline)
+            .unwrap();
+        exchange.return_committed_custody(worker_deadline).unwrap();
+        let recorded = await_probe_event(
+            &root,
+            generation,
+            "hayes-probe-release-recorded",
+            worker_deadline,
+        );
+        let committed = await_probe_event(
+            &root,
+            generation,
+            "hayes-probe-disposition-committed",
+            worker_deadline,
+        );
+        drop(exchange);
+        assert!(session.retained_hayes.is_none());
+        assert_eq!(proof.binding.generation, generation);
+        assert_eq!(proof.binding.owner, native_owner);
+        assert!(!custody_path.join("active.json").exists());
+        drop(Lease::acquire(custody.path(), custody.authority()).unwrap());
+        release_probe::verify_release(
+            &mut session,
+            &root,
+            &original_path,
+            &proof,
+            &committed,
+            &recorded,
+        );
+        stop_probe_session(&mut session, &root, catalog);
+        println!("HAYES_SESSION_RELEASE_RECORDED manifest={manifest} generation={generation} nativeOwner={native_owner} attempt={} job={} dbStage={} receipt={} completionFrame={} web={web} api={api} postgres={database}",
+            proof.binding.attempt, proof.binding.job, proof.db_stage_id, committed["receiptId"].as_str().unwrap(), recorded["completionFrameSha256"].as_str().unwrap());
+        return;
+    }
     drop(exchange);
 
     let retained = session
@@ -339,19 +392,7 @@ fn actual_session_probe(catalog: WorkspaceFurnishingCatalog) {
     }
     assert!(!attempt.join("terminal.json").exists());
 
-    let stopped = session.stop().unwrap();
-    assert_eq!(stopped.state, "stopped");
-    assert!(stopped.failure_code.is_none());
-    assert!(
-        stopped.node_pid.is_none()
-            && stopped.postgres_pid.is_none()
-            && stopped.auxiliary_pid.is_none()
-    );
-    assert_eq!(stopped.exits.get("node"), Some(&0));
-    assert_eq!(stopped.exits.get("postgres"), Some(&0));
-    let current = current_run(&root).unwrap().unwrap().furnishing.unwrap();
-    assert_eq!(current.catalog, catalog.version());
-    assert_eq!(current.phase, Phase::Clean);
+    stop_probe_session(&mut session, &root, catalog);
     assert_eq!(
         Lease::acquire(custody.path(), custody.authority())
             .err()
@@ -372,28 +413,45 @@ fn actual_session_probe(catalog: WorkspaceFurnishingCatalog) {
     println!("HAYES_SESSION_WORKERS_HELD manifest={manifest} generation={generation} nativeOwner={native_owner} attempt={} job={} output={expected_hash} leaseRemainingMs={lease_remaining_ms} web={web} api={api} postgres={database}", binding.attempt, binding.job);
 }
 
-fn await_staged_probe_event(root: &Path, generation: Uuid, deadline: Instant) -> Value {
+fn stop_probe_session(session: &mut Session, root: &Path, catalog: WorkspaceFurnishingCatalog) {
+    let stopped = session.stop().unwrap();
+    assert_eq!(stopped.state, "stopped");
+    assert!(stopped.failure_code.is_none());
+    assert!(
+        stopped.node_pid.is_none()
+            && stopped.postgres_pid.is_none()
+            && stopped.auxiliary_pid.is_none()
+    );
+    assert_eq!(stopped.exits.get("node"), Some(&0));
+    assert_eq!(stopped.exits.get("postgres"), Some(&0));
+    let current = current_run(root).unwrap().unwrap().furnishing.unwrap();
+    assert_eq!(current.catalog, catalog.version());
+    assert_eq!(current.phase, Phase::Clean);
+}
+
+#[path = "native_runtime_hayes_044_probe.rs"]
+mod release_probe;
+
+fn await_probe_event(root: &Path, generation: Uuid, kind: &str, deadline: Instant) -> Value {
     let log = root
         .join("native-runs")
         .join(generation.to_string())
         .join("process.log");
+    let prefix = format!("{{\"kind\":\"{kind}\",");
     loop {
         assert!(
             Instant::now() < deadline,
-            "043 probe did not stage output before the deadline"
+            "Hayes probe did not emit {kind} before the deadline"
         );
         let lines = fs::read_to_string(&log).unwrap();
-        if let Some(line) = lines
-            .lines()
-            .find(|line| line.starts_with("{\"kind\":\"hayes-probe-output-staged\","))
-        {
+        if let Some(line) = lines.lines().find(|line| line.starts_with(&prefix)) {
             return serde_json::from_str(line).unwrap();
         }
         assert!(
             !lines
                 .lines()
                 .any(|line| line == "HAYES_SESSION_PROBE_FAILED"),
-            "043 probe failed before output staging"
+            "Hayes probe failed before {kind}"
         );
         std::thread::sleep(Duration::from_millis(50));
     }
