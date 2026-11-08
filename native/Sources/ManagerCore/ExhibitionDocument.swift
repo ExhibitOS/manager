@@ -226,13 +226,19 @@ public struct NativeExhibitionDraft: Codable, Equatable, Sendable {
               let variants = lod["variants"].items, variants.count == 2,
               variants.contains(where: { $0["detail"] == .string("full") && $0["assetId"].string == fullId }),
               variants.contains(where: { $0["detail"] == .string("coarse") && $0["assetId"].string == coarseId }),
-              case .object(var extensions) = artwork["extensions"] else { throw invalid }
+              artwork["extensions"][cmsKey]["revision"].integer == revision + 1,
+              prior["extensions"][cmsKey]["revision"].integer == revision,
+              case .object(var extensions) = artwork["extensions"],
+              case .object(var comparison) = artwork,
+              case .object(let original) = prior else { throw invalid }
         extensions.removeValue(forKey: lodKey)
-        var comparison = artwork
+        var cms = artwork["extensions"][cmsKey]
+        cms["revision"] = .integer(revision)
+        extensions[cmsKey] = cms
         comparison["extensions"] = .object(extensions)
-        comparison["extensions"][cmsKey]["revision"] = prior["extensions"][cmsKey]["revision"]
-        for key in ["revision", "revisionId", "createdAt", "provenance", "assets"] { comparison[key] = prior[key] }
-        guard comparison == prior, artwork["provenance"]["authorship"] == prior["provenance"]["authorship"] else { throw invalid }
+        let changing: Set<String> = ["revision", "revisionId", "createdAt", "provenance", "assets"]
+        guard comparison.filter({ !changing.contains($0.key) }) == original.filter({ !changing.contains($0.key) }),
+              artwork["provenance"]["authorship"] == prior["provenance"]["authorship"] else { throw invalid }
 
         inventory[i] = artwork
         rows[p]["artworkRevisionId"] = newRevision
