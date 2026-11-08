@@ -250,6 +250,25 @@ stops cleanly, reopen with the exact 044 runtime through the ordinary helper
 or Manager app. The trial starts no Hayes import. Use the same checkpoint and
 key for recovery if activation fails and the trial has drained.
 
+### Ordinary Hayes original intake
+
+Use the exact ordinary 044 runtime above with a saved owner workspace.
+Mount the existing qualified Hayes worker image read-only. Manager discovers
+the single verified worker on a mounted volume before the job is claimed.
+Select the original GLB in the artwork's existing file controls, register it,
+and confirm the saved artwork and rights before preparing the display file.
+Artwork approval is a separate action after Manager verifies release of the
+original and display file custody.
+
+The native automation commands `hayes-original-queue` and
+`hayes-original-prepare` use the same upload journal and owned operation.
+`hayes-original-prepare` accepts an explicit `workerRuntime` path for a
+verified read-only mount when the caller supplies one. On reopening the
+same workspace, use `hayes-original-release` to read the confirmed receipt
+for the persisted job before `artwork-approve`. The app performs that read
+when it restores an approved file job. If the release is unconfirmed, keep
+the job and its journal for inspection.
+
 For current catalog 040 service EXB, the same saved-workspace commands
 admit a directed refresh from
 `bdfc8202d851f9f8983440b9475da3fc3ddc6ee1f0bf4cf2c0d4bf1995dde338`

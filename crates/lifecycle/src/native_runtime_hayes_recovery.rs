@@ -141,3 +141,41 @@ fn check_journals(binding: ExecuteBinding, row: Row, intent: &[u8], completion: 
         receipt_sha256: row.receipt_sha256, completion_frame_sha256: row.completion_frame_sha256,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires the retained real 044 release evidence and independent DB receipt vector"]
+    fn retained_release_journals_confirm_only_the_original_receipt() {
+        let journal = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_HAYES_RELEASE_JOURNAL").unwrap());
+        let vector = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_HAYES_RELEASE_VECTOR").unwrap());
+        let vector = fs::read(vector).unwrap();
+        let row = || serde_json::from_slice::<Row>(&vector).unwrap();
+        let intent = fs::read(journal.join("operation-release-intent.json")).unwrap();
+        let completion = fs::read(journal.join("operation-release-completed.json")).unwrap();
+        let ack = fs::read(journal.join("operation-release-recorded.json")).unwrap();
+        let recorded: Value = serde_json::from_slice(&ack).unwrap();
+        let binding: ExecuteBinding = serde_json::from_value(serde_json::json!({
+            "jobId": recorded["binding"]["jobId"],
+            "artworkId": recorded["binding"]["artworkId"],
+            "artworkRevision": recorded["binding"]["artworkRevision"],
+        })).unwrap();
+
+        let receipt = check_journals(binding, row(), &intent, &completion, &ack).unwrap();
+        assert_eq!(receipt.receipt_id, row().receipt_id);
+        assert_eq!(receipt.completion_frame_sha256, row().completion_frame_sha256);
+        let other = ExecuteBinding { artwork_revision: binding.artwork_revision + 1, ..binding };
+        assert!(check_journals(other, row(), &intent, &completion, &ack).is_err());
+
+        let mut corrupted = completion.clone();
+        corrupted.push(b'\n');
+        assert!(check_journals(binding, row(), &intent, &corrupted, &ack).is_err());
+
+        let mut other_ack = recorded;
+        other_ack["nativeOwnerId"] = Value::from(Uuid::new_v4().to_string());
+        let other_ack = serde_json::to_vec(&other_ack).unwrap();
+        assert!(check_journals(binding, row(), &intent, &completion, &other_ack).is_err());
+    }
+}
