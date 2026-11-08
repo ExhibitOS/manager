@@ -1288,6 +1288,17 @@ impl Host {
             },
             _ => {}
         }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        if let UiCommand::NativeHayesRelease { selection_token, job_id } = &request.command {
+            let root = self.selected(selection_token)?;
+            let transfer = self.controller.native_upload(selection_token)?;
+            let mut state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+            if state.root.as_ref() != Some(&root) || state.busy || state.detail_closing || state.selected_oex {
+                return Err(err("NATIVE_NOT_READY"));
+            }
+            return state.session.as_mut().ok_or_else(|| err("NATIVE_NOT_READY"))?
+                .recover_hayes_release(job_id, &transfer);
+        }
         if let UiCommand::NativeAuthoringSession { selection_token } = &request.command {
             let root = self.selected(selection_token)?;
             let mut state = self

@@ -72,7 +72,8 @@ final class AuthoringModel: ObservableObject {
     private var writeTransfer: ((NativeUploadState) async throws -> NativeUploadState)?
     @Published private var hayesSessionReady = false
     @Published private(set) var hayesReceipt: NativeHayesReceipt?
-    private var executeHayes: ((String, String, Int, URL) async throws -> NativeHayesReceipt)?
+    private var executeHayes: ((String, String, Int) async throws -> NativeHayesReceipt)?
+    private var recoverHayes: ((String) async throws -> NativeHayesReceipt)?
     var hayesOriginalAvailable: Bool {
         hayesSessionReady && api?.hayesOriginalRuntimeQualified == true
             && hasUnknownSourceUnits && selected?.metadata?.displayReference?.status == "provisional-uncalibrated"
@@ -138,7 +139,7 @@ final class AuthoringModel: ObservableObject {
             // Starting a new local runtime revokes the previous session even
             // when the tenant, port and runtime manifest stay the same.
             self.runtimeJobID = runtimeJobID
-            hayesSessionReady = false; hayesReceipt = nil; executeHayes = nil
+            hayesSessionReady = false; hayesReceipt = nil; executeHayes = nil; recoverHayes = nil
             session = nil
             importStatusGeneration = UUID()
         }
@@ -237,7 +238,9 @@ final class AuthoringModel: ObservableObject {
             if transfer?.intent == nil { importFile = nil }
             approvalAcknowledged = false
             selected = value; draft = value.metadata ?? ArtworkMetadata(); original = draft; creationYearText = draft.creationYear.map(String.init) ?? ""
-            assetId = value.approvedAssetId ?? value.assets.first(where: { $0.state == "approved" })?.id ?? ""
+            assetId = value.approvedAssetId
+                ?? (transfer?.intent?.artworkId == value.id && hasHayesIntent ? importJob?.assetId : nil)
+                ?? value.assets.first(where: { $0.state == "approved" })?.id ?? ""
             artistId = value.artistId; editing = true; editingUser = session?.userId
             if !artists.contains(where: { $0.id == value.artistId }) { artists.append(try await api.artist(value.artistId)) }
         }
@@ -335,9 +338,26 @@ extension AuthoringModel {
     func bindImportStore(read: @escaping () async throws -> NativeUploadState, save: @escaping (NativeUploadState) async throws -> NativeUploadState) {
         readTransfer = read; writeTransfer = save
     }
-    func bindHayesOriginal(ready: Bool, execute: @escaping (String, String, Int, URL) async throws -> NativeHayesReceipt) {
+    func bindHayesOriginal(ready: Bool, execute: @escaping (String, String, Int) async throws -> NativeHayesReceipt,
+                           recover: @escaping (String) async throws -> NativeHayesReceipt) {
         hayesSessionReady = ready
         executeHayes = execute
+        recoverHayes = recover
+    }
+
+    private func recoverHayesIfApproved(_ job: NativeImportJob) async {
+        guard job.state == "approved", let intent = transfer?.intent, intent.hayesOriginal != nil,
+              let recoverHayes else { return }
+        let generation = importStatusGeneration
+        do {
+            let receipt = try await recoverHayes(job.id)
+            guard generation == importStatusGeneration, transfer?.intent == intent, transfer?.jobId == job.id else { return }
+            hayesReceipt = receipt
+        } catch {
+            guard generation == importStatusGeneration, transfer?.intent == intent else { return }
+            hayesReceipt = nil
+            failure = AuthoringFailure("HAYES_RELEASE_UNCONFIRMED")
+        }
     }
 
     private func restoreImport() async throws {
@@ -354,6 +374,7 @@ extension AuthoringModel {
             let observed = try await api.importJob(id)
             if let intent = state.intent { try importTransfer.observe(observed, intent: intent) }
             importJob = observed
+            await recoverHayesIfApproved(observed)
         }
         scheduleImportPoll()
     }
@@ -627,6 +648,7 @@ extension AuthoringModel {
             let observed = try await api.importJob(id)
             if let intent = transfer?.intent { try importTransfer.observe(observed, intent: intent) }
             importJob = observed
+            await recoverHayesIfApproved(observed)
             if importJob?.state == "approved", let selected, selected.id == transfer?.intent?.artworkId {
                 let fresh = try await api.artwork(selected.id)
                 if fresh.revision == selected.revision { self.selected = fresh; if let asset = importJob?.assetId { assetId = asset } }
@@ -685,16 +707,6 @@ extension AuthoringModel {
         }
     }
     func prepareHayesOriginal() async {
-        guard hayesOriginalAvailable, approvalAcknowledged, !metadataDirty, !busy else { return }
-        let panel = NSOpenPanel()
-        panel.title = "검증된 Hayes 작업 도구 선택"
-        panel.message = "읽기 전용으로 연결한 작업 도구의 runtime 폴더를 선택하세요."
-        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
-        guard let window = NSApp.keyWindow else { return }
-        let response = await withCheckedContinuation { continuation in
-            panel.beginSheetModal(for: window) { continuation.resume(returning: $0) }
-        }
-        guard response == .OK, let url = panel.url else { return }
         await action {
             guard hayesOriginalAvailable, approvalAcknowledged, !metadataDirty, let api, let executeHayes,
                   let selected, let job = importJob, let intent = transfer?.intent,
@@ -704,7 +716,7 @@ extension AuthoringModel {
             }
             let generation = importStatusGeneration
             try await checkGUIImportContinuation(intent, api: api)
-            let receipt = try await executeHayes(job.id, intent.artworkId, hayes.artworkRevision, url)
+            let receipt = try await executeHayes(job.id, intent.artworkId, hayes.artworkRevision)
             guard generation == importStatusGeneration, available, transfer?.intent == intent,
                   self.selected?.id == intent.artworkId else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
             hayesReceipt = receipt
@@ -725,10 +737,14 @@ extension AuthoringModel {
             guard let api, let selected, !metadataDirty, approvalAcknowledged,
                   selected.assets.contains(where: { $0.id == assetId && $0.state == "approved" }) else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
             if hasUnknownSourceUnits {
-                guard let receipt = hayesReceipt, let intent = transfer?.intent, let job = importJob,
-                      receipt.jobId == job.id, job.assetId == assetId,
+                guard let recoverHayes, let intent = transfer?.intent, let job = importJob,
+                      job.assetId == assetId,
                       intent.hayesOriginal?.confirmsDisplay(selected, job: job, intent: intent) == true else {
                     throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+                }
+                hayesReceipt = try await recoverHayes(job.id)
+                guard transfer?.intent == intent, importJob?.id == job.id else {
+                    throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
                 }
             }
             if let intent = transfer?.intent, intent.artworkId.lowercased() == selected.id.lowercased(),

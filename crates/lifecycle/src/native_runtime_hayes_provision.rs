@@ -49,6 +49,12 @@ pub(in crate::native_runtime) fn acquire_user_lease() -> Result<Lease> {
     acquire_in(&PrivateDirectory::open(&base)?)
 }
 
+pub(in crate::native_runtime) fn open_user_lease() -> Result<Lease> {
+    let base = PrivateDirectory::open(&account_home()?.join("Library/Application Support").join(CONTAINER))?;
+    let authority = base.read(AUTHORITY)?;
+    Lease::acquire(&base.path.join(ROOT), authority)
+}
+
 fn acquire_in(base: &PrivateDirectory) -> Result<Lease> {
     let lock = base.open_file(PROVISION_LOCK, libc::O_RDWR | libc::O_CREAT)
         .map_err(|_| custody_error())?;

@@ -14,7 +14,7 @@ use std::{
 
 const SOURCE: &str = "77e8e4dc1c8489f42c3f1dd0a6d858eecc96bf1c";
 const PRODUCER: &str = "153558a719595549071e9bf6dd06950a0bfba9549c463601c1c6ac0ff51cc3ba";
-const MANIFEST: &str = "94a6551d16af3fb134f94549d9f087ee8ccb9fd2372d914de5f738a78d3505c6";
+pub(crate) const WORKER_MANIFEST_SHA256: &str = "94a6551d16af3fb134f94549d9f087ee8ccb9fd2372d914de5f738a78d3505c6";
 const NODE: &str = "bin/node";
 const NODE_SHA: &str = "e4b5a3af0e05c75de2eae013904145f40fe7fc2a6e6f17510128bf45cca4e79b";
 const NODE_NOTICE: &str = "notices/Node-LICENSE";
@@ -72,7 +72,7 @@ pub(crate) struct ReadOnlyHayesGenerate {
 
 impl ReadOnlyHayesGenerate {
     pub(crate) fn manifest_sha256(&self) -> &'static str {
-        MANIFEST
+        WORKER_MANIFEST_SHA256
     }
 
     pub(crate) fn check(&self) -> Result<()> {
@@ -122,7 +122,7 @@ impl Payload {
         if self.manifest.mode != "local-validation"
             || self.manifest.source_commit != SOURCE
             || self.manifest.producer_sha256 != PRODUCER
-            || self.manifest_sha256 != MANIFEST
+            || self.manifest_sha256 != WORKER_MANIFEST_SHA256
         {
             return Err(unavailable());
         }

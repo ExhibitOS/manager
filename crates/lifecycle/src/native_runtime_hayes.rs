@@ -291,6 +291,18 @@ pub(super) struct Lease {
 }
 
 impl Lease {
+    #[cfg(target_os = "macos")]
+    pub(super) fn released_journal(&self, attempt: Uuid, file: &str) -> Result<Vec<u8>> {
+        self.check()?;
+        if attempt.is_nil() || self.root.exists(ACTIVE)? {
+            return Err(custody_error());
+        }
+        let journal = PrivateDirectory::open(&self.root.path.join(attempt.to_string()))?;
+        let bytes = journal.read_bytes(file)?;
+        self.check()?;
+        Ok(bytes)
+    }
+
     /// Each call, including restart, independently opens and locks the stable inode.
     pub(super) fn acquire(path: &Path, authority: Authority) -> Result<Self> {
         let root = PrivateDirectory::open(path)?;

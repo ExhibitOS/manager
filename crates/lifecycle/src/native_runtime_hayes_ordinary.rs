@@ -13,7 +13,7 @@ use super::{
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Input {
     binding: ExecuteBinding,
-    worker_runtime: PathBuf,
+    worker_runtime: Option<PathBuf>,
 }
 
 impl Input {
@@ -43,7 +43,10 @@ impl Session {
             return Err(unavailable());
         }
         self.check_native_observation_fence()?;
-        let worker = Payload::open(&input.worker_runtime)?;
+        let worker = match input.worker_runtime {
+            Some(path) => Payload::open(&path)?,
+            None => discover_worker()?,
+        };
         // Fail before the API can claim the import if the immutable worker is absent.
         worker.hayes_read_only_generate()?.check()?;
         let lease = provision::acquire_user_lease()?;
@@ -67,6 +70,46 @@ impl Session {
         }
         serde_json::to_value(verified).map_err(|_| unavailable())
     }
+}
+
+fn discover_worker() -> Result<Payload> {
+    use crate::native_payload::hayes::WORKER_MANIFEST_SHA256;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let mut matches = Vec::new();
+    let volumes = Path::new("/Volumes");
+    let host_device = volumes.metadata().map_err(|_| unavailable())?.dev();
+    for (index, volume) in fs::read_dir(volumes).map_err(|_| unavailable())?.enumerate() {
+        if index == 64 {
+            return Err(unavailable());
+        }
+        let volume = volume.map_err(|_| unavailable())?;
+        if !volume.file_type().map_err(|_| unavailable())?.is_dir()
+            || volume.metadata().map_err(|_| unavailable())?.dev() == host_device
+        {
+            continue;
+        }
+        let runtime = volume.path().join("runtime");
+        let Ok(file) = fs::OpenOptions::new().read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(runtime.join("manifest.json")) else {
+            continue;
+        };
+        if !file.metadata().is_ok_and(|stat| stat.is_file() && stat.len() <= 8 * 1024 * 1024) {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        if file.take(8 * 1024 * 1024 + 1).read_to_end(&mut bytes).is_ok()
+            && digest(&bytes) == WORKER_MANIFEST_SHA256
+            && let Ok(payload) = Payload::open(&runtime)
+            && payload.hayes_read_only_generate().is_ok()
+        {
+            matches.push(payload);
+            if matches.len() > 1 {
+                return Err(err("HAYES_WORKER_MOUNT_AMBIGUOUS"));
+            }
+        }
+    }
+    matches.pop().ok_or_else(|| err("HAYES_WORKER_MOUNT_UNAVAILABLE"))
 }
 
 fn unavailable() -> LifecycleError {

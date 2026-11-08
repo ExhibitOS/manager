@@ -397,7 +397,7 @@ public actor AuthoringAPI {
         )
         let manifest = nativeRuntimeManifestSHA256 ?? ""
         #if DEBUG
-        hayesOriginalRuntimeQualified = manifest == "c0565112569fc1b1b95f8ada72b2b7cacabc8ea3e24b58a61dc9aa138c8bb406"
+        hayesOriginalRuntimeQualified = NativeHayesOriginalIntent.supports(manifest: manifest)
         let portalQualified = manifest == Self.workspacePortalFinishManifestPin || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
         let multimapQualified = portalQualified || Self.workspaceMaterialMultimapManifestPins.contains(manifest)
         #else
@@ -1620,6 +1620,14 @@ public struct NativeImportJob: Decodable, Sendable {
 /// Retain this exact intent/key on uncertain responses; changing bytes/rights
 /// requires an explicit new intent rather than replaying a different payload.
 public struct NativeHayesOriginalIntent: Codable, Equatable, Sendable {
+    public static func supports(manifest: String) -> Bool {
+        #if DEBUG
+        return manifest == "c0565112569fc1b1b95f8ada72b2b7cacabc8ea3e24b58a61dc9aa138c8bb406"
+        #else
+        return false
+        #endif
+    }
+
     public static let sourceBytes = 8_383_096
     public static let sourceSHA256 = "e66715a51c9cad0b904d2715d5b27fb80b97d43fe8c2a3cd10276c1b336a2cf6"
     public let artworkRevision: Int

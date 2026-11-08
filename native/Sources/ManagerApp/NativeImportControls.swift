@@ -34,7 +34,7 @@ struct NativeImportControls: View {
                         }
                         if model.hasHayesIntent, model.importJob?.state == "queued" {
                             Toggle("저장한 작품 정보와 원본의 사용 권리를 확인했습니다", isOn: $model.approvalAcknowledged)
-                            Button("감상용 파일 준비…") { Task { await model.prepareHayesOriginal() } }
+                            Button("감상용 파일 준비") { Task { await model.prepareHayesOriginal() } }
                                 .disabled(!model.approvalAcknowledged || model.metadataDirty)
                         }
                     } else if !model.hasHayesIntent {

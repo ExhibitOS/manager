@@ -341,14 +341,22 @@ public actor NativeBridge {
         let _: DocumentValue = try request("native_oex_select", fields: ["selection_token": context.selectionToken])
     }
     public func executeHayesOriginal(_ context: Context, jobId: String, artworkId: String,
-                                     artworkRevision: Int, workerRuntime: URL) throws -> NativeHostStatus {
-        guard workerRuntime.isFileURL else { throw BridgeFailure("HAYES_OPERATION_UNAVAILABLE") }
-        return try request("native_hayes_execute", fields: ["selection_token": context.selectionToken,
-            "hayes_execute": ["binding": ["jobId": jobId, "artworkId": artworkId, "artworkRevision": artworkRevision],
-                             "workerRuntime": workerRuntime.path]])
+                                     artworkRevision: Int, workerRuntime: URL? = nil) throws -> NativeHostStatus {
+        var input: [String: Any] = ["binding": ["jobId": jobId, "artworkId": artworkId, "artworkRevision": artworkRevision]]
+        if let workerRuntime {
+            guard workerRuntime.isFileURL else { throw BridgeFailure("HAYES_OPERATION_UNAVAILABLE") }
+            input["workerRuntime"] = workerRuntime.path
+        }
+        return try request("native_hayes_execute", fields: ["selection_token": context.selectionToken, "hayes_execute": input])
+    }
+    public func hayesRelease(_ context: Context, jobId: String) throws -> NativeHayesReceipt {
+        let receipt: NativeHayesReceipt = try request("native_hayes_release",
+            fields: ["selection_token": context.selectionToken, "hayes_job_id": jobId])
+        guard receipt.jobId == jobId else { throw BridgeFailure("HAYES_RELEASE_UNCONFIRMED") }
+        return receipt
     }
     public func executeHayesAndWait(_ context: Context, jobId: String, artworkId: String,
-                                   artworkRevision: Int, workerRuntime: URL) async throws -> NativeHayesReceipt {
+                                   artworkRevision: Int, workerRuntime: URL? = nil) async throws -> NativeHayesReceipt {
         let before = try nativeStatus(context)
         guard before.hayesOriginalReady == true, let generation = before.runtime?.jobId else {
             throw BridgeFailure("HAYES_OPERATION_UNAVAILABLE")
