@@ -68,6 +68,54 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         try intake(wire).check()
     }
 
+    func testRegisteredFrameLineageRequiresSameOwnerHistoryAndDrainedReceipt() throws {
+        let source: DocumentValue = .object([
+            "mime": .string("model/gltf-binary"), "bytes": .integer(101_768),
+            "sha256": .string("17c571accc4ed2554731d4ce89f3cad4faa66cf2bca83321ecd92ad2537093d9")
+        ])
+        let renderable: DocumentValue = .object([
+            "mime": .string("model/gltf-binary"), "bytes": .integer(101_720),
+            "sha256": .string("2fb941a9f6ed030638512e917e348a0a3000e29c1133fe3f9670268ff1c4169c")
+        ])
+        var registeredIntake = try registered()
+        for key in ["declaration", "furnishing"] {
+            registeredIntake[key]["kind"] = .string("artwork-frame")
+            registeredIntake[key]["model"] = renderable
+        }
+        registeredIntake["received"] = .object(["bytes": renderable["bytes"], "sha256": renderable["sha256"]])
+        let history = try intake(registeredIntake)
+        try history.check(supportedExtensionVersion: 5)
+        let recipe = DocumentValue.string("omit-unused-invalid-tangent-r1")
+        var wire: DocumentValue = .object([
+            "version": .integer(1), "kind": .string(WorkspaceRegisteredFrameLineage.profile),
+            "workspaceId": .string(placementId), "tenantId": .string(requestId), "principalId": .string(furnishingId),
+            "intakeId": .string(intakeId), "requestId": .string(requestId), "furnishingId": .string(furnishingId),
+            "furnishingVersion": .integer(1), "recipe": recipe, "phase": .string("ready-to-prepare"),
+            "sourceModel": source, "renderableModel": renderable,
+            "historicalRequestSHA256": .string(modelSHA256), "descriptorSHA256": .string(modelSHA256)
+        ])
+        func validate(_ wire: DocumentValue, previous: WorkspaceRegisteredFrameLineage? = nil) throws -> WorkspaceRegisteredFrameLineage {
+            let lineage = try JSONDecoder().decode(WorkspaceRegisteredFrameLineage.self, from: JSONEncoder().encode(wire))
+            try lineage.check(history: history, workspace: placementId, tenant: requestId, principal: furnishingId, previous: previous)
+            return lineage
+        }
+        let staged = try validate(wire)
+        wire["phase"] = .string("registered")
+        XCTAssertThrowsError(try validate(wire))
+        wire["receipt"] = .object(["workspaceId": .string(placementId), "intakeId": .string(intakeId), "recipe": recipe,
+                                   "sourceSHA256": source["sha256"], "renderableSHA256": renderable["sha256"]])
+        wire["workerDrained"] = .bool(false)
+        XCTAssertThrowsError(try validate(wire))
+        wire["workerDrained"] = .bool(true)
+        XCTAssertEqual(try validate(wire, previous: staged).phase, .registered)
+        var changed = wire
+        changed["workspaceId"] = .string(intakeId)
+        XCTAssertThrowsError(try validate(changed))
+        changed = wire
+        changed["descriptorSHA256"] = .string(String(repeating: "b", count: 64))
+        XCTAssertThrowsError(try validate(changed, previous: staged))
+    }
+
     func testOptInPreparationBindsOriginalAndRegisteredRenderable() throws {
         let policy = WorkspaceArtworkFramePreparationPolicy.omitUnusedInvalidTangent
         let source: DocumentValue = .object(["mime": .string("model/gltf-binary"), "bytes": .integer(101_768),

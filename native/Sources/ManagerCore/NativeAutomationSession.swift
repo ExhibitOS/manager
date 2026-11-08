@@ -601,7 +601,9 @@ public actor NativeAutomationSession {
         // Scope is checked even for replay: correlation is not authorization.
         let (context, api, current) = try await checked(request)
         if let seen = seenRequests[id], seen != bytes { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
-        let requiresFreshRead = ["artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed", "hayes-original-release", "hayes-finished-release"].contains(operation)
+        let requiresFreshRead = ["artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
+                                 "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status",
+                                 "workspace-frame-lineage-prepare"].contains(operation)
         if !requiresFreshRead, let prior = replay[id] {
             guard prior.0 == bytes else { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
             return prior.1
@@ -616,6 +618,53 @@ public actor NativeAutomationSession {
         let result: DocumentValue
         switch operation {
         case "read": result = try await statusValue()
+        case "artwork-finish-reviewed":
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "jobId", "artworkRevision"])
+            var transfer = try await bridge.uploadState(context)
+            try NativeAutomationArtworkRules.checkUploadScope(transfer, document: current)
+            guard selectedOEXFormat == nil, api.admitsSameOwnerArtworkReplacement, !current.dirty,
+                  let draft = current.draft, let etag = current.etag,
+                  let artworkId = command["artworkId"].string, let jobId = command["jobId"].string,
+                  let revision = command["artworkRevision"].integer,
+                  let intent = transfer.intent, intent.artworkId == artworkId, transfer.jobId == jobId,
+                  intent.coarsePreparation != nil else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
+            let saved = try await api.exhibition(draft.id)
+            guard saved.draft == draft, saved.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            let job = try await api.importJob(jobId), artwork = try await api.artwork(artworkId)
+            guard job.id == jobId, job.state == "approved", job.confirmsIntakeDrain(for: intent),
+                  let assetId = job.assetId, !artwork.archived, Int64(artwork.revision) == revision,
+                  artwork.approvedRevision == artwork.revision, artwork.approvedAssetId == assetId,
+                  artwork.metadata?.rights == intent.rights, draft.artworks.contains(where: {
+                      $0["id"].string == artworkId && $0["revision"].integer == revision && $0["primaryAssetId"].string == assetId
+                  }) else { throw BridgeFailure("APPROVAL_REVIEW_REQUIRED") }
+            let jobProof = try NativeAutomationArtworkRules.reviewedJobValue(job, intent: intent)
+            transfer.intent = nil; transfer.jobId = nil; transfer.fileName = nil
+            let cleared = try await bridge.saveUploadState(context, state: transfer)
+            result = .object(["job": jobProof, "transfer": try value(cleared)])
+        case "workspace-frame-lineage-status", "workspace-frame-lineage-prepare":
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["intakeId", "requestId", "furnishingId"])
+            guard selectedOEXFormat == nil, !current.dirty, let intakeId = command["intakeId"].string else {
+                throw BridgeFailure("AUTOMATION_INPUT_INVALID")
+            }
+            let history = try await api.workspaceFurnishingIntake(intakeId)
+            guard history.requestId == command["requestId"].string,
+                  let furnishing = history.furnishing, furnishing.id == command["furnishingId"].string else {
+                throw BridgeFailure("AUTOMATION_INPUT_CHANGED")
+            }
+            var original: ImportFileSnapshot?
+            if operation == "workspace-frame-lineage-prepare" {
+                guard let path = request["inputPath"].string, let expected = inputs[path] else {
+                    throw BridgeFailure("AUTOMATION_INPUT_INVALID")
+                }
+                let url = URL(fileURLWithPath: path)
+                guard url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+                let snapshot = try await ImportFileSnapshot.load(url, byteLimit: WorkspaceRegisteredFrameLineage.originalByteLimit)
+                guard snapshot.sha256 == expected else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
+                original = snapshot
+            }
+            result = try value(await api.registeredFrameLineage(history, workspaceId: current.workspaceId, original: original))
         case "artwork-prepare-reviewed", "artwork-replace-reviewed":
             guard selectedOEXFormat == nil, api.admitsSameOwnerArtworkReplacement,
                   UUID(uuidString: id)?.uuidString.lowercased() == id else {

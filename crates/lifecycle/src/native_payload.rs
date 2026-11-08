@@ -500,10 +500,17 @@ const CATALOG44_HAYES_AUTO_TARGET: RuntimeTuple = (
     "2627954c7ac6c083bed01470db1e3ccec94e857ea2858babca1b4ed1e740adad",
     "af9c141f071d84ba4e9397798759e1cb13b2cde4d350f2fcf0a4b852ce3a09b5",
 );
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG44_BC96_FRAME_LINEAGE_TARGET: RuntimeTuple = (
+    "05be49accd64f9f0fd79c7cbf268938c441e61c9",
+    "2627954c7ac6c083bed01470db1e3ccec94e857ea2858babca1b4ed1e740adad",
+    "aa7534f2165c5d8a28a3e54dc5da4c8e1f026c16e806f28df52d35598d84bf27",
+);
 
 pub(crate) fn ordinary_hayes_release_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return CATALOG44_WHEAT_TARGET == Some(tuple) || CATALOG44_HAYES_AUTO_TARGET == tuple;
+    return CATALOG44_WHEAT_TARGET == Some(tuple) || CATALOG44_HAYES_AUTO_TARGET == tuple
+        || CATALOG44_BC96_FRAME_LINEAGE_TARGET == tuple;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -535,6 +542,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG40_WHEAT_DETAIL.is_some_and(|target| target.2 == manifest)
         || CATALOG44_WHEAT_TARGET.is_some_and(|target| target.2 == manifest)
         || CATALOG44_HAYES_AUTO_TARGET.2 == manifest
+        || CATALOG44_BC96_FRAME_LINEAGE_TARGET.2 == manifest
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -553,6 +561,13 @@ impl FurnishingTransition {
             && pair == (source.2, target.2)
         {
             return Some(Self::Upgrade40(Catalog40Upgrade { source, target }));
+        }
+        if let Some(source) = CATALOG40_ARTWORK_REPLACEMENT_TARGET
+            && pair == (source.2, CATALOG44_BC96_FRAME_LINEAGE_TARGET.2)
+        {
+            return Some(Self::Upgrade40(Catalog40Upgrade {
+                source, target: CATALOG44_BC96_FRAME_LINEAGE_TARGET,
+            }));
         }
         if let Some(source) = CATALOG44_WHEAT_TARGET
             && pair == (source.2, CATALOG44_HAYES_AUTO_TARGET.2)
@@ -1337,6 +1352,31 @@ mod normal_oex_release_declaration_tests {
         assert!(!transition.upgrades_catalog());
         assert!(FurnishingTransition::from_manifests((pair.1, pair.0)).is_none());
         assert!(FurnishingTransition::from_manifests((CATALOG40_WHEAT_DETAIL.unwrap().2, pair.1)).is_none());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact bc96 040 and registered-frame 044 packages"]
+    fn opens_reviewed_bc96_frame_lineage_packages_without_starting_a_profile() {
+        let source_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_BC96_CATALOG40_RUNTIME").unwrap());
+        let target_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_FRAME_LINEAGE_RUNTIME").unwrap());
+        let source = Payload::open_saved_workspace_transition(&source_root).unwrap();
+        let target = Payload::open_saved_workspace_transition(&target_root).unwrap();
+        let from = WorkspaceFurnishingCatalog::MaterialMultimap040;
+        let to = WorkspaceFurnishingCatalog::HayesRelease044;
+        assert_eq!(source.workspace_furnishing_catalog().unwrap(), Some(from));
+        assert_eq!(target.workspace_furnishing_catalog().unwrap(), Some(to));
+        assert_eq!(source.workspace_furnishing_ledger(from).unwrap(), target.catalog40_upgrade_source_ledger().unwrap());
+        let source_context = source.context();
+        let target_context = target.context();
+        let pair = (source_context.manifest_sha256.as_str(), target_context.manifest_sha256.as_str());
+        let transition = FurnishingTransition::from_manifests(pair).unwrap();
+        assert_eq!(transition.source_catalog(), from);
+        assert_eq!(transition.target_catalog(), to);
+        assert!(transition.upgrades_catalog());
+        assert!(FurnishingTransition::from_manifests((pair.1, pair.0)).is_none());
+        assert!(FurnishingTransition::from_manifests((CATALOG40_WHEAT_DETAIL.unwrap().2, pair.1)).is_none());
+        assert!(FurnishingTransition::from_manifests((pair.0, CATALOG44_HAYES_AUTO_TARGET.2)).is_none());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
