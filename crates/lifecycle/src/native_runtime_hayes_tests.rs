@@ -692,3 +692,33 @@ fn fixed_package_inert_leaf_exits_on_owner_loss() {
         "HAYES_DRAIN_UNCONFIRMED"
     );
 }
+
+#[test]
+fn direct_watch_observes_exit_and_vetoes_a_fork_even_if_exit_follows() {
+    for mode in ["valid", "descendant"] {
+        let root = Fixture::new();
+        let mut attempt = root.acquire().begin(binding()).unwrap();
+        let mut run = generation_fixture(&mut attempt, &root.0, mode);
+        run.require_fixture_watch();
+        let result = drive_fixture(&mut attempt, &mut run);
+        if mode == "descendant" {
+            fs::write(root.0.join("release-descendant"), b"").unwrap();
+            wait_for(|| root.0.join("descendant-exited").is_file());
+            assert_eq!(code(result), "HAYES_WORKER_FORK_OBSERVED");
+            assert!(!attempt
+                .journal
+                .path
+                .join("generate-direct-observed.json")
+                .exists());
+        } else {
+            assert_eq!(code(result), "HAYES_DRAIN_UNCONFIRMED");
+            let record: serde_json::Value = serde_json::from_slice(
+                &fs::read(attempt.journal.path.join("generate-direct-observed.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(record["watched_direct_exit_without_fork_or_exec"], true);
+        }
+        wait_for(|| run.child.try_wait().unwrap().is_some());
+        assert_eq!(code(attempt.retire_unstarted()), "HAYES_DRAIN_UNCONFIRMED");
+    }
+}

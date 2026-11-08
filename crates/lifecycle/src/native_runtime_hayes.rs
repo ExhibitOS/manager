@@ -28,6 +28,8 @@ mod generation;
 mod launch;
 #[path = "native_runtime_hayes_transfer.rs"]
 mod transfer;
+#[path = "native_runtime_hayes_watch.rs"]
+mod watch;
 use launch::{channel_error, LaunchPermit, Phase, SpawnedWorker};
 
 pub(super) const RESERVATION_BYTES: u64 = 512 * 1024 * 1024;

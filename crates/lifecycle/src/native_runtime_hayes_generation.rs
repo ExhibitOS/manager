@@ -4,7 +4,9 @@
 use super::{
     channel_error, custody_error, cvt, err,
     launch::{LaunchPermit, SpawnedWorker, WorkerStdio},
-    private_file, Attempt, Binding, Physical, Result, Role, SourceStage,
+    private_file,
+    watch::DirectWatch,
+    Attempt, Binding, Physical, Result, Role, SourceStage,
 };
 use crate::{
     native_payload::hayes::ReadOnlyHayesGenerate,
@@ -65,6 +67,7 @@ struct Prepared {
 struct DirectObservation<'a> {
     prepared: &'a Prepared,
     stdout: StageBinding,
+    watched_direct_exit_without_fork_or_exec: bool,
 }
 
 pub(super) struct GenerationPermit {
@@ -82,6 +85,23 @@ pub(super) struct RunningGeneration {
     pub(super) child: SpawnedWorker,
     work: Option<(Staging, WorkerStdio)>,
     pinned_generate: Option<ReadOnlyHayesGenerate>,
+    watch: Option<DirectWatch>,
+    watch_required: bool,
+}
+
+impl RunningGeneration {
+    fn arm_watch(&mut self) -> Result<()> {
+        if self.watch.is_some() || self.child.phase != super::Phase::Registered {
+            return Err(channel_error());
+        }
+        self.watch = Some(DirectWatch::arm(&mut self.child)?);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn require_fixture_watch(&mut self) {
+        self.watch_required = true;
+    }
 }
 
 impl GenerationPermit {
@@ -104,6 +124,8 @@ impl GenerationPermit {
             child,
             work: Some((self.staging, stdio)),
             pinned_generate: Some(candidate),
+            watch: None,
+            watch_required: true,
         })
     }
 
@@ -118,6 +140,8 @@ impl GenerationPermit {
             child,
             work: Some((self.staging, stdio)),
             pinned_generate: None,
+            watch: None,
+            watch_required: false,
         })
     }
 }
@@ -199,12 +223,26 @@ impl Attempt {
             progress()?;
             self.check_generation(&staging)?;
             self.register_ready_until(&mut run.child, deadline, &mut progress)?;
+            // The trusted inert entry has executed and completed READY. Darwin
+            // can still queue the initial exec after posix_spawn returns.
+            // Start the witness here, before the first possible GO.
+            if run.watch_required {
+                run.arm_watch()?;
+            }
+            let watch = run.watch.as_ref();
+            let mut watched_progress = || {
+                progress()?;
+                if let Some(watch) = watch {
+                    watch.poll()?;
+                }
+                Ok(())
+            };
             self.check_generation(&staging)?;
             if let Some(candidate) = &run.pinned_generate {
                 candidate.check()?;
             }
             stdio.check_quiet_output()?;
-            progress()?;
+            watched_progress()?;
             self.send_go(&mut run.child)?;
             capture(
                 &mut run.child,
@@ -212,7 +250,7 @@ impl Attempt {
                 &staging.source.observed,
                 staging.output.materializer_write(),
                 staging.prepared.stdout_limit,
-                &mut progress,
+                &mut watched_progress,
             )
         })();
         // Closing the dedicated owner channel is the cancellation request.
@@ -225,6 +263,10 @@ impl Attempt {
             .sync_all()
             .map_err(|_| custody_error())?;
         let (bytes, sha256) = result?;
+        let watch = run.watch.as_ref();
+        if let Some(watch) = watch {
+            watch.require_exit()?;
+        }
         if let Some(candidate) = &run.pinned_generate {
             candidate.check()?;
         }
@@ -244,6 +286,7 @@ impl Attempt {
             &DirectObservation {
                 prepared: &staging.prepared,
                 stdout: (&observed).into(),
+                watched_direct_exit_without_fork_or_exec: watch.is_some(),
             },
         )?;
         Err(err("HAYES_DRAIN_UNCONFIRMED"))
