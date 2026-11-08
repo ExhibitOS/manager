@@ -341,7 +341,7 @@ pub(crate) const HAYES_SESSION_PROBE_PIN: Option<HayesSessionProbePin> = Some(Ha
 // Admit a 043 probe only after the exact receiver, host manifest and probe
 // script have been packaged and independently reviewed together.
 #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const HAYES_DISPOSITION_PROBE_PIN: Option<HayesSessionProbePin> = None;
+pub(crate) const HAYES_DISPOSITION_PROBE_PIN: Option<HayesSessionProbePin> = None;
 
 pub(crate) fn hayes_validation_host_matches(tuple: (&str, &str, &str)) -> bool {
     hayes_bootstrap_validation_tuple() == Some(tuple) || hayes_session_probe_matches(tuple)

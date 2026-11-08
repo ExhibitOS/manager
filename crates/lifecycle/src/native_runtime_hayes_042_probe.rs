@@ -138,30 +138,53 @@ fn probe_path(key: &str) -> PathBuf {
 #[test]
 #[ignore = "runs the exact private Platform caller and sealed worker in a new isolated Session"]
 fn actual_042_session_holds_checked_worker_output() {
+    actual_session_probe(WorkspaceFurnishingCatalog::HayesOriginal042);
+}
+
+#[test]
+#[ignore = "requires the exact reviewed 043 pair and a new isolated profile and custody"]
+fn actual_043_session_stages_output_and_retains_native_custody() {
+    actual_session_probe(WorkspaceFurnishingCatalog::HayesDisposition043);
+}
+
+fn actual_session_probe(catalog: WorkspaceFurnishingCatalog) {
     use super::{
         hayes::{tests::Fixture, Lease},
         hayes_probe_source::ProbeSourceFd,
     };
     use std::mem::ManuallyDrop;
 
-    let pin = crate::native_payload::HAYES_SESSION_PROBE_PIN
+    let stages_output = catalog == WorkspaceFurnishingCatalog::HayesDisposition043;
+    let (pin, prefix) = if stages_output {
+        (
+            &crate::native_payload::HAYES_DISPOSITION_PROBE_PIN,
+            "EXHIBITOS_TEST_HAYES_043_PROBE_",
+        )
+    } else {
+        (
+            &crate::native_payload::HAYES_SESSION_PROBE_PIN,
+            "EXHIBITOS_TEST_HAYES_PROBE_",
+        )
+    };
+    let pin = pin
         .as_ref()
         .expect("paired probe host manifest must be admitted");
-    let runtime = probe_path("EXHIBITOS_TEST_HAYES_PROBE_RUNTIME");
+    let path = |name: &str| probe_path(&format!("{prefix}{name}"));
+    let runtime = path("RUNTIME");
     let payload = Arc::new(Payload::open(&runtime).unwrap());
     let manifest = payload.context().manifest_sha256;
     assert_eq!(manifest, pin.host.2);
     assert!(payload.hayes_session_probe_script().unwrap().is_some());
     assert_eq!(
         payload.workspace_furnishing_catalog().unwrap(),
-        Some(WorkspaceFurnishingCatalog::HayesOriginal042)
+        Some(catalog)
     );
-    let worker = Payload::open(&probe_path("EXHIBITOS_TEST_HAYES_PROBE_WORKER")).unwrap();
+    let worker = Payload::open(&path("WORKER")).unwrap();
     let original =
         ProbeSourceFd::open_original(&probe_path("EXHIBITOS_TEST_HAYES_ORIGINAL")).unwrap();
 
-    let root = probe_path("EXHIBITOS_TEST_HAYES_PROBE_ROOT");
-    let custody_path = probe_path("EXHIBITOS_TEST_HAYES_PROBE_CUSTODY");
+    let root = path("ROOT");
+    let custody_path = path("CUSTODY");
     let parent = root.parent().unwrap();
     assert_eq!(parent, fs::canonicalize(parent).unwrap());
     assert_eq!(custody_path.parent(), Some(parent));
@@ -208,6 +231,16 @@ fn actual_042_session_holds_checked_worker_output() {
     exchange
         .observe_revalidated_workers(&worker, worker_deadline)
         .unwrap();
+    let staged = if stages_output {
+        exchange.emit_output_ready(worker_deadline).unwrap();
+        exchange
+            .receive_output_reservation(worker_deadline)
+            .unwrap();
+        exchange.transfer_reserved_output(worker_deadline).unwrap();
+        Some(await_staged_probe_event(&root, generation, worker_deadline))
+    } else {
+        None
+    };
     drop(exchange);
 
     let retained = session
@@ -269,6 +302,41 @@ fn actual_042_session_holds_checked_worker_output() {
     let body = fs::read(attempt.join("stage").join(format!(".oex-stage-{body_id}"))).unwrap();
     assert_eq!(body.len(), 16_036_864);
     assert_eq!(digest(&body), expected_hash);
+    if let Some(staged) = staged {
+        assert_eq!(staged["jobId"], binding.job.to_string());
+        assert_eq!(staged["sha256"], expected_hash);
+        assert_eq!(staged["bytes"], body.len());
+        let stage_id = Uuid::parse_str(staged["stageId"].as_str().unwrap()).unwrap();
+        let reservation: Value = serde_json::from_slice(
+            &fs::read(attempt.join("operation-output-reservation.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reservation["dbStageId"], stage_id.to_string());
+        assert_eq!(reservation["output"]["stageId"], body_id.to_string());
+        let key = format!("{tenant}/hayes-output/{}/{expected_hash}", binding.attempt);
+        let stored = fs::read(root.join("blobs").join(&key)).unwrap();
+        assert_eq!(stored, body);
+        let check = format!(
+            "SELECT count(*) FROM hayes_output_stages WHERE tenant_id='{tenant}' AND id='{stage_id}'
+                AND attempt_id='{}' AND job_id='{}' AND output_sha256='{expected_hash}'
+                AND output_bytes=16036864 AND object_key='{key}'
+                AND NOT EXISTS (SELECT 1 FROM hayes_original_dispositions d WHERE d.tenant_id='{tenant}' AND d.attempt_id='{}')",
+            binding.attempt, binding.job, binding.attempt,
+        );
+        assert_eq!(
+            session
+                .query_database_before(
+                    "exhibitos",
+                    &check,
+                    Instant::now() + Duration::from_secs(10)
+                )
+                .unwrap(),
+            "1"
+        );
+        println!(
+            "HAYES_SESSION_OUTPUT_STAGED dbStage={stage_id} output={expected_hash} bytes=16036864"
+        );
+    }
     assert!(!attempt.join("terminal.json").exists());
 
     let stopped = session.stop().unwrap();
@@ -282,7 +350,7 @@ fn actual_042_session_holds_checked_worker_output() {
     assert_eq!(stopped.exits.get("node"), Some(&0));
     assert_eq!(stopped.exits.get("postgres"), Some(&0));
     let current = current_run(&root).unwrap().unwrap().furnishing.unwrap();
-    assert_eq!(current.catalog, 42);
+    assert_eq!(current.catalog, catalog.version());
     assert_eq!(current.phase, Phase::Clean);
     assert_eq!(
         Lease::acquire(custody.path(), custody.authority())
@@ -302,4 +370,31 @@ fn actual_042_session_holds_checked_worker_output() {
         "HAYES_DRAIN_UNCONFIRMED"
     );
     println!("HAYES_SESSION_WORKERS_HELD manifest={manifest} generation={generation} nativeOwner={native_owner} attempt={} job={} output={expected_hash} leaseRemainingMs={lease_remaining_ms} web={web} api={api} postgres={database}", binding.attempt, binding.job);
+}
+
+fn await_staged_probe_event(root: &Path, generation: Uuid, deadline: Instant) -> Value {
+    let log = root
+        .join("native-runs")
+        .join(generation.to_string())
+        .join("process.log");
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "043 probe did not stage output before the deadline"
+        );
+        let lines = fs::read_to_string(&log).unwrap();
+        if let Some(line) = lines
+            .lines()
+            .find(|line| line.starts_with("{\"kind\":\"hayes-probe-output-staged\","))
+        {
+            return serde_json::from_str(line).unwrap();
+        }
+        assert!(
+            !lines
+                .lines()
+                .any(|line| line == "HAYES_SESSION_PROBE_FAILED"),
+            "043 probe failed before output staging"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
