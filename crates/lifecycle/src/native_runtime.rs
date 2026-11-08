@@ -1025,7 +1025,7 @@ impl Session {
                     return Ok(Some(match transition {
                         FurnishingTransition::Upgrade39(_) => FurnishingStart::Upgrade039To040,
                         FurnishingTransition::Upgrade40(_) => FurnishingStart::Upgrade040To044,
-                        FurnishingTransition::Upgrade44 => FurnishingStart::Upgrade044To045,
+                        FurnishingTransition::Upgrade44 { .. } => FurnishingStart::Upgrade044To045,
                         _ => FurnishingStart::Reopen,
                     }));
                 }
