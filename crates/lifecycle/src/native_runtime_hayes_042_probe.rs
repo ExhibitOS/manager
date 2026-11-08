@@ -130,6 +130,27 @@ fn selected_session_probe_arm_matches_the_platform_key_order() {
     ).as_bytes());
 }
 
+fn trace_probe_event(event: &'static str) {
+    let mut stamp = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let monotonic_ns = if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_RAW, &mut stamp) } == 0
+    {
+        Some((stamp.tv_sec as u64 * 1_000_000_000 + stamp.tv_nsec as u64).to_string())
+    } else {
+        None
+    };
+    println!(
+        "{}",
+        serde_json::json!({
+            "kind": "hayes-probe-manager-phase",
+            "event": event,
+            "monotonicNs": monotonic_ns,
+        })
+    );
+}
+
 fn probe_path(key: &str) -> PathBuf {
     PathBuf::from(std::env::var_os(key).unwrap_or_else(|| panic!("{key} required")))
 }
@@ -199,6 +220,7 @@ fn actual_042_session_holds_checked_worker_output() {
     let native_owner = issued.pin.native_owner_id();
     let arm = session_probe_arm(&issued.pin);
     let pre_open_deadline = Instant::now() + Duration::from_secs(180);
+    trace_probe_event("probe-arm-send-start");
     issued
         .channel
         .send_frame(&arm, pre_open_deadline, &session.cancellation, &mut || {
@@ -206,8 +228,13 @@ fn actual_042_session_holds_checked_worker_output() {
         })
         .unwrap();
 
+    trace_probe_event("probe-arm-send-done");
     let mut exchange = session
-        .begin_owned_hayes_open_until(custody.acquire(), pre_open_deadline)
+        .begin_owned_hayes_open_observed(
+            custody.acquire(),
+            pre_open_deadline,
+            &mut trace_probe_event,
+        )
         .unwrap();
     let worker_deadline = Instant::now() + Duration::from_secs(180);
     exchange.receive_source(worker_deadline).unwrap();

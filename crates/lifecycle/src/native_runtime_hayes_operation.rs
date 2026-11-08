@@ -269,32 +269,64 @@ impl Session {
         lease: Lease,
         deadline: Instant,
     ) -> Result<OwnedHayesOpen<'a>> {
+        self.begin_owned_hayes_open_observed(lease, deadline, &mut |_| {})
+    }
+
+    pub(in super::super) fn begin_owned_hayes_open_observed<'a>(
+        &'a mut self,
+        lease: Lease,
+        deadline: Instant,
+        observe: &mut dyn FnMut(&'static str),
+    ) -> Result<OwnedHayesOpen<'a>> {
         if self.retained_hayes.is_some() || Instant::now() >= deadline {
+            observe("open-unavailable");
             return Err(unavailable());
         }
-        let AuthenticatedHayes { pin, mut channel } = self.hayes_bootstrap.consume()?;
+        let AuthenticatedHayes { pin, mut channel } = self
+            .hayes_bootstrap
+            .consume()
+            .inspect_err(|_| observe("open-session-pin-unavailable"))?;
         let result = (|| {
-            channel.claim_hayes()?;
+            channel
+                .claim_hayes()
+                .inspect_err(|_| observe("open-channel-claim-failed"))?;
             let host = self.payload.context();
             if host.manifest_sha256 != pin.host_manifest_sha256
                 || self.job_id.as_deref() != Some(pin.runtime_generation.to_string().as_str())
             {
+                observe("open-session-pin-mismatch");
                 return Err(unavailable());
             }
-            self.payload.recheck()?;
-            let owner = Owner::capture(self)?;
+            observe("open-payload-recheck-start");
+            self.payload
+                .recheck()
+                .inspect_err(|_| observe("open-payload-recheck-failed"))?;
+            observe("open-payload-recheck-done");
+            observe("open-owner-capture-start");
+            let owner = Owner::capture_observed(self, observe)?;
+            observe("open-owner-capture-done");
             let cancellation = self.cancellation.clone();
-            let raw = channel.read_frame(deadline, &cancellation, &mut || owner.check(self))?;
-            let open = parse_open(&raw)?;
+            observe("open-frame-read-start");
+            let raw = channel
+                .read_frame(deadline, &cancellation, &mut || {
+                    owner.check_observed(self, observe)
+                })
+                .inspect_err(|_| observe("open-frame-read-failed"))?;
+            observe("open-frame-read-done");
+            let open = parse_open(&raw).inspect_err(|_| observe("open-frame-binding-invalid"))?;
             let auth = self.local_authority.as_ref().ok_or_else(unavailable)?;
             open.check_session(
                 &auth.workspace_id,
                 &auth.tenant_id,
                 &auth.principal_id,
                 self.job_id.as_deref().ok_or_else(unavailable)?,
-            )?;
-            owner.recheck_database_identity(self)?;
+            )
+            .inspect_err(|_| observe("open-frame-session-mismatch"))?;
+            owner
+                .recheck_database_identity(self)
+                .inspect_err(|_| observe("open-frame-database-identity-failed"))?;
             if open.lease_id == pin.native_owner_id {
+                observe("open-frame-lease-alias");
                 return Err(unavailable());
             }
             let record = Record {
@@ -307,11 +339,17 @@ impl Session {
                 database_system_id: owner.system_id.clone(),
                 database_oid: owner.database_oid.clone(),
             };
-            let attempt = record.persist(lease)?;
+            let attempt = record
+                .persist(lease)
+                .inspect_err(|_| observe("open-intent-persist-failed"))?;
             let accepted = record.accepted()?;
-            channel.send_frame(&accepted, deadline, &cancellation, &mut || {
-                owner.check(self)
-            })?;
+            observe("open-accept-send-start");
+            channel
+                .send_frame(&accepted, deadline, &cancellation, &mut || {
+                    owner.check_observed(self, observe)
+                })
+                .inspect_err(|_| observe("open-accept-send-failed"))?;
+            observe("open-accept-send-done");
             Ok((attempt, owner, record))
         })();
         match result {

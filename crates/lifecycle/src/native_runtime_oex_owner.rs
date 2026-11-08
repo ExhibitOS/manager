@@ -6,6 +6,14 @@ use std::os::unix::fs::MetadataExt;
 fn invalid() -> LifecycleError { err("NATIVE_OEX_ATTEMPT_INVALID") }
 pub(super) const DATABASE_IDENTITY_SQL: &str = "SELECT system_identifier::text AS system_id,(SELECT oid::text FROM pg_database WHERE datname=current_database()) AS database_oid FROM pg_control_system()";
 
+fn require(valid: bool, failure: &'static str, observe: &mut dyn FnMut(&'static str)) -> Result<()> {
+    if !valid {
+        observe(failure);
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 fn parse_database_identity(value: &str) -> Result<(String, String)> {
     let (system, oid) = value.split_once('|').ok_or_else(invalid)?;
     let canonical = |v: &str| v.parse::<u64>().ok().is_some_and(|n| n != 0 && n.to_string() == v);
@@ -44,25 +52,36 @@ impl Owner {
     /// A failed or timed-out query leaves any owned auxiliary in the Session;
     /// the caller must retain the fence and drain it using the existing lifecycle.
     pub(super) fn capture(session: &mut Session) -> Result<Self> {
-        session.poll()?;
-        session.check_native_observation_fence()?;
-        if session.state != "ready" || session.auxiliary.is_some() || session.cancelled() {
-            return Err(invalid());
-        }
-        let runtime = session.job_id.clone().ok_or_else(invalid)?;
-        if Uuid::parse_str(&runtime).ok().is_none_or(|id| id.to_string() != runtime) { return Err(invalid()); }
-        let node = session.node.as_ref().ok_or_else(invalid)?.child.id();
-        let postgres = session.postgres.as_ref().ok_or_else(invalid)?.child.id();
-        let identity = session.service.personal_identity()?;
+        Self::capture_observed(session, &mut |_| {})
+    }
+
+    pub(super) fn capture_observed(session: &mut Session, observe: &mut dyn FnMut(&'static str)) -> Result<Self> {
+        session.poll().inspect_err(|_| observe("capture-poll-failed"))?;
+        session.check_native_observation_fence().inspect_err(|_| observe("capture-root-fence-failed"))?;
+        require(session.state == "ready", "capture-session-not-ready", observe)?;
+        require(session.auxiliary.is_none(), "capture-auxiliary-present", observe)?;
+        require(!session.cancelled(), "capture-cancelled", observe)?;
+        let runtime = session.job_id.clone().ok_or_else(|| { observe("capture-generation-missing"); invalid() })?;
+        require(Uuid::parse_str(&runtime).is_ok_and(|id| id.to_string() == runtime),
+            "capture-generation-invalid", observe)?;
+        let node = session.node.as_ref().ok_or_else(|| { observe("capture-node-missing"); invalid() })?.child.id();
+        let postgres = session.postgres.as_ref().ok_or_else(|| { observe("capture-postgres-missing"); invalid() })?.child.id();
+        let identity = session.service.personal_identity().inspect_err(|_| observe("capture-personal-identity-failed"))?;
         let path = session.service.root.join("blobs");
-        let pin = crate::maintenance_source::DirectoryPin::open(&path)?;
-        let stat = pin.try_clone_file()?.metadata().map_err(|_| invalid())?;
+        let pin = crate::maintenance_source::DirectoryPin::open(&path)
+            .inspect_err(|_| observe("capture-blob-pin-failed"))?;
+        let stat = pin.try_clone_file().and_then(|file| file.metadata().map_err(|_| invalid()))
+            .inspect_err(|_| observe("capture-blob-metadata-failed"))?;
         let mut owner = Self { pin, path, device: stat.dev(), inode: stat.ino(), runtime, node, postgres, identity,
             system_id: String::new(), database_oid: String::new() };
-        owner.check(session)?;
-        let result = session.query_database("exhibitos", DATABASE_IDENTITY_SQL)?;
-        (owner.system_id, owner.database_oid) = parse_database_identity(&result)?;
-        owner.check(session)?;
+        owner.check_observed(session, observe)?;
+        observe("capture-database-query-start");
+        let result = session.query_database("exhibitos", DATABASE_IDENTITY_SQL)
+            .inspect_err(|_| observe("capture-database-query-failed"))?;
+        (owner.system_id, owner.database_oid) = parse_database_identity(&result)
+            .inspect_err(|_| observe("capture-database-identity-invalid"))?;
+        observe("capture-database-identity-accepted");
+        owner.check_observed(session, observe)?;
         Ok(owner)
     }
 
@@ -84,28 +103,38 @@ impl Owner {
 
     /// Checks the retained runtime and directory pins, not current DB identity.
     pub(super) fn check(&self, session: &mut Session) -> Result<()> {
-        session.poll()?;
-        session.check_native_observation_fence()?;
+        self.check_observed(session, &mut |_| {})
+    }
+
+    pub(super) fn check_observed(&self, session: &mut Session, observe: &mut dyn FnMut(&'static str)) -> Result<()> {
+        session.poll().inspect_err(|_| observe("check-poll-failed"))?;
+        session.check_native_observation_fence().inspect_err(|_| observe("check-root-fence-failed"))?;
         if let Some(binding) = session.active_furnishing_binding() {
-            let writer = session.furnishing_writer_lifetime.as_ref().ok_or_else(invalid)?;
-            if writer.identity()? != binding.physical {
-                return Err(invalid());
-            }
+            let writer = session.furnishing_writer_lifetime.as_ref().ok_or_else(|| {
+                observe("check-writer-missing"); invalid()
+            })?;
+            let physical = writer.identity().inspect_err(|_| observe("check-writer-identity-failed"))?;
+            require(physical == binding.physical, "check-writer-identity-mismatch", observe)?;
         }
-        self.pin.check_path(&self.path)?;
-        let stat = self.pin.try_clone_file()?.metadata().map_err(|_| invalid())?;
-        let authority = session.local_authority.as_ref().ok_or_else(invalid)?;
-        let identity = session.service.personal_identity()?;
-        if session.state != "ready" || session.auxiliary.is_some() || session.cancelled()
-            || session.job_id.as_deref() != Some(self.runtime.as_str())
-            || session.node.as_ref().map(|p| p.child.id()) != Some(self.node)
-            || session.postgres.as_ref().map(|p| p.child.id()) != Some(self.postgres)
-            || identity != self.identity || authority.owner_uid != unsafe { libc::geteuid() }
-            || (&authority.workspace_id, &authority.tenant_id, &authority.principal_id) != (&identity.0, &identity.1, &identity.2)
-            || !stat.is_dir() || (stat.dev(), stat.ino()) != (self.device, self.inode) {
-            return Err(invalid());
-        }
-        Ok(())
+        self.pin.check_path(&self.path).inspect_err(|_| observe("check-blob-pin-failed"))?;
+        let stat = self.pin.try_clone_file().and_then(|file| file.metadata().map_err(|_| invalid()))
+            .inspect_err(|_| observe("check-blob-metadata-failed"))?;
+        let authority = session.local_authority.as_ref().ok_or_else(|| {
+            observe("check-local-authority-missing"); invalid()
+        })?;
+        let identity = session.service.personal_identity().inspect_err(|_| observe("check-personal-identity-failed"))?;
+        require(session.state == "ready", "check-session-not-ready", observe)?;
+        require(session.auxiliary.is_none(), "check-auxiliary-present", observe)?;
+        require(!session.cancelled(), "check-cancelled", observe)?;
+        require(session.job_id.as_deref() == Some(self.runtime.as_str()), "check-generation-mismatch", observe)?;
+        require(session.node.as_ref().map(|p| p.child.id()) == Some(self.node), "check-node-mismatch", observe)?;
+        require(session.postgres.as_ref().map(|p| p.child.id()) == Some(self.postgres), "check-postgres-mismatch", observe)?;
+        require(identity == self.identity, "check-personal-identity-mismatch", observe)?;
+        require(authority.owner_uid == unsafe { libc::geteuid() }, "check-uid-mismatch", observe)?;
+        require((&authority.workspace_id, &authority.tenant_id, &authority.principal_id)
+            == (&identity.0, &identity.1, &identity.2), "check-local-scope-mismatch", observe)?;
+        require(stat.is_dir() && (stat.dev(), stat.ino()) == (self.device, self.inode),
+            "check-blob-identity-mismatch", observe)
     }
 }
 

@@ -318,12 +318,12 @@ pub(crate) struct HayesSessionProbePin {
 #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const HAYES_SESSION_PROBE_PIN: Option<HayesSessionProbePin> = Some(HayesSessionProbePin {
     host: (
-        "4251a5172a8012f976e7bce94dd86d97e28ff10b",
+        "8cd9e8e1ccc622f4d228eaf5e25dda9b9128a260",
         "1d46b4eb7bfd5b774aebad364a3131b09c3c42427dd633bb6622434b21bb60a3",
-        "552d2d9a4de49a6de49fc7aba5a56b6b194018dc83dbf01cf2e6747bd6b842c7",
+        "a756b012b20fea4485a38f8a7acd2d2eefa475bc96047aafca271778fc7847a4",
     ),
-    script_bytes: 7196,
-    script_sha256: "fb5218a9262a76b2f20d685154461d4add0ef06783073bac07f2ad3cd6813b6a",
+    script_bytes: 7307,
+    script_sha256: "cf761453a0567ec1a9e2d0be8e336bec757ac8af323a47541a73080f3aa8f7f8",
 });
 
 pub(crate) fn hayes_validation_host_matches(tuple: (&str, &str, &str)) -> bool {
