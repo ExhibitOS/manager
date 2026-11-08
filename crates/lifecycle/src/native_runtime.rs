@@ -4,7 +4,7 @@
 use super::*;
 use super::{native_installation::Ports, native_payload::{Payload, WorkspaceFurnishingCatalog}};
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-use crate::native_payload::Catalog40Transition;
+use crate::native_payload::FurnishingTransition;
 #[path = "native_runtime_oex_worker.rs"] mod oex_worker;
 #[path = "native_runtime_oex_worker_v2.rs"] mod oex_worker_v2;
 #[path = "native_runtime_oex_preflight.rs"] mod oex_preflight;
@@ -64,7 +64,7 @@ mod hayes_probe_source;
 pub(crate) const WORKSPACE_FURNISHING_INITIALIZATION: &str = "native-workspace-furnishing-initialization.json";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum FurnishingStart { Initialize, Reopen, SelectedImport038, SelectedImport039, SelectedImport040, Upgrade039To040 }
+enum FurnishingStart { Initialize, Reopen, SelectedImport038, SelectedImport039, SelectedImport040, Upgrade039To040, Upgrade040To044 }
 
 #[derive(Clone, Copy)]
 enum StartMode<'a> {
@@ -89,7 +89,7 @@ impl FurnishingStart {
     }
 
     fn opens_existing(self) -> bool {
-        matches!(self, Self::Reopen | Self::Upgrade039To040)
+        matches!(self, Self::Reopen | Self::Upgrade039To040 | Self::Upgrade040To044)
     }
 
     fn owner_mode(self) -> &'static str {
@@ -100,6 +100,7 @@ impl FurnishingStart {
             Self::SelectedImport039 => "workspace-furnishing-039-selected-import-v7",
             Self::SelectedImport040 => "workspace-furnishing-040-selected-import-v7",
             Self::Upgrade039To040 => "workspace-furnishing-039-to-040-upgrade-v1",
+            Self::Upgrade040To044 => "workspace-furnishing-040-to-044-upgrade-v1",
         }
     }
 }
@@ -396,17 +397,17 @@ fn validate_cold_furnishing_source(root: &Path, prior: Option<&Binding>, live: &
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct Catalog40Trial {
+pub(crate) struct FurnishingTransitionTrial {
     source: Current,
     generation: String,
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-pub(crate) use furnishing_lifetime::WriterLifetime as Catalog40WriterGuard;
+pub(crate) use furnishing_lifetime::WriterLifetime as FurnishingTransitionWriterGuard;
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-impl Catalog40Trial {
-    pub(crate) fn capture(service: &LifecycleService, transition: Catalog40Transition) -> Result<Self> {
+impl FurnishingTransitionTrial {
+    pub(crate) fn capture(service: &LifecycleService, transition: FurnishingTransition) -> Result<Self> {
         let source = current_run(&service.root)?.ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
         let trial = Self { source, generation: Uuid::new_v4().to_string() };
         trial.hold_source(service, transition)?;
@@ -417,7 +418,7 @@ impl Catalog40Trial {
         self.generation = Uuid::new_v4().to_string();
     }
 
-    fn source_binding(&self, transition: Catalog40Transition) -> Result<&Binding> {
+    fn source_binding(&self, transition: FurnishingTransition) -> Result<&Binding> {
         let prior = self.source.furnishing.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
         prior.check()?;
         if self.source.format != 1 || !installations::uuid(&self.source.id)
@@ -430,7 +431,7 @@ impl Catalog40Trial {
         Ok(prior)
     }
 
-    pub(crate) fn hold_source(&self, service: &LifecycleService, transition: Catalog40Transition) -> Result<Catalog40WriterGuard> {
+    pub(crate) fn hold_source(&self, service: &LifecycleService, transition: FurnishingTransition) -> Result<FurnishingTransitionWriterGuard> {
         let (guard, observed) = self.hold(service, transition)?;
         if observed != self.source {
             return Err(err(furnishing_lifecycle::ERROR));
@@ -439,8 +440,8 @@ impl Catalog40Trial {
         Ok(guard)
     }
 
-    fn hold(&self, service: &LifecycleService, transition: Catalog40Transition) -> Result<(Catalog40WriterGuard, Current)> {
-        let guard = Catalog40WriterGuard::acquire_existing(&service.root)?;
+    fn hold(&self, service: &LifecycleService, transition: FurnishingTransition) -> Result<(FurnishingTransitionWriterGuard, Current)> {
+        let guard = FurnishingTransitionWriterGuard::acquire_existing(&service.root)?;
         let prior = self.source_binding(transition)?;
         let (workspace_id, tenant_id, principal_id) = service.personal_identity()?;
         if prior.physical != guard.identity()? || prior.owner != (FurnishingOwner {
@@ -455,7 +456,7 @@ impl Catalog40Trial {
                 || !matches!(target.phase, Phase::Active | Phase::Clean)
                 || target.owner != prior.owner || target.physical != prior.physical
                 || target.previous_generation.as_deref() != Some(prior.generation.as_str())
-                || !target.matches_catalog_tuple(40, transition.target())
+                || !target.matches_catalog_tuple(transition.target_catalog().version(), transition.target())
                 || target.admission_kind != Binding::transition_admission(transition) || target.restore.is_some()
             {
                 return Err(err(furnishing_lifecycle::ERROR));
@@ -466,13 +467,13 @@ impl Catalog40Trial {
 
     // Called with the operation fence held and after the trial's processes
     // have drained. Never remove the trial run or its diagnostic evidence.
-    pub(crate) fn hold_recovery(&self, service: &LifecycleService, transition: Catalog40Transition) -> Result<Catalog40WriterGuard> {
+    pub(crate) fn hold_recovery(&self, service: &LifecycleService, transition: FurnishingTransition) -> Result<FurnishingTransitionWriterGuard> {
         let (guard, _) = self.hold(service, transition)?;
         self.recoverable_source_completion(&service.root, transition)?;
         Ok(guard)
     }
 
-    pub(crate) fn check_recovery_root(&self, root: &Path, guard: &Catalog40WriterGuard, transition: Catalog40Transition) -> Result<()> {
+    pub(crate) fn check_recovery_root(&self, root: &Path, guard: &FurnishingTransitionWriterGuard, transition: FurnishingTransition) -> Result<()> {
         let cold = || err("NATIVE_PHYSICAL_CHECKPOINT_NOT_COLD");
         if guard.identity()? != self.source_binding(transition)?.physical {
             return Err(cold());
@@ -511,7 +512,7 @@ impl Catalog40Trial {
         Err(cold())
     }
 
-    fn recoverable_source_completion(&self, root: &Path, transition: Catalog40Transition) -> Result<(Context, FurnishingCompletion)> {
+    fn recoverable_source_completion(&self, root: &Path, transition: FurnishingTransition) -> Result<(Context, FurnishingCompletion)> {
         let prior = self.source_binding(transition)?;
         let (context, proof) = read_run(root, &prior.generation)?;
         let proof = proof.ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
@@ -526,7 +527,7 @@ impl Catalog40Trial {
         Ok((context, proof))
     }
 
-    pub(crate) fn recover_source(&self, service: &LifecycleService, guard: &Catalog40WriterGuard, transition: Catalog40Transition) -> Result<()> {
+    pub(crate) fn recover_source(&self, service: &LifecycleService, guard: &FurnishingTransitionWriterGuard, transition: FurnishingTransition) -> Result<()> {
         let prior = self.source_binding(transition)?;
         if guard.identity()? != prior.physical {
             return Err(err(furnishing_lifecycle::ERROR));
@@ -558,7 +559,7 @@ pub struct Session {
     environment: Environment,
     transition_fence: Option<String>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    catalog40_trial: Option<(Catalog40Trial, Catalog40Transition)>,
+    furnishing_transition_trial: Option<(FurnishingTransitionTrial, FurnishingTransition)>,
     guard: Option<OperationGuard>,
     postgres: Option<Owned>,
     node: Option<Owned>,
@@ -926,8 +927,8 @@ impl Session {
         Self::bound_session(service, payload, ports, guard, Environment(fields), Some(fence))
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    pub(crate) fn with_catalog40_trial(mut self, trial: Catalog40Trial, transition: Catalog40Transition) -> Self {
-        self.catalog40_trial = Some((trial, transition));
+    pub(crate) fn with_furnishing_transition_trial(mut self, trial: FurnishingTransitionTrial, transition: FurnishingTransition) -> Self {
+        self.furnishing_transition_trial = Some((trial, transition));
         self
     }
     fn bound_session(
@@ -946,7 +947,7 @@ impl Session {
             environment,
             transition_fence,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-            catalog40_trial: None,
+            furnishing_transition_trial: None,
             guard: Some(guard),
             postgres: None,
             node: None,
@@ -1008,14 +1009,17 @@ impl Session {
         };
         if self.transition_fence.is_some() {
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-            if let Some((_, transition)) = self.catalog40_trial.as_ref() {
-                if catalog == WorkspaceFurnishingCatalog::MaterialMultimap040
+            if let Some((_, transition)) = self.furnishing_transition_trial.as_ref() {
+                if catalog == transition.target_catalog()
                     && !exists(&self.service.root.join(WORKSPACE_FURNISHING_INITIALIZATION))?
                     && exists(&self.service.root.join("native-database"))?
                 {
                     self.payload.recheck()?;
-                    return Ok(Some(if transition.upgrades_catalog() { FurnishingStart::Upgrade039To040 }
-                        else { FurnishingStart::Reopen }));
+                    return Ok(Some(match transition {
+                        FurnishingTransition::Upgrade39(_) => FurnishingStart::Upgrade039To040,
+                        FurnishingTransition::Upgrade40(_) => FurnishingStart::Upgrade040To044,
+                        _ => FurnishingStart::Reopen,
+                    }));
                 }
             }
             return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
@@ -1025,6 +1029,12 @@ impl Session {
         self.payload.workspace_furnishing_ledger(catalog)?;
         let (workspace, tenant, principal) = self.service.personal_identity()?;
         let root = &self.service.root;
+        if self.payload.ordinary_hayes_release() {
+            if exists(&root.join(WORKSPACE_FURNISHING_INITIALIZATION))? {
+                return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+            }
+            return Ok(Some(FurnishingStart::Reopen));
+        }
         let metadata = fs::symlink_metadata(root).map_err(|_| err("STATE_UNAVAILABLE"))?;
         let expected = serde_json::to_vec(&serde_json::json!({
             "format": 1,
@@ -1387,8 +1397,12 @@ const { isDeepStrictEqual } = require('node:util');
         if self.node.is_none() {
             self.owner_channel = None;
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
-            if matches!(self.hayes_bootstrap, HayesBootstrap::Issued(_)) {
-                self.hayes_bootstrap = HayesBootstrap::Spent;
+            if matches!(self.hayes_bootstrap, HayesBootstrap::Issued(_) | HayesBootstrap::Spent) {
+                self.hayes_bootstrap = if self.payload.ordinary_hayes_release() {
+                    HayesBootstrap::Disabled
+                } else {
+                    HayesBootstrap::Spent
+                };
             }
         }
         Ok(changed)
@@ -1813,8 +1827,11 @@ const { isDeepStrictEqual } = require('node:util');
             }
         }
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-        if furnishing == Some(FurnishingStart::Upgrade039To040) {
-            let expected = self.payload.catalog39_upgrade_source_ledger()?;
+        if matches!(furnishing, Some(FurnishingStart::Upgrade039To040 | FurnishingStart::Upgrade040To044)) {
+            let expected = match furnishing {
+                Some(FurnishingStart::Upgrade040To044) => self.payload.catalog40_upgrade_source_ledger()?,
+                _ => self.payload.catalog39_upgrade_source_ledger()?,
+            };
             let observed = self.query_database_before("exhibitos",
                 "SELECT name,sha256 FROM public.schema_migrations ORDER BY name",
                 Instant::now() + Duration::from_secs(60))?;
@@ -1897,6 +1914,15 @@ const { isDeepStrictEqual } = require('node:util');
             }
             Some(owner_channel::Setup::new()?)
         } else { None };
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        if self.payload.ordinary_hayes_release()
+            && matches!(furnishing, Some(FurnishingStart::Reopen | FurnishingStart::Upgrade040To044))
+        {
+            self.payload.recheck()?;
+            let generation_id = Uuid::parse_str(generation).map_err(|_| err("HAYES_OPERATION_UNAVAILABLE"))?;
+            let pin = HayesSessionPin::new(generation_id, &self.payload.context().manifest_sha256)?;
+            owner_setup = Some(owner_setup.take().ok_or_else(|| err("HAYES_OPERATION_UNAVAILABLE"))?.with_hayes(pin)?);
+        }
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
         if matches!(self.hayes_bootstrap, HayesBootstrap::Armed(_)) {
             let HayesBootstrap::Armed(expected) =
@@ -2109,7 +2135,7 @@ const { isDeepStrictEqual } = require('node:util');
         let prior = current_run(&self.service.root)?;
         let id = Uuid::new_v4().to_string();
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-        let id = if let Some((trial, _)) = &self.catalog40_trial {
+        let id = if let Some((trial, _)) = &self.furnishing_transition_trial {
             if self.transition_fence.is_none() || !services || prior.as_ref() != Some(&trial.source) {
                 return Err(err(furnishing_lifecycle::ERROR));
             }
@@ -2119,6 +2145,7 @@ const { isDeepStrictEqual } = require('node:util');
         let catalog = self.payload.workspace_furnishing_catalog()?;
         #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         if matches!(catalog, Some(WorkspaceFurnishingCatalog::HayesOriginal042 | WorkspaceFurnishingCatalog::HayesDisposition043 | WorkspaceFurnishingCatalog::HayesRelease044))
+            && !self.payload.ordinary_hayes_release()
             && (!matches!(self.hayes_bootstrap, HayesBootstrap::Armed(_)) || prior.is_some()
                 || self.payload.hayes_session_probe_script()?.is_some() != self.hayes_probe_source.is_some())
         {
@@ -2157,11 +2184,11 @@ const { isDeepStrictEqual } = require('node:util');
             if services {
                 match furnishing {
                     Some(FurnishingStart::Initialize | FurnishingStart::SelectedImport038 | FurnishingStart::SelectedImport039 | FurnishingStart::SelectedImport040) => (),
-                    Some(FurnishingStart::Reopen | FurnishingStart::Upgrade039To040) => {
+                    Some(FurnishingStart::Reopen | FurnishingStart::Upgrade039To040 | FurnishingStart::Upgrade040To044) => {
                         let source = prior_binding.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
                         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-                        if let Some((_, transition)) = &self.catalog40_trial {
-                            active.consume_catalog40_transition(source, *transition)?;
+                        if let Some((_, transition)) = &self.furnishing_transition_trial {
+                            active.consume_furnishing_transition(source, *transition)?;
                         } else {
                             active.consume(source)?;
                         }
@@ -2230,7 +2257,7 @@ const { isDeepStrictEqual } = require('node:util');
         self.furnishing_selected_saved = false;
         self.furnishing_keep_fences = false;
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-        if self.catalog40_trial.is_some() {
+        if self.furnishing_transition_trial.is_some() {
             self.furnishing_keep_fences = true;
         }
         self.state = "starting".into();
@@ -2723,7 +2750,7 @@ const { isDeepStrictEqual } = require('node:util');
                 self.failure.get_or_insert_with(|| furnishing_lifecycle::ERROR.into());
             }
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-            if self.catalog40_trial.is_some() && self.failure.is_some()
+            if self.furnishing_transition_trial.is_some() && self.failure.is_some()
                 && (!self.exits.contains_key("node") || self.furnishing_drain_ack)
                 && self.exits.values().all(|code| *code == 0)
             {

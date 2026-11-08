@@ -16,6 +16,8 @@ pub(super) enum Admission {
     VerifiedRestore,
     #[serde(rename = "catalog-upgrade-039-to-040")]
     CatalogUpgrade039To040,
+    #[serde(rename = "catalog-upgrade-040-to-044")]
+    CatalogUpgrade040To044,
 }
 
 impl Admission {
@@ -25,6 +27,7 @@ impl Admission {
             Self::CleanReopen => 2,
             Self::VerifiedRestore => 3,
             Self::CatalogUpgrade039To040 => 4,
+            Self::CatalogUpgrade040To044 => 5,
         }
     }
 }
@@ -87,7 +90,10 @@ impl Binding {
             _ => false,
         };
         if self.version != 1
-            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap)
+            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap
+                || (self.catalog == 44 && self.restore.is_none()
+                    && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade040To044)
+                    && crate::native_payload::ordinary_hayes_release_host_matches(tuple)))
             || (self.catalog == 41
                 && (self.restore.is_some()
                     || !matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)))
@@ -128,6 +134,9 @@ impl Binding {
             }
             (Phase::Active | Phase::Clean, Admission::CatalogUpgrade039To040) => {
                 self.catalog == 40 && self.previous_generation.is_some() && self.restore.is_none()
+            }
+            (Phase::Active | Phase::Clean, Admission::CatalogUpgrade040To044) => {
+                self.catalog == 44 && self.previous_generation.is_some() && self.restore.is_none()
             }
             (Phase::ActivatedRestore, Admission::VerifiedRestore) => {
                 self.previous_generation.is_none() && self.restore.is_some()
@@ -179,14 +188,15 @@ impl Binding {
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    pub(super) fn consume_catalog40_transition(&mut self, prior: &Self, transition: Catalog40Transition) -> Result<()> {
+    pub(super) fn consume_furnishing_transition(&mut self, prior: &Self, transition: FurnishingTransition) -> Result<()> {
         prior.check()?;
-        self.check()?;
-        if prior.phase != Phase::Clean || self.phase != Phase::Active || prior.restore.is_some()
+        if prior.phase != Phase::Clean || self.phase != Phase::Active
+            || self.previous_generation.is_some() || self.admission_kind != Admission::FreshEmpty
+            || prior.restore.is_some() || self.restore.is_some()
             || self.generation == prior.generation || self.owner != prior.owner
             || self.physical != prior.physical
             || !prior.matches_catalog_tuple(transition.source_catalog().version(), transition.source())
-            || !self.matches_catalog_tuple(40, transition.target())
+            || !self.matches_catalog_tuple(transition.target_catalog().version(), transition.target())
         {
             return Err(err(ERROR));
         }
@@ -196,9 +206,12 @@ impl Binding {
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    pub(super) fn transition_admission(transition: Catalog40Transition) -> Admission {
-        if transition.upgrades_catalog() { Admission::CatalogUpgrade039To040 }
-        else { Admission::CleanReopen }
+    pub(super) fn transition_admission(transition: FurnishingTransition) -> Admission {
+        match transition {
+            FurnishingTransition::Upgrade39(_) => Admission::CatalogUpgrade039To040,
+            FurnishingTransition::Upgrade40(_) => Admission::CatalogUpgrade040To044,
+            _ => Admission::CleanReopen,
+        }
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -530,29 +543,29 @@ mod tests {
         use crate::native_payload::{CATALOG40_FRAME_SOURCE, CATALOG40_FRAME_TARGET};
         let mut prior = catalog40_binding(GENERATION, CATALOG40_FRAME_SOURCE);
         let target = catalog40_binding(NEXT, CATALOG40_FRAME_TARGET);
-        assert!(target.clone().consume_catalog40_transition(&prior, Catalog40Transition::White).is_err());
+        assert!(target.clone().consume_furnishing_transition(&prior, FurnishingTransition::White).is_err());
         prior.phase = Phase::Clean;
         assert!(target.clone().consume(&prior).is_err());
         let mut next = target.clone();
-        next.consume_catalog40_transition(&prior, Catalog40Transition::White).unwrap();
+        next.consume_furnishing_transition(&prior, FurnishingTransition::White).unwrap();
         assert_eq!(next.admission_kind, Admission::CleanReopen);
         assert_eq!(next.previous_generation.as_deref(), Some(GENERATION));
 
         let mut bad = prior.clone();
         bad.owner.principal_id = NEXT.into();
-        assert!(target.clone().consume_catalog40_transition(&bad, Catalog40Transition::White).is_err());
+        assert!(target.clone().consume_furnishing_transition(&bad, FurnishingTransition::White).is_err());
         bad = prior.clone();
         bad.physical.lock_inode += 1;
-        assert!(target.clone().consume_catalog40_transition(&bad, Catalog40Transition::White).is_err());
+        assert!(target.clone().consume_furnishing_transition(&bad, FurnishingTransition::White).is_err());
         bad = prior.clone();
         bad.producer_sha256 = "a".repeat(64);
-        assert!(target.clone().consume_catalog40_transition(&bad, Catalog40Transition::White).is_err());
+        assert!(target.clone().consume_furnishing_transition(&bad, FurnishingTransition::White).is_err());
         bad = target.clone();
         bad.payload_manifest_sha256 = "a".repeat(64);
-        assert!(bad.consume_catalog40_transition(&prior, Catalog40Transition::White).is_err());
+        assert!(bad.consume_furnishing_transition(&prior, FurnishingTransition::White).is_err());
         bad = target;
         bad.catalog = 39;
-        assert!(bad.consume_catalog40_transition(&prior, Catalog40Transition::White).is_err());
+        assert!(bad.consume_furnishing_transition(&prior, FurnishingTransition::White).is_err());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -562,42 +575,42 @@ mod tests {
         let mut white = catalog40_binding(GENERATION, CATALOG40_FRAME_TARGET);
         white.phase = Phase::Clean;
         let tangent = catalog40_binding(NEXT, CATALOG40_TANGENT_TARGET);
-        let step = Catalog40Transition::Tangent;
-        assert_eq!(Catalog40Transition::from_manifests((
+        let step = FurnishingTransition::Tangent;
+        assert_eq!(FurnishingTransition::from_manifests((
             &white.payload_manifest_sha256, &tangent.payload_manifest_sha256,
         )), Some(step));
         let mut next = tangent.clone();
-        next.consume_catalog40_transition(&white, step).unwrap();
+        next.consume_furnishing_transition(&white, step).unwrap();
         assert_eq!(next.previous_generation.as_deref(), Some(GENERATION));
         assert!(tangent.clone().consume(&white).is_err());
-        assert!(tangent.clone().consume_catalog40_transition(&white, Catalog40Transition::White).is_err());
+        assert!(tangent.clone().consume_furnishing_transition(&white, FurnishingTransition::White).is_err());
 
         let mut original = catalog40_binding(GENERATION, CATALOG40_FRAME_SOURCE);
         original.phase = Phase::Clean;
-        assert!(tangent.clone().consume_catalog40_transition(&original, step).is_err());
-        assert_eq!(Catalog40Transition::from_manifests((
+        assert!(tangent.clone().consume_furnishing_transition(&original, step).is_err());
+        assert_eq!(FurnishingTransition::from_manifests((
             &original.payload_manifest_sha256, &tangent.payload_manifest_sha256,
         )), None);
-        assert_eq!(Catalog40Transition::from_manifests((
+        assert_eq!(FurnishingTransition::from_manifests((
             &tangent.payload_manifest_sha256, &white.payload_manifest_sha256,
         )), None);
         let mut bad = tangent;
         bad.producer_sha256 = white.producer_sha256.clone();
-        assert!(bad.consume_catalog40_transition(&white, step).is_err());
+        assert!(bad.consume_furnishing_transition(&white, step).is_err());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
     fn catalog39_upgrade_uses_a_distinct_admission_and_reopens_normally_after_stop() {
-        let transition = Catalog40Transition::test_upgrade();
+        let transition = FurnishingTransition::test_upgrade();
         let mut prior = catalog40_binding(GENERATION, transition.source());
         prior.catalog = 39;
         prior.phase = Phase::Clean;
         let target = catalog40_binding(NEXT, transition.target());
         assert!(target.clone().consume(&prior).is_err());
-        assert!(target.clone().consume_catalog40_transition(&prior, Catalog40Transition::Tangent).is_err());
+        assert!(target.clone().consume_furnishing_transition(&prior, FurnishingTransition::Tangent).is_err());
         let mut active = target.clone();
-        active.consume_catalog40_transition(&prior, transition).unwrap();
+        active.consume_furnishing_transition(&prior, transition).unwrap();
         assert_eq!(active.admission_kind, Admission::CatalogUpgrade039To040);
         assert_eq!(active.admission_kind.tag(), 4);
         assert_eq!(serde_json::to_value(active.admission_kind).unwrap(), "catalog-upgrade-039-to-040");
@@ -607,32 +620,32 @@ mod tests {
         let mut reopened = catalog40_binding(LATER, transition.target());
         reopened.consume(&active).unwrap();
         assert_eq!(reopened.admission_kind, Admission::CleanReopen);
-        assert!(catalog40_binding(LATER, transition.target()).consume_catalog40_transition(&active, transition).is_err());
+        assert!(catalog40_binding(LATER, transition.target()).consume_furnishing_transition(&active, transition).is_err());
 
         let mut invalid = prior;
         invalid.catalog = 40;
-        assert!(target.clone().consume_catalog40_transition(&invalid, transition).is_err());
+        assert!(target.clone().consume_furnishing_transition(&invalid, transition).is_err());
         invalid.catalog = 39;
         invalid.owner.principal_id = NEXT.into();
-        assert!(target.clone().consume_catalog40_transition(&invalid, transition).is_err());
+        assert!(target.clone().consume_furnishing_transition(&invalid, transition).is_err());
         invalid.owner.principal_id = target.owner.principal_id.clone();
         invalid.physical.lock_inode += 1;
-        assert!(target.clone().consume_catalog40_transition(&invalid, transition).is_err());
+        assert!(target.clone().consume_furnishing_transition(&invalid, transition).is_err());
         invalid.physical = target.physical;
         invalid.phase = Phase::Active;
-        assert!(target.clone().consume_catalog40_transition(&invalid, transition).is_err());
+        assert!(target.clone().consume_furnishing_transition(&invalid, transition).is_err());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
     fn catalog40_transition_recovers_only_its_own_consumption_and_keeps_trial_record() {
-        for transition in [Catalog40Transition::White, Catalog40Transition::Tangent, Catalog40Transition::test_upgrade()] {
+        for transition in [FurnishingTransition::White, FurnishingTransition::Tangent, FurnishingTransition::test_upgrade()] {
             check_catalog40_recovery(transition);
         }
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    fn check_catalog40_recovery(transition: Catalog40Transition) {
+    fn check_catalog40_recovery(transition: FurnishingTransition) {
         use std::os::unix::fs::DirBuilderExt;
         let root = std::env::temp_dir().join(format!("catalog40-transition-{}", Uuid::new_v4()));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
@@ -644,7 +657,7 @@ mod tests {
         prior.physical = writer.identity().unwrap();
         prior.phase = Phase::Clean;
         let source = Current { format: 1, id: GENERATION.into(), furnishing: Some(prior.clone()) };
-        let trial = Catalog40Trial { source: source.clone(), generation: NEXT.into() };
+        let trial = FurnishingTransitionTrial { source: source.clone(), generation: NEXT.into() };
         let runs = directory(&root, "native-runs").unwrap();
         let prior_run = directory(&runs, GENERATION).unwrap();
         let trial_run = directory(&runs, NEXT).unwrap();
@@ -673,7 +686,7 @@ mod tests {
         write_run(&prior_run, &context, proof(NEXT)).unwrap();
         let mut target = catalog40_binding(NEXT, transition.target());
         target.physical = prior.physical;
-        target.consume_catalog40_transition(&prior, transition).unwrap();
+        target.consume_furnishing_transition(&prior, transition).unwrap();
         write_json(&root, "native-current-run.json", &Current {
             format: 1, id: NEXT.into(), furnishing: Some(target.clone()),
         }).unwrap();
@@ -693,7 +706,7 @@ mod tests {
             context.state = "starting_services".into();
             write_run(&trial_run, &context, None).unwrap();
             assert!(trial.check_recovery_root(&root, &writer, transition).is_err());
-            assert!(catalog40_binding(LATER, transition.target()).consume_catalog40_transition(&target, transition).is_err());
+            assert!(catalog40_binding(LATER, transition.target()).consume_furnishing_transition(&target, transition).is_err());
         }
 
         // The helper drained the failed trial and exited before sealing the
