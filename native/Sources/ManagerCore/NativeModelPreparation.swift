@@ -18,6 +18,12 @@ public struct NativeModelPreparationIntent: Codable, Equatable, Sendable {
         self.artworkRevision = artworkRevision
     }
 
+    public static func requireFreshIntake(for artwork: NativeArtwork) throws {
+        guard artwork.approvedRevision != artwork.revision else {
+            throw AuthoringFailure("IMPORT_MODEL_NEW_REVISION_REQUIRED")
+        }
+    }
+
     var valid: Bool {
         let token = "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
         return version == 1 && profileId == Self.profile

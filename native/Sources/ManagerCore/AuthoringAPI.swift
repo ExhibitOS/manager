@@ -245,6 +245,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "IMPORT_MODEL_BINDING_INVALID": return "감상용 파일 요청의 파일·설정·작업 식별 정보가 일치하지 않습니다. 저장한 원본과 요청을 유지했습니다."
         case "IMPORT_MODEL_UNAVAILABLE": return "이 실행본은 저장한 감상용 파일 요청을 지원하지 않습니다. 원본과 요청을 보존했으니 지원 실행본에서 다시 확인하세요."
         case "IMPORT_MODEL_METADATA_HELD": return "준비된 파일을 승인하거나 가능한 경우 검사를 중단한 뒤 ‘다른 파일 검사 준비’를 선택하면 작품 정보를 다시 저장할 수 있습니다."
+        case "IMPORT_MODEL_NEW_REVISION_REQUIRED": return "이 작품 버전은 이미 승인됐습니다. 작품 정보를 저장해 새 버전을 만든 뒤 파일 검사를 시작하세요. 대기 목록에서 연 파일은 목록으로 돌려놓았다가 다시 여세요."
         case "IMPORT_ICC_UNAVAILABLE": return "이 실행본은 저장한 ICC 변환 요청을 지원하지 않습니다. 원본과 요청을 보존했으니 지원 실행본에서 다시 확인하세요."
         case "IMPORT_INTENT_CHANGED": return "이전 검사 요청과 파일 또는 권리 입력이 다릅니다. 이전 요청을 완료하거나 취소한 뒤 새 검사를 시작하세요."
         case "IMPORT_FILE_REQUIRED": return "이전 요청과 같은 파일을 다시 선택하세요. 저장한 요청은 유지됩니다."

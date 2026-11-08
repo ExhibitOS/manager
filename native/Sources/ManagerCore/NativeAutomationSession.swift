@@ -1099,6 +1099,7 @@ public actor NativeAutomationSession {
             if let retained = state.intent {
                 preparation = retained.modelPreparation
             } else if await api.admitsRequiredModelPreparation {
+                try NativeModelPreparationIntent.requireFreshIntake(for: artwork)
                 preparation = .init(operationID: id, generation: UUID().uuidString.lowercased(), artworkRevision: artwork.revision)
             } else { preparation = nil }
             let intent = NativeImportIntent(artworkId: artwork.id, idempotencyKey: id, mime: file.mime,

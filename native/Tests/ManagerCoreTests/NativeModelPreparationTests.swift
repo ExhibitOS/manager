@@ -3,6 +3,21 @@ import XCTest
 @testable import ManagerCore
 
 final class NativeModelPreparationTests: XCTestCase {
+    func testFreshRequiredIntakeWaitsForNewUnapprovedArtworkRevision() throws {
+        let artworkId = UUID().uuidString, artistId = UUID().uuidString
+        let asset = NativeArtwork.Asset(id: UUID().uuidString, mime: "model/gltf-binary", state: "approved",
+                                       sha256: String(repeating: "a", count: 64), bytes: 128)
+        let approved = NativeArtwork(id: artworkId, artistId: artistId, revision: 1, approvedRevision: 1,
+                                     approvedAssetId: asset.id, metadata: ArtworkMetadata(), assets: [asset], archived: false)
+        XCTAssertThrowsError(try NativeModelPreparationIntent.requireFreshIntake(for: approved)) {
+            XCTAssertEqual(($0 as? AuthoringFailure)?.code, "IMPORT_MODEL_NEW_REVISION_REQUIRED")
+        }
+        let revised = NativeArtwork(id: artworkId, artistId: artistId, revision: 2, approvedRevision: nil,
+                                    approvedAssetId: nil, metadata: approved.metadata, assets: approved.assets, archived: false)
+        XCTAssertNoThrow(try NativeModelPreparationIntent.requireFreshIntake(for: revised))
+        XCTAssertEqual(revised.assets.map(\.id), [asset.id])
+    }
+
     private func readyFixture() throws -> (Data, NativeImportJob, NativeModelPreparationStatus, NativeImportIntent) {
         guard let path = ProcessInfo.processInfo.environment["EXHIBITOS_REQUIRED_MODEL_READY_FIXTURE"] else {
             throw XCTSkip("Set the synthetic Platform 045 fixture path for this paired contract check")

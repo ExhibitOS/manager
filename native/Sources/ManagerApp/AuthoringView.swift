@@ -452,19 +452,26 @@ extension AuthoringModel {
                 return
             }
             let generation = importStatusGeneration, currentScope = scope, manifest = runtimeManifestSHA256
-            if let target = intakeTarget {
+            let target = intakeTarget
+            let startsRequiredModel = state.intent == nil && file.mime == "model/gltf-binary" && requiredModelPreparationEnabled
+            if let target {
                 guard target.artworkID == selected.id, target.revision == selected.revision,
                       try await intakeWorkspaceCheck?() == true else { throw AuthoringFailure("INTAKE_WORKSPACE_UNAVAILABLE") }
-                let fresh = try await api.artwork(target.artworkID)
+            }
+            if target != nil || startsRequiredModel {
+                let fresh = try await api.artwork(selected.id)
                 guard available, generation == importStatusGeneration, currentScope == scope,
-                      !fresh.archived, fresh.revision == target.revision, fresh.metadata == selected.metadata,
-                      self.selected?.id == target.artworkID, self.selected?.revision == target.revision,
+                      fresh.id == selected.id, !fresh.archived, fresh.revision == selected.revision, fresh.metadata == selected.metadata,
+                      self.selected?.id == selected.id, self.selected?.revision == selected.revision,
                       !metadataDirty, self.transfer?.revision == state.revision else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
-                guard file.mime == "image/png" && iccImportAdmitted || file.mime == "model/gltf-binary" && modelIntakeEnabled else {
-                    throw AuthoringFailure("INTAKE_WORKSPACE_UNAVAILABLE")
-                }
-                if state.intent == nil, fresh.assets.contains(where: { $0.sha256 == file.sha256 && $0.state == "approved" }) {
-                    throw AuthoringFailure("INTAKE_FILE_ALREADY_APPROVED")
+                if startsRequiredModel { try NativeModelPreparationIntent.requireFreshIntake(for: fresh) }
+                if target != nil {
+                    guard file.mime == "image/png" && iccImportAdmitted || file.mime == "model/gltf-binary" && modelIntakeEnabled else {
+                        throw AuthoringFailure("INTAKE_WORKSPACE_UNAVAILABLE")
+                    }
+                    if state.intent == nil, fresh.assets.contains(where: { $0.sha256 == file.sha256 && $0.state == "approved" }) {
+                        throw AuthoringFailure("INTAKE_FILE_ALREADY_APPROVED")
+                    }
                 }
             }
             let rights = draft.rights, scale = importScale
@@ -484,7 +491,7 @@ extension AuthoringModel {
             let modelPreparation: NativeModelPreparationIntent?
             if let previous = state.intent {
                 modelPreparation = previous.modelPreparation
-            } else if file.mime == "model/gltf-binary", requiredModelPreparationEnabled {
+            } else if startsRequiredModel {
                 modelPreparation = NativeModelPreparationIntent(operationID: requestKey,
                     generation: UUID().uuidString.lowercased(), artworkRevision: selected.revision)
             } else { modelPreparation = nil }
