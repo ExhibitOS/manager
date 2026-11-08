@@ -28,20 +28,29 @@ impl Session {
         job_id: &str,
         saved: &crate::installations::native_upload::Transfer,
         current_artwork_revision: Option<u32>,
+        finished_artwork: Option<(&str, &str)>,
     ) -> Result<Value> {
         let unavailable = || err("HAYES_RELEASE_UNCONFIRMED");
         if !self.status()?.readiness.ready || !self.payload.ordinary_hayes_release()
             || self.active_furnishing_binding().is_none_or(|binding| binding.catalog != 44)
-            || saved.job_id.as_deref() != Some(job_id)
         {
             return Err(unavailable());
         }
-        let intent = saved.intent.as_ref().ok_or_else(unavailable)?;
-        let hayes = intent.hayes_original.as_ref().ok_or_else(unavailable)?;
+        let (artwork, display, historical_revision) = if let Some((artwork, display)) = finished_artwork {
+            if saved.intent.is_some() || saved.job_id.is_some() || current_artwork_revision.is_none() {
+                return Err(unavailable());
+            }
+            (artwork, display, 1)
+        } else {
+            if saved.job_id.as_deref() != Some(job_id) { return Err(unavailable()); }
+            let intent = saved.intent.as_ref().ok_or_else(unavailable)?;
+            let hayes = intent.hayes_original.as_ref().ok_or_else(unavailable)?;
+            (intent.artwork_id.as_str(), hayes.display_reference_sha256.as_str(), hayes.artwork_revision)
+        };
         let binding = ExecuteBinding {
             job_id: Uuid::parse_str(job_id).map_err(|_| unavailable())?,
-            artwork_id: Uuid::parse_str(&intent.artwork_id).map_err(|_| unavailable())?,
-            artwork_revision: hayes.artwork_revision,
+            artwork_id: Uuid::parse_str(artwork).map_err(|_| unavailable())?,
+            artwork_revision: historical_revision,
         };
         let current_revision = current_artwork_revision.unwrap_or(binding.artwork_revision);
         let text_successor = match (binding.artwork_revision, current_revision) {
@@ -53,7 +62,7 @@ impl Session {
         if (auth.workspace_id.as_str(), auth.tenant_id.as_str(), auth.principal_id.as_str())
             != (saved.workspace_id.as_str(), saved.tenant_id.as_str(), saved.principal_id.as_str())
             || ![&auth.workspace_id, &auth.tenant_id, &auth.principal_id].iter().all(|id| installations::uuid(id))
-            || !hash_valid(&hayes.display_reference_sha256)
+            || !hash_valid(display)
         {
             return Err(unavailable());
         }
@@ -81,7 +90,7 @@ impl Session {
                 AND rights.deleted_at IS NULL AND rights.metadata=j.rights AND j.rights=w.metadata->'rights'
                 AND w.metadata->'displayReference'->>'assetSha256'='{display}'
                 AND r.runtime_manifest_sha256 IN ('{manifest}','{predecessor}')
-                AND (NOT {text_successor} OR (
+                AND (NOT {require_prior_approval} OR (
                     r.runtime_manifest_sha256='{predecessor}'
                     AND EXISTS (
                         SELECT 1 FROM artwork_approvals approved
@@ -98,8 +107,9 @@ impl Session {
                 AND encode(sha256(d.receipt_canonical),'hex')=r.receipt_sha256",
             tenant=auth.tenant_id, workspace=auth.workspace_id, principal=auth.principal_id,
             job=binding.job_id, artwork=binding.artwork_id, historical_revision=binding.artwork_revision,
-            display=hayes.display_reference_sha256, manifest=self.payload.context().manifest_sha256,
+            display=display, manifest=self.payload.context().manifest_sha256,
             predecessor=crate::native_payload::HAYES_ORIGINAL_RELEASE_MANIFEST,
+            require_prior_approval=text_successor || finished_artwork.is_some(),
             worker=crate::native_payload::hayes::WORKER_MANIFEST_SHA256,
         );
         let owner = Owner::capture(self)?;

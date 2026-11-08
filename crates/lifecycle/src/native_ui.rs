@@ -208,6 +208,7 @@ pub enum Command {
         selection_token: String,
         job_id: String,
         current_artwork_revision: Option<u32>,
+        finished_artwork: Option<(String, String)>,
     },
     #[cfg(target_os = "macos")]
     NativeAuthoringSession {
@@ -269,6 +270,10 @@ struct WireRequest {
     hayes_job_id: Option<String>,
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
     hayes_current_artwork_revision: Option<u32>,
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    hayes_finished_artwork_id: Option<String>,
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    hayes_finished_display_sha256: Option<String>,
 }
 impl TryFrom<WireRequest> for Request {
     type Error = &'static str;
@@ -282,18 +287,27 @@ impl TryFrom<WireRequest> for Request {
                 return Err("NATIVE_PROTOCOL_INVALID");
             }
             let selection_token = wire.selection_token.ok_or("NATIVE_PROTOCOL_INVALID")?;
+            let finished_artwork = match (wire.hayes_finished_artwork_id, wire.hayes_finished_display_sha256) {
+                (None, None) => None,
+                (Some(artwork), Some(display)) if wire.hayes_current_artwork_revision.is_some()
+                    && crate::installations::uuid(&artwork) && crate::hash_valid(&display) => Some((artwork, display)),
+                _ => return Err("NATIVE_PROTOCOL_INVALID"),
+            };
             let command = match (wire.command.as_str(), wire.hayes_execute, wire.hayes_job_id, wire.hayes_current_artwork_revision) {
-                ("native_hayes_execute", Some(input), None, None) => Command::NativeHayesExecute { selection_token, input },
+                ("native_hayes_execute", Some(input), None, None) if finished_artwork.is_none() =>
+                    Command::NativeHayesExecute { selection_token, input },
                 ("native_hayes_release", None, Some(job_id), current_artwork_revision)
                     if crate::installations::uuid(&job_id)
                         && current_artwork_revision.is_none_or(|revision| (1..=i32::MAX as u32).contains(&revision)) =>
-                    Command::NativeHayesRelease { selection_token, job_id, current_artwork_revision },
+                    Command::NativeHayesRelease { selection_token, job_id, current_artwork_revision, finished_artwork },
                 _ => return Err("NATIVE_PROTOCOL_INVALID"),
             };
             return Ok(Self { version: wire.version, id: wire.id, command });
         }
         #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
-        if wire.hayes_execute.is_some() || wire.hayes_job_id.is_some() || wire.hayes_current_artwork_revision.is_some() { return Err("NATIVE_PROTOCOL_INVALID"); }
+        if wire.hayes_execute.is_some() || wire.hayes_job_id.is_some() || wire.hayes_current_artwork_revision.is_some()
+            || wire.hayes_finished_artwork_id.is_some() || wire.hayes_finished_display_sha256.is_some()
+        { return Err("NATIVE_PROTOCOL_INVALID"); }
         #[cfg(target_os = "macos")]
         if matches!(wire.command.as_str(), "native_oex_save_observed" | "native_oex_save_authorize") {
             if wire.state.is_some() || wire.account.is_some() || wire.transfer.is_some() || wire.oex_import.is_some()
@@ -556,6 +570,31 @@ impl TryFrom<WireRequest> for Request {
             id: wire.id,
             command,
         })
+    }
+}
+
+#[cfg(all(test, target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+mod finished_hayes_wire_tests {
+    use super::*;
+
+    #[test]
+    fn finished_hayes_release_requires_complete_explicit_scope() {
+        let mut wire = serde_json::json!({
+            "version":1, "id":1, "command":"native_hayes_release", "selection_token":"scope",
+            "hayes_job_id":"2d26a5d9-12d0-4fa2-a25b-4d322e042dd8"
+        });
+        let parse = |value| Request::try_from(serde_json::from_value::<WireRequest>(value).unwrap());
+        assert!(matches!(parse(wire.clone()).unwrap().command, Command::NativeHayesRelease { finished_artwork: None, .. }));
+        wire["hayes_finished_artwork_id"] = serde_json::json!("996d69ed-c26b-4dfc-a8ee-1d44b8514cdb");
+        assert!(parse(wire.clone()).is_err());
+        wire["hayes_finished_display_sha256"] = serde_json::json!("a".repeat(64));
+        assert!(parse(wire.clone()).is_err());
+        wire["hayes_current_artwork_revision"] = serde_json::json!(2);
+        assert!(matches!(parse(wire.clone()).unwrap().command, Command::NativeHayesRelease {
+            finished_artwork: Some(_), current_artwork_revision: Some(2), ..
+        }));
+        wire["command"] = serde_json::json!("native_status");
+        assert!(parse(wire).is_err());
     }
 }
 

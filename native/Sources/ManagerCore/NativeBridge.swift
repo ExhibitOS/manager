@@ -356,6 +356,16 @@ public actor NativeBridge {
         guard receipt.jobId == jobId else { throw BridgeFailure("HAYES_RELEASE_UNCONFIRMED") }
         return receipt
     }
+    func finishedHayesRelease(_ context: Context, jobId: String, artworkId: String, revision: Int,
+                              displaySHA256: String) throws -> NativeHayesReceipt {
+        let receipt: NativeHayesReceipt = try request("native_hayes_release", fields: [
+            "selection_token": context.selectionToken, "hayes_job_id": jobId,
+            "hayes_current_artwork_revision": revision, "hayes_finished_artwork_id": artworkId,
+            "hayes_finished_display_sha256": displaySHA256
+        ])
+        guard receipt.jobId == jobId else { throw BridgeFailure("HAYES_RELEASE_UNCONFIRMED") }
+        return receipt
+    }
     public func executeHayesAndWait(_ context: Context, jobId: String, artworkId: String,
                                    artworkRevision: Int, workerRuntime: URL? = nil) async throws -> NativeHayesReceipt {
         let before = try nativeStatus(context)
