@@ -41,6 +41,8 @@ pub fn selected_oex_format_v7_validation(resources: &Path, input_fd: i32, cancel
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
 #[allow(dead_code)] // Inactive pending native containment and owner-channel integration.
 #[path = "native_runtime_hayes.rs"] mod hayes;
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+use hayes::operation::{HayesBootstrap, HayesSessionPin};
 #[path = "native_runtime_furnishing_lifetime.rs"] mod furnishing_lifetime;
 pub(crate) use furnishing_lifetime::WriterIdentity as FurnishingWriterIdentity;
 #[path = "native_runtime_furnishing_lease.rs"] mod furnishing_lease;
@@ -567,6 +569,8 @@ pub struct Session {
     cancellation: Arc<AtomicBool>,
     local_authority: Option<LocalAuthority>,
     owner_channel: Option<owner_channel::Connection>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    hayes_bootstrap: HayesBootstrap,
     furnishing_writer_lifetime: Option<furnishing_lifetime::WriterLifetime>,
     furnishing_binding: Option<Binding>,
     furnishing_drain_attempted: bool,
@@ -949,6 +953,8 @@ impl Session {
             cancellation: Arc::new(AtomicBool::new(false)),
             local_authority: None,
             owner_channel: None,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+            hayes_bootstrap: HayesBootstrap::Disabled,
             furnishing_writer_lifetime: None,
             furnishing_binding: None,
             furnishing_drain_attempted: false,
@@ -1360,7 +1366,13 @@ const { isDeepStrictEqual } = require('node:util');
                 changed = true;
             }
         }
-        if self.node.is_none() { self.owner_channel = None; }
+        if self.node.is_none() {
+            self.owner_channel = None;
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+            if matches!(self.hayes_bootstrap, HayesBootstrap::Issued(_)) {
+                self.hayes_bootstrap = HayesBootstrap::Spent;
+            }
+        }
         Ok(changed)
     }
     fn any_owned(&self) -> bool {
@@ -1864,6 +1876,23 @@ const { isDeepStrictEqual } = require('node:util');
             }
             Some(owner_channel::Setup::new()?)
         } else { None };
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        if matches!(self.hayes_bootstrap, HayesBootstrap::Armed(_)) {
+            let HayesBootstrap::Armed(expected) =
+                std::mem::replace(&mut self.hayes_bootstrap, HayesBootstrap::Spent)
+            else {
+                unreachable!()
+            };
+            if !matches!(furnishing, Some(FurnishingStart::Initialize | FurnishingStart::Reopen))
+                || self.payload.context().manifest_sha256 != expected
+            {
+                return Err(err("HAYES_OPERATION_UNAVAILABLE"));
+            }
+            self.payload.recheck()?;
+            let generation_id = Uuid::parse_str(generation).map_err(|_| err("HAYES_OPERATION_UNAVAILABLE"))?;
+            let pin = HayesSessionPin::new(generation_id, &expected)?;
+            owner_setup = Some(owner_setup.take().ok_or_else(|| err("HAYES_OPERATION_UNAVAILABLE"))?.with_hayes(pin)?);
+        }
         let mut private_input = match (&self.local_authority, &owner_setup, self.payload.workspace_import_version(), furnishing) {
             (Some(a), Some(setup), _, Some(start)) => Some(setup.workspace_furnishing_bootstrap(a, generation, start)?),
             (Some(a), Some(setup), Some(version), _) => Some(setup.workspace_import_bootstrap(a, generation, version)?),
@@ -1889,10 +1918,15 @@ const { isDeepStrictEqual } = require('node:util');
         self.node = Some(spawned?);
         if let Some(setup) = owner_setup.as_mut() { setup.close_child(); }
         self.record()?;
-        if let Some(setup) = owner_setup {
+        #[allow(unused_mut)]
+        if let Some(mut setup) = owner_setup {
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+            let dedicated = setup.take_hayes();
             let authority = self.local_authority.as_ref().ok_or_else(|| err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
             let generation = self.job_id.as_deref().ok_or_else(|| err("NATIVE_JOURNAL_INVALID"))?;
             let mut channel = setup.handshake(authority, generation, &self.cancellation)?;
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+            let hayes = dedicated.map(|setup| setup.handshake(authority, generation, &self.cancellation)).transpose()?;
             if let Some(lease) = furnishing_lease {
                 let cancellation = self.cancellation.clone();
                 let binding = self.active_furnishing_binding().ok_or_else(|| err(furnishing_lifecycle::ERROR))?.clone();
@@ -1909,6 +1943,10 @@ const { isDeepStrictEqual } = require('node:util');
                 })?;
             }
             self.owner_channel = Some(channel);
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+            if let Some(hayes) = hayes {
+                self.hayes_bootstrap = HayesBootstrap::Issued(hayes);
+            }
         }
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
@@ -1988,6 +2026,12 @@ const { isDeepStrictEqual } = require('node:util');
     }
     fn start_owned(&mut self, mode: StartMode<'_>) -> Result<Context> {
         let services = matches!(mode, StartMode::Services);
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        if !matches!(self.hayes_bootstrap, HayesBootstrap::Disabled)
+            && !(services && matches!(self.hayes_bootstrap, HayesBootstrap::Armed(_)))
+        {
+            return Err(err("HAYES_OPERATION_UNAVAILABLE"));
+        }
         if !services && exists(&self.service.root.join(WORKSPACE_FURNISHING_INITIALIZATION))? {
             return Err(err("NATIVE_WORKSPACE_FURNISHING_INITIALIZATION_PENDING"));
         }

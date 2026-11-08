@@ -116,8 +116,40 @@ impl HayesSessionPin {
         })
     }
 
+    pub(in super::super) fn runtime_generation(&self) -> Uuid {
+        self.runtime_generation
+    }
+
+    pub(in super::super) fn host_manifest_sha256(&self) -> &str {
+        &self.host_manifest_sha256
+    }
+
     pub(in super::super) fn native_owner_id(&self) -> Uuid {
         self.native_owner_id
+    }
+}
+
+pub(in super::super) struct AuthenticatedHayes {
+    pub(in super::super) pin: HayesSessionPin,
+    pub(in super::super) channel: Connection,
+}
+
+pub(in super::super) enum HayesBootstrap {
+    Disabled,
+    Armed(String),
+    Issued(AuthenticatedHayes),
+    Spent,
+}
+
+impl HayesBootstrap {
+    pub(in super::super) fn consume(&mut self) -> Result<AuthenticatedHayes> {
+        if !matches!(self, Self::Issued(_)) {
+            return Err(unavailable());
+        }
+        let Self::Issued(authenticated) = std::mem::replace(self, Self::Spent) else {
+            unreachable!()
+        };
+        Ok(authenticated)
     }
 }
 
@@ -132,15 +164,13 @@ pub(in super::super) struct OwnedHayesOpen<'a> {
 }
 
 impl Session {
-    /// The caller is a private selected-runtime entry and supplies its
-    /// independently configured host manifest pin and already acquired
-    /// UID authority. No product bootstrap currently calls this method.
+    /// The private selected-runtime entry supplies the acquired UID authority.
+    /// Only this Session's dedicated inherited channel can supply the pin.
     pub(in super::super) fn begin_owned_hayes_open<'a>(
         &'a mut self,
         lease: Lease,
-        pin: HayesSessionPin,
     ) -> Result<OwnedHayesOpen<'a>> {
-        let mut channel = self.owner_channel.take().ok_or_else(unavailable)?;
+        let AuthenticatedHayes { pin, mut channel } = self.hayes_bootstrap.consume()?;
         let result = (|| {
             channel.claim_hayes()?;
             let host = self.payload.context();
