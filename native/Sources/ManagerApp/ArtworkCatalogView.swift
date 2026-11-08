@@ -108,7 +108,7 @@ struct ArtworkCatalogView: View {
         let size = ArtworkSizePresentation(entry.artwork)
         let values = entry.dimensions
         let dimensions = values.isEmpty ? "치수 확인 중" : values.map { $0.formatted(.number.precision(.fractionLength(0...3))) }.joined(separator: " × ") + " m"
-        let recorded = size.sourceUnitsUnknown ? "기관 표기 H/W/D · " + dimensions : dimensions
+        let recorded = size.sourceUnitsUnknown ? "등록된 크기 · " + dimensions : dimensions
         let reference = size.provisionalHeightMeters.map { height in
             "임시 표시 높이 · 미보정 · " + height.formatted(.number.precision(.fractionLength(0...4))) + " m"
         }
