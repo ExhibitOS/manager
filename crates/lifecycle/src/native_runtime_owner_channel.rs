@@ -194,6 +194,20 @@ impl Connection {
         })
     }
 
+    /// One dedicated Hayes exchange on the inherited, authenticated Session
+    /// channel. No legacy or furnishing claim can share this exchange.
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub(super) fn claim_hayes(&mut self) -> Result<()> {
+        if !self.valid || self.claim_started || self.metadata_started
+            || self.furnishing_bound.is_some() || self.ordinary.is_some()
+        {
+            self.fail();
+            return Err(err("HAYES_OPERATION_UNAVAILABLE"));
+        }
+        self.claim_started = true;
+        Ok(())
+    }
+
     // No MAC accessor yet: cached `valid` alone cannot prove the owned peer or
     // fence is live. A typed, single-use Session-bound challenge is required.
     fn fail(&mut self) {self.valid=false;self.key.fill(0);let _=self.socket.shutdown(std::net::Shutdown::Both);}

@@ -26,6 +26,8 @@ mod frame;
 mod generation;
 #[path = "native_runtime_hayes_launch.rs"]
 mod launch;
+#[path = "native_runtime_hayes_operation.rs"]
+pub(super) mod operation;
 #[path = "native_runtime_hayes_transfer.rs"]
 mod transfer;
 #[path = "native_runtime_hayes_watch.rs"]
