@@ -587,6 +587,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_BC96_REQUIRED_MODEL_TARGET.2 == manifest
         || CATALOG45_COMPACT_AND_CANDIDATE_TARGET.2 == manifest
         || CATALOG45_CURRENT_ORIGINAL_TARGET.2 == manifest
+        || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -602,6 +603,11 @@ pub(crate) enum FurnishingTransition {
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 impl FurnishingTransition {
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
+        if let Some(transition) = Self::same_catalog_from_manifests(
+            pair, Some(CATALOG40_DRAFT2_OEX_SELECTED), Some(CATALOG40_RETAINED_OEX_CLEANUP),
+        ) {
+            return Some(transition);
+        }
         if pair == (CATALOG44_BC96_FRAME_LINEAGE_TARGET.2, CATALOG45_BC96_REQUIRED_MODEL_TARGET.2) {
             return Some(Self::Upgrade44 {
                 source: CATALOG44_BC96_FRAME_LINEAGE_TARGET,
@@ -748,6 +754,12 @@ const CATALOG40_DRAFT2_OEX_SELECTED: RuntimeTuple = (
     "9297ba5b94a385a108fc4d9f356a7cc4b915a529",
     "f166f37f9323ea557bfc229feaa7b0f0e7b19472908f21ef3b5862578aedee25",
     "d8daa29b32a9fd27d932047e055286f5a78522d8d7b0cec5eb0f7abddfe706c2",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG40_RETAINED_OEX_CLEANUP: RuntimeTuple = (
+    "cff5a7eb4db9d71542c900689e644173a80d1160",
+    "f166f37f9323ea557bfc229feaa7b0f0e7b19472908f21ef3b5862578aedee25",
+    "ebd9295fdc72f21c128d0fc35a1e17ea7e1fb229386549608fc44e6997d4a292",
 );
 #[cfg(debug_assertions)]
 const WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE: &[(&str, &str, &str)] =
@@ -1579,6 +1591,31 @@ mod normal_oex_release_declaration_tests {
         assert_eq!(reopened.context().manifest_sha256, selected.context().manifest_sha256);
     }
 
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact sealed source and cleanup catalog 040 packages"]
+    fn opens_reviewed_retained_oex_cleanup_refresh() {
+        let old_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_DRAFT2_OEX_SELECTED_RUNTIME").unwrap());
+        let new_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_RETAINED_OEX_CLEANUP_RUNTIME").unwrap());
+        let old = Payload::open_saved_workspace_transition(&old_root).unwrap();
+        let new = Payload::open_saved_workspace_transition(&new_root).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::MaterialMultimap040;
+        assert_eq!(old.workspace_furnishing_ledger(catalog).unwrap(), new.workspace_furnishing_ledger(catalog).unwrap());
+        assert!(!old.retained_oex_cleanup_hook());
+        assert!(new.retained_oex_cleanup_hook());
+        let old_hash = old.context().manifest_sha256;
+        let new_hash = new.context().manifest_sha256;
+        let step = FurnishingTransition::from_manifests((&old_hash, &new_hash)).unwrap();
+        assert_eq!(step.source_catalog(), catalog);
+        assert_eq!(step.target_catalog(), catalog);
+        assert!(!step.upgrades_catalog());
+        assert!(saved_workspace_transition_target(&new_hash));
+        assert!(FurnishingTransition::from_manifests((&new_hash, &old_hash)).is_none());
+        let reopened = Payload::open_workspace_import_validation(&new_root, WorkspaceImport::V7, false).unwrap();
+        assert!(reopened.retained_oex_cleanup_hook() && !reopened.workspace_import_selected_input());
+        assert!(Payload::open_workspace_import_validation(&new_root, WorkspaceImport::V7, true).is_err());
+    }
+
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     #[test]
     fn workspace_import_validation_distinguishes_v6_v7_and_preserves_reopen() {
@@ -2113,6 +2150,15 @@ impl Payload {
     pub(crate) fn open_saved_workspace_transition(root: &Path) -> Result<Self> {
         let payload = Self::open(root)?;
         let context = payload.context();
+        if [CATALOG40_DRAFT2_OEX_SELECTED.2, CATALOG40_RETAINED_OEX_CLEANUP.2]
+            .contains(&context.manifest_sha256.as_str())
+        {
+            return if payload.workspace_furnishing_catalog()? == Some(WorkspaceFurnishingCatalog::MaterialMultimap040) {
+                Ok(payload)
+            } else {
+                Err(err("NATIVE_RUNTIME_UNQUALIFIED"))
+            };
+        }
         if let Some(expected) = payload.retained_furnishing_catalog() {
             return if payload.workspace_furnishing_catalog()? == Some(expected) {
                 Ok(payload)
@@ -2176,7 +2222,11 @@ impl Payload {
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn retained_oex_cleanup_hook(&self) -> bool {
-        self.manifest.files.iter().any(|file| file.path == "platform/apps/api/dist/native-oex-cleanup.js")
+        self.manifest_sha256 == CATALOG40_RETAINED_OEX_CLEANUP.2
+            && self.manifest.files.iter().any(|file|
+                file.path == "platform/apps/api/dist/native-oex-cleanup.js"
+                    && file.link.is_none() && file.executable == Some(false)
+                    && file.sha256.as_deref() == Some("2c9f5f667cbaaf00cbd2e4c6b34940735c47d5cd8ed69b7a50f2ac6283ea7b23"))
     }
 
     pub(crate) fn workspace_furnishing_catalog(&self) -> Result<Option<WorkspaceFurnishingCatalog>> {
@@ -2214,7 +2264,7 @@ impl Payload {
             .chain(CATALOG39_UPGRADE_TARGET).chain(CATALOG40_EXB_TARGET)
             .chain(CATALOG40_RESTORE_PROVENANCE_TARGET).chain(CATALOG40_FRAME_RECORD_TARGET)
             .chain(portal).chain(artwork_replacement).chain(wheat_grant).chain(CATALOG40_WHEAT_DETAIL)
-            .chain([CATALOG40_DRAFT2_OEX_SELECTED]).collect::<Vec<_>>();
+            .chain([CATALOG40_DRAFT2_OEX_SELECTED, CATALOG40_RETAINED_OEX_CLEANUP]).collect::<Vec<_>>();
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         let multimap = multimap.as_slice();
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
@@ -2534,7 +2584,9 @@ impl Payload {
                 WorkspaceFurnishingCatalog::MaterialMultimap040 => WORKSPACE_FURNISHING_SELECTED_OEX_040_CAPABILITY,
                 _ => return Err(err("NATIVE_RUNTIME_UNQUALIFIED")),
             };
-            if version != WorkspaceImport::V7 || !workspace_import_files_match(&payload.manifest, version, Some(marker)) {
+            if version != WorkspaceImport::V7 || (selected && payload.retained_oex_cleanup_hook())
+                || !workspace_import_files_match(&payload.manifest, version, Some(marker))
+            {
                 return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
             }
             payload.workspace_furnishing_ledger(catalog)?;
