@@ -392,6 +392,7 @@ mod tests {
             derived: None,
             model_derivation: None,
             coarse_preparation: None,
+            hayes_original: None,
         });
         controller.save_native_upload(token, transfer).unwrap();
         let upload_path = profile.join(format!(

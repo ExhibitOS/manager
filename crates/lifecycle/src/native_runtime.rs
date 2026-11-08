@@ -43,6 +43,12 @@ pub fn selected_oex_format_v7_validation(resources: &Path, input_fd: i32, cancel
 #[path = "native_runtime_hayes.rs"] mod hayes;
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
 use hayes::operation::{HayesBootstrap, HayesSessionPin, RetainedHayes};
+#[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+#[path = "native_runtime_hayes_ordinary.rs"]
+pub(crate) mod hayes_ordinary;
+#[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+#[path = "native_runtime_hayes_recovery.rs"]
+mod hayes_recovery;
 #[path = "native_runtime_furnishing_lifetime.rs"] mod furnishing_lifetime;
 pub(crate) use furnishing_lifetime::WriterIdentity as FurnishingWriterIdentity;
 #[path = "native_runtime_furnishing_lease.rs"] mod furnishing_lease;

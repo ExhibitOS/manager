@@ -70,6 +70,15 @@ final class AuthoringModel: ObservableObject {
     @Published var assetId = ""
     private var readTransfer: (() async throws -> NativeUploadState)?
     private var writeTransfer: ((NativeUploadState) async throws -> NativeUploadState)?
+    @Published private var hayesSessionReady = false
+    @Published private(set) var hayesReceipt: NativeHayesReceipt?
+    private var executeHayes: ((String, String, Int) async throws -> NativeHayesReceipt)?
+    private var recoverHayes: ((String) async throws -> NativeHayesReceipt)?
+    var hayesOriginalAvailable: Bool {
+        hayesSessionReady && api?.hayesOriginalRuntimeQualified == true
+            && hasUnknownSourceUnits && selected?.metadata?.displayReference?.status == "provisional-uncalibrated"
+    }
+    var hasHayesIntent: Bool { transfer?.intent?.hayesOriginal != nil }
     private let importTransfer = NativeImportTransfer()
     private var importRead: Task<ImportFileSnapshot, Error>?
     private var imagePreparation: Task<NativePreparedJPEG, Error>?
@@ -130,6 +139,7 @@ final class AuthoringModel: ObservableObject {
             // Starting a new local runtime revokes the previous session even
             // when the tenant, port and runtime manifest stay the same.
             self.runtimeJobID = runtimeJobID
+            hayesSessionReady = false; hayesReceipt = nil; executeHayes = nil; recoverHayes = nil
             session = nil
             importStatusGeneration = UUID()
         }
@@ -228,7 +238,9 @@ final class AuthoringModel: ObservableObject {
             if transfer?.intent == nil { importFile = nil }
             approvalAcknowledged = false
             selected = value; draft = value.metadata ?? ArtworkMetadata(); original = draft; creationYearText = draft.creationYear.map(String.init) ?? ""
-            assetId = value.approvedAssetId ?? value.assets.first(where: { $0.state == "approved" })?.id ?? ""
+            assetId = value.approvedAssetId
+                ?? (transfer?.intent?.artworkId == value.id && hasHayesIntent ? importJob?.assetId : nil)
+                ?? value.assets.first(where: { $0.state == "approved" })?.id ?? ""
             artistId = value.artistId; editing = true; editingUser = session?.userId
             if !artists.contains(where: { $0.id == value.artistId }) { artists.append(try await api.artist(value.artistId)) }
         }
@@ -326,6 +338,28 @@ extension AuthoringModel {
     func bindImportStore(read: @escaping () async throws -> NativeUploadState, save: @escaping (NativeUploadState) async throws -> NativeUploadState) {
         readTransfer = read; writeTransfer = save
     }
+    func bindHayesOriginal(ready: Bool, execute: @escaping (String, String, Int) async throws -> NativeHayesReceipt,
+                           recover: @escaping (String) async throws -> NativeHayesReceipt) {
+        hayesSessionReady = ready
+        executeHayes = execute
+        recoverHayes = recover
+    }
+
+    private func recoverHayesIfApproved(_ job: NativeImportJob) async {
+        guard job.state == "approved", let intent = transfer?.intent, intent.hayesOriginal != nil,
+              let recoverHayes else { return }
+        let generation = importStatusGeneration
+        do {
+            let receipt = try await recoverHayes(job.id)
+            guard generation == importStatusGeneration, transfer?.intent == intent, transfer?.jobId == job.id else { return }
+            hayesReceipt = receipt
+        } catch {
+            guard generation == importStatusGeneration, transfer?.intent == intent else { return }
+            hayesReceipt = nil
+            failure = AuthoringFailure("HAYES_RELEASE_UNCONFIRMED")
+        }
+    }
+
     private func restoreImport() async throws {
         guard let readTransfer, let session else { return }
         let state = try await readTransfer()
@@ -340,6 +374,7 @@ extension AuthoringModel {
             let observed = try await api.importJob(id)
             if let intent = state.intent { try importTransfer.observe(observed, intent: intent) }
             importJob = observed
+            await recoverHayesIfApproved(observed)
         }
         scheduleImportPoll()
     }
@@ -348,24 +383,39 @@ extension AuthoringModel {
         transfer = try await writeTransfer(state)
     }
     func chooseImportFile() async {
-        guard !hasUnknownSourceUnits else { return }
+        let hayes = hasUnknownSourceUnits
+        guard !hayes || hayesOriginalAvailable else { return }
         guard !busy, available, session != nil, activeIntakeID == nil || transfer?.intent != nil else { return }
         let panel = NSOpenPanel()
         panel.title = "작품 파일 가져오기"
         panel.message = jpegImportsEnabled ? "GLB·PNG·JPEG 파일을 선택하세요. 최대 32 MiB이며 JPEG 원본을 유지하고 감상용 PNG를 준비합니다." : "GLB 또는 PNG 파일을 선택하세요. 최대 32 MiB를 지원합니다."
         panel.canChooseDirectories = false; panel.canChooseFiles = true; panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [UTType(filenameExtension: "glb") ?? .data, .png] + (jpegImportsEnabled ? [.jpeg] : [])
+        panel.allowedContentTypes = [UTType(filenameExtension: "glb") ?? .data]
+        if hayes {
+            panel.message = "등록할 Hayes GLB 원본을 선택하세요."
+        } else {
+            panel.allowedContentTypes += [.png] + (jpegImportsEnabled ? [.jpeg] : [])
+        }
         guard let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.identifier?.rawValue == "manager" }) else { return }
         let response = await withCheckedContinuation { continuation in
             panel.beginSheetModal(for: window) { continuation.resume(returning: $0) }
         }
         guard response == .OK, let url = panel.url else { return }
         await action {
-            let read = Task { try await ImportFileSnapshot.load(url, allowJPEG: jpegImportsEnabled) }
+            let read = Task {
+                try await ImportFileSnapshot.load(url, allowJPEG: !hayes && jpegImportsEnabled,
+                    byteLimit: hayes ? NativeHayesOriginalIntent.sourceBytes : ImportFileSnapshot.limit)
+            }
             importRead = read
             defer { importRead = nil }
             let snapshot = try await withTaskCancellationHandler { try await read.value } onCancel: { read.cancel() }
             try Task.checkCancellation()
+            if hayes {
+                guard snapshot.mime == "model/gltf-binary", snapshot.sha256 == NativeHayesOriginalIntent.sourceSHA256,
+                      snapshot.data.count == NativeHayesOriginalIntent.sourceBytes else {
+                    throw AuthoringFailure("IMPORT_INTENT_CHANGED")
+                }
+            }
             if let intent = transfer?.intent, !snapshot.matches(intent) { throw AuthoringFailure("IMPORT_INTENT_CHANGED") }
             importFile = snapshot
             if draft.title.isEmpty && selected == nil { draft.title = url.deletingPathExtension().lastPathComponent }
@@ -374,7 +424,22 @@ extension AuthoringModel {
     }
     func uploadImportFile() async {
         await action {
-            guard !hasUnknownSourceUnits, let api, let selected, !metadataDirty, let file = importFile, let state = transfer else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
+            guard let api, let selected, !metadataDirty, let file = importFile, let state = transfer else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
+            if hasUnknownSourceUnits {
+                guard hayesOriginalAvailable, let reference = selected.metadata?.displayReference,
+                      file.sha256 == NativeHayesOriginalIntent.sourceSHA256,
+                      file.data.count == NativeHayesOriginalIntent.sourceBytes else {
+                    throw AuthoringFailure("HAYES_OPERATION_UNAVAILABLE")
+                }
+                let intent = NativeImportIntent(artworkId: selected.id, idempotencyKey: state.intent?.idempotencyKey ?? UUID().uuidString.lowercased(),
+                    mime: file.mime, sha256: file.sha256, bytes: file.data.count, scaleMeters: 1, rights: draft.rights,
+                    hayesOriginal: .init(artworkRevision: selected.revision, displayReferenceSha256: reference.assetSha256))
+                if let saved = state.intent, saved != intent { throw AuthoringFailure("IMPORT_INTENT_CHANGED") }
+                try await continueImport(intent: intent, file: file, api: api)
+                approvalAcknowledged = false
+                notice = "원본을 등록했습니다. 저장한 작품 정보와 권리를 확인한 뒤 감상용 파일을 준비할 수 있습니다."
+                return
+            }
             let generation = importStatusGeneration, currentScope = scope, manifest = runtimeManifestSHA256
             if let target = intakeTarget {
                 guard target.artworkID == selected.id, target.revision == selected.revision,
@@ -434,6 +499,16 @@ extension AuthoringModel {
         let artwork = try await api.artwork(intent.artworkId)
         guard generation == importStatusGeneration, available, self.api === api,
               transfer?.intent == intent else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+        if let hayes = intent.hayesOriginal {
+            guard api.hayesOriginalRuntimeQualified, artwork.id == intent.artworkId,
+                  artwork.revision == hayes.artworkRevision,
+                  artwork.metadata?.displayReference?.assetSha256 == hayes.displayReferenceSha256,
+                  artwork.metadata?.displayReference?.status == "provisional-uncalibrated",
+                  artwork.metadata?.provenance.sourceUnits == "unknown", artwork.metadata?.rights == intent.rights else {
+                throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
+            }
+            return
+        }
         guard artwork.id == intent.artworkId, let metadata = artwork.metadata,
               ["m", "cm", "mm"].contains(metadata.provenance.sourceUnits) else {
             throw AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID")
@@ -573,6 +648,7 @@ extension AuthoringModel {
             let observed = try await api.importJob(id)
             if let intent = transfer?.intent { try importTransfer.observe(observed, intent: intent) }
             importJob = observed
+            await recoverHayesIfApproved(observed)
             if importJob?.state == "approved", let selected, selected.id == transfer?.intent?.artworkId {
                 let fresh = try await api.artwork(selected.id)
                 if fresh.revision == selected.revision { self.selected = fresh; if let asset = importJob?.assetId { assetId = asset } }
@@ -606,6 +682,15 @@ extension AuthoringModel {
                 }
             }
             let completed = importJob
+            if state.intent?.hayesOriginal != nil, let job = completed, job.state == "approved" {
+                guard let api, let intent = state.intent, let revision = intent.hayesOriginal?.artworkRevision else {
+                    throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+                }
+                let artwork = try await api.artwork(intent.artworkId)
+                guard artwork.approvedRevision == revision, artwork.approvedAssetId == job.assetId else {
+                    throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+                }
+            }
             guard available, generation == importStatusGeneration, currentScope == scope,
                   tenant == session?.tenantId, principal == session?.userId,
                   transfer?.workspaceId == state.workspaceId, transfer?.revision == state.revision,
@@ -621,10 +706,47 @@ extension AuthoringModel {
             importJob = nil; importFile = nil; approvalAcknowledged = false
         }
     }
+    func prepareHayesOriginal() async {
+        await action {
+            guard hayesOriginalAvailable, approvalAcknowledged, !metadataDirty, let api, let executeHayes,
+                  let selected, let job = importJob, let intent = transfer?.intent,
+                  let hayes = intent.hayesOriginal, selected.id == intent.artworkId,
+                  transfer?.jobId == job.id, job.state == "queued" else {
+                throw AuthoringFailure("HAYES_OPERATION_UNAVAILABLE")
+            }
+            let generation = importStatusGeneration
+            try await checkGUIImportContinuation(intent, api: api)
+            let receipt = try await executeHayes(job.id, intent.artworkId, hayes.artworkRevision)
+            guard generation == importStatusGeneration, available, transfer?.intent == intent,
+                  self.selected?.id == intent.artworkId else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+            hayesReceipt = receipt
+            hayesSessionReady = false
+            let observed = try await api.importJob(job.id)
+            let artwork = try await api.artwork(intent.artworkId)
+            guard generation == importStatusGeneration, available, transfer?.intent == intent,
+                  observed.id == job.id, hayes.confirmsDisplay(artwork, job: observed, intent: intent) else {
+                throw AuthoringFailure("IMPORT_RECEIPT_INVALID")
+            }
+            importJob = observed; self.selected = artwork; assetId = observed.assetId ?? ""
+            approvalAcknowledged = false
+            notice = "감상용 파일 준비와 원본 보관을 확인했습니다. 작품 정보와 권리를 승인할 수 있습니다."
+        }
+    }
     func approveImportedArtwork() async {
         await action {
-            guard !hasUnknownSourceUnits, let api, let selected, !metadataDirty, approvalAcknowledged,
+            guard let api, let selected, !metadataDirty, approvalAcknowledged,
                   selected.assets.contains(where: { $0.id == assetId && $0.state == "approved" }) else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+            if hasUnknownSourceUnits {
+                guard let recoverHayes, let intent = transfer?.intent, let job = importJob,
+                      job.assetId == assetId,
+                      intent.hayesOriginal?.confirmsDisplay(selected, job: job, intent: intent) == true else {
+                    throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+                }
+                hayesReceipt = try await recoverHayes(job.id)
+                guard transfer?.intent == intent, importJob?.id == job.id else {
+                    throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
+                }
+            }
             if let intent = transfer?.intent, intent.artworkId.lowercased() == selected.id.lowercased(),
                intent.derived?.recipe.colourConversion != nil {
                 guard iccImportAdmitted else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }

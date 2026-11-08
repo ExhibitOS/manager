@@ -297,6 +297,21 @@ pub(in super::super) struct OwnedHayesOpen<'a> {
     phase: Phase,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(in crate::native_runtime) struct ExecuteBinding {
+    pub(in crate::native_runtime) job_id: Uuid,
+    pub(in crate::native_runtime) artwork_id: Uuid,
+    pub(in crate::native_runtime) artwork_revision: u32,
+}
+
+impl ExecuteBinding {
+    fn matches(&self, observed: &OperationBinding) -> bool {
+        observed.job_id == self.job_id && observed.artwork_id == self.artwork_id
+            && observed.artwork_revision == u64::from(self.artwork_revision)
+    }
+}
+
 impl Session {
     /// The private selected-runtime entry supplies the acquired UID authority.
     /// Only this Session's dedicated inherited channel can supply the pin.
@@ -312,7 +327,17 @@ impl Session {
         lease: Lease,
         deadline: Instant,
     ) -> Result<OwnedHayesOpen<'a>> {
-        self.begin_owned_hayes_open_inner(lease, deadline, &mut |_| {}, None)
+        self.begin_owned_hayes_open_inner(lease, deadline, &mut |_| {}, None, None)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(in crate::native_runtime) fn begin_owned_hayes_open_for(
+        &mut self,
+        lease: Lease,
+        deadline: Instant,
+        expected: ExecuteBinding,
+    ) -> Result<OwnedHayesOpen<'_>> {
+        self.begin_owned_hayes_open_inner(lease, deadline, &mut |_| {}, None, Some(expected))
     }
 
     #[cfg(all(
@@ -330,7 +355,7 @@ impl Session {
         if self.payload.hayes_session_probe_script()?.is_none() {
             return Err(unavailable());
         }
-        self.begin_owned_hayes_open_inner(lease, deadline, observe, Some(session_probe_arm))
+        self.begin_owned_hayes_open_inner(lease, deadline, observe, Some(session_probe_arm), None)
     }
 
     fn begin_owned_hayes_open_inner<'a>(
@@ -339,6 +364,7 @@ impl Session {
         deadline: Instant,
         observe: &mut dyn FnMut(&'static str),
         probe_arm: Option<fn(&HayesSessionPin) -> Result<Vec<u8>>>,
+        expected: Option<ExecuteBinding>,
     ) -> Result<OwnedHayesOpen<'a>> {
         if self.retained_hayes.is_some() || Instant::now() >= deadline {
             observe("open-unavailable");
@@ -386,6 +412,10 @@ impl Session {
                 .inspect_err(|_| observe("open-frame-read-failed"))?;
             observe("open-frame-read-done");
             let open = parse_open(&raw).inspect_err(|_| observe("open-frame-binding-invalid"))?;
+            if expected.is_some_and(|expected| !expected.matches(&open))
+            {
+                return Err(unavailable());
+            }
             let auth = self.local_authority.as_ref().ok_or_else(unavailable)?;
             open.check_session(
                 &auth.workspace_id,
@@ -918,6 +948,7 @@ fn unavailable() -> crate::LifecycleError {
 
 #[path = "native_runtime_hayes_ready.rs"]
 mod ready;
+pub(in crate::native_runtime) use ready::disposition::VerifiedRelease;
 
 #[cfg(test)]
 #[path = "native_runtime_hayes_operation_tests.rs"]

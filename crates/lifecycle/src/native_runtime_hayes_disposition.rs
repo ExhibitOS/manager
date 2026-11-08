@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 #[path = "native_runtime_hayes_release.rs"]
 mod release;
+pub(in crate::native_runtime) use release::VerifiedRelease;
 
 #[cfg(test)]
 #[path = "native_runtime_hayes_disposition_tests.rs"]

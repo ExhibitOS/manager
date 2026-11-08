@@ -64,6 +64,15 @@ fn open_uses_closed_canonical_v1_and_exact_session_and_source() {
         br#"{"version":1,"kind":"hayes-operation-open","binding":{"version":1,"tenantId":"10000000-0000-4000-8000-000000000001","workspaceId":"10000000-0000-4000-8000-000000000002","principalId":"10000000-0000-4000-8000-000000000003","jobId":"10000000-0000-4000-8000-000000000004","leaseId":"10000000-0000-4000-8000-000000000005","attemptId":"10000000-0000-4000-8000-000000000006","runtimeGeneration":"10000000-0000-4000-8000-000000000007","artworkId":"10000000-0000-4000-8000-000000000008","correlationId":"10000000-0000-4000-8000-000000000009","artworkRevision":12,"sourceSha256":"e66715a51c9cad0b904d2715d5b27fb80b97d43fe8c2a3cd10276c1b336a2cf6","sourceBytes":8383096}}"#,
     );
     let parsed = parse_open(&bytes).unwrap();
+    let expected = ExecuteBinding {
+        job_id: parsed.job_id,
+        artwork_id: parsed.artwork_id,
+        artwork_revision: 12,
+    };
+    assert!(expected.matches(&parsed));
+    assert!(!ExecuteBinding { job_id: parsed.attempt_id, ..expected }.matches(&parsed));
+    assert!(!ExecuteBinding { artwork_id: parsed.workspace_id, ..expected }.matches(&parsed));
+    assert!(!ExecuteBinding { artwork_revision: 13, ..expected }.matches(&parsed));
     assert_eq!(parsed, request.binding);
     parsed
         .check_session(

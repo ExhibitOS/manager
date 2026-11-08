@@ -42,6 +42,11 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oex_workspace_v7_qualified: Option<bool>,
     pub oex_save_offer: Option<OexSaveOffer>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub hayes_original_ready: bool,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hayes_receipt: Option<Value>,
 }
 struct State {
     root: Option<PathBuf>,
@@ -67,6 +72,8 @@ struct State {
     oex_save_sender: Option<std::sync::mpsc::Sender<String>>,
     oex_terminal: Option<(OexSaveOffer, String, super::installations::native_oex_import::Transfer)>,
     oex_put_authorized: bool,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    hayes_receipt: Option<Value>,
 }
 impl State {
     fn retire_completed_oex_after_drain(&mut self) -> Option<Session> {
@@ -132,6 +139,8 @@ enum Work {
     Prepare(Option<InitialAccountInput>),
     Start,
     RunSelectedOex,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    RunHayes(crate::native_runtime::hayes_ordinary::Input),
     Stop,
     Backup(super::installations::native_backup::Input),
     Restore(super::installations::native_restore::Input),
@@ -174,6 +183,8 @@ impl Host {
                 oex_save_sender: None,
                 oex_terminal: None,
                 oex_put_authorized: false,
+                #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+                hayes_receipt: None,
             })),
             worker: None,
         }
@@ -339,6 +350,8 @@ impl Host {
         state.oex_save_sender = None;
         state.oex_terminal = None;
         state.oex_put_authorized = false;
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        { state.hayes_receipt = None; }
         Ok(())
     }
     fn snapshot(&self) -> Result<Status> {
@@ -372,6 +385,10 @@ impl Host {
             oex_workspace_v6_qualified: selected_workspace_import == Some(crate::native_payload::WorkspaceImport::V6),
             oex_workspace_v7_qualified: (selected_workspace_import == Some(crate::native_payload::WorkspaceImport::V7)).then_some(true),
             oex_save_offer: state.oex_save_offer.clone(),
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+            hayes_original_ready: !state.busy && state.session.as_ref().is_some_and(Session::ordinary_hayes_available),
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+            hayes_receipt: state.hayes_receipt.clone(),
         })
     }
     fn launch(&mut self, token: String, work: Work) -> Result<Status> {
@@ -423,6 +440,11 @@ impl Host {
                 Work::Prepare(_) => "preparing",
                 Work::Start => "starting",
                 Work::RunSelectedOex => "importing_oex",
+                #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+                Work::RunHayes(_) => {
+                    state.hayes_receipt = None;
+                    "importing_hayes"
+                },
                 Work::Stop => "stopping",
                 Work::Backup(_) => "backing_up",
                 Work::Restore(_) => "restoring",
@@ -716,6 +738,34 @@ impl Host {
                             state.cancel = None;
                             started?;
                             if let Some(error) = status_error { return Err(error); }
+                        }
+                        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+                        Work::RunHayes(input) => {
+                            if !input.matches(&controller.native_upload(&token)?) {
+                                return Err(err("HAYES_OPERATION_UNAVAILABLE"));
+                            }
+                            let session = {
+                                let mut state = shared.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+                                if state.selected_oex { return Err(err("HAYES_OPERATION_UNAVAILABLE")); }
+                                state.session.take().ok_or_else(|| err("NATIVE_NOT_READY"))?
+                            };
+                            let mut lease = SessionLease { shared: shared.clone(), session: Some(session) };
+                            let session = lease.session.as_mut().ok_or_else(|| err("NATIVE_HOST_UNAVAILABLE"))?;
+                            let cancel = session.cancellation();
+                            {
+                                let mut state = shared.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+                                cancel.store(state.stop_requested, Ordering::SeqCst);
+                                state.cancel = Some(cancel);
+                            }
+                            let result = session.execute_ordinary_hayes(input);
+                            let requested = shared.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.stop_requested;
+                            if requested { session.stop()?; }
+                            let context = session.status();
+                            let mut state = shared.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+                            state.cancel = None;
+                            state.hayes_receipt = result.as_ref().ok().cloned();
+                            state.runtime = Some(context?);
+                            result?;
                         }
                         Work::RunSelectedOex => {
                             oex_owned_session = true;
@@ -1238,6 +1288,17 @@ impl Host {
             },
             _ => {}
         }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        if let UiCommand::NativeHayesRelease { selection_token, job_id } = &request.command {
+            let root = self.selected(selection_token)?;
+            let transfer = self.controller.native_upload(selection_token)?;
+            let mut state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+            if state.root.as_ref() != Some(&root) || state.busy || state.detail_closing || state.selected_oex {
+                return Err(err("NATIVE_NOT_READY"));
+            }
+            return state.session.as_mut().ok_or_else(|| err("NATIVE_NOT_READY"))?
+                .recover_hayes_release(job_id, &transfer);
+        }
         if let UiCommand::NativeAuthoringSession { selection_token } = &request.command {
             let root = self.selected(selection_token)?;
             let mut state = self
@@ -1274,6 +1335,9 @@ impl Host {
                 self.launch(selection_token, Work::Start)?
             }
             UiCommand::NativeOexRun { selection_token } => self.launch(selection_token, Work::RunSelectedOex)?,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+            UiCommand::NativeHayesExecute { selection_token, input } =>
+                self.launch(selection_token, Work::RunHayes(input))?,
             UiCommand::NativeStatus { selection_token } => {
                 let status = self.status(&selection_token)?;
                 if !status.busy && status.runtime.as_ref().is_none_or(is_drained)

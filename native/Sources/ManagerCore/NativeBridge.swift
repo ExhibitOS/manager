@@ -71,6 +71,13 @@ public struct NativeOEXSaveOffer: Decodable, Sendable {
     public let etag: String
     public let requestId: String
 }
+public struct NativeHayesReceipt: Codable, Sendable {
+    public let jobId: String
+    public let receiptId: String
+    public let receiptSha256: String
+    public let completionFrameSha256: String
+}
+
 public struct NativeHostStatus: Decodable, Sendable {
     public struct Backup: Decodable, Sendable { public let id: String, backupId: String, manifestSha256: String, state: String }
     public struct Restoration: Decodable, Sendable { public let id: String, state: String; public let backupId: String? }
@@ -88,6 +95,8 @@ public struct NativeHostStatus: Decodable, Sendable {
     public let oexWorkspaceV6Qualified: Bool?
     public let oexWorkspaceV7Qualified: Bool?
     public let oexSaveOffer: NativeOEXSaveOffer?
+    public let hayesOriginalReady: Bool?
+    public let hayesReceipt: NativeHayesReceipt?
     public var needsShutdown: Bool { busy || runtime?.hasOwnedProcesses == true }
 }
 public struct LocalAuthoringSession: Decodable, Sendable {
@@ -330,6 +339,44 @@ public actor NativeBridge {
     }
     public func selectBoundedOEX(_ context: Context) throws {
         let _: DocumentValue = try request("native_oex_select", fields: ["selection_token": context.selectionToken])
+    }
+    public func executeHayesOriginal(_ context: Context, jobId: String, artworkId: String,
+                                     artworkRevision: Int, workerRuntime: URL? = nil) throws -> NativeHostStatus {
+        var input: [String: Any] = ["binding": ["jobId": jobId, "artworkId": artworkId, "artworkRevision": artworkRevision]]
+        if let workerRuntime {
+            guard workerRuntime.isFileURL else { throw BridgeFailure("HAYES_OPERATION_UNAVAILABLE") }
+            input["workerRuntime"] = workerRuntime.path
+        }
+        return try request("native_hayes_execute", fields: ["selection_token": context.selectionToken, "hayes_execute": input])
+    }
+    public func hayesRelease(_ context: Context, jobId: String) throws -> NativeHayesReceipt {
+        let receipt: NativeHayesReceipt = try request("native_hayes_release",
+            fields: ["selection_token": context.selectionToken, "hayes_job_id": jobId])
+        guard receipt.jobId == jobId else { throw BridgeFailure("HAYES_RELEASE_UNCONFIRMED") }
+        return receipt
+    }
+    public func executeHayesAndWait(_ context: Context, jobId: String, artworkId: String,
+                                   artworkRevision: Int, workerRuntime: URL? = nil) async throws -> NativeHayesReceipt {
+        let before = try nativeStatus(context)
+        guard before.hayesOriginalReady == true, let generation = before.runtime?.jobId else {
+            throw BridgeFailure("HAYES_OPERATION_UNAVAILABLE")
+        }
+        let started = try executeHayesOriginal(context, jobId: jobId, artworkId: artworkId,
+                                               artworkRevision: artworkRevision, workerRuntime: workerRuntime)
+        guard started.operation == "importing_hayes" else { throw BridgeFailure("HAYES_OPERATION_UNAVAILABLE") }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(195))
+        while clock.now < deadline {
+            let status = try nativeStatus(context)
+            if !status.busy {
+                if let code = status.errorCode { throw BridgeFailure(code) }
+                guard status.runtime?.jobId == generation, let receipt = status.hayesReceipt,
+                      receipt.jobId == jobId else { throw BridgeFailure("HAYES_OPERATION_UNAVAILABLE") }
+                return receipt
+            }
+            try await Task.sleep(for: .milliseconds(350))
+        }
+        throw BridgeFailure("HAYES_OPERATION_UNAVAILABLE")
     }
     public func runBoundedOEX(_ context: Context) throws -> NativeHostStatus {
         try request("native_oex_run", fields: ["selection_token": context.selectionToken])

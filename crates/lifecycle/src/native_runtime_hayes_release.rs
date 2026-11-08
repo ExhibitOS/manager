@@ -10,7 +10,7 @@ use crate::native_runtime::hayes::{
     stage_return::{ClosedCustody, StageIdentity},
     Attempt,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use uuid::Uuid;
 
@@ -71,13 +71,22 @@ struct CompletedFrame<'a> {
     completion_sha256: &'a str,
 }
 
+#[derive(Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(in crate::native_runtime) struct VerifiedRelease {
+    pub(in crate::native_runtime) job_id: Uuid,
+    pub(in crate::native_runtime) receipt_id: Uuid,
+    pub(in crate::native_runtime) receipt_sha256: String,
+    pub(in crate::native_runtime) completion_frame_sha256: String,
+}
+
 impl OwnedHayesOpen<'_> {
     /// Only the current exchange can return native custody and observe the
     /// API's separate durable recording on the same live channel.
     pub(in crate::native_runtime) fn return_committed_custody(
         &mut self,
         deadline: Instant,
-    ) -> Result<()> {
+    ) -> Result<VerifiedRelease> {
         self.start(Phase::DispositionObserved)?;
         let result = self.release_and_verify_recording(deadline);
         if result.is_ok() {
@@ -88,7 +97,7 @@ impl OwnedHayesOpen<'_> {
         result
     }
 
-    fn release_and_verify_recording(&mut self, deadline: Instant) -> Result<()> {
+    fn release_and_verify_recording(&mut self, deadline: Instant) -> Result<VerifiedRelease> {
         if !self.retain_attempt || self.worker.is_some() || self.source.is_some() {
             return Err(unavailable());
         }
@@ -224,7 +233,12 @@ impl OwnedHayesOpen<'_> {
         if Instant::now() >= deadline {
             return Err(unavailable());
         }
-        Ok(())
+        Ok(VerifiedRelease {
+            job_id: record.binding.job_id,
+            receipt_id: notice.receipt_id,
+            receipt_sha256: notice.receipt_sha256.clone(),
+            completion_frame_sha256: frame_sha256,
+        })
     }
 }
 
