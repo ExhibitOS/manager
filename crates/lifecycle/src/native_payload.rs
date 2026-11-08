@@ -364,7 +364,15 @@ pub(crate) const HAYES_DISPOSITION_PROBE_PIN: Option<HayesSessionProbePin> = Som
 });
 
 #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-pub(crate) const HAYES_RELEASE_PROBE_PIN: Option<HayesSessionProbePin> = None;
+pub(crate) const HAYES_RELEASE_PROBE_PIN: Option<HayesSessionProbePin> = Some(HayesSessionProbePin {
+    host: (
+        "71f116bdac0e0bb0dd327659fd4407048fa100e4",
+        "c3912c3251a22f32292a7317e0ad1b980aedb5318a0008aab439947db95a89a2",
+        "14bf2a6175cef712c2d5c48679ae8f0d01d894158854061c943353559f61462f",
+    ),
+    script_bytes: 8196,
+    script_sha256: "89a77022b0d88aae45e1f0256d2b15f95d7221308d899faaeee57a144b559384",
+});
 
 pub(crate) fn hayes_validation_host_matches(tuple: (&str, &str, &str)) -> bool {
     hayes_bootstrap_validation_tuple() == Some(tuple) || hayes_session_probe_matches(tuple)
