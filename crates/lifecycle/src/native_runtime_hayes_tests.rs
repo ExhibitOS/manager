@@ -200,7 +200,8 @@ fn wrong_nonce_extra_frames_or_cross_attempt_child_never_receive_go() {
             );
         }
         wait_for(|| worker.try_wait().unwrap().is_some());
-        assert!(worker.try_wait().unwrap().unwrap().success());
+        let status = worker.try_wait().unwrap().unwrap();
+        assert!(status.success(), "{mode} exited with {status}");
         assert!(!root.0.join("child-go").exists());
         assert!(!attempt.journal.path.join(Role::Generate.files().1).exists());
         assert_eq!(code(attempt.retire_unstarted()), "HAYES_DRAIN_UNCONFIRMED");
@@ -389,6 +390,17 @@ fn channel_child_fixture() {
     );
     let nonce = env::var("HAYES_TEST_NONCE").unwrap();
     let mut owner = unsafe { UnixStream::from_raw_fd(3) };
+    if mode == "foreign-attempt" {
+        // The parent can close before exec. Darwin can reject SO_RCVTIMEO
+        // on that socket, so wait for EOF with a nonblocking read instead.
+        owner.set_nonblocking(true).unwrap();
+        wait_for(|| match owner.read(&mut [0]) {
+            Ok(0) => true,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => false,
+            result => panic!("foreign attempt must only receive EOF: {result:?}"),
+        });
+        return;
+    }
     owner
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
@@ -397,11 +409,6 @@ fn channel_child_fixture() {
         "duplicate" => format!("READY {nonce}\nREADY {nonce}\n"),
         _ => format!("READY {nonce}\n"),
     };
-    if mode == "foreign-attempt" {
-        // Parent burns the channel without accepting a frame from this child.
-        assert_eq!(owner.read(&mut [0]).unwrap(), 0);
-        return;
-    }
     owner.write_all(frame.as_bytes()).unwrap();
     let expected = format!("GO {nonce}\n");
     let mut received = vec![0; expected.len()];
