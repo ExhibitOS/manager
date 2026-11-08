@@ -3,6 +3,20 @@ import XCTest
 @testable import ManagerCore
 
 final class NativeAutomationFailureTests: XCTestCase {
+    func testArtworkStatusBypassesCachedReadyResponseWhileMutationReplayStaysBound() throws {
+        let request = Data("same request".utf8)
+        let stale: DocumentValue = .object(["job": .object(["state": .string("approved")])])
+        let current: DocumentValue = .object(["job": .object(["state": .string("failed")])])
+        let prior = (request, stale)
+        let status = try NativeAutomationSession.replayResponse(for: "artwork-status", prior: prior, matching: request)
+        XCTAssertEqual(status ?? current, current)
+        XCTAssertEqual(try NativeAutomationSession.replayResponse(for: "artwork-approve", prior: prior, matching: request), stale)
+        XCTAssertThrowsError(try NativeAutomationSession.replayResponse(
+            for: "artwork-approve", prior: prior, matching: Data("changed request".utf8))) {
+            XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_REQUEST_CHANGED")
+        }
+    }
+
     func testStaticExportReusesMatchingStatusAndAllowsNewExportAfterTerminalStatus() throws {
         let id = UUID().uuidString.lowercased()
         func status(_ state: String) -> NativeStaticExportStatus {

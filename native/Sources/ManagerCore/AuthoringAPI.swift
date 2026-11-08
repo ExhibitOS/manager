@@ -15,6 +15,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public let expiresAt: String
     public var nativeOexExportProfile: String? = nil
     public var nativePublicationProfile: String? = nil
+    public var modelPreparationProfile: String? = nil
     public var workspaceMaterialProfile: String? = nil
     public var workspaceFurnishingProfile: String? = nil
     public var workspaceFurnishingStoolProfile: String? = nil
@@ -243,6 +244,8 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "IMPORT_DRAIN_PENDING": return "작품 파일 처리의 종료를 아직 확인하지 못했습니다. 저장한 요청과 원본을 유지한 채 상태를 확인하거나 로컬 제작을 정상 정지하세요."
         case "IMPORT_MODEL_BINDING_INVALID": return "감상용 파일 요청의 파일·설정·작업 식별 정보가 일치하지 않습니다. 저장한 원본과 요청을 유지했습니다."
         case "IMPORT_MODEL_UNAVAILABLE": return "이 실행본은 저장한 감상용 파일 요청을 지원하지 않습니다. 원본과 요청을 보존했으니 지원 실행본에서 다시 확인하세요."
+        case "IMPORT_MODEL_METADATA_HELD": return "준비된 파일을 승인하거나 가능한 경우 검사를 중단한 뒤 ‘다른 파일 검사 준비’를 선택하면 작품 정보를 다시 저장할 수 있습니다."
+        case "IMPORT_MODEL_NEW_REVISION_REQUIRED": return "이 작품 버전은 이미 승인됐습니다. 작품 정보를 저장해 새 버전을 만든 뒤 파일 검사를 시작하세요. 대기 목록에서 연 파일은 목록으로 돌려놓았다가 다시 여세요."
         case "IMPORT_ICC_UNAVAILABLE": return "이 실행본은 저장한 ICC 변환 요청을 지원하지 않습니다. 원본과 요청을 보존했으니 지원 실행본에서 다시 확인하세요."
         case "IMPORT_INTENT_CHANGED": return "이전 검사 요청과 파일 또는 권리 입력이 다릅니다. 이전 요청을 완료하거나 취소한 뒤 새 검사를 시작하세요."
         case "IMPORT_FILE_REQUIRED": return "이전 요청과 같은 파일을 다시 선택하세요. 저장한 요청은 유지됩니다."
@@ -1057,6 +1060,9 @@ public actor AuthoringAPI {
     public func importJob(_ id: String) async throws -> NativeImportJob {
         try await request("/api/v1/tenants/\(tenant)/imports/" + identifier(id))
     }
+    public var admitsRequiredModelPreparation: Bool {
+        session?.modelPreparationProfile == NativeModelPreparationIntent.profile
+    }
     public func createImport(_ input: NativeImportIntent) async throws -> NativeImportJob {
         if let hayes = input.hayesOriginal {
             guard nativeSession, hayesOriginalRuntimeQualified, hayes.matches(input) else {
@@ -1081,6 +1087,10 @@ public actor AuthoringAPI {
             return job
         }
         guard input.derived?.recipe.colourConversion == nil || admitsICCJPEG else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
+        if let preparation = input.modelPreparation {
+            guard admitsRequiredModelPreparation else { throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE") }
+            guard preparation.matches(input) else { throw AuthoringFailure("IMPORT_INPUT_INVALID") }
+        }
         if let coarse = input.coarsePreparation {
             guard admitsSameOwnerArtworkReplacement, nativeSession else {
                 throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
@@ -1594,12 +1604,13 @@ public struct NativeImportJob: Decodable, Sendable {
     public let retryAt: String?
     public let originalAssetId: String?
     public let modelDerivation: NativeModelDerivationStatus?
+    public let modelPreparation: NativeModelPreparationStatus?
     public let imagePreparation: NativeImagePreparationStatus?
     public let coarsePreparation: NativeCoarsePreparationStatus?
     public let workerDrainVersion: Int?
     public let workerDrained: Bool?
     private enum CodingKeys: String, CodingKey {
-        case id, state, progress, attempts, errorCode, assetId, retryAt, originalAssetId, modelDerivation, imagePreparation, coarsePreparation, workerDrainVersion, workerDrained
+        case id, state, progress, attempts, errorCode, assetId, retryAt, originalAssetId, modelDerivation, modelPreparation, imagePreparation, coarsePreparation, workerDrainVersion, workerDrained
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -1612,6 +1623,8 @@ public struct NativeImportJob: Decodable, Sendable {
         retryAt = try values.decodeIfPresent(String.self, forKey: .retryAt)
         originalAssetId = try values.decodeIfPresent(String.self, forKey: .originalAssetId)
         modelDerivation = try values.decodeIfPresent(NativeModelDerivationStatus.self, forKey: .modelDerivation)
+        modelPreparation = values.contains(.modelPreparation)
+            ? try values.decode(NativeModelPreparationStatus.self, forKey: .modelPreparation) : nil
         // Legacy clients ignored this field. A malformed future field remains
         // absent here; selected ICC validation then rejects that absence.
         imagePreparation = try? values.decode(NativeImagePreparationStatus.self, forKey: .imagePreparation)
@@ -1623,6 +1636,7 @@ public struct NativeImportJob: Decodable, Sendable {
     public init(id: String, state: String, progress: Int, attempts: Int, errorCode: String?, assetId: String?, retryAt: String?, originalAssetId: String? = nil, modelDerivation: NativeModelDerivationStatus? = nil, imagePreparation: NativeImagePreparationStatus? = nil) {
         self.id = id; self.state = state; self.progress = progress; self.attempts = attempts; self.errorCode = errorCode
         self.assetId = assetId; self.retryAt = retryAt; self.originalAssetId = originalAssetId; self.modelDerivation = modelDerivation; self.imagePreparation = imagePreparation
+        self.modelPreparation = nil
         self.coarsePreparation = nil
         self.workerDrainVersion = nil; self.workerDrained = nil
     }
@@ -1635,6 +1649,9 @@ public struct NativeImportJob: Decodable, Sendable {
         }
     }
     public func confirmsIntakeDrain(for intent: NativeImportIntent) -> Bool {
+        if intent.modelPreparation != nil {
+            return modelPreparation?.matches(intent, job: self) == true && modelPreparation?.workerDrained == true
+        }
         if let coarse = intent.coarsePreparation {
             return imagePreparation?.matches(intent) == true
                 && coarsePreparation?.matches(coarse, job: self) == true
@@ -1645,7 +1662,8 @@ public struct NativeImportJob: Decodable, Sendable {
     public var canRetry: Bool {
         let optionalModelFailure = state == "approved" && modelDerivation?.status == "failed" && modelDerivation?.workerDrained == true
         guard state == "failed" || optionalModelFailure, attempts < 5,
-              coarsePreparation?.workerDrained != false else { return false }
+              coarsePreparation?.workerDrained != false,
+              modelPreparation == nil || (modelPreparation?.status == .failed && modelPreparation?.workerDrained == true) else { return false }
         guard let retryAt else { return true }
         let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let date = formatter.date(from: retryAt) ?? ISO8601DateFormatter().date(from: retryAt)
@@ -1698,7 +1716,7 @@ public struct NativeHayesOriginalIntent: Codable, Equatable, Sendable {
             && displayReferenceSha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil
             && intent.mime == "model/gltf-binary" && intent.sha256 == Self.sourceSHA256
             && intent.bytes == Self.sourceBytes && intent.scaleMeters == 1
-            && intent.derived == nil && intent.modelDerivation == nil && intent.coarsePreparation == nil
+            && intent.derived == nil && intent.modelDerivation == nil && intent.modelPreparation == nil && intent.coarsePreparation == nil
     }
 }
 
@@ -1712,10 +1730,11 @@ public struct NativeImportIntent: Codable, Equatable, Sendable {
     public let rights: ArtworkMetadata.Rights
     public let derived: NativeImportDerived?
     public let modelDerivation: NativeModelDerivationIntent?
+    public let modelPreparation: NativeModelPreparationIntent?
     public let coarsePreparation: NativeCoarsePreparationIntent?
     public let hayesOriginal: NativeHayesOriginalIntent?
     private enum CodingKeys: String, CodingKey {
-        case artworkId, idempotencyKey, mime, sha256, bytes, scaleMeters, rights, derived, modelDerivation, coarsePreparation, hayesOriginal
+        case artworkId, idempotencyKey, mime, sha256, bytes, scaleMeters, rights, derived, modelDerivation, modelPreparation, coarsePreparation, hayesOriginal
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -1728,13 +1747,16 @@ public struct NativeImportIntent: Codable, Equatable, Sendable {
         rights = try values.decode(ArtworkMetadata.Rights.self, forKey: .rights)
         derived = try values.decodeIfPresent(NativeImportDerived.self, forKey: .derived)
         modelDerivation = try values.decodeIfPresent(NativeModelDerivationIntent.self, forKey: .modelDerivation)
+        modelPreparation = values.contains(.modelPreparation)
+            ? try values.decode(NativeModelPreparationIntent.self, forKey: .modelPreparation) : nil
         coarsePreparation = values.contains(.coarsePreparation)
             ? try values.decode(NativeCoarsePreparationIntent.self, forKey: .coarsePreparation) : nil
         hayesOriginal = try values.decodeIfPresent(NativeHayesOriginalIntent.self, forKey: .hayesOriginal)
     }
-    public init(artworkId: String, idempotencyKey: String = UUID().uuidString.lowercased(), mime: String, sha256: String, bytes: Int, scaleMeters: Double, rights: ArtworkMetadata.Rights, derived: NativeImportDerived? = nil, modelDerivation: NativeModelDerivationIntent? = nil, coarsePreparation: NativeCoarsePreparationIntent? = nil, hayesOriginal: NativeHayesOriginalIntent? = nil) {
+    public init(artworkId: String, idempotencyKey: String = UUID().uuidString.lowercased(), mime: String, sha256: String, bytes: Int, scaleMeters: Double, rights: ArtworkMetadata.Rights, derived: NativeImportDerived? = nil, modelDerivation: NativeModelDerivationIntent? = nil, modelPreparation: NativeModelPreparationIntent? = nil, coarsePreparation: NativeCoarsePreparationIntent? = nil, hayesOriginal: NativeHayesOriginalIntent? = nil) {
         self.artworkId = artworkId; self.idempotencyKey = idempotencyKey; self.mime = mime; self.sha256 = sha256; self.bytes = bytes; self.scaleMeters = scaleMeters; self.rights = rights; self.derived = derived; self.modelDerivation = modelDerivation
         self.coarsePreparation = coarsePreparation
+        self.modelPreparation = modelPreparation
         self.hayesOriginal = hayesOriginal
     }
 }

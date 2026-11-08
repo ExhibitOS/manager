@@ -57,6 +57,9 @@ public final class NativeImportTransfer {
         // A restored intent must not continue against an older runtime that
         // cannot preserve the colour provenance on the exact same job.
         guard intent.derived?.recipe.colourConversion == nil || transport.admitsICCJPEG else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
+        if let preparation = intent.modelPreparation {
+            guard preparation.matches(intent) else { throw AuthoringFailure("IMPORT_MODEL_BINDING_INVALID") }
+        }
         guard task == nil, modelDrainTask == nil,
               modelOperation.map({ $0.intent == intent }) ?? true else { throw AuthoringFailure("IMPORT_ACTIVE") }
         if let model = intent.modelDerivation {
@@ -140,7 +143,13 @@ public final class NativeImportTransfer {
     }
 
     private static func valid(_ job: NativeImportJob, intent: NativeImportIntent) -> Bool {
-        UUID(uuidString: job.id) != nil
+        if intent.modelPreparation != nil {
+            return UUID(uuidString: job.id) != nil && job.modelDerivation == nil
+                && job.imagePreparation == nil && job.coarsePreparation == nil
+                && job.modelPreparation?.matches(intent, job: job) == true
+        }
+        guard job.modelPreparation == nil else { return false }
+        return UUID(uuidString: job.id) != nil
             && (intent.derived?.recipe.colourConversion == nil || job.imagePreparation?.matches(intent) == true)
             && ["uploading", "queued", "processing", "approved", "failed", "cancelled"].contains(job.state)
             && (job.originalAssetId == nil || job.originalAssetId.flatMap(UUID.init(uuidString:)) != nil)

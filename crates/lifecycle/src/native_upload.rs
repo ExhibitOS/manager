@@ -17,6 +17,8 @@ pub struct Intent {
     pub derived: Option<Derived>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_derivation: Option<ModelDerivation>,
+    #[serde(default, deserialize_with = "ModelPreparation::deserialize_present", skip_serializing_if = "Option::is_none")]
+    pub model_preparation: Option<ModelPreparation>,
     #[serde(
         default,
         deserialize_with = "CoarsePreparation::deserialize_present",
@@ -103,6 +105,39 @@ impl ModelDerivation {
             && self.artwork_revision > 0
             && intent.mime == "model/gltf-binary"
             && intent.derived.is_none()
+    }
+}
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelPreparation {
+    pub version: u32,
+    pub profile_id: String,
+    #[serde(rename = "operationID")]
+    pub operation_id: String,
+    pub generation: String,
+    pub artwork_revision: u32,
+}
+impl ModelPreparation {
+    fn deserialize_present<'de, D: serde::Deserializer<'de>>(
+        decoder: D,
+    ) -> std::result::Result<Option<Self>, D::Error> {
+        Self::deserialize(decoder).map(Some)
+    }
+
+    fn valid(&self, intent: &Intent) -> bool {
+        let generation = self.generation.as_bytes();
+        self.version == 1
+            && self.profile_id == "embedded-model-compact-20k-512-v1"
+            && self.operation_id == intent.idempotency_key
+            && generation.len() <= 128
+            && generation.first().is_some_and(u8::is_ascii_alphanumeric)
+            && generation.iter().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(b))
+            && (1..=i32::MAX as u32).contains(&self.artwork_revision)
+            && intent.mime == "model/gltf-binary"
+            && intent.derived.is_none()
+            && intent.model_derivation.is_none()
+            && intent.coarse_preparation.is_none()
+            && intent.hayes_original.is_none()
     }
 }
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -209,6 +244,7 @@ pub(crate) fn validate(s: &Transfer) -> Result<()> {
             }
             || !hash_valid(&i.sha256)
             || i.model_derivation.as_ref().is_some_and(|model| !model.valid(i))
+            || i.model_preparation.as_ref().is_some_and(|model| !model.valid(i))
             || i.coarse_preparation
                 .as_ref()
                 .is_some_and(|coarse| !coarse.valid(i))
@@ -333,6 +369,34 @@ impl InstallationController {
 #[cfg(test)]
 mod model_derivation_tests {
     use super::*;
+
+    #[test]
+    fn durable_required_model_intent_is_separate_and_restart_safe() {
+        let operation = Uuid::new_v4().to_string();
+        let value = serde_json::json!({
+            "format":1,"revision":1,"workspaceId":Uuid::new_v4().to_string(),
+            "tenantId":Uuid::new_v4().to_string(),"principalId":Uuid::new_v4().to_string(),
+            "jobId":null,"fileName":"synthetic.glb",
+            "intent":{"artworkId":Uuid::new_v4().to_string(),"idempotencyKey":operation,
+                "mime":"model/gltf-binary","sha256":"a".repeat(64),"bytes":1000,"scaleMeters":1,"rights":{},
+                "modelPreparation":{"version":1,"profileId":"embedded-model-compact-20k-512-v1",
+                    "operationID":operation,"generation":"durable-generation.1","artworkRevision":1}}
+        });
+        let state: Transfer = serde_json::from_value(value.clone()).unwrap();
+        validate(&state).unwrap();
+        let reopened: Transfer = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        validate(&reopened).unwrap();
+        assert_eq!(serde_json::to_value(&state).unwrap(), serde_json::to_value(&reopened).unwrap());
+        for (field, bad) in [("operationID", serde_json::json!("other")),
+            ("generation", serde_json::json!("\nother")), ("artworkRevision", serde_json::json!(0))] {
+            let mut changed = value.clone();
+            changed["intent"]["modelPreparation"][field] = bad;
+            assert!(validate(&serde_json::from_value(changed).unwrap()).is_err());
+        }
+        let mut null = value;
+        null["intent"]["modelPreparation"] = Value::Null;
+        assert!(serde_json::from_value::<Transfer>(null).is_err());
+    }
 
     #[test]
     fn durable_optional_model_binding_keeps_legacy_and_jpeg_closed() {
