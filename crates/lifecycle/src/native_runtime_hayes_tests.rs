@@ -22,7 +22,7 @@ impl Fixture {
         Self::provision(path)
     }
 
-    fn provision(path: PathBuf) -> Self {
+    pub(super) fn provision(path: PathBuf) -> Self {
         fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
         fs::OpenOptions::new()
             .create_new(true)
@@ -45,7 +45,7 @@ impl Fixture {
         &self.0
     }
 
-    fn acquire(&self) -> Lease {
+    pub(super) fn acquire(&self) -> Lease {
         Lease::acquire(&self.0, self.authority()).unwrap()
     }
 }
@@ -56,7 +56,7 @@ impl Drop for Fixture {
     }
 }
 
-fn binding() -> Binding {
+pub(super) fn binding() -> Binding {
     Binding {
         attempt: Uuid::new_v4(),
         generation: Uuid::new_v4(),
@@ -261,7 +261,7 @@ fn child_command(name: &str, root: &Path) -> Command {
     cmd
 }
 
-fn wait_for(mut condition: impl FnMut() -> bool) {
+pub(super) fn wait_for(mut condition: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(12);
     while !condition() {
         assert!(Instant::now() < deadline, "Hayes fixture timed out");

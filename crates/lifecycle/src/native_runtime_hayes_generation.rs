@@ -403,3 +403,7 @@ fn retry(error: &io::Error) -> bool {
 fn io_error() -> crate::LifecycleError {
     err("HAYES_WORKER_IO_INVALID")
 }
+
+#[cfg(test)]
+#[path = "native_runtime_hayes_selected_probe.rs"]
+mod selected_probe;

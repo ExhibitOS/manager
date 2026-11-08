@@ -6,8 +6,9 @@ use crate::{err, Result};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 
-const BODY_BYTES: u32 = 16_036_864;
-const BODY_SHA: &str = "694a9cf81dfbf12fd0841ae45240c5ae0f1d7cb129d0ee122be7cff86c4625bc";
+pub(super) const BODY_BYTES: u32 = 16_036_864;
+pub(super) const BODY_SHA: &str =
+    "694a9cf81dfbf12fd0841ae45240c5ae0f1d7cb129d0ee122be7cff86c4625bc";
 
 #[derive(Debug, PartialEq)]
 pub(super) struct GenerateTelemetry {
