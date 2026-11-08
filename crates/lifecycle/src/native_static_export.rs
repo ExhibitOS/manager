@@ -12,7 +12,7 @@ use std::{
         fd::{AsRawFd, FromRawFd},
         unix::{ffi::{OsStrExt, OsStringExt}, fs::MetadataExt, process::CommandExt},
     },
-    process::{Child, Stdio},
+    process::{Child, Command, Stdio},
     time::Instant,
     sync::{
         Arc, Mutex,
@@ -614,6 +614,7 @@ struct DetailStage {
     parent_file: File,
     wrapper: File,
     directory: File,
+    #[cfg(test)]
     path: PathBuf,
 }
 impl DetailStage {
@@ -635,6 +636,7 @@ impl DetailStage {
             parent_file,
             wrapper,
             directory,
+            #[cfg(test)]
             path: parent_path.join(wrapper_name).join("output"),
         })
     }
@@ -1256,6 +1258,21 @@ fn wait_detail_child(child: &mut Child, check: &impl Fn() -> Result<()>) -> Resu
     }
 }
 
+fn spawn_detail_child(mut command: Command, stage: &File) -> std::io::Result<Child> {
+    let stage_fd = stage.as_raw_fd();
+    // The borrowed stage stays open until spawn returns. The child changes cwd
+    // through that descriptor before exec; it needs no inherited stage FD.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fchdir(stage_fd) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command.spawn()
+}
+
 struct DetailRun {
     payload: Arc<Payload>,
     script: PathBuf,
@@ -1284,13 +1301,13 @@ impl DetailRun {
         } = self;
         let deadline = Instant::now() + DETAIL_DEADLINE;
         let check = || check_detail(deadline, cancel);
-        let mut command = std::process::Command::new(payload.node());
+        let mut command = Command::new(payload.node());
         command.args([
             script.as_os_str(),
             OsStr::new(&origin),
             OsStr::new(&journal.status.publication_id),
             viewer.as_os_str(),
-            stage.path.as_os_str(),
+            OsStr::new("."),
         ]);
         if journal.status.private_editor {
             command.arg("--private-editor");
@@ -1308,7 +1325,11 @@ impl DetailRun {
         let startup_deadline = deadline.min(Instant::now() + Duration::from_secs(5));
         let mut child = match check()
             .and_then(|_| stage.check(&journal))
-            .and_then(|_| command.spawn().map(OwnedChild).map_err(|_| bad()))
+            .and_then(|_| {
+                spawn_detail_child(command, &stage.directory)
+                    .map(OwnedChild)
+                    .map_err(|_| bad())
+            })
         {
             Ok(child) => child,
             Err(error) => {
@@ -2193,6 +2214,68 @@ mod detail_tests {
         (root, stage, journal)
     }
 
+    #[test]
+    fn static_detail_child_uses_held_cwd_across_ancestor_replacement() {
+        let (root, stage, mut journal) = stage_fixture();
+        let wrapper = stage.path.parent().unwrap();
+        let first_location = root.join("before-spawn");
+        fs::rename(wrapper, &first_location).unwrap();
+        fs::create_dir_all(&stage.path).unwrap();
+
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "printf ready; read -r signal && printf pinned > proof",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        let mut child = OwnedChild(spawn_detail_child(command, &stage.directory).unwrap());
+        let mut ready = [0; 5];
+        child
+            .0
+            .stdout
+            .take()
+            .unwrap()
+            .read_exact(&mut ready)
+            .unwrap();
+        assert_eq!(&ready, b"ready");
+
+        let final_location = root.join("after-spawn");
+        fs::rename(first_location, &final_location).unwrap();
+        child.0.stdin.take().unwrap().write_all(b"write\n").unwrap();
+        assert!(child.0.wait().unwrap().success());
+        assert_eq!(
+            fs::read(final_location.join("output/proof")).unwrap(),
+            b"pinned"
+        );
+        assert!(fs::read_dir(&stage.path).unwrap().next().is_none());
+
+        assert!(stage.check(&journal).is_err());
+        journal.cleanup = Some(DetailCleanup::Cancelled);
+        assert!(remove_detail_stage(&journal).is_err());
+        assert!(final_location.join("output/proof").is_file());
+        assert!(stage.path.is_dir());
+        assert!(!journal.status.output.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn static_detail_child_never_execs_when_fchdir_fails() {
+        let (root, stage, _) = stage_fixture();
+        let invalid_stage = stage.path.join("regular-file");
+        fs::write(&invalid_stage, b"regular").unwrap();
+        let file = File::open(invalid_stage).unwrap();
+        let unexpected = root.join("unexpected");
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "printf unexpected > \"$1\"", "fixture"])
+            .arg(&unexpected);
+        assert!(spawn_detail_child(command, &file).is_err());
+        assert!(!unexpected.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn write_detail_fixture(stage: &DetailStage, journal: &DetailJournal) -> String {
         let index = b"{}";
         let index_hash = digest(index);
@@ -2281,7 +2364,9 @@ mod detail_tests {
         let changed = verify_and_sync_detail_file(&file, stamp, 8, &|| Ok(()), &|synced| {
             assert_eq!(synced.as_raw_fd(), file.as_raw_fd());
             fs::write(&payload, b"modified").unwrap();
-            synced.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(60)).unwrap();
+            synced
+                .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(60))
+                .unwrap();
             synced.sync_all().unwrap();
             Ok(())
         });
