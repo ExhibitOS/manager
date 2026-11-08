@@ -137,6 +137,7 @@ enum Phase {
     OutputHeld,
     ReadySent,
     Reserved,
+    OutputAcknowledged,
     Failed,
 }
 
