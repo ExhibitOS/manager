@@ -327,7 +327,7 @@ struct NativeExhibitionView: View {
             if model.canRefreshApprovedCompactArtwork {
                 Button("승인한 축소본을 기존 배치에 반영") {
                     Task { if controller.editingContextActive { await model.refreshApprovedCompactArtwork() } }
-                }.disabled(!ready)
+                }.disabled(!ready || readOnly)
             }
             if model.canReplaceWithSelectedModelCandidate {
                 Button("배치 작품을 선택한 승인 모델로 교체") { confirmModelCandidateReplacement = true }
