@@ -24,6 +24,25 @@ pub struct Receipt {
     staging_chunks: u32,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Unresolved {
+    version: u32,
+    job_id: String,
+    import_runtime_generation: String,
+    state: String,
+    #[serde(rename = "cleanupPending")]
+    _cleanup_pending: (),
+    error_code: String,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ResultFrame {
+    Complete(Receipt),
+    Unresolved(Unresolved),
+}
+
 #[derive(Clone)]
 pub(super) struct Run {
     selection: Selection,
@@ -35,6 +54,7 @@ enum Evidence {
     #[default]
     Waiting,
     Complete(Receipt),
+    Unresolved,
     Invalid,
 }
 
@@ -47,13 +67,19 @@ impl Run {
 
     pub(super) fn observe(&self, line: &[u8], ready_seen: bool) {
         if let Ok(mut evidence) = self.evidence.lock() {
-            match self.selection.receipt(line) {
+            match self.selection.result_frame(line) {
                 Ok(None) => (),
-                Ok(Some(receipt)) if !ready_seen && matches!(*evidence, Evidence::Waiting) =>
+                Ok(Some(ResultFrame::Complete(receipt))) if !ready_seen && matches!(*evidence, Evidence::Waiting) =>
                     *evidence = Evidence::Complete(receipt),
+                Ok(Some(ResultFrame::Unresolved(_))) if !ready_seen && matches!(*evidence, Evidence::Waiting) =>
+                    *evidence = Evidence::Unresolved,
                 _ => *evidence = Evidence::Invalid,
             }
         }
+    }
+
+    pub(super) fn unresolved(&self) -> bool {
+        self.evidence.lock().is_ok_and(|evidence| matches!(*evidence, Evidence::Unresolved))
     }
 
     pub(super) fn receipt(&self) -> Result<Receipt> {
@@ -76,16 +102,19 @@ impl Selection {
         serde_json::to_string(self).map_err(|_| err(ERROR))
     }
 
-    pub(super) fn receipt(&self, line: &[u8]) -> Result<Option<Receipt>> {
+    fn result_frame(&self, line: &[u8]) -> Result<Option<ResultFrame>> {
         let Some(json) = line.strip_prefix(RESULT) else { return Ok(None) };
-        let receipt: Receipt = serde_json::from_slice(json).map_err(|_| err(ERROR))?;
-        if receipt.version != 1 || receipt.job_id != self.job_id
-            || receipt.import_runtime_generation != self.import_runtime_generation
-            || receipt.state != "complete" || receipt.cleanup_pending
-        {
-            return Err(err(ERROR));
-        }
-        Ok(Some(receipt))
+        let result: ResultFrame = serde_json::from_slice(json).map_err(|_| err(ERROR))?;
+        let matches = |version, job: &str, generation: &str| version == 1
+            && job == self.job_id && generation == self.import_runtime_generation;
+        let valid = match &result {
+            ResultFrame::Complete(receipt) => matches(receipt.version, &receipt.job_id, &receipt.import_runtime_generation)
+                && receipt.state == "complete" && !receipt.cleanup_pending,
+            ResultFrame::Unresolved(receipt) => matches(receipt.version, &receipt.job_id, &receipt.import_runtime_generation)
+                && receipt.state == "unresolved" && receipt.error_code == "NATIVE_OEX_CLEANUP_FAILED",
+        };
+        if !valid { return Err(err(ERROR)); }
+        Ok(Some(result))
     }
 }
 
@@ -104,8 +133,8 @@ mod tests {
         let receipt = serde_json::json!({"version":1,"jobId":job,"importRuntimeGeneration":generation,
             "state":"complete","cleanupPending":false,"stagingChunks":3});
         let line = |value: &Value| [RESULT, value.to_string().as_bytes()].concat();
-        assert!(selection.receipt(&line(&receipt)).unwrap().is_some());
-        assert!(selection.receipt(b"ExhibitOS local runtime started.").unwrap().is_none());
+        assert!(selection.result_frame(&line(&receipt)).unwrap().is_some());
+        assert!(selection.result_frame(b"ExhibitOS local runtime started.").unwrap().is_none());
         for (field, value) in [
             ("jobId", serde_json::json!(generation)),
             ("importRuntimeGeneration", serde_json::json!(job)),
@@ -116,7 +145,7 @@ mod tests {
         ] {
             let mut wrong = receipt.clone();
             wrong[field] = value;
-            assert!(selection.receipt(&line(&wrong)).is_err());
+            assert!(selection.result_frame(&line(&wrong)).is_err());
         }
         let late = Run::new(selection.clone());
         late.observe(&line(&receipt), true);
@@ -127,5 +156,38 @@ mod tests {
         assert!(run.receipt().is_ok());
         run.observe(&line(&receipt), false);
         assert!(run.receipt().is_err());
+    }
+
+    #[test]
+    fn only_a_correlated_unresolved_result_can_request_owned_drain() {
+        let job = "00000000-0000-4000-8000-000000000001";
+        let generation = "00000000-0000-4000-8000-000000000002";
+        let selection = Selection::new(job, generation).unwrap();
+        let unresolved = serde_json::json!({"version":1,"jobId":job,"importRuntimeGeneration":generation,
+            "state":"unresolved","cleanupPending":null,"errorCode":"NATIVE_OEX_CLEANUP_FAILED"});
+        let line = |value: &Value| [RESULT, value.to_string().as_bytes()].concat();
+        let run = Run::new(selection.clone());
+        run.observe(ERROR.as_bytes(), false);
+        assert!(!run.unresolved());
+        run.observe(&line(&unresolved), false);
+        assert!(run.unresolved());
+        assert!(run.receipt().is_err());
+        run.observe(&line(&unresolved), false);
+        assert!(!run.unresolved());
+        for (field, value) in [
+            ("jobId", serde_json::json!(generation)),
+            ("importRuntimeGeneration", serde_json::json!(job)),
+            ("cleanupPending", serde_json::json!(false)),
+            ("errorCode", serde_json::json!("other")),
+        ] {
+            let mut wrong = unresolved.clone();
+            wrong[field] = value;
+            let run = Run::new(selection.clone());
+            run.observe(&line(&wrong), false);
+            assert!(!run.unresolved());
+        }
+        let late = Run::new(selection);
+        late.observe(&line(&unresolved), true);
+        assert!(!late.unresolved());
     }
 }

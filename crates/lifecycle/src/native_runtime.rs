@@ -2060,6 +2060,10 @@ const { isDeepStrictEqual } = require('node:util');
             if self.node.is_none() || self.postgres.is_none() {
                 return Err(err("NATIVE_PROCESS_EXITED"));
             }
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            if self.oex_retained_cleanup.as_ref().is_some_and(oex_retained_cleanup::Run::unresolved) {
+                return Err(err(oex_retained_cleanup::ERROR));
+            }
             if self.node_started.load(Ordering::SeqCst) {
                 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
                 if let Some(cleanup) = &self.oex_retained_cleanup { cleanup.receipt()?; }
@@ -2335,7 +2339,23 @@ const { isDeepStrictEqual } = require('node:util');
         // The current pointer now describes this owned attempt; it has no PIDs yet.
         let result = self.start_inner(services, maintenance_system.as_deref(), existing_database, furnishing);
         if let Err(error) = result {
-            self.failure = Some(error.code.clone());
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            if error.code == oex_retained_cleanup::ERROR
+                && self.oex_retained_cleanup.as_ref().is_some_and(oex_retained_cleanup::Run::unresolved)
+                && !self.node_started.load(Ordering::SeqCst)
+                && !self.cancelled()
+                && self.check_workspace_furnishing_channel().is_ok()
+            {
+                // The pre-ready child is available only for the ordinary owner
+                // drain. stop publishes Clean only after the drain ACK, both
+                // zero exits, and database quiescence.
+                if self.stop().is_ok_and(|context| context.state == "stopped")
+                    && self.furnishing_binding.as_ref().is_some_and(|binding| binding.phase == Phase::Clean)
+                {
+                    return Err(error);
+                }
+            }
+            self.failure.get_or_insert_with(|| error.code.clone());
             let _ = self.stop();
             return Err(error);
         }
