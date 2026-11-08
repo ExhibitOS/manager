@@ -34,7 +34,7 @@ struct NativeImportControls: View {
                         }
                         if model.hasHayesIntent, model.importJob?.state == "queued" {
                             Toggle("저장한 작품 정보와 원본의 사용 권리를 확인했습니다", isOn: $model.approvalAcknowledged)
-                            Button("감상용 파일 준비 및 승인…") { Task { await model.prepareHayesOriginal() } }
+                            Button("감상용 파일 준비…") { Task { await model.prepareHayesOriginal() } }
                                 .disabled(!model.approvalAcknowledged || model.metadataDirty)
                         }
                     } else if !model.hasHayesIntent {
@@ -42,7 +42,12 @@ struct NativeImportControls: View {
                             .foregroundStyle(.secondary)
                     }
                     if model.hayesReceipt != nil {
-                        Label("원본 보관과 감상용 파일 승인을 확인했습니다.", systemImage: "checkmark.circle")
+                        Label("원본 보관과 감상용 파일 준비를 확인했습니다.", systemImage: "checkmark.circle")
+                        if model.selected?.approvedRevision != model.selected?.revision {
+                            Toggle("감상용 파일과 저장한 작품 정보·권리를 확인했습니다", isOn: $model.approvalAcknowledged)
+                            Button("작품 정보·권리 승인") { Task { await model.approveImportedArtwork() } }
+                                .disabled(!model.approvalAcknowledged || model.metadataDirty)
+                        }
                     }
                 } else {
                     Button(model.importFile == nil ? "\(model.importFormats) 파일 선택…" : "같은 파일 다시 선택…", systemImage: "doc.badge.plus") { Task { await model.chooseImportFile() } }

@@ -71,7 +71,7 @@ public struct NativeOEXSaveOffer: Decodable, Sendable {
     public let etag: String
     public let requestId: String
 }
-public struct NativeHayesReceipt: Decodable, Sendable {
+public struct NativeHayesReceipt: Codable, Sendable {
     public let jobId: String
     public let receiptId: String
     public let receiptSha256: String

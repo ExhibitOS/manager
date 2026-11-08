@@ -1630,6 +1630,15 @@ public struct NativeHayesOriginalIntent: Codable, Equatable, Sendable {
         self.displayReferenceSha256 = displayReferenceSha256
     }
 
+    public func confirmsDisplay(_ artwork: NativeArtwork, job: NativeImportJob, intent: NativeImportIntent) -> Bool {
+        guard matches(intent), artwork.id == intent.artworkId, artwork.revision == artworkRevision,
+              artwork.metadata?.rights == intent.rights,
+              artwork.metadata?.displayReference?.assetSha256 == displayReferenceSha256,
+              job.state == "approved", let display = job.assetId, UUID(uuidString: display) != nil else { return false }
+        return artwork.assets.contains { $0.id == display && $0.mime == "model/gltf-binary"
+            && $0.sha256 == displayReferenceSha256 && $0.state == "approved" }
+    }
+
     func matches(_ intent: NativeImportIntent) -> Bool {
         (1...Int(Int32.max)).contains(artworkRevision)
             && displayReferenceSha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil

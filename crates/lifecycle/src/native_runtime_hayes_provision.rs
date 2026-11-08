@@ -80,3 +80,30 @@ fn acquire_in(base: &PrivateDirectory) -> Result<Lease> {
     };
     Lease::acquire(&base.path.join(ROOT), authority)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_hayes_provision_reopens_only_the_original_locked_custody() {
+        let root = fs::canonicalize(std::env::temp_dir()).unwrap()
+            .join(format!("hayes-custody-provision-{}", Uuid::new_v4()));
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let base = PrivateDirectory::open(&root).unwrap();
+        let lease = acquire_in(&base).unwrap();
+        let authority = base.read_bytes(AUTHORITY).unwrap();
+        assert_eq!(acquire_in(&base).err().unwrap().code, "HAYES_RESERVATION_BUSY");
+        drop(lease);
+        drop(acquire_in(&base).unwrap());
+        assert_eq!(base.read_bytes(AUTHORITY).unwrap(), authority);
+
+        let custody = root.join(ROOT);
+        fs::rename(custody.join(LOCK), custody.join("old.lock")).unwrap();
+        fs::write(custody.join(LOCK), []).unwrap();
+        assert!(acquire_in(&base).is_err());
+        assert_eq!(base.read_bytes(AUTHORITY).unwrap(), authority);
+        drop(base);
+        fs::remove_dir_all(root).unwrap();
+    }
+}

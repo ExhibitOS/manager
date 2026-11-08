@@ -305,6 +305,13 @@ pub(in crate::native_runtime) struct ExecuteBinding {
     pub(in crate::native_runtime) artwork_revision: u32,
 }
 
+impl ExecuteBinding {
+    fn matches(&self, observed: &OperationBinding) -> bool {
+        observed.job_id == self.job_id && observed.artwork_id == self.artwork_id
+            && observed.artwork_revision == u64::from(self.artwork_revision)
+    }
+}
+
 impl Session {
     /// The private selected-runtime entry supplies the acquired UID authority.
     /// Only this Session's dedicated inherited channel can supply the pin.
@@ -405,9 +412,7 @@ impl Session {
                 .inspect_err(|_| observe("open-frame-read-failed"))?;
             observe("open-frame-read-done");
             let open = parse_open(&raw).inspect_err(|_| observe("open-frame-binding-invalid"))?;
-            if expected.is_some_and(|expected| open.job_id != expected.job_id
-                || open.artwork_id != expected.artwork_id
-                || open.artwork_revision != u64::from(expected.artwork_revision))
+            if expected.is_some_and(|expected| !expected.matches(&open))
             {
                 return Err(unavailable());
             }

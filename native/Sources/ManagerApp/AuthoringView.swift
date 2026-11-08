@@ -660,6 +660,15 @@ extension AuthoringModel {
                 }
             }
             let completed = importJob
+            if state.intent?.hayesOriginal != nil, let job = completed, job.state == "approved" {
+                guard let api, let intent = state.intent, let revision = intent.hayesOriginal?.artworkRevision else {
+                    throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+                }
+                let artwork = try await api.artwork(intent.artworkId)
+                guard artwork.approvedRevision == revision, artwork.approvedAssetId == job.assetId else {
+                    throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+                }
+            }
             guard available, generation == importStatusGeneration, currentScope == scope,
                   tenant == session?.tenantId, principal == session?.userId,
                   transfer?.workspaceId == state.workspaceId, transfer?.revision == state.revision,
@@ -703,19 +712,25 @@ extension AuthoringModel {
             let observed = try await api.importJob(job.id)
             let artwork = try await api.artwork(intent.artworkId)
             guard generation == importStatusGeneration, available, transfer?.intent == intent,
-                  observed.id == job.id, observed.state == "approved",
-                  artwork.approvedRevision == hayes.artworkRevision, artwork.approvedAssetId == observed.assetId else {
+                  observed.id == job.id, hayes.confirmsDisplay(artwork, job: observed, intent: intent) else {
                 throw AuthoringFailure("IMPORT_RECEIPT_INVALID")
             }
             importJob = observed; self.selected = artwork; assetId = observed.assetId ?? ""
             approvalAcknowledged = false
-            notice = "감상용 파일의 승인과 원본 보관을 확인했습니다."
+            notice = "감상용 파일 준비와 원본 보관을 확인했습니다. 작품 정보와 권리를 승인할 수 있습니다."
         }
     }
     func approveImportedArtwork() async {
         await action {
-            guard !hasUnknownSourceUnits, let api, let selected, !metadataDirty, approvalAcknowledged,
+            guard let api, let selected, !metadataDirty, approvalAcknowledged,
                   selected.assets.contains(where: { $0.id == assetId && $0.state == "approved" }) else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+            if hasUnknownSourceUnits {
+                guard let receipt = hayesReceipt, let intent = transfer?.intent, let job = importJob,
+                      receipt.jobId == job.id, job.assetId == assetId,
+                      intent.hayesOriginal?.confirmsDisplay(selected, job: job, intent: intent) == true else {
+                    throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+                }
+            }
             if let intent = transfer?.intent, intent.artworkId.lowercased() == selected.id.lowercased(),
                intent.derived?.recipe.colourConversion != nil {
                 guard iccImportAdmitted else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
