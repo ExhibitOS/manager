@@ -1014,6 +1014,7 @@ impl LifecycleService {
             let target_expected_source = match transition {
                 FurnishingTransition::Upgrade39(_) => target_payload.catalog39_upgrade_source_ledger()?,
                 FurnishingTransition::Upgrade40(_) => target_payload.catalog40_upgrade_source_ledger()?,
+                FurnishingTransition::Upgrade44 => target_payload.catalog44_upgrade_source_ledger()?,
                 _ => target_payload.workspace_furnishing_ledger(target_catalog)?,
             };
             if source_payload.workspace_furnishing_ledger(source_catalog)? != target_expected_source {

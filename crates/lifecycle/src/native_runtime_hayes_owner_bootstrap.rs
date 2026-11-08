@@ -92,7 +92,7 @@ impl HayesSetup {
         start: FurnishingStart,
         ordinary_secret: &str,
     ) -> Result<Vec<u8>> {
-        if !matches!(start, FurnishingStart::Initialize | FurnishingStart::Reopen | FurnishingStart::Upgrade040To044)
+        if !matches!(start, FurnishingStart::Initialize | FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045)
             || self.pin.runtime_generation().to_string() != generation
             || ordinary_secret == self.socket.secret
         {

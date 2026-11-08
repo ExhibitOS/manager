@@ -144,7 +144,7 @@ impl Setup {
         if let Some(hayes) = &self.hayes {
             return hayes.bootstrap(auth, generation, start, &self.secret);
         }
-        if start == super::FurnishingStart::Upgrade040To044 {
+        if matches!(start, super::FurnishingStart::Upgrade040To044 | super::FurnishingStart::Upgrade044To045) {
             return Err(err("HAYES_OPERATION_UNAVAILABLE"));
         }
         self.normal_selected_v3_bootstrap(auth, generation, start.owner_mode())

@@ -64,13 +64,16 @@ public actor NativeAutomationSession {
 
     public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false, workspaceV5ValidationRuntime: URL? = nil, existingWorkspaceV5: ExistingWorkspaceV5? = nil, workspaceV6ValidationRuntime: URL? = nil, workspaceV7ValidationRuntime: URL? = nil) throws {
         let draft12 = workspaceV6ValidationRuntime != nil || workspaceV7ValidationRuntime != nil
-        let ordinaryHayes = !draft12 && workspaceV5ValidationRuntime == nil
-            && existingWorkspaceV5.map { NativeHayesOriginalIntent.supports(manifest: $0.manifestSHA256) } == true
+        let retainedFurnishing = !draft12 && workspaceV5ValidationRuntime == nil
+            && existingWorkspaceV5.map {
+                NativeHayesOriginalIntent.supports(manifest: $0.manifestSHA256)
+                    || $0.manifestSHA256 == "af4e787a5fa5c714d60bf24cba23a1b2e7015946d1f4bea9a5777a3af3c8b2d0"
+            } == true
         guard !(selectedOEX9 && selectedOEX10),
               workspaceV6ValidationRuntime == nil || workspaceV7ValidationRuntime == nil,
               !draft12 || (!selectedOEX9 && !selectedOEX10 && workspaceV5ValidationRuntime == nil),
               existingWorkspaceV5 == nil || (!selectedOEX9 && !selectedOEX10
-                  && (workspaceV5ValidationRuntime != nil || workspaceV7ValidationRuntime != nil || ordinaryHayes)),
+                  && (workspaceV5ValidationRuntime != nil || workspaceV7ValidationRuntime != nil || retainedFurnishing)),
               workspaceV5ValidationRuntime == nil || selectedOEX10 || existingWorkspaceV5 != nil else {
             throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID")
         }

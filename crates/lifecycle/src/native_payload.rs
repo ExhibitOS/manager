@@ -309,6 +309,17 @@ const HAYES_RELEASE_CAPABILITY: (&str, u64, &str) = (
     285,
     "b21403370f5f9088207d0d9a5aa4a74c7b2eb33e8692d0d61b617e40f08947c0",
 );
+const MODEL_PREPARATION_DIRECTORY: &str = "platform/database/native-model-preparation/";
+const MODEL_PREPARATION_SCHEMA: (&str, u64, &str) = (
+    "platform/database/native-model-preparation/045_required_model_preparation.sql",
+    2485,
+    "ebd546db086b5488374abae719f34f0c18de95c9a6eb74acd69e2cea6f6430d8",
+);
+const MODEL_PREPARATION_CAPABILITY: (&str, u64, &str) = (
+    "platform/scripts/native-model-preparation-capability-v1.json",
+    352,
+    "19beda5c00b9427270dd08c800955076daf5ebc1699ab61881e41fa4c48a3370",
+);
 const HAYES_FRAME_PREPARATION_CAPABILITY: (&str, u64, &str) = (
     WORKSPACE_FRAME_PREPARATION_CAPABILITY.0,
     WORKSPACE_FRAME_PREPARATION_CAPABILITY.1,
@@ -507,6 +518,20 @@ const CATALOG44_BC96_FRAME_LINEAGE_TARGET: RuntimeTuple = (
     "aa7534f2165c5d8a28a3e54dc5da4c8e1f026c16e806f28df52d35598d84bf27",
 );
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_BC96_REQUIRED_MODEL_TARGET: RuntimeTuple = (
+    "0f743bda2a055f1025ea11ba64f17933cf28ccec",
+    "f166f37f9323ea557bfc229feaa7b0f0e7b19472908f21ef3b5862578aedee25",
+    "af4e787a5fa5c714d60bf24cba23a1b2e7015946d1f4bea9a5777a3af3c8b2d0",
+);
+
+pub(crate) fn required_model_preparation_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return CATALOG45_BC96_REQUIRED_MODEL_TARGET == tuple;
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+
 pub(crate) fn ordinary_hayes_release_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CATALOG44_WHEAT_TARGET == Some(tuple) || CATALOG44_HAYES_AUTO_TARGET == tuple
@@ -543,6 +568,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG44_WHEAT_TARGET.is_some_and(|target| target.2 == manifest)
         || CATALOG44_HAYES_AUTO_TARGET.2 == manifest
         || CATALOG44_BC96_FRAME_LINEAGE_TARGET.2 == manifest
+        || CATALOG45_BC96_REQUIRED_MODEL_TARGET.2 == manifest
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -552,11 +578,15 @@ pub(crate) enum FurnishingTransition {
     Tangent,
     Upgrade39(Catalog39Upgrade),
     Upgrade40(Catalog40Upgrade),
+    Upgrade44,
     SameCatalog { source: RuntimeTuple, target: RuntimeTuple, catalog: WorkspaceFurnishingCatalog },
 }
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 impl FurnishingTransition {
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
+        if pair == (CATALOG44_BC96_FRAME_LINEAGE_TARGET.2, CATALOG45_BC96_REQUIRED_MODEL_TARGET.2) {
+            return Some(Self::Upgrade44);
+        }
         if let Some((source, target)) = CATALOG40_WHEAT_DETAIL.zip(CATALOG44_WHEAT_TARGET)
             && pair == (source.2, target.2)
         {
@@ -623,12 +653,13 @@ impl FurnishingTransition {
 
     #[cfg(test)]
     pub(crate) fn upgrades_catalog(self) -> bool {
-        matches!(self, Self::Upgrade39(_) | Self::Upgrade40(_))
+        matches!(self, Self::Upgrade39(_) | Self::Upgrade40(_) | Self::Upgrade44)
     }
 
     pub(crate) fn source_catalog(self) -> WorkspaceFurnishingCatalog {
         match self {
             Self::Upgrade39(_) => WorkspaceFurnishingCatalog::MaterialPublication039,
+            Self::Upgrade44 => WorkspaceFurnishingCatalog::HayesRelease044,
             Self::SameCatalog { catalog, .. } => catalog,
             _ => WorkspaceFurnishingCatalog::MaterialMultimap040,
         }
@@ -637,6 +668,7 @@ impl FurnishingTransition {
     pub(crate) fn target_catalog(self) -> WorkspaceFurnishingCatalog {
         match self {
             Self::Upgrade40(_) => WorkspaceFurnishingCatalog::HayesRelease044,
+            Self::Upgrade44 => WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             Self::SameCatalog { catalog, .. } => catalog,
             _ => WorkspaceFurnishingCatalog::MaterialMultimap040,
         }
@@ -648,6 +680,7 @@ impl FurnishingTransition {
             Self::Tangent => CATALOG40_FRAME_TARGET,
             Self::Upgrade39(_) => CATALOG39_UPGRADE_SOURCE,
             Self::Upgrade40(step) => step.source,
+            Self::Upgrade44 => CATALOG44_BC96_FRAME_LINEAGE_TARGET,
             Self::SameCatalog { source, .. } => source,
         }
     }
@@ -658,6 +691,7 @@ impl FurnishingTransition {
             Self::Tangent => CATALOG40_TANGENT_TARGET,
             Self::Upgrade39(target) => target.0,
             Self::Upgrade40(step) => step.target,
+            Self::Upgrade44 => CATALOG45_BC96_REQUIRED_MODEL_TARGET,
             Self::SameCatalog { target, .. } => target,
         }
     }
@@ -681,6 +715,7 @@ pub(crate) enum WorkspaceFurnishingCatalog {
     HayesOriginal042,
     HayesDisposition043,
     HayesRelease044,
+    RequiredModelPreparation045,
 }
 
 impl WorkspaceFurnishingCatalog {
@@ -695,13 +730,14 @@ impl WorkspaceFurnishingCatalog {
             Self::HayesOriginal042 => 42,
             Self::HayesDisposition043 => 43,
             Self::HayesRelease044 => 44,
+            Self::RequiredModelPreparation045 => 45,
         }
     }
 
     pub(crate) fn uses_writer_lease(self) -> bool {
         matches!(self, Self::Writer037 | Self::Publication038 | Self::MaterialPublication039
             | Self::MaterialMultimap040 | Self::FramePreparation041 | Self::HayesOriginal042
-            | Self::HayesDisposition043 | Self::HayesRelease044)
+            | Self::HayesDisposition043 | Self::HayesRelease044 | Self::RequiredModelPreparation045)
     }
 }
 
@@ -1379,6 +1415,34 @@ mod normal_oex_release_declaration_tests {
         assert!(FurnishingTransition::from_manifests((pair.0, CATALOG44_HAYES_AUTO_TARGET.2)).is_none());
     }
 
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact sealed bc96 044 and required-model 045 packages"]
+    fn opens_reviewed_bc96_required_model_packages_without_starting_a_profile() {
+        let source_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_BC96_CATALOG44_RUNTIME").unwrap());
+        let target_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_BC96_CATALOG45_RUNTIME").unwrap());
+        let source = Payload::open_saved_workspace_transition(&source_root).unwrap();
+        let target = Payload::open_saved_workspace_transition(&target_root).unwrap();
+        let from = WorkspaceFurnishingCatalog::HayesRelease044;
+        let to = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        assert_eq!(source.workspace_furnishing_catalog().unwrap(), Some(from));
+        assert_eq!(target.workspace_furnishing_catalog().unwrap(), Some(to));
+        let source_ledger = source.workspace_furnishing_ledger(from).unwrap();
+        assert_eq!(source_ledger, target.catalog44_upgrade_source_ledger().unwrap());
+        assert_eq!(source_ledger.lines().count(), 44);
+        assert_eq!(target.workspace_furnishing_ledger(to).unwrap().lines().count(), 45);
+        assert!(!target.ordinary_hayes_release());
+
+        let source_context = source.context();
+        let target_context = target.context();
+        let pair = (source_context.manifest_sha256.as_str(), target_context.manifest_sha256.as_str());
+        assert_eq!(FurnishingTransition::from_manifests(pair), Some(FurnishingTransition::Upgrade44));
+        assert!(saved_workspace_transition_target(pair.1));
+        assert!(FurnishingTransition::from_manifests((pair.1, pair.0)).is_none());
+        assert!(FurnishingTransition::from_manifests((CATALOG44_HAYES_AUTO_TARGET.2, pair.1)).is_none());
+        assert!(FurnishingTransition::from_manifests((pair.0, CATALOG44_HAYES_AUTO_TARGET.2)).is_none());
+    }
+
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     #[test]
     fn workspace_import_validation_distinguishes_v6_v7_and_preserves_reopen() {
@@ -1907,8 +1971,8 @@ impl Payload {
     pub(crate) fn open_saved_workspace_transition(root: &Path) -> Result<Self> {
         let payload = Self::open(root)?;
         let context = payload.context();
-        if payload.ordinary_hayes_release() {
-            return if payload.workspace_furnishing_catalog()? == Some(WorkspaceFurnishingCatalog::HayesRelease044) {
+        if let Some(expected) = payload.retained_furnishing_catalog() {
+            return if payload.workspace_furnishing_catalog()? == Some(expected) {
                 Ok(payload)
             } else {
                 Err(err("NATIVE_RUNTIME_UNQUALIFIED"))
@@ -1950,6 +2014,18 @@ impl Payload {
         ))
     }
 
+    pub(crate) fn retained_furnishing_catalog(&self) -> Option<WorkspaceFurnishingCatalog> {
+        if self.ordinary_hayes_release() {
+            Some(WorkspaceFurnishingCatalog::HayesRelease044)
+        } else if required_model_preparation_host_matches((
+            &self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256,
+        )) {
+            Some(WorkspaceFurnishingCatalog::RequiredModelPreparation045)
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn workspace_v5_selected_input(&self) -> bool {
         self.workspace_v5_validation
     }
@@ -1975,7 +2051,7 @@ impl Payload {
         let wheat_grant = CATALOG40_WHEAT_GRANT;
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
         let wheat_grant: Option<(&str, &str, &str)> = None;
-        let pinned_portal = self.ordinary_hayes_release()
+        let pinned_portal = self.retained_furnishing_catalog().is_some()
             || portal.into_iter().chain(artwork_replacement).chain(wheat_grant).chain(CATALOG40_WHEAT_DETAIL).any(|(source, producer, manifest)|
                 self.manifest.source_commit == source && self.manifest.producer_sha256 == producer
                     && self.manifest_sha256 == manifest);
@@ -2027,7 +2103,14 @@ impl Payload {
         let material_pinned = material.contains(&tuple);
         let multimap_pinned = multimap.contains(&tuple);
         let release_probe_pinned = hayes_release_host_matches(tuple);
-        let release_pinned = release_probe_pinned || ordinary_hayes_release_host_matches(tuple);
+        let model_preparation_pinned = required_model_preparation_host_matches(tuple);
+        let model_preparation_declared = self.manifest.files.iter().any(|file|
+            file.path == MODEL_PREPARATION_CAPABILITY.0 || file.path.starts_with(MODEL_PREPARATION_DIRECTORY));
+        if model_preparation_declared != model_preparation_pinned {
+            return Err(unqualified());
+        }
+        let release_pinned = release_probe_pinned || ordinary_hayes_release_host_matches(tuple)
+            || model_preparation_pinned;
         let release_declared = self.manifest.files.iter().any(|file|
             file.path == HAYES_RELEASE_CAPABILITY.0 || file.path.starts_with(HAYES_RELEASE_DIRECTORY));
         if release_declared != release_pinned {
@@ -2133,6 +2216,12 @@ impl Payload {
                                     if !pinned_file(HAYES_RELEASE_CAPABILITY) || !pinned_file(HAYES_RELEASE_SCHEMA) {
                                         return Err(unqualified());
                                     }
+                                    if model_preparation_pinned {
+                                        if !pinned_file(MODEL_PREPARATION_CAPABILITY) || !pinned_file(MODEL_PREPARATION_SCHEMA) {
+                                            return Err(unqualified());
+                                        }
+                                        return Ok(Some(WorkspaceFurnishingCatalog::RequiredModelPreparation045));
+                                    }
                                     return Ok(Some(WorkspaceFurnishingCatalog::HayesRelease044));
                                 }
                                 return Ok(Some(WorkspaceFurnishingCatalog::HayesDisposition043));
@@ -2230,12 +2319,20 @@ impl Payload {
                 43
             } else if file.path.starts_with(HAYES_RELEASE_DIRECTORY) {
                 let (path, bytes, hash) = HAYES_RELEASE_SCHEMA;
-                if catalog != WorkspaceFurnishingCatalog::HayesRelease044
+                if catalog.version() < 44
                     || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
                 {
                     return Err(invalid());
                 }
                 44
+            } else if file.path.starts_with(MODEL_PREPARATION_DIRECTORY) {
+                let (path, bytes, hash) = MODEL_PREPARATION_SCHEMA;
+                if catalog != WorkspaceFurnishingCatalog::RequiredModelPreparation045
+                    || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
+                {
+                    return Err(invalid());
+                }
+                45
             } else {
                 let Some((_, range)) = directories.iter().find(|(expected, _)| *expected == directory) else { continue; };
                 let Some(number) = name.split_once('_').and_then(|(number, _)| number.parse::<usize>().ok()) else { return Err(invalid()); };
@@ -2267,6 +2364,13 @@ impl Payload {
     pub(crate) fn catalog40_upgrade_source_ledger(&self) -> Result<String> {
         let full = self.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::HayesRelease044)?;
         Ok(full.lines().take(40).collect::<Vec<_>>().join("\n"))
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn catalog44_upgrade_source_ledger(&self) -> Result<String> {
+        let full = self.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::RequiredModelPreparation045)?;
+        let (source, _) = full.rsplit_once('\n').ok_or_else(invalid)?;
+        Ok(source.into())
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
