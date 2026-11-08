@@ -99,10 +99,15 @@ final class AuthoringModel: ObservableObject {
     private var executeHayes: ((String, String, Int) async throws -> NativeHayesReceipt)?
     private var recoverHayes: ((String, Int) async throws -> NativeHayesReceipt)?
     var hayesOriginalAvailable: Bool {
-        hayesSessionReady && api?.hayesOriginalRuntimeQualified == true
-            && hasUnknownSourceUnits && selected?.metadata?.displayReference?.status == "provisional-uncalibrated"
+        guard hayesSessionReady, api?.hayesOriginalRuntimeQualified == true, let selected, hasUnknownSourceUnits else {
+            return false
+        }
+        return hasHayesIntent || NativeHayesOriginalIntent.matchesSourceArtwork(selected)
     }
-    var hasHayesIntent: Bool { transfer?.intent?.hayesOriginal != nil }
+    var hasHayesIntent: Bool {
+        guard let selected, let intent = transfer?.intent else { return false }
+        return intent.artworkId == selected.id && intent.hayesOriginal != nil
+    }
     private var usesHayesOriginal: Bool { hasHayesIntent || hayesOriginalAvailable }
     var modelOriginalInspectionAvailable: Bool {
         requiredModelPreparationEnabled && session?.modelOriginalInspectionProfile == NativeModelOriginalInspection.profile
@@ -499,8 +504,12 @@ extension AuthoringModel {
                 }
                 modelOriginalInspection = inspection
                 provisionalHeight = draft.displayReference?.referenceHeightMeters
-            } else if ordinaryUnknownModel, draft.displayReference?.assetSha256 != snapshot.sha256 {
-                throw AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID")
+            } else {
+                if ordinaryUnknownModel, draft.displayReference?.assetSha256 != snapshot.sha256 {
+                    throw AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID")
+                }
+                modelOriginalInspection = nil
+                provisionalHeight = nil
             }
             importFile = snapshot
             if draft.title.isEmpty && selected == nil { draft.title = url.deletingPathExtension().lastPathComponent }
@@ -846,6 +855,7 @@ extension AuthoringModel {
                 self.activeIntakeID = nil; intakeTarget = nil
             }
             importJob = nil; importFile = nil; approvalAcknowledged = false
+            modelOriginalInspection = nil; provisionalHeight = nil
         }
     }
     func prepareHayesOriginal() async {

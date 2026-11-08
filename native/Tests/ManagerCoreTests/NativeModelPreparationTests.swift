@@ -49,6 +49,22 @@ final class NativeModelPreparationTests: XCTestCase {
         XCTAssertFalse(draining.confirmsIntakeDrain(for: request))
     }
 
+    func testHayesOriginalMatchesOnlyTheQualifiedSourceArtwork() {
+        let artworkId = UUID().uuidString, artistId = UUID().uuidString
+        let exactHash = "694a9cf81dfbf12fd0841ae45240c5ae0f1d7cb129d0ee122be7cff86c4625bc"
+        func artwork(_ hash: String) -> NativeArtwork {
+            var metadata = ArtworkMetadata()
+            metadata.provenance.sourceUnits = "unknown"
+            metadata.displayReference = .init(version: 1, status: "provisional-uncalibrated", assetSha256: hash,
+                rawBounds: .init(min: [0, 0, 0], max: [1, 1, 1]), referenceHeightMeters: 1,
+                pose: .init(position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1]))
+            return .init(id: artworkId, artistId: artistId, revision: 1, approvedRevision: nil,
+                         approvedAssetId: nil, metadata: metadata, assets: [], archived: false)
+        }
+        XCTAssertTrue(NativeHayesOriginalIntent.matchesSourceArtwork(artwork(exactHash)))
+        XCTAssertFalse(NativeHayesOriginalIntent.matchesSourceArtwork(artwork(String(repeating: "b", count: 64))))
+    }
+
     func testInspectedOriginalBuildsOnlyAnAuthoredProvisionalReference() throws {
         let hash = String(repeating: "b", count: 64)
         let file = ImportFileSnapshot(name: "synthetic.glb", mime: "model/gltf-binary",

@@ -1943,6 +1943,13 @@ public struct NativeHayesOriginalIntent: Codable, Equatable, Sendable {
 
     public static let sourceBytes = 8_383_096
     public static let sourceSHA256 = "e66715a51c9cad0b904d2715d5b27fb80b97d43fe8c2a3cd10276c1b336a2cf6"
+    public static func matchesSourceArtwork(_ artwork: NativeArtwork) -> Bool {
+        let reference = artwork.metadata?.displayReference
+        return !artwork.archived && artwork.metadata?.provenance.sourceUnits == "unknown"
+            && reference?.status == "provisional-uncalibrated"
+            && reference?.assetSha256 == "694a9cf81dfbf12fd0841ae45240c5ae0f1d7cb129d0ee122be7cff86c4625bc"
+    }
+
     public let artworkRevision: Int
     public let displayReferenceSha256: String
 
