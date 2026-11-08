@@ -1113,6 +1113,22 @@ mod normal_oex_release_declaration_tests {
         assert!(payload.workspace_furnishing_ledger(catalog).is_err());
     }
 
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the reviewed 040 and ordinary 044 runtime directories"]
+    fn opens_reviewed_catalog40_to_44_packages_without_starting_a_profile() {
+        let source = std::env::var_os("EXHIBITOS_TEST_CATALOG40_RUNTIME").unwrap();
+        let target = std::env::var_os("EXHIBITOS_TEST_ORDINARY_CATALOG44_RUNTIME").unwrap();
+        let source = Payload::open_saved_workspace_transition(Path::new(&source)).unwrap();
+        let target = Payload::open_saved_workspace_transition(Path::new(&target)).unwrap();
+        assert_eq!(source.workspace_furnishing_catalog().unwrap(), Some(WorkspaceFurnishingCatalog::MaterialMultimap040));
+        assert_eq!(target.workspace_furnishing_catalog().unwrap(), Some(WorkspaceFurnishingCatalog::HayesRelease044));
+        let source_ledger = source.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::MaterialMultimap040).unwrap();
+        assert_eq!(target.catalog40_upgrade_source_ledger().unwrap(), source_ledger);
+        assert!(target.static_detail_export_resources(true).is_ok());
+        assert!(target.hayes_session_probe_script().unwrap().is_none());
+    }
+
     #[cfg(debug_assertions)]
     #[test]
     fn workspace_furnishing_material_catalog_requires_exact_ancestry_and_pin() {
@@ -1872,9 +1888,10 @@ impl Payload {
         let wheat_grant = CATALOG40_WHEAT_GRANT;
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
         let wheat_grant: Option<(&str, &str, &str)> = None;
-        let pinned_portal = portal.into_iter().chain(artwork_replacement).chain(wheat_grant).chain(CATALOG40_WHEAT_DETAIL).any(|(source, producer, manifest)|
-            self.manifest.source_commit == source && self.manifest.producer_sha256 == producer
-                && self.manifest_sha256 == manifest);
+        let pinned_portal = self.ordinary_hayes_release()
+            || portal.into_iter().chain(artwork_replacement).chain(wheat_grant).chain(CATALOG40_WHEAT_DETAIL).any(|(source, producer, manifest)|
+                self.manifest.source_commit == source && self.manifest.producer_sha256 == producer
+                    && self.manifest_sha256 == manifest);
         let portal_marker = self.manifest.files.iter().find(|file| file.path == PORTAL_MARKER);
         if (pinned_portal || portal_marker.is_some())
             && !(pinned_portal && portal_marker.is_some_and(|file| file.link.is_none()
