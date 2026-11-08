@@ -484,11 +484,14 @@ const CATALOG40_WHEAT_DETAIL: Option<RuntimeTuple> = Some((
 const CATALOG40_WHEAT_DETAIL: Option<(&str, &str, &str)> = None;
 
 // The ordinary package is admitted only after its sealed inventory is reviewed.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const CATALOG44_WHEAT_TARGET: Option<RuntimeTuple> = None;
 
 pub(crate) fn ordinary_hayes_release_host_matches(tuple: (&str, &str, &str)) -> bool {
-    cfg!(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))
-        && CATALOG44_WHEAT_TARGET == Some(tuple)
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return CATALOG44_WHEAT_TARGET == Some(tuple);
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
