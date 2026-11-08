@@ -301,6 +301,21 @@ public struct NativeStudioArtwork: Decodable, Sendable {
 
 /// One private current draft, base ETag and exact pending save, bound by Rust to
 /// the Mac workspace/principal. Saved edit version distinguishes unsent edits.
+public struct NativeApprovedModelCandidateReplacement: Codable, Equatable, Sendable {
+    public static let profile = "approved-model-candidate-v1"
+    public let artworkId: String
+    public let artworkRevision: Int
+    public let importJobId: String
+    public let placementId: String
+
+    public init(artworkId: String, artworkRevision: Int, importJobId: String, placementId: String) {
+        self.artworkId = artworkId
+        self.artworkRevision = artworkRevision
+        self.importJobId = importJobId
+        self.placementId = placementId
+    }
+}
+
 public struct NativeDocumentState: Codable, Sendable {
     public struct Pending: Codable, Sendable {
         public let requestId: String
@@ -309,8 +324,11 @@ public struct NativeDocumentState: Codable, Sendable {
         /// Older records omit this field. Tagged bounded requests must never
         /// enter the generic retry path after a runtime or session change.
         public let origin: String?
-        public init(requestId: String = UUID().uuidString.lowercased(), etag: String?, draft: NativeExhibitionDraft, origin: String? = nil) {
+        public let modelCandidate: NativeApprovedModelCandidateReplacement?
+        public init(requestId: String = UUID().uuidString.lowercased(), etag: String?, draft: NativeExhibitionDraft,
+                    origin: String? = nil, modelCandidate: NativeApprovedModelCandidateReplacement? = nil) {
             self.requestId = requestId; self.etag = etag; self.draft = draft; self.origin = origin
+            self.modelCandidate = modelCandidate
         }
     }
     public let format: Int

@@ -2451,6 +2451,86 @@ final class ExhibitionModel: ObservableObject {
             notice = "현재 전시 입력을 이 Mac에 보관했습니다. 아직 전시 저장본에 반영하지 않았습니다."
         }
     }
+    var hasPendingModelCandidateReplacement: Bool { state?.pending?.modelCandidate != nil }
+
+    var canReplaceWithSelectedModelCandidate: Bool {
+        guard session?.nativeModelCandidateReplacementProfile == NativeApprovedModelCandidateReplacement.profile,
+              !busy, !pending, !dirty, !entrancePreviewActive, !placingArtwork,
+              let draft, state?.etag != nil, let entry = catalogEntries[catalogArtworkId],
+              entry.kind == "sculpture", entry.primaryMime == "model/gltf-binary",
+              let placement = draft.placements.first(where: { $0["id"].string == placementId }),
+              let placed = draft.artworks.first(where: { $0["revisionId"] == placement["artworkRevisionId"] })
+        else { return false }
+        return placed["artworkType"] == .string("sculpture") && placed["id"].string != entry.id
+    }
+
+    func replaceWithSelectedModelCandidate() async {
+        let starting = canReplaceWithSelectedModelCandidate
+        await work {
+            guard let api, var local = state, let draft = local.draft, let etag = local.etag,
+                  await api.admitsApprovedModelCandidateReplacement,
+                  !entrancePreviewActive, !placingArtwork else {
+                throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
+            }
+            let access = viewportAccessID
+            let intent: NativeDocumentState.Pending
+            let candidate: NativeApprovedModelCandidateReplacement
+            if let pending = local.pending {
+                guard pending.origin == NativeApprovedModelCandidateReplacement.profile,
+                      let reviewed = pending.modelCandidate, pending.draft == draft, pending.etag == etag else {
+                    throw AuthoringFailure("EXHIBITION_PENDING")
+                }
+                intent = pending
+                candidate = reviewed
+            } else {
+                guard starting, let entry = catalogEntries[catalogArtworkId] else {
+                    throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
+                }
+                let target = placementId
+                let saved = try await api.exhibition(draft.id)
+                let editing = try await publishedEditingAccess(draft.id, api: api, expected: saved)
+                guard saved.draft == draft, saved.etag == etag, !editing.immutable else {
+                    throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+                }
+                candidate = try await api.discoverApprovedModelCandidate(entry, placementId: target)
+                guard self.api === api, viewportAccessID == access, state?.revision == local.revision,
+                      catalogArtworkId == entry.id, placementId == target, !dirty else {
+                    throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
+                }
+                intent = .init(etag: etag, draft: draft, origin: NativeApprovedModelCandidateReplacement.profile,
+                               modelCandidate: candidate)
+                local.pending = intent
+                try await persist(local, recordUndo: false)
+            }
+            let etagPrefix = "\"studio-r"
+            guard etag.hasPrefix(etagPrefix),
+                  let revision = etag.dropFirst(etagPrefix.count).split(separator: "-").first.flatMap({ Int($0) }),
+                  (1..<2_147_483_647).contains(revision),
+                  self.api === api, viewportAccessID == access,
+                  state?.pending?.requestId == intent.requestId else {
+                throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
+            }
+            let saved = try await api.replaceApprovedModelCandidate(
+                draft: intent.draft, studioRevision: revision, etag: etag, requestId: intent.requestId,
+                artworkId: candidate.artworkId, artworkRevision: candidate.artworkRevision,
+                importJobId: candidate.importJobId, placementId: candidate.placementId
+            )
+            guard self.api === api, viewportAccessID == access,
+                  var accepted = state, accepted.pending?.requestId == intent.requestId else {
+                throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
+            }
+            accepted.draft = saved.draft
+            accepted.etag = saved.etag
+            accepted.savedEditVersion = saved.draft.document["editVersion"].integer
+            accepted.pending = nil
+            try await persist(accepted, recordUndo: false)
+            past = []; future = []; comparison = saved
+            syncFields()
+            if ordinaryBoundedRuntime { await prepareOrdinaryBoundedPlacement() }
+            notice = "선택한 승인 작품으로 교체한 전시 저장본을 확인했습니다."
+        }
+    }
+
     func save() async {
         await work {
             guard let api, var value = state else { return }

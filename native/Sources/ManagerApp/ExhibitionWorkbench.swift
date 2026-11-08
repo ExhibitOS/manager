@@ -311,11 +311,31 @@ struct NativeExhibitionView: View {
             }
         }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true).disabled(formLocked)
     }
+    @State private var confirmModelCandidateReplacement = false
+
     private var outputControls: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("저장·내보내기").font(.headline)
             Button("입력 이 Mac에 보관") { Task { if controller.editingContextActive { await model.keepLocal() } } }.disabled(!ready || readOnly || model.busy || model.pending || model.immutable || model.entrancePreviewActive)
-            Button(model.pending ? "저장 응답 다시 확인" : "전시 저장") { Task { if controller.editingContextActive { await model.save() } } }.buttonStyle(.borderedProminent).disabled(saveLocked)
+            if model.hasPendingModelCandidateReplacement {
+                Button("작품 교체 응답 다시 확인") {
+                    Task { if controller.editingContextActive { await model.replaceWithSelectedModelCandidate() } }
+                }.disabled(!ready || model.busy)
+            } else {
+                Button(model.pending ? "저장 응답 다시 확인" : "전시 저장") { Task { if controller.editingContextActive { await model.save() } } }.buttonStyle(.borderedProminent).disabled(saveLocked)
+            }
+            if model.canReplaceWithSelectedModelCandidate {
+                Button("배치 작품을 선택한 승인 모델로 교체") { confirmModelCandidateReplacement = true }
+                    .disabled(!ready)
+                    .confirmationDialog("기존 배치의 작품을 교체할까요?", isPresented: $confirmModelCandidateReplacement, titleVisibility: .visible) {
+                        Button("교체하고 저장") {
+                            Task { if controller.editingContextActive { await model.replaceWithSelectedModelCandidate() } }
+                        }
+                        Button("취소", role: .cancel) {}
+                    } message: {
+                        Text("선택한 승인 모델을 사용하며 기존 공간과 위치, 회전, 크기를 유지합니다.")
+                    }
+            }
             Button("저장본 비교") { Task { await model.compare() } }.disabled(!ready || model.busy || model.state?.etag == nil)
             if let comparison = model.comparison {
                 Text("비교한 저장본: \(comparison.draft.title) · 저장본 \(comparison.revision) · 작품 배치 \(comparison.draft.placements.count)개")

@@ -11,6 +11,16 @@ pub struct Pending {
     pub draft: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_candidate: Option<ModelCandidateReplacement>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelCandidateReplacement {
+    artwork_id: String,
+    artwork_revision: u32,
+    import_job_id: String,
+    placement_id: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -81,7 +91,14 @@ pub(crate) fn validate(s: &DocumentState) -> Result<()> {
     }
     if let Some(p) = &s.pending
         && (!uuid(&p.request_id)
-            || p.origin.as_deref().is_some_and(|v| v != "bounded-placement-v1" && v != "bounded-import-v1")
+            || p.origin.as_deref().is_some_and(|v| !matches!(v,
+                "bounded-placement-v1" | "bounded-import-v1" | "approved-model-candidate-v1"))
+            || (p.origin.as_deref() == Some("approved-model-candidate-v1")) != p.model_candidate.is_some()
+            || p.model_candidate.as_ref().is_some_and(|candidate|
+                !uuid(&candidate.artwork_id) || !uuid(&candidate.import_job_id) || !uuid(&candidate.placement_id)
+                    || !(1..=2_147_483_647).contains(&candidate.artwork_revision)
+                    || s.draft.as_ref() != Some(&p.draft)
+                    || p.draft["editVersion"].as_u64() != s.saved_edit_version)
             || (p.origin.is_some() && p.etag.is_none())
             || p.etag != s.etag
             || p.etag.as_ref().is_some_and(|v| !valid_etag(v))
@@ -216,7 +233,7 @@ mod pending_origin_tests {
         let mut state = DocumentState { format: 1, revision: 0, workspace_id: workspace,
             tenant_id: Uuid::new_v4().to_string(), principal_id: Uuid::new_v4().to_string(),
             draft: Some(draft.clone()), etag: Some(etag.clone()), saved_edit_version: Some(1),
-            pending: Some(Pending { request_id: Uuid::new_v4().to_string(), etag: Some(etag), draft, origin: None }) };
+            pending: Some(Pending { request_id: Uuid::new_v4().to_string(), etag: Some(etag), draft, origin: None, model_candidate: None }) };
         let legacy = serde_json::to_value(&state).unwrap();
         assert!(legacy["pending"].get("origin").is_none());
         assert!(serde_json::from_value::<LegacyPending>(legacy["pending"].clone()).is_ok());
@@ -229,6 +246,21 @@ mod pending_origin_tests {
         state.pending.as_mut().unwrap().origin = Some("bounded-import-v1".into());
         assert!(validate(&state).is_ok());
         state.pending.as_mut().unwrap().origin = Some("other".into());
+        assert!(validate(&state).is_err());
+
+        state.pending.as_mut().unwrap().origin = Some("approved-model-candidate-v1".into());
+        assert!(validate(&state).is_err());
+        state.pending.as_mut().unwrap().model_candidate = Some(ModelCandidateReplacement {
+            artwork_id: Uuid::new_v4().to_string(), artwork_revision: 1,
+            import_job_id: Uuid::new_v4().to_string(), placement_id: Uuid::new_v4().to_string(),
+        });
+        let model = serde_json::to_value(&state).unwrap();
+        assert_eq!(model["pending"]["modelCandidate"]["artworkRevision"], 1);
+        assert!(validate(&serde_json::from_value(model).unwrap()).is_ok());
+        state.saved_edit_version = Some(2);
+        assert!(validate(&state).is_err());
+        state.saved_edit_version = Some(1);
+        state.pending.as_mut().unwrap().origin = Some("bounded-import-v1".into());
         assert!(validate(&state).is_err());
     }
 }

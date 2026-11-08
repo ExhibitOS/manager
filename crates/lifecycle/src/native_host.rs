@@ -1445,7 +1445,7 @@ mod selected_oex_ipc_tests {
           state.operation = "importing_oex".into(); state.selected_oex = true; state.oex_save_offer = Some(offer.clone()); state.oex_save_sender = Some(sender); }
         let mut document = controller.native_document(&token).unwrap();
         document.draft = Some(draft.clone()); document.etag = Some(old_etag.clone()); document.saved_edit_version = Some(1);
-        document.pending = Some(crate::installations::native_document::Pending { request_id: offer.request_id.clone(), etag: Some(old_etag.clone()), draft, origin: Some("bounded-import-v1".into()) });
+        document.pending = Some(crate::installations::native_document::Pending { request_id: offer.request_id.clone(), etag: Some(old_etag.clone()), draft, origin: Some("bounded-import-v1".into()), model_candidate: None });
         let mut stale = document.clone(); stale.revision += 1;
         assert!(host.handle(request(1, UiCommand::SaveDocumentState { selection_token: token.clone(), document: Box::new(stale) })).is_err());
         let mut wrong_scope = document.clone(); wrong_scope.workspace_id = Uuid::new_v4().to_string();

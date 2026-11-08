@@ -7,7 +7,7 @@ struct NativeAutomationReplacementCommand {
         case approvedModel(placementID: String)
     }
 
-    static let modelProfile = "approved-model-candidate-v1"
+    static let modelProfile = NativeApprovedModelCandidateReplacement.profile
     let artworkId: String
     let artworkRevision: Int
     let importJobId: String
