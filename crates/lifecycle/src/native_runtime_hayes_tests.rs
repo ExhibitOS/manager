@@ -130,23 +130,13 @@ fn writes_terminal_before_retiring_only_an_unstarted_empty_attempt() {
 }
 
 #[test]
-fn wrong_or_duplicate_ready_cannot_authorize_work() {
+fn exact_child_registers_once_and_receives_one_go() {
     let root = Fixture::new();
     let mut attempt = root.acquire().begin(binding()).unwrap();
-    let launch = attempt.before_spawn(Role::Generate).unwrap();
-    let nonce = launch.nonce();
-    let replay = InertLaunch {
-        worker: launch.worker,
-        lock_fd: launch.lock_fd.try_clone().unwrap(),
-    };
-    let ready = format!("READY {nonce}\n");
+    let mut worker = spawn_channel_fixture(&mut attempt, &root.0, "valid");
     assert_eq!(
-        attempt.register_ready(launch, ready.as_bytes()).unwrap(),
-        format!("GO {nonce}\n")
-    );
-    assert_eq!(
-        code(attempt.register_ready(replay, ready.as_bytes())),
-        "HAYES_CUSTODY_UNAVAILABLE"
+        code(attempt.send_go(&mut worker)),
+        "HAYES_WORKER_CHANNEL_UNAVAILABLE"
     );
     assert_eq!(
         code(attempt.before_spawn(Role::Generate)),
@@ -156,18 +146,57 @@ fn wrong_or_duplicate_ready_cannot_authorize_work() {
         code(attempt.before_spawn(Role::Validate)),
         "HAYES_DRAIN_UNCONFIRMED"
     );
-    assert_eq!(code(attempt.retire_unstarted()), "HAYES_DRAIN_UNCONFIRMED");
 
-    let root = Fixture::new();
-    let mut attempt = root.acquire().begin(binding()).unwrap();
-    let launch = attempt.before_spawn(Role::Generate).unwrap();
-    let registered = attempt.journal.path.join(Role::Generate.files().1);
+    attempt.register_ready(&mut worker).unwrap();
+    let registered: Registration = attempt.journal.read(Role::Generate.files().1).unwrap();
+    assert_eq!(registered.worker, worker.worker);
+    assert_eq!(registered.child_pid, worker.diagnostic_pid());
+    assert!(!root.0.join("child-go").exists());
     assert_eq!(
-        code(attempt.register_ready(launch, b"READY foreign\n")),
-        "HAYES_READY_INVALID"
+        code(attempt.register_ready(&mut worker)),
+        "HAYES_WORKER_CHANNEL_UNAVAILABLE"
     );
-    assert!(!registered.exists());
+    attempt.send_go(&mut worker).unwrap();
+    assert_eq!(
+        code(attempt.send_go(&mut worker)),
+        "HAYES_WORKER_CHANNEL_UNAVAILABLE"
+    );
+    wait_for(|| root.0.join("child-go").is_file());
+    fs::write(root.0.join("release-0"), b"").unwrap();
+    wait_for(|| worker.try_wait().unwrap().is_some());
+    assert!(worker.try_wait().unwrap().unwrap().success());
     assert_eq!(code(attempt.retire_unstarted()), "HAYES_DRAIN_UNCONFIRMED");
+}
+
+#[test]
+fn wrong_nonce_extra_frames_or_cross_attempt_child_never_receive_go() {
+    for mode in ["wrong-nonce", "duplicate", "foreign-attempt"] {
+        let root = Fixture::new();
+        let mut attempt = root.acquire().begin(binding()).unwrap();
+        let mut worker = spawn_channel_fixture(&mut attempt, &root.0, mode);
+        if mode == "foreign-attempt" {
+            let foreign = Fixture::new();
+            let mut foreign_attempt = foreign.acquire().begin(binding()).unwrap();
+            assert_eq!(
+                code(foreign_attempt.register_ready(&mut worker)),
+                "HAYES_READY_INVALID"
+            );
+            assert_eq!(
+                code(attempt.register_ready(&mut worker)),
+                "HAYES_WORKER_CHANNEL_UNAVAILABLE"
+            );
+        } else {
+            assert_eq!(
+                code(attempt.register_ready(&mut worker)),
+                "HAYES_READY_INVALID"
+            );
+        }
+        wait_for(|| worker.try_wait().unwrap().is_some());
+        assert!(worker.try_wait().unwrap().unwrap().success());
+        assert!(!root.0.join("child-go").exists());
+        assert!(!attempt.journal.path.join(Role::Generate.files().1).exists());
+        assert_eq!(code(attempt.retire_unstarted()), "HAYES_DRAIN_UNCONFIRMED");
+    }
 }
 
 #[test]
@@ -302,68 +331,104 @@ fn crash_parent_fixture() {
         .unwrap()
         .begin(binding())
         .unwrap();
-    let launch = attempt.before_spawn(Role::Generate).unwrap();
-    let nonce = launch.nonce();
-    for index in [0, 1] {
-        let fd = launch.lock_fd.as_raw_fd();
-        let mut command = child_command("lock_holder_fixture", &path);
-        command
-            .env("HAYES_TEST_INDEX", index.to_string())
-            .env("HAYES_TEST_NONCE", &nonce)
-            .env("HAYES_TEST_STAGE", &attempt.stage.path)
-            .env("HAYES_TEST_FD", fd.to_string())
-            .env("HAYES_TEST_LOCK", launch.lock_identity().unwrap());
-        unsafe {
-            command.pre_exec(move || cvt(libc::fcntl(fd, libc::F_SETFD, 0)).map(|_| ()));
-        }
-        command.spawn().unwrap();
+    let holder_fd = attempt.lease.lock.try_clone().unwrap();
+    let fd = holder_fd.as_raw_fd();
+    let mut holder = child_command("lock_holder_fixture", &path);
+    holder.env("HAYES_TEST_FD", fd.to_string());
+    unsafe {
+        holder.pre_exec(move || cvt(libc::fcntl(fd, libc::F_SETFD, 0)).map(|_| ()));
     }
+    holder.spawn().unwrap();
+    let mut worker = spawn_channel_fixture(&mut attempt, &path, "crash");
     wait_for(|| path.join("ready-1").is_file());
-    let ready = path.join("ready-0");
-    wait_for(|| fs::read(&ready).is_ok_and(|frame| frame == format!("READY {nonce}\n").as_bytes()));
-    let go = attempt
-        .register_ready(launch, &fs::read(ready).unwrap())
-        .unwrap();
+    attempt.register_ready(&mut worker).unwrap();
     if env::var("HAYES_TEST_GO").unwrap() == "yes" {
-        fs::write(path.join("go"), &go).unwrap();
+        attempt.send_go(&mut worker).unwrap();
         wait_for(|| attempt.stage.path.join("synthetic").is_file());
     }
     // Bypass Rust destructors to model loss of the owner before retirement.
     std::process::exit(42);
 }
 
+fn spawn_channel_fixture(attempt: &mut Attempt, path: &Path, mode: &str) -> SpawnedWorker {
+    use std::ffi::OsStr;
+    let exe = env::current_exe().unwrap();
+    let permit = attempt.before_spawn(Role::Generate).unwrap();
+    // The shell only maps test-only argv to environment before execing libtest.
+    // The permit appends the same identity and nonce arguments as the Node ABI.
+    permit.spawn_fixture(Path::new("/bin/sh"), &[
+        OsStr::new("-c"),
+        OsStr::new("HAYES_TEST_ROOT=$2 HAYES_TEST_STAGE=$3 HAYES_TEST_MODE=$4 HAYES_TEST_LOCK=$5 HAYES_TEST_NONCE=$6 exec \"$1\" --ignored --exact native_runtime::hayes::tests::channel_child_fixture"),
+        OsStr::new("hayes-test"),
+        exe.as_os_str(),
+        path.as_os_str(),
+        attempt.stage.path.as_os_str(),
+        OsStr::new(mode),
+    ]).unwrap()
+}
+
 #[test]
 #[ignore]
-fn lock_holder_fixture() {
+fn channel_child_fixture() {
+    use std::os::unix::net::UnixStream;
     let path = PathBuf::from(env::var_os("HAYES_TEST_ROOT").unwrap());
-    let index = env::var("HAYES_TEST_INDEX").unwrap();
-    let fd = env::var("HAYES_TEST_FD").unwrap().parse().unwrap();
-    let lock = unsafe { File::from_raw_fd(fd) };
+    let mode = env::var("HAYES_TEST_MODE").unwrap();
+    let lock = unsafe { File::from_raw_fd(4) };
     let identity = private_file(&lock).unwrap();
     assert_eq!(
         format!("{}:{}", identity.dev, identity.ino),
         env::var("HAYES_TEST_LOCK").unwrap()
     );
     let nonce = env::var("HAYES_TEST_NONCE").unwrap();
-    fs::write(
-        path.join(format!("ready-{index}")),
-        format!("READY {nonce}\n"),
-    )
-    .unwrap();
-    wait_for(|| {
-        if path.join(format!("release-{index}")).is_file() {
-            return true;
-        }
-        if index == "0"
-            && fs::read(path.join("go")).is_ok_and(|go| go == format!("GO {nonce}\n").as_bytes())
-        {
+    let mut owner = unsafe { UnixStream::from_raw_fd(3) };
+    owner
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let frame = match mode.as_str() {
+        "wrong-nonce" => "READY 00000000000000000000000000000000\n".to_owned(),
+        "duplicate" => format!("READY {nonce}\nREADY {nonce}\n"),
+        _ => format!("READY {nonce}\n"),
+    };
+    if mode == "foreign-attempt" {
+        // Parent burns the channel without accepting a frame from this child.
+        assert_eq!(owner.read(&mut [0]).unwrap(), 0);
+        return;
+    }
+    owner.write_all(frame.as_bytes()).unwrap();
+    let expected = format!("GO {nonce}\n");
+    let mut received = vec![0; expected.len()];
+    match owner.read_exact(&mut received) {
+        Ok(()) => {
+            assert!(mode == "valid" || mode == "crash");
+            assert_eq!(received, expected.as_bytes());
             let output = PathBuf::from(env::var_os("HAYES_TEST_STAGE").unwrap()).join("synthetic");
             fs::write(output, b"pending custody").unwrap();
+            fs::write(path.join("child-go"), b"").unwrap();
         }
-        false
-    });
-    drop(lock);
-    if index == "0" {
-        fs::write(path.join("closed-0"), b"").unwrap();
+        Err(error) => {
+            // Some kernels reset the socket when the parent closes on extra
+            // unread bytes. Either closure must leave the child without GO.
+            assert!(matches!(
+                error.kind(),
+                io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset
+            ));
+            assert_ne!(mode, "valid");
+        }
     }
+    if mode == "valid" || mode == "crash" {
+        wait_for(|| path.join("release-0").is_file());
+    }
+    drop(lock);
+    fs::write(path.join("closed-0"), b"").unwrap();
+}
+
+#[test]
+#[ignore]
+fn lock_holder_fixture() {
+    let path = PathBuf::from(env::var_os("HAYES_TEST_ROOT").unwrap());
+    let fd = env::var("HAYES_TEST_FD").unwrap().parse().unwrap();
+    let lock = unsafe { File::from_raw_fd(fd) };
+    private_file(&lock).unwrap();
+    fs::write(path.join("ready-1"), b"").unwrap();
+    wait_for(|| path.join("release-1").is_file());
 }

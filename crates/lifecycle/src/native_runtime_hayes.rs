@@ -18,6 +18,10 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "native_runtime_hayes_launch.rs"]
+mod launch;
+use launch::{channel_error, LaunchPermit, Phase, SpawnedWorker};
+
 pub(super) const RESERVATION_BYTES: u64 = 512 * 1024 * 1024;
 const LOCK: &str = "hayes.lock";
 const ACTIVE: &str = "active.json";
@@ -102,6 +106,14 @@ struct Worker {
     binding: Binding,
     role: Role,
     nonce: Uuid,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Registration {
+    worker: Worker,
+    // Diagnostic observation from the direct child handle, never re-adopted.
+    child_pid: libc::pid_t,
 }
 
 #[derive(Debug, Serialize)]
@@ -352,24 +364,6 @@ pub(super) struct Attempt {
     launch_possible: bool,
 }
 
-/// Possession of this value authorizes only an inert spawn. Send the READY
-/// frame from that exact child's inherited channel to register_ready.
-pub(super) struct InertLaunch {
-    worker: Worker,
-    pub(super) lock_fd: File,
-}
-
-impl InertLaunch {
-    pub(super) fn nonce(&self) -> String {
-        self.worker.nonce.simple().to_string()
-    }
-
-    pub(super) fn lock_identity(&self) -> Result<String> {
-        let lock = private_file(&self.lock_fd)?;
-        Ok(format!("{}:{}", lock.dev, lock.ino))
-    }
-}
-
 impl Attempt {
     fn check(&self) -> Result<()> {
         self.lease.check()?;
@@ -382,7 +376,7 @@ impl Attempt {
         Ok(())
     }
 
-    pub(super) fn before_spawn(&mut self, role: Role) -> Result<InertLaunch> {
+    pub(super) fn before_spawn(&mut self, role: Role) -> Result<LaunchPermit> {
         self.check()?;
         if role == Role::Validate {
             // Generation drain has no trusted producer in this inactive branch.
@@ -400,25 +394,61 @@ impl Attempt {
         };
         self.journal.create(role.files().0, &worker)?;
         let lock_fd = self.lease.lock.try_clone().map_err(|_| custody_error())?;
-        Ok(InertLaunch { worker, lock_fd })
+        Ok(LaunchPermit::new(worker, lock_fd))
     }
 
-    /// The fixed READY frame is meaningful only on the channel owned by this
-    /// spawn. Consume the launch token and return a GO frame after the fsync.
-    pub(super) fn register_ready(&mut self, launch: InertLaunch, frame: &[u8]) -> Result<String> {
+    fn worker_record(&self, child: &SpawnedWorker) -> Result<Registration> {
         self.check()?;
-        let worker = launch.worker;
-        let (launched, registered) = worker.role.files();
+        let worker = child.worker;
         if worker.binding != self.intent.binding
-            || private_file(&launch.lock_fd)? != self.intent.authority.lock
-            || self.journal.read::<Worker>(launched)? != worker
-            || frame != format!("READY {}\n", launch.nonce()).as_bytes()
+            || self.journal.read::<Worker>(worker.role.files().0)? != worker
         {
             return Err(err("HAYES_READY_INVALID"));
         }
-        self.journal.create(registered, &worker)?;
+        Ok(Registration {
+            worker,
+            child_pid: child.diagnostic_pid(),
+        })
+    }
+
+    /// Reads from the exact spawn's private channel and durably registers
+    /// it. A transport or storage error consumes the channel without GO.
+    pub(super) fn register_ready(&mut self, child: &mut SpawnedWorker) -> Result<()> {
+        if child.phase != Phase::Awaiting {
+            return Err(channel_error());
+        }
+        let mut owner = child.owner.take().ok_or_else(channel_error)?;
+        let record = self.worker_record(child)?;
+        child.require_live()?;
+        launch::receive_ready(&mut owner, record.worker)?;
+        child.require_live()?;
+        self.journal.create(record.worker.role.files().1, &record)?;
         self.check()?;
-        Ok(format!("GO {}\n", launch.nonce()))
+        child.phase = Phase::Registered;
+        child.owner = Some(owner);
+        Ok(())
+    }
+
+    /// GO stays on that same channel and is attempted at most once, even
+    /// when send fails. No raw authorization frame is returned to a caller.
+    pub(super) fn send_go(&mut self, child: &mut SpawnedWorker) -> Result<()> {
+        if child.phase != Phase::Registered {
+            return Err(channel_error());
+        }
+        let owner = child.owner.take().ok_or_else(channel_error)?;
+        let record = self.worker_record(child)?;
+        if self
+            .journal
+            .read::<Registration>(record.worker.role.files().1)?
+            != record
+        {
+            return Err(custody_error());
+        }
+        child.require_live()?;
+        launch::send_go(&owner, record.worker)?;
+        child.phase = Phase::Authorized;
+        child.owner = Some(owner);
+        Ok(())
     }
 
     /// The only terminal this inactive implementation can prove. Once any
