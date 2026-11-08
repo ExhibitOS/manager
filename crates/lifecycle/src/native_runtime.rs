@@ -38,6 +38,9 @@ pub fn selected_oex_format_v7_validation(resources: &Path, input_fd: i32, cancel
 #[path = "native_runtime_oex_materializer_protocol.rs"] mod oex_materializer_protocol;
 #[path = "native_runtime_oex_materializer.rs"] mod oex_materializer;
 #[path = "native_runtime_owner_channel.rs"] mod owner_channel;
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+#[allow(dead_code)] // Inactive pending native containment and owner-channel integration.
+#[path = "native_runtime_hayes.rs"] mod hayes;
 #[path = "native_runtime_furnishing_lifetime.rs"] mod furnishing_lifetime;
 pub(crate) use furnishing_lifetime::WriterIdentity as FurnishingWriterIdentity;
 #[path = "native_runtime_furnishing_lease.rs"] mod furnishing_lease;
