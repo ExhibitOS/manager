@@ -173,6 +173,38 @@ impl HayesSessionPin {
     }
 }
 
+#[cfg(all(
+    test,
+    feature = "workspace-v5-owner-validation",
+    debug_assertions,
+    target_os = "macos"
+))]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionProbeArm<'a> {
+    version: u8,
+    kind: &'static str,
+    runtime_generation: Uuid,
+    native_owner_id: Uuid,
+    runtime_manifest_sha256: &'a str,
+}
+
+#[cfg(all(
+    test,
+    feature = "workspace-v5-owner-validation",
+    debug_assertions,
+    target_os = "macos"
+))]
+pub(in super::super) fn session_probe_arm(pin: &HayesSessionPin) -> Result<Vec<u8>> {
+    encode(&SessionProbeArm {
+        version: 1,
+        kind: "hayes-session-probe-start",
+        runtime_generation: pin.runtime_generation(),
+        native_owner_id: pin.native_owner_id(),
+        runtime_manifest_sha256: pin.host_manifest_sha256(),
+    })
+}
+
 pub(in super::super) struct AuthenticatedHayes {
     pub(in super::super) pin: HayesSessionPin,
     pub(in super::super) channel: Connection,
@@ -269,14 +301,33 @@ impl Session {
         lease: Lease,
         deadline: Instant,
     ) -> Result<OwnedHayesOpen<'a>> {
-        self.begin_owned_hayes_open_observed(lease, deadline, &mut |_| {})
+        self.begin_owned_hayes_open_inner(lease, deadline, &mut |_| {}, None)
     }
 
-    pub(in super::super) fn begin_owned_hayes_open_observed<'a>(
+    #[cfg(all(
+        test,
+        feature = "workspace-v5-owner-validation",
+        debug_assertions,
+        target_os = "macos"
+    ))]
+    pub(in super::super) fn begin_owned_hayes_probe_open<'a>(
         &'a mut self,
         lease: Lease,
         deadline: Instant,
         observe: &mut dyn FnMut(&'static str),
+    ) -> Result<OwnedHayesOpen<'a>> {
+        if self.payload.hayes_session_probe_script()?.is_none() {
+            return Err(unavailable());
+        }
+        self.begin_owned_hayes_open_inner(lease, deadline, observe, Some(session_probe_arm))
+    }
+
+    fn begin_owned_hayes_open_inner<'a>(
+        &'a mut self,
+        lease: Lease,
+        deadline: Instant,
+        observe: &mut dyn FnMut(&'static str),
+        probe_arm: Option<fn(&HayesSessionPin) -> Result<Vec<u8>>>,
     ) -> Result<OwnedHayesOpen<'a>> {
         if self.retained_hayes.is_some() || Instant::now() >= deadline {
             observe("open-unavailable");
@@ -306,6 +357,16 @@ impl Session {
             let owner = Owner::capture_observed(self, observe)?;
             observe("open-owner-capture-done");
             let cancellation = self.cancellation.clone();
+            if let Some(probe_arm) = probe_arm {
+                let arm = probe_arm(&pin)?;
+                observe("probe-arm-send-start");
+                channel
+                    .send_frame(&arm, deadline, &cancellation, &mut || {
+                        owner.check_observed(self, observe)
+                    })
+                    .inspect_err(|_| observe("probe-arm-send-failed"))?;
+                observe("probe-arm-send-done");
+            }
             observe("open-frame-read-start");
             let raw = channel
                 .read_frame(deadline, &cancellation, &mut || {

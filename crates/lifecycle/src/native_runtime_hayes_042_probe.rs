@@ -98,33 +98,13 @@ fn actual_042_host_bootstrap_and_clean_stop() {
     println!("042_BOOTSTRAP_READY_CLEAN manifest={manifest} generation={generation} nativeOwner={native_owner} ledgerRows=42 web={web} api={api} postgres={database}");
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SessionProbeArm<'a> {
-    version: u8,
-    kind: &'static str,
-    runtime_generation: Uuid,
-    native_owner_id: Uuid,
-    runtime_manifest_sha256: &'a str,
-}
-
-fn session_probe_arm(pin: &HayesSessionPin) -> Vec<u8> {
-    serde_json::to_vec(&SessionProbeArm {
-        version: 1,
-        kind: "hayes-session-probe-start",
-        runtime_generation: pin.runtime_generation(),
-        native_owner_id: pin.native_owner_id(),
-        runtime_manifest_sha256: pin.host_manifest_sha256(),
-    })
-    .unwrap()
-}
-
 #[test]
 fn selected_session_probe_arm_matches_the_platform_key_order() {
+    use super::hayes::operation::session_probe_arm;
     let generation = Uuid::parse_str("10000000-0000-4000-8000-000000000001").unwrap();
     let hash = "a".repeat(64);
     let pin = HayesSessionPin::new(generation, &hash).unwrap();
-    assert_eq!(session_probe_arm(&pin), format!(
+    assert_eq!(session_probe_arm(&pin).unwrap(), format!(
         "{{\"version\":1,\"kind\":\"hayes-session-probe-start\",\"runtimeGeneration\":\"{generation}\",\"nativeOwnerId\":\"{}\",\"runtimeManifestSha256\":\"{hash}\"}}",
         pin.native_owner_id(),
     ).as_bytes());
@@ -218,23 +198,9 @@ fn actual_042_session_holds_checked_worker_output() {
     };
     let generation = issued.pin.runtime_generation();
     let native_owner = issued.pin.native_owner_id();
-    let arm = session_probe_arm(&issued.pin);
     let pre_open_deadline = Instant::now() + Duration::from_secs(180);
-    trace_probe_event("probe-arm-send-start");
-    issued
-        .channel
-        .send_frame(&arm, pre_open_deadline, &session.cancellation, &mut || {
-            Ok(())
-        })
-        .unwrap();
-
-    trace_probe_event("probe-arm-send-done");
     let mut exchange = session
-        .begin_owned_hayes_open_observed(
-            custody.acquire(),
-            pre_open_deadline,
-            &mut trace_probe_event,
-        )
+        .begin_owned_hayes_probe_open(custody.acquire(), pre_open_deadline, &mut trace_probe_event)
         .unwrap();
     let worker_deadline = Instant::now() + Duration::from_secs(180);
     exchange.receive_source(worker_deadline).unwrap();
