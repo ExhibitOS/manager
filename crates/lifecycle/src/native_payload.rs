@@ -306,6 +306,37 @@ pub(crate) fn hayes_bootstrap_validation_tuple() -> Option<(&'static str, &'stat
     None
 }
 
+const HAYES_SESSION_PROBE_SCRIPT: &str = "platform/scripts/native-hayes-session-probe.mjs";
+
+#[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) struct HayesSessionProbePin {
+    pub(crate) host: (&'static str, &'static str, &'static str),
+    script_bytes: u64,
+    script_sha256: &'static str,
+}
+
+#[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const HAYES_SESSION_PROBE_PIN: Option<HayesSessionProbePin> = Some(HayesSessionProbePin {
+    host: (
+        "4251a5172a8012f976e7bce94dd86d97e28ff10b",
+        "1d46b4eb7bfd5b774aebad364a3131b09c3c42427dd633bb6622434b21bb60a3",
+        "552d2d9a4de49a6de49fc7aba5a56b6b194018dc83dbf01cf2e6747bd6b842c7",
+    ),
+    script_bytes: 7196,
+    script_sha256: "fb5218a9262a76b2f20d685154461d4add0ef06783073bac07f2ad3cd6813b6a",
+});
+
+pub(crate) fn hayes_validation_host_matches(tuple: (&str, &str, &str)) -> bool {
+    hayes_bootstrap_validation_tuple() == Some(tuple) || hayes_session_probe_matches(tuple)
+}
+
+fn hayes_session_probe_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return HAYES_SESSION_PROBE_PIN.as_ref().is_some_and(|pin| pin.host == tuple);
+    #[cfg(not(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+
 // Keep this exact physical transition local to the debug validation helper.
 #[cfg(debug_assertions)]
 pub(crate) const CATALOG40_FRAME_SOURCE: (&str, &str, &str) = (
@@ -1731,7 +1762,12 @@ impl Payload {
                 || file.path == WORKSPACE_FURNISHING_SELECTED_OEX_039_CAPABILITY.0);
         let material_pinned = material.contains(&tuple);
         let multimap_pinned = multimap.contains(&tuple);
-        let hayes_pinned = hayes_bootstrap_validation_tuple() == Some(tuple);
+        let probe_pinned = hayes_session_probe_matches(tuple);
+        let probe_declared = self.manifest.files.iter().any(|file| file.path == HAYES_SESSION_PROBE_SCRIPT);
+        if probe_declared != probe_pinned {
+            return Err(unqualified());
+        }
+        let hayes_pinned = hayes_validation_host_matches(tuple);
         let hayes_declared = self.manifest.files.iter().any(|file|
             file.path == HAYES_ORIGINAL_CAPABILITY.0 || file.path.starts_with(HAYES_ORIGINAL_DIRECTORY));
         if hayes_declared != hayes_pinned {
@@ -2275,6 +2311,21 @@ impl Payload {
     pub fn script(&self) -> PathBuf {
         self.root.join(&self.manifest.entry.script)
     }
+    #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn hayes_session_probe_script(&self) -> Result<Option<PathBuf>> {
+        let tuple = (self.manifest.source_commit.as_str(), self.manifest.producer_sha256.as_str(), self.manifest_sha256.as_str());
+        let Some(pin) = HAYES_SESSION_PROBE_PIN.as_ref().filter(|pin| pin.host == tuple) else {
+            return Ok(None);
+        };
+        if !self.manifest.files.iter().any(|file| file.path == HAYES_SESSION_PROBE_SCRIPT
+            && file.link.is_none() && file.executable == Some(false) && file.bytes == Some(pin.script_bytes)
+            && file.sha256.as_deref() == Some(pin.script_sha256))
+        {
+            return Err(err("HAYES_OPERATION_UNAVAILABLE"));
+        }
+        Ok(Some(contained(&self.root, HAYES_SESSION_PROBE_SCRIPT)?))
+    }
+
     pub(crate) fn authoring_session_script(&self) -> Result<PathBuf> {
         let name = "platform/scripts/native-workspace-session.mjs";
         if !self.manifest.files.iter().any(|f| f.path == name && f.link.is_none() && f.executable == Some(false)) {

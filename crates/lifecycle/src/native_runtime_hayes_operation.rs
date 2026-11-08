@@ -261,7 +261,15 @@ impl Session {
         &'a mut self,
         lease: Lease,
     ) -> Result<OwnedHayesOpen<'a>> {
-        if self.retained_hayes.is_some() {
+        self.begin_owned_hayes_open_until(lease, Instant::now() + Duration::from_secs(30))
+    }
+
+    pub(in super::super) fn begin_owned_hayes_open_until<'a>(
+        &'a mut self,
+        lease: Lease,
+        deadline: Instant,
+    ) -> Result<OwnedHayesOpen<'a>> {
+        if self.retained_hayes.is_some() || Instant::now() >= deadline {
             return Err(unavailable());
         }
         let AuthenticatedHayes { pin, mut channel } = self.hayes_bootstrap.consume()?;
@@ -276,7 +284,6 @@ impl Session {
             self.payload.recheck()?;
             let owner = Owner::capture(self)?;
             let cancellation = self.cancellation.clone();
-            let deadline = Instant::now() + Duration::from_secs(30);
             let raw = channel.read_frame(deadline, &cancellation, &mut || owner.check(self))?;
             let open = parse_open(&raw)?;
             let auth = self.local_authority.as_ref().ok_or_else(unavailable)?;

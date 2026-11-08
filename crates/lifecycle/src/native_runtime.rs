@@ -57,6 +57,9 @@ use furnishing_lifecycle::{Admission, Binding, Owner as FurnishingOwner, Phase, 
 #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 #[path = "native_runtime_hayes_042_probe.rs"]
 mod hayes_042_probe;
+#[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[path = "native_runtime_hayes_probe_source.rs"]
+mod hayes_probe_source;
 
 pub(crate) const WORKSPACE_FURNISHING_INITIALIZATION: &str = "native-workspace-furnishing-initialization.json";
 
@@ -576,6 +579,8 @@ pub struct Session {
     hayes_bootstrap: HayesBootstrap,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     retained_hayes: Option<RetainedHayes>,
+    #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    hayes_probe_source: Option<hayes_probe_source::ProbeSourceFd>,
     furnishing_writer_lifetime: Option<furnishing_lifetime::WriterLifetime>,
     furnishing_binding: Option<Binding>,
     furnishing_drain_attempted: bool,
@@ -962,6 +967,8 @@ impl Session {
             hayes_bootstrap: HayesBootstrap::Disabled,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             retained_hayes: None,
+            #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            hayes_probe_source: None,
             furnishing_writer_lifetime: None,
             furnishing_binding: None,
             furnishing_drain_attempted: false,
@@ -1907,6 +1914,17 @@ const { isDeepStrictEqual } = require('node:util');
             let pin = HayesSessionPin::new(generation_id, &expected)?;
             owner_setup = Some(owner_setup.take().ok_or_else(|| err("HAYES_OPERATION_UNAVAILABLE"))?.with_hayes(pin)?);
         }
+        let script = self.payload.script();
+        #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        let script = match (self.payload.hayes_session_probe_script()?, self.hayes_probe_source.take()) {
+            (Some(entry), Some(source)) if furnishing == Some(FurnishingStart::Initialize) => {
+                owner_setup = Some(owner_setup.take().ok_or_else(|| err("HAYES_OPERATION_UNAVAILABLE"))?
+                    .with_hayes_probe_source(source)?);
+                entry
+            }
+            (None, None) => script,
+            _ => return Err(err("HAYES_OPERATION_UNAVAILABLE")),
+        };
         let mut private_input = match (&self.local_authority, &owner_setup, self.payload.workspace_import_version(), furnishing) {
             (Some(a), Some(setup), _, Some(start)) => Some(setup.workspace_furnishing_bootstrap(a, generation, start)?),
             (Some(a), Some(setup), Some(version), _) => Some(setup.workspace_import_bootstrap(a, generation, version)?),
@@ -1919,7 +1937,7 @@ const { isDeepStrictEqual } = require('node:util');
         };
         let spawned = self.spawn(
             &self.payload.node(),
-            &[self.payload.script().to_string_lossy().into()],
+            &[script.to_string_lossy().into()],
             &environment,
             private_input.as_deref(),
             false,
@@ -2101,7 +2119,8 @@ const { isDeepStrictEqual } = require('node:util');
         let catalog = self.payload.workspace_furnishing_catalog()?;
         #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         if catalog == Some(WorkspaceFurnishingCatalog::HayesOriginal042)
-            && (!matches!(self.hayes_bootstrap, HayesBootstrap::Armed(_)) || prior.is_some())
+            && (!matches!(self.hayes_bootstrap, HayesBootstrap::Armed(_)) || prior.is_some()
+                || self.payload.hayes_session_probe_script()?.is_some() != self.hayes_probe_source.is_some())
         {
             return Err(err("HAYES_OPERATION_UNAVAILABLE"));
         }
