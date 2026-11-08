@@ -5,14 +5,20 @@
 
 use super::{
     canonical, canonical_uuid, check_live_claim, check_live_claim_stage, check_revalidation_record,
-    encode, unavailable, Kind, OperationBinding, OwnedHayesOpen, Phase, Result, BODY_BYTES,
-    BODY_SHA,
+    encode, unavailable, Kind, OperationBinding, OwnedHayesOpen, Phase, Result, ValidatedReadback,
+    BODY_BYTES, BODY_SHA,
 };
 use crate::native_runtime::hayes::{
-    generation::validation::ReadyStage, watch::LeafEvidence, Attempt,
+    generation::validation::ReadyStage,
+    transfer::{Frames, OwnerFrames, Transfer},
+    watch::LeafEvidence,
+    Attempt,
 };
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
+use std::{
+    io::{Seek, SeekFrom},
+    time::Instant,
+};
 use uuid::Uuid;
 
 #[cfg(test)]
@@ -119,6 +125,21 @@ struct ReservedOutput {
     stage_id: Uuid,
     bytes: u64,
     sha256: String,
+}
+
+impl ReservedOutput {
+    fn selected(validated: &ValidatedReadback) -> Result<Self> {
+        let selected = &validated.selected;
+        if selected.observed.bytes != u64::from(BODY_BYTES) || selected.observed.sha256 != BODY_SHA
+        {
+            return Err(unavailable());
+        }
+        Ok(Self {
+            stage_id: selected.id,
+            bytes: selected.observed.bytes,
+            sha256: selected.observed.sha256.clone(),
+        })
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -292,15 +313,7 @@ impl OwnedHayesOpen<'_> {
         let challenge = self.revalidation_challenge.ok_or_else(unavailable)?;
         let record = &self.record;
         let selected = &validated.selected;
-        if selected.observed.bytes != u64::from(BODY_BYTES) || selected.observed.sha256 != BODY_SHA
-        {
-            return Err(unavailable());
-        }
-        let expected = ReservedOutput {
-            stage_id: selected.id,
-            bytes: selected.observed.bytes,
-            sha256: selected.observed.sha256.clone(),
-        };
+        let expected = ReservedOutput::selected(validated)?;
         check_revalidation_record(attempt, record, challenge)?;
         pins.check(attempt)?;
         let cancellation = self.session.cancellation.clone();
@@ -327,6 +340,75 @@ impl OwnedHayesOpen<'_> {
             return Err(unavailable());
         }
         Ok(reservation.db_stage_id)
+    }
+
+    /// A byte ACK advances only this exchange's transfer phase. The Session
+    /// keeps the same attempt, lock and readbacks for disposition.
+    pub(in crate::native_runtime) fn transfer_reserved_output(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<()> {
+        self.start(Phase::Reserved)?;
+        let result = self.serve_reserved_output(deadline);
+        if result.is_ok() {
+            self.phase = Phase::OutputAcknowledged;
+        } else {
+            self.channel.invalidate();
+        }
+        result
+    }
+
+    fn serve_reserved_output(&mut self, deadline: Instant) -> Result<()> {
+        let attempt = self.attempt.as_ref().ok_or_else(unavailable)?;
+        let pins = self.ready_pins.as_ref().ok_or_else(unavailable)?;
+        let validated = self.validated.as_ref().ok_or_else(unavailable)?;
+        let challenge = self.revalidation_challenge.ok_or_else(unavailable)?;
+        let db_stage_id = self.db_stage_id.ok_or_else(unavailable)?;
+        let record = &self.record;
+        let selected = &validated.selected;
+        let expected = ReservedOutput::selected(validated)?;
+        let raw = attempt.journal.read_bytes(RESERVATION_RECORD)?;
+        let reservation =
+            check_reservation(&raw, &record.binding, &pins.evidence_sha256, &expected)?;
+        if db_stage_id != reservation.db_stage_id {
+            return Err(unavailable());
+        }
+        check_live_claim_stage(
+            &self.owner,
+            self.session,
+            &record.binding,
+            Some(db_stage_id),
+            deadline,
+        )?;
+        check_revalidation_record(attempt, record, challenge)?;
+        pins.check(attempt)?;
+        validated.check_leaves(attempt)?;
+        self.channel.check_hayes_idle()?;
+
+        let transfer = Transfer::output(
+            record.binding.attempt_id,
+            record.binding.correlation_id,
+            expected.bytes,
+            &expected.sha256,
+        )?;
+        let mut source = selected.observed.file();
+        source.seek(SeekFrom::Start(0)).map_err(|_| unavailable())?;
+        let cancellation = self.session.cancellation.clone();
+        let mut check = || {
+            self.owner.check(self.session)?;
+            attempt.check()?;
+            attempt.check_stage_file(selected.id, &selected.observed)
+        };
+        let mut frames = OwnerFrames::new(&mut self.channel, deadline, &cancellation, &mut check);
+        frames.check()?;
+        transfer.serve_output(&mut frames, &mut source)?;
+        frames.check()?;
+        if attempt.journal.read_bytes(RESERVATION_RECORD)? != raw {
+            return Err(unavailable());
+        }
+        check_revalidation_record(attempt, record, challenge)?;
+        pins.check(attempt)?;
+        validated.check_leaves(attempt)
     }
 }
 
