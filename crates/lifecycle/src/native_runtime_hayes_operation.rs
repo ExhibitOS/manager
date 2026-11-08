@@ -59,6 +59,8 @@ enum Kind {
     HayesOperationRevalidated,
     HayesOperationAbort,
     HayesOutputReservationReady,
+    HayesDispositionChallenge,
+    HayesDispositionCommitted,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -138,6 +140,7 @@ enum Phase {
     ReadySent,
     Reserved,
     OutputAcknowledged,
+    DispositionObserved,
     Failed,
 }
 
