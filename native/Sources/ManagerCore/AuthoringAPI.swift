@@ -628,15 +628,15 @@ public actor AuthoringAPI {
     /// Use the original comparison and request ID on replay. A historical
     /// receipt becomes a local save only if it still matches a fresh GET.
     public func replaceReviewedArtwork(
-        in previous: NativeStudioResponse, requestId: String, importJobId: String,
+        exhibitionId: String, studioRevision: Int, etag: String, requestId: String, importJobId: String,
         intent: NativeImportIntent, expectedCoarseSHA256: String
     ) async throws -> NativeStudioResponse {
         guard admitsSameOwnerArtworkReplacement, nativeSession else {
             throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
         }
         guard let coarse = intent.coarsePreparation, coarse.valid, nativeImportDigest(expectedCoarseSHA256),
-              (1..<2_147_483_647).contains(previous.revision),
-              previous.etag.hasPrefix("\"studio-r\(previous.revision)-") else {
+              (1..<2_147_483_647).contains(studioRevision),
+              etag.hasPrefix("\"studio-r\(studioRevision)-") else {
             throw AuthoringFailure("IMPORT_INPUT_INVALID")
         }
         struct Input: Encodable {
@@ -646,7 +646,7 @@ public actor AuthoringAPI {
             let importJobId: String
         }
         let current = generation
-        let exhibitionId = try identifier(previous.draft.id)
+        let exhibitionId = try identifier(exhibitionId)
         let input = try Input(requestId: identifier(requestId), artworkId: identifier(intent.artworkId),
                               artworkRevision: coarse.artworkRevision, importJobId: identifier(importJobId))
         let job = try await importJob(input.importJobId)
@@ -660,9 +660,9 @@ public actor AuthoringAPI {
         try Task.checkCancellation()
         let path = studioPrefix + "/exhibitions/" + exhibitionId + "/native-artwork-replacement"
         let saved: NativeStudioResponse = try await request(path, method: "POST", body: encoded(input),
-                                                            ifMatch: previous.etag, timeout: 120)
+                                                            ifMatch: etag, timeout: 120)
         guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
-        guard saved.revision == previous.revision + 1, saved.draft.id.lowercased() == exhibitionId else {
+        guard saved.revision == studioRevision + 1, saved.draft.id.lowercased() == exhibitionId else {
             throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
         }
         let reopened = try await exhibition(exhibitionId)
@@ -1552,7 +1552,8 @@ public struct NativeImportJob: Decodable, Sendable {
         // Legacy clients ignored this field. A malformed future field remains
         // absent here; selected ICC validation then rejects that absence.
         imagePreparation = try? values.decode(NativeImagePreparationStatus.self, forKey: .imagePreparation)
-        coarsePreparation = try values.decodeIfPresent(NativeCoarsePreparationStatus.self, forKey: .coarsePreparation)
+        coarsePreparation = values.contains(.coarsePreparation)
+            ? try values.decode(NativeCoarsePreparationStatus.self, forKey: .coarsePreparation) : nil
         workerDrainVersion = try? values.decode(Int.self, forKey: .workerDrainVersion)
         workerDrained = try? values.decode(Bool.self, forKey: .workerDrained)
     }
@@ -1580,6 +1581,10 @@ public struct NativeImportJob: Decodable, Sendable {
         let date = formatter.date(from: retryAt) ?? ISO8601DateFormatter().date(from: retryAt)
         return date.map { $0 <= Date() } ?? false
     }
+    func canRetry(coarse intent: NativeCoarsePreparationIntent) -> Bool {
+        retryAt != nil && canRetry && coarsePreparation?.matches(intent, job: self) == true
+            && coarsePreparation?.workerDrained == true
+    }
 }
 /// Retain this exact intent/key on uncertain responses; changing bytes/rights
 /// requires an explicit new intent rather than replaying a different payload.
@@ -1594,6 +1599,23 @@ public struct NativeImportIntent: Codable, Equatable, Sendable {
     public let derived: NativeImportDerived?
     public let modelDerivation: NativeModelDerivationIntent?
     public let coarsePreparation: NativeCoarsePreparationIntent?
+    private enum CodingKeys: String, CodingKey {
+        case artworkId, idempotencyKey, mime, sha256, bytes, scaleMeters, rights, derived, modelDerivation, coarsePreparation
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        artworkId = try values.decode(String.self, forKey: .artworkId)
+        idempotencyKey = try values.decode(String.self, forKey: .idempotencyKey)
+        mime = try values.decode(String.self, forKey: .mime)
+        sha256 = try values.decode(String.self, forKey: .sha256)
+        bytes = try values.decode(Int.self, forKey: .bytes)
+        scaleMeters = try values.decode(Double.self, forKey: .scaleMeters)
+        rights = try values.decode(ArtworkMetadata.Rights.self, forKey: .rights)
+        derived = try values.decodeIfPresent(NativeImportDerived.self, forKey: .derived)
+        modelDerivation = try values.decodeIfPresent(NativeModelDerivationIntent.self, forKey: .modelDerivation)
+        coarsePreparation = values.contains(.coarsePreparation)
+            ? try values.decode(NativeCoarsePreparationIntent.self, forKey: .coarsePreparation) : nil
+    }
     public init(artworkId: String, idempotencyKey: String = UUID().uuidString.lowercased(), mime: String, sha256: String, bytes: Int, scaleMeters: Double, rights: ArtworkMetadata.Rights, derived: NativeImportDerived? = nil, modelDerivation: NativeModelDerivationIntent? = nil, coarsePreparation: NativeCoarsePreparationIntent? = nil) {
         self.artworkId = artworkId; self.idempotencyKey = idempotencyKey; self.mime = mime; self.sha256 = sha256; self.bytes = bytes; self.scaleMeters = scaleMeters; self.rights = rights; self.derived = derived; self.modelDerivation = modelDerivation
         self.coarsePreparation = coarsePreparation

@@ -3,6 +3,46 @@ import XCTest
 @testable import ManagerCore
 
 final class NativeJPEGImportRuntimeTests: XCTestCase {
+    func testReviewedCoarseStatusIsClosedAndRetryRequiresExactDrain() throws {
+        let approval = "ce328328-97fa-56cf-8fc1-6bafd4573153"
+        let intent = NativeCoarsePreparationIntent(approvalId: approval, artworkRevision: 1)
+        var wire: [String: Any] = [
+            "id": "a968c98b-62c4-4289-b09b-534ab9c2c65e", "state": "failed", "progress": 25, "attempts": 1,
+            "retryAt": "2026-01-01T00:00:00Z"
+        ]
+        func job() throws -> NativeImportJob {
+            try JSONDecoder().decode(NativeImportJob.self, from: JSONSerialization.data(withJSONObject: wire))
+        }
+        XCTAssertFalse(try job().canRetry(coarse: intent))
+        wire["coarsePreparation"] = NSNull()
+        XCTAssertThrowsError(try job())
+        var status: [String: Any] = [
+            "profile": "viewer-png-box-512-v1", "approvalId": approval, "artworkRevision": 1,
+            "status": "failed", "workerDrained": false
+        ]
+        wire["coarsePreparation"] = status
+        XCTAssertFalse(try job().canRetry(coarse: intent))
+        status["workerDrained"] = true
+        status["artworkRevision"] = 2
+        wire["coarsePreparation"] = status
+        XCTAssertFalse(try job().canRetry(coarse: intent))
+        status["artworkRevision"] = 1
+        wire["coarsePreparation"] = status
+        XCTAssertTrue(try job().canRetry(coarse: intent))
+        wire.removeValue(forKey: "retryAt")
+        XCTAssertFalse(try job().canRetry(coarse: intent))
+        status["unverified"] = true
+        wire["coarsePreparation"] = status
+        XCTAssertThrowsError(try job())
+
+        let bytes = try JSONEncoder().encode(intent)
+        XCTAssertEqual(try JSONDecoder().decode(NativeCoarsePreparationIntent.self, from: bytes), intent)
+        var shape = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+        shape["coarseSha256"] = String(repeating: "a", count: 64)
+        let extra = try JSONSerialization.data(withJSONObject: shape)
+        XCTAssertThrowsError(try JSONDecoder().decode(NativeCoarsePreparationIntent.self, from: extra))
+    }
+
     func testCurrentPacketRequiresReadinessAndUnknownPacketsStayClosed() {
         let current = NativeJPEGImportRuntime.currentManifestSHA256
         XCTAssertTrue(NativeJPEGImportRuntime.supports(manifestSHA256: current, ready: true))

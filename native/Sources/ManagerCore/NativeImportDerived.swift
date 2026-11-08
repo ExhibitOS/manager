@@ -52,6 +52,17 @@ public struct NativeCoarsePreparationIntent: Codable, Equatable, Sendable {
         self.approvalId = approvalId
         self.artworkRevision = artworkRevision
     }
+    private enum CodingKeys: String, CodingKey, CaseIterable { case version, profile, approvalId, artworkRevision }
+
+    public init(from decoder: Decoder) throws {
+        try checkCoarseKeys(decoder, required: Set(CodingKeys.allCases.map(\.stringValue)))
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decode(Int.self, forKey: .version)
+        profile = try values.decode(String.self, forKey: .profile)
+        approvalId = try values.decode(String.self, forKey: .approvalId)
+        artworkRevision = try values.decode(Int.self, forKey: .artworkRevision)
+        guard valid else { throw AuthoringFailure("IMPORT_INPUT_INVALID") }
+    }
 
     var valid: Bool {
         version == 1 && profile == "viewer-png-box-512-v1"
@@ -60,6 +71,21 @@ public struct NativeCoarsePreparationIntent: Codable, Equatable, Sendable {
                 of: #"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"#,
                 options: [.regularExpression, .caseInsensitive]
             ) != nil
+    }
+}
+
+private struct CoarseWireKey: CodingKey {
+    let stringValue: String
+    let intValue: Int? = nil
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
+}
+
+private func checkCoarseKeys(_ decoder: Decoder, required: Set<String>, complete: Set<String>? = nil) throws {
+    let container = try decoder.container(keyedBy: CoarseWireKey.self)
+    let keys = Set(container.allKeys.map(\.stringValue))
+    guard keys == required || keys == complete else {
+        throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unexpected coarse preparation shape"))
     }
 }
 
@@ -72,6 +98,23 @@ public struct NativeCoarsePreparationStatus: Decodable, Sendable {
     public let assetId: String?
     public let sha256: String?
     public let bytes: Int?
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case profile, approvalId, artworkRevision, status, workerDrained, assetId, sha256, bytes
+    }
+
+    public init(from decoder: Decoder) throws {
+        try checkCoarseKeys(decoder, required: ["profile", "approvalId", "artworkRevision", "status", "workerDrained"],
+                            complete: Set(CodingKeys.allCases.map(\.stringValue)))
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        profile = try values.decode(String.self, forKey: .profile)
+        approvalId = try values.decode(String.self, forKey: .approvalId)
+        artworkRevision = try values.decode(Int.self, forKey: .artworkRevision)
+        status = try values.decode(String.self, forKey: .status)
+        workerDrained = try values.decode(Bool.self, forKey: .workerDrained)
+        assetId = values.contains(.assetId) ? try values.decode(String.self, forKey: .assetId) : nil
+        sha256 = values.contains(.sha256) ? try values.decode(String.self, forKey: .sha256) : nil
+        bytes = values.contains(.bytes) ? try values.decode(Int.self, forKey: .bytes) : nil
+    }
 
     func matches(_ intent: NativeCoarsePreparationIntent, job: NativeImportJob) -> Bool {
         guard intent.valid, profile == intent.profile, approvalId.lowercased() == intent.approvalId.lowercased(),

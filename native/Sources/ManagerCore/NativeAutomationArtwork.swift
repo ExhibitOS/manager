@@ -1,6 +1,37 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 
+struct NativeAutomationReplacementCommand {
+    let artworkId: String
+    let artworkRevision: Int
+    let importJobId: String
+    let studioRevision: Int
+    let etag: String
+    let coarseSHA256: String
+
+    init(_ request: DocumentValue) throws {
+        let command = try NativeAutomationArtworkRules.command(request, keys: [
+            "artworkId", "artworkRevision", "importJobId", "studioRevision", "etag", "coarseSha256"
+        ])
+        guard let artworkId = command["artworkId"].string, UUID(uuidString: artworkId)?.uuidString.lowercased() == artworkId,
+              let job = command["importJobId"].string, UUID(uuidString: job)?.uuidString.lowercased() == job,
+              let revision = command["artworkRevision"].integer, (1...2_147_483_647).contains(revision),
+              let studio = command["studioRevision"].integer, (1..<2_147_483_647).contains(studio),
+              let etag = command["etag"].string,
+              etag.hasPrefix("\"studio-r\(studio)-"),
+              etag.range(of: #"^"studio-r[1-9][0-9]*-[a-f0-9]{64}"$"#, options: .regularExpression) != nil,
+              let sha256 = command["coarseSha256"].string, nativeImportDigest(sha256) else {
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        }
+        self.artworkId = artworkId
+        artworkRevision = Int(revision)
+        importJobId = job
+        studioRevision = Int(studio)
+        self.etag = etag
+        coarseSHA256 = sha256
+    }
+}
+
 enum NativeAutomationArtworkRules {
     static func command(_ request: DocumentValue, keys: Set<String>) throws -> DocumentValue {
         guard case .object(let fields) = request["command"], Set(fields.keys) == keys else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
@@ -74,21 +105,43 @@ enum NativeAutomationArtworkRules {
                  "workerDrainVersion": job.workerDrainVersion.map { .integer(Int64($0)) } ?? .null,
                  "workerDrained": job.workerDrained.map(DocumentValue.bool) ?? .null])
     }
+    static func reviewedJobValue(_ job: NativeImportJob, intent: NativeImportIntent) throws -> DocumentValue {
+        guard let coarse = intent.coarsePreparation, let status = job.coarsePreparation,
+              status.matches(coarse, job: job), let preparation = job.imagePreparation,
+              preparation.matches(intent), UUID(uuidString: job.id) != nil else {
+            throw BridgeFailure("IMPORT_RECEIPT_INVALID")
+        }
+        var wire = jobValue(job)
+        wire["coarsePreparation"] = .object([
+            "profile": .string(status.profile), "approvalId": .string(status.approvalId),
+            "artworkRevision": .integer(Int64(status.artworkRevision)), "status": .string(status.status),
+            "workerDrained": .bool(status.workerDrained), "assetId": status.assetId.map(DocumentValue.string) ?? .null,
+            "sha256": status.sha256.map(DocumentValue.string) ?? .null,
+            "bytes": status.bytes.map { .integer(Int64($0)) } ?? .null
+        ])
+        wire["imagePreparation"] = .object([
+            "provenance": .string(preparation.provenance), "originalSha256": .string(preparation.originalSha256),
+            "derivedSha256": .string(preparation.derivedSha256)
+        ])
+        return wire
+    }
 }
 
-/// Reuses the GUI's durable native upload journal and transfer owner. Optional
-/// derivation is deliberately absent: the admitted GLB bytes are not rewritten.
+/// Reuses the GUI's durable native upload journal and transfer owner.
 @MainActor
-enum NativeAutomationGLBTransfer {
+enum NativeAutomationArtworkTransfer {
     static func run(bridge: NativeBridge, context: Context, state initial: NativeUploadState,
-                    intent: NativeImportIntent, file: ImportFileSnapshot,
+                    intent: NativeImportIntent, file: ImportFileSnapshot, derived: NativePreparedJPEG? = nil,
                     transport: any NativeImportTransport) async throws -> NativeImportJob {
-        guard intent.mime == "model/gltf-binary", intent.derived == nil, intent.modelDerivation == nil,
+        let glb = intent.mime == "model/gltf-binary" && intent.derived == nil && intent.coarsePreparation == nil && derived == nil
+        let reviewed = intent.mime == "image/jpeg" && intent.coarsePreparation?.valid == true
+            && intent.derived?.recipe.colourConversion != nil && derived?.derived == intent.derived && intent.scaleMeters == 1
+        guard glb || reviewed, intent.modelDerivation == nil,
               intent.scaleMeters.isFinite, intent.scaleMeters > 0, intent.scaleMeters <= 1_000_000,
               initial.intent == nil || initial.intent == intent else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
         var state = initial
         let transfer = NativeImportTransfer()
-        return try await transfer.run(intent: intent, jobID: state.jobId, file: file, transport: transport,
+        return try await transfer.run(intent: intent, jobID: state.jobId, file: file, derived: derived, transport: transport,
             persistIntent: {
                 if state.intent == nil {
                     state.intent = intent; state.fileName = file.name; state.jobId = nil

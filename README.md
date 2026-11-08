@@ -165,9 +165,18 @@ OEX connection validation at source `9b52e367044082ecfce5233844af3f0e5b46f023`: 
 
 ### Same-owner reviewed image replacement
 
-The macOS native client uses the qualified local runtime and its authenticated owner session for an existing artwork. Persist the exact JPEG import intent, including `coarsePreparation`, in the private upload journal before creating the job. Record the returned job ID before uploading the original and prepared PNG. Keep the same intent and idempotency key on retry. Continue only after the approved job reports the reviewed coarse hash, `ready` and `workerDrained: true`.
+Run `exhibitos-automation --configuration /absolute/path/to/private-config.json` with the matching macOS debug helper and exact catalog 040 target runtime. Use `existingWorkspaceV5` to bind the saved workspace, tenant, principal and runtime manifest. Give the process an owner-only output directory and temporary directory, its selected workspace ports, and the original JPEG path and SHA-256 in `inputs`. Use the authenticated local owner session and a clean saved draft.
 
-Retain the selected Studio comparison, replacement request ID and original ETag before calling `replaceReviewedArtwork`. Replay these exact inputs after an uncertain response. The client compares the replacement receipt against a fresh Studio read before returning a result suitable for the local saved document. A later Studio edit requires a new comparison. Native runtime admission and isolated end-to-end qualification are separate from this source interface.
+Send each operation as one JSON line. Both commands use the ordinary envelope fields `version`, `requestId`, `capability`, `workspaceId`, `tenantId`, `principalId`, `expectedRevision` and `expectedEditVersion` from the owning session and document. Fill the values below with the reviewed artwork and exact file identities.
+
+```json
+{"operation":"artwork-prepare-reviewed","inputPath":"/absolute/path/to/original.jpg","command":{"artworkId":"<artwork UUID>","artworkRevision":1,"approvalId":"<approved policy UUID>","derivedSha256":"<reviewed PNG SHA-256>","retryFailed":false}}
+{"operation":"artwork-replace-reviewed","command":{"artworkId":"<artwork UUID>","artworkRevision":1,"importJobId":"<prepared job UUID>","studioRevision":2,"etag":"\"studio-r2-<64 lowercase hex digits>\"","coarseSha256":"<reviewed coarse SHA-256>"}}
+```
+
+The preparation command records the exact intent before creating the job and records the server job ID before uploading the original and prepared PNG. Repeat the same preparation request and ID to observe the current job. An opted-in failed-job retry requires matching worker drain and the server retry time. Use a distinct replacement request ID after the job is approved and the reviewed coarse result is ready and drained.
+
+The replacement command saves the original request and ETag in the private output directory before posting. Keep that directory and replay the same request after an uncertain response. Use a separate output directory for a separate replacement request. Reopening with a mismatched Studio document allows only the retained recovery operation. The client compares the replacement receipt with a fresh Studio read before updating the local document journal. A later Studio edit requires a new comparison.
 
 ## Registered Prepared update application
 
