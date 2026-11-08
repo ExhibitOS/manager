@@ -28,6 +28,8 @@ mod generation;
 mod launch;
 #[path = "native_runtime_hayes_operation.rs"]
 pub(super) mod operation;
+#[path = "native_runtime_hayes_stage_return.rs"]
+mod stage_return;
 #[path = "native_runtime_hayes_transfer.rs"]
 mod transfer;
 #[path = "native_runtime_hayes_watch.rs"]

@@ -6,11 +6,20 @@ use super::{
     Attestation, Database, Kind, OperationBinding, OwnedHayesOpen, Phase, ReadyPins,
     ReservedOutput, Result, BODY_BYTES, BODY_SHA, RESERVATION_RECORD,
 };
-use crate::{hash_valid, native_runtime::oex_owner::DATABASE_IDENTITY_SQL};
+use crate::{
+    hash_valid,
+    native_runtime::{
+        oex_owner::{Owner, DATABASE_IDENTITY_SQL},
+        Session,
+    },
+};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use uuid::Uuid;
+
+#[path = "native_runtime_hayes_release.rs"]
+mod release;
 
 #[cfg(test)]
 #[path = "native_runtime_hayes_disposition_tests.rs"]
@@ -34,7 +43,7 @@ struct Challenge<'a> {
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Notice {
+pub(in super::super) struct Notice {
     version: u8,
     kind: Kind,
     binding: OperationBinding,
@@ -157,16 +166,20 @@ impl OwnedHayesOpen<'_> {
         deadline: Instant,
     ) -> Result<()> {
         self.start(Phase::OutputAcknowledged)?;
-        let result = self.read_committed_disposition(deadline);
-        if result.is_ok() {
-            self.phase = Phase::DispositionObserved;
-        } else {
-            self.channel.invalidate();
+        match self.read_committed_disposition(deadline) {
+            Ok(notice) => {
+                self.disposition = Some(notice);
+                self.phase = Phase::DispositionObserved;
+                Ok(())
+            }
+            Err(error) => {
+                self.channel.invalidate();
+                Err(error)
+            }
         }
-        result
     }
 
-    fn read_committed_disposition(&mut self, deadline: Instant) -> Result<()> {
+    fn read_committed_disposition(&mut self, deadline: Instant) -> Result<Notice> {
         let attempt = self.attempt.as_ref().ok_or_else(unavailable)?;
         let pins = self.ready_pins.as_ref().ok_or_else(unavailable)?;
         let validated = self.validated.as_ref().ok_or_else(unavailable)?;
@@ -212,18 +225,7 @@ impl OwnedHayesOpen<'_> {
             .channel
             .read_frame(deadline, &cancellation, &mut check)?;
         let notice = check_notice(&raw, &challenge)?;
-        let sql = committed_sql(&notice, pins);
-        self.owner.check(self.session)?;
-        let value = self
-            .session
-            .query_database_before("exhibitos", &sql, deadline)?;
-        let readback = Readback::parse(&value)?;
-        self.owner.check_database_identity_result(&format!(
-            "{}|{}",
-            readback.system_id, readback.database_oid
-        ))?;
-        readback.check_receipt(&notice, pins)?;
-        self.owner.check(self.session)?;
+        verify_committed_receipt(&self.owner, self.session, &notice, pins, deadline)?;
         check_revalidation_record(attempt, record, revalidation)?;
         pins.check(attempt)?;
         validated.check_leaves(attempt)?;
@@ -233,8 +235,28 @@ impl OwnedHayesOpen<'_> {
             return Err(unavailable());
         }
         self.channel.check_hayes_idle()?;
-        attempt.journal.create(OBSERVED_RECORD, &notice)
+        attempt.journal.create(OBSERVED_RECORD, &notice)?;
+        Ok(notice)
     }
+}
+
+fn verify_committed_receipt(
+    owner: &Owner,
+    session: &mut Session,
+    notice: &Notice,
+    pins: &ReadyPins,
+    deadline: Instant,
+) -> Result<()> {
+    owner.check(session)?;
+    let value =
+        session.query_database_before("exhibitos", &committed_sql(notice, pins), deadline)?;
+    let readback = Readback::parse(&value)?;
+    owner.check_database_identity_result(&format!(
+        "{}|{}",
+        readback.system_id, readback.database_oid
+    ))?;
+    readback.check_receipt(notice, pins)?;
+    owner.check(session)
 }
 
 fn committed_sql(notice: &Notice, pins: &ReadyPins) -> String {

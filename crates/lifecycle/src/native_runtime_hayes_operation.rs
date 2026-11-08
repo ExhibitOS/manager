@@ -141,6 +141,7 @@ enum Phase {
     Reserved,
     OutputAcknowledged,
     DispositionObserved,
+    ReleaseNotified,
     Failed,
 }
 
@@ -289,6 +290,7 @@ pub(in super::super) struct OwnedHayesOpen<'a> {
     validated: Option<ValidatedReadback>,
     ready_pins: Option<ready::ReadyPins>,
     db_stage_id: Option<Uuid>,
+    disposition: Option<ready::disposition::Notice>,
     retain_attempt: bool,
     open_accepted_at: Instant,
     timings: WorkerTimings,
@@ -435,6 +437,7 @@ impl Session {
                 validated: None,
                 ready_pins: None,
                 db_stage_id: None,
+                disposition: None,
                 retain_attempt: false,
                 open_accepted_at: Instant::now(),
                 timings: WorkerTimings::default(),

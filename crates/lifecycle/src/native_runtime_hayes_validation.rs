@@ -92,6 +92,26 @@ pub(in super::super) struct ReadyMaterial {
 }
 
 impl ValidatedReadback {
+    pub(in super::super) fn into_retained_stages(
+        self,
+        attempt: &Attempt,
+    ) -> Result<(
+        super::super::stage_return::RetainedStages,
+        ReadOnlyHayesGenerate,
+    )> {
+        self.check_leaves(attempt)?;
+        let selected = self.selected;
+        let generated = selected.readback;
+        let worker_pin = generated.worker_pin.ok_or_else(custody_error)?;
+        let stages = super::super::stage_return::RetainedStages::new([
+            (generated.source.binding.attempt, generated.source.observed),
+            (generated.prepared.output_stage_id, generated.stdout),
+            (selected.id, selected.observed),
+            (self.prepared.stdout_stage_id, self.stdout),
+        ]);
+        Ok((stages, worker_pin))
+    }
+
     pub(in super::super) fn check_leaves(&self, attempt: &Attempt) -> Result<()> {
         self.selected.readback.check(attempt)?;
         self.exit.check(attempt, Role::Validate)?;

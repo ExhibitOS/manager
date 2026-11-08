@@ -22,7 +22,7 @@ use std::{
 use uuid::Uuid;
 
 #[path = "native_runtime_hayes_disposition.rs"]
-mod disposition;
+pub(super) mod disposition;
 
 #[cfg(test)]
 #[path = "native_runtime_hayes_reservation_tests.rs"]
