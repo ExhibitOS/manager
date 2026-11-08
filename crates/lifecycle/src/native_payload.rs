@@ -1498,6 +1498,8 @@ mod normal_oex_release_declaration_tests {
         let manifest = target.context().manifest_sha256;
         assert_eq!(manifest, CATALOG45_COMPACT_AND_CANDIDATE_TARGET.2);
         assert!(!target.ordinary_hayes_release());
+        assert!(target.static_detail_export_resources(true).is_ok());
+        assert!(bc96.static_detail_export_resources(true).is_err());
         assert!(saved_workspace_transition_target(&manifest));
         assert!(Payload::open_workspace_v5_validation(&target_root, true).is_err());
         assert_eq!(Payload::open_workspace_v5_validation(&target_root, false).unwrap().context().manifest_sha256, manifest);
@@ -2791,7 +2793,13 @@ impl Payload {
             self.manifest.producer_sha256.as_str(),
             self.manifest_sha256.as_str(),
         );
-        if (CATALOG40_WHEAT_DETAIL != Some(provenance) && !ordinary_hayes_release_host_matches(provenance))
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        let combined_local_validation = CATALOG45_COMPACT_AND_CANDIDATE_TARGET == provenance;
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        let combined_local_validation = false;
+        if (CATALOG40_WHEAT_DETAIL != Some(provenance)
+            && !ordinary_hayes_release_host_matches(provenance)
+            && !combined_local_validation)
             || !static_detail_inventory_matches(&self.manifest.files)
         {
             return Err(err("NATIVE_STATIC_DETAIL_UNAVAILABLE"));
