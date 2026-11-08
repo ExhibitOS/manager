@@ -449,7 +449,11 @@ public actor AuthoringAPI {
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = method; request.httpBody = body
         if let publicationProfile {
-            guard publicationProfile == "bounded-local-v1", session?.nativePublicationProfile == publicationProfile else { throw AuthoringFailure("PUBLICATION_STAGE_UNAVAILABLE") }
+            guard session?.nativePublicationProfile == "bounded-local-v1",
+                  publicationProfile == "bounded-local-v1"
+                    || (publicationProfile == "native-original-v1" && nativeSession && method == "POST") else {
+                throw AuthoringFailure("PUBLICATION_STAGE_UNAVAILABLE")
+            }
             request.setValue(publicationProfile, forHTTPHeaderField: "X-ExhibitOS-Publication-Profile")
         }
         if let bodyFile {

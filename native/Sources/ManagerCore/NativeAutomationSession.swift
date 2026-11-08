@@ -603,7 +603,7 @@ public actor NativeAutomationSession {
         if let seen = seenRequests[id], seen != bytes { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
         let requiresFreshRead = ["artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
                                  "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status",
-                                 "workspace-frame-lineage-prepare"].contains(operation)
+                                 "workspace-frame-lineage-prepare", "export-static-native-original"].contains(operation)
         if !requiresFreshRead, let prior = replay[id] {
             guard prior.0 == bytes else { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
             return prior.1
@@ -1276,19 +1276,45 @@ public actor NativeAutomationSession {
                 try await archive.writeBoundedVerified(to: url)
             }
             result = .object(["path": .string(url.path), "sha256": .string(Self.digest(try Data(contentsOf: url))), "etag": .string(etag)])
-        case "export-static":
+        case "export-static", "export-static-native-original":
             try checkedRevision(request, current)
             guard !current.dirty, let draft = current.draft, let etag = current.etag, let path = request["outputPath"].string else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
+            let nativeOriginal = operation == "export-static-native-original"
+            if nativeOriginal {
+                let command = try NativeAutomationArtworkRules.command(request, keys: ["etag"])
+                guard existingWorkspaceV5 != nil, selectedOEXFormat == nil, current.pending == nil,
+                      fields["inputPath"] == nil, command["etag"] == .string(etag),
+                      authoringSession?.nativePublicationProfile == "bounded-local-v1" else {
+                    throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+                }
+            }
             let destination = URL(fileURLWithPath: path)
             guard destination.path.hasPrefix(root.path + "/"), destination.deletingLastPathComponent().resolvingSymlinksInPath() == root else { throw BridgeFailure("AUTOMATION_OUTPUT_INVALID") }
-            if staticIntents[id] == nil { _ = try output(path) }
+            if !nativeOriginal && staticIntents[id] == nil { _ = try output(path) }
             let reopened = try await api.exhibition(draft.id)
             guard reopened.draft == draft, reopened.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
             var publication = try await bridge.publicationState(context)
-            let publicationProfile = authoringSession?.nativePublicationProfile == "bounded-local-v1" ? "bounded-local-v1" : nil
+            let publicationProfile = nativeOriginal ? "native-original-v1"
+                : authoringSession?.nativePublicationProfile == "bounded-local-v1" ? "bounded-local-v1" : nil
+            // Session capabilities rotate on reconnect. The checked owner
+            // scope and all durable request fields still bind exact replay.
+            let originalRequestSHA256 = nativeOriginal
+                ? Self.digest(try encoder.encode(DocumentValue.object(fields.filter { $0.key != "capability" }))) : nil
             let planBinding = try runtimeManifest.map { try nativePublicationPlanBinding(sourceExhibitionId: draft.id, etag: etag,
-                runtimeManifestSha256: $0, watermark: draft.publicationWatermark(), publicationProfile: publicationProfile) }
-            if staticIntents[id] == nil {
+                runtimeManifestSha256: $0, watermark: draft.publicationWatermark(), publicationProfile: publicationProfile,
+                nativeOriginalRequestSHA256: originalRequestSHA256) }
+            if nativeOriginal {
+                guard let planBinding else { throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE") }
+                let intent = try NativePublicationPending(nativeOriginalSource: draft, etag: etag, requestId: id, planBindingSha256: planBinding)
+                if let completed = publication.completed, completed.publishRequestId == id {
+                    try completed.refuseNativeOriginalExportReplay(intent)
+                }
+                let before = publication
+                try publication.stageNativeOriginal(intent)
+                _ = try output(path)
+                if publication != before { publication = try await bridge.savePublicationState(context, state: publication) }
+                staticIntents[id] = intent
+            } else if staticIntents[id] == nil {
                 guard publication.pending == nil else { throw BridgeFailure("NATIVE_PUBLICATION_PENDING") }
                 let intent = try NativePublicationPending(source: draft, etag: etag, planBindingSha256: planBinding)
                 // Retain the exact operation-to-snapshot/request binding before
@@ -1326,22 +1352,45 @@ public actor NativeAutomationSession {
                 publication.completed = NativePublicationCompleted(pending: pending, publication: frozen); publication.pending = nil
                 publication = try await bridge.savePublicationState(context, state: publication)
             }
-            let existing = try await bridge.staticExportStatus(context)
-            if try existing?.canReuse(publicationId: frozen.publicationId, output: path) != true {
-                guard !FileManager.default.fileExists(atPath: path) else { throw BridgeFailure("AUTOMATION_OUTPUT_INVALID") }
-                _ = try await bridge.startStaticExport(context, publicationId: frozen.publicationId, output: destination, privateEditor: true)
+            if nativeOriginal {
+                let matches = try await api.publications(exhibitionId: draft.id).filter { $0.publicationId == frozen.publicationId }
+                guard matches == [frozen], frozen.status == "published" else { throw BridgeFailure("PUBLICATION_SCOPE_CHANGED") }
+                try reopened.requireSameComparison(await api.exhibition(draft.id))
             }
+            let existing = try await bridge.staticExportStatus(context)
+            let reuse = try existing?.canReuse(publicationId: frozen.publicationId, output: path) == true
+            if nativeOriginal && reuse { throw BridgeFailure("NATIVE_DETAIL_EXPORT_REPLAY_UNAVAILABLE") }
+            let detailJobId: String?
+            if !reuse {
+                guard !FileManager.default.fileExists(atPath: path) else { throw BridgeFailure("AUTOMATION_OUTPUT_INVALID") }
+                if nativeOriginal {
+                    try publication.claimNativeOriginalExport(intent)
+                    publication = try await bridge.savePublicationState(context, state: publication)
+                }
+                let started = try await bridge.startStaticExport(context, publicationId: frozen.publicationId, output: destination,
+                                                                 privateEditor: true, nativeOriginalDetail: nativeOriginal)
+                detailJobId = nativeOriginal ? started.jobId : nil
+            } else { detailJobId = nil }
             do {
                 var receipt: NativeStaticExportReceipt?
                 for _ in 0..<1200 {
                     try Task.checkCancellation()
                     if let status = try await bridge.staticExportStatus(context), !status.running {
+                        if nativeOriginal && !status.confirmsDetailTerminal(jobId: detailJobId, publicationId: frozen.publicationId, output: path) {
+                            throw BridgeFailure("AUTOMATION_DRAIN_UNCERTAIN")
+                        }
                         guard let accepted = status.receipt, status.errorCode == nil else { throw BridgeFailure(status.errorCode ?? "NATIVE_STATIC_EXPORT_FAILED") }
                         receipt = accepted; break
                     }
                     try await Task.sleep(for: .milliseconds(100))
                 }
                 guard let receipt else { throw BridgeFailure("NATIVE_TIMEOUT") }
+                if nativeOriginal {
+                    guard receipt.publicationId == frozen.publicationId, receipt.revisionSha256 == frozen.revisionSha256,
+                          receipt.output == path, FileManager.default.fileExists(atPath: path) else {
+                        throw BridgeFailure("PUBLICATION_SCOPE_CHANGED")
+                    }
+                }
                 result = try value(receipt)
             } catch {
                 let ownedBridge = bridge
@@ -1350,7 +1399,9 @@ public actor NativeAutomationSession {
                 let drained = (try? await Task.detached {
                     _ = try await ownedBridge.cancelStaticExport(context)
                     for _ in 0..<1200 {
-                        if let status = try await ownedBridge.staticExportStatus(context), !status.running { return true }
+                        if let status = try await ownedBridge.staticExportStatus(context), !status.running {
+                            return !nativeOriginal || status.confirmsDetailTerminal(jobId: detailJobId, publicationId: frozen.publicationId, output: path)
+                        }
                         try await Task.sleep(for: .milliseconds(100))
                     }
                     return false

@@ -2,6 +2,88 @@
 import XCTest
 @testable import ManagerCore
 final class PublicationTests: XCTestCase {
+    func testNativeOriginalIntentBindsTheSavedSourceAndReplayID() throws {
+        let draft = try NativeExhibitionDraft.new()
+        let etag = "\"studio-r6-" + String(repeating: "a", count: 64) + "\""
+        let manifest = String(repeating: "b", count: 64)
+        let requestId = UUID().uuidString.lowercased()
+        func originalPlan(etag: String, request: String) throws -> String {
+            try nativePublicationPlanBinding(sourceExhibitionId: draft.id, etag: etag,
+                runtimeManifestSha256: manifest, watermark: nil, publicationProfile: "native-original-v1",
+                nativeOriginalRequestSHA256: request)
+        }
+        let plan = try originalPlan(etag: etag, request: String(repeating: "c", count: 64))
+        let ordinary = try nativePublicationPlanBinding(sourceExhibitionId: draft.id, etag: etag,
+            runtimeManifestSha256: manifest, watermark: nil, publicationProfile: "bounded-local-v1")
+        XCTAssertNotEqual(plan, ordinary)
+        let intent = try NativePublicationPending(nativeOriginalSource: draft, etag: etag, requestId: requestId, planBindingSha256: plan)
+        XCTAssertEqual(intent, try NativePublicationPending(nativeOriginalSource: draft, etag: etag, requestId: requestId, planBindingSha256: plan))
+        XCTAssertEqual(intent.snapshot, draft)
+        XCTAssertEqual(intent.snapshotEtag, etag)
+        XCTAssertEqual(intent.publishRequestId, requestId)
+        XCTAssertNil(intent.capabilityPublicationId)
+        XCTAssertThrowsError(try intent.requirePlanBinding(ordinary))
+        let publicationID = UUID().uuidString.lowercased()
+        let publication = NativePublication(publicationId: publicationID, publicUrl: "/p/" + publicationID,
+            revisionSha256: String(repeating: "e", count: 64), publishedAt: "2026-11-08T00:00:00Z", status: "published")
+        let completed = NativePublicationCompleted(pending: intent, publication: publication)
+        XCTAssertThrowsError(try completed.refuseNativeOriginalExportReplay(intent)) { error in
+            XCTAssertEqual((error as? AuthoringFailure)?.code, "NATIVE_DETAIL_EXPORT_REPLAY_UNAVAILABLE")
+        }
+        let newer = etag.replacingOccurrences(of: "studio-r6-", with: "studio-r7-")
+        let otherRequest = String(repeating: "d", count: 64)
+        for otherEtag in [etag, newer] {
+            let changed = try NativePublicationPending(nativeOriginalSource: draft, etag: otherEtag, requestId: requestId,
+                planBindingSha256: originalPlan(etag: otherEtag, request: otherRequest))
+            XCTAssertThrowsError(try completed.refuseNativeOriginalExportReplay(changed)) { error in
+                XCTAssertEqual((error as? AuthoringFailure)?.code, "PUBLICATION_PLAN_CHANGED")
+            }
+        }
+    }
+
+    func testDetailTerminalRejectsInterruptedOrDifferentJob() {
+        func status(_ state: String) -> NativeStaticExportStatus {
+            .init(format: 1, jobId: "job", workspaceId: "workspace", tenantId: "tenant", principalId: "owner",
+                publicationId: "publication", revisionSha256: "revision", output: "/candidate",
+                state: state, receipt: nil, errorCode: nil, privateEditor: true)
+        }
+        XCTAssertFalse(status("interrupted").confirmsDetailTerminal(jobId: "job", publicationId: "publication", output: "/candidate"))
+        XCTAssertFalse(status("completed").confirmsDetailTerminal(jobId: "other", publicationId: "publication", output: "/candidate"))
+        XCTAssertFalse(status("completed").confirmsDetailTerminal(jobId: "job", publicationId: "publication", output: "/missing"))
+        XCTAssertTrue(status("cancelled").confirmsDetailTerminal(jobId: "job", publicationId: "publication", output: "/candidate"))
+    }
+
+    func testNativeOriginalClaimSurvivesLaterPublicationAndRejectsColdReplay() throws {
+        let draft = try NativeExhibitionDraft.new()
+        let etag = "\"studio-r6-" + String(repeating: "a", count: 64) + "\""
+        func intent(id: String = UUID().uuidString, plan: Character) throws -> NativePublicationPending {
+            try .init(nativeOriginalSource: draft, etag: etag, requestId: id,
+                      planBindingSha256: String(repeating: plan, count: 64))
+        }
+        let a = try intent(plan: "a"), b = try intent(plan: "b")
+        let publicId = UUID().uuidString
+        let publication = NativePublication(publicationId: publicId, publicUrl: "/p/" + publicId,
+            revisionSha256: String(repeating: "c", count: 64), publishedAt: "2026-11-08T00:00:00Z", status: "published")
+        var state = NativePublicationState(format: 1, revision: 1, workspaceId: UUID().uuidString,
+            tenantId: UUID().uuidString, principalId: UUID().uuidString, pending: nil, completed: nil)
+        for operation in [a, b] {
+            try state.stageNativeOriginal(operation)
+            state.pending = nil
+            state.completed = NativePublicationCompleted(pending: operation, publication: publication)
+            try state.claimNativeOriginalExport(operation)
+        }
+        var cold = try JSONDecoder().decode(NativePublicationState.self, from: JSONEncoder().encode(state))
+        XCTAssertEqual(cold.completed?.publishRequestId, b.publishRequestId)
+        let changedDestination = try intent(id: a.publishRequestId, plan: "d")
+        XCTAssertThrowsError(try cold.stageNativeOriginal(changedDestination)) { error in
+            XCTAssertEqual((error as? AuthoringFailure)?.code, "PUBLICATION_PLAN_CHANGED")
+        }
+        XCTAssertThrowsError(try cold.stageNativeOriginal(a)) { error in
+            XCTAssertEqual((error as? AuthoringFailure)?.code, "NATIVE_DETAIL_EXPORT_REPLAY_UNAVAILABLE")
+        }
+        XCTAssertEqual(cold, state)
+    }
+
     func testPublicationCopyRetainsGeometryRightsAndOpaqueDataWhileChangingOnlyDocumentIdentity() throws {
         let authoredTitle = String(repeating: "가", count: 500) + " · 공개용 저장본"
         var source = try NativeExhibitionDraft.new(title: authoredTitle)

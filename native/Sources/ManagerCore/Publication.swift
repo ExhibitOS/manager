@@ -56,6 +56,16 @@ public struct NativePublicationPending: Codable, Equatable, Sendable {
         self.planBindingSha256 = planBindingSha256; snapshot = source; snapshotEtag = etag
         saveRequestId = UUID().uuidString.lowercased(); publishRequestId = UUID().uuidString.lowercased()
     }
+    init(nativeOriginalSource source: NativeExhibitionDraft, etag: String, requestId: String, planBindingSha256: String) throws {
+        guard UUID(uuidString: requestId) != nil, validPublicationETag(etag), nativeImportDigest(planBindingSha256),
+              source.document["editVersion"].integer.map({ $0 > 0 && $0 <= 2_147_483_647 }) == true else {
+            throw AuthoringFailure("PUBLICATION_PLAN_CHANGED")
+        }
+        mode = "native-original-v1"; capabilityPublicationId = nil; sourceExhibitionId = source.id; sourceEtag = etag
+        self.planBindingSha256 = planBindingSha256; snapshot = source; snapshotEtag = etag
+        // The authored source already exists. Its save request is never executed.
+        saveRequestId = requestId; publishRequestId = requestId
+    }
     public func requirePlanBinding(_ expected: String?) throws {
         guard validPublicationPlanBinding(planBindingSha256), validPublicationPlanBinding(expected), planBindingSha256 == expected else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
     }
@@ -88,13 +98,56 @@ public struct NativePublicationCompleted: Codable, Equatable, Sendable {
         self.sourceExhibitionId == sourceExhibitionId && sourceEtag == etag
             && validPublicationPlanBinding(planBindingSha256) && validPublicationPlanBinding(expected) && planBindingSha256 == expected
     }
+    func refuseNativeOriginalExportReplay(_ intent: NativePublicationPending) throws -> Never {
+        guard mode == "native-original-v1", mode == intent.mode, publishRequestId == intent.publishRequestId,
+              snapshotExhibitionId == intent.snapshot.id, intent.planBindingSha256 != nil,
+              refersToSource(sourceExhibitionId: intent.sourceExhibitionId, etag: intent.sourceEtag,
+                             planBindingSha256: intent.planBindingSha256) else {
+            throw AuthoringFailure("PUBLICATION_PLAN_CHANGED")
+        }
+        // A completed publication alone says nothing about the destination or
+        // the export worker. Keep the original operation available for review.
+        throw AuthoringFailure("NATIVE_DETAIL_EXPORT_REPLAY_UNAVAILABLE")
+    }
 }
+struct NativeOriginalExportAttempt: Codable, Equatable, Sendable {
+    let planBindingSha256: String
+    var exportClaimed: Bool
+}
+
 public struct NativePublicationState: Codable, Equatable, Sendable {
     public let format: Int
     public var revision: UInt64
     public let workspaceId: String, tenantId: String, principalId: String
     public var pending: NativePublicationPending?
     public var completed: NativePublicationCompleted?
+    var nativeOriginalAttempts: [String: NativeOriginalExportAttempt]? = nil
+
+    mutating func stageNativeOriginal(_ intent: NativePublicationPending) throws {
+        guard intent.mode == "native-original-v1", let plan = intent.planBindingSha256,
+              pending == nil || pending == intent else { throw AuthoringFailure("NATIVE_PUBLICATION_PENDING") }
+        let id = intent.publishRequestId
+        if let attempt = nativeOriginalAttempts?[id] {
+            guard attempt.planBindingSha256 == plan else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
+            guard !attempt.exportClaimed else { throw AuthoringFailure("NATIVE_DETAIL_EXPORT_REPLAY_UNAVAILABLE") }
+        } else {
+            guard (nativeOriginalAttempts?.count ?? 0) < 256 else { throw AuthoringFailure("NATIVE_DETAIL_EXPORT_HISTORY_FULL") }
+            if nativeOriginalAttempts == nil { nativeOriginalAttempts = [:] }
+            nativeOriginalAttempts?[id] = .init(planBindingSha256: plan, exportClaimed: false)
+        }
+        pending = intent
+    }
+
+    mutating func claimNativeOriginalExport(_ intent: NativePublicationPending) throws {
+        let id = intent.publishRequestId
+        guard pending == nil, completed?.mode == "native-original-v1", completed?.publishRequestId == id,
+              completed?.planBindingSha256 == intent.planBindingSha256,
+              let attempt = nativeOriginalAttempts?[id], !attempt.exportClaimed,
+              attempt.planBindingSha256 == intent.planBindingSha256 else {
+            throw AuthoringFailure("NATIVE_DETAIL_EXPORT_REPLAY_UNAVAILABLE")
+        }
+        nativeOriginalAttempts?[id]?.exportClaimed = true
+    }
 }
 
 /// Local correspondence only. Authentication belongs to AuthoringAPI and the
@@ -142,13 +195,18 @@ func validPublicationPlanBinding(_ value: String?) -> Bool { value.map(nativeImp
 /// exact runtime artifact pins publication quality/derivation policy; there is
 /// no separate native quality selector. Explicit bounded transport is committed
 /// only when negotiated; legacy commitments retain their original bytes.
-public func nativePublicationPlanBinding(sourceExhibitionId: String, etag: String, runtimeManifestSha256: String, watermark: PublicationWatermark?, publicationProfile: String? = nil) throws -> String {
+public func nativePublicationPlanBinding(sourceExhibitionId: String, etag: String, runtimeManifestSha256: String, watermark: PublicationWatermark?, publicationProfile: String? = nil, nativeOriginalRequestSHA256: String? = nil) throws -> String {
     guard UUID(uuidString: sourceExhibitionId) != nil, validPublicationETag(etag), nativeImportDigest(runtimeManifestSha256) else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
     let settings = watermark ?? PublicationWatermark(); try settings.validate()
-    guard publicationProfile == nil || publicationProfile == "bounded-local-v1" else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
+    guard publicationProfile == nil || publicationProfile == "bounded-local-v1" || publicationProfile == "native-original-v1" else {
+        throw AuthoringFailure("PUBLICATION_PLAN_CHANGED")
+    }
+    guard (publicationProfile == "native-original-v1") == (nativeOriginalRequestSHA256 != nil),
+          validPublicationPlanBinding(nativeOriginalRequestSHA256) else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
     var fields: [String: DocumentValue] = ["version": .integer(publicationProfile == nil ? 1 : 2), "sourceExhibitionId": .string(sourceExhibitionId), "sourceEtag": .string(etag),
         "runtimeManifestSha256": .string(runtimeManifestSha256), "effectiveWatermark": settings.value]
     if let publicationProfile { fields["publicationProfile"] = .string(publicationProfile) }
+    if let nativeOriginalRequestSHA256 { fields["nativeOriginalRequestSHA256"] = .string(nativeOriginalRequestSHA256) }
     let record = DocumentValue.object(fields)
     let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     return nativeImportSHA256(try encoder.encode(record))
