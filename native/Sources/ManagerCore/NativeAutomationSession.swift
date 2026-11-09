@@ -60,6 +60,7 @@ public actor NativeAutomationSession {
     private var replay: [String: (Data, DocumentValue)] = [:]
     private var seenRequests: [String: Data] = [:]
     private var proposals: [String: BenchViewportRequest] = [:]
+    private var sharedBenchProposals: [String: SharedFurnishingViewportRequest] = [:]
     private var surfaceProposals: [String: SurfaceMaterialTextureRequest] = [:]
     private var pendingRevisions: [String: UInt64] = [:]
     private var staticIntents: [String: NativePublicationPending] = [:]
@@ -271,7 +272,7 @@ public actor NativeAutomationSession {
         let directory = try profileIdentity()
 
         runtimeStopped = true
-        proposals.removeAll(); surfaceProposals.removeAll()
+        proposals.removeAll(); sharedBenchProposals.removeAll(); surfaceProposals.removeAll()
         _ = try await bridge.stop(context)
         let stopped = try await waitReady()
         guard let runtime = stopped.runtime, runtime.state == "stopped", !runtime.hasOwnedProcesses,
@@ -409,6 +410,29 @@ public actor NativeAutomationSession {
         guard url.path.hasPrefix(root.path + "/"), url.deletingLastPathComponent().resolvingSymlinksInPath() == root,
               !FileManager.default.fileExists(atPath: url.path) else { throw BridgeFailure("AUTOMATION_OUTPUT_INVALID") }
         return url
+    }
+    static func sharedBenchReply(root: URL, path: String) throws -> DocumentValue {
+        let url = URL(fileURLWithPath: path)
+        guard path == url.path, url.deletingLastPathComponent() == root else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+        let parent = Darwin.open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+        defer { Darwin.close(parent) }
+        var held = stat(), named = stat()
+        guard fstat(parent, &held) == 0, lstat(root.path, &named) == 0,
+              held.st_mode & S_IFMT == S_IFDIR, held.st_uid == getuid(), held.st_mode & 0o777 == 0o700,
+              (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino) else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+        let fd = openat(parent, url.lastPathComponent, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+        let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? file.close() }
+        var info = stat(), after = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1,
+              info.st_uid == getuid(), info.st_mode & 0o077 == 0, (1...1_100_000).contains(info.st_size),
+              let bytes = try file.read(upToCount: 1_100_001), bytes.count == info.st_size,
+              fstat(fd, &after) == 0, after.st_size == info.st_size,
+              after.st_mtimespec.tv_sec == info.st_mtimespec.tv_sec,
+              after.st_mtimespec.tv_nsec == info.st_mtimespec.tv_nsec else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+        return try JSONDecoder().decode(DocumentValue.self, from: bytes)
     }
     private func checkSavedEditPolicy(_ state: NativeDocumentState, api: AuthoringAPI, unsupportedCode: String = "NATIVE_BENCH_CAPABILITY_UNAVAILABLE") async throws {
         guard let draft = state.draft, let etag = state.etag else { return }
@@ -920,6 +944,11 @@ public actor NativeAutomationSession {
               Set(fields.keys).isSubset(of: ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "inputPath", "outputPath", "command", "proposalId", "archiveFormat"]) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         if installedExportRootIdentity != nil {
             try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))
+        }
+        if operation == "shared-bench-prepare" || operation == "shared-bench-apply" {
+            let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion"]
+            let extra: Set<String> = operation == "shared-bench-prepare" ? ["command", "outputPath"] : ["proposalId", "inputPath"]
+            guard Set(fields.keys) == common.union(extra) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
         if installedImageCLI {
             guard ["read", "import-image", "artwork-status", "artwork-image-preparation-retry", "artwork-approve",
@@ -1700,6 +1729,39 @@ public actor NativeAutomationSession {
             try NativeAutomationArtworkRules.checkRegistration(snapshot.artwork, artworkId: artworkId, revision: 2, tenantId: current.tenantId)
             try draft.refreshHayesArtwork(snapshot.artwork, placementId: placementId)
             var next = current; next.draft = draft
+            result = try value(await bridge.saveDocumentState(context, state: next))
+        case "shared-bench-prepare":
+            try checkedRevision(request, current)
+            try await checkSavedEditPolicy(current, api: api)
+            let fields = try NativeAutomationArtworkRules.command(request, keys: ["hostId", "pose"])
+            guard current.pending == nil, let draft = current.draft, let etag = current.etag,
+                  let hostId = fields["hostId"].string, let path = request["outputPath"].string,
+                  request["inputPath"] == .null else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let pose = try FurnishingPose(fields["pose"])
+            let command = try SharedFurnishingCommand(host: .bench, hostId: hostId, pose: pose)
+            let catalog = try await api.sharedFurnishings()
+            guard catalog.contains(where: { $0["catalogId"] == .string("backless-oak-bench") && $0["catalogVersion"] == .integer(1) }) else {
+                throw BridgeFailure("FURNISHING_CATALOG_INVALID")
+            }
+            let frame = ViewportFrame(epoch: capability, sequence: 1, tenantId: current.tenantId, principalId: current.principalId,
+                draft: draft, selection: nil, mode: "translate", view: "isometric", disabled: false,
+                workspaceId: current.workspaceId, baseETag: etag)
+            let proposal = try SharedFurnishingViewportRequest(frame: frame, command: command, selectedInspectorId: hostId)
+            result = try write(.object(["version": .integer(1), "operation": .string("shared-furnishing-proposal"),
+                "frame": try value(frame), "request": proposal.value]), to: path)
+            sharedBenchProposals[id] = proposal
+        case "shared-bench-apply":
+            try checkedRevision(request, current)
+            try await checkSavedEditPolicy(current, api: api)
+            guard current.pending == nil, let draft = current.draft, let etag = current.etag,
+                  let proposalId = request["proposalId"].string, let proposal = sharedBenchProposals[proposalId],
+                  proposal.frame.draft == draft, proposal.frame.baseETag == etag,
+                  let path = request["inputPath"].string, request["outputPath"] == .null else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            let reply = try Self.sharedBenchReply(root: root, path: path)
+            let preview = try proposal.checkedReply(reply)
+            var next = current; next.draft = try preview.apply(to: draft, command: proposal.command)
             result = try value(await bridge.saveDocumentState(context, state: next))
         case "bench-prepare":
             try checkedRevision(request, current)
