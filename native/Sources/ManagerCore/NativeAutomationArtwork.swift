@@ -117,9 +117,14 @@ enum NativeAutomationArtworkRules {
                                   allowsImage: Bool = false) throws {
         let cms = artwork["extensions"]["org.exhibitos.studio/cms"]
         let type = artwork["artworkType"].string
+        let approvedPNG = allowsImage && type == "image" && artwork["primaryAssetId"].string.map { primary in
+            artwork["assets"].items?.contains {
+                $0["id"].string == primary && $0["mime"].string == "image/png" && $0["role"].string == "image"
+            } == true
+        } == true
         guard revision > 0, revision <= 2_147_483_647, artwork["id"].string == artworkId,
               cms["tenantId"].string == tenantId, cms["artworkId"].string == artworkId,
-              cms["revision"].integer == revision, type == "sculpture" || (allowsImage && type == "image"),
+              cms["revision"].integer == revision, type == "sculpture" || approvedPNG,
               artwork["rights"]["permissions"]["display"] == .bool(true) else { throw BridgeFailure("ARTWORK_SCOPE_CHANGED") }
     }
     static func jobValue(_ job: NativeImportJob) -> DocumentValue {
