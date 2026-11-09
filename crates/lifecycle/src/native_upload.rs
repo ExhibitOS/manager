@@ -688,8 +688,8 @@ mod tests {
             .unwrap()
             .join(format!("exhibitos-image-upload-{}", Uuid::new_v4()));
         new_directory(&parent).unwrap();
-        let fixture = OwnedFixture(parent);
-        let profile = fixture.0.join("profile");
+        let owned_fixture = OwnedFixture(parent);
+        let profile = owned_fixture.0.join("profile");
         let mut state: Transfer = serde_json::from_value(input).unwrap();
         let controller = InstallationController::new(profile.clone(), None).unwrap();
         let token = controller.context().unwrap().selection_token;

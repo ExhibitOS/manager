@@ -472,11 +472,6 @@ public actor NativeAutomationSession {
         }) == true else { throw BridgeFailure("ARTWORK_SCOPE_CHANGED") }
         let saved = try await api.exhibition(draft.id)
         guard saved.draft == draft, saved.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
-        let artwork = try await api.artwork(artworkId)
-        guard artwork.id == artworkId, Int64(artwork.revision) == revision, !artwork.archived,
-              artwork.approvedRevision == artwork.revision, let rights = artwork.metadata?.rights else {
-            throw BridgeFailure("ARTWORK_SCOPE_CHANGED")
-        }
         let state = try await bridge.uploadState(context)
         try NativeAutomationArtworkRules.checkUploadScope(state, document: current)
         let url = URL(fileURLWithPath: path)
@@ -485,10 +480,23 @@ public actor NativeAutomationSession {
         guard original.mime == "image/jpeg", original.sha256 == sourceHash else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
         if product {
             let preparation = NativeProductImagePreparationIntent(artworkRevision: Int(revision))
-            try preparation.checkSource(original, artwork: artwork)
-            let intent = NativeImportIntent(artworkId: artworkId, idempotencyKey: id, mime: original.mime,
-                sha256: original.sha256, bytes: original.data.count, scaleMeters: 1, rights: rights,
-                productImagePreparation: preparation)
+            let intent: NativeImportIntent
+            if let retained = state.intent {
+                guard retained.artworkId == artworkId, retained.idempotencyKey == id,
+                      retained.productImagePreparation == preparation, original.matches(retained) else {
+                    throw BridgeFailure("IMPORT_INTENT_CHANGED")
+                }
+                intent = retained
+            } else {
+                let artwork = try await api.artwork(artworkId)
+                try preparation.checkSource(original, artwork: artwork)
+                guard artwork.id == artworkId, let rights = artwork.metadata?.rights else {
+                    throw BridgeFailure("ARTWORK_SCOPE_CHANGED")
+                }
+                intent = NativeImportIntent(artworkId: artworkId, idempotencyKey: id, mime: original.mime,
+                    sha256: original.sha256, bytes: original.data.count, scaleMeters: 1, rights: rights,
+                    productImagePreparation: preparation)
+            }
             var job = try await NativeAutomationArtworkTransfer.run(bridge: bridge, context: context, state: state,
                 intent: intent, file: original, transport: api)
             if retryFailed, job.state == "failed", job.canRetry, job.retryAt != nil, job.confirmsIntakeDrain(for: intent) {
@@ -505,6 +513,11 @@ public actor NativeAutomationSession {
         }
         let coarse = NativeCoarsePreparationIntent(approvalId: approvalId, artworkRevision: Int(revision))
         guard coarse.valid else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+        let artwork = try await api.artwork(artworkId)
+        guard artwork.id == artworkId, Int64(artwork.revision) == revision, !artwork.archived,
+              artwork.approvedRevision == artwork.revision, let rights = artwork.metadata?.rights else {
+            throw BridgeFailure("ARTWORK_SCOPE_CHANGED")
+        }
         let derived = try await NativePreparedJPEG.prepare(
             original: original, operationID: id, generation: id, isCurrent: { !Task.isCancelled }, allowICC: true
         )

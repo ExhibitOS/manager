@@ -477,18 +477,24 @@ extension AuthoringModel {
         busy = true
         defer { busy = false; scheduleImportPoll() }
         let file = try await ImportFileSnapshot.load(url, allowJPEG: true)
-        let artwork = try await expectedAPI.artwork(artworkId)
         let preparation = NativeProductImagePreparationIntent(artworkRevision: artworkRevision)
-        try preparation.checkSource(file, artwork: artwork)
-        guard artwork.id == artworkId, let rights = artwork.metadata?.rights,
-              importStatusGeneration == generation, self.transfer?.revision == transfer.revision, isCurrent() else {
+        let intent: NativeImportIntent
+        if let retained = transfer.intent {
+            guard retained.artworkId == artworkId, retained.productImagePreparation == preparation,
+                  file.matches(retained) else { throw AuthoringFailure("IMPORT_INTENT_CHANGED") }
+            intent = retained
+        } else {
+            let artwork = try await expectedAPI.artwork(artworkId)
+            try preparation.checkSource(file, artwork: artwork)
+            guard artwork.id == artworkId, let rights = artwork.metadata?.rights else {
+                throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
+            }
+            intent = NativeImportIntent(artworkId: artworkId, mime: file.mime, sha256: file.sha256,
+                bytes: file.data.count, scaleMeters: 1, rights: rights, productImagePreparation: preparation)
+        }
+        guard importStatusGeneration == generation, self.transfer?.revision == transfer.revision, isCurrent() else {
             throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
         }
-        let intent = NativeImportIntent(artworkId: artworkId,
-            idempotencyKey: transfer.intent?.idempotencyKey ?? UUID().uuidString.lowercased(), mime: file.mime,
-            sha256: file.sha256, bytes: file.data.count, scaleMeters: 1, rights: rights,
-            productImagePreparation: preparation)
-        guard transfer.intent == nil || transfer.intent == intent else { throw AuthoringFailure("IMPORT_INTENT_CHANGED") }
         do { try await continueImport(intent: intent, file: file, api: expectedAPI, isScopeCurrent: isCurrent) }
         catch let error as AuthoringFailure where NativeProductImagePreparationIntent.definitivelyRejectedCreate(error) {
             if importStatusGeneration == generation, isCurrent(), var rejected = self.transfer,

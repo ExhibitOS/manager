@@ -2580,7 +2580,8 @@ final class ExhibitionModel: ObservableObject {
                     requestId: intent.requestId, importJobId: candidate.importJobId, intent: importIntent,
                     workspaceId: local.workspaceId, principalId: local.principalId, expectedReceiptSHA256: candidate.receiptSha256)
             } catch let error as AuthoringFailure where (error.status == 412 && error.code == "REMOTE_CONFLICT")
-                || (error.status == 409 && error.code == "ARTWORK_REPLACEMENT_STALE") {
+                || (error.status == 409 && ["ARTWORK_REPLACEMENT_STALE", "ARTWORK_REPLACEMENT_REFERENCE_UNSUPPORTED"].contains(error.code))
+                || ([409, 422].contains(error.status) && error.code == "ARTWORK_REPLACEMENT_INVALID") {
                 // The server checks its replay receipt before these rejection
                 // branches. Keep the original draft available for comparison.
                 let live = try await api.exhibition(draft.id)
