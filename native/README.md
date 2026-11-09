@@ -37,6 +37,15 @@ when the fixed bundle needs updating. The launcher retains the previous
 bundle and verifies the app and native helper against their approved
 designated requirements before reuse.
 
+To include a reviewed Help/source tree, pass `--legal-resources DIR`,
+`--legal-inventory FILE`, and `--legal-inventory-sha SHA` to `prepare`. The
+inventory lists each `path`, `bytes`, and `sha256`, including `index.html`.
+Preparation checks the exact tree and copies only listed files. The signed
+bundle binds the inventory SHA alongside its build, runtime and profile pins.
+Pass that same `--legal-inventory-sha` to `verify`, `launch`, and `attach` for
+the prepared bundle. The inventory is limited to 2 MiB, 4,096 files and 1 GiB
+of resources. Source correspondence and distribution review remain separate.
+
 Run `launch` once. It verifies the fixed bundle before opening it through
 Launch Services and returns the owned PID. For CUA, run `attach --pid <PID>`
 with the same pins and confirm that the exact bundle is already running in

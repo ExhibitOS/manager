@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import importlib.util
+import json
 from pathlib import Path
 import plistlib
 import subprocess
@@ -14,6 +15,17 @@ spec.loader.exec_module(launcher)
 
 
 class ManagerValidationGuiTests(unittest.TestCase):
+    def legal_fixture(self, root):
+        legal = root / "legal"
+        legal.mkdir()
+        (legal / "index.html").write_text('<a href="source.txt">Source</a>')
+        (legal / "source.txt").write_text("Reviewed source fixture")
+        inventory = legal / "inventory.json"
+        inventory.write_text(json.dumps({"files": [
+            {"path": p.name, "bytes": p.stat().st_size, "sha256": launcher.sha(p)} for p in sorted(legal.iterdir())
+        ]}))
+        return legal, inventory
+
     def test_rejects_per_run_path_before_checking_bundle_or_profile(self):
         with patch.object(launcher, "output") as run, patch.object(launcher, "launch_services_has_app") as services:
             with self.assertRaisesRegex(launcher.ValidationError, "restricted to"):
@@ -96,6 +108,56 @@ class ManagerValidationGuiTests(unittest.TestCase):
             with self.assertRaisesRegex(launcher.ValidationError, "already open"):
                 launcher.launch(launcher.APP, Path("/fixed-profile"), {})
             run.assert_not_called()
+
+    def test_prepare_and_preflight_bind_only_inventoried_legal_resources(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            app, profile, binary, runtime = (root / name for name in (launcher.APP.name, "profile", "bin", "runtime"))
+            profile.mkdir()
+            binary.write_bytes(b"build fixture")
+            binary.chmod(0o755)
+            runtime.mkdir()
+            manifest = runtime / "manifest.json"
+            manifest.write_text('{"mode":"local-validation","redistributionQualified":false}')
+            legal, inventory = self.legal_fixture(root)
+            pins = dict(unsignedGUI=launcher.sha(binary), unsignedHelper=launcher.sha(binary),
+                        runtimeManifest=launcher.sha(manifest), legalInventory=launcher.sha(inventory))
+            sign_calls = []
+
+            def run(*args):
+                if args[0] == "/usr/bin/python3":
+                    return subprocess.check_output([sys.executable, "-B", *args[3:]], text=True)
+                self.assertEqual(args[:4], (launcher.CODESIGN, "--force", "--sign", launcher.CERT))
+                sign_calls.append(args[-1])
+
+            with patch.object(launcher, "APP", app), patch.object(launcher, "output", side_effect=run), \
+                 patch.object(launcher, "verify_signature"), patch.object(launcher, "pids", return_value=set()) as pids, \
+                 patch.object(launcher, "launch_services_has_app", return_value=False):
+                launcher.prepare(profile, pins, binary, binary, runtime, legal, inventory)
+                self.assertEqual(len(sign_calls), 2)
+                self.assertEqual((app / launcher.LEGAL_INVENTORY).read_bytes(), inventory.read_bytes())
+                self.assertEqual({p.name for p in (app / launcher.LEGAL).iterdir()}, {"index.html", "source.txt"})
+                launcher.preflight(app, profile, pins)
+                pids.reset_mock()
+                (app / launcher.LEGAL / "source.txt").write_text("changed")
+                with self.assertRaisesRegex(launcher.ValidationError, "differs from"):
+                    launcher.launch(app, profile, pins)
+                pids.assert_not_called()
+
+    def test_legal_input_refuses_wrong_pin_unlisted_file_and_link(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            legal, inventory = self.legal_fixture(root)
+            with self.assertRaisesRegex(launcher.ValidationError, "SHA-256"):
+                launcher.read_legal_inventory(inventory, "0" * 64)
+            _, files = launcher.read_legal_inventory(inventory, launcher.sha(inventory))
+            (legal / "extra.txt").write_text("unlisted")
+            with self.assertRaisesRegex(launcher.ValidationError, "differs from"):
+                launcher.verify_legal_resources(legal, files, inventory=inventory)
+            (legal / "extra.txt").unlink()
+            (legal / "extra.txt").symlink_to(legal / "source.txt")
+            with self.assertRaisesRegex(launcher.ValidationError, "Links are not allowed"):
+                launcher.verify_legal_resources(legal, files, inventory=inventory)
 
 
 if __name__ == "__main__":
