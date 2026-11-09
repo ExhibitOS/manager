@@ -15,7 +15,7 @@ public struct NativeStaticExportStatus: Codable, Sendable {
     public let receipt: NativeStaticExportReceipt?
     public let errorCode: String?
     public let privateEditor: Bool?
-    let outputParentIdentity: OutputParentIdentity?
+    var outputParentIdentity: OutputParentIdentity? = nil
     public var running: Bool { state == "running" }
 
     func canReuse(publicationId: String, output: String) throws -> Bool {
