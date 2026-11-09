@@ -647,7 +647,7 @@ pub(crate) fn fresh_image_release_manifest_matches(manifest: &str) -> bool {
 
 fn fresh_image_release_host_matches(tuple: (&str, &str, &str)) -> bool {
     fresh_image_release_manifest_matches(tuple.2)
-        && tuple.0 == "273b0bbb054b357c3ac7d5a354ff78924747734d"
+        && tuple.0 == "7ad04db38db884ffc7dfd32d803aaf5bf08b0aa5"
         && option_env!("EXHIBITOS_FRESH_IMAGE_RELEASE_PRODUCER_SHA256") == Some(tuple.1)
 }
 
