@@ -40,7 +40,29 @@ pub enum LocalPersonalTransition {
     #[cfg(feature = "workspace-v5-owner-validation")]
     StageSaved { source_payload: PathBuf, staging: PathBuf, key_file: PathBuf },
     Activate { staging: PathBuf, key_file: PathBuf },
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation"))]
+    ActivateSelected045 { staging: PathBuf, key_file: PathBuf, selection: SelectedRecovery045 },
     Recover { staging: PathBuf, key_file: PathBuf },
+}
+
+#[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SelectedRecovery045 {
+    pub(crate) hayes_job_id: String,
+    pub(crate) hayes_completion_frame_sha256: String,
+    pub(crate) oex_job_id: String,
+    pub(crate) oex_import_runtime_generation: String,
+    pub(crate) oex_retirement_sha256: String,
+    pub(crate) rollback_lineage: Vec<RecoveryRollback045>,
+}
+
+#[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RecoveryRollback045 {
+    pub(crate) receipt_sha256: String,
+    pub(crate) key_file: PathBuf,
 }
 
 #[derive(Clone, Serialize)]

@@ -203,9 +203,19 @@ fn inventory_with_sync(
     max_bytes: u64,
     sync: impl Fn(&File) -> std::io::Result<()>,
 ) -> Result<BTreeMap<PathBuf, Entry>> {
+    inventory_members_with_sync(root, staged, max_bytes, MEMBERS, sync)
+}
+
+fn inventory_members_with_sync(
+    root: &Path,
+    staged: bool,
+    max_bytes: u64,
+    members: &[&str],
+    sync: impl Fn(&File) -> std::io::Result<()>,
+) -> Result<BTreeMap<PathBuf, Entry>> {
     let root_pin = crate::maintenance_source::DirectoryPin::open(root)?;
     let mut files = BTreeMap::new();
-    let mut todo: Vec<_> = MEMBERS.iter().map(|name| PathBuf::from(name)).collect();
+    let mut todo: Vec<_> = members.iter().map(|name| PathBuf::from(name)).collect();
     let mut total = 0u64;
     let mut visited = 0;
     let mut directories = Vec::new();
@@ -506,6 +516,32 @@ fn verify_unchanged(root: &Path, checkpoint: &Checkpoint, pending: &[u8]) -> Res
     Ok(())
 }
 
+#[cfg(feature = "workspace-v5-owner-validation")]
+fn verify_selected_staging_delta(
+    before: &BTreeMap<PathBuf, Entry>, live: &BTreeMap<PathBuf, Entry>,
+    prefix: &Path, bytes: usize,
+) -> Result<()> {
+    const CHUNK: usize = 16 * 1024 * 1024;
+    let mismatch = || err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED");
+    let keys: BTreeMap<_, _> = (0..bytes.div_ceil(CHUNK)).map(|i| {
+        (prefix.join(format!("chunk-{i}")), (bytes - i * CHUNK).min(CHUNK) as u64)
+    }).collect();
+    for (path, bytes) in &keys {
+        if live.contains_key(path) || before.get(path).is_some_and(|entry|
+            entry.sha256.is_none() || entry.bytes != *bytes)
+        {
+            return Err(mismatch());
+        }
+    }
+    let protected = |path: &Path| path.starts_with("blobs") || path.starts_with("config");
+    if live.iter().filter(|(path, _)| protected(path))
+        .ne(before.iter().filter(|(path, _)| protected(path) && !keys.contains_key(*path)))
+    {
+        return Err(mismatch());
+    }
+    Ok(())
+}
+
 fn keep_receipt(root: &Path, kind: &str, envelope: &[u8]) -> Result<()> {
     let name = format!("native-personal-transition-{kind}-{}.gcm", digest(envelope));
     if !present(root, &name)? {
@@ -662,6 +698,79 @@ fn exchange_data_directories(root: &Path, plan: &RestorePlan, members: &[&str]) 
 }
 
 impl LifecycleService {
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    fn selected_045_original_store(
+        &self, profile: &Path, checkpoint: &Checkpoint,
+        lineage: &[crate::installations::native_maintenance::RecoveryRollback045],
+        staging_prefix: &Path,
+    ) -> Result<(Option<PathBuf>, BTreeMap<usize, u64>)> {
+        if lineage.len() > 8 {
+            return Err(invalid());
+        }
+        let mut original = None;
+        let mut predecessor = None;
+        let mut absent_chunks = BTreeMap::new();
+        for item in lineage {
+            if !hash_valid(&item.receipt_sha256) {
+                return Err(invalid());
+            }
+            let name = format!("native-personal-transition-recovery-{}.gcm", item.receipt_sha256);
+            let envelope = installation_backup::source_bytes(&self.root, &name, ENVELOPE_LIMIT as u64, true)?;
+            if digest(&envelope) != item.receipt_sha256 {
+                return Err(invalid());
+            }
+            let key = Bytes(crate::profile_backup::external_key(profile, &item.key_file)?);
+            let prior = self.transition_checkpoint(&envelope, key.0.as_slice().try_into().map_err(|_| invalid())?)?;
+            prior.check_host(true)?;
+            if !prior.trial || prior.source_identity != checkpoint.source_identity
+                || prior.workspace_id != checkpoint.workspace_id || prior.tenant_id != checkpoint.tenant_id
+                || prior.principal_id != checkpoint.principal_id || prior.owner_uid != checkpoint.owner_uid
+            {
+                return Err(invalid());
+            }
+            let restore = prior.restore.as_ref().ok_or_else(invalid)?;
+            if !restore.retained.strip_prefix("native-personal-transition-retained-").is_some_and(installations::uuid) {
+                return Err(invalid());
+            }
+            let retained = self.root.join(&restore.retained);
+            let store = retained.join("blobs");
+            let swap = restore.directories.get("blobs").ok_or_else(invalid)?;
+            if directory_identity(&retained)? != restore.retained_identity
+                || directory_identity(&store)? != swap.trial
+                || predecessor.is_some_and(|expected| expected != swap.trial)
+            {
+                return Err(invalid());
+            }
+            if original.is_none() {
+                let stored = inventory_members_with_sync(&retained, false, MAX_BYTES, &["blobs"], File::sync_all)?;
+                if stored.iter().ne(prior.files.iter().filter(|(path, _)| path.starts_with("blobs"))) {
+                    return Err(invalid());
+                }
+                for (path, entry) in stored {
+                    match checkpoint.files.get(&path) {
+                        Some(current) if current == &entry => (),
+                        None if entry.sha256.is_some() => {
+                            let suffix = path.strip_prefix(staging_prefix).ok()
+                                .and_then(Path::to_str).ok_or_else(invalid)?;
+                            let index = suffix.strip_prefix("chunk-").and_then(|index| index.parse::<usize>().ok())
+                                .filter(|index| *index < 32 && suffix == format!("chunk-{index}")).ok_or_else(invalid)?;
+                            absent_chunks.insert(index, entry.bytes);
+                        }
+                        _ => return Err(invalid()),
+                    }
+                }
+                original = Some(store);
+            }
+            predecessor = Some(swap.before);
+        }
+        if let Some(expected) = predecessor {
+            if directory_identity(&self.root.join("blobs"))? != expected {
+                return Err(invalid());
+            }
+        }
+        Ok((original, absent_chunks))
+    }
+
     pub(crate) fn check_selected_checkpoint_source(
         &self,
         source: &Payload,
@@ -912,9 +1021,16 @@ impl LifecycleService {
         key: &[u8; 32],
         saved_workspace_host: bool,
         document: &super::installations::native_document::DocumentState,
+        #[cfg(feature = "workspace-v5-owner-validation")]
+        selected: Option<(crate::native_runtime::oex_retained_cleanup::Selected045, PathBuf)>,
     ) -> Result<()> {
         let (mut session, mut checkpoint, binding, envelope) =
             self.trial_local_personal_runtime(target, staging, key, saved_workspace_host)?;
+        #[cfg(feature = "workspace-v5-owner-validation")]
+        let selected_staging = selected.map(|(selection, prefix)| {
+            session.arm_selected_recovery_045(selection)?;
+            Ok::<_, LifecycleError>(prefix)
+        }).transpose()?;
         let qualified = (|| {
             if session.start()?.state != "ready" {
                 return Err(invalid());
@@ -958,9 +1074,17 @@ impl LifecycleService {
         if checkpoint.saved_document_sha256.is_some() {
             let unchanged = |path: &Path| path.starts_with("blobs") || path.starts_with("config");
             let live = inventory_with_limit(&self.root, false, MAX_BYTES + pending.len() as u64)?;
+            #[cfg(feature = "workspace-v5-owner-validation")]
+            if let Some(prefix) = selected_staging {
+                let bytes = session.selected_recovery_045_staging_bytes()?.ok_or_else(invalid)?;
+                verify_selected_staging_delta(&checkpoint.files, &live, &prefix, bytes)?;
+            } else if live.iter().filter(|(path, _)| unchanged(path))
+                .ne(checkpoint.files.iter().filter(|(path, _)| unchanged(path))) {
+                return Err(err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED"));
+            }
+            #[cfg(not(feature = "workspace-v5-owner-validation"))]
             if live.iter().filter(|(path, _)| unchanged(path))
-                .ne(checkpoint.files.iter().filter(|(path, _)| unchanged(path)))
-            {
+                .ne(checkpoint.files.iter().filter(|(path, _)| unchanged(path))) {
                 return Err(err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED"));
             }
         }
@@ -1225,7 +1349,47 @@ impl InstallationController {
             }
             service.activate_local_personal_runtime_transition(
                 target, staging, key, saved_workspace_host, document,
+                #[cfg(feature = "workspace-v5-owner-validation")]
+                None,
             )
+        })
+    }
+
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    pub(crate) fn activate_selected_recovery_045(
+        &self, token: &str, target: Arc<Payload>, staging: &Path, key_path: &Path,
+        selection: crate::installations::native_maintenance::SelectedRecovery045,
+    ) -> Result<()> {
+        use crate::native_runtime::{oex_recovery::SelectedRetirement, oex_retained_cleanup};
+        if !target.catalog45_selected_recovery_validation() {
+            return Err(invalid());
+        }
+        self.with_transition_key(token, key_path, staging, |service, profile, document, key| {
+            let generation = crate::native_runtime::catalog45_recovery_source_generation(&service.root)?;
+            self.check_catalog45_recovery_export_unlocked(service, &generation, document)?;
+            let pending = read_pending(&service.root)?;
+            let checkpoint = service.transition_checkpoint(pending.strip_prefix(PENDING_PREFIX).ok_or_else(invalid)?, key)?;
+            checkpoint.check_host(true)?;
+            if checkpoint.trial || checkpoint.staged != staging
+                || checkpoint.new_manifest != target.context().manifest_sha256
+            {
+                return Err(invalid());
+            }
+            verify_unchanged(&service.root, &checkpoint, &pending)?;
+            let oex = oex_retained_cleanup::Selection::new(&selection.oex_job_id, &selection.oex_import_runtime_generation)?;
+            let prefix = Path::new("blobs").join(&checkpoint.tenant_id).join("oex-staging").join(&selection.oex_job_id);
+            let (original, absent_chunks) = service.selected_045_original_store(
+                profile, &checkpoint, &selection.rollback_lineage, &prefix,
+            )?;
+            let retired = SelectedRetirement::open(
+                &service.root, (&checkpoint.workspace_id, &checkpoint.tenant_id, &checkpoint.principal_id),
+                &selection.oex_job_id, &selection.oex_import_runtime_generation, &selection.oex_retirement_sha256,
+                original.as_deref(),
+            )?;
+            let selected = oex_retained_cleanup::Selected045::new(
+                oex, &selection.hayes_job_id, &selection.hayes_completion_frame_sha256, retired, absent_chunks,
+            )?;
+            service.activate_local_personal_runtime_transition(target, staging, key, true, document, Some((selected, prefix)))
         })
     }
 
@@ -1246,6 +1410,28 @@ impl InstallationController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    #[test]
+    fn selected_045_delta_only_removes_exact_staging_files_and_allows_repeat() {
+        let prefix = Path::new("blobs/tenant/oex-staging/job");
+        let entry = |bytes| Entry { bytes, mode: 0o600, sha256: Some("a".repeat(64)) };
+        let stage = prefix.join("chunk-0");
+        let extra = prefix.join("unselected");
+        let config = PathBuf::from("config/settings");
+        let before = BTreeMap::from([(stage.clone(), entry(7)), (extra.clone(), entry(2)), (config.clone(), entry(3))]);
+        let mut after = before.clone();
+        after.remove(&stage);
+        assert!(verify_selected_staging_delta(&before, &after, prefix, 7).is_ok());
+        assert!(verify_selected_staging_delta(&after, &after, prefix, 7).is_ok());
+        assert!(verify_selected_staging_delta(&before, &before, prefix, 7).is_err());
+        assert!(verify_selected_staging_delta(&before, &after, prefix, 8).is_err());
+        after.remove(&extra);
+        assert!(verify_selected_staging_delta(&before, &after, prefix, 7).is_err());
+        after.insert(extra, entry(2));
+        after.insert(config, entry(4));
+        assert!(verify_selected_staging_delta(&before, &after, prefix, 7).is_err());
+    }
     use std::{net::TcpListener, os::unix::fs::PermissionsExt, process::Command, sync::Arc};
 
     #[test]

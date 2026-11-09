@@ -281,8 +281,15 @@ impl PriorDirectories {
     }
 
     fn check_records(&self, witness: &Witness, live: bool) -> Result<()> {
+        self.check_records_with_store(witness, live, None)
+    }
+
+    fn check_records_with_store(
+        &self, witness: &Witness, live: bool, retained_store: Option<&DirectoryIdentity>,
+    ) -> Result<()> {
         let identities = self.identities()?;
         let (journal, coordinator, store) = &identities;
+        let original_store = retained_store.unwrap_or(store);
         let dir = self.journal.try_clone_file()?;
         let alias = format!("{}.claim.json", witness.attempt_id);
         // IDs were validated as canonical UUIDs. This is the Platform's
@@ -335,8 +342,8 @@ impl PriorDirectories {
             || claim.owner.database_system_id != witness.database_system_id
             || claim.owner.database_oid != witness.database_oid
             || claim.owner.store_root != store.root
-            || claim.owner.store_device != store.device
-            || claim.owner.store_inode != store.inode
+            || claim.owner.store_device != original_store.device
+            || claim.owner.store_inode != original_store.inode
             || record_stamp(
                 &open_record(&dir, &alias, libc::O_RDONLY | libc::O_NONBLOCK)
                     .map_err(|_| invalid())?,
@@ -356,6 +363,68 @@ impl PriorDirectories {
             return Err(invalid());
         }
         Ok(())
+    }
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+pub(crate) struct SelectedRetirement {
+    root: DirectoryPin,
+    root_path: PathBuf,
+    dirs: PriorDirectories,
+    witness: Witness,
+    witness_sha256: String,
+    retained: Option<(DirectoryPin, DirectoryIdentity)>,
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+impl SelectedRetirement {
+    pub(crate) fn open(
+        root_path: &Path, owner: (&str, &str, &str), job_id: &str, generation: &str,
+        witness_sha256: &str, retained_store: Option<&Path>,
+    ) -> Result<Self> {
+        if !valid_id(job_id) || !valid_id(generation) || !hash_valid(witness_sha256) {
+            return Err(invalid());
+        }
+        let root = DirectoryPin::open(root_path)?;
+        let (bytes, _) = read_record(&root.try_clone_file()?, &witness_name(job_id), 1)?;
+        let witness: Witness = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+        witness.check()?;
+        if (witness.workspace_id.as_str(), witness.tenant_id.as_str(), witness.principal_id.as_str()) != owner
+            || witness.job_id != job_id || witness.runtime_generation != generation
+        {
+            return Err(invalid());
+        }
+        let retained = retained_store.map(|path| {
+            let pin = DirectoryPin::open(path)?;
+            let identity = DirectoryIdentity::read(&pin, path.into())?;
+            Ok::<_, LifecycleError>((pin, identity))
+        }).transpose()?;
+        let result = Self {
+            root, root_path: root_path.into(), dirs: PriorDirectories::open(root_path, generation)?,
+            witness, witness_sha256: witness_sha256.into(), retained,
+        };
+        result.recheck()?;
+        Ok(result)
+    }
+
+    pub(crate) fn recheck(&self) -> Result<()> {
+        self.root.check_path(&self.root_path)?;
+        let (bytes, _) = read_record(&self.root.try_clone_file()?, &self.witness.name(), 1)?;
+        if digest(&bytes) != self.witness_sha256 {
+            return Err(invalid());
+        }
+        if let Some((pin, identity)) = &self.retained {
+            if DirectoryIdentity::read(pin, identity.root.clone())? != *identity {
+                return Err(invalid());
+            }
+        }
+        self.dirs.check_records_with_store(&self.witness, false, self.retained.as_ref().map(|(_, id)| id))
+    }
+
+    pub(crate) fn database_binding(&self) -> (&str, &str, &str, &str, &str, &str) {
+        let w = &self.witness;
+        (&w.attempt_id, &w.import_request_id, &w.source_archive_sha256, &w.claim_sha256,
+            &w.database_system_id, &w.database_oid)
     }
 }
 

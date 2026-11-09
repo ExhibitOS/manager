@@ -3,6 +3,7 @@
 use super::*;
 
 pub(super) const ENV: &str = "EXHIBITOS_NATIVE_OEX_CLEANUP_SELECTION";
+pub(super) const HAYES_COMPLETION_ENV: &str = "EXHIBITOS_NATIVE_045_HAYES_COMPLETION";
 pub(super) const ERROR: &str = "LOCAL_RUNTIME_START_FAILED_OEX_CLEANUP";
 const RESULT: &[u8] = b"EXHIBITOS_NATIVE_OEX_CLEANUP_RESULT ";
 
@@ -22,6 +23,89 @@ pub struct Receipt {
     state: String,
     cleanup_pending: bool,
     staging_chunks: u32,
+}
+
+pub(crate) struct Selected045 {
+    pub(super) oex: Selection,
+    hayes_job_id: String,
+    completion_sha256: String,
+    retirement: super::oex_recovery::SelectedRetirement,
+    absent_historical_chunks: BTreeMap<usize, u64>,
+    staging_bytes: Option<usize>,
+}
+
+const CHUNK_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Selected045Staging {
+    bytes: usize,
+    cleanup_pending: bool,
+}
+
+impl Selected045Staging {
+    fn admits(&self, absent: &BTreeMap<usize, u64>) -> bool {
+        (1..=32 * CHUNK_BYTES).contains(&self.bytes)
+            && (absent.is_empty() || !self.cleanup_pending)
+            && absent.iter().all(|(&i, &size)|
+                i < self.bytes.div_ceil(CHUNK_BYTES)
+                    && size == (self.bytes - i * CHUNK_BYTES).min(CHUNK_BYTES) as u64)
+    }
+}
+
+impl Selected045 {
+    pub(crate) fn new(
+        oex: Selection, hayes_job_id: &str, completion_sha256: &str,
+        retirement: super::oex_recovery::SelectedRetirement,
+        absent_historical_chunks: BTreeMap<usize, u64>,
+    ) -> Result<Self> {
+        if !oex_preflight_frames::uuid(hayes_job_id) || !hash_valid(completion_sha256) {
+            return Err(err(ERROR));
+        }
+        Ok(Self { oex, hayes_job_id: hayes_job_id.into(), completion_sha256: completion_sha256.into(),
+            retirement, absent_historical_chunks, staging_bytes: None })
+    }
+
+    pub(super) fn database_query(&self, owner: &FurnishingOwner) -> Result<String> {
+        self.retirement.recheck()?;
+        let (attempt, request, source, claim, system, oid) = self.retirement.database_binding();
+        if ![owner.workspace_id.as_str(), &owner.tenant_id, &owner.principal_id, &self.hayes_job_id,
+            &self.oex.job_id, attempt, request].into_iter().all(oex_preflight_frames::uuid)
+            || ![self.completion_sha256.as_str(), source, claim].into_iter().all(hash_valid)
+            || system.parse::<u64>().ok().filter(|&id| id > 0).map(|id| id.to_string()).as_deref() != Some(system)
+            || oid.parse::<u32>().ok().filter(|&id| id > 0).map(|id| id.to_string()).as_deref() != Some(oid)
+        {
+            return Err(err(ERROR));
+        }
+        let mut sql = include_str!("native_runtime_oex_selected_045.sql").to_owned();
+        for (index, value) in [owner.workspace_id.as_str(), &owner.tenant_id, &owner.principal_id,
+            &self.hayes_job_id, &self.completion_sha256, &self.oex.job_id, attempt, request, source,
+            claim, system, oid].into_iter().enumerate()
+        {
+            sql = sql.replace(&format!("@{}@", index + 1), &format!("'{value}'"));
+        }
+        Ok(sql)
+    }
+
+    pub(super) fn hayes_environment(&self) -> String {
+        serde_json::json!({"jobId": self.hayes_job_id, "completionFrameSha256": self.completion_sha256}).to_string()
+    }
+
+    pub(super) fn admit_staging(&mut self, value: &str) -> Result<()> {
+        let refusal = || err("FURNISHING_RECOVERY_UNAVAILABLE");
+        let staging: Selected045Staging = serde_json::from_str(value).map_err(|_| refusal())?;
+        if !staging.admits(&self.absent_historical_chunks) {
+            return Err(refusal());
+        }
+        self.staging_bytes = Some(staging.bytes);
+        Ok(())
+    }
+
+    pub(super) fn completed_staging_bytes(&self, receipt: Receipt) -> Result<usize> {
+        self.retirement.recheck()?;
+        self.staging_bytes.filter(|bytes| bytes.div_ceil(CHUNK_BYTES) == receipt.staging_chunks as usize)
+            .ok_or_else(|| err(ERROR))
+    }
 }
 
 #[derive(Deserialize)]
@@ -123,6 +207,16 @@ impl Selection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_historical_chunks_require_settled_exact_db_staging_shape() {
+        let absent = BTreeMap::from([(0, CHUNK_BYTES as u64), (1, 7)]);
+        assert!(Selected045Staging { bytes: CHUNK_BYTES + 7, cleanup_pending: false }.admits(&absent));
+        assert!(!Selected045Staging { bytes: CHUNK_BYTES + 7, cleanup_pending: true }.admits(&absent));
+        assert!(!Selected045Staging { bytes: CHUNK_BYTES + 8, cleanup_pending: false }.admits(&absent));
+        assert!(!Selected045Staging { bytes: CHUNK_BYTES, cleanup_pending: false }.admits(&absent));
+        assert!(Selected045Staging { bytes: CHUNK_BYTES, cleanup_pending: true }.admits(&BTreeMap::new()));
+    }
 
     #[test]
     fn cleanup_selector_and_receipt_are_closed_and_correlated() {

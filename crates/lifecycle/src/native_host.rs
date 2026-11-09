@@ -602,6 +602,11 @@ impl Host {
                                         &token, target, &staging, &key_file, saved_workspace_host,
                                     )?;
                                 }
+                                #[cfg(feature = "workspace-v5-owner-validation")]
+                                LocalPersonalTransition::ActivateSelected045 { staging, key_file, selection } => {
+                                    let target = Arc::new(Payload::open_saved_workspace_transition(&resources)?);
+                                    controller.activate_selected_recovery_045(&token, target, &staging, &key_file, selection)?;
+                                }
                                 LocalPersonalTransition::Recover { staging, key_file } => {
                                     controller.recover_local_personal_runtime_transition(
                                         &token, &staging, &key_file, saved_workspace_host,
@@ -987,7 +992,8 @@ impl Host {
             let transition_entry = matches!(
                 &request.command,
                 UiCommand::NativeMaintenance { maintenance: Input::LocalPersonalTransition {
-                    transition: LocalPersonalTransition::StageSaved { .. }, ..
+                    transition: LocalPersonalTransition::StageSaved { .. }
+                        | LocalPersonalTransition::ActivateSelected045 { .. }, ..
                 }, .. }
             );
             if transition_entry && !self.workspace_v5_maintenance_only {
@@ -1000,6 +1006,7 @@ impl Host {
                 UiCommand::NativeMaintenance { maintenance: Input::LocalPersonalTransition {
                     transition: LocalPersonalTransition::StageSaved { .. }
                         | LocalPersonalTransition::Activate { .. }
+                        | LocalPersonalTransition::ActivateSelected045 { .. }
                         | LocalPersonalTransition::Recover { .. }, ..
                 }, .. }
             ) {

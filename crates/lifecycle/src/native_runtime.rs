@@ -56,7 +56,7 @@ pub(crate) use furnishing_lifetime::WriterIdentity as FurnishingWriterIdentity;
 #[path = "native_runtime_furnishing_lifecycle.rs"] mod furnishing_lifecycle;
 use furnishing_lifecycle::{Admission, Binding, Owner as FurnishingOwner, Phase, Restore as FurnishingRestore};
 #[path = "native_runtime_oex_owner.rs"] mod oex_owner;
-#[path = "native_runtime_oex_recovery.rs"] mod oex_recovery;
+#[path = "native_runtime_oex_recovery.rs"] pub(crate) mod oex_recovery;
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 #[path = "native_runtime_oex_retained_cleanup.rs"] pub(crate) mod oex_retained_cleanup;
 #[path = "native_runtime_oex_catalog_frames.rs"] mod oex_catalog_frames;
@@ -640,6 +640,8 @@ pub struct Session {
     node_started: Arc<AtomicBool>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     oex_retained_cleanup: Option<oex_retained_cleanup::Run>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    selected_recovery_045: Option<oex_retained_cleanup::Selected045>,
     node_drain_requested: bool,
     job_id: Option<String>,
     run: Option<PathBuf>,
@@ -1032,6 +1034,8 @@ impl Session {
             node_started: Arc::new(AtomicBool::new(false)),
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             oex_retained_cleanup: None,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            selected_recovery_045: None,
             node_drain_requested: false,
             job_id: None,
             run: None,
@@ -1442,6 +1446,24 @@ const { isDeepStrictEqual } = require('node:util');
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn oex_retained_cleanup_receipt(&self) -> Option<oex_retained_cleanup::Receipt> {
         self.oex_retained_cleanup.as_ref().and_then(|run| run.receipt().ok())
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn arm_selected_recovery_045(&mut self, selection: oex_retained_cleanup::Selected045) -> Result<()> {
+        if self.job_id.is_some() || self.oex_retained_cleanup.is_some()
+            || self.furnishing_transition_trial.is_none() || !self.payload.catalog45_selected_recovery_validation()
+        {
+            return Err(err(oex_retained_cleanup::ERROR));
+        }
+        self.oex_retained_cleanup = Some(oex_retained_cleanup::Run::new(selection.oex.clone()));
+        self.selected_recovery_045 = Some(selection);
+        Ok(())
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn selected_recovery_045_staging_bytes(&self) -> Result<Option<usize>> {
+        self.selected_recovery_045.as_ref().map(|selection| {
+            selection.completed_staging_bytes(self.oex_retained_cleanup.as_ref()
+                .ok_or_else(|| err(oex_retained_cleanup::ERROR))?.receipt()?)
+        }).transpose()
     }
     fn snapshot(&self) -> Context {
         let readiness = if self.state == "ready" {
@@ -1962,23 +1984,35 @@ const { isDeepStrictEqual } = require('node:util');
                     // The 045 recovery leaves every job in place. Mirror the
                     // Platform bootstrap check before starting its process.
                     45 if self.payload.catalog45_recovery_validation() => {
-                        let unsettled = self.query_database("exhibitos",
-                            "SELECT EXISTS (
-                               SELECT 1 FROM import_jobs WHERE state IN ('uploading','queued','processing')
-                               OR lease_id IS NOT NULL OR lease_until IS NOT NULL OR cardinality(png_worker_tokens)>0
-                               OR model_preparation ? 'claim'
-                             ) OR EXISTS (
-                               SELECT 1 FROM oex_import_jobs WHERE state IN ('uploading','queued','processing')
-                               OR lease_id IS NOT NULL OR lease_until IS NOT NULL OR cleanup_pending
-                             ) OR EXISTS (
-                               SELECT 1 FROM workspace_material_intakes WHERE phase IN ('uploading','validating','cancelling')
-                               OR worker_token IS NOT NULL
-                             ) OR EXISTS (
-                               SELECT 1 FROM workspace_furnishing_intakes WHERE phase IN ('uploading','validating','cancelling')
-                               OR worker_token IS NOT NULL
-                             )")?;
-                        if unsettled != "f" {
-                            return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
+                        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                        let selected_checked = if let Some(selected) = self.selected_recovery_045.as_ref() {
+                            let sql = selected.database_query(owner)?;
+                            let value = self.query_database("exhibitos", &sql)?;
+                            self.selected_recovery_045.as_mut().ok_or_else(|| err(oex_retained_cleanup::ERROR))?
+                                .admit_staging(&value)?;
+                            true
+                        } else { false };
+                        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+                        let selected_checked = false;
+                        if !selected_checked {
+                            let unsettled = self.query_database("exhibitos",
+                                "SELECT EXISTS (
+                                   SELECT 1 FROM import_jobs WHERE state IN ('uploading','queued','processing')
+                                   OR lease_id IS NOT NULL OR lease_until IS NOT NULL OR cardinality(png_worker_tokens)>0
+                                   OR model_preparation ? 'claim'
+                                 ) OR EXISTS (
+                                   SELECT 1 FROM oex_import_jobs WHERE state IN ('uploading','queued','processing')
+                                   OR lease_id IS NOT NULL OR lease_until IS NOT NULL OR cleanup_pending
+                                 ) OR EXISTS (
+                                   SELECT 1 FROM workspace_material_intakes WHERE phase IN ('uploading','validating','cancelling')
+                                   OR worker_token IS NOT NULL
+                                 ) OR EXISTS (
+                                   SELECT 1 FROM workspace_furnishing_intakes WHERE phase IN ('uploading','validating','cancelling')
+                                   OR worker_token IS NOT NULL
+                                 )")?;
+                            if unsettled != "f" {
+                                return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
+                            }
                         }
                         String::new()
                     },
@@ -2147,13 +2181,18 @@ const { isDeepStrictEqual } = require('node:util');
         };
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         if let Some(cleanup) = &self.oex_retained_cleanup {
+            let selected = self.selected_recovery_045.as_ref();
+            let expected = if selected.is_some() { Admission::InterruptedReopen } else { Admission::CleanReopen };
             if !personal || furnishing != Some(FurnishingStart::Reopen) || furnishing_lease.is_none()
                 || !self.active_furnishing_binding().is_some_and(|binding|
-                    binding.admission_kind == Admission::CleanReopen && binding.restore.is_none())
+                    binding.admission_kind == expected && binding.restore.is_none())
             {
                 return Err(err(oex_retained_cleanup::ERROR));
             }
             environment.push((oex_retained_cleanup::ENV, cleanup.environment()?));
+            if let Some(selected) = selected {
+                environment.push((oex_retained_cleanup::HAYES_COMPLETION_ENV, selected.hayes_environment()));
+            }
         }
         let spawned = self.spawn(
             &self.payload.node(),
@@ -2344,9 +2383,16 @@ const { isDeepStrictEqual } = require('node:util');
         let catalog = self.payload.workspace_furnishing_catalog()?;
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         if self.oex_retained_cleanup.is_some() {
-            if !services || self.normal_oex_selected || self.transition_fence.is_some()
+            let admissible_source = if self.selected_recovery_045.is_some() {
+                self.transition_fence.is_some() && self.furnishing_transition_trial.as_ref()
+                    .is_some_and(|(_, trial)| matches!(trial, FurnishingTransition::Recover45 { .. }))
+                    && prior_binding.as_ref().is_some_and(|binding| binding.phase == Phase::Active && binding.restore.is_none())
+            } else {
+                self.transition_fence.is_none() && prior_binding.as_ref()
+                    .is_some_and(|binding| binding.phase == Phase::Clean && binding.restore.is_none())
+            };
+            if !services || self.normal_oex_selected || !admissible_source
                 || !catalog.is_some_and(WorkspaceFurnishingCatalog::uses_writer_lease)
-                || !prior_binding.as_ref().is_some_and(|binding| binding.phase == Phase::Clean && binding.restore.is_none())
                 || !self.environment.0.get("EXHIBITOS_AUTHORING_MODE").is_some_and(|mode| mode == "personal")
             {
                 return Err(err(oex_retained_cleanup::ERROR));
