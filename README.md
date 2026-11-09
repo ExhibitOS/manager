@@ -198,8 +198,9 @@ The preparation command records the exact intent before creating the job and rec
 
 The replacement command saves the original request and ETag in the private output directory before posting. Keep that directory and replay the same request after an uncertain response. Use a separate output directory for a separate replacement request. Reopening with a mismatched Studio document allows only the retained recovery operation. The client compares the replacement receipt with a fresh Studio read before updating the local document journal. A later Studio edit requires a new comparison.
 
-With the reviewed catalog 045 local-validation package, the authenticated
-session must advertise `nativeProductImagePreparationProfile` as
+For catalog 045, use the reviewed runtime bundled with the debug helper. Set
+`existingWorkspaceV5` and leave the external runtime overrides unset. The
+authenticated session must advertise `nativeProductImagePreparationProfile` as
 `product-image-pair-2048-512-v1`. Use the same operations with these command
 fields and the original JPEG input. The server prepares the display PNG and,
 when useful, a smaller PNG. After the worker drains, review the exact receipt
