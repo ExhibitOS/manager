@@ -1405,9 +1405,11 @@ impl InstallationController {
             let oex = oex_retained_cleanup::Selection::new(&selection.oex_job_id, &selection.oex_import_runtime_generation)?;
             let prefix = Path::new("blobs").join(&checkpoint.tenant_id).join("oex-staging").join(&selection.oex_job_id);
             let settled_only = checkpoint.old_manifest == checkpoint.new_manifest;
-            if settled_only && checkpoint.files.iter().any(|(path, entry)| {
-                path.starts_with(&prefix) && entry.sha256.is_some()
-            }) {
+            // Settlement durably observes absence. Require its directory to
+            // exist and be empty so that observation cannot create any paths.
+            if settled_only && (checkpoint.files.get(&prefix).is_none_or(|entry| entry.sha256.is_some())
+                || checkpoint.files.keys().any(|path| path != &prefix && path.starts_with(&prefix)))
+            {
                 return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
             }
             let (original, absent_chunks) = service.selected_045_original_store(

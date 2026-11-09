@@ -1829,7 +1829,14 @@ mod normal_oex_release_declaration_tests {
         let transition = FurnishingTransition::from_manifests((&source_manifest, &target_manifest)).unwrap();
         assert!(matches!(transition, FurnishingTransition::Recover45 { .. }));
         assert!(FurnishingTransition::from_manifests((&target_manifest, &source_manifest)).is_none());
-        assert!(FurnishingTransition::from_manifests((&target_manifest, &target_manifest)).is_none());
+        let same_payload = FurnishingTransition::from_manifests((&target_manifest, &target_manifest));
+        if target.catalog45_selected_recovery_validation() {
+            let settled_recovery = same_payload.unwrap();
+            assert_eq!(settled_recovery.source(), settled_recovery.target());
+            assert!(matches!(settled_recovery, FurnishingTransition::Recover45 { .. }));
+        } else {
+            assert!(same_payload.is_none());
+        }
         assert!(!source.catalog45_recovery_validation());
         assert!(target.catalog45_recovery_validation());
         let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
