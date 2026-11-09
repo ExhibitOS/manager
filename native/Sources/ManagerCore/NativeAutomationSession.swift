@@ -109,6 +109,10 @@ public actor NativeAutomationSession {
     /// The installed entry supplies its bundled helper and standard profile.
     /// It does not open developer fixtures, custom helpers or output roots.
     public init(installedImageCLIHelper helper: URL, profile: URL) throws {
+        var metadata = stat()
+        if lstat(profile.path, &metadata) != 0 && errno == ENOENT {
+            throw BridgeFailure("IMAGE_CLI_PERSONAL_WORKSPACE_REQUIRED")
+        }
         _ = try Self.profileIdentity(profile)
         self.helper = helper
         self.profile = profile
