@@ -594,6 +594,10 @@ not a Docker-free release or a qualified replacement for the existing Manager.
 
 ## Native artwork management (partial authoring)
 
+The installed [image CLI](../docs/native-image-cli.md) uses the same personal
+workspace, artwork approval and exhibition save. It requires a bundled runtime
+that admits ordinary image preparation.
+
 The Create destination now contains a personal workspace connection, optional
 existing-account login, artist creation, artwork
 search/pagination and metadata forms, using the existing CMS API. The selected native configuration supplies workspace identity. New personal
