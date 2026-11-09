@@ -1087,3 +1087,15 @@ visuals and automatic artwork movement are unsupported in this slice.
 Source tests cover correspondence and raw input only. Matching qualified runtime
 artifacts and native save/reopen/output/consumer actual evidence are required
 before claiming this feature complete.
+
+The authenticated automation session exposes `plaque-prepare` and
+`wall-finish-prepare` for the existing inspector commands. Each requires a
+clean local draft matching the authenticated saved Studio head, the current
+local revision and edit version, and a `command`. The server validates the
+proposal against that saved head without writing it. The session retains the
+checked preview and returns its proposal ID and candidate for inspection.
+`plaque-apply` or `wall-finish-apply` accepts only the proposal ID and current
+revisions; it rechecks the saved head and stages the retained preview. Use
+`save` and `reopen-saved` before preparing another edit. `plaque-cancel` and
+`wall-finish-cancel` discard a pending proposal without changing the draft.
+Caller-supplied producer replies are not accepted.

@@ -154,31 +154,62 @@ public struct WorkspaceFurnishingDetails: Codable, Equatable, Sendable {
     var isValid: Bool { furnishingText(name, limit: 120) && furnishingText(provenance, limit: 1024) && model.isValid }
 }
 
+public enum WorkspaceFurnishingFitProfile: String, Codable, Sendable {
+    case straightRing = "straight-ring-v1"
+    case continuousPortal = "continuous-portal-v1"
+    case modularPortal = "modular-portal-v1"
+
+    func matches(_ kind: WorkspaceFurnishingKind) -> Bool {
+        kind == (self == .straightRing ? .artworkFrame : .portalFinish)
+    }
+}
+
+public struct WorkspaceFurnishingFit: Codable, Equatable, Sendable {
+    public let version: Int
+    public let sourceBytes: Int
+    public let sourceSha256: String
+    public let geometry: DocumentValue
+
+    var profile: WorkspaceFurnishingFitProfile? {
+        geometry["profile"].string.flatMap(WorkspaceFurnishingFitProfile.init(rawValue:))
+    }
+
+    func matches(_ details: WorkspaceFurnishingDetails) -> Bool {
+        version == 1 && sourceBytes == details.model.bytes && sourceSha256 == details.model.sha256
+            && profile?.matches(details.kind) == true
+    }
+}
+
 struct WorkspaceFurnishingRequest: Encodable {
     let requestId: String
     let details: WorkspaceFurnishingDetails
     var preparationPolicy: WorkspaceArtworkFramePreparationPolicy? = nil
+    var fitProfile: WorkspaceFurnishingFitProfile? = nil
 
     func encode(to encoder: Encoder) throws {
         try details.encode(to: encoder)
         var fields = encoder.container(keyedBy: CodingKeys.self)
         try fields.encode(requestId, forKey: .requestId)
         try fields.encodeIfPresent(preparationPolicy, forKey: .preparationPolicy)
+        try fields.encodeIfPresent(fitProfile, forKey: .fitProfile)
     }
-    private enum CodingKeys: CodingKey { case requestId, preparationPolicy }
+    private enum CodingKeys: CodingKey { case requestId, preparationPolicy, fitProfile }
 }
 
 public struct WorkspaceFurnishing: Codable, Equatable, Sendable {
     public let id: String
     public let version: Int
     public let details: WorkspaceFurnishingDetails
+    public let fit: WorkspaceFurnishingFit?
 
     public init(from decoder: Decoder) throws {
         let fields = try decoder.container(keyedBy: CodingKeys.self)
         id = try fields.decode(String.self, forKey: .id)
         version = try fields.decode(Int.self, forKey: .version)
         details = try WorkspaceFurnishingDetails(from: decoder)
-        guard workspaceFurnishingID(id), version == 1, details.isValid else {
+        fit = fields.contains(.fit) ? try fields.decode(WorkspaceFurnishingFit.self, forKey: .fit) : nil
+        guard workspaceFurnishingID(id), version == 1, details.isValid,
+              fit.map({ $0.matches(details) }) ?? true else {
             throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
         }
     }
@@ -188,8 +219,9 @@ public struct WorkspaceFurnishing: Codable, Equatable, Sendable {
         var fields = encoder.container(keyedBy: CodingKeys.self)
         try fields.encode(id, forKey: .id)
         try fields.encode(version, forKey: .version)
+        try fields.encodeIfPresent(fit, forKey: .fit)
     }
-    private enum CodingKeys: CodingKey { case id, version }
+    private enum CodingKeys: CodingKey { case id, version, fit }
 }
 
 public struct WorkspaceFurnishingSummary: Codable, Sendable, Identifiable {
@@ -250,9 +282,10 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
     public let furnishing: WorkspaceFurnishing?
     public let preparationPolicy: WorkspaceArtworkFramePreparationPolicy?
     public let preparation: Preparation?
+    public let fitProfile: WorkspaceFurnishingFitProfile?
 
     private enum CodingKeys: CodingKey {
-        case intakeId, requestId, phase, declaration, received, retryable, error, furnishing, preparationPolicy, preparation
+        case intakeId, requestId, phase, declaration, received, retryable, error, furnishing, preparationPolicy, preparation, fitProfile
     }
 
     public init(from decoder: Decoder) throws {
@@ -268,15 +301,19 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
         preparationPolicy = fields.contains(.preparationPolicy)
             ? try fields.decode(WorkspaceArtworkFramePreparationPolicy.self, forKey: .preparationPolicy) : nil
         preparation = fields.contains(.preparation) ? try fields.decode(Preparation.self, forKey: .preparation) : nil
+        fitProfile = fields.contains(.fitProfile) ? try fields.decode(WorkspaceFurnishingFitProfile.self, forKey: .fitProfile) : nil
     }
 
     func check(id: String? = nil, requestId: String? = nil, details: WorkspaceFurnishingDetails? = nil,
-               expectedPolicy: WorkspaceArtworkFramePreparationPolicy? = nil, supportedExtensionVersion: Int64 = 1,
+               expectedPolicy: WorkspaceArtworkFramePreparationPolicy? = nil, expectedFit: WorkspaceFurnishingFitProfile? = nil,
+               supportedExtensionVersion: Int64 = 1,
                admitsPreparation: Bool = false) throws {
         guard workspaceFurnishingID(intakeId), workspaceFurnishingID(self.requestId),
               id.map({ $0 == intakeId }) ?? true, requestId.map({ $0 == self.requestId }) ?? true,
               declaration.isValid, declaration.kind.minimumExtensionVersion <= supportedExtensionVersion,
-              details.map({ $0 == declaration && expectedPolicy == preparationPolicy }) ?? true,
+              details.map({ $0 == declaration && expectedPolicy == preparationPolicy && expectedFit == fitProfile }) ?? true,
+              fitProfile.map({ supportedExtensionVersion >= 7 && preparationPolicy == nil && $0.matches(declaration.kind) }) ?? true,
+              furnishing.map({ $0.fit?.profile == fitProfile }) ?? true,
               received.map({ $0.bytes == declaration.model.bytes && $0.sha256 == declaration.model.sha256 }) ?? true,
               !retryable || (phase == .failed && received != nil),
               phase != .validating || received != nil,

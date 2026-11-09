@@ -62,6 +62,8 @@ public actor NativeAutomationSession {
     private var proposals: [String: BenchViewportRequest] = [:]
     private var sharedBenchProposals: [String: SharedFurnishingViewportRequest] = [:]
     private var surfaceProposals: [String: SurfaceMaterialTextureRequest] = [:]
+    private var plaqueProposals: [String: (PlaquePreview, String)] = [:]
+    private var wallFinishProposals: [String: (WallFinishPreview, String)] = [:]
     private var pendingRevisions: [String: UInt64] = [:]
     private var staticIntents: [String: NativePublicationPending] = [:]
     private var selectedOEXFormat: String?
@@ -75,6 +77,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsProductImageRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsFreshImageRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsLargeModelRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: $0.manifestSHA256)
             } == true
         guard !(selectedOEX9 && selectedOEX10),
               workspaceV6ValidationRuntime == nil || workspaceV7ValidationRuntime == nil,
@@ -238,7 +241,8 @@ public actor NativeAutomationSession {
         let admitsMaterials = await api.admitsWorkspaceMaterials
         let admitsFreshImages = await api.admitsFreshImagePreparation
         let admitsLargeModels = await api.admitsLargeModelPreparation
-        guard admitsMaterials || admitsFreshImages || admitsLargeModels else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
+        let admitsSavedHeadAuthoring = await api.admitsSavedHeadAuthoring
+        guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsSavedHeadAuthoring else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
         let stored = try await api.exhibition(draft.id)
         guard try value(await bridge.documentState(context)) == value(saved) else {
             throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
@@ -272,7 +276,7 @@ public actor NativeAutomationSession {
         let directory = try profileIdentity()
 
         runtimeStopped = true
-        proposals.removeAll(); sharedBenchProposals.removeAll(); surfaceProposals.removeAll()
+        proposals.removeAll(); sharedBenchProposals.removeAll(); surfaceProposals.removeAll(); plaqueProposals.removeAll(); wallFinishProposals.removeAll()
         _ = try await bridge.stop(context)
         let stopped = try await waitReady()
         guard let runtime = stopped.runtime, runtime.state == "stopped", !runtime.hasOwnedProcesses,
@@ -873,13 +877,22 @@ public actor NativeAutomationSession {
             } else {
                 policy = nil
             }
+            let fitProfile: WorkspaceFurnishingFitProfile?
+            if let input = fields.removeValue(forKey: "fitProfile") {
+                guard let name = input.string, let selected = WorkspaceFurnishingFitProfile(rawValue: name) else {
+                    throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+                }
+                fitProfile = selected
+            } else {
+                fitProfile = nil
+            }
             guard Set(fields.keys) == commandKeys else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
             let command = DocumentValue.object(fields)
             let details = try JSONDecoder().decode(WorkspaceFurnishingDetails.self, from: JSONEncoder().encode(command))
             guard let id = request["requestId"].string, try value(details) == command else {
                 throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
             }
-            return try value(await api.createWorkspaceFurnishing(requestId: id, details: details, preparationPolicy: policy))
+            return try value(await api.createWorkspaceFurnishing(requestId: id, details: details, preparationPolicy: policy, fitProfile: fitProfile))
         case "workspace-furnishing-intake-list", "workspace-furnishing-list":
             let command = try NativeAutomationArtworkRules.command(request, keys: ["cursor"])
             guard command["cursor"] == .null || command["cursor"].string != nil else {
@@ -945,6 +958,11 @@ public actor NativeAutomationSession {
         if installedExportRootIdentity != nil {
             try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))
         }
+        if ["plaque-prepare", "plaque-apply", "plaque-cancel", "wall-finish-prepare", "wall-finish-apply", "wall-finish-cancel"].contains(operation) {
+            let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion"]
+            let extra: Set<String> = operation.hasSuffix("-prepare") ? ["command"] : ["proposalId"]
+            guard Set(fields.keys) == common.union(extra) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        }
         if operation == "shared-bench-prepare" || operation == "shared-bench-apply" {
             let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion"]
             let extra: Set<String> = operation == "shared-bench-prepare" ? ["command", "outputPath"] : ["proposalId", "inputPath"]
@@ -982,7 +1000,11 @@ public actor NativeAutomationSession {
                 throw BridgeFailure("AUTOMATION_OUTPUT_INVALID")
             }
         }
-        if let prior { return prior }
+        if let prior {
+            if operation == "plaque-prepare", plaqueProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
+            if operation == "wall-finish-prepare", wallFinishProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
+            return prior
+        }
         guard !busy, seenRequests.count < 128 else { throw BridgeFailure("AUTOMATION_BUSY") }
         guard !runtimeStopped || operation == "read" else { throw BridgeFailure("NATIVE_NOT_READY") }
         guard !artworkReplacementRecoveryOnly || ["read", "artwork-replace-reviewed"].contains(operation) else {
@@ -1142,9 +1164,14 @@ public actor NativeAutomationSession {
             let attaching = operation == "workspace-portal-attach"
             let fields = try NativeAutomationArtworkRules.command(request, keys: attaching
                 ? ["openingId", "furnishingId", "furnishingVersion", "modelSha256"] : ["openingId"])
+            let modularFit = attaching ? await api.admitsWorkspaceModularPortalFit : false
+            let modelHash = fields["modelSha256"].string
+            let validModularHash = modularFit && modelHash.map {
+                $0.utf8.count == 64 && $0.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+            } == true
             guard let opening = fields["openingId"].string,
                   !attaching || (fields["furnishingId"].string != nil && fields["furnishingVersion"] == .integer(1)
-                    && fields["modelSha256"].string == WorkspacePortalFinish.modelSHA256) else {
+                    && (modelHash == WorkspacePortalFinish.modelSHA256 || validModularHash)) else {
                 throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
             }
             if let draft = try await api.prepareWorkspacePortalFinish(openingId: opening,
@@ -1730,6 +1757,77 @@ public actor NativeAutomationSession {
             try draft.refreshHayesArtwork(snapshot.artwork, placementId: placementId)
             var next = current; next.draft = draft
             result = try value(await bridge.saveDocumentState(context, state: next))
+        case "plaque-prepare", "wall-finish-prepare":
+            try checkedRevision(request, current)
+            guard !current.dirty, current.pending == nil, let draft = current.draft, let etag = current.etag else {
+                throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
+            }
+            try await checkSavedEditPolicy(current, api: api, unsupportedCode: "NATIVE_VIEWPORT_CAPABILITY_UNAVAILABLE")
+            let saved = try await api.exhibition(draft.id)
+            guard saved.draft == draft, saved.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            let epoch = UUID().uuidString.lowercased()
+            if operation == "plaque-prepare" {
+                let command = try NativeAutomationPlaqueWall.plaque(request["command"])
+                let frame = ViewportFrame(epoch: epoch, sequence: 1, tenantId: current.tenantId, principalId: current.principalId,
+                    draft: draft, selection: nil, mode: "translate", view: "isometric", disabled: false, workspaceId: current.workspaceId, baseETag: etag)
+                let proposal = try PlaqueViewportRequest(frame: frame, command: command, selectedPlaqueId: command.plaqueId)
+                let reply = try await api.nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision, etag: etag, proposal: proposal.value)
+                try Task.checkCancellation()
+                let (_, _, refreshed) = try await checked(request)
+                guard try value(refreshed) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+                let now = try await api.exhibition(draft.id)
+                let (_, _, finalState) = try await checked(request)
+                try Task.checkCancellation()
+                guard now.draft == draft, now.etag == etag, now.revision == saved.revision,
+                      try value(finalState) == value(current) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+                let preview = try proposal.checkedReply(reply, selectedPlaqueId: command.plaqueId)
+                plaqueProposals[id] = (preview, etag)
+                result = .object(["proposalId": .string(id), "candidate": preview.candidate])
+            } else {
+                let command = try NativeAutomationPlaqueWall.wall(request["command"])
+                let frame = ViewportFrame(epoch: epoch, sequence: 1, tenantId: current.tenantId, principalId: current.principalId,
+                    draft: draft, selection: ViewportSelection(kind: "surface", id: command.surfaceId), mode: "translate", view: "isometric", disabled: false, workspaceId: current.workspaceId, baseETag: etag)
+                let proposal = try WallFinishViewportRequest(frame: frame, command: command)
+                let reply = try await api.nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision, etag: etag, proposal: proposal.value)
+                try Task.checkCancellation()
+                let (_, _, refreshed) = try await checked(request)
+                guard try value(refreshed) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+                let now = try await api.exhibition(draft.id)
+                let (_, _, finalState) = try await checked(request)
+                try Task.checkCancellation()
+                guard now.draft == draft, now.etag == etag, now.revision == saved.revision,
+                      try value(finalState) == value(current) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+                let preview = try proposal.checkedReply(reply)
+                wallFinishProposals[id] = (preview, etag)
+                result = .object(["proposalId": .string(id), "candidate": preview.candidate])
+            }
+        case "plaque-apply", "wall-finish-apply":
+            try checkedRevision(request, current)
+            guard !current.dirty, current.pending == nil, let draft = current.draft, let etag = current.etag,
+                  let proposalId = request["proposalId"].string else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
+            try await checkSavedEditPolicy(current, api: api, unsupportedCode: "NATIVE_VIEWPORT_CAPABILITY_UNAVAILABLE")
+            let saved = try await api.exhibition(draft.id)
+            let (_, _, finalState) = try await checked(request)
+            try Task.checkCancellation()
+            guard saved.draft == draft, saved.etag == etag,
+                  try value(finalState) == value(current) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            var next = current
+            if operation == "plaque-apply" {
+                guard let (preview, expectedETag) = plaqueProposals[proposalId], expectedETag == etag else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+                next.draft = try preview.apply(to: draft, selectedPlaqueId: preview.command.plaqueId, command: preview.command)
+            } else {
+                guard let (preview, expectedETag) = wallFinishProposals[proposalId], expectedETag == etag else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+                next.draft = try preview.apply(to: draft, command: preview.command, selectedSurfaceId: preview.command.surfaceId)
+            }
+            try Task.checkCancellation()
+            result = try value(await bridge.saveDocumentState(context, state: next))
+            plaqueProposals.removeValue(forKey: proposalId); wallFinishProposals.removeValue(forKey: proposalId)
+        case "plaque-cancel", "wall-finish-cancel":
+            try checkedRevision(request, current)
+            guard let proposalId = request["proposalId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let removed = operation == "plaque-cancel" ? plaqueProposals.removeValue(forKey: proposalId) != nil : wallFinishProposals.removeValue(forKey: proposalId) != nil
+            guard removed else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            result = .object(["cancelled": .bool(true)])
         case "shared-bench-prepare":
             try checkedRevision(request, current)
             try await checkSavedEditPolicy(current, api: api)

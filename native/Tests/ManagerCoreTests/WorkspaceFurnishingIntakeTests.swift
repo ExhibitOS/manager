@@ -48,6 +48,29 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(value.furnishing)), wire["furnishing"])
     }
 
+    func testModularFitProfileAndRegisteredReceiptAreSeparate() throws {
+        var wire = try registered()
+        wire["declaration"]["kind"] = .string("portal-finish")
+        wire["furnishing"]["kind"] = .string("portal-finish")
+        wire["fitProfile"] = .string("modular-portal-v1")
+        wire["furnishing"]["fit"] = .object([
+            "version": .integer(1), "sourceBytes": .integer(23), "sourceSha256": .string(modelSHA256),
+            "geometry": .object(["profile": .string("modular-portal-v1"), "openingWidth": .number(2.4)])
+        ])
+        let value = try intake(wire)
+        try value.check(requestId: requestId, details: value.declaration, expectedFit: .modularPortal,
+                        supportedExtensionVersion: 7)
+        XCTAssertThrowsError(try value.check(supportedExtensionVersion: 6))
+        let request = WorkspaceFurnishingRequest(requestId: requestId, details: value.declaration, fitProfile: .modularPortal)
+        var expected = wire["declaration"]
+        expected["requestId"] = .string(requestId)
+        expected["fitProfile"] = wire["fitProfile"]
+        XCTAssertEqual(try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(request)), expected)
+        XCTAssertEqual(try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(value.furnishing)), wire["furnishing"])
+        wire["furnishing"]["fit"]["sourceBytes"] = .integer(24)
+        XCTAssertThrowsError(try intake(wire))
+    }
+
     func testResumeAndTerminalReceiptsBindOriginalBytesAndRequest() throws {
         var wire = try registered()
         let issued = try intake(wire)

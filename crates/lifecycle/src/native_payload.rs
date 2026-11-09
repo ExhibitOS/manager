@@ -656,10 +656,18 @@ const CATALOG45_RENDERED_SCULPTURE_THUMBNAIL: RuntimeTuple = (
     "f21b1378b39d11fd6ea8f9c89636912f233f884af176e2deb9856dea3ae77b53",
 );
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_SAVED_HEAD_MODULAR_PORTAL: RuntimeTuple = (
+    "3bcf73ed523c465376b213b0649185621d10e216",
+    "93f6ceebc80298d946df23624e0d7b4f755bbe9d6764771e6ecc95f60e951ee2",
+    "375672ab366c52a8a177e2815fda65382708aba8126461a903268534918b43fe",
+);
+
 pub(crate) fn ordinary_fresh_catalog45_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CATALOG45_DEFAULT_FRAME == tuple || CATALOG45_PRODUCT_IMAGE == tuple
-        || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL == tuple;
+        || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL == tuple
+        || CATALOG45_SAVED_HEAD_MODULAR_PORTAL == tuple;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -1909,6 +1917,21 @@ mod normal_oex_release_declaration_tests {
     #[ignore = "requires the exact sealed catalog 045 sculpture thumbnail validation package"]
     fn opens_reviewed_rendered_sculpture_thumbnail_package() {
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_RENDERED_SCULPTURE_RUNTIME").unwrap());
+        let payload = Payload::open(&root).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 45);
+        assert!(payload.ordinary_fresh_furnishing());
+        assert!(!payload.workspace_v5_selected_input());
+        assert!(payload.retained_furnishing_catalog().is_none());
+        assert!(!saved_workspace_transition_target(&payload.context().manifest_sha256));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact sealed ordinary saved-head and modular portal package"]
+    fn opens_reviewed_saved_head_modular_portal_package() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_SAVED_HEAD_MODULAR_RUNTIME").unwrap());
         let payload = Payload::open(&root).unwrap();
         let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
         assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
