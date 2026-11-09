@@ -393,6 +393,7 @@ mod tests {
             model_derivation: None,
             model_preparation: None,
             coarse_preparation: None,
+            product_image_preparation: None,
             hayes_original: None,
         });
         controller.save_native_upload(token, transfer).unwrap();

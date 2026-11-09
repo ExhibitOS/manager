@@ -686,7 +686,7 @@ struct ManagerView: View {
             .opacity(workbenchActive ? 0 : 1)
             .allowsHitTesting(!workbenchActive)
             .accessibilityHidden(workbenchActive)
-            NativeExhibitionView(model: model.exhibitions, controller: model.exhibitions.viewportController,
+            NativeExhibitionView(model: model.exhibitions, authoring: model.authoring, controller: model.exhibitions.viewportController,
                                  oexImport: model.exhibitions.oexImport, ready: model.ready,
                                  freshOEXOperationActive: model.native?.busy == true && model.native?.selectedOex == true && model.native?.operation == "importing_oex",
                                  mode: model.presentation?.mode ?? .beginner,

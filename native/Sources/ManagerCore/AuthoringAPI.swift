@@ -19,6 +19,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var modelOriginalInspectionProfile: String? = nil
     public var compactModelVariantProfile: String? = nil
     public var nativeModelCandidateReplacementProfile: String? = nil
+    public var nativeProductImagePreparationProfile: String? = nil
     public var workspaceMaterialProfile: String? = nil
     public var workspaceFurnishingProfile: String? = nil
     public var workspaceFurnishingStoolProfile: String? = nil
@@ -330,6 +331,7 @@ public actor AuthoringAPI {
     private let transport: URLSession
     public nonisolated let admitsICCJPEG: Bool
     public nonisolated let admitsSameOwnerArtworkReplacement: Bool
+    public nonisolated let productImageRuntimeQualified: Bool
     // These reviewed v5 tuples are local-validation payloads. Release admission
     // requires separate package qualification.
     #if DEBUG
@@ -348,6 +350,7 @@ public actor AuthoringAPI {
         "a7cab3643e4b6554c70ef4c1fda7bfb2ce5234273dead44711be9f72df9ff34c",
         "3ef0cf579846cfd682e63cf1bf89c8735c042b46a711569b4ec6d6c10870c76c"
     ]
+    private static let productImageManifestPins: Set<String> = []
     private static let workspaceMaterialMultimapManifestPins: Set<String> = [
         "72a13c526fb422c106f8eefaa7e277e5ab003f3c2085ebd09b2814c0a19ef904",
         "df6efc23ea2d9aab790fc25fab9833db9f5b48b3cb0c5417a1bd7c5ef609ac2a",
@@ -414,12 +417,14 @@ public actor AuthoringAPI {
         let manifest = nativeRuntimeManifestSHA256 ?? ""
         #if DEBUG
         hayesOriginalRuntimeQualified = NativeHayesOriginalIntent.supports(manifest: manifest)
+        productImageRuntimeQualified = Self.productImageManifestPins.contains(manifest)
         let portalQualified = manifest == Self.workspacePortalFinishManifestPin
             || Self.requiredModelPreparationManifestPins.contains(manifest)
             || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
         let multimapQualified = portalQualified || Self.workspaceMaterialMultimapManifestPins.contains(manifest)
         #else
         hayesOriginalRuntimeQualified = false
+        productImageRuntimeQualified = false
         let portalQualified = false
         let multimapQualified = false
         #endif
@@ -664,24 +669,76 @@ public actor AuthoringAPI {
               etag.hasPrefix("\"studio-r\(studioRevision)-") else {
             throw AuthoringFailure("IMPORT_INPUT_INVALID")
         }
+        let current = generation
+        let importJobId = try identifier(importJobId)
+        let job = try await importJob(importJobId)
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard job.id.lowercased() == importJobId, job.state == "approved",
+              job.imagePreparation?.matches(intent) == true,
+              let prepared = job.coarsePreparation, prepared.matches(coarse, job: job),
+              prepared.workerDrained, prepared.sha256 == expectedCoarseSHA256 else {
+            throw AuthoringFailure("COARSE_JOB_NOT_READY")
+        }
+        return try await commitImageReplacement(exhibitionId: exhibitionId, studioRevision: studioRevision,
+            etag: etag, requestId: requestId, importJobId: importJobId, artworkId: intent.artworkId,
+            artworkRevision: coarse.artworkRevision, generation: current)
+    }
+
+    public func replaceProductImage(
+        exhibitionId: String, studioRevision: Int, etag: String, requestId: String, importJobId: String,
+        intent: NativeImportIntent, workspaceId: String, principalId: String, expectedReceiptSHA256: String
+    ) async throws -> NativeStudioResponse {
+        guard admitsProductImagePreparation, session?.userId == principalId else {
+            throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
+        }
+        guard let preparation = intent.productImagePreparation, preparation.valid,
+              nativeImportDigest(expectedReceiptSHA256), (1..<2_147_483_647).contains(studioRevision),
+              etag.hasPrefix("\"studio-r\(studioRevision)-") else {
+            throw AuthoringFailure("IMPORT_INPUT_INVALID")
+        }
+        let current = generation
+        let importJobId = try identifier(importJobId)
+        let job = try await importJob(importJobId)
+        guard generation == current, admitsProductImagePreparation else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard job.id == importJobId, let status = job.productImagePreparation,
+              status.validatesReady(intent: intent, preparation: preparation, job: job,
+                                    workspaceID: workspaceId, principalID: principalId),
+              let receipt = status.serverReceipt, receipt.sha256 == expectedReceiptSHA256 else {
+            throw AuthoringFailure("IMAGE_PREPARATION_JOB_NOT_READY")
+        }
+        let stored = try await commitImageReplacement(exhibitionId: exhibitionId, studioRevision: studioRevision,
+            etag: etag, requestId: requestId, importJobId: importJobId, artworkId: intent.artworkId,
+            artworkRevision: preparation.artworkRevision, generation: current)
+        guard let artwork = stored.draft.artworks.first(where: { $0["id"].string == intent.artworkId }),
+              artwork["revision"].integer == Int64(preparation.artworkRevision + 1),
+              artwork["primaryAssetId"].string == receipt.full.assetId,
+              let assets = artwork["assets"].items,
+              assets.count == (receipt.coarse == nil ? 1 : 2),
+              assets.contains(where: { $0["id"].string == receipt.full.assetId
+                && $0["sha256"].string == receipt.full.sha256 && $0["bytes"].integer == Int64(receipt.full.bytes)
+                && $0["mime"].string == "image/png" }) else {
+            throw AuthoringFailure("IMPORT_RECEIPT_INVALID")
+        }
+        if let coarse = receipt.coarse {
+            guard assets.contains(where: { $0["id"].string == coarse.assetId
+                && $0["sha256"].string == coarse.sha256 && $0["bytes"].integer == Int64(coarse.bytes)
+                && $0["mime"].string == "image/png" }) else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
+        }
+        return stored
+    }
+
+    private func commitImageReplacement(exhibitionId: String, studioRevision: Int, etag: String, requestId: String,
+                                        importJobId: String, artworkId: String, artworkRevision: Int,
+                                        generation current: UInt64) async throws -> NativeStudioResponse {
         struct Input: Encodable {
             let requestId: String
             let artworkId: String
             let artworkRevision: Int
             let importJobId: String
         }
-        let current = generation
         let exhibitionId = try identifier(exhibitionId)
-        let input = try Input(requestId: identifier(requestId), artworkId: identifier(intent.artworkId),
-                              artworkRevision: coarse.artworkRevision, importJobId: identifier(importJobId))
-        let job = try await importJob(input.importJobId)
-        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
-        guard job.id.lowercased() == input.importJobId, job.state == "approved",
-              job.imagePreparation?.matches(intent) == true,
-              let prepared = job.coarsePreparation, prepared.matches(coarse, job: job),
-              prepared.workerDrained, prepared.sha256 == expectedCoarseSHA256 else {
-            throw AuthoringFailure("COARSE_JOB_NOT_READY")
-        }
+        let input = try Input(requestId: identifier(requestId), artworkId: identifier(artworkId),
+                              artworkRevision: artworkRevision, importJobId: importJobId)
         try Task.checkCancellation()
         let path = studioPrefix + "/exhibitions/" + exhibitionId + "/native-artwork-replacement"
         let saved: NativeStudioResponse = try await request(path, method: "POST", body: encoded(input),
@@ -698,6 +755,11 @@ public actor AuthoringAPI {
     public var admitsApprovedModelCandidateReplacement: Bool {
         nativeSession && !authenticationBusy && admitsRequiredModelPreparation
             && session?.nativeModelCandidateReplacementProfile == NativeAutomationReplacementCommand.modelProfile
+    }
+
+    public var admitsProductImagePreparation: Bool {
+        nativeSession && !authenticationBusy && productImageRuntimeQualified && admitsRequiredModelPreparation
+            && session?.nativeProductImagePreparationProfile == NativeProductImagePreparationIntent.profileID
     }
 
     private func reviewedModelCandidate(job: NativeImportJob, jobId: String, artworkId: String,
@@ -1311,6 +1373,9 @@ public actor AuthoringAPI {
     }
 
     public func createImport(_ input: NativeImportIntent) async throws -> NativeImportJob {
+        if let preparation = input.productImagePreparation {
+            return try await createProductImageImport(input, preparation: preparation)
+        }
         if let hayes = input.hayesOriginal {
             guard nativeSession, hayesOriginalRuntimeQualified, hayes.matches(input) else {
                 throw AuthoringFailure("HAYES_OPERATION_UNAVAILABLE")
@@ -1362,6 +1427,36 @@ public actor AuthoringAPI {
                   job.imagePreparation?.matches(input) == true else {
                 throw AuthoringFailure("IMPORT_RECEIPT_INVALID")
             }
+        }
+        return job
+    }
+    private func createProductImageImport(_ input: NativeImportIntent,
+                                          preparation: NativeProductImagePreparationIntent) async throws -> NativeImportJob {
+        guard admitsProductImagePreparation else { throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE") }
+        guard preparation.valid, input.mime == "image/jpeg", input.scaleMeters == 1,
+              (1...ImportFileSnapshot.limit).contains(input.bytes), nativeImportDigest(input.sha256),
+              input.derived == nil, input.coarsePreparation == nil, input.modelDerivation == nil,
+              input.modelPreparation == nil, input.hayesOriginal == nil else {
+            throw AuthoringFailure("IMPORT_INPUT_INVALID")
+        }
+        struct Input: Encodable {
+            let artworkId: String
+            let idempotencyKey: String
+            let mime: String
+            let sha256: String
+            let bytes: Int
+            let scaleMeters: Double
+            let rights: ArtworkMetadata.Rights
+            let coarsePreparation: NativeProductImagePreparationIntent
+        }
+        let current = generation
+        let wire = try Input(artworkId: identifier(input.artworkId), idempotencyKey: identifier(input.idempotencyKey),
+                             mime: input.mime, sha256: input.sha256, bytes: input.bytes, scaleMeters: input.scaleMeters,
+                             rights: input.rights, coarsePreparation: preparation)
+        let job: NativeImportJob = try await request("/api/v1/tenants/\(tenant)/imports", method: "POST", body: encoded(wire))
+        guard generation == current, admitsProductImagePreparation,
+              job.productImagePreparation?.matches(preparation, job: job) == true else {
+            throw AuthoringFailure("IMPORT_RECEIPT_INVALID")
         }
         return job
     }
@@ -1870,6 +1965,7 @@ public struct NativeImportJob: Decodable, Sendable {
     public let modelDerivation: NativeModelDerivationStatus?
     public let modelPreparation: NativeModelPreparationStatus?
     public let imagePreparation: NativeImagePreparationStatus?
+    public let productImagePreparation: NativeProductImagePreparationStatus?
     public let coarsePreparation: NativeCoarsePreparationStatus?
     public let workerDrainVersion: Int?
     public let workerDrained: Bool?
@@ -1892,6 +1988,7 @@ public struct NativeImportJob: Decodable, Sendable {
         // Legacy clients ignored this field. A malformed future field remains
         // absent here; selected ICC validation then rejects that absence.
         imagePreparation = try? values.decode(NativeImagePreparationStatus.self, forKey: .imagePreparation)
+        productImagePreparation = try? values.decode(NativeProductImagePreparationStatus.self, forKey: .imagePreparation)
         coarsePreparation = values.contains(.coarsePreparation)
             ? try values.decode(NativeCoarsePreparationStatus.self, forKey: .coarsePreparation) : nil
         workerDrainVersion = try? values.decode(Int.self, forKey: .workerDrainVersion)
@@ -1901,6 +1998,7 @@ public struct NativeImportJob: Decodable, Sendable {
         self.id = id; self.state = state; self.progress = progress; self.attempts = attempts; self.errorCode = errorCode
         self.assetId = assetId; self.retryAt = retryAt; self.originalAssetId = originalAssetId; self.modelDerivation = modelDerivation; self.imagePreparation = imagePreparation
         self.modelPreparation = nil
+        self.productImagePreparation = nil
         self.coarsePreparation = nil
         self.workerDrainVersion = nil; self.workerDrained = nil
     }
@@ -1913,6 +2011,10 @@ public struct NativeImportJob: Decodable, Sendable {
         }
     }
     public func confirmsIntakeDrain(for intent: NativeImportIntent) -> Bool {
+        if let preparation = intent.productImagePreparation {
+            return productImagePreparation?.matches(preparation, job: self) == true
+                && productImagePreparation?.workerDrained == true
+        }
         if intent.modelPreparation != nil {
             return modelPreparation?.matches(intent, job: self) == true && modelPreparation?.workerDrained == true
         }
@@ -2003,9 +2105,10 @@ public struct NativeImportIntent: Codable, Equatable, Sendable {
     public let modelDerivation: NativeModelDerivationIntent?
     public let modelPreparation: NativeModelPreparationIntent?
     public let coarsePreparation: NativeCoarsePreparationIntent?
+    public let productImagePreparation: NativeProductImagePreparationIntent?
     public let hayesOriginal: NativeHayesOriginalIntent?
     private enum CodingKeys: String, CodingKey {
-        case artworkId, idempotencyKey, mime, sha256, bytes, scaleMeters, rights, derived, modelDerivation, modelPreparation, coarsePreparation, hayesOriginal
+        case artworkId, idempotencyKey, mime, sha256, bytes, scaleMeters, rights, derived, modelDerivation, modelPreparation, coarsePreparation, productImagePreparation, hayesOriginal
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -2022,11 +2125,13 @@ public struct NativeImportIntent: Codable, Equatable, Sendable {
             ? try values.decode(NativeModelPreparationIntent.self, forKey: .modelPreparation) : nil
         coarsePreparation = values.contains(.coarsePreparation)
             ? try values.decode(NativeCoarsePreparationIntent.self, forKey: .coarsePreparation) : nil
+        productImagePreparation = try values.decodeIfPresent(NativeProductImagePreparationIntent.self, forKey: .productImagePreparation)
         hayesOriginal = try values.decodeIfPresent(NativeHayesOriginalIntent.self, forKey: .hayesOriginal)
     }
-    public init(artworkId: String, idempotencyKey: String = UUID().uuidString.lowercased(), mime: String, sha256: String, bytes: Int, scaleMeters: Double, rights: ArtworkMetadata.Rights, derived: NativeImportDerived? = nil, modelDerivation: NativeModelDerivationIntent? = nil, modelPreparation: NativeModelPreparationIntent? = nil, coarsePreparation: NativeCoarsePreparationIntent? = nil, hayesOriginal: NativeHayesOriginalIntent? = nil) {
+    public init(artworkId: String, idempotencyKey: String = UUID().uuidString.lowercased(), mime: String, sha256: String, bytes: Int, scaleMeters: Double, rights: ArtworkMetadata.Rights, derived: NativeImportDerived? = nil, modelDerivation: NativeModelDerivationIntent? = nil, modelPreparation: NativeModelPreparationIntent? = nil, coarsePreparation: NativeCoarsePreparationIntent? = nil, productImagePreparation: NativeProductImagePreparationIntent? = nil, hayesOriginal: NativeHayesOriginalIntent? = nil) {
         self.artworkId = artworkId; self.idempotencyKey = idempotencyKey; self.mime = mime; self.sha256 = sha256; self.bytes = bytes; self.scaleMeters = scaleMeters; self.rights = rights; self.derived = derived; self.modelDerivation = modelDerivation
         self.coarsePreparation = coarsePreparation
+        self.productImagePreparation = productImagePreparation
         self.modelPreparation = modelPreparation
         self.hayesOriginal = hayesOriginal
     }

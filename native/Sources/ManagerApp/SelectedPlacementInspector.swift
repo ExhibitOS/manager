@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import SwiftUI
+import UniformTypeIdentifiers
 import ManagerCore
 
 /// Former installation-view @State stays owned by the exhibition view, keyed to
@@ -17,9 +18,13 @@ struct InstallationInspectorState {
 
 struct SelectedPlacementInspector: View {
     @ObservedObject var model: ExhibitionModel
+    @ObservedObject var authoring: AuthoringModel
     let ready: Bool
     let mode: Mode
     @Binding var inputs: InstallationInspectorState
+    @State private var choosingJPEG = false
+    @State private var confirmImageReplacement = false
+    @State private var reviewedReceiptSHA256: String?
 
     private var selected: (placement: DocumentValue, artwork: DocumentValue)? {
         guard let draft = model.draft, let selection = model.viewportSelection, selection.kind == "placement",
@@ -30,6 +35,71 @@ struct SelectedPlacementInspector: View {
     }
     private var editable: Bool { ready && !model.busy && !model.pending && !model.immutable && !model.architectureDirty && !model.architectureApplying && !model.placingArtwork }
     private var canAlign: Bool { editable && !model.formDirty && !model.positionDirty && model.viewportController.connected }
+
+    @ViewBuilder private func productImageControls(placementId: String) -> some View {
+        if authoring.productImagePreparationAvailable, let target = model.productImageTarget(placementId: placementId),
+           let transfer = authoring.transfer {
+            let intent = transfer.intent
+            let active = intent?.artworkId == target.id && intent?.productImagePreparation != nil
+            let readyForReview = active && intent?.productImagePreparation?.artworkRevision == target.revision
+            let status = active ? authoring.importJob?.productImagePreparation : nil
+            let committed = active && intent?.productImagePreparation.map { $0.artworkRevision + 1 } == target.revision
+            GroupBox("전시에 표시할 이미지") {
+                VStack(alignment: .leading, spacing: 8) {
+                    if active, let name = transfer.fileName { Text(name).textSelection(.enabled) }
+                    if committed {
+                        Button("교체 저장본 확인") {
+                            Task { await model.finishSavedProductImageTransfer(authoring: authoring) }
+                        }
+                    } else if readyForReview, let status, status.status == .ready, let full = status.full,
+                              let receipt = status.serverReceipt {
+                        Text("표시용 PNG \(full.width) × \(full.height)")
+                        if let coarse = status.coarse { Text("경량 PNG \(coarse.width) × \(coarse.height)") }
+                        Button("교체하고 저장…") {
+                            reviewedReceiptSHA256 = receipt.sha256
+                            confirmImageReplacement = true
+                        }
+                    } else if readyForReview, let job = authoring.importJob, job.state == "cancelled" {
+                        Text("이미지 준비를 취소했습니다.").foregroundStyle(.secondary)
+                        Button("취소 확인") { Task { await authoring.changeProductImagePreparation(.cancel, artworkId: target.id) } }
+                            .disabled(status?.workerDrained != true)
+                    } else if readyForReview, let job = authoring.importJob, status?.status == .failed {
+                        Text("이미지를 준비하지 못했습니다.").foregroundStyle(.secondary)
+                        if job.canRetry && status?.workerDrained == true {
+                            Button("다시 준비") { Task { await authoring.changeProductImagePreparation(.retry, artworkId: target.id) } }
+                        }
+                        Button("준비 취소") { Task { await authoring.changeProductImagePreparation(.cancel, artworkId: target.id) } }
+                    } else if readyForReview, let job = authoring.importJob, job.state != "uploading" {
+                        ProgressView("표시용 이미지 준비 중").controlSize(.small)
+                        if job.state != "approved" {
+                            Button("준비 취소") { Task { await authoring.changeProductImagePreparation(.cancel, artworkId: target.id) } }
+                        }
+                    } else if transfer.compactVariant == nil && (intent == nil || readyForReview) {
+                        Button(readyForReview ? "같은 JPEG 다시 선택…" : "교체할 JPEG 선택…", systemImage: "photo") {
+                            choosingJPEG = true
+                        }
+                    } else {
+                        Text("진행 중인 작품 파일 작업을 마친 뒤 선택할 수 있습니다.").foregroundStyle(.secondary)
+                    }
+                }.padding(4)
+            }
+            .disabled(!editable || model.dirty || authoring.busy || authoring.dirty)
+            .fileImporter(isPresented: $choosingJPEG, allowedContentTypes: [.jpeg]) { result in
+                if case .success(let url) = result {
+                    Task { await model.prepareProductImage(url, placementId: placementId, authoring: authoring) }
+                }
+            }
+            .confirmationDialog("이 전시의 작품 이미지를 교체할까요?", isPresented: $confirmImageReplacement,
+                                titleVisibility: .visible) {
+                Button("교체하고 저장") {
+                    let receipt = reviewedReceiptSHA256
+                    Task { await model.replaceWithProductImage(authoring: authoring, reviewedReceiptSHA256: receipt) }
+                }
+            } message: {
+                Text("이 전시에서 같은 작품을 사용하는 모든 배치에 적용됩니다. JPEG 원본은 보관됩니다.")
+            }
+        }
+    }
     private func surfaces(_ kind: String, placement: DocumentValue) -> [(id: String, name: String)] {
         (model.draft?.candidate["surfaces"].items ?? []).filter { $0["roomId"] == placement["roomId"] && $0["type"].string == kind }
             .enumerated().compactMap { index, row in row["id"].string.map { ($0, (kind == "floor" ? "바닥 " : "벽 ") + String(index + 1)) } }
@@ -77,6 +147,9 @@ struct SelectedPlacementInspector: View {
                     Button("공간에서 찾기", systemImage: "scope") { Task { await model.viewportController.findSelection() } }
                         .disabled(!editable || !model.viewportController.findSelectionSupported || !model.canSelectCatalog || model.viewportPresentation == .plan)
                     SceneSnapshotControls(model: model, controller: model.viewportController, placement: selected.placement, ready: ready)
+                    if let id = selected.placement["id"].string {
+                        productImageControls(placementId: id)
+                    }
                     GroupBox("높이 맞추기") {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("작품 중심 높이").font(.caption).foregroundStyle(.secondary)

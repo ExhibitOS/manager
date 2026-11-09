@@ -3,7 +3,8 @@
 //! Private profile data only; no credentials, source paths or asset bytes.
 use super::*;
 const LIMIT: u64 = 2_200_000;
-#[derive(Clone, Serialize, Deserialize)]
+const PRODUCT_IMAGE_ORIGIN: &str = "product-image-pair-2048-512-v1";
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Pending {
     pub request_id: String,
@@ -13,14 +14,35 @@ pub struct Pending {
     pub origin: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_candidate: Option<ModelCandidateReplacement>,
+    #[serde(
+        default,
+        deserialize_with = "ProductImageReplacement::deserialize_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub product_image: Option<ProductImageReplacement>,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelCandidateReplacement {
     artwork_id: String,
     artwork_revision: u32,
     import_job_id: String,
     placement_id: String,
+}
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProductImageReplacement {
+    artwork_id: String,
+    artwork_revision: u32,
+    import_job_id: String,
+    receipt_sha256: String,
+}
+impl ProductImageReplacement {
+    fn deserialize_present<'de, D: serde::Deserializer<'de>>(
+        decoder: D,
+    ) -> std::result::Result<Option<Self>, D::Error> {
+        Self::deserialize(decoder).map(Some)
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -92,13 +114,18 @@ pub(crate) fn validate(s: &DocumentState) -> Result<()> {
     if let Some(p) = &s.pending
         && (!uuid(&p.request_id)
             || p.origin.as_deref().is_some_and(|v| !matches!(v,
-                "bounded-placement-v1" | "bounded-import-v1" | "approved-model-candidate-v1"))
+                "bounded-placement-v1" | "bounded-import-v1" | "approved-model-candidate-v1" | PRODUCT_IMAGE_ORIGIN))
             || (p.origin.as_deref() == Some("approved-model-candidate-v1")) != p.model_candidate.is_some()
+            || (p.origin.as_deref() == Some(PRODUCT_IMAGE_ORIGIN)) != p.product_image.is_some()
             || p.model_candidate.as_ref().is_some_and(|candidate|
                 !uuid(&candidate.artwork_id) || !uuid(&candidate.import_job_id) || !uuid(&candidate.placement_id)
-                    || !(1..=2_147_483_647).contains(&candidate.artwork_revision)
-                    || s.draft.as_ref() != Some(&p.draft)
-                    || p.draft["editVersion"].as_u64() != s.saved_edit_version)
+                    || !(1..=2_147_483_647).contains(&candidate.artwork_revision))
+            || p.product_image.as_ref().is_some_and(|image|
+                !uuid(&image.artwork_id) || !uuid(&image.import_job_id) || !hash_valid(&image.receipt_sha256)
+                    || !(1..2_147_483_647).contains(&image.artwork_revision))
+            || ((p.model_candidate.is_some() || p.product_image.is_some())
+                && (s.draft.as_ref() != Some(&p.draft)
+                    || p.draft["editVersion"].as_u64() != s.saved_edit_version))
             || (p.origin.is_some() && p.etag.is_none())
             || p.etag != s.etag
             || p.etag.as_ref().is_some_and(|v| !valid_etag(v))
@@ -109,6 +136,22 @@ pub(crate) fn validate(s: &DocumentState) -> Result<()> {
     }
     Ok(())
 }
+
+fn matches_product_image_transition(current: &DocumentState, state: &DocumentState) -> bool {
+    match (&current.pending, &state.pending) {
+        (None, Some(next)) if next.product_image.is_some() => {
+            // Only stage against the document that was already saved locally.
+            state.draft == current.draft
+                && state.etag == current.etag
+                && state.saved_edit_version == current.saved_edit_version
+        }
+        (Some(prior), Some(next)) if prior.product_image.is_some() || next.product_image.is_some() => {
+            prior == next
+        }
+        _ => true,
+    }
+}
+
 impl InstallationController {
     pub(super) fn document_unlocked(&self, service: &LifecycleService) -> Result<(String, DocumentState)> {
         let profile = self
@@ -178,7 +221,9 @@ impl InstallationController {
             {
                 return Err(err("NATIVE_DOCUMENT_SCOPE_CHANGED"));
             }
-            if state.revision != current.revision {
+            if state.revision != current.revision
+                || !matches_product_image_transition(&current, &state)
+            {
                 return Err(err("NATIVE_DOCUMENT_STATE_CHANGED"));
             }
             state.revision = state
@@ -233,7 +278,7 @@ mod pending_origin_tests {
         let mut state = DocumentState { format: 1, revision: 0, workspace_id: workspace,
             tenant_id: Uuid::new_v4().to_string(), principal_id: Uuid::new_v4().to_string(),
             draft: Some(draft.clone()), etag: Some(etag.clone()), saved_edit_version: Some(1),
-            pending: Some(Pending { request_id: Uuid::new_v4().to_string(), etag: Some(etag), draft, origin: None, model_candidate: None }) };
+            pending: Some(Pending { request_id: Uuid::new_v4().to_string(), etag: Some(etag), draft, origin: None, model_candidate: None, product_image: None }) };
         let legacy = serde_json::to_value(&state).unwrap();
         assert!(legacy["pending"].get("origin").is_none());
         assert!(serde_json::from_value::<LegacyPending>(legacy["pending"].clone()).is_ok());
@@ -262,5 +307,58 @@ mod pending_origin_tests {
         state.saved_edit_version = Some(1);
         state.pending.as_mut().unwrap().origin = Some("bounded-import-v1".into());
         assert!(validate(&state).is_err());
+    }
+
+    #[test]
+    fn pending_product_image_requires_the_exact_saved_snapshot_and_replay() {
+        let exhibition = Uuid::new_v4().to_string();
+        let draft = serde_json::json!({"kind":"exhibition-draft","schemaVersion":"1.0.0-draft.1",
+            "id":Uuid::new_v4().to_string(),"exhibitionId":exhibition,"editVersion":1,
+            "candidate":{"id":exhibition}});
+        let etag = format!("\"studio-r1-{}\"", "a".repeat(64));
+        let current = DocumentState {
+            format: 1, revision: 0, workspace_id: Uuid::new_v4().to_string(),
+            tenant_id: Uuid::new_v4().to_string(), principal_id: Uuid::new_v4().to_string(),
+            draft: Some(draft.clone()), etag: Some(etag.clone()), saved_edit_version: Some(1),
+            pending: None,
+        };
+        let mut staged = current.clone();
+        staged.pending = Some(Pending {
+            request_id: Uuid::new_v4().to_string(), etag: Some(etag), draft,
+            origin: Some(PRODUCT_IMAGE_ORIGIN.into()), model_candidate: None,
+            product_image: Some(ProductImageReplacement {
+                artwork_id: Uuid::new_v4().to_string(), artwork_revision: 1,
+                import_job_id: Uuid::new_v4().to_string(), receipt_sha256: "b".repeat(64),
+            }),
+        });
+        let wire = serde_json::to_value(&staged).unwrap();
+        assert_eq!(wire["pending"]["productImage"]["receiptSha256"], "b".repeat(64));
+        let reopened: DocumentState = serde_json::from_value(wire).unwrap();
+        assert!(validate(&reopened).is_ok());
+        assert!(matches_product_image_transition(&current, &staged));
+        assert!(matches_product_image_transition(&staged, &reopened));
+
+        let mut changed = staged.clone();
+        changed.pending.as_mut().unwrap().product_image.as_mut().unwrap().receipt_sha256 = "c".repeat(64);
+        assert!(validate(&changed).is_ok());
+        assert!(!matches_product_image_transition(&staged, &changed));
+
+        let mut changed = staged.clone();
+        changed.draft.as_mut().unwrap()["editVersion"] = Value::from(2);
+        assert!(validate(&changed).is_err());
+        changed.pending.as_mut().unwrap().draft = changed.draft.clone().unwrap();
+        assert!(validate(&changed).is_err());
+        changed.saved_edit_version = Some(2);
+        assert!(validate(&changed).is_ok());
+        assert!(!matches_product_image_transition(&current, &changed));
+
+        let mut changed = staged;
+        changed.pending.as_mut().unwrap().origin = Some("bounded-import-v1".into());
+        assert!(validate(&changed).is_err());
+        changed.pending.as_mut().unwrap().product_image = None;
+        assert!(validate(&changed).is_ok());
+        assert!(!matches_product_image_transition(&reopened, &changed));
+        changed.pending.as_mut().unwrap().origin = Some(PRODUCT_IMAGE_ORIGIN.into());
+        assert!(validate(&changed).is_err());
     }
 }

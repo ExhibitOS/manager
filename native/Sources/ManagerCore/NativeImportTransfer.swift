@@ -143,6 +143,10 @@ public final class NativeImportTransfer {
     }
 
     private static func valid(_ job: NativeImportJob, intent: NativeImportIntent) -> Bool {
+        if let preparation = intent.productImagePreparation {
+            return job.productImagePreparation?.matches(preparation, job: job) == true
+        }
+        guard job.productImagePreparation == nil else { return false }
         if intent.modelPreparation != nil {
             return UUID(uuidString: job.id) != nil && job.modelDerivation == nil
                 && job.imagePreparation == nil && job.coarsePreparation == nil

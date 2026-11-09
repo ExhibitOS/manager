@@ -2484,6 +2484,134 @@ final class ExhibitionModel: ObservableObject {
     }
 
     var hasPendingModelCandidateReplacement: Bool { state?.pending?.modelCandidate != nil }
+    var hasPendingProductImageReplacement: Bool { state?.pending?.productImage != nil }
+
+    func productImageTarget(placementId target: String) -> (id: String, revision: Int)? {
+        guard !selectedBoundedPolicy, !entrancePreviewActive, !placingArtwork,
+              let state, let draft = state.draft, state.etag != nil, state.pending == nil,
+              let placement = draft.placements.first(where: { $0["id"].string == target }),
+              let artwork = draft.artworks.first(where: { $0["revisionId"] == placement["artworkRevisionId"] }),
+              artwork["artworkType"] == .string("image"),
+              let id = artwork["id"].string, let revision = artwork["revision"].integer,
+              (1..<2_147_483_647).contains(revision),
+              artwork["extensions"]["org.exhibitos.studio/cms"]["tenantId"].string == state.tenantId,
+              artwork["extensions"]["org.exhibitos.studio/cms"]["artworkId"].string == id,
+              artwork["extensions"]["org.exhibitos.studio/cms"]["revision"].integer == revision else { return nil }
+        return (id, Int(revision))
+    }
+
+    func prepareProductImage(_ url: URL, placementId target: String, authoring: AuthoringModel) async {
+        await work {
+            guard viewportController.editingContextActive, placementId == target, !dirty, !immutable,
+                  let api, let local = state, let draft = local.draft, let etag = local.etag,
+                  let artwork = productImageTarget(placementId: target),
+                  let transfer = authoring.transfer, transfer.workspaceId == local.workspaceId,
+                  transfer.tenantId == local.tenantId, transfer.principalId == local.principalId else {
+                throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
+            }
+            let access = viewportAccessID
+            let saved = try await api.exhibition(draft.id)
+            let editing = try await publishedEditingAccess(draft.id, api: api, expected: saved)
+            guard saved.draft == draft, saved.etag == etag, !editing.immutable else {
+                throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            try await authoring.prepareProductImage(url, artworkId: artwork.id, artworkRevision: artwork.revision,
+                expectedAPI: api, isCurrent: { [weak self] in
+                    guard let self else { return false }
+                    return self.viewportController.editingContextActive && self.api === api
+                        && self.viewportAccessID == access && self.state?.revision == local.revision
+                        && self.placementId == target && !self.dirty
+                })
+            notice = "JPEG 원본을 제출했습니다. 준비 상태를 확인한 뒤 전시에 적용하세요."
+        }
+    }
+
+    func replaceWithProductImage(authoring: AuthoringModel, reviewedReceiptSHA256: String? = nil) async {
+        await work {
+            guard !selectedBoundedPolicy, viewportController.editingContextActive,
+                  let api, await api.admitsProductImagePreparation, var local = state,
+                  let draft = local.draft, let etag = local.etag, let transfer = authoring.transfer,
+                  authoring.exhibitionAPI === api, transfer.workspaceId == local.workspaceId,
+                  transfer.tenantId == local.tenantId, transfer.principalId == local.principalId,
+                  let importIntent = transfer.intent, let preparation = importIntent.productImagePreparation,
+                  let jobId = transfer.jobId else { throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE") }
+            let access = viewportAccessID
+            let intent: NativeDocumentState.Pending
+            let candidate: NativeProductImageReplacement
+            if let pending = local.pending {
+                guard let reviewed = pending.productImage, pending.origin == NativeProductImagePreparationIntent.profileID,
+                      pending.draft == draft, pending.etag == etag, reviewed.artworkId == importIntent.artworkId,
+                      reviewed.artworkRevision == preparation.artworkRevision, reviewed.importJobId == jobId else {
+                    throw AuthoringFailure("EXHIBITION_PENDING")
+                }
+                intent = pending
+                candidate = reviewed
+            } else {
+                guard !dirty, !immutable, let artwork = productImageTarget(placementId: placementId),
+                      artwork.id == importIntent.artworkId, artwork.revision == preparation.artworkRevision,
+                      let reviewedReceiptSHA256 else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+                let target = placementId
+                let saved = try await api.exhibition(draft.id)
+                let editing = try await publishedEditingAccess(draft.id, api: api, expected: saved)
+                let job = try await api.importJob(jobId)
+                guard saved.draft == draft, saved.etag == etag, !editing.immutable,
+                      job.id == jobId, let status = job.productImagePreparation,
+                      status.validatesReady(intent: importIntent, preparation: preparation, job: job,
+                          workspaceID: local.workspaceId, principalID: local.principalId),
+                      status.serverReceipt?.sha256 == reviewedReceiptSHA256,
+                      self.api === api, viewportAccessID == access, state?.revision == local.revision,
+                      authoring.transfer?.revision == transfer.revision, placementId == target, !dirty else {
+                    throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+                }
+                candidate = .init(artworkId: artwork.id, artworkRevision: artwork.revision, importJobId: jobId,
+                                  receiptSha256: reviewedReceiptSHA256)
+                intent = .init(etag: etag, draft: draft, origin: NativeProductImagePreparationIntent.profileID,
+                               productImage: candidate)
+                local.pending = intent
+                try await persist(local, recordUndo: false)
+            }
+            let prefix = "\"studio-r"
+            guard etag.hasPrefix(prefix), let revision = etag.dropFirst(prefix.count).split(separator: "-").first.flatMap({ Int($0) }),
+                  self.api === api, viewportAccessID == access, state?.pending?.requestId == intent.requestId,
+                  authoring.transfer?.revision == transfer.revision else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+            let saved = try await api.replaceProductImage(exhibitionId: draft.id, studioRevision: revision, etag: etag,
+                requestId: intent.requestId, importJobId: candidate.importJobId, intent: importIntent,
+                workspaceId: local.workspaceId, principalId: local.principalId, expectedReceiptSHA256: candidate.receiptSha256)
+            guard self.api === api, viewportAccessID == access, var accepted = state,
+                  accepted.pending?.requestId == intent.requestId else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+            accepted.draft = saved.draft; accepted.etag = saved.etag
+            accepted.savedEditVersion = saved.draft.document["editVersion"].integer; accepted.pending = nil
+            try await persist(accepted, recordUndo: false)
+            past = []; future = []; comparison = saved
+            syncFields()
+            if ordinaryBoundedRuntime { await prepareOrdinaryBoundedPlacement() }
+            notice = "교체한 이미지가 전시 저장본에 반영됐습니다."
+            try await authoring.finishProductImageTransfer(intent: importIntent, jobId: jobId, api: api)
+        }
+    }
+
+    func finishSavedProductImageTransfer(authoring: AuthoringModel) async {
+        await work {
+            guard !selectedBoundedPolicy, viewportController.editingContextActive, !dirty, !pending,
+                  let api, await api.admitsProductImagePreparation, let local = state, let draft = local.draft,
+                  let transfer = authoring.transfer, transfer.workspaceId == local.workspaceId,
+                  transfer.tenantId == local.tenantId, transfer.principalId == local.principalId,
+                  let intent = transfer.intent, let preparation = intent.productImagePreparation,
+                  let jobId = transfer.jobId else { throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE") }
+            let saved = try await api.exhibition(draft.id)
+            let job = try await api.importJob(jobId)
+            guard saved.draft == draft, saved.etag == local.etag, job.id == jobId,
+                  let full = job.productImagePreparation?.full,
+                  draft.artworks.contains(where: { $0["id"].string == intent.artworkId
+                    && $0["revision"].integer == Int64(preparation.artworkRevision + 1)
+                    && $0["primaryAssetId"].string == full.assetId }),
+                  self.api === api, state?.revision == local.revision, authoring.transfer?.revision == transfer.revision else {
+                throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            try await authoring.finishProductImageTransfer(intent: intent, jobId: jobId, api: api)
+            notice = "교체한 이미지와 전시 저장본을 확인했습니다."
+        }
+    }
 
     var canReplaceWithSelectedModelCandidate: Bool {
         guard session?.nativeModelCandidateReplacementProfile == NativeApprovedModelCandidateReplacement.profile,
@@ -2566,6 +2694,7 @@ final class ExhibitionModel: ObservableObject {
     func save() async {
         await work {
             guard let api, var value = state else { return }
+            guard value.pending?.productImage == nil else { throw AuthoringFailure("EXHIBITION_PENDING") }
             guard !boundedPendingRecoveryBlocked else { throw AuthoringFailure("EXHIBITION_PENDING") }
             let bounded = boundedPlacementCapability != nil
             let access = viewportAccessID, generation = boundedPolicyGeneration, token = viewportCredentials?.token

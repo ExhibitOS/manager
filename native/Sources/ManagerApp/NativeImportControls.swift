@@ -18,7 +18,9 @@ struct NativeImportControls: View {
         Form {
           Section("작품 파일") {
             VStack(alignment: .leading, spacing: 12) {
-                if let compact = model.compactTransfer {
+                if model.hasProductImageTransfer {
+                    Text("전시의 선택 속성에서 JPEG 교체 준비를 이어갈 수 있습니다.")
+                } else if let compact = model.compactTransfer {
                     compactControls(compact)
                 } else if !belongs, let id = model.transfer?.intent?.artworkId {
                     Text("다른 작품에 시작한 파일 검사가 있습니다.")

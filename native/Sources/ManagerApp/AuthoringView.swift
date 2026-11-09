@@ -68,6 +68,7 @@ final class AuthoringModel: ObservableObject {
         // the runtime's drain contract. Unknown older single-file runtimes
         // retain their existing behavior.
         activeIntakeID != nil || intent.modelDerivation != nil || intent.modelPreparation != nil || intent.coarsePreparation != nil
+            || intent.productImagePreparation != nil
             || (intent.mime == "image/png" && (iccImportAdmitted || (job.workerDrainVersion ?? 0) > 0))
     }
     @Published private(set) var compactJob: NativeCompactModelVariantJob?
@@ -456,8 +457,100 @@ extension AuthoringModel {
         guard let writeTransfer else { throw AuthoringFailure("IMPORT_STORE_REQUIRED") }
         transfer = try await writeTransfer(state)
     }
+    var hasProductImageTransfer: Bool { transfer?.intent?.productImagePreparation != nil }
+
+    var productImagePreparationAvailable: Bool {
+        available && intakeWritesAvailable && api?.productImageRuntimeQualified == true
+            && session?.nativeProductImagePreparationProfile == NativeProductImagePreparationIntent.profileID
+    }
+
+    func prepareProductImage(_ url: URL, artworkId: String, artworkRevision: Int,
+                             expectedAPI: AuthoringAPI, isCurrent: @escaping @MainActor () -> Bool) async throws {
+        guard productImagePreparationAvailable, !busy, !dirty, activeIntakeID == nil,
+              compactTransfer == nil, api === expectedAPI, let transfer,
+              transfer.intent == nil || transfer.intent?.productImagePreparation != nil,
+              await expectedAPI.admitsProductImagePreparation, isCurrent() else {
+            throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
+        }
+        let generation = UUID()
+        importStatusGeneration = generation
+        busy = true
+        defer { busy = false; scheduleImportPoll() }
+        let file = try await ImportFileSnapshot.load(url, allowJPEG: true)
+        let artwork = try await expectedAPI.artwork(artworkId)
+        guard file.mime == "image/jpeg", artwork.id == artworkId, artwork.revision == artworkRevision,
+              !artwork.archived, artwork.approvedRevision == artworkRevision, let rights = artwork.metadata?.rights,
+              importStatusGeneration == generation, self.transfer?.revision == transfer.revision, isCurrent() else {
+            throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
+        }
+        let intent = NativeImportIntent(artworkId: artworkId,
+            idempotencyKey: transfer.intent?.idempotencyKey ?? UUID().uuidString.lowercased(), mime: file.mime,
+            sha256: file.sha256, bytes: file.data.count, scaleMeters: 1, rights: rights,
+            productImagePreparation: .init(artworkRevision: artworkRevision))
+        guard transfer.intent == nil || transfer.intent == intent else { throw AuthoringFailure("IMPORT_INTENT_CHANGED") }
+        try await continueImport(intent: intent, file: file, api: expectedAPI, isScopeCurrent: isCurrent)
+    }
+
+    func finishProductImageTransfer(intent: NativeImportIntent, jobId: String, api: AuthoringAPI) async throws {
+        guard !busy, self.api === api, var transfer, transfer.intent == intent, transfer.jobId == jobId,
+              let preparation = intent.productImagePreparation else { throw AuthoringFailure("IMPORT_INTENT_CHANGED") }
+        let generation = UUID()
+        importStatusGeneration = generation
+        busy = true
+        defer { busy = false }
+        let artwork = try await api.artwork(intent.artworkId)
+        let job = try await api.importJob(jobId)
+        guard importStatusGeneration == generation, self.transfer?.revision == transfer.revision, job.id == jobId,
+              job.productImagePreparation?.validatesReady(intent: intent, preparation: preparation, job: job,
+                  workspaceID: transfer.workspaceId, principalID: transfer.principalId) == true,
+              artwork.id == intent.artworkId, artwork.revision == preparation.artworkRevision + 1,
+              artwork.approvedRevision == artwork.revision, artwork.approvedAssetId == job.assetId else {
+            throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+        }
+        transfer.intent = nil; transfer.jobId = nil; transfer.fileName = nil
+        try await persistImport(transfer)
+        importJob = nil
+    }
+
+    func changeProductImagePreparation(_ change: NativeImportAction, artworkId: String) async {
+        await action {
+            guard productImagePreparationAvailable, let api, await api.admitsProductImagePreparation,
+                  var transfer, let intent = transfer.intent, intent.artworkId == artworkId,
+                  let preparation = intent.productImagePreparation, let jobId = transfer.jobId else {
+                throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
+            }
+            let generation = importStatusGeneration
+            var observed = try await api.importJob(jobId)
+            guard observed.id == jobId, observed.productImagePreparation?.matches(preparation, job: observed) == true,
+                  importStatusGeneration == generation, self.transfer?.revision == transfer.revision else {
+                throw AuthoringFailure("IMPORT_RECEIPT_INVALID")
+            }
+            switch change {
+            case .cancel:
+                guard observed.state != "approved" else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+                if observed.state != "cancelled" { observed = try await api.importAction(jobId, action: change) }
+            case .retry:
+                guard observed.state == "failed", observed.canRetry, observed.retryAt != nil,
+                      observed.confirmsIntakeDrain(for: intent) else { throw AuthoringFailure("IMPORT_DRAIN_PENDING") }
+                observed = try await api.importAction(jobId, action: change)
+            default:
+                throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
+            }
+            guard observed.id == jobId, observed.productImagePreparation?.matches(preparation, job: observed) == true,
+                  importStatusGeneration == generation, self.transfer?.revision == transfer.revision else {
+                throw AuthoringFailure("IMPORT_RECEIPT_INVALID")
+            }
+            importJob = observed
+            if observed.state == "cancelled", observed.confirmsIntakeDrain(for: intent) {
+                transfer.intent = nil; transfer.jobId = nil; transfer.fileName = nil
+                try await persistImport(transfer)
+                importJob = nil
+            }
+            scheduleImportPoll()
+        }
+    }
     func chooseImportFile(inspectUnknown: Bool = false) async {
-        guard compactTransfer == nil, !inspectUnknown || canInspectUnknownModel,
+        guard !hasProductImageTransfer, compactTransfer == nil, !inspectUnknown || canInspectUnknownModel,
               !hasUnknownSourceUnits || usesHayesOriginal || ordinaryUnknownModel else { return }
         let hayes = usesHayesOriginal
         let unknown = inspectUnknown || ordinaryUnknownModel
@@ -645,14 +738,16 @@ extension AuthoringModel {
             }
         }
     }
-    private func continueImport(intent: NativeImportIntent, file: ImportFileSnapshot?, derived: NativePreparedJPEG? = nil, api: AuthoringAPI) async throws {
+    private func continueImport(intent: NativeImportIntent, file: ImportFileSnapshot?, derived: NativePreparedJPEG? = nil,
+                                api: AuthoringAPI, isScopeCurrent: @escaping @MainActor () -> Bool = { true }) async throws {
         guard intent.modelDerivation == nil || modelDerivationEnabled else { throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE") }
         guard intent.modelPreparation == nil || requiredModelPreparationEnabled else { throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE") }
         let generation = importStatusGeneration, currentScope = scope, manifest = runtimeManifestSHA256
         let tenant = session?.tenantId, principal = session?.userId
         @MainActor func current() -> Bool {
-            generation == importStatusGeneration && currentScope == scope && available
-                && (intent.mime != "image/jpeg" || (jpegImportsEnabled && manifest == runtimeManifestSHA256))
+            generation == importStatusGeneration && currentScope == scope && available && isScopeCurrent()
+                && (intent.mime != "image/jpeg" || ((intent.productImagePreparation == nil
+                    ? jpegImportsEnabled : productImagePreparationAvailable) && manifest == runtimeManifestSHA256))
                 && (intent.modelDerivation == nil || (modelDerivationEnabled && manifest == runtimeManifestSHA256))
                 && (intent.modelPreparation == nil || (requiredModelPreparationEnabled && manifest == runtimeManifestSHA256))
                 && session?.tenantId == tenant && session?.userId == principal
@@ -793,7 +888,7 @@ extension AuthoringModel {
             if let intent = transfer?.intent { try importTransfer.observe(observed, intent: intent) }
             importJob = observed
             await recoverHayesIfApproved(observed)
-            if importJob?.state == "approved", let selected, selected.id == transfer?.intent?.artworkId {
+            if !hasProductImageTransfer, importJob?.state == "approved", let selected, selected.id == transfer?.intent?.artworkId {
                 let fresh = try await api.artwork(selected.id)
                 if fresh.revision == selected.revision { self.selected = fresh; if let asset = importJob?.assetId { assetId = asset } }
             }
@@ -802,6 +897,7 @@ extension AuthoringModel {
     }
     func clearImport() async {
         await action {
+            guard !hasProductImageTransfer else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
             guard transfer?.intent?.derived?.recipe.colourConversion == nil || iccImportAdmitted else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
             guard importJob?.terminal == true, !modelWorkerPending,
                   importJob?.modelDerivation?.workerDrained != false, var state = transfer else { throw AuthoringFailure("IMPORT_ACTIVE") }
@@ -889,7 +985,7 @@ extension AuthoringModel {
     }
     func approveImportedArtwork() async {
         await action {
-            guard let api, let selected, !metadataDirty, approvalAcknowledged,
+            guard !hasProductImageTransfer, let api, let selected, !metadataDirty, approvalAcknowledged,
                   selected.assets.contains(where: { $0.id == assetId && $0.state == "approved" }) else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
             if usesHayesOriginal {
                 guard let recoverHayes, let intent = transfer?.intent, let job = importJob,
@@ -1078,7 +1174,7 @@ extension AuthoringModel {
             if let intent = transfer?.intent { try importTransfer.observe(observed, intent: intent) }
             importJob = observed
             if !modelWorkerPending, failure?.code == "IMPORT_DRAIN_PENDING" { failure = nil }
-            if observed.state == "approved", let selected, selected.id == transfer?.intent?.artworkId {
+            if !hasProductImageTransfer, observed.state == "approved", let selected, selected.id == transfer?.intent?.artworkId {
                 let fresh = try await api.artwork(selected.id)
                 guard current(), self.selected?.id == selected.id,
                       self.selected?.revision == selected.revision, fresh.revision == selected.revision else { return }

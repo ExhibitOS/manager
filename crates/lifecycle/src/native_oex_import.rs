@@ -304,7 +304,7 @@ mod tests {
         let request = Uuid::new_v4().to_string();
         let mut pending = controller.native_document(&token).unwrap();
         pending.draft = Some(draft.clone()); pending.etag = Some(old_etag.clone()); pending.saved_edit_version = Some(1);
-        pending.pending = Some(super::super::native_document::Pending { request_id: request.clone(), etag: Some(old_etag.clone()), draft, origin: Some("bounded-import-v1".into()), model_candidate: None });
+        pending.pending = Some(super::super::native_document::Pending { request_id: request.clone(), etag: Some(old_etag.clone()), draft, origin: Some("bounded-import-v1".into()), model_candidate: None, product_image: None });
         pending = controller.save_native_document(&token, pending).unwrap();
         let mut proposed = pending.clone(); proposed.pending = None; proposed.etag = Some(saved_etag.clone());
         let offer = crate::native_host::OexSaveOffer { attempt_id: Uuid::new_v4().to_string(), exhibition_id: exhibition, etag: old_etag, request_id: request };

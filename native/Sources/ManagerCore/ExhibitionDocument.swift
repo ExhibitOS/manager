@@ -367,6 +367,20 @@ public struct NativeApprovedModelCandidateReplacement: Codable, Equatable, Senda
     }
 }
 
+public struct NativeProductImageReplacement: Codable, Sendable {
+    public let artworkId: String
+    public let artworkRevision: Int
+    public let importJobId: String
+    public let receiptSha256: String
+
+    public init(artworkId: String, artworkRevision: Int, importJobId: String, receiptSha256: String) {
+        self.artworkId = artworkId
+        self.artworkRevision = artworkRevision
+        self.importJobId = importJobId
+        self.receiptSha256 = receiptSha256
+    }
+}
+
 public struct NativeDocumentState: Codable, Sendable {
     public struct Pending: Codable, Sendable {
         public let requestId: String
@@ -376,10 +390,13 @@ public struct NativeDocumentState: Codable, Sendable {
         /// enter the generic retry path after a runtime or session change.
         public let origin: String?
         public let modelCandidate: NativeApprovedModelCandidateReplacement?
+        public let productImage: NativeProductImageReplacement?
         public init(requestId: String = UUID().uuidString.lowercased(), etag: String?, draft: NativeExhibitionDraft,
-                    origin: String? = nil, modelCandidate: NativeApprovedModelCandidateReplacement? = nil) {
+                    origin: String? = nil, modelCandidate: NativeApprovedModelCandidateReplacement? = nil,
+                    productImage: NativeProductImageReplacement? = nil) {
             self.requestId = requestId; self.etag = etag; self.draft = draft; self.origin = origin
             self.modelCandidate = modelCandidate
+            self.productImage = productImage
         }
     }
     public let format: Int
