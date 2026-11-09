@@ -989,7 +989,11 @@ public actor NativeAutomationSession {
                 throw BridgeFailure("AUTOMATION_OUTPUT_INVALID")
             }
         }
-        if let prior { return prior }
+        if let prior {
+            if operation == "plaque-prepare", plaqueProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
+            if operation == "wall-finish-prepare", wallFinishProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
+            return prior
+        }
         guard !busy, seenRequests.count < 128 else { throw BridgeFailure("AUTOMATION_BUSY") }
         guard !runtimeStopped || operation == "read" else { throw BridgeFailure("NATIVE_NOT_READY") }
         guard !artworkReplacementRecoveryOnly || ["read", "artwork-replace-reviewed"].contains(operation) else {
