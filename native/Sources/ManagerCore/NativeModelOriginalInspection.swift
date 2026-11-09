@@ -13,11 +13,13 @@ public struct NativeModelOriginalInspection: Decodable, Equatable, Sendable {
     public let triangles: Int, vertices: Int
     private let sourceUnits: String, qualification: String
 
-    func check(file: ImportFileSnapshot) throws {
-        guard version == 1, profileId == NativeModelPreparationIntent.profile,
+    func check(file: ImportFileSnapshot, large: Bool = false) throws {
+        let expectedProfile = large ? NativeModelPreparationIntent.largeProfile : NativeModelPreparationIntent.profile
+        guard version == 1, profileId == expectedProfile,
               sourceUnits == "unknown", qualification == "structure-only",
               original.mime == file.mime, original.sha256 == file.sha256, original.bytes == file.data.count,
-              (1...200_000).contains(triangles), (1...131_072).contains(vertices),
+              (1...(large ? 400_000 : 200_000)).contains(triangles),
+              (1...(large ? 262_144 : 131_072)).contains(vertices),
               rawBounds.min.count == 3, rawBounds.max.count == 3,
               (rawBounds.min + rawBounds.max).allSatisfy({ $0.isFinite && abs($0) <= 1_000_000 }),
               zip(rawBounds.min, rawBounds.max).allSatisfy({ (0...10_000).contains($0.1 - $0.0) })

@@ -353,6 +353,21 @@ and keeps the placement ID, room, transform and full asset. Use the ordinary
 exhibition save, reopen and export controls to persist and verify it. Render
 quality and the Viewer GPU budgets are verified separately.
 
+### Larger GLB originals in the isolated 046 workspace
+
+A freshly prepared personal workspace with the exact selected 046 validation
+runtime can prepare GLB sources over 32 MiB and up to 64 MiB. Manager uses the
+authenticated v2 model capability and its dedicated upload route. PNG, JPEG
+and the existing v1 GLB path keep their existing 32 MiB source limit. The
+v2 geometry limits are 400,000 triangles and 262,144 vertices, with up to
+48 MiB of embedded image bytes. The runtime validates the encoding and retains
+the exact source while producing an approved-display candidate of up to 8 MiB.
+The artwork still requires separate rights acknowledgment and approval.
+
+The clean 046 packet can reopen the same isolated workspace after a normal
+shutdown. A lost runtime with a retained worker claim needs the separate
+interruption recovery binding.
+
 ### Original GLBs with unknown source units
 
 In a session advertising `bounded-compact-source-inspection-v1`, choose

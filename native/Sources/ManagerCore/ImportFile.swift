@@ -41,9 +41,12 @@ public struct ImportFileSnapshot: Sendable {
     public let sha256: String
     public let data: Data
 
-    public static func load(_ url: URL, allowJPEG: Bool = false, byteLimit: Int = limit) async throws -> Self {
+    public static func load(_ url: URL, allowJPEG: Bool = false, byteLimit: Int = limit,
+                            allowLargeModel: Bool = false) async throws -> Self {
         guard (1...limit).contains(byteLimit) else { throw AuthoringFailure("FILE_SIZE_INVALID") }
-        let worker = Task.detached(priority: .userInitiated) { try read(url, allowJPEG: allowJPEG, limit: byteLimit) }
+        let maximumBytes = allowLargeModel && url.pathExtension.lowercased() == "glb"
+            ? NativeModelPreparationIntent.largeSourceLimit : byteLimit
+        let worker = Task.detached(priority: .userInitiated) { try read(url, allowJPEG: allowJPEG, limit: maximumBytes) }
         return try await withTaskCancellationHandler {
             let snapshot = try await worker.value
             try Task.checkCancellation()

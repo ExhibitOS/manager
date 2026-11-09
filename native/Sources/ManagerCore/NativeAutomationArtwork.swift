@@ -183,7 +183,8 @@ enum NativeAutomationArtworkTransfer {
         let reviewed = intent.mime == "image/jpeg" && intent.coarsePreparation?.valid == true
             && intent.derived?.recipe.colourConversion != nil && derived?.derived == intent.derived && intent.scaleMeters == 1
         let product = intent.productImagePreparation?.matches(intent) == true && derived == nil
-        guard glb || reviewed || product, intent.modelDerivation == nil, intent.modelPreparation == nil,
+        guard glb || reviewed || product, intent.modelDerivation == nil,
+              intent.modelPreparation == nil || intent.modelPreparation?.isLarge == true,
               intent.hayesOriginal == nil, intent.productImagePreparation == nil || product,
               intent.scaleMeters.isFinite, intent.scaleMeters > 0, intent.scaleMeters <= 1_000_000,
               initial.intent == nil || initial.intent == intent else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }

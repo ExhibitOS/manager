@@ -3,6 +3,9 @@ import Foundation
 
 public struct NativeModelPreparationIntent: Codable, Equatable, Sendable {
     public static let profile = "embedded-model-compact-20k-512-v1"
+    public static let largeProfile = "embedded-model-compact-large-20k-512-v2"
+    public static let largeSourceLimit = 64 * 1024 * 1024
+    static let largeRecipeSHA256 = "0f28c31aca95ed70441e2229bbb7db72ab0b367c54708f39a7bfe54b6c50a2b6"
     static let recipeSHA256 = "a11cd154369496ee9af9cac73538d8f4cfc49df0043aeaae3af186c96162344e"
     public let version: Int
     public let profileId: String
@@ -10,9 +13,9 @@ public struct NativeModelPreparationIntent: Codable, Equatable, Sendable {
     public let generation: String
     public let artworkRevision: Int
 
-    public init(operationID: String, generation: String, artworkRevision: Int) {
+    public init(operationID: String, generation: String, artworkRevision: Int, large: Bool = false) {
         version = 1
-        profileId = Self.profile
+        profileId = large ? Self.largeProfile : Self.profile
         self.operationID = operationID
         self.generation = generation
         self.artworkRevision = artworkRevision
@@ -24,9 +27,11 @@ public struct NativeModelPreparationIntent: Codable, Equatable, Sendable {
         }
     }
 
+    var isLarge: Bool { profileId == Self.largeProfile }
+
     var valid: Bool {
         let token = "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
-        return version == 1 && profileId == Self.profile
+        return version == 1 && (profileId == Self.profile || isLarge)
             && operationID.range(of: token, options: .regularExpression) != nil
             && generation.range(of: token, options: .regularExpression) != nil
             && (1...2_147_483_647).contains(artworkRevision)
@@ -36,6 +41,7 @@ public struct NativeModelPreparationIntent: Codable, Equatable, Sendable {
         valid && operationID == intent.idempotencyKey && intent.mime == "model/gltf-binary"
             && intent.derived == nil && intent.modelDerivation == nil
             && intent.coarsePreparation == nil && intent.hayesOriginal == nil
+            && (!isLarge || (28...Self.largeSourceLimit).contains(intent.bytes))
     }
 }
 
@@ -132,7 +138,7 @@ public struct NativeModelPreparationStatus: Decodable, Equatable, Sendable {
               job.assetId == display.assetId, display.mime == request.mime, nativeImportDigest(display.sha256),
               (28...8 * 1024 * 1024).contains(display.bytes), let receipt = serverReceipt,
               receipt.version == 1, receipt.profileId == intent.profileId,
-              receipt.recipeSHA256 == NativeModelPreparationIntent.recipeSHA256,
+              receipt.recipeSHA256 == (intent.isLarge ? NativeModelPreparationIntent.largeRecipeSHA256 : NativeModelPreparationIntent.recipeSHA256),
               receipt.jobId == job.id, receipt.artworkId == request.artworkId,
               receipt.artworkRevision == intent.artworkRevision, receipt.operationID == intent.operationID,
               receipt.generation == intent.generation, nativeImportDigest(receipt.rightsSHA256),

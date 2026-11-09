@@ -17,6 +17,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var nativePublicationProfile: String? = nil
     public var modelPreparationProfile: String? = nil
     public var modelOriginalInspectionProfile: String? = nil
+    public var nativeLargeModelPreparationProfile: String? = nil
     public var compactModelVariantProfile: String? = nil
     public var nativeModelCandidateReplacementProfile: String? = nil
     public var nativeProductImagePreparationProfile: String? = nil
@@ -1400,15 +1401,22 @@ public actor AuthoringAPI {
         admitsRequiredModelPreparation && session?.modelOriginalInspectionProfile == NativeModelOriginalInspection.profile
     }
 
+    public var admitsLargeModelPreparation: Bool {
+        nativeSession && !authenticationBusy && admitsRequiredModelPreparation
+            && session?.nativeLargeModelPreparationProfile == NativeModelPreparationIntent.largeProfile
+    }
+
     public func inspectModelOriginal(_ file: ImportFileSnapshot) async throws -> NativeModelOriginalInspection {
-        guard admitsModelOriginalInspection, file.mime == "model/gltf-binary",
-              (28...ImportFileSnapshot.limit).contains(file.data.count) else {
+        let large = file.data.count > ImportFileSnapshot.limit
+        guard admitsModelOriginalInspection, file.mime == "model/gltf-binary", file.data.count >= 28,
+              !large || (admitsLargeModelPreparation && file.data.count <= NativeModelPreparationIntent.largeSourceLimit) else {
             throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE")
         }
+        let route = large ? "large-model-inspection" : "model-inspection"
         let inspection: NativeModelOriginalInspection = try await request(
-            "/api/v1/tenants/\(tenant)/imports/model-inspection",
+            "/api/v1/tenants/\(tenant)/imports/" + route,
             method: "POST", body: file.data, contentType: "application/octet-stream")
-        try inspection.check(file: file)
+        try inspection.check(file: file, large: large)
         return inspection
     }
 
@@ -1440,7 +1448,9 @@ public actor AuthoringAPI {
         }
         guard input.derived?.recipe.colourConversion == nil || admitsICCJPEG else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
         if let preparation = input.modelPreparation {
-            guard admitsRequiredModelPreparation else { throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE") }
+            guard preparation.isLarge ? admitsLargeModelPreparation : admitsRequiredModelPreparation else {
+                throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE")
+            }
             guard preparation.matches(input) else { throw AuthoringFailure("IMPORT_INPUT_INVALID") }
         }
         if let coarse = input.coarsePreparation {
@@ -1452,7 +1462,9 @@ public actor AuthoringAPI {
                 throw AuthoringFailure("IMPORT_INPUT_INVALID")
             }
         }
-        guard input.bytes > 0, input.bytes <= 32 * 1024 * 1024,
+        let maximumBytes = input.modelPreparation?.isLarge == true
+            ? NativeModelPreparationIntent.largeSourceLimit : ImportFileSnapshot.limit
+        guard input.bytes > 0, input.bytes <= maximumBytes,
               input.scaleMeters.isFinite, input.scaleMeters > 0, input.scaleMeters <= 1_000_000,
               ((["model/gltf-binary", "image/png"].contains(input.mime) && input.derived == nil)
                 || (input.mime == "image/jpeg" && input.derived?.valid == true)),
@@ -1503,6 +1515,15 @@ public actor AuthoringAPI {
         guard !bytes.isEmpty, bytes.count <= 32 * 1024 * 1024 else { throw AuthoringFailure("IMPORT_SIZE_INVALID") }
         struct Received: Decodable, Sendable { let received: Int }
         let value: Received = try await request("/api/v1/tenants/\(tenant)/imports/" + identifier(id) + "/bytes", method: "PUT", body: bytes, contentType: "application/octet-stream")
+        guard value.received == bytes.count else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
+    }
+    public func uploadLargeModelImport(_ id: String, bytes: Data) async throws {
+        guard admitsLargeModelPreparation, (28...NativeModelPreparationIntent.largeSourceLimit).contains(bytes.count) else {
+            throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE")
+        }
+        struct Received: Decodable, Sendable { let received: Int }
+        let value: Received = try await request("/api/v1/tenants/\(tenant)/imports/" + identifier(id) + "/large-model-bytes",
+            method: "PUT", body: bytes, contentType: "application/octet-stream")
         guard value.received == bytes.count else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
     }
     public func uploadDerivedImport(_ id: String, bytes: Data) async throws {
