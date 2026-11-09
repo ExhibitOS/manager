@@ -944,7 +944,7 @@ impl LifecycleService {
         );
         #[cfg(feature = "workspace-v5-owner-validation")]
         if let (Some((trial, transition)), Some(writer)) = (furnishing, &writer) {
-            trial.check_recovery_root(&self.root, writer, transition)?;
+            trial.check_recovery_root(&self.root, writer, transition, retained)?;
         } else {
             ordinary_cold_check()?;
         }

@@ -10,6 +10,16 @@ pub(super) struct Trial {
     before: Option<Value>,
 }
 
+pub(super) fn drained_database_error(context: &Context) -> bool {
+    context.state == "failed"
+        && context.failure_code.as_deref() == Some("NATIVE_DATABASE_UNAVAILABLE")
+        && !context.readiness.ready
+        && context.postgres_pid.is_none() && context.node_pid.is_none() && context.auxiliary_pid.is_none()
+        && context.exits.len() == 2
+        && context.exits.get("postgres") == Some(&0)
+        && context.exits.get("auxiliary") == Some(&1)
+}
+
 fn custody_query(owner: &FurnishingOwner, proof: &RetainedProductImage) -> Result<String> {
     let tenant = &owner.tenant_id;
     let workspace = &owner.workspace_id;
