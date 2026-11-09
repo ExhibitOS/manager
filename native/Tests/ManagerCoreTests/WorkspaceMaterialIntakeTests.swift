@@ -53,6 +53,24 @@ final class WorkspaceMaterialIntakeTests: XCTestCase {
         XCTAssertFalse(admitted)
     }
 
+    func testCatalog45SelectedRecoveryManifestRequiresAuthenticatedNativeCapability() async throws {
+        let tenant = UUID().uuidString
+        let manifest = "62200d7ccb47e7ede5d1910a65e0087ac171c595d76ca14df6a19290382e4288"
+        let api = try AuthoringAPI(port: 65535, tenantId: tenant, nativeRuntimeManifestSHA256: manifest)
+        #if DEBUG
+        XCTAssertTrue(api.workspaceMaterialRuntimeQualified)
+        XCTAssertTrue(AuthoringAPI.supportsProductImageRuntime(manifest: manifest))
+        #else
+        XCTAssertFalse(api.workspaceMaterialRuntimeQualified)
+        XCTAssertFalse(AuthoringAPI.supportsProductImageRuntime(manifest: manifest))
+        #endif
+        let changed = try AuthoringAPI(port: 65535, tenantId: tenant,
+            nativeRuntimeManifestSHA256: String(manifest.dropLast()) + "0")
+        XCTAssertFalse(changed.workspaceMaterialRuntimeQualified)
+        let admitted = await api.admitsWorkspaceMaterials
+        XCTAssertFalse(admitted)
+    }
+
     func testV7DebugCatalogReadsRequireNativeCapabilityAndKeepIntakeClosed() async throws {
         guard let port = ProcessInfo.processInfo.environment["EXHIBITOS_TEST_WORKSPACE_CATALOG_PORT"].flatMap(UInt16.init) else {
             throw XCTSkip("Requires the isolated loopback workspace catalog fixture")
