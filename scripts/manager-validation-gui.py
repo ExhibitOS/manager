@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -23,6 +24,11 @@ GUI = Path("Contents/MacOS/ExhibitOSManager")
 HELPER = Path("Contents/Helpers/exhibitos-native")
 INFO = Path("Contents/Info.plist")
 MANIFEST = Path("Contents/Resources/native-runtime/manifest.json")
+LEGAL = Path("Contents/Resources/NativeRuntime-Legal")
+LEGAL_INVENTORY = Path("Contents/Resources/NativeRuntime-Legal-Inventory.json")
+MAX_LEGAL_INVENTORY_BYTES = 2 * 1024 ** 2
+MAX_LEGAL_FILES = 4096
+MAX_LEGAL_BYTES = 1024 ** 3
 CODESIGN = "/usr/bin/codesign"
 REQUIREMENT = (
     'identifier "{identifier}" and anchor apple generic and '
@@ -46,6 +52,54 @@ def sha(path):
         for block in iter(lambda: file.read(1024 * 1024), b""):
             digest.update(block)
         return digest.hexdigest()
+
+
+def read_legal_inventory(path, pin):
+    require(path.is_absolute() and path.resolve(strict=True) == path and path.is_file(),
+            "Supply a canonical regular legal inventory file.")
+    with path.open("rb") as file:
+        data = file.read(MAX_LEGAL_INVENTORY_BYTES + 1)
+    require(len(data) <= MAX_LEGAL_INVENTORY_BYTES and hashlib.sha256(data).hexdigest() == pin,
+            "Legal inventory size or SHA-256 does not match the reviewed input.")
+    inventory = json.loads(data)
+    rows = inventory.get("files") if isinstance(inventory, dict) else None
+    require(isinstance(rows, list) and 0 < len(rows) <= MAX_LEGAL_FILES,
+            "Legal inventory must contain a bounded file list.")
+    files = {}
+    total = 0
+    for row in rows:
+        require(isinstance(row, dict) and set(row) == {"path", "bytes", "sha256"}
+                and isinstance(row["path"], str), "Invalid legal inventory entry.")
+        name = Path(row["path"])
+        require(name.parts and not name.is_absolute() and ".." not in name.parts
+                and name.as_posix() == row["path"] and name not in files
+                and type(row["bytes"]) is int and 0 <= row["bytes"] <= MAX_LEGAL_BYTES
+                and isinstance(row["sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", row["sha256"]),
+                "Invalid or duplicate legal inventory entry.")
+        files[name] = (row["bytes"], row["sha256"])
+        total += row["bytes"]
+    require(Path("index.html") in files and total <= MAX_LEGAL_BYTES,
+            "Legal inventory must include index.html and fit within 1 GiB.")
+    return data, files
+
+
+def verify_legal_resources(root, files, *, inventory=None):
+    require(root.is_absolute() and root.resolve(strict=True) == root and root.is_dir(),
+            "Supply a canonical legal resource directory.")
+    actual = set()
+    for path in root.rglob("*"):
+        require(not path.is_symlink(), "Links are not allowed in the legal resource tree.")
+        if path == inventory:
+            continue
+        if path.is_dir():
+            continue
+        name = path.relative_to(root)
+        expected = files.get(name)
+        require(expected is not None and path.is_file()
+                and path.stat().st_size == expected[0] and sha(path) == expected[1],
+                f"Legal resource differs from the reviewed inventory: {name}")
+        actual.add(name)
+    require(actual == files.keys(), "The legal resource tree is missing reviewed files.")
 
 
 def output(*argv):
@@ -89,6 +143,13 @@ def verify_bundle(bundle, profile, pins):
             "Validation build or runtime pins differ. Prepare the fixed bundle with the reviewed artifacts.")
     require(info.get("ExhibitOSValidationProfile") == str(profile),
             "The signed bundle is bound to a different validation profile. Prepare it with the intended profile.")
+    legal, inventory = bundle / LEGAL, bundle / LEGAL_INVENTORY
+    if "legalInventory" in pins:
+        _, files = read_legal_inventory(inventory, pins["legalInventory"])
+        verify_legal_resources(legal, files)
+    else:
+        require(not any(path.exists() or path.is_symlink() for path in (legal, inventory)),
+                "The validation app contains unpinned legal resources.")
 
 
 def check_fixed_path(path):
@@ -108,7 +169,10 @@ def launch_services_has_app():
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
-def prepare(profile, pins, gui, helper, runtime):
+def prepare(profile, pins, gui, helper, runtime, legal=None, inventory=None):
+    pinned_legal = "legalInventory" in pins
+    require((legal is not None) == pinned_legal and (inventory is not None) == pinned_legal,
+            "Legal resources, inventory and its reviewed SHA-256 must be supplied together.")
     require(not pids() and not launch_services_has_app(),
             "The validation app is already open. Stop its owned work and quit normally before preparing it.")
     if APP.exists() or APP.is_symlink():
@@ -125,6 +189,9 @@ def prepare(profile, pins, gui, helper, runtime):
     require(sha(gui) == pins["unsignedGUI"] and sha(helper) == pins["unsignedHelper"]
             and sha(runtime / "manifest.json") == pins["runtimeManifest"],
             "Input hashes differ from the reviewed build or sealed runtime. Supply the matching artifacts.")
+    if legal is not None:
+        inventory_bytes, legal_files = read_legal_inventory(inventory, pins["legalInventory"])
+        verify_legal_resources(legal, legal_files, inventory=inventory)
     producer = Path(__file__).resolve().with_name("package-native-preview.py")
     with tempfile.TemporaryDirectory(prefix=".build-", dir=APP.parent) as temporary:
         scratch = Path(temporary)
@@ -132,6 +199,13 @@ def prepare(profile, pins, gui, helper, runtime):
         output("/usr/bin/python3", "-I", "-B", str(producer), "--app", str(candidate),
                "--swift-executable", str(gui), "--rust-helper", str(helper),
                "--validation-profile", str(scratch / "uncreated-profile"), "--runtime-payload", str(runtime))
+        if legal is not None:
+            for name in legal_files:
+                target = candidate / LEGAL / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(legal / name, target, follow_symlinks=False)
+            verify_legal_resources(candidate / LEGAL, legal_files)
+            (candidate / LEGAL_INVENTORY).write_bytes(inventory_bytes)
         info_path = candidate / INFO
         info = plistlib.loads(info_path.read_bytes())
         info.update(CFBundleIdentifier=BUNDLE_ID, CFBundleName="ExhibitOS Manager Validation",
@@ -189,6 +263,9 @@ def main():
         parser.add_argument("--" + option, required=True)
     for option in ("gui", "helper", "runtime"):
         parser.add_argument("--" + option, type=Path)
+    parser.add_argument("--legal-resources", type=Path)
+    parser.add_argument("--legal-inventory", type=Path)
+    parser.add_argument("--legal-inventory-sha")
     parser.add_argument("--pid", type=int)
     args = parser.parse_args()
     try:
@@ -196,6 +273,16 @@ def main():
         pins = dict(unsignedGUI=args.gui_sha, unsignedHelper=args.helper_sha, runtimeManifest=args.runtime_manifest_sha)
         require(all(re.fullmatch(r"[0-9a-f]{64}", pin) for pin in pins.values()),
                 "Provide the three reviewed SHA-256 build and runtime pins.")
+        legal_paths = (args.legal_resources, args.legal_inventory)
+        if args.legal_inventory_sha is not None:
+            require(re.fullmatch(r"[0-9a-f]{64}", args.legal_inventory_sha), "Provide a reviewed legal inventory SHA-256.")
+            pins["legalInventory"] = args.legal_inventory_sha
+        if args.action == "prepare":
+            legal_inputs = (*legal_paths, args.legal_inventory_sha)
+            require(all(legal_inputs) or not any(legal_inputs),
+                    "For prepare, supply --legal-resources, --legal-inventory and --legal-inventory-sha together.")
+        else:
+            require(not any(legal_paths), "For verify, launch or attach, supply only the legal inventory SHA-256.")
         require(args.profile.is_absolute(), "Supply the absolute validation profile path.")
         require(args.action != "prepare" or all((args.gui, args.helper, args.runtime)),
                 "Prepare requires --gui, --helper and --runtime paths.")
@@ -209,7 +296,7 @@ def main():
             if args.action == "prepare":
                 require(args.profile.resolve(strict=True) == args.profile and args.profile.is_dir(),
                         "Use the canonical existing validation profile.")
-                prepare(args.profile, pins, args.gui, args.helper, args.runtime)
+                prepare(args.profile, pins, args.gui, args.helper, args.runtime, *legal_paths)
             result = dict(app=str(APP), bundleId=BUNDLE_ID, profile=str(args.profile), pins=pins)
             if args.action == "launch":
                 result["pid"] = launch(args.app, args.profile, pins)
