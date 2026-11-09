@@ -749,15 +749,19 @@ pub(crate) enum FurnishingTransition {
     Upgrade39(Catalog39Upgrade),
     Upgrade40(Catalog40Upgrade),
     Upgrade44 { source: RuntimeTuple, target: RuntimeTuple },
-    Recover45 { target: RuntimeTuple },
+    Recover45 { source: RuntimeTuple, target: RuntimeTuple },
     SameCatalog { source: RuntimeTuple, target: RuntimeTuple, catalog: WorkspaceFurnishingCatalog },
 }
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 impl FurnishingTransition {
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
-        for target in [CATALOG45_RECOVERY_TARGET, CATALOG45_SELECTED_RECOVERY_TARGET] {
-            if pair == (CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET.2, target.2) {
-                return Some(Self::Recover45 { target });
+        for (source, target) in [
+            (CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET, CATALOG45_RECOVERY_TARGET),
+            (CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET, CATALOG45_SELECTED_RECOVERY_TARGET),
+            (CATALOG45_SELECTED_RECOVERY_TARGET, CATALOG45_SELECTED_RECOVERY_TARGET),
+        ] {
+            if pair == (source.2, target.2) {
+                return Some(Self::Recover45 { source, target });
             }
         }
         if let Some(transition) = Self::same_catalog_from_manifests(
@@ -900,7 +904,7 @@ impl FurnishingTransition {
             Self::Upgrade39(_) => CATALOG39_UPGRADE_SOURCE,
             Self::Upgrade40(step) => step.source,
             Self::Upgrade44 { source, .. } => source,
-            Self::Recover45 { .. } => CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET,
+            Self::Recover45 { source, .. } => source,
             Self::SameCatalog { source, .. } => source,
         }
     }
@@ -912,7 +916,7 @@ impl FurnishingTransition {
             Self::Upgrade39(target) => target.0,
             Self::Upgrade40(step) => step.target,
             Self::Upgrade44 { target, .. } => target,
-            Self::Recover45 { target } => target,
+            Self::Recover45 { target, .. } => target,
             Self::SameCatalog { target, .. } => target,
         }
     }

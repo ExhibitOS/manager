@@ -1000,6 +1000,41 @@ mod tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    fn catalog45_same_payload_recovery_is_explicit_and_bound_to_its_failed_generation() {
+        let selected = "62200d7ccb47e7ede5d1910a65e0087ac171c595d76ca14df6a19290382e4288";
+        let transition = FurnishingTransition::from_manifests((selected, selected)).unwrap();
+        let old = crate::native_payload::CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET;
+        assert!(FurnishingTransition::from_manifests((old.2, old.2)).is_none());
+        assert!(FurnishingTransition::from_manifests((selected, old.2)).is_none());
+
+        let mut failed = catalog40_binding(GENERATION, transition.source());
+        failed.catalog = 45;
+        failed.admission_kind = Admission::CleanReopen;
+        failed.previous_generation = Some(LATER.into());
+        let mut next = catalog40_binding(NEXT, transition.target());
+        next.catalog = 45;
+
+        assert!(next.clone().consume(&failed).is_err());
+        let mut different_owner = next.clone();
+        different_owner.owner.workspace_id = NEXT.into();
+        assert!(different_owner.consume_furnishing_transition(&failed, transition).is_err());
+
+        next.consume_furnishing_transition(&failed, transition).unwrap();
+        assert_eq!(next.admission_kind, Admission::InterruptedReopen);
+        assert_eq!(next.previous_generation.as_deref(), Some(GENERATION));
+        assert_eq!(next.interrupted_claim_generations, [GENERATION]);
+        assert!(next.clone().consume_furnishing_transition(&failed, transition).is_err());
+
+        next.phase = Phase::Clean;
+        let mut reopened = catalog40_binding(LATER, transition.target());
+        reopened.catalog = 45;
+        assert!(reopened.clone().consume_furnishing_transition(&next, transition).is_err());
+        reopened.consume(&next).unwrap();
+        assert_eq!(reopened.admission_kind, Admission::CleanReopen);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     fn catalog40_to_44_recovery_retains_the_failed_trial_and_restores_source() {
         check_furnishing_recovery(FurnishingTransition::reviewed_catalog40_to_44());
     }
