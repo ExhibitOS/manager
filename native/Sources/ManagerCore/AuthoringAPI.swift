@@ -523,14 +523,45 @@ public actor AuthoringAPI {
         enum Event: String {
             case localAuthRequired = "local-auth-required"
             case request
-            case unauthorized = "http-401"
         }
 
-        func record(_ event: Event) {
+        func record(_ event: Event) { record(event.rawValue) }
+
+        func recordResponse(_ status: Int, code: String? = nil) {
+            #if DEBUG
+            let statuses = [200, 201, 400, 401, 403, 404, 409, 412, 413, 415, 422, 429, 500, 502, 503, 504]
+            let codes = ["AUTH_REQUIRED", "CSRF_REJECTED", "FORBIDDEN", "INVALID_INPUT", "REVISION_CONFLICT",
+                         "APPROVAL_INVALID", "RIGHTS_DENIED", "ASSET_INTEGRITY", "SELECTION_CONFLICT", "REQUEST_CONFLICT",
+                         "ARTWORK_THUMBNAIL_INVALID", "NATIVE_OWNER_UNAVAILABLE", "RENDERED_PREVIEW_UNAVAILABLE",
+                         "STORAGE_UNAVAILABLE", "VALIDATION_UNAVAILABLE", "BODY_TOO_LARGE", "UNSUPPORTED_MEDIA_TYPE",
+                         "INTERNAL_ERROR", "REQUEST_FAILED"]
+            let safeStatus = statuses.contains(status) ? String(status) : "other"
+            let safeCode = code.map { codes.contains($0) ? $0 : "other" } ?? "none"
+            record("response status=\(safeStatus) code=\(safeCode)")
+            #endif
+        }
+
+        func recordTransportFailure(_ error: Error) {
+            #if DEBUG
+            let failure: String
+            switch (error as? URLError)?.code {
+            case .timedOut: failure = "timed-out"
+            case .cannotConnectToHost: failure = "cannot-connect"
+            case .networkConnectionLost: failure = "connection-lost"
+            case .badServerResponse, .cannotParseResponse: failure = "invalid-response"
+            case .cannotDecodeContentData: failure = "invalid-content"
+            case .cancelled: failure = "cancelled"
+            default: failure = "other"
+            }
+            record("transport failure=\(failure)")
+            #endif
+        }
+
+        private func record(_ event: String) {
             #if DEBUG
             guard Bundle.main.bundleIdentifier == "org.exhibitos.manager.validation" else { return }
             let log = Logger(subsystem: "org.exhibitos.manager.validation", category: "catalog-thumbnail")
-            log.notice("Catalog thumbnail stage=\(rawValue, privacy: .public) event=\(event.rawValue, privacy: .public)")
+            log.notice("Catalog thumbnail stage=\(rawValue, privacy: .public) event=\(event, privacy: .public)")
             #endif
         }
     }
@@ -574,26 +605,39 @@ public actor AuthoringAPI {
             guard catalogThumbnail.scope.isCurrent else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
             catalogThumbnail.stage.record(.request)
         }
-        let (bytes, response) = try await transport.bytes(for: request)
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do { (bytes, response) = try await transport.bytes(for: request) }
+        catch {
+            catalogThumbnail?.stage.recordTransportFailure(error)
+            throw error
+        }
         defer { bytes.task.cancel() }
-        guard let http = response as? HTTPURLResponse, http.url == url else { throw AuthoringFailure("RESPONSE_INVALID") }
+        guard let http = response as? HTTPURLResponse, http.url == url else {
+            catalogThumbnail?.stage.recordTransportFailure(URLError(.badServerResponse))
+            throw AuthoringFailure("RESPONSE_INVALID")
+        }
         var data = Data()
-        for try await byte in bytes {
-            try Task.checkCancellation()
-            guard data.count < 2 * 1024 * 1024 else { throw AuthoringFailure("RESPONSE_LIMIT") }
-            data.append(byte)
+        do {
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                guard data.count < 2 * 1024 * 1024 else { throw AuthoringFailure("RESPONSE_LIMIT") }
+                data.append(byte)
+            }
+        } catch {
+            catalogThumbnail?.stage.recordTransportFailure(error)
+            throw error
         }
         guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         guard (200..<300).contains(http.statusCode) else {
             let envelope = try? JSONDecoder().decode(APIErrorEnvelope.self, from: data)
             let code = envelope?.code ?? "REQUEST_FAILED"
-            if http.statusCode == 401 {
-                catalogThumbnail?.stage.record(.unauthorized)
-                generation &+= 1; clear()
-            }
+            catalogThumbnail?.stage.recordResponse(http.statusCode, code: code)
+            if http.statusCode == 401 { generation &+= 1; clear() }
             throw AuthoringFailure(AuthoringFailure.safeCode(code) ? code : "REQUEST_FAILED", status: http.statusCode,
                                    role: envelope?.role, field: envelope?.field)
         }
+        catalogThumbnail?.stage.recordResponse(http.statusCode)
         let result = try JSONDecoder().decode(T.self, from: data)
         if let studio = result as? NativeStudioResponse {
             guard studio.revision > 0, studio.revision <= 2_147_483_647,
