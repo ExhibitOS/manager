@@ -16,8 +16,8 @@ between requests and wait for each response before sending another. Close stdin
 to stop the owned runtime. Shell scripts should use a subprocess with pipes.
 For terminal use, keep each request on a single short line. The command reports
 `IMAGE_CLI_PERSONAL_WORKSPACE_REQUIRED` when the personal workspace is missing
-or unprepared. `IMAGE_PREPARATION_UNAVAILABLE` means the connected runtime has
-not admitted ordinary image preparation. Startup errors go to stderr and exit
+or unprepared. `IMAGE_PREPARATION_UNAVAILABLE` means the configured runtime
+or the authenticated session does not support ordinary image preparation. Startup errors go to stderr and exit
 with a nonzero status.
 
 ## Requests and responses

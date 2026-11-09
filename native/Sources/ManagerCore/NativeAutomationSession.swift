@@ -163,9 +163,14 @@ public actor NativeAutomationSession {
     private func openInstalledImageWorkspace(_ context: Context) async throws -> DocumentValue {
         let directory = try profileIdentity()
         let stopped = try await bridge.nativeStatus(context)
+        if let code = stopped.errorCode { throw BridgeFailure(code) }
         guard !stopped.needsShutdown, !stopped.accountRequired, stopped.selectedOex != true,
-              let configured = stopped.configuration, configured.kind == "personal" else {
+              let configured = stopped.configuration, configured.kind == "personal",
+              stopped.restoration.map({ $0.state == "activated" }) ?? true else {
             throw BridgeFailure("IMAGE_CLI_PERSONAL_WORKSPACE_REQUIRED")
+        }
+        guard AuthoringAPI.supportsFreshImageRuntime(manifest: configured.manifestSha256) else {
+            throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE")
         }
         _ = try await bridge.start(context)
         let ready = try await waitReady()
