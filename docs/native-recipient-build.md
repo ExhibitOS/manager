@@ -44,7 +44,9 @@ python3 scripts/package-native-preview.py \
 Use the [existing private local automation entry](private-agent-interface.md)
 with the bundled helper, the same fresh profile, private output and temporary
 directories, and an unused port triple to initialize the owned workspace.
-Close that owner session before opening the separate app on the prepared
-profile. Verify startup and the local Help index before exercising image
-preparation. Keep the source checkout, runtime inventory, and verification
-results together so this local build can be reproduced.
+Close that owner session after verifying preparation. The preview is headless.
+For GUI validation, use the existing fixed `scripts/manager-validation-gui.py`
+entry with the reviewed source build, runtime, profile, and approved signature.
+The fixed launcher must verify the installed bundle before launch. Verify Help
+from that approved instance when its source resources have been prepared. Keep
+the source checkout, runtime inventory, and verification results together.

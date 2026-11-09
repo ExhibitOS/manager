@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Assemble reviewed native build outputs in a new app bundle.
+"""Stage a headless validation preview or verified release inputs for sealing.
 
-The default is the existing development preview. An exact release receipt can
-stage inputs for sealing. Assembly never signs, installs or runs the app.
+Assembly never signs, installs or runs the app.
 """
 import argparse
 import hashlib
@@ -137,7 +136,12 @@ contents = args.app / 'Contents'
 (contents / 'MacOS').mkdir(parents=True)
 (contents / 'Helpers').mkdir()
 (contents / 'Resources').mkdir()
-shutil.copy2(args.swift_executable, contents / 'MacOS/ExhibitOSManager')
+gui = contents / 'MacOS/ExhibitOSManager'
+if release:
+    shutil.copy2(args.swift_executable, gui)
+else:
+    # The fixed launcher adds the app entry and executable mode during preparation.
+    shutil.copyfile(args.swift_executable, gui)
 shutil.copy2(args.rust_helper, contents / 'Helpers/exhibitos-native')
 brand_source = source_root / 'native/Resources/Brand'
 brand = contents / 'Resources/Brand'
@@ -184,11 +188,13 @@ if args.runtime_payload:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_root / name, target)
 metadata = dict(CFBundleIdentifier='org.exhibitos.manager', CFBundleName='ExhibitOS Manager',
-                CFBundleDisplayName='ExhibitOS Manager', CFBundleExecutable='ExhibitOSManager',
+                CFBundleDisplayName='ExhibitOS Manager',
                 CFBundlePackageType='APPL', CFBundleVersion='1', CFBundleShortVersionString='0.1.0',
                 LSMinimumSystemVersion='14.0', NSHighResolutionCapable=True,
                 CFBundleIconFile='manager.icns')
-if not release:
+if release:
+    metadata['CFBundleExecutable'] = 'ExhibitOSManager'
+else:
     metadata['ExhibitOSValidationProfile'] = str(args.validation_profile)
 with (contents / 'Info.plist').open('wb') as f:
     plistlib.dump(metadata, f)
