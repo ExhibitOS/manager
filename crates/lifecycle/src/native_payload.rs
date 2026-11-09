@@ -671,6 +671,13 @@ const CATALOG45_SAVED_HEAD_MODULAR_PORTAL: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS: RuntimeTuple = (
+    "17488095a3851ac76386c40dfdab114212fd3981",
+    "93f6ceebc80298d946df23624e0d7b4f755bbe9d6764771e6ecc95f60e951ee2",
+    "31b12d9f6fac4019f39c2a9128ced09b7ee918c49ffb119beb544e5e40831ac0",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const CATALOG45_NATIVE_PUBLICATION_CAPACITY: RuntimeTuple = (
     "493223193a6db1b7941835d96a6d8f3a39084863",
     "93f6ceebc80298d946df23624e0d7b4f755bbe9d6764771e6ecc95f60e951ee2",
@@ -699,6 +706,7 @@ pub(crate) fn ordinary_fresh_catalog45_host_matches(tuple: (&str, &str, &str)) -
     return CATALOG45_DEFAULT_FRAME == tuple || CATALOG45_PRODUCT_IMAGE == tuple
         || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL == tuple
         || CATALOG45_SAVED_HEAD_MODULAR_PORTAL == tuple
+        || CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS == tuple
         || catalog45_native_publication_host_matches(tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
@@ -2268,6 +2276,23 @@ mod normal_oex_release_declaration_tests {
         assert!(!payload.normal_oex_selected_input().unwrap());
         assert!(payload.static_export_resources(false).is_ok());
         assert!(payload.static_detail_export_resources(false).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact sealed museum captions catalog 045 package"]
+    fn opens_reviewed_museum_captions_runtime_for_ordinary_catalog45() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_MUSEUM_CAPTIONS_RUNTIME").unwrap());
+        let payload = Payload::open(&root).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        let manifest = payload.context().manifest_sha256;
+        assert_eq!(manifest, CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS.2);
+        assert!(payload.ordinary_fresh_furnishing());
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 45);
+        assert!(!saved_workspace_transition_target(&manifest));
+        assert!(!workspace_v5_validation_matches(&payload.manifest, &manifest, true));
+        assert!(!payload.normal_oex_selected_input().unwrap());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
