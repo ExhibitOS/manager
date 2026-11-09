@@ -36,11 +36,16 @@ struct CatalogThumbnailValidationCapture {
     struct Reservation {
         fileprivate let parent: FileHandle
         fileprivate let directory: FileHandle
+        fileprivate let parentPath: String
         fileprivate let name: String
 
         fileprivate var isCurrent: Bool {
-            var opened = stat(), named = stat()
-            return fstat(directory.fileDescriptor, &opened) == 0
+            var opened = stat(), named = stat(), openedParent = stat(), namedParent = stat()
+            return fstat(parent.fileDescriptor, &openedParent) == 0
+                && lstat(parentPath, &namedParent) == 0
+                && (namedParent.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
+                && openedParent.st_dev == namedParent.st_dev && openedParent.st_ino == namedParent.st_ino
+                && fstat(directory.fileDescriptor, &opened) == 0
                 && fstatat(parent.fileDescriptor, name, &named, AT_SYMLINK_NOFOLLOW) == 0
                 && (named.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
                 && opened.st_dev == named.st_dev && opened.st_ino == named.st_ino
@@ -104,7 +109,7 @@ struct CatalogThumbnailValidationCapture {
         let directoryFD = openat(parentFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
         guard directoryFD >= 0 else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
         let directory = FileHandle(fileDescriptor: directoryFD, closeOnDealloc: true)
-        let reservation = Reservation(parent: parent, directory: directory, name: name)
+        let reservation = Reservation(parent: parent, directory: directory, parentPath: parentPath, name: name)
         guard fstat(directoryFD, &info) == 0, info.st_uid == geteuid(), (info.st_mode & 0o777) == 0o700,
               reservation.isCurrent else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
         return reservation
