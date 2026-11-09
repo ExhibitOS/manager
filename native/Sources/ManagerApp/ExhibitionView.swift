@@ -43,10 +43,19 @@ final class ExhibitionModel: ObservableObject {
         return entry.kind == "sculpture" && entry.primaryMime == "model/gltf-binary"
     }
 
+    var canSaveSelectedCatalogThumbnail: Bool {
+        canSelectCatalog && !immutable && !catalogThumbnailSaving && catalogThumbnailContextIsEditable
+            && selectedCatalogArtworkSupportsRenderedThumbnail
+            && (pendingCatalogThumbnail == nil || pendingCatalogThumbnail?.rendered.artworkId == catalogArtworkId)
+    }
+
+    private var catalogThumbnailContextIsEditable: Bool {
+        viewportController.editingContextActive && viewportController.connected && !viewportController.boundedReadOnly
+            && viewportController.renderedThumbnailSupported
+    }
+
     func saveSelectedCatalogThumbnail() async {
-        guard canSelectCatalog, !immutable, !catalogThumbnailSaving, viewportController.renderedThumbnailSupported,
-              selectedCatalogArtworkSupportsRenderedThumbnail, let entry = catalogEntries[catalogArtworkId],
-              let api else { return }
+        guard canSaveSelectedCatalogThumbnail, let entry = catalogEntries[catalogArtworkId], let api else { return }
         let access = viewportAccessID
         catalogThumbnailSaving = true
         defer { catalogThumbnailSaving = false }
@@ -64,6 +73,8 @@ final class ExhibitionModel: ObservableObject {
                 attempt = PendingCatalogThumbnail(access: access, requestId: UUID(), selectionVersion: version, rendered: rendered)
                 pendingCatalogThumbnail = attempt
             }
+            guard viewportAccessID == access, catalogArtworkId == entry.id, canSelectCatalog, !immutable,
+                  catalogThumbnailContextIsEditable else { return }
             try await api.saveRenderedArtworkThumbnail(attempt.rendered, requestId: attempt.requestId,
                                                         expectedSelectionVersion: attempt.selectionVersion)
             pendingCatalogThumbnail = nil

@@ -91,7 +91,7 @@ struct ArtworkCatalogView: View {
                 .labelStyle(.iconOnly).disabled(!ready || !model.canSelectCatalog || model.immutable || model.viewportSelection?.kind != "placement" || !controller.findSelectionSupported || model.viewportPresentation == .plan)
             if controller.renderedThumbnailSupported && model.selectedCatalogArtworkSupportsRenderedThumbnail {
                 Button("게시용 미리보기 저장", systemImage: "photo") { Task { await model.saveSelectedCatalogThumbnail() } }
-                    .disabled(!ready || !model.canSelectCatalog || model.immutable || model.catalogThumbnailSaving)
+                    .disabled(!ready || !model.canSaveSelectedCatalogThumbnail)
             }
         }
         Spacer(minLength: 0)
