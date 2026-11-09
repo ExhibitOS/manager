@@ -422,7 +422,7 @@ public actor AuthoringAPI {
         #if DEBUG
         hayesOriginalRuntimeQualified = NativeHayesOriginalIntent.supports(manifest: manifest)
         productImageRuntimeQualified = Self.supportsProductImageRuntime(manifest: manifest)
-        freshImageRuntimeQualified = manifest == "257ea9d3d0ef1064494da5c68c2d9b9dd2430ac9f7882ae85e3399c49420ac96"
+        freshImageRuntimeQualified = Self.supportsFreshImageRuntime(manifest: manifest)
         let portalQualified = manifest == Self.workspacePortalFinishManifestPin
             || Self.requiredModelPreparationManifestPins.contains(manifest)
             || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
@@ -784,6 +784,14 @@ public actor AuthoringAPI {
     public var admitsFreshImagePreparation: Bool {
         nativeSession && !authenticationBusy && freshImageRuntimeQualified
             && session?.nativeFreshImagePreparationProfile == NativeProductImagePreparationIntent.freshProfileID
+    }
+
+    nonisolated static func supportsFreshImageRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == "257ea9d3d0ef1064494da5c68c2d9b9dd2430ac9f7882ae85e3399c49420ac96"
+        #else
+        false
+        #endif
     }
 
     nonisolated static func supportsProductImageRuntime(manifest: String) -> Bool {

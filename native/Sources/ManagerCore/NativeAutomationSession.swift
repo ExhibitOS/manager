@@ -69,6 +69,7 @@ public actor NativeAutomationSession {
             && existingWorkspaceV5.map {
                 NativeHayesOriginalIntent.supports(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsProductImageRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsFreshImageRuntime(manifest: $0.manifestSHA256)
             } == true
         guard !(selectedOEX9 && selectedOEX10),
               workspaceV6ValidationRuntime == nil || workspaceV7ValidationRuntime == nil,
