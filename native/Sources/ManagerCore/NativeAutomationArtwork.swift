@@ -5,6 +5,7 @@ struct NativeAutomationReplacementCommand {
     enum Target {
         case image(coarseSHA256: String)
         case productImage(receiptSHA256: String)
+        case productImageThumbnailRepair(receiptSHA256: String)
         case approvedModel(placementID: String)
     }
 
@@ -26,12 +27,14 @@ struct NativeAutomationReplacementCommand {
                 throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
             }
             target = .approvedModel(placementID: placement)
-        } else if request["command"]["kind"] == .string(NativeProductImagePreparationIntent.profileID) {
+        } else if request["command"]["kind"] == .string(NativeProductImagePreparationIntent.profileID)
+                    || request["command"]["kind"] == .string(AuthoringAPI.productImageThumbnailRepairProfile) {
             command = try NativeAutomationArtworkRules.command(request, keys: common.union(["kind", "receiptSha256"]))
             guard let sha256 = command["receiptSha256"].string, nativeImportDigest(sha256) else {
                 throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
             }
-            target = .productImage(receiptSHA256: sha256)
+            target = command["kind"] == .string(AuthoringAPI.productImageThumbnailRepairProfile)
+                ? .productImageThumbnailRepair(receiptSHA256: sha256) : .productImage(receiptSHA256: sha256)
         } else {
             command = try NativeAutomationArtworkRules.command(request, keys: common.union(["coarseSha256"]))
             guard let sha256 = command["coarseSha256"].string, nativeImportDigest(sha256) else {

@@ -7,7 +7,7 @@ final class NativeAutomationArtworkTests: XCTestCase {
     private let assetId = "22222222-2222-4222-8222-222222222222"
     private let jobId = "33333333-3333-4333-8333-333333333333"
     private let tenantId = "44444444-4444-4444-8444-444444444444"
-    func testReviewedReplacementKeepsJPEGAndModelCommandsDisjoint() throws {
+    func testReviewedReplacementKeepsImageRepairAndModelCommandsDisjoint() throws {
         let placement = "55555555-5555-4555-8555-555555555555"
         let hash = String(repeating: "a", count: 64)
         let common: [String: DocumentValue] = [
@@ -21,6 +21,17 @@ final class NativeAutomationArtworkTests: XCTestCase {
         let image = try parse(["coarseSha256": .string(hash)])
         guard case .image(let digest) = image.target else { return XCTFail("Expected legacy image command") }
         XCTAssertEqual(digest, hash)
+
+        let repair = ["kind": DocumentValue.string("product-image-thumbnail-repair-v1"),
+                      "receiptSha256": .string(hash), "artworkRevision": .integer(2)]
+        let repaired = try parse(repair)
+        guard case .productImageThumbnailRepair(let receiptSHA256) = repaired.target else {
+            return XCTFail("Expected retained product image thumbnail repair")
+        }
+        XCTAssertEqual(receiptSHA256, hash)
+        XCTAssertEqual(repaired.artworkRevision, 2)
+        XCTAssertThrowsError(try parse(["kind": .string("product-image-thumbnail-repair-v1")]))
+        XCTAssertThrowsError(try parse(repair.merging(["placementId": .string(placement)]) { _, value in value }))
 
         let model = ["kind": DocumentValue.string("approved-model-candidate-v1"),
                      "placementId": .string(placement)]
