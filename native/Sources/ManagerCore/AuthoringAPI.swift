@@ -2,6 +2,9 @@
 import Foundation
 import CryptoKit
 import Darwin
+#if DEBUG
+import OSLog
+#endif
 
 public struct NativeBoundedOEXJob: Decodable, Sendable {
     public let id: String
@@ -484,7 +487,27 @@ public actor AuthoringAPI {
         return id.uuidString.lowercased()
     }
     private func encoded<T: Encodable>(_ body: T) throws -> Data { try JSONEncoder().encode(body) }
-    private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, bodyFile: URL? = nil, bodyLength: Int? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, chunkSHA256: String? = nil, publicationProfile: String? = nil, timeout: TimeInterval = 15) async throws -> T {
+    private enum CatalogThumbnailStage: String {
+        case selectionRead = "selection-get"
+        case artworkRead = "artwork-get"
+        case selectionWrite = "selection-post"
+
+        enum Event: String {
+            case localAuthRequired = "local-auth-required"
+            case request
+            case unauthorized = "http-401"
+        }
+
+        func record(_ event: Event) {
+            #if DEBUG
+            guard Bundle.main.bundleIdentifier == "org.exhibitos.manager.validation" else { return }
+            let log = Logger(subsystem: "org.exhibitos.manager.validation", category: "catalog-thumbnail")
+            log.notice("Catalog thumbnail stage=\(rawValue, privacy: .public) event=\(event.rawValue, privacy: .public)")
+            #endif
+        }
+    }
+
+    private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, bodyFile: URL? = nil, bodyLength: Int? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, chunkSHA256: String? = nil, publicationProfile: String? = nil, timeout: TimeInterval = 15, catalogThumbnailStage: CatalogThumbnailStage? = nil) async throws -> T {
         guard !(authenticated && authenticationBusy && path != "/api/v1/auth/logout") else { throw AuthoringFailure("AUTH_BUSY") }
         activeRequests += 1
         defer { activeRequests -= 1 }
@@ -519,6 +542,7 @@ public actor AuthoringAPI {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if body != nil || bodyFile != nil { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
         if method != "GET", authenticated, let session { request.setValue(session.csrfToken, forHTTPHeaderField: "x-csrf-token") }
+        catalogThumbnailStage?.record(.request)
         let (bytes, response) = try await transport.bytes(for: request)
         defer { bytes.task.cancel() }
         guard let http = response as? HTTPURLResponse, http.url == url else { throw AuthoringFailure("RESPONSE_INVALID") }
@@ -532,7 +556,10 @@ public actor AuthoringAPI {
         guard (200..<300).contains(http.statusCode) else {
             let envelope = try? JSONDecoder().decode(APIErrorEnvelope.self, from: data)
             let code = envelope?.code ?? "REQUEST_FAILED"
-            if http.statusCode == 401 { generation &+= 1; clear() }
+            if http.statusCode == 401 {
+                catalogThumbnailStage?.record(.unauthorized)
+                generation &+= 1; clear()
+            }
             throw AuthoringFailure(AuthoringFailure.safeCode(code) ? code : "REQUEST_FAILED", status: http.statusCode,
                                    role: envelope?.role, field: envelope?.field)
         }
@@ -641,22 +668,38 @@ public actor AuthoringAPI {
     public func artists() async throws -> AuthoringPage<NativeArtist> { try await request(prefix + "/artists?limit=50&archived=false") }
     public func artist(_ id: String) async throws -> NativeArtist { try await request(prefix + "/artists/" + identifier(id)) }
     public func artwork(_ id: String) async throws -> NativeArtwork { try await request(prefix + "/artworks/" + identifier(id)) }
-    public func artworkThumbnailSelectionVersion(artworkId: String, revision: Int) async throws -> Int {
-        guard nativeSession, (1...Int(Int32.max)).contains(revision) else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+    public func hasCatalogThumbnailAuthority(_ expected: AuthoringSession) -> Bool {
+        guard nativeSession, !authenticationBusy, let session else { return false }
+        return session.userId == expected.userId && session.tenantId == expected.tenantId
+            && session.role == expected.role && session.csrfToken == expected.csrfToken && session.expiresAt == expected.expiresAt
+    }
+
+    private func requireCatalogThumbnailAuthority(_ expected: AuthoringSession, stage: CatalogThumbnailStage) throws {
+        guard hasCatalogThumbnailAuthority(expected) else {
+            stage.record(.localAuthRequired)
+            throw AuthoringFailure("AUTH_REQUIRED", status: 401)
+        }
+    }
+
+    public func artworkThumbnailSelectionVersion(artworkId: String, revision: Int, authority: AuthoringSession) async throws -> Int {
+        try requireCatalogThumbnailAuthority(authority, stage: .selectionRead)
+        guard (1...Int(Int32.max)).contains(revision) else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
         struct Selection: Decodable, Sendable { let selectionVersion: Int }
         let path = prefix + "/artworks/" + (try identifier(artworkId)) + "/thumbnail-selection?expectedRevision=\(revision)"
-        let selection: Selection = try await request(path)
+        let selection: Selection = try await request(path, catalogThumbnailStage: .selectionRead)
         guard (0..<Int(Int32.max)).contains(selection.selectionVersion) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
         return selection.selectionVersion
     }
 
     public func saveRenderedArtworkThumbnail(_ rendered: ViewportRenderedThumbnail, requestId: UUID,
-                                             expectedSelectionVersion: Int) async throws {
-        guard nativeSession, (0..<Int(Int32.max)).contains(expectedSelectionVersion) else {
+                                             expectedSelectionVersion: Int, authority: AuthoringSession) async throws {
+        try requireCatalogThumbnailAuthority(authority, stage: .artworkRead)
+        guard (0..<Int(Int32.max)).contains(expectedSelectionVersion) else {
             throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE")
         }
         let current = generation
-        let artwork = try await artwork(rendered.artworkId)
+        let artwork: NativeArtwork = try await request(prefix + "/artworks/" + identifier(rendered.artworkId),
+                                                        catalogThumbnailStage: .artworkRead)
         guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         guard artwork.id == rendered.artworkId, !artwork.archived, artwork.revision == rendered.revision,
               artwork.approvedRevision == rendered.revision, artwork.approvedAssetId == rendered.sourceAssetId,
@@ -674,8 +717,9 @@ public actor AuthoringAPI {
         struct Receipt: Decodable, Sendable {
             let id: UUID, thumbnailAssetId: UUID, selectionVersion: Int, thumbnailSha256: String, selected: Bool
         }
+        try requireCatalogThumbnailAuthority(authority, stage: .selectionWrite)
         let receipt: Receipt = try await request(prefix + "/artworks/" + (try identifier(rendered.artworkId)) + "/thumbnail-selection",
-                                                 method: "POST", body: encoded(payload))
+                                                 method: "POST", body: encoded(payload), catalogThumbnailStage: .selectionWrite)
         guard receipt.selected else { throw AuthoringFailure("SELECTION_CONFLICT", status: 409) }
         guard receipt.selectionVersion == expectedSelectionVersion + 1, receipt.thumbnailSha256 == rendered.pngSha256,
               receipt.thumbnailAssetId.uuidString.lowercased() != rendered.sourceAssetId.lowercased() else {
