@@ -363,12 +363,14 @@ public actor AuthoringAPI {
         "3ef0cf579846cfd682e63cf1bf89c8735c042b46a711569b4ec6d6c10870c76c",
         productImageFitWheatManifestPin,
         catalog45RecoveryManifestPin,
-        catalog45SelectedRecoveryManifestPin
+        catalog45SelectedRecoveryManifestPin,
+        catalog45RetainedProductImageManifestPin
     ]
     private static let productImageManifestPin = "157f538603a9557c30dfbb58ffc04755db9e174817aaeeb13353ce90e6dd84a2"
     private static let productImageFitWheatManifestPin = "9c5da125d1789e93bdeb9446060b452fcb33b1bb2d95645c909d60c1ff30d18d"
     private static let catalog45RecoveryManifestPin = "7c3efefb9dc90786da5efdcb1025d5953e0900de333830f3775f138c1dbc21f3"
     private static let catalog45SelectedRecoveryManifestPin = "62200d7ccb47e7ede5d1910a65e0087ac171c595d76ca14df6a19290382e4288"
+    private static let catalog45RetainedProductImageManifestPin = "003a98c579e69e1b38a7cb96971f0872f15b8afd169d392a96ac94fe87be9f92"
     private static let workspaceMaterialMultimapManifestPins: Set<String> = [
         "72a13c526fb422c106f8eefaa7e277e5ab003f3c2085ebd09b2814c0a19ef904",
         "df6efc23ea2d9aab790fc25fab9833db9f5b48b3cb0c5417a1bd7c5ef609ac2a",
@@ -756,20 +758,40 @@ public actor AuthoringAPI {
             artworkRevision: receipt.artworkRevision, generation: current)
         guard let artwork = stored.draft.artworks.first(where: { $0["id"].string == intent.artworkId }),
               artwork["revision"].integer == Int64(receipt.artworkRevision + 1),
-              artwork["primaryAssetId"].string == receipt.full.assetId,
-              let assets = artwork["assets"].items,
-              assets.count == (receipt.coarse == nil ? 1 : 2),
-              assets.contains(where: { $0["id"].string == receipt.full.assetId
-                && $0["sha256"].string == receipt.full.sha256 && $0["bytes"].integer == Int64(receipt.full.bytes)
-                && $0["mime"].string == "image/png" }) else {
+              Self.validatesProductImageReplacementInventory(artwork, full: receipt.full, coarse: receipt.coarse,
+                  admitsThumbnail: Self.supportsProductImageReplacementThumbnail(manifest: nativeRuntimeManifestSHA256)) else {
             throw AuthoringFailure("IMPORT_RECEIPT_INVALID")
         }
-        if let coarse = receipt.coarse {
-            guard assets.contains(where: { $0["id"].string == coarse.assetId
-                && $0["sha256"].string == coarse.sha256 && $0["bytes"].integer == Int64(coarse.bytes)
-                && $0["mime"].string == "image/png" }) else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
-        }
         return stored
+    }
+
+    nonisolated static func validatesProductImageReplacementInventory(
+        _ artwork: DocumentValue, full: NativeProductImagePreparationStatus.Image,
+        coarse: NativeProductImagePreparationStatus.Image?, admitsThumbnail: Bool
+    ) -> Bool {
+        let images = [full, coarse].compactMap { $0 }
+        guard artwork["primaryAssetId"].string == full.assetId, let assets = artwork["assets"].items,
+              images.allSatisfy({ image in
+                  assets.contains { asset in
+                      asset["id"].string == image.assetId && asset["sha256"].string == image.sha256
+                          && asset["bytes"].integer == Int64(image.bytes) && asset["mime"].string == "image/png"
+                  }
+              }) else { return false }
+
+        guard admitsThumbnail, case .object(let extensions) = artwork["extensions"],
+              let reference = extensions["org.exhibitos.viewer/thumbnail"] else {
+            return assets.count == images.count
+        }
+        guard assets.count == images.count + 1,
+              case .object(let fields) = reference, fields.count == 2, fields["version"] == .integer(1),
+              let assetId = fields["assetId"]?.string, UUID(uuidString: assetId) != nil,
+              !images.contains(where: { $0.assetId.lowercased() == assetId.lowercased() }),
+              let preview = assets.first(where: { $0["id"].string?.lowercased() == assetId.lowercased() }),
+              preview["role"].string == "preview", preview["mime"].string == "image/png",
+              preview["path"].string?.hasSuffix(".png") == true,
+              let bytes = preview["bytes"].integer, (1...512 * 1024).contains(bytes),
+              let sha256 = preview["sha256"].string, nativeImportDigest(sha256) else { return false }
+        return true
     }
 
     private func commitImageReplacement(exhibitionId: String, studioRevision: Int, etag: String, requestId: String,
@@ -825,8 +847,17 @@ public actor AuthoringAPI {
         #if DEBUG
         manifest == productImageManifestPin || manifest == productImageFitWheatManifestPin
             || manifest == catalog45RecoveryManifestPin || manifest == catalog45SelectedRecoveryManifestPin
+            || manifest == catalog45RetainedProductImageManifestPin
         #else
         false
+        #endif
+    }
+
+    nonisolated static func supportsProductImageReplacementThumbnail(manifest: String?) -> Bool {
+        #if DEBUG
+        manifest == catalog45RetainedProductImageManifestPin
+        #else
+        return false
         #endif
     }
 

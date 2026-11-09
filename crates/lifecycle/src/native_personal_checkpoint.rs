@@ -3,7 +3,7 @@
 //! Staged data remains plaintext in a private directory; only the inventory is sealed.
 //! Pending binding changes block normal startup until authenticated recovery.
 use super::*;
-use crate::installations::InstallationController;
+use crate::installations::{InstallationController, native_maintenance::RetainedProductImage};
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, OsRng, Payload as CipherPayload, rand_core::RngCore},
@@ -101,6 +101,8 @@ struct Checkpoint {
     files: BTreeMap<PathBuf, Entry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     saved_document_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retained_product_image: Option<RetainedProductImage>,
     #[cfg(feature = "workspace-v5-owner-validation")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "catalog40")]
@@ -140,13 +142,55 @@ impl Checkpoint {
         if FurnishingTransition::from_manifests(pair).is_some() != self.furnishing.is_some() {
             return Err(invalid());
         }
+        if self.retained_product_image.is_some() && !retained_transition(pair) {
+            return Err(invalid());
+        }
         check_transition_host(pair, self.saved_document_sha256.as_deref(), saved_workspace_host)
+    }
+
+    fn check_retained(&self, retained: Option<&RetainedProductImage>) -> Result<()> {
+        if self.retained_product_image.as_ref() != retained {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    fn verify_retained_product_image_files(&self, proof: &RetainedProductImage, receipt: &Value) -> Result<()> {
+        let root = Path::new("blobs").join(&self.tenant_id);
+        let quarantine = root.join("quarantine").join(format!("import-{}", proof.job_id));
+        let full_hash = receipt["full"]["sha256"].as_str().filter(|value| hash_valid(value)).ok_or_else(invalid)?;
+        let files = [
+            (&receipt["original"], quarantine.join(&proof.source_sha256)),
+            (&receipt["full"], root.join("approved").join(full_hash)),
+            (&receipt["coarse"], quarantine.join("product-coarse")),
+        ];
+        for (descriptor, path) in files {
+            if descriptor.is_null() {
+                if path.ends_with("product-coarse") { continue; }
+                return Err(invalid());
+            }
+            let entry = self.files.get(&path).ok_or_else(invalid)?;
+            if entry.sha256.as_deref() != descriptor["sha256"].as_str()
+                || entry.sha256.is_none() || descriptor["bytes"].as_u64() != Some(entry.bytes)
+            {
+                return Err(err("NATIVE_RETAINED_PRODUCT_IMAGE_CHANGED"));
+            }
+        }
+        Ok(())
     }
 
     #[cfg(feature = "workspace-v5-owner-validation")]
     fn furnishing_transition(&self) -> Option<FurnishingTransition> {
         FurnishingTransition::from_manifests((&self.old_manifest, &self.new_manifest))
     }
+}
+
+fn retained_transition(pair: (&str, &str)) -> bool {
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    return crate::native_payload::retained_product_image_transition(pair);
+    #[cfg(not(feature = "workspace-v5-owner-validation"))]
+    { let _ = pair; false }
 }
 
 fn invalid() -> LifecycleError {
@@ -874,6 +918,7 @@ impl LifecycleService {
         staging: &Path,
         key: &[u8; 32],
         saved_workspace_host: bool,
+        retained: Option<&RetainedProductImage>,
     ) -> Result<()> {
         let guard = self.lock()?;
         self.check_prepare_guard(&guard)?;
@@ -884,6 +929,7 @@ impl LifecycleService {
             .to_vec();
         let mut checkpoint = self.transition_checkpoint(&envelope, key)?;
         checkpoint.check_host(saved_workspace_host)?;
+        checkpoint.check_retained(retained)?;
         if checkpoint.staged != staging {
             return Err(invalid());
         }
@@ -898,7 +944,7 @@ impl LifecycleService {
         );
         #[cfg(feature = "workspace-v5-owner-validation")]
         if let (Some((trial, transition)), Some(writer)) = (furnishing, &writer) {
-            trial.check_recovery_root(&self.root, writer, transition)?;
+            trial.check_recovery_root(&self.root, writer, transition, retained)?;
         } else {
             ordinary_cold_check()?;
         }
@@ -951,6 +997,7 @@ impl LifecycleService {
         staging: &Path,
         key: &[u8; 32],
         saved_workspace_host: bool,
+        retained: Option<&RetainedProductImage>,
     ) -> Result<(
         crate::native_runtime::Session,
         Checkpoint,
@@ -974,6 +1021,7 @@ impl LifecycleService {
         let envelope = pending.strip_prefix(PENDING_PREFIX).ok_or_else(invalid)?;
         let mut checkpoint = self.transition_checkpoint(envelope, key)?;
         checkpoint.check_host(saved_workspace_host)?;
+        checkpoint.check_retained(retained)?;
         if checkpoint.new_manifest != target_context.manifest_sha256
             || checkpoint.trial || checkpoint.staged != staging {
             return Err(invalid());
@@ -1021,16 +1069,21 @@ impl LifecycleService {
         key: &[u8; 32],
         saved_workspace_host: bool,
         document: &super::installations::native_document::DocumentState,
+        retained: Option<&RetainedProductImage>,
         #[cfg(feature = "workspace-v5-owner-validation")]
         selected: Option<(crate::native_runtime::oex_retained_cleanup::Selected045, PathBuf)>,
     ) -> Result<()> {
         let (mut session, mut checkpoint, binding, envelope) =
-            self.trial_local_personal_runtime(target, staging, key, saved_workspace_host)?;
+            self.trial_local_personal_runtime(target, staging, key, saved_workspace_host, retained)?;
         #[cfg(feature = "workspace-v5-owner-validation")]
         let selected_staging = selected.map(|(selection, prefix)| {
             session.arm_selected_recovery_045(selection)?;
             Ok::<_, LifecycleError>(prefix)
         }).transpose()?;
+        #[cfg(feature = "workspace-v5-owner-validation")]
+        if let Some(proof) = retained {
+            session.arm_retained_product_image(proof.clone())?;
+        }
         let qualified = (|| {
             if session.start()?.state != "ready" {
                 return Err(invalid());
@@ -1049,6 +1102,11 @@ impl LifecycleService {
             if checkpoint.saved_document_sha256.is_some() {
                 session.verify_transition_studio(&authoring, document)?;
             }
+            #[cfg(feature = "workspace-v5-owner-validation")]
+            if let Some(proof) = retained {
+                let receipt = session.verify_retained_product_image(&authoring)?;
+                checkpoint.verify_retained_product_image_files(proof, &receipt)?;
+            }
             Ok(())
         })();
         let stop = session.stop()?;
@@ -1064,6 +1122,9 @@ impl LifecycleService {
                 publish_pending(&self.root, &drained)?;
             }
             return Err(error);
+        }
+        if let Some(proof) = retained {
+            proof.check_replacement_attempt(document)?;
         }
         crate::native_runtime::check_cold_checkpoint_root(&self.root)?;
         let pending = read_pending(&self.root)?;
@@ -1104,6 +1165,7 @@ impl LifecycleService {
         staging: &Path,
         key: &[u8; 32],
         saved_document_sha256: Option<String>,
+        retained_product_image: Option<&RetainedProductImage>,
     ) -> Result<()> {
         let guard = self.lock()?;
         self.check_prepare_guard(&guard)?;
@@ -1200,6 +1262,7 @@ impl LifecycleService {
             new_manifest: target.manifest_sha256,
             files,
             saved_document_sha256,
+            retained_product_image: retained_product_image.cloned(),
             #[cfg(feature = "workspace-v5-owner-validation")]
             furnishing,
             trial: false,
@@ -1233,12 +1296,13 @@ impl InstallationController {
         token: &str,
         key_path: &Path,
         staging: &Path,
+        retained: Option<&RetainedProductImage>,
         task: impl FnOnce(&LifecycleService, &Path, &super::installations::native_document::DocumentState, &[u8; 32]) -> Result<()>,
     ) -> Result<()> {
         if key_path.starts_with(staging) {
             return Err(invalid());
         }
-        self.with_personal_transition(token, |service, profile, document| {
+        self.with_personal_transition(token, retained, |service, profile, document| {
             if key_path.starts_with(&service.root) {
                 return Err(invalid());
             }
@@ -1255,9 +1319,9 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, |service, _, _, key| {
+        self.with_transition_key(token, key_path, staging, None, |service, _, _, key| {
             if !present(staging, ENVELOPE)? {
-                service.authenticate_local_personal_checkpoint(source, target, staging, key, None)?;
+                service.authenticate_local_personal_checkpoint(source, target, staging, key, None, None)?;
             }
             service.stage_local_personal_runtime_transition(source, target, staging, key, false)
         })
@@ -1271,14 +1335,15 @@ impl InstallationController {
         target: &Payload,
         staging: &Path,
         key_path: &Path,
+        retained: Option<&RetainedProductImage>,
     ) -> Result<()> {
-        if !saved_workspace_transition_supported((
-            source.context().manifest_sha256.as_str(), target.context().manifest_sha256.as_str(),
-        ))
-        {
+        let source_manifest = source.context().manifest_sha256;
+        let target_manifest = target.context().manifest_sha256;
+        let pair = (source_manifest.as_str(), target_manifest.as_str());
+        if !saved_workspace_transition_supported(pair) || (retained.is_some() && !retained_transition(pair)) {
             return Err(invalid());
         }
-        self.with_transition_key(token, key_path, staging, |service, profile, document, key| {
+        self.with_transition_key(token, key_path, staging, retained, |service, profile, document, key| {
             if !staging.is_absolute() || staging.starts_with(profile) || profile.starts_with(staging) {
                 return Err(invalid());
             }
@@ -1295,12 +1360,13 @@ impl InstallationController {
             if present(staging, ENVELOPE)? {
                 let envelope = installation_backup::source_bytes(staging, ENVELOPE, ENVELOPE_LIMIT as u64, true)?;
                 let checkpoint = service.transition_checkpoint(&envelope, key)?;
+                checkpoint.check_retained(retained)?;
                 if checkpoint.saved_document_sha256.as_deref() != Some(document_sha256.as_str()) {
                     return Err(invalid());
                 }
             } else {
                 service.authenticate_local_personal_checkpoint(
-                    source, target, staging, key, Some(document_sha256),
+                    source, target, staging, key, Some(document_sha256), retained,
                 )?;
             }
             service.stage_local_personal_runtime_transition(source, target, staging, key, true)
@@ -1316,8 +1382,8 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, |service, _, _, key| {
-            service.authenticate_local_personal_checkpoint(source, target, staging, key, None)
+        self.with_transition_key(token, key_path, staging, None, |service, _, _, key| {
+            service.authenticate_local_personal_checkpoint(source, target, staging, key, None, None)
         })
     }
 
@@ -1330,7 +1396,7 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, |service, _, _, key| {
+        self.with_transition_key(token, key_path, staging, None, |service, _, _, key| {
             service.stage_local_personal_runtime_transition(source, target, staging, key, false)
         })
     }
@@ -1342,8 +1408,9 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
         saved_workspace_host: bool,
+        retained: Option<&RetainedProductImage>,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, |service, _, document, key| {
+        self.with_transition_key(token, key_path, staging, retained, |service, _, document, key| {
             #[cfg(feature = "workspace-v5-owner-validation")]
             if target.catalog45_recovery_validation() {
                 let checkpoint = self.catalog45_activation_checkpoint(service, document, &target, staging, key)?;
@@ -1352,7 +1419,7 @@ impl InstallationController {
                 }
             }
             service.activate_local_personal_runtime_transition(
-                target, staging, key, saved_workspace_host, document,
+                target, staging, key, saved_workspace_host, document, retained,
                 #[cfg(feature = "workspace-v5-owner-validation")]
                 None,
             )
@@ -1400,7 +1467,7 @@ impl InstallationController {
         if !target.catalog45_selected_recovery_validation() {
             return Err(invalid());
         }
-        self.with_transition_key(token, key_path, staging, |service, profile, document, key| {
+        self.with_transition_key(token, key_path, staging, None, |service, profile, document, key| {
             let checkpoint = self.catalog45_activation_checkpoint(service, document, &target, staging, key)?;
             let oex = oex_retained_cleanup::Selection::new(&selection.oex_job_id, &selection.oex_import_runtime_generation)?;
             let prefix = Path::new("blobs").join(&checkpoint.tenant_id).join("oex-staging").join(&selection.oex_job_id);
@@ -1423,7 +1490,7 @@ impl InstallationController {
             let selected = oex_retained_cleanup::Selected045::new(
                 oex, &selection.hayes_job_id, &selection.hayes_completion_frame_sha256, retired, absent_chunks, settled_only,
             )?;
-            service.activate_local_personal_runtime_transition(target, staging, key, true, document, Some((selected, prefix)))
+            service.activate_local_personal_runtime_transition(target, staging, key, true, document, None, Some((selected, prefix)))
         })
     }
 
@@ -1433,9 +1500,10 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
         saved_workspace_host: bool,
+        retained: Option<&RetainedProductImage>,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, |service, _, _, key| {
-            service.recover_local_personal_runtime_transition(staging, key, saved_workspace_host)
+        self.with_transition_key(token, key_path, staging, retained, |service, _, _, key| {
+            service.recover_local_personal_runtime_transition(staging, key, saved_workspace_host, retained)
         })
     }
 
@@ -1493,7 +1561,7 @@ mod tests {
         let target = Arc::new(Payload::open(&path("EXHIBITOS_TEST_TARGET_PAYLOAD")).unwrap());
         let service = LifecycleService::bound_existing(root.clone()).unwrap();
         let (mut session, checkpoint, binding, _) = service
-            .trial_local_personal_runtime(target, &staging, key.0.as_slice().try_into().unwrap(), false)
+            .trial_local_personal_runtime(target, &staging, key.0.as_slice().try_into().unwrap(), false, None)
             .unwrap();
         assert_eq!(session.start().unwrap().state, "ready");
         let authoring = session.authoring_session().unwrap();
@@ -1818,7 +1886,7 @@ mod tests {
             }
             assert!(
                 controller
-                    .recover_local_personal_runtime_transition(token, &staged, &wrong_key_path, false)
+                    .recover_local_personal_runtime_transition(token, &staged, &wrong_key_path, false, None)
                     .is_err()
             );
             assert!(
@@ -1837,7 +1905,7 @@ mod tests {
                 assert!(inventory_with_limit(&root, false, original_bytes + pending_bytes).is_ok());
             }
             controller
-                .recover_local_personal_runtime_transition(token, &staged, &key_path, false)
+                .recover_local_personal_runtime_transition(token, &staged, &key_path, false, None)
                 .unwrap();
             assert_eq!(inventory(&root, false).unwrap(), checkpoint.files);
             assert!(service.personal_environment(&old, ports).is_ok());

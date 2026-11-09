@@ -38,11 +38,82 @@ pub enum LocalPersonalTransition {
     },
     Stage { source_payload: PathBuf, staging: PathBuf, key_file: PathBuf },
     #[cfg(feature = "workspace-v5-owner-validation")]
-    StageSaved { source_payload: PathBuf, staging: PathBuf, key_file: PathBuf },
-    Activate { staging: PathBuf, key_file: PathBuf },
+    StageSaved {
+        source_payload: PathBuf, staging: PathBuf, key_file: PathBuf,
+        #[serde(default)]
+        retained_product_image: Option<RetainedProductImage>,
+    },
+    Activate {
+        staging: PathBuf, key_file: PathBuf,
+        #[serde(default)]
+        retained_product_image: Option<RetainedProductImage>,
+    },
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation"))]
     ActivateSelected045 { staging: PathBuf, key_file: PathBuf, selection: SelectedRecovery045 },
-    Recover { staging: PathBuf, key_file: PathBuf },
+    Recover {
+        staging: PathBuf, key_file: PathBuf,
+        #[serde(default)]
+        retained_product_image: Option<RetainedProductImage>,
+    },
+}
+
+/// Exact approved image preparation retained while the saved workspace changes payloads.
+#[cfg(debug_assertions)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RetainedProductImage {
+    pub(crate) job_id: String,
+    pub(crate) artwork_id: String,
+    pub(crate) artwork_revision: u32,
+    pub(crate) upload_idempotency_key: String,
+    pub(crate) source_sha256: String,
+    pub(crate) source_bytes: u64,
+    pub(crate) receipt_sha256: String,
+    pub(crate) transfer_sha256: String,
+    pub(crate) replacement_request_id: String,
+    pub(crate) replacement_attempt_path: PathBuf,
+    pub(crate) replacement_attempt_sha256: String,
+    pub(crate) saved_etag: String,
+}
+
+#[cfg(all(target_os = "macos", debug_assertions))]
+impl RetainedProductImage {
+    pub(crate) fn check_replacement_attempt(&self, document: &super::native_document::DocumentState) -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+
+        const NAME: &str = ".automation-artwork-replacement.json";
+        let invalid = || err("NATIVE_RETAINED_PRODUCT_IMAGE_ATTEMPT_CHANGED");
+        let path = &self.replacement_attempt_path;
+        let directory = path.parent().filter(|_| path.is_absolute() && path.ends_with(NAME)).ok_or_else(invalid)?;
+        let metadata = fs::symlink_metadata(directory).map_err(|_| invalid())?;
+        if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o022 != 0 {
+            return Err(invalid());
+        }
+        let bytes = super::installation_backup::source_bytes(directory, NAME, 8192, true).map_err(|_| invalid())?;
+        if digest(&bytes) != self.replacement_attempt_sha256 {
+            return Err(invalid());
+        }
+        let attempt: Value = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+        let exhibition = document.draft.as_ref().and_then(super::native_document::draft_id).ok_or_else(invalid)?;
+        let studio_revision: u32 = self.saved_etag.strip_prefix("\"studio-r")
+            .and_then(|value| value.split_once('-'))
+            .and_then(|(revision, _)| revision.parse().ok()).ok_or_else(invalid)?;
+        let expected = serde_json::json!({
+            "version": 1, "operation": "artwork-replace-reviewed", "requestId": self.replacement_request_id,
+            "exhibitionId": exhibition, "workspaceId": document.workspace_id, "tenantId": document.tenant_id,
+            "principalId": document.principal_id, "expectedRevision": document.revision,
+            "expectedEditVersion": document.saved_edit_version.ok_or_else(invalid)?,
+            "command": {
+                "kind": "product-image-pair-2048-512-v1", "artworkId": self.artwork_id,
+                "artworkRevision": self.artwork_revision, "importJobId": self.job_id,
+                "studioRevision": studio_revision, "etag": self.saved_etag, "receiptSha256": self.receipt_sha256,
+            },
+        });
+        if attempt != expected {
+            return Err(invalid());
+        }
+        Ok(())
+    }
 }
 
 #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
