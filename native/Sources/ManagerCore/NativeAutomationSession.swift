@@ -877,7 +877,10 @@ public actor NativeAutomationSession {
             } else {
                 policy = nil
             }
-            guard Set(fields.keys) == commandKeys else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let suppliedKeys = Set(fields.keys)
+            guard suppliedKeys == commandKeys || suppliedKeys == commandKeys.union(["fitProfile"]) else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
             let command = DocumentValue.object(fields)
             let details = try JSONDecoder().decode(WorkspaceFurnishingDetails.self, from: JSONEncoder().encode(command))
             guard let id = request["requestId"].string, try value(details) == command else {
