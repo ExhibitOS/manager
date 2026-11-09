@@ -259,6 +259,20 @@ public struct NativeExhibitionDraft: Codable, Equatable, Sendable {
         var c = candidate; c["placements"] = .array(rows); try change(c)
     }
 
+    /// Change only the explicitly reviewed placement alternative text.
+    mutating func setArtworkInterpretation(_ id: String, expectedText: String, text: String) throws {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              text.unicodeScalars.count <= 8192,
+              placements.filter({ $0["id"].string == id }).count == 1,
+              var rows = candidate["accessibility"]["artworkDescriptions"].items,
+              rows.filter({ $0["placementId"].string == id }).count == 1,
+              let index = rows.firstIndex(where: { $0["placementId"].string == id }),
+              case .object(let fields) = rows[index], Set(fields.keys) == ["placementId", "text"],
+              let existing = rows[index]["text"].string, existing.utf8.elementsEqual(expectedText.utf8) else { throw AuthoringFailure("ARTWORK_INTERPRETATION_CHANGED") }
+        rows[index]["text"] = .string(text)
+        var next = candidate; next["accessibility"]["artworkDescriptions"] = .array(rows); try change(next)
+    }
+
     mutating func rotatePlacement(_ id: String, rotation: [Double]) throws {
         guard rotation.count == 4, rotation.allSatisfy(\.isFinite),
               abs(rotation.reduce(0) { $0 + $1 * $1 } - 1) <= 1e-6,

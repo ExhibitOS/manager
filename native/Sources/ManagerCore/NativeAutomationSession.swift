@@ -474,6 +474,15 @@ public actor NativeAutomationSession {
         guard policy.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
         guard !policy.boundedReadOnly, policy.boundedEditRequired != true else { throw BridgeFailure(unsupportedCode) }
     }
+    /// Ordinary GUI staging is allowed only on a positive ordinary policy;
+    /// bounded provenance retains the server's dedicated viewport check.
+    static func operatorRequiresViewportValidation(_ policy: NativeViewportPolicy, etag: String) throws -> Bool {
+        guard policy.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+        if policy.confirmsOrdinaryDraft { return false }
+        guard policy.boundedProfile == true, policy.boundedEditRequired == false,
+              !policy.boundedReadOnly, policy.editingCapability == nil else { throw BridgeFailure("NATIVE_ARTWORK_CAPABILITY_UNAVAILABLE") }
+        return true
+    }
     @discardableResult
     private func checkSavedSurfacePolicy(_ state: NativeDocumentState, api: AuthoringAPI) async throws -> NativeViewportPolicy {
         guard !state.dirty, state.pending == nil, let draft = state.draft, state.etag != nil else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
@@ -1001,6 +1010,10 @@ public actor NativeAutomationSession {
         if operation == "workspace-bench-seat-attach" {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
                                          "expectedRevision", "expectedEditVersion", "command"]
+            guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        }
+        if ["artwork-placement-move", "artwork-interpretation-set"].contains(operation) {
+            let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
         if installedImageCLI {
@@ -1950,6 +1963,41 @@ public actor NativeAutomationSession {
             let reply = try JSONDecoder().decode(DocumentValue.self, from: Data(contentsOf: url))
             let preview = try proposal.checkedReply(reply, selectedBenchId: proposal.command.benchId)
             var next = current; next.draft = try preview.apply(to: draft, selectedBenchId: proposal.command.benchId, command: proposal.command)
+            result = try value(await bridge.saveDocumentState(context, state: next))
+        case "artwork-placement-move", "artwork-interpretation-set":
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: operation == "artwork-placement-move"
+                ? ["placementId", "position", "etag"] : ["placementId", "expectedText", "text", "etag"])
+            guard existingWorkspaceV5 != nil, selectedOEXFormat == nil, !current.dirty, current.pending == nil,
+                  let etag = current.etag, command["etag"] == .string(etag), var draft = current.draft,
+                  let placementId = command["placementId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let policy = try await api.nativeViewportPolicy(draft.id)
+            let needsViewportCheck = try Self.operatorRequiresViewportValidation(policy, etag: etag)
+            let saved = try await api.exhibition(draft.id)
+            guard saved.etag == etag, saved.draft == draft, saved.revision == policy.revision else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            if operation == "artwork-placement-move" {
+                guard let values = command["position"].items, values.count == 3,
+                      values.allSatisfy({ $0.double != nil }) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+                try draft.movePlacement(placementId, position: values.compactMap(\.double))
+            } else {
+                guard let previous = command["expectedText"].string, let text = command["text"].string else {
+                    throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+                }
+                try draft.setArtworkInterpretation(placementId, expectedText: previous, text: text)
+            }
+            if needsViewportCheck { try await api.validateNativeViewportEdit(draft, etag: etag) }
+            try Task.checkCancellation()
+            guard try value(await bridge.documentState(context)) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+            let latest = try await api.exhibition(draft.id)
+            guard latest.etag == etag, latest.draft == saved.draft else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            let latestPolicy = try await api.nativeViewportPolicy(draft.id)
+            guard latestPolicy.revision == saved.revision,
+                  try Self.operatorRequiresViewportValidation(latestPolicy, etag: etag) == needsViewportCheck else {
+                throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            guard try value(await bridge.documentState(context)) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+            try Task.checkCancellation()
+            var next = current; next.draft = draft
             result = try value(await bridge.saveDocumentState(context, state: next))
         case "artwork-placement-rotate":
             try checkedRevision(request, current)
