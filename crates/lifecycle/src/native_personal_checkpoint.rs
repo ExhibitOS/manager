@@ -1123,6 +1123,9 @@ impl LifecycleService {
             }
             return Err(error);
         }
+        if let Some(proof) = retained {
+            proof.check_replacement_attempt(document)?;
+        }
         crate::native_runtime::check_cold_checkpoint_root(&self.root)?;
         let pending = read_pending(&self.root)?;
         if pending.strip_prefix(PENDING_PREFIX) != Some(envelope.as_slice()) {

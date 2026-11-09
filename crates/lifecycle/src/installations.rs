@@ -430,6 +430,7 @@ impl InstallationController {
                 {
                     return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
                 }
+                proof.check_replacement_attempt(&document)?;
             } else if transfer.intent.is_some() {
                 return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
             }
