@@ -26,6 +26,8 @@ public struct AuthoringSession: Decodable, Sendable {
     public var nativeModelCandidateReplacementProfile: String? = nil
     public var nativeProductImagePreparationProfile: String? = nil
     public var nativeAuthoringProposalProfile: String? = nil
+    public var workspacePortalModularFitProfile: String? = nil
+    public var workspaceFurnishingReusableFitProfile: String? = nil
     public var nativeFreshImagePreparationProfile: String? = nil
     public var workspaceMaterialProfile: String? = nil
     public var workspaceFurnishingProfile: String? = nil
@@ -379,6 +381,8 @@ public actor AuthoringAPI {
     ]
     private static let workspacePortalFinishManifestPin =
         "0bea16fb7d61aa3b0e60921a7f4d8d702025e4857f779fd763b9633f4884b330"
+    private static let savedHeadModularRuntimeManifestPin =
+        "375672ab366c52a8a177e2815fda65382708aba8126461a903268534918b43fe"
     private static let requiredModelPreparationManifestPins: Set<String> = [
         "f21b1378b39d11fd6ea8f9c89636912f233f884af176e2deb9856dea3ae77b53",
         "af4e787a5fa5c714d60bf24cba23a1b2e7015946d1f4bea9a5777a3af3c8b2d0",
@@ -474,6 +478,7 @@ public actor AuthoringAPI {
         hayesOriginalRuntimeQualified = NativeHayesOriginalIntent.supports(manifest: manifest)
         productImageRuntimeQualified = Self.supportsProductImageRuntime(manifest: manifest)
         let portalQualified = manifest == Self.workspacePortalFinishManifestPin
+            || Self.supportsSavedHeadAuthoringRuntime(manifest: manifest)
             || Self.requiredModelPreparationManifestPins.contains(manifest)
             || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
         let multimapQualified = portalQualified || Self.workspaceMaterialMultimapManifestPins.contains(manifest)
@@ -1922,8 +1927,16 @@ public actor AuthoringAPI {
         workspacePortalFinishRuntimeQualified && admitsWorkspaceFurnishings && session?.advertisesWorkspacePortalFinish == true
     }
 
+    public var admitsWorkspaceModularPortalFit: Bool {
+        admitsWorkspacePortalFinish
+            && Self.supportsSavedHeadAuthoringRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
+            && session?.workspaceFurnishingReusableFitProfile == "source-bound-fit-v1"
+            && session?.workspacePortalModularFitProfile == WorkspaceFurnishingFitProfile.modularPortal.rawValue
+    }
+
     private var supportedFurnishingExtensionVersion: Int64 {
         guard admitsWorkspaceFurnishings, let session else { return 0 }
+        if admitsWorkspaceModularPortalFit { return 7 }
         if admitsWorkspacePortalFinish { return 6 }
         if session.advertisesWorkspaceArtworkFrameModels { return 5 }
         if session.advertisesWorkspaceArtworkFrame { return 4 }
@@ -1942,10 +1955,17 @@ public actor AuthoringAPI {
     }
 
     public func createWorkspaceFurnishing(requestId: String, details: WorkspaceFurnishingDetails,
-                                          preparationPolicy: WorkspaceArtworkFramePreparationPolicy? = nil) async throws -> WorkspaceFurnishingIntake {
+                                          preparationPolicy: WorkspaceArtworkFramePreparationPolicy? = nil,
+                                          fitProfile: WorkspaceFurnishingFitProfile? = nil) async throws -> WorkspaceFurnishingIntake {
         guard workspaceFurnishingID(requestId), details.isValid else { throw AuthoringFailure("FURNISHING_DECLARATION") }
         guard details.kind.minimumExtensionVersion <= supportedFurnishingExtensionVersion else {
             throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+        }
+        if let fitProfile {
+            guard admitsWorkspaceModularPortalFit, fitProfile == .modularPortal,
+                  fitProfile.matches(details.kind), preparationPolicy == nil else {
+                throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+            }
         }
         if details.kind == .artworkFrame {
             let version = try WorkspaceArtworkFrameAttachment.extensionVersion(for: details.model)
@@ -1960,9 +1980,10 @@ public actor AuthoringAPI {
                 throw AuthoringFailure("FRAME_PREPARATION_SOURCE_UNSUPPORTED")
             }
         }
-        let body = try encoded(WorkspaceFurnishingRequest(requestId: requestId, details: details, preparationPolicy: preparationPolicy))
+        let body = try encoded(WorkspaceFurnishingRequest(requestId: requestId, details: details,
+                                                         preparationPolicy: preparationPolicy, fitProfile: fitProfile))
         let intake: WorkspaceFurnishingIntake = try await request(workspaceFurnishingPath("furnishing-intakes"), method: "POST", body: body)
-        try intake.check(requestId: requestId, details: details, expectedPolicy: preparationPolicy,
+        try intake.check(requestId: requestId, details: details, expectedPolicy: preparationPolicy, expectedFit: fitProfile,
                          supportedExtensionVersion: supportedFurnishingExtensionVersion, admitsPreparation: admitsWorkspaceArtworkFramePreparation)
         return intake
     }
@@ -2074,7 +2095,8 @@ public actor AuthoringAPI {
 
     public func workspaceFurnishing(_ id: String, version: Int) async throws -> WorkspaceFurnishing {
         let furnishing: WorkspaceFurnishing = try await request(workspaceFurnishingVersionPath(id, version: version))
-        guard furnishing.id == id, furnishing.details.kind.minimumExtensionVersion <= supportedFurnishingExtensionVersion else {
+        guard furnishing.id == id, furnishing.details.kind.minimumExtensionVersion <= supportedFurnishingExtensionVersion,
+              furnishing.fit == nil || supportedFurnishingExtensionVersion >= 7 else {
             throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
         }
         return furnishing
@@ -2112,10 +2134,23 @@ public actor AuthoringAPI {
         guard response.valid else { throw AuthoringFailure("DRAFT_INVALID") }
     }
 
+    nonisolated static func supportsSavedHeadAuthoringRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == savedHeadModularRuntimeManifestPin
+        #else
+        false
+        #endif
+    }
+
+    var admitsSavedHeadAuthoring: Bool {
+        nativeSession && !authenticationBusy
+            && Self.supportsSavedHeadAuthoringRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
+            && session?.nativeAuthoringProposalProfile == "saved-head-v1"
+    }
+
     func nativeAuthoringProposal(exhibitionId: String, studioRevision: Int, etag: String,
                                  proposal: DocumentValue) async throws -> DocumentValue {
-        guard nativeSession, !authenticationBusy, let session,
-              session.nativeAuthoringProposalProfile == "saved-head-v1" else {
+        guard admitsSavedHeadAuthoring, let session else {
             throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),
@@ -2202,7 +2237,8 @@ public actor AuthoringAPI {
             furnishing = selected
         }
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
-        let next = try WorkspacePortalFinish.applying(to: draft, openingId: openingId, furnishing: furnishing)
+        let next = try WorkspacePortalFinish.applying(to: draft, openingId: openingId, furnishing: furnishing,
+                                                      admitsModularFit: admitsWorkspaceModularPortalFit)
         if next != nil || furnishing != nil { try await validateNativeViewportEdit(next ?? draft, etag: etag) }
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next

@@ -10,9 +10,9 @@ public enum WorkspacePortalFinish {
     }
 
     // Platform validates dimensions, host transforms, fit, rights and the saved revision.
-    // The client constructs only the current v5/v6 visual delta.
+    // The client carries the server's registered fit descriptor into the visual delta.
     static func applying(to draft: NativeExhibitionDraft, openingId: String,
-                         furnishing: WorkspaceFurnishing?) throws -> NativeExhibitionDraft? {
+                         furnishing: WorkspaceFurnishing?, admitsModularFit: Bool = false) throws -> NativeExhibitionDraft? {
         let openingId = openingId.lowercased()
         let hosts = draft.candidate["openings"].items?.filter { $0["id"].string?.lowercased() == openingId }
         guard workspaceFurnishingID(openingId), hosts?.count == 1, hosts?.first?["type"].string == "door" else {
@@ -30,15 +30,16 @@ public enum WorkspacePortalFinish {
         var openings: [DocumentValue] = []
         if let existing = extensions[namespace] {
             guard case .object(let fields) = existing, let version = existing["version"].integer,
-                  version == 5 || version == 6,
+                  version == 5 || version == 6 || (version == 7 && admitsModularFit),
                   let listed = existing["furnishings"].items,
                   let placed = existing["placements"].items,
                   let attachedFrames = existing["frameAttachments"].items else {
                 throw AuthoringFailure("VIEWPORT_COMMAND_DENIED")
             }
             let common: Set<String> = ["version", "furnishings", "placements", "frameAttachments"]
-            guard Set(fields.keys) == (version == 6 ? common.union(["openingAttachments"]) : common),
-                  version == 5 || existing["openingAttachments"].items?.isEmpty == false else {
+            guard Set(fields.keys) == (version >= 6 ? common.union(["openingAttachments"]) : common),
+                  version == 5 || existing["openingAttachments"].items != nil,
+                  version != 6 || existing["openingAttachments"].items?.isEmpty == false else {
                 throw AuthoringFailure("VIEWPORT_COMMAND_DENIED")
             }
             furnishings = listed
@@ -53,8 +54,10 @@ public enum WorkspacePortalFinish {
         let existing = targets.firstIndex(of: openingId)
         if let furnishing {
             let model = furnishing.details.model
+            let qualifiedModel = furnishing.fit.map { admitsModularFit && $0.profile == .modularPortal }
+                ?? (model.sha256 == modelSHA256 && model.bytes == 164_044)
             guard furnishing.details.kind == .portalFinish, furnishing.version == 1, workspaceFurnishingID(furnishing.id),
-                  model.sha256 == modelSHA256, model.bytes == 164_044, model.mime == "model/gltf-binary" else {
+                  qualifiedModel, model.mime == "model/gltf-binary" else {
                 throw AuthoringFailure("PORTAL_ASSET_UNSUPPORTED")
             }
             let descriptor = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(furnishing))
@@ -79,11 +82,12 @@ public enum WorkspacePortalFinish {
         if furnishings.isEmpty && placements.isEmpty && frames.isEmpty && openings.isEmpty {
             extensions.removeValue(forKey: namespace)
         } else {
+            let version: Int64 = furnishings.contains { $0["fit"] != .null } ? 7 : openings.isEmpty ? 5 : 6
             var fields: [String: DocumentValue] = [
-                "version": .integer(openings.isEmpty ? 5 : 6), "furnishings": .array(furnishings),
+                "version": .integer(version), "furnishings": .array(furnishings),
                 "placements": .array(placements), "frameAttachments": .array(frames)
             ]
-            if !openings.isEmpty { fields["openingAttachments"] = .array(openings) }
+            if version >= 6 { fields["openingAttachments"] = .array(openings) }
             extensions[namespace] = .object(fields)
         }
         candidate["extensions"] = .object(extensions)

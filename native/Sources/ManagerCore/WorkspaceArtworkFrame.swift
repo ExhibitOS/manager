@@ -66,16 +66,17 @@ public enum WorkspaceArtworkFrameCommand: Sendable {
         var extensionVersion: Int64 = 4
         if let existing = extensions[namespace] {
             guard case .object(let fields) = existing, let version = existing["version"].integer,
-                  (1...6).contains(version),
+                  (1...7).contains(version),
                   let descriptors = existing["furnishings"].items, let rows = existing["placements"].items,
                   version < 4 || existing["frameAttachments"].items != nil else {
                 throw AuthoringFailure("VIEWPORT_COMMAND_DENIED")
             }
             var expected: Set<String> = ["version", "furnishings", "placements"]
             if version >= 4 { expected.insert("frameAttachments") }
-            if version == 6 { expected.insert("openingAttachments") }
+            if version >= 6 { expected.insert("openingAttachments") }
             openingAttachments = existing["openingAttachments"].items
-            guard Set(fields.keys) == expected, version != 6 || openingAttachments?.isEmpty == false else {
+            guard Set(fields.keys) == expected, version < 6 || openingAttachments != nil,
+                  version != 6 || openingAttachments?.isEmpty == false else {
                 throw AuthoringFailure("VIEWPORT_COMMAND_DENIED")
             }
             guard version <= supportedExtensionVersion else {
