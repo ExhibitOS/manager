@@ -671,10 +671,17 @@ const CATALOG45_SAVED_HEAD_MODULAR_PORTAL: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS: RuntimeTuple = (
+const CATALOG45_MUSEUM_CAPTION_TRANSITION_SOURCE: RuntimeTuple = (
     "17488095a3851ac76386c40dfdab114212fd3981",
     "93f6ceebc80298d946df23624e0d7b4f755bbe9d6764771e6ecc95f60e951ee2",
     "31b12d9f6fac4019f39c2a9128ced09b7ee918c49ffb119beb544e5e40831ac0",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS: RuntimeTuple = (
+    "fe4491994abf75f6e8872108b3fe19d6e8aa0db4",
+    "66b63cfecc4c48f77d4b04a10ee9df495de64072371817b3c8eee57710ba1ca6",
+    "4fbd168027090f38776bd75990e27ed336db6c65d15c4af3f17bf428d140440b",
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -706,6 +713,7 @@ pub(crate) fn ordinary_fresh_catalog45_host_matches(tuple: (&str, &str, &str)) -
     return CATALOG45_DEFAULT_FRAME == tuple || CATALOG45_PRODUCT_IMAGE == tuple
         || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL == tuple
         || CATALOG45_SAVED_HEAD_MODULAR_PORTAL == tuple
+        || CATALOG45_MUSEUM_CAPTION_TRANSITION_SOURCE == tuple
         || CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS == tuple
         || catalog45_native_publication_host_matches(tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
@@ -865,6 +873,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_RETAINED_IMAGE_RECOVERY_TARGET.2 == manifest
         || CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET.2 == manifest
         || CATALOG45_NATIVE_PUBLICATION_CAPACITY.2 == manifest
+        || CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS.2 == manifest
         || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL_OEX.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
@@ -960,6 +969,13 @@ impl FurnishingTransition {
             return Some(Self::SameCatalog {
                 source: CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET,
                 target: CATALOG45_NATIVE_PUBLICATION_CAPACITY,
+                catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
+            });
+        }
+        if pair == (CATALOG45_MUSEUM_CAPTION_TRANSITION_SOURCE.2, CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS.2) {
+            return Some(Self::SameCatalog {
+                source: CATALOG45_MUSEUM_CAPTION_TRANSITION_SOURCE,
+                target: CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS,
                 catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             });
         }
@@ -2280,18 +2296,34 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
-    #[ignore = "requires the exact sealed museum captions catalog 045 package"]
+    #[ignore = "requires the exact original and corrected museum captions catalog 045 packages"]
     fn opens_reviewed_museum_captions_runtime_for_ordinary_catalog45() {
+        let original = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_MUSEUM_CAPTIONS_SOURCE_RUNTIME").unwrap());
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_MUSEUM_CAPTIONS_RUNTIME").unwrap());
-        let payload = Payload::open(&root).unwrap();
+        let source = Payload::open_saved_workspace_transition(&original).unwrap();
+        let payload = Payload::open_saved_workspace_transition(&root).unwrap();
         let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
-        let manifest = payload.context().manifest_sha256;
-        assert_eq!(manifest, CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS.2);
+        let old = source.manifest_sha256.as_str();
+        let new = payload.manifest_sha256.as_str();
+        assert_eq!(old, CATALOG45_MUSEUM_CAPTION_TRANSITION_SOURCE.2);
+        assert_eq!(new, CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS.2);
         assert!(payload.ordinary_fresh_furnishing());
         assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
-        assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 45);
-        assert!(!saved_workspace_transition_target(&manifest));
-        assert!(!workspace_v5_validation_matches(&payload.manifest, &manifest, true));
+        let ledger = payload.workspace_furnishing_ledger(catalog).unwrap();
+        assert_eq!(ledger.lines().count(), 45);
+        assert_eq!(ledger, source.workspace_furnishing_ledger(catalog).unwrap());
+        assert_eq!(FurnishingTransition::from_manifests((old, new)), Some(FurnishingTransition::SameCatalog {
+            source: CATALOG45_MUSEUM_CAPTION_TRANSITION_SOURCE,
+            target: CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS,
+            catalog,
+        }));
+        assert!(saved_workspace_transition_supported((old, new)));
+        for pair in [(new, old), (old, old), (new, new), (CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET.2, new)] {
+            assert!(!saved_workspace_transition_supported(pair));
+        }
+        assert!(!saved_workspace_transition_target(old));
+        assert!(saved_workspace_transition_target(new));
+        assert!(!workspace_v5_validation_matches(&payload.manifest, new, true));
         assert!(!payload.normal_oex_selected_input().unwrap());
     }
 
@@ -2884,8 +2916,10 @@ impl Payload {
                 Err(err("NATIVE_RUNTIME_UNQUALIFIED"))
             };
         }
-        let ordinary_catalog45 = [CATALOG45_RENDERED_SCULPTURE_THUMBNAIL, CATALOG45_NATIVE_PUBLICATION_CAPACITY]
-            .contains(&(context.source_commit.as_str(), payload.manifest.producer_sha256.as_str(), context.manifest_sha256.as_str()));
+        let ordinary_catalog45 = [
+            CATALOG45_RENDERED_SCULPTURE_THUMBNAIL, CATALOG45_NATIVE_PUBLICATION_CAPACITY,
+            CATALOG45_MUSEUM_CAPTION_TRANSITION_SOURCE, CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS,
+        ].contains(&(context.source_commit.as_str(), payload.manifest.producer_sha256.as_str(), context.manifest_sha256.as_str()));
         let retained_catalog = payload.retained_furnishing_catalog().or(
             ordinary_catalog45.then_some(WorkspaceFurnishingCatalog::RequiredModelPreparation045),
         );

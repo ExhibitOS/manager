@@ -385,7 +385,7 @@ public actor AuthoringAPI {
     private static let savedHeadModularRuntimeManifestPin =
         "375672ab366c52a8a177e2815fda65382708aba8126461a903268534918b43fe"
     private static let savedHeadMuseumCaptionManifestPin =
-        "31b12d9f6fac4019f39c2a9128ced09b7ee918c49ffb119beb544e5e40831ac0"
+        "4fbd168027090f38776bd75990e27ed336db6c65d15c4af3f17bf428d140440b"
     private static let nativePublicationCapacityManifestPin =
         "1209d5d95417d1e29f637d8ce327e78cf38ed1b32eabcb5ab6fd3e2a62a10203"
     private static let renderedSculptureThumbnailOexRuntimeManifestPin =
