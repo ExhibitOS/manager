@@ -165,6 +165,26 @@ final class NativeAutomationFailureTests: XCTestCase {
         XCTAssertThrowsError(try invalid.check())
     }
 
+    #if DEBUG
+    func testOrdinaryExistingThumbnailOexRequiresExactReviewedRuntime() throws {
+        let previous = "f21b1378b39d11fd6ea8f9c89636912f233f884af176e2deb9856dea3ae77b53"
+        let corrected = "0efbf042ad20b7cd8963751e5cfe5f343ead93d6ced6164e8bbd08566e378c99"
+        let owner = UUID().uuidString.lowercased()
+        let missing = URL(fileURLWithPath: "/missing/exhibitos-native")
+        for (manifest, expected) in [(previous, "AUTOMATION_CONFIGURATION_INVALID"),
+                                     (corrected, "AUTOMATION_SCOPE_CHANGED")] {
+            let data = Data("""
+                {"workspaceId":"\(owner)","tenantId":"\(owner)","principalId":"\(owner)","manifestSHA256":"\(manifest)"}
+                """.utf8)
+            let identity = try JSONDecoder().decode(NativeAutomationSession.ExistingWorkspaceV5.self, from: data)
+            XCTAssertThrowsError(try NativeAutomationSession(helper: missing, profile: missing,
+                ports: [:], outputRoot: missing, temporaryRoot: missing, inputs: [:], existingWorkspaceV5: identity)) {
+                XCTAssertEqual(($0 as? BridgeFailure)?.code, expected)
+            }
+        }
+    }
+    #endif
+
     func testDraft12CompletionReceiptRequiresSuccessfulReopen() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)

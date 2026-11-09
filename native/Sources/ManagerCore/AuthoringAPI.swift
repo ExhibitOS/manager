@@ -2152,14 +2152,18 @@ public actor AuthoringAPI {
             && session?.nativeAuthoringProposalProfile == "saved-head-v1"
     }
 
-    var admitsRenderedSculptureThumbnailOex: Bool {
+    nonisolated static func supportsRenderedSculptureThumbnailOexRuntime(manifest: String) -> Bool {
         #if DEBUG
-        nativeSession && !authenticationBusy
-            && nativeRuntimeManifestSHA256 == Self.renderedSculptureThumbnailOexRuntimeManifestPin
-            && session?.nativeOexExportProfile == "bounded-file-v1"
+        manifest == renderedSculptureThumbnailOexRuntimeManifestPin
         #else
         false
         #endif
+    }
+
+    var admitsRenderedSculptureThumbnailOex: Bool {
+        nativeSession && !authenticationBusy
+            && Self.supportsRenderedSculptureThumbnailOexRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
+            && session?.nativeOexExportProfile == "bounded-file-v1"
     }
 
     func nativeAuthoringProposal(exhibitionId: String, studioRevision: Int, etag: String,
