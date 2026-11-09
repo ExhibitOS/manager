@@ -15,7 +15,8 @@ final class ManagerModel: ObservableObject {
     }
     @Published private(set) var native: NativeHostStatus? {
         didSet {
-            if !ready || oldValue?.runtime?.jobId != native?.runtime?.jobId {
+            if !ready || oldValue?.runtime?.jobId != native?.runtime?.jobId
+                || oldValue?.configuration?.manifestSha256 != native?.configuration?.manifestSha256 {
                 exhibitions.invalidateCatalogThumbnailAuthority()
             }
             if let binding = retainedAuthoring, let current = native, !current.busy,
@@ -285,7 +286,8 @@ final class ManagerModel: ObservableObject {
                    !quitting, ready, native?.runtime?.jobId == runtimeJobID,
                    connectionGeneration == retainedAuthoringGeneration, authoring.exhibitionAPI === api,
                    let current = authoring.session, Self.sameSession(current, session) {
-                    exhibitions.confirmCatalogThumbnailAuthority(api: api, session: session, credentials: credentials)
+                    exhibitions.confirmCatalogThumbnailAuthority(api: api, session: session, credentials: credentials,
+                                                                  manifestSHA256: native?.configuration?.manifestSha256)
                 }
             } else { exhibitions.entranceCredentialRenewalFailed() }
         } catch {
