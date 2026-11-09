@@ -125,6 +125,17 @@ final class NativeAutomationArtworkTests: XCTestCase {
         }
         var changed = snapshot; changed["rights"]["permissions"]["display"] = .bool(false)
         XCTAssertThrowsError(try NativeAutomationArtworkRules.checkRegistration(changed, artworkId: artworkId, revision: 3, tenantId: tenantId))
+        var image = snapshot; image["artworkType"] = .string("image")
+        image["primaryAssetId"] = .string(assetId)
+        XCTAssertThrowsError(try NativeAutomationArtworkRules.checkRegistration(image, artworkId: artworkId, revision: 3, tenantId: tenantId, allowsImage: true))
+        image["assets"] = .array([.object(["id": .string(assetId), "mime": .string("image/png"), "role": .string("image")])])
+        XCTAssertThrowsError(try NativeAutomationArtworkRules.checkRegistration(image, artworkId: artworkId, revision: 3, tenantId: tenantId))
+        try NativeAutomationArtworkRules.checkRegistration(image, artworkId: artworkId, revision: 3, tenantId: tenantId, allowsImage: true)
+        image["rights"]["permissions"]["display"] = .bool(false)
+        XCTAssertThrowsError(try NativeAutomationArtworkRules.checkRegistration(image, artworkId: artworkId, revision: 3, tenantId: tenantId, allowsImage: true))
+        image["rights"]["permissions"]["display"] = .bool(true)
+        image["artworkType"] = .string("sound")
+        XCTAssertThrowsError(try NativeAutomationArtworkRules.checkRegistration(image, artworkId: artworkId, revision: 3, tenantId: tenantId, allowsImage: true))
     }
     func testQualifiedMetadataRoundTripsAndBindsExactUpload() throws {
         let (_, job, intent, body) = try approvalFixture()

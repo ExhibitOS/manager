@@ -778,7 +778,7 @@ mod tests {
                 payload_manifest_sha256: "a".repeat(64),
                 catalog,
                 physical,
-                restore: None,
+                restore: None, interrupted_claim_generations: Vec::new(),
             };
             let lease_body = lease.signed(&key, furnishing_lease::Kind::Lease).unwrap();
             let lease_ack = lease.signed(&key, furnishing_lease::Kind::Ack).unwrap();

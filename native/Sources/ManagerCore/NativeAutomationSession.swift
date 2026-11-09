@@ -69,6 +69,7 @@ public actor NativeAutomationSession {
             && existingWorkspaceV5.map {
                 NativeHayesOriginalIntent.supports(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsProductImageRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsFreshImageRuntime(manifest: $0.manifestSHA256)
             } == true
         guard !(selectedOEX9 && selectedOEX10),
               workspaceV6ValidationRuntime == nil || workspaceV7ValidationRuntime == nil,
@@ -158,7 +159,9 @@ public actor NativeAutomationSession {
         }
         let api = try AuthoringAPI(port: config.ports.web, tenantId: expected.tenantId, nativeRuntimeManifestSHA256: config.manifestSha256)
         let session = try await api.connect(credentials)
-        guard await api.admitsWorkspaceMaterials else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
+        let admitsMaterials = await api.admitsWorkspaceMaterials
+        let admitsFreshImages = await api.admitsFreshImagePreparation
+        guard admitsMaterials || admitsFreshImages else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
         let stored = try await api.exhibition(draft.id)
         guard try value(await bridge.documentState(context)) == value(saved) else {
             throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
@@ -800,6 +803,7 @@ public actor NativeAutomationSession {
             try NativeAutomationArtworkRules.checkUploadScope(transfer, document: current)
             let requiredPreparationAvailable = await api.admitsRequiredModelPreparation
             let productPreparationAvailable = await api.admitsProductImagePreparation
+            let freshPreparationAvailable = await api.admitsFreshImagePreparation
             guard selectedOEXFormat == nil, !current.dirty,
                   let draft = current.draft, let etag = current.etag,
                   let artworkId = command["artworkId"].string, let jobId = command["jobId"].string,
@@ -807,7 +811,7 @@ public actor NativeAutomationSession {
                   let intent = transfer.intent, intent.artworkId == artworkId, transfer.jobId == jobId,
                   (intent.coarsePreparation != nil && api.admitsSameOwnerArtworkReplacement)
                     || (intent.modelPreparation != nil && requiredPreparationAvailable)
-                    || (intent.productImagePreparation != nil && productPreparationAvailable) else {
+                    || (intent.productImagePreparation.map { $0.isFresh ? freshPreparationAvailable : productPreparationAvailable } == true) else {
                 throw BridgeFailure("IMPORT_INTENT_CHANGED")
             }
             let saved = try await api.exhibition(draft.id)
@@ -821,7 +825,7 @@ public actor NativeAutomationSession {
                   }) else { throw BridgeFailure("APPROVAL_REVIEW_REQUIRED") }
             let jobProof: DocumentValue
             if let preparation = intent.productImagePreparation {
-                guard revision == Int64(preparation.artworkRevision + 1),
+                guard revision == Int64(preparation.artworkRevision + (preparation.isFresh ? 0 : 1)),
                       job.productImagePreparation?.status == .ready else { throw BridgeFailure("APPROVAL_REVIEW_REQUIRED") }
                 jobProof = try productImageJobValue(job, intent: intent, current: current)
             } else if intent.modelPreparation != nil {
@@ -1278,22 +1282,38 @@ public actor NativeAutomationSession {
             }
         case "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement":
             result = try await executeCompactModel(operation, request: request, id: id, context: context, current: current, api: api)
-        case "import-glb":
+        case "import-glb", "import-image":
+            let image = operation == "import-image"
             try checkedRevision(request, current)
-            let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "artworkRevision", "scaleMeters"])
+            let command = try NativeAutomationArtworkRules.command(request,
+                keys: image ? ["artworkId", "artworkRevision"] : ["artworkId", "artworkRevision", "scaleMeters"])
             guard selectedOEXFormat == nil, current.pending == nil, let path = request["inputPath"].string,
                   let expected = inputs[path], let artworkId = command["artworkId"].string,
-                  let revision = command["artworkRevision"].integer, let scale = command["scaleMeters"].double else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+                  let revision = command["artworkRevision"].integer, let scale = image ? 1.0 : command["scaleMeters"].double else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
             let url = URL(fileURLWithPath: path)
             guard url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
-            let file = try await ImportFileSnapshot.load(url)
-            guard file.mime == "model/gltf-binary", file.sha256 == expected else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
+            let file = try await ImportFileSnapshot.load(url, allowJPEG: image)
+            guard (image ? ["image/jpeg", "image/png"].contains(file.mime) : file.mime == "model/gltf-binary"),
+                  file.sha256 == expected else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
             let artwork = try await api.artwork(artworkId)
             guard Int64(artwork.revision) == revision, !artwork.archived, let metadata = artwork.metadata else { throw BridgeFailure("ARTWORK_SCOPE_CHANGED") }
-            try NativeAutomationArtworkRules.checkDisplayAsset(metadata, sha256: file.sha256, scaleMeters: scale)
             let state = try await bridge.uploadState(context)
             try NativeAutomationArtworkRules.checkUploadScope(state, document: current)
             guard state.compactVariant == nil else { throw BridgeFailure("IMPORT_ACTIVE") }
+            if image {
+                guard await api.admitsFreshImagePreparation else { throw BridgeFailure("IMAGE_PREPARATION_UNAVAILABLE") }
+                let preparation = NativeProductImagePreparationIntent(artworkRevision: artwork.revision, fresh: true)
+                try preparation.checkFreshArtwork(artwork, rights: metadata.rights)
+                let intent = NativeImportIntent(artworkId: artwork.id, idempotencyKey: id, mime: file.mime,
+                    sha256: file.sha256, bytes: file.data.count, scaleMeters: 1, rights: metadata.rights,
+                    productImagePreparation: preparation)
+                let job = try await NativeAutomationArtworkTransfer.run(bridge: bridge, context: context, state: state,
+                    intent: intent, file: file, transport: api)
+                result = .object(["job": try productImageJobValue(job, intent: intent, current: current),
+                                  "transfer": try value(await bridge.uploadState(context))])
+                break
+            }
+            try NativeAutomationArtworkRules.checkDisplayAsset(metadata, sha256: file.sha256, scaleMeters: scale)
             if metadata.provenance.sourceUnits == "unknown" {
                 guard await api.admitsModelOriginalInspection,
                       state.intent == nil || state.intent?.modelPreparation != nil else {
@@ -1335,6 +1355,24 @@ public actor NativeAutomationSession {
                 fields["job"] = NativeAutomationArtworkRules.jobValue(observed)
             }
             result = .object(fields)
+        case "artwork-image-preparation-retry":
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "jobId"])
+            let state = try await bridge.uploadState(context)
+            try NativeAutomationArtworkRules.checkUploadScope(state, document: current)
+            guard selectedOEXFormat == nil, await api.admitsFreshImagePreparation,
+                  let intent = state.intent, let preparation = intent.productImagePreparation, preparation.isFresh,
+                  command["artworkId"] == .string(intent.artworkId), let jobId = state.jobId,
+                  command["jobId"] == .string(jobId) else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
+            let artwork = try await api.artwork(intent.artworkId)
+            try preparation.checkFreshArtwork(artwork, rights: intent.rights)
+            let previous = try await api.importJob(jobId)
+            guard previous.id == jobId, previous.canRetry, previous.confirmsIntakeDrain(for: intent) else {
+                throw BridgeFailure("IMPORT_DRAIN_PENDING")
+            }
+            let retried = try await api.importAction(jobId, action: .retry)
+            guard retried.id == jobId else { throw BridgeFailure("IMPORT_RECEIPT_INVALID") }
+            result = .object(["job": try productImageJobValue(retried, intent: intent, current: current), "transfer": try value(state)])
         case "artwork-model-preparation-retry":
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "jobId"])
@@ -1385,9 +1423,17 @@ public actor NativeAutomationSession {
                   let revision = command["revision"].integer, let assetId = command["assetId"].string else { throw BridgeFailure("APPROVAL_REVIEW_REQUIRED") }
             let state = try await bridge.uploadState(context)
             try NativeAutomationArtworkRules.checkUploadScope(state, document: current)
-            guard let intent = state.intent, intent.artworkId == artworkId, intent.mime == "model/gltf-binary",
+            guard let intent = state.intent, intent.artworkId == artworkId,
+                  intent.mime == "model/gltf-binary" || intent.productImagePreparation?.isFresh == true,
                   intent.derived == nil, intent.modelDerivation == nil, let jobId = state.jobId else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
             let job = try await api.importJob(jobId), artwork = try await api.artwork(artworkId)
+            if let preparation = intent.productImagePreparation, preparation.isFresh {
+                guard job.id == jobId, job.assetId == assetId, Int64(preparation.artworkRevision) == revision else {
+                    throw BridgeFailure("APPROVAL_REVIEW_REQUIRED")
+                }
+                result = try value(await api.approveFreshImage(job, request: intent, current: artwork, workspaceID: current.workspaceId))
+                break
+            }
             if let hayes = intent.hayesOriginal {
                 guard job.id == jobId, job.assetId == assetId, Int64(artwork.revision) == revision,
                       hayes.matchesReleasedDisplay(artwork, job: job, intent: intent) else {
@@ -1419,7 +1465,8 @@ public actor NativeAutomationSession {
                   let revision = command["revision"].integer, let room = command["roomId"].string,
                   let placement = command["placementId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
             let approved = try await api.studioArtwork(artworkId)
-            try NativeAutomationArtworkRules.checkRegistration(approved.artwork, artworkId: artworkId, revision: revision, tenantId: current.tenantId)
+            try NativeAutomationArtworkRules.checkRegistration(approved.artwork, artworkId: artworkId, revision: revision,
+                tenantId: current.tenantId, allowsImage: await api.admitsFreshImagePreparation)
             try draft.addApprovedArtwork(approved.artwork, roomId: room, placementId: placement, transform: command["transform"])
             var next = current; next.draft = draft
             result = try value(await bridge.saveDocumentState(context, state: next))

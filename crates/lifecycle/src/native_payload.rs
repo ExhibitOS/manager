@@ -320,6 +320,17 @@ const MODEL_PREPARATION_CAPABILITY: (&str, u64, &str) = (
     352,
     "19beda5c00b9427270dd08c800955076daf5ebc1699ab61881e41fa4c48a3370",
 );
+const FRESH_IMAGE_PREPARATION_DIRECTORY: &str = "platform/database/native-fresh-image-preparation/";
+const FRESH_IMAGE_PREPARATION_SCHEMA: (&str, u64, &str) = (
+    "platform/database/native-fresh-image-preparation/047_fresh_image_preparation.sql",
+    1357,
+    "682a7bf2f07a3b43cb8c398758c37568723c85abc372be1f374a59a29f474bf7",
+);
+const FRESH_IMAGE_PREPARATION_CAPABILITY: (&str, u64, &str) = (
+    "platform/scripts/native-fresh-image-preparation-capability-v1.json",
+    269,
+    "92f9752cf464f7e75839c57f40d81586e1a6a2b452b06b5d5bee1868211c45ac",
+);
 const HAYES_FRAME_PREPARATION_CAPABILITY: (&str, u64, &str) = (
     WORKSPACE_FRAME_PREPARATION_CAPABILITY.0,
     WORKSPACE_FRAME_PREPARATION_CAPABILITY.1,
@@ -563,6 +574,20 @@ pub(crate) const CATALOG45_PRODUCT_IMAGE: RuntimeTuple = (
 pub(crate) fn ordinary_fresh_catalog45_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CATALOG45_DEFAULT_FRAME == tuple || CATALOG45_PRODUCT_IMAGE == tuple;
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const CATALOG47_FRESH_IMAGE_RECOVERY: RuntimeTuple = (
+    "11f6a7ef0b297b5f57cb262870829708c1fe9904",
+    "489e5c418e1757a8c9202cfde3efa3a1bda55b16b01a075e48cfba893b6ce643",
+    "257ea9d3d0ef1064494da5c68c2d9b9dd2430ac9f7882ae85e3399c49420ac96",
+);
+
+pub(crate) fn fresh_image_recovery_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return CATALOG47_FRESH_IMAGE_RECOVERY == tuple;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -818,6 +843,7 @@ pub(crate) enum WorkspaceFurnishingCatalog {
     HayesDisposition043,
     HayesRelease044,
     RequiredModelPreparation045,
+    FreshImagePreparation047,
 }
 
 impl WorkspaceFurnishingCatalog {
@@ -833,13 +859,15 @@ impl WorkspaceFurnishingCatalog {
             Self::HayesDisposition043 => 43,
             Self::HayesRelease044 => 44,
             Self::RequiredModelPreparation045 => 45,
+            Self::FreshImagePreparation047 => 47,
         }
     }
 
     pub(crate) fn uses_writer_lease(self) -> bool {
         matches!(self, Self::Writer037 | Self::Publication038 | Self::MaterialPublication039
             | Self::MaterialMultimap040 | Self::FramePreparation041 | Self::HayesOriginal042
-            | Self::HayesDisposition043 | Self::HayesRelease044 | Self::RequiredModelPreparation045)
+            | Self::HayesDisposition043 | Self::HayesRelease044 | Self::RequiredModelPreparation045
+            | Self::FreshImagePreparation047)
     }
 }
 
@@ -1640,13 +1668,39 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    #[ignore = "requires the exact sealed isolated fresh-image 047 package"]
+    fn opens_reviewed_ordinary_fresh_image_catalog47() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_FRESH_IMAGE_CATALOG47_RUNTIME").unwrap());
+        let mut payload = Payload::open(&root).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::FreshImagePreparation047;
+        let manifest = payload.context().manifest_sha256;
+        assert!(payload.ordinary_fresh_furnishing_validation());
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        let ledger = payload.workspace_furnishing_ledger(catalog).unwrap();
+        assert_eq!(ledger.lines().count(), 46);
+        assert_eq!(ledger.lines().last(), Some(concat!(
+            "047_fresh_image_preparation.sql|",
+            "682a7bf2f07a3b43cb8c398758c37568723c85abc372be1f374a59a29f474bf7"
+        )));
+        assert!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::RequiredModelPreparation045).is_err());
+        assert!(payload.retained_furnishing_catalog().is_none());
+        assert!(!saved_workspace_transition_target(&manifest));
+        assert!(!workspace_v5_validation_matches(&payload.manifest, &manifest, true));
+        assert!(!payload.normal_oex_selected_input().unwrap());
+        assert!(payload.static_detail_export_resources(false).is_err());
+        payload.manifest_sha256 = "f".repeat(64);
+        assert!(payload.workspace_furnishing_catalog().is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the exact sealed default frame 045 package"]
     fn opens_reviewed_default_frame_runtime_for_ordinary_catalog45() {
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_DEFAULT_FRAME_CATALOG45_RUNTIME").unwrap());
         let payload = Payload::open(&root).unwrap();
         let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
         let manifest = payload.context().manifest_sha256;
-        assert!(payload.ordinary_fresh_catalog45_validation());
+        assert!(payload.ordinary_fresh_furnishing_validation());
         assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
         assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 45);
         assert!(payload.retained_furnishing_catalog().is_none());
@@ -2286,8 +2340,13 @@ impl Payload {
         ))
     }
 
-    pub(crate) fn ordinary_fresh_catalog45_validation(&self) -> bool {
-        ordinary_fresh_catalog45_host_matches((
+    pub(crate) fn ordinary_fresh_furnishing_validation(&self) -> bool {
+        let tuple = (&*self.manifest.source_commit, &*self.manifest.producer_sha256, &*self.manifest_sha256);
+        ordinary_fresh_catalog45_host_matches(tuple) || fresh_image_recovery_host_matches(tuple)
+    }
+
+    pub(crate) fn fresh_image_recovery_validation(&self) -> bool {
+        fresh_image_recovery_host_matches((
             &self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256,
         ))
     }
@@ -2338,7 +2397,7 @@ impl Payload {
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
         let wheat_grant: Option<(&str, &str, &str)> = None;
         let pinned_portal = self.retained_furnishing_catalog().is_some()
-            || self.ordinary_fresh_catalog45_validation()
+            || self.ordinary_fresh_furnishing_validation()
             || portal.into_iter().chain(artwork_replacement).chain(wheat_grant).chain(CATALOG40_WHEAT_DETAIL).any(|(source, producer, manifest)|
                 self.manifest.source_commit == source && self.manifest.producer_sha256 == producer
                     && self.manifest_sha256 == manifest);
@@ -2391,8 +2450,14 @@ impl Payload {
         let material_pinned = material.contains(&tuple);
         let multimap_pinned = multimap.contains(&tuple);
         let release_probe_pinned = hayes_release_host_matches(tuple);
+        let fresh_image_pinned = fresh_image_recovery_host_matches(tuple);
+        let fresh_image_declared = self.manifest.files.iter().any(|file|
+            file.path == FRESH_IMAGE_PREPARATION_CAPABILITY.0 || file.path.starts_with(FRESH_IMAGE_PREPARATION_DIRECTORY));
+        if fresh_image_declared != fresh_image_pinned {
+            return Err(unqualified());
+        }
         let model_preparation_pinned = required_model_preparation_host_matches(tuple)
-            || self.ordinary_fresh_catalog45_validation();
+            || self.ordinary_fresh_furnishing_validation();
         let model_preparation_declared = self.manifest.files.iter().any(|file|
             file.path == MODEL_PREPARATION_CAPABILITY.0 || file.path.starts_with(MODEL_PREPARATION_DIRECTORY));
         if model_preparation_declared != model_preparation_pinned {
@@ -2509,6 +2574,12 @@ impl Payload {
                                         if !pinned_file(MODEL_PREPARATION_CAPABILITY) || !pinned_file(MODEL_PREPARATION_SCHEMA) {
                                             return Err(unqualified());
                                         }
+                                        if fresh_image_pinned {
+                                            if !pinned_file(FRESH_IMAGE_PREPARATION_CAPABILITY) || !pinned_file(FRESH_IMAGE_PREPARATION_SCHEMA) {
+                                                return Err(unqualified());
+                                            }
+                                            return Ok(Some(WorkspaceFurnishingCatalog::FreshImagePreparation047));
+                                        }
                                         return Ok(Some(WorkspaceFurnishingCatalog::RequiredModelPreparation045));
                                     }
                                     return Ok(Some(WorkspaceFurnishingCatalog::HayesRelease044));
@@ -2616,12 +2687,20 @@ impl Payload {
                 44
             } else if file.path.starts_with(MODEL_PREPARATION_DIRECTORY) {
                 let (path, bytes, hash) = MODEL_PREPARATION_SCHEMA;
-                if catalog != WorkspaceFurnishingCatalog::RequiredModelPreparation045
+                if catalog.version() < 45
                     || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
                 {
                     return Err(invalid());
                 }
                 45
+            } else if file.path.starts_with(FRESH_IMAGE_PREPARATION_DIRECTORY) {
+                let (path, bytes, hash) = FRESH_IMAGE_PREPARATION_SCHEMA;
+                if catalog != WorkspaceFurnishingCatalog::FreshImagePreparation047
+                    || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
+                {
+                    return Err(invalid());
+                }
+                47
             } else {
                 let Some((_, range)) = directories.iter().find(|(expected, _)| *expected == directory) else { continue; };
                 let Some(number) = name.split_once('_').and_then(|(number, _)| number.parse::<usize>().ok()) else { return Err(invalid()); };
@@ -2636,7 +2715,9 @@ impl Payload {
                 return Err(invalid());
             }
         }
-        if rows.len() != catalog.version() as usize { return Err(invalid()); }
+        // The isolated fresh-image catalog is 045 plus 047, with no 046.
+        let count = if catalog == WorkspaceFurnishingCatalog::FreshImagePreparation047 { 46 } else { catalog.version() };
+        if rows.len() != count as usize { return Err(invalid()); }
         Ok(rows.into_values().collect::<Vec<_>>().join("\n"))
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]

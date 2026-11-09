@@ -4,14 +4,15 @@ import CryptoKit
 
 public struct NativeProductImagePreparationIntent: Codable, Equatable, Sendable {
     public static let profileID = "product-image-pair-2048-512-v1"
+    public static let freshProfileID = "ordinary-image-preparation-v1"
     public static let maximumSourceBytes = 32 * 1024 * 1024
     public let version: Int
     public let profile: String
     public let artworkRevision: Int
 
-    public init(artworkRevision: Int) {
+    public init(artworkRevision: Int, fresh: Bool = false) {
         version = 1
-        profile = Self.profileID
+        profile = fresh ? Self.freshProfileID : Self.profileID
         self.artworkRevision = artworkRevision
     }
 
@@ -26,12 +27,34 @@ public struct NativeProductImagePreparationIntent: Codable, Equatable, Sendable 
         guard valid else { throw AuthoringFailure("IMAGE_PREPARATION_INTENT_INVALID") }
     }
 
+    public var isFresh: Bool { profile == Self.freshProfileID }
+
     var valid: Bool {
-        version == 1 && profile == Self.profileID && (1..<2_147_483_647).contains(artworkRevision)
+        version == 1 && (isFresh || profile == Self.profileID) && (1..<2_147_483_647).contains(artworkRevision)
+    }
+
+    func accepts(mime: String) -> Bool {
+        mime == "image/jpeg" || (isFresh && mime == "image/png")
+    }
+
+    func matches(_ intent: NativeImportIntent) -> Bool {
+        valid && accepts(mime: intent.mime) && intent.scaleMeters == 1
+            && (4...Self.maximumSourceBytes).contains(intent.bytes) && nativeImportDigest(intent.sha256)
+            && intent.derived == nil && intent.coarsePreparation == nil && intent.modelDerivation == nil
+            && intent.modelPreparation == nil && intent.hayesOriginal == nil
+    }
+
+    public func checkFreshArtwork(_ artwork: NativeArtwork, rights: ArtworkMetadata.Rights, approvedAssetId: String? = nil) throws {
+        guard isFresh, valid, !artwork.archived, artwork.revision == artworkRevision,
+              artwork.metadata?.displayReference == nil, artwork.metadata?.rights == rights,
+              rights.permissions.display, rights.permissions.export,
+              artwork.approvedAssetId == nil && artwork.approvedRevision == nil
+                || (approvedAssetId != nil && artwork.approvedAssetId == approvedAssetId && artwork.approvedRevision == artworkRevision)
+        else { throw AuthoringFailure("IMAGE_PREPARATION_CONTEXT_CHANGED") }
     }
 
     public func checkSource(_ file: ImportFileSnapshot, artwork: NativeArtwork) throws {
-        guard valid, file.mime == "image/jpeg", (4...Self.maximumSourceBytes).contains(file.data.count),
+        guard valid, !isFresh, file.mime == "image/jpeg", (4...Self.maximumSourceBytes).contains(file.data.count),
               !artwork.archived, artwork.revision == artworkRevision, artwork.approvedRevision == artworkRevision,
               let metadata = artwork.metadata, metadata.displayReference == nil,
               metadata.rights.permissions.display, metadata.rights.permissions.export,
@@ -197,6 +220,19 @@ public struct NativeProductImagePreparationStatus: Codable, Equatable, Sendable 
         serverReceipt = fields.contains(.serverReceipt) ? try fields.decode(Receipt.self, forKey: .serverReceipt) : nil
     }
 
+    static func matchesCanonicalTiers(_ artwork: DocumentValue, full: Image, coarse: Image?) -> Bool {
+        let lod = artwork["extensions"]["org.exhibitos.viewer/lod"]
+        guard lod["version"].integer == 1, let variants = lod["variants"].items,
+              variants.count == (coarse == nil ? 1 : 2) else { return false }
+        func hasTier(_ image: Image, _ detail: String) -> Bool {
+            variants.contains {
+                $0["assetId"].string == image.assetId && $0["detail"].string == detail
+                    && $0["textureSize"].integer == Int64(max(image.width, image.height))
+            }
+        }
+        return hasTier(full, "full") && (coarse.map { hasTier($0, "coarse") } ?? true)
+    }
+
     public func matches(_ preparation: NativeProductImagePreparationIntent, job: NativeImportJob) -> Bool {
         guard preparation.valid, provenance == "server-generated", profile == preparation.profile,
               artworkRevision == preparation.artworkRevision, productImageID(job.id) else { return false }
@@ -224,9 +260,7 @@ public struct NativeProductImagePreparationStatus: Codable, Equatable, Sendable 
               receipt.workspaceId == workspaceID.lowercased(), productImageID(receipt.workspaceId),
               receipt.principalId == principalID.lowercased(), productImageID(receipt.principalId),
               (try? productImageHash(intent.rights)) == receipt.rightsSHA256,
-              intent.scaleMeters == 1, intent.derived == nil, intent.coarsePreparation == nil,
-              intent.modelDerivation == nil, intent.modelPreparation == nil, intent.hayesOriginal == nil,
-              intent.mime == "image/jpeg", original.mime == intent.mime, nativeImportDigest(original.sha256),
+              preparation.matches(intent), original.mime == intent.mime, nativeImportDigest(original.sha256),
               original.sha256 == intent.sha256, original.bytes == intent.bytes,
               (4...NativeProductImagePreparationIntent.maximumSourceBytes).contains(original.bytes),
               productImageID(original.assetId), original.assetId.lowercased() != full.assetId.lowercased(),
@@ -236,11 +270,14 @@ public struct NativeProductImagePreparationStatus: Codable, Equatable, Sendable 
         let producer = receipt.producer
         let source = producer.source
         guard producer.version == 1,
-              producer.recipeSHA256 == "f60ff6877a53bf48aabd066f60eab3ea39c6c4e6d97b97856af8ea1b8294430d",
+              producer.recipeSHA256 == (preparation.isFresh
+                ? "d13ad48b1ae8c29818002225fb5ebb4840907646810d90922a4ea3a5448f06c0"
+                : "f60ff6877a53bf48aabd066f60eab3ea39c6c4e6d97b97856af8ea1b8294430d"),
               producer.decoder == "sharp-0.35.4-vips-8.18.6-mozjpeg-0826579",
               source.mime == original.mime, source.sha256 == original.sha256, source.bytes == original.bytes,
               (1...8192).contains(source.width), (1...8192).contains(source.height),
               source.width * source.height <= 24 * 1024 * 1024,
+              source.mime != "image/png" || source.iccSHA256 == nil,
               source.iccSHA256.map(nativeImportDigest) ?? true, producer.full.matches(full),
               [2048, 1600].contains(where: { edge in
                   scaledProductImage(width: source.width, height: source.height, edge: edge) == (full.width, full.height)

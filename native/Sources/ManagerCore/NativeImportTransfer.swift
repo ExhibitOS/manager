@@ -60,12 +60,9 @@ public final class NativeImportTransfer {
         if let preparation = intent.modelPreparation {
             guard preparation.matches(intent) else { throw AuthoringFailure("IMPORT_MODEL_BINDING_INVALID") }
         }
-        let sourceOnlyJPEG = intent.productImagePreparation != nil
+        let sourceOnlyImage = intent.productImagePreparation != nil
         if let preparation = intent.productImagePreparation {
-            guard preparation.valid, intent.mime == "image/jpeg", intent.scaleMeters == 1,
-                  (4...NativeProductImagePreparationIntent.maximumSourceBytes).contains(intent.bytes),
-                  intent.derived == nil, intent.coarsePreparation == nil, intent.modelDerivation == nil,
-                  intent.modelPreparation == nil, intent.hayesOriginal == nil, derived == nil else {
+            guard preparation.matches(intent), derived == nil else {
                 throw AuthoringFailure("IMPORT_INTENT_CHANGED")
             }
         }
@@ -89,7 +86,7 @@ public final class NativeImportTransfer {
                     guard intent.mime == "image/jpeg", descriptor.valid, let derived,
                           derived.originalSHA256 == intent.sha256, derived.derived == descriptor,
                           derived.png.count == descriptor.bytes, nativeImportSHA256(derived.png) == descriptor.sha256 else { throw AuthoringFailure("IMPORT_DERIVED_REQUIRED") }
-                } else if derived != nil || (intent.mime == "image/jpeg" && !sourceOnlyJPEG) {
+                } else if derived != nil || (intent.mime == "image/jpeg" && !sourceOnlyImage) {
                     throw AuthoringFailure("IMPORT_INTENT_CHANGED")
                 }
             }

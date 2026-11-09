@@ -113,11 +113,18 @@ enum NativeAutomationArtworkRules {
             throw BridgeFailure("ARTWORK_DISPLAY_REFERENCE_INVALID")
         }
     }
-    static func checkRegistration(_ artwork: DocumentValue, artworkId: String, revision: Int64, tenantId: String) throws {
+    static func checkRegistration(_ artwork: DocumentValue, artworkId: String, revision: Int64, tenantId: String,
+                                  allowsImage: Bool = false) throws {
         let cms = artwork["extensions"]["org.exhibitos.studio/cms"]
+        let type = artwork["artworkType"].string
+        let approvedPNG = allowsImage && type == "image" && artwork["primaryAssetId"].string.map { primary in
+            artwork["assets"].items?.contains {
+                $0["id"].string == primary && $0["mime"].string == "image/png" && $0["role"].string == "image"
+            } == true
+        } == true
         guard revision > 0, revision <= 2_147_483_647, artwork["id"].string == artworkId,
               cms["tenantId"].string == tenantId, cms["artworkId"].string == artworkId,
-              cms["revision"].integer == revision, artwork["artworkType"].string == "sculpture",
+              cms["revision"].integer == revision, type == "sculpture" || approvedPNG,
               artwork["rights"]["permissions"]["display"] == .bool(true) else { throw BridgeFailure("ARTWORK_SCOPE_CHANGED") }
     }
     static func jobValue(_ job: NativeImportJob) -> DocumentValue {
@@ -175,8 +182,7 @@ enum NativeAutomationArtworkTransfer {
         let glb = intent.mime == "model/gltf-binary" && intent.derived == nil && intent.coarsePreparation == nil && derived == nil
         let reviewed = intent.mime == "image/jpeg" && intent.coarsePreparation?.valid == true
             && intent.derived?.recipe.colourConversion != nil && derived?.derived == intent.derived && intent.scaleMeters == 1
-        let product = intent.mime == "image/jpeg" && intent.productImagePreparation?.valid == true
-            && intent.derived == nil && intent.coarsePreparation == nil && derived == nil && intent.scaleMeters == 1
+        let product = intent.productImagePreparation?.matches(intent) == true && derived == nil
         guard glb || reviewed || product, intent.modelDerivation == nil, intent.modelPreparation == nil,
               intent.hayesOriginal == nil, intent.productImagePreparation == nil || product,
               intent.scaleMeters.isFinite, intent.scaleMeters > 0, intent.scaleMeters <= 1_000_000,

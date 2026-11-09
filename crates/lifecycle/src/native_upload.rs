@@ -50,9 +50,12 @@ impl ProductImagePreparation {
 
     fn valid(&self, intent: &Intent) -> bool {
         self.version == 1
-            && self.profile == "product-image-pair-2048-512-v1"
+            && match self.profile.as_str() {
+                "product-image-pair-2048-512-v1" => intent.mime == "image/jpeg",
+                "ordinary-image-preparation-v1" => matches!(intent.mime.as_str(), "image/jpeg" | "image/png"),
+                _ => false,
+            }
             && (1..i32::MAX as u32).contains(&self.artwork_revision)
-            && intent.mime == "image/jpeg"
             && intent.bytes >= 4
             && intent.scale_meters == 1.0
             && intent.derived.is_none()
@@ -675,6 +678,16 @@ mod tests {
     #[test]
     fn product_image_intent_and_job_binding_survive_controller_restart() {
         assert_image_intent_survives_restart(product_image_fixture(), "productImagePreparation");
+    }
+
+    #[test]
+    fn fresh_png_and_job_binding_survive_controller_restart() {
+        let mut input = product_image_fixture();
+        input["fileName"] = serde_json::json!("synthetic.png");
+        input["intent"]["mime"] = serde_json::json!("image/png");
+        input["intent"]["productImagePreparation"]["profile"] =
+            serde_json::json!("ordinary-image-preparation-v1");
+        assert_image_intent_survives_restart(input, "productImagePreparation");
     }
 
     fn assert_image_intent_survives_restart(input: Value, preparation_field: &str) {
