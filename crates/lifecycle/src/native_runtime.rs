@@ -580,7 +580,8 @@ impl FurnishingTransitionTrial {
         // failure before Node started. An authenticated trial and normal
         // PostgreSQL shutdown are still required.
         if retained.is_some()
-            && crate::native_payload::retained_product_image_transition((transition.source().2, transition.target().2))
+            && (crate::native_payload::retained_product_image_transition((transition.source().2, transition.target().2))
+                || crate::native_payload::retained_product_image_recovery_transition((transition.source().2, transition.target().2)))
             && binding.phase == Phase::Active
             && retained_product_image::drained_database_error(&context)
         {
@@ -2018,7 +2019,19 @@ const { isDeepStrictEqual } = require('node:util');
                         } else { false };
                         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
                         let selected_checked = false;
-                        if !selected_checked {
+                        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                        let retained_checked = if let Some(recovery) = self.retained_product_image_recovery() {
+                            let sql = oex_retained_cleanup::hayes_only_database_query(
+                                owner, &recovery.hayes_job_id, &recovery.hayes_completion_frame_sha256,
+                            )?;
+                            if selected_checked || self.query_database("exhibitos", &sql)? != "true" {
+                                return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
+                            }
+                            true
+                        } else { false };
+                        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+                        let retained_checked = false;
+                        if !selected_checked && !retained_checked {
                             let unsettled = self.query_database("exhibitos",
                                 "SELECT EXISTS (
                                    SELECT 1 FROM import_jobs WHERE state IN ('uploading','queued','processing')
@@ -2219,6 +2232,18 @@ const { isDeepStrictEqual } = require('node:util');
             if let Some(selected) = selected {
                 environment.push((oex_retained_cleanup::HAYES_COMPLETION_ENV, selected.hayes_environment()));
             }
+        }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        if let Some(recovery) = self.retained_product_image_recovery() {
+            if !personal || furnishing != Some(FurnishingStart::Reopen) || furnishing_lease.is_none()
+                || self.oex_retained_cleanup.is_some() || !self.active_furnishing_binding().is_some_and(|binding|
+                    binding.admission_kind == Admission::InterruptedReopen && binding.restore.is_none())
+            {
+                return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
+            }
+            environment.push((oex_retained_cleanup::HAYES_COMPLETION_ENV, serde_json::json!({
+                "jobId": recovery.hayes_job_id, "completionFrameSha256": recovery.hayes_completion_frame_sha256,
+            }).to_string()));
         }
         let spawned = self.spawn(
             &self.payload.node(),

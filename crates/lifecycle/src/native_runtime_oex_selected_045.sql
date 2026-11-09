@@ -37,5 +37,6 @@ WITH completed_hayes AS (
     EXISTS (SELECT 1 FROM workspace_material_intakes WHERE phase IN ('uploading','validating','cancelling') OR worker_token IS NOT NULL) OR
     EXISTS (SELECT 1 FROM workspace_furnishing_intakes WHERE phase IN ('uploading','validating','cancelling') OR worker_token IS NOT NULL) AS unsettled
 ) SELECT CASE WHEN NOT unsettled THEN
-    (SELECT json_build_object('bytes',expected_bytes,'cleanupPending',cleanup_pending) FROM completed_oex)
+    CASE WHEN @6@::uuid IS NULL THEN 'true'::json
+         ELSE (SELECT json_build_object('bytes',expected_bytes,'cleanupPending',cleanup_pending) FROM completed_oex) END
 END FROM admission;

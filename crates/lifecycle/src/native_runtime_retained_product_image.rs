@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Pin the one prepared image across the fenced saved-workspace trial.
 use super::*;
-use crate::installations::native_maintenance::RetainedProductImage;
+use crate::installations::native_maintenance::{RetainedProductImage, RetainedProductImageRecovery};
 
 const ERROR: &str = "NATIVE_RETAINED_PRODUCT_IMAGE_CHANGED";
 
@@ -81,13 +81,23 @@ WHERE j.tenant_id = '{tenant}' AND j.user_id = '{principal}' AND j.id = '{job}'
 
 impl Session {
     pub(crate) fn arm_retained_product_image(&mut self, proof: RetainedProductImage) -> Result<()> {
-        if self.job_id.is_some() || self.retained_product_image.is_some()
-            || self.furnishing_transition_trial.is_none() || self.transition_fence.is_none()
+        let (trial, transition) = self.furnishing_transition_trial.as_ref().ok_or_else(|| err(ERROR))?;
+        let pair = (transition.source().2, transition.target().2);
+        if self.job_id.is_some() || self.retained_product_image.is_some() || self.transition_fence.is_none()
+            || match proof.recovery.as_ref() {
+                Some(recovery) => !crate::native_payload::retained_product_image_recovery_transition(pair)
+                    || recovery.failed_generation != trial.source.id || self.oex_retained_cleanup.is_some(),
+                None => !crate::native_payload::retained_product_image_transition(pair),
+            }
         {
             return Err(err(ERROR));
         }
         self.retained_product_image = Some(Trial { proof, before: None });
         Ok(())
+    }
+
+    pub(super) fn retained_product_image_recovery(&self) -> Option<&RetainedProductImageRecovery> {
+        self.retained_product_image.as_ref()?.proof.recovery.as_ref()
     }
 
     fn retained_product_image_custody(&mut self) -> Result<Value> {
@@ -114,6 +124,15 @@ impl Session {
 
     pub(crate) fn verify_retained_product_image(&mut self, authoring: &Value) -> Result<Value> {
         let custody = self.retained_product_image_custody()?;
+        if let Some(recovery) = self.retained_product_image_recovery() {
+            let binding = self.active_furnishing_binding().ok_or_else(|| err(ERROR))?;
+            let sql = oex_retained_cleanup::hayes_only_database_query(
+                &binding.owner, &recovery.hayes_job_id, &recovery.hayes_completion_frame_sha256,
+            )?;
+            if self.query_database("exhibitos", &sql)? != "true" {
+                return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
+            }
+        }
         let trial = self.retained_product_image.as_ref().ok_or_else(|| err(ERROR))?;
         if trial.before.as_ref() != Some(&custody) {
             return Err(err(ERROR));

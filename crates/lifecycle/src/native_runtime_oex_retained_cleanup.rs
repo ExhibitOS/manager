@@ -54,6 +54,25 @@ impl Selected045Staging {
     }
 }
 
+fn catalog45_query(values: [Option<&str>; 12]) -> String {
+    let mut sql = include_str!("native_runtime_oex_selected_045.sql").to_owned();
+    for (index, value) in values.into_iter().enumerate() {
+        let argument = value.map_or_else(|| "NULL".to_owned(), |value| format!("'{value}'"));
+        sql = sql.replace(&format!("@{}@", index + 1), &argument);
+    }
+    sql
+}
+
+pub(super) fn hayes_only_database_query(owner: &FurnishingOwner, job: &str, completion: &str) -> Result<String> {
+    if ![owner.workspace_id.as_str(), &owner.tenant_id, &owner.principal_id, job]
+        .into_iter().all(oex_preflight_frames::uuid) || !hash_valid(completion)
+    {
+        return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
+    }
+    Ok(catalog45_query([Some(&owner.workspace_id), Some(&owner.tenant_id), Some(&owner.principal_id),
+        Some(job), Some(completion), None, None, None, None, None, None, None]))
+}
+
 impl Selected045 {
     pub(crate) fn new(
         oex: Selection, hayes_job_id: &str, completion_sha256: &str,
@@ -78,14 +97,9 @@ impl Selected045 {
         {
             return Err(err(ERROR));
         }
-        let mut sql = include_str!("native_runtime_oex_selected_045.sql").to_owned();
-        for (index, value) in [owner.workspace_id.as_str(), &owner.tenant_id, &owner.principal_id,
+        Ok(catalog45_query([owner.workspace_id.as_str(), &owner.tenant_id, &owner.principal_id,
             &self.hayes_job_id, &self.completion_sha256, &self.oex.job_id, attempt, request, source,
-            claim, system, oid].into_iter().enumerate()
-        {
-            sql = sql.replace(&format!("@{}@", index + 1), &format!("'{value}'"));
-        }
-        Ok(sql)
+            claim, system, oid].map(Some)))
     }
 
     pub(super) fn hayes_environment(&self) -> String {
