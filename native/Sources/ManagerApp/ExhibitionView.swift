@@ -34,17 +34,21 @@ final class ExhibitionModel: ObservableObject {
     private var catalogThumbnailTail: Task<Void, Never>?
     private var catalogThumbnailTailId: UUID?
     @Published private(set) var catalogThumbnailSaving = false
-    @Published private var catalogThumbnailAuthorityReady = false
+    @Published private var catalogThumbnailAuthority: CatalogThumbnailAuthority?
 
     func invalidateCatalogThumbnailAuthority() {
-        if catalogThumbnailAuthorityReady { catalogThumbnailAuthorityReady = false }
+        guard let catalogThumbnailAuthority else { return }
+        catalogThumbnailAuthority.invalidate()
+        self.catalogThumbnailAuthority = nil
     }
 
     func confirmCatalogThumbnailAuthority(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession) {
-        catalogThumbnailAuthorityReady = self.api === api && self.session?.csrfToken == session.csrfToken
-            && viewportCredentials?.token == credentials.token
-            && state?.tenantId.lowercased() == session.tenantId.lowercased()
-            && state?.principalId.lowercased() == session.userId.lowercased()
+        invalidateCatalogThumbnailAuthority()
+        guard self.api === api, self.session?.csrfToken == session.csrfToken,
+              viewportCredentials?.token == credentials.token,
+              state?.tenantId.lowercased() == session.tenantId.lowercased(),
+              state?.principalId.lowercased() == session.userId.lowercased() else { return }
+        catalogThumbnailAuthority = CatalogThumbnailAuthority()
     }
     private struct PendingCatalogThumbnail {
         let access: UUID, requestId: UUID, selectionVersion: Int, rendered: ViewportRenderedThumbnail
@@ -56,7 +60,7 @@ final class ExhibitionModel: ObservableObject {
     }
 
     var canSaveSelectedCatalogThumbnail: Bool {
-        catalogThumbnailAuthorityReady && canSelectCatalog && !immutable && !catalogThumbnailSaving && catalogThumbnailContextIsEditable
+        catalogThumbnailAuthority != nil && canSelectCatalog && !immutable && !catalogThumbnailSaving && catalogThumbnailContextIsEditable
             && selectedCatalogArtworkSupportsRenderedThumbnail
             && (pendingCatalogThumbnail == nil || pendingCatalogThumbnail?.rendered.artworkId == catalogArtworkId)
     }
@@ -67,10 +71,11 @@ final class ExhibitionModel: ObservableObject {
     }
 
     func saveSelectedCatalogThumbnail() async {
-        guard canSaveSelectedCatalogThumbnail, let entry = catalogEntries[catalogArtworkId], let api, let session else { return }
+        guard canSaveSelectedCatalogThumbnail, let entry = catalogEntries[catalogArtworkId],
+              let api, let session, let authority = catalogThumbnailAuthority else { return }
         let access = viewportAccessID
         func currentAuthority() -> Bool {
-            catalogThumbnailAuthorityReady && self.api === api && viewportAccessID == access
+            catalogThumbnailAuthority === authority && self.api === api && viewportAccessID == access
                 && self.session?.csrfToken == session.csrfToken
         }
         catalogThumbnailSaving = true
@@ -83,7 +88,8 @@ final class ExhibitionModel: ObservableObject {
             } else {
                 await catalogThumbnailTail?.value
                 guard currentAuthority(), catalogArtworkId == entry.id else { return }
-                let version = try await api.artworkThumbnailSelectionVersion(artworkId: entry.id, revision: entry.revision, authority: session)
+                let version = try await api.artworkThumbnailSelectionVersion(artworkId: entry.id, revision: entry.revision,
+                                                                              session: session, authority: authority)
                 guard currentAuthority(), catalogArtworkId == entry.id else { return }
                 let rendered = try await viewportController.renderedThumbnail(artworkId: entry.id, revision: entry.revision)
                 guard currentAuthority(), catalogArtworkId == entry.id else { return }
@@ -93,7 +99,7 @@ final class ExhibitionModel: ObservableObject {
             guard currentAuthority(), catalogArtworkId == entry.id, canSelectCatalog, !immutable,
                   catalogThumbnailContextIsEditable else { return }
             try await api.saveRenderedArtworkThumbnail(attempt.rendered, requestId: attempt.requestId,
-                                                        expectedSelectionVersion: attempt.selectionVersion, authority: session)
+                                                        expectedSelectionVersion: attempt.selectionVersion, session: session, authority: authority)
             guard currentAuthority() else { return }
             pendingCatalogThumbnail = nil
             catalogStatus = "게시용 미리보기를 저장했습니다."
