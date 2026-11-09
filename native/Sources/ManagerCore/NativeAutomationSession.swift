@@ -267,8 +267,12 @@ public actor NativeAutomationSession {
         let admitsLargeModels = await api.admitsLargeModelPreparation
         let admitsSavedHeadAuthoring = await api.admitsSavedHeadAuthoring
         let admitsRenderedSculptureThumbnailOex = await api.admitsRenderedSculptureThumbnailOex
+        let admitsNativePublication = AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: config.manifestSha256)
+            && session.nativePublicationProfile == "bounded-local-v1"
         guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsSavedHeadAuthoring
-                || admitsRenderedSculptureThumbnailOex else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
+                || admitsRenderedSculptureThumbnailOex || admitsNativePublication else {
+            throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
+        }
         let stored = try await api.exhibition(draft.id)
         guard try value(await bridge.documentState(context)) == value(saved) else {
             throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
