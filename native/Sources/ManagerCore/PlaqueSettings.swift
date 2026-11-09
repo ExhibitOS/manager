@@ -28,19 +28,29 @@ public struct PlaqueSettings: Equatable, Sendable {
     }
     public struct CaptionTranslation: Equatable, Sendable {
         public var locale: String, artist: String, date: String
+        public var medium: String?
+        /// Museum-recorded original dimensions, separate from the plaque plane.
+        public var dimensions: String?
 
-        public init(locale: String = "", artist: String = "", date: String = "") {
+        public init(locale: String = "", artist: String = "", date: String = "", medium: String? = nil, dimensions: String? = nil) {
             self.locale = locale; self.artist = artist; self.date = date
+            self.medium = medium
+            self.dimensions = dimensions
         }
 
         fileprivate init(value: DocumentValue) throws {
-            guard case .object(let fields) = value, Set(fields.keys) == ["locale", "artist", "date"],
-                  let locale = value["locale"].string, let artist = value["artist"].string, let date = value["date"].string else { throw PlaqueSettings.invalid() }
-            self.init(locale: locale, artist: artist, date: date)
+            guard case .object(let fields) = value, Set(fields.keys).subtracting(["medium", "dimensions"]) == ["locale", "artist", "date"],
+                  let locale = value["locale"].string, let artist = value["artist"].string, let date = value["date"].string,
+                  fields["medium"] == nil || fields["medium"]?.string != nil,
+                  fields["dimensions"] == nil || fields["dimensions"]?.string != nil else { throw PlaqueSettings.invalid() }
+            self.init(locale: locale, artist: artist, date: date, medium: fields["medium"]?.string, dimensions: fields["dimensions"]?.string)
         }
 
         fileprivate var value: DocumentValue {
-            .object(["locale": .string(locale), "artist": .string(artist), "date": .string(date)])
+            var fields: [String: DocumentValue] = ["locale": .string(locale), "artist": .string(artist), "date": .string(date)]
+            if let medium { fields["medium"] = .string(medium) }
+            if let dimensions { fields["dimensions"] = .string(dimensions) }
+            return .object(fields)
         }
     }
     public let id: String, roomId: String
@@ -51,17 +61,26 @@ public struct PlaqueSettings: Equatable, Sendable {
     public let captionTranslations: [CaptionTranslation]
     public init(id: String, roomId: String, source: Source, position: [Double], rotation: [Double], width: Double, height: Double, visible: Bool,
                 captionTranslations: [CaptionTranslation] = []) throws {
+        let artwork: Bool
+        if case .artwork(let id) = source {
+            guard BenchSettings.uuid(id) else { throw Self.invalid() }
+            artwork = true
+        } else {
+            artwork = false
+        }
         guard BenchSettings.uuid(id), BenchSettings.uuid(roomId), BenchSettings.point(position),
               rotation.count == 4, rotation.allSatisfy(\.isFinite),
               abs(sqrt(rotation.reduce(0) { $0 + $1 * $1 }) - 1) <= 1e-6,
-              BenchSettings.bounded(width, 0.2...2), BenchSettings.bounded(height, 0.15...1.2) else { throw Self.invalid() }
-        if case .artwork(let id) = source, !BenchSettings.uuid(id) { throw Self.invalid() }
+              BenchSettings.bounded(width, (artwork ? 0.15 : 0.2)...2),
+              BenchSettings.bounded(height, (artwork ? 0.10 : 0.15)...1.2) else { throw Self.invalid() }
         if !captionTranslations.isEmpty {
-            guard case .artwork = source, captionTranslations.count <= 8 else { throw Self.invalid() }
+            guard artwork, captionTranslations.count <= 8 else { throw Self.invalid() }
             var tags = Set<String>()
             for row in captionTranslations {
                 guard Self.validLocale(row.locale), tags.insert(row.locale.lowercased()).inserted,
-                      Self.validCaptionLine(row.artist, maximum: 80), Self.validCaptionLine(row.date, maximum: 48) else { throw Self.invalid() }
+                      Self.validCaptionLine(row.artist, maximum: 80), Self.validCaptionLine(row.date, maximum: 48),
+                      [row.medium, row.dimensions].compactMap({ $0 }).allSatisfy({ Self.validCaptionLine($0, maximum: 96) })
+                else { throw Self.invalid() }
             }
         }
         self.id = id; self.roomId = roomId; self.source = source; self.position = position; self.rotation = rotation

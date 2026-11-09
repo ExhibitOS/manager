@@ -84,9 +84,9 @@ struct SelectedPlaqueInspector: View {
             Text("내용은 기존 전시·작품 정보에서 가져옵니다.").font(.caption).foregroundStyle(.secondary)
         }
     }
-    private func captionText(_ index: Int, _ key: WritableKeyPath<PlaqueSettings.CaptionTranslation, String>) -> Binding<String> {
+    private func captionField<Value>(_ index: Int, _ key: WritableKeyPath<PlaqueSettings.CaptionTranslation, Value>, fallback: Value) -> Binding<Value> {
         Binding(get: {
-            guard let rows = model.plaque?.captionTranslations, rows.indices.contains(index) else { return "" }
+            guard let rows = model.plaque?.captionTranslations, rows.indices.contains(index) else { return fallback }
             return rows[index][keyPath: key]
         }, set: { value in
             guard var fields = model.plaque, fields.captionTranslations.indices.contains(index) else { return }
@@ -94,13 +94,19 @@ struct SelectedPlaqueInspector: View {
             model.plaque = fields
         })
     }
+    private func optionalCaptionText(_ index: Int, _ key: WritableKeyPath<PlaqueSettings.CaptionTranslation, String?>) -> Binding<String> {
+        let value = captionField(index, key, fallback: nil)
+        return Binding(get: { value.wrappedValue ?? "" }, set: { value.wrappedValue = $0.isEmpty ? nil : $0 })
+    }
     private func captionFields(_ fields: PlaqueFormBuffer) -> some View {
         DisclosureGroup("언어별 작품 캡션", isExpanded: $captionDetails) {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(fields.captionTranslations.indices, id: \.self) { index in
-                    TextField("캡션 언어 코드 · 예: ko", text: captionText(index, \.locale))
-                    TextField("캡션 작가 이름", text: captionText(index, \.artist))
-                    TextField("캡션 제작 시기 · 예: 1862~63년경", text: captionText(index, \.date))
+                    TextField("캡션 언어 코드 · 예: ko", text: captionField(index, \.locale, fallback: ""))
+                    TextField("캡션 작가 이름", text: captionField(index, \.artist, fallback: ""))
+                    TextField("캡션 제작 시기 · 예: 1862~63년경", text: captionField(index, \.date, fallback: ""))
+                    TextField("작품 재료 · 선택", text: optionalCaptionText(index, \.medium))
+                    TextField("소장처가 기록한 원본 치수 · 선택", text: optionalCaptionText(index, \.dimensions))
                     Button("이 언어 캡션 제거") {
                         guard var fields = model.plaque, fields.captionTranslations.indices.contains(index) else { return }
                         fields.captionTranslations.remove(at: index); model.plaque = fields
@@ -150,8 +156,8 @@ struct SelectedPlaqueInspector: View {
                         sourceFields(fields)
                         Toggle("명판 표시", isOn: field(\.visible, fallback: true))
                         Text("숨긴 명판도 설정과 참조를 보관합니다.").font(.caption).foregroundStyle(.secondary)
-                        text("가로 · 0.2–2 m", \.width)
-                        text("세로 · 0.15–1.2 m", \.height)
+                        text(fields.sourceKind == .artwork ? "가로 · 0.15–2 m" : "가로 · 0.2–2 m", \.width)
+                        text(fields.sourceKind == .artwork ? "세로 · 0.10–1.2 m" : "세로 · 0.15–1.2 m", \.height)
                         Menu("명판 앞면 방향") {
                             ForEach(PlaqueFormBuffer.Facing.allCases, id: \.self) { direction in
                                 Button(facingTitle(direction)) {

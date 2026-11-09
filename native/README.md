@@ -840,6 +840,11 @@ binding/delta checks before transient Preview and explicit Apply. One existing
 journal/history entry carries the change through normal save, reopen and
 exports. Removal changes only the plaque namespace and the existing template
 marker; original source text, artwork and unrelated rows/extensions are kept.
+Artwork plaques support a 150 × 100 mm minimum. Room and exhibition plaques
+keep the 200 × 150 mm minimum. Existing version 3 artwork caption translations
+can carry optional single-line `medium` and `dimensions` fields, up to 96 UTF-16
+code units each. `dimensions` holds the museum-recorded original dimensions
+separately from the scene size. Existing caption rows can omit both fields.
 Native GUI and saved-output/host continuity remain separate qualification.
 
 

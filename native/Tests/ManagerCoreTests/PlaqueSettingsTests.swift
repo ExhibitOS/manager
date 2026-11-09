@@ -139,17 +139,34 @@ final class PlaqueSettingsTests: XCTestCase {
         var caption = try fields(draft)
         caption.sourceKind = .artwork
         caption.placementId = try XCTUnwrap(draft.placements.first?["id"].string)
-        caption.captionTranslations = [.init(locale: "ko", artist: "에두아르 마네", date: "1862~63년경"),
+        caption.captionTranslations = [.init(locale: "ko", artist: "에두아르 마네", date: "1862~63년경",
+                                            medium: "캔버스에 유채", dimensions: "81 × 66 cm"),
                                        .init(locale: "en", artist: "Édouard Manet", date: "ca. 1862–63")]
         let added = try adding(caption, to: draft)
         let raw = added.candidate["extensions"][PlaqueSettings.namespace]
         XCTAssertEqual(raw["version"], .integer(3))
         XCTAssertEqual(raw["roomIntroductions"], old["roomIntroductions"])
         XCTAssertEqual(raw["plaques"].items?.first, old["plaques"].items?.first)
+        let plaque = try XCTUnwrap(raw["plaques"].items?.last)
+        let translations = try XCTUnwrap(plaque["artworkCaption"]["translations"].items)
+        XCTAssertEqual(translations[0]["medium"], .string("캔버스에 유채"))
+        XCTAssertEqual(translations[0]["dimensions"], .string("81 × 66 cm"))
+        XCTAssertEqual(translations[1], .object(["locale": .string("en"), "artist": .string("Édouard Manet"), "date": .string("ca. 1862–63")]))
         let reopened = try PlaqueFormBuffer(draft: added, plaqueId: caption.id)
         XCTAssertEqual(reopened.captionTranslations, caption.captionTranslations)
         XCTAssertEqual(reopened.placementId, caption.placementId)
         XCTAssertEqual(added.artworks, draft.artworks)
+        for key in ["medium", "dimensions"] {
+            for bad in [DocumentValue.null, .integer(2), .string(""), .string(" \u{00a0}"), .string("line\nbreak"),
+                        .string(String(repeating: "😀", count: 48) + "a")] {
+                var rows = translations, invalid = plaque
+                rows[0][key] = bad
+                invalid["artworkCaption"]["translations"] = .array(rows)
+                XCTAssertThrowsError(try PlaqueSettings(value: invalid))
+            }
+        }
+        caption.captionTranslations[0].medium = String(repeating: "😀", count: 48)
+        XCTAssertNoThrow(try caption.settings())
 
         var legacyWithCaption = added.candidate
         legacyWithCaption["extensions"][PlaqueSettings.namespace]["version"] = .integer(2)
@@ -167,6 +184,23 @@ final class PlaqueSettingsTests: XCTestCase {
         caption.captionTranslations = reopened.captionTranslations
         caption.sourceKind = .room
         XCTAssertThrowsError(try caption.settings())
+    }
+
+    func testMuseumSizeFloorIsOnlyForArtworkPlaques() throws {
+        let draft = try fixture()
+        var input = try fields(draft)
+        input.placementId = try XCTUnwrap(draft.placements.first?["id"].string)
+        for kind in PlaqueFormBuffer.SourceKind.allCases {
+            input.sourceKind = kind
+            let (width, height) = kind == .artwork ? (0.15, 0.10) : (0.20, 0.15)
+            input.width = String(width); input.height = String(height)
+            let plaque = try input.settings()
+            XCTAssertEqual(try PlaqueSettings(value: plaque.value), plaque)
+            input.width = String(width.nextDown)
+            XCTAssertThrowsError(try input.settings())
+            input.width = String(width); input.height = String(height.nextDown)
+            XCTAssertThrowsError(try input.settings())
+        }
     }
 
     func testDecimalCommaPreservesRawInputAndExistingBounds() throws {
