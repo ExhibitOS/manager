@@ -2,18 +2,61 @@
 //! Dedicated inherited Hayes bootstrap within an ordinary selected Session.
 
 use super::{
-    err, read_bounded, write_bounded, FreshOwnerBinding, LocalAuthority, Result, Setup, LIMIT,
+    err, read_bounded, write_bounded, Connection, FreshOwnerBinding, LocalAuthority, Result, Setup, LIMIT,
 };
-use crate::native_runtime::{
-    hayes::operation::{AuthenticatedHayes, HayesSessionPin},
-    FurnishingStart,
-};
+use crate::{hash_valid, native_runtime::FurnishingStart};
+use uuid::Uuid;
 use serde::Serialize;
 use std::{
     os::fd::AsRawFd,
     sync::atomic::AtomicBool,
     time::{Duration, Instant},
 };
+
+/// Native-selected identity issued before the API sends OPEN. The caller
+/// must convey it through the existing authenticated private bootstrap.
+pub(in super::super) struct HayesSessionPin {
+    runtime_generation: Uuid,
+    host_manifest_sha256: String,
+    native_owner_id: Uuid,
+}
+
+impl HayesSessionPin {
+    pub(in super::super) fn new(
+        runtime_generation: Uuid,
+        host_manifest_sha256: &str,
+    ) -> Result<Self> {
+        if runtime_generation.get_variant() != uuid::Variant::RFC4122
+            || !(1..=8).contains(&runtime_generation.get_version_num())
+            || !hash_valid(host_manifest_sha256)
+        {
+            return Err(unavailable());
+        }
+        Ok(Self {
+            runtime_generation,
+            host_manifest_sha256: host_manifest_sha256.into(),
+            native_owner_id: Uuid::new_v4(),
+        })
+    }
+
+    pub(in super::super) fn runtime_generation(&self) -> Uuid {
+        self.runtime_generation
+    }
+
+    pub(in super::super) fn host_manifest_sha256(&self) -> &str {
+        &self.host_manifest_sha256
+    }
+
+    pub(in super::super) fn native_owner_id(&self) -> Uuid {
+        self.native_owner_id
+    }
+}
+
+pub(in super::super) struct AuthenticatedHayes {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub(in super::super) pin: HayesSessionPin,
+    pub(in super::super) channel: Connection,
+}
 
 pub(in super::super) struct HayesSetup {
     socket: Box<Setup>,
@@ -203,6 +246,7 @@ impl HayesSetup {
         }
         let channel = self.socket.authenticated_connection()?;
         Ok(AuthenticatedHayes {
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             pin: self.pin,
             channel,
         })
@@ -213,6 +257,6 @@ fn unavailable() -> crate::LifecycleError {
     err("HAYES_OPERATION_UNAVAILABLE")
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions))]
 #[path = "native_runtime_hayes_owner_bootstrap_tests.rs"]
 mod tests;

@@ -439,6 +439,16 @@ redistribution qualification or change runtime admission.
 
 ### Stage finalized macOS release inputs
 
+For ordinary image preparation with catalog 047, build `exhibitos-native` in
+release mode with `EXHIBITOS_FRESH_IMAGE_RELEASE_PRODUCER_SHA256` and
+`EXHIBITOS_FRESH_IMAGE_RELEASE_MANIFEST_SHA256` set from the reviewed Platform
+finalizer success receipt. Verify its `sourceCommit`, `producerSHA256` and
+`manifestSHA256` against the finalized runtime manifest before building. Cargo
+compiles the two hashes into the helper. The app obtains admission through the
+helper's private owner session and requires the live API capability before
+enabling image preparation. The helper still validates the official app and
+helper signatures, runtime inventory and managed owner binding at launch.
+
 Use Python 3.11 or newer. On the clean Manager checkout used for the release
 build, assemble the already-built non-debug app and helper with
 `scripts/package-native-preview.py --release-receipt RECEIPT --app APP

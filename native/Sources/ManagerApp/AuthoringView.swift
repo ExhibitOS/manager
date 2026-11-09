@@ -467,7 +467,7 @@ extension AuthoringModel {
     var hasProductImageTransfer: Bool { transfer?.intent?.productImagePreparation?.isFresh == false }
     var hasFreshImageTransfer: Bool { transfer?.intent?.productImagePreparation?.isFresh == true }
     var freshImagePreparationAvailable: Bool {
-        available && intakeWritesAvailable && api?.freshImageRuntimeQualified == true
+        available && intakeWritesAvailable && api != nil
             && session?.nativeFreshImagePreparationProfile == NativeProductImagePreparationIntent.freshProfileID
     }
     var freshImageSourceSelected: Bool {

@@ -170,7 +170,8 @@ public actor NativeAutomationSession {
               stopped.restoration.map({ $0.state == "activated" }) ?? true else {
             throw BridgeFailure("IMAGE_CLI_PERSONAL_WORKSPACE_REQUIRED")
         }
-        guard AuthoringAPI.supportsFreshImageRuntime(manifest: configured.manifestSha256) else {
+        guard stopped.freshImageReleaseConfigured == true
+                || AuthoringAPI.supportsFreshImageRuntime(manifest: configured.manifestSha256) else {
             throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE")
         }
         _ = try await bridge.start(context)

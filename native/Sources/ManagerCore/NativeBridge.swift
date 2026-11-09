@@ -95,6 +95,7 @@ public struct NativeHostStatus: Decodable, Sendable {
     public let oexWorkspaceV6Qualified: Bool?
     public let oexWorkspaceV7Qualified: Bool?
     public let oexSaveOffer: NativeOEXSaveOffer?
+    public let freshImageReleaseConfigured: Bool?
     public let hayesOriginalReady: Bool?
     public let hayesReceipt: NativeHayesReceipt?
     public var needsShutdown: Bool { busy || runtime?.hasOwnedProcesses == true }
@@ -104,6 +105,7 @@ public struct LocalAuthoringSession: Decodable, Sendable {
     public let principalId: String
     public let origin: String
     public let token: String
+    var freshImageReleaseManifestSHA256: String? = nil
     /// Rotation is admitted only for the already selected local authority.
     /// A different account/origin or the same expired token cannot recover a host.
     public func isRenewal(of previous: LocalAuthoringSession) -> Bool {
