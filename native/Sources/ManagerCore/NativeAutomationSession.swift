@@ -78,6 +78,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsFreshImageRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsLargeModelRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: $0.manifestSHA256)
             } == true
         guard !(selectedOEX9 && selectedOEX10),
               workspaceV6ValidationRuntime == nil || workspaceV7ValidationRuntime == nil,
@@ -166,10 +167,13 @@ public actor NativeAutomationSession {
         }
         throw BridgeFailure("NATIVE_TIMEOUT")
     }
-    // This exact runtime owns its startup phase deadlines. Keep its helper
-    // channel alive while startup is busy, even if this task is cancelled;
-    // otherwise closing the channel can interrupt the owned start mid-flight.
-    private func waitF738ExistingStartup() async throws -> NativeHostStatus {
+    private func waitExistingStartup(manifest: String) async throws -> NativeHostStatus {
+        guard manifest == "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a"
+            || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: manifest) else {
+            return try await waitReady()
+        }
+        // These runtimes own their startup deadlines. Keep the helper channel
+        // open while busy, including when the calling task is cancelled.
         guard let context else { throw BridgeFailure("AUTOMATION_NOT_READY") }
         let ownedBridge = bridge
         let status = try await Task.detached {
@@ -247,8 +251,7 @@ public actor NativeAutomationSession {
             throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
         }
         _ = try await bridge.start(context)
-        let ready = try await (expected.manifestSHA256 == "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a"
-            ? waitF738ExistingStartup() : waitReady())
+        let ready = try await waitExistingStartup(manifest: expected.manifestSHA256)
         guard ready.runtime?.readiness.ready == true, ready.selectedOex != true,
               ready.configuration?.manifestSha256 == expected.manifestSHA256,
               try profileIdentity() == directory else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
@@ -262,7 +265,9 @@ public actor NativeAutomationSession {
         let admitsFreshImages = await api.admitsFreshImagePreparation
         let admitsLargeModels = await api.admitsLargeModelPreparation
         let admitsSavedHeadAuthoring = await api.admitsSavedHeadAuthoring
-        guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsSavedHeadAuthoring else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
+        let admitsRenderedSculptureThumbnailOex = await api.admitsRenderedSculptureThumbnailOex
+        guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsSavedHeadAuthoring
+                || admitsRenderedSculptureThumbnailOex else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
         let stored = try await api.exhibition(draft.id)
         guard try value(await bridge.documentState(context)) == value(saved) else {
             throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
@@ -324,8 +329,7 @@ public actor NativeAutomationSession {
         }
         try Task.checkCancellation()
         _ = try await bridge.start(reopened)
-        let ready = try await (existingWorkspaceV5 != nil && manifest == "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a"
-            ? waitF738ExistingStartup() : waitReady())
+        let ready = try await (existingWorkspaceV5 != nil ? waitExistingStartup(manifest: manifest) : waitReady())
         guard ready.runtime?.readiness.ready == true, let job = ready.runtime?.jobId, job != previousJob,
               ready.configuration?.manifestSha256 == manifest else { throw BridgeFailure("NATIVE_NOT_READY") }
         let credentials = try await bridge.authoringSession(reopened)

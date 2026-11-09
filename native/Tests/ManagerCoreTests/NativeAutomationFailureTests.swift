@@ -165,6 +165,26 @@ final class NativeAutomationFailureTests: XCTestCase {
         XCTAssertThrowsError(try invalid.check())
     }
 
+    #if DEBUG
+    func testOrdinaryExistingThumbnailOexRequiresExactReviewedRuntime() throws {
+        let previous = "f21b1378b39d11fd6ea8f9c89636912f233f884af176e2deb9856dea3ae77b53"
+        let corrected = "0efbf042ad20b7cd8963751e5cfe5f343ead93d6ced6164e8bbd08566e378c99"
+        let owner = UUID().uuidString.lowercased()
+        let missing = URL(fileURLWithPath: "/missing/exhibitos-native")
+        for (manifest, expected) in [(previous, "AUTOMATION_CONFIGURATION_INVALID"),
+                                     (corrected, "AUTOMATION_SCOPE_CHANGED")] {
+            let data = Data("""
+                {"workspaceId":"\(owner)","tenantId":"\(owner)","principalId":"\(owner)","manifestSHA256":"\(manifest)"}
+                """.utf8)
+            let identity = try JSONDecoder().decode(NativeAutomationSession.ExistingWorkspaceV5.self, from: data)
+            XCTAssertThrowsError(try NativeAutomationSession(helper: missing, profile: missing,
+                ports: [:], outputRoot: missing, temporaryRoot: missing, inputs: [:], existingWorkspaceV5: identity)) {
+                XCTAssertEqual(($0 as? BridgeFailure)?.code, expected)
+            }
+        }
+    }
+    #endif
+
     func testDraft12CompletionReceiptRequiresSuccessfulReopen() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
@@ -260,6 +280,16 @@ final class NativeAutomationFailureTests: XCTestCase {
 
     #if DEBUG
     func testF738CancellationKeepsStatusChannelUntilStartupSettles() async throws {
+        try await checkExistingStartupCancellation(
+            manifest: "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a")
+    }
+
+    func testThumbnailOexCancellationKeepsStatusChannelUntilStartupSettles() async throws {
+        try await checkExistingStartupCancellation(
+            manifest: "0efbf042ad20b7cd8963751e5cfe5f343ead93d6ced6164e8bbd08566e378c99")
+    }
+
+    private func checkExistingStartupCancellation(manifest: String) async throws {
         let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let profile = folder.appendingPathComponent("profile", isDirectory: true)
@@ -270,7 +300,6 @@ final class NativeAutomationFailureTests: XCTestCase {
                                                     attributes: [.posixPermissions: 0o700])
         }
         let scope = UUID().uuidString.lowercased()
-        let manifest = "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a"
         let owner = try JSONDecoder().decode(NativeAutomationSession.ExistingWorkspaceV5.self, from: Data("""
             {"workspaceId":"\(scope)","tenantId":"\(scope)","principalId":"\(scope)","manifestSHA256":"\(manifest)"}
             """.utf8))
@@ -294,7 +323,7 @@ final class NativeAutomationFailureTests: XCTestCase {
         IFS= read -r request || exit 9
         touch "$root/terminal"
         printf '%s\\n' '{"version":1,"id":6,"result":{"busy":false,"operation":"start","accountRequired":false}}'
-        if IFS= read -r request; then exit 9; fi
+        exit 0
         """.write(to: helper, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
         let session = try NativeAutomationSession(helper: helper, profile: profile,
@@ -313,7 +342,6 @@ final class NativeAutomationFailureTests: XCTestCase {
             XCTFail("Startup cancellation must propagate after terminal status")
         } catch is CancellationError { }
         XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("terminal").path))
-        try await session.close()
     }
     #endif
 }

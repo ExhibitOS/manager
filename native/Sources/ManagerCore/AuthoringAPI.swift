@@ -383,6 +383,8 @@ public actor AuthoringAPI {
         "0bea16fb7d61aa3b0e60921a7f4d8d702025e4857f779fd763b9633f4884b330"
     private static let savedHeadModularRuntimeManifestPin =
         "375672ab366c52a8a177e2815fda65382708aba8126461a903268534918b43fe"
+    private static let renderedSculptureThumbnailOexRuntimeManifestPin =
+        "0efbf042ad20b7cd8963751e5cfe5f343ead93d6ced6164e8bbd08566e378c99"
     private static let requiredModelPreparationManifestPins: Set<String> = [
         "f21b1378b39d11fd6ea8f9c89636912f233f884af176e2deb9856dea3ae77b53",
         "af4e787a5fa5c714d60bf24cba23a1b2e7015946d1f4bea9a5777a3af3c8b2d0",
@@ -2148,6 +2150,20 @@ public actor AuthoringAPI {
         nativeSession && !authenticationBusy
             && Self.supportsSavedHeadAuthoringRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
             && session?.nativeAuthoringProposalProfile == "saved-head-v1"
+    }
+
+    nonisolated static func supportsRenderedSculptureThumbnailOexRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == renderedSculptureThumbnailOexRuntimeManifestPin
+        #else
+        false
+        #endif
+    }
+
+    var admitsRenderedSculptureThumbnailOex: Bool {
+        nativeSession && !authenticationBusy
+            && Self.supportsRenderedSculptureThumbnailOexRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
+            && session?.nativeOexExportProfile == "bounded-file-v1"
     }
 
     func nativeAuthoringProposal(exhibitionId: String, studioRevision: Int, etag: String,
