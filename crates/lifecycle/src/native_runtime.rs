@@ -419,6 +419,12 @@ fn catalog45_failed_reopen_shape(failed: &Context, startup_cancelled: bool) -> b
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 fn check_catalog45_recovery_source(root: &Path, source: &Current, startup_cancelled: bool) -> Result<()> {
     let rejected = || err(furnishing_lifecycle::ERROR);
+    if startup_cancelled {
+        check_interrupted_root(root)?;
+        if exists(&root.join("native-database/postmaster.pid"))? {
+            return Err(err("NATIVE_PHYSICAL_CHECKPOINT_NOT_COLD"));
+        }
+    }
     let binding = source.furnishing.as_ref().ok_or_else(rejected)?;
     let predecessor = binding.previous_generation.as_deref().ok_or_else(rejected)?;
     if source.id != binding.generation || binding.phase != Phase::Active
@@ -473,7 +479,9 @@ fn catalog45_cancelled_startup_is_separate_from_unqualified_stop() {
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) fn catalog45_recovery_source_generation(root: &Path, startup_cancelled: bool) -> Result<String> {
     let source = current_run(root)?.ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
-    check_cold_transition_root(root, Some(&source.id))?;
+    if !startup_cancelled {
+        check_cold_transition_root(root, Some(&source.id))?;
+    }
     check_catalog45_recovery_source(root, &source, startup_cancelled)?;
     Ok(source.id)
 }
@@ -526,8 +534,11 @@ impl FurnishingTransitionTrial {
             return Err(err(furnishing_lifecycle::ERROR));
         }
         if matches!(transition, FurnishingTransition::Recover45 { .. }) {
-            check_cold_transition_root(&service.root, Some(&self.source.id))?;
-            check_catalog45_recovery_source(&service.root, &self.source, transition.startup_cancel_recovery())?;
+            let startup_cancelled = transition.startup_cancel_recovery();
+            if !startup_cancelled {
+                check_cold_transition_root(&service.root, Some(&self.source.id))?;
+            }
+            check_catalog45_recovery_source(&service.root, &self.source, startup_cancelled)?;
         } else {
             unconsumed_furnishing_completion(&service.root, self.source_binding(transition)?)?;
         }
@@ -588,6 +599,9 @@ impl FurnishingTransitionTrial {
         }
         let current = current_run(root)?.ok_or_else(cold)?;
         if current == self.source {
+            if transition.startup_cancel_recovery() {
+                return check_catalog45_recovery_source(root, &self.source, true);
+            }
             if matches!(transition, FurnishingTransition::Recover45 { .. }) {
                 return check_cold_transition_root(root, Some(&self.source.id));
             }
