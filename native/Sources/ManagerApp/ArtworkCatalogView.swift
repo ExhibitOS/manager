@@ -90,12 +90,24 @@ struct ArtworkCatalogView: View {
             Button { Task { await controller.findSelection() } } label: { Label("선택한 배치 찾기", systemImage: "scope") }
                 .labelStyle(.iconOnly).disabled(!ready || !model.canSelectCatalog || model.immutable || model.viewportSelection?.kind != "placement" || !controller.findSelectionSupported || model.viewportPresentation == .plan)
             if controller.renderedThumbnailSupported && model.selectedCatalogArtworkSupportsRenderedThumbnail {
-                Button("게시용 미리보기 저장", systemImage: "photo") { Task { await model.saveSelectedCatalogThumbnail() } }
-                    .disabled(!ready || !model.canSaveSelectedCatalogThumbnail)
+                #if DEBUG
+                if CatalogThumbnailValidationCapture.requested {
+                    Button("검증용 미리보기 PNG 캡처", systemImage: "photo") { Task { await model.captureSelectedCatalogThumbnail() } }
+                        .disabled(!ready || !model.canCaptureSelectedCatalogThumbnail)
+                } else {
+                    thumbnailSaveButton
+                }
+                #else
+                thumbnailSaveButton
+                #endif
             }
         }
         Spacer(minLength: 0)
         if model.libraryCursor != nil { Button("작품 더 보기") { Task { await model.loadMoreCatalog() } }.disabled(!ready || model.busy) }
+    }
+    private var thumbnailSaveButton: some View {
+        Button("게시용 미리보기 저장", systemImage: "photo") { Task { await model.saveSelectedCatalogThumbnail() } }
+            .disabled(!ready || !model.canSaveSelectedCatalogThumbnail)
     }
     private var search: some View {
         TextField("작품명·작가 검색", text: $model.catalogQuery).textFieldStyle(.roundedBorder).frame(minWidth: compact ? 90 : 180)

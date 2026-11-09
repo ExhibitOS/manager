@@ -100,6 +100,40 @@ impl Session {
         self.retained_product_image.as_ref()?.proof.recovery.as_ref()
     }
 
+    pub(crate) fn arm_startup_cancellation_045(
+        &mut self, proof: crate::installations::native_maintenance::StartupCancellation045,
+    ) -> Result<()> {
+        let (trial, transition) = self.furnishing_transition_trial.as_ref().ok_or_else(|| err(ERROR))?;
+        if self.job_id.is_some() || self.startup_cancellation_045.is_some() || self.transition_fence.is_none()
+            || !transition.startup_cancel_recovery() || proof.failed_generation != trial.source.id
+            || self.retained_product_image.is_some() || self.oex_retained_cleanup.is_some()
+        {
+            return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
+        }
+        self.startup_cancellation_045 = Some(proof);
+        Ok(())
+    }
+
+    pub(super) fn catalog45_hayes_only_recovery(&self) -> Option<(&str, &str)> {
+        if let Some(proof) = &self.startup_cancellation_045 {
+            return Some((&proof.hayes_job_id, &proof.hayes_completion_frame_sha256));
+        }
+        let proof = self.retained_product_image_recovery()?;
+        Some((&proof.hayes_job_id, &proof.hayes_completion_frame_sha256))
+    }
+
+    pub(crate) fn verify_startup_cancellation_045(&mut self) -> Result<()> {
+        let Some(proof) = &self.startup_cancellation_045 else { return Ok(()); };
+        let binding = self.active_furnishing_binding().ok_or_else(|| err("FURNISHING_RECOVERY_UNAVAILABLE"))?;
+        let sql = oex_retained_cleanup::hayes_only_database_query(
+            &binding.owner, &proof.hayes_job_id, &proof.hayes_completion_frame_sha256,
+        )?;
+        if self.query_database("exhibitos", &sql)? != "true" {
+            return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
+        }
+        Ok(())
+    }
+
     fn retained_product_image_custody(&mut self) -> Result<Value> {
         let trial = self.retained_product_image.as_ref().ok_or_else(|| err(ERROR))?;
         let binding = self.active_furnishing_binding().ok_or_else(|| err(ERROR))?;

@@ -121,8 +121,8 @@ final class ArtworkCatalogTests: XCTestCase {
     func testRenderedThumbnailRequiresExactSquareAndCompleteSourceProof() throws {
         let request = try ViewportThumbnailRequest(frame: frame(NativeExhibitionDraft.new()),
             artworkId: UUID().uuidString, expectedRevision: 4)
-        let png = "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEAAQAAAAB0CZXLAAAAH0lEQVR42u3BAQ0AAADCoPdPbQ43oAAAAAAAAAAAvg0hAAABYOSdlwAAAABJRU5ErkJggg=="
-        let pngHash = "f569b175026cfbb77a68f1754f6e1a3c175f3a7a7e930918bd8656240a90e396"
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABccqhmAAAAAXNSR0IArs4c6QAAAyFJREFUeJzt1CEBACAQwMAPQApS0L8YxEDsxPmpzdrnAk3zOwD4xwAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAg7AFVARTs0KSS8QAAAABJRU5ErkJggg=="
+        let pngHash = "d6d4bf257e7cdf31e55caad7f0a023f67fe50c612dd81bad06ac7c7f4d74c510"
         let source = UUID().uuidString.lowercased()
         let sourceHash = String(repeating: "a", count: 64)
         let displayHash = String(repeating: "b", count: 64)
@@ -151,6 +151,16 @@ final class ArtworkCatalogTests: XCTestCase {
         XCTAssertEqual(rendered.pngSha256, pngHash)
         fields["pngSha256"] = pngHash
         XCTAssertEqual(try reply(fields).renderedThumbnail(matching: request).pngSha256, pngHash)
+        let withExif = try XCTUnwrap(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABccqhmAAAAAXNSR0IArs4c6QAAAAhlWElmSUkqAAgAAADATdKBAAADIUlEQVR4nO3UIQEAIBDAwA9AClLQvxjEQOzE+anN2ucCTfM7APjHACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDMACDsAVUBFOzQpJLxAAAAAElFTkSuQmCC"))
+        fields["pngBase64"] = withExif.base64EncodedString()
+        fields["pngSha256"] = nativeImportSHA256(withExif)
+        let normalized = try reply(fields).renderedThumbnail(matching: request)
+        XCTAssertEqual(normalized.pngData, Data(base64Encoded: png))
+        XCTAssertEqual(normalized.pngSha256, pngHash)
+        XCTAssertNotEqual(nativeImportSHA256(withExif), normalized.pngSha256)
+        fields["pngSha256"] = pngHash
+        XCTAssertThrowsError(try reply(fields).renderedThumbnail(matching: request))
+        fields["pngBase64"] = png
 
         for (key, value) in [("sourceAssetId", "../foreign"), ("sourceSha256", sourceHash.uppercased()),
                              ("displaySha256", "missing digest"), ("pngSha256", sourceHash),

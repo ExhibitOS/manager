@@ -388,7 +388,8 @@ public actor AuthoringAPI {
         catalog45RecoveryManifestPin,
         catalog45SelectedRecoveryManifestPin,
         catalog45RetainedProductImageManifestPin,
-        catalog45RetainedImageRecoveryManifestPin
+        catalog45RetainedImageRecoveryManifestPin,
+        catalog45StartupCancellationRecoveryManifestPin
     ]
     private static let productImageManifestPin = "157f538603a9557c30dfbb58ffc04755db9e174817aaeeb13353ce90e6dd84a2"
     private static let productImageFitWheatManifestPin = "9c5da125d1789e93bdeb9446060b452fcb33b1bb2d95645c909d60c1ff30d18d"
@@ -396,6 +397,7 @@ public actor AuthoringAPI {
     private static let catalog45SelectedRecoveryManifestPin = "62200d7ccb47e7ede5d1910a65e0087ac171c595d76ca14df6a19290382e4288"
     private static let catalog45RetainedProductImageManifestPin = "003a98c579e69e1b38a7cb96971f0872f15b8afd169d392a96ac94fe87be9f92"
     private static let catalog45RetainedImageRecoveryManifestPin = "f15d2530a298c3e9507e4719fa3ba65f26aff8cb9b40d9f646f1043976d0a75d"
+    private static let catalog45StartupCancellationRecoveryManifestPin = "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a"
     private static let workspaceMaterialMultimapManifestPins: Set<String> = [
         "72a13c526fb422c106f8eefaa7e277e5ab003f3c2085ebd09b2814c0a19ef904",
         "df6efc23ea2d9aab790fc25fab9833db9f5b48b3cb0c5417a1bd7c5ef609ac2a",
@@ -523,14 +525,45 @@ public actor AuthoringAPI {
         enum Event: String {
             case localAuthRequired = "local-auth-required"
             case request
-            case unauthorized = "http-401"
         }
 
-        func record(_ event: Event) {
+        func record(_ event: Event) { record(event.rawValue) }
+
+        func recordResponse(_ status: Int, code: String? = nil) {
+            #if DEBUG
+            let statuses = [200, 201, 400, 401, 403, 404, 409, 412, 413, 415, 422, 429, 500, 502, 503, 504]
+            let codes = ["AUTH_REQUIRED", "CSRF_REJECTED", "FORBIDDEN", "INVALID_INPUT", "REVISION_CONFLICT",
+                         "APPROVAL_INVALID", "RIGHTS_DENIED", "ASSET_INTEGRITY", "SELECTION_CONFLICT", "REQUEST_CONFLICT",
+                         "ARTWORK_THUMBNAIL_INVALID", "NATIVE_OWNER_UNAVAILABLE", "RENDERED_PREVIEW_UNAVAILABLE",
+                         "STORAGE_UNAVAILABLE", "VALIDATION_UNAVAILABLE", "BODY_TOO_LARGE", "UNSUPPORTED_MEDIA_TYPE",
+                         "INTERNAL_ERROR", "REQUEST_FAILED"]
+            let safeStatus = statuses.contains(status) ? String(status) : "other"
+            let safeCode = code.map { codes.contains($0) ? $0 : "other" } ?? "none"
+            record("response status=\(safeStatus) code=\(safeCode)")
+            #endif
+        }
+
+        func recordTransportFailure(_ error: Error) {
+            #if DEBUG
+            let failure: String
+            switch (error as? URLError)?.code {
+            case .timedOut: failure = "timed-out"
+            case .cannotConnectToHost: failure = "cannot-connect"
+            case .networkConnectionLost: failure = "connection-lost"
+            case .badServerResponse, .cannotParseResponse: failure = "invalid-response"
+            case .cannotDecodeContentData: failure = "invalid-content"
+            case .cancelled: failure = "cancelled"
+            default: failure = "other"
+            }
+            record("transport failure=\(failure)")
+            #endif
+        }
+
+        private func record(_ event: String) {
             #if DEBUG
             guard Bundle.main.bundleIdentifier == "org.exhibitos.manager.validation" else { return }
             let log = Logger(subsystem: "org.exhibitos.manager.validation", category: "catalog-thumbnail")
-            log.notice("Catalog thumbnail stage=\(rawValue, privacy: .public) event=\(event.rawValue, privacy: .public)")
+            log.notice("Catalog thumbnail stage=\(rawValue, privacy: .public) event=\(event, privacy: .public)")
             #endif
         }
     }
@@ -574,26 +607,39 @@ public actor AuthoringAPI {
             guard catalogThumbnail.scope.isCurrent else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
             catalogThumbnail.stage.record(.request)
         }
-        let (bytes, response) = try await transport.bytes(for: request)
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do { (bytes, response) = try await transport.bytes(for: request) }
+        catch {
+            catalogThumbnail?.stage.recordTransportFailure(error)
+            throw error
+        }
         defer { bytes.task.cancel() }
-        guard let http = response as? HTTPURLResponse, http.url == url else { throw AuthoringFailure("RESPONSE_INVALID") }
+        guard let http = response as? HTTPURLResponse, http.url == url else {
+            catalogThumbnail?.stage.recordTransportFailure(URLError(.badServerResponse))
+            throw AuthoringFailure("RESPONSE_INVALID")
+        }
         var data = Data()
-        for try await byte in bytes {
-            try Task.checkCancellation()
-            guard data.count < 2 * 1024 * 1024 else { throw AuthoringFailure("RESPONSE_LIMIT") }
-            data.append(byte)
+        do {
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                guard data.count < 2 * 1024 * 1024 else { throw AuthoringFailure("RESPONSE_LIMIT") }
+                data.append(byte)
+            }
+        } catch {
+            catalogThumbnail?.stage.recordTransportFailure(error)
+            throw error
         }
         guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         guard (200..<300).contains(http.statusCode) else {
             let envelope = try? JSONDecoder().decode(APIErrorEnvelope.self, from: data)
             let code = envelope?.code ?? "REQUEST_FAILED"
-            if http.statusCode == 401 {
-                catalogThumbnail?.stage.record(.unauthorized)
-                generation &+= 1; clear()
-            }
+            catalogThumbnail?.stage.recordResponse(http.statusCode, code: code)
+            if http.statusCode == 401 { generation &+= 1; clear() }
             throw AuthoringFailure(AuthoringFailure.safeCode(code) ? code : "REQUEST_FAILED", status: http.statusCode,
                                    role: envelope?.role, field: envelope?.field)
         }
+        catalogThumbnail?.stage.recordResponse(http.statusCode)
         if let expectedResponseETag, http.value(forHTTPHeaderField: "ETag") != expectedResponseETag {
             throw AuthoringFailure("ETAG_INVALID")
         }
@@ -971,6 +1017,7 @@ public actor AuthoringAPI {
         manifest == productImageManifestPin || manifest == productImageFitWheatManifestPin
             || manifest == catalog45RecoveryManifestPin || manifest == catalog45SelectedRecoveryManifestPin
             || manifest == catalog45RetainedProductImageManifestPin || manifest == catalog45RetainedImageRecoveryManifestPin
+            || manifest == catalog45StartupCancellationRecoveryManifestPin
         #else
         false
         #endif
@@ -979,6 +1026,7 @@ public actor AuthoringAPI {
     nonisolated static func supportsProductImageReplacementThumbnail(manifest: String?) -> Bool {
         #if DEBUG
         manifest == catalog45RetainedProductImageManifestPin || manifest == catalog45RetainedImageRecoveryManifestPin
+            || manifest == catalog45StartupCancellationRecoveryManifestPin
         #else
         return false
         #endif

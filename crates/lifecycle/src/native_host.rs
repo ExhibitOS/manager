@@ -589,17 +589,17 @@ impl Host {
                                     )?;
                                 }
                                 #[cfg(feature = "workspace-v5-owner-validation")]
-                                LocalPersonalTransition::StageSaved { source_payload, staging, key_file, retained_product_image } => {
+                                LocalPersonalTransition::StageSaved { source_payload, staging, key_file, retained_product_image, startup_cancellation_045 } => {
                                     let source = Payload::open_saved_workspace_transition(&source_payload)?;
                                     let target = Payload::open_saved_workspace_transition(&resources)?;
                                     controller.prepare_saved_workspace_v5_transition(
-                                        &token, &source, &target, &staging, &key_file, retained_product_image.as_ref(),
+                                        &token, &source, &target, &staging, &key_file, retained_product_image.as_ref(), startup_cancellation_045.as_ref(),
                                     )?;
                                 }
-                                LocalPersonalTransition::Activate { staging, key_file, retained_product_image } => {
+                                LocalPersonalTransition::Activate { staging, key_file, retained_product_image, startup_cancellation_045 } => {
                                     let target = Arc::new(Payload::open(&resources)?);
                                     controller.activate_local_personal_runtime_transition(
-                                        &token, target, &staging, &key_file, saved_workspace_host, retained_product_image.as_ref(),
+                                        &token, target, &staging, &key_file, saved_workspace_host, retained_product_image.as_ref(), startup_cancellation_045.as_ref(),
                                     )?;
                                 }
                                 #[cfg(feature = "workspace-v5-owner-validation")]

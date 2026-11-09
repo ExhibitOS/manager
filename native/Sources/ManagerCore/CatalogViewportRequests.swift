@@ -42,9 +42,10 @@ public struct ViewportThumbnailReply: Decodable, Sendable {
               let sourceAssetId, UUID(uuidString: sourceAssetId) != nil,
               let sourceSha256, nativeImportDigest(sourceSha256),
               let displaySha256, nativeImportDigest(displaySha256) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
-        let bytes = try pngData(matching: request)
+        let original = try pngData(matching: request)
+        guard pngSha256 == nil || pngSha256 == nativeImportSHA256(original) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        let bytes = try GeneratedThumbnailPNG.canonical(original)
         let digest = nativeImportSHA256(bytes)
-        guard pngSha256 == nil || pngSha256 == digest else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
         return ViewportRenderedThumbnail(artworkId: artworkId, revision: revision, sourceAssetId: sourceAssetId,
             sourceSha256: sourceSha256, displaySha256: displaySha256, pngData: bytes, pngSha256: digest)
     }
