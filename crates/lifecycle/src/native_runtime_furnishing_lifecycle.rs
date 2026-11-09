@@ -125,9 +125,8 @@ impl Binding {
                     && matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)
                     && crate::native_payload::ordinary_fresh_catalog45_host_matches(tuple))
                 || (self.catalog == 47 && self.restore.is_none()
-                    && ((matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)
-                        && crate::native_payload::ordinary_fresh_catalog47_host_matches(tuple))
-                        || (interrupted && crate::native_payload::fresh_image_recovery_host_matches(tuple)))))
+                    && matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen | Admission::InterruptedReopen)
+                    && crate::native_payload::fresh_image_recovery_host_matches(tuple)))
             || (self.catalog == 41
                 && (self.restore.is_some()
                     || !matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)))

@@ -1354,6 +1354,24 @@ public actor NativeAutomationSession {
                 fields["job"] = NativeAutomationArtworkRules.jobValue(observed)
             }
             result = .object(fields)
+        case "artwork-image-preparation-retry":
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "jobId"])
+            let state = try await bridge.uploadState(context)
+            try NativeAutomationArtworkRules.checkUploadScope(state, document: current)
+            guard selectedOEXFormat == nil, await api.admitsFreshImagePreparation,
+                  let intent = state.intent, let preparation = intent.productImagePreparation, preparation.isFresh,
+                  command["artworkId"] == .string(intent.artworkId), let jobId = state.jobId,
+                  command["jobId"] == .string(jobId) else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
+            let artwork = try await api.artwork(intent.artworkId)
+            try preparation.checkFreshArtwork(artwork, rights: intent.rights)
+            let previous = try await api.importJob(jobId)
+            guard previous.id == jobId, previous.canRetry, previous.confirmsIntakeDrain(for: intent) else {
+                throw BridgeFailure("IMPORT_DRAIN_PENDING")
+            }
+            let retried = try await api.importAction(jobId, action: .retry)
+            guard retried.id == jobId else { throw BridgeFailure("IMPORT_RECEIPT_INVALID") }
+            result = .object(["job": try productImageJobValue(retried, intent: intent, current: current), "transfer": try value(state)])
         case "artwork-model-preparation-retry":
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "jobId"])

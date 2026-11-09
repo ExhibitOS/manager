@@ -579,29 +579,15 @@ pub(crate) fn ordinary_fresh_catalog45_host_matches(tuple: (&str, &str, &str)) -
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const CATALOG47_FRESH_IMAGE: RuntimeTuple = (
-    "40dabd310a623c47c558312f2dbfd9e9cc87b504",
-    "489e5c418e1757a8c9202cfde3efa3a1bda55b16b01a075e48cfba893b6ce643",
-    "37da1a942fcd5f9dad57929aaa442997bb9a5576956f376e0bffcbdf957056a5",
-);
-
-#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const CATALOG47_FRESH_IMAGE_RECOVERY: RuntimeTuple = (
-    "d6bc7a0e99fdaae0ddf8cb90518b93a380318184",
+    "11f6a7ef0b297b5f57cb262870829708c1fe9904",
     "489e5c418e1757a8c9202cfde3efa3a1bda55b16b01a075e48cfba893b6ce643",
-    "d65b6205a4e7fcec2fca27839a3fb063c27323363a3dde5744ff7fc8517f6bb9",
+    "257ea9d3d0ef1064494da5c68c2d9b9dd2430ac9f7882ae85e3399c49420ac96",
 );
 
 pub(crate) fn fresh_image_recovery_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CATALOG47_FRESH_IMAGE_RECOVERY == tuple;
-    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
-    { let _ = tuple; false }
-}
-
-pub(crate) fn ordinary_fresh_catalog47_host_matches(tuple: (&str, &str, &str)) -> bool {
-    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return CATALOG47_FRESH_IMAGE == tuple || fresh_image_recovery_host_matches(tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -2356,7 +2342,7 @@ impl Payload {
 
     pub(crate) fn ordinary_fresh_furnishing_validation(&self) -> bool {
         let tuple = (&*self.manifest.source_commit, &*self.manifest.producer_sha256, &*self.manifest_sha256);
-        ordinary_fresh_catalog45_host_matches(tuple) || ordinary_fresh_catalog47_host_matches(tuple)
+        ordinary_fresh_catalog45_host_matches(tuple) || fresh_image_recovery_host_matches(tuple)
     }
 
     pub(crate) fn fresh_image_recovery_validation(&self) -> bool {
@@ -2464,7 +2450,7 @@ impl Payload {
         let material_pinned = material.contains(&tuple);
         let multimap_pinned = multimap.contains(&tuple);
         let release_probe_pinned = hayes_release_host_matches(tuple);
-        let fresh_image_pinned = ordinary_fresh_catalog47_host_matches(tuple);
+        let fresh_image_pinned = fresh_image_recovery_host_matches(tuple);
         let fresh_image_declared = self.manifest.files.iter().any(|file|
             file.path == FRESH_IMAGE_PREPARATION_CAPABILITY.0 || file.path.starts_with(FRESH_IMAGE_PREPARATION_DIRECTORY));
         if fresh_image_declared != fresh_image_pinned {
