@@ -7,25 +7,50 @@ public struct BenchSettings: Equatable, Sendable {
     public static let namespace = "org.exhibitos.studio/benches"
     public static let presentationNamespace = "org.exhibitos.studio/presentation"
     public enum Kind: String, CaseIterable, Sendable { case slab, backed }
+    public struct WorkspaceVisual: Equatable, Sendable {
+        public let placementId: String, modelSha256: String
+
+        public init(placementId: String, modelSha256: String) throws {
+            guard workspaceFurnishingID(placementId),
+                  modelSha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else {
+                throw BenchSettings.invalid()
+            }
+            self.placementId = placementId; self.modelSha256 = modelSha256
+        }
+
+        init(value: DocumentValue) throws {
+            guard case .object(let fields) = value, Set(fields.keys) == ["placementId", "modelSha256"],
+                  let placementId = value["placementId"].string, let modelSha256 = value["modelSha256"].string else {
+                throw BenchSettings.invalid()
+            }
+            try self.init(placementId: placementId, modelSha256: modelSha256)
+        }
+
+        var value: DocumentValue { .object(["placementId": .string(placementId), "modelSha256": .string(modelSha256)]) }
+    }
+
     public let id: String, name: String, roomId: String, viewpointId: String
     public let kind: Kind
     public let position: [Double]
     public let yaw: Double
     public let width: Double, depth: Double, height: Double // Height is the seat top.
     public let material: InstallationSettings.Material
+    public let workspaceVisual: WorkspaceVisual?
 
     public init(id: String, name: String, roomId: String, kind: Kind, position: [Double], yaw: Double,
-                width: Double, depth: Double, height: Double, material: InstallationSettings.Material, viewpointId: String) throws {
+                width: Double, depth: Double, height: Double, material: InstallationSettings.Material, viewpointId: String,
+                workspaceVisual: WorkspaceVisual? = nil) throws {
         guard Self.uuid(id), Self.uuid(roomId), Self.uuid(viewpointId), !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.utf16.count <= 128,
               Self.point(position), yaw.isFinite, (-Double.pi...Double.pi).contains(yaw),
               Self.bounded(width, 0.6...3), Self.bounded(depth, 0.3...1), Self.bounded(height, 0.3...0.65) else { throw Self.invalid() }
         do { try material.validate(frame: false) } catch { throw Self.invalid() }
         self.id = id; self.name = name; self.roomId = roomId; self.kind = kind; self.position = position; self.yaw = yaw
         self.width = width; self.depth = depth; self.height = height; self.material = material; self.viewpointId = viewpointId
+        self.workspaceVisual = workspaceVisual
     }
     public init(value: DocumentValue) throws {
         guard case .object(let fields) = value,
-              Set(fields.keys) == Set(["id", "name", "roomId", "kind", "position", "yaw", "dimensions", "material", "viewpointId"]),
+              Set(fields.keys).subtracting(["workspaceVisual"]) == ["id", "name", "roomId", "kind", "position", "yaw", "dimensions", "material", "viewpointId"],
               let id = value["id"].string, let name = value["name"].string, let room = value["roomId"].string,
               let rawKind = value["kind"].string, let kind = Kind(rawValue: rawKind),
               let position = Self.numbers(value["position"], count: 3), let yaw = value["yaw"].double,
@@ -35,12 +60,15 @@ public struct BenchSettings: Equatable, Sendable {
         let material: InstallationSettings.Material
         do { material = try InstallationSettings.readMaterial(value["material"], frame: false) } catch { throw Self.invalid() }
         try self.init(id: id, name: name, roomId: room, kind: kind, position: position, yaw: yaw,
-                      width: width, depth: depth, height: height, material: material, viewpointId: viewpoint)
+                      width: width, depth: depth, height: height, material: material, viewpointId: viewpoint,
+                      workspaceVisual: try fields["workspaceVisual"].map(WorkspaceVisual.init(value:)))
     }
     public var value: DocumentValue {
-        .object(["id": .string(id), "name": .string(name), "roomId": .string(roomId), "kind": .string(kind.rawValue),
+        var fields: [String: DocumentValue] = ["id": .string(id), "name": .string(name), "roomId": .string(roomId), "kind": .string(kind.rawValue),
                  "position": .vector(position), "yaw": .number(yaw), "dimensions": .object(["width": .number(width), "depth": .number(depth), "height": .number(height)]),
-                 "material": material.value, "viewpointId": .string(viewpointId)])
+                 "material": material.value, "viewpointId": .string(viewpointId)]
+        if let workspaceVisual { fields["workspaceVisual"] = workspaceVisual.value }
+        return .object(fields)
     }
     static func invalid() -> AuthoringFailure { AuthoringFailure("BENCH_FIELDS_INVALID") }
     static func uuid(_ value: String) -> Bool { UUID(uuidString: value) != nil }
@@ -116,6 +144,7 @@ public struct BenchViewpoint: Equatable, Sendable {
 /// copying a viewpoint pins one fresh UUID for all previews/retries of this form.
 public struct BenchFormBuffer: Equatable, Sendable {
     public let id: String, freshViewpointId: String
+    public let workspaceVisual: BenchSettings.WorkspaceVisual?
     public var name: String, roomId: String
     public var kind: BenchSettings.Kind = .slab
     public var x = "0.0", y = "0.0", z = "0.0", yawDegrees = "0.0"
@@ -133,6 +162,7 @@ public struct BenchFormBuffer: Equatable, Sendable {
     public init(roomId: String, name: String = "새 벤치") throws {
         guard BenchSettings.uuid(roomId) else { throw BenchSettings.invalid() }
         id = UUID().uuidString.lowercased(); freshViewpointId = UUID().uuidString.lowercased()
+        workspaceVisual = nil
         self.roomId = roomId; self.name = name; usesFreshViewpoint = true
         viewpointId = ""; viewpointName = name + " 감상"
         originalYaw = 0; originalYawDegrees = "0.0"
@@ -141,6 +171,7 @@ public struct BenchFormBuffer: Equatable, Sendable {
         guard let bench = try BenchSettings.list(in: draft).first(where: { $0.id == benchId }),
               let view = try BenchViewpoint.list(in: draft).first(where: { $0.id.lowercased() == bench.viewpointId.lowercased() }) else { throw AuthoringFailure("BENCH_SELECTION_CHANGED") }
         id = bench.id; freshViewpointId = UUID().uuidString.lowercased(); name = bench.name; roomId = bench.roomId; kind = bench.kind
+        workspaceVisual = bench.workspaceVisual
         x = String(bench.position[0]); y = String(bench.position[1]); z = String(bench.position[2])
         originalYaw = bench.yaw; originalYawDegrees = String(bench.yaw * 180 / .pi); yawDegrees = originalYawDegrees
         width = String(bench.width); depth = String(bench.depth); height = String(bench.height)
@@ -157,7 +188,7 @@ public struct BenchFormBuffer: Equatable, Sendable {
         return try BenchSettings(id: id, name: name, roomId: roomId, kind: kind, position: [number(x), number(y), number(z)],
                                  yaw: yawDegrees == originalYawDegrees ? originalYaw : number(yawDegrees) * .pi / 180,
                                  width: number(width), depth: number(depth), height: number(height), material: material,
-                                 viewpointId: usesFreshViewpoint ? freshViewpointId : viewpointId)
+                                 viewpointId: usesFreshViewpoint ? freshViewpointId : viewpointId, workspaceVisual: workspaceVisual)
     }
     public func newViewpoint() throws -> BenchViewpoint? {
         guard usesFreshViewpoint else { return nil }

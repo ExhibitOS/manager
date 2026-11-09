@@ -317,6 +317,7 @@ public struct NativeViewportPolicy: Decodable, Sendable {
     /// Absence is unknown, not an ordinary-size admission.
     public let boundedEditRequired: Bool?
     public let editingCapability: NativeBoundedEditCapability?
+    public let workspaceBenchSeatProfile: String?
 
     /// A positive server observation for a draft outside bounded provenance.
     public var confirmsOrdinaryDraft: Bool {

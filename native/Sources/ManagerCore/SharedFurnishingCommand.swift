@@ -31,7 +31,7 @@ public struct SharedFurnishingPreview: Equatable, Sendable {
         case .pedestal: rows = draft.placements
         case .opening: rows = draft.candidate["openings"].items ?? []
         case .light: rows = draft.candidate["lights"].items ?? []
-        case .bench: rows = try BenchSettings.list(in: draft).map(\.value)
+        case .bench: rows = try BenchSettings.list(in: draft).filter { $0.workspaceVisual == nil }.map(\.value)
         }
         return rows.filter { same($0["id"].string, id) }.count == 1
     }

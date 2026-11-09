@@ -38,6 +38,7 @@ struct WorkspaceFurnishingIntakeView: View {
     @State private var yaw = "0"
     @State private var scale = "1"
     @State private var placementId = UUID().uuidString.lowercased()
+    @State private var seatPolicyETag: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -77,6 +78,10 @@ struct WorkspaceFurnishingIntakeView: View {
                     }
                 }
                 if let target, target.kind != .artworkFrame, target.kind != .portalFinish { placementSection(target) }
+                if let target, target.kind == .bench, let seatPolicyETag, seatPolicyETag == model.state?.etag {
+                    WorkspaceBenchSeatEditor(model: model, entry: target, access: access)
+                        .id(target.id)
+                }
                 if model.workspaceArtworkFrameAvailable { artworkFrameSection }
                 if model.workspacePortalFinishAvailable { portalSection }
             }.disabled(busy || access != model.viewportAccessID)
@@ -362,12 +367,14 @@ struct WorkspaceFurnishingIntakeView: View {
             let pages = try await model.withWorkspaceFurnishingAccess(access) { api in
                 let intakes = try await api.workspaceFurnishingIntakes()
                 let catalog = try await api.workspaceFurnishings()
-                return (intakes, catalog)
+                let seatPolicyETag = await model.workspaceBenchSeatPolicyETag(using: api)
+                return (intakes, catalog, seatPolicyETag)
             }
             intakes = pages.0.items
             intakeCursor = pages.0.nextCursor
             library = pages.1.items
             catalogCursor = pages.1.nextCursor
+            seatPolicyETag = pages.2
         }
     }
 

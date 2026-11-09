@@ -998,6 +998,11 @@ public actor NativeAutomationSession {
             let extra: Set<String> = operation == "shared-bench-prepare" ? ["command", "outputPath"] : ["proposalId", "inputPath"]
             guard Set(fields.keys) == common.union(extra) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
+        if operation == "workspace-bench-seat-attach" {
+            let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
+                                         "expectedRevision", "expectedEditVersion", "command"]
+            guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        }
         if installedImageCLI {
             guard ["read", "import-image", "artwork-status", "artwork-image-preparation-retry", "artwork-approve",
                    "artwork-register", "save", "artwork-finish-reviewed"].contains(operation) else {
@@ -1156,6 +1161,33 @@ public actor NativeAutomationSession {
             let placement = try JSONDecoder().decode(WorkspaceFurnishingPlacement.self, from: JSONEncoder().encode(command))
             guard try value(placement) == command else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
             if let draft = try await api.prepareWorkspaceFurnishingPlacement(placement, in: current) {
+                var next = current
+                next.draft = draft
+                result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
+            } else {
+                result = .object(["changed": .bool(false), "document": try value(current)])
+            }
+        case "workspace-bench-seat-attach":
+            guard selectedOEXFormat == nil else { throw BridgeFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE") }
+            try checkedRevision(request, current)
+            let required: Set<String> = ["etag", "benchId", "placementId", "furnishingId", "furnishingVersion", "modelSha256",
+                                         "dimensions", "viewpointId"]
+            let command = request["command"]
+            guard case .object(let commandFields) = command, Set(commandFields.keys).subtracting(["viewpoint"]) == required,
+                  let etag = current.etag, command["etag"].string == etag,
+                  let benchId = command["benchId"].string, let placementId = command["placementId"].string,
+                  let furnishingId = command["furnishingId"].string, command["furnishingVersion"].integer == 1,
+                  let hash = command["modelSha256"].string, let viewpointId = command["viewpointId"].string,
+                  case .object(let dimensions) = command["dimensions"], Set(dimensions.keys) == ["width", "depth", "height"],
+                  let width = dimensions["width"]?.double, let depth = dimensions["depth"]?.double,
+                  let height = dimensions["height"]?.double else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            let viewpoint = try commandFields["viewpoint"].map(BenchViewpoint.init(value:))
+            let attachment = try WorkspaceBenchSeatAttachment(benchId: benchId, placementId: placementId,
+                furnishingId: furnishingId, furnishingVersion: 1, modelSha256: hash,
+                width: width, depth: depth, height: height, viewpointId: viewpointId, viewpoint: viewpoint)
+            if let draft = try await api.prepareWorkspaceBenchSeat(attachment, in: current) {
                 var next = current
                 next.draft = draft
                 result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])

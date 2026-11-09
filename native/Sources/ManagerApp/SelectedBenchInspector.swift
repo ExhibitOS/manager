@@ -32,7 +32,7 @@ struct SelectedBenchInspector: View {
     @State private var positionDetails = false
     @State private var materialDetails = false
     @State private var cameraDetails = false
-    private var editable: Bool { ready && model.canEditBench && !model.benchRemoving }
+    private var editable: Bool { ready && model.canEditBench && !model.benchRemoving && model.bench?.workspaceVisual == nil }
     private func field<Value>(_ key: WritableKeyPath<BenchFormBuffer, Value>, fallback: Value) -> Binding<Value> {
         Binding(get: { model.bench?[keyPath: key] ?? fallback }, set: { value in
             guard var fields = model.bench else { return }
@@ -107,6 +107,10 @@ struct SelectedBenchInspector: View {
             VStack(alignment: .leading, spacing: 16) {
                 Text(model.benchAdding ? "새 벤치" : "선택한 벤치").font(.headline).accessibilityAddTraits(.isHeader)
                 if let fields = model.bench {
+                    if fields.workspaceVisual != nil {
+                        Text("등록한 비품에 연결된 좌석입니다. 착석 설정은 작업 공간 비품에서 수정하세요.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     VStack(alignment: .leading, spacing: 12) {
                         text("벤치 이름", \.name)
                         Picker("공간", selection: field(\.roomId, fallback: "")) {
@@ -146,7 +150,9 @@ struct SelectedBenchInspector: View {
                 }
                 if !controller.benchInspectorSupported { Text("벤치 편집을 지원하는 제작 서비스에 연결하세요. 저장된 설정은 유지됩니다.").font(.caption).foregroundStyle(.secondary) }
                 if !model.benchStatus.isEmpty { Text(model.benchStatus).foregroundStyle(.secondary) }
-                if !model.benchAdding { SharedFurnishingCatalogView(model: model, viewport: controller, ready: ready) }
+                if !model.benchAdding && model.bench?.workspaceVisual == nil {
+                    SharedFurnishingCatalogView(model: model, viewport: controller, ready: ready)
+                }
             }.padding(16)
         }.inspectorColumnWidth(min: 280, ideal: 340, max: 440)
     }
