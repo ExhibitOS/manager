@@ -1104,16 +1104,16 @@ mod tests {
         context.state = "starting".into();
         context.exits.clear();
         write_run(&trial_run, &context, None).unwrap();
-        trial.check_recovery_root(&root, &writer, transition).unwrap();
+        trial.check_recovery_root(&root, &writer, transition, None).unwrap();
         context.state = "starting_database".into();
         write_run(&trial_run, &context, None).unwrap();
-        assert!(trial.check_recovery_root(&root, &writer, transition).is_err());
+        assert!(trial.check_recovery_root(&root, &writer, transition, None).is_err());
         if transition.upgrades_catalog() {
             // This state covers a committed SQL transaction before Runtime Ready.
             // The PostgreSQL ledger alone cannot authorize an old-runtime reopen.
             context.state = "starting_services".into();
             write_run(&trial_run, &context, None).unwrap();
-            assert!(trial.check_recovery_root(&root, &writer, transition).is_err());
+            assert!(trial.check_recovery_root(&root, &writer, transition, None).is_err());
             let mut next = catalog40_binding(LATER, transition.target());
             next.catalog = transition.target_catalog().version();
             assert!(next.consume_furnishing_transition(&target, transition).is_err());
@@ -1125,16 +1125,16 @@ mod tests {
         context.failure_code = Some("NATIVE_TEST_FAILURE".into());
         context.exits.insert("postgres".into(), 0);
         write_run(&trial_run, &context, None).unwrap();
-        assert!(trial.check_recovery_root(&root, &writer, transition).is_err());
+        assert!(trial.check_recovery_root(&root, &writer, transition, None).is_err());
         write_json(&trial_run, "catalog40-drained.json", &"a".repeat(64)).unwrap();
-        assert!(trial.check_recovery_root(&root, &writer, transition).is_err());
+        assert!(trial.check_recovery_root(&root, &writer, transition, None).is_err());
         write_json(&trial_run, "catalog40-drained.json", &target.sha256().unwrap()).unwrap();
         context.node_pid = Some(std::process::id());
         write_run(&trial_run, &context, None).unwrap();
-        assert!(trial.check_recovery_root(&root, &writer, transition).is_err());
+        assert!(trial.check_recovery_root(&root, &writer, transition, None).is_err());
         context.node_pid = None;
         write_run(&trial_run, &context, None).unwrap();
-        trial.check_recovery_root(&root, &writer, transition).unwrap();
+        trial.check_recovery_root(&root, &writer, transition, None).unwrap();
         let trial_state = fs::read(trial_run.join("state.json")).unwrap();
         let trial_drain = fs::read(trial_run.join("catalog40-drained.json")).unwrap();
         trial.recover_source(&service, &writer, transition).unwrap();

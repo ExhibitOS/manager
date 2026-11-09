@@ -538,7 +538,13 @@ impl FurnishingTransitionTrial {
         Ok(guard)
     }
 
-    pub(crate) fn check_recovery_root(&self, root: &Path, guard: &FurnishingTransitionWriterGuard, transition: FurnishingTransition) -> Result<()> {
+    pub(crate) fn check_recovery_root(
+        &self,
+        root: &Path,
+        guard: &FurnishingTransitionWriterGuard,
+        transition: FurnishingTransition,
+        retained: Option<&crate::installations::native_maintenance::RetainedProductImage>,
+    ) -> Result<()> {
         let cold = || err("NATIVE_PHYSICAL_CHECKPOINT_NOT_COLD");
         if guard.identity()? != self.source_binding(transition)?.physical {
             return Err(cold());
@@ -567,6 +573,16 @@ impl FurnishingTransitionTrial {
         if binding.phase == Phase::Active && context.state == "starting"
             && context.exits.is_empty() && context.failure_code.is_none()
             && context.postgres_pid.is_none() && context.node_pid.is_none() && context.auxiliary_pid.is_none()
+        {
+            return Ok(());
+        }
+        // The retained checkpoint can roll back a reaped, read-only PG probe
+        // failure before Node started. An authenticated trial and normal
+        // PostgreSQL shutdown are still required.
+        if retained.is_some()
+            && crate::native_payload::retained_product_image_transition((transition.source().2, transition.target().2))
+            && binding.phase == Phase::Active
+            && retained_product_image::drained_database_error(&context)
         {
             return Ok(());
         }
@@ -623,6 +639,10 @@ fn furnishing_restore_stage_creates_lock(prior: Option<&Current>, has_database: 
     }
 }
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[path = "native_runtime_retained_product_image.rs"]
+mod retained_product_image;
+
 pub struct Session {
     service: LifecycleService,
     observation_root: crate::maintenance_source::DirectoryPin,
@@ -642,6 +662,8 @@ pub struct Session {
     oex_retained_cleanup: Option<oex_retained_cleanup::Run>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     selected_recovery_045: Option<oex_retained_cleanup::Selected045>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    retained_product_image: Option<retained_product_image::Trial>,
     node_drain_requested: bool,
     job_id: Option<String>,
     run: Option<PathBuf>,
@@ -1036,6 +1058,8 @@ impl Session {
             oex_retained_cleanup: None,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             selected_recovery_045: None,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            retained_product_image: None,
             node_drain_requested: false,
             job_id: None,
             run: None,
@@ -2054,6 +2078,8 @@ const { isDeepStrictEqual } = require('node:util');
                 Instant::now() + Duration::from_secs(60))?;
             if observed != expected { return Err(err("NATIVE_WORKSPACE_FURNISHING_CATALOG")); }
         }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        self.check_retained_product_image_before_node()?;
         self.state = "starting_services".into();
         self.record()?;
         let mut environment = vec![

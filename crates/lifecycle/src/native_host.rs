@@ -589,17 +589,17 @@ impl Host {
                                     )?;
                                 }
                                 #[cfg(feature = "workspace-v5-owner-validation")]
-                                LocalPersonalTransition::StageSaved { source_payload, staging, key_file } => {
+                                LocalPersonalTransition::StageSaved { source_payload, staging, key_file, retained_product_image } => {
                                     let source = Payload::open_saved_workspace_transition(&source_payload)?;
                                     let target = Payload::open_saved_workspace_transition(&resources)?;
                                     controller.prepare_saved_workspace_v5_transition(
-                                        &token, &source, &target, &staging, &key_file,
+                                        &token, &source, &target, &staging, &key_file, retained_product_image.as_ref(),
                                     )?;
                                 }
-                                LocalPersonalTransition::Activate { staging, key_file } => {
+                                LocalPersonalTransition::Activate { staging, key_file, retained_product_image } => {
                                     let target = Arc::new(Payload::open(&resources)?);
                                     controller.activate_local_personal_runtime_transition(
-                                        &token, target, &staging, &key_file, saved_workspace_host,
+                                        &token, target, &staging, &key_file, saved_workspace_host, retained_product_image.as_ref(),
                                     )?;
                                 }
                                 #[cfg(feature = "workspace-v5-owner-validation")]
@@ -607,9 +607,9 @@ impl Host {
                                     let target = Arc::new(Payload::open_saved_workspace_transition(&resources)?);
                                     controller.activate_selected_recovery_045(&token, target, &staging, &key_file, selection)?;
                                 }
-                                LocalPersonalTransition::Recover { staging, key_file } => {
+                                LocalPersonalTransition::Recover { staging, key_file, retained_product_image } => {
                                     controller.recover_local_personal_runtime_transition(
-                                        &token, &staging, &key_file, saved_workspace_host,
+                                        &token, &staging, &key_file, saved_workspace_host, retained_product_image.as_ref(),
                                     )?;
                                 }
                             }

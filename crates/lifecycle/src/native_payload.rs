@@ -596,6 +596,13 @@ const CATALOG45_SELECTED_RECOVERY_TARGET: RuntimeTuple = (
     "62200d7ccb47e7ede5d1910a65e0087ac171c595d76ca14df6a19290382e4288",
 );
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET: RuntimeTuple = (
+    "09b778996f83c3d0f6a242a7f638c162cc2d89e8",
+    "84088f217c42dde5cb2d52d4d357879fcf4f32ea710ae5cd0e0fc52d861077b8",
+    "003a98c579e69e1b38a7cb96971f0872f15b8afd169d392a96ac94fe87be9f92",
+);
+
 pub(crate) fn catalog45_recovery_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CATALOG45_RECOVERY_TARGET == tuple || CATALOG45_SELECTED_RECOVERY_TARGET == tuple;
@@ -691,6 +698,7 @@ pub(crate) fn required_model_preparation_host_matches(tuple: (&str, &str, &str))
         || CATALOG45_COMPACT_AND_CANDIDATE_TARGET == tuple
         || CATALOG45_CURRENT_ORIGINAL_TARGET == tuple
         || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET == tuple
+        || CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET == tuple
         || catalog45_recovery_host_matches(tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
@@ -721,6 +729,11 @@ pub(crate) fn saved_workspace_transition_supported(pair: (&str, &str)) -> bool {
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) fn retained_product_image_transition(pair: (&str, &str)) -> bool {
+    pair == (CATALOG45_SELECTED_RECOVERY_TARGET.2, CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET.2)
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
     WORKSPACE_V5_SAVED_TRANSITIONS.iter().any(|(_, target)| *target == manifest)
         || CATALOG39_UPGRADE_TARGET.is_some_and(|target| target.2 == manifest)
@@ -738,6 +751,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET.2 == manifest
         || CATALOG45_RECOVERY_TARGET.2 == manifest
         || CATALOG45_SELECTED_RECOVERY_TARGET.2 == manifest
+        || CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -799,6 +813,13 @@ impl FurnishingTransition {
             return Some(Self::SameCatalog {
                 source: CATALOG45_CURRENT_ORIGINAL_TARGET,
                 target: CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET,
+                catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
+            });
+        }
+        if retained_product_image_transition(pair) {
+            return Some(Self::SameCatalog {
+                source: CATALOG45_SELECTED_RECOVERY_TARGET,
+                target: CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET,
                 catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             });
         }
@@ -1833,6 +1854,37 @@ mod normal_oex_release_declaration_tests {
         assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 40);
         assert!(!payload.workspace_v5_selected_input());
         assert!(payload.retained_furnishing_catalog().is_none());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact sealed selected recovery and combined catalog 045 packages"]
+    fn opens_reviewed_catalog45_retained_product_image_transition() {
+        let source_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_CATALOG45_RECOVERY_RUNTIME").unwrap());
+        let target_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_CATALOG45_RETAINED_PRODUCT_IMAGE_RUNTIME").unwrap());
+        let source = Payload::open_saved_workspace_transition(&source_root).unwrap();
+        let target = Payload::open_saved_workspace_transition(&target_root).unwrap();
+        let old = source.context().manifest_sha256;
+        let new = target.context().manifest_sha256;
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        assert_eq!(source.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(target.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(source.workspace_furnishing_ledger(catalog).unwrap(), target.workspace_furnishing_ledger(catalog).unwrap());
+        assert_eq!(FurnishingTransition::from_manifests((&old, &new)), Some(FurnishingTransition::SameCatalog {
+            source: CATALOG45_SELECTED_RECOVERY_TARGET,
+            target: CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET,
+            catalog,
+        }));
+        for pair in [(&*new, &*old), (&*new, &*new), (CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET.2, &*new)] {
+            assert!(!retained_product_image_transition(pair));
+            assert!(!saved_workspace_transition_supported(pair));
+        }
+        assert!(!retained_product_image_transition((&old, &old)));
+        assert!(source.catalog45_selected_recovery_validation());
+        assert!(!target.catalog45_recovery_validation());
+        assert!(target.static_detail_export_resources(true).is_ok());
+        assert!(Payload::open_workspace_v5_validation(&target_root, false).is_ok());
+        assert!(Payload::open_workspace_v5_validation(&target_root, true).is_err());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -3364,6 +3416,7 @@ impl Payload {
         let combined_local_validation = CATALOG45_COMPACT_AND_CANDIDATE_TARGET == provenance
             || CATALOG45_CURRENT_ORIGINAL_TARGET == provenance
             || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET == provenance
+            || CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET == provenance
             || catalog45_recovery_host_matches(provenance);
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
         let combined_local_validation = false;
