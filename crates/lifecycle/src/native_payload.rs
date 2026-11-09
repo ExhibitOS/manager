@@ -671,12 +671,15 @@ const CATALOG45_SAVED_HEAD_MODULAR_PORTAL: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_NATIVE_PUBLICATION_CAPACITY: RuntimeTuple = (
+    "493223193a6db1b7941835d96a6d8f3a39084863",
+    "93f6ceebc80298d946df23624e0d7b4f755bbe9d6764771e6ecc95f60e951ee2",
+    "1209d5d95417d1e29f637d8ce327e78cf38ed1b32eabcb5ab6fd3e2a62a10203",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const CATALOG45_NATIVE_PUBLICATION_TARGETS: &[RuntimeTuple] = &[
-    (
-        "493223193a6db1b7941835d96a6d8f3a39084863",
-        "93f6ceebc80298d946df23624e0d7b4f755bbe9d6764771e6ecc95f60e951ee2",
-        "1209d5d95417d1e29f637d8ce327e78cf38ed1b32eabcb5ab6fd3e2a62a10203",
-    ),
+    CATALOG45_NATIVE_PUBLICATION_CAPACITY,
     (
         "08776739a3c65709dbd998c4150c06a7b2401c4e",
         "93f6ceebc80298d946df23624e0d7b4f755bbe9d6764771e6ecc95f60e951ee2",
@@ -810,6 +813,11 @@ pub(crate) fn retained_product_image_recovery_transition(pair: (&str, &str)) -> 
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) fn catalog45_native_publication_transition(pair: (&str, &str)) -> bool {
+    pair == (CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET.2, CATALOG45_NATIVE_PUBLICATION_CAPACITY.2)
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Catalog45StartupRecovery {
     Cancelled,
@@ -848,6 +856,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET.2 == manifest
         || CATALOG45_RETAINED_IMAGE_RECOVERY_TARGET.2 == manifest
         || CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET.2 == manifest
+        || CATALOG45_NATIVE_PUBLICATION_CAPACITY.2 == manifest
         || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL_OEX.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
@@ -936,6 +945,13 @@ impl FurnishingTransition {
             return Some(Self::SameCatalog {
                 source: CATALOG45_SELECTED_RECOVERY_TARGET,
                 target: CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET,
+                catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
+            });
+        }
+        if catalog45_native_publication_transition(pair) {
+            return Some(Self::SameCatalog {
+                source: CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET,
+                target: CATALOG45_NATIVE_PUBLICATION_CAPACITY,
                 catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             });
         }
@@ -2071,6 +2087,37 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    #[ignore = "requires the exact f738 source and 160 MiB capacity payloads"]
+    fn opens_reviewed_catalog45_native_publication_transition() {
+        let old = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_CATALOG45_STARTUP_CANCEL_RUNTIME").unwrap());
+        let new = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_NATIVE_PUBLICATION_CAP_RUNTIME").unwrap());
+        let source = Payload::open_saved_workspace_transition(&old).unwrap();
+        let target = Payload::open_saved_workspace_transition(&new).unwrap();
+        let source_manifest = source.manifest_sha256.as_str();
+        let target_manifest = target.manifest_sha256.as_str();
+        let pair = (source_manifest, target_manifest);
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        assert_eq!(FurnishingTransition::from_manifests(pair), Some(FurnishingTransition::SameCatalog {
+            source: CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET,
+            target: CATALOG45_NATIVE_PUBLICATION_CAPACITY,
+            catalog,
+        }));
+        assert_eq!(source.workspace_furnishing_ledger(catalog).unwrap(), target.workspace_furnishing_ledger(catalog).unwrap());
+        assert!(saved_workspace_transition_target(target_manifest));
+        assert!(!target.catalog45_recovery_validation());
+        assert!(Payload::open_workspace_v5_validation(&new, false).is_ok());
+        for rejected in [
+            (target_manifest, source_manifest),
+            (target_manifest, target_manifest),
+            (source_manifest, CATALOG45_NATIVE_PUBLICATION_TARGETS[1].2),
+            (CATALOG45_RETAINED_IMAGE_RECOVERY_TARGET.2, target_manifest),
+        ] {
+            assert!(!saved_workspace_transition_supported(rejected));
+        }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the exact publication capacity and authored-seat payloads"]
     fn opens_reviewed_catalog45_native_publication_payloads() {
         for (tuple, variable) in CATALOG45_NATIVE_PUBLICATION_TARGETS.iter().zip([
@@ -2812,10 +2859,10 @@ impl Payload {
                 Err(err("NATIVE_RUNTIME_UNQUALIFIED"))
             };
         }
-        let ordinary_thumbnail_source = (context.source_commit.as_str(), payload.manifest.producer_sha256.as_str(),
-            context.manifest_sha256.as_str()) == CATALOG45_RENDERED_SCULPTURE_THUMBNAIL;
+        let ordinary_catalog45 = [CATALOG45_RENDERED_SCULPTURE_THUMBNAIL, CATALOG45_NATIVE_PUBLICATION_CAPACITY]
+            .contains(&(context.source_commit.as_str(), payload.manifest.producer_sha256.as_str(), context.manifest_sha256.as_str()));
         let retained_catalog = payload.retained_furnishing_catalog().or(
-            ordinary_thumbnail_source.then_some(WorkspaceFurnishingCatalog::RequiredModelPreparation045),
+            ordinary_catalog45.then_some(WorkspaceFurnishingCatalog::RequiredModelPreparation045),
         );
         if let Some(expected) = retained_catalog {
             return if payload.workspace_furnishing_catalog()? == Some(expected) {
