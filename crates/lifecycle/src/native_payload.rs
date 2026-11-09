@@ -699,6 +699,7 @@ const CATALOG45_NATIVE_PUBLICATION_TARGETS: &[RuntimeTuple] = &[
         "93f6ceebc80298d946df23624e0d7b4f755bbe9d6764771e6ecc95f60e951ee2",
         "22d253f8928d7dee5e2d01e8ce65e20cd24f10b7bfa0251b1eb8371aca8e8fc9",
     ),
+    CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS,
 ];
 
 fn catalog45_native_publication_host_matches(tuple: (&str, &str, &str)) -> bool {
@@ -714,7 +715,6 @@ pub(crate) fn ordinary_fresh_catalog45_host_matches(tuple: (&str, &str, &str)) -
         || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL == tuple
         || CATALOG45_SAVED_HEAD_MODULAR_PORTAL == tuple
         || CATALOG45_MUSEUM_CAPTION_TRANSITION_SOURCE == tuple
-        || CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS == tuple
         || catalog45_native_publication_host_matches(tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
@@ -829,8 +829,11 @@ pub(crate) fn retained_product_image_recovery_transition(pair: (&str, &str)) -> 
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-pub(crate) fn catalog45_native_publication_transition(pair: (&str, &str)) -> bool {
-    pair == (CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET.2, CATALOG45_NATIVE_PUBLICATION_CAPACITY.2)
+pub(crate) fn catalog45_native_publication_transition(pair: (&str, &str)) -> Option<(RuntimeTuple, RuntimeTuple)> {
+    [
+        (CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET, CATALOG45_NATIVE_PUBLICATION_CAPACITY),
+        (CATALOG45_NATIVE_PUBLICATION_CAPACITY, CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS),
+    ].into_iter().find(|(source, target)| pair == (source.2, target.2))
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -965,10 +968,10 @@ impl FurnishingTransition {
                 catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             });
         }
-        if catalog45_native_publication_transition(pair) {
+        if let Some((source, target)) = catalog45_native_publication_transition(pair) {
             return Some(Self::SameCatalog {
-                source: CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET,
-                target: CATALOG45_NATIVE_PUBLICATION_CAPACITY,
+                source,
+                target,
                 catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             });
         }
@@ -2142,11 +2145,12 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
-    #[ignore = "requires the exact publication capacity and authored-seat payloads"]
+    #[ignore = "requires the exact publication capacity, authored-seat and museum-caption payloads"]
     fn opens_reviewed_catalog45_native_publication_payloads() {
         for (tuple, variable) in CATALOG45_NATIVE_PUBLICATION_TARGETS.iter().zip([
             "EXHIBITOS_TEST_NATIVE_PUBLICATION_CAP_RUNTIME",
             "EXHIBITOS_TEST_NATIVE_PUBLICATION_SEAT_RUNTIME",
+            "EXHIBITOS_TEST_MUSEUM_CAPTIONS_RUNTIME",
         ]) {
             let root = PathBuf::from(std::env::var_os(variable).unwrap());
             let payload = Payload::open_workspace_v5_validation(&root, false).unwrap();
@@ -2296,7 +2300,7 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
-    #[ignore = "requires the exact original and corrected museum captions catalog 045 packages"]
+    #[ignore = "requires the exact original and corrected museum captions and publication capacity payloads"]
     fn opens_reviewed_museum_captions_runtime_for_ordinary_catalog45() {
         let original = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_MUSEUM_CAPTIONS_SOURCE_RUNTIME").unwrap());
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_MUSEUM_CAPTIONS_RUNTIME").unwrap());
@@ -2325,6 +2329,18 @@ mod normal_oex_release_declaration_tests {
         assert!(saved_workspace_transition_target(new));
         assert!(!workspace_v5_validation_matches(&payload.manifest, new, true));
         assert!(!payload.normal_oex_selected_input().unwrap());
+
+        let publication_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_NATIVE_PUBLICATION_CAP_RUNTIME").unwrap());
+        let publication = Payload::open_saved_workspace_transition(&publication_root).unwrap();
+        assert_eq!(publication.manifest_sha256, CATALOG45_NATIVE_PUBLICATION_CAPACITY.2);
+        assert_eq!(ledger, publication.workspace_furnishing_ledger(catalog).unwrap());
+        assert_eq!(FurnishingTransition::from_manifests((publication.manifest_sha256.as_str(), new)), Some(FurnishingTransition::SameCatalog {
+            source: CATALOG45_NATIVE_PUBLICATION_CAPACITY,
+            target: CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS,
+            catalog,
+        }));
+        assert!(!saved_workspace_transition_supported((new, publication.manifest_sha256.as_str())));
+        assert!(payload.static_detail_export_resources(true).is_ok());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]

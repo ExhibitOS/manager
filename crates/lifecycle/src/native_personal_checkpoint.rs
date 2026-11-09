@@ -223,7 +223,7 @@ fn startup_cancellation_proof_matches(
 
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
     #[cfg(feature = "workspace-v5-owner-validation")]
-    if crate::native_payload::catalog45_native_publication_transition(pair) {
+    if crate::native_payload::catalog45_native_publication_transition(pair).is_some() {
         return CATALOG45_NATIVE_PUBLICATION_CHECKPOINT_MAX_BYTES;
     }
     #[cfg(feature = "workspace-v5-owner-validation")]
@@ -1638,8 +1638,14 @@ mod tests {
         assert_eq!(default, 2_147_483_648);
         assert_eq!(extended, 2_415_919_104);
         let publication = "1209d5d95417d1e29f637d8ce327e78cf38ed1b32eabcb5ab6fd3e2a62a10203";
+        let captions = "4fbd168027090f38776bd75990e27ed336db6c65d15c4af3f17bf428d140440b";
+        let caption_fixture = "31b12d9f6fac4019f39c2a9128ced09b7ee918c49ffb119beb544e5e40831ac0";
         let publication_limit = checkpoint_inventory_limit((current, publication), None);
         assert_eq!(publication_limit, 4_294_967_296);
+        assert_eq!(checkpoint_inventory_limit((publication, captions), None), publication_limit);
+        for pair in [(captions, publication), (captions, captions), (current, captions), (caption_fixture, captions)] {
+            assert_eq!(checkpoint_inventory_limit(pair, None), default);
+        }
         assert_eq!(checkpoint_inventory_limit((publication, current), None), default);
         assert_eq!(checkpoint_inventory_limit((publication, publication), None), default);
         assert_eq!(checkpoint_inventory_limit((previous, publication), None), default);
