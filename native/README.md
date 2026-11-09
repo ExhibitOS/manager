@@ -462,9 +462,10 @@ inventory stays outside the copied tree and lists `path`, `bytes` and `sha256`
 for every resource, including `index.html`.
 
 The assembler verifies both inventories before and after copying and emits a
-receipt for the unsealed app. The 1 GiB stage limit covers the current managed
-runtime and bundled source resources and is independent of the development
-DMG limit. The existing Developer ID app/helper and full-resource validation
+receipt for the unsealed app. The 1.25 GiB stage limit includes the finalized
+runtime, bundled source resources, executables and app metadata. The assembler
+also checks available disk space before copying. The development DMG limit is
+separate. The existing Developer ID app/helper and full-resource validation
 still applies at installed launch. The Help item uses the bundled index.
 
 The native packager copies the approved Manager icon and integrated Studio/CMS

@@ -14,7 +14,7 @@ import stat
 import subprocess
 from pathlib import Path
 
-RELEASE_STAGE_MAX_BYTES = 1024 ** 3
+RELEASE_STAGE_MAX_BYTES = 1280 * 1024 ** 2
 
 
 def require(condition, message):
