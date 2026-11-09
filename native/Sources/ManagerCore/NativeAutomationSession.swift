@@ -77,6 +77,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsProductImageRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsFreshImageRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsLargeModelRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: $0.manifestSHA256)
             } == true
         guard !(selectedOEX9 && selectedOEX10),
               workspaceV6ValidationRuntime == nil || workspaceV7ValidationRuntime == nil,
@@ -240,7 +241,8 @@ public actor NativeAutomationSession {
         let admitsMaterials = await api.admitsWorkspaceMaterials
         let admitsFreshImages = await api.admitsFreshImagePreparation
         let admitsLargeModels = await api.admitsLargeModelPreparation
-        guard admitsMaterials || admitsFreshImages || admitsLargeModels else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
+        let admitsSavedHeadAuthoring = await api.admitsSavedHeadAuthoring
+        guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsSavedHeadAuthoring else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
         let stored = try await api.exhibition(draft.id)
         guard try value(await bridge.documentState(context)) == value(saved) else {
             throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
