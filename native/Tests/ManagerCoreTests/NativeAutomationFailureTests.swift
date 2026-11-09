@@ -3,6 +3,49 @@ import XCTest
 @testable import ManagerCore
 
 final class NativeAutomationFailureTests: XCTestCase {
+    func testInstalledExportCommandsRequireExactScopeAndSavedRevisionFields() throws {
+        let scope: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId"]
+        let export = scope.union(["expectedRevision", "expectedEditVersion", "outputPath"])
+        XCTAssertNoThrow(try NativeAutomationSession.checkInstalledExportRequest("read", fields: scope))
+        for operation in ["export-oex", "export-static"] {
+            XCTAssertNoThrow(try NativeAutomationSession.checkInstalledExportRequest(operation, fields: export))
+            XCTAssertThrowsError(try NativeAutomationSession.checkInstalledExportRequest(operation, fields: export.subtracting(["expectedEditVersion"]))) {
+                XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_PROTOCOL_INVALID")
+            }
+        }
+        XCTAssertThrowsError(try NativeAutomationSession.checkInstalledExportRequest("read", fields: export)) {
+            XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_PROTOCOL_INVALID")
+        }
+        for operation in ["save", "import-image", "export-static-native-original"] {
+            XCTAssertThrowsError(try NativeAutomationSession.checkInstalledExportRequest(operation, fields: scope)) {
+                XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_OPERATION_UNSUPPORTED")
+            }
+        }
+    }
+
+    func testInstalledExportOutputRootMustBePrivateCanonicalAndOutsideProfile() throws {
+        let files = FileManager.default
+        let parent = files.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let profile = parent.appendingPathComponent("profile", isDirectory: true)
+        let output = parent.appendingPathComponent("output", isDirectory: true)
+        let nested = profile.appendingPathComponent("nested", isDirectory: true)
+        let link = parent.appendingPathComponent("link", isDirectory: true)
+        try files.createDirectory(at: parent, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? files.removeItem(at: parent) }
+        for path in [profile, output, nested] {
+            try files.createDirectory(at: path, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        }
+        try files.createSymbolicLink(at: link, withDestinationURL: output)
+        XCTAssertNoThrow(try NativeAutomationSession.exportRootIdentity(output, profile: profile))
+        for invalid in [profile, nested, parent, link] {
+            XCTAssertThrowsError(try NativeAutomationSession.exportRootIdentity(invalid, profile: profile)) {
+                XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_OUTPUT_INVALID")
+            }
+        }
+        try files.setAttributes([.posixPermissions: 0o755], ofItemAtPath: output.path)
+        XCTAssertThrowsError(try NativeAutomationSession.exportRootIdentity(output, profile: profile))
+    }
+
     func testArtworkStatusBypassesCachedReadyResponseWhileMutationReplayStaysBound() throws {
         let request = Data("same request".utf8)
         let stale: DocumentValue = .object(["job": .object(["state": .string("approved")])])

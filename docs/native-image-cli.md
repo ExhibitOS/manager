@@ -79,3 +79,28 @@ before retrying. Use a new session if the current session reaches its
   request. After restarting the CLI, use `read` to inspect the pending document.
   For a retained ordinary save, use its original request UUID with the current
   document versions. Confirm the saved draft before finishing the transfer.
+
+## Export a saved exhibition
+
+Use the installed app's export command with an existing managed personal
+profile and a separate, existing directory with owner-only permissions.
+
+```sh
+"/Applications/ExhibitOS Manager.app/Contents/MacOS/ExhibitOSManager" \
+  --export-cli --profile "/absolute/path/to/profile" --output-root "/absolute/path/to/output"
+```
+
+Both directory paths must be canonical. Neither directory may contain the other.
+Quit Manager before running this command. It starts the profile's matching signed
+release runtime and uses the same version 1 JSON envelope and scoped ready
+response described above.
+
+The command accepts `read`, `export-oex` and `export-static`. For either export,
+send the current `expectedRevision` and `expectedEditVersion` with an absolute
+`outputPath` naming a new immediate child of the output directory. The profile
+must hold a saved draft that still matches the server's draft and ETag.
+`export-oex` writes the OEX archive and returns its hash and source ETag.
+`export-static` creates a local publication snapshot, writes a static site with
+the private editor, and returns its export receipt. Static output can have
+publication-specific IDs and asset hashes. Close stdin to drain the runtime
+before another process opens the profile.

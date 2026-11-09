@@ -4,7 +4,7 @@ import CryptoKit
 import Darwin
 
 /// Command adapter to the same native document journal and authenticated API
-/// used by ManagerApp. The installed image CLI admits only its scoped commands.
+/// used by ManagerApp. Each installed CLI admits only its scoped commands.
 public actor NativeAutomationSession {
     private static let freshResponseOperations: Set<String> = [
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
@@ -46,6 +46,7 @@ public actor NativeAutomationSession {
     private let existingWorkspaceV5: ExistingWorkspaceV5?
     private let root: URL
     private let installedImageCLI: Bool
+    private let installedExportRootIdentity: (dev_t, ino_t)?
     private let requiresReleaseImageRuntime: Bool
     private let inputs: [String: String]
     private let capability = UUID().uuidString.lowercased()
@@ -89,6 +90,7 @@ public actor NativeAutomationSession {
               outputRoot.resolvingSymlinksInPath().path == outputRoot.path,
               !profile.path.hasPrefix(outputRoot.path + "/") else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
         self.root = outputRoot; self.inputs = inputs; self.installedImageCLI = false
+        self.installedExportRootIdentity = nil
         self.requiresReleaseImageRuntime = false
         self.helper = helper; self.profile = profile; self.temporaryRoot = temporaryRoot; self.ports = ports
         self.workspaceV5ValidationRuntime = workspaceV5ValidationRuntime
@@ -112,6 +114,15 @@ public actor NativeAutomationSession {
     /// The installed entry supplies its bundled helper and the default or
     /// explicitly selected managed profile.
     public init(installedImageCLIHelper helper: URL, profile: URL, requireExistingManagedProfile: Bool = false) throws {
+        try self.init(installedHelper: helper, profile: profile, requireExistingManagedProfile: requireExistingManagedProfile,
+                      exportRoot: nil)
+    }
+
+    public init(installedExportCLIHelper helper: URL, profile: URL, outputRoot: URL) throws {
+        try self.init(installedHelper: helper, profile: profile, requireExistingManagedProfile: true, exportRoot: outputRoot)
+    }
+
+    private init(installedHelper helper: URL, profile: URL, requireExistingManagedProfile: Bool, exportRoot: URL?) throws {
         var metadata = stat()
         if lstat(profile.path, &metadata) != 0 && errno == ENOENT {
             throw BridgeFailure("IMAGE_CLI_PERSONAL_WORKSPACE_REQUIRED")
@@ -119,11 +130,12 @@ public actor NativeAutomationSession {
         _ = try Self.profileIdentity(profile)
         self.helper = helper
         self.profile = profile
-        self.root = profile
+        self.root = exportRoot ?? profile
         self.temporaryRoot = profile
         self.ports = [:]
         self.inputs = [:]
-        self.installedImageCLI = true
+        self.installedImageCLI = exportRoot == nil
+        self.installedExportRootIdentity = try exportRoot.map { try Self.exportRootIdentity($0, profile: profile) }
         self.requiresReleaseImageRuntime = requireExistingManagedProfile
         self.workspaceV5ValidationRuntime = nil
         self.workspaceV6ValidationRuntime = nil
@@ -153,7 +165,9 @@ public actor NativeAutomationSession {
     public func open() async throws -> DocumentValue {
         guard context == nil, !closed else { throw BridgeFailure("AUTOMATION_ALREADY_OPEN") }
         let context = try await bridge.context(); self.context = context
-        if installedImageCLI { return try await openInstalledImageWorkspace(context) }
+        if installedImageCLI || installedExportRootIdentity != nil {
+            return try await openInstalledImageWorkspace(context)
+        }
         if let existingWorkspaceV5 { return try await openExistingWorkspace(existingWorkspaceV5, context: context) }
         if selectedOEXFormat == nil { _ = try await bridge.prepare(context); _ = try await waitReady() }
         _ = try await bridge.start(context)
@@ -325,7 +339,7 @@ public actor NativeAutomationSession {
               request["tenantId"].string == identity.tenantId,
               request["principalId"].string == identity.principalId else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
         let current = try await bridge.documentState(context)
-        if installedImageCLI {
+        if installedImageCLI || installedExportRootIdentity != nil {
             guard current.workspaceId == identity.workspaceId, current.tenantId == identity.tenantId,
                   current.principalId == identity.principalId else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
         }
@@ -357,8 +371,23 @@ public actor NativeAutomationSession {
                                                             revision: revision, displaySHA256: reference.assetSha256)
         return (artwork, full, receipt)
     }
+    static func exportRootIdentity(_ root: URL, profile: URL) throws -> (dev_t, ino_t) {
+        guard root.isFileURL, root.path != profile.path, !root.path.hasPrefix(profile.path + "/"),
+              !profile.path.hasPrefix(root.path + "/"), let identity = try? profileIdentity(root) else {
+            throw BridgeFailure("AUTOMATION_OUTPUT_INVALID")
+        }
+        return identity
+    }
+
     private func output(_ path: String) throws -> URL {
         let url = URL(fileURLWithPath: path)
+        if installedExportRootIdentity != nil {
+            var metadata = stat()
+            guard path == url.path, url.deletingLastPathComponent().path == root.path,
+                  lstat(url.path, &metadata) != 0, errno == ENOENT else {
+                throw BridgeFailure("AUTOMATION_OUTPUT_INVALID")
+            }
+        }
         guard url.path.hasPrefix(root.path + "/"), url.deletingLastPathComponent().resolvingSymlinksInPath() == root,
               !FileManager.default.fileExists(atPath: url.path) else { throw BridgeFailure("AUTOMATION_OUTPUT_INVALID") }
         return url
@@ -843,10 +872,27 @@ public actor NativeAutomationSession {
         }
     }
 
+    static func checkInstalledExportRequest(_ operation: String, fields: Set<String>) throws {
+        let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId"]
+        let expected: Set<String>
+        switch operation {
+        case "read": expected = common
+        case "export-oex", "export-static": expected = common.union(["expectedRevision", "expectedEditVersion", "outputPath"])
+        default: throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+        }
+        guard fields == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+    }
+
     public func execute(_ request: DocumentValue) async throws -> DocumentValue {
         guard request["version"] == .integer(1), let id = request["requestId"].string, UUID(uuidString: id) != nil,
               let operation = request["operation"].string, case .object(let fields) = request,
               Set(fields.keys).isSubset(of: ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "inputPath", "outputPath", "command", "proposalId", "archiveFormat"]) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        if let expected = installedExportRootIdentity {
+            try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))
+            guard try Self.exportRootIdentity(root, profile: profile) == expected else {
+                throw BridgeFailure("AUTOMATION_OUTPUT_INVALID")
+            }
+        }
         if installedImageCLI {
             guard ["read", "import-image", "artwork-status", "artwork-image-preparation-retry", "artwork-approve",
                    "artwork-register", "save", "artwork-finish-reviewed"].contains(operation) else {
@@ -868,6 +914,9 @@ public actor NativeAutomationSession {
         let bytes = try encoder.encode(request)
         // Scope is checked even for replay: correlation is not authorization.
         let (context, api, current) = try await checked(request)
+        if installedExportRootIdentity != nil && operation != "read" && current.pending != nil {
+            throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
+        }
         if let seen = seenRequests[id], seen != bytes { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
         if let prior = try Self.replayResponse(for: operation, prior: replay[id], matching: bytes) { return prior }
         guard !busy, seenRequests.count < 128 else { throw BridgeFailure("AUTOMATION_BUSY") }
@@ -1693,6 +1742,9 @@ public actor NativeAutomationSession {
             result = try await reopenSaved(current, context: context, api: api)
         case "export-oex":
             try checkedRevision(request, current)
+            if installedExportRootIdentity != nil && authoringSession?.nativeOexExportProfile != "bounded-file-v1" {
+                throw AuthoringFailure("NATIVE_OEX_EXPORT_UNAVAILABLE")
+            }
             guard !current.dirty, let draft = current.draft, let etag = current.etag, let path = request["outputPath"].string else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
             let url = try output(path)
             let reopened = try await api.exhibition(draft.id)
@@ -1707,6 +1759,9 @@ public actor NativeAutomationSession {
             result = .object(["path": .string(url.path), "sha256": .string(Self.digest(try Data(contentsOf: url))), "etag": .string(etag)])
         case "export-static", "export-static-native-original":
             try checkedRevision(request, current)
+            if installedExportRootIdentity != nil && authoringSession?.nativePublicationProfile != "bounded-local-v1" {
+                throw AuthoringFailure("PUBLICATION_STAGE_UNAVAILABLE")
+            }
             guard !current.dirty, let draft = current.draft, let etag = current.etag, let path = request["outputPath"].string else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
             let nativeOriginal = operation == "export-static-native-original"
             if nativeOriginal {
