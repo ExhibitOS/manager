@@ -4,7 +4,7 @@
 use super::*;
 use super::{native_installation::Ports, native_payload::{Payload, WorkspaceFurnishingCatalog}};
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-use crate::native_payload::FurnishingTransition;
+use crate::native_payload::{Catalog45StartupRecovery, FurnishingTransition};
 #[path = "native_runtime_oex_worker.rs"] mod oex_worker;
 #[path = "native_runtime_oex_worker_v2.rs"] mod oex_worker_v2;
 #[path = "native_runtime_oex_preflight.rs"] mod oex_preflight;
@@ -405,7 +405,8 @@ fn validate_cold_furnishing_source(root: &Path, prior: Option<&Binding>, live: &
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-fn catalog45_failed_reopen_shape(failed: &Context, startup_cancelled: bool) -> bool {
+fn catalog45_failed_reopen_shape(failed: &Context, startup: Option<Catalog45StartupRecovery>) -> bool {
+    let startup_cancelled = startup == Some(Catalog45StartupRecovery::Cancelled);
     let code = if startup_cancelled { "NATIVE_CANCELLED" } else { furnishing_lifecycle::ERROR };
     let node_exit = if startup_cancelled { -15 } else { 0 };
     failed.state == "failed"
@@ -413,13 +414,16 @@ fn catalog45_failed_reopen_shape(failed: &Context, startup_cancelled: bool) -> b
         && failed.failure_code.as_deref() == Some(code) && failed.error_code.as_deref() == Some(code)
         && failed.exits.get("postgres") == Some(&0) && failed.exits.get("auxiliary") == Some(&0)
         && failed.exits.get("node") == Some(&node_exit)
-        && (!startup_cancelled || (!failed.readiness.ready && failed.exits.len() == 3))
+        && (startup.is_none() || (!failed.readiness.ready && failed.exits.len() == 3))
+        && (startup != Some(Catalog45StartupRecovery::Unqualified)
+            || (failed.readiness.version.is_none() && failed.readiness.protocol_version.is_none()
+                && failed.readiness.error_code.is_none()))
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-fn check_catalog45_recovery_source(root: &Path, source: &Current, startup_cancelled: bool) -> Result<()> {
+fn check_catalog45_recovery_source(root: &Path, source: &Current, startup: Option<Catalog45StartupRecovery>) -> Result<()> {
     let rejected = || err(furnishing_lifecycle::ERROR);
-    if startup_cancelled {
+    if startup.is_some() {
         check_interrupted_root(root)?;
         if exists(&root.join("native-database/postmaster.pid"))? {
             return Err(err("NATIVE_PHYSICAL_CHECKPOINT_NOT_COLD"));
@@ -434,7 +438,7 @@ fn check_catalog45_recovery_source(root: &Path, source: &Current, startup_cancel
         return Err(rejected());
     }
     let (failed, completion) = read_run(root, &source.id)?;
-    if completion.is_some() || !catalog45_failed_reopen_shape(&failed, startup_cancelled) {
+    if completion.is_some() || !catalog45_failed_reopen_shape(&failed, startup) {
         return Err(rejected());
     }
     let (prior, prior_completion) = read_run(root, predecessor)?;
@@ -462,27 +466,37 @@ fn catalog45_cancelled_startup_is_separate_from_unqualified_stop() {
         exits: BTreeMap::from([("postgres".into(), 0), ("node".into(), -15), ("auxiliary".into(), 0)]),
         log_truncated: false,
     };
-    assert!(catalog45_failed_reopen_shape(&context, true));
-    assert!(!catalog45_failed_reopen_shape(&context, false));
+    let cancelled = Some(Catalog45StartupRecovery::Cancelled);
+    let unqualified = Some(Catalog45StartupRecovery::Unqualified);
+    assert!(catalog45_failed_reopen_shape(&context, cancelled));
+    assert!(!catalog45_failed_reopen_shape(&context, unqualified));
+    assert!(!catalog45_failed_reopen_shape(&context, None));
     context.readiness.ready = true;
-    assert!(!catalog45_failed_reopen_shape(&context, true));
+    assert!(!catalog45_failed_reopen_shape(&context, cancelled));
     context.readiness.ready = false;
     context.exits.insert("node".into(), -9);
-    assert!(!catalog45_failed_reopen_shape(&context, true));
+    assert!(!catalog45_failed_reopen_shape(&context, cancelled));
     context.exits.insert("node".into(), 0);
     context.error_code = Some(furnishing_lifecycle::ERROR.into());
     context.failure_code = context.error_code.clone();
-    assert!(catalog45_failed_reopen_shape(&context, false));
-    assert!(!catalog45_failed_reopen_shape(&context, true));
+    assert!(catalog45_failed_reopen_shape(&context, None));
+    assert!(catalog45_failed_reopen_shape(&context, unqualified));
+    assert!(!catalog45_failed_reopen_shape(&context, cancelled));
+    context.readiness.ready = true;
+    assert!(!catalog45_failed_reopen_shape(&context, unqualified));
+    assert!(catalog45_failed_reopen_shape(&context, None));
+    context.readiness.ready = false;
+    context.readiness.version = Some("unexpected".into());
+    assert!(!catalog45_failed_reopen_shape(&context, unqualified));
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-pub(crate) fn catalog45_recovery_source_generation(root: &Path, startup_cancelled: bool) -> Result<String> {
+pub(crate) fn catalog45_recovery_source_generation(root: &Path, startup: Option<Catalog45StartupRecovery>) -> Result<String> {
     let source = current_run(root)?.ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
-    if !startup_cancelled {
+    if startup != Some(Catalog45StartupRecovery::Cancelled) {
         check_cold_transition_root(root, Some(&source.id))?;
     }
-    check_catalog45_recovery_source(root, &source, startup_cancelled)?;
+    check_catalog45_recovery_source(root, &source, startup)?;
     Ok(source.id)
 }
 
@@ -534,11 +548,11 @@ impl FurnishingTransitionTrial {
             return Err(err(furnishing_lifecycle::ERROR));
         }
         if matches!(transition, FurnishingTransition::Recover45 { .. }) {
-            let startup_cancelled = transition.startup_cancel_recovery();
-            if !startup_cancelled {
+            let startup = transition.startup_recovery();
+            if startup != Some(Catalog45StartupRecovery::Cancelled) {
                 check_cold_transition_root(&service.root, Some(&self.source.id))?;
             }
-            check_catalog45_recovery_source(&service.root, &self.source, startup_cancelled)?;
+            check_catalog45_recovery_source(&service.root, &self.source, startup)?;
         } else {
             unconsumed_furnishing_completion(&service.root, self.source_binding(transition)?)?;
         }
@@ -575,7 +589,7 @@ impl FurnishingTransitionTrial {
     pub(crate) fn hold_recovery(&self, service: &LifecycleService, transition: FurnishingTransition) -> Result<FurnishingTransitionWriterGuard> {
         let (guard, _) = self.hold(service, transition)?;
         if matches!(transition, FurnishingTransition::Recover45 { .. }) {
-            check_catalog45_recovery_source(&service.root, &self.source, transition.startup_cancel_recovery())?;
+            check_catalog45_recovery_source(&service.root, &self.source, transition.startup_recovery())?;
         } else {
             self.recoverable_source_completion(&service.root, transition)?;
         }
@@ -599,8 +613,8 @@ impl FurnishingTransitionTrial {
         }
         let current = current_run(root)?.ok_or_else(cold)?;
         if current == self.source {
-            if transition.startup_cancel_recovery() {
-                return check_catalog45_recovery_source(root, &self.source, true);
+            if let Some(startup) = transition.startup_recovery() {
+                return check_catalog45_recovery_source(root, &self.source, Some(startup));
             }
             if matches!(transition, FurnishingTransition::Recover45 { .. }) {
                 return check_cold_transition_root(root, Some(&self.source.id));
@@ -627,7 +641,7 @@ impl FurnishingTransitionTrial {
         // failure before Node started. An authenticated trial and normal
         // PostgreSQL shutdown are still required.
         let pair = (transition.source().2, transition.target().2);
-        if (transition.startup_cancel_recovery() || retained.is_some()
+        if (transition.startup_recovery().is_some() || retained.is_some()
             && (crate::native_payload::retained_product_image_transition(pair)
                 || crate::native_payload::retained_product_image_recovery_transition(pair)))
             && binding.phase == Phase::Active
@@ -666,7 +680,7 @@ impl FurnishingTransitionTrial {
             return Err(err(furnishing_lifecycle::ERROR));
         }
         if matches!(transition, FurnishingTransition::Recover45 { .. }) {
-            check_catalog45_recovery_source(&service.root, &self.source, transition.startup_cancel_recovery())?;
+            check_catalog45_recovery_source(&service.root, &self.source, transition.startup_recovery())?;
         } else {
             let (context, mut proof) = self.recoverable_source_completion(&service.root, transition)?;
             if proof.consumed_by.is_some() {
