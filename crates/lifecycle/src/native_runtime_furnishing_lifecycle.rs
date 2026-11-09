@@ -20,6 +20,7 @@ pub(super) enum Admission {
     CatalogUpgrade040To044,
     #[serde(rename = "catalog-upgrade-044-to-045")]
     CatalogUpgrade044To045,
+    InterruptedReopen,
 }
 
 impl Admission {
@@ -31,6 +32,7 @@ impl Admission {
             Self::CatalogUpgrade039To040 => 4,
             Self::CatalogUpgrade040To044 => 5,
             Self::CatalogUpgrade044To045 => 6,
+            Self::InterruptedReopen => 7,
         }
     }
 }
@@ -81,10 +83,29 @@ pub(super) struct Binding {
     pub(super) catalog: u32,
     pub(super) physical: WriterIdentity,
     pub(super) restore: Option<Restore>,
+    // First is the exact claim generation authenticated on the owner channel.
+    // Remaining entries preserve authority across another pre-ready interruption.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) interrupted_claim_generations: Vec<String>,
 }
 
 impl Binding {
     pub(super) fn check(&self) -> Result<()> {
+        let interrupted = self.admission_kind == Admission::InterruptedReopen;
+        let lineage = &self.interrupted_claim_generations;
+        if interrupted {
+            let tuple = (self.source_commit.as_str(), self.producer_sha256.as_str(), self.payload_manifest_sha256.as_str());
+            if self.catalog != 47 || !crate::native_payload::fresh_image_recovery_host_matches(tuple)
+                || lineage.is_empty() || lineage.len() > 8
+                || !self.previous_generation.as_ref().is_some_and(|id| lineage.contains(id))
+                || lineage.iter().enumerate().any(|(index, id)| id == &self.generation
+                    || !installations::uuid(id) || lineage[..index].contains(id))
+            {
+                return Err(err(ERROR));
+            }
+        } else if !lineage.is_empty() {
+            return Err(err(ERROR));
+        }
         let tuple = (self.source_commit.as_str(), self.producer_sha256.as_str(), self.payload_manifest_sha256.as_str());
         let private_hayes_bootstrap = self.admission_kind == Admission::FreshEmpty && match self.catalog {
             42 => crate::native_payload::hayes_validation_host_matches(tuple),
@@ -104,8 +125,9 @@ impl Binding {
                     && matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)
                     && crate::native_payload::ordinary_fresh_catalog45_host_matches(tuple))
                 || (self.catalog == 47 && self.restore.is_none()
-                    && matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)
-                    && crate::native_payload::ordinary_fresh_catalog47_host_matches(tuple)))
+                    && ((matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)
+                        && crate::native_payload::ordinary_fresh_catalog47_host_matches(tuple))
+                        || (interrupted && crate::native_payload::fresh_image_recovery_host_matches(tuple)))))
             || (self.catalog == 41
                 && (self.restore.is_some()
                     || !matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)))
@@ -140,6 +162,9 @@ impl Binding {
             }
             (Phase::Active | Phase::Clean, Admission::CleanReopen) => {
                 self.previous_generation.is_some()
+            }
+            (Phase::Active | Phase::Clean, Admission::InterruptedReopen) => {
+                self.previous_generation.is_some() && self.restore.is_none()
             }
             (Phase::Active | Phase::Clean, Admission::VerifiedRestore) => {
                 self.previous_generation.is_some() && self.restore.is_some()
@@ -199,6 +224,31 @@ impl Binding {
         }
         self.restore = prior.restore.clone();
         self.previous_generation = Some(prior.generation.clone());
+        self.check()
+    }
+
+    pub(super) fn consume_interrupted(&mut self, prior: &Self, prior_ready: bool) -> Result<()> {
+        prior.check()?;
+        if prior.phase != Phase::Active || prior.restore.is_some()
+            || self.generation == prior.generation || !self.same_installation(prior)
+        {
+            return Err(err(ERROR));
+        }
+        self.admission_kind = Admission::InterruptedReopen;
+        self.previous_generation = Some(prior.generation.clone());
+        self.interrupted_claim_generations = if prior_ready { Vec::new() } else { prior.interrupted_claim_generations.clone() };
+        self.interrupted_claim_generations.push(prior.generation.clone());
+        self.check()
+    }
+
+    pub(super) fn select_interrupted_claim_generation(&mut self, observed: &str) -> Result<()> {
+        let generation = if observed.is_empty() {
+            self.previous_generation.as_deref().ok_or_else(|| err(ERROR))?
+        } else {
+            observed
+        };
+        let index = self.interrupted_claim_generations.iter().position(|id| id == generation).ok_or_else(|| err(ERROR))?;
+        self.interrupted_claim_generations.swap(0, index);
         self.check()
     }
 
@@ -276,6 +326,7 @@ pub(super) struct Exchange {
     admission_kind: Admission,
     active_binding_sha256: String,
     restore_proof: Option<RestoreProof>,
+    previous_runtime_generation: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -291,6 +342,8 @@ struct Frame<'a> {
     active_binding_sha256: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     restore_proof: Option<&'a RestoreProof>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_runtime_generation: Option<&'a str>,
     mac: String,
 }
 
@@ -302,11 +355,14 @@ impl Exchange {
             admission_kind: binding.admission_kind,
             active_binding_sha256: binding.active_sha256()?,
             restore_proof: binding.restore.as_ref().and_then(|restore| restore.provenance.clone()),
+            previous_runtime_generation: binding.interrupted_claim_generations.first().cloned(),
         })
     }
 
     fn version(&self) -> u32 {
-        if self.restore_proof.is_some() { 2 } else { 1 }
+        if self.previous_runtime_generation.is_some() { 3 }
+        else if self.restore_proof.is_some() { 2 }
+        else { 1 }
     }
 
     fn message(&self, kind: Kind) -> Result<Vec<u8>> {
@@ -330,6 +386,15 @@ impl Exchange {
         bytes.extend(decode(&self.lease_transcript_sha256)?);
         bytes.push(self.admission_kind.tag());
         bytes.extend(decode(&self.active_binding_sha256)?);
+        if let Some(previous) = &self.previous_runtime_generation {
+            let previous_id = Uuid::parse_str(previous).map_err(|_| err(ERROR))?;
+            if previous_id == id || previous_id.to_string() != *previous || self.restore_proof.is_some()
+                || self.admission_kind != Admission::InterruptedReopen
+            {
+                return Err(err(ERROR));
+            }
+            bytes.extend_from_slice(previous_id.as_bytes());
+        }
         if let Some(proof) = &self.restore_proof {
             let canonical = serde_json::to_vec(proof).map_err(|_| err(ERROR))?;
             bytes.extend(decode(&digest(&canonical))?);
@@ -350,6 +415,7 @@ impl Exchange {
             admission_kind: self.admission_kind,
             active_binding_sha256: &self.active_binding_sha256,
             restore_proof: self.restore_proof.as_ref(),
+            previous_runtime_generation: self.previous_runtime_generation.as_deref(),
             mac,
         })
         .map_err(|_| err(ERROR))
@@ -402,7 +468,72 @@ mod tests {
                 lock_inode: 13,
             },
             restore: None,
+            interrupted_claim_generations: Vec::new(),
         }
+    }
+
+    #[test]
+    fn interrupted_reopen_v3_matches_platform_vectors() {
+        let current = "11111111-1111-4111-8111-111111111111";
+        let previous = "22222222-2222-4222-8222-222222222222";
+        let exchange = Exchange {
+            generation: current.into(),
+            lease_transcript_sha256: "33".repeat(32),
+            admission_kind: Admission::InterruptedReopen,
+            active_binding_sha256: "44".repeat(32),
+            restore_proof: None,
+            previous_runtime_generation: Some(previous.into()),
+        };
+        for (kind, mac) in [
+            (Kind::Admission, "6da0c39aa8e606b20b5d972440f070fb7bfeeb72d3ca6c0971bc03a080d04908"),
+            (Kind::AdmissionAck, "15aae6811fc80d85b491fc997ae615b273538d5ac7e82d756755acdf10ce58ef"),
+            (Kind::Stop, "5a59d72e0ccd2cbdbac233202e20286edd6d5561f6e9690beed0e42720776d19"),
+            (Kind::Drained, "2738da7f70720fff8de6614c85f74ca071edecdb04ea33831ec1a54d645a6196"),
+        ] {
+            let wire = exchange.signed(&[0x55; 32], kind).unwrap();
+            let expected = format!(
+                r#"{{"version":3,"kind":"{}","runtimeGeneration":"{current}","leaseTranscriptSHA256":"{}","admissionKind":"interrupted-reopen","activeBindingSHA256":"{}","previousRuntimeGeneration":"{previous}","mac":"{mac}"}}"#,
+                kind.name(), "33".repeat(32), "44".repeat(32),
+            );
+            assert_eq!(wire, expected.as_bytes());
+            exchange.check_frame(&[0x55; 32], kind, &wire).unwrap();
+        }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn interrupted_reopen_keeps_the_original_claim_across_a_second_interruption() {
+        let recovery = |generation: &str| {
+            let mut result = binding(generation);
+            let (source, producer, manifest) = crate::native_payload::CATALOG47_FRESH_IMAGE_RECOVERY;
+            result.source_commit = source.into();
+            result.producer_sha256 = producer.into();
+            result.payload_manifest_sha256 = manifest.into();
+            result.catalog = 47;
+            result
+        };
+        let initial = recovery(GENERATION);
+        let mut attempt = recovery(NEXT);
+        assert!(attempt.consume(&initial).is_err());
+        attempt.consume_interrupted(&initial, true).unwrap();
+        attempt.select_interrupted_claim_generation(GENERATION).unwrap();
+
+        let mut retry = recovery(LATER);
+        retry.consume_interrupted(&attempt, false).unwrap();
+        let mut durable: Binding = serde_json::from_slice(&serde_json::to_vec(&retry).unwrap()).unwrap();
+        assert_eq!(durable.previous_generation.as_deref(), Some(NEXT));
+        assert!(durable.select_interrupted_claim_generation(&format!("{GENERATION}\n{NEXT}")).is_err());
+        assert!(durable.select_interrupted_claim_generation("aaaaaaaa-0000-4000-8000-000000000001").is_err());
+        durable.select_interrupted_claim_generation(GENERATION).unwrap();
+        assert_eq!(Exchange::new(&durable, b"lease").unwrap().previous_runtime_generation.as_deref(), Some(GENERATION));
+        durable.select_interrupted_claim_generation(NEXT).unwrap();
+        assert_eq!(Exchange::new(&durable, b"lease").unwrap().previous_runtime_generation.as_deref(), Some(NEXT));
+        let mut after_ready = recovery(LATER);
+        after_ready.consume_interrupted(&attempt, true).unwrap();
+        assert!(after_ready.select_interrupted_claim_generation(GENERATION).is_err());
+        let mut wrong_physical = recovery(LATER);
+        wrong_physical.physical.root_inode += 1;
+        assert!(wrong_physical.consume_interrupted(&attempt, false).is_err());
     }
 
     #[test]
@@ -419,6 +550,7 @@ mod tests {
             generation: GENERATION.into(), lease_transcript_sha256: "a".repeat(64),
             admission_kind: Admission::VerifiedRestore, active_binding_sha256: "b".repeat(64),
             restore_proof: Some(proof.clone()),
+            previous_runtime_generation: None,
         };
         for (kind, mac) in [
             (Kind::Admission, "2a5aec78c967db201a7574b194e89f8f66db707d31709dd8b8ebbadbf4a9178c"),

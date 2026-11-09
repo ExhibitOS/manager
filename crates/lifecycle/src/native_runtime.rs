@@ -1092,6 +1092,7 @@ impl Session {
             owner: FurnishingOwner { workspace_id, tenant_id, principal_id, owner_uid: unsafe { libc::geteuid() } },
             source_commit: payload.source_commit, producer_sha256: self.payload.producer_sha256().into(),
             payload_manifest_sha256: payload.manifest_sha256, catalog: catalog.version(), physical, restore: None,
+            interrupted_claim_generations: Vec::new(),
         })
     }
 
@@ -1866,6 +1867,23 @@ const { isDeepStrictEqual } = require('node:util');
         }
         if furnishing == Some(FurnishingStart::Reopen) {
             self.verify_workspace_furnishing_ledger()?;
+            if let Some(mut binding) = self.active_furnishing_binding()
+                .filter(|binding| binding.admission_kind == Admission::InterruptedReopen).cloned()
+            {
+                // The writer and operation fences are held. The owned PG
+                // process is the only child and no Node worker has started.
+                let owner = &binding.owner;
+                let observed = self.query_database("exhibitos", &format!(
+                    "SELECT DISTINCT COALESCE(derived#>>'{{claim,runtimeGeneration}}','unbound')
+                     FROM public.import_jobs WHERE tenant_id='{}'::uuid AND user_id='{}'::uuid
+                     AND derived->>'kind'='fresh-product-image' AND derived->>'workspaceId'='{}'
+                     AND (cardinality(png_worker_tokens)>0 OR derived ? 'claim') ORDER BY 1 LIMIT 2",
+                    owner.tenant_id, owner.principal_id, owner.workspace_id,
+                ))?;
+                binding.select_interrupted_claim_generation(&observed)?;
+                self.publish_current(Some(binding.clone()))?;
+                self.furnishing_binding = Some(binding);
+            }
             let restore_system = self.active_furnishing_binding().and_then(|binding| binding.restore.as_ref())
                 .map(|restore| restore.target_system_identifier.clone());
             if let Some(expected) = restore_system {
@@ -2268,6 +2286,23 @@ const { isDeepStrictEqual } = require('node:util');
                         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
                         if let Some((_, transition)) = &self.furnishing_transition_trial {
                             active.consume_furnishing_transition(source, *transition)?;
+                        } else if source.phase == Phase::Active && self.payload.fresh_image_recovery_validation()
+                            && furnishing == Some(FurnishingStart::Reopen)
+                        {
+                            if prior.as_ref().is_none_or(|run| run.id != source.generation) {
+                                return Err(err(furnishing_lifecycle::ERROR));
+                            }
+                            check_interrupted_root(&self.service.root)?;
+                            let (record, completion) = read_run(&self.service.root, &source.generation)?;
+                            if completion.is_some() || record.ports != self.ports
+                                || (record.state == "starting_database" && record.postgres_pid.is_none()
+                                    && !record.exits.contains_key("postgres"))
+                                || (source.admission_kind != Admission::InterruptedReopen && !record.readiness.ready
+                                    && record.node_pid.is_none() && !record.exits.contains_key("node"))
+                            {
+                                return Err(err(furnishing_lifecycle::ERROR));
+                            }
+                            active.consume_interrupted(source, record.readiness.ready)?;
                         } else {
                             active.consume(source)?;
                         }
@@ -2343,7 +2378,9 @@ const { isDeepStrictEqual } = require('node:util');
         self.record()?;
         // No process or mutable bootstrap may start before Active is durable.
         if services {
-            if let Some(prior) = &prior_binding {
+            if let Some(prior) = &prior_binding
+                && !binding.as_ref().is_some_and(|next| next.admission_kind == Admission::InterruptedReopen)
+            {
                 let generation = self.job_id.as_deref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
                 consume_furnishing_completion(&self.service.root, prior, generation)?;
             }

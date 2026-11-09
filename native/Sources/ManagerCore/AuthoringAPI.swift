@@ -423,6 +423,7 @@ public actor AuthoringAPI {
         hayesOriginalRuntimeQualified = NativeHayesOriginalIntent.supports(manifest: manifest)
         productImageRuntimeQualified = Self.supportsProductImageRuntime(manifest: manifest)
         freshImageRuntimeQualified = manifest == "37da1a942fcd5f9dad57929aaa442997bb9a5576956f376e0bffcbdf957056a5"
+            || manifest == "d65b6205a4e7fcec2fca27839a3fb063c27323363a3dde5744ff7fc8517f6bb9"
         let portalQualified = manifest == Self.workspacePortalFinishManifestPin
             || Self.requiredModelPreparationManifestPins.contains(manifest)
             || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
