@@ -1636,19 +1636,21 @@ mod tests {
         }
 
         // Oversize members are rejected from metadata before any file copy.
-        let root = tempfile::tempdir().unwrap();
-        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let root = std::env::temp_dir().join(format!("checkpoint-capacity-{}", Uuid::new_v4()));
+        installations::new_directory(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
         for name in DATA_DIRECTORIES {
-            installations::new_directory(&root.path().join(name)).unwrap();
+            installations::new_directory(&root.join(name)).unwrap();
         }
         for name in [RECORD, ENVIRONMENT] {
-            private_options().open(root.path().join(name)).unwrap();
+            private_options().open(root.join(name)).unwrap();
         }
-        let file = private_options().open(root.path().join("blobs/oversize")).unwrap();
+        let file = private_options().open(root.join("blobs/oversize")).unwrap();
         file.set_len(default + 1).unwrap();
-        assert_eq!(inventory_with_limit(root.path(), false, default).unwrap_err().code, invalid().code);
+        assert_eq!(inventory_with_limit(&root, false, default).unwrap_err().code, invalid().code);
         file.set_len(extended + 1).unwrap();
-        assert_eq!(inventory_with_limit(root.path(), false, extended).unwrap_err().code, invalid().code);
+        assert_eq!(inventory_with_limit(&root, false, extended).unwrap_err().code, invalid().code);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(feature = "workspace-v5-owner-validation")]
