@@ -48,7 +48,7 @@ fn admitted_pair(source: &str, target: &str) -> bool {
 fn check_cold_transition_source(root: &Path, pair: (&str, &str)) -> Result<()> {
     #[cfg(feature = "workspace-v5-owner-validation")]
     if let Some(transition @ FurnishingTransition::Recover45 { .. }) = FurnishingTransition::from_manifests(pair) {
-        return crate::native_runtime::catalog45_recovery_source_generation(root, transition.startup_cancel_recovery()).map(|_| ());
+        return crate::native_runtime::catalog45_recovery_source_generation(root, transition.startup_recovery()).map(|_| ());
     }
     #[cfg(not(feature = "workspace-v5-owner-validation"))]
     let _ = pair;
@@ -205,7 +205,7 @@ fn startup_cancellation_proof_matches(
     pair: (&str, &str), retained: Option<&RetainedProductImage>, proof: Option<&StartupCancellation045>,
 ) -> bool {
     #[cfg(feature = "workspace-v5-owner-validation")]
-    if crate::native_payload::startup_cancel_recovery_transition(pair) {
+    if crate::native_payload::catalog45_startup_recovery(pair).is_some() {
         return retained.is_none() && proof.is_some();
     }
     #[cfg(not(feature = "workspace-v5-owner-validation"))]
@@ -1394,7 +1394,9 @@ impl InstallationController {
                 return Err(err("NATIVE_PHYSICAL_CHECKPOINT_SAVED_DOCUMENT_REQUIRED"));
             }
             if target.catalog45_recovery_validation() {
-                let generation = crate::native_runtime::catalog45_recovery_source_generation(&service.root, startup_cancellation_045.is_some())?;
+                let generation = crate::native_runtime::catalog45_recovery_source_generation(
+                    &service.root, crate::native_payload::catalog45_startup_recovery(pair),
+                )?;
                 if let Some(proof) = startup_cancellation_045 {
                     self.verify_startup_cancellation_045_preservation(service, document, proof)?;
                     if proof.failed_generation != generation || !installations::uuid(&proof.hayes_job_id)
@@ -1471,7 +1473,10 @@ impl InstallationController {
             #[cfg(feature = "workspace-v5-owner-validation")]
             if target.catalog45_recovery_validation() {
                 let checkpoint = self.catalog45_activation_checkpoint(service, document, &target, staging, key)?;
-                if checkpoint.old_manifest == checkpoint.new_manifest
+                let startup = crate::native_payload::catalog45_startup_recovery((
+                    checkpoint.old_manifest.as_str(), checkpoint.new_manifest.as_str(),
+                ));
+                if (checkpoint.old_manifest == checkpoint.new_manifest && startup.is_none())
                     || checkpoint.startup_cancellation_045.as_ref() != startup_cancellation_045
                 {
                     return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
@@ -1508,7 +1513,9 @@ impl InstallationController {
             return Err(invalid());
         }
         let generation = crate::native_runtime::catalog45_recovery_source_generation(
-            &service.root, checkpoint.startup_cancellation_045.is_some(),
+            &service.root, crate::native_payload::catalog45_startup_recovery((
+                checkpoint.old_manifest.as_str(), checkpoint.new_manifest.as_str(),
+            )),
         )?;
         if checkpoint.startup_cancellation_045.as_ref().is_some_and(|proof| proof.failed_generation != generation) {
             return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
