@@ -348,9 +348,11 @@ public actor AuthoringAPI {
     private static let requiredModelPreparationManifestPins: Set<String> = [
         "af4e787a5fa5c714d60bf24cba23a1b2e7015946d1f4bea9a5777a3af3c8b2d0",
         "a7cab3643e4b6554c70ef4c1fda7bfb2ce5234273dead44711be9f72df9ff34c",
-        "3ef0cf579846cfd682e63cf1bf89c8735c042b46a711569b4ec6d6c10870c76c"
+        "3ef0cf579846cfd682e63cf1bf89c8735c042b46a711569b4ec6d6c10870c76c",
+        productImageFitWheatManifestPin
     ]
     private static let productImageManifestPin = "157f538603a9557c30dfbb58ffc04755db9e174817aaeeb13353ce90e6dd84a2"
+    private static let productImageFitWheatManifestPin = "9c5da125d1789e93bdeb9446060b452fcb33b1bb2d95645c909d60c1ff30d18d"
     private static let workspaceMaterialMultimapManifestPins: Set<String> = [
         "72a13c526fb422c106f8eefaa7e277e5ab003f3c2085ebd09b2814c0a19ef904",
         "df6efc23ea2d9aab790fc25fab9833db9f5b48b3cb0c5417a1bd7c5ef609ac2a",
@@ -777,7 +779,7 @@ public actor AuthoringAPI {
 
     nonisolated static func supportsProductImageRuntime(manifest: String) -> Bool {
         #if DEBUG
-        manifest == productImageManifestPin
+        manifest == productImageManifestPin || manifest == productImageFitWheatManifestPin
         #else
         false
         #endif

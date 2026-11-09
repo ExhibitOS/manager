@@ -540,6 +540,13 @@ const CATALOG45_CURRENT_ORIGINAL_TARGET: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET: RuntimeTuple = (
+    "3db5e972e2cd3a46be58723c99d74fe8b16a03c5",
+    "29cdc6fd07e1c5d4e5fda06a2c37270d7023024d76a7cc3d31596af9f1c7a921",
+    "9c5da125d1789e93bdeb9446060b452fcb33b1bb2d95645c909d60c1ff30d18d",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const CATALOG45_DEFAULT_FRAME: RuntimeTuple = (
     "df34e11e5335e170c66f5b160a51b92b530e42d1",
     "29cdc6fd07e1c5d4e5fda06a2c37270d7023024d76a7cc3d31596af9f1c7a921",
@@ -564,7 +571,8 @@ pub(crate) fn required_model_preparation_host_matches(tuple: (&str, &str, &str))
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CATALOG45_BC96_REQUIRED_MODEL_TARGET == tuple
         || CATALOG45_COMPACT_AND_CANDIDATE_TARGET == tuple
-        || CATALOG45_CURRENT_ORIGINAL_TARGET == tuple;
+        || CATALOG45_CURRENT_ORIGINAL_TARGET == tuple
+        || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET == tuple;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -608,6 +616,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_BC96_REQUIRED_MODEL_TARGET.2 == manifest
         || CATALOG45_COMPACT_AND_CANDIDATE_TARGET.2 == manifest
         || CATALOG45_CURRENT_ORIGINAL_TARGET.2 == manifest
+        || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -652,6 +661,13 @@ impl FurnishingTransition {
             return Some(Self::SameCatalog {
                 source: CATALOG45_COMPACT_AND_CANDIDATE_TARGET,
                 target: CATALOG45_CURRENT_ORIGINAL_TARGET,
+                catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
+            });
+        }
+        if pair == (CATALOG45_CURRENT_ORIGINAL_TARGET.2, CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET.2) {
+            return Some(Self::SameCatalog {
+                source: CATALOG45_CURRENT_ORIGINAL_TARGET,
+                target: CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET,
                 catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             });
         }
@@ -1594,6 +1610,32 @@ mod normal_oex_release_declaration_tests {
         assert!(source.static_detail_export_resources(true).is_ok());
         assert!(target.static_detail_export_resources(true).is_ok());
         assert!(Payload::open_workspace_v5_validation(&new_root, true).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact sealed current-original and image-fit Wheat packages"]
+    fn opens_reviewed_product_image_fit_wheat_transition() {
+        let source_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_CURRENT_ORIGINAL_CATALOG45_RUNTIME").unwrap());
+        let target_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_PRODUCT_IMAGE_FIT_WHEAT_RUNTIME").unwrap());
+        let source = Payload::open_saved_workspace_transition(&source_root).unwrap();
+        let target = Payload::open_saved_workspace_transition(&target_root).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        assert_eq!(source.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(target.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(source.workspace_furnishing_ledger(catalog).unwrap(), target.workspace_furnishing_ledger(catalog).unwrap());
+        let old = source.context().manifest_sha256;
+        let new = target.context().manifest_sha256;
+        let step = FurnishingTransition::from_manifests((&old, &new)).unwrap();
+        assert!(!step.upgrades_catalog());
+        assert_eq!(step.source(), CATALOG45_CURRENT_ORIGINAL_TARGET);
+        assert_eq!(step.target(), CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET);
+        assert!(saved_workspace_transition_target(&new));
+        assert!(FurnishingTransition::from_manifests((&new, &old)).is_none());
+        assert!(FurnishingTransition::from_manifests((CATALOG45_PRODUCT_IMAGE.2, &new)).is_none());
+        assert!(target.static_detail_export_resources(true).is_ok());
+        assert_eq!(Payload::open_workspace_v5_validation(&target_root, false).unwrap().context().manifest_sha256, new);
+        assert!(Payload::open_workspace_v5_validation(&target_root, true).is_err());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -2966,7 +3008,8 @@ impl Payload {
         );
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         let combined_local_validation = CATALOG45_COMPACT_AND_CANDIDATE_TARGET == provenance
-            || CATALOG45_CURRENT_ORIGINAL_TARGET == provenance;
+            || CATALOG45_CURRENT_ORIGINAL_TARGET == provenance
+            || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET == provenance;
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
         let combined_local_validation = false;
         if (CATALOG40_WHEAT_DETAIL != Some(provenance)
