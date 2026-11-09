@@ -1802,6 +1802,7 @@ pub struct Exporter {
     cancel: Arc<AtomicBool>,
     commit_gate: Arc<Mutex<()>>,
     detail_token: Option<String>,
+    commit_recovery_attempted: Option<String>,
     worker: Option<thread::JoinHandle<()>>,
 }
 impl Exporter {
@@ -1812,6 +1813,7 @@ impl Exporter {
             cancel: Arc::new(AtomicBool::new(false)),
             commit_gate: Arc::new(Mutex::new(())),
             detail_token: None,
+            commit_recovery_attempted: None,
             worker: None,
         }
     }
@@ -1884,7 +1886,10 @@ impl Exporter {
         if let Some(value) = &value {
             // Reopening a running job never re-executes the exporter. Verify its
             // atomic final output asynchronously; retain incomplete files.
-            if value.state == "running" || committed_output_available(value) {
+            let recover_commit = self.commit_recovery_attempted.as_deref() != Some(&value.job_id)
+                && committed_output_available(value);
+            if value.state == "running" || recover_commit {
+                if recover_commit { self.commit_recovery_attempted = Some(value.job_id.clone()); }
                 let mut checking = value.clone();
                 checking.state = "running".into();
                 self.launch(token.into(), checking.clone(), None, None);
@@ -2168,10 +2173,13 @@ impl Exporter {
                         return Ok((verified, true));
                     }
                     let verified = verify_output(&value).map_err(|_| err("NATIVE_STATIC_INTERRUPTED"))?;
-                    if value.error_code.as_deref() == Some(STATIC_COMMIT_UNCONFIRMED)
-                        && value.receipt.as_ref() != Some(&verified)
-                    {
-                        return Err(err(STATIC_COMMIT_UNCONFIRMED));
+                    if value.error_code.as_deref() == Some(STATIC_COMMIT_UNCONFIRMED) {
+                        let parent = pinned_output_parent(&value)?.ok_or_else(bad)?;
+                        if value.receipt.as_ref() != Some(&verified)
+                            || parent.try_clone_file()?.sync_all().is_err() || parent.check().is_err()
+                        {
+                            return Err(err(STATIC_COMMIT_UNCONFIRMED));
+                        }
                     }
                     Ok((verified, true))
                 }));

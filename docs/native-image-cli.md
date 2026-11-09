@@ -107,5 +107,7 @@ hash to locate the committed archive in the original directory.
 the private editor, and returns its export receipt. Static output can have
 publication-specific IDs and asset hashes. If a static commit cannot confirm
 its path, restore the original directory before checking the same request.
+If verification has already failed in this session, reopen the export command
+to recheck the retained result.
 Close stdin to drain the runtime
 before another process opens the profile.

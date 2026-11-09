@@ -910,11 +910,8 @@ public actor NativeAutomationSession {
         guard request["version"] == .integer(1), let id = request["requestId"].string, UUID(uuidString: id) != nil,
               let operation = request["operation"].string, case .object(let fields) = request,
               Set(fields.keys).isSubset(of: ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "inputPath", "outputPath", "command", "proposalId", "archiveFormat"]) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
-        if let expected = installedExportRootIdentity {
+        if installedExportRootIdentity != nil {
             try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))
-            guard try Self.exportRootIdentity(root, profile: profile) == expected else {
-                throw BridgeFailure("AUTOMATION_OUTPUT_INVALID")
-            }
         }
         if installedImageCLI {
             guard ["read", "import-image", "artwork-status", "artwork-image-preparation-retry", "artwork-approve",
@@ -941,7 +938,14 @@ public actor NativeAutomationSession {
             throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
         }
         if let seen = seenRequests[id], seen != bytes { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
-        if let prior = try Self.replayResponse(for: operation, prior: replay[id], matching: bytes) { return prior }
+        let prior = try Self.replayResponse(for: operation, prior: replay[id], matching: bytes)
+        if let expected = installedExportRootIdentity,
+           !(operation == "export-oex" && prior?["commitState"] == .string("committed-path-unconfirmed") && prior?["path"] == .null) {
+            guard try Self.exportRootIdentity(root, profile: profile) == expected else {
+                throw BridgeFailure("AUTOMATION_OUTPUT_INVALID")
+            }
+        }
+        if let prior { return prior }
         guard !busy, seenRequests.count < 128 else { throw BridgeFailure("AUTOMATION_BUSY") }
         guard !runtimeStopped || operation == "read" else { throw BridgeFailure("NATIVE_NOT_READY") }
         guard !artworkReplacementRecoveryOnly || ["read", "artwork-replace-reviewed"].contains(operation) else {
