@@ -33,6 +33,20 @@ struct CatalogThumbnailValidationCapture {
     let intent: Intent
     private let destination: URL
 
+    struct Reservation {
+        fileprivate let parent: FileHandle
+        fileprivate let directory: FileHandle
+        fileprivate let name: String
+
+        fileprivate var isCurrent: Bool {
+            var opened = stat(), named = stat()
+            return fstat(directory.fileDescriptor, &opened) == 0
+                && fstatat(parent.fileDescriptor, name, &named, AT_SYMLINK_NOFOLLOW) == 0
+                && (named.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
+                && opened.st_dev == named.st_dev && opened.st_ino == named.st_ino
+        }
+    }
+
     static var requested: Bool {
         guard let root = evidenceRoot else { return false }
         var info = stat()
@@ -78,11 +92,25 @@ struct CatalogThumbnailValidationCapture {
         return lstat(destination.path, &info) != 0 && errno == ENOENT
     }
 
-    func reserve() throws {
-        guard mkdir(destination.path, 0o700) == 0 else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+    func reserve() throws -> Reservation {
+        let parentPath = destination.deletingLastPathComponent().path
+        let parentFD = open(parentPath, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard parentFD >= 0 else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+        let parent = FileHandle(fileDescriptor: parentFD, closeOnDealloc: true)
+        let name = destination.lastPathComponent
+        var info = stat()
+        guard fstat(parentFD, &info) == 0, info.st_uid == geteuid(), (info.st_mode & 0o777) == 0o700,
+              mkdirat(parentFD, name, 0o700) == 0 else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+        let directoryFD = openat(parentFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard directoryFD >= 0 else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+        let directory = FileHandle(fileDescriptor: directoryFD, closeOnDealloc: true)
+        let reservation = Reservation(parent: parent, directory: directory, name: name)
+        guard fstat(directoryFD, &info) == 0, info.st_uid == geteuid(), (info.st_mode & 0o777) == 0o700,
+              reservation.isCurrent else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+        return reservation
     }
 
-    func write(_ rendered: ViewportRenderedThumbnail) throws {
+    func write(_ rendered: ViewportRenderedThumbnail, to reservation: Reservation) throws {
         guard rendered.artworkId == intent.artworkId, rendered.revision == intent.revision,
               rendered.sourceAssetId == intent.sourceAssetId, rendered.sourceSha256 == intent.sourceSha256,
               rendered.displaySha256 == intent.displaySha256, (24...512 * 1024).contains(rendered.pngData.count) else {
@@ -94,12 +122,14 @@ struct CatalogThumbnailValidationCapture {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let metadata = try encoder.encode(receipt)
-        try writePrivate(rendered.pngData, to: destination.appendingPathComponent("preview.png"))
-        try writePrivate(metadata, to: destination.appendingPathComponent("receipt.json"))
+        guard reservation.isCurrent else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+        try writePrivate(rendered.pngData, name: "preview.png", in: reservation)
+        try writePrivate(metadata, name: "receipt.json", in: reservation)
+        guard reservation.isCurrent else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
     }
 
-    private func writePrivate(_ data: Data, to file: URL) throws {
-        let descriptor = open(file.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+    private func writePrivate(_ data: Data, name: String, in reservation: Reservation) throws {
+        let descriptor = openat(reservation.directory.fileDescriptor, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
         let output = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         try output.write(contentsOf: data)
