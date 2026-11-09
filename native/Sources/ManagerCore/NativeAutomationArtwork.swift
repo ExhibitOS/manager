@@ -183,7 +183,7 @@ enum NativeAutomationArtworkTransfer {
               initial.intent == nil || initial.intent == intent else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
         var state = initial
         let transfer = NativeImportTransfer()
-        return try await transfer.run(intent: intent, jobID: state.jobId, file: file, derived: derived, transport: transport,
+        do { return try await transfer.run(intent: intent, jobID: state.jobId, file: file, derived: derived, transport: transport,
             persistIntent: {
                 if state.intent == nil {
                     state.intent = intent; state.fileName = file.name; state.jobId = nil
@@ -195,5 +195,12 @@ enum NativeAutomationArtworkTransfer {
                 state.jobId = job.id
                 state = try await bridge.saveUploadState(context, state: state)
             }, isCurrent: { !Task.isCancelled })
+        } catch let error as AuthoringFailure where product && NativeProductImagePreparationIntent.definitivelyRejectedCreate(error) {
+            if state.intent == intent, state.jobId == nil, !Task.isCancelled {
+                state.intent = nil; state.fileName = nil
+                _ = try await bridge.saveUploadState(context, state: state)
+            }
+            throw error
+        }
     }
 }

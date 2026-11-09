@@ -29,6 +29,21 @@ public struct NativeProductImagePreparationIntent: Codable, Equatable, Sendable 
     var valid: Bool {
         version == 1 && profile == Self.profileID && (1..<2_147_483_647).contains(artworkRevision)
     }
+
+    public func checkSource(_ file: ImportFileSnapshot, artwork: NativeArtwork) throws {
+        guard valid, file.mime == "image/jpeg", (4...Self.maximumSourceBytes).contains(file.data.count),
+              !artwork.archived, artwork.revision == artworkRevision, artwork.approvedRevision == artworkRevision,
+              let metadata = artwork.metadata, metadata.displayReference == nil,
+              metadata.rights.permissions.display, metadata.rights.permissions.export,
+              artwork.assets.contains(where: { $0.id == artwork.approvedAssetId && $0.mime == "image/png" && $0.state == "approved" }) else {
+            throw AuthoringFailure("IMAGE_PREPARATION_CONTEXT_CHANGED")
+        }
+    }
+
+    public static func definitivelyRejectedCreate(_ error: AuthoringFailure) -> Bool {
+        (error.status == 400 && error.code == "IMAGE_PREPARATION_INPUT_INVALID")
+            || (error.status == 409 && error.code == "IMAGE_PREPARATION_CONTEXT_CHANGED")
+    }
 }
 
 public struct NativeProductImagePreparationStatus: Codable, Equatable, Sendable {

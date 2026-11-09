@@ -684,16 +684,15 @@ public actor AuthoringAPI {
             artworkRevision: coarse.artworkRevision, generation: current)
     }
 
-    public func replaceProductImage(
-        exhibitionId: String, studioRevision: Int, etag: String, requestId: String, importJobId: String,
+    public func reviewProductImage(
+        importJobId: String,
         intent: NativeImportIntent, workspaceId: String, principalId: String, expectedReceiptSHA256: String
-    ) async throws -> NativeStudioResponse {
+    ) async throws -> NativeProductImagePreparationStatus.Receipt {
         guard admitsProductImagePreparation, session?.userId == principalId else {
             throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
         }
         guard let preparation = intent.productImagePreparation, preparation.valid,
-              nativeImportDigest(expectedReceiptSHA256), (1..<2_147_483_647).contains(studioRevision),
-              etag.hasPrefix("\"studio-r\(studioRevision)-") else {
+              nativeImportDigest(expectedReceiptSHA256) else {
             throw AuthoringFailure("IMPORT_INPUT_INVALID")
         }
         let current = generation
@@ -706,11 +705,24 @@ public actor AuthoringAPI {
               let receipt = status.serverReceipt, receipt.sha256 == expectedReceiptSHA256 else {
             throw AuthoringFailure("IMAGE_PREPARATION_JOB_NOT_READY")
         }
+        return receipt
+    }
+
+    public func replaceProductImage(
+        exhibitionId: String, studioRevision: Int, etag: String, requestId: String, importJobId: String,
+        intent: NativeImportIntent, workspaceId: String, principalId: String, expectedReceiptSHA256: String
+    ) async throws -> NativeStudioResponse {
+        guard (1..<2_147_483_647).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-") else {
+            throw AuthoringFailure("IMPORT_INPUT_INVALID")
+        }
+        let current = generation
+        let receipt = try await reviewProductImage(importJobId: importJobId, intent: intent, workspaceId: workspaceId,
+            principalId: principalId, expectedReceiptSHA256: expectedReceiptSHA256)
         let stored = try await commitImageReplacement(exhibitionId: exhibitionId, studioRevision: studioRevision,
             etag: etag, requestId: requestId, importJobId: importJobId, artworkId: intent.artworkId,
-            artworkRevision: preparation.artworkRevision, generation: current)
+            artworkRevision: receipt.artworkRevision, generation: current)
         guard let artwork = stored.draft.artworks.first(where: { $0["id"].string == intent.artworkId }),
-              artwork["revision"].integer == Int64(preparation.artworkRevision + 1),
+              artwork["revision"].integer == Int64(receipt.artworkRevision + 1),
               artwork["primaryAssetId"].string == receipt.full.assetId,
               let assets = artwork["assets"].items,
               assets.count == (receipt.coarse == nil ? 1 : 2),
@@ -739,6 +751,7 @@ public actor AuthoringAPI {
         let exhibitionId = try identifier(exhibitionId)
         let input = try Input(requestId: identifier(requestId), artworkId: identifier(artworkId),
                               artworkRevision: artworkRevision, importJobId: importJobId)
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         try Task.checkCancellation()
         let path = studioPrefix + "/exhibitions/" + exhibitionId + "/native-artwork-replacement"
         let saved: NativeStudioResponse = try await request(path, method: "POST", body: encoded(input),
@@ -1434,7 +1447,7 @@ public actor AuthoringAPI {
                                           preparation: NativeProductImagePreparationIntent) async throws -> NativeImportJob {
         guard admitsProductImagePreparation else { throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE") }
         guard preparation.valid, input.mime == "image/jpeg", input.scaleMeters == 1,
-              (1...ImportFileSnapshot.limit).contains(input.bytes), nativeImportDigest(input.sha256),
+              (4...NativeProductImagePreparationIntent.maximumSourceBytes).contains(input.bytes), nativeImportDigest(input.sha256),
               input.derived == nil, input.coarsePreparation == nil, input.modelDerivation == nil,
               input.modelPreparation == nil, input.hayesOriginal == nil else {
             throw AuthoringFailure("IMPORT_INPUT_INVALID")

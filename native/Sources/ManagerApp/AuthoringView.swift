@@ -478,17 +478,26 @@ extension AuthoringModel {
         defer { busy = false; scheduleImportPoll() }
         let file = try await ImportFileSnapshot.load(url, allowJPEG: true)
         let artwork = try await expectedAPI.artwork(artworkId)
-        guard file.mime == "image/jpeg", artwork.id == artworkId, artwork.revision == artworkRevision,
-              !artwork.archived, artwork.approvedRevision == artworkRevision, let rights = artwork.metadata?.rights,
+        let preparation = NativeProductImagePreparationIntent(artworkRevision: artworkRevision)
+        try preparation.checkSource(file, artwork: artwork)
+        guard artwork.id == artworkId, let rights = artwork.metadata?.rights,
               importStatusGeneration == generation, self.transfer?.revision == transfer.revision, isCurrent() else {
             throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
         }
         let intent = NativeImportIntent(artworkId: artworkId,
             idempotencyKey: transfer.intent?.idempotencyKey ?? UUID().uuidString.lowercased(), mime: file.mime,
             sha256: file.sha256, bytes: file.data.count, scaleMeters: 1, rights: rights,
-            productImagePreparation: .init(artworkRevision: artworkRevision))
+            productImagePreparation: preparation)
         guard transfer.intent == nil || transfer.intent == intent else { throw AuthoringFailure("IMPORT_INTENT_CHANGED") }
-        try await continueImport(intent: intent, file: file, api: expectedAPI, isScopeCurrent: isCurrent)
+        do { try await continueImport(intent: intent, file: file, api: expectedAPI, isScopeCurrent: isCurrent) }
+        catch let error as AuthoringFailure where NativeProductImagePreparationIntent.definitivelyRejectedCreate(error) {
+            if importStatusGeneration == generation, isCurrent(), var rejected = self.transfer,
+               rejected.intent == intent, rejected.jobId == nil {
+                rejected.intent = nil; rejected.fileName = nil
+                try await persistImport(rejected)
+            }
+            throw error
+        }
     }
 
     func finishProductImageTransfer(intent: NativeImportIntent, jobId: String, api: AuthoringAPI) async throws {
@@ -612,7 +621,7 @@ extension AuthoringModel {
     }
     func uploadImportFile() async {
         await action {
-            guard let api, let selected, !metadataDirty, let file = importFile, let state = transfer,
+            guard !hasProductImageTransfer, let api, let selected, !metadataDirty, let file = importFile, let state = transfer,
                   !inspectedReferencePending, state.compactVariant == nil else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
             if usesHayesOriginal {
                 guard hayesOriginalAvailable, let reference = selected.metadata?.displayReference,
@@ -698,7 +707,7 @@ extension AuthoringModel {
     }
     func recoverImport() async {
         await action {
-            guard let api, let intent = transfer?.intent else { return }
+            guard !hasProductImageTransfer, let api, let intent = transfer?.intent else { return }
             try await checkGUIImportContinuation(intent, api: api)
             try await continueImport(intent: intent, file: nil, api: api)
             notice = "같은 파일 검사 요청의 현재 상태를 확인했습니다."

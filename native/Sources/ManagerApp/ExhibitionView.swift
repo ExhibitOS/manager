@@ -2574,9 +2574,23 @@ final class ExhibitionModel: ObservableObject {
             guard etag.hasPrefix(prefix), let revision = etag.dropFirst(prefix.count).split(separator: "-").first.flatMap({ Int($0) }),
                   self.api === api, viewportAccessID == access, state?.pending?.requestId == intent.requestId,
                   authoring.transfer?.revision == transfer.revision else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
-            let saved = try await api.replaceProductImage(exhibitionId: draft.id, studioRevision: revision, etag: etag,
-                requestId: intent.requestId, importJobId: candidate.importJobId, intent: importIntent,
-                workspaceId: local.workspaceId, principalId: local.principalId, expectedReceiptSHA256: candidate.receiptSha256)
+            let saved: NativeStudioResponse
+            do {
+                saved = try await api.replaceProductImage(exhibitionId: draft.id, studioRevision: revision, etag: etag,
+                    requestId: intent.requestId, importJobId: candidate.importJobId, intent: importIntent,
+                    workspaceId: local.workspaceId, principalId: local.principalId, expectedReceiptSHA256: candidate.receiptSha256)
+            } catch let error as AuthoringFailure where (error.status == 412 && error.code == "REMOTE_CONFLICT")
+                || (error.status == 409 && error.code == "ARTWORK_REPLACEMENT_STALE") {
+                // The server checks its replay receipt before these rejection
+                // branches. Keep the original draft available for comparison.
+                let live = try await api.exhibition(draft.id)
+                guard self.api === api, viewportAccessID == access, var rejected = state,
+                      rejected.pending?.requestId == intent.requestId else { throw error }
+                rejected.pending = nil
+                try await persist(rejected, recordUndo: false)
+                comparison = live
+                throw error
+            }
             guard self.api === api, viewportAccessID == access, var accepted = state,
                   accepted.pending?.requestId == intent.requestId else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
             accepted.draft = saved.draft; accepted.etag = saved.etag

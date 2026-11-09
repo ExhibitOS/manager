@@ -485,7 +485,7 @@ public actor NativeAutomationSession {
         guard original.mime == "image/jpeg", original.sha256 == sourceHash else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
         if product {
             let preparation = NativeProductImagePreparationIntent(artworkRevision: Int(revision))
-            guard preparation.valid else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+            try preparation.checkSource(original, artwork: artwork)
             let intent = NativeImportIntent(artworkId: artworkId, idempotencyKey: id, mime: original.mime,
                 sha256: original.sha256, bytes: original.data.count, scaleMeters: 1, rights: rights,
                 productImagePreparation: preparation)
@@ -588,6 +588,10 @@ public actor NativeAutomationSession {
             let previous = try await api.exhibition(draft.id)
             guard previous.draft == draft, previous.etag == command.etag, previous.revision == command.studioRevision else {
                 throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            if case .productImage(let receiptSHA256) = command.target, let intent = state.intent {
+                _ = try await api.reviewProductImage(importJobId: command.importJobId, intent: intent,
+                    workspaceId: current.workspaceId, principalId: current.principalId, expectedReceiptSHA256: receiptSHA256)
             }
             try saveReplacementAttempt(attempt)
         }
