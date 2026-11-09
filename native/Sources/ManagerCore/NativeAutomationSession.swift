@@ -712,6 +712,7 @@ public actor NativeAutomationSession {
         switch command.target {
         case .image: api.admitsSameOwnerArtworkReplacement
         case .productImage: await api.admitsProductImagePreparation
+        case .productImageThumbnailRepair: await api.admitsProductImageThumbnailRepair
         case .approvedModel: await api.admitsApprovedModelCandidateReplacement
         }
     }
@@ -736,6 +737,10 @@ public actor NativeAutomationSession {
         case .productImage:
             guard let intent = state.intent, intent.artworkId == command.artworkId, state.jobId == command.importJobId,
                   intent.productImagePreparation?.artworkRevision == command.artworkRevision else {
+                throw BridgeFailure("IMPORT_INTENT_CHANGED")
+            }
+        case .productImageThumbnailRepair:
+            guard current.pending == nil, state.intent == nil, state.jobId == nil, state.compactVariant == nil else {
                 throw BridgeFailure("IMPORT_INTENT_CHANGED")
             }
         case .approvedModel:
@@ -763,6 +768,11 @@ public actor NativeAutomationSession {
                 _ = try await api.reviewProductImage(importJobId: command.importJobId, intent: intent,
                     workspaceId: current.workspaceId, principalId: current.principalId, expectedReceiptSHA256: receiptSHA256)
             }
+            if case .productImageThumbnailRepair(let receiptSHA256) = command.target {
+                _ = try await api.reviewProductImageThumbnailRepair(draft: draft, artworkId: command.artworkId,
+                    artworkRevision: command.artworkRevision, importJobId: command.importJobId,
+                    workspaceId: current.workspaceId, principalId: current.principalId, expectedReceiptSHA256: receiptSHA256)
+            }
             try saveReplacementAttempt(attempt)
         }
         try syncArtworkAttempt(at: replacementAttemptPath)
@@ -779,6 +789,11 @@ public actor NativeAutomationSession {
             stored = try await api.replaceProductImage(exhibitionId: draft.id, studioRevision: command.studioRevision,
                 etag: command.etag, requestId: id, importJobId: command.importJobId, intent: intent,
                 workspaceId: current.workspaceId, principalId: current.principalId, expectedReceiptSHA256: receiptSHA256)
+        case .productImageThumbnailRepair(let receiptSHA256):
+            stored = try await api.repairProductImageThumbnail(exhibitionId: draft.id, studioRevision: command.studioRevision,
+                etag: command.etag, requestId: id, artworkId: command.artworkId, artworkRevision: command.artworkRevision,
+                importJobId: command.importJobId, workspaceId: current.workspaceId, principalId: current.principalId,
+                expectedReceiptSHA256: receiptSHA256)
         case .approvedModel(let placementID):
             stored = try await api.replaceApprovedModelCandidate(
                 draft: draft, studioRevision: command.studioRevision, etag: command.etag, requestId: id,
