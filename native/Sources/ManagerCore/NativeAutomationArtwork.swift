@@ -113,11 +113,13 @@ enum NativeAutomationArtworkRules {
             throw BridgeFailure("ARTWORK_DISPLAY_REFERENCE_INVALID")
         }
     }
-    static func checkRegistration(_ artwork: DocumentValue, artworkId: String, revision: Int64, tenantId: String) throws {
+    static func checkRegistration(_ artwork: DocumentValue, artworkId: String, revision: Int64, tenantId: String,
+                                  allowsImage: Bool = false) throws {
         let cms = artwork["extensions"]["org.exhibitos.studio/cms"]
+        let type = artwork["artworkType"].string
         guard revision > 0, revision <= 2_147_483_647, artwork["id"].string == artworkId,
               cms["tenantId"].string == tenantId, cms["artworkId"].string == artworkId,
-              cms["revision"].integer == revision, artwork["artworkType"].string == "sculpture",
+              cms["revision"].integer == revision, type == "sculpture" || (allowsImage && type == "image"),
               artwork["rights"]["permissions"]["display"] == .bool(true) else { throw BridgeFailure("ARTWORK_SCOPE_CHANGED") }
     }
     static func jobValue(_ job: NativeImportJob) -> DocumentValue {

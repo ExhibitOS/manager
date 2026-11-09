@@ -1465,7 +1465,8 @@ public actor NativeAutomationSession {
                   let revision = command["revision"].integer, let room = command["roomId"].string,
                   let placement = command["placementId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
             let approved = try await api.studioArtwork(artworkId)
-            try NativeAutomationArtworkRules.checkRegistration(approved.artwork, artworkId: artworkId, revision: revision, tenantId: current.tenantId)
+            try NativeAutomationArtworkRules.checkRegistration(approved.artwork, artworkId: artworkId, revision: revision,
+                tenantId: current.tenantId, allowsImage: await api.admitsFreshImagePreparation)
             try draft.addApprovedArtwork(approved.artwork, roomId: room, placementId: placement, transform: command["transform"])
             var next = current; next.draft = draft
             result = try value(await bridge.saveDocumentState(context, state: next))
