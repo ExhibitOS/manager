@@ -25,6 +25,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var compactModelVariantProfile: String? = nil
     public var nativeModelCandidateReplacementProfile: String? = nil
     public var nativeProductImagePreparationProfile: String? = nil
+    public var nativeAuthoringProposalProfile: String? = nil
     public var nativeFreshImagePreparationProfile: String? = nil
     public var workspaceMaterialProfile: String? = nil
     public var workspaceFurnishingProfile: String? = nil
@@ -534,7 +535,7 @@ public actor AuthoringAPI {
         }
     }
 
-    private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, bodyFile: URL? = nil, bodyLength: Int? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, chunkSHA256: String? = nil, publicationProfile: String? = nil, timeout: TimeInterval = 15, catalogThumbnail: (stage: CatalogThumbnailStage, scope: CatalogThumbnailAuthority)? = nil) async throws -> T {
+    private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, bodyFile: URL? = nil, bodyLength: Int? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, chunkSHA256: String? = nil, publicationProfile: String? = nil, timeout: TimeInterval = 15, catalogThumbnail: (stage: CatalogThumbnailStage, scope: CatalogThumbnailAuthority)? = nil, expectedResponseETag: String? = nil) async throws -> T {
         guard !(authenticated && authenticationBusy && path != "/api/v1/auth/logout") else { throw AuthoringFailure("AUTH_BUSY") }
         activeRequests += 1
         defer { activeRequests -= 1 }
@@ -592,6 +593,9 @@ public actor AuthoringAPI {
             }
             throw AuthoringFailure(AuthoringFailure.safeCode(code) ? code : "REQUEST_FAILED", status: http.statusCode,
                                    role: envelope?.role, field: envelope?.field)
+        }
+        if let expectedResponseETag, http.value(forHTTPHeaderField: "ETag") != expectedResponseETag {
+            throw AuthoringFailure("ETAG_INVALID")
         }
         let result = try JSONDecoder().decode(T.self, from: data)
         if let studio = result as? NativeStudioResponse {
@@ -2058,6 +2062,25 @@ public actor AuthoringAPI {
         let path = studioPrefix + "/exhibitions/" + (try identifier(draft.id)) + "/native-viewport-check"
         let response: Validation = try await request(path, method: "POST", body: body, ifMatch: etag)
         guard response.valid else { throw AuthoringFailure("DRAFT_INVALID") }
+    }
+
+    func nativeAuthoringProposal(exhibitionId: String, studioRevision: Int, etag: String,
+                                 proposal: DocumentValue) async throws -> DocumentValue {
+        guard nativeSession, !authenticationBusy, let session,
+              session.nativeAuthoringProposalProfile == "saved-head-v1" else {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+        }
+        guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),
+              proposal["tenantId"].string == tenant, proposal["principalId"].string == session.userId,
+              let operation = proposal["type"].string,
+              ["add-plaque", "set-plaque", "set-wall-finish"].contains(operation) else {
+            throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
+        }
+        struct Input: Encodable { let expectedRevision: Int; let request: DocumentValue }
+        let body = try encoded(Input(expectedRevision: studioRevision, request: proposal))
+        guard body.count <= 66_560 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
+        let path = studioPrefix + "/exhibitions/" + (try identifier(exhibitionId)) + "/native-authoring-proposal"
+        return try await request(path, method: "POST", body: body, ifMatch: etag, expectedResponseETag: etag)
     }
 
     public func prepareWorkspaceArtworkFrame(_ command: WorkspaceArtworkFrameCommand,
