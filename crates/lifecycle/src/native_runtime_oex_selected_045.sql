@@ -11,7 +11,7 @@ WITH completed_hayes AS (
       AND r.database_system_identifier=(pg_control_system()).system_identifier::text
       AND r.database_oid=(SELECT oid::text FROM pg_database WHERE datname=current_database())
    ), completed_oex AS (
-    SELECT j.tenant_id,j.id,j.expected_bytes FROM oex_import_jobs j
+    SELECT j.tenant_id,j.id,j.expected_bytes,j.cleanup_pending FROM oex_import_jobs j
     JOIN workspace_oex_import_terminal_proof t ON (t.tenant_id,t.import_job_id,t.principal_id,t.import_request_id,t.source_archive_sha256)
       =(j.tenant_id,j.id,j.user_id,j.request_id,j.payload_sha256)
     JOIN native_oex_exhibition_provenance p ON (p.tenant_id,p.import_job_id)=(j.tenant_id,j.id)
@@ -36,5 +36,6 @@ WITH completed_hayes AS (
       AND NOT EXISTS (SELECT 1 FROM completed_oex o WHERE (o.tenant_id,o.id)=(j.tenant_id,j.id))) OR
     EXISTS (SELECT 1 FROM workspace_material_intakes WHERE phase IN ('uploading','validating','cancelling') OR worker_token IS NOT NULL) OR
     EXISTS (SELECT 1 FROM workspace_furnishing_intakes WHERE phase IN ('uploading','validating','cancelling') OR worker_token IS NOT NULL) AS unsettled
-) SELECT CASE WHEN NOT unsettled THEN (SELECT expected_bytes FROM completed_oex) END FROM admission;
-
+) SELECT CASE WHEN NOT unsettled THEN
+    (SELECT json_build_object('bytes',expected_bytes,'cleanupPending',cleanup_pending) FROM completed_oex)
+END FROM admission;

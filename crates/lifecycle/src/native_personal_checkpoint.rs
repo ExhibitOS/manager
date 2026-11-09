@@ -702,12 +702,14 @@ impl LifecycleService {
     fn selected_045_original_store(
         &self, profile: &Path, checkpoint: &Checkpoint,
         lineage: &[crate::installations::native_maintenance::RecoveryRollback045],
-    ) -> Result<Option<PathBuf>> {
+        staging_prefix: &Path,
+    ) -> Result<(Option<PathBuf>, BTreeMap<usize, u64>)> {
         if lineage.len() > 8 {
             return Err(invalid());
         }
         let mut original = None;
         let mut predecessor = None;
+        let mut absent_chunks = BTreeMap::new();
         for item in lineage {
             if !hash_valid(&item.receipt_sha256) {
                 return Err(invalid());
@@ -741,10 +743,21 @@ impl LifecycleService {
             }
             if original.is_none() {
                 let stored = inventory_members_with_sync(&retained, false, MAX_BYTES, &["blobs"], File::sync_all)?;
-                if stored.iter().ne(prior.files.iter().filter(|(path, _)| path.starts_with("blobs")))
-                    || stored.iter().any(|(path, entry)| checkpoint.files.get(path) != Some(entry))
-                {
+                if stored.iter().ne(prior.files.iter().filter(|(path, _)| path.starts_with("blobs"))) {
                     return Err(invalid());
+                }
+                for (path, entry) in stored {
+                    match checkpoint.files.get(&path) {
+                        Some(current) if current == &entry => (),
+                        None if entry.sha256.is_some() => {
+                            let suffix = path.strip_prefix(staging_prefix).ok()
+                                .and_then(Path::to_str).ok_or_else(invalid)?;
+                            let index = suffix.strip_prefix("chunk-").and_then(|index| index.parse::<usize>().ok())
+                                .filter(|index| *index < 32 && suffix == format!("chunk-{index}")).ok_or_else(invalid)?;
+                            absent_chunks.insert(index, entry.bytes);
+                        }
+                        _ => return Err(invalid()),
+                    }
                 }
                 original = Some(store);
             }
@@ -755,7 +768,7 @@ impl LifecycleService {
                 return Err(invalid());
             }
         }
-        Ok(original)
+        Ok((original, absent_chunks))
     }
 
     pub(crate) fn check_selected_checkpoint_source(
@@ -1363,17 +1376,19 @@ impl InstallationController {
                 return Err(invalid());
             }
             verify_unchanged(&service.root, &checkpoint, &pending)?;
-            let original = service.selected_045_original_store(profile, &checkpoint, &selection.rollback_lineage)?;
             let oex = oex_retained_cleanup::Selection::new(&selection.oex_job_id, &selection.oex_import_runtime_generation)?;
+            let prefix = Path::new("blobs").join(&checkpoint.tenant_id).join("oex-staging").join(&selection.oex_job_id);
+            let (original, absent_chunks) = service.selected_045_original_store(
+                profile, &checkpoint, &selection.rollback_lineage, &prefix,
+            )?;
             let retired = SelectedRetirement::open(
                 &service.root, (&checkpoint.workspace_id, &checkpoint.tenant_id, &checkpoint.principal_id),
                 &selection.oex_job_id, &selection.oex_import_runtime_generation, &selection.oex_retirement_sha256,
                 original.as_deref(),
             )?;
             let selected = oex_retained_cleanup::Selected045::new(
-                oex, &selection.hayes_job_id, &selection.hayes_completion_frame_sha256, retired,
+                oex, &selection.hayes_job_id, &selection.hayes_completion_frame_sha256, retired, absent_chunks,
             )?;
-            let prefix = Path::new("blobs").join(&checkpoint.tenant_id).join("oex-staging").join(&selection.oex_job_id);
             service.activate_local_personal_runtime_transition(target, staging, key, true, document, Some((selected, prefix)))
         })
     }

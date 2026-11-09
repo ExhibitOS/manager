@@ -1988,11 +1988,8 @@ const { isDeepStrictEqual } = require('node:util');
                         let selected_checked = if let Some(selected) = self.selected_recovery_045.as_ref() {
                             let sql = selected.database_query(owner)?;
                             let value = self.query_database("exhibitos", &sql)?;
-                            let bytes = value.parse::<usize>().ok()
-                                .filter(|bytes| (1..=512 * 1024 * 1024).contains(bytes))
-                                .ok_or_else(|| err("FURNISHING_RECOVERY_UNAVAILABLE"))?;
                             self.selected_recovery_045.as_mut().ok_or_else(|| err(oex_retained_cleanup::ERROR))?
-                                .staging_bytes = Some(bytes);
+                                .admit_staging(&value)?;
                             true
                         } else { false };
                         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
