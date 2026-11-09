@@ -333,6 +333,7 @@ public actor AuthoringAPI {
     public nonisolated let admitsICCJPEG: Bool
     public nonisolated let admitsSameOwnerArtworkReplacement: Bool
     public nonisolated let productImageRuntimeQualified: Bool
+    public nonisolated let freshImageRuntimeQualified: Bool
     // These reviewed v5 tuples are local-validation payloads. Release admission
     // requires separate package qualification.
     #if DEBUG
@@ -421,6 +422,7 @@ public actor AuthoringAPI {
         #if DEBUG
         hayesOriginalRuntimeQualified = NativeHayesOriginalIntent.supports(manifest: manifest)
         productImageRuntimeQualified = Self.supportsProductImageRuntime(manifest: manifest)
+        freshImageRuntimeQualified = manifest == "37da1a942fcd5f9dad57929aaa442997bb9a5576956f376e0bffcbdf957056a5"
         let portalQualified = manifest == Self.workspacePortalFinishManifestPin
             || Self.requiredModelPreparationManifestPins.contains(manifest)
             || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
@@ -428,6 +430,7 @@ public actor AuthoringAPI {
         #else
         hayesOriginalRuntimeQualified = false
         productImageRuntimeQualified = false
+        freshImageRuntimeQualified = false
         let portalQualified = false
         let multimapQualified = false
         #endif
@@ -779,7 +782,7 @@ public actor AuthoringAPI {
     }
 
     public var admitsFreshImagePreparation: Bool {
-        nativeSession && !authenticationBusy
+        nativeSession && !authenticationBusy && freshImageRuntimeQualified
             && session?.nativeFreshImagePreparationProfile == NativeProductImagePreparationIntent.freshProfileID
     }
 

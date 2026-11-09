@@ -1427,7 +1427,7 @@ const { isDeepStrictEqual } = require('node:util');
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             if matches!(self.hayes_bootstrap, HayesBootstrap::Issued(_) | HayesBootstrap::Spent) {
                 self.hayes_bootstrap = if self.payload.ordinary_hayes_release()
-                    || self.payload.ordinary_fresh_catalog45_validation()
+                    || self.payload.ordinary_fresh_furnishing_validation()
                 {
                     HayesBootstrap::Disabled
                 } else {
@@ -1964,7 +1964,7 @@ const { isDeepStrictEqual } = require('node:util');
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
         if (self.payload.retained_furnishing_catalog().is_some()
             && matches!(furnishing, Some(FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045)))
-            || (self.payload.ordinary_fresh_catalog45_validation()
+            || (self.payload.ordinary_fresh_furnishing_validation()
                 && matches!(furnishing, Some(FurnishingStart::Initialize | FurnishingStart::Reopen)))
         {
             self.payload.recheck()?;
