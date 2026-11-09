@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 import Darwin
+#if DEBUG
+import OSLog
+#endif
 
 public enum Mode: String, Codable, CaseIterable, Sendable { case beginner, expert }
 public enum Step: String, Codable, CaseIterable, Sendable { case prepare, create, select, preview, publish }
@@ -181,6 +184,26 @@ public actor NativeBridge {
     private let selectedOEXFormatValidation: (version: String, runtime: URL)?
     private var sequence: UInt64 = 0
     private var buffered = Data()
+    #if DEBUG
+    private static let startupLog = Logger(subsystem: "org.exhibitos.manager.validation", category: "native-startup")
+    private static let startupRPCs: Set<String> = [
+        "context", "native_prepare", "native_start", "native_status", "native_authoring_session", "document_state"
+    ]
+    private static let startupStates: Set<String> = [
+        "starting", "starting_database", "database_ready", "starting_services", "ready",
+        "unavailable", "stopping", "stopped", "failed"
+    ]
+    private var lastStartupPhase = "no-status"
+    private var lastStartupBusy = false
+
+    private func observeStartupStatus(_ status: NativeHostStatus) {
+        let phase = status.runtime.map { Self.startupStates.contains($0.state) ? $0.state : "other" } ?? "no-runtime"
+        guard phase != lastStartupPhase || status.busy != lastStartupBusy else { return }
+        lastStartupPhase = phase
+        lastStartupBusy = status.busy
+        Self.startupLog.notice("Native startup status phase=\(phase, privacy: .public) busy=\(status.busy, privacy: .public)")
+    }
+    #endif
 
     public init(helper: URL, profile: URL, freshSelectedOEX: Bool = false, freshWorkspacePorts: [String: UInt16]? = nil, temporaryDirectory: URL? = nil, workspaceV5ValidationRuntime: URL? = nil, workspaceV6ValidationRuntime: URL? = nil, workspaceV7ValidationRuntime: URL? = nil, requireExistingManagedProfile: Bool = false) throws {
         guard helper.isFileURL, profile.isFileURL,
@@ -448,6 +471,13 @@ public actor NativeBridge {
         guard process.isRunning else { throw BridgeFailure("NATIVE_HELPER_EXITED") }
         try Task.checkCancellation()
         sequence += 1
+        #if DEBUG
+        let traceStartup = Bundle.main.bundleIdentifier == "org.exhibitos.manager.validation"
+            && Self.startupRPCs.contains(command)
+        if traceStartup && (command == "native_prepare" || command == "native_start") {
+            Self.startupLog.notice("Native startup request rpc=\(command, privacy: .public) sequence=\(self.sequence, privacy: .public)")
+        }
+        #endif
         var frame = fields
         frame["version"] = 1; frame["id"] = sequence; frame["command"] = command
         var data = try JSONSerialization.data(withJSONObject: frame)
@@ -461,6 +491,11 @@ public actor NativeBridge {
         let deadline = ContinuousClock.now.advanced(by: .seconds(60))
         while !buffered.contains(10) {
             if ContinuousClock.now >= deadline {
+                #if DEBUG
+                if traceStartup {
+                    Self.startupLog.error("Native startup timeout rpc=\(command, privacy: .public) sequence=\(self.sequence, privacy: .public) lastPhase=\(self.lastStartupPhase, privacy: .public) lastBusy=\(self.lastStartupBusy, privacy: .public)")
+                }
+                #endif
                 process.terminate()
                 throw BridgeFailure("NATIVE_TIMEOUT")
             }
@@ -493,6 +528,12 @@ public actor NativeBridge {
             throw BridgeFailure(error["code"] as? String ?? "NATIVE_PROTOCOL_INVALID")
         }
         guard let result = object["result"] else { throw BridgeFailure("NATIVE_PROTOCOL_INVALID") }
-        return try JSONDecoder().decode(T.self, from: JSONSerialization.data(withJSONObject: result, options: .fragmentsAllowed))
+        let decoded = try JSONDecoder().decode(T.self, from: JSONSerialization.data(withJSONObject: result, options: .fragmentsAllowed))
+        #if DEBUG
+        if traceStartup, let status = decoded as? NativeHostStatus {
+            observeStartupStatus(status)
+        }
+        #endif
+        return decoded
     }
 }
