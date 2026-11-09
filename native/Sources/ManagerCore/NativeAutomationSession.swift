@@ -1158,9 +1158,14 @@ public actor NativeAutomationSession {
             let attaching = operation == "workspace-portal-attach"
             let fields = try NativeAutomationArtworkRules.command(request, keys: attaching
                 ? ["openingId", "furnishingId", "furnishingVersion", "modelSha256"] : ["openingId"])
+            let modularFit = attaching ? await api.admitsWorkspaceModularPortalFit : false
+            let modelHash = fields["modelSha256"].string
+            let validModularHash = modularFit && modelHash.map {
+                $0.utf8.count == 64 && $0.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+            } == true
             guard let opening = fields["openingId"].string,
                   !attaching || (fields["furnishingId"].string != nil && fields["furnishingVersion"] == .integer(1)
-                    && fields["modelSha256"].string == WorkspacePortalFinish.modelSHA256) else {
+                    && (modelHash == WorkspacePortalFinish.modelSHA256 || validModularHash)) else {
                 throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
             }
             if let draft = try await api.prepareWorkspacePortalFinish(openingId: opening,
