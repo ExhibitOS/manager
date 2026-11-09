@@ -21,17 +21,23 @@ enum InstalledImageCLI {
     static func run(_ arguments: [String]) async -> Int32 {
         if arguments == ["--help"] {
             print("""
-                Usage: ExhibitOSManager --image-cli
+                Usage: ExhibitOSManager --image-cli [--profile ABSOLUTE_PATH]
                 Send one JSON request per line and read one response before sending another.
                 Commands: read, import-image, artwork-status, artwork-image-preparation-retry,
                           artwork-approve, artwork-register, save, artwork-finish-reviewed.
-                Set up the personal workspace in Manager, then quit Manager before using this command.
+                Use a prepared personal workspace. Omit --profile to use the default.
+                Quit Manager before using this command.
                 End stdin to close and drain the owned runtime.
                 """)
             return 0
         }
-        guard arguments.isEmpty else {
-            FileHandle.standardError.write(Data("IMAGE_CLI_USAGE: ExhibitOSManager --image-cli [--help]\n".utf8))
+        let profilePath: String?
+        if arguments.isEmpty {
+            profilePath = nil
+        } else if arguments.count == 2, arguments[0] == "--profile", arguments[1].hasPrefix("/") {
+            profilePath = arguments[1]
+        } else {
+            FileHandle.standardError.write(Data("IMAGE_CLI_USAGE: ExhibitOSManager --image-cli [--help | --profile ABSOLUTE_PATH]\n".utf8))
             return 2
         }
         // Let the CLI cancel the request and close the pipe. The helper retains
@@ -41,7 +47,7 @@ enum InstalledImageCLI {
             signal(number, SIG_IGN)
             return DispatchSource.makeSignalSource(signal: number, queue: .global())
         }
-        let task = Task { await runSession() }
+        let task = Task { await runSession(profilePath: profilePath) }
         for source in signals {
             source.setEventHandler { task.cancel() }
             source.resume()
@@ -51,7 +57,7 @@ enum InstalledImageCLI {
         return status
     }
 
-    private static func runSession() async -> Int32 {
+    private static func runSession(profilePath: String?) async -> Int32 {
         var session: NativeAutomationSession?
         var status: Int32 = 0
         do {
@@ -59,10 +65,19 @@ enum InstalledImageCLI {
                 throw BridgeFailure("IMAGE_CLI_INSTALLED_APP_REQUIRED")
             }
             let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/exhibitos-native")
-            let profile = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+            let profile: URL
+            if let profilePath {
+                profile = URL(fileURLWithPath: profilePath, isDirectory: true)
+                guard profile.resolvingSymlinksInPath().path == profilePath else {
+                    throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
+                }
+            } else {
+                profile = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                        appropriateFor: nil, create: false)
-                .appendingPathComponent("org.exhibitos.manager", isDirectory: true)
-            let owner = try NativeAutomationSession(installedImageCLIHelper: helper, profile: profile)
+                    .appendingPathComponent("org.exhibitos.manager", isDirectory: true)
+            }
+            let owner = try NativeAutomationSession(installedImageCLIHelper: helper, profile: profile,
+                                                    requireExistingManagedProfile: profilePath != nil)
             session = owner
             try emit(["event": .string("ready"), "result": try await owner.open()])
             let consumed = DispatchSemaphore(value: 0)

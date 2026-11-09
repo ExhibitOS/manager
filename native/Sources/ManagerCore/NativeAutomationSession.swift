@@ -46,6 +46,7 @@ public actor NativeAutomationSession {
     private let existingWorkspaceV5: ExistingWorkspaceV5?
     private let root: URL
     private let installedImageCLI: Bool
+    private let requiresReleaseImageRuntime: Bool
     private let inputs: [String: String]
     private let capability = UUID().uuidString.lowercased()
     private var context: Context?
@@ -88,6 +89,7 @@ public actor NativeAutomationSession {
               outputRoot.resolvingSymlinksInPath().path == outputRoot.path,
               !profile.path.hasPrefix(outputRoot.path + "/") else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
         self.root = outputRoot; self.inputs = inputs; self.installedImageCLI = false
+        self.requiresReleaseImageRuntime = false
         self.helper = helper; self.profile = profile; self.temporaryRoot = temporaryRoot; self.ports = ports
         self.workspaceV5ValidationRuntime = workspaceV5ValidationRuntime
         self.workspaceV6ValidationRuntime = workspaceV6ValidationRuntime
@@ -107,9 +109,9 @@ public actor NativeAutomationSession {
                                   workspaceV5ValidationRuntime: workspaceV5ValidationRuntime, workspaceV6ValidationRuntime: workspaceV6ValidationRuntime,
                                   workspaceV7ValidationRuntime: workspaceV7ValidationRuntime)
     }
-    /// The installed entry supplies its bundled helper and standard profile.
-    /// It does not open developer fixtures, custom helpers or output roots.
-    public init(installedImageCLIHelper helper: URL, profile: URL) throws {
+    /// The installed entry supplies its bundled helper and the default or
+    /// explicitly selected managed profile.
+    public init(installedImageCLIHelper helper: URL, profile: URL, requireExistingManagedProfile: Bool = false) throws {
         var metadata = stat()
         if lstat(profile.path, &metadata) != 0 && errno == ENOENT {
             throw BridgeFailure("IMAGE_CLI_PERSONAL_WORKSPACE_REQUIRED")
@@ -122,11 +124,13 @@ public actor NativeAutomationSession {
         self.ports = [:]
         self.inputs = [:]
         self.installedImageCLI = true
+        self.requiresReleaseImageRuntime = requireExistingManagedProfile
         self.workspaceV5ValidationRuntime = nil
         self.workspaceV6ValidationRuntime = nil
         self.workspaceV7ValidationRuntime = nil
         self.existingWorkspaceV5 = nil
-        bridge = try NativeBridge(helper: helper, profile: profile)
+        bridge = try NativeBridge(helper: helper, profile: profile,
+                                  requireExistingManagedProfile: requireExistingManagedProfile)
     }
 
     private func value<T: Encodable>(_ v: T) throws -> DocumentValue {
@@ -171,7 +175,8 @@ public actor NativeAutomationSession {
             throw BridgeFailure("IMAGE_CLI_PERSONAL_WORKSPACE_REQUIRED")
         }
         guard stopped.freshImageReleaseConfigured == true
-                || AuthoringAPI.supportsFreshImageRuntime(manifest: configured.manifestSha256) else {
+                || (!requiresReleaseImageRuntime
+                    && AuthoringAPI.supportsFreshImageRuntime(manifest: configured.manifestSha256)) else {
             throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE")
         }
         _ = try await bridge.start(context)

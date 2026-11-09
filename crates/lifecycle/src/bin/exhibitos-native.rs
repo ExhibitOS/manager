@@ -134,16 +134,23 @@ fn main() {
         });
         match result { Ok(host) => std::process::exit(run_host(host)), Err(code) => { eprintln!("{code}"); std::process::exit(1); } }
     }
-    if !(args.len() == 3 || (cfg!(target_os = "macos") && args.len() == 4 && args[3] == "--fresh-selected-oex"))
+    if !(args.len() == 3 || (cfg!(target_os = "macos") && args.len() == 4
+        && (args[3] == "--fresh-selected-oex" || args[3] == "--existing-managed-profile")))
         || args[1] != "--profile" || !std::path::Path::new(&args[2]).is_absolute() {
         eprintln!("NATIVE_PROFILE_REQUIRED");
         std::process::exit(2);
     }
     #[cfg(target_os = "macos")]
-    if args.len() == 4 {
+    if args.len() == 4 && args[3] == "--fresh-selected-oex" {
         std::process::exit(run_fresh_selected((&args[2]).into()));
     }
-    let controller = match InstallationController::new((&args[2]).into(), None) {
+    let profile = (&args[2]).into();
+    let opened = match args.get(3) {
+        #[cfg(target_os = "macos")]
+        Some(mode) if mode == "--existing-managed-profile" => InstallationController::open_existing_managed(profile),
+        _ => InstallationController::new(profile, None),
+    };
+    let controller = match opened {
         Ok(c) => c,
         Err(e) => {
             eprintln!("{}", e.code);

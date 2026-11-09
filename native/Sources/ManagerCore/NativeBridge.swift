@@ -182,7 +182,7 @@ public actor NativeBridge {
     private var sequence: UInt64 = 0
     private var buffered = Data()
 
-    public init(helper: URL, profile: URL, freshSelectedOEX: Bool = false, freshWorkspacePorts: [String: UInt16]? = nil, temporaryDirectory: URL? = nil, workspaceV5ValidationRuntime: URL? = nil, workspaceV6ValidationRuntime: URL? = nil, workspaceV7ValidationRuntime: URL? = nil) throws {
+    public init(helper: URL, profile: URL, freshSelectedOEX: Bool = false, freshWorkspacePorts: [String: UInt16]? = nil, temporaryDirectory: URL? = nil, workspaceV5ValidationRuntime: URL? = nil, workspaceV6ValidationRuntime: URL? = nil, workspaceV7ValidationRuntime: URL? = nil, requireExistingManagedProfile: Bool = false) throws {
         guard helper.isFileURL, profile.isFileURL,
               FileManager.default.isExecutableFile(atPath: helper.path) else {
             throw BridgeFailure("NATIVE_HELPER_MISSING")
@@ -196,6 +196,12 @@ public actor NativeBridge {
             runtime.map { (version, $0) }
         }
         guard validation.count <= 1 else { throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID") }
+        if requireExistingManagedProfile {
+            guard !freshSelectedOEX, freshWorkspacePorts == nil, validation.isEmpty else {
+                throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID")
+            }
+            process.arguments?.append("--existing-managed-profile")
+        }
         if let (validationVersion, runtime) = validation.first {
             #if DEBUG
             guard runtime.isFileURL, runtime.resolvingSymlinksInPath().path == runtime.path,

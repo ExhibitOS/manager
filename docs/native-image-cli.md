@@ -9,8 +9,15 @@ editable exhibition. Quit Manager to release the workspace before running:
 "/Applications/ExhibitOS Manager.app/Contents/MacOS/ExhibitOSManager" --image-cli
 ```
 
-Use the actual path to your installed app. The command starts and owns the
-bundled runtime for the same personal workspace. It reads one JSON object per
+Use the actual path to your installed app. To use a separate, already prepared
+personal profile, add `--profile "/absolute/path/to/profile"`. Supply the managed
+profile directory, with its canonical path and owner-only permissions. The
+explicit selector opens an existing managed profile and its selected personal
+workspace with the matching signed release runtime. Omit it to use the default Manager profile. The JSON protocol stays
+at version 1.
+
+The command starts and owns the bundled runtime for the same personal
+workspace. It reads one JSON object per
 line from stdin and writes one JSON object per line to stdout. Keep stdin open
 between requests and wait for each response before sending another. Close stdin
 to stop the owned runtime. Shell scripts should use a subprocess with pipes.
