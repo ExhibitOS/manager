@@ -207,7 +207,7 @@ Operations:
   `inputPath` under the output root. Native checks the held request, exact reply,
   unchanged draft/CAS and narrow BenchCommand delta before persisting it.
 - `shared-bench-prepare`: after staging the bench host, pass `command` with
-  exactly `hostId` and model-local `pose` (`position`, `yaw`, `scale`), plus a
+  exactly `hostId` and room-coordinate `pose` (`position`, `yaw`, `scale`), plus a
   new `outputPath`. The authenticated catalog must match the known builtin
   backless-oak-bench version 1. The packet is for the shared renderer.
 - `shared-bench-apply`: pass the prepare request ID as `proposalId` and the
