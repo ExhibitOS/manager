@@ -7,10 +7,16 @@ public protocol NativeImportTransport: Sendable {
     var admitsICCJPEG: Bool { get }
     func createImport(_ input: NativeImportIntent) async throws -> NativeImportJob
     func uploadImport(_ id: String, bytes: Data) async throws
+    func uploadLargeModelImport(_ id: String, bytes: Data) async throws
     func uploadDerivedImport(_ id: String, bytes: Data) async throws
     func importAction(_ id: String, action: NativeImportAction) async throws -> NativeImportJob
 }
-extension NativeImportTransport { public var admitsICCJPEG: Bool { false } }
+extension NativeImportTransport {
+    public var admitsICCJPEG: Bool { false }
+    public func uploadLargeModelImport(_ id: String, bytes: Data) async throws {
+        throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE")
+    }
+}
 extension AuthoringAPI: NativeImportTransport {}
 
 /// The same import API, with observation of the server-owned worker. A cancel
@@ -109,7 +115,11 @@ public final class NativeImportTransfer {
                 return created
             }
             if let file {
-                try await transport.uploadImport(created.id, bytes: file.data)
+                if intent.modelPreparation?.isLarge == true {
+                    try await transport.uploadLargeModelImport(created.id, bytes: file.data)
+                } else {
+                    try await transport.uploadImport(created.id, bytes: file.data)
+                }
                 try check()
                 if let derived {
                     try await transport.uploadDerivedImport(created.id, bytes: derived.png)

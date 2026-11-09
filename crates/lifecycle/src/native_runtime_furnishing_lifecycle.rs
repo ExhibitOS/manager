@@ -95,8 +95,12 @@ impl Binding {
         let lineage = &self.interrupted_claim_generations;
         if interrupted {
             let tuple = (self.source_commit.as_str(), self.producer_sha256.as_str(), self.payload_manifest_sha256.as_str());
-            if self.catalog != 47 || !crate::native_payload::fresh_image_recovery_host_matches(tuple)
-                || lineage.is_empty() || lineage.len() > 8
+            let supported = match self.catalog {
+                46 => crate::native_payload::large_model_recovery_host_matches(tuple),
+                47 => crate::native_payload::fresh_image_recovery_host_matches(tuple),
+                _ => false,
+            };
+            if !supported || lineage.is_empty() || lineage.len() > 8
                 || !self.previous_generation.as_ref().is_some_and(|id| lineage.contains(id))
                 || lineage.iter().enumerate().any(|(index, id)| id == &self.generation
                     || !installations::uuid(id) || lineage[..index].contains(id))
@@ -124,6 +128,9 @@ impl Binding {
                 || (self.catalog == 45 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)
                     && crate::native_payload::ordinary_fresh_catalog45_host_matches(tuple))
+                || (self.catalog == 46 && self.restore.is_none()
+                    && matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen | Admission::InterruptedReopen)
+                    && crate::native_payload::large_model_host_matches(tuple))
                 || (self.catalog == 47 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen | Admission::InterruptedReopen)
                     && crate::native_payload::fresh_image_recovery_host_matches(tuple)))
@@ -533,6 +540,32 @@ mod tests {
         let mut wrong_physical = recovery(LATER);
         wrong_physical.physical.root_inode += 1;
         assert!(wrong_physical.consume_interrupted(&attempt, false).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn model_interruption_requires_its_own_exact_046_seal() {
+        let model = |generation: &str, (source, producer, manifest): (&str, &str, &str)| {
+            let mut result = binding(generation);
+            result.source_commit = source.into();
+            result.producer_sha256 = producer.into();
+            result.payload_manifest_sha256 = manifest.into();
+            result.catalog = 46;
+            result
+        };
+        let clean = crate::native_payload::CATALOG46_LARGE_MODEL;
+        let recovery = crate::native_payload::CATALOG46_LARGE_MODEL_RECOVERY;
+        assert!(model(NEXT, clean).consume_interrupted(&model(GENERATION, clean), true).is_err());
+        assert!(model(NEXT, recovery).consume_interrupted(&model(GENERATION, clean), true).is_err());
+        let mut admitted = model(NEXT, recovery);
+        admitted.consume_interrupted(&model(GENERATION, recovery), true).unwrap();
+        assert!(admitted.select_interrupted_claim_generation("unbound").is_err());
+        assert!(admitted.select_interrupted_claim_generation(&format!("{GENERATION}\n{LATER}")).is_err());
+        admitted.select_interrupted_claim_generation(GENERATION).unwrap();
+        assert_eq!(Exchange::new(&admitted, b"lease").unwrap().previous_runtime_generation.as_deref(), Some(GENERATION));
+        let mut wrong_catalog = admitted;
+        wrong_catalog.catalog = 47;
+        assert!(wrong_catalog.check().is_err());
     }
 
     #[test]

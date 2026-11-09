@@ -1873,13 +1873,24 @@ const { isDeepStrictEqual } = require('node:util');
                 // The writer and operation fences are held. The owned PG
                 // process is the only child and no Node worker has started.
                 let owner = &binding.owner;
-                let observed = self.query_database("exhibitos", &format!(
-                    "SELECT DISTINCT COALESCE(derived#>>'{{claim,runtimeGeneration}}','unbound')
-                     FROM public.import_jobs WHERE tenant_id='{}'::uuid AND user_id='{}'::uuid
-                     AND derived->>'kind'='fresh-product-image' AND derived->>'workspaceId'='{}'
-                     AND (cardinality(png_worker_tokens)>0 OR derived ? 'claim') ORDER BY 1 LIMIT 2",
-                    owner.tenant_id, owner.principal_id, owner.workspace_id,
-                ))?;
+                let sql = match binding.catalog {
+                    46 if self.payload.large_model_recovery_validation() => format!(
+                        "SELECT DISTINCT COALESCE(model_preparation#>>'{{claim,runtimeGeneration}}','unbound')
+                         FROM public.import_jobs WHERE tenant_id='{}'::uuid AND user_id='{}'::uuid
+                         AND model_preparation#>>'{{request,profileId}}'='embedded-model-compact-large-20k-512-v2'
+                         AND (cardinality(png_worker_tokens)>0 OR model_preparation ? 'claim') ORDER BY 1 LIMIT 2",
+                        owner.tenant_id, owner.principal_id,
+                    ),
+                    47 if self.payload.fresh_image_recovery_validation() => format!(
+                        "SELECT DISTINCT COALESCE(derived#>>'{{claim,runtimeGeneration}}','unbound')
+                         FROM public.import_jobs WHERE tenant_id='{}'::uuid AND user_id='{}'::uuid
+                         AND derived->>'kind'='fresh-product-image' AND derived->>'workspaceId'='{}'
+                         AND (cardinality(png_worker_tokens)>0 OR derived ? 'claim') ORDER BY 1 LIMIT 2",
+                        owner.tenant_id, owner.principal_id, owner.workspace_id,
+                    ),
+                    _ => return Err(err(furnishing_lifecycle::ERROR)),
+                };
+                let observed = self.query_database("exhibitos", &sql)?;
                 binding.select_interrupted_claim_generation(&observed)?;
                 self.publish_current(Some(binding.clone()))?;
                 self.furnishing_binding = Some(binding);
@@ -2286,7 +2297,8 @@ const { isDeepStrictEqual } = require('node:util');
                         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
                         if let Some((_, transition)) = &self.furnishing_transition_trial {
                             active.consume_furnishing_transition(source, *transition)?;
-                        } else if source.phase == Phase::Active && self.payload.fresh_image_recovery_validation()
+                        } else if source.phase == Phase::Active
+                            && (self.payload.fresh_image_recovery_validation() || self.payload.large_model_recovery_validation())
                             && furnishing == Some(FurnishingStart::Reopen)
                         {
                             if prior.as_ref().is_none_or(|run| run.id != source.generation) {

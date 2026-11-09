@@ -70,6 +70,7 @@ public actor NativeAutomationSession {
                 NativeHayesOriginalIntent.supports(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsProductImageRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsFreshImageRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsLargeModelRuntime(manifest: $0.manifestSHA256)
             } == true
         guard !(selectedOEX9 && selectedOEX10),
               workspaceV6ValidationRuntime == nil || workspaceV7ValidationRuntime == nil,
@@ -161,7 +162,8 @@ public actor NativeAutomationSession {
         let session = try await api.connect(credentials)
         let admitsMaterials = await api.admitsWorkspaceMaterials
         let admitsFreshImages = await api.admitsFreshImagePreparation
-        guard admitsMaterials || admitsFreshImages else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
+        let admitsLargeModels = await api.admitsLargeModelPreparation
+        guard admitsMaterials || admitsFreshImages || admitsLargeModels else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
         let stored = try await api.exhibition(draft.id)
         guard try value(await bridge.documentState(context)) == value(saved) else {
             throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
@@ -1292,7 +1294,8 @@ public actor NativeAutomationSession {
                   let revision = command["artworkRevision"].integer, let scale = image ? 1.0 : command["scaleMeters"].double else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
             let url = URL(fileURLWithPath: path)
             guard url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
-            let file = try await ImportFileSnapshot.load(url, allowJPEG: image)
+            let allowLargeModel = image ? false : await api.admitsLargeModelPreparation
+            let file = try await ImportFileSnapshot.load(url, allowJPEG: image, allowLargeModel: allowLargeModel)
             guard (image ? ["image/jpeg", "image/png"].contains(file.mime) : file.mime == "model/gltf-binary"),
                   file.sha256 == expected else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
             let artwork = try await api.artwork(artworkId)
@@ -1325,7 +1328,8 @@ public actor NativeAutomationSession {
                 preparation = retained.modelPreparation
             } else if await api.admitsRequiredModelPreparation {
                 try NativeModelPreparationIntent.requireFreshIntake(for: artwork)
-                preparation = .init(operationID: id, generation: UUID().uuidString.lowercased(), artworkRevision: artwork.revision)
+                preparation = .init(operationID: id, generation: UUID().uuidString.lowercased(), artworkRevision: artwork.revision,
+                                    large: file.data.count > ImportFileSnapshot.limit)
             } else { preparation = nil }
             let intent = NativeImportIntent(artworkId: artwork.id, idempotencyKey: id, mime: file.mime,
                 sha256: file.sha256, bytes: file.data.count, scaleMeters: scale, rights: metadata.rights,

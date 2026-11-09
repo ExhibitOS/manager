@@ -155,6 +155,10 @@ pub struct ModelPreparation {
     pub artwork_revision: u32,
 }
 impl ModelPreparation {
+    fn is_large(&self) -> bool {
+        self.profile_id == "embedded-model-compact-large-20k-512-v2"
+    }
+
     fn deserialize_present<'de, D: serde::Deserializer<'de>>(
         decoder: D,
     ) -> std::result::Result<Option<Self>, D::Error> {
@@ -164,7 +168,8 @@ impl ModelPreparation {
     fn valid(&self, intent: &Intent) -> bool {
         let generation = self.generation.as_bytes();
         self.version == 1
-            && self.profile_id == "embedded-model-compact-20k-512-v1"
+            && (self.profile_id == "embedded-model-compact-20k-512-v1"
+                || (self.is_large() && (28..=64 * 1024 * 1024).contains(&intent.bytes)))
             && self.operation_id == intent.idempotency_key
             && generation.len() <= 128
             && generation.first().is_some_and(u8::is_ascii_alphanumeric)
@@ -320,7 +325,8 @@ pub(crate) fn validate(s: &Transfer) -> Result<()> {
                 .is_some_and(|image| !image.valid(i))
             || i.hayes_original.as_ref().is_some_and(|hayes| !hayes.valid(i))
             || i.bytes == 0
-            || i.bytes > 32 * 1024 * 1024
+            || (i.bytes > 32 * 1024 * 1024
+                && !i.model_preparation.as_ref().is_some_and(ModelPreparation::is_large))
             || !i.scale_meters.is_finite()
             || i.scale_meters <= 0.0
             || i.scale_meters > 1_000_000.0
@@ -503,6 +509,14 @@ mod model_derivation_tests {
             changed["intent"]["modelPreparation"][field] = bad;
             assert!(validate(&serde_json::from_value(changed).unwrap()).is_err());
         }
+        let mut large = value.clone();
+        large["intent"]["bytes"] = serde_json::json!(58_293_704);
+        assert!(validate(&serde_json::from_value(large.clone()).unwrap()).is_err());
+        large["intent"]["modelPreparation"]["profileId"] =
+            serde_json::json!("embedded-model-compact-large-20k-512-v2");
+        assert!(validate(&serde_json::from_value(large.clone()).unwrap()).is_ok());
+        large["intent"]["bytes"] = serde_json::json!(64 * 1024 * 1024 + 1);
+        assert!(validate(&serde_json::from_value(large).unwrap()).is_err());
         let mut null = value;
         null["intent"]["modelPreparation"] = Value::Null;
         assert!(serde_json::from_value::<Transfer>(null).is_err());

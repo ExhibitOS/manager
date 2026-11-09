@@ -48,6 +48,10 @@ final class AuthoringModel: ObservableObject {
     private var requiredModelPreparationEnabled: Bool {
         session?.modelPreparationProfile == NativeModelPreparationIntent.profile
     }
+    private var largeModelPreparationEnabled: Bool {
+        api?.largeModelRuntimeQualified == true && requiredModelPreparationEnabled
+            && session?.nativeLargeModelPreparationProfile == NativeModelPreparationIntent.largeProfile
+    }
     private var modelIntakeEnabled: Bool { modelDerivationEnabled || requiredModelPreparationEnabled }
     var canSelectIntake: Bool {
         intakeWritesAvailable && (modelIntakeEnabled || iccImportAdmitted) && available && session != nil && !busy
@@ -370,7 +374,7 @@ extension AuthoringModel {
             let generation = importStatusGeneration, workspace = transfer?.workspaceId
             guard try await intakeWorkspaceCheck?() == true else { throw AuthoringFailure("INTAKE_WORKSPACE_UNAVAILABLE") }
             do {
-                let read = Task { try await ImportFileSnapshot.load(row.url) }
+                let read = Task { try await ImportFileSnapshot.load(row.url, allowLargeModel: largeModelPreparationEnabled) }
                 importRead = read
                 defer { importRead = nil }
                 let file = try await withTaskCancellationHandler { try await read.value } onCancel: { read.cancel() }
@@ -593,6 +597,11 @@ extension AuthoringModel {
         let panel = NSOpenPanel()
         panel.title = "작품 파일 가져오기"
         panel.message = (jpegImportsEnabled || freshImagePreparationAvailable) ? "GLB·PNG·JPEG 파일을 선택하세요. 최대 32 MiB이며 JPEG 원본을 유지하고 감상용 PNG를 준비합니다." : "GLB 또는 PNG 파일을 선택하세요. 최대 32 MiB를 지원합니다."
+        if largeModelPreparationEnabled {
+            panel.message = (jpegImportsEnabled || freshImagePreparationAvailable)
+                ? "GLB는 최대 64 MiB, PNG·JPEG는 최대 32 MiB를 지원합니다."
+                : "GLB는 최대 64 MiB, PNG는 최대 32 MiB를 지원합니다."
+        }
         panel.canChooseDirectories = false; panel.canChooseFiles = true; panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [UTType(filenameExtension: "glb") ?? .data]
         if hayes {
@@ -610,7 +619,8 @@ extension AuthoringModel {
         await action {
             let read = Task {
                 try await ImportFileSnapshot.load(url, allowJPEG: !hayes && (jpegImportsEnabled || freshImagePreparationAvailable),
-                    byteLimit: hayes ? NativeHayesOriginalIntent.sourceBytes : ImportFileSnapshot.limit)
+                    byteLimit: hayes ? NativeHayesOriginalIntent.sourceBytes : ImportFileSnapshot.limit,
+                    allowLargeModel: !hayes && largeModelPreparationEnabled)
             }
             importRead = read
             defer { importRead = nil }
@@ -735,7 +745,8 @@ extension AuthoringModel {
                 modelPreparation = previous.modelPreparation
             } else if startsRequiredModel {
                 modelPreparation = NativeModelPreparationIntent(operationID: requestKey,
-                    generation: UUID().uuidString.lowercased(), artworkRevision: selected.revision)
+                    generation: UUID().uuidString.lowercased(), artworkRevision: selected.revision,
+                    large: file.data.count > ImportFileSnapshot.limit)
             } else { modelPreparation = nil }
             let modelDerivation: NativeModelDerivationIntent?
             if let previous = state.intent {
