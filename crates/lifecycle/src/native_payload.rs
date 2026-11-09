@@ -331,6 +331,11 @@ const LARGE_MODEL_PREPARATION_CAPABILITY: (&str, u64, &str) = (
     279,
     "80fd3739748f7d28cedfaa7c37e7ea1aec1a39be8662a8f81b4a35e429cceba6",
 );
+const LARGE_MODEL_RECOVERY_CAPABILITY: (&str, u64, &str) = (
+    "platform/scripts/native-large-model-recovery-capability-v1.json",
+    207,
+    "9745703701bfbbd2f8257acfba8e7c2929b6aa4dea2e8ea2041882f6ba101435",
+);
 const FRESH_IMAGE_PREPARATION_DIRECTORY: &str = "platform/database/native-fresh-image-preparation/";
 const FRESH_IMAGE_PREPARATION_SCHEMA: (&str, u64, &str) = (
     "platform/database/native-fresh-image-preparation/047_fresh_image_preparation.sql",
@@ -590,15 +595,29 @@ pub(crate) fn ordinary_fresh_catalog45_host_matches(tuple: (&str, &str, &str)) -
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const CATALOG46_LARGE_MODEL: RuntimeTuple = (
+pub(crate) const CATALOG46_LARGE_MODEL: RuntimeTuple = (
     "c3937794193b2262f0ad2d5dcf30cdb838e424c9",
     "682a92a91bf39a71dd308646cea57796eeb3be6c0d6f457a02fc5c431d4106f5",
     "d9ccc2d90985981279b5e3d49835cd5675a91589aabedc838d100c63e95da8fa",
 );
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const CATALOG46_LARGE_MODEL_RECOVERY: RuntimeTuple = (
+    "ab17d52e4145a063e02a5adb883b2f7c32615ce9",
+    "110678e6b231c67f9b522c4f0ab1100c95bdef4fa20a4ef1224e487c8f5b98e6",
+    "31d6f02f26aab8ce736d41ccf4148139587f9880336471afd4beaca995dfbc7d",
+);
+
+pub(crate) fn large_model_recovery_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return CATALOG46_LARGE_MODEL_RECOVERY == tuple;
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+
 pub(crate) fn large_model_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return CATALOG46_LARGE_MODEL == tuple;
+    return CATALOG46_LARGE_MODEL == tuple || large_model_recovery_host_matches(tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -1718,6 +1737,21 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    #[ignore = "requires the exact isolated large-model 046 recovery package"]
+    fn opens_reviewed_large_model_catalog46_recovery() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_LARGE_MODEL_RECOVERY_RUNTIME").unwrap());
+        let mut payload = Payload::open(&root).unwrap();
+        assert!(payload.large_model_recovery_validation());
+        assert!(!payload.fresh_image_recovery_validation());
+        let catalog = WorkspaceFurnishingCatalog::LargeModelPreparation046;
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 46);
+        payload.manifest.files.retain(|file| file.path != LARGE_MODEL_RECOVERY_CAPABILITY.0);
+        assert!(payload.workspace_furnishing_catalog().is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the exact sealed isolated fresh-image 047 package"]
     fn opens_reviewed_ordinary_fresh_image_catalog47() {
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_FRESH_IMAGE_CATALOG47_RUNTIME").unwrap());
@@ -2396,6 +2430,12 @@ impl Payload {
             || fresh_image_recovery_host_matches(tuple)
     }
 
+    pub(crate) fn large_model_recovery_validation(&self) -> bool {
+        large_model_recovery_host_matches((
+            &self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256,
+        ))
+    }
+
     pub(crate) fn fresh_image_recovery_validation(&self) -> bool {
         fresh_image_recovery_host_matches((
             &self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256,
@@ -2504,7 +2544,10 @@ impl Payload {
         let large_model_pinned = large_model_host_matches(tuple);
         let large_model_declared = self.manifest.files.iter().any(|file|
             file.path == LARGE_MODEL_PREPARATION_CAPABILITY.0 || file.path.starts_with(LARGE_MODEL_PREPARATION_DIRECTORY));
-        if large_model_declared != large_model_pinned {
+        let large_recovery_pinned = self.large_model_recovery_validation();
+        let large_recovery_declared = self.manifest.files.iter().any(|file|
+            file.path == LARGE_MODEL_RECOVERY_CAPABILITY.0);
+        if large_model_declared != large_model_pinned || large_recovery_declared != large_recovery_pinned {
             return Err(unqualified());
         }
         let fresh_image_pinned = fresh_image_recovery_host_matches(tuple);
@@ -2632,7 +2675,10 @@ impl Payload {
                                             return Err(unqualified());
                                         }
                                         if large_model_pinned {
-                                            if !pinned_file(LARGE_MODEL_PREPARATION_CAPABILITY) || !pinned_file(LARGE_MODEL_PREPARATION_SCHEMA) {
+                                            if !pinned_file(LARGE_MODEL_PREPARATION_CAPABILITY)
+                                                || !pinned_file(LARGE_MODEL_PREPARATION_SCHEMA)
+                                                || (large_recovery_pinned && !pinned_file(LARGE_MODEL_RECOVERY_CAPABILITY))
+                                            {
                                                 return Err(unqualified());
                                             }
                                             return Ok(Some(WorkspaceFurnishingCatalog::LargeModelPreparation046));

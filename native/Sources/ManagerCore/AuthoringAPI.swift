@@ -1406,6 +1406,7 @@ public actor AuthoringAPI {
     nonisolated static func supportsLargeModelRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == "d9ccc2d90985981279b5e3d49835cd5675a91589aabedc838d100c63e95da8fa"
+            || manifest == "31d6f02f26aab8ce736d41ccf4148139587f9880336471afd4beaca995dfbc7d"
         #else
         false
         #endif
