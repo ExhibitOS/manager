@@ -3,8 +3,8 @@ import Foundation
 import CryptoKit
 import Darwin
 
-/// Private agent adapter to the same native document journal and authenticated
-/// API used by ManagerApp. No credentials or arbitrary executable are exposed.
+/// Command adapter to the same native document journal and authenticated API
+/// used by ManagerApp. The installed image CLI admits only its scoped commands.
 public actor NativeAutomationSession {
     private static let freshResponseOperations: Set<String> = [
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
@@ -45,6 +45,7 @@ public actor NativeAutomationSession {
     private let workspaceV7ValidationRuntime: URL?
     private let existingWorkspaceV5: ExistingWorkspaceV5?
     private let root: URL
+    private let installedImageCLI: Bool
     private let inputs: [String: String]
     private let capability = UUID().uuidString.lowercased()
     private var context: Context?
@@ -86,7 +87,7 @@ public actor NativeAutomationSession {
               FileManager.default.fileExists(atPath: outputRoot.path),
               outputRoot.resolvingSymlinksInPath().path == outputRoot.path,
               !profile.path.hasPrefix(outputRoot.path + "/") else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
-        self.root = outputRoot; self.inputs = inputs
+        self.root = outputRoot; self.inputs = inputs; self.installedImageCLI = false
         self.helper = helper; self.profile = profile; self.temporaryRoot = temporaryRoot; self.ports = ports
         self.workspaceV5ValidationRuntime = workspaceV5ValidationRuntime
         self.workspaceV6ValidationRuntime = workspaceV6ValidationRuntime
@@ -106,6 +107,28 @@ public actor NativeAutomationSession {
                                   workspaceV5ValidationRuntime: workspaceV5ValidationRuntime, workspaceV6ValidationRuntime: workspaceV6ValidationRuntime,
                                   workspaceV7ValidationRuntime: workspaceV7ValidationRuntime)
     }
+    /// The installed entry supplies its bundled helper and standard profile.
+    /// It does not open developer fixtures, custom helpers or output roots.
+    public init(installedImageCLIHelper helper: URL, profile: URL) throws {
+        var metadata = stat()
+        if lstat(profile.path, &metadata) != 0 && errno == ENOENT {
+            throw BridgeFailure("IMAGE_CLI_PERSONAL_WORKSPACE_REQUIRED")
+        }
+        _ = try Self.profileIdentity(profile)
+        self.helper = helper
+        self.profile = profile
+        self.root = profile
+        self.temporaryRoot = profile
+        self.ports = [:]
+        self.inputs = [:]
+        self.installedImageCLI = true
+        self.workspaceV5ValidationRuntime = nil
+        self.workspaceV6ValidationRuntime = nil
+        self.workspaceV7ValidationRuntime = nil
+        self.existingWorkspaceV5 = nil
+        bridge = try NativeBridge(helper: helper, profile: profile)
+    }
+
     private func value<T: Encodable>(_ v: T) throws -> DocumentValue {
         try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(v))
     }
@@ -126,6 +149,7 @@ public actor NativeAutomationSession {
     public func open() async throws -> DocumentValue {
         guard context == nil, !closed else { throw BridgeFailure("AUTOMATION_ALREADY_OPEN") }
         let context = try await bridge.context(); self.context = context
+        if installedImageCLI { return try await openInstalledImageWorkspace(context) }
         if let existingWorkspaceV5 { return try await openExistingWorkspace(existingWorkspaceV5, context: context) }
         if selectedOEXFormat == nil { _ = try await bridge.prepare(context); _ = try await waitReady() }
         _ = try await bridge.start(context)
@@ -137,6 +161,36 @@ public actor NativeAutomationSession {
         identity = try await bridge.documentState(context)
         return try await statusValue()
     }
+    private func openInstalledImageWorkspace(_ context: Context) async throws -> DocumentValue {
+        let directory = try profileIdentity()
+        let stopped = try await bridge.nativeStatus(context)
+        if let code = stopped.errorCode { throw BridgeFailure(code) }
+        guard !stopped.needsShutdown, !stopped.accountRequired, stopped.selectedOex != true,
+              let configured = stopped.configuration, configured.kind == "personal",
+              stopped.restoration.map({ $0.state == "activated" }) ?? true else {
+            throw BridgeFailure("IMAGE_CLI_PERSONAL_WORKSPACE_REQUIRED")
+        }
+        guard AuthoringAPI.supportsFreshImageRuntime(manifest: configured.manifestSha256) else {
+            throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE")
+        }
+        _ = try await bridge.start(context)
+        let ready = try await waitReady()
+        guard ready.runtime?.readiness.ready == true, ready.selectedOex != true,
+              ready.configuration?.manifestSha256 == configured.manifestSha256,
+              ready.configuration?.ports.web == configured.ports.web,
+              try profileIdentity() == directory else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+        let credentials = try await bridge.authoringSession(context)
+        let document = try await bridge.documentState(context)
+        guard credentials.tenantId == configured.tenantId, credentials.tenantId == document.tenantId,
+              credentials.principalId == document.principalId else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+        let api = try AuthoringAPI(port: configured.ports.web, tenantId: credentials.tenantId,
+                                  nativeRuntimeManifestSHA256: configured.manifestSha256)
+        authoringSession = try await api.connect(credentials)
+        guard await api.admitsFreshImagePreparation else { throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE") }
+        self.api = api; runtimeManifest = configured.manifestSha256; identity = document
+        return try await statusValue()
+    }
+
     private func openExistingWorkspace(_ expected: ExistingWorkspaceV5, context: Context) async throws -> DocumentValue {
         let directory = try profileIdentity()
         let status = try await bridge.nativeStatus(context)
@@ -264,7 +318,12 @@ public actor NativeAutomationSession {
               request["workspaceId"].string == identity.workspaceId,
               request["tenantId"].string == identity.tenantId,
               request["principalId"].string == identity.principalId else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
-        return (context, api, try await bridge.documentState(context))
+        let current = try await bridge.documentState(context)
+        if installedImageCLI {
+            guard current.workspaceId == identity.workspaceId, current.tenantId == identity.tenantId,
+                  current.principalId == identity.principalId else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+        }
+        return (context, api, current)
     }
     private func checkedRevision(_ request: DocumentValue, _ state: NativeDocumentState) throws {
         guard case .object(let fields) = request, fields["expectedRevision"] != nil, fields["expectedEditVersion"] != nil,
@@ -782,6 +841,23 @@ public actor NativeAutomationSession {
         guard request["version"] == .integer(1), let id = request["requestId"].string, UUID(uuidString: id) != nil,
               let operation = request["operation"].string, case .object(let fields) = request,
               Set(fields.keys).isSubset(of: ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "inputPath", "outputPath", "command", "proposalId", "archiveFormat"]) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        if installedImageCLI {
+            guard ["read", "import-image", "artwork-status", "artwork-image-preparation-retry", "artwork-approve",
+                   "artwork-register", "save", "artwork-finish-reviewed"].contains(operation) else {
+                throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+            }
+            let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId"]
+            let revision: Set<String> = ["expectedRevision", "expectedEditVersion"]
+            let extra: Set<String>
+            switch operation {
+            case "read": extra = []
+            case "artwork-status": extra = ["command"]
+            case "import-image": extra = revision.union(["inputPath", "command"])
+            case "save": extra = revision
+            default: extra = revision.union(["command"])
+            }
+            guard Set(fields.keys) == common.union(extra) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        }
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
         let bytes = try encoder.encode(request)
         // Scope is checked even for replay: correlation is not authorization.
@@ -814,6 +890,9 @@ public actor NativeAutomationSession {
                   (intent.coarsePreparation != nil && api.admitsSameOwnerArtworkReplacement)
                     || (intent.modelPreparation != nil && requiredPreparationAvailable)
                     || (intent.productImagePreparation.map { $0.isFresh ? freshPreparationAvailable : productPreparationAvailable } == true) else {
+                throw BridgeFailure("IMPORT_INTENT_CHANGED")
+            }
+            guard !installedImageCLI || intent.productImagePreparation?.isFresh == true else {
                 throw BridgeFailure("IMPORT_INTENT_CHANGED")
             }
             let saved = try await api.exhibition(draft.id)
@@ -1290,14 +1369,18 @@ public actor NativeAutomationSession {
             let command = try NativeAutomationArtworkRules.command(request,
                 keys: image ? ["artworkId", "artworkRevision"] : ["artworkId", "artworkRevision", "scaleMeters"])
             guard selectedOEXFormat == nil, current.pending == nil, let path = request["inputPath"].string,
-                  let expected = inputs[path], let artworkId = command["artworkId"].string,
-                  let revision = command["artworkRevision"].integer, let scale = image ? 1.0 : command["scaleMeters"].double else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+                  let artworkId = command["artworkId"].string, let revision = command["artworkRevision"].integer,
+                  let scale = image ? 1.0 : command["scaleMeters"].double else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+            let expected = inputs[path]
+            guard installedImageCLI ? image && path.hasPrefix("/") : expected != nil else {
+                throw BridgeFailure("AUTOMATION_INPUT_INVALID")
+            }
             let url = URL(fileURLWithPath: path)
             guard url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
             let allowLargeModel = image ? false : await api.admitsLargeModelPreparation
             let file = try await ImportFileSnapshot.load(url, allowJPEG: image, allowLargeModel: allowLargeModel)
             guard (image ? ["image/jpeg", "image/png"].contains(file.mime) : file.mime == "model/gltf-binary"),
-                  file.sha256 == expected else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
+                  installedImageCLI || file.sha256 == expected else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
             let artwork = try await api.artwork(artworkId)
             guard Int64(artwork.revision) == revision, !artwork.archived, let metadata = artwork.metadata else { throw BridgeFailure("ARTWORK_SCOPE_CHANGED") }
             let state = try await bridge.uploadState(context)
@@ -1429,6 +1512,7 @@ public actor NativeAutomationSession {
             try NativeAutomationArtworkRules.checkUploadScope(state, document: current)
             guard let intent = state.intent, intent.artworkId == artworkId,
                   intent.mime == "model/gltf-binary" || intent.productImagePreparation?.isFresh == true,
+                  !installedImageCLI || intent.productImagePreparation?.isFresh == true,
                   intent.derived == nil, intent.modelDerivation == nil, let jobId = state.jobId else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
             let job = try await api.importJob(jobId), artwork = try await api.artwork(artworkId)
             if let preparation = intent.productImagePreparation, preparation.isFresh {
@@ -1469,6 +1553,21 @@ public actor NativeAutomationSession {
                   let revision = command["revision"].integer, let room = command["roomId"].string,
                   let placement = command["placementId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
             let approved = try await api.studioArtwork(artworkId)
+            if installedImageCLI {
+                let transfer = try await bridge.uploadState(context)
+                try NativeAutomationArtworkRules.checkUploadScope(transfer, document: current)
+                guard let intent = transfer.intent, intent.artworkId == artworkId,
+                      let preparation = intent.productImagePreparation, preparation.isFresh, let jobId = transfer.jobId else {
+                    throw BridgeFailure("IMPORT_INTENT_CHANGED")
+                }
+                let job = try await api.importJob(jobId)
+                guard job.id == jobId, let status = job.productImagePreparation, let full = status.full,
+                      status.validatesReady(intent: intent, preparation: preparation, job: job,
+                                            workspaceID: current.workspaceId, principalID: current.principalId),
+                      approved.artwork["primaryAssetId"] == .string(full.assetId) else {
+                    throw BridgeFailure("APPROVAL_REVIEW_REQUIRED")
+                }
+            }
             try NativeAutomationArtworkRules.checkRegistration(approved.artwork, artworkId: artworkId, revision: revision,
                 tenantId: current.tenantId, allowsImage: await api.admitsFreshImagePreparation)
             try draft.addApprovedArtwork(approved.artwork, roomId: room, placementId: placement, transform: command["transform"])
@@ -1564,8 +1663,15 @@ public actor NativeAutomationSession {
                 // journal revision this session wrote before the uncertain API
                 // call. It never rewrites expectedRevision or issues a new ID.
                 guard pending.requestId == id, pending.draft == draft, pending.etag == next.etag,
-                      pendingRevisions[id] == current.revision,
                       request["expectedEditVersion"] == draft.document["editVersion"] else { throw BridgeFailure("EXHIBITION_PENDING") }
+                if installedImageCLI {
+                    guard pending.origin == nil, pending.modelCandidate == nil, pending.productImage == nil else {
+                        throw BridgeFailure("EXHIBITION_PENDING")
+                    }
+                    if pendingRevisions[id] != current.revision { try checkedRevision(request, current) }
+                } else {
+                    guard pendingRevisions[id] == current.revision else { throw BridgeFailure("EXHIBITION_PENDING") }
+                }
             } else {
                 try checkedRevision(request, current)
                 next.pending = .init(requestId: id, etag: next.etag, draft: draft)
