@@ -670,11 +670,33 @@ const CATALOG45_SAVED_HEAD_MODULAR_PORTAL: RuntimeTuple = (
     "375672ab366c52a8a177e2815fda65382708aba8126461a903268534918b43fe",
 );
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_NATIVE_PUBLICATION_TARGETS: &[RuntimeTuple] = &[
+    (
+        "493223193a6db1b7941835d96a6d8f3a39084863",
+        "93f6ceebc80298d946df23624e0d7b4f755bbe9d6764771e6ecc95f60e951ee2",
+        "1209d5d95417d1e29f637d8ce327e78cf38ed1b32eabcb5ab6fd3e2a62a10203",
+    ),
+    (
+        "08776739a3c65709dbd998c4150c06a7b2401c4e",
+        "93f6ceebc80298d946df23624e0d7b4f755bbe9d6764771e6ecc95f60e951ee2",
+        "22d253f8928d7dee5e2d01e8ce65e20cd24f10b7bfa0251b1eb8371aca8e8fc9",
+    ),
+];
+
+fn catalog45_native_publication_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return CATALOG45_NATIVE_PUBLICATION_TARGETS.contains(&tuple);
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+
 pub(crate) fn ordinary_fresh_catalog45_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CATALOG45_DEFAULT_FRAME == tuple || CATALOG45_PRODUCT_IMAGE == tuple
         || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL == tuple
-        || CATALOG45_SAVED_HEAD_MODULAR_PORTAL == tuple;
+        || CATALOG45_SAVED_HEAD_MODULAR_PORTAL == tuple
+        || catalog45_native_publication_host_matches(tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -2049,6 +2071,28 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    #[ignore = "requires the exact publication capacity and authored-seat payloads"]
+    fn opens_reviewed_catalog45_native_publication_payloads() {
+        for (tuple, variable) in CATALOG45_NATIVE_PUBLICATION_TARGETS.iter().zip([
+            "EXHIBITOS_TEST_NATIVE_PUBLICATION_CAP_RUNTIME",
+            "EXHIBITOS_TEST_NATIVE_PUBLICATION_SEAT_RUNTIME",
+        ]) {
+            let root = PathBuf::from(std::env::var_os(variable).unwrap());
+            let payload = Payload::open_workspace_v5_validation(&root, false).unwrap();
+            assert_eq!(payload.manifest_sha256, tuple.2);
+            assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(WorkspaceFurnishingCatalog::RequiredModelPreparation045));
+            assert!(payload.ordinary_fresh_furnishing());
+            assert!(!payload.catalog45_recovery_validation());
+            assert!(payload.retained_furnishing_catalog().is_none());
+            assert!(payload.static_detail_export_resources(false).is_ok());
+            assert!(payload.static_detail_export_resources(true).is_ok());
+            assert!(Payload::open_workspace_v5_validation(&root, true).is_err());
+            assert!(!catalog45_native_publication_host_matches((tuple.0, tuple.1, CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET.2)));
+        }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the exact combined catalog 045 and its sealed retained-image recovery successor"]
     fn opens_reviewed_catalog45_retained_image_recovery() {
         let source_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_CATALOG45_RETAINED_PRODUCT_IMAGE_RUNTIME").unwrap());
@@ -2743,7 +2787,10 @@ impl Payload {
         if !workspace_v5_validation_matches(&payload.manifest, &payload.manifest_sha256, selected) {
             // This selector admits catalog 045 only for an existing workspace.
             let expected = Some(WorkspaceFurnishingCatalog::RequiredModelPreparation045);
-            if selected || payload.retained_furnishing_catalog() != expected
+            let publication = catalog45_native_publication_host_matches((
+                &payload.manifest.source_commit, &payload.manifest.producer_sha256, &payload.manifest_sha256,
+            ));
+            if selected || (!publication && payload.retained_furnishing_catalog() != expected)
                 || payload.workspace_furnishing_catalog()? != expected
             {
                 return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
@@ -3664,6 +3711,7 @@ impl Payload {
         let combined_local_validation = false;
         if (CATALOG40_WHEAT_DETAIL != Some(provenance)
             && !ordinary_hayes_release_host_matches(provenance)
+            && !catalog45_native_publication_host_matches(provenance)
             && !combined_local_validation)
             || !static_detail_inventory_matches(&self.manifest.files)
         {
