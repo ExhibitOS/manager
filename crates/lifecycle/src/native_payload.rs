@@ -749,15 +749,19 @@ pub(crate) enum FurnishingTransition {
     Upgrade39(Catalog39Upgrade),
     Upgrade40(Catalog40Upgrade),
     Upgrade44 { source: RuntimeTuple, target: RuntimeTuple },
-    Recover45 { target: RuntimeTuple },
+    Recover45 { source: RuntimeTuple, target: RuntimeTuple },
     SameCatalog { source: RuntimeTuple, target: RuntimeTuple, catalog: WorkspaceFurnishingCatalog },
 }
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 impl FurnishingTransition {
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
-        for target in [CATALOG45_RECOVERY_TARGET, CATALOG45_SELECTED_RECOVERY_TARGET] {
-            if pair == (CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET.2, target.2) {
-                return Some(Self::Recover45 { target });
+        for (source, target) in [
+            (CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET, CATALOG45_RECOVERY_TARGET),
+            (CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET, CATALOG45_SELECTED_RECOVERY_TARGET),
+            (CATALOG45_SELECTED_RECOVERY_TARGET, CATALOG45_SELECTED_RECOVERY_TARGET),
+        ] {
+            if pair == (source.2, target.2) {
+                return Some(Self::Recover45 { source, target });
             }
         }
         if let Some(transition) = Self::same_catalog_from_manifests(
@@ -900,7 +904,7 @@ impl FurnishingTransition {
             Self::Upgrade39(_) => CATALOG39_UPGRADE_SOURCE,
             Self::Upgrade40(step) => step.source,
             Self::Upgrade44 { source, .. } => source,
-            Self::Recover45 { .. } => CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET,
+            Self::Recover45 { source, .. } => source,
             Self::SameCatalog { source, .. } => source,
         }
     }
@@ -912,7 +916,7 @@ impl FurnishingTransition {
             Self::Upgrade39(target) => target.0,
             Self::Upgrade40(step) => step.target,
             Self::Upgrade44 { target, .. } => target,
-            Self::Recover45 { target } => target,
+            Self::Recover45 { target, .. } => target,
             Self::SameCatalog { target, .. } => target,
         }
     }
@@ -1825,7 +1829,14 @@ mod normal_oex_release_declaration_tests {
         let transition = FurnishingTransition::from_manifests((&source_manifest, &target_manifest)).unwrap();
         assert!(matches!(transition, FurnishingTransition::Recover45 { .. }));
         assert!(FurnishingTransition::from_manifests((&target_manifest, &source_manifest)).is_none());
-        assert!(FurnishingTransition::from_manifests((&target_manifest, &target_manifest)).is_none());
+        let same_payload = FurnishingTransition::from_manifests((&target_manifest, &target_manifest));
+        if target.catalog45_selected_recovery_validation() {
+            let settled_recovery = same_payload.unwrap();
+            assert_eq!(settled_recovery.source(), settled_recovery.target());
+            assert!(matches!(settled_recovery, FurnishingTransition::Recover45 { .. }));
+        } else {
+            assert!(same_payload.is_none());
+        }
         assert!(!source.catalog45_recovery_validation());
         assert!(target.catalog45_recovery_validation());
         let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;

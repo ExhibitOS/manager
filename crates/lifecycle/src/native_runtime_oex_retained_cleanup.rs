@@ -31,6 +31,7 @@ pub(crate) struct Selected045 {
     completion_sha256: String,
     retirement: super::oex_recovery::SelectedRetirement,
     absent_historical_chunks: BTreeMap<usize, u64>,
+    settled_only: bool,
     staging_bytes: Option<usize>,
 }
 
@@ -44,9 +45,9 @@ struct Selected045Staging {
 }
 
 impl Selected045Staging {
-    fn admits(&self, absent: &BTreeMap<usize, u64>) -> bool {
+    fn admits(&self, absent: &BTreeMap<usize, u64>, settled_only: bool) -> bool {
         (1..=32 * CHUNK_BYTES).contains(&self.bytes)
-            && (absent.is_empty() || !self.cleanup_pending)
+            && (!self.cleanup_pending || (!settled_only && absent.is_empty()))
             && absent.iter().all(|(&i, &size)|
                 i < self.bytes.div_ceil(CHUNK_BYTES)
                     && size == (self.bytes - i * CHUNK_BYTES).min(CHUNK_BYTES) as u64)
@@ -57,13 +58,13 @@ impl Selected045 {
     pub(crate) fn new(
         oex: Selection, hayes_job_id: &str, completion_sha256: &str,
         retirement: super::oex_recovery::SelectedRetirement,
-        absent_historical_chunks: BTreeMap<usize, u64>,
+        absent_historical_chunks: BTreeMap<usize, u64>, settled_only: bool,
     ) -> Result<Self> {
         if !oex_preflight_frames::uuid(hayes_job_id) || !hash_valid(completion_sha256) {
             return Err(err(ERROR));
         }
         Ok(Self { oex, hayes_job_id: hayes_job_id.into(), completion_sha256: completion_sha256.into(),
-            retirement, absent_historical_chunks, staging_bytes: None })
+            retirement, absent_historical_chunks, settled_only, staging_bytes: None })
     }
 
     pub(super) fn database_query(&self, owner: &FurnishingOwner) -> Result<String> {
@@ -94,7 +95,7 @@ impl Selected045 {
     pub(super) fn admit_staging(&mut self, value: &str) -> Result<()> {
         let refusal = || err("FURNISHING_RECOVERY_UNAVAILABLE");
         let staging: Selected045Staging = serde_json::from_str(value).map_err(|_| refusal())?;
-        if !staging.admits(&self.absent_historical_chunks) {
+        if !staging.admits(&self.absent_historical_chunks, self.settled_only) {
             return Err(refusal());
         }
         self.staging_bytes = Some(staging.bytes);
@@ -211,11 +212,13 @@ mod tests {
     #[test]
     fn missing_historical_chunks_require_settled_exact_db_staging_shape() {
         let absent = BTreeMap::from([(0, CHUNK_BYTES as u64), (1, 7)]);
-        assert!(Selected045Staging { bytes: CHUNK_BYTES + 7, cleanup_pending: false }.admits(&absent));
-        assert!(!Selected045Staging { bytes: CHUNK_BYTES + 7, cleanup_pending: true }.admits(&absent));
-        assert!(!Selected045Staging { bytes: CHUNK_BYTES + 8, cleanup_pending: false }.admits(&absent));
-        assert!(!Selected045Staging { bytes: CHUNK_BYTES, cleanup_pending: false }.admits(&absent));
-        assert!(Selected045Staging { bytes: CHUNK_BYTES, cleanup_pending: true }.admits(&BTreeMap::new()));
+        assert!(Selected045Staging { bytes: CHUNK_BYTES + 7, cleanup_pending: false }.admits(&absent, false));
+        assert!(!Selected045Staging { bytes: CHUNK_BYTES + 7, cleanup_pending: true }.admits(&absent, false));
+        assert!(!Selected045Staging { bytes: CHUNK_BYTES + 8, cleanup_pending: false }.admits(&absent, false));
+        assert!(!Selected045Staging { bytes: CHUNK_BYTES, cleanup_pending: false }.admits(&absent, false));
+        assert!(Selected045Staging { bytes: CHUNK_BYTES, cleanup_pending: true }.admits(&BTreeMap::new(), false));
+        assert!(!Selected045Staging { bytes: CHUNK_BYTES, cleanup_pending: true }.admits(&BTreeMap::new(), true));
+        assert!(Selected045Staging { bytes: CHUNK_BYTES, cleanup_pending: false }.admits(&BTreeMap::new(), true));
     }
 
     #[test]

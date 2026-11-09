@@ -1287,7 +1287,9 @@ impl InstallationController {
             }
             if target.catalog45_recovery_validation() {
                 let generation = crate::native_runtime::catalog45_recovery_source_generation(&service.root)?;
-                self.check_catalog45_recovery_export_unlocked(service, &generation, document)?;
+                if source.context().manifest_sha256 != target.context().manifest_sha256 {
+                    self.check_catalog45_recovery_export_unlocked(service, &generation, document)?;
+                }
             }
             let document_sha256 = saved_document_digest(document)?;
             if present(staging, ENVELOPE)? {
@@ -1344,8 +1346,10 @@ impl InstallationController {
         self.with_transition_key(token, key_path, staging, |service, _, document, key| {
             #[cfg(feature = "workspace-v5-owner-validation")]
             if target.catalog45_recovery_validation() {
-                let generation = crate::native_runtime::catalog45_recovery_source_generation(&service.root)?;
-                self.check_catalog45_recovery_export_unlocked(service, &generation, document)?;
+                let checkpoint = self.catalog45_activation_checkpoint(service, document, &target, staging, key)?;
+                if checkpoint.old_manifest == checkpoint.new_manifest {
+                    return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
+                }
             }
             service.activate_local_personal_runtime_transition(
                 target, staging, key, saved_workspace_host, document,
@@ -1353,6 +1357,38 @@ impl InstallationController {
                 None,
             )
         })
+    }
+
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    fn catalog45_activation_checkpoint(
+        &self,
+        service: &LifecycleService,
+        document: &super::installations::native_document::DocumentState,
+        target: &Payload,
+        staging: &Path,
+        key: &[u8; 32],
+    ) -> Result<Checkpoint> {
+        let generation = crate::native_runtime::catalog45_recovery_source_generation(&service.root)?;
+        let pending = read_pending(&service.root)?;
+        let checkpoint = service.transition_checkpoint(pending.strip_prefix(PENDING_PREFIX).ok_or_else(invalid)?, key)?;
+        checkpoint.check_host(true)?;
+        if checkpoint.trial || checkpoint.staged != staging
+            || checkpoint.new_manifest != target.context().manifest_sha256
+        {
+            return Err(invalid());
+        }
+        if checkpoint.old_manifest == checkpoint.new_manifest {
+            // The same reviewed payload reopens the saved document. It does not
+            // depend on a publication attempt from this failed generation.
+            let document_sha256 = saved_document_digest(document)?;
+            if checkpoint.saved_document_sha256.as_deref() != Some(document_sha256.as_str()) {
+                return Err(err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED"));
+            }
+        } else {
+            self.check_catalog45_recovery_export_unlocked(service, &generation, document)?;
+        }
+        verify_unchanged(&service.root, &checkpoint, &pending)?;
+        Ok(checkpoint)
     }
 
     #[cfg(feature = "workspace-v5-owner-validation")]
@@ -1365,19 +1401,17 @@ impl InstallationController {
             return Err(invalid());
         }
         self.with_transition_key(token, key_path, staging, |service, profile, document, key| {
-            let generation = crate::native_runtime::catalog45_recovery_source_generation(&service.root)?;
-            self.check_catalog45_recovery_export_unlocked(service, &generation, document)?;
-            let pending = read_pending(&service.root)?;
-            let checkpoint = service.transition_checkpoint(pending.strip_prefix(PENDING_PREFIX).ok_or_else(invalid)?, key)?;
-            checkpoint.check_host(true)?;
-            if checkpoint.trial || checkpoint.staged != staging
-                || checkpoint.new_manifest != target.context().manifest_sha256
-            {
-                return Err(invalid());
-            }
-            verify_unchanged(&service.root, &checkpoint, &pending)?;
+            let checkpoint = self.catalog45_activation_checkpoint(service, document, &target, staging, key)?;
             let oex = oex_retained_cleanup::Selection::new(&selection.oex_job_id, &selection.oex_import_runtime_generation)?;
             let prefix = Path::new("blobs").join(&checkpoint.tenant_id).join("oex-staging").join(&selection.oex_job_id);
+            let settled_only = checkpoint.old_manifest == checkpoint.new_manifest;
+            // Settlement durably observes absence. Require its directory to
+            // exist and be empty so that observation cannot create any paths.
+            if settled_only && (checkpoint.files.get(&prefix).is_none_or(|entry| entry.sha256.is_some())
+                || checkpoint.files.keys().any(|path| path != &prefix && path.starts_with(&prefix)))
+            {
+                return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
+            }
             let (original, absent_chunks) = service.selected_045_original_store(
                 profile, &checkpoint, &selection.rollback_lineage, &prefix,
             )?;
@@ -1387,7 +1421,7 @@ impl InstallationController {
                 original.as_deref(),
             )?;
             let selected = oex_retained_cleanup::Selected045::new(
-                oex, &selection.hayes_job_id, &selection.hayes_completion_frame_sha256, retired, absent_chunks,
+                oex, &selection.hayes_job_id, &selection.hayes_completion_frame_sha256, retired, absent_chunks, settled_only,
             )?;
             service.activate_local_personal_runtime_transition(target, staging, key, true, document, Some((selected, prefix)))
         })
