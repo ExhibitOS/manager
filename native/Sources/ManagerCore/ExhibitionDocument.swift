@@ -79,13 +79,18 @@ public struct NativeExhibitionDraft: Codable, Equatable, Sendable {
     }
     public init(from decoder: Decoder) throws { try self.init(document: DocumentValue(from: decoder)) }
     public func encode(to encoder: Encoder) throws { try document.encode(to: encoder) }
-    public static func new(title: String = "새 전시", now: Date = Date()) throws -> Self {
+    public static func new(title: String = "새 전시", now: Date = Date(), roomBaseLight: Bool = false) throws -> Self {
         let timestamp = ISO8601DateFormatter().string(from: now), id = UUID().uuidString.lowercased()
         var candidate: [String: DocumentValue] = ["schemaVersion": .string("1.0.0-draft.1"), "kind": .string("exhibition-revision"), "id": .string(id), "revisionId": .string(UUID().uuidString.lowercased()), "revision": .integer(1), "createdAt": .string(timestamp), "title": .string(title), "units": .string("meter"), "coordinates": .string("right-handed-y-up")]
-        candidate["rooms"] = .array([.object(["id": .string(UUID().uuidString.lowercased()), "name": .string("첫 공간"), "dimensions": .object(["width": .number(12), "height": .number(4), "depth": .number(8)]), "transform": identity])])
+        let room = RoomBaseLightAction.newRoom(id: UUID().uuidString.lowercased(), name: "첫 공간")
+        candidate["rooms"] = .array([room])
         for key in ["surfaces", "openings", "artworks", "placements", "lights", "navigation", "mediaAssets", "audioZones", "annotations", "scripts"] { candidate[key] = .array([]) }
         candidate["accessibility"] = .object(["alternativeView": .string("list"), "keyboardNavigation": .bool(true), "reducedMotion": .bool(true), "stationaryNavigation": .bool(true), "routeIds": .array([]), "artworkDescriptions": .array([])])
-        return try Self(document: .object(["schemaVersion": .string("1.0.0-draft.1"), "kind": .string("exhibition-draft"), "id": .string(UUID().uuidString.lowercased()), "exhibitionId": .string(id), "editVersion": .integer(1), "createdAt": .string(timestamp), "updatedAt": .string(timestamp), "candidate": .object(candidate)]))
+        let seed: DocumentValue = .object(candidate)
+        let initial = roomBaseLight
+            ? try RoomBaseLightAction.appendingLight(to: seed, room: room, lightId: UUID().uuidString.lowercased())
+            : seed
+        return try Self(document: .object(["schemaVersion": .string("1.0.0-draft.1"), "kind": .string("exhibition-draft"), "id": .string(UUID().uuidString.lowercased()), "exhibitionId": .string(id), "editVersion": .integer(1), "createdAt": .string(timestamp), "updatedAt": .string(timestamp), "candidate": initial]))
     }
     public static var identity: DocumentValue { .object(["position": .vector([0, 0, 0]), "rotation": .vector([0, 0, 0, 1]), "scale": .vector([1, 1, 1])]) }
     private mutating func change(_ candidate: DocumentValue) throws {

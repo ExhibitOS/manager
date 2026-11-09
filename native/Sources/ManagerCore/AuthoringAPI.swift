@@ -32,6 +32,9 @@ public struct AuthoringSession: Decodable, Sendable {
     public var workspaceArtworkFramePreparationProfile: String? = nil
     public var workspaceRegisteredFrameLineageProfile: String? = nil
     public var workspacePortalFinishProfile: String? = nil
+    public var roomBaseLightProfile: String? = nil
+
+    public var advertisesRoomBaseLight: Bool { roomBaseLightProfile == RoomBaseLightAction.profile }
 
     public var advertisesWorkspacePortalFinish: Bool {
         advertisesWorkspaceArtworkFrameModels && workspacePortalFinishProfile == "workspace-portal-finish-v1"

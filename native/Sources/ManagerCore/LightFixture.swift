@@ -15,11 +15,11 @@ public enum NativeLightFixture: String, CaseIterable, Sendable {
         }
     }
     private static func invalid() -> AuthoringFailure { AuthoringFailure("LIGHT_FIELDS_INVALID") }
-    private static func bindings(in draft: NativeExhibitionDraft) throws -> [DocumentValue] {
-        if draft.candidate["extensions"] != .null {
-            guard case .object = draft.candidate["extensions"] else { throw invalid() }
+    static func bindings(in candidate: DocumentValue) throws -> [DocumentValue] {
+        if candidate["extensions"] != .null {
+            guard case .object = candidate["extensions"] else { throw invalid() }
         }
-        let value = draft.candidate["extensions"][namespace]
+        let value = candidate["extensions"][namespace]
         if value == .null { return [] }
         guard case .object(let fields) = value, Set(fields.keys) == Set(["version", "lights"]),
               value["version"].integer == 1, let rows = value["lights"].items, rows.count <= 32,
@@ -35,11 +35,12 @@ public enum NativeLightFixture: String, CaseIterable, Sendable {
     /// Unsupported selected metadata refuses fixture editing, never normalizes.
     public static func settings(in draft: NativeExhibitionDraft, lightId: String) throws -> DocumentValue {
         guard UUID(uuidString: lightId) != nil else { throw invalid() }
-        guard let row = try bindings(in: draft).first(where: { $0["lightId"].string?.lowercased() == lightId.lowercased() }) else {
+        guard let row = try bindings(in: draft.candidate).first(where: { $0["lightId"].string?.lowercased() == lightId.lowercased() }) else {
             return .object(["fixture": .string(Self.none.rawValue)])
         }
         guard case .object(var fields) = row,
-              Set(fields.keys).isSubset(of: ["lightId", "fixture", "aim", "penumbra", "range", "temperatureKelvin"]),
+              Set(fields.keys).isSubset(of: ["lightId", "fixture", "aim", "penumbra", "range", "temperatureKelvin", "purpose"]),
+              fields["purpose"].map({ $0 == .string("room-base") }) ?? true,
               row["fixture"].string.flatMap(Self.init(rawValue:)) != nil else { throw invalid() }
         fields.removeValue(forKey: "lightId")
         return .object(fields)
@@ -56,7 +57,7 @@ public enum NativeLightFixture: String, CaseIterable, Sendable {
     static func applying(settings input: DocumentValue, to candidate: DocumentValue, base: NativeExhibitionDraft, lightId: String) throws -> DocumentValue {
         var settings = input
         settings["lightId"] = .string(lightId)
-        var rows = try Self.bindings(in: base)
+        var rows = try Self.bindings(in: base.candidate)
         if let index = rows.firstIndex(where: { $0["lightId"].string?.lowercased() == lightId.lowercased() }) { rows[index] = settings }
         else { rows.append(settings) }
         let value: DocumentValue = .object(["version": .integer(1), "lights": .array(rows)])
