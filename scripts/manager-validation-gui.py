@@ -136,10 +136,11 @@ def prepare(profile, pins, gui, helper, runtime):
         info = plistlib.loads(info_path.read_bytes())
         info.update(CFBundleIdentifier=BUNDLE_ID, CFBundleName="ExhibitOS Manager Validation",
                     CFBundleDisplayName="ExhibitOS Manager Validation", ExhibitOSValidationProfile=str(profile),
-                    ExhibitOSValidationInputs=pins)
+                    CFBundleExecutable=GUI.name, ExhibitOSValidationInputs=pins)
         info_path.write_bytes(plistlib.dumps(info))
         require(sha(candidate / GUI) == pins["unsignedGUI"] and sha(candidate / HELPER) == pins["unsignedHelper"],
                 "Assembled executable hashes differ from the reviewed build.")
+        (candidate / GUI).chmod(0o755)
         output(CODESIGN, "--force", "--sign", CERT, str(candidate / HELPER))
         output(CODESIGN, "--force", "--sign", CERT, str(candidate))
         verify_bundle(candidate, profile, pins)
@@ -157,10 +158,18 @@ def prepare(profile, pins, gui, helper, runtime):
             raise
 
 
-def launch():
+def preflight(bundle, profile, pins):
+    check_fixed_path(bundle)
+    require(profile.is_absolute() and profile.resolve(strict=True) == profile and profile.is_dir(),
+            "The signed validation profile path is missing or redirected.")
+    verify_bundle(bundle, profile, pins)
+
+
+def launch(bundle, profile, pins):
+    preflight(bundle, profile, pins)
     require(not pids() and not launch_services_has_app(),
             "The validation app is already open. Verify and attach to its owned PID instead of opening it again.")
-    output("/usr/bin/open", "-a", str(APP))
+    output("/usr/bin/open", "-a", str(bundle))
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         running = pids()
@@ -201,12 +210,11 @@ def main():
                 require(args.profile.resolve(strict=True) == args.profile and args.profile.is_dir(),
                         "Use the canonical existing validation profile.")
                 prepare(args.profile, pins, args.gui, args.helper, args.runtime)
-            verify_bundle(APP, args.profile, pins)
-            require(args.profile.resolve(strict=True) == args.profile and args.profile.is_dir(),
-                    "The signed validation profile path is missing or redirected.")
             result = dict(app=str(APP), bundleId=BUNDLE_ID, profile=str(args.profile), pins=pins)
             if args.action == "launch":
-                result["pid"] = launch()
+                result["pid"] = launch(args.app, args.profile, pins)
+            else:
+                preflight(args.app, args.profile, pins)
             if args.action == "attach":
                 require(pids() == {args.pid} and launch_services_has_app(),
                         "The single owned validation PID is no longer registered. Inspect the app; do not launch through CUA.")

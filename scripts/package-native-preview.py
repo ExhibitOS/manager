@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Assemble already-built native development outputs in a NEW isolated bundle.
-
-No build, signing, installation replacement, credential access or launch. This
-preview is not a qualified distribution and carries no runtime service payload.
-"""
+"""Stage a new headless Manager preview and its optional validation runtime."""
 import argparse
 import json
 import plistlib
@@ -31,7 +27,9 @@ contents = args.app / 'Contents'
 (contents / 'MacOS').mkdir(parents=True)
 (contents / 'Helpers').mkdir()
 (contents / 'Resources').mkdir()
-shutil.copy2(args.swift_executable, contents / 'MacOS/ExhibitOSManager')
+# Keep the app bytes for the fixed launcher to prepare. A raw preview has no
+# Launch Services entry and no executable main program.
+shutil.copyfile(args.swift_executable, contents / 'MacOS/ExhibitOSManager')
 shutil.copy2(args.rust_helper, contents / 'Helpers/exhibitos-native')
 source_root = Path(__file__).resolve().parent.parent
 brand_source = source_root / 'native/Resources/Brand'
@@ -78,7 +76,7 @@ if args.runtime_payload:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_root / name, target)
 metadata = dict(CFBundleIdentifier='org.exhibitos.manager', CFBundleName='ExhibitOS Manager',
-                CFBundleDisplayName='ExhibitOS Manager', CFBundleExecutable='ExhibitOSManager',
+                CFBundleDisplayName='ExhibitOS Manager',
                 CFBundlePackageType='APPL', CFBundleVersion='1', CFBundleShortVersionString='0.1.0',
                 LSMinimumSystemVersion='14.0', NSHighResolutionCapable=True,
                 CFBundleIconFile='manager.icns',
