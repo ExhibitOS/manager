@@ -29,6 +29,7 @@ pub struct Input {
     pub private_editor: bool,
     #[serde(default, deserialize_with = "read_detail_mode")]
     pub detail_mode: Option<DetailMode>,
+    output_parent_identity: Option<DirectoryIdentity>,
 }
 #[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 pub enum DetailMode {
@@ -40,7 +41,7 @@ fn read_detail_mode<'de, D: serde::Deserializer<'de>>(
 ) -> std::result::Result<Option<DetailMode>, D::Error> {
     DetailMode::deserialize(input).map(Some)
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Receipt {
     pub publication_id: String,
@@ -62,6 +63,8 @@ pub struct Status {
     pub publication_id: String,
     pub revision_sha256: String,
     pub output: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) output_parent_identity: Option<DirectoryIdentity>,
     pub state: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub private_editor: bool,
@@ -241,6 +244,7 @@ pub fn verify_output(status: &Status) -> Result<Receipt> {
 
 fn verify_export(status: &Status, check: &impl Fn() -> Result<()>) -> Result<Receipt> {
     check()?;
+    let parent = pinned_output_parent(status)?;
     if !status.output.is_absolute()
         || fs::symlink_metadata(&status.output)
             .map_err(|_| bad())?
@@ -318,6 +322,7 @@ fn verify_export(status: &Status, check: &impl Fn() -> Result<()>) -> Result<Rec
     verify_export_controls(status, &manifest, |name| {
         bounded(&status.output, name, 1024 * 1024)
     })?;
+    if let Some(parent) = parent { parent.check().map_err(|_| bad())?; }
     Ok(Receipt {
         publication_id: status.publication_id.clone(),
         revision_sha256: status.revision_sha256.clone(),
@@ -375,7 +380,7 @@ const CONTROL_LIMIT: usize = 1024;
 
 #[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct DirectoryIdentity {
+pub(crate) struct DirectoryIdentity {
     device: u64,
     inode: u64,
 }
@@ -389,6 +394,104 @@ impl DirectoryIdentity {
             device: stat.dev(),
             inode: stat.ino(),
         })
+    }
+}
+
+const STATIC_COMMIT_UNCONFIRMED: &str = "NATIVE_STATIC_OUTPUT_COMMIT_UNCONFIRMED";
+
+fn committed_output_available(status: &Status) -> bool {
+    status.error_code.as_deref() == Some(STATIC_COMMIT_UNCONFIRMED)
+        && status.receipt.is_some()
+        && pinned_output_parent(status).is_ok_and(|parent| parent.is_some())
+        && fs::symlink_metadata(&status.output).is_ok_and(|meta| meta.is_dir())
+}
+
+fn pinned_output_parent(status: &Status) -> Result<Option<DirectoryPin>> {
+    status.output_parent_identity.map(|expected| {
+        let pin = DirectoryPin::open(status.output.parent().ok_or_else(bad)?)
+            .map_err(|_| err("NATIVE_STATIC_OUTPUT_INVALID"))?;
+        let file = pin.try_clone_file().map_err(|_| err("NATIVE_STATIC_OUTPUT_INVALID"))?;
+        if DirectoryIdentity::read(&file)? != expected || check_private_detail_directory(&file).is_err() {
+            return Err(err("NATIVE_STATIC_OUTPUT_INVALID"));
+        }
+        Ok(pin)
+    }).transpose()
+}
+
+// The ordinary worker still exports using its existing Platform contract. For
+// installed CLI exports it writes only inside a private managed-profile stage.
+struct PinnedOrdinaryOutput {
+    parent: DirectoryPin,
+    staging_root: DirectoryPin,
+    profile: DirectoryPin,
+    worker: Status,
+}
+impl PinnedOrdinaryOutput {
+    fn create(profile: &Path, status: &Status, parent: DirectoryPin) -> Result<Self> {
+        let profile_pin = DirectoryPin::open(profile)?;
+        let profile_file = profile_pin.try_clone_file()?;
+        check_private_detail_directory(&profile_file)?;
+        if DirectoryIdentity::read(&profile_file)?.device
+            != DirectoryIdentity::read(&parent.try_clone_file()?)?.device
+        {
+            return Err(err("NATIVE_STATIC_OUTPUT_INVALID"));
+        }
+        let name = format!(".native-static-stage-{}", status.job_id);
+        let file = create_detail_directory(&profile_file, OsStr::new(&name))?;
+        let stage = profile.join(name);
+        let staging_root = DirectoryPin::open(&stage)?;
+        if DirectoryIdentity::read(&file)? != DirectoryIdentity::read(&staging_root.try_clone_file()?)? {
+            return Err(bad());
+        }
+        let mut worker = status.clone();
+        worker.output = stage.join("output");
+        worker.output_parent_identity = None;
+        Ok(Self { parent, staging_root, profile: profile_pin, worker })
+    }
+
+    fn verify(&self, receipt: Receipt) -> Result<(Receipt, File)> {
+        let stage = self.staging_root.try_clone_file()?;
+        let output = open_detail_at(&stage, OsStr::new("output"), libc::O_RDONLY | libc::O_DIRECTORY)?;
+        let check = || {
+            self.profile.check()?;
+            self.staging_root.check()?;
+            let named = open_detail_at(&stage, OsStr::new("output"), libc::O_RDONLY | libc::O_DIRECTORY)?;
+            if DirectoryIdentity::read(&output)? != DirectoryIdentity::read(&named)? {
+                return Err(bad());
+            }
+            Ok(())
+        };
+        let verified = verify_export(&self.worker, &check)?;
+        if receipt != verified {
+            return Err(bad());
+        }
+        check()?;
+        Ok((verified, output))
+    }
+
+    fn commit(&self, target: &Path, mut receipt: Receipt, output: &File) -> Result<(Receipt, bool)> {
+        let parent = self.parent.try_clone_file().map_err(|_| err("NATIVE_STATIC_OUTPUT_INVALID"))?;
+        let stage = self.staging_root.try_clone_file()?;
+        let leaf = detail_leaf(target.file_name().ok_or_else(bad)?)?;
+        let named = open_detail_at(&stage, OsStr::new("output"), libc::O_RDONLY | libc::O_DIRECTORY)?;
+        if DirectoryIdentity::read(output)? != DirectoryIdentity::read(&named)? {
+            return Err(bad());
+        }
+        self.parent.check().map_err(|_| err("NATIVE_STATIC_OUTPUT_INVALID"))?;
+        if unsafe { libc::renameatx_np(stage.as_raw_fd(), c"output".as_ptr(),
+                                       parent.as_raw_fd(), leaf.as_ptr(), libc::RENAME_EXCL) } != 0 {
+            return Err(if std::io::Error::last_os_error().raw_os_error() == Some(libc::EEXIST) {
+                err("NATIVE_STATIC_OUTPUT_EXISTS")
+            } else { bad() });
+        }
+        let confirmed = parent.sync_all().is_ok() && self.parent.check().is_ok();
+        // Return only the published destination. Best-effort cleanup may leave
+        // an empty private stage, but never removes an unrelated directory.
+        if let (Ok(profile), Some(name)) = (self.profile.try_clone_file(), self.worker.output.parent().and_then(Path::file_name)) {
+            let _ = unlink_exact_detail(&profile, name, &stage, true);
+        }
+        receipt.output = target.into();
+        Ok((receipt, confirmed))
     }
 }
 
@@ -1699,6 +1802,7 @@ pub struct Exporter {
     cancel: Arc<AtomicBool>,
     commit_gate: Arc<Mutex<()>>,
     detail_token: Option<String>,
+    commit_recovery_attempted: Option<String>,
     worker: Option<thread::JoinHandle<()>>,
 }
 impl Exporter {
@@ -1709,6 +1813,7 @@ impl Exporter {
             cancel: Arc::new(AtomicBool::new(false)),
             commit_gate: Arc::new(Mutex::new(())),
             detail_token: None,
+            commit_recovery_attempted: None,
             worker: None,
         }
     }
@@ -1781,8 +1886,14 @@ impl Exporter {
         if let Some(value) = &value {
             // Reopening a running job never re-executes the exporter. Verify its
             // atomic final output asynchronously; retain incomplete files.
-            if value.state == "running" {
-                self.launch(token.into(), value.clone(), None);
+            let recover_commit = self.commit_recovery_attempted.as_deref() != Some(&value.job_id)
+                && committed_output_available(value);
+            if value.state == "running" || recover_commit {
+                if recover_commit { self.commit_recovery_attempted = Some(value.job_id.clone()); }
+                let mut checking = value.clone();
+                checking.state = "running".into();
+                self.launch(token.into(), checking.clone(), None, None);
+                return Ok(Some(checking));
             }
         }
         Ok(value)
@@ -1827,7 +1938,9 @@ impl Exporter {
         // All optional capability bytes were included in Payload::open's exact
         // inventory. An older runtime is refused instead of searching PATH.
         let detail = input.detail_mode == Some(DetailMode::NativeDetailV1);
-        if detail != detail_authority.is_some() {
+        if detail != detail_authority.is_some()
+            || (input.output_parent_identity.is_some() && (detail || !input.private_editor))
+        {
             return Err(bad());
         }
         let (script, viewer) = if detail {
@@ -1844,6 +1957,7 @@ impl Exporter {
             publication_id: input.publication_id,
             revision_sha256: completed.publication.revision_sha256,
             output: input.output,
+            output_parent_identity: input.output_parent_identity,
             state: "running".into(),
             private_editor: input.private_editor,
             receipt: None,
@@ -1873,8 +1987,12 @@ impl Exporter {
             self.controller.write_detail_journal(&token, &journal, true)?;
             self.launch_detail(token, DetailRun { payload, script, viewer, origin, startup, stage, journal });
         } else {
+            let pinned = pinned_output_parent(&value)?.map(|parent| {
+                let profile = self.controller.static_export_location(&token)?.0;
+                PinnedOrdinaryOutput::create(&profile, &value, parent)
+            }).transpose()?;
             self.controller.write_static_export(&token, &value)?;
-            self.launch(token, value.clone(), Some((payload, script, viewer, port)));
+            self.launch(token, value.clone(), Some((payload, script, viewer, port)), pinned);
         }
         Ok(value)
     }
@@ -1944,10 +2062,12 @@ impl Exporter {
         token: String,
         mut value: Status,
         execute: Option<(Arc<Payload>, PathBuf, PathBuf, u16)>,
+        pinned: Option<PinnedOrdinaryOutput>,
     ) {
         self.detail_token = None;
         self.cancel.store(false, Ordering::SeqCst);
         let cancel = self.cancel.clone();
+        let commit_gate = self.commit_gate.clone();
         let shared = self.state.clone();
         let controller = self.controller.clone();
         if let Ok(mut state) = shared.lock() {
@@ -1955,7 +2075,7 @@ impl Exporter {
         }
         self.worker = Some(thread::spawn(move || {
             let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<Receipt> {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(Receipt, bool)> {
                     if let Some((payload, script, viewer, port)) = execute {
                         let (root, _, _) = controller.static_export_location(&token)?;
                         let stdout_name = format!("native-static-{}.stdout", value.job_id);
@@ -1971,13 +2091,14 @@ impl Exporter {
                         };
                         let stdout = create(&stdout_name)?;
                         let stderr = create(&stderr_name)?;
+                        let worker = pinned.as_ref().map_or(&value, |output| &output.worker);
                         let mut command = std::process::Command::new(payload.node());
                         command.args([
                                     script.as_os_str(),
                                     std::ffi::OsStr::new(&format!("http://127.0.0.1:{port}")),
                                     std::ffi::OsStr::new(&value.publication_id),
                                     viewer.as_os_str(),
-                                    value.output.as_os_str(),
+                                    worker.output.as_os_str(),
                                 ]);
                         if value.private_editor {
                             command.arg("--private-editor");
@@ -2021,7 +2142,8 @@ impl Exporter {
                         // Cancellation can race the final rename. A verified final
                         // result wins; otherwise keep every incomplete output.
                         if cancel.load(Ordering::SeqCst) {
-                            return verify_output(&value)
+                            if pinned.is_some() { return Err(err("NATIVE_STATIC_CANCELLED")); }
+                            return verify_output(&value).map(|receipt| (receipt, true))
                                 .map_err(|_| err("NATIVE_STATIC_CANCELLED"));
                         }
                         if !exit.success() || stopping.is_some() {
@@ -2036,21 +2158,40 @@ impl Exporter {
                         let raw =
                             installation_backup::source_bytes(&root, &stdout_name, 65536, true)?;
                         let receipt: Receipt = serde_json::from_slice(&raw).map_err(|_| bad())?;
+                        if let Some(pinned) = &pinned {
+                            let (receipt, output) = pinned.verify(receipt)?;
+                            let _commit = commit_gate.lock().map_err(|_| bad())?;
+                            if cancel.load(Ordering::SeqCst) { return Err(err("NATIVE_STATIC_CANCELLED")); }
+                            return pinned.commit(&value.output, receipt, &output);
+                        }
                         let verified = verify_output(&value)?;
                         if serde_json::to_value(receipt).map_err(|_| bad())?
                             != serde_json::to_value(&verified).map_err(|_| bad())?
                         {
                             return Err(bad());
                         }
-                        return Ok(verified);
+                        return Ok((verified, true));
                     }
-                    verify_output(&value).map_err(|_| err("NATIVE_STATIC_INTERRUPTED"))
+                    let verified = verify_output(&value).map_err(|_| err("NATIVE_STATIC_INTERRUPTED"))?;
+                    if value.error_code.as_deref() == Some(STATIC_COMMIT_UNCONFIRMED) {
+                        let parent = pinned_output_parent(&value)?.ok_or_else(bad)?;
+                        if value.receipt.as_ref() != Some(&verified)
+                            || parent.try_clone_file()?.sync_all().is_err() || parent.check().is_err()
+                        {
+                            return Err(err(STATIC_COMMIT_UNCONFIRMED));
+                        }
+                    }
+                    Ok((verified, true))
                 }));
             match result {
-                Ok(Ok(receipt)) => {
-                    value.state = "completed".into();
+                Ok(Ok((receipt, confirmed))) => {
+                    value.state = if confirmed { "completed" } else { "interrupted" }.into();
                     value.receipt = Some(receipt);
-                    value.error_code = None;
+                    value.error_code = (!confirmed).then(|| STATIC_COMMIT_UNCONFIRMED.into());
+                }
+                _ if value.error_code.as_deref() == Some(STATIC_COMMIT_UNCONFIRMED) => {
+                    // A verification failure does not erase the committed receipt.
+                    value.state = "interrupted".into();
                 }
                 other => {
                     let code = match other {
@@ -2197,6 +2338,56 @@ mod detail_tests {
         }
     }
 
+    #[test]
+    fn ordinary_static_commit_refuses_replacement_output_parent() {
+        let (root, _legacy_stage, journal) = stage_fixture();
+        let profile = root.join("profile");
+        let destination = root.join("destination");
+        let moved = root.join("moved");
+        let root_file = File::open(&root).unwrap();
+        let _profile = create_detail_directory(&root_file, OsStr::new("profile")).unwrap();
+        let parent = create_detail_directory(&root_file, OsStr::new("destination")).unwrap();
+        let mut status = journal.status;
+        status.output = destination.join("bundle");
+        status.output_parent_identity = Some(DirectoryIdentity::read(&parent).unwrap());
+        status.private_editor = true;
+        let stage = PinnedOrdinaryOutput::create(&profile, &status, pinned_output_parent(&status).unwrap().unwrap()).unwrap();
+        let stage_file = stage.staging_root.try_clone_file().unwrap();
+        let output = create_detail_directory(&stage_file, OsStr::new("output")).unwrap();
+        fs::write(stage.worker.output.join("index.html"), "fixture").unwrap();
+        let receipt = Receipt {
+            publication_id: status.publication_id.clone(),
+            revision_sha256: status.revision_sha256.clone(),
+            index_sha256: "a".repeat(64),
+            manifest_sha256: "b".repeat(64),
+            files: 1,
+            bytes: 7,
+            output: stage.worker.output.clone(),
+        };
+        fs::rename(&destination, &moved).unwrap();
+        let _replacement = create_detail_directory(&root_file, OsStr::new("destination")).unwrap();
+        assert!(pinned_output_parent(&status).is_err());
+        assert!(stage.commit(&status.output, receipt.clone(), &output).is_err());
+        assert!(!destination.join("bundle").exists() && !moved.join("bundle").exists());
+        assert!(stage.worker.output.join("index.html").exists());
+        fs::remove_dir(&destination).unwrap();
+        fs::rename(&moved, &destination).unwrap();
+        let (committed, confirmed) = stage.commit(&status.output, receipt, &output).unwrap();
+        assert!(confirmed);
+        assert_eq!(committed.output, status.output);
+        assert_eq!(fs::read(status.output.join("index.html")).unwrap(), b"fixture");
+        status.state = "interrupted".into();
+        status.error_code = Some(STATIC_COMMIT_UNCONFIRMED.into());
+        status.receipt = Some(committed);
+        fs::rename(&destination, &moved).unwrap();
+        let _replacement = create_detail_directory(&root_file, OsStr::new("destination")).unwrap();
+        assert!(!committed_output_available(&status));
+        fs::remove_dir(&destination).unwrap();
+        fs::rename(&moved, &destination).unwrap();
+        assert!(committed_output_available(&status));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     fn stage_fixture() -> (PathBuf, DetailStage, DetailJournal) {
         let root =
             std::env::temp_dir().join(format!("exhibitos-native-detail-test-{}", Uuid::new_v4()));
@@ -2211,6 +2402,7 @@ mod detail_tests {
             publication_id: Uuid::new_v4().to_string(),
             revision_sha256: "b".repeat(64),
             output: root.join("bundle"),
+            output_parent_identity: None,
             state: "running".into(),
             private_editor: false,
             receipt: None,

@@ -79,3 +79,37 @@ before retrying. Use a new session if the current session reaches its
   request. After restarting the CLI, use `read` to inspect the pending document.
   For a retained ordinary save, use its original request UUID with the current
   document versions. Confirm the saved draft before finishing the transfer.
+
+## Export a saved exhibition
+
+Use the installed app's export command with an existing managed personal
+profile and a separate, existing directory with owner-only permissions.
+
+```sh
+"/Applications/ExhibitOS Manager.app/Contents/MacOS/ExhibitOSManager" \
+  --export-cli --profile "/absolute/path/to/profile" --output-root "/absolute/path/to/output"
+```
+
+Both directory paths must be canonical and on the same volume. Neither directory may contain the other.
+Quit Manager before running this command. It starts the profile's matching signed
+release runtime and uses the same version 1 JSON envelope and scoped ready
+response described above.
+
+The command accepts `read`, `export-oex`, `export-static` and
+`export-static-status`. For either export,
+send the current `expectedRevision` and `expectedEditVersion` with an absolute
+`outputPath` naming a new immediate child of the output directory. The profile
+must hold a saved draft that still matches the server's draft and ETag.
+`export-oex` writes the OEX archive and returns its hash and source ETag.
+If the output directory moves during the final commit, the response can contain
+`commitState: "committed-path-unconfirmed"` and a null path. Use the returned
+hash to locate the committed archive in the original directory.
+`export-static` creates a local publication snapshot, writes a static site with
+the private editor, and returns its export receipt. Static output can have
+publication-specific IDs and asset hashes. If a static commit cannot confirm
+its path, restore the original directory and use `export-static-status` with
+the same output path and document versions. The command checks the retained
+publication and export receipt for that saved draft. It can also be used after
+reopening the export command.
+Close stdin to drain the runtime
+before another process opens the profile.

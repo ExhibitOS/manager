@@ -93,7 +93,7 @@ impl Work {
     }
     fn verify_source(&self) -> Result<static_publication_source::SourcePin> {
         self.validate()?;
-        let value = super::native_static_export::Status { format: 1, job_id: self.id.clone(), workspace_id: self.workspace_id.clone(), tenant_id: self.tenant_id.clone(), principal_id: self.principal_id.clone(), publication_id: self.source.publication_id.clone(), revision_sha256: self.source.revision_sha256.clone(), output: self.source.output.clone(), state: "completed".into(), private_editor: false, receipt: None, error_code: None };
+        let value = super::native_static_export::Status { format: 1, job_id: self.id.clone(), workspace_id: self.workspace_id.clone(), tenant_id: self.tenant_id.clone(), principal_id: self.principal_id.clone(), publication_id: self.source.publication_id.clone(), revision_sha256: self.source.revision_sha256.clone(), output: self.source.output.clone(), output_parent_identity: None, state: "completed".into(), private_editor: false, receipt: None, error_code: None };
         let current = super::native_static_export::verify_output(&value)?;
         if let Some(expected) = &self.static_cache_policy_sha256
             && super::native_static_export::cache_policy_sha256(&current)? != *expected { return Err(err("HOSTED_STATIC_BUNDLE_CHANGED")); }

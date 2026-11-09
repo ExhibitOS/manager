@@ -9,11 +9,14 @@ struct ManagerEntryPoint {
     @MainActor
     static func main() async {
         let arguments = Array(CommandLine.arguments.dropFirst())
-        guard arguments.first == "--image-cli" else {
+        switch arguments.first {
+        case "--image-cli":
+            exit(await InstalledImageCLI.run(Array(arguments.dropFirst())))
+        case "--export-cli":
+            exit(await InstalledImageCLI.runExport(Array(arguments.dropFirst())))
+        default:
             ManagerApp.main()
-            return
         }
-        exit(await InstalledImageCLI.run(Array(arguments.dropFirst())))
     }
 }
 
@@ -40,6 +43,35 @@ enum InstalledImageCLI {
             FileHandle.standardError.write(Data("IMAGE_CLI_USAGE: ExhibitOSManager --image-cli [--help | --profile ABSOLUTE_PATH]\n".utf8))
             return 2
         }
+        return await run(profilePath: profilePath)
+    }
+
+    static func runExport(_ arguments: [String]) async -> Int32 {
+        let usage = "Usage: ExhibitOSManager --export-cli --profile ABSOLUTE_PATH --output-root ABSOLUTE_PATH"
+        if arguments == ["--help"] {
+            print("""
+                \(usage)
+                Commands: read, export-oex, export-static, export-static-status.
+                Send one JSON request per line.
+                Use a saved personal workspace and a separate owner-only output directory on the same volume.
+                End stdin to close and drain the owned runtime.
+                """)
+            return 0
+        }
+        guard arguments.count == 4, arguments[0] == "--profile", arguments[1].hasPrefix("/"),
+              arguments[2] == "--output-root", arguments[3].hasPrefix("/") else {
+            FileHandle.standardError.write(Data((usage + "\n").utf8))
+            return 2
+        }
+        let output = URL(fileURLWithPath: arguments[3], isDirectory: true)
+        guard output.path == arguments[3] else {
+            report(BridgeFailure("AUTOMATION_OUTPUT_INVALID"))
+            return 2
+        }
+        return await run(profilePath: arguments[1], outputRoot: output)
+    }
+
+    private static func run(profilePath: String?, outputRoot: URL? = nil) async -> Int32 {
         // Let the CLI cancel the request and close the pipe. The helper retains
         // its own signal and EOF shutdown paths.
         signal(SIGPIPE, SIG_IGN)
@@ -47,7 +79,7 @@ enum InstalledImageCLI {
             signal(number, SIG_IGN)
             return DispatchSource.makeSignalSource(signal: number, queue: .global())
         }
-        let task = Task { await runSession(profilePath: profilePath) }
+        let task = Task { await runSession(profilePath: profilePath, outputRoot: outputRoot) }
         for source in signals {
             source.setEventHandler { task.cancel() }
             source.resume()
@@ -57,7 +89,7 @@ enum InstalledImageCLI {
         return status
     }
 
-    private static func runSession(profilePath: String?) async -> Int32 {
+    private static func runSession(profilePath: String?, outputRoot: URL?) async -> Int32 {
         var session: NativeAutomationSession?
         var status: Int32 = 0
         do {
@@ -76,8 +108,13 @@ enum InstalledImageCLI {
                                                        appropriateFor: nil, create: false)
                     .appendingPathComponent("org.exhibitos.manager", isDirectory: true)
             }
-            let owner = try NativeAutomationSession(installedImageCLIHelper: helper, profile: profile,
+            let owner: NativeAutomationSession
+            if let outputRoot {
+                owner = try NativeAutomationSession(installedExportCLIHelper: helper, profile: profile, outputRoot: outputRoot)
+            } else {
+                owner = try NativeAutomationSession(installedImageCLIHelper: helper, profile: profile,
                                                     requireExistingManagedProfile: profilePath != nil)
+            }
             session = owner
             try emit(["event": .string("ready"), "result": try await owner.open()])
             let consumed = DispatchSemaphore(value: 0)
