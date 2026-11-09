@@ -70,6 +70,7 @@ public actor NativeAutomationSession {
                 NativeHayesOriginalIntent.supports(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsProductImageRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsFreshImageRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsLargeModelRuntime(manifest: $0.manifestSHA256)
             } == true
         guard !(selectedOEX9 && selectedOEX10),
               workspaceV6ValidationRuntime == nil || workspaceV7ValidationRuntime == nil,
@@ -161,7 +162,8 @@ public actor NativeAutomationSession {
         let session = try await api.connect(credentials)
         let admitsMaterials = await api.admitsWorkspaceMaterials
         let admitsFreshImages = await api.admitsFreshImagePreparation
-        guard admitsMaterials || admitsFreshImages else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
+        let admitsLargeModels = await api.admitsLargeModelPreparation
+        guard admitsMaterials || admitsFreshImages || admitsLargeModels else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
         let stored = try await api.exhibition(draft.id)
         guard try value(await bridge.documentState(context)) == value(saved) else {
             throw BridgeFailure("EXHIBITION_COMPARISON_STALE")

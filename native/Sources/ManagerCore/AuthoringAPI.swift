@@ -335,6 +335,7 @@ public actor AuthoringAPI {
     public nonisolated let admitsSameOwnerArtworkReplacement: Bool
     public nonisolated let productImageRuntimeQualified: Bool
     public nonisolated let freshImageRuntimeQualified: Bool
+    public nonisolated let largeModelRuntimeQualified: Bool
     // These reviewed v5 tuples are local-validation payloads. Release admission
     // requires separate package qualification.
     #if DEBUG
@@ -420,6 +421,7 @@ public actor AuthoringAPI {
             manifestSHA256: nativeRuntimeManifestSHA256, ready: true
         )
         let manifest = nativeRuntimeManifestSHA256 ?? ""
+        largeModelRuntimeQualified = Self.supportsLargeModelRuntime(manifest: manifest)
         #if DEBUG
         hayesOriginalRuntimeQualified = NativeHayesOriginalIntent.supports(manifest: manifest)
         productImageRuntimeQualified = Self.supportsProductImageRuntime(manifest: manifest)
@@ -1401,8 +1403,16 @@ public actor AuthoringAPI {
         admitsRequiredModelPreparation && session?.modelOriginalInspectionProfile == NativeModelOriginalInspection.profile
     }
 
+    nonisolated static func supportsLargeModelRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == "d9ccc2d90985981279b5e3d49835cd5675a91589aabedc838d100c63e95da8fa"
+        #else
+        false
+        #endif
+    }
+
     public var admitsLargeModelPreparation: Bool {
-        nativeSession && !authenticationBusy && admitsRequiredModelPreparation
+        nativeSession && !authenticationBusy && largeModelRuntimeQualified && admitsRequiredModelPreparation
             && session?.nativeLargeModelPreparationProfile == NativeModelPreparationIntent.largeProfile
     }
 

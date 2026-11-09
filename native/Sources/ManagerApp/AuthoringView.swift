@@ -49,7 +49,8 @@ final class AuthoringModel: ObservableObject {
         session?.modelPreparationProfile == NativeModelPreparationIntent.profile
     }
     private var largeModelPreparationEnabled: Bool {
-        requiredModelPreparationEnabled && session?.nativeLargeModelPreparationProfile == NativeModelPreparationIntent.largeProfile
+        api?.largeModelRuntimeQualified == true && requiredModelPreparationEnabled
+            && session?.nativeLargeModelPreparationProfile == NativeModelPreparationIntent.largeProfile
     }
     private var modelIntakeEnabled: Bool { modelDerivationEnabled || requiredModelPreparationEnabled }
     var canSelectIntake: Bool {
