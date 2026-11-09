@@ -3,6 +3,7 @@
 use super::*;
 
 pub(super) const ENV: &str = "EXHIBITOS_NATIVE_OEX_CLEANUP_SELECTION";
+pub(super) const HAYES_COMPLETION_ENV: &str = "EXHIBITOS_NATIVE_045_HAYES_COMPLETION";
 pub(super) const ERROR: &str = "LOCAL_RUNTIME_START_FAILED_OEX_CLEANUP";
 const RESULT: &[u8] = b"EXHIBITOS_NATIVE_OEX_CLEANUP_RESULT ";
 
@@ -22,6 +23,59 @@ pub struct Receipt {
     state: String,
     cleanup_pending: bool,
     staging_chunks: u32,
+}
+
+pub(crate) struct Selected045 {
+    pub(super) oex: Selection,
+    hayes_job_id: String,
+    completion_sha256: String,
+    retirement: super::oex_recovery::SelectedRetirement,
+    pub(super) staging_bytes: Option<usize>,
+}
+
+impl Selected045 {
+    pub(crate) fn new(
+        oex: Selection, hayes_job_id: &str, completion_sha256: &str,
+        retirement: super::oex_recovery::SelectedRetirement,
+    ) -> Result<Self> {
+        if !oex_preflight_frames::uuid(hayes_job_id) || !hash_valid(completion_sha256) {
+            return Err(err(ERROR));
+        }
+        Ok(Self { oex, hayes_job_id: hayes_job_id.into(), completion_sha256: completion_sha256.into(),
+            retirement, staging_bytes: None })
+    }
+
+    pub(super) fn database_query(&self, owner: &FurnishingOwner) -> Result<String> {
+        self.retirement.recheck()?;
+        let (attempt, request, source, claim, system, oid) = self.retirement.database_binding();
+        if ![owner.workspace_id.as_str(), &owner.tenant_id, &owner.principal_id, &self.hayes_job_id,
+            &self.oex.job_id, attempt, request].into_iter().all(oex_preflight_frames::uuid)
+            || ![self.completion_sha256.as_str(), source, claim].into_iter().all(hash_valid)
+            || system.parse::<u64>().ok().filter(|&id| id > 0).map(|id| id.to_string()).as_deref() != Some(system)
+            || oid.parse::<u32>().ok().filter(|&id| id > 0).map(|id| id.to_string()).as_deref() != Some(oid)
+        {
+            return Err(err(ERROR));
+        }
+        let mut sql = include_str!("native_runtime_oex_selected_045.sql").to_owned();
+        for (index, value) in [owner.workspace_id.as_str(), &owner.tenant_id, &owner.principal_id,
+            &self.hayes_job_id, &self.completion_sha256, &self.oex.job_id, attempt, request, source,
+            claim, system, oid].into_iter().enumerate()
+        {
+            sql = sql.replace(&format!("@{}@", index + 1), &format!("'{value}'"));
+        }
+        Ok(sql)
+    }
+
+    pub(super) fn hayes_environment(&self) -> String {
+        serde_json::json!({"jobId": self.hayes_job_id, "completionFrameSha256": self.completion_sha256}).to_string()
+    }
+
+    pub(super) fn completed_staging_bytes(&self, receipt: Receipt) -> Result<usize> {
+        self.retirement.recheck()?;
+        const CHUNK: usize = 16 * 1024 * 1024;
+        self.staging_bytes.filter(|bytes| bytes.div_ceil(CHUNK) == receipt.staging_chunks as usize)
+            .ok_or_else(|| err(ERROR))
+    }
 }
 
 #[derive(Deserialize)]

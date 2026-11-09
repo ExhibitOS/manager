@@ -578,16 +578,27 @@ const CATALOG45_RECOVERY_CAPABILITY: (&str, u64, &str) = (
     137,
     "75dd973c5e497ad93df9a0563470de11b0831c91ccccc23fa9c3442d0897d9fc",
 );
+const CATALOG45_SELECTED_RECOVERY_CAPABILITY: (&str, u64, &str) = (
+    "platform/scripts/native-catalog-045-interrupted-recovery-capability-v2.json",
+    137,
+    "8a50c1df0fb773cf0ec0252792c341a9c4f7a7e575d2068974649323d935d637",
+);
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const CATALOG45_RECOVERY_TARGET: RuntimeTuple = (
     "fc152aca21da393c0214b3e028edcb2b9e58e9de",
     "ecdcc0f612240daa231d74842c4b1a181493da03a4a18c04a6e9b1bd7a9ab37e",
     "7c3efefb9dc90786da5efdcb1025d5953e0900de333830f3775f138c1dbc21f3",
 );
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_SELECTED_RECOVERY_TARGET: RuntimeTuple = (
+    "749e624539005db2b0036416b83d308a169dd2d0",
+    "84088f217c42dde5cb2d52d4d357879fcf4f32ea710ae5cd0e0fc52d861077b8",
+    "62200d7ccb47e7ede5d1910a65e0087ac171c595d76ca14df6a19290382e4288",
+);
 
 pub(crate) fn catalog45_recovery_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return CATALOG45_RECOVERY_TARGET == tuple;
+    return CATALOG45_RECOVERY_TARGET == tuple || CATALOG45_SELECTED_RECOVERY_TARGET == tuple;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -726,6 +737,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_CURRENT_ORIGINAL_TARGET.2 == manifest
         || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET.2 == manifest
         || CATALOG45_RECOVERY_TARGET.2 == manifest
+        || CATALOG45_SELECTED_RECOVERY_TARGET.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -743,9 +755,10 @@ pub(crate) enum FurnishingTransition {
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 impl FurnishingTransition {
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
-        let target = CATALOG45_RECOVERY_TARGET;
-        if pair == (CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET.2, target.2) {
-            return Some(Self::Recover45 { target });
+        for target in [CATALOG45_RECOVERY_TARGET, CATALOG45_SELECTED_RECOVERY_TARGET] {
+            if pair == (CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET.2, target.2) {
+                return Some(Self::Recover45 { target });
+            }
         }
         if let Some(transition) = Self::same_catalog_from_manifests(
             pair, Some(CATALOG40_DRAFT2_OEX_SELECTED), Some(CATALOG40_RETAINED_OEX_CLEANUP),
@@ -1819,7 +1832,8 @@ mod normal_oex_release_declaration_tests {
         assert_eq!(source.workspace_furnishing_ledger(catalog).unwrap(), target.workspace_furnishing_ledger(catalog).unwrap());
         assert!(Payload::open_workspace_v5_validation(&target_root, false).is_ok());
         assert!(Payload::open_workspace_v5_validation(&target_root, true).is_err());
-        target.manifest.files.retain(|file| file.path != CATALOG45_RECOVERY_CAPABILITY.0);
+        target.manifest.files.retain(|file| file.path != CATALOG45_RECOVERY_CAPABILITY.0
+            && file.path != CATALOG45_SELECTED_RECOVERY_CAPABILITY.0);
         assert!(target.workspace_furnishing_catalog().is_err());
     }
 
@@ -2523,6 +2537,16 @@ impl Payload {
         ))
     }
 
+    pub(crate) fn catalog45_selected_recovery_validation(&self) -> bool {
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        return CATALOG45_SELECTED_RECOVERY_TARGET == (
+            self.manifest.source_commit.as_str(), self.manifest.producer_sha256.as_str(),
+            self.manifest_sha256.as_str(),
+        );
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        false
+    }
+
     pub(crate) fn fresh_image_recovery_enabled(&self) -> bool {
         self.fresh_image_release() || fresh_image_recovery_host_matches((
             &self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256,
@@ -2651,14 +2675,15 @@ impl Payload {
         if model_preparation_declared != model_preparation_pinned {
             return Err(unqualified());
         }
-        let (recovery_path, recovery_bytes, recovery_sha) = CATALOG45_RECOVERY_CAPABILITY;
-        let recovery_marker = self.manifest.files.iter().find(|file| file.path == recovery_path);
-        if recovery_marker.is_some() != self.catalog45_recovery_validation() {
-            return Err(unqualified());
-        }
-        if let Some(file) = recovery_marker {
-            if file.link.is_some() || file.executable != Some(false)
-                || file.bytes != Some(recovery_bytes) || file.sha256.as_deref() != Some(recovery_sha)
+        let selected_recovery = self.catalog45_selected_recovery_validation();
+        for ((path, bytes, sha), expected) in [
+            (CATALOG45_RECOVERY_CAPABILITY, self.catalog45_recovery_validation() && !selected_recovery),
+            (CATALOG45_SELECTED_RECOVERY_CAPABILITY, selected_recovery),
+        ] {
+            let marker = self.manifest.files.iter().find(|file| file.path == path);
+            if marker.is_some() != expected || marker.is_some_and(|file|
+                file.link.is_some() || file.executable != Some(false)
+                    || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(sha))
             {
                 return Err(unqualified());
             }
