@@ -90,6 +90,44 @@ final class ExhibitionDocumentTests: XCTestCase {
         XCTAssertEqual(draft.document["editVersion"].integer, before.document["editVersion"].integer.map { $0 + 1 })
     }
 
+    func testInterpretationRequiresReviewedTextAndPreservesOtherContent() throws {
+        var draft = try NativeExhibitionDraft.new()
+        let room = try XCTUnwrap(draft.rooms.first?["id"].string)
+        let artwork: DocumentValue = .object(["kind": .string("artwork"), "revisionId": .string(UUID().uuidString),
+                                                "primaryAssetId": .string(UUID().uuidString), "metadata": .object(["description": .string("원래 설명")])])
+        try draft.addApprovedArtwork(artwork, roomId: room, position: [0, 1, 0])
+        try draft.addApprovedArtwork(artwork, roomId: room, position: [2, 1, 0])
+        let id = try XCTUnwrap(draft.placements.first?["id"].string)
+        let before = draft
+        XCTAssertThrowsError(try draft.setArtworkInterpretation(id, expectedText: "이전 값이 다름", text: "새 해설"))
+        XCTAssertThrowsError(try draft.setArtworkInterpretation(id, expectedText: "원래 설명", text: "  \n"))
+        XCTAssertEqual(draft, before)
+        try draft.setArtworkInterpretation(id, expectedText: "원래 설명", text: "새 해설")
+        var expected = before.candidate
+        var descriptions = try XCTUnwrap(expected["accessibility"]["artworkDescriptions"].items)
+        descriptions[0]["text"] = .string("새 해설")
+        expected["accessibility"]["artworkDescriptions"] = .array(descriptions)
+        XCTAssertEqual(draft.candidate, expected)
+        XCTAssertEqual(draft.document["editVersion"].integer, before.document["editVersion"].integer.map { $0 + 1 })
+    }
+
+    func testPositionMovePreservesPlacementRelationshipsAndOtherPoseFields() throws {
+        var draft = try NativeExhibitionDraft.new()
+        let room = try XCTUnwrap(draft.rooms.first?["id"].string)
+        let artwork: DocumentValue = .object(["kind": .string("artwork"), "revisionId": .string(UUID().uuidString),
+                                                "primaryAssetId": .string(UUID().uuidString)])
+        try draft.addApprovedArtwork(artwork, roomId: room, position: [0, 1, 0])
+        let id = try XCTUnwrap(draft.placements.first?["id"].string)
+        let before = draft
+        try draft.movePlacement(id, position: [2, 1, -1])
+        var expected = before.candidate
+        var placements = before.placements
+        placements[0]["transform"]["position"] = .vector([2, 1, -1])
+        expected["placements"] = .array(placements)
+        XCTAssertEqual(draft.candidate, expected)
+        XCTAssertEqual(draft.document["editVersion"].integer, before.document["editVersion"].integer.map { $0 + 1 })
+    }
+
     func testApprovedCompactRefreshKeepsPlacementAndFullModel() throws {
         var draft = try NativeExhibitionDraft.new()
         let room = try XCTUnwrap(draft.rooms.first?["id"].string)
