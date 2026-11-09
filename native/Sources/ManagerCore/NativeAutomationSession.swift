@@ -65,13 +65,16 @@ public actor NativeAutomationSession {
 
     public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false, workspaceV5ValidationRuntime: URL? = nil, existingWorkspaceV5: ExistingWorkspaceV5? = nil, workspaceV6ValidationRuntime: URL? = nil, workspaceV7ValidationRuntime: URL? = nil) throws {
         let draft12 = workspaceV6ValidationRuntime != nil || workspaceV7ValidationRuntime != nil
-        let ordinaryHayes = !draft12 && workspaceV5ValidationRuntime == nil
-            && existingWorkspaceV5.map { NativeHayesOriginalIntent.supports(manifest: $0.manifestSHA256) } == true
+        let ordinaryExisting = !draft12 && workspaceV5ValidationRuntime == nil
+            && existingWorkspaceV5.map {
+                NativeHayesOriginalIntent.supports(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsProductImageRuntime(manifest: $0.manifestSHA256)
+            } == true
         guard !(selectedOEX9 && selectedOEX10),
               workspaceV6ValidationRuntime == nil || workspaceV7ValidationRuntime == nil,
               !draft12 || (!selectedOEX9 && !selectedOEX10 && workspaceV5ValidationRuntime == nil),
               existingWorkspaceV5 == nil || (!selectedOEX9 && !selectedOEX10
-                  && (workspaceV5ValidationRuntime != nil || workspaceV7ValidationRuntime != nil || ordinaryHayes)),
+                  && (workspaceV5ValidationRuntime != nil || workspaceV7ValidationRuntime != nil || ordinaryExisting)),
               workspaceV5ValidationRuntime == nil || selectedOEX10 || existingWorkspaceV5 != nil else {
             throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID")
         }
@@ -451,37 +454,73 @@ public actor NativeAutomationSession {
     private func prepareReviewedArtwork(_ request: DocumentValue, id: String, context: Context,
                                         api: AuthoringAPI, current: NativeDocumentState) async throws -> DocumentValue {
         try checkedRevision(request, current)
-        let command = try NativeAutomationArtworkRules.command(request, keys: [
-            "artworkId", "artworkRevision", "approvalId", "derivedSha256", "retryFailed"
-        ])
+        let product = request["command"]["kind"] == .string(NativeProductImagePreparationIntent.profileID)
+        let common: Set<String> = ["artworkId", "artworkRevision", "retryFailed"]
+        let command = try NativeAutomationArtworkRules.command(request, keys: product
+            ? common.union(["kind"]) : common.union(["approvalId", "derivedSha256"]))
+        let available = product ? await api.admitsProductImagePreparation : api.admitsSameOwnerArtworkReplacement
+        guard available else { throw BridgeFailure("ARTWORK_REPLACEMENT_UNAVAILABLE") }
         guard !current.dirty, let draft = current.draft, let etag = current.etag,
               let path = request["inputPath"].string, let sourceHash = inputs[path],
               let artworkId = command["artworkId"].string,
               let revision = command["artworkRevision"].integer, (1...2_147_483_647).contains(revision),
-              let approvalId = command["approvalId"].string,
-              let expectedDerived = command["derivedSha256"].string, nativeImportDigest(expectedDerived),
               case .bool(let retryFailed) = command["retryFailed"] else {
             throw BridgeFailure("AUTOMATION_INPUT_INVALID")
         }
-        let coarse = NativeCoarsePreparationIntent(approvalId: approvalId, artworkRevision: Int(revision))
-        guard coarse.valid, draft.candidate["artworks"].items?.contains(where: { item in
+        guard draft.candidate["artworks"].items?.contains(where: { item in
             let cms = item["extensions"]["org.exhibitos.studio/cms"]
             return item["id"].string == artworkId && cms["tenantId"].string == current.tenantId
                 && cms["artworkId"].string == artworkId && cms["revision"].integer == revision
+                && (!product || item["artworkType"].string == "image")
         }) == true else { throw BridgeFailure("ARTWORK_SCOPE_CHANGED") }
         let saved = try await api.exhibition(draft.id)
         guard saved.draft == draft, saved.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
-        let artwork = try await api.artwork(artworkId)
-        guard artwork.id == artworkId, Int64(artwork.revision) == revision, !artwork.archived,
-              artwork.approvedRevision == artwork.revision, let rights = artwork.metadata?.rights else {
-            throw BridgeFailure("ARTWORK_SCOPE_CHANGED")
-        }
         let state = try await bridge.uploadState(context)
         try NativeAutomationArtworkRules.checkUploadScope(state, document: current)
         let url = URL(fileURLWithPath: path)
         guard url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
         let original = try await ImportFileSnapshot.load(url, allowJPEG: true)
         guard original.mime == "image/jpeg", original.sha256 == sourceHash else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
+        if product {
+            let preparation = NativeProductImagePreparationIntent(artworkRevision: Int(revision))
+            let intent: NativeImportIntent
+            if let retained = state.intent {
+                guard retained.artworkId == artworkId, retained.idempotencyKey == id,
+                      retained.productImagePreparation == preparation, original.matches(retained) else {
+                    throw BridgeFailure("IMPORT_INTENT_CHANGED")
+                }
+                intent = retained
+            } else {
+                let artwork = try await api.artwork(artworkId)
+                try preparation.checkSource(original, artwork: artwork)
+                guard artwork.id == artworkId, let rights = artwork.metadata?.rights else {
+                    throw BridgeFailure("ARTWORK_SCOPE_CHANGED")
+                }
+                intent = NativeImportIntent(artworkId: artworkId, idempotencyKey: id, mime: original.mime,
+                    sha256: original.sha256, bytes: original.data.count, scaleMeters: 1, rights: rights,
+                    productImagePreparation: preparation)
+            }
+            var job = try await NativeAutomationArtworkTransfer.run(bridge: bridge, context: context, state: state,
+                intent: intent, file: original, transport: api)
+            if retryFailed, job.state == "failed", job.canRetry, job.retryAt != nil, job.confirmsIntakeDrain(for: intent) {
+                let jobId = job.id
+                job = try await api.importAction(jobId, action: .retry)
+                guard job.id == jobId else { throw BridgeFailure("IMPORT_RECEIPT_INVALID") }
+            }
+            return .object(["job": try productImageJobValue(job, intent: intent, current: current),
+                            "transfer": try value(await bridge.uploadState(context))])
+        }
+        guard let approvalId = command["approvalId"].string,
+              let expectedDerived = command["derivedSha256"].string, nativeImportDigest(expectedDerived) else {
+            throw BridgeFailure("AUTOMATION_INPUT_INVALID")
+        }
+        let coarse = NativeCoarsePreparationIntent(approvalId: approvalId, artworkRevision: Int(revision))
+        guard coarse.valid else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+        let artwork = try await api.artwork(artworkId)
+        guard artwork.id == artworkId, Int64(artwork.revision) == revision, !artwork.archived,
+              artwork.approvedRevision == artwork.revision, let rights = artwork.metadata?.rights else {
+            throw BridgeFailure("ARTWORK_SCOPE_CHANGED")
+        }
         let derived = try await NativePreparedJPEG.prepare(
             original: original, operationID: id, generation: id, isCurrent: { !Task.isCancelled }, allowICC: true
         )
@@ -502,9 +541,23 @@ public actor NativeAutomationSession {
                         "transfer": try value(await bridge.uploadState(context))])
     }
 
+    private func productImageJobValue(_ job: NativeImportJob, intent: NativeImportIntent,
+                                      current: NativeDocumentState) throws -> DocumentValue {
+        guard let preparation = intent.productImagePreparation, let status = job.productImagePreparation,
+              status.matches(preparation, job: job),
+              status.status != .ready || status.validatesReady(intent: intent, preparation: preparation, job: job,
+                  workspaceID: current.workspaceId, principalID: current.principalId) else {
+            throw BridgeFailure("IMPORT_RECEIPT_INVALID")
+        }
+        var wire = NativeAutomationArtworkRules.jobValue(job)
+        wire["imagePreparation"] = try value(status)
+        return wire
+    }
+
     private func admitsReplacement(_ command: NativeAutomationReplacementCommand, api: AuthoringAPI) async -> Bool {
         switch command.target {
         case .image: api.admitsSameOwnerArtworkReplacement
+        case .productImage: await api.admitsProductImagePreparation
         case .approvedModel: await api.admitsApprovedModelCandidateReplacement
         }
     }
@@ -524,6 +577,11 @@ public actor NativeAutomationSession {
         case .image:
             guard let intent = state.intent, intent.artworkId == command.artworkId, state.jobId == command.importJobId,
                   intent.coarsePreparation?.artworkRevision == command.artworkRevision else {
+                throw BridgeFailure("IMPORT_INTENT_CHANGED")
+            }
+        case .productImage:
+            guard let intent = state.intent, intent.artworkId == command.artworkId, state.jobId == command.importJobId,
+                  intent.productImagePreparation?.artworkRevision == command.artworkRevision else {
                 throw BridgeFailure("IMPORT_INTENT_CHANGED")
             }
         case .approvedModel:
@@ -547,6 +605,10 @@ public actor NativeAutomationSession {
             guard previous.draft == draft, previous.etag == command.etag, previous.revision == command.studioRevision else {
                 throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
             }
+            if case .productImage(let receiptSHA256) = command.target, let intent = state.intent {
+                _ = try await api.reviewProductImage(importJobId: command.importJobId, intent: intent,
+                    workspaceId: current.workspaceId, principalId: current.principalId, expectedReceiptSHA256: receiptSHA256)
+            }
             try saveReplacementAttempt(attempt)
         }
         try syncArtworkAttempt(at: replacementAttemptPath)
@@ -558,6 +620,11 @@ public actor NativeAutomationSession {
                 exhibitionId: draft.id, studioRevision: command.studioRevision, etag: command.etag, requestId: id,
                 importJobId: command.importJobId, intent: intent, expectedCoarseSHA256: coarseSHA256
             )
+        case .productImage(let receiptSHA256):
+            guard let intent = state.intent else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
+            stored = try await api.replaceProductImage(exhibitionId: draft.id, studioRevision: command.studioRevision,
+                etag: command.etag, requestId: id, importJobId: command.importJobId, intent: intent,
+                workspaceId: current.workspaceId, principalId: current.principalId, expectedReceiptSHA256: receiptSHA256)
         case .approvedModel(let placementID):
             stored = try await api.replaceApprovedModelCandidate(
                 draft: draft, studioRevision: command.studioRevision, etag: command.etag, requestId: id,
@@ -732,13 +799,15 @@ public actor NativeAutomationSession {
             var transfer = try await bridge.uploadState(context)
             try NativeAutomationArtworkRules.checkUploadScope(transfer, document: current)
             let requiredPreparationAvailable = await api.admitsRequiredModelPreparation
+            let productPreparationAvailable = await api.admitsProductImagePreparation
             guard selectedOEXFormat == nil, !current.dirty,
                   let draft = current.draft, let etag = current.etag,
                   let artworkId = command["artworkId"].string, let jobId = command["jobId"].string,
                   let revision = command["artworkRevision"].integer,
                   let intent = transfer.intent, intent.artworkId == artworkId, transfer.jobId == jobId,
                   (intent.coarsePreparation != nil && api.admitsSameOwnerArtworkReplacement)
-                    || (intent.modelPreparation != nil && requiredPreparationAvailable) else {
+                    || (intent.modelPreparation != nil && requiredPreparationAvailable)
+                    || (intent.productImagePreparation != nil && productPreparationAvailable) else {
                 throw BridgeFailure("IMPORT_INTENT_CHANGED")
             }
             let saved = try await api.exhibition(draft.id)
@@ -751,7 +820,11 @@ public actor NativeAutomationSession {
                       $0["id"].string == artworkId && $0["revision"].integer == revision && $0["primaryAssetId"].string == assetId
                   }) else { throw BridgeFailure("APPROVAL_REVIEW_REQUIRED") }
             let jobProof: DocumentValue
-            if intent.modelPreparation != nil {
+            if let preparation = intent.productImagePreparation {
+                guard revision == Int64(preparation.artworkRevision + 1),
+                      job.productImagePreparation?.status == .ready else { throw BridgeFailure("APPROVAL_REVIEW_REQUIRED") }
+                jobProof = try productImageJobValue(job, intent: intent, current: current)
+            } else if intent.modelPreparation != nil {
                 guard job.modelPreparation?.permitsReview(of: artwork, request: intent, job: job) == true else {
                     throw BridgeFailure("APPROVAL_REVIEW_REQUIRED")
                 }
@@ -786,7 +859,7 @@ public actor NativeAutomationSession {
             }
             result = try value(await api.registeredFrameLineage(history, workspaceId: current.workspaceId, original: original))
         case "artwork-prepare-reviewed":
-            guard selectedOEXFormat == nil, api.admitsSameOwnerArtworkReplacement,
+            guard selectedOEXFormat == nil,
                   UUID(uuidString: id)?.uuidString.lowercased() == id else {
                 throw BridgeFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
             }
@@ -1248,6 +1321,12 @@ public actor NativeAutomationSession {
             var fields: [String: DocumentValue] = ["artwork": try value(artwork), "transfer": try value(state)]
             if let intent = state.intent, intent.artworkId == artwork.id, let job = state.jobId {
                 let observed = try await api.importJob(job)
+                guard observed.id == job else { throw BridgeFailure("IMPORT_RECEIPT_INVALID") }
+                if intent.productImagePreparation != nil {
+                    fields["job"] = try productImageJobValue(observed, intent: intent, current: current)
+                    result = .object(fields)
+                    break
+                }
                 if intent.modelPreparation != nil {
                     guard observed.id == job, observed.modelPreparation?.matches(intent, job: observed) == true else {
                         throw BridgeFailure("IMPORT_RECEIPT_INVALID")

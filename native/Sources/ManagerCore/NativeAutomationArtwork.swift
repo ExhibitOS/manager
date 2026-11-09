@@ -4,6 +4,7 @@ import Foundation
 struct NativeAutomationReplacementCommand {
     enum Target {
         case image(coarseSHA256: String)
+        case productImage(receiptSHA256: String)
         case approvedModel(placementID: String)
     }
 
@@ -25,6 +26,12 @@ struct NativeAutomationReplacementCommand {
                 throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
             }
             target = .approvedModel(placementID: placement)
+        } else if request["command"]["kind"] == .string(NativeProductImagePreparationIntent.profileID) {
+            command = try NativeAutomationArtworkRules.command(request, keys: common.union(["kind", "receiptSha256"]))
+            guard let sha256 = command["receiptSha256"].string, nativeImportDigest(sha256) else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            target = .productImage(receiptSHA256: sha256)
         } else {
             command = try NativeAutomationArtworkRules.command(request, keys: common.union(["coarseSha256"]))
             guard let sha256 = command["coarseSha256"].string, nativeImportDigest(sha256) else {
@@ -168,12 +175,15 @@ enum NativeAutomationArtworkTransfer {
         let glb = intent.mime == "model/gltf-binary" && intent.derived == nil && intent.coarsePreparation == nil && derived == nil
         let reviewed = intent.mime == "image/jpeg" && intent.coarsePreparation?.valid == true
             && intent.derived?.recipe.colourConversion != nil && derived?.derived == intent.derived && intent.scaleMeters == 1
-        guard glb || reviewed, intent.modelDerivation == nil,
+        let product = intent.mime == "image/jpeg" && intent.productImagePreparation?.valid == true
+            && intent.derived == nil && intent.coarsePreparation == nil && derived == nil && intent.scaleMeters == 1
+        guard glb || reviewed || product, intent.modelDerivation == nil, intent.modelPreparation == nil,
+              intent.hayesOriginal == nil, intent.productImagePreparation == nil || product,
               intent.scaleMeters.isFinite, intent.scaleMeters > 0, intent.scaleMeters <= 1_000_000,
               initial.intent == nil || initial.intent == intent else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
         var state = initial
         let transfer = NativeImportTransfer()
-        return try await transfer.run(intent: intent, jobID: state.jobId, file: file, derived: derived, transport: transport,
+        do { return try await transfer.run(intent: intent, jobID: state.jobId, file: file, derived: derived, transport: transport,
             persistIntent: {
                 if state.intent == nil {
                     state.intent = intent; state.fileName = file.name; state.jobId = nil
@@ -185,5 +195,12 @@ enum NativeAutomationArtworkTransfer {
                 state.jobId = job.id
                 state = try await bridge.saveUploadState(context, state: state)
             }, isCurrent: { !Task.isCancelled })
+        } catch let error as AuthoringFailure where product && NativeProductImagePreparationIntent.definitivelyRejectedCreate(error) {
+            if state.intent == intent, state.jobId == nil, !Task.isCancelled {
+                state.intent = nil; state.fileName = nil
+                _ = try await bridge.saveUploadState(context, state: state)
+            }
+            throw error
+        }
     }
 }

@@ -102,7 +102,7 @@ impl Binding {
                     && crate::native_payload::required_model_preparation_host_matches(tuple))
                 || (self.catalog == 45 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)
-                    && crate::native_payload::ordinary_default_frame_host_matches(tuple)))
+                    && crate::native_payload::ordinary_fresh_catalog45_host_matches(tuple)))
             || (self.catalog == 41
                 && (self.restore.is_some()
                     || !matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)))

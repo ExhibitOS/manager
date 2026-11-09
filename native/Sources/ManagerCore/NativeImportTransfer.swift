@@ -60,6 +60,15 @@ public final class NativeImportTransfer {
         if let preparation = intent.modelPreparation {
             guard preparation.matches(intent) else { throw AuthoringFailure("IMPORT_MODEL_BINDING_INVALID") }
         }
+        let sourceOnlyJPEG = intent.productImagePreparation != nil
+        if let preparation = intent.productImagePreparation {
+            guard preparation.valid, intent.mime == "image/jpeg", intent.scaleMeters == 1,
+                  (4...NativeProductImagePreparationIntent.maximumSourceBytes).contains(intent.bytes),
+                  intent.derived == nil, intent.coarsePreparation == nil, intent.modelDerivation == nil,
+                  intent.modelPreparation == nil, intent.hayesOriginal == nil, derived == nil else {
+                throw AuthoringFailure("IMPORT_INTENT_CHANGED")
+            }
+        }
         guard task == nil, modelDrainTask == nil,
               modelOperation.map({ $0.intent == intent }) ?? true else { throw AuthoringFailure("IMPORT_ACTIVE") }
         if let model = intent.modelDerivation {
@@ -80,7 +89,9 @@ public final class NativeImportTransfer {
                     guard intent.mime == "image/jpeg", descriptor.valid, let derived,
                           derived.originalSHA256 == intent.sha256, derived.derived == descriptor,
                           derived.png.count == descriptor.bytes, nativeImportSHA256(derived.png) == descriptor.sha256 else { throw AuthoringFailure("IMPORT_DERIVED_REQUIRED") }
-                } else if derived != nil || intent.mime == "image/jpeg" { throw AuthoringFailure("IMPORT_INTENT_CHANGED") }
+                } else if derived != nil || (intent.mime == "image/jpeg" && !sourceOnlyJPEG) {
+                    throw AuthoringFailure("IMPORT_INTENT_CHANGED")
+                }
             }
             try await persistIntent()
             try check()
@@ -143,6 +154,10 @@ public final class NativeImportTransfer {
     }
 
     private static func valid(_ job: NativeImportJob, intent: NativeImportIntent) -> Bool {
+        if let preparation = intent.productImagePreparation {
+            return job.productImagePreparation?.matches(preparation, job: job) == true
+        }
+        guard job.productImagePreparation == nil else { return false }
         if intent.modelPreparation != nil {
             return UUID(uuidString: job.id) != nil && job.modelDerivation == nil
                 && job.imagePreparation == nil && job.coarsePreparation == nil

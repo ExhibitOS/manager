@@ -18,7 +18,9 @@ struct NativeImportControls: View {
         Form {
           Section("작품 파일") {
             VStack(alignment: .leading, spacing: 12) {
-                if let compact = model.compactTransfer {
+                if model.hasProductImageTransfer {
+                    Text("전시의 선택 속성에서 JPEG 교체 준비를 이어갈 수 있습니다.")
+                } else if let compact = model.compactTransfer {
                     compactControls(compact)
                 } else if !belongs, let id = model.transfer?.intent?.artworkId {
                     Text("다른 작품에 시작한 파일 검사가 있습니다.")
@@ -75,10 +77,11 @@ struct NativeImportControls: View {
                                 || model.inspectedReferencePending || (!model.ordinaryUnknownModel && (!model.importScale.isFinite || model.importScale <= 0)))
                     }
                 }
-                if (!model.hasUnknownSourceUnits || model.ordinaryUnknownModel) && model.transfer?.intent != nil && model.importJob == nil {
+                if !model.hasProductImageTransfer && (!model.hasUnknownSourceUnits || model.ordinaryUnknownModel)
+                    && model.transfer?.intent != nil && model.importJob == nil {
                     Button("이전 검사 요청 찾기") { Task { await model.recoverImport() } }
                 }
-                if belongs, let job = model.importJob {
+                if !model.hasProductImageTransfer, belongs, let job = model.importJob {
                     let visibleState = job.modelPreparation?.status == .processing ? "processing" : job.state
                     Label(stateTitle(visibleState), systemImage: visibleState == "approved" ? "checkmark.circle" : "doc.text.magnifyingglass")
                     if model.jpegOriginalStored { Text("JPEG 원본과 감상용 PNG를 이 Mac에 보관했습니다.").foregroundStyle(.secondary) }
@@ -129,7 +132,7 @@ struct NativeImportControls: View {
                         DisclosureGroup("검사 오류 상세") { Text(code).textSelection(.enabled) }
                     }
                 }
-                if !approvedAssets.isEmpty {
+                if !model.hasProductImageTransfer, !approvedAssets.isEmpty {
                     if !model.hasUnknownSourceUnits || model.ordinaryUnknownModel {
                         Picker("전시에 쓸 파일", selection: $model.assetId) {
                             Text("파일 선택").tag("")

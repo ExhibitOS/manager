@@ -7,6 +7,7 @@ import ManagerCore
 /// purpose only replaces its inspector, never the document or rendering host.
 struct NativeExhibitionView: View {
     @ObservedObject var model: ExhibitionModel
+    @ObservedObject var authoring: AuthoringModel
     @ObservedObject var controller: NativeViewportController
     @ObservedObject var oexImport: OEXImportModel
     let ready: Bool
@@ -259,7 +260,7 @@ struct NativeExhibitionView: View {
                 else if !model.selectedPlaqueId.isEmpty { SelectedPlaqueInspector(model: model, controller: model.viewportController, ready: ready, mode: mode).id(model.selectedPlaqueId) }
                 else if !model.selectedBenchId.isEmpty { SelectedBenchInspector(model: model, controller: model.viewportController, ready: ready, mode: mode).id(model.selectedBenchId) }
                 else if !model.selectedLightId.isEmpty { SelectedLightInspector(model: model, controller: model.viewportController, ready: ready, mode: mode).id(model.selectedLightId) }
-                else if hasSelectedPlacement { SelectedPlacementInspector(model: model, ready: ready, mode: mode, inputs: selectedInputs).id(model.placementId) }
+                else if hasSelectedPlacement { SelectedPlacementInspector(model: model, authoring: authoring, ready: ready, mode: mode, inputs: selectedInputs).id(model.placementId) }
                 else { ScrollView { ArchitectureSettingsView(model: model, ready: ready, mode: mode).padding(4) } }
             }
         case .lighting:
@@ -317,7 +318,11 @@ struct NativeExhibitionView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("저장·내보내기").font(.headline)
             Button("입력 이 Mac에 보관") { Task { if controller.editingContextActive { await model.keepLocal() } } }.disabled(!ready || readOnly || model.busy || model.pending || model.immutable || model.entrancePreviewActive)
-            if model.hasPendingModelCandidateReplacement {
+            if model.hasPendingProductImageReplacement {
+                Button("이미지 교체 응답 다시 확인") {
+                    Task { if controller.editingContextActive { await model.replaceWithProductImage(authoring: authoring) } }
+                }.disabled(!ready || readOnly || model.busy)
+            } else if model.hasPendingModelCandidateReplacement {
                 Button("작품 교체 응답 다시 확인") {
                     Task { if controller.editingContextActive { await model.replaceWithSelectedModelCandidate() } }
                 }.disabled(!ready || model.busy)

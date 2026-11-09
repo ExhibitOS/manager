@@ -25,8 +25,42 @@ pub struct Intent {
         skip_serializing_if = "Option::is_none"
     )]
     pub coarse_preparation: Option<CoarsePreparation>,
+    #[serde(
+        default,
+        deserialize_with = "ProductImagePreparation::deserialize_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub product_image_preparation: Option<ProductImagePreparation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hayes_original: Option<HayesOriginal>,
+}
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProductImagePreparation {
+    version: u32,
+    profile: String,
+    artwork_revision: u32,
+}
+impl ProductImagePreparation {
+    fn deserialize_present<'de, D: serde::Deserializer<'de>>(
+        decoder: D,
+    ) -> std::result::Result<Option<Self>, D::Error> {
+        Self::deserialize(decoder).map(Some)
+    }
+
+    fn valid(&self, intent: &Intent) -> bool {
+        self.version == 1
+            && self.profile == "product-image-pair-2048-512-v1"
+            && (1..i32::MAX as u32).contains(&self.artwork_revision)
+            && intent.mime == "image/jpeg"
+            && intent.bytes >= 4
+            && intent.scale_meters == 1.0
+            && intent.derived.is_none()
+            && intent.model_derivation.is_none()
+            && intent.model_preparation.is_none()
+            && intent.coarse_preparation.is_none()
+            && intent.hayes_original.is_none()
+    }
 }
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -269,6 +303,7 @@ pub(crate) fn validate(s: &Transfer) -> Result<()> {
             || !match (i.mime.as_str(), &i.derived) {
                 ("model/gltf-binary" | "image/png", None) => true,
                 ("image/jpeg", Some(derived)) => derived.valid(),
+                ("image/jpeg", None) => i.product_image_preparation.is_some(),
                 _ => false,
             }
             || !hash_valid(&i.sha256)
@@ -277,6 +312,9 @@ pub(crate) fn validate(s: &Transfer) -> Result<()> {
             || i.coarse_preparation
                 .as_ref()
                 .is_some_and(|coarse| !coarse.valid(i))
+            || i.product_image_preparation
+                .as_ref()
+                .is_some_and(|image| !image.valid(i))
             || i.hayes_original.as_ref().is_some_and(|hayes| !hayes.valid(i))
             || i.bytes == 0
             || i.bytes > 32 * 1024 * 1024
@@ -369,8 +407,11 @@ impl InstallationController {
             if !compact_matches {
                 return Err(err("NATIVE_UPLOAD_STATE_CHANGED"));
             }
+            let product_image_bound = [&current.intent, &state.intent].into_iter().any(|intent| {
+                intent.as_ref().is_some_and(|intent| intent.product_image_preparation.is_some())
+            });
             if let Some(next) = &state.intent
-                && (next.coarse_preparation.is_some() || next.hayes_original.is_some()
+                && (product_image_bound || next.coarse_preparation.is_some() || next.hayes_original.is_some()
                     || current.intent.as_ref().is_some_and(|prior|
                         prior.coarse_preparation.is_some() || prior.hayes_original.is_some()))
             {
@@ -381,7 +422,7 @@ impl InstallationController {
                 // Persist a new intent before recording its first server job.
                 // Retrying then keeps both the exact intent and any bound job.
                 let matches = match prior {
-                    None => state.job_id.is_none(),
+                    None => state.job_id.is_none() && (!product_image_bound || current.intent.is_none()),
                     Some(prior) => prior == next
                         && (current.job_id.is_none() || current.job_id == state.job_id),
                 };
@@ -549,6 +590,49 @@ mod tests {
         input
     }
 
+    fn product_image_fixture() -> Value {
+        let mut input = fixture();
+        input["fileName"] = serde_json::json!("synthetic.jpg");
+        input["intent"]["mime"] = serde_json::json!("image/jpeg");
+        input["intent"]["productImagePreparation"] = serde_json::json!({
+            "version": 1,
+            "profile": "product-image-pair-2048-512-v1",
+            "artworkRevision": 1
+        });
+        input
+    }
+
+    #[test]
+    fn product_image_intent_only_accepts_an_original_jpeg() {
+        let input = product_image_fixture();
+        let state: Transfer = serde_json::from_value(input.clone()).unwrap();
+        validate(&state).unwrap();
+        assert_eq!(serde_json::to_value(state).unwrap(), input);
+        for (pointer, value) in [
+            ("/intent/productImagePreparation/version", serde_json::json!(2)),
+            ("/intent/productImagePreparation/profile", serde_json::json!("other")),
+            ("/intent/productImagePreparation/artworkRevision", serde_json::json!(0)),
+            ("/intent/productImagePreparation/artworkRevision", serde_json::json!(2_147_483_647)),
+            ("/intent/mime", serde_json::json!("image/png")),
+            ("/intent/bytes", serde_json::json!(3)),
+            ("/intent/bytes", serde_json::json!(32 * 1024 * 1024 + 1)),
+            ("/intent/scaleMeters", serde_json::json!(2.0)),
+        ] {
+            let mut changed = input.clone();
+            *changed.pointer_mut(pointer).unwrap() = value;
+            assert!(validate(&serde_json::from_value(changed).unwrap()).is_err(), "{pointer}");
+        }
+        let mut mixed = coarse_fixture();
+        mixed["intent"]["productImagePreparation"] = input["intent"]["productImagePreparation"].clone();
+        assert!(validate(&serde_json::from_value(mixed).unwrap()).is_err());
+        let mut changed = input.clone();
+        changed["intent"]["productImagePreparation"]["approvalId"] = serde_json::json!(Uuid::new_v4());
+        assert!(serde_json::from_value::<Transfer>(changed).is_err());
+        let mut changed = input;
+        changed["intent"]["productImagePreparation"] = Value::Null;
+        assert!(serde_json::from_value::<Transfer>(changed).is_err());
+    }
+
     #[test]
     fn coarse_intent_is_closed_and_requires_an_icc_jpeg() {
         let input = coarse_fixture();
@@ -585,6 +669,15 @@ mod tests {
 
     #[test]
     fn coarse_intent_and_job_binding_survive_controller_restart() {
+        assert_image_intent_survives_restart(coarse_fixture(), "coarsePreparation");
+    }
+
+    #[test]
+    fn product_image_intent_and_job_binding_survive_controller_restart() {
+        assert_image_intent_survives_restart(product_image_fixture(), "productImagePreparation");
+    }
+
+    fn assert_image_intent_survives_restart(input: Value, preparation_field: &str) {
         struct OwnedFixture(PathBuf);
         impl Drop for OwnedFixture {
             fn drop(&mut self) {
@@ -593,11 +686,11 @@ mod tests {
         }
         let parent = fs::canonicalize(std::env::temp_dir())
             .unwrap()
-            .join(format!("exhibitos-coarse-upload-{}", Uuid::new_v4()));
+            .join(format!("exhibitos-image-upload-{}", Uuid::new_v4()));
         new_directory(&parent).unwrap();
-        let fixture = OwnedFixture(parent);
-        let profile = fixture.0.join("profile");
-        let mut state: Transfer = serde_json::from_value(coarse_fixture()).unwrap();
+        let owned_fixture = OwnedFixture(parent);
+        let profile = owned_fixture.0.join("profile");
+        let mut state: Transfer = serde_json::from_value(input).unwrap();
         let controller = InstallationController::new(profile.clone(), None).unwrap();
         let token = controller.context().unwrap().selection_token;
         controller
@@ -634,17 +727,12 @@ mod tests {
         let token = reopened.context().unwrap().selection_token;
         let resumed = reopened.native_upload(&token).unwrap();
         assert_eq!(serde_json::to_value(&resumed).unwrap(), persisted);
-        let mut changed = resumed.clone();
-        let coarse = changed
-            .intent
-            .as_mut()
-            .unwrap()
-            .coarse_preparation
-            .as_mut()
-            .unwrap();
-        coarse.artwork_revision += 1;
+        let mut changed = persisted.clone();
+        changed["intent"][preparation_field]["artworkRevision"] = serde_json::json!(2);
         assert_eq!(
-            reopened.save_native_upload(&token, changed).err().unwrap().code,
+            reopened
+                .save_native_upload(&token, serde_json::from_value(changed).unwrap())
+                .err().unwrap().code,
             "NATIVE_UPLOAD_STATE_CHANGED"
         );
         let mut changed = resumed.clone();
@@ -653,6 +741,15 @@ mod tests {
             reopened.save_native_upload(&token, changed).err().unwrap().code,
             "NATIVE_UPLOAD_STATE_CHANGED"
         );
+        if preparation_field == "productImagePreparation" {
+            let mut changed = resumed.clone();
+            changed.intent = serde_json::from_value::<Transfer>(fixture()).unwrap().intent;
+            changed.job_id = None;
+            assert_eq!(
+                reopened.save_native_upload(&token, changed).err().unwrap().code,
+                "NATIVE_UPLOAD_STATE_CHANGED"
+            );
+        }
         let mut changed = resumed.clone();
         changed.job_id = Some(Uuid::new_v4().to_string());
         assert_eq!(

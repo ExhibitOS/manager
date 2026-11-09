@@ -198,6 +198,23 @@ The preparation command records the exact intent before creating the job and rec
 
 The replacement command saves the original request and ETag in the private output directory before posting. Keep that directory and replay the same request after an uncertain response. Use a separate output directory for a separate replacement request. Reopening with a mismatched Studio document allows only the retained recovery operation. The client compares the replacement receipt with a fresh Studio read before updating the local document journal. A later Studio edit requires a new comparison.
 
+For catalog 045, use the reviewed runtime bundled with the debug helper. Set
+`existingWorkspaceV5` and leave the external runtime overrides unset. The
+authenticated session must advertise `nativeProductImagePreparationProfile` as
+`product-image-pair-2048-512-v1`. Use the same operations with these command
+fields and the original JPEG input. The server prepares the display PNG and,
+when useful, a smaller PNG. After the worker drains, review the exact receipt
+from `artwork-status` before submitting the replacement.
+
+```json
+{"operation":"artwork-prepare-reviewed","inputPath":"/absolute/path/to/original.jpg","command":{"kind":"product-image-pair-2048-512-v1","artworkId":"<artwork UUID>","artworkRevision":1,"retryFailed":false}}
+{"operation":"artwork-replace-reviewed","command":{"kind":"product-image-pair-2048-512-v1","artworkId":"<artwork UUID>","artworkRevision":1,"importJobId":"<prepared job UUID>","studioRevision":2,"etag":"\"studio-r2-<64 lowercase hex digits>\"","receiptSha256":"<serverReceipt.sha256>"}}
+```
+
+After confirming the saved replacement, `artwork-finish-reviewed` releases
+the local upload slot. Pass the same `artworkId` and `jobId` and the artwork
+revision from the saved replacement.
+
 ## Registered Prepared update application
 
 The update panel lists only references bound to the selected installation, current Prepared operation, trust generation and registry bytes. It exposes version/schema summaries and opaque IDs, never native file paths or key contents. Applying requires explicit external-writer quiescence and app-close/data-preservation acknowledgements. These acknowledgements do not replace native engine observation. Changed-schema application remains unqualified and cannot be dispatched from this UI.

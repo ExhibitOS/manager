@@ -27,6 +27,7 @@ private actor ImportTransportFixture: NativeImportTransport {
     var createdState = "uploading"
     var assetID: String?
     var originalAssetID: String?
+    var productImageRevision: Int?
     var createHook: (@Sendable () async -> Void)?
     var uploadHook: (@Sendable () async -> Void)?
     func configure(code: String? = nil, state: String = "uploading",
@@ -39,10 +40,16 @@ private actor ImportTransportFixture: NativeImportTransport {
         var value: [String: Any] = ["id": id, "state": state, "progress": 10, "attempts": 0]
         if let assetID { value["assetId"] = assetID }
         if let originalAssetID { value["originalAssetId"] = originalAssetID }
+        if let productImageRevision {
+            value["imagePreparation"] = ["provenance": "server-generated",
+                "profile": NativeProductImagePreparationIntent.profileID, "artworkRevision": productImageRevision,
+                "status": "pending", "workerDrained": false]
+        }
         return try JSONDecoder().decode(NativeImportJob.self, from: JSONSerialization.data(withJSONObject: value))
     }
     func createImport(_ input: NativeImportIntent) async throws -> NativeImportJob {
         calls.append("create:\(input.idempotencyKey)")
+        productImageRevision = input.productImagePreparation?.artworkRevision
         await createHook?()
         return try job(createdState)
     }
@@ -155,6 +162,37 @@ final class NativeImportTransferTests: XCTestCase {
                 let (calls, _) = await transport.observed(); XCTAssertEqual(calls, [])
             }
         }
+    }
+    func testProductImageTransferUploadsOnlyTheOriginalAndKeepsLegacyGuard() async throws {
+        let bytes = Data("original JPEG transport fixture".utf8)
+        let file = ImportFileSnapshot(name: "source.jpg", mime: "image/jpeg", sha256: nativeImportSHA256(bytes), data: bytes)
+        let artworkId = UUID().uuidString.lowercased()
+        let product = NativeImportIntent(artworkId: artworkId, mime: file.mime, sha256: file.sha256,
+            bytes: bytes.count, scaleMeters: 1, rights: ArtworkMetadata().rights, productImagePreparation: .init(artworkRevision: 1))
+        let transport = ImportTransportFixture()
+        var recordedIntent = false
+        let queued = try await NativeImportTransfer().run(intent: product, jobID: nil, file: file, transport: transport,
+            persistIntent: { recordedIntent = true }, persistJob: { _ in XCTAssertTrue(recordedIntent) }, isCurrent: { true })
+        let (calls, uploaded) = await transport.observed()
+        let derived = await transport.observedDerived()
+        XCTAssertEqual(queued.state, "queued")
+        XCTAssertEqual(uploaded, bytes)
+        XCTAssertNil(derived)
+        XCTAssertEqual(calls, ["create:\(product.idempotencyKey)", "upload", "complete"])
+
+        let legacy = NativeImportIntent(artworkId: artworkId, mime: file.mime, sha256: file.sha256,
+            bytes: bytes.count, scaleMeters: 1, rights: product.rights)
+        let untouched = ImportTransportFixture()
+        do {
+            _ = try await NativeImportTransfer().run(intent: legacy, jobID: nil, file: file, transport: untouched,
+                persistIntent: { XCTFail("legacy source-only JPEG must not persist an intent") },
+                persistJob: { _ in XCTFail("legacy source-only JPEG must not persist a job") }, isCurrent: { true })
+            XCTFail("legacy source-only JPEG must fail")
+        } catch let error as AuthoringFailure {
+            XCTAssertEqual(error.code, "IMPORT_INTENT_CHANGED")
+        }
+        let (untouchedCalls, _) = await untouched.observed()
+        XCTAssertTrue(untouchedCalls.isEmpty)
     }
     func testIntentEncodingPreservesLegacyAndCanonicalDerivedProvenance() throws {
         let old = intent()

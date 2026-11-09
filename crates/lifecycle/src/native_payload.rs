@@ -546,9 +546,16 @@ pub(crate) const CATALOG45_DEFAULT_FRAME: RuntimeTuple = (
     "a70e062ea7f1d0aa799e4dd924cfe6043bde06ffe11960e2967e60c0ab8285be",
 );
 
-pub(crate) fn ordinary_default_frame_host_matches(tuple: (&str, &str, &str)) -> bool {
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const CATALOG45_PRODUCT_IMAGE: RuntimeTuple = (
+    "d33714b74d2b12ad1bc089bd8180ad0a49974894",
+    "29cdc6fd07e1c5d4e5fda06a2c37270d7023024d76a7cc3d31596af9f1c7a921",
+    "157f538603a9557c30dfbb58ffc04755db9e174817aaeeb13353ce90e6dd84a2",
+);
+
+pub(crate) fn ordinary_fresh_catalog45_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return CATALOG45_DEFAULT_FRAME == tuple;
+    return CATALOG45_DEFAULT_FRAME == tuple || CATALOG45_PRODUCT_IMAGE == tuple;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -1597,7 +1604,7 @@ mod normal_oex_release_declaration_tests {
         let payload = Payload::open(&root).unwrap();
         let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
         let manifest = payload.context().manifest_sha256;
-        assert!(payload.ordinary_default_frame_validation());
+        assert!(payload.ordinary_fresh_catalog45_validation());
         assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
         assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 45);
         assert!(payload.retained_furnishing_catalog().is_none());
@@ -2237,8 +2244,8 @@ impl Payload {
         ))
     }
 
-    pub(crate) fn ordinary_default_frame_validation(&self) -> bool {
-        ordinary_default_frame_host_matches((
+    pub(crate) fn ordinary_fresh_catalog45_validation(&self) -> bool {
+        ordinary_fresh_catalog45_host_matches((
             &self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256,
         ))
     }
@@ -2289,7 +2296,7 @@ impl Payload {
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
         let wheat_grant: Option<(&str, &str, &str)> = None;
         let pinned_portal = self.retained_furnishing_catalog().is_some()
-            || self.ordinary_default_frame_validation()
+            || self.ordinary_fresh_catalog45_validation()
             || portal.into_iter().chain(artwork_replacement).chain(wheat_grant).chain(CATALOG40_WHEAT_DETAIL).any(|(source, producer, manifest)|
                 self.manifest.source_commit == source && self.manifest.producer_sha256 == producer
                     && self.manifest_sha256 == manifest);
@@ -2343,7 +2350,7 @@ impl Payload {
         let multimap_pinned = multimap.contains(&tuple);
         let release_probe_pinned = hayes_release_host_matches(tuple);
         let model_preparation_pinned = required_model_preparation_host_matches(tuple)
-            || self.ordinary_default_frame_validation();
+            || self.ordinary_fresh_catalog45_validation();
         let model_preparation_declared = self.manifest.files.iter().any(|file|
             file.path == MODEL_PREPARATION_CAPABILITY.0 || file.path.starts_with(MODEL_PREPARATION_DIRECTORY));
         if model_preparation_declared != model_preparation_pinned {
