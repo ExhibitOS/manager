@@ -14,6 +14,7 @@ public struct ViewportSelection: Codable, Equatable, Sendable {
 }
 public enum NativeGeometryAction: Sendable {
     case whiteCube(roomId: String), addRoom(name: String), addLight(roomId: String)
+    case roomBaseLight(RoomBaseLightAction)
     case installation(InstallationCommand)
     case architecture(ArchitectureCommand)
     case surfaceMaterial(SurfaceMaterialCommand)
@@ -23,6 +24,7 @@ public enum NativeGeometryAction: Sendable {
         case .whiteCube(let id): return .object(["type":.string("white-cube"),"roomId":.string(id)])
         case .addRoom(let name): return .object(["type":.string("add-room"),"name":.string(name)])
         case .addLight(let id): return .object(["type":.string("add-light"),"roomId":.string(id)])
+        case .roomBaseLight(let action): return try action.encodedValue(in: draft, selected: selected)
         case .installation(let command):
             if case .alignOnVerifiedPlinth(let id) = command {
                 guard let draft, selected == ViewportSelection(kind: "placement", id: id), selected?.belongs(to: draft) == true else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
@@ -40,6 +42,101 @@ public enum NativeGeometryAction: Sendable {
         }
     }
 }
+/// These actions can add only one authored light and its corresponding marker.
+public enum RoomBaseLightAction: Sendable {
+    public static let profile = "room-base-light-v1"
+    case addRoom(name: String)
+    case ensure(roomId: String)
+
+    public func encodedValue(in draft: NativeExhibitionDraft?, selected: ViewportSelection?) throws -> DocumentValue {
+        switch self {
+        case .addRoom(let name):
+            guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  name.utf16.count <= 512 else { throw AuthoringFailure("ROOM_INVALID") }
+            return .object(["type": .string("add-room-with-base-light"), "name": .string(name)])
+        case .ensure(let roomId):
+            guard let draft, selected == ViewportSelection(kind: "room", id: roomId),
+                  selected?.belongs(to: draft) == true else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            return .object(["type": .string("ensure-room-base-light"), "roomId": .string(roomId)])
+        }
+    }
+
+    static func newRoom(id: String, name: String) -> DocumentValue {
+        .object(["id": .string(id), "name": .string(name),
+                 "dimensions": .object(["width": .number(12), "height": .number(4), "depth": .number(8)]),
+                 "transform": NativeExhibitionDraft.identity])
+    }
+
+    static func appendingLight(to candidate: DocumentValue, room: DocumentValue, lightId: String) throws -> DocumentValue {
+        let dimensions = room["dimensions"]
+        guard let roomId = room["id"].string, UUID(uuidString: roomId) != nil,
+              let width = dimensions["width"].double, let depth = dimensions["depth"].double,
+              let height = dimensions["height"].double, [width, depth, height].allSatisfy({ $0.isFinite && $0 > 0 }),
+              var lights = candidate["lights"].items else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
+        var pose = NativeExhibitionDraft.identity
+        pose["position"] = .vector([0, height * 0.9, 0])
+        lights.append(.object(["id": .string(lightId), "roomId": .string(roomId), "type": .string("point"),
+                               "transform": pose, "color": .vector([1, 1, 1]), "intensity": .integer(16),
+                               "unit": .string("candela"), "castsShadow": .bool(false)]))
+        var bindings = try NativeLightFixture.bindings(in: candidate)
+        bindings.append(.object(["lightId": .string(lightId), "fixture": .string("none"),
+                                 "range": .number(min(50, max(0.1, width, depth, height))), "purpose": .string("room-base")]))
+        let details: DocumentValue = .object(["version": .integer(1), "lights": .array(bindings)])
+        guard bindings.count <= 32, try JSONEncoder().encode(details).count <= 16_384 else {
+            throw AuthoringFailure("LIGHT_FIELDS_INVALID")
+        }
+        var result = candidate
+        result["lights"] = .array(lights)
+        if result["extensions"] == .null { result["extensions"] = .object([:]) }
+        result["extensions"][NativeLightFixture.namespace] = details
+        return result
+    }
+
+    /// Validate the exact reply before changing local edit version or undo history.
+    public func apply(_ candidate: DocumentValue, to draft: inout NativeExhibitionDraft, selected: ViewportSelection?) throws -> Bool {
+        _ = try encodedValue(in: draft, selected: selected)
+        let changed = AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED")
+        var expected = draft.candidate
+        guard let rooms = expected["rooms"].items, let lights = expected["lights"].items else { throw changed }
+        let room: DocumentValue
+        switch self {
+        case .addRoom(let name):
+            guard let newId = candidate["rooms"].items?.last?["id"].string,
+                  UUID(uuidString: newId) != nil,
+                  !rooms.contains(where: { $0["id"].string?.lowercased() == newId.lowercased() }),
+                  !lights.contains(where: { $0["id"].string?.lowercased() == newId.lowercased() }) else { throw changed }
+            room = Self.newRoom(id: newId, name: name)
+            expected["rooms"] = .array(rooms + [room])
+        case .ensure(let roomId):
+            let matchingRooms = rooms.filter { $0["id"].string?.lowercased() == roomId.lowercased() }
+            guard matchingRooms.count == 1, let target = matchingRooms.first else { throw changed }
+            room = target
+            let markers = try NativeLightFixture.bindings(in: expected).filter { $0["purpose"] == .string("room-base") }
+            let roomLights = lights.filter { $0["roomId"].string?.lowercased() == roomId.lowercased() }
+            let marked = roomLights.filter { light in
+                markers.contains { $0["lightId"].string?.lowercased() == light["id"].string?.lowercased() }
+            }
+            if !marked.isEmpty {
+                guard marked.count == 1, candidate == expected else { throw changed }
+                return false
+            }
+        }
+        guard let lightId = candidate["lights"].items?.last?["id"].string, UUID(uuidString: lightId) != nil,
+              expected["rooms"].items?.contains(where: { $0["id"].string?.lowercased() == lightId.lowercased() }) == false,
+              !lights.contains(where: { $0["id"].string?.lowercased() == lightId.lowercased() }) else { throw changed }
+        expected = try Self.appendingLight(to: expected, room: room, lightId: lightId)
+        let template = "org.exhibitos.studio/template"
+        if expected["extensions"][template] != .null {
+            guard case .object = expected["extensions"][template], case .bool = expected["extensions"][template]["modified"] else { throw changed }
+            expected["extensions"][template]["modified"] = .bool(true)
+        }
+        guard candidate == expected else { throw changed }
+        guard try JSONEncoder().encode(candidate).count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
+        try draft.replaceCandidate(candidate)
+        return true
+    }
+}
+
 /// Display capability only; it grants no editing or account authority.
 public enum ViewportPresentation: String, Codable, Hashable, Sendable {
     case threeD = "3d", plan = "plan"
@@ -79,6 +176,9 @@ public struct ViewportAcceptance: Decodable, Sendable {
     public var supportsPlinthEnvelopeAlign: Bool { accepted && capabilities?.contains("plinth-envelope-align-v1") == true }
     public var supportsSpaceSettings: Bool { accepted && capabilities?.contains("space-settings-v1") == true }
     public var supportsLightInspector: Bool { accepted && capabilities?.contains("light-inspector-v1") == true }
+    public var supportsRoomBaseLight: Bool {
+        accepted && boundedReadOnly == false && editingCapability == nil && capabilities?.contains(RoomBaseLightAction.profile) == true
+    }
     public var supportsLightFixture: Bool { accepted && capabilities?.contains("light-fixture-aim-v1") == true }
     public var supportsWallFinish: Bool { accepted && capabilities?.contains("architectural-finishes-v1") == true }
     public var supportsBenchInspector: Bool { accepted && capabilities?.contains("bench-inspector-v1") == true }

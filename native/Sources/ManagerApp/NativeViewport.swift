@@ -55,6 +55,7 @@ final class NativeViewportController: ObservableObject {
     @Published fileprivate(set) var viewingPlanSupported = false
     @Published fileprivate(set) var lightInspectorSupported = false
     @Published fileprivate(set) var lightFixtureSupported = false
+    @Published fileprivate(set) var roomBaseLightSupported = false
     @Published fileprivate(set) var wallFinishSupported = false
     @Published fileprivate(set) var benchInspectorSupported = false
     @Published fileprivate(set) var plaqueInspectorSupported = false
@@ -251,11 +252,14 @@ final class NativeViewportController: ObservableObject {
     func perform(_ command: NativeGeometryAction, model: ExhibitionModel) async {
         guard editingContextActive, !model.placingArtwork, let action, connected else { return }
         if case .installation(.alignOnVerifiedPlinth(_)) = command, !plinthEnvelopeAlignSupported { return }
-        let contextGeneration = editingContextGeneration
+        if case .roomBaseLight = command, !model.canUseRoomBaseLight { return }
+        let contextGeneration = editingContextGeneration, access = model.viewportAccessID
         do {
             let (candidate, base) = try await action(command)
             guard editingContextActive, editingContextGeneration == contextGeneration else { return }
-            if case .installation(let installation) = command { await model.acceptInstallationCandidate(candidate, base: base, command: installation) }
+            if case .roomBaseLight(let roomBaseLight) = command {
+                await model.acceptRoomBaseLightCandidate(candidate, base: base, action: roomBaseLight, access: access)
+            } else if case .installation(let installation) = command { await model.acceptInstallationCandidate(candidate, base: base, command: installation) }
             else if case .architecture(let architecture) = command { await model.acceptArchitectureCandidate(candidate, base: base, command: architecture) }
             else if case .surfaceMaterial(let material) = command { await model.acceptSurfaceMaterialPreview(candidate, base: base, command: material) }
             else if case .surfaceMaterialTexture(let material) = command { await model.acceptSurfaceMaterialTexturePreview(candidate, base: base, command: material) }
@@ -363,7 +367,7 @@ struct NativeViewport: NSViewRepresentable {
             if controller.owner == epoch { controller.entrancePreviewAction = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }
             active = false; generation = UUID(); sendTask?.cancel()
             if controller.owner == epoch { controller.sharedFurnishingVisualsAction = nil; controller.sharedFurnishingVisualsSupported = false; controller.plinthEnvelopeAlignSupported = false }
-            if controller.owner == epoch { controller.furnishingVisualsAction = nil; controller.furnishingThumbnailAction = nil; controller.spaceSettingsAction = nil; controller.viewingPlanAction = nil; controller.lightInspectorAction = nil; controller.wallFinishAction = nil; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.wallFinishSupported = false; controller.benchInspectorAction = nil; controller.benchInspectorSupported = false; controller.plaqueInspectorAction = nil; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false }
+            if controller.owner == epoch { controller.furnishingVisualsAction = nil; controller.furnishingThumbnailAction = nil; controller.spaceSettingsAction = nil; controller.viewingPlanAction = nil; controller.lightInspectorAction = nil; controller.wallFinishAction = nil; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.roomBaseLightSupported = false; controller.wallFinishSupported = false; controller.benchInspectorAction = nil; controller.benchInspectorSupported = false; controller.plaqueInspectorAction = nil; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false }
             if controller.owner == epoch { controller.action = nil; controller.thumbnailAction = nil; controller.findSelectionAction = nil; controller.placementAction = nil; controller.placementSupported = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0 }
         }
         private func restoreSnapshotPolicy(_ id: UUID? = nil) {
@@ -398,7 +402,7 @@ struct NativeViewport: NSViewRepresentable {
                 controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil
                 controller.sharedFurnishingVisualsSupported = false; controller.plinthEnvelopeAlignSupported = false
                 entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""
-                controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.wallFinishSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false
+                controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.roomBaseLightSupported = false; controller.wallFinishSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false
                 installedToken = value.credentials.token
                 generation = UUID(); sequence = 0; sent = 0; fingerprint = nil; prepared = false
                 sendTask?.cancel(); sendTask = nil
@@ -460,7 +464,7 @@ struct NativeViewport: NSViewRepresentable {
             return .allow
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; restoreSnapshotPolicy(); controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.wallFinishSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; restoreSnapshotPolicy(); controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.findSelectionSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.roomBaseLightSupported = false; controller.wallFinishSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             guard active, controller.owner == epoch, webView === web else { return }
             controller.message = "3D 화면을 열지 못했습니다. 로컬 제작 상태를 확인하세요."
@@ -513,6 +517,7 @@ struct NativeViewport: NSViewRepresentable {
                         self.controller.viewingPlanSupported = acceptance.supportsViewingPlan
                         self.controller.lightInspectorSupported = acceptance.supportsLightInspector
                         self.controller.lightFixtureSupported = acceptance.supportsLightFixture
+                        self.controller.roomBaseLightSupported = frame.workspaceId == nil && !frame.disabled && acceptance.supportsRoomBaseLight
                         self.controller.wallFinishSupported = acceptance.supportsWallFinish
                         self.controller.benchInspectorSupported = acceptance.supportsBenchInspector
                         self.controller.plaqueInspectorSupported = acceptance.supportsPlaqueInspector
@@ -990,6 +995,10 @@ struct NativeViewport: NSViewRepresentable {
                 if case .surfaceMaterialTexture = command {
                     guard self.controller.surfaceMaterialTexturesSupported else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
                 }
+                if case .roomBaseLight = command {
+                    guard frame.workspaceId == nil, !self.parent.interactionDisabled, self.controller.roomBaseLightSupported,
+                          self.controller.acknowledgedFrame?.sequence == frame.sequence else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+                }
                 if case .installation(.alignOnVerifiedPlinth(_)) = command {
                     guard self.controller.plinthEnvelopeAlignSupported else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
                 }
@@ -999,6 +1008,10 @@ struct NativeViewport: NSViewRepresentable {
                 guard self.active, self.controller.owner == self.epoch, self.generation == generation, self.latest?.sequence == frame.sequence, let candidate, JSONSerialization.isValidJSONObject(candidate) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 if case .installation(.alignOnVerifiedPlinth(_)) = command {
                     guard self.controller.connected, self.controller.editingContextActive, self.controller.plinthEnvelopeAlignSupported else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                }
+                if case .roomBaseLight = command {
+                    guard self.controller.connected, self.controller.roomBaseLightSupported, !self.parent.interactionDisabled,
+                          self.controller.acknowledgedFrame?.sequence == frame.sequence else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 }
                 let bytes = try JSONSerialization.data(withJSONObject: candidate)
                 guard bytes.count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
@@ -1107,7 +1120,7 @@ struct NativeViewportArea: View {
                 if editable {
                     HStack {
                         Button("벽과 바닥 만들기") { Task { await controller.perform(.whiteCube(roomId: model.roomId), model: model) } }
-                        Button("공간 추가") { Task { await controller.perform(.addRoom(name: "새 공간"), model: model) } }
+                        roomAddControls
                         Button("조명 추가") { Task { await controller.perform(.addLight(roomId: model.roomId), model: model) } }
                     }.disabled(model.entrancePreviewActive || !controller.connected || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.placingArtwork)
                     Text("숫자 입력은 이 Mac에 보관한 뒤 3D에 반영됩니다. 3D 변경도 이 Mac에 보관하며, 전시 저장과 공개는 별도로 진행합니다.").foregroundStyle(.secondary)
@@ -1119,6 +1132,21 @@ struct NativeViewportArea: View {
             } else { Text("전시를 열고 로컬 제작을 시작하면 3D를 볼 수 있습니다.").foregroundStyle(.secondary) }
         }
     }
+    @ViewBuilder private var roomAddControls: some View {
+        Button("공간 추가") {
+            let action: NativeGeometryAction = model.canUseRoomBaseLight
+                ? .roomBaseLight(.addRoom(name: "새 공간"))
+                : .addRoom(name: "새 공간")
+            Task { await controller.perform(action, model: model) }
+        }
+        if model.canUseRoomBaseLight {
+            Button("기본 조명 적용") {
+                let action = RoomBaseLightAction.ensure(roomId: model.roomId)
+                Task { await controller.perform(.roomBaseLight(action), model: model) }
+            }.disabled(!model.canEnsureRoomBaseLight)
+        }
+    }
+
     private func viewportSurface(credentials: LocalAuthoringSession, draft: NativeExhibitionDraft) -> some View {
         GeometryReader { geometry in
             let width = model.entrancePreviewActive ? (model.entrancePreviewDevice == .mobile ? 360.0 : 1024.0) : max(1, geometry.size.width)
@@ -1184,7 +1212,7 @@ struct NativeViewportArea: View {
             if editable {
                 Menu {
                     Button("벽과 바닥 만들기") { Task { await controller.perform(.whiteCube(roomId: model.roomId), model: model) } }
-                    Button("공간 추가") { Task { await controller.perform(.addRoom(name: "새 공간"), model: model) } }
+                    roomAddControls
                     Button("조명 추가") { Task { await controller.perform(.addLight(roomId: model.roomId), model: model) } }
                     Button("벤치 추가") { model.beginBench() }.disabled(!model.canAddBench)
                     Button("명판 추가") { model.beginPlaque() }.disabled(!model.canAddPlaque)

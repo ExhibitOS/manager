@@ -1369,6 +1369,30 @@ final class ExhibitionModel: ObservableObject {
             notice = "3D 변경을 이 Mac에 보관했습니다. 전시 저장은 별도로 진행하세요."
         }
     }
+    var canUseRoomBaseLight: Bool {
+        session?.advertisesRoomBaseLight == true && viewportController.roomBaseLightSupported
+            && viewportController.connected && viewportController.editingContextActive
+            && !ordinaryBoundedRuntime && boundedPlacementCapability == nil && !immutable
+    }
+    var canEnsureRoomBaseLight: Bool {
+        canUseRoomBaseLight && !roomId.isEmpty && viewportSelection == ViewportSelection(kind: "room", id: roomId)
+    }
+    func acceptRoomBaseLightCandidate(_ candidate: DocumentValue, base: NativeExhibitionDraft,
+                                      action: RoomBaseLightAction, access: UUID) async {
+        await work {
+            guard canUseRoomBaseLight, access == viewportAccessID, !pending, !formDirty, !positionDirty,
+                  !architectureDirty, !architectureApplying, !placingArtwork,
+                  draft == base, var value = state, var next = draft else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            if case .ensure(let target) = action, target != roomId { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            guard try action.apply(candidate, to: &next, selected: viewportSelection) else {
+                notice = "이 공간에는 이미 기본 조명이 있습니다."
+                return
+            }
+            value.draft = next
+            try await persist(value); syncFields()
+            notice = "공간의 기본 조명을 이 Mac에 보관했습니다. 전시 저장은 별도로 진행하세요."
+        }
+    }
     func acceptInstallationCandidate(_ candidate: DocumentValue, base: NativeExhibitionDraft, command: InstallationCommand) async {
         await work {
             guard !immutable, !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, draft == base,
@@ -2266,7 +2290,8 @@ final class ExhibitionModel: ObservableObject {
     func new() async {
         await work(allowViewingPlanInput: true, allowViewingPointInput: true) {
             guard !ordinaryBoundedRuntime, !pending, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
-            value.draft = try NativeExhibitionDraft.new(); value.etag = nil; value.savedEditVersion = nil
+            value.draft = try NativeExhibitionDraft.new(roomBaseLight: session?.advertisesRoomBaseLight == true)
+            value.etag = nil; value.savedEditVersion = nil
             try await persist(value); storedImmutable = false; reusablePublicationId = nil; comparison = nil; syncFields()
             notice = "새 전시를 이 Mac에 보관했습니다. 공간과 작품을 구성한 뒤 전시를 저장하세요."
         }
