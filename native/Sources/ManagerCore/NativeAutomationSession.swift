@@ -167,10 +167,13 @@ public actor NativeAutomationSession {
         }
         throw BridgeFailure("NATIVE_TIMEOUT")
     }
-    // This exact runtime owns its startup phase deadlines. Keep its helper
-    // channel alive while startup is busy, even if this task is cancelled;
-    // otherwise closing the channel can interrupt the owned start mid-flight.
-    private func waitF738ExistingStartup() async throws -> NativeHostStatus {
+    private func waitExistingStartup(manifest: String) async throws -> NativeHostStatus {
+        guard manifest == "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a"
+            || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: manifest) else {
+            return try await waitReady()
+        }
+        // These runtimes own their startup deadlines. Keep the helper channel
+        // open while busy, including when the calling task is cancelled.
         guard let context else { throw BridgeFailure("AUTOMATION_NOT_READY") }
         let ownedBridge = bridge
         let status = try await Task.detached {
@@ -248,8 +251,7 @@ public actor NativeAutomationSession {
             throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
         }
         _ = try await bridge.start(context)
-        let ready = try await (expected.manifestSHA256 == "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a"
-            ? waitF738ExistingStartup() : waitReady())
+        let ready = try await waitExistingStartup(manifest: expected.manifestSHA256)
         guard ready.runtime?.readiness.ready == true, ready.selectedOex != true,
               ready.configuration?.manifestSha256 == expected.manifestSHA256,
               try profileIdentity() == directory else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
@@ -327,8 +329,7 @@ public actor NativeAutomationSession {
         }
         try Task.checkCancellation()
         _ = try await bridge.start(reopened)
-        let ready = try await (existingWorkspaceV5 != nil && manifest == "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a"
-            ? waitF738ExistingStartup() : waitReady())
+        let ready = try await (existingWorkspaceV5 != nil ? waitExistingStartup(manifest: manifest) : waitReady())
         guard ready.runtime?.readiness.ready == true, let job = ready.runtime?.jobId, job != previousJob,
               ready.configuration?.manifestSha256 == manifest else { throw BridgeFailure("NATIVE_NOT_READY") }
         let credentials = try await bridge.authoringSession(reopened)
