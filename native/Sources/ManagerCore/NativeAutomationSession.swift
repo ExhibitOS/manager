@@ -411,6 +411,29 @@ public actor NativeAutomationSession {
               !FileManager.default.fileExists(atPath: url.path) else { throw BridgeFailure("AUTOMATION_OUTPUT_INVALID") }
         return url
     }
+    static func sharedBenchReply(root: URL, path: String) throws -> DocumentValue {
+        let url = URL(fileURLWithPath: path)
+        guard path == url.path, url.deletingLastPathComponent() == root else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+        let parent = Darwin.open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+        defer { Darwin.close(parent) }
+        var held = stat(), named = stat()
+        guard fstat(parent, &held) == 0, lstat(root.path, &named) == 0,
+              held.st_mode & S_IFMT == S_IFDIR, held.st_uid == getuid(), held.st_mode & 0o777 == 0o700,
+              (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino) else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+        let fd = openat(parent, url.lastPathComponent, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+        let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? file.close() }
+        var info = stat(), after = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1,
+              info.st_uid == getuid(), info.st_mode & 0o077 == 0, (1...1_100_000).contains(info.st_size),
+              let bytes = try file.read(upToCount: 1_100_001), bytes.count == info.st_size,
+              fstat(fd, &after) == 0, after.st_size == info.st_size,
+              after.st_mtimespec.tv_sec == info.st_mtimespec.tv_sec,
+              after.st_mtimespec.tv_nsec == info.st_mtimespec.tv_nsec else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+        return try JSONDecoder().decode(DocumentValue.self, from: bytes)
+    }
     private func checkSavedEditPolicy(_ state: NativeDocumentState, api: AuthoringAPI, unsupportedCode: String = "NATIVE_BENCH_CAPABILITY_UNAVAILABLE") async throws {
         guard let draft = state.draft, let etag = state.etag else { return }
         let policy = try await api.nativeViewportPolicy(draft.id)
@@ -1736,12 +1759,7 @@ public actor NativeAutomationSession {
                   let path = request["inputPath"].string, request["outputPath"] == .null else {
                 throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
             }
-            let url = URL(fileURLWithPath: path)
-            guard url.path.hasPrefix(root.path + "/"), url.resolvingSymlinksInPath() == url,
-                  let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 1_100_000 else {
-                throw BridgeFailure("AUTOMATION_INPUT_INVALID")
-            }
-            let reply = try JSONDecoder().decode(DocumentValue.self, from: Data(contentsOf: url))
+            let reply = try Self.sharedBenchReply(root: root, path: path)
             let preview = try proposal.checkedReply(reply)
             var next = current; next.draft = try preview.apply(to: draft, command: proposal.command)
             result = try value(await bridge.saveDocumentState(context, state: next))

@@ -211,7 +211,9 @@ Operations:
   new `outputPath`. The authenticated catalog must match the known builtin
   backless-oak-bench version 1. The packet is for the shared renderer.
 - `shared-bench-apply`: pass the prepare request ID as `proposalId` and the
-  shared renderer reply at `inputPath` under the output root. Native validates
+  shared renderer output contains an envelope; write its `reply` object as a
+  private 0600 JSON file directly under the output root and pass that path as
+  `inputPath`. Native validates
   the exact proposal, full candidate delta, current draft and ETag before
   staging. After a restart the held proposal is unavailable: read the current
   draft and prepare again. Use a separate `save` and verify saved readback.
