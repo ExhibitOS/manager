@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Stage a headless validation preview or verified release inputs for sealing.
-
-Assembly never signs, installs or runs the app.
-"""
+"""Stage an unsigned app or explicitly seal a private copy for local qualification."""
 import argparse
 import hashlib
+import itertools
 import json
 import os
 import plistlib
 import shutil
 import stat
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 RELEASE_STAGE_MAX_BYTES = 1280 * 1024 ** 2
@@ -107,6 +107,155 @@ def release_inputs(args, source_root):
     verify_release_tree(args.runtime_payload, manifest['files'], runtime=True)
     verify_release_tree(args.legal_resources, legal['files'])
     return receipt, manifest, legal, size
+
+
+SIGNING_LEAF = '805040A7D2F984CAEE1B7AD8378765E215FAB2E1'
+SIGNING_TEAM = 'W563ZQD9G6'
+APP_ID = 'org.exhibitos.manager'
+HELPER_ID = 'org.exhibitos.manager.native'
+APP_EXECUTABLE = 'Contents/MacOS/ExhibitOSManager'
+HELPER_EXECUTABLE = 'Contents/Helpers/exhibitos-native'
+RUNTIME_PATH = 'Contents/Resources/native-runtime'
+SEAL_METADATA = {'Contents/_CodeSignature', 'Contents/_CodeSignature/CodeResources'}
+
+
+def app_inventory(root):
+    entries = {}
+    for path in itertools.chain((root,), root.rglob('*')):
+        name = path.relative_to(root).as_posix()
+        mode = path.lstat().st_mode
+        if stat.S_ISREG(mode):
+            entries[name] = (mode, path.stat().st_size, digest(path))
+        elif stat.S_ISDIR(mode):
+            entries[name] = (mode,)
+        else:
+            require(stat.S_ISLNK(mode) and name.startswith(RUNTIME_PATH + '/'),
+                    f'Unexpected staged entry: {name}')
+            entries[name] = (mode, os.readlink(path))
+    return entries
+
+
+def inventory_digest(entries):
+    return hashlib.sha256(json.dumps(entries, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def codesign(*arguments):
+    result = subprocess.run(['/usr/bin/codesign', *arguments], text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+    require(result.returncode == 0,
+            f'codesign {arguments[0]} exited {result.returncode}: {result.stderr.strip()}')
+    return result.stdout + result.stderr
+
+
+def verify_seal(path, identifier, *, bundle=False):
+    requirement = (
+        f'anchor apple generic and identifier "{identifier}" '
+        f'and certificate leaf[subject.OU] = "{SIGNING_TEAM}" '
+        'and certificate 1[field.1.2.840.113635.100.6.2.6] exists '
+        'and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
+    )
+    codesign('--verify', '--strict', '--all-architectures',
+             *(['--deep'] if bundle else []), f'-R={requirement}', path)
+    report = codesign('--display', '--verbose=4', '--entitlements', ':-', path)
+    lines = report.splitlines()
+    require(f'Identifier={identifier}' in lines and f'TeamIdentifier={SIGNING_TEAM}' in lines
+            and any(line.startswith('Authority=Developer ID Application:') for line in lines)
+            and any(line.startswith('Timestamp=') and line[10:].strip() for line in lines)
+            and any('flags=' in line and '(runtime)' in line for line in lines)
+            and '<key>' not in report, f'Unexpected signature metadata: {identifier}')
+    with tempfile.TemporaryDirectory(prefix='exhibitos-seal-cert-') as directory:
+        prefix = Path(directory) / 'cert'
+        codesign('--display', f'--extract-certificates={prefix}', path)
+        leaf = hashlib.sha1(prefix.with_name('cert0').read_bytes()).hexdigest().upper()
+        require(leaf == SIGNING_LEAF, f'Unexpected signing certificate: {identifier}')
+
+
+def seal_release(argv):
+    parser = argparse.ArgumentParser(description='Seal a private copy of a staged Swift release app')
+    parser.add_argument('--staged-app', required=True, type=Path)
+    parser.add_argument('--sealed-app', required=True, type=Path)
+    parser.add_argument('--assembly-receipt', required=True, type=Path)
+    parser.add_argument('--assembly-receipt-sha256', required=True)
+    parser.add_argument('--staged-inventory-sha256', required=True)
+    parser.add_argument('--legal-inventory', required=True, type=Path)
+    args = parser.parse_args(argv)
+    source, target = args.staged_app, args.sealed_app
+    require(source.is_absolute() and source.resolve(strict=True) == source
+            and source.is_dir() and source.suffix == '.app', 'Expected a canonical staged app')
+    require(target.is_absolute() and target.suffix == '.app' and not target.is_relative_to(source)
+            and target.parent.resolve(strict=True) == target.parent and target.parent.is_dir()
+            and not target.exists() and not target.is_symlink(), 'Expected a fresh canonical output app')
+    parent = target.parent.stat()
+    require(parent.st_uid == os.getuid() and not parent.st_mode & 0o077,
+            'Seal output parent must be private and owned by the current user')
+    assembly = read_pinned_json(args.assembly_receipt, args.assembly_receipt_sha256, 65_536)
+    require(assembly['kind'] == 'RELEASE_ASSEMBLY_PENDING_APP_SEAL' and assembly['app'] == str(source),
+            'Assembly receipt does not identify this stage')
+    inputs = assembly['inputs']
+    require(set(inputs) == {'version', 'managerCommit', 'managerTree', 'appSHA256', 'helperSHA256',
+                            'runtimeManifestSHA256', 'legalInventorySHA256'} and inputs['version'] == 1,
+            'Assembly build receipt fields are invalid')
+    metadata = plistlib.loads((source / 'Contents/Info.plist').read_bytes())
+    require(metadata.get('CFBundleIdentifier') == APP_ID
+            and metadata.get('CFBundleExecutable') == Path(APP_EXECUTABLE).name
+            and 'ExhibitOSValidationProfile' not in metadata, 'Unexpected Swift app identity')
+    runtime = source / RUNTIME_PATH
+    manifest = read_pinned_json(runtime / 'manifest.json', inputs['runtimeManifestSHA256'], 16 * 1024 ** 2)
+    require(manifest.get('format') == 'exhibitos-native-runtime-v1' and manifest.get('platform') == 'darwin-arm64'
+            and manifest.get('mode') == 'release' and manifest.get('officialSigned') is True
+            and manifest.get('redistributionQualified') is True, 'Finalized release runtime required')
+    verify_release_tree(runtime, manifest['files'], runtime=True)
+    legal = read_pinned_json(args.legal_inventory, inputs['legalInventorySHA256'], 2 * 1024 ** 2)
+    verify_release_tree(source / 'Contents/Resources/NativeRuntime-Legal', legal['files'])
+    before = app_inventory(source)
+    require(inventory_digest(before) == args.staged_inventory_sha256
+            and assembly.get('stagedInventorySHA256', args.staged_inventory_sha256) == args.staged_inventory_sha256,
+            'Staged app differs from the pinned assembly inventory')
+    executable_fields = {APP_EXECUTABLE: 'appSHA256', HELPER_EXECUTABLE: 'helperSHA256'}
+    for path, field in executable_fields.items():
+        mode, _, sha = before[path]
+        require(stat.S_ISREG(mode) and mode & 0o111 and sha == inputs[field],
+                f'Staged executable does not match build receipt: {path}')
+    staged_bytes = sum(entry[1] for entry in before.values() if stat.S_ISREG(entry[0]))
+    require('Contents/_CodeSignature' not in before and staged_bytes == assembly['stagedBytes']
+            and 0 < staged_bytes <= RELEASE_STAGE_MAX_BYTES
+            and shutil.disk_usage(target.parent).free > staged_bytes + 6 * 1024 ** 3,
+            'Staged app size, existing seal or free space prevents sealing')
+
+    shutil.copytree(source, target, symlinks=True)
+    require(app_inventory(target) == before, 'Private copy differs from staged app')
+    for path, identifier in ((target / HELPER_EXECUTABLE, HELPER_ID), (target, APP_ID)):
+        codesign('--force', '--sign', SIGNING_LEAF, '--timestamp', '--options', 'runtime',
+                 '--identifier', identifier, path)
+    verify_seal(target / HELPER_EXECUTABLE, HELPER_ID)
+    verify_seal(target, APP_ID, bundle=True)
+
+    after = app_inventory(target)
+    require(set(after) == set(before) | SEAL_METADATA
+            and stat.S_ISDIR(after['Contents/_CodeSignature'][0])
+            and stat.S_ISREG(after['Contents/_CodeSignature/CodeResources'][0]),
+            'Unexpected signed app paths')
+    for path, entry in before.items():
+        if path in executable_fields:
+            require(after[path][0] == entry[0], f'Signing changed executable mode: {path}')
+        else:
+            require(after[path] == entry, f'Signing changed staged resource: {path}')
+    require(app_inventory(source) == before, 'Original stage changed during sealing')
+    print(json.dumps({
+        'kind': 'RELEASE_APP_SEALED_FOR_LOCAL_QUALIFICATION', 'app': str(target),
+        'assemblyReceiptSHA256': args.assembly_receipt_sha256,
+        'stagedInventorySHA256': args.staged_inventory_sha256, 'inputs': inputs,
+        'certificateSHA1': SIGNING_LEAF, 'teamIdentifier': SIGNING_TEAM,
+        'stagedBytes': staged_bytes,
+        'sealedBytes': sum(entry[1] for entry in after.values() if stat.S_ISREG(entry[0])),
+        'appSHA256': after[APP_EXECUTABLE][2], 'helperSHA256': after[HELPER_EXECUTABLE][2],
+        'codeResourcesSHA256': after['Contents/_CodeSignature/CodeResources'][2],
+    }))
+
+
+if sys.argv[1:2] == ['seal-release']:
+    seal_release(sys.argv[2:])
+    raise SystemExit(0)
 
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -215,6 +364,7 @@ if release:
     require(staged_size <= RELEASE_STAGE_MAX_BYTES, 'Assembled release exceeds the stage limit')
     print(json.dumps({'app': str(args.app), 'kind': 'RELEASE_ASSEMBLY_PENDING_APP_SEAL',
                       'inputs': receipt, 'inputBytes': size, 'stagedBytes': staged_size,
-                      'stageLimitBytes': RELEASE_STAGE_MAX_BYTES}))
+                      'stageLimitBytes': RELEASE_STAGE_MAX_BYTES,
+                      'stagedInventorySHA256': inventory_digest(app_inventory(args.app))}))
 else:
     print(json.dumps({'app': str(args.app), 'profile': str(args.validation_profile), 'kind': 'DEVELOPMENT_PREVIEW_NOT_RELEASE_QUALIFIED'}))
