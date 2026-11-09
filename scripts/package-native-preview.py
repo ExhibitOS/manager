@@ -163,18 +163,21 @@ if args.runtime_payload:
     shutil.copytree(args.runtime_payload, contents / 'Resources/native-runtime', symlinks=True)
     # Fixed Manager-owned public provider code; the helper checks the same
     # source bytes compiled into it before any credential-bearing execution.
-    hosting = contents / 'Resources/native-hosting'
-    for name in ['scripts/native-hosting-runner.mjs',
-                 'vendor/deployment/src/pages-render.mjs',
-                 'vendor/deployment/src/pages-asset-hash.mjs',
-                 'vendor/deployment/src/pages-render-worker.mjs',
-                 'vendor/deployment/src/bounded-json.mjs',
-                 'vendor/deployment/LICENSE',
-                 'vendor/deployment/native-hosting-source.json']:
+    migration = contents / 'Resources/native-migration'
+    hosting = migration if release else contents / 'Resources/native-hosting'
+    hosting_files = ['scripts/native-hosting-runner.mjs',
+                     'vendor/deployment/src/pages-render.mjs',
+                     'vendor/deployment/src/pages-asset-hash.mjs',
+                     'vendor/deployment/src/pages-render-worker.mjs',
+                     'vendor/deployment/native-hosting-source.json']
+    # The release layout shares these two files with migration. Preview keeps
+    # the older separate hosting directory for existing validation helpers.
+    if not release:
+        hosting_files += ['vendor/deployment/src/bounded-json.mjs', 'vendor/deployment/LICENSE']
+    for name in hosting_files:
         target = hosting / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_root / name, target)
-    migration = contents / 'Resources/native-migration'
     for name in ['scripts/native-legacy-verify.mjs',
                  'scripts/native-legacy-inspect.mjs',
                  'scripts/native-legacy-apply.mjs',

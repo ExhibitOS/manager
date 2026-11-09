@@ -151,7 +151,15 @@ const RESOURCES: &[(&str, &[u8])] = &[
 ];
 fn resources(payload: &Payload) -> Result<(PathBuf, Vec<hosted_runtime_file::Pin>)> {
     let runtime = payload.script().parent().and_then(Path::parent).and_then(Path::parent).map(Path::to_path_buf).ok_or_else(bad)?;
-    let root = runtime.parent().ok_or_else(bad)?.join("native-hosting");
+    resources_in(runtime.parent().ok_or_else(bad)?)
+}
+fn resources_in(resources: &Path) -> Result<(PathBuf, Vec<hosted_runtime_file::Pin>)> {
+    let hosting = resources.join("native-hosting");
+    let root = match fs::symlink_metadata(&hosting) {
+        Ok(_) => hosting,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => resources.join("native-migration"),
+        Err(_) => return Err(bad()),
+    };
     if fs::canonicalize(&root).map_err(|_| err("NATIVE_HOSTING_UNAVAILABLE"))? != root { return Err(bad()); }
     let mut pins = Vec::new();
     for (name, expected) in RESOURCES {
@@ -338,6 +346,31 @@ mod tests {
     }
     fn work() -> Work {
         Work { format: 1, id: Uuid::new_v4().to_string(), workspace_id: Uuid::new_v4().to_string(), tenant_id: Uuid::new_v4().to_string(), principal_id: Uuid::new_v4().to_string(), account_id: "a".repeat(32), project_name: "synthetic-exhibition".into(), source: super::super::native_static_export::Receipt { publication_id: Uuid::new_v4().to_string(), revision_sha256: "b".repeat(64), index_sha256: "c".repeat(64), manifest_sha256: "d".repeat(64), files: 3, bytes: 4096, output: PathBuf::from("/synthetic/absent-publication") }, static_cache_policy_sha256: None, state: "running".into(), deployment_id: None, public_url: None, error_code: None }
+    }
+    #[test]
+    fn hosting_resource_layout_preserves_exact_pins() {
+        let directory = fs::canonicalize(std::env::temp_dir()).unwrap()
+            .join(format!("native-hosting-resources-{}", Uuid::new_v4()));
+        let shared = directory.join("native-migration");
+        let preview = directory.join("native-hosting");
+        let runner = "scripts/native-hosting-runner.mjs";
+        for root in [&shared, &preview] {
+            for (name, bytes) in RESOURCES {
+                let path = root.join(name);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, bytes).unwrap();
+            }
+            let (path, pins) = resources_in(&directory).unwrap();
+            assert_eq!(path, root.join(runner));
+            assert_eq!(pins.len(), RESOURCES.len());
+        }
+        let common = "vendor/deployment/src/bounded-json.mjs";
+        fs::write(preview.join(common), b"changed").unwrap();
+        assert!(resources_in(&directory).is_err());
+        fs::remove_dir_all(preview).unwrap();
+        fs::write(shared.join(common), b"changed").unwrap();
+        assert!(resources_in(&directory).is_err());
+        fs::remove_dir_all(directory).unwrap();
     }
     #[test]
     fn provider_ready_without_public_file_proof_never_completes() {
