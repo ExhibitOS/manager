@@ -222,7 +222,7 @@ The same saved-owner maintenance entry admits the exact catalog 045 transition
 from manifest `f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a`
 to `1209d5d95417d1e29f637d8ce327e78cf38ed1b32eabcb5ab6fd3e2a62a10203`.
 Both packages use the same SQL ledger. This pair requires a clean source and
-uses the 2.25 GiB protected checkpoint ceiling. The target can reopen through
+uses a 4 GiB protected checkpoint ceiling. The target can reopen through
 the existing ordinary saved-workspace entry after a successful activation.
 
 The isolated V5 wall preview validation also admits a directed saved-profile

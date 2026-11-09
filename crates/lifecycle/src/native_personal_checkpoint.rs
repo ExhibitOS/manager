@@ -60,7 +60,9 @@ const ENVELOPE: &str = "physical-checkpoint.gcm";
 const MAX_FILES: usize = 50_000;
 const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 #[cfg(feature = "workspace-v5-owner-validation")]
-const CATALOG45_PROTECTED_CHECKPOINT_MAX_BYTES: u64 = MAX_BYTES + 256 * 1024 * 1024;
+const CATALOG45_STARTUP_RECOVERY_CHECKPOINT_MAX_BYTES: u64 = MAX_BYTES + 256 * 1024 * 1024;
+#[cfg(feature = "workspace-v5-owner-validation")]
+const CATALOG45_NATIVE_PUBLICATION_CHECKPOINT_MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_MANIFEST: usize = 16 * 1024 * 1024;
 const DATA_DIRECTORIES: &[&str] = &["native-database", "blobs", "config"];
 const MEMBERS: &[&str] = &["native-database", "blobs", "config", "runtime.env", RECORD];
@@ -221,11 +223,14 @@ fn startup_cancellation_proof_matches(
 
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
     #[cfg(feature = "workspace-v5-owner-validation")]
-    if (proof.is_some() && crate::native_payload::catalog45_startup_recovery(pair)
-        == Some(crate::native_payload::Catalog45StartupRecovery::Unqualified))
-        || crate::native_payload::catalog45_native_publication_transition(pair)
+    if crate::native_payload::catalog45_native_publication_transition(pair) {
+        return CATALOG45_NATIVE_PUBLICATION_CHECKPOINT_MAX_BYTES;
+    }
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    if proof.is_some() && crate::native_payload::catalog45_startup_recovery(pair)
+        == Some(crate::native_payload::Catalog45StartupRecovery::Unqualified)
     {
-        return CATALOG45_PROTECTED_CHECKPOINT_MAX_BYTES;
+        return CATALOG45_STARTUP_RECOVERY_CHECKPOINT_MAX_BYTES;
     }
     #[cfg(not(feature = "workspace-v5-owner-validation"))]
     let _ = (pair, proof);
@@ -1618,7 +1623,7 @@ mod tests {
 
     #[cfg(feature = "workspace-v5-owner-validation")]
     #[test]
-    fn startup_unqualified_checkpoint_capacity_is_exactly_scoped() {
+    fn catalog45_checkpoint_capacity_is_exactly_scoped() {
         let current = "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a";
         let previous = "f15d2530a298c3e9507e4719fa3ba65f26aff8cb9b40d9f646f1043976d0a75d";
         let proof = StartupCancellation045 {
@@ -1633,8 +1638,10 @@ mod tests {
         assert_eq!(default, 2_147_483_648);
         assert_eq!(extended, 2_415_919_104);
         let publication = "1209d5d95417d1e29f637d8ce327e78cf38ed1b32eabcb5ab6fd3e2a62a10203";
-        assert_eq!(checkpoint_inventory_limit((current, publication), None), extended);
+        let publication_limit = checkpoint_inventory_limit((current, publication), None);
+        assert_eq!(publication_limit, 4_294_967_296);
         assert_eq!(checkpoint_inventory_limit((publication, current), None), default);
+        assert_eq!(checkpoint_inventory_limit((publication, publication), None), default);
         assert_eq!(checkpoint_inventory_limit((previous, publication), None), default);
         for pair in [(previous, current), (current, previous), (previous, previous), (OLD_MANIFEST, NEW_MANIFEST)] {
             assert_eq!(checkpoint_inventory_limit(pair, Some(&proof)), default);
@@ -1655,6 +1662,11 @@ mod tests {
         assert_eq!(inventory_with_limit(&root, false, default).unwrap_err().code, invalid().code);
         file.set_len(extended + 1).unwrap();
         assert_eq!(inventory_with_limit(&root, false, extended).unwrap_err().code, invalid().code);
+        file.set_len(publication_limit).unwrap();
+        let files = inventory_with_limit(&root, false, publication_limit).unwrap();
+        assert_eq!(files[Path::new("blobs/oversize")].bytes, publication_limit);
+        file.set_len(publication_limit + 1).unwrap();
+        assert_eq!(inventory_with_limit(&root, false, publication_limit).unwrap_err().code, invalid().code);
         fs::remove_dir_all(root).unwrap();
     }
 
