@@ -218,6 +218,13 @@ against the exact target with `--reopen-workspace-v5-validation`.
 The completed transition clears the fence. This command set has no post-commit
 rollback path.
 
+The same saved-owner maintenance entry admits the exact catalog 045 transition
+from manifest `f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a`
+to `1209d5d95417d1e29f637d8ce327e78cf38ed1b32eabcb5ab6fd3e2a62a10203`.
+Both packages use the same SQL ledger. This pair requires a clean source and
+uses the 2.25 GiB protected checkpoint ceiling. The target can reopen through
+the existing ordinary saved-workspace entry after a successful activation.
+
 The isolated V5 wall preview validation also admits a directed saved-profile
 transition from the exact `cfe1` manifest to the reviewed `6be2` manifest.
 It uses the same authenticated checkpoint and saved-draft trial. The new
