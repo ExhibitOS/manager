@@ -74,6 +74,17 @@ pub struct RetainedProductImage {
     pub(crate) replacement_attempt_path: PathBuf,
     pub(crate) replacement_attempt_sha256: String,
     pub(crate) saved_etag: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recovery: Option<RetainedProductImageRecovery>,
+}
+
+#[cfg(debug_assertions)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RetainedProductImageRecovery {
+    pub(crate) failed_generation: String,
+    pub(crate) hayes_job_id: String,
+    pub(crate) hayes_completion_frame_sha256: String,
 }
 
 #[cfg(all(target_os = "macos", debug_assertions))]

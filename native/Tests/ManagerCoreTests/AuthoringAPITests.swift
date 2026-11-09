@@ -36,12 +36,16 @@ final class AuthoringAPITests: XCTestCase {
     }
     func testProductImageReplacementAdmitsOnlyLinkedBoundedThumbnailAlongsideReviewedImages() {
         let successor = "003a98c579e69e1b38a7cb96971f0872f15b8afd169d392a96ac94fe87be9f92"
+        let recovery = "f15d2530a298c3e9507e4719fa3ba65f26aff8cb9b40d9f646f1043976d0a75d"
         let prior = "62200d7ccb47e7ede5d1910a65e0087ac171c595d76ca14df6a19290382e4288"
         #if DEBUG
         XCTAssertTrue(AuthoringAPI.supportsProductImageRuntime(manifest: successor))
         XCTAssertTrue(AuthoringAPI.supportsProductImageReplacementThumbnail(manifest: successor))
+        XCTAssertTrue(AuthoringAPI.supportsProductImageRuntime(manifest: recovery))
+        XCTAssertTrue(AuthoringAPI.supportsProductImageReplacementThumbnail(manifest: recovery))
         #else
         XCTAssertFalse(AuthoringAPI.supportsProductImageReplacementThumbnail(manifest: successor))
+        XCTAssertFalse(AuthoringAPI.supportsProductImageReplacementThumbnail(manifest: recovery))
         #endif
         XCTAssertFalse(AuthoringAPI.supportsProductImageReplacementThumbnail(manifest: prior))
         XCTAssertFalse(AuthoringAPI.supportsProductImageReplacementThumbnail(manifest: nil))
