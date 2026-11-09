@@ -1089,13 +1089,13 @@ artifacts and native save/reopen/output/consumer actual evidence are required
 before claiming this feature complete.
 
 The authenticated automation session exposes `plaque-prepare` and
-`wall-finish-prepare` for the existing inspector commands. Each takes the
-current document revision and edit version, a `command`, and an output path;
-it returns a proposal packet for the corresponding shared viewport producer.
-Pass the producer's checked reply to `plaque-apply` or `wall-finish-apply`
-with the proposal request ID, input path, and unchanged document revisions.
-These operations stage the existing native draft only; use `save` and
-`reopen-saved` to persist and verify. `plaque-cancel` and
+`wall-finish-prepare` for the existing inspector commands. Each requires a
+clean local draft matching the authenticated saved Studio head, the current
+local revision and edit version, and a `command`. The server validates the
+proposal against that saved head without writing it. The session retains the
+checked preview and returns its proposal ID and candidate for inspection.
+`plaque-apply` or `wall-finish-apply` accepts only the proposal ID and current
+revisions; it rechecks the saved head and stages the retained preview. Use
+`save` and `reopen-saved` before preparing another edit. `plaque-cancel` and
 `wall-finish-cancel` discard a pending proposal without changing the draft.
-The producer must validate the full source and geometry; a native prospective
-candidate alone is not a producer reply.
+Caller-supplied producer replies are not accepted.
