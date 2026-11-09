@@ -42,6 +42,8 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oex_workspace_v7_qualified: Option<bool>,
     pub oex_save_offer: Option<OexSaveOffer>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fresh_image_release_configured: Option<bool>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retained_oex_cleanup: Option<crate::native_runtime::oex_retained_cleanup::Receipt>,
@@ -405,6 +407,10 @@ impl Host {
             oex_workspace_v6_qualified: selected_workspace_import == Some(crate::native_payload::WorkspaceImport::V6),
             oex_workspace_v7_qualified: (selected_workspace_import == Some(crate::native_payload::WorkspaceImport::V7)).then_some(true),
             oex_save_offer: state.oex_save_offer.clone(),
+            fresh_image_release_configured: state.configuration.as_ref().and_then(|configured| {
+                crate::native_payload::fresh_image_release_manifest_matches(&configured.manifest_sha256)
+                    .then_some(true)
+            }),
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             retained_oex_cleanup: (!state.busy && state.error.is_none())
                 .then(|| state.session.as_ref().and_then(Session::oex_retained_cleanup_receipt)).flatten(),

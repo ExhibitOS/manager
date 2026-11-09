@@ -116,6 +116,37 @@ final class NativeAutomationFailureTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(DocumentValue.self, from: Data(contentsOf: output)), result)
     }
 
+    func testExplicitImageProfileRefusesDebugRuntimeBeforeStart() async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let profile = folder.appendingPathComponent("profile", isDirectory: true)
+        try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let helper = folder.appendingPathComponent("helper")
+        try #"""
+        #!/bin/sh
+        [ "$#" = 3 ] && [ "$1" = --profile ] && [ "$2" = "${0%/*}/profile" ] &&
+            [ "$3" = --existing-managed-profile ] || exit 8
+        IFS= read -r request || exit 9
+        printf '%s\n' '{"version":1,"id":1,"result":{"selectionToken":"fixture","activeId":"fixture","installations":[]}}'
+        IFS= read -r request || exit 9
+        printf '%s\n' '{"version":1,"id":2,"result":{"busy":false,"operation":"idle","accountRequired":false,"configuration":{"kind":"personal","ports":{"web":13200,"api":13201,"database":15432},"manifestSha256":"257ea9d3d0ef1064494da5c68c2d9b9dd2430ac9f7882ae85e3399c49420ac96"}}}'
+        if IFS= read -r request; then exit 9; fi
+        exit 0
+        """#.write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+        let session = try NativeAutomationSession(installedImageCLIHelper: helper, profile: profile,
+                                                  requireExistingManagedProfile: true)
+        do {
+            _ = try await session.open()
+            XCTFail("An explicit profile must require release admission")
+        } catch let error as AuthoringFailure {
+            XCTAssertEqual(error.code, "IMAGE_PREPARATION_UNAVAILABLE")
+        }
+        try await session.close()
+    }
+
     func testCloseOnlyReplaysConfirmedHelperExit() async throws {
         let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

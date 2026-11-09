@@ -636,6 +636,25 @@ pub(crate) fn fresh_image_recovery_host_matches(tuple: (&str, &str, &str)) -> bo
     { let _ = tuple; false }
 }
 
+// Only the reviewed finalizer receipt supplies these build-time values. A
+// missing receipt leaves ordinary release catalog 047 closed.
+pub(crate) fn fresh_image_release_manifest_matches(manifest: &str) -> bool {
+    cfg!(all(not(debug_assertions), target_os = "macos", target_arch = "aarch64"))
+        && option_env!("EXHIBITOS_FRESH_IMAGE_RELEASE_MANIFEST_SHA256") == Some(manifest)
+        && hash_valid(manifest)
+        && option_env!("EXHIBITOS_FRESH_IMAGE_RELEASE_PRODUCER_SHA256").is_some_and(hash_valid)
+}
+
+fn fresh_image_release_host_matches(tuple: (&str, &str, &str)) -> bool {
+    fresh_image_release_manifest_matches(tuple.2)
+        && tuple.0 == "7ad04db38db884ffc7dfd32d803aaf5bf08b0aa5"
+        && option_env!("EXHIBITOS_FRESH_IMAGE_RELEASE_PRODUCER_SHA256") == Some(tuple.1)
+}
+
+pub(crate) fn fresh_image_host_matches(tuple: (&str, &str, &str)) -> bool {
+    fresh_image_recovery_host_matches(tuple) || fresh_image_release_host_matches(tuple)
+}
+
 pub(crate) fn required_model_preparation_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CATALOG45_BC96_REQUIRED_MODEL_TARGET == tuple
@@ -1719,8 +1738,8 @@ mod normal_oex_release_declaration_tests {
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_LARGE_MODEL_CATALOG46_RUNTIME").unwrap());
         let mut payload = Payload::open(&root).unwrap();
         let catalog = WorkspaceFurnishingCatalog::LargeModelPreparation046;
-        assert!(payload.ordinary_fresh_furnishing_validation());
-        assert!(!payload.fresh_image_recovery_validation());
+        assert!(payload.ordinary_fresh_furnishing());
+        assert!(!payload.fresh_image_recovery_enabled());
         assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
         let ledger = payload.workspace_furnishing_ledger(catalog).unwrap();
         assert_eq!(ledger.lines().count(), 46);
@@ -1742,7 +1761,7 @@ mod normal_oex_release_declaration_tests {
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_LARGE_MODEL_RECOVERY_RUNTIME").unwrap());
         let mut payload = Payload::open(&root).unwrap();
         assert!(payload.large_model_recovery_validation());
-        assert!(!payload.fresh_image_recovery_validation());
+        assert!(!payload.fresh_image_recovery_enabled());
         let catalog = WorkspaceFurnishingCatalog::LargeModelPreparation046;
         assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
         assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 46);
@@ -1758,7 +1777,7 @@ mod normal_oex_release_declaration_tests {
         let mut payload = Payload::open(&root).unwrap();
         let catalog = WorkspaceFurnishingCatalog::FreshImagePreparation047;
         let manifest = payload.context().manifest_sha256;
-        assert!(payload.ordinary_fresh_furnishing_validation());
+        assert!(payload.ordinary_fresh_furnishing());
         assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
         let ledger = payload.workspace_furnishing_ledger(catalog).unwrap();
         assert_eq!(ledger.lines().count(), 46);
@@ -1784,7 +1803,7 @@ mod normal_oex_release_declaration_tests {
         let payload = Payload::open(&root).unwrap();
         let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
         let manifest = payload.context().manifest_sha256;
-        assert!(payload.ordinary_fresh_furnishing_validation());
+        assert!(payload.ordinary_fresh_furnishing());
         assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
         assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 45);
         assert!(payload.retained_furnishing_catalog().is_none());
@@ -2424,10 +2443,17 @@ impl Payload {
         ))
     }
 
-    pub(crate) fn ordinary_fresh_furnishing_validation(&self) -> bool {
+    pub(crate) fn ordinary_fresh_furnishing(&self) -> bool {
         let tuple = (&*self.manifest.source_commit, &*self.manifest.producer_sha256, &*self.manifest_sha256);
         ordinary_fresh_catalog45_host_matches(tuple) || large_model_host_matches(tuple)
-            || fresh_image_recovery_host_matches(tuple)
+            || self.fresh_image_release() || fresh_image_recovery_host_matches(tuple)
+    }
+
+    pub(crate) fn fresh_image_release(&self) -> bool {
+        self.manifest.mode == "release" && self.manifest.official_signed
+            && self.manifest.redistribution_qualified
+            && fresh_image_release_host_matches((&self.manifest.source_commit,
+                &self.manifest.producer_sha256, &self.manifest_sha256))
     }
 
     pub(crate) fn large_model_recovery_validation(&self) -> bool {
@@ -2436,8 +2462,8 @@ impl Payload {
         ))
     }
 
-    pub(crate) fn fresh_image_recovery_validation(&self) -> bool {
-        fresh_image_recovery_host_matches((
+    pub(crate) fn fresh_image_recovery_enabled(&self) -> bool {
+        self.fresh_image_release() || fresh_image_recovery_host_matches((
             &self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256,
         ))
     }
@@ -2488,7 +2514,7 @@ impl Payload {
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
         let wheat_grant: Option<(&str, &str, &str)> = None;
         let pinned_portal = self.retained_furnishing_catalog().is_some()
-            || self.ordinary_fresh_furnishing_validation()
+            || self.ordinary_fresh_furnishing()
             || portal.into_iter().chain(artwork_replacement).chain(wheat_grant).chain(CATALOG40_WHEAT_DETAIL).any(|(source, producer, manifest)|
                 self.manifest.source_commit == source && self.manifest.producer_sha256 == producer
                     && self.manifest_sha256 == manifest);
@@ -2550,14 +2576,15 @@ impl Payload {
         if large_model_declared != large_model_pinned || large_recovery_declared != large_recovery_pinned {
             return Err(unqualified());
         }
-        let fresh_image_pinned = fresh_image_recovery_host_matches(tuple);
+        let fresh_image_release = self.fresh_image_release();
+        let fresh_image_pinned = fresh_image_release || fresh_image_recovery_host_matches(tuple);
         let fresh_image_declared = self.manifest.files.iter().any(|file|
             file.path == FRESH_IMAGE_PREPARATION_CAPABILITY.0 || file.path.starts_with(FRESH_IMAGE_PREPARATION_DIRECTORY));
         if fresh_image_declared != fresh_image_pinned {
             return Err(unqualified());
         }
         let model_preparation_pinned = required_model_preparation_host_matches(tuple)
-            || self.ordinary_fresh_furnishing_validation();
+            || self.ordinary_fresh_furnishing();
         let model_preparation_declared = self.manifest.files.iter().any(|file|
             file.path == MODEL_PREPARATION_CAPABILITY.0 || file.path.starts_with(MODEL_PREPARATION_DIRECTORY));
         if model_preparation_declared != model_preparation_pinned {
@@ -2604,9 +2631,9 @@ impl Payload {
         {
             return Ok(None);
         }
-        if !cfg!(debug_assertions) || self.manifest.mode != "local-validation"
-            || self.manifest.redistribution_qualified || self.manifest.official_signed
-            || !regular(WORKSPACE_FURNISHING_CAPABILITY)
+        let local_validation = cfg!(debug_assertions) && self.manifest.mode == "local-validation"
+            && !self.manifest.redistribution_qualified && !self.manifest.official_signed;
+        if !(local_validation || fresh_image_release) || !regular(WORKSPACE_FURNISHING_CAPABILITY)
         {
             return Err(unqualified());
         }

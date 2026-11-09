@@ -594,7 +594,6 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-@main
 struct ManagerApp: App {
     @NSApplicationDelegateAdaptor(ManagerDelegate.self) private var delegate
     @StateObject private var model = ManagerModel()

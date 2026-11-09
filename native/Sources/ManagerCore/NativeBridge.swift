@@ -95,6 +95,7 @@ public struct NativeHostStatus: Decodable, Sendable {
     public let oexWorkspaceV6Qualified: Bool?
     public let oexWorkspaceV7Qualified: Bool?
     public let oexSaveOffer: NativeOEXSaveOffer?
+    public let freshImageReleaseConfigured: Bool?
     public let hayesOriginalReady: Bool?
     public let hayesReceipt: NativeHayesReceipt?
     public var needsShutdown: Bool { busy || runtime?.hasOwnedProcesses == true }
@@ -104,6 +105,7 @@ public struct LocalAuthoringSession: Decodable, Sendable {
     public let principalId: String
     public let origin: String
     public let token: String
+    var freshImageReleaseManifestSHA256: String? = nil
     /// Rotation is admitted only for the already selected local authority.
     /// A different account/origin or the same expired token cannot recover a host.
     public func isRenewal(of previous: LocalAuthoringSession) -> Bool {
@@ -180,7 +182,7 @@ public actor NativeBridge {
     private var sequence: UInt64 = 0
     private var buffered = Data()
 
-    public init(helper: URL, profile: URL, freshSelectedOEX: Bool = false, freshWorkspacePorts: [String: UInt16]? = nil, temporaryDirectory: URL? = nil, workspaceV5ValidationRuntime: URL? = nil, workspaceV6ValidationRuntime: URL? = nil, workspaceV7ValidationRuntime: URL? = nil) throws {
+    public init(helper: URL, profile: URL, freshSelectedOEX: Bool = false, freshWorkspacePorts: [String: UInt16]? = nil, temporaryDirectory: URL? = nil, workspaceV5ValidationRuntime: URL? = nil, workspaceV6ValidationRuntime: URL? = nil, workspaceV7ValidationRuntime: URL? = nil, requireExistingManagedProfile: Bool = false) throws {
         guard helper.isFileURL, profile.isFileURL,
               FileManager.default.isExecutableFile(atPath: helper.path) else {
             throw BridgeFailure("NATIVE_HELPER_MISSING")
@@ -194,6 +196,12 @@ public actor NativeBridge {
             runtime.map { (version, $0) }
         }
         guard validation.count <= 1 else { throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID") }
+        if requireExistingManagedProfile {
+            guard !freshSelectedOEX, freshWorkspacePorts == nil, validation.isEmpty else {
+                throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID")
+            }
+            process.arguments?.append("--existing-managed-profile")
+        }
         if let (validationVersion, runtime) = validation.first {
             #if DEBUG
             guard runtime.isFileURL, runtime.resolvingSymlinksInPath().path == runtime.path,

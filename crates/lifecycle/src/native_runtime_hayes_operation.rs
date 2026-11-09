@@ -22,6 +22,8 @@ use crate::{
         Session,
     },
 };
+use crate::native_runtime::owner_channel::AuthenticatedHayes;
+pub(in super::super) use crate::native_runtime::owner_channel::HayesSessionPin;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -145,42 +147,6 @@ enum Phase {
     Failed,
 }
 
-/// Native-selected identity issued before the API sends OPEN. The caller
-/// must convey it through the existing authenticated private bootstrap.
-pub(in super::super) struct HayesSessionPin {
-    runtime_generation: Uuid,
-    host_manifest_sha256: String,
-    native_owner_id: Uuid,
-}
-
-impl HayesSessionPin {
-    pub(in super::super) fn new(
-        runtime_generation: Uuid,
-        host_manifest_sha256: &str,
-    ) -> Result<Self> {
-        if !canonical_uuid(&runtime_generation) || !hash_valid(host_manifest_sha256) {
-            return Err(unavailable());
-        }
-        Ok(Self {
-            runtime_generation,
-            host_manifest_sha256: host_manifest_sha256.into(),
-            native_owner_id: Uuid::new_v4(),
-        })
-    }
-
-    pub(in super::super) fn runtime_generation(&self) -> Uuid {
-        self.runtime_generation
-    }
-
-    pub(in super::super) fn host_manifest_sha256(&self) -> &str {
-        &self.host_manifest_sha256
-    }
-
-    pub(in super::super) fn native_owner_id(&self) -> Uuid {
-        self.native_owner_id
-    }
-}
-
 #[cfg(all(
     test,
     feature = "workspace-v5-owner-validation",
@@ -211,11 +177,6 @@ pub(in super::super) fn session_probe_arm(pin: &HayesSessionPin) -> Result<Vec<u
         native_owner_id: pin.native_owner_id(),
         runtime_manifest_sha256: pin.host_manifest_sha256(),
     })
-}
-
-pub(in super::super) struct AuthenticatedHayes {
-    pub(in super::super) pin: HayesSessionPin,
-    pub(in super::super) channel: Connection,
 }
 
 pub(in super::super) enum HayesBootstrap {
@@ -379,8 +340,8 @@ impl Session {
                 .claim_hayes()
                 .inspect_err(|_| observe("open-channel-claim-failed"))?;
             let host = self.payload.context();
-            if host.manifest_sha256 != pin.host_manifest_sha256
-                || self.job_id.as_deref() != Some(pin.runtime_generation.to_string().as_str())
+            if host.manifest_sha256 != pin.host_manifest_sha256()
+                || self.job_id.as_deref() != Some(pin.runtime_generation().to_string().as_str())
             {
                 observe("open-session-pin-mismatch");
                 return Err(unavailable());
@@ -427,14 +388,14 @@ impl Session {
             owner
                 .recheck_database_identity(self)
                 .inspect_err(|_| observe("open-frame-database-identity-failed"))?;
-            if open.lease_id == pin.native_owner_id {
+            if open.lease_id == pin.native_owner_id() {
                 observe("open-frame-lease-alias");
                 return Err(unavailable());
             }
             let record = Record {
                 version: 1,
                 binding: open,
-                native_owner_id: pin.native_owner_id,
+                native_owner_id: pin.native_owner_id(),
                 runtime_manifest_sha256: host.manifest_sha256,
                 runtime_source_commit: host.source_commit,
                 runtime_producer_sha256: self.payload.producer_sha256().to_owned(),

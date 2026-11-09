@@ -437,6 +437,37 @@ actual corresponding-source/notices contents and owning-app resource seal must
 be reviewed and recorded with the delivered app; copying it does not establish
 redistribution qualification or change runtime admission.
 
+### Stage finalized macOS release inputs
+
+For ordinary image preparation with catalog 047, build `exhibitos-native` in
+release mode with `EXHIBITOS_FRESH_IMAGE_RELEASE_PRODUCER_SHA256` and
+`EXHIBITOS_FRESH_IMAGE_RELEASE_MANIFEST_SHA256` set from the reviewed Platform
+finalizer success receipt. Verify its `sourceCommit`, `producerSHA256` and
+`manifestSHA256` against the finalized runtime manifest before building. Cargo
+compiles the two hashes into the helper. The app obtains admission through the
+helper's private owner session and requires the live API capability before
+enabling image preparation. The helper still validates the official app and
+helper signatures, runtime inventory and managed owner binding at launch.
+
+Use Python 3.11 or newer. On the clean Manager checkout used for the release
+build, assemble the already-built non-debug app and helper with
+`scripts/package-native-preview.py --release-receipt RECEIPT --app APP
+--swift-executable APP_BINARY --rust-helper HELPER_BINARY --runtime-payload
+RUNTIME --legal-resources SOURCES --legal-inventory SOURCES_INVENTORY`.
+Use absolute paths and a new `.app` destination. The v1 JSON receipt records
+`managerCommit`, `managerTree`, `appSHA256`, `helperSHA256`,
+`runtimeManifestSHA256` and `legalInventorySHA256` alongside `version: 1`.
+Use the independently recorded build and finalized runtime digests. The legal
+inventory stays outside the copied tree and lists `path`, `bytes` and `sha256`
+for every resource, including `index.html`.
+
+The assembler verifies both inventories before and after copying and emits a
+receipt for the unsealed app. The 1.25 GiB stage limit includes the finalized
+runtime, bundled source resources, executables and app metadata. The assembler
+also checks available disk space before copying. The development DMG limit is
+separate. The existing Developer ID app/helper and full-resource validation
+still applies at installed launch. The Help item uses the bundled index.
+
 The native packager copies the approved Manager icon and integrated Studio/CMS
 marks from `native/Resources/Brand` into the app's existing Resources directory.
 `CFBundleIconFile` names `manager.icns`; the existing screen header uses the
@@ -615,6 +646,10 @@ not a Docker-free release or a qualified replacement for the existing Manager.
 
 
 ## Native artwork management (partial authoring)
+
+The installed [image CLI](../docs/native-image-cli.md) uses the same personal
+workspace, artwork approval and exhibition save. It requires a bundled runtime
+that admits ordinary image preparation.
 
 The Create destination now contains a personal workspace connection, optional
 existing-account login, artist creation, artwork

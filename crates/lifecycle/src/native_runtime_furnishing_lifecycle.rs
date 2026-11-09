@@ -97,7 +97,7 @@ impl Binding {
             let tuple = (self.source_commit.as_str(), self.producer_sha256.as_str(), self.payload_manifest_sha256.as_str());
             let supported = match self.catalog {
                 46 => crate::native_payload::large_model_recovery_host_matches(tuple),
-                47 => crate::native_payload::fresh_image_recovery_host_matches(tuple),
+                47 => crate::native_payload::fresh_image_host_matches(tuple),
                 _ => false,
             };
             if !supported || lineage.is_empty() || lineage.len() > 8
@@ -133,7 +133,7 @@ impl Binding {
                     && crate::native_payload::large_model_host_matches(tuple))
                 || (self.catalog == 47 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen | Admission::InterruptedReopen)
-                    && crate::native_payload::fresh_image_recovery_host_matches(tuple)))
+                    && crate::native_payload::fresh_image_host_matches(tuple)))
             || (self.catalog == 41
                 && (self.restore.is_some()
                     || !matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)))

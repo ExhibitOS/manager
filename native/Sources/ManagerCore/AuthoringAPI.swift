@@ -334,7 +334,7 @@ public actor AuthoringAPI {
     public nonisolated let admitsICCJPEG: Bool
     public nonisolated let admitsSameOwnerArtworkReplacement: Bool
     public nonisolated let productImageRuntimeQualified: Bool
-    public nonisolated let freshImageRuntimeQualified: Bool
+    private let nativeRuntimeManifestSHA256: String?
     public nonisolated let largeModelRuntimeQualified: Bool
     // These reviewed v5 tuples are local-validation payloads. Release admission
     // requires separate package qualification.
@@ -420,12 +420,12 @@ public actor AuthoringAPI {
         admitsSameOwnerArtworkReplacement = NativeJPEGImportRuntime.supportsSameOwnerArtworkReplacement(
             manifestSHA256: nativeRuntimeManifestSHA256, ready: true
         )
+        self.nativeRuntimeManifestSHA256 = nativeRuntimeManifestSHA256
         let manifest = nativeRuntimeManifestSHA256 ?? ""
         largeModelRuntimeQualified = Self.supportsLargeModelRuntime(manifest: manifest)
         #if DEBUG
         hayesOriginalRuntimeQualified = NativeHayesOriginalIntent.supports(manifest: manifest)
         productImageRuntimeQualified = Self.supportsProductImageRuntime(manifest: manifest)
-        freshImageRuntimeQualified = Self.supportsFreshImageRuntime(manifest: manifest)
         let portalQualified = manifest == Self.workspacePortalFinishManifestPin
             || Self.requiredModelPreparationManifestPins.contains(manifest)
             || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
@@ -433,7 +433,6 @@ public actor AuthoringAPI {
         #else
         hayesOriginalRuntimeQualified = false
         productImageRuntimeQualified = false
-        freshImageRuntimeQualified = false
         let portalQualified = false
         let multimapQualified = false
         #endif
@@ -559,8 +558,17 @@ public actor AuthoringAPI {
         defer { authenticationBusy = false; if session == nil { clear() } }
         guard let cookie = HTTPCookie(properties: [.domain: "127.0.0.1", .path: "/", .name: "exhibitos_local_session", .value: credentials.token, .discard: "TRUE"]) else { throw AuthoringFailure("LOCAL_SESSION_INVALID") }
         transport.configuration.httpCookieStorage?.setCookies([cookie], for: base, mainDocumentURL: base)
-        let value: AuthoringSession = try await request("/api/v1/auth/session", authenticated: false)
+        var value: AuthoringSession = try await request("/api/v1/auth/session", authenticated: false)
         guard value.tenantId.lowercased() == tenant, value.userId.lowercased() == credentials.principalId.lowercased(), !value.csrfToken.isEmpty else { clear(); throw AuthoringFailure("ACCOUNT_BINDING_MISMATCH") }
+        // Release admission comes from the bundled helper after owner binding.
+        // The HTTP session must separately advertise the live image capability.
+        let qualified = nativeRuntimeManifestSHA256.map {
+            Self.supportsFreshImageRuntime(manifest: $0)
+                || (nativeImportDigest($0) && credentials.freshImageReleaseManifestSHA256 == $0)
+        } == true
+        if !qualified {
+            value.nativeFreshImagePreparationProfile = nil
+        }
         session = value
         nativeSession = true
         return value
@@ -572,12 +580,15 @@ public actor AuthoringAPI {
               original.role == expected.role, original.csrfToken == expected.csrfToken, original.expiresAt == expected.expiresAt else {
             throw AuthoringFailure("ACCOUNT_BINDING_MISMATCH")
         }
-        let current: AuthoringSession = try await request("/api/v1/auth/session")
+        var current: AuthoringSession = try await request("/api/v1/auth/session")
         guard let held = session, held.userId == original.userId, held.tenantId == original.tenantId,
               held.role == original.role, held.csrfToken == original.csrfToken, held.expiresAt == original.expiresAt,
               current.userId == original.userId, current.tenantId == original.tenantId,
               current.role == original.role, current.csrfToken == original.csrfToken, current.expiresAt == original.expiresAt else {
             throw AuthoringFailure("ACCOUNT_BINDING_MISMATCH")
+        }
+        if original.nativeFreshImagePreparationProfile == nil {
+            current.nativeFreshImagePreparationProfile = nil
         }
         return current
     }
@@ -590,8 +601,9 @@ public actor AuthoringAPI {
         struct Accepted: Decodable, Sendable { let authenticated: Bool }
         let accepted: Accepted = try await request("/api/v1/auth/login", method: "POST", body: encoded(Login(subject: subject, password: password, tenantId: tenant)), authenticated: false)
         guard accepted.authenticated else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
-        let value: AuthoringSession = try await request("/api/v1/auth/session", authenticated: false)
+        var value: AuthoringSession = try await request("/api/v1/auth/session", authenticated: false)
         guard value.tenantId.lowercased() == tenant, UUID(uuidString: value.userId) != nil, !value.csrfToken.isEmpty else { clear(); throw AuthoringFailure("ACCOUNT_BINDING_MISMATCH") }
+        value.nativeFreshImagePreparationProfile = nil
         session = value
         return value
     }
@@ -785,7 +797,7 @@ public actor AuthoringAPI {
     }
 
     public var admitsFreshImagePreparation: Bool {
-        nativeSession && !authenticationBusy && freshImageRuntimeQualified
+        nativeSession && !authenticationBusy
             && session?.nativeFreshImagePreparationProfile == NativeProductImagePreparationIntent.freshProfileID
     }
 

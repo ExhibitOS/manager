@@ -42,7 +42,8 @@ pub fn selected_oex_format_v7_validation(resources: &Path, input_fd: i32, cancel
 #[allow(dead_code)] // Inactive pending native containment and owner-channel integration.
 #[path = "native_runtime_hayes.rs"] mod hayes;
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
-use hayes::operation::{HayesBootstrap, HayesSessionPin, RetainedHayes};
+use hayes::operation::{HayesBootstrap, RetainedHayes};
+use owner_channel::HayesSessionPin;
 #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
 #[path = "native_runtime_hayes_ordinary.rs"]
 pub(crate) mod hayes_ordinary;
@@ -587,6 +588,8 @@ pub struct Session {
     cancellation: Arc<AtomicBool>,
     local_authority: Option<LocalAuthority>,
     owner_channel: Option<owner_channel::Connection>,
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions)))]
+    hayes_owner_connection: Option<owner_channel::Connection>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     hayes_bootstrap: HayesBootstrap,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -977,6 +980,8 @@ impl Session {
             cancellation: Arc::new(AtomicBool::new(false)),
             local_authority: None,
             owner_channel: None,
+            #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions)))]
+            hayes_owner_connection: None,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             hayes_bootstrap: HayesBootstrap::Disabled,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -1066,7 +1071,11 @@ impl Session {
             if saved != expected { return Err(err("NATIVE_CONFIGURATION_CHANGED")); }
             return Ok(Some(initialize));
         }
-        if self.fresh_ordinary_furnishing && !exists(&root.join("native-database"))? {
+        // Official 047 provisions the default personal profile through the
+        // normal app. Its bound personal record, Session lock and absence of
+        // previous runs are required before creating the initialization marker.
+        let fresh_release = self.payload.fresh_image_release() && current_run(root)?.is_none();
+        if (self.fresh_ordinary_furnishing || fresh_release) && !exists(&root.join("native-database"))? {
             if exists(&root.join("blobs"))? || exists(&root.join("config"))? {
                 return Err(err("NATIVE_FRESH_WORKSPACE_REQUIRED"));
             }
@@ -1191,6 +1200,11 @@ impl Session {
     fn check_workspace_furnishing_channel(&mut self) -> Result<()> {
         self.check_native_observation_fence()?;
         self.furnishing_writer_lifetime.as_ref().ok_or_else(|| err("NATIVE_FURNISHING_WRITER_LOCK_INVALID"))?.identity()?;
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions)))]
+        if self.payload.fresh_image_release() {
+            self.hayes_owner_connection.as_ref().ok_or_else(|| err("HAYES_OPERATION_UNAVAILABLE"))?
+                .check_hayes_peer_idle()?;
+        }
         self.owner_channel.as_mut().ok_or_else(|| err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?.check_furnishing_idle()
     }
     pub(crate) fn static_detail_authority(&mut self) -> Result<StaticDetailAuthority<'_>> {
@@ -1279,9 +1293,16 @@ impl Session {
             .local_authority
             .as_ref()
             .ok_or_else(|| err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
-        Ok(
-            serde_json::json!({"tenantId":a.tenant_id,"principalId":a.principal_id,"origin":format!("http://127.0.0.1:{}",self.ports.web),"token":a.session_token}),
-        )
+        let mut response = serde_json::json!({
+            "tenantId": a.tenant_id, "principalId": a.principal_id,
+            "origin": format!("http://127.0.0.1:{}", self.ports.web), "token": a.session_token,
+        });
+        if self.payload.fresh_image_release()
+            && self.active_furnishing_binding().is_some_and(|binding| binding.catalog == 47)
+        {
+            response["freshImageReleaseManifestSHA256"] = self.payload.context().manifest_sha256.into();
+        }
+        Ok(response)
     }
     #[cfg(debug_assertions)]
     pub(crate) fn verify_transition_studio(
@@ -1425,10 +1446,12 @@ const { isDeepStrictEqual } = require('node:util');
         }
         if self.node.is_none() {
             self.owner_channel = None;
+            #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions)))]
+            { self.hayes_owner_connection = None; }
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             if matches!(self.hayes_bootstrap, HayesBootstrap::Issued(_) | HayesBootstrap::Spent) {
                 self.hayes_bootstrap = if self.payload.ordinary_hayes_release()
-                    || self.payload.ordinary_fresh_furnishing_validation()
+                    || self.payload.ordinary_fresh_furnishing()
                 {
                     HayesBootstrap::Disabled
                 } else {
@@ -1881,7 +1904,7 @@ const { isDeepStrictEqual } = require('node:util');
                          AND (cardinality(png_worker_tokens)>0 OR model_preparation ? 'claim') ORDER BY 1 LIMIT 2",
                         owner.tenant_id, owner.principal_id,
                     ),
-                    47 if self.payload.fresh_image_recovery_validation() => format!(
+                    47 if self.payload.fresh_image_recovery_enabled() => format!(
                         "SELECT DISTINCT COALESCE(derived#>>'{{claim,runtimeGeneration}}','unbound')
                          FROM public.import_jobs WHERE tenant_id='{}'::uuid AND user_id='{}'::uuid
                          AND derived->>'kind'='fresh-product-image' AND derived->>'workspaceId'='{}'
@@ -1990,10 +2013,9 @@ const { isDeepStrictEqual } = require('node:util');
             }
             Some(owner_channel::Setup::new()?)
         } else { None };
-        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
         if (self.payload.retained_furnishing_catalog().is_some()
             && matches!(furnishing, Some(FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045)))
-            || (self.payload.ordinary_fresh_furnishing_validation()
+            || (self.payload.ordinary_fresh_furnishing()
                 && matches!(furnishing, Some(FurnishingStart::Initialize | FurnishingStart::Reopen)))
         {
             self.payload.recheck()?;
@@ -2064,14 +2086,11 @@ const { isDeepStrictEqual } = require('node:util');
         self.node = Some(spawned?);
         if let Some(setup) = owner_setup.as_mut() { setup.close_child(); }
         self.record()?;
-        #[allow(unused_mut)]
         if let Some(mut setup) = owner_setup {
-            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             let dedicated = setup.take_hayes();
             let authority = self.local_authority.as_ref().ok_or_else(|| err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
             let generation = self.job_id.as_deref().ok_or_else(|| err("NATIVE_JOURNAL_INVALID"))?;
             let mut channel = setup.handshake(authority, generation, &self.cancellation)?;
-            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             let hayes = dedicated.map(|setup| setup.handshake(authority, generation, &self.cancellation)).transpose()?;
             if let Some(lease) = furnishing_lease {
                 let cancellation = self.cancellation.clone();
@@ -2093,6 +2112,8 @@ const { isDeepStrictEqual } = require('node:util');
             if let Some(hayes) = hayes {
                 self.hayes_bootstrap = HayesBootstrap::Issued(hayes);
             }
+            #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions)))]
+            { self.hayes_owner_connection = hayes.map(|authenticated| authenticated.channel); }
         }
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
@@ -2295,10 +2316,11 @@ const { isDeepStrictEqual } = require('node:util');
                     Some(FurnishingStart::Reopen | FurnishingStart::Upgrade039To040 | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045) => {
                         let source = prior_binding.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
                         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-                        if let Some((_, transition)) = &self.furnishing_transition_trial {
-                            active.consume_furnishing_transition(source, *transition)?;
-                        } else if source.phase == Phase::Active
-                            && (self.payload.fresh_image_recovery_validation() || self.payload.large_model_recovery_validation())
+                        let transition = self.furnishing_transition_trial.as_ref();
+                        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+                        let transition: Option<()> = None;
+                        if source.phase == Phase::Active && transition.is_none()
+                            && (self.payload.fresh_image_recovery_enabled() || self.payload.large_model_recovery_validation())
                             && furnishing == Some(FurnishingStart::Reopen)
                         {
                             if prior.as_ref().is_none_or(|run| run.id != source.generation) {
@@ -2316,10 +2338,15 @@ const { isDeepStrictEqual } = require('node:util');
                             }
                             active.consume_interrupted(source, record.readiness.ready)?;
                         } else {
+                            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                            if let Some((_, transition)) = transition {
+                                active.consume_furnishing_transition(source, *transition)?;
+                            } else {
+                                active.consume(source)?;
+                            }
+                            #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
                             active.consume(source)?;
                         }
-                        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
-                        active.consume(source)?;
                         if active.admission_kind == Admission::VerifiedRestore
                             || active.restore.as_ref().is_some_and(|restore| restore.provenance.is_some())
                         {

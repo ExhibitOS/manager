@@ -468,10 +468,10 @@ impl InstallationController {
         }
         Self::managed(profile)
     }
-    /// Bind a returned validation profile without initializing or recovering
-    /// either the profile or its selected installation.
-    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
-    pub(crate) fn open_existing_managed(profile: PathBuf) -> Result<Self> {
+    /// Bind an existing managed profile and selected installation without
+    /// initializing or recovering either directory.
+    #[cfg(target_os = "macos")]
+    pub fn open_existing_managed(profile: PathBuf) -> Result<Self> {
         private_directory(&profile)?;
         // Fast refusal avoids leaving lock files in an empty directory. The
         // guarded read below is authoritative if a registry was present here.
@@ -1208,6 +1208,39 @@ mod tests {
         f.write_all(bytes).unwrap();
         f.sync_all().unwrap();
     }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn existing_managed_profile_refuses_unregistered_paths_and_reuses_existing_selection() {
+        let parent = fs::canonicalize(std::env::temp_dir()).unwrap()
+            .join(format!("manager-existing-profile-{}", Uuid::new_v4()));
+        new_directory(&parent).unwrap();
+        let profile = parent.join("profile");
+        assert!(InstallationController::open_existing_managed(profile.clone()).is_err());
+        assert!(!profile.exists());
+        new_directory(&profile).unwrap();
+        assert!(InstallationController::open_existing_managed(profile.clone()).is_err());
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&profile).unwrap().count(), 0);
+
+        let original = InstallationController::new(profile.clone(), None).unwrap();
+        let active = original.context().unwrap().active_id;
+        let registry = fs::read(profile.join("installation-selection.json")).unwrap();
+        assert!(InstallationController::open_existing_managed(profile.clone()).is_err());
+        drop(original);
+
+        let alias = parent.join("alias");
+        std::os::unix::fs::symlink(&profile, &alias).unwrap();
+        assert!(InstallationController::open_existing_managed(alias).is_err());
+        fs::set_permissions(&profile, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(InstallationController::open_existing_managed(profile.clone()).is_err());
+        fs::set_permissions(&profile, fs::Permissions::from_mode(0o700)).unwrap();
+        let reopened = InstallationController::open_existing_managed(profile.clone()).unwrap();
+        assert_eq!(reopened.context().unwrap().active_id, active);
+        assert_eq!(fs::read(profile.join("installation-selection.json")).unwrap(), registry);
+        drop(reopened);
+        fs::remove_dir_all(&parent).unwrap();
+    }
+
     #[test]
     fn raw_diagnosis_survives_actual_incomplete_candidate_startup_without_rewriting_it() {
         let (profile, controller) = fixture();

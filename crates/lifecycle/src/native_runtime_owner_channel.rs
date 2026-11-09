@@ -28,11 +28,12 @@ struct Hello<'a> { version: u32, kind: &'static str, workspace_id: &'a str, tena
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Ack { version: u32, kind: String, workspace_id: String, tenant_id: String, principal_id: String, runtime_generation: String }
 
-#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
 #[path = "native_runtime_hayes_owner_bootstrap.rs"]
 mod hayes_bootstrap;
-#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
 use hayes_bootstrap::HayesSetup;
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+pub(super) use hayes_bootstrap::AuthenticatedHayes;
+pub(super) use hayes_bootstrap::HayesSessionPin;
 
 /// Holds both original endpoints until spawn. Only the duplicated child
 /// descriptor is made inheritable in the forked API child.
@@ -41,7 +42,6 @@ pub(super) struct Setup {
     child: Option<File>,
     secret: String,
     furnishing_writer: Option<super::furnishing_lifetime::ProbedWriter>,
-    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     hayes: Option<HayesSetup>,
     #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     probe_source: Option<super::hayes_probe_source::ProbeSourceFd>,
@@ -92,7 +92,6 @@ impl Setup {
         let secret=bytes.iter().map(|v|format!("{v:02x}")).collect::<String>();bytes.fill(0);
         parent.set_nonblocking(true).map_err(|_| err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
         Ok(Self {parent,child:Some(child),secret,furnishing_writer:None,
-            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             hayes: None,
             #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             probe_source: None,
@@ -140,7 +139,6 @@ impl Setup {
         self.normal_selected_v3_bootstrap(auth, generation, super::oex_catalog_frames::Protocol::from(version).owner_mode())
     }
     pub(super) fn workspace_furnishing_bootstrap(&self, auth: &LocalAuthority, generation: &str, start: super::FurnishingStart) -> Result<Vec<u8>> {
-        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
         if let Some(hayes) = &self.hayes {
             return hayes.bootstrap(auth, generation, start, &self.secret);
         }
@@ -154,8 +152,7 @@ impl Setup {
         let bytes=serde_json::to_vec(&value).map_err(|_|err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
         if bytes.len()>4096 {return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));} Ok(bytes)
     }
-    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
-    pub(super) fn with_hayes(mut self, pin: super::hayes::operation::HayesSessionPin) -> Result<Self> {
+    pub(super) fn with_hayes(mut self, pin: HayesSessionPin) -> Result<Self> {
         if self.hayes.is_some() || self.furnishing_writer.is_none() {
             return Err(err("HAYES_OPERATION_UNAVAILABLE"));
         }
@@ -163,7 +160,6 @@ impl Setup {
         Ok(self)
     }
 
-    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     pub(super) fn take_hayes(&mut self) -> Option<HayesSetup> {
         self.hayes.take()
     }
@@ -188,10 +184,7 @@ impl Setup {
             }
             command.env("EXHIBITOS_NATIVE_FURNISHING_WRITER_FD", writer.to_string());
         }
-        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
         let hayes_fd = self.hayes.as_ref().map(HayesSetup::child_fd).transpose()?;
-        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions)))]
-        let hayes_fd: Option<i32> = None;
         if let Some(hayes_fd) = hayes_fd {
             if hayes_fd == fd || writer == Some(hayes_fd) {
                 return Err(err("HAYES_OPERATION_UNAVAILABLE"));
@@ -224,7 +217,6 @@ impl Setup {
         self.furnishing_writer.take();
         #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         self.probe_source.take();
-        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
         if let Some(hayes) = self.hayes.as_mut() {
             hayes.close_child();
         }
@@ -292,6 +284,11 @@ impl Connection {
         {
             return Err(err("HAYES_OPERATION_UNAVAILABLE"));
         }
+        self.check_hayes_peer_idle()
+    }
+
+    pub(super) fn check_hayes_peer_idle(&self) -> Result<()> {
+        if !self.valid { return Err(err("HAYES_OPERATION_UNAVAILABLE")); }
         let mut byte = 0u8;
         let received = unsafe {
             libc::recv(self.socket.as_raw_fd(), (&mut byte as *mut u8).cast(), 1,
