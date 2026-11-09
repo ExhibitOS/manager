@@ -46,6 +46,37 @@ final class NativeAutomationFailureTests: XCTestCase {
         XCTAssertThrowsError(try NativeAutomationSession.exportRootIdentity(output, profile: profile))
     }
 
+    func testBoundedOEXRefusesReplacementDirectoryAtWrite() async throws {
+        let files = FileManager.default
+        let base = files.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        let profile = base.appendingPathComponent("profile", isDirectory: true)
+        let root = base.appendingPathComponent("output", isDirectory: true)
+        let moved = base.appendingPathComponent("moved", isDirectory: true)
+        try files.createDirectory(at: base, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? files.removeItem(at: base) }
+        for path in [profile, root] {
+            try files.createDirectory(at: path, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        }
+        let identity = try NativeAutomationSession.exportRootIdentity(root, profile: profile)
+        try files.moveItem(at: root, to: moved)
+        try files.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let data = Data([80, 75, 3, 4] + Array(repeating: 0, count: 22))
+        let archive = try NativeOEXArchive(data: data)
+        let destination = root.appendingPathComponent("saved.oex")
+        do {
+            try await archive.writeBoundedVerified(to: destination, expectedParent: identity)
+            XCTFail("Accepted a replacement output directory")
+        } catch let error as BridgeFailure {
+            XCTAssertEqual(error.code, "AUTOMATION_OUTPUT_INVALID")
+        }
+        XCTAssertTrue(try files.contentsOfDirectory(atPath: root.path).isEmpty)
+        XCTAssertTrue(try files.contentsOfDirectory(atPath: moved.path).isEmpty)
+        try files.removeItem(at: root)
+        try files.moveItem(at: moved, to: root)
+        try await archive.writeBoundedVerified(to: destination, expectedParent: identity)
+        XCTAssertEqual(try Data(contentsOf: destination), data)
+    }
+
     func testArtworkStatusBypassesCachedReadyResponseWhileMutationReplayStaysBound() throws {
         let request = Data("same request".utf8)
         let stale: DocumentValue = .object(["job": .object(["state": .string("approved")])])

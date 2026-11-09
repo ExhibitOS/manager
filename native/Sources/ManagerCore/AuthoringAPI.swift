@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 import CryptoKit
+import Darwin
 
 public struct NativeBoundedOEXJob: Decodable, Sendable {
     public let id: String
@@ -285,6 +286,10 @@ public struct NativeBoundedOEXExport: Sendable {
     public var sha256: String { archive.sha256 }
     fileprivate init(_ archive: NativeOEXArchive) { self.archive = archive }
     public func write(to url: URL) async throws { try await archive.writeBoundedVerified(to: url) }
+
+    func write(to url: URL, expectedParent: (dev_t, ino_t)?) async throws {
+        try await archive.writeBoundedVerified(to: url, expectedParent: expectedParent)
+    }
 }
 private struct NativeOEXExportResponse: Sendable {
     let archive: NativeOEXArchive

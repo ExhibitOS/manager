@@ -90,7 +90,7 @@ profile and a separate, existing directory with owner-only permissions.
   --export-cli --profile "/absolute/path/to/profile" --output-root "/absolute/path/to/output"
 ```
 
-Both directory paths must be canonical. Neither directory may contain the other.
+Both directory paths must be canonical and on the same volume. Neither directory may contain the other.
 Quit Manager before running this command. It starts the profile's matching signed
 release runtime and uses the same version 1 JSON envelope and scoped ready
 response described above.

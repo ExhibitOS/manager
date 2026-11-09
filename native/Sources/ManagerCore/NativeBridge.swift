@@ -282,11 +282,15 @@ public actor NativeBridge {
     public func staticExportStatus(_ context: Context) throws -> NativeStaticExportStatus? {
         try request("static_export_status", fields: ["selection_token": context.selectionToken])
     }
-    public func startStaticExport(_ context: Context, publicationId: String, output: URL, privateEditor: Bool = false, nativeOriginalDetail: Bool = false) throws -> NativeStaticExportStatus {
+    public func startStaticExport(_ context: Context, publicationId: String, output: URL, privateEditor: Bool = false, nativeOriginalDetail: Bool = false,
+                                  outputParentIdentity: (dev_t, ino_t)? = nil) throws -> NativeStaticExportStatus {
         guard output.isFileURL else { throw BridgeFailure("NATIVE_STATIC_OUTPUT_INVALID") }
         var export: [String: Any] = ["publicationId": publicationId, "output": output.path]
         if privateEditor { export["privateEditor"] = true }
         if nativeOriginalDetail { export["detailMode"] = "native-detail-v1" }
+        if let (device, inode) = outputParentIdentity {
+            export["outputParentIdentity"] = ["device": UInt64(bitPattern: Int64(device)), "inode": UInt64(inode)]
+        }
         return try request("static_export", fields: ["selection_token": context.selectionToken, "export": export])
     }
     public func cancelStaticExport(_ context: Context) throws -> NativeStaticExportStatus? {

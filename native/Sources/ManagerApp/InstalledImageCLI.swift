@@ -52,7 +52,7 @@ enum InstalledImageCLI {
             print("""
                 \(usage)
                 Commands: read, export-oex, export-static. Send one JSON request per line.
-                Use a saved personal workspace and a separate owner-only output directory.
+                Use a saved personal workspace and a separate owner-only output directory on the same volume.
                 End stdin to close and drain the owned runtime.
                 """)
             return 0

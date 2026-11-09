@@ -373,10 +373,20 @@ public actor NativeAutomationSession {
     }
     static func exportRootIdentity(_ root: URL, profile: URL) throws -> (dev_t, ino_t) {
         guard root.isFileURL, root.path != profile.path, !root.path.hasPrefix(profile.path + "/"),
-              !profile.path.hasPrefix(root.path + "/"), let identity = try? profileIdentity(root) else {
+              !profile.path.hasPrefix(root.path + "/"), let identity = try? profileIdentity(root),
+              let source = try? profileIdentity(profile), source.0 == identity.0 else {
             throw BridgeFailure("AUTOMATION_OUTPUT_INVALID")
         }
         return identity
+    }
+
+    static func checkExportDirectory(_ descriptor: Int32, path: String, expected: (dev_t, ino_t)) throws {
+        var held = stat(), named = stat()
+        guard fstat(descriptor, &held) == 0, lstat(path, &named) == 0,
+              (held.st_dev, held.st_ino) == expected, (named.st_dev, named.st_ino) == expected,
+              held.st_mode & S_IFMT == S_IFDIR, held.st_mode & 0o777 == 0o700, held.st_uid == getuid() else {
+            throw BridgeFailure("AUTOMATION_OUTPUT_INVALID")
+        }
     }
 
     private func output(_ path: String) throws -> URL {
@@ -407,8 +417,21 @@ public actor NativeAutomationSession {
     }
     private func write(_ object: DocumentValue, to path: String) throws -> DocumentValue {
         let url = try output(path), bytes = try JSONEncoder().encode(object)
-        try bytes.write(to: url, options: .withoutOverwriting)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        if let expected = installedExportRootIdentity {
+            let parent = Darwin.open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard parent >= 0 else { throw BridgeFailure("AUTOMATION_OUTPUT_INVALID") }
+            defer { Darwin.close(parent) }
+            try Self.checkExportDirectory(parent, path: root.path, expected: expected)
+            let fd = openat(parent, url.lastPathComponent, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            guard fd >= 0 else { throw BridgeFailure("AUTOMATION_OUTPUT_INVALID") }
+            let output = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+            try output.write(contentsOf: bytes)
+            try output.synchronize()
+            try output.close()
+        } else {
+            try bytes.write(to: url, options: .withoutOverwriting)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        }
         return .object(["path": .string(url.path), "sha256": .string(Self.digest(bytes)), "bytes": .integer(Int64(bytes.count))])
     }
     static func recordCompletedDraft12Import(
@@ -1749,14 +1772,17 @@ public actor NativeAutomationSession {
             let url = try output(path)
             let reopened = try await api.exhibition(draft.id)
             guard reopened.draft == draft, reopened.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            let sha256: String
             if authoringSession?.nativeOexExportProfile == "bounded-file-v1" {
                 let archive = try await api.exportBoundedOEX(exhibitionId: draft.id, etag: etag)
-                try await archive.write(to: url)
+                try await archive.write(to: url, expectedParent: installedExportRootIdentity)
+                sha256 = archive.sha256
             } else {
                 let archive = try await api.exportOEX(exhibitionId: draft.id, etag: etag)
                 try await archive.writeBoundedVerified(to: url)
+                sha256 = archive.sha256
             }
-            result = .object(["path": .string(url.path), "sha256": .string(Self.digest(try Data(contentsOf: url))), "etag": .string(etag)])
+            result = .object(["path": .string(url.path), "sha256": .string(sha256), "etag": .string(etag)])
         case "export-static", "export-static-native-original":
             try checkedRevision(request, current)
             if installedExportRootIdentity != nil && authoringSession?.nativePublicationProfile != "bounded-local-v1" {
@@ -1852,7 +1878,8 @@ public actor NativeAutomationSession {
                     publication = try await bridge.savePublicationState(context, state: publication)
                 }
                 let started = try await bridge.startStaticExport(context, publicationId: frozen.publicationId, output: destination,
-                                                                 privateEditor: true, nativeOriginalDetail: nativeOriginal)
+                                                                 privateEditor: true, nativeOriginalDetail: nativeOriginal,
+                                                                 outputParentIdentity: installedExportRootIdentity)
                 detailJobId = nativeOriginal ? started.jobId : nil
             } else { detailJobId = nil }
             do {

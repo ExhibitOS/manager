@@ -208,13 +208,17 @@ public struct NativeOEXArchive: Sendable {
     }
     /// Selected bounded output only. The caller must first establish the
     /// separately reviewed owner terminal/drain proof for this exact snapshot.
-    func writeBoundedVerified(to url: URL) async throws {
+    func writeBoundedVerified(to url: URL, expectedParent: (dev_t, ino_t)? = nil) async throws {
         guard url.isFileURL, !url.lastPathComponent.isEmpty, url.lastPathComponent != ".", url.lastPathComponent != ".." else { throw AuthoringFailure("EXPORT_WRITE_FAILED") }
         let ownedFile = file, identity = stamp, expectedHash = sha256, expectedBytes = count
         let work = Task.detached(priority: .userInitiated) {
             let parentFD = Darwin.open(url.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
             guard parentFD >= 0 else { throw AuthoringFailure("EXPORT_WRITE_FAILED") }
             defer { Darwin.close(parentFD) }
+            if let expectedParent {
+                try NativeAutomationSession.checkExportDirectory(parentFD, path: url.deletingLastPathComponent().path,
+                                                                 expected: expectedParent)
+            }
             // One owner creates and holds this private directory until commit.
             let directory = ".exhibitos-oex-" + UUID().uuidString
             guard mkdirat(parentFD, directory, 0o700) == 0 else { throw AuthoringFailure("EXPORT_WRITE_FAILED") }
@@ -262,11 +266,19 @@ public struct NativeOEXArchive: Sendable {
                   namedOutput.st_dev == outputIdentity.st_dev, namedOutput.st_ino == outputIdentity.st_ino,
                   fstatat(parentFD, directory, &namedDir, AT_SYMLINK_NOFOLLOW) == 0,
                   namedDir.st_dev == dirIdentity.st_dev, namedDir.st_ino == dirIdentity.st_ino else { throw AuthoringFailure("EXPORT_WRITE_FAILED") }
+            if let expectedParent {
+                try NativeAutomationSession.checkExportDirectory(parentFD, path: url.deletingLastPathComponent().path,
+                                                                 expected: expectedParent)
+            }
             try Task.checkCancellation()
             // No existing or concurrently created destination may be replaced.
             // After this exclusive rename succeeds, report committed even if
             // cancellation arrives while the kernel call executes.
             guard renameatx_np(dirFD, "archive", parentFD, url.lastPathComponent, UInt32(RENAME_EXCL)) == 0 else { throw AuthoringFailure("EXPORT_WRITE_FAILED") }
+            if let expectedParent {
+                try NativeAutomationSession.checkExportDirectory(parentFD, path: url.deletingLastPathComponent().path,
+                                                                 expected: expectedParent)
+            }
         }
         try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
     }
