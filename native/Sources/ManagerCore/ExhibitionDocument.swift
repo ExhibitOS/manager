@@ -268,7 +268,7 @@ public struct NativeExhibitionDraft: Codable, Equatable, Sendable {
               rows.filter({ $0["placementId"].string == id }).count == 1,
               let index = rows.firstIndex(where: { $0["placementId"].string == id }),
               case .object(let fields) = rows[index], Set(fields.keys) == ["placementId", "text"],
-              rows[index]["text"].string == expectedText else { throw AuthoringFailure("ARTWORK_INTERPRETATION_CHANGED") }
+              let existing = rows[index]["text"].string, existing.utf8.elementsEqual(expectedText.utf8) else { throw AuthoringFailure("ARTWORK_INTERPRETATION_CHANGED") }
         rows[index]["text"] = .string(text)
         var next = candidate; next["accessibility"]["artworkDescriptions"] = .array(rows); try change(next)
     }

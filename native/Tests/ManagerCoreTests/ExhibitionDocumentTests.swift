@@ -90,6 +90,19 @@ final class ExhibitionDocumentTests: XCTestCase {
         XCTAssertEqual(draft.document["editVersion"].integer, before.document["editVersion"].integer.map { $0 + 1 })
     }
 
+    func testInterpretationRequiresExactUTF8ForExpectedText() throws {
+        var draft = try NativeExhibitionDraft.new()
+        let room = try XCTUnwrap(draft.rooms.first?["id"].string)
+        let artwork: DocumentValue = .object(["kind": .string("artwork"), "revisionId": .string(UUID().uuidString),
+                                                "primaryAssetId": .string(UUID().uuidString), "metadata": .object(["description": .string("é")])])
+        try draft.addApprovedArtwork(artwork, roomId: room, position: [0, 1, 0])
+        let id = try XCTUnwrap(draft.placements.first?["id"].string)
+        let before = draft
+        XCTAssertThrowsError(try draft.setArtworkInterpretation(id, expectedText: "e\u{301}", text: "새 해설"))
+        XCTAssertEqual(draft, before)
+        XCTAssertNoThrow(try draft.setArtworkInterpretation(id, expectedText: "é", text: "새 해설"))
+    }
+
     func testInterpretationRequiresReviewedTextAndPreservesOtherContent() throws {
         var draft = try NativeExhibitionDraft.new()
         let room = try XCTUnwrap(draft.rooms.first?["id"].string)
