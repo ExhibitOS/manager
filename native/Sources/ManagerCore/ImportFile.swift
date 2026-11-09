@@ -17,7 +17,7 @@ public struct NativeUploadState: Codable, Sendable {
     public func permitsOrdinaryJobAction(_ jobId: String, selectedArtworkId: String?) -> Bool {
         guard let intent, let selectedArtworkId else { return false }
         return self.jobId == jobId && intent.artworkId == selectedArtworkId && intent.hayesOriginal == nil
-            && intent.productImagePreparation == nil
+            && (intent.productImagePreparation == nil || intent.productImagePreparation?.isFresh == true)
     }
 
     public func holdsRequiredModelMetadata(for artworkId: String?) -> Bool {

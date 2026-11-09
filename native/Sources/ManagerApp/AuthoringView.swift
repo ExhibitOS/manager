@@ -151,7 +151,7 @@ final class AuthoringModel: ObservableObject {
         guard let intent = transfer?.intent, let job = importJob, let selected else { return false }
         return job.modelDerivation?.currentOutputs(in: selected, intent: intent, job: job) == true
     }
-    var importFormats: String { jpegImportsEnabled ? "GLB·PNG·JPEG" : "GLB·PNG" }
+    var importFormats: String { (jpegImportsEnabled || freshImagePreparationAvailable) ? "GLB·PNG·JPEG" : "GLB·PNG" }
     var jpegOriginalStored: Bool {
         guard transfer?.intent?.mime == "image/jpeg", transfer?.intent?.derived?.valid == true,
               let job = importJob, job.state == "approved", transfer?.jobId?.lowercased() == job.id.lowercased(),
@@ -176,7 +176,10 @@ final class AuthoringModel: ObservableObject {
     private var runtimeJobID: String?
     private var available = false
     var metadataDirty: Bool { editing && (draft != original || selected == nil || creationYearText != (original.creationYear.map(String.init) ?? "")) }
-    var requiredModelMetadataHeld: Bool { transfer?.holdsRequiredModelMetadata(for: selected?.id) == true }
+    var intakeMetadataHeld: Bool {
+        transfer?.holdsRequiredModelMetadata(for: selected?.id) == true
+            || (hasFreshImageTransfer && transfer?.intent?.artworkId == selected?.id)
+    }
 
     var dirty: Bool { metadataDirty || (importFile != nil && transfer?.intent == nil) }
 
@@ -310,7 +313,7 @@ final class AuthoringModel: ObservableObject {
     func save() async {
         await action {
             guard let api else { return }
-            guard !requiredModelMetadataHeld else { throw AuthoringFailure("IMPORT_MODEL_METADATA_HELD") }
+            guard !intakeMetadataHeld else { throw AuthoringFailure(hasFreshImageTransfer ? "IMPORT_ACTIVE" : "IMPORT_MODEL_METADATA_HELD") }
             guard !inspectedReferencePending else { throw AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID") }
             if let selected, let intent = transfer?.intent, intent.derived?.recipe.colourConversion != nil,
                selected.id.lowercased() == intent.artworkId.lowercased() {
@@ -457,7 +460,24 @@ extension AuthoringModel {
         guard let writeTransfer else { throw AuthoringFailure("IMPORT_STORE_REQUIRED") }
         transfer = try await writeTransfer(state)
     }
-    var hasProductImageTransfer: Bool { transfer?.intent?.productImagePreparation != nil }
+    var hasProductImageTransfer: Bool { transfer?.intent?.productImagePreparation?.isFresh == false }
+    var hasFreshImageTransfer: Bool { transfer?.intent?.productImagePreparation?.isFresh == true }
+    var freshImagePreparationAvailable: Bool {
+        available && intakeWritesAvailable
+            && session?.nativeFreshImagePreparationProfile == NativeProductImagePreparationIntent.freshProfileID
+    }
+    var freshImageSourceSelected: Bool {
+        hasFreshImageTransfer || (freshImagePreparationAvailable && transfer?.intent == nil
+            && selected?.approvedRevision == nil && selected?.approvedAssetId == nil
+            && ["image/jpeg", "image/png"].contains(importFile?.mime ?? ""))
+    }
+    var freshImageReady: NativeProductImagePreparationStatus? {
+        guard let transfer, let intent = transfer.intent, let preparation = intent.productImagePreparation, preparation.isFresh,
+              let job = importJob, transfer.jobId == job.id, let status = job.productImagePreparation,
+              status.validatesReady(intent: intent, preparation: preparation, job: job,
+                                    workspaceID: transfer.workspaceId, principalID: transfer.principalId) else { return nil }
+        return status
+    }
 
     var productImagePreparationAvailable: Bool {
         available && intakeWritesAvailable && api?.productImageRuntimeQualified == true
@@ -572,7 +592,7 @@ extension AuthoringModel {
         guard !busy, available, session != nil, activeIntakeID == nil || transfer?.intent != nil else { return }
         let panel = NSOpenPanel()
         panel.title = "작품 파일 가져오기"
-        panel.message = jpegImportsEnabled ? "GLB·PNG·JPEG 파일을 선택하세요. 최대 32 MiB이며 JPEG 원본을 유지하고 감상용 PNG를 준비합니다." : "GLB 또는 PNG 파일을 선택하세요. 최대 32 MiB를 지원합니다."
+        panel.message = (jpegImportsEnabled || freshImagePreparationAvailable) ? "GLB·PNG·JPEG 파일을 선택하세요. 최대 32 MiB이며 JPEG 원본을 유지하고 감상용 PNG를 준비합니다." : "GLB 또는 PNG 파일을 선택하세요. 최대 32 MiB를 지원합니다."
         panel.canChooseDirectories = false; panel.canChooseFiles = true; panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [UTType(filenameExtension: "glb") ?? .data]
         if hayes {
@@ -580,7 +600,7 @@ extension AuthoringModel {
         } else if unknown {
             panel.message = "원본 단위를 확인할 수 없는 GLB를 선택하세요. 구조와 좌표 범위를 확인합니다."
         } else {
-            panel.allowedContentTypes += [.png] + (jpegImportsEnabled ? [.jpeg] : [])
+            panel.allowedContentTypes += [.png] + ((jpegImportsEnabled || freshImagePreparationAvailable) ? [.jpeg] : [])
         }
         guard let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.identifier?.rawValue == "manager" }) else { return }
         let response = await withCheckedContinuation { continuation in
@@ -589,7 +609,7 @@ extension AuthoringModel {
         guard response == .OK, let url = panel.url else { return }
         await action {
             let read = Task {
-                try await ImportFileSnapshot.load(url, allowJPEG: !hayes && jpegImportsEnabled,
+                try await ImportFileSnapshot.load(url, allowJPEG: !hayes && (jpegImportsEnabled || freshImagePreparationAvailable),
                     byteLimit: hayes ? NativeHayesOriginalIntent.sourceBytes : ImportFileSnapshot.limit)
             }
             importRead = read
@@ -674,6 +694,28 @@ extension AuthoringModel {
                     }
                 }
             }
+            if freshImageSourceSelected {
+                guard freshImagePreparationAvailable, await api.admitsFreshImagePreparation,
+                      try await intakeWorkspaceCheck?() == true else {
+                    throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE")
+                }
+                let preparation = state.intent?.productImagePreparation
+                    ?? .init(artworkRevision: selected.revision, fresh: true)
+                try preparation.checkFreshArtwork(selected, rights: draft.rights)
+                let intent = state.intent ?? NativeImportIntent(artworkId: selected.id, mime: file.mime, sha256: file.sha256,
+                    bytes: file.data.count, scaleMeters: 1, rights: draft.rights, productImagePreparation: preparation)
+                guard generation == importStatusGeneration, currentScope == scope, self.api === api,
+                      self.selected?.id == selected.id, self.selected?.revision == selected.revision,
+                      self.transfer?.revision == state.revision, !metadataDirty,
+                      intent.artworkId == selected.id, intent.rights == draft.rights, file.matches(intent) else {
+                    throw AuthoringFailure("IMPORT_INTENT_CHANGED")
+                }
+                try await continueImport(intent: intent, file: file, api: api)
+                approvalAcknowledged = false
+                notice = "원본 파일을 보냈습니다. 감상용 파일이 준비되면 작품 정보와 권리를 검토하세요."
+                scheduleImportPoll()
+                return
+            }
             let rights = draft.rights, scale = ordinaryUnknownModel ? 1 : importScale
             let requestKey = state.intent?.idempotencyKey ?? UUID().uuidString.lowercased()
             let derived: NativePreparedJPEG?
@@ -738,6 +780,13 @@ extension AuthoringModel {
         guard artwork.id == intent.artworkId, let metadata = artwork.metadata else {
             throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
         }
+        if let preparation = intent.productImagePreparation, preparation.isFresh {
+            guard freshImagePreparationAvailable, await api.admitsFreshImagePreparation else {
+                throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE")
+            }
+            try preparation.checkFreshArtwork(artwork, rights: intent.rights, approvedAssetId: importJob?.assetId)
+            return
+        }
         if metadata.provenance.sourceUnits == "unknown" {
             guard modelOriginalInspectionAvailable, intent.modelPreparation != nil, intent.scaleMeters == 1,
                   !metadata.provenance.scaleApplied, metadata.displayReference?.assetSha256 == intent.sha256 else {
@@ -761,8 +810,10 @@ extension AuthoringModel {
         let tenant = session?.tenantId, principal = session?.userId
         @MainActor func current() -> Bool {
             generation == importStatusGeneration && currentScope == scope && available && isScopeCurrent()
-                && (intent.mime != "image/jpeg" || ((intent.productImagePreparation == nil
-                    ? jpegImportsEnabled : productImagePreparationAvailable) && manifest == runtimeManifestSHA256))
+                && (intent.productImagePreparation?.isFresh == true
+                    ? (freshImagePreparationAvailable && manifest == runtimeManifestSHA256)
+                    : (intent.mime != "image/jpeg" || ((intent.productImagePreparation == nil
+                        ? jpegImportsEnabled : productImagePreparationAvailable) && manifest == runtimeManifestSHA256)))
                 && (intent.modelDerivation == nil || (modelDerivationEnabled && manifest == runtimeManifestSHA256))
                 && (intent.modelPreparation == nil || (requiredModelPreparationEnabled && manifest == runtimeManifestSHA256))
                 && session?.tenantId == tenant && session?.userId == principal
@@ -863,7 +914,7 @@ extension AuthoringModel {
                     }
                     importJob = observed
                 }
-                if intent.modelPreparation != nil {
+                if intent.modelPreparation != nil || intent.productImagePreparation?.isFresh == true {
                     let observed = try await api.importJob(job.id)
                     guard observed.id == job.id, transfer?.jobId == job.id, transfer?.intent == intent,
                           observed.canRetry, observed.confirmsIntakeDrain(for: intent) else {
@@ -946,6 +997,13 @@ extension AuthoringModel {
                     throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
                 }
             }
+            if let intent = state.intent, intent.productImagePreparation?.isFresh == true,
+               let job = completed, job.state == "approved" {
+                guard let api else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+                let artwork = try await api.artwork(intent.artworkId)
+                guard artwork.approvedRevision == intent.productImagePreparation?.artworkRevision,
+                      artwork.approvedAssetId == job.assetId else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+            }
             if state.intent?.hayesOriginal != nil, let job = completed, job.state == "approved" {
                 guard let api, let intent = state.intent, let hayes = intent.hayesOriginal else {
                     throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
@@ -1001,7 +1059,8 @@ extension AuthoringModel {
     func approveImportedArtwork() async {
         await action {
             guard !hasProductImageTransfer, let api, let selected, !metadataDirty, approvalAcknowledged,
-                  selected.assets.contains(where: { $0.id == assetId && $0.state == "approved" }) else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+                  hasFreshImageTransfer ? freshImageReady?.full != nil
+                    : selected.assets.contains(where: { $0.id == assetId && $0.state == "approved" }) else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
             if usesHayesOriginal {
                 guard let recoverHayes, let intent = transfer?.intent, let job = importJob,
                       job.assetId == assetId,
@@ -1023,7 +1082,17 @@ extension AuthoringModel {
                 guard jpegOriginalStored else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
             }
             let approved: NativeArtwork
-            if let intent = transfer?.intent, intent.modelPreparation != nil, intent.artworkId == selected.id {
+            if let transfer, let intent = transfer.intent, intent.productImagePreparation?.isFresh == true {
+                guard freshImagePreparationAvailable, intent.artworkId == selected.id, let jobId = transfer.jobId else {
+                    throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+                }
+                let job = try await api.importJob(jobId)
+                let current = try await api.artwork(selected.id)
+                guard self.transfer?.revision == transfer.revision, self.selected?.id == selected.id,
+                      job.id == jobId, job.productImagePreparation?.serverReceipt?.sha256 == freshImageReady?.serverReceipt?.sha256,
+                      current.metadata == selected.metadata else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+                approved = try await api.approveFreshImage(job, request: intent, current: current, workspaceID: transfer.workspaceId)
+            } else if let intent = transfer?.intent, intent.modelPreparation != nil, intent.artworkId == selected.id {
                 guard requiredModelPreparationEnabled, let jobId = transfer?.jobId else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
                 let job = try await api.importJob(jobId)
                 let current = try await api.artwork(selected.id)
@@ -1262,10 +1331,12 @@ struct NativeAuthoringView: View {
                 }
                 if model.editing {
                     NativeImportControls(model: model, ready: ready, mode: mode, openArtwork: { select($0) })
-                    if model.requiredModelMetadataHeld {
-                        Text(AuthoringFailure("IMPORT_MODEL_METADATA_HELD").localizedDescription).foregroundStyle(.secondary)
+                    if model.intakeMetadataHeld {
+                        Text(model.hasFreshImageTransfer
+                             ? "준비된 파일의 검토를 마친 뒤 작품 정보를 편집할 수 있습니다."
+                             : AuthoringFailure("IMPORT_MODEL_METADATA_HELD").localizedDescription).foregroundStyle(.secondary)
                     }
-                    editor.disabled(model.requiredModelMetadataHeld)
+                    editor.disabled(model.intakeMetadataHeld)
                 }
             }
             if model.busy { ProgressView("제작 내용을 확인하고 있습니다…") }

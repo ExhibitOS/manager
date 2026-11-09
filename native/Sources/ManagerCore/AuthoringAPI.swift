@@ -20,6 +20,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var compactModelVariantProfile: String? = nil
     public var nativeModelCandidateReplacementProfile: String? = nil
     public var nativeProductImagePreparationProfile: String? = nil
+    public var nativeFreshImagePreparationProfile: String? = nil
     public var workspaceMaterialProfile: String? = nil
     public var workspaceFurnishingProfile: String? = nil
     public var workspaceFurnishingStoolProfile: String? = nil
@@ -777,6 +778,11 @@ public actor AuthoringAPI {
             && session?.nativeProductImagePreparationProfile == NativeProductImagePreparationIntent.profileID
     }
 
+    public var admitsFreshImagePreparation: Bool {
+        nativeSession && !authenticationBusy
+            && session?.nativeFreshImagePreparationProfile == NativeProductImagePreparationIntent.freshProfileID
+    }
+
     nonisolated static func supportsProductImageRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == productImageManifestPin || manifest == productImageFitWheatManifestPin
@@ -1455,13 +1461,10 @@ public actor AuthoringAPI {
     }
     private func createProductImageImport(_ input: NativeImportIntent,
                                           preparation: NativeProductImagePreparationIntent) async throws -> NativeImportJob {
-        guard admitsProductImagePreparation else { throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE") }
-        guard preparation.valid, input.mime == "image/jpeg", input.scaleMeters == 1,
-              (4...NativeProductImagePreparationIntent.maximumSourceBytes).contains(input.bytes), nativeImportDigest(input.sha256),
-              input.derived == nil, input.coarsePreparation == nil, input.modelDerivation == nil,
-              input.modelPreparation == nil, input.hayesOriginal == nil else {
-            throw AuthoringFailure("IMPORT_INPUT_INVALID")
+        guard preparation.isFresh ? admitsFreshImagePreparation : admitsProductImagePreparation else {
+            throw AuthoringFailure(preparation.isFresh ? "IMAGE_PREPARATION_UNAVAILABLE" : "ARTWORK_REPLACEMENT_UNAVAILABLE")
         }
+        guard preparation.matches(input) else { throw AuthoringFailure("IMPORT_INPUT_INVALID") }
         struct Input: Encodable {
             let artworkId: String
             let idempotencyKey: String
@@ -1470,14 +1473,16 @@ public actor AuthoringAPI {
             let bytes: Int
             let scaleMeters: Double
             let rights: ArtworkMetadata.Rights
-            let coarsePreparation: NativeProductImagePreparationIntent
+            let coarsePreparation: NativeProductImagePreparationIntent?
+            let imagePreparation: NativeProductImagePreparationIntent?
         }
         let current = generation
         let wire = try Input(artworkId: identifier(input.artworkId), idempotencyKey: identifier(input.idempotencyKey),
                              mime: input.mime, sha256: input.sha256, bytes: input.bytes, scaleMeters: input.scaleMeters,
-                             rights: input.rights, coarsePreparation: preparation)
+                             rights: input.rights, coarsePreparation: preparation.isFresh ? nil : preparation,
+                             imagePreparation: preparation.isFresh ? preparation : nil)
         let job: NativeImportJob = try await request("/api/v1/tenants/\(tenant)/imports", method: "POST", body: encoded(wire))
-        guard generation == current, admitsProductImagePreparation,
+        guard generation == current, (preparation.isFresh ? admitsFreshImagePreparation : admitsProductImagePreparation),
               job.productImagePreparation?.matches(preparation, job: job) == true else {
             throw AuthoringFailure("IMPORT_RECEIPT_INVALID")
         }
@@ -1929,6 +1934,37 @@ public actor AuthoringAPI {
             throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
         }
         return observed
+    }
+
+    public func approveFreshImage(_ job: NativeImportJob, request intent: NativeImportIntent,
+                                  current artwork: NativeArtwork, workspaceID: String) async throws -> NativeArtwork {
+        let current = generation
+        guard admitsFreshImagePreparation, let principalID = session?.userId,
+              let preparation = intent.productImagePreparation, preparation.isFresh, artwork.id == intent.artworkId,
+              let status = job.productImagePreparation, let full = status.full,
+              status.validatesReady(intent: intent, preparation: preparation, job: job,
+                                    workspaceID: workspaceID, principalID: principalID) else {
+            throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+        }
+        try preparation.checkFreshArtwork(artwork, rights: intent.rights, approvedAssetId: full.assetId)
+        struct Approval: Encodable { let revision: Int; let jobId: String }
+        let approved: NativeArtwork = try await request(prefix + "/artworks/" + identifier(artwork.id) + "/fresh-image-preparations/approve",
+            method: "POST", body: encoded(Approval(revision: artwork.revision, jobId: try identifier(job.id))))
+        let canonical = try await studioArtwork(artwork.id).artwork
+        let expectedAssets = [full] + (status.coarse.map { [$0] } ?? [])
+        guard generation == current, admitsFreshImagePreparation, approved.id == artwork.id,
+              approved.revision == artwork.revision, approved.approvedRevision == artwork.revision,
+              approved.approvedAssetId == full.assetId, approved.metadata == artwork.metadata, !approved.archived,
+              canonical["revision"].integer == Int64(artwork.revision),
+              canonical["primaryAssetId"].string == full.assetId,
+              canonical["assets"].items?.count == expectedAssets.count,
+              expectedAssets.allSatisfy({ expected in
+                  canonical["assets"].items?.contains(where: {
+                      $0["id"].string == expected.assetId && $0["mime"].string == expected.mime
+                          && $0["sha256"].string == expected.sha256 && $0["bytes"].integer == Int64(expected.bytes)
+                  }) == true
+              }) else { throw AuthoringFailure("ARTWORK_SCOPE_CHANGED") }
+        return approved
     }
 
     public func approveArtwork(_ id: String, revision: Int, assetId: String) async throws -> NativeArtwork {

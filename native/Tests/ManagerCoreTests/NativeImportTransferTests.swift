@@ -27,7 +27,7 @@ private actor ImportTransportFixture: NativeImportTransport {
     var createdState = "uploading"
     var assetID: String?
     var originalAssetID: String?
-    var productImageRevision: Int?
+    var productImage: NativeProductImagePreparationIntent?
     var createHook: (@Sendable () async -> Void)?
     var uploadHook: (@Sendable () async -> Void)?
     func configure(code: String? = nil, state: String = "uploading",
@@ -40,16 +40,16 @@ private actor ImportTransportFixture: NativeImportTransport {
         var value: [String: Any] = ["id": id, "state": state, "progress": 10, "attempts": 0]
         if let assetID { value["assetId"] = assetID }
         if let originalAssetID { value["originalAssetId"] = originalAssetID }
-        if let productImageRevision {
+        if let productImage {
             value["imagePreparation"] = ["provenance": "server-generated",
-                "profile": NativeProductImagePreparationIntent.profileID, "artworkRevision": productImageRevision,
+                "profile": productImage.profile, "artworkRevision": productImage.artworkRevision,
                 "status": "pending", "workerDrained": false]
         }
         return try JSONDecoder().decode(NativeImportJob.self, from: JSONSerialization.data(withJSONObject: value))
     }
     func createImport(_ input: NativeImportIntent) async throws -> NativeImportJob {
         calls.append("create:\(input.idempotencyKey)")
-        productImageRevision = input.productImagePreparation?.artworkRevision
+        productImage = input.productImagePreparation
         await createHook?()
         return try job(createdState)
     }
@@ -194,6 +194,29 @@ final class NativeImportTransferTests: XCTestCase {
         let (untouchedCalls, _) = await untouched.observed()
         XCTAssertTrue(untouchedCalls.isEmpty)
     }
+    func testFreshImagesResumeTheBoundSourceOnlyJob() async throws {
+        for mime in ["image/png", "image/jpeg"] {
+            let bytes = Data("fresh artwork transport fixture".utf8)
+            let file = ImportFileSnapshot(name: "source", mime: mime, sha256: nativeImportSHA256(bytes), data: bytes)
+            let input = NativeImportIntent(artworkId: UUID().uuidString.lowercased(), mime: mime, sha256: file.sha256,
+                bytes: bytes.count, scaleMeters: 1, rights: ArtworkMetadata().rights,
+                productImagePreparation: .init(artworkRevision: 1, fresh: true))
+            let transport = ImportTransportFixture()
+            let first = try await NativeImportTransfer().run(intent: input, jobID: nil, file: file, transport: transport, isCurrent: { true })
+            let resumedIntent = try JSONDecoder().decode(NativeImportIntent.self, from: JSONEncoder().encode(input))
+            await transport.configure(state: "queued")
+            let resumed = try await NativeImportTransfer().run(intent: resumedIntent, jobID: first.id, file: nil,
+                transport: transport, isCurrent: { true })
+            let (calls, uploaded) = await transport.observed()
+            let derived = await transport.observedDerived()
+            XCTAssertEqual(resumed.id, first.id)
+            XCTAssertEqual(resumed.productImagePreparation?.profile, NativeProductImagePreparationIntent.freshProfileID)
+            XCTAssertEqual(uploaded, bytes)
+            XCTAssertNil(derived)
+            XCTAssertEqual(calls, ["create:\(input.idempotencyKey)", "upload", "complete", "create:\(input.idempotencyKey)"])
+        }
+    }
+
     func testIntentEncodingPreservesLegacyAndCanonicalDerivedProvenance() throws {
         let old = intent()
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as? [String: Any])

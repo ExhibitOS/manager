@@ -175,8 +175,7 @@ enum NativeAutomationArtworkTransfer {
         let glb = intent.mime == "model/gltf-binary" && intent.derived == nil && intent.coarsePreparation == nil && derived == nil
         let reviewed = intent.mime == "image/jpeg" && intent.coarsePreparation?.valid == true
             && intent.derived?.recipe.colourConversion != nil && derived?.derived == intent.derived && intent.scaleMeters == 1
-        let product = intent.mime == "image/jpeg" && intent.productImagePreparation?.valid == true
-            && intent.derived == nil && intent.coarsePreparation == nil && derived == nil && intent.scaleMeters == 1
+        let product = intent.productImagePreparation?.matches(intent) == true && derived == nil
         guard glb || reviewed || product, intent.modelDerivation == nil, intent.modelPreparation == nil,
               intent.hayesOriginal == nil, intent.productImagePreparation == nil || product,
               intent.scaleMeters.isFinite, intent.scaleMeters > 0, intent.scaleMeters <= 1_000_000,
