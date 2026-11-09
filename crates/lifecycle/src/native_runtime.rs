@@ -405,6 +405,47 @@ fn validate_cold_furnishing_source(root: &Path, prior: Option<&Binding>, live: &
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+fn check_catalog45_recovery_source(root: &Path, source: &Current) -> Result<()> {
+    let rejected = || err(furnishing_lifecycle::ERROR);
+    let binding = source.furnishing.as_ref().ok_or_else(rejected)?;
+    let predecessor = binding.previous_generation.as_deref().ok_or_else(rejected)?;
+    if source.id != binding.generation || binding.phase != Phase::Active
+        || binding.admission_kind != Admission::CleanReopen || binding.catalog != 45
+        || binding.restore.is_some()
+    {
+        return Err(rejected());
+    }
+    let (failed, completion) = read_run(root, &source.id)?;
+    if failed.state != "failed" || completion.is_some()
+        || failed.postgres_pid.is_some() || failed.node_pid.is_some() || failed.auxiliary_pid.is_some()
+        || failed.failure_code.as_deref() != Some(furnishing_lifecycle::ERROR)
+        || failed.error_code.as_deref() != Some(furnishing_lifecycle::ERROR)
+        || ["postgres", "node", "auxiliary"].iter().any(|name| failed.exits.get(*name) != Some(&0))
+    {
+        return Err(rejected());
+    }
+    let (prior, prior_completion) = read_run(root, predecessor)?;
+    let prior_completion = prior_completion.ok_or_else(rejected)?;
+    if prior.state != "stopped" || prior.failure_code.is_some() || prior.ports != failed.ports
+        || prior.postgres_pid.is_some() || prior.node_pid.is_some() || prior.auxiliary_pid.is_some()
+        || ["postgres", "node"].iter().any(|name| prior.exits.get(*name) != Some(&0))
+        || !hash_valid(&prior_completion.binding_sha256)
+        || prior_completion.consumed_by.as_deref() != Some(source.id.as_str())
+    {
+        return Err(rejected());
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) fn catalog45_recovery_source_generation(root: &Path) -> Result<String> {
+    let source = current_run(root)?.ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+    check_cold_transition_root(root, Some(&source.id))?;
+    check_catalog45_recovery_source(root, &source)?;
+    Ok(source.id)
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct FurnishingTransitionTrial {
@@ -431,9 +472,14 @@ impl FurnishingTransitionTrial {
     fn source_binding(&self, transition: FurnishingTransition) -> Result<&Binding> {
         let prior = self.source.furnishing.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
         prior.check()?;
+        let source_phase = if matches!(transition, FurnishingTransition::Recover45 { .. }) {
+            Phase::Active
+        } else {
+            Phase::Clean
+        };
         if self.source.format != 1 || !installations::uuid(&self.source.id)
             || !installations::uuid(&self.generation) || self.generation == prior.generation
-            || prior.phase != Phase::Clean || prior.restore.is_some()
+            || prior.phase != source_phase || prior.restore.is_some()
             || !prior.matches_catalog_tuple(transition.source_catalog().version(), transition.source())
         {
             return Err(err(furnishing_lifecycle::ERROR));
@@ -446,7 +492,12 @@ impl FurnishingTransitionTrial {
         if observed != self.source {
             return Err(err(furnishing_lifecycle::ERROR));
         }
-        unconsumed_furnishing_completion(&service.root, self.source_binding(transition)?)?;
+        if matches!(transition, FurnishingTransition::Recover45 { .. }) {
+            check_cold_transition_root(&service.root, Some(&self.source.id))?;
+            check_catalog45_recovery_source(&service.root, &self.source)?;
+        } else {
+            unconsumed_furnishing_completion(&service.root, self.source_binding(transition)?)?;
+        }
         Ok(guard)
     }
 
@@ -479,7 +530,11 @@ impl FurnishingTransitionTrial {
     // have drained. Never remove the trial run or its diagnostic evidence.
     pub(crate) fn hold_recovery(&self, service: &LifecycleService, transition: FurnishingTransition) -> Result<FurnishingTransitionWriterGuard> {
         let (guard, _) = self.hold(service, transition)?;
-        self.recoverable_source_completion(&service.root, transition)?;
+        if matches!(transition, FurnishingTransition::Recover45 { .. }) {
+            check_catalog45_recovery_source(&service.root, &self.source)?;
+        } else {
+            self.recoverable_source_completion(&service.root, transition)?;
+        }
         Ok(guard)
     }
 
@@ -494,6 +549,9 @@ impl FurnishingTransitionTrial {
         }
         let current = current_run(root)?.ok_or_else(cold)?;
         if current == self.source {
+            if matches!(transition, FurnishingTransition::Recover45 { .. }) {
+                return check_cold_transition_root(root, Some(&self.source.id));
+            }
             return check_cold_checkpoint_root(root);
         }
         if current.id != self.generation {
@@ -542,12 +600,16 @@ impl FurnishingTransitionTrial {
         if guard.identity()? != prior.physical {
             return Err(err(furnishing_lifecycle::ERROR));
         }
-        let (context, mut proof) = self.recoverable_source_completion(&service.root, transition)?;
-        if proof.consumed_by.is_some() {
-            proof.consumed_by = None;
-            write_run(&service.root.join("native-runs").join(&prior.generation), &context, Some(proof))?;
+        if matches!(transition, FurnishingTransition::Recover45 { .. }) {
+            check_catalog45_recovery_source(&service.root, &self.source)?;
+        } else {
+            let (context, mut proof) = self.recoverable_source_completion(&service.root, transition)?;
+            if proof.consumed_by.is_some() {
+                proof.consumed_by = None;
+                write_run(&service.root.join("native-runs").join(&prior.generation), &context, Some(proof))?;
+            }
+            unconsumed_furnishing_completion(&service.root, prior)?;
         }
-        unconsumed_furnishing_completion(&service.root, prior)?;
         write_json(&service.root, "native-current-run.json", &self.source)?;
         File::open(&service.root).and_then(|file| file.sync_all()).map_err(|_| err("STATE_UNAVAILABLE"))
     }
@@ -1896,24 +1958,46 @@ const { isDeepStrictEqual } = require('node:util');
                 // The writer and operation fences are held. The owned PG
                 // process is the only child and no Node worker has started.
                 let owner = &binding.owner;
-                let sql = match binding.catalog {
-                    46 if self.payload.large_model_recovery_validation() => format!(
+                let observed = match binding.catalog {
+                    // The 045 recovery leaves every job in place. Mirror the
+                    // Platform bootstrap check before starting its process.
+                    45 if self.payload.catalog45_recovery_validation() => {
+                        let unsettled = self.query_database("exhibitos",
+                            "SELECT EXISTS (
+                               SELECT 1 FROM import_jobs WHERE state IN ('uploading','queued','processing')
+                               OR lease_id IS NOT NULL OR lease_until IS NOT NULL OR cardinality(png_worker_tokens)>0
+                               OR model_preparation ? 'claim'
+                             ) OR EXISTS (
+                               SELECT 1 FROM oex_import_jobs WHERE state IN ('uploading','queued','processing')
+                               OR lease_id IS NOT NULL OR lease_until IS NOT NULL OR cleanup_pending
+                             ) OR EXISTS (
+                               SELECT 1 FROM workspace_material_intakes WHERE phase IN ('uploading','validating','cancelling')
+                               OR worker_token IS NOT NULL
+                             ) OR EXISTS (
+                               SELECT 1 FROM workspace_furnishing_intakes WHERE phase IN ('uploading','validating','cancelling')
+                               OR worker_token IS NOT NULL
+                             )")?;
+                        if unsettled != "f" {
+                            return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
+                        }
+                        String::new()
+                    },
+                    46 if self.payload.large_model_recovery_validation() => self.query_database("exhibitos", &format!(
                         "SELECT DISTINCT COALESCE(model_preparation#>>'{{claim,runtimeGeneration}}','unbound')
                          FROM public.import_jobs WHERE tenant_id='{}'::uuid AND user_id='{}'::uuid
                          AND model_preparation#>>'{{request,profileId}}'='embedded-model-compact-large-20k-512-v2'
                          AND (cardinality(png_worker_tokens)>0 OR model_preparation ? 'claim') ORDER BY 1 LIMIT 2",
                         owner.tenant_id, owner.principal_id,
-                    ),
-                    47 if self.payload.fresh_image_recovery_enabled() => format!(
+                    ))?,
+                    47 if self.payload.fresh_image_recovery_enabled() => self.query_database("exhibitos", &format!(
                         "SELECT DISTINCT COALESCE(derived#>>'{{claim,runtimeGeneration}}','unbound')
                          FROM public.import_jobs WHERE tenant_id='{}'::uuid AND user_id='{}'::uuid
                          AND derived->>'kind'='fresh-product-image' AND derived->>'workspaceId'='{}'
                          AND (cardinality(png_worker_tokens)>0 OR derived ? 'claim') ORDER BY 1 LIMIT 2",
                         owner.tenant_id, owner.principal_id, owner.workspace_id,
-                    ),
+                    ))?,
                     _ => return Err(err(furnishing_lifecycle::ERROR)),
                 };
-                let observed = self.query_database("exhibitos", &sql)?;
                 binding.select_interrupted_claim_generation(&observed)?;
                 self.publish_current(Some(binding.clone()))?;
                 self.furnishing_binding = Some(binding);

@@ -567,11 +567,30 @@ const CATALOG45_CURRENT_ORIGINAL_TARGET: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET: RuntimeTuple = (
+pub(crate) const CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET: RuntimeTuple = (
     "3db5e972e2cd3a46be58723c99d74fe8b16a03c5",
     "29cdc6fd07e1c5d4e5fda06a2c37270d7023024d76a7cc3d31596af9f1c7a921",
     "9c5da125d1789e93bdeb9446060b452fcb33b1bb2d95645c909d60c1ff30d18d",
 );
+
+const CATALOG45_RECOVERY_CAPABILITY: (&str, u64, &str) = (
+    "platform/scripts/native-catalog-045-interrupted-recovery-capability-v1.json",
+    137,
+    "75dd973c5e497ad93df9a0563470de11b0831c91ccccc23fa9c3442d0897d9fc",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_RECOVERY_TARGET: RuntimeTuple = (
+    "fc152aca21da393c0214b3e028edcb2b9e58e9de",
+    "ecdcc0f612240daa231d74842c4b1a181493da03a4a18c04a6e9b1bd7a9ab37e",
+    "7c3efefb9dc90786da5efdcb1025d5953e0900de333830f3775f138c1dbc21f3",
+);
+
+pub(crate) fn catalog45_recovery_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return CATALOG45_RECOVERY_TARGET == tuple;
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const CATALOG45_DEFAULT_FRAME: RuntimeTuple = (
@@ -660,7 +679,8 @@ pub(crate) fn required_model_preparation_host_matches(tuple: (&str, &str, &str))
     return CATALOG45_BC96_REQUIRED_MODEL_TARGET == tuple
         || CATALOG45_COMPACT_AND_CANDIDATE_TARGET == tuple
         || CATALOG45_CURRENT_ORIGINAL_TARGET == tuple
-        || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET == tuple;
+        || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET == tuple
+        || catalog45_recovery_host_matches(tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -705,6 +725,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_COMPACT_AND_CANDIDATE_TARGET.2 == manifest
         || CATALOG45_CURRENT_ORIGINAL_TARGET.2 == manifest
         || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET.2 == manifest
+        || CATALOG45_RECOVERY_TARGET.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -716,11 +737,16 @@ pub(crate) enum FurnishingTransition {
     Upgrade39(Catalog39Upgrade),
     Upgrade40(Catalog40Upgrade),
     Upgrade44 { source: RuntimeTuple, target: RuntimeTuple },
+    Recover45 { target: RuntimeTuple },
     SameCatalog { source: RuntimeTuple, target: RuntimeTuple, catalog: WorkspaceFurnishingCatalog },
 }
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 impl FurnishingTransition {
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
+        let target = CATALOG45_RECOVERY_TARGET;
+        if pair == (CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET.2, target.2) {
+            return Some(Self::Recover45 { target });
+        }
         if let Some(transition) = Self::same_catalog_from_manifests(
             pair, Some(CATALOG40_DRAFT2_OEX_SELECTED), Some(CATALOG40_RETAINED_OEX_CLEANUP),
         ) {
@@ -838,6 +864,7 @@ impl FurnishingTransition {
         match self {
             Self::Upgrade39(_) => WorkspaceFurnishingCatalog::MaterialPublication039,
             Self::Upgrade44 { .. } => WorkspaceFurnishingCatalog::HayesRelease044,
+            Self::Recover45 { .. } => WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             Self::SameCatalog { catalog, .. } => catalog,
             _ => WorkspaceFurnishingCatalog::MaterialMultimap040,
         }
@@ -847,6 +874,7 @@ impl FurnishingTransition {
         match self {
             Self::Upgrade40(_) => WorkspaceFurnishingCatalog::HayesRelease044,
             Self::Upgrade44 { .. } => WorkspaceFurnishingCatalog::RequiredModelPreparation045,
+            Self::Recover45 { .. } => WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             Self::SameCatalog { catalog, .. } => catalog,
             _ => WorkspaceFurnishingCatalog::MaterialMultimap040,
         }
@@ -859,6 +887,7 @@ impl FurnishingTransition {
             Self::Upgrade39(_) => CATALOG39_UPGRADE_SOURCE,
             Self::Upgrade40(step) => step.source,
             Self::Upgrade44 { source, .. } => source,
+            Self::Recover45 { .. } => CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET,
             Self::SameCatalog { source, .. } => source,
         }
     }
@@ -870,6 +899,7 @@ impl FurnishingTransition {
             Self::Upgrade39(target) => target.0,
             Self::Upgrade40(step) => step.target,
             Self::Upgrade44 { target, .. } => target,
+            Self::Recover45 { target } => target,
             Self::SameCatalog { target, .. } => target,
         }
     }
@@ -1771,6 +1801,30 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    #[ignore = "requires the exact local catalog 045 source and recovery packages"]
+    fn opens_reviewed_catalog45_recovery_transition() {
+        let source_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_CATALOG45_SOURCE_RUNTIME").unwrap());
+        let target_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_CATALOG45_RECOVERY_RUNTIME").unwrap());
+        let source = Payload::open_workspace_v5_validation(&source_root, false).unwrap();
+        let mut target = Payload::open_saved_workspace_transition(&target_root).unwrap();
+        let source_manifest = source.context().manifest_sha256;
+        let target_manifest = target.context().manifest_sha256;
+        let transition = FurnishingTransition::from_manifests((&source_manifest, &target_manifest)).unwrap();
+        assert!(matches!(transition, FurnishingTransition::Recover45 { .. }));
+        assert!(FurnishingTransition::from_manifests((&target_manifest, &source_manifest)).is_none());
+        assert!(FurnishingTransition::from_manifests((&target_manifest, &target_manifest)).is_none());
+        assert!(!source.catalog45_recovery_validation());
+        assert!(target.catalog45_recovery_validation());
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        assert_eq!(source.workspace_furnishing_ledger(catalog).unwrap(), target.workspace_furnishing_ledger(catalog).unwrap());
+        assert!(Payload::open_workspace_v5_validation(&target_root, false).is_ok());
+        assert!(Payload::open_workspace_v5_validation(&target_root, true).is_err());
+        target.manifest.files.retain(|file| file.path != CATALOG45_RECOVERY_CAPABILITY.0);
+        assert!(target.workspace_furnishing_catalog().is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the exact sealed isolated fresh-image 047 package"]
     fn opens_reviewed_ordinary_fresh_image_catalog47() {
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_FRESH_IMAGE_CATALOG47_RUNTIME").unwrap());
@@ -2462,6 +2516,13 @@ impl Payload {
         ))
     }
 
+    pub(crate) fn catalog45_recovery_validation(&self) -> bool {
+        catalog45_recovery_host_matches((
+            self.manifest.source_commit.as_str(), self.manifest.producer_sha256.as_str(),
+            self.manifest_sha256.as_str(),
+        ))
+    }
+
     pub(crate) fn fresh_image_recovery_enabled(&self) -> bool {
         self.fresh_image_release() || fresh_image_recovery_host_matches((
             &self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256,
@@ -2589,6 +2650,18 @@ impl Payload {
             file.path == MODEL_PREPARATION_CAPABILITY.0 || file.path.starts_with(MODEL_PREPARATION_DIRECTORY));
         if model_preparation_declared != model_preparation_pinned {
             return Err(unqualified());
+        }
+        let (recovery_path, recovery_bytes, recovery_sha) = CATALOG45_RECOVERY_CAPABILITY;
+        let recovery_marker = self.manifest.files.iter().find(|file| file.path == recovery_path);
+        if recovery_marker.is_some() != self.catalog45_recovery_validation() {
+            return Err(unqualified());
+        }
+        if let Some(file) = recovery_marker {
+            if file.link.is_some() || file.executable != Some(false)
+                || file.bytes != Some(recovery_bytes) || file.sha256.as_deref() != Some(recovery_sha)
+            {
+                return Err(unqualified());
+            }
         }
         let release_pinned = release_probe_pinned || ordinary_hayes_release_host_matches(tuple)
             || model_preparation_pinned;
@@ -3234,7 +3307,8 @@ impl Payload {
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         let combined_local_validation = CATALOG45_COMPACT_AND_CANDIDATE_TARGET == provenance
             || CATALOG45_CURRENT_ORIGINAL_TARGET == provenance
-            || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET == provenance;
+            || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET == provenance
+            || catalog45_recovery_host_matches(provenance);
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
         let combined_local_validation = false;
         if (CATALOG40_WHEAT_DETAIL != Some(provenance)

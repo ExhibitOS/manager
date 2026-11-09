@@ -96,6 +96,7 @@ impl Binding {
         if interrupted {
             let tuple = (self.source_commit.as_str(), self.producer_sha256.as_str(), self.payload_manifest_sha256.as_str());
             let supported = match self.catalog {
+                45 => crate::native_payload::catalog45_recovery_host_matches(tuple),
                 46 => crate::native_payload::large_model_recovery_host_matches(tuple),
                 47 => crate::native_payload::fresh_image_host_matches(tuple),
                 _ => false,
@@ -123,7 +124,7 @@ impl Binding {
                     && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade040To044)
                     && crate::native_payload::ordinary_hayes_release_host_matches(tuple))
                 || (self.catalog == 45 && self.restore.is_none()
-                    && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade044To045)
+                    && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade044To045 | Admission::InterruptedReopen)
                     && crate::native_payload::required_model_preparation_host_matches(tuple))
                 || (self.catalog == 45 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)
@@ -261,7 +262,16 @@ impl Binding {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(super) fn consume_furnishing_transition(&mut self, prior: &Self, transition: FurnishingTransition) -> Result<()> {
         prior.check()?;
-        if prior.phase != Phase::Clean || self.phase != Phase::Active
+        let admission = Self::transition_admission(transition);
+        let source_phase = if admission == Admission::InterruptedReopen {
+            if prior.admission_kind != Admission::CleanReopen {
+                return Err(err(ERROR));
+            }
+            Phase::Active
+        } else {
+            Phase::Clean
+        };
+        if prior.phase != source_phase || self.phase != Phase::Active
             || self.previous_generation.is_some() || self.admission_kind != Admission::FreshEmpty
             || prior.restore.is_some() || self.restore.is_some()
             || self.generation == prior.generation || self.owner != prior.owner
@@ -271,8 +281,11 @@ impl Binding {
         {
             return Err(err(ERROR));
         }
-        self.admission_kind = Self::transition_admission(transition);
+        self.admission_kind = admission;
         self.previous_generation = Some(prior.generation.clone());
+        if admission == Admission::InterruptedReopen {
+            self.interrupted_claim_generations.push(prior.generation.clone());
+        }
         self.check()
     }
 
@@ -282,6 +295,7 @@ impl Binding {
             FurnishingTransition::Upgrade39(_) => Admission::CatalogUpgrade039To040,
             FurnishingTransition::Upgrade40(_) => Admission::CatalogUpgrade040To044,
             FurnishingTransition::Upgrade44 { .. } => Admission::CatalogUpgrade044To045,
+            FurnishingTransition::Recover45 { .. } => Admission::InterruptedReopen,
             _ => Admission::CleanReopen,
         }
     }
@@ -933,6 +947,55 @@ mod tests {
     #[test]
     fn furnishing_catalog44_to_45_recovery_retains_the_failed_trial_and_restores_source() {
         check_furnishing_recovery(FurnishingTransition::reviewed_catalog44_to_45());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn catalog45_recovery_requires_exact_failed_stop_and_consumed_predecessor() {
+        use std::os::unix::fs::DirBuilderExt;
+        let root = std::env::temp_dir().join(format!("catalog45-recovery-{}", Uuid::new_v4()));
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let runs = directory(&root, "native-runs").unwrap();
+        let predecessor = directory(&runs, GENERATION).unwrap();
+        let failed_run = directory(&runs, NEXT).unwrap();
+        let mut binding = catalog40_binding(NEXT, crate::native_payload::CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET);
+        binding.catalog = 45;
+        binding.admission_kind = Admission::CleanReopen;
+        binding.previous_generation = Some(GENERATION.into());
+        write_json(&root, "native-current-run.json", &Current {
+            format: 1, id: NEXT.into(), furnishing: Some(binding.clone()),
+        }).unwrap();
+        let mut state = Context {
+            format: 1, job_id: Some(GENERATION.into()), state: "stopped".into(),
+            ports: Ports::default(), readiness: Readiness::default(), error_code: None, failure_code: None,
+            postgres_pid: None, node_pid: None, auxiliary_pid: None,
+            exits: [("postgres".into(), 0), ("node".into(), 0), ("auxiliary".into(), 0)].into(),
+            log_truncated: false,
+        };
+        let predecessor_state = state.clone();
+        let proof = |consumer: &str| Some(FurnishingCompletion {
+            binding_sha256: "7".repeat(64), consumed_by: Some(consumer.into()),
+        });
+        write_run(&predecessor, &predecessor_state, proof(LATER)).unwrap();
+        state.job_id = Some(NEXT.into());
+        state.state = "failed".into();
+        state.failure_code = Some(ERROR.into());
+        state.error_code = Some(ERROR.into());
+        write_run(&failed_run, &state, None).unwrap();
+        assert!(catalog45_recovery_source_generation(&root).is_err());
+        write_run(&predecessor, &predecessor_state, proof(NEXT)).unwrap();
+        assert_eq!(catalog45_recovery_source_generation(&root).unwrap(), NEXT);
+        let mut ordinary = catalog40_binding(LATER, crate::native_payload::CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET);
+        ordinary.catalog = 45;
+        assert!(ordinary.consume(&binding).is_err());
+        state.node_pid = Some(std::process::id());
+        write_run(&failed_run, &state, None).unwrap();
+        assert!(catalog45_recovery_source_generation(&root).is_err());
+        state.node_pid = None;
+        write_run(&failed_run, &state, proof(LATER)).unwrap();
+        assert!(catalog45_recovery_source_generation(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]

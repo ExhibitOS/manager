@@ -52,7 +52,7 @@ pub struct Receipt {
     pub bytes: u64,
     pub output: PathBuf,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Status {
     pub format: u32,
@@ -1662,6 +1662,67 @@ fn read_detail_file(
 }
 
 impl InstallationController {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn check_catalog45_recovery_export_unlocked(
+        &self, service: &LifecycleService, generation: &str, document: &native_document::DocumentState,
+    ) -> Result<()> {
+        let root = &self.profile.as_ref().ok_or_else(bad)?.root;
+        let name = format!("native-static-export-{}.json", digest(service.root.as_os_str().as_encoded_bytes()));
+        let identity = service.personal_identity()?;
+        let (_, upload) = self.upload_unlocked(service)?;
+        let (_, publication_state) = self.publication_unlocked(service)?;
+        let publication = publication_state.completed.as_ref().ok_or_else(bad)?;
+        if upload.intent.is_some() || upload.job_id.is_some() || upload.file_name.is_some() || upload.compact_variant.is_some()
+            || document.etag.as_deref() != Some(publication.source_etag.as_str())
+            || document.draft.as_ref().and_then(|draft| draft["exhibitionId"].as_str()) != Some(publication.source_exhibition_id.as_str())
+            || publication.mode.as_deref() != Some("native-original-v1")
+            || !publication_state.native_original_attempts.get(&publication.publish_request_id).is_some_and(|attempt|
+                attempt.export_claimed && Some(attempt.plan_binding_sha256.as_str()) == publication.plan_binding_sha256.as_deref()
+            )
+        {
+            return Err(bad());
+        }
+        let detail_name = detail_journal_name(&name);
+        if read_detail_file(root, &detail_name, &identity)?.is_some() {
+            return Err(bad());
+        }
+        let terminal_name = format!("terminal-{detail_name}");
+        let (detail, status): (DetailJournal, Status) =
+            serde_json::from_slice(&installation_backup::source_bytes(
+                root, &terminal_name, 65536, true,
+            )?).map_err(|_| bad())?;
+        detail.validate(&identity)?;
+        let latest: Status = serde_json::from_slice(&installation_backup::source_bytes(
+            root, &name, 65536, true,
+        )?).map_err(|_| bad())?;
+        if detail.runtime_generation != generation
+            || !matches!(detail.cleanup, Some(DetailCleanup::Cancelled))
+            || detail.child_group.is_some() || detail.child_returned
+            || detail.manifest_sha256.is_some()
+            || !detail.status.private_editor
+            || detail.status.publication_id != publication.publication.publication_id
+            || detail.status.revision_sha256 != publication.publication.revision_sha256
+            || DetailCleanup::Cancelled.status(&detail) != status
+            || status != latest
+        {
+            return Err(bad());
+        }
+        let parent = DirectoryPin::open(detail.status.output.parent().ok_or_else(bad)?)?;
+        let directory = parent.try_clone_file()?;
+        let wrapper = open_detail_at(
+            &directory, OsStr::new(&detail.wrapper_name()), libc::O_RDONLY | libc::O_DIRECTORY,
+        )?;
+        check_private_detail_directory(&wrapper)?;
+        if DirectoryIdentity::read(&directory)? != detail.parent
+            || DirectoryIdentity::read(&wrapper)? != detail.wrapper
+            || detail_stat_at(&directory, OsStr::new(&detail.destination_basename))?.is_some()
+            || !detail_directory_names(&wrapper, 0)?.is_empty()
+        {
+            return Err(bad());
+        }
+        parent.check()
+    }
+
     fn static_export_location(
         &self,
         token: &str,
