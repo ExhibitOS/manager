@@ -198,6 +198,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "ROLE_CONFLICT", "MODEL_CONFLICT", "UPLOAD_INTEGRITY": return "선언한 파일과 받은 파일이 다릅니다. 원래 파일로 등록을 이어가거나 새로 등록하세요."
         case "FURNISHING_DECLARATION": return "비품 이름, 출처, 권리와 32 MiB 이하 GLB 파일을 확인하세요."
         case "WORKSPACE_FURNISHING_UNAVAILABLE": return "현재 작업공간에서 이 비품을 등록하거나 배치할 수 없습니다."
+        case "WORKSPACE_BENCH_SEAT_UNAVAILABLE": return "착석 설정을 지원하는 작업 공간에서 전시를 저장한 뒤 다시 시도하세요."
         case "FURNISHING_VALIDATION_UNAVAILABLE": return "비품 검증이 중단됐습니다. 등록 기록에서 상태를 확인하고 검증을 다시 시도하세요."
         case "FRAME_PREPARATION_SOURCE_UNSUPPORTED": return "이 원본 GLB는 자동 보정을 지원하지 않습니다. 지원되는 원본을 선택하세요."
         case "FRAME_PREPARATION_RIGHTS_DENIED": return "자동 보정에 필요한 원본 권리 정보를 확인하세요."
@@ -2125,6 +2126,40 @@ public actor AuthoringAPI {
         let furnishing = try await workspaceFurnishing(placement.furnishingId, version: placement.furnishingVersion)
         let next = try placement.applying(furnishing, to: draft, supportedExtensionVersion: supportedFurnishingExtensionVersion)
         _ = try await workspaceFurnishingModel(furnishing)
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return next
+    }
+
+    public func workspaceBenchSeatPolicy(in document: NativeDocumentState) async throws -> NativeViewportPolicy {
+        guard admitsWorkspaceFurnishings, document.tenantId == tenant, session?.userId == document.principalId,
+              !document.dirty, document.pending == nil, let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE")
+        }
+        let heldGeneration = generation
+        let policy = try await nativeViewportPolicy(draft.id)
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard policy.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        guard policy.workspaceBenchSeatProfile == "workspace-bench-seat-v1",
+              !policy.boundedReadOnly, policy.boundedEditRequired == false,
+              policy.boundedProfile != nil, policy.editingCapability == nil else {
+            throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE")
+        }
+        return policy
+    }
+
+    public func prepareWorkspaceBenchSeat(_ attachment: WorkspaceBenchSeatAttachment,
+                                         in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        let heldGeneration = generation
+        let policy = try await workspaceBenchSeatPolicy(in: document)
+        guard let draft = document.draft else { throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE") }
+        let saved = try await exhibition(draft.id)
+        guard saved.etag == policy.etag, saved.draft == draft else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        let furnishing = try await workspaceFurnishing(attachment.furnishingId, version: attachment.furnishingVersion)
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let next = try attachment.applying(furnishing, to: draft)
+        try await validateNativeViewportEdit(next ?? draft, etag: policy.etag)
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next
     }

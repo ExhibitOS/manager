@@ -2,7 +2,7 @@
 import Foundation
 
 public struct WorkspaceFurnishingPlacement: Codable, Equatable, Sendable {
-    static let namespace = "org.exhibitos.studio/workspace-furnishings"
+    public static let namespace = "org.exhibitos.studio/workspace-furnishings"
     public let id: String
     public let roomId: String
     public let furnishingId: String

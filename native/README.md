@@ -1033,6 +1033,22 @@ The private native automation command uses the same intake and catalog API:
 - `workspace-furnishing-place` takes `id`, `roomId`, `furnishingId`,
   `furnishingVersion`, `position` (metres), `yaw` (radians) and `scale`.
   Supply the expected document revision and edit version, then save normally.
+- When the authenticated saved exhibition policy advertises
+  `workspace-bench-seat-v1`, select a registered bench and its existing
+  unit-scale placement in **작업 공간 비품**. Enter the seat dimensions and
+  choose a same-room viewpoint or author a new one. Apply the seat and save
+  the exhibition. The seat uses the existing model and placement.
+  The equivalent `workspace-bench-seat-attach` command takes `etag`, `benchId`,
+  `placementId`, `furnishingId`, `furnishingVersion`, `modelSha256`,
+  `dimensions` (`width`, `depth`, `height` in metres), and `viewpointId`.
+  To add a viewpoint in the same edit, supply the optional `viewpoint` with
+  that ID, `name`, `roomId`, `position`, `target` and `fov`. Supply the
+  expected document revision and edit version in the envelope. The command
+  returns `changed` and the local document state after server validation.
+  Reuse the bench ID and any fresh viewpoint ID for the same intent. An
+  identical saved seat returns `changed: false`. Run `save` and `reopen-saved`
+  before exporting. After an uncertain save, use the existing pending
+  request ID and journal to recover the same save.
 - In a qualified session with the artwork frame capability, register a
   supported GLB as `kind: "artwork-frame"`. The original capability admits
   thin brass. The additional `workspace-artwork-frame-models-v1` profile

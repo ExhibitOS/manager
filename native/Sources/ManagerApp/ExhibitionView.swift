@@ -1371,6 +1371,15 @@ final class ExhibitionModel: ObservableObject {
         workspaceArtworkFrameAvailable && canSelectCatalog && !immutable && !dirty && !viewingPlanDirty
             && state?.etag != nil && viewportController.editingContextActive
     }
+    var canEditWorkspaceBenchSeat: Bool {
+        workspaceFurnishingIntakeAvailable && canSelectCatalog && !immutable && !dirty && !benchDirty
+            && !viewingPlanDirty && !architectureDirty && !formDirty && !positionDirty
+            && state?.etag != nil && viewportController.editingContextActive
+    }
+    func workspaceBenchSeatPolicyETag(using api: AuthoringAPI) async -> String? {
+        guard let state else { return nil }
+        return try? await api.workspaceBenchSeatPolicy(in: state).etag
+    }
     func withWorkspaceFurnishingAccess<T>(_ access: UUID, _ body: (AuthoringAPI) async throws -> T) async throws -> T {
         guard workspaceFurnishingIntakeAvailable, access == viewportAccessID, !busy, !entrancePreviewActive,
               !placingArtwork, !architectureApplying, !pending, let api else {
@@ -1399,6 +1408,24 @@ final class ExhibitionModel: ObservableObject {
             try await persist(current)
             syncFields()
             notice = "비품 배치 입력을 이 Mac에 보관했습니다. 전시를 저장하세요."
+            return true
+        }
+    }
+    func applyWorkspaceBenchSeat(_ attachment: WorkspaceBenchSeatAttachment, access: UUID) async throws -> Bool {
+        guard canEditWorkspaceBenchSeat else { throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE") }
+        return try await withWorkspaceFurnishingAccess(access) { api in
+            guard var current = state else { throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE") }
+            let next = try await api.prepareWorkspaceBenchSeat(attachment, in: current)
+            guard state?.revision == current.revision, state?.draft == current.draft,
+                  !immutable, !benchDirty, !viewingPlanDirty, !architectureDirty, !formDirty, !positionDirty,
+                  viewportController.editingContextActive, access == viewportAccessID else {
+                throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            guard let next else { return false }
+            current.draft = next
+            try await persist(current)
+            syncFields()
+            notice = "착석 설정을 이 Mac에 보관했습니다. 전시를 저장하세요."
             return true
         }
     }
