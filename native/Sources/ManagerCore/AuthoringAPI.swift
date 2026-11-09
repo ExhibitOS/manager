@@ -350,7 +350,7 @@ public actor AuthoringAPI {
         "a7cab3643e4b6554c70ef4c1fda7bfb2ce5234273dead44711be9f72df9ff34c",
         "3ef0cf579846cfd682e63cf1bf89c8735c042b46a711569b4ec6d6c10870c76c"
     ]
-    private static let productImageManifestPins: Set<String> = []
+    private static let productImageManifestPin = "157f538603a9557c30dfbb58ffc04755db9e174817aaeeb13353ce90e6dd84a2"
     private static let workspaceMaterialMultimapManifestPins: Set<String> = [
         "72a13c526fb422c106f8eefaa7e277e5ab003f3c2085ebd09b2814c0a19ef904",
         "df6efc23ea2d9aab790fc25fab9833db9f5b48b3cb0c5417a1bd7c5ef609ac2a",
@@ -417,7 +417,7 @@ public actor AuthoringAPI {
         let manifest = nativeRuntimeManifestSHA256 ?? ""
         #if DEBUG
         hayesOriginalRuntimeQualified = NativeHayesOriginalIntent.supports(manifest: manifest)
-        productImageRuntimeQualified = Self.productImageManifestPins.contains(manifest)
+        productImageRuntimeQualified = Self.supportsProductImageRuntime(manifest: manifest)
         let portalQualified = manifest == Self.workspacePortalFinishManifestPin
             || Self.requiredModelPreparationManifestPins.contains(manifest)
             || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
@@ -431,7 +431,7 @@ public actor AuthoringAPI {
         let wallQualified = multimapQualified || Self.workspaceWallMaterialManifestPins.contains(manifest)
         workspaceMaterialMultimapRuntimeQualified = multimapQualified
         workspaceWallMaterialRuntimeQualified = wallQualified
-        workspaceMaterialRuntimeQualified = wallQualified || Self.workspaceMaterialManifestPins.contains(manifest)
+        workspaceMaterialRuntimeQualified = wallQualified || productImageRuntimeQualified || Self.workspaceMaterialManifestPins.contains(manifest)
         #if DEBUG
         let framePreparationQualified = manifest == Self.workspaceFramePreparationManifestPin
         workspaceCatalogReadRuntimeQualified = manifest == Self.workspaceCatalogReadManifest
@@ -771,8 +771,16 @@ public actor AuthoringAPI {
     }
 
     public var admitsProductImagePreparation: Bool {
-        nativeSession && !authenticationBusy && productImageRuntimeQualified && admitsRequiredModelPreparation
+        admitsWorkspaceMaterials && productImageRuntimeQualified && admitsRequiredModelPreparation
             && session?.nativeProductImagePreparationProfile == NativeProductImagePreparationIntent.profileID
+    }
+
+    nonisolated static func supportsProductImageRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == productImageManifestPin
+        #else
+        false
+        #endif
     }
 
     private func reviewedModelCandidate(job: NativeImportJob, jobId: String, artworkId: String,
