@@ -32,7 +32,7 @@ fn custody_query(owner: &FurnishingOwner, proof: &RetainedProductImage) -> Resul
 SELECT jsonb_build_object(
   'receipt', j.derived->'result',
   'custodySha256', encode(sha256(convert_to(jsonb_build_array(
-    to_jsonb(j), to_jsonb(a), to_jsonb(approval), to_jsonb(snapshot),
+    to_jsonb(j), to_jsonb(a), to_jsonb(approval), to_jsonb(revision_row),
     (SELECT jsonb_agg(jsonb_build_array(
        to_jsonb(asset), to_jsonb(rights),
        (SELECT jsonb_agg(to_jsonb(derivative) ORDER BY derivative.id)
@@ -48,8 +48,8 @@ JOIN public.artworks a ON (a.tenant_id, a.id) = (j.tenant_id, j.artwork_id)
 JOIN public.artwork_approvals approval
   ON (approval.tenant_id, approval.artwork_id, approval.revision, approval.asset_id)
      = (a.tenant_id, a.id, a.approved_revision, a.approved_asset_id)
-JOIN public.artwork_revisions snapshot
-  ON (snapshot.tenant_id, snapshot.artwork_id, snapshot.revision) = (a.tenant_id, a.id, a.revision)
+JOIN public.artwork_revisions revision_row
+  ON (revision_row.tenant_id, revision_row.artwork_id, revision_row.revision) = (a.tenant_id, a.id, a.revision)
 WHERE j.tenant_id = '{tenant}' AND j.user_id = '{principal}' AND j.id = '{job}'
   AND j.artwork_id = '{artwork}' AND a.revision = {revision}
   AND a.approved_revision = a.revision AND a.deleted_at IS NULL
