@@ -142,7 +142,7 @@ impl Checkpoint {
         if FurnishingTransition::from_manifests(pair).is_some() != self.furnishing.is_some() {
             return Err(invalid());
         }
-        if self.retained_product_image.is_some() && !retained_transition(pair) {
+        if !retained_transition_proof_matches(pair, self.retained_product_image.as_ref()) {
             return Err(invalid());
         }
         check_transition_host(pair, self.saved_document_sha256.as_deref(), saved_workspace_host)
@@ -186,11 +186,27 @@ impl Checkpoint {
     }
 }
 
-fn retained_transition(pair: (&str, &str)) -> bool {
+fn retained_transition_proof_matches(pair: (&str, &str), proof: Option<&RetainedProductImage>) -> bool {
     #[cfg(feature = "workspace-v5-owner-validation")]
-    return crate::native_payload::retained_product_image_transition(pair);
+    return match proof {
+        Some(proof) if proof.recovery.is_some() => crate::native_payload::retained_product_image_recovery_transition(pair),
+        Some(_) => crate::native_payload::retained_product_image_transition(pair),
+        None => !crate::native_payload::retained_product_image_recovery_transition(pair),
+    };
     #[cfg(not(feature = "workspace-v5-owner-validation"))]
-    { let _ = pair; false }
+    { let _ = pair; proof.is_none() }
+}
+
+#[cfg(feature = "workspace-v5-owner-validation")]
+fn check_retained_recovery_generation(proof: &RetainedProductImage, generation: &str) -> Result<()> {
+    let recovery = proof.recovery.as_ref().ok_or_else(invalid)?;
+    if recovery.failed_generation != generation
+        || !installations::uuid(&recovery.hayes_job_id)
+        || !hash_valid(&recovery.hayes_completion_frame_sha256)
+    {
+        return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
+    }
+    Ok(())
 }
 
 fn invalid() -> LifecycleError {
@@ -1340,7 +1356,7 @@ impl InstallationController {
         let source_manifest = source.context().manifest_sha256;
         let target_manifest = target.context().manifest_sha256;
         let pair = (source_manifest.as_str(), target_manifest.as_str());
-        if !saved_workspace_transition_supported(pair) || (retained.is_some() && !retained_transition(pair)) {
+        if !saved_workspace_transition_supported(pair) || !retained_transition_proof_matches(pair, retained) {
             return Err(invalid());
         }
         self.with_transition_key(token, key_path, staging, retained, |service, profile, document, key| {
@@ -1352,7 +1368,9 @@ impl InstallationController {
             }
             if target.catalog45_recovery_validation() {
                 let generation = crate::native_runtime::catalog45_recovery_source_generation(&service.root)?;
-                if source.context().manifest_sha256 != target.context().manifest_sha256 {
+                if let Some(proof) = retained.filter(|proof| proof.recovery.is_some()) {
+                    check_retained_recovery_generation(proof, &generation)?;
+                } else if pair.0 != pair.1 {
                     self.check_catalog45_recovery_export_unlocked(service, &generation, document)?;
                 }
             }
@@ -1444,9 +1462,12 @@ impl InstallationController {
         {
             return Err(invalid());
         }
-        if checkpoint.old_manifest == checkpoint.new_manifest {
-            // The same reviewed payload reopens the saved document. It does not
-            // depend on a publication attempt from this failed generation.
+        let retained_recovery = checkpoint.retained_product_image.as_ref().filter(|proof| proof.recovery.is_some());
+        if let Some(proof) = retained_recovery {
+            check_retained_recovery_generation(proof, &generation)?;
+        }
+        if checkpoint.old_manifest == checkpoint.new_manifest || retained_recovery.is_some() {
+            // Verify the preserved saved draft when no publication was attempted.
             let document_sha256 = saved_document_digest(document)?;
             if checkpoint.saved_document_sha256.as_deref() != Some(document_sha256.as_str()) {
                 return Err(err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED"));

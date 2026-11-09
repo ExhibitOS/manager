@@ -18,6 +18,8 @@ struct WorkspaceFurnishingIntakeView: View {
         return value
     }()
     @State private var snapshot: ImportFileSnapshot?
+    @State private var bundledItems: [BundledWorkspaceFurnishings.Item] = []
+    @State private var bundledRoot: URL?
     @State private var choosing = false
     @State private var busy = false
     @State private var message: String?
@@ -98,11 +100,26 @@ struct WorkspaceFurnishingIntakeView: View {
                 }
             }
         }
-        .task { await reload() }
+        .task {
+            if let catalog = try? await Task.detached(priority: .userInitiated, operation: { try BundledWorkspaceFurnishings.catalog() }).value,
+               !Task.isCancelled, access == model.viewportAccessID {
+                bundledRoot = catalog.0; bundledItems = catalog.1
+            }
+            await reload()
+        }
     }
 
     private var newSection: some View {
         Section("GLB 등록") {
+            if !bundledItems.isEmpty {
+                Menu("기본 비품 선택") {
+                    ForEach(bundledItems) { item in
+                        Button(item.name) { Task { await selectBundled(item) } }
+                            .disabled(item.kind == .stool && !model.workspaceFurnishingStoolAvailable ||
+                                      item.kind == .infoStand && !model.workspaceFurnishingRoomVisualAvailable)
+                    }
+                }
+            }
             Picker("종류", selection: $kind) {
                 Text("받침").tag(WorkspaceFurnishingKind.pedestal)
                 Text("벤치").tag(WorkspaceFurnishingKind.bench)
@@ -314,6 +331,29 @@ struct WorkspaceFurnishingIntakeView: View {
         do { try await work() }
         catch {
             message = (error as? AuthoringFailure)?.errorDescription ?? "비품 등록 또는 배치 상태를 다시 확인하세요."
+        }
+    }
+
+    private func selectBundled(_ item: BundledWorkspaceFurnishings.Item) async {
+        await perform {
+            guard let root = bundledRoot, let selectedKind = item.kind else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
+            let file = try await BundledWorkspaceFurnishings.load(item, root: root)
+            try Task.checkCancellation()
+            guard access == model.viewportAccessID, selected == nil, request == nil else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
+            _ = try WorkspaceFurnishingModel(snapshot: file)
+            var bundledRights = ArtworkMetadata().rights
+            bundledRights.holder = "ExhibitOS"
+            bundledRights.ownership = "authorized-licensee"
+            bundledRights.licenseId = "CC0-1.0"
+            bundledRights.licenseText = nil
+            bundledRights.creditLine = "ExhibitOS"
+            bundledRights.permissions.display = true
+            bundledRights.permissions.download = true
+            bundledRights.permissions.export = true
+            bundledRights.permissions.commercial = true
+            kind = selectedKind; name = item.name
+            provenance = "ExhibitOS default furnishings 1.2.0, \(item.catalogId), original-v1."
+            rights = bundledRights; snapshot = file
         }
     }
 
