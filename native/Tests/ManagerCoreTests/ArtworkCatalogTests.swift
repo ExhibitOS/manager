@@ -121,8 +121,8 @@ final class ArtworkCatalogTests: XCTestCase {
     func testRenderedThumbnailRequiresExactSquareAndCompleteSourceProof() throws {
         let request = try ViewportThumbnailRequest(frame: frame(NativeExhibitionDraft.new()),
             artworkId: UUID().uuidString, expectedRevision: 4)
-        let png = "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEAAQAAAAB0CZXLAAAAH0lEQVR42u3BAQ0AAADCoPdPbQ43oAAAAAAAAAAAvg0hAAABYOSdlwAAAABJRU5ErkJggg=="
-        let pngHash = "f569b175026cfbb77a68f1754f6e1a3c175f3a7a7e930918bd8656240a90e396"
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABccqhmAAAAAXNSR0IArs4c6QAAAyFJREFUeJzt1CEBACAQwMAPQApS0L8YxEDsxPmpzdrnAk3zOwD4xwAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAg7AFVARTs0KSS8QAAAABJRU5ErkJggg=="
+        let pngHash = "d6d4bf257e7cdf31e55caad7f0a023f67fe50c612dd81bad06ac7c7f4d74c510"
         let source = UUID().uuidString.lowercased()
         let sourceHash = String(repeating: "a", count: 64)
         let displayHash = String(repeating: "b", count: 64)
