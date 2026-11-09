@@ -142,6 +142,7 @@ final class ExhibitionModel: ObservableObject {
                                                                            session: session, authority: authority)
             guard selection == 0 else { throw AuthoringFailure("SELECTION_CONFLICT", status: 409) }
             guard current(), catalogThumbnailContextIsEditable else { return }
+            try capture.reserve()
             let rendered = try await viewportController.renderedThumbnail(artworkId: entry.id, revision: entry.revision)
             try Task.checkCancellation()
             guard current(), catalogThumbnailContextIsEditable else { return }

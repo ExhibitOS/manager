@@ -48,7 +48,7 @@ struct CatalogThumbnailValidationCapture {
         let input = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         defer { try? input.close() }
         var info = stat()
-        guard fstat(descriptor, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_nlink == 1,
+        guard fstat(descriptor, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG), info.st_nlink == 1,
               info.st_uid == geteuid(), (info.st_mode & 0o777) == 0o600, (1...4096).contains(info.st_size),
               let data = try? input.read(upToCount: 4097), data.count == Int(info.st_size),
               let intent = try? JSONDecoder().decode(Intent.self, from: data),
@@ -68,7 +68,7 @@ struct CatalogThumbnailValidationCapture {
         let root = URL(fileURLWithPath: profile, isDirectory: true).deletingLastPathComponent()
         var info = stat()
         guard root.resolvingSymlinksInPath().path == root.path,
-              lstat(root.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == geteuid(),
+              lstat(root.path, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR), info.st_uid == geteuid(),
               (info.st_mode & 0o777) == 0o700 else { return nil }
         return root
     }
@@ -76,6 +76,10 @@ struct CatalogThumbnailValidationCapture {
     var canWrite: Bool {
         var info = stat()
         return lstat(destination.path, &info) != 0 && errno == ENOENT
+    }
+
+    func reserve() throws {
+        guard mkdir(destination.path, 0o700) == 0 else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
     }
 
     func write(_ rendered: ViewportRenderedThumbnail) throws {
@@ -90,7 +94,6 @@ struct CatalogThumbnailValidationCapture {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let metadata = try encoder.encode(receipt)
-        guard mkdir(destination.path, 0o700) == 0 else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
         try writePrivate(rendered.pngData, to: destination.appendingPathComponent("preview.png"))
         try writePrivate(metadata, to: destination.appendingPathComponent("receipt.json"))
     }
