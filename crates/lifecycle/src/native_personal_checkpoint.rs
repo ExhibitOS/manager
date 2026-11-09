@@ -48,7 +48,7 @@ fn admitted_pair(source: &str, target: &str) -> bool {
 fn check_cold_transition_source(root: &Path, pair: (&str, &str)) -> Result<()> {
     #[cfg(feature = "workspace-v5-owner-validation")]
     if let Some(transition @ FurnishingTransition::Recover45 { .. }) = FurnishingTransition::from_manifests(pair) {
-        return crate::native_runtime::catalog45_recovery_source_generation(root, transition.startup_cancel_recovery()).map(|_| ());
+        return crate::native_runtime::catalog45_recovery_source_generation(root, transition.startup_recovery()).map(|_| ());
     }
     #[cfg(not(feature = "workspace-v5-owner-validation"))]
     let _ = pair;
@@ -59,6 +59,8 @@ const DOMAIN: &[u8] = b"ExhibitOS-local-personal-physical-checkpoint-v1\0";
 const ENVELOPE: &str = "physical-checkpoint.gcm";
 const MAX_FILES: usize = 50_000;
 const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+#[cfg(feature = "workspace-v5-owner-validation")]
+const STARTUP_UNQUALIFIED_MAX_BYTES: u64 = MAX_BYTES + 256 * 1024 * 1024;
 const MAX_MANIFEST: usize = 16 * 1024 * 1024;
 const DATA_DIRECTORIES: &[&str] = &["native-database", "blobs", "config"];
 const MEMBERS: &[&str] = &["native-database", "blobs", "config", "runtime.env", RECORD];
@@ -138,6 +140,10 @@ fn check_transition_host(
 }
 
 impl Checkpoint {
+    fn inventory_limit(&self) -> u64 {
+        checkpoint_inventory_limit((&self.old_manifest, &self.new_manifest), self.startup_cancellation_045.as_ref())
+    }
+
     fn check_host(&self, saved_workspace_host: bool) -> Result<()> {
         let pair = (self.old_manifest.as_str(), self.new_manifest.as_str());
         #[cfg(feature = "workspace-v5-owner-validation")]
@@ -205,12 +211,24 @@ fn startup_cancellation_proof_matches(
     pair: (&str, &str), retained: Option<&RetainedProductImage>, proof: Option<&StartupCancellation045>,
 ) -> bool {
     #[cfg(feature = "workspace-v5-owner-validation")]
-    if crate::native_payload::startup_cancel_recovery_transition(pair) {
+    if crate::native_payload::catalog45_startup_recovery(pair).is_some() {
         return retained.is_none() && proof.is_some();
     }
     #[cfg(not(feature = "workspace-v5-owner-validation"))]
     let _ = (pair, retained);
     proof.is_none()
+}
+
+fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    if proof.is_some() && crate::native_payload::catalog45_startup_recovery(pair)
+        == Some(crate::native_payload::Catalog45StartupRecovery::Unqualified)
+    {
+        return STARTUP_UNQUALIFIED_MAX_BYTES;
+    }
+    #[cfg(not(feature = "workspace-v5-owner-validation"))]
+    let _ = (pair, proof);
+    MAX_BYTES
 }
 
 #[cfg(feature = "workspace-v5-owner-validation")]
@@ -261,6 +279,7 @@ fn directory_identity(path: &Path) -> Result<(u64, u64)> {
     Ok((metadata.dev(), metadata.ino()))
 }
 
+#[cfg(test)]
 fn inventory(root: &Path, staged: bool) -> Result<BTreeMap<PathBuf, Entry>> {
     inventory_with_limit(root, staged, MAX_BYTES)
 }
@@ -573,7 +592,7 @@ pub(crate) fn check_trial_fence(root: &Path, expected: &str) -> Result<()> {
 }
 
 fn verify_unchanged(root: &Path, checkpoint: &Checkpoint, pending: &[u8]) -> Result<()> {
-    let mut live = inventory_with_limit(root, false, MAX_BYTES + pending.len() as u64)?;
+    let mut live = inventory_with_limit(root, false, checkpoint.inventory_limit() + pending.len() as u64)?;
     let entry = live.get_mut(Path::new(ENVIRONMENT)).ok_or_else(invalid)?;
     if entry.mode != 0o600
         || entry.bytes != pending.len() as u64
@@ -635,7 +654,7 @@ fn recovery_copy(root: &Path, checkpoint: &Checkpoint) -> Result<PathBuf> {
         Uuid::new_v4()
     ));
     installations::new_directory(&copy)?;
-    copy_beforeimages(&checkpoint.staged, true, &copy, &checkpoint.files)?;
+    copy_beforeimages(&checkpoint.staged, true, &copy, &checkpoint.files, checkpoint.inventory_limit())?;
     sync_root(root)?;
     Ok(copy)
 }
@@ -645,6 +664,7 @@ fn copy_beforeimages(
     source_staged: bool,
     destination: &Path,
     files: &BTreeMap<PathBuf, Entry>,
+    max_bytes: u64,
 ) -> Result<()> {
     for (relative, entry) in files {
         let name = relative.to_str().ok_or_else(invalid)?;
@@ -678,7 +698,7 @@ fn copy_beforeimages(
     }
     // Staged inventory verifies and flushes the final-mode files and nested
     // directories before the caller can publish a seal or a recovery plan.
-    if inventory(destination, true)? != *files {
+    if inventory_with_limit(destination, true, max_bytes)? != *files {
         return Err(invalid());
     }
     Ok(())
@@ -885,7 +905,7 @@ impl LifecycleService {
         check_staged_names(staging, true)?;
         if directory_identity(&self.root)? != checkpoint.source_identity
             || directory_identity(staging)? != checkpoint.staged_identity
-            || inventory(staging, true)? != checkpoint.files
+            || inventory_with_limit(staging, true, checkpoint.inventory_limit())? != checkpoint.files
         {
             return Err(invalid());
         }
@@ -923,7 +943,7 @@ impl LifecycleService {
             || checkpoint.new_manifest != target.context().manifest_sha256
             || checkpoint.trial
             || checkpoint.staged != staging
-            || inventory(&self.root, false)? != checkpoint.files
+            || inventory_with_limit(&self.root, false, checkpoint.inventory_limit())? != checkpoint.files
         {
             return Err(invalid());
         }
@@ -1017,7 +1037,7 @@ impl LifecycleService {
             trial.recover_source(self, writer, transition)?;
         }
         replace_private(&self.root, ENVIRONMENT, &binding.old_env.0, 4096)?;
-        if inventory(&self.root, false)? != checkpoint.files {
+        if inventory_with_limit(&self.root, false, checkpoint.inventory_limit())? != checkpoint.files {
             return Err(invalid());
         }
         Ok(())
@@ -1172,7 +1192,7 @@ impl LifecycleService {
         self.transition_checkpoint(&envelope, key)?;
         if checkpoint.saved_document_sha256.is_some() {
             let unchanged = |path: &Path| path.starts_with("blobs") || path.starts_with("config");
-            let live = inventory_with_limit(&self.root, false, MAX_BYTES + pending.len() as u64)?;
+            let live = inventory_with_limit(&self.root, false, checkpoint.inventory_limit() + pending.len() as u64)?;
             #[cfg(feature = "workspace-v5-owner-validation")]
             if let Some(prefix) = selected_staging {
                 let bytes = session.selected_recovery_045_staging_bytes()?.ok_or_else(invalid)?;
@@ -1262,7 +1282,8 @@ impl LifecycleService {
         #[cfg(feature = "workspace-v5-owner-validation")]
         let _writer = furnishing.as_ref().zip(transition)
             .map(|(trial, transition)| trial.hold_source(self, transition)).transpose()?;
-        let files = inventory(&self.root, false)?;
+        let max_bytes = checkpoint_inventory_limit((&source.manifest_sha256, &target.manifest_sha256), startup_cancellation_045);
+        let files = inventory_with_limit(&self.root, false, max_bytes)?;
         if saved_document_sha256.is_some() {
             let device = directory_identity(&self.root)?.0;
             if fs::read_dir(staging).map_err(|_| invalid())?.next().is_some()
@@ -1281,11 +1302,11 @@ impl LifecycleService {
             {
                 return Err(err("NATIVE_PHYSICAL_CHECKPOINT_SPACE"));
             }
-            copy_beforeimages(&self.root, false, staging, &files)?;
+            copy_beforeimages(&self.root, false, staging, &files, max_bytes)?;
         }
         // Backup names keep the staged directory from becoming a runnable profile.
         check_staged_names(staging, false)?;
-        if files != inventory(staging, true)? {
+        if files != inventory_with_limit(staging, true, max_bytes)? {
             return Err(invalid());
         }
         let checkpoint = Checkpoint {
@@ -1312,8 +1333,8 @@ impl LifecycleService {
         let envelope = seal(&checkpoint, key)?;
         staging_pin.check()?;
         self.check_prepare_guard(&guard)?;
-        if checkpoint.files != inventory(&self.root, false)?
-            || checkpoint.files != inventory(staging, true)?
+        if checkpoint.files != inventory_with_limit(&self.root, false, max_bytes)?
+            || checkpoint.files != inventory_with_limit(staging, true, max_bytes)?
         {
             return Err(invalid());
         }
@@ -1394,7 +1415,9 @@ impl InstallationController {
                 return Err(err("NATIVE_PHYSICAL_CHECKPOINT_SAVED_DOCUMENT_REQUIRED"));
             }
             if target.catalog45_recovery_validation() {
-                let generation = crate::native_runtime::catalog45_recovery_source_generation(&service.root, startup_cancellation_045.is_some())?;
+                let generation = crate::native_runtime::catalog45_recovery_source_generation(
+                    &service.root, crate::native_payload::catalog45_startup_recovery(pair),
+                )?;
                 if let Some(proof) = startup_cancellation_045 {
                     self.verify_startup_cancellation_045_preservation(service, document, proof)?;
                     if proof.failed_generation != generation || !installations::uuid(&proof.hayes_job_id)
@@ -1471,7 +1494,10 @@ impl InstallationController {
             #[cfg(feature = "workspace-v5-owner-validation")]
             if target.catalog45_recovery_validation() {
                 let checkpoint = self.catalog45_activation_checkpoint(service, document, &target, staging, key)?;
-                if checkpoint.old_manifest == checkpoint.new_manifest
+                let startup = crate::native_payload::catalog45_startup_recovery((
+                    checkpoint.old_manifest.as_str(), checkpoint.new_manifest.as_str(),
+                ));
+                if (checkpoint.old_manifest == checkpoint.new_manifest && startup.is_none())
                     || checkpoint.startup_cancellation_045.as_ref() != startup_cancellation_045
                 {
                     return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
@@ -1508,7 +1534,9 @@ impl InstallationController {
             return Err(invalid());
         }
         let generation = crate::native_runtime::catalog45_recovery_source_generation(
-            &service.root, checkpoint.startup_cancellation_045.is_some(),
+            &service.root, crate::native_payload::catalog45_startup_recovery((
+                checkpoint.old_manifest.as_str(), checkpoint.new_manifest.as_str(),
+            )),
         )?;
         if checkpoint.startup_cancellation_045.as_ref().is_some_and(|proof| proof.failed_generation != generation) {
             return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
@@ -1586,6 +1614,44 @@ impl InstallationController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    #[test]
+    fn startup_unqualified_checkpoint_capacity_is_exactly_scoped() {
+        let current = "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a";
+        let previous = "f15d2530a298c3e9507e4719fa3ba65f26aff8cb9b40d9f646f1043976d0a75d";
+        let proof = StartupCancellation045 {
+            failed_generation: Uuid::new_v4().to_string(),
+            hayes_job_id: Uuid::new_v4().to_string(),
+            hayes_completion_frame_sha256: "a".repeat(64),
+            saved_etag: "\"studio-r20-fixture\"".into(),
+            transfer_sha256: "b".repeat(64),
+        };
+        let default = checkpoint_inventory_limit((current, current), None);
+        let extended = checkpoint_inventory_limit((current, current), Some(&proof));
+        assert_eq!(default, 2_147_483_648);
+        assert_eq!(extended, 2_415_919_104);
+        for pair in [(previous, current), (current, previous), (previous, previous), (OLD_MANIFEST, NEW_MANIFEST)] {
+            assert_eq!(checkpoint_inventory_limit(pair, Some(&proof)), default);
+        }
+
+        // Oversize members are rejected from metadata before any file copy.
+        let root = std::env::temp_dir().join(format!("checkpoint-capacity-{}", Uuid::new_v4()));
+        installations::new_directory(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        for name in DATA_DIRECTORIES {
+            installations::new_directory(&root.join(name)).unwrap();
+        }
+        for name in [RECORD, ENVIRONMENT] {
+            private_options().open(root.join(name)).unwrap();
+        }
+        let file = private_options().open(root.join("blobs/oversize")).unwrap();
+        file.set_len(default + 1).unwrap();
+        assert_eq!(inventory_with_limit(&root, false, default).unwrap_err().code, invalid().code);
+        file.set_len(extended + 1).unwrap();
+        assert_eq!(inventory_with_limit(&root, false, extended).unwrap_err().code, invalid().code);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(feature = "workspace-v5-owner-validation")]
     #[test]

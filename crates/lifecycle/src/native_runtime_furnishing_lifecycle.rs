@@ -983,18 +983,18 @@ mod tests {
         state.failure_code = Some(ERROR.into());
         state.error_code = Some(ERROR.into());
         write_run(&failed_run, &state, None).unwrap();
-        assert!(catalog45_recovery_source_generation(&root, false).is_err());
+        assert!(catalog45_recovery_source_generation(&root, None).is_err());
         write_run(&predecessor, &predecessor_state, proof(NEXT)).unwrap();
-        assert_eq!(catalog45_recovery_source_generation(&root, false).unwrap(), NEXT);
+        assert_eq!(catalog45_recovery_source_generation(&root, None).unwrap(), NEXT);
         let mut ordinary = catalog40_binding(LATER, crate::native_payload::CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET);
         ordinary.catalog = 45;
         assert!(ordinary.consume(&binding).is_err());
         state.node_pid = Some(std::process::id());
         write_run(&failed_run, &state, None).unwrap();
-        assert!(catalog45_recovery_source_generation(&root, false).is_err());
+        assert!(catalog45_recovery_source_generation(&root, None).is_err());
         state.node_pid = None;
         write_run(&failed_run, &state, proof(LATER)).unwrap();
-        assert!(catalog45_recovery_source_generation(&root, false).is_err());
+        assert!(catalog45_recovery_source_generation(&root, None).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

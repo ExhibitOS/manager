@@ -788,8 +788,21 @@ pub(crate) fn retained_product_image_recovery_transition(pair: (&str, &str)) -> 
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-pub(crate) fn startup_cancel_recovery_transition(pair: (&str, &str)) -> bool {
-    pair == (CATALOG45_RETAINED_IMAGE_RECOVERY_TARGET.2, CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET.2)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Catalog45StartupRecovery {
+    Cancelled,
+    Unqualified,
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) fn catalog45_startup_recovery(pair: (&str, &str)) -> Option<Catalog45StartupRecovery> {
+    let current = CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET.2;
+    match pair {
+        (source, target) if source == CATALOG45_RETAINED_IMAGE_RECOVERY_TARGET.2 && target == current =>
+            Some(Catalog45StartupRecovery::Cancelled),
+        (source, target) if source == current && target == current => Some(Catalog45StartupRecovery::Unqualified),
+        _ => None,
+    }
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -830,8 +843,8 @@ pub(crate) enum FurnishingTransition {
 }
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 impl FurnishingTransition {
-    pub(crate) fn startup_cancel_recovery(self) -> bool {
-        startup_cancel_recovery_transition((self.source().2, self.target().2))
+    pub(crate) fn startup_recovery(self) -> Option<Catalog45StartupRecovery> {
+        catalog45_startup_recovery((self.source().2, self.target().2))
     }
 
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
@@ -850,9 +863,12 @@ impl FurnishingTransition {
                 target: CATALOG45_RETAINED_IMAGE_RECOVERY_TARGET,
             });
         }
-        if startup_cancel_recovery_transition(pair) {
+        if let Some(startup) = catalog45_startup_recovery(pair) {
             return Some(Self::Recover45 {
-                source: CATALOG45_RETAINED_IMAGE_RECOVERY_TARGET,
+                source: match startup {
+                    Catalog45StartupRecovery::Cancelled => CATALOG45_RETAINED_IMAGE_RECOVERY_TARGET,
+                    Catalog45StartupRecovery::Unqualified => CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET,
+                },
                 target: CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET,
             });
         }
@@ -2070,7 +2086,10 @@ mod normal_oex_release_declaration_tests {
         let old = source.context().manifest_sha256;
         let new = target.context().manifest_sha256;
         let transition = FurnishingTransition::from_manifests((&old, &new)).unwrap();
-        assert!(matches!(transition, FurnishingTransition::Recover45 { .. }) && transition.startup_cancel_recovery());
+        assert!(matches!(transition, FurnishingTransition::Recover45 { .. }));
+        assert_eq!(transition.startup_recovery(), Some(Catalog45StartupRecovery::Cancelled));
+        let same = FurnishingTransition::from_manifests((&new, &new)).unwrap();
+        assert_eq!(same.startup_recovery(), Some(Catalog45StartupRecovery::Unqualified));
         assert!(!retained_product_image_recovery_transition((&old, &new)));
         assert!(!saved_workspace_transition_supported((&new, &old)));
         assert!(saved_workspace_transition_target(&new));

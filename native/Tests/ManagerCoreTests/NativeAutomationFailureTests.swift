@@ -277,4 +277,63 @@ final class NativeAutomationFailureTests: XCTestCase {
             }
         }
     }
+
+    #if DEBUG
+    func testF738CancellationKeepsStatusChannelUntilStartupSettles() async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let profile = folder.appendingPathComponent("profile", isDirectory: true)
+        let output = folder.appendingPathComponent("output", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        for path in [profile, output] {
+            try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+        }
+        let scope = UUID().uuidString.lowercased()
+        let manifest = "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a"
+        let owner = try JSONDecoder().decode(NativeAutomationSession.ExistingWorkspaceV5.self, from: Data("""
+            {"workspaceId":"\(scope)","tenantId":"\(scope)","principalId":"\(scope)","manifestSHA256":"\(manifest)"}
+            """.utf8))
+        let draft = String(decoding: try JSONEncoder().encode(NativeExhibitionDraft.new()), as: UTF8.self)
+        let helper = folder.appendingPathComponent("helper")
+        try """
+        #!/bin/sh
+        root=${0%/*}
+        IFS= read -r request || exit 9
+        printf '%s\\n' '{"version":1,"id":1,"result":{"selectionToken":"fixture","activeId":"fixture","installations":[]}}'
+        IFS= read -r request || exit 9
+        printf '%s\\n' '{"version":1,"id":2,"result":{"busy":false,"operation":"idle","accountRequired":false,"configuration":{"kind":"personal","tenantId":"\(scope)","ports":{"web":13200,"api":13201,"database":15432},"manifestSha256":"\(manifest)"}}}'
+        IFS= read -r request || exit 9
+        printf '%s\\n' '{"version":1,"id":3,"result":{"format":1,"revision":1,"workspaceId":"\(scope)","tenantId":"\(scope)","principalId":"\(scope)","savedEditVersion":1,"etag":"saved","draft":\(draft)}}'
+        IFS= read -r request || exit 9
+        printf '%s\\n' '{"version":1,"id":4,"result":{"busy":true,"operation":"start","accountRequired":false}}'
+        IFS= read -r request || exit 9
+        touch "$root/busy"
+        while [ ! -f "$root/cancelled" ]; do sleep .02; done
+        printf '%s\\n' '{"version":1,"id":5,"result":{"busy":true,"operation":"start","accountRequired":false}}'
+        IFS= read -r request || exit 9
+        touch "$root/terminal"
+        printf '%s\\n' '{"version":1,"id":6,"result":{"busy":false,"operation":"start","accountRequired":false}}'
+        if IFS= read -r request; then exit 9; fi
+        """.write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+        let session = try NativeAutomationSession(helper: helper, profile: profile,
+            ports: ["web": 13200, "api": 13201, "database": 15432], outputRoot: output,
+            temporaryRoot: folder, inputs: [:], workspaceV5ValidationRuntime: folder, existingWorkspaceV5: owner)
+        let task = Task { try await session.open() }
+        let busy = folder.appendingPathComponent("busy").path
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath: busy) {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: busy))
+        task.cancel()
+        try Data().write(to: folder.appendingPathComponent("cancelled"))
+        do {
+            _ = try await task.value
+            XCTFail("Startup cancellation must propagate after terminal status")
+        } catch is CancellationError { }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("terminal").path))
+        try await session.close()
+    }
+    #endif
 }
