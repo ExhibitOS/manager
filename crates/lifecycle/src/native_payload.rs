@@ -637,9 +637,17 @@ pub(crate) const CATALOG45_PRODUCT_IMAGE: RuntimeTuple = (
     "157f538603a9557c30dfbb58ffc04755db9e174817aaeeb13353ce90e6dd84a2",
 );
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_RENDERED_SCULPTURE_THUMBNAIL: RuntimeTuple = (
+    "d20776d173ba22df971236648ac8c34a7cdd662c",
+    "c8f2613ffe79d1aa1baf223201ec89b5fe38941d9b960a1317fded652b9df531",
+    "f21b1378b39d11fd6ea8f9c89636912f233f884af176e2deb9856dea3ae77b53",
+);
+
 pub(crate) fn ordinary_fresh_catalog45_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return CATALOG45_DEFAULT_FRAME == tuple || CATALOG45_PRODUCT_IMAGE == tuple;
+    return CATALOG45_DEFAULT_FRAME == tuple || CATALOG45_PRODUCT_IMAGE == tuple
+        || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL == tuple;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -1866,6 +1874,21 @@ mod normal_oex_release_declaration_tests {
         assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 46);
         payload.manifest.files.retain(|file| file.path != LARGE_MODEL_RECOVERY_CAPABILITY.0);
         assert!(payload.workspace_furnishing_catalog().is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact sealed catalog 045 sculpture thumbnail validation package"]
+    fn opens_reviewed_rendered_sculpture_thumbnail_package() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_RENDERED_SCULPTURE_RUNTIME").unwrap());
+        let payload = Payload::open(&root).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 45);
+        assert!(payload.ordinary_fresh_furnishing());
+        assert!(!payload.workspace_v5_selected_input());
+        assert!(payload.retained_furnishing_catalog().is_none());
+        assert!(!saved_workspace_transition_target(&payload.context().manifest_sha256));
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]

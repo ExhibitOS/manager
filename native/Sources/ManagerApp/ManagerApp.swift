@@ -15,6 +15,9 @@ final class ManagerModel: ObservableObject {
     }
     @Published private(set) var native: NativeHostStatus? {
         didSet {
+            if !ready || oldValue?.runtime?.jobId != native?.runtime?.jobId {
+                exhibitions.invalidateCatalogThumbnailAuthority()
+            }
             if let binding = retainedAuthoring, let current = native, !current.busy,
                !binding.matches(context: context, status: current) { invalidateRetainedAuthoring() }
             exhibitions.configurePublicationWatermark(native?.configuration, ready: ready)
@@ -83,7 +86,10 @@ final class ManagerModel: ObservableObject {
     }
     private var retainedAuthoring: RetainedAuthoring?
     private var retainedAuthoringGeneration = UUID()
-    private func invalidateRetainedAuthoring() { retainedAuthoring = nil; retainedAuthoringGeneration = UUID() }
+    private func invalidateRetainedAuthoring() {
+        retainedAuthoring = nil; retainedAuthoringGeneration = UUID()
+        exhibitions.invalidateCatalogThumbnailAuthority()
+    }
     private var startAfterPrepare = false
     private var serviceRequested = false
     var mayHaveServices: Bool { serviceRequested || native?.needsShutdown == true || staticExport.running || hosting.running || hosting.busy }
@@ -138,7 +144,7 @@ final class ManagerModel: ObservableObject {
     }
 
     func connectPersonalAuthoring() async {
-        guard !exhibitions.oexImport.busy else { return }
+        guard !exhibitions.oexImport.busy, !exhibitions.catalogThumbnailSaving else { return }
         let jobID = native?.runtime?.jobId
         while let connection = authoringConnection {
             await connection.task.value
@@ -162,11 +168,12 @@ final class ManagerModel: ObservableObject {
     }
     private func connectPersonalAuthoringOwned(runtimeJobID: String?) async {
         guard !busy, !quitting, ready, native?.runtime?.jobId == runtimeJobID,
-              !exhibitions.oexImport.busy, let bridge, let context else { return }
+              !exhibitions.oexImport.busy, !exhibitions.catalogThumbnailSaving, let bridge, let context else { return }
         if native?.selectedOex == true, retainedAuthoring != nil, exhibitions.entrancePreviewActive {
             failure = BridgeFailure("NATIVE_OEX_SESSION_BOUND"); return
         }
         guard exhibitions.beginEntranceCredentialRenewal() else { return }
+        exhibitions.invalidateCatalogThumbnailAuthority()
         busy = true
         defer { busy = false }
         do {
@@ -274,6 +281,12 @@ final class ManagerModel: ObservableObject {
                       authoring.exhibitionAPI === api, let finalSession = authoring.session,
                       Self.sameSession(finalSession, session) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
                 await publication.connect(api: api, session: session, read: { try await bridge.publicationState(context) }, write: { state in try await bridge.savePublicationState(context, state: state) })
+                if await api.hasCatalogThumbnailAuthority(session),
+                   !quitting, ready, native?.runtime?.jobId == runtimeJobID,
+                   connectionGeneration == retainedAuthoringGeneration, authoring.exhibitionAPI === api,
+                   let current = authoring.session, Self.sameSession(current, session) {
+                    exhibitions.confirmCatalogThumbnailAuthority(api: api, session: session, credentials: credentials)
+                }
             } else { exhibitions.entranceCredentialRenewalFailed() }
         } catch {
             invalidateRetainedAuthoring()

@@ -89,6 +89,10 @@ struct ArtworkCatalogView: View {
                 .disabled(!ready || !model.canSelectCatalog || model.immutable)
             Button { Task { await controller.findSelection() } } label: { Label("선택한 배치 찾기", systemImage: "scope") }
                 .labelStyle(.iconOnly).disabled(!ready || !model.canSelectCatalog || model.immutable || model.viewportSelection?.kind != "placement" || !controller.findSelectionSupported || model.viewportPresentation == .plan)
+            if controller.renderedThumbnailSupported && model.selectedCatalogArtworkSupportsRenderedThumbnail {
+                Button("게시용 미리보기 저장", systemImage: "photo") { Task { await model.saveSelectedCatalogThumbnail() } }
+                    .disabled(!ready || !model.canSaveSelectedCatalogThumbnail)
+            }
         }
         Spacer(minLength: 0)
         if model.libraryCursor != nil { Button("작품 더 보기") { Task { await model.loadMoreCatalog() } }.disabled(!ready || model.busy) }

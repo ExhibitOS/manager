@@ -13,9 +13,19 @@ public struct ViewportThumbnailRequest: Encodable, Sendable {
         requestId = UUID().uuidString.lowercased(); self.artworkId = artwork.uuidString.lowercased(); self.expectedRevision = expectedRevision
     }
 }
+public struct ViewportRenderedThumbnail: Sendable {
+    public let artworkId: String, revision: Int
+    public let sourceAssetId: String, sourceSha256: String
+    /// The model bytes used by the renderer may come from a derivative of the approved primary asset.
+    public let displaySha256: String
+    public let pngData: Data, pngSha256: String
+}
+
 public struct ViewportThumbnailReply: Decodable, Sendable {
     public let version: Int, epoch: String, sequence: Int, tenantId: String, principalId: String, requestId: String
     public let artworkId: String, revision: Int, pngBase64: String, width: Int, height: Int
+    public let sourceAssetId: String?, sourceSha256: String?, displaySha256: String?, pngSha256: String?
+
     public func pngData(matching request: ViewportThumbnailRequest) throws -> Data {
         guard version == 1, epoch == request.epoch, sequence == request.sequence, tenantId == request.tenantId,
               principalId == request.principalId, requestId == request.requestId, artworkId == request.artworkId, revision == request.expectedRevision,
@@ -25,6 +35,18 @@ public struct ViewportThumbnailReply: Decodable, Sendable {
         func dimension(_ offset: Int) -> Int { bytes[offset..<offset+4].reduce(0) { ($0 << 8) | Int($1) } }
         guard dimension(16) == width, dimension(20) == height else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
         return bytes
+    }
+
+    public func renderedThumbnail(matching request: ViewportThumbnailRequest) throws -> ViewportRenderedThumbnail {
+        guard width == 256, height == 256,
+              let sourceAssetId, UUID(uuidString: sourceAssetId) != nil,
+              let sourceSha256, nativeImportDigest(sourceSha256),
+              let displaySha256, nativeImportDigest(displaySha256) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        let bytes = try pngData(matching: request)
+        let digest = nativeImportSHA256(bytes)
+        guard pngSha256 == nil || pngSha256 == digest else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        return ViewportRenderedThumbnail(artworkId: artworkId, revision: revision, sourceAssetId: sourceAssetId,
+            sourceSha256: sourceSha256, displaySha256: displaySha256, pngData: bytes, pngSha256: digest)
     }
 }
 public struct ViewportFindSelectionRequest: Encodable, Sendable {
