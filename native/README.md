@@ -24,13 +24,11 @@ EXHIBITOS_NATIVE_TEST_HELPER=/absolute/path/to/target/debug/exhibitos-native swi
 ```
 
 `scripts/package-native-preview.py` assembles existing built outputs into a new
-development app/profile; it never replaces an installation, builds or signs an
-artifact, or accesses credentials. Supply the debug Swift executable and built
-Rust helper explicitly. The validation-profile Info key is recognized only in
-debug builds. Use an isolated profile for validation and retain original apps.
-Release delivery/signing is a separate existing distribution pipeline.
+headless preview. Supply the debug Swift build and native helper. The preview
+keeps the Swift binary without execute permission and leaves the app launch
+entry unset. Use the bundled helper for isolated headless work.
 
-For the shared local Manager GUI validation workflow, use
+For all local Manager GUI validation, including recipient source builds, use
 `scripts/manager-validation-gui.py` under the normal desktop resource lease.
 Supply the intended existing profile and the reviewed `--gui-sha`,
 `--helper-sha`, and `--runtime-manifest-sha` pins to every action. Use
