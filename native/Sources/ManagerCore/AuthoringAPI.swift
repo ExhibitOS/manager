@@ -1957,6 +1957,7 @@ public actor AuthoringAPI {
               approved.approvedAssetId == full.assetId, approved.metadata == artwork.metadata, !approved.archived,
               canonical["revision"].integer == Int64(artwork.revision),
               canonical["primaryAssetId"].string == full.assetId,
+              NativeProductImagePreparationStatus.matchesCanonicalTiers(canonical, full: full, coarse: status.coarse),
               canonical["assets"].items?.count == expectedAssets.count,
               expectedAssets.allSatisfy({ expected in
                   canonical["assets"].items?.contains(where: {

@@ -220,6 +220,19 @@ public struct NativeProductImagePreparationStatus: Codable, Equatable, Sendable 
         serverReceipt = fields.contains(.serverReceipt) ? try fields.decode(Receipt.self, forKey: .serverReceipt) : nil
     }
 
+    static func matchesCanonicalTiers(_ artwork: DocumentValue, full: Image, coarse: Image?) -> Bool {
+        let lod = artwork["extensions"]["org.exhibitos.viewer/lod"]
+        guard lod["version"].integer == 1, let variants = lod["variants"].items,
+              variants.count == (coarse == nil ? 1 : 2) else { return false }
+        func hasTier(_ image: Image, _ detail: String) -> Bool {
+            variants.contains {
+                $0["assetId"].string == image.assetId && $0["detail"].string == detail
+                    && $0["textureSize"].integer == Int64(max(image.width, image.height))
+            }
+        }
+        return hasTier(full, "full") && (coarse.map { hasTier($0, "coarse") } ?? true)
+    }
+
     public func matches(_ preparation: NativeProductImagePreparationIntent, job: NativeImportJob) -> Bool {
         guard preparation.valid, provenance == "server-generated", profile == preparation.profile,
               artworkRevision == preparation.artworkRevision, productImageID(job.id) else { return false }
