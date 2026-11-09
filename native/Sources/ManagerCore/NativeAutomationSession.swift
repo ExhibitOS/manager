@@ -168,15 +168,19 @@ public actor NativeAutomationSession {
     // otherwise closing the channel can interrupt the owned start mid-flight.
     private func waitF738ExistingStartup() async throws -> NativeHostStatus {
         guard let context else { throw BridgeFailure("AUTOMATION_NOT_READY") }
-        while true {
-            let status = try await bridge.nativeStatus(context)
-            if !status.busy {
-                if let code = status.errorCode { throw BridgeFailure(code) }
-                try Task.checkCancellation()
-                return status
+        let ownedBridge = bridge
+        let status = try await Task.detached {
+            while true {
+                let status = try await ownedBridge.nativeStatus(context)
+                if !status.busy {
+                    if let code = status.errorCode { throw BridgeFailure(code) }
+                    return status
+                }
+                try await Task.sleep(for: .milliseconds(100))
             }
-            await Task.detached { try? await Task.sleep(for: .milliseconds(100)) }.value
-        }
+        }.value
+        try Task.checkCancellation()
+        return status
     }
     public func open() async throws -> DocumentValue {
         guard context == nil, !closed else { throw BridgeFailure("AUTOMATION_ALREADY_OPEN") }
