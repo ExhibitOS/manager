@@ -438,6 +438,25 @@ impl InstallationController {
         })
     }
 
+    #[cfg(all(target_os = "macos", debug_assertions, feature = "workspace-v5-owner-validation"))]
+    pub(crate) fn verify_startup_cancellation_045_preservation(
+        &self,
+        service: &LifecycleService,
+        document: &native_document::DocumentState,
+        proof: &native_maintenance::StartupCancellation045,
+    ) -> Result<()> {
+        let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
+        let (file, transfer) = self.upload_unlocked(service)?;
+        if transfer.intent.is_some() || transfer.job_id.is_some() || transfer.file_name.is_some() || transfer.compact_variant.is_some()
+            || document.etag.as_deref() != Some(proof.saved_etag.as_str())
+            || digest(&installation_backup::source_bytes(&profile.root, &file, native_upload::LIMIT, true)?)
+                != proof.transfer_sha256
+        {
+            return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
+        }
+        Ok(())
+    }
+
     /// Protect the exact selected workspace and upload receipt without
     /// changing the current writer state or admitting activation.
     #[cfg(all(target_os = "macos", debug_assertions))]

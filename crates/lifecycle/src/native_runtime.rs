@@ -405,8 +405,26 @@ fn validate_cold_furnishing_source(root: &Path, prior: Option<&Binding>, live: &
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-fn check_catalog45_recovery_source(root: &Path, source: &Current) -> Result<()> {
+fn catalog45_failed_reopen_shape(failed: &Context, startup_cancelled: bool) -> bool {
+    let code = if startup_cancelled { "NATIVE_CANCELLED" } else { furnishing_lifecycle::ERROR };
+    let node_exit = if startup_cancelled { -15 } else { 0 };
+    failed.state == "failed"
+        && failed.postgres_pid.is_none() && failed.node_pid.is_none() && failed.auxiliary_pid.is_none()
+        && failed.failure_code.as_deref() == Some(code) && failed.error_code.as_deref() == Some(code)
+        && failed.exits.get("postgres") == Some(&0) && failed.exits.get("auxiliary") == Some(&0)
+        && failed.exits.get("node") == Some(&node_exit)
+        && (!startup_cancelled || (!failed.readiness.ready && failed.exits.len() == 3))
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+fn check_catalog45_recovery_source(root: &Path, source: &Current, startup_cancelled: bool) -> Result<()> {
     let rejected = || err(furnishing_lifecycle::ERROR);
+    if startup_cancelled {
+        check_interrupted_root(root)?;
+        if exists(&root.join("native-database/postmaster.pid"))? {
+            return Err(err("NATIVE_PHYSICAL_CHECKPOINT_NOT_COLD"));
+        }
+    }
     let binding = source.furnishing.as_ref().ok_or_else(rejected)?;
     let predecessor = binding.previous_generation.as_deref().ok_or_else(rejected)?;
     if source.id != binding.generation || binding.phase != Phase::Active
@@ -416,12 +434,7 @@ fn check_catalog45_recovery_source(root: &Path, source: &Current) -> Result<()> 
         return Err(rejected());
     }
     let (failed, completion) = read_run(root, &source.id)?;
-    if failed.state != "failed" || completion.is_some()
-        || failed.postgres_pid.is_some() || failed.node_pid.is_some() || failed.auxiliary_pid.is_some()
-        || failed.failure_code.as_deref() != Some(furnishing_lifecycle::ERROR)
-        || failed.error_code.as_deref() != Some(furnishing_lifecycle::ERROR)
-        || ["postgres", "node", "auxiliary"].iter().any(|name| failed.exits.get(*name) != Some(&0))
-    {
+    if completion.is_some() || !catalog45_failed_reopen_shape(&failed, startup_cancelled) {
         return Err(rejected());
     }
     let (prior, prior_completion) = read_run(root, predecessor)?;
@@ -437,11 +450,39 @@ fn check_catalog45_recovery_source(root: &Path, source: &Current) -> Result<()> 
     Ok(())
 }
 
+#[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[test]
+fn catalog45_cancelled_startup_is_separate_from_unqualified_stop() {
+    let mut context = Context {
+        format: 1, job_id: None, state: "failed".into(),
+        ports: Ports { web: 56851, api: 56852, database: 56853 },
+        readiness: Readiness::default(), error_code: Some("NATIVE_CANCELLED".into()),
+        failure_code: Some("NATIVE_CANCELLED".into()),
+        postgres_pid: None, node_pid: None, auxiliary_pid: None,
+        exits: BTreeMap::from([("postgres".into(), 0), ("node".into(), -15), ("auxiliary".into(), 0)]),
+        log_truncated: false,
+    };
+    assert!(catalog45_failed_reopen_shape(&context, true));
+    assert!(!catalog45_failed_reopen_shape(&context, false));
+    context.readiness.ready = true;
+    assert!(!catalog45_failed_reopen_shape(&context, true));
+    context.readiness.ready = false;
+    context.exits.insert("node".into(), -9);
+    assert!(!catalog45_failed_reopen_shape(&context, true));
+    context.exits.insert("node".into(), 0);
+    context.error_code = Some(furnishing_lifecycle::ERROR.into());
+    context.failure_code = context.error_code.clone();
+    assert!(catalog45_failed_reopen_shape(&context, false));
+    assert!(!catalog45_failed_reopen_shape(&context, true));
+}
+
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-pub(crate) fn catalog45_recovery_source_generation(root: &Path) -> Result<String> {
+pub(crate) fn catalog45_recovery_source_generation(root: &Path, startup_cancelled: bool) -> Result<String> {
     let source = current_run(root)?.ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
-    check_cold_transition_root(root, Some(&source.id))?;
-    check_catalog45_recovery_source(root, &source)?;
+    if !startup_cancelled {
+        check_cold_transition_root(root, Some(&source.id))?;
+    }
+    check_catalog45_recovery_source(root, &source, startup_cancelled)?;
     Ok(source.id)
 }
 
@@ -493,8 +534,11 @@ impl FurnishingTransitionTrial {
             return Err(err(furnishing_lifecycle::ERROR));
         }
         if matches!(transition, FurnishingTransition::Recover45 { .. }) {
-            check_cold_transition_root(&service.root, Some(&self.source.id))?;
-            check_catalog45_recovery_source(&service.root, &self.source)?;
+            let startup_cancelled = transition.startup_cancel_recovery();
+            if !startup_cancelled {
+                check_cold_transition_root(&service.root, Some(&self.source.id))?;
+            }
+            check_catalog45_recovery_source(&service.root, &self.source, startup_cancelled)?;
         } else {
             unconsumed_furnishing_completion(&service.root, self.source_binding(transition)?)?;
         }
@@ -531,7 +575,7 @@ impl FurnishingTransitionTrial {
     pub(crate) fn hold_recovery(&self, service: &LifecycleService, transition: FurnishingTransition) -> Result<FurnishingTransitionWriterGuard> {
         let (guard, _) = self.hold(service, transition)?;
         if matches!(transition, FurnishingTransition::Recover45 { .. }) {
-            check_catalog45_recovery_source(&service.root, &self.source)?;
+            check_catalog45_recovery_source(&service.root, &self.source, transition.startup_cancel_recovery())?;
         } else {
             self.recoverable_source_completion(&service.root, transition)?;
         }
@@ -555,6 +599,9 @@ impl FurnishingTransitionTrial {
         }
         let current = current_run(root)?.ok_or_else(cold)?;
         if current == self.source {
+            if transition.startup_cancel_recovery() {
+                return check_catalog45_recovery_source(root, &self.source, true);
+            }
             if matches!(transition, FurnishingTransition::Recover45 { .. }) {
                 return check_cold_transition_root(root, Some(&self.source.id));
             }
@@ -579,9 +626,10 @@ impl FurnishingTransitionTrial {
         // The retained checkpoint can roll back a reaped, read-only PG probe
         // failure before Node started. An authenticated trial and normal
         // PostgreSQL shutdown are still required.
-        if retained.is_some()
-            && (crate::native_payload::retained_product_image_transition((transition.source().2, transition.target().2))
-                || crate::native_payload::retained_product_image_recovery_transition((transition.source().2, transition.target().2)))
+        let pair = (transition.source().2, transition.target().2);
+        if (transition.startup_cancel_recovery() || retained.is_some()
+            && (crate::native_payload::retained_product_image_transition(pair)
+                || crate::native_payload::retained_product_image_recovery_transition(pair)))
             && binding.phase == Phase::Active
             && retained_product_image::drained_database_error(&context)
         {
@@ -618,7 +666,7 @@ impl FurnishingTransitionTrial {
             return Err(err(furnishing_lifecycle::ERROR));
         }
         if matches!(transition, FurnishingTransition::Recover45 { .. }) {
-            check_catalog45_recovery_source(&service.root, &self.source)?;
+            check_catalog45_recovery_source(&service.root, &self.source, transition.startup_cancel_recovery())?;
         } else {
             let (context, mut proof) = self.recoverable_source_completion(&service.root, transition)?;
             if proof.consumed_by.is_some() {
@@ -665,6 +713,8 @@ pub struct Session {
     selected_recovery_045: Option<oex_retained_cleanup::Selected045>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     retained_product_image: Option<retained_product_image::Trial>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    startup_cancellation_045: Option<crate::installations::native_maintenance::StartupCancellation045>,
     node_drain_requested: bool,
     job_id: Option<String>,
     run: Option<PathBuf>,
@@ -1061,6 +1111,8 @@ impl Session {
             selected_recovery_045: None,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             retained_product_image: None,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            startup_cancellation_045: None,
             node_drain_requested: false,
             job_id: None,
             run: None,
@@ -2020,9 +2072,9 @@ const { isDeepStrictEqual } = require('node:util');
                         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
                         let selected_checked = false;
                         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-                        let retained_checked = if let Some(recovery) = self.retained_product_image_recovery() {
+                        let retained_checked = if let Some((job, frame)) = self.catalog45_hayes_only_recovery() {
                             let sql = oex_retained_cleanup::hayes_only_database_query(
-                                owner, &recovery.hayes_job_id, &recovery.hayes_completion_frame_sha256,
+                                owner, job, frame,
                             )?;
                             if selected_checked || self.query_database("exhibitos", &sql)? != "true" {
                                 return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
@@ -2234,7 +2286,7 @@ const { isDeepStrictEqual } = require('node:util');
             }
         }
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-        if let Some(recovery) = self.retained_product_image_recovery() {
+        if let Some((job, frame)) = self.catalog45_hayes_only_recovery() {
             if !personal || furnishing != Some(FurnishingStart::Reopen) || furnishing_lease.is_none()
                 || self.oex_retained_cleanup.is_some() || !self.active_furnishing_binding().is_some_and(|binding|
                     binding.admission_kind == Admission::InterruptedReopen && binding.restore.is_none())
@@ -2242,7 +2294,7 @@ const { isDeepStrictEqual } = require('node:util');
                 return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
             }
             environment.push((oex_retained_cleanup::HAYES_COMPLETION_ENV, serde_json::json!({
-                "jobId": recovery.hayes_job_id, "completionFrameSha256": recovery.hayes_completion_frame_sha256,
+                "jobId": job, "completionFrameSha256": frame,
             }).to_string()));
         }
         let spawned = self.spawn(

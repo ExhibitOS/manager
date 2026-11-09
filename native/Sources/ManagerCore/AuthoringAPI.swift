@@ -387,7 +387,8 @@ public actor AuthoringAPI {
         catalog45RecoveryManifestPin,
         catalog45SelectedRecoveryManifestPin,
         catalog45RetainedProductImageManifestPin,
-        catalog45RetainedImageRecoveryManifestPin
+        catalog45RetainedImageRecoveryManifestPin,
+        catalog45StartupCancellationRecoveryManifestPin
     ]
     private static let productImageManifestPin = "157f538603a9557c30dfbb58ffc04755db9e174817aaeeb13353ce90e6dd84a2"
     private static let productImageFitWheatManifestPin = "9c5da125d1789e93bdeb9446060b452fcb33b1bb2d95645c909d60c1ff30d18d"
@@ -395,6 +396,7 @@ public actor AuthoringAPI {
     private static let catalog45SelectedRecoveryManifestPin = "62200d7ccb47e7ede5d1910a65e0087ac171c595d76ca14df6a19290382e4288"
     private static let catalog45RetainedProductImageManifestPin = "003a98c579e69e1b38a7cb96971f0872f15b8afd169d392a96ac94fe87be9f92"
     private static let catalog45RetainedImageRecoveryManifestPin = "f15d2530a298c3e9507e4719fa3ba65f26aff8cb9b40d9f646f1043976d0a75d"
+    private static let catalog45StartupCancellationRecoveryManifestPin = "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a"
     private static let workspaceMaterialMultimapManifestPins: Set<String> = [
         "72a13c526fb422c106f8eefaa7e277e5ab003f3c2085ebd09b2814c0a19ef904",
         "df6efc23ea2d9aab790fc25fab9833db9f5b48b3cb0c5417a1bd7c5ef609ac2a",
@@ -1011,6 +1013,7 @@ public actor AuthoringAPI {
         manifest == productImageManifestPin || manifest == productImageFitWheatManifestPin
             || manifest == catalog45RecoveryManifestPin || manifest == catalog45SelectedRecoveryManifestPin
             || manifest == catalog45RetainedProductImageManifestPin || manifest == catalog45RetainedImageRecoveryManifestPin
+            || manifest == catalog45StartupCancellationRecoveryManifestPin
         #else
         false
         #endif
@@ -1019,6 +1022,7 @@ public actor AuthoringAPI {
     nonisolated static func supportsProductImageReplacementThumbnail(manifest: String?) -> Bool {
         #if DEBUG
         manifest == catalog45RetainedProductImageManifestPin || manifest == catalog45RetainedImageRecoveryManifestPin
+            || manifest == catalog45StartupCancellationRecoveryManifestPin
         #else
         return false
         #endif
