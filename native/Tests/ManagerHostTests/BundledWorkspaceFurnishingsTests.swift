@@ -23,6 +23,11 @@ final class BundledWorkspaceFurnishingsTests: XCTestCase {
         }
         let (catalogRoot, items) = try BundledWorkspaceFurnishings.catalog(root: root)
         XCTAssertEqual(Set(items.map(\.id)), Set(["freestanding-info-stand", "gallery-stool", "upholstered-gallery-bench"]))
+        let relativeRoot = try XCTUnwrap(URL(string: root.lastPathComponent + "/", relativeTo: root.deletingLastPathComponent()))
+        XCTAssertNotNil(relativeRoot.baseURL)
+        let (resolvedRoot, relativeItems) = try BundledWorkspaceFurnishings.catalog(root: relativeRoot)
+        XCTAssertEqual(resolvedRoot.path, root.path)
+        XCTAssertEqual(Set(relativeItems.map(\.id)), Set(items.map(\.id)))
         for item in items {
             let snapshot = try await BundledWorkspaceFurnishings.load(item, root: catalogRoot)
             XCTAssertEqual(snapshot.sha256, item.model.sha256)

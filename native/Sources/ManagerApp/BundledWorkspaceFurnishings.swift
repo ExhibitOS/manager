@@ -45,7 +45,9 @@ enum BundledWorkspaceFurnishings {
         return url
     }
     static func catalog(root override: URL? = nil) throws -> (URL, [Item]) {
-        guard let root = override ?? Bundle.main.resourceURL?.appendingPathComponent("native-runtime/platform", isDirectory: true) else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
+        guard let location = override ?? Bundle.main.resourceURL?.appendingPathComponent("native-runtime/platform", isDirectory: true), location.isFileURL else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
+        // Bundle.resourceURL may have a base URL; compare canonical absolute file URLs.
+        let root = URL(fileURLWithPath: location.path, isDirectory: true)
         let manifestURL = root.appendingPathComponent("assets/furnishings/default-manifest.json")
         guard root.resolvingSymlinksInPath() == root, manifestURL.resolvingSymlinksInPath() == manifestURL,
               manifestURL.path.hasPrefix(root.path + "/") else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
