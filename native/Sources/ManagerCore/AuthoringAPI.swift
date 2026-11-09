@@ -25,6 +25,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var compactModelVariantProfile: String? = nil
     public var nativeModelCandidateReplacementProfile: String? = nil
     public var nativeProductImagePreparationProfile: String? = nil
+    public var nativeProductImageThumbnailRepairProfile: String? = nil
     public var nativeFreshImagePreparationProfile: String? = nil
     public var workspaceMaterialProfile: String? = nil
     public var workspaceFurnishingProfile: String? = nil
@@ -387,7 +388,8 @@ public actor AuthoringAPI {
         catalog45RecoveryManifestPin,
         catalog45SelectedRecoveryManifestPin,
         catalog45RetainedProductImageManifestPin,
-        catalog45RetainedImageRecoveryManifestPin
+        catalog45RetainedImageRecoveryManifestPin,
+        catalog45FirstThumbnailRepairManifestPin
     ]
     private static let productImageManifestPin = "157f538603a9557c30dfbb58ffc04755db9e174817aaeeb13353ce90e6dd84a2"
     private static let productImageFitWheatManifestPin = "9c5da125d1789e93bdeb9446060b452fcb33b1bb2d95645c909d60c1ff30d18d"
@@ -395,6 +397,7 @@ public actor AuthoringAPI {
     private static let catalog45SelectedRecoveryManifestPin = "62200d7ccb47e7ede5d1910a65e0087ac171c595d76ca14df6a19290382e4288"
     private static let catalog45RetainedProductImageManifestPin = "003a98c579e69e1b38a7cb96971f0872f15b8afd169d392a96ac94fe87be9f92"
     private static let catalog45RetainedImageRecoveryManifestPin = "f15d2530a298c3e9507e4719fa3ba65f26aff8cb9b40d9f646f1043976d0a75d"
+    private static let catalog45FirstThumbnailRepairManifestPin = "c930b64b072935d3a42bee72f5e97503d9e93b84bc3f89d69e02cf217899fbe2"
     private static let workspaceMaterialMultimapManifestPins: Set<String> = [
         "72a13c526fb422c106f8eefaa7e277e5ab003f3c2085ebd09b2814c0a19ef904",
         "df6efc23ea2d9aab790fc25fab9833db9f5b48b3cb0c5417a1bd7c5ef609ac2a",
@@ -928,6 +931,97 @@ public actor AuthoringAPI {
         return stored
     }
 
+    public static let productImageThumbnailRepairProfile = "product-image-thumbnail-repair-v1"
+
+    public var admitsProductImageThumbnailRepair: Bool {
+        #if DEBUG
+        nativeRuntimeManifestSHA256 == Self.catalog45FirstThumbnailRepairManifestPin
+            && admitsProductImagePreparation
+            && session?.nativeProductImageThumbnailRepairProfile == Self.productImageThumbnailRepairProfile
+        #else
+        false
+        #endif
+    }
+
+    private func retainedProductImageForThumbnailRepair(
+        artworkId: String, importJobId: String, workspaceId: String, principalId: String, expectedReceiptSHA256: String
+    ) async throws -> (NativeArtwork, NativeProductImagePreparationStatus.Receipt) {
+        guard admitsProductImageThumbnailRepair, session?.userId == principalId else {
+            throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
+        }
+        let current = generation
+        let artworkId = try identifier(artworkId), importJobId = try identifier(importJobId)
+        let job = try await importJob(importJobId)
+        let currentArtwork = try await artwork(artworkId)
+        guard generation == current, admitsProductImageThumbnailRepair else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard job.id == importJobId, let status = job.productImagePreparation, let receipt = status.serverReceipt,
+              status.profile == NativeProductImagePreparationIntent.profileID,
+              receipt.original.mime == "image/jpeg", receipt.sha256 == expectedReceiptSHA256, receipt.artworkId == artworkId,
+              let rights = currentArtwork.metadata?.rights, rights.permissions.display, rights.permissions.export,
+              !currentArtwork.archived, currentArtwork.id == artworkId,
+              currentArtwork.approvedRevision == currentArtwork.revision,
+              currentArtwork.approvedAssetId == receipt.full.assetId,
+              currentArtwork.assets.contains(where: {
+                  $0.id == receipt.full.assetId && $0.state == "approved" && $0.mime == "image/png"
+                      && $0.sha256 == receipt.full.sha256 && $0.bytes == receipt.full.bytes
+              }) else { throw AuthoringFailure("IMAGE_PREPARATION_JOB_NOT_READY") }
+        let preparation = NativeProductImagePreparationIntent(artworkRevision: receipt.artworkRevision)
+        let retained = NativeImportIntent(artworkId: artworkId, idempotencyKey: importJobId,
+            mime: receipt.original.mime, sha256: receipt.original.sha256, bytes: receipt.original.bytes,
+            scaleMeters: 1, rights: rights, productImagePreparation: preparation)
+        guard status.validatesReady(intent: retained, preparation: preparation, job: job,
+                                    workspaceID: workspaceId, principalID: principalId) else {
+            throw AuthoringFailure("IMAGE_PREPARATION_JOB_NOT_READY")
+        }
+        return (currentArtwork, receipt)
+    }
+
+    public func reviewProductImageThumbnailRepair(
+        draft: NativeExhibitionDraft, artworkId: String, artworkRevision: Int, importJobId: String,
+        workspaceId: String, principalId: String, expectedReceiptSHA256: String
+    ) async throws {
+        let current = generation
+        let (artwork, receipt) = try await retainedProductImageForThumbnailRepair(artworkId: artworkId,
+            importJobId: importJobId, workspaceId: workspaceId, principalId: principalId, expectedReceiptSHA256: expectedReceiptSHA256)
+        guard receipt.artworkRevision < artworkRevision, artworkRevision < Int32.max, artwork.revision == artworkRevision,
+              let snapshot = draft.artworks.first(where: { $0["id"].string == artworkId }),
+              snapshot["revision"].integer == Int64(artworkRevision),
+              snapshot["extensions"]["org.exhibitos.viewer/thumbnail"] == .null,
+              Self.validatesProductImageReplacementInventory(snapshot, full: receipt.full, coarse: receipt.coarse, admitsThumbnail: false),
+              NativeProductImagePreparationStatus.matchesCanonicalTiers(snapshot, full: receipt.full, coarse: receipt.coarse) else {
+            throw AuthoringFailure("ARTWORK_REPLACEMENT_STALE")
+        }
+        struct Selection: Decodable, Sendable { let selectionVersion: Int }
+        let path = prefix + "/artworks/" + (try identifier(artworkId)) + "/thumbnail-selection?expectedRevision=\(artworkRevision)"
+        let selection: Selection = try await request(path)
+        guard generation == current, admitsProductImageThumbnailRepair else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard selection.selectionVersion == 0 else { throw AuthoringFailure("ARTWORK_REPLACEMENT_INVALID") }
+    }
+
+    public func repairProductImageThumbnail(
+        exhibitionId: String, studioRevision: Int, etag: String, requestId: String,
+        artworkId: String, artworkRevision: Int, importJobId: String,
+        workspaceId: String, principalId: String, expectedReceiptSHA256: String
+    ) async throws -> NativeStudioResponse {
+        let current = generation
+        let (_, receipt) = try await retainedProductImageForThumbnailRepair(artworkId: artworkId, importJobId: importJobId,
+            workspaceId: workspaceId, principalId: principalId, expectedReceiptSHA256: expectedReceiptSHA256)
+        guard receipt.artworkRevision < artworkRevision, artworkRevision < Int32.max else {
+            throw AuthoringFailure("ARTWORK_REPLACEMENT_STALE")
+        }
+        let stored = try await commitImageReplacement(exhibitionId: exhibitionId, studioRevision: studioRevision,
+            etag: etag, requestId: requestId, importJobId: importJobId, artworkId: artworkId,
+            artworkRevision: artworkRevision, generation: current, kind: Self.productImageThumbnailRepairProfile)
+        guard let artwork = stored.draft.artworks.first(where: { $0["id"].string == artworkId }),
+              artwork["revision"].integer == Int64(artworkRevision) + 1,
+              artwork["extensions"]["org.exhibitos.viewer/thumbnail"] != .null,
+              Self.validatesProductImageReplacementInventory(artwork, full: receipt.full, coarse: receipt.coarse, admitsThumbnail: true),
+              NativeProductImagePreparationStatus.matchesCanonicalTiers(artwork, full: receipt.full, coarse: receipt.coarse) else {
+            throw AuthoringFailure("IMPORT_RECEIPT_INVALID")
+        }
+        return stored
+    }
+
     nonisolated static func validatesProductImageReplacementInventory(
         _ artwork: DocumentValue, full: NativeProductImagePreparationStatus.Image,
         coarse: NativeProductImagePreparationStatus.Image?, admitsThumbnail: Bool
@@ -959,15 +1053,16 @@ public actor AuthoringAPI {
 
     private func commitImageReplacement(exhibitionId: String, studioRevision: Int, etag: String, requestId: String,
                                         importJobId: String, artworkId: String, artworkRevision: Int,
-                                        generation current: UInt64) async throws -> NativeStudioResponse {
+                                        generation current: UInt64, kind: String? = nil) async throws -> NativeStudioResponse {
         struct Input: Encodable {
+            let kind: String?
             let requestId: String
             let artworkId: String
             let artworkRevision: Int
             let importJobId: String
         }
         let exhibitionId = try identifier(exhibitionId)
-        let input = try Input(requestId: identifier(requestId), artworkId: identifier(artworkId),
+        let input = try Input(kind: kind, requestId: identifier(requestId), artworkId: identifier(artworkId),
                               artworkRevision: artworkRevision, importJobId: importJobId)
         guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         try Task.checkCancellation()
@@ -1011,6 +1106,7 @@ public actor AuthoringAPI {
         manifest == productImageManifestPin || manifest == productImageFitWheatManifestPin
             || manifest == catalog45RecoveryManifestPin || manifest == catalog45SelectedRecoveryManifestPin
             || manifest == catalog45RetainedProductImageManifestPin || manifest == catalog45RetainedImageRecoveryManifestPin
+            || manifest == catalog45FirstThumbnailRepairManifestPin
         #else
         false
         #endif
@@ -1019,6 +1115,7 @@ public actor AuthoringAPI {
     nonisolated static func supportsProductImageReplacementThumbnail(manifest: String?) -> Bool {
         #if DEBUG
         manifest == catalog45RetainedProductImageManifestPin || manifest == catalog45RetainedImageRecoveryManifestPin
+            || manifest == catalog45FirstThumbnailRepairManifestPin
         #else
         return false
         #endif
