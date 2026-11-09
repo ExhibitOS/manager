@@ -954,6 +954,12 @@ const CATALOG40_RETAINED_OEX_CLEANUP: RuntimeTuple = (
     "f166f37f9323ea557bfc229feaa7b0f0e7b19472908f21ef3b5862578aedee25",
     "ebd9295fdc72f21c128d0fc35a1e17ea7e1fb229386549608fc44e6997d4a292",
 );
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const BUNDLED_FURNISHINGS_VALIDATION: RuntimeTuple = (
+    "ee26d6480e675f02427bde172fff47d354990125",
+    "c8f2613ffe79d1aa1baf223201ec89b5fe38941d9b960a1317fded652b9df531",
+    "41bda4a70ab5fd98be5d8f1fbbfa996a13acf2c3c00b81b9787b9992b11665ca",
+);
 #[cfg(debug_assertions)]
 const WORKSPACE_MATERIAL_MULTIMAP_VALIDATION_PROVENANCE: &[(&str, &str, &str)] =
     &[CATALOG40_FRAME_SOURCE, CATALOG40_FRAME_TARGET, CATALOG40_TANGENT_TARGET];
@@ -1839,6 +1845,19 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    #[ignore = "requires the exact sealed catalog 040 package with bundled original furnishings"]
+    fn opens_reviewed_bundled_furnishings_validation_package() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_BUNDLED_FURNISHINGS_RUNTIME").unwrap());
+        let payload = Payload::open(&root).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::MaterialMultimap040;
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 40);
+        assert!(!payload.workspace_v5_selected_input());
+        assert!(payload.retained_furnishing_catalog().is_none());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the exact sealed selected recovery and combined catalog 045 packages"]
     fn opens_reviewed_catalog45_retained_product_image_transition() {
         let source_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_CATALOG45_RECOVERY_RUNTIME").unwrap());
@@ -2679,7 +2698,8 @@ impl Payload {
             .chain(CATALOG39_UPGRADE_TARGET).chain(CATALOG40_EXB_TARGET)
             .chain(CATALOG40_RESTORE_PROVENANCE_TARGET).chain(CATALOG40_FRAME_RECORD_TARGET)
             .chain(portal).chain(artwork_replacement).chain(wheat_grant).chain(CATALOG40_WHEAT_DETAIL)
-            .chain([CATALOG40_DRAFT2_OEX_SELECTED, CATALOG40_RETAINED_OEX_CLEANUP]).collect::<Vec<_>>();
+            .chain([CATALOG40_DRAFT2_OEX_SELECTED, CATALOG40_RETAINED_OEX_CLEANUP, BUNDLED_FURNISHINGS_VALIDATION])
+            .collect::<Vec<_>>();
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         let multimap = multimap.as_slice();
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
