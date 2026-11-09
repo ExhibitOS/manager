@@ -8,7 +8,7 @@ final class NativeAutomationFailureTests: XCTestCase {
         let scope: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId"]
         let export = scope.union(["expectedRevision", "expectedEditVersion", "outputPath"])
         XCTAssertNoThrow(try NativeAutomationSession.checkInstalledExportRequest("read", fields: scope))
-        for operation in ["export-oex", "export-static"] {
+        for operation in ["export-oex", "export-static", "export-static-status"] {
             XCTAssertNoThrow(try NativeAutomationSession.checkInstalledExportRequest(operation, fields: export))
             XCTAssertThrowsError(try NativeAutomationSession.checkInstalledExportRequest(operation, fields: export.subtracting(["expectedEditVersion"]))) {
                 XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_PROTOCOL_INVALID")

@@ -95,7 +95,8 @@ Quit Manager before running this command. It starts the profile's matching signe
 release runtime and uses the same version 1 JSON envelope and scoped ready
 response described above.
 
-The command accepts `read`, `export-oex` and `export-static`. For either export,
+The command accepts `read`, `export-oex`, `export-static` and
+`export-static-status`. For either export,
 send the current `expectedRevision` and `expectedEditVersion` with an absolute
 `outputPath` naming a new immediate child of the output directory. The profile
 must hold a saved draft that still matches the server's draft and ETag.
@@ -106,8 +107,9 @@ hash to locate the committed archive in the original directory.
 `export-static` creates a local publication snapshot, writes a static site with
 the private editor, and returns its export receipt. Static output can have
 publication-specific IDs and asset hashes. If a static commit cannot confirm
-its path, restore the original directory before checking the same request.
-If verification has already failed in this session, reopen the export command
-to recheck the retained result.
+its path, restore the original directory and use `export-static-status` with
+the same output path and document versions. The command checks the retained
+publication and export receipt for that saved draft. It can also be used after
+reopening the export command.
 Close stdin to drain the runtime
 before another process opens the profile.

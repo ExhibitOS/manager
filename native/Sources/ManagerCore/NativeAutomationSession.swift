@@ -9,7 +9,7 @@ public actor NativeAutomationSession {
     private static let freshResponseOperations: Set<String> = [
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
         "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status",
-        "workspace-frame-lineage-prepare", "export-static-native-original",
+        "workspace-frame-lineage-prepare", "export-static-native-original", "export-static-status",
         "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement"
     ]
 
@@ -389,12 +389,20 @@ public actor NativeAutomationSession {
         }
     }
 
+    private func installedExportDestination(_ path: String) throws -> URL {
+        let url = URL(fileURLWithPath: path)
+        guard path == url.path, url.deletingLastPathComponent().path == root.path else {
+            throw BridgeFailure("AUTOMATION_OUTPUT_INVALID")
+        }
+        return url
+    }
+
     private func output(_ path: String) throws -> URL {
         let url = URL(fileURLWithPath: path)
         if installedExportRootIdentity != nil {
             var metadata = stat()
-            guard path == url.path, url.deletingLastPathComponent().path == root.path,
-                  lstat(url.path, &metadata) != 0, errno == ENOENT else {
+            _ = try installedExportDestination(path)
+            guard lstat(url.path, &metadata) != 0, errno == ENOENT else {
                 throw BridgeFailure("AUTOMATION_OUTPUT_INVALID")
             }
         }
@@ -900,7 +908,7 @@ public actor NativeAutomationSession {
         let expected: Set<String>
         switch operation {
         case "read": expected = common
-        case "export-oex", "export-static": expected = common.union(["expectedRevision", "expectedEditVersion", "outputPath"])
+        case "export-oex", "export-static", "export-static-status": expected = common.union(["expectedRevision", "expectedEditVersion", "outputPath"])
         default: throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
         }
         guard fields == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
@@ -1767,6 +1775,30 @@ public actor NativeAutomationSession {
         case "reopen-saved":
             try checkedRevision(request, current)
             result = try await reopenSaved(current, context: context, api: api)
+        case "export-static-status":
+            guard let (device, inode) = installedExportRootIdentity else {
+                throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+            }
+            try checkedRevision(request, current)
+            guard !current.dirty, let draft = current.draft, let etag = current.etag,
+                  let path = request["outputPath"].string else {
+                throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
+            }
+            _ = try installedExportDestination(path)
+            let publication = try await bridge.publicationState(context)
+            guard publication.pending == nil, let completed = publication.completed, completed.mode == nil,
+                  completed.sourceExhibitionId == draft.id, completed.sourceEtag == etag,
+                  let status = try await bridge.staticExportStatus(context), status.privateEditor == true,
+                  status.workspaceId == current.workspaceId, status.tenantId == current.tenantId,
+                  status.principalId == current.principalId, status.output == path,
+                  status.publicationId == completed.publication.publicationId,
+                  status.revisionSha256 == completed.publication.revisionSha256,
+                  status.outputParentIdentity?.device == UInt64(bitPattern: Int64(device)),
+                  status.outputParentIdentity?.inode == UInt64(inode),
+                  try Self.exportRootIdentity(root, profile: profile) == (device, inode) else {
+                throw BridgeFailure("AUTOMATION_EXPORT_CHANGED")
+            }
+            result = try value(status)
         case "export-oex":
             try checkedRevision(request, current)
             if installedExportRootIdentity != nil && authoringSession?.nativeOexExportProfile != "bounded-file-v1" {
