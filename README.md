@@ -163,6 +163,26 @@ Source integration does not establish actual native GUI/Studio import/export qua
 OEX connection validation at source `9b52e367044082ecfce5233844af3f0e5b46f023`: TypeScript and the existing ESLint scope passed; three focused IPC tests passed (selection token only, native readiness refusal, malformed selection refusal). The existing release desktop URL regression passed (1 passed, 13 filtered), including the fixed Studio route and remote URL refusals; it compiled the native command with locked offline dependencies. These checks do not launch the native app/browser or run an OEX upload, export or server job. Actual native GUI/Studio job qualification remains NOT_RUN.
 
 
+### Local artwork render comparison
+
+Use Node 24 and a trusted local Platform checkout with the private agent
+renderer built and its Chromium installed. Run the one-shot comparison command
+with an absolute version-1 `raw-asset-comparison` request and a new private
+output directory.
+
+```sh
+node scripts/render-local-comparison.mjs \
+  --platform-root /absolute/platform-checkout \
+  --input /absolute/comparison-request.json \
+  --output /absolute/new-output-directory
+```
+
+The Platform renderer checks the reference and candidate GLB descriptors,
+applies their common camera and light settings, and writes `reference.png`,
+`candidate.png` and `result.json`. Ctrl+C cancels through the renderer's owner
+pipe. The command uses local files and an ephemeral renderer without a Manager
+workspace or saved exhibition.
+
 ### Same-owner reviewed image replacement
 
 Run `exhibitos-automation --configuration /absolute/path/to/private-config.json` with the matching macOS debug helper and exact catalog 040 target runtime. Use `existingWorkspaceV5` to bind the saved workspace, tenant, principal and runtime manifest. Give the process an owner-only output directory and temporary directory, its selected workspace ports, and the original JPEG path and SHA-256 in `inputs`. Use the authenticated local owner session and a clean saved draft.
