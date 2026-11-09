@@ -38,11 +38,40 @@ pub enum LocalPersonalTransition {
     },
     Stage { source_payload: PathBuf, staging: PathBuf, key_file: PathBuf },
     #[cfg(feature = "workspace-v5-owner-validation")]
-    StageSaved { source_payload: PathBuf, staging: PathBuf, key_file: PathBuf },
-    Activate { staging: PathBuf, key_file: PathBuf },
+    StageSaved {
+        source_payload: PathBuf, staging: PathBuf, key_file: PathBuf,
+        #[serde(default)]
+        retained_product_image: Option<RetainedProductImage>,
+    },
+    Activate {
+        staging: PathBuf, key_file: PathBuf,
+        #[serde(default)]
+        retained_product_image: Option<RetainedProductImage>,
+    },
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation"))]
     ActivateSelected045 { staging: PathBuf, key_file: PathBuf, selection: SelectedRecovery045 },
-    Recover { staging: PathBuf, key_file: PathBuf },
+    Recover {
+        staging: PathBuf, key_file: PathBuf,
+        #[serde(default)]
+        retained_product_image: Option<RetainedProductImage>,
+    },
+}
+
+/// Exact approved image preparation retained while the saved workspace changes payloads.
+#[cfg(debug_assertions)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RetainedProductImage {
+    pub(crate) job_id: String,
+    pub(crate) artwork_id: String,
+    pub(crate) artwork_revision: u32,
+    pub(crate) upload_idempotency_key: String,
+    pub(crate) source_sha256: String,
+    pub(crate) source_bytes: u64,
+    pub(crate) receipt_sha256: String,
+    pub(crate) transfer_sha256: String,
+    pub(crate) replacement_request_id: String,
+    pub(crate) saved_etag: String,
 }
 
 #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]

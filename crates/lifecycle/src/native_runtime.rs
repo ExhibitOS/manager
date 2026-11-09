@@ -623,6 +623,10 @@ fn furnishing_restore_stage_creates_lock(prior: Option<&Current>, has_database: 
     }
 }
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[path = "native_runtime_retained_product_image.rs"]
+mod retained_product_image;
+
 pub struct Session {
     service: LifecycleService,
     observation_root: crate::maintenance_source::DirectoryPin,
@@ -642,6 +646,8 @@ pub struct Session {
     oex_retained_cleanup: Option<oex_retained_cleanup::Run>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     selected_recovery_045: Option<oex_retained_cleanup::Selected045>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    retained_product_image: Option<retained_product_image::Trial>,
     node_drain_requested: bool,
     job_id: Option<String>,
     run: Option<PathBuf>,
@@ -1036,6 +1042,8 @@ impl Session {
             oex_retained_cleanup: None,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             selected_recovery_045: None,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            retained_product_image: None,
             node_drain_requested: false,
             job_id: None,
             run: None,
@@ -2054,6 +2062,8 @@ const { isDeepStrictEqual } = require('node:util');
                 Instant::now() + Duration::from_secs(60))?;
             if observed != expected { return Err(err("NATIVE_WORKSPACE_FURNISHING_CATALOG")); }
         }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        self.check_retained_product_image_before_node()?;
         self.state = "starting_services".into();
         self.record()?;
         let mut environment = vec![

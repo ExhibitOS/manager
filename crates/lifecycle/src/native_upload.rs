@@ -2,7 +2,7 @@
 //! One durable, revision-checked import intent per selected personal workspace.
 //! No source path, asset bytes, password, cookie or service token is stored here.
 use super::*;
-const LIMIT: u64 = 128 * 1024;
+pub(super) const LIMIT: u64 = 128 * 1024;
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Intent {
@@ -285,6 +285,24 @@ pub struct Transfer {
     pub file_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_variant: Option<CompactVariantTransfer>,
+}
+#[cfg(all(target_os = "macos", debug_assertions))]
+impl Transfer {
+    pub(super) fn matches_retained_product_image(&self, proof: &super::native_maintenance::RetainedProductImage) -> bool {
+        let Some(intent) = &self.intent else { return false };
+        let Some(preparation) = &intent.product_image_preparation else { return false };
+        self.compact_variant.is_none()
+            && self.job_id.as_deref() == Some(proof.job_id.as_str())
+            && uuid(&proof.replacement_request_id)
+            && hash_valid(&proof.receipt_sha256)
+            && hash_valid(&proof.transfer_sha256)
+            && intent.artwork_id == proof.artwork_id
+            && intent.idempotency_key == proof.upload_idempotency_key
+            && intent.sha256 == proof.source_sha256
+            && intent.bytes == proof.source_bytes
+            && preparation.profile == "product-image-pair-2048-512-v1"
+            && preparation.artwork_revision == proof.artwork_revision
+    }
 }
 pub(crate) fn validate(s: &Transfer) -> Result<()> {
     if s.format != 1
