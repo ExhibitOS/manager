@@ -158,7 +158,9 @@ public actor NativeAutomationSession {
         }
         let api = try AuthoringAPI(port: config.ports.web, tenantId: expected.tenantId, nativeRuntimeManifestSHA256: config.manifestSha256)
         let session = try await api.connect(credentials)
-        guard await api.admitsWorkspaceMaterials else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
+        let admitsMaterials = await api.admitsWorkspaceMaterials
+        let admitsFreshImages = await api.admitsFreshImagePreparation
+        guard admitsMaterials || admitsFreshImages else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
         let stored = try await api.exhibition(draft.id)
         guard try value(await bridge.documentState(context)) == value(saved) else {
             throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
