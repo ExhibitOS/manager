@@ -7,6 +7,20 @@ final class NativeAutomationArtworkTests: XCTestCase {
     private let assetId = "22222222-2222-4222-8222-222222222222"
     private let jobId = "33333333-3333-4333-8333-333333333333"
     private let tenantId = "44444444-4444-4444-8444-444444444444"
+    func testOperatorPolicyRequiresExplicitOrdinaryOrCheckedBoundedProvenance() throws {
+        func policy(_ extra: [String: Any]) throws -> NativeViewportPolicy {
+            let base: [String: Any] = ["exhibitionId": artworkId, "revision": 1, "etag": "head", "boundedReadOnly": false]
+            return try JSONDecoder().decode(NativeViewportPolicy.self, from: JSONSerialization.data(withJSONObject: base.merging(extra) { _, value in value }))
+        }
+        XCTAssertFalse(try NativeAutomationSession.operatorRequiresViewportValidation(policy(["boundedProfile": false, "boundedEditRequired": false]), etag: "head"))
+        XCTAssertTrue(try NativeAutomationSession.operatorRequiresViewportValidation(policy(["boundedProfile": true, "boundedEditRequired": false]), etag: "head"))
+        for value in [try policy([:]), try policy(["boundedProfile": false]),
+                      try policy(["boundedProfile": true, "boundedEditRequired": true]),
+                      try policy(["boundedProfile": false, "boundedEditRequired": false, "boundedReadOnly": true])] {
+            XCTAssertThrowsError(try NativeAutomationSession.operatorRequiresViewportValidation(value, etag: "head"))
+        }
+        XCTAssertThrowsError(try NativeAutomationSession.operatorRequiresViewportValidation(policy(["boundedProfile": false, "boundedEditRequired": false]), etag: "stale"))
+    }
     func testReviewedReplacementKeepsJPEGAndModelCommandsDisjoint() throws {
         let placement = "55555555-5555-4555-8555-555555555555"
         let hash = String(repeating: "a", count: 64)
