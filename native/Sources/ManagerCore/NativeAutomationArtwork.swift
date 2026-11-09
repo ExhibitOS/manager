@@ -52,6 +52,9 @@ struct NativeAutomationReplacementCommand {
             throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
         }
         self.artworkId = artworkId
+        if case .productImageThumbnailRepair = target, revision >= Int64(Int32.max) {
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        }
         artworkRevision = Int(revision)
         importJobId = job
         studioRevision = Int(studio)

@@ -31,6 +31,7 @@ final class NativeAutomationArtworkTests: XCTestCase {
         XCTAssertEqual(receiptSHA256, hash)
         XCTAssertEqual(repaired.artworkRevision, 2)
         XCTAssertThrowsError(try parse(["kind": .string("product-image-thumbnail-repair-v1")]))
+        XCTAssertThrowsError(try parse(repair.merging(["artworkRevision": .integer(Int64(Int32.max))]) { _, value in value }))
         XCTAssertThrowsError(try parse(repair.merging(["placementId": .string(placement)]) { _, value in value }))
 
         let model = ["kind": DocumentValue.string("approved-model-candidate-v1"),

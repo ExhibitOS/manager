@@ -903,7 +903,8 @@ public actor AuthoringAPI {
         let currentArtwork = try await artwork(artworkId)
         guard generation == current, admitsProductImageThumbnailRepair else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         guard job.id == importJobId, let status = job.productImagePreparation, let receipt = status.serverReceipt,
-              receipt.sha256 == expectedReceiptSHA256, receipt.artworkId == artworkId,
+              status.profile == NativeProductImagePreparationIntent.profileID,
+              receipt.original.mime == "image/jpeg", receipt.sha256 == expectedReceiptSHA256, receipt.artworkId == artworkId,
               let rights = currentArtwork.metadata?.rights, rights.permissions.display, rights.permissions.export,
               !currentArtwork.archived, currentArtwork.id == artworkId,
               currentArtwork.approvedRevision == currentArtwork.revision,
@@ -912,8 +913,7 @@ public actor AuthoringAPI {
                   $0.id == receipt.full.assetId && $0.state == "approved" && $0.mime == "image/png"
                       && $0.sha256 == receipt.full.sha256 && $0.bytes == receipt.full.bytes
               }) else { throw AuthoringFailure("IMAGE_PREPARATION_JOB_NOT_READY") }
-        let preparation = NativeProductImagePreparationIntent(artworkRevision: receipt.artworkRevision,
-            fresh: status.profile == NativeProductImagePreparationIntent.freshProfileID)
+        let preparation = NativeProductImagePreparationIntent(artworkRevision: receipt.artworkRevision)
         let retained = NativeImportIntent(artworkId: artworkId, idempotencyKey: importJobId,
             mime: receipt.original.mime, sha256: receipt.original.sha256, bytes: receipt.original.bytes,
             scaleMeters: 1, rights: rights, productImagePreparation: preparation)
@@ -931,7 +931,7 @@ public actor AuthoringAPI {
         let current = generation
         let (artwork, receipt) = try await retainedProductImageForThumbnailRepair(artworkId: artworkId,
             importJobId: importJobId, workspaceId: workspaceId, principalId: principalId, expectedReceiptSHA256: expectedReceiptSHA256)
-        guard artwork.revision == artworkRevision,
+        guard receipt.artworkRevision < artworkRevision, artworkRevision < Int32.max, artwork.revision == artworkRevision,
               let snapshot = draft.artworks.first(where: { $0["id"].string == artworkId }),
               snapshot["revision"].integer == Int64(artworkRevision),
               snapshot["extensions"]["org.exhibitos.viewer/thumbnail"] == .null,
@@ -954,6 +954,9 @@ public actor AuthoringAPI {
         let current = generation
         let (_, receipt) = try await retainedProductImageForThumbnailRepair(artworkId: artworkId, importJobId: importJobId,
             workspaceId: workspaceId, principalId: principalId, expectedReceiptSHA256: expectedReceiptSHA256)
+        guard receipt.artworkRevision < artworkRevision, artworkRevision < Int32.max else {
+            throw AuthoringFailure("ARTWORK_REPLACEMENT_STALE")
+        }
         let stored = try await commitImageReplacement(exhibitionId: exhibitionId, studioRevision: studioRevision,
             etag: etag, requestId: requestId, importJobId: importJobId, artworkId: artworkId,
             artworkRevision: artworkRevision, generation: current, kind: Self.productImageThumbnailRepairProfile)
