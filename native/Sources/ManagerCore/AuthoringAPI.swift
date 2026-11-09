@@ -2037,7 +2037,8 @@ public actor AuthoringAPI {
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(previous.intakeId) + "/model",
             method: "PUT", body: snapshot.data, contentType: "application/octet-stream", timeout: 120)
         try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration,
-                         expectedPolicy: previous.preparationPolicy, supportedExtensionVersion: supportedFurnishingExtensionVersion,
+                         expectedPolicy: previous.preparationPolicy, expectedFit: previous.fitProfile,
+                         supportedExtensionVersion: supportedFurnishingExtensionVersion,
                          admitsPreparation: admitsWorkspaceArtworkFramePreparation)
         guard intake.received != nil else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
         return intake
@@ -2050,7 +2051,8 @@ public actor AuthoringAPI {
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(previous.intakeId) + "/" + action.rawValue,
             method: "POST", body: Data("{}".utf8))
         try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration,
-                         expectedPolicy: previous.preparationPolicy, supportedExtensionVersion: supportedFurnishingExtensionVersion,
+                         expectedPolicy: previous.preparationPolicy, expectedFit: previous.fitProfile,
+                         supportedExtensionVersion: supportedFurnishingExtensionVersion,
                          admitsPreparation: admitsWorkspaceArtworkFramePreparation)
         return intake
     }
