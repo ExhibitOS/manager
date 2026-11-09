@@ -45,6 +45,16 @@ fn admitted_pair(source: &str, target: &str) -> bool {
     TRANSITION_PAIRS.contains(&(source, target))
 }
 
+fn check_cold_transition_source(root: &Path, pair: (&str, &str)) -> Result<()> {
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    if matches!(FurnishingTransition::from_manifests(pair), Some(FurnishingTransition::Recover45 { .. })) {
+        return crate::native_runtime::catalog45_recovery_source_generation(root).map(|_| ());
+    }
+    #[cfg(not(feature = "workspace-v5-owner-validation"))]
+    let _ = pair;
+    crate::native_runtime::check_cold_checkpoint_root(root)
+}
+
 const DOMAIN: &[u8] = b"ExhibitOS-local-personal-physical-checkpoint-v1\0";
 const ENVELOPE: &str = "physical-checkpoint.gcm";
 const MAX_FILES: usize = 50_000;
@@ -713,7 +723,9 @@ impl LifecycleService {
         }
         source.recheck()?;
         target.recheck()?;
-        crate::native_runtime::check_cold_checkpoint_root(&self.root)?;
+        check_cold_transition_source(&self.root, (
+            &source.context().manifest_sha256, &target.context().manifest_sha256,
+        ))?;
         let record = read(self)?;
         let mut fields = self.personal_environment(source, record.ports)?;
         for value in fields.values_mut() {
@@ -838,7 +850,6 @@ impl LifecycleService {
     )> {
         let guard = self.lock()?;
         self.check_prepare_guard(&guard)?;
-        crate::native_runtime::check_cold_checkpoint_root(&self.root)?;
         let target_context = target.context();
         #[cfg(feature = "workspace-v5-owner-validation")]
         let saved_target = saved_workspace_transition_target(&target_context.manifest_sha256);
@@ -858,6 +869,7 @@ impl LifecycleService {
             || checkpoint.trial || checkpoint.staged != staging {
             return Err(invalid());
         }
+        check_cold_transition_source(&self.root, (&checkpoint.old_manifest, &checkpoint.new_manifest))?;
         verify_unchanged(&self.root, &checkpoint, &pending)?;
         let binding = bindings(&checkpoint)?;
         verify_beforeimage(&checkpoint, ENVIRONMENT, &binding.old_env.0)?;
@@ -994,7 +1006,7 @@ impl LifecycleService {
         target_payload.recheck()?;
         installations::private_directory(staging)?;
         let staging_pin = crate::maintenance_source::DirectoryPin::open(staging)?;
-        crate::native_runtime::check_cold_checkpoint_root(&self.root)?;
+        check_cold_transition_source(&self.root, (&source.manifest_sha256, &target.manifest_sha256))?;
         let record = read(self)?;
         let mut fields = self.personal_environment(source_payload, record.ports)?;
         for value in fields.values_mut() {
@@ -1149,6 +1161,10 @@ impl InstallationController {
             if document.draft.is_none() || document.etag.is_none() {
                 return Err(err("NATIVE_PHYSICAL_CHECKPOINT_SAVED_DOCUMENT_REQUIRED"));
             }
+            if target.catalog45_recovery_validation() {
+                let generation = crate::native_runtime::catalog45_recovery_source_generation(&service.root)?;
+                self.check_catalog45_recovery_export_unlocked(service, &generation, document)?;
+            }
             let document_sha256 = saved_document_digest(document)?;
             if present(staging, ENVELOPE)? {
                 let envelope = installation_backup::source_bytes(staging, ENVELOPE, ENVELOPE_LIMIT as u64, true)?;
@@ -1202,6 +1218,11 @@ impl InstallationController {
         saved_workspace_host: bool,
     ) -> Result<()> {
         self.with_transition_key(token, key_path, staging, |service, _, document, key| {
+            #[cfg(feature = "workspace-v5-owner-validation")]
+            if target.catalog45_recovery_validation() {
+                let generation = crate::native_runtime::catalog45_recovery_source_generation(&service.root)?;
+                self.check_catalog45_recovery_export_unlocked(service, &generation, document)?;
+            }
             service.activate_local_personal_runtime_transition(
                 target, staging, key, saved_workspace_host, document,
             )
