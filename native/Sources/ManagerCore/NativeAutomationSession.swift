@@ -320,7 +320,8 @@ public actor NativeAutomationSession {
         }
         try Task.checkCancellation()
         _ = try await bridge.start(reopened)
-        let ready = try await waitReady()
+        let ready = try await (existingWorkspaceV5 != nil && manifest == "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a"
+            ? waitF738ExistingStartup() : waitReady())
         guard ready.runtime?.readiness.ready == true, let job = ready.runtime?.jobId, job != previousJob,
               ready.configuration?.manifestSha256 == manifest else { throw BridgeFailure("NATIVE_NOT_READY") }
         let credentials = try await bridge.authoringSession(reopened)
