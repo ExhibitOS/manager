@@ -42,11 +42,15 @@ pub enum LocalPersonalTransition {
         source_payload: PathBuf, staging: PathBuf, key_file: PathBuf,
         #[serde(default)]
         retained_product_image: Option<RetainedProductImage>,
+        #[serde(default)]
+        startup_cancellation_045: Option<StartupCancellation045>,
     },
     Activate {
         staging: PathBuf, key_file: PathBuf,
         #[serde(default)]
         retained_product_image: Option<RetainedProductImage>,
+        #[serde(default)]
+        startup_cancellation_045: Option<StartupCancellation045>,
     },
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation"))]
     ActivateSelected045 { staging: PathBuf, key_file: PathBuf, selection: SelectedRecovery045 },
@@ -85,6 +89,17 @@ pub(crate) struct RetainedProductImageRecovery {
     pub(crate) failed_generation: String,
     pub(crate) hayes_job_id: String,
     pub(crate) hayes_completion_frame_sha256: String,
+}
+
+#[cfg(debug_assertions)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StartupCancellation045 {
+    pub(crate) failed_generation: String,
+    pub(crate) hayes_job_id: String,
+    pub(crate) hayes_completion_frame_sha256: String,
+    pub(crate) saved_etag: String,
+    pub(crate) transfer_sha256: String,
 }
 
 #[cfg(all(target_os = "macos", debug_assertions))]

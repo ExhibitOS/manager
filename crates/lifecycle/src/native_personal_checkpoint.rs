@@ -3,7 +3,7 @@
 //! Staged data remains plaintext in a private directory; only the inventory is sealed.
 //! Pending binding changes block normal startup until authenticated recovery.
 use super::*;
-use crate::installations::{InstallationController, native_maintenance::RetainedProductImage};
+use crate::installations::{InstallationController, native_maintenance::{RetainedProductImage, StartupCancellation045}};
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, OsRng, Payload as CipherPayload, rand_core::RngCore},
@@ -47,8 +47,8 @@ fn admitted_pair(source: &str, target: &str) -> bool {
 
 fn check_cold_transition_source(root: &Path, pair: (&str, &str)) -> Result<()> {
     #[cfg(feature = "workspace-v5-owner-validation")]
-    if matches!(FurnishingTransition::from_manifests(pair), Some(FurnishingTransition::Recover45 { .. })) {
-        return crate::native_runtime::catalog45_recovery_source_generation(root).map(|_| ());
+    if let Some(transition @ FurnishingTransition::Recover45 { .. }) = FurnishingTransition::from_manifests(pair) {
+        return crate::native_runtime::catalog45_recovery_source_generation(root, transition.startup_cancel_recovery()).map(|_| ());
     }
     #[cfg(not(feature = "workspace-v5-owner-validation"))]
     let _ = pair;
@@ -103,6 +103,8 @@ struct Checkpoint {
     saved_document_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retained_product_image: Option<RetainedProductImage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    startup_cancellation_045: Option<StartupCancellation045>,
     #[cfg(feature = "workspace-v5-owner-validation")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "catalog40")]
@@ -142,7 +144,9 @@ impl Checkpoint {
         if FurnishingTransition::from_manifests(pair).is_some() != self.furnishing.is_some() {
             return Err(invalid());
         }
-        if !retained_transition_proof_matches(pair, self.retained_product_image.as_ref()) {
+        if !retained_transition_proof_matches(pair, self.retained_product_image.as_ref())
+            || !startup_cancellation_proof_matches(pair, self.retained_product_image.as_ref(), self.startup_cancellation_045.as_ref())
+        {
             return Err(invalid());
         }
         check_transition_host(pair, self.saved_document_sha256.as_deref(), saved_workspace_host)
@@ -195,6 +199,18 @@ fn retained_transition_proof_matches(pair: (&str, &str), proof: Option<&Retained
     };
     #[cfg(not(feature = "workspace-v5-owner-validation"))]
     { let _ = pair; proof.is_none() }
+}
+
+fn startup_cancellation_proof_matches(
+    pair: (&str, &str), retained: Option<&RetainedProductImage>, proof: Option<&StartupCancellation045>,
+) -> bool {
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    if crate::native_payload::startup_cancel_recovery_transition(pair) {
+        return retained.is_none() && proof.is_some();
+    }
+    #[cfg(not(feature = "workspace-v5-owner-validation"))]
+    let _ = (pair, retained);
+    proof.is_none()
 }
 
 #[cfg(feature = "workspace-v5-owner-validation")]
@@ -1100,6 +1116,10 @@ impl LifecycleService {
         if let Some(proof) = retained {
             session.arm_retained_product_image(proof.clone())?;
         }
+        #[cfg(feature = "workspace-v5-owner-validation")]
+        if let Some(proof) = &checkpoint.startup_cancellation_045 {
+            session.arm_startup_cancellation_045(proof.clone())?;
+        }
         let qualified = (|| {
             if session.start()?.state != "ready" {
                 return Err(invalid());
@@ -1123,6 +1143,8 @@ impl LifecycleService {
                 let receipt = session.verify_retained_product_image(&authoring)?;
                 checkpoint.verify_retained_product_image_files(proof, &receipt)?;
             }
+            #[cfg(feature = "workspace-v5-owner-validation")]
+            session.verify_startup_cancellation_045()?;
             Ok(())
         })();
         let stop = session.stop()?;
@@ -1182,6 +1204,7 @@ impl LifecycleService {
         key: &[u8; 32],
         saved_document_sha256: Option<String>,
         retained_product_image: Option<&RetainedProductImage>,
+        startup_cancellation_045: Option<&StartupCancellation045>,
     ) -> Result<()> {
         let guard = self.lock()?;
         self.check_prepare_guard(&guard)?;
@@ -1279,6 +1302,7 @@ impl LifecycleService {
             files,
             saved_document_sha256,
             retained_product_image: retained_product_image.cloned(),
+            startup_cancellation_045: startup_cancellation_045.cloned(),
             #[cfg(feature = "workspace-v5-owner-validation")]
             furnishing,
             trial: false,
@@ -1337,7 +1361,7 @@ impl InstallationController {
     ) -> Result<()> {
         self.with_transition_key(token, key_path, staging, None, |service, _, _, key| {
             if !present(staging, ENVELOPE)? {
-                service.authenticate_local_personal_checkpoint(source, target, staging, key, None, None)?;
+                service.authenticate_local_personal_checkpoint(source, target, staging, key, None, None, None)?;
             }
             service.stage_local_personal_runtime_transition(source, target, staging, key, false)
         })
@@ -1352,11 +1376,14 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
         retained: Option<&RetainedProductImage>,
+        startup_cancellation_045: Option<&StartupCancellation045>,
     ) -> Result<()> {
         let source_manifest = source.context().manifest_sha256;
         let target_manifest = target.context().manifest_sha256;
         let pair = (source_manifest.as_str(), target_manifest.as_str());
-        if !saved_workspace_transition_supported(pair) || !retained_transition_proof_matches(pair, retained) {
+        if !saved_workspace_transition_supported(pair) || !retained_transition_proof_matches(pair, retained)
+            || !startup_cancellation_proof_matches(pair, retained, startup_cancellation_045)
+        {
             return Err(invalid());
         }
         self.with_transition_key(token, key_path, staging, retained, |service, profile, document, key| {
@@ -1367,8 +1394,15 @@ impl InstallationController {
                 return Err(err("NATIVE_PHYSICAL_CHECKPOINT_SAVED_DOCUMENT_REQUIRED"));
             }
             if target.catalog45_recovery_validation() {
-                let generation = crate::native_runtime::catalog45_recovery_source_generation(&service.root)?;
-                if let Some(proof) = retained.filter(|proof| proof.recovery.is_some()) {
+                let generation = crate::native_runtime::catalog45_recovery_source_generation(&service.root, startup_cancellation_045.is_some())?;
+                if let Some(proof) = startup_cancellation_045 {
+                    self.verify_startup_cancellation_045_preservation(service, document, proof)?;
+                    if proof.failed_generation != generation || !installations::uuid(&proof.hayes_job_id)
+                        || !hash_valid(&proof.hayes_completion_frame_sha256)
+                    {
+                        return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
+                    }
+                } else if let Some(proof) = retained.filter(|proof| proof.recovery.is_some()) {
                     check_retained_recovery_generation(proof, &generation)?;
                 } else if pair.0 != pair.1 {
                     self.check_catalog45_recovery_export_unlocked(service, &generation, document)?;
@@ -1379,12 +1413,14 @@ impl InstallationController {
                 let envelope = installation_backup::source_bytes(staging, ENVELOPE, ENVELOPE_LIMIT as u64, true)?;
                 let checkpoint = service.transition_checkpoint(&envelope, key)?;
                 checkpoint.check_retained(retained)?;
-                if checkpoint.saved_document_sha256.as_deref() != Some(document_sha256.as_str()) {
+                if checkpoint.saved_document_sha256.as_deref() != Some(document_sha256.as_str())
+                    || checkpoint.startup_cancellation_045.as_ref() != startup_cancellation_045
+                {
                     return Err(invalid());
                 }
             } else {
                 service.authenticate_local_personal_checkpoint(
-                    source, target, staging, key, Some(document_sha256), retained,
+                    source, target, staging, key, Some(document_sha256), retained, startup_cancellation_045,
                 )?;
             }
             service.stage_local_personal_runtime_transition(source, target, staging, key, true)
@@ -1401,7 +1437,7 @@ impl InstallationController {
         key_path: &Path,
     ) -> Result<()> {
         self.with_transition_key(token, key_path, staging, None, |service, _, _, key| {
-            service.authenticate_local_personal_checkpoint(source, target, staging, key, None, None)
+            service.authenticate_local_personal_checkpoint(source, target, staging, key, None, None, None)
         })
     }
 
@@ -1427,14 +1463,24 @@ impl InstallationController {
         key_path: &Path,
         saved_workspace_host: bool,
         retained: Option<&RetainedProductImage>,
+        startup_cancellation_045: Option<&StartupCancellation045>,
     ) -> Result<()> {
+        #[cfg(not(feature = "workspace-v5-owner-validation"))]
+        if startup_cancellation_045.is_some() { return Err(invalid()); }
         self.with_transition_key(token, key_path, staging, retained, |service, _, document, key| {
             #[cfg(feature = "workspace-v5-owner-validation")]
             if target.catalog45_recovery_validation() {
                 let checkpoint = self.catalog45_activation_checkpoint(service, document, &target, staging, key)?;
-                if checkpoint.old_manifest == checkpoint.new_manifest {
+                if checkpoint.old_manifest == checkpoint.new_manifest
+                    || checkpoint.startup_cancellation_045.as_ref() != startup_cancellation_045
+                {
                     return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
                 }
+                if let Some(proof) = startup_cancellation_045 {
+                    self.verify_startup_cancellation_045_preservation(service, document, proof)?;
+                }
+            } else if startup_cancellation_045.is_some() {
+                return Err(invalid());
             }
             service.activate_local_personal_runtime_transition(
                 target, staging, key, saved_workspace_host, document, retained,
@@ -1453,7 +1499,6 @@ impl InstallationController {
         staging: &Path,
         key: &[u8; 32],
     ) -> Result<Checkpoint> {
-        let generation = crate::native_runtime::catalog45_recovery_source_generation(&service.root)?;
         let pending = read_pending(&service.root)?;
         let checkpoint = service.transition_checkpoint(pending.strip_prefix(PENDING_PREFIX).ok_or_else(invalid)?, key)?;
         checkpoint.check_host(true)?;
@@ -1462,11 +1507,19 @@ impl InstallationController {
         {
             return Err(invalid());
         }
+        let generation = crate::native_runtime::catalog45_recovery_source_generation(
+            &service.root, checkpoint.startup_cancellation_045.is_some(),
+        )?;
+        if checkpoint.startup_cancellation_045.as_ref().is_some_and(|proof| proof.failed_generation != generation) {
+            return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
+        }
         let retained_recovery = checkpoint.retained_product_image.as_ref().filter(|proof| proof.recovery.is_some());
         if let Some(proof) = retained_recovery {
             check_retained_recovery_generation(proof, &generation)?;
         }
-        if checkpoint.old_manifest == checkpoint.new_manifest || retained_recovery.is_some() {
+        if checkpoint.old_manifest == checkpoint.new_manifest || retained_recovery.is_some()
+            || checkpoint.startup_cancellation_045.is_some()
+        {
             // Verify the preserved saved draft when no publication was attempted.
             let document_sha256 = saved_document_digest(document)?;
             if checkpoint.saved_document_sha256.as_deref() != Some(document_sha256.as_str()) {
