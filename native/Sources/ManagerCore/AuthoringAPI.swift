@@ -503,7 +503,8 @@ public actor AuthoringAPI {
         #endif
         workspaceFramePreparationRuntimeQualified = framePreparationQualified
         workspacePortalFinishRuntimeQualified = portalQualified
-        workspaceFurnishingRuntimeQualified = portalQualified || framePreparationQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
+        workspaceFurnishingRuntimeQualified = portalQualified || framePreparationQualified
+            || Self.workspaceFurnishingManifestPins.contains(manifest) || Self.supportsOrdinaryNativePublicationRuntime(manifest: manifest)
         let configuration = URLSessionConfiguration.ephemeral
         if let protocolClasses { configuration.protocolClasses = protocolClasses }
         configuration.urlCache = nil
@@ -2141,6 +2142,15 @@ public actor AuthoringAPI {
     nonisolated static func supportsSavedHeadAuthoringRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == savedHeadModularRuntimeManifestPin
+        #else
+        false
+        #endif
+    }
+
+    nonisolated static func supportsOrdinaryNativePublicationRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == "1209d5d95417d1e29f637d8ce327e78cf38ed1b32eabcb5ab6fd3e2a62a10203"
+            || manifest == "22d253f8928d7dee5e2d01e8ce65e20cd24f10b7bfa0251b1eb8371aca8e8fc9"
         #else
         false
         #endif
