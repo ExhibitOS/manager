@@ -657,6 +657,13 @@ const CATALOG45_RENDERED_SCULPTURE_THUMBNAIL: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_RENDERED_SCULPTURE_THUMBNAIL_OEX: RuntimeTuple = (
+    "ca53a3b0aeb4f1ce7cf3d9a4040d8d09336cad51",
+    "93f6ceebc80298d946df23624e0d7b4f755bbe9d6764771e6ecc95f60e951ee2",
+    "0efbf042ad20b7cd8963751e5cfe5f343ead93d6ced6164e8bbd08566e378c99",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const CATALOG45_SAVED_HEAD_MODULAR_PORTAL: RuntimeTuple = (
     "3bcf73ed523c465376b213b0649185621d10e216",
     "93f6ceebc80298d946df23624e0d7b4f755bbe9d6764771e6ecc95f60e951ee2",
@@ -740,6 +747,7 @@ pub(crate) fn required_model_preparation_host_matches(tuple: (&str, &str, &str))
         || CATALOG45_CURRENT_ORIGINAL_TARGET == tuple
         || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET == tuple
         || CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET == tuple
+        || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL_OEX == tuple
         || catalog45_recovery_host_matches(tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
@@ -805,6 +813,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET.2 == manifest
         || CATALOG45_RETAINED_IMAGE_RECOVERY_TARGET.2 == manifest
         || CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET.2 == manifest
+        || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL_OEX.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -889,6 +898,13 @@ impl FurnishingTransition {
             return Some(Self::SameCatalog {
                 source: CATALOG45_SELECTED_RECOVERY_TARGET,
                 target: CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET,
+                catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
+            });
+        }
+        if pair == (CATALOG45_RENDERED_SCULPTURE_THUMBNAIL.2, CATALOG45_RENDERED_SCULPTURE_THUMBNAIL_OEX.2) {
+            return Some(Self::SameCatalog {
+                source: CATALOG45_RENDERED_SCULPTURE_THUMBNAIL,
+                target: CATALOG45_RENDERED_SCULPTURE_THUMBNAIL_OEX,
                 catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             });
         }
@@ -1944,6 +1960,35 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    #[ignore = "requires both exact sealed Catalog 045 thumbnail packages"]
+    fn admits_only_forward_saved_thumbnail_oex_transition() {
+        let source_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_THUMBNAIL_OEX_SOURCE").unwrap());
+        let target_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_THUMBNAIL_OEX_TARGET").unwrap());
+        let source = Payload::open_saved_workspace_transition(&source_root).unwrap();
+        let target = Payload::open_saved_workspace_transition(&target_root).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        let from = source.context().manifest_sha256;
+        let to = target.context().manifest_sha256;
+        assert_eq!(source.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(target.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(source.workspace_furnishing_ledger(catalog).unwrap(),
+                   target.workspace_furnishing_ledger(catalog).unwrap());
+        assert_eq!(FurnishingTransition::from_manifests((&from, &to)), Some(FurnishingTransition::SameCatalog {
+            source: CATALOG45_RENDERED_SCULPTURE_THUMBNAIL,
+            target: CATALOG45_RENDERED_SCULPTURE_THUMBNAIL_OEX,
+            catalog,
+        }));
+        assert_eq!(FurnishingTransition::from_manifests((&to, &from)), None);
+        assert_eq!(FurnishingTransition::from_manifests((&from, CATALOG45_SAVED_HEAD_MODULAR_PORTAL.2)), None);
+        assert!(!saved_workspace_transition_target(&from));
+        assert!(saved_workspace_transition_target(&to));
+        assert!(!target.ordinary_fresh_furnishing());
+        assert!(Payload::open_workspace_v5_validation(&target_root, false).is_ok());
+        assert!(Payload::open_workspace_v5_validation(&target_root, true).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the exact sealed catalog 040 package with bundled original furnishings"]
     fn opens_reviewed_bundled_furnishings_validation_package() {
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_BUNDLED_FURNISHINGS_RUNTIME").unwrap());
@@ -2701,7 +2746,12 @@ impl Payload {
                 Err(err("NATIVE_RUNTIME_UNQUALIFIED"))
             };
         }
-        if let Some(expected) = payload.retained_furnishing_catalog() {
+        let ordinary_thumbnail_source = (context.source_commit.as_str(), payload.manifest.producer_sha256.as_str(),
+            context.manifest_sha256.as_str()) == CATALOG45_RENDERED_SCULPTURE_THUMBNAIL;
+        let retained_catalog = payload.retained_furnishing_catalog().or(
+            ordinary_thumbnail_source.then_some(WorkspaceFurnishingCatalog::RequiredModelPreparation045),
+        );
+        if let Some(expected) = retained_catalog {
             return if payload.workspace_furnishing_catalog()? == Some(expected) {
                 Ok(payload)
             } else {

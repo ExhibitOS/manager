@@ -242,7 +242,9 @@ public actor NativeAutomationSession {
         let admitsFreshImages = await api.admitsFreshImagePreparation
         let admitsLargeModels = await api.admitsLargeModelPreparation
         let admitsSavedHeadAuthoring = await api.admitsSavedHeadAuthoring
-        guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsSavedHeadAuthoring else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
+        let admitsRenderedSculptureThumbnailOex = await api.admitsRenderedSculptureThumbnailOex
+        guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsSavedHeadAuthoring
+                || admitsRenderedSculptureThumbnailOex else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
         let stored = try await api.exhibition(draft.id)
         guard try value(await bridge.documentState(context)) == value(saved) else {
             throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
