@@ -100,7 +100,12 @@ send the current `expectedRevision` and `expectedEditVersion` with an absolute
 `outputPath` naming a new immediate child of the output directory. The profile
 must hold a saved draft that still matches the server's draft and ETag.
 `export-oex` writes the OEX archive and returns its hash and source ETag.
+If the output directory moves during the final commit, the response can contain
+`commitState: "committed-path-unconfirmed"` and a null path. Use the returned
+hash to locate the committed archive in the original directory.
 `export-static` creates a local publication snapshot, writes a static site with
 the private editor, and returns its export receipt. Static output can have
-publication-specific IDs and asset hashes. Close stdin to drain the runtime
+publication-specific IDs and asset hashes. If a static commit cannot confirm
+its path, restore the original directory before checking the same request.
+Close stdin to drain the runtime
 before another process opens the profile.

@@ -1773,16 +1773,20 @@ public actor NativeAutomationSession {
             let reopened = try await api.exhibition(draft.id)
             guard reopened.draft == draft, reopened.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
             let sha256: String
+            let confirmed: Bool
             if authoringSession?.nativeOexExportProfile == "bounded-file-v1" {
                 let archive = try await api.exportBoundedOEX(exhibitionId: draft.id, etag: etag)
-                try await archive.write(to: url, expectedParent: installedExportRootIdentity)
+                confirmed = try await archive.write(to: url, expectedParent: installedExportRootIdentity)
                 sha256 = archive.sha256
             } else {
                 let archive = try await api.exportOEX(exhibitionId: draft.id, etag: etag)
-                try await archive.writeBoundedVerified(to: url)
+                confirmed = try await archive.writeBoundedVerified(to: url)
                 sha256 = archive.sha256
             }
-            result = .object(["path": .string(url.path), "sha256": .string(sha256), "etag": .string(etag)])
+            var receipt: [String: DocumentValue] = ["path": confirmed ? .string(url.path) : .null,
+                                                    "sha256": .string(sha256), "etag": .string(etag)]
+            if !confirmed { receipt["commitState"] = .string("committed-path-unconfirmed") }
+            result = .object(receipt)
         case "export-static", "export-static-native-original":
             try checkedRevision(request, current)
             if installedExportRootIdentity != nil && authoringSession?.nativePublicationProfile != "bounded-local-v1" {

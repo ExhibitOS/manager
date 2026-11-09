@@ -285,9 +285,9 @@ public struct NativeBoundedOEXExport: Sendable {
     public var count: Int { archive.count }
     public var sha256: String { archive.sha256 }
     fileprivate init(_ archive: NativeOEXArchive) { self.archive = archive }
-    public func write(to url: URL) async throws { try await archive.writeBoundedVerified(to: url) }
+    public func write(to url: URL) async throws { _ = try await archive.writeBoundedVerified(to: url) }
 
-    func write(to url: URL, expectedParent: (dev_t, ino_t)?) async throws {
+    func write(to url: URL, expectedParent: (dev_t, ino_t)?) async throws -> Bool {
         try await archive.writeBoundedVerified(to: url, expectedParent: expectedParent)
     }
 }

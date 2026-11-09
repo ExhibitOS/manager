@@ -208,7 +208,8 @@ public struct NativeOEXArchive: Sendable {
     }
     /// Selected bounded output only. The caller must first establish the
     /// separately reviewed owner terminal/drain proof for this exact snapshot.
-    func writeBoundedVerified(to url: URL, expectedParent: (dev_t, ino_t)? = nil) async throws {
+    @discardableResult
+    func writeBoundedVerified(to url: URL, expectedParent: (dev_t, ino_t)? = nil) async throws -> Bool {
         guard url.isFileURL, !url.lastPathComponent.isEmpty, url.lastPathComponent != ".", url.lastPathComponent != ".." else { throw AuthoringFailure("EXPORT_WRITE_FAILED") }
         let ownedFile = file, identity = stamp, expectedHash = sha256, expectedBytes = count
         let work = Task.detached(priority: .userInitiated) {
@@ -275,12 +276,14 @@ public struct NativeOEXArchive: Sendable {
             // After this exclusive rename succeeds, report committed even if
             // cancellation arrives while the kernel call executes.
             guard renameatx_np(dirFD, "archive", parentFD, url.lastPathComponent, UInt32(RENAME_EXCL)) == 0 else { throw AuthoringFailure("EXPORT_WRITE_FAILED") }
-            if let expectedParent {
-                try NativeAutomationSession.checkExportDirectory(parentFD, path: url.deletingLastPathComponent().path,
-                                                                 expected: expectedParent)
-            }
+            return Self.confirmsCommittedParent(parentFD, path: url.deletingLastPathComponent().path, expected: expectedParent)
         }
-        try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+        return try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+    }
+
+    static func confirmsCommittedParent(_ descriptor: Int32, path: String, expected: (dev_t, ino_t)?) -> Bool {
+        guard let expected else { return true }
+        return (try? NativeAutomationSession.checkExportDirectory(descriptor, path: path, expected: expected)) != nil
     }
     public func write(to url: URL) async throws {
         guard url.isFileURL else { throw AuthoringFailure("EXPORT_WRITE_FAILED") }

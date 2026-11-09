@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import XCTest
+import Darwin
 @testable import ManagerCore
 
 final class NativeAutomationFailureTests: XCTestCase {
@@ -73,8 +74,16 @@ final class NativeAutomationFailureTests: XCTestCase {
         XCTAssertTrue(try files.contentsOfDirectory(atPath: moved.path).isEmpty)
         try files.removeItem(at: root)
         try files.moveItem(at: moved, to: root)
-        try await archive.writeBoundedVerified(to: destination, expectedParent: identity)
-        XCTAssertEqual(try Data(contentsOf: destination), data)
+        let held = Darwin.open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(held, 0)
+        defer { if held >= 0 { Darwin.close(held) } }
+        let confirmed = try await archive.writeBoundedVerified(to: destination, expectedParent: identity)
+        XCTAssertTrue(confirmed)
+        try files.moveItem(at: root, to: moved)
+        try files.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        XCTAssertFalse(NativeOEXArchive.confirmsCommittedParent(held, path: root.path, expected: identity))
+        XCTAssertTrue(try files.contentsOfDirectory(atPath: root.path).isEmpty)
+        XCTAssertEqual(try Data(contentsOf: moved.appendingPathComponent(destination.lastPathComponent)), data)
     }
 
     func testArtworkStatusBypassesCachedReadyResponseWhileMutationReplayStaysBound() throws {

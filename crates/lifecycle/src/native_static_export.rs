@@ -397,6 +397,15 @@ impl DirectoryIdentity {
     }
 }
 
+const STATIC_COMMIT_UNCONFIRMED: &str = "NATIVE_STATIC_OUTPUT_COMMIT_UNCONFIRMED";
+
+fn committed_output_available(status: &Status) -> bool {
+    status.error_code.as_deref() == Some(STATIC_COMMIT_UNCONFIRMED)
+        && status.receipt.is_some()
+        && pinned_output_parent(status).is_ok_and(|parent| parent.is_some())
+        && fs::symlink_metadata(&status.output).is_ok_and(|meta| meta.is_dir())
+}
+
 fn pinned_output_parent(status: &Status) -> Result<Option<DirectoryPin>> {
     status.output_parent_identity.map(|expected| {
         let pin = DirectoryPin::open(status.output.parent().ok_or_else(bad)?)
@@ -460,7 +469,7 @@ impl PinnedOrdinaryOutput {
         Ok((verified, output))
     }
 
-    fn commit(&self, target: &Path, mut receipt: Receipt, output: &File) -> Result<Receipt> {
+    fn commit(&self, target: &Path, mut receipt: Receipt, output: &File) -> Result<(Receipt, bool)> {
         let parent = self.parent.try_clone_file().map_err(|_| err("NATIVE_STATIC_OUTPUT_INVALID"))?;
         let stage = self.staging_root.try_clone_file()?;
         let leaf = detail_leaf(target.file_name().ok_or_else(bad)?)?;
@@ -475,15 +484,14 @@ impl PinnedOrdinaryOutput {
                 err("NATIVE_STATIC_OUTPUT_EXISTS")
             } else { bad() });
         }
-        parent.sync_all().map_err(|_| bad())?;
-        self.parent.check().map_err(|_| err("NATIVE_STATIC_OUTPUT_INVALID"))?;
+        let confirmed = parent.sync_all().is_ok() && self.parent.check().is_ok();
         // Return only the published destination. Best-effort cleanup may leave
         // an empty private stage, but never removes an unrelated directory.
         if let (Ok(profile), Some(name)) = (self.profile.try_clone_file(), self.worker.output.parent().and_then(Path::file_name)) {
             let _ = unlink_exact_detail(&profile, name, &stage, true);
         }
         receipt.output = target.into();
-        Ok(receipt)
+        Ok((receipt, confirmed))
     }
 }
 
@@ -1876,8 +1884,11 @@ impl Exporter {
         if let Some(value) = &value {
             // Reopening a running job never re-executes the exporter. Verify its
             // atomic final output asynchronously; retain incomplete files.
-            if value.state == "running" {
-                self.launch(token.into(), value.clone(), None, None);
+            if value.state == "running" || committed_output_available(value) {
+                let mut checking = value.clone();
+                checking.state = "running".into();
+                self.launch(token.into(), checking.clone(), None, None);
+                return Ok(Some(checking));
             }
         }
         Ok(value)
@@ -2059,7 +2070,7 @@ impl Exporter {
         }
         self.worker = Some(thread::spawn(move || {
             let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<Receipt> {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(Receipt, bool)> {
                     if let Some((payload, script, viewer, port)) = execute {
                         let (root, _, _) = controller.static_export_location(&token)?;
                         let stdout_name = format!("native-static-{}.stdout", value.job_id);
@@ -2127,7 +2138,7 @@ impl Exporter {
                         // result wins; otherwise keep every incomplete output.
                         if cancel.load(Ordering::SeqCst) {
                             if pinned.is_some() { return Err(err("NATIVE_STATIC_CANCELLED")); }
-                            return verify_output(&value)
+                            return verify_output(&value).map(|receipt| (receipt, true))
                                 .map_err(|_| err("NATIVE_STATIC_CANCELLED"));
                         }
                         if !exit.success() || stopping.is_some() {
@@ -2154,15 +2165,25 @@ impl Exporter {
                         {
                             return Err(bad());
                         }
-                        return Ok(verified);
+                        return Ok((verified, true));
                     }
-                    verify_output(&value).map_err(|_| err("NATIVE_STATIC_INTERRUPTED"))
+                    let verified = verify_output(&value).map_err(|_| err("NATIVE_STATIC_INTERRUPTED"))?;
+                    if value.error_code.as_deref() == Some(STATIC_COMMIT_UNCONFIRMED)
+                        && value.receipt.as_ref() != Some(&verified)
+                    {
+                        return Err(err(STATIC_COMMIT_UNCONFIRMED));
+                    }
+                    Ok((verified, true))
                 }));
             match result {
-                Ok(Ok(receipt)) => {
-                    value.state = "completed".into();
+                Ok(Ok((receipt, confirmed))) => {
+                    value.state = if confirmed { "completed" } else { "interrupted" }.into();
                     value.receipt = Some(receipt);
-                    value.error_code = None;
+                    value.error_code = (!confirmed).then(|| STATIC_COMMIT_UNCONFIRMED.into());
+                }
+                _ if value.error_code.as_deref() == Some(STATIC_COMMIT_UNCONFIRMED) => {
+                    // A verification failure does not erase the committed receipt.
+                    value.state = "interrupted".into();
                 }
                 other => {
                     let code = match other {
@@ -2343,9 +2364,19 @@ mod detail_tests {
         assert!(stage.worker.output.join("index.html").exists());
         fs::remove_dir(&destination).unwrap();
         fs::rename(&moved, &destination).unwrap();
-        let committed = stage.commit(&status.output, receipt, &output).unwrap();
+        let (committed, confirmed) = stage.commit(&status.output, receipt, &output).unwrap();
+        assert!(confirmed);
         assert_eq!(committed.output, status.output);
         assert_eq!(fs::read(status.output.join("index.html")).unwrap(), b"fixture");
+        status.state = "interrupted".into();
+        status.error_code = Some(STATIC_COMMIT_UNCONFIRMED.into());
+        status.receipt = Some(committed);
+        fs::rename(&destination, &moved).unwrap();
+        let _replacement = create_detail_directory(&root_file, OsStr::new("destination")).unwrap();
+        assert!(!committed_output_available(&status));
+        fs::remove_dir(&destination).unwrap();
+        fs::rename(&moved, &destination).unwrap();
+        assert!(committed_output_available(&status));
         fs::remove_dir_all(&root).unwrap();
     }
 
