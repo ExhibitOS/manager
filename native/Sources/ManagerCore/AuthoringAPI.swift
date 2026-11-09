@@ -640,6 +640,48 @@ public actor AuthoringAPI {
     public func artists() async throws -> AuthoringPage<NativeArtist> { try await request(prefix + "/artists?limit=50&archived=false") }
     public func artist(_ id: String) async throws -> NativeArtist { try await request(prefix + "/artists/" + identifier(id)) }
     public func artwork(_ id: String) async throws -> NativeArtwork { try await request(prefix + "/artworks/" + identifier(id)) }
+    public func artworkThumbnailSelectionVersion(artworkId: String, revision: Int) async throws -> Int {
+        guard nativeSession, (1...Int(Int32.max)).contains(revision) else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+        struct Selection: Decodable, Sendable { let selectionVersion: Int }
+        let path = prefix + "/artworks/" + (try identifier(artworkId)) + "/thumbnail-selection?expectedRevision=\(revision)"
+        let selection: Selection = try await request(path)
+        guard (0..<Int(Int32.max)).contains(selection.selectionVersion) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        return selection.selectionVersion
+    }
+
+    public func saveRenderedArtworkThumbnail(_ rendered: ViewportRenderedThumbnail, requestId: UUID,
+                                             expectedSelectionVersion: Int) async throws {
+        guard nativeSession, (0..<Int(Int32.max)).contains(expectedSelectionVersion) else {
+            throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE")
+        }
+        let current = generation
+        let artwork = try await artwork(rendered.artworkId)
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard artwork.id == rendered.artworkId, !artwork.archived, artwork.revision == rendered.revision,
+              artwork.approvedRevision == rendered.revision, artwork.approvedAssetId == rendered.sourceAssetId,
+              artwork.assets.contains(where: { $0.id == rendered.sourceAssetId && $0.sha256 == rendered.sourceSha256
+                  && $0.mime == "model/gltf-binary" && $0.state == "approved" }) else {
+            throw AuthoringFailure("REVISION_CONFLICT", status: 409)
+        }
+        let payload = DocumentValue.object([
+            "kind": .string("rendered-display-preview-v1"), "requestId": .string(requestId.uuidString.lowercased()),
+            "expectedRevision": .integer(Int64(rendered.revision)), "expectedSelectionVersion": .integer(Int64(expectedSelectionVersion)),
+            "sourceAssetId": .string(rendered.sourceAssetId), "sourceSha256": .string(rendered.sourceSha256),
+            "displaySha256": .string(rendered.displaySha256), "pngSha256": .string(rendered.pngSha256),
+            "pngBase64": .string(rendered.pngData.base64EncodedString()), "view": .object(["kind": .string("default")])
+        ])
+        struct Receipt: Decodable, Sendable {
+            let id: UUID, thumbnailAssetId: UUID, selectionVersion: Int, thumbnailSha256: String, selected: Bool
+        }
+        let receipt: Receipt = try await request(prefix + "/artworks/" + (try identifier(rendered.artworkId)) + "/thumbnail-selection",
+                                                 method: "POST", body: encoded(payload))
+        guard receipt.selected else { throw AuthoringFailure("SELECTION_CONFLICT", status: 409) }
+        guard receipt.selectionVersion == expectedSelectionVersion + 1, receipt.thumbnailSha256 == rendered.pngSha256,
+              receipt.thumbnailAssetId.uuidString.lowercased() != rendered.sourceAssetId.lowercased() else {
+            throw AuthoringFailure("CATALOG_PREVIEW_INVALID")
+        }
+    }
+
     public func createArtist(name: String, bio: String) async throws -> NativeArtist {
         struct Input: Encodable { let name: String; let bio: String }
         return try await request(prefix + "/artists", method: "POST", body: encoded(Input(name: name, bio: bio)))

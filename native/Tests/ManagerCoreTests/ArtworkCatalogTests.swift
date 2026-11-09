@@ -118,6 +118,58 @@ final class ArtworkCatalogTests: XCTestCase {
         var wrongFormat = fields; wrongFormat["pngBase64"] = Data("<html>not an image</html>".utf8).base64EncodedString()
         XCTAssertThrowsError(try reply(wrongFormat).pngData(matching: request))
     }
+    func testRenderedThumbnailRequiresExactSquareAndCompleteSourceProof() throws {
+        let request = try ViewportThumbnailRequest(frame: frame(NativeExhibitionDraft.new()),
+            artworkId: UUID().uuidString, expectedRevision: 4)
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEAAQAAAAB0CZXLAAAAH0lEQVR42u3BAQ0AAADCoPdPbQ43oAAAAAAAAAAAvg0hAAABYOSdlwAAAABJRU5ErkJggg=="
+        let pngHash = "f569b175026cfbb77a68f1754f6e1a3c175f3a7a7e930918bd8656240a90e396"
+        let source = UUID().uuidString.lowercased()
+        let sourceHash = String(repeating: "a", count: 64)
+        let displayHash = String(repeating: "b", count: 64)
+        var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
+        fields.removeValue(forKey: "expectedRevision")
+        fields["revision"] = request.expectedRevision
+        fields["width"] = 256
+        fields["height"] = 256
+        fields["pngBase64"] = png
+        func reply(_ value: [String: Any]) throws -> ViewportThumbnailReply {
+            try JSONDecoder().decode(ViewportThumbnailReply.self, from: JSONSerialization.data(withJSONObject: value))
+        }
+
+        XCTAssertEqual(try reply(fields).pngData(matching: request), Data(base64Encoded: png))
+        XCTAssertThrowsError(try reply(fields).renderedThumbnail(matching: request))
+        fields["sourceAssetId"] = source
+        fields["sourceSha256"] = sourceHash
+        fields["displaySha256"] = displayHash
+        let rendered = try reply(fields).renderedThumbnail(matching: request)
+        XCTAssertEqual(rendered.artworkId, request.artworkId)
+        XCTAssertEqual(rendered.revision, request.expectedRevision)
+        XCTAssertEqual(rendered.sourceAssetId, source)
+        XCTAssertEqual(rendered.sourceSha256, sourceHash)
+        XCTAssertEqual(rendered.displaySha256, displayHash)
+        XCTAssertEqual(rendered.pngData, Data(base64Encoded: png))
+        XCTAssertEqual(rendered.pngSha256, pngHash)
+        fields["pngSha256"] = pngHash
+        XCTAssertEqual(try reply(fields).renderedThumbnail(matching: request).pngSha256, pngHash)
+
+        for (key, value) in [("sourceAssetId", "../foreign"), ("sourceSha256", sourceHash.uppercased()),
+                             ("displaySha256", "missing digest"), ("pngSha256", sourceHash),
+                             ("epoch", UUID().uuidString.lowercased())] {
+            var invalid = fields
+            invalid[key] = value
+            XCTAssertThrowsError(try reply(invalid).renderedThumbnail(matching: request), key)
+        }
+
+        fields.removeValue(forKey: "pngSha256")
+        fields["width"] = 1
+        fields["height"] = 1
+        fields["pngBase64"] = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="
+        XCTAssertFalse(try reply(fields).pngData(matching: request).isEmpty)
+        XCTAssertThrowsError(try reply(fields).renderedThumbnail(matching: request))
+        fields["width"] = 256
+        fields["height"] = 256
+        XCTAssertThrowsError(try reply(fields).renderedThumbnail(matching: request), "Mismatched IHDR dimensions")
+    }
     func testFindReplyBindsExactCurrentInstanceAndDoesNotBecomeDocumentEdit() throws {
         var draft = try NativeExhibitionDraft.new(); let art = artwork(kind: "sculpture", title: "같은 원본")
         let room = draft.rooms[0]["id"].string!

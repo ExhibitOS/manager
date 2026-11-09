@@ -167,6 +167,9 @@ public struct ViewportAcceptance: Decodable, Sendable {
     public let boundedReadOnly: Bool?
     public let editingCapability: NativeBoundedEditCapability?
     public var supportsArtworkThumbnail: Bool { accepted && capabilities?.contains("artwork-thumbnail-v1") == true }
+    public var supportsRenderedArtworkThumbnail: Bool {
+        supportsArtworkThumbnail && capabilities?.contains("rendered-display-preview-v1") == true
+    }
     public var supportsSceneSnapshot: Bool { accepted && capabilities?.contains("scene-snapshot-v1") == true }
     public var supportsSceneSnapshotInspection: Bool { accepted && capabilities?.contains("scene-snapshot-inspection-v1") == true }
     public var supportsFindSelection: Bool { accepted && capabilities?.contains("find-selection-v1") == true }
