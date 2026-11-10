@@ -81,6 +81,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsPreReadyPreservationReadback(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsDefaultSeatRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: $0.manifestSHA256)
             } == true
         guard !(selectedOEX9 && selectedOEX10),
@@ -170,7 +171,7 @@ public actor NativeAutomationSession {
         }
         throw BridgeFailure("NATIVE_TIMEOUT")
     }
-    private func waitExistingStartup(manifest: String) async throws -> NativeHostStatus {
+    private func waitStartup(manifest: String) async throws -> NativeHostStatus {
         guard manifest == "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a"
             || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: manifest)
             || AuthoringAPI.supportsPinnedStartupDrain(manifest: manifest) else {
@@ -200,13 +201,28 @@ public actor NativeAutomationSession {
             return try await openInstalledImageWorkspace(context)
         }
         if let existingWorkspaceV5 { return try await openExistingWorkspace(existingWorkspaceV5, context: context) }
-        if selectedOEXFormat == nil { _ = try await bridge.prepare(context); _ = try await waitReady() }
+        var preparedManifest: String?
+        if selectedOEXFormat == nil {
+            _ = try await bridge.prepare(context)
+            preparedManifest = try await waitReady().configuration?.manifestSha256
+        }
         _ = try await bridge.start(context)
-        let status = try await waitReady()
+        let status: NativeHostStatus
+        if let preparedManifest, AuthoringAPI.supportsDefaultSeatRuntime(manifest: preparedManifest) {
+            status = try await waitStartup(manifest: preparedManifest)
+        } else {
+            status = try await waitReady()
+        }
         guard status.runtime?.readiness.ready == true, let config = status.configuration else { throw BridgeFailure("NATIVE_NOT_READY") }
         let credentials = try await bridge.authoringSession(context)
         let api = try AuthoringAPI(port: config.ports.web, tenantId: credentials.tenantId, nativeRuntimeManifestSHA256: config.manifestSha256)
-        authoringSession = try await api.connect(credentials); self.api = api; runtimeManifest = config.manifestSha256
+        let session = try await api.connect(credentials)
+        if AuthoringAPI.supportsDefaultSeatRuntime(manifest: config.manifestSha256) {
+            guard config.manifestSha256 == preparedManifest, await api.admitsWorkspaceDefaultSeatProposal else {
+                throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE")
+            }
+        }
+        authoringSession = session; self.api = api; runtimeManifest = config.manifestSha256
         identity = try await bridge.documentState(context)
         return try await statusValue()
     }
@@ -255,7 +271,7 @@ public actor NativeAutomationSession {
             throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
         }
         _ = try await bridge.start(context)
-        let ready = try await waitExistingStartup(manifest: expected.manifestSHA256)
+        let ready = try await waitStartup(manifest: expected.manifestSHA256)
         guard ready.runtime?.readiness.ready == true, ready.selectedOex != true,
               ready.configuration?.manifestSha256 == expected.manifestSHA256,
               try profileIdentity() == directory else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
@@ -273,10 +289,15 @@ public actor NativeAutomationSession {
         let admitsRenderedSculptureThumbnailOex = await api.admitsRenderedSculptureThumbnailOex
         let admitsNativePublication = AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: config.manifestSha256)
             && session.nativePublicationProfile == "bounded-local-v1"
+        let admitsDefaultSeats = await api.admitsWorkspaceDefaultSeatProposal
+        if AuthoringAPI.supportsDefaultSeatRuntime(manifest: config.manifestSha256), !admitsDefaultSeats {
+            throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE")
+        }
         let admitsPreservationReadback = AuthoringAPI.supportsPreReadyPreservationReadback(manifest: config.manifestSha256)
             && session.nativeAuthoringProposalProfile == "saved-head-v1"
         guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
-                || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback else {
+                || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback
+                || (AuthoringAPI.supportsDefaultSeatRuntime(manifest: config.manifestSha256) && admitsDefaultSeats) else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }
         let stored = try await api.exhibition(draft.id)
@@ -341,12 +362,16 @@ public actor NativeAutomationSession {
         }
         try Task.checkCancellation()
         _ = try await bridge.start(reopened)
-        let ready = try await (existingWorkspaceV5 != nil ? waitExistingStartup(manifest: manifest) : waitReady())
+        let pinnedStartup = existingWorkspaceV5 != nil || AuthoringAPI.supportsDefaultSeatRuntime(manifest: manifest)
+        let ready = try await (pinnedStartup ? waitStartup(manifest: manifest) : waitReady())
         guard ready.runtime?.readiness.ready == true, let job = ready.runtime?.jobId, job != previousJob,
               ready.configuration?.manifestSha256 == manifest else { throw BridgeFailure("NATIVE_NOT_READY") }
         let credentials = try await bridge.authoringSession(reopened)
         let reopenedAPI = try AuthoringAPI(port: config.ports.web, tenantId: current.tenantId, nativeRuntimeManifestSHA256: manifest)
         let session = try await reopenedAPI.connect(credentials)
+        if AuthoringAPI.supportsDefaultSeatRuntime(manifest: manifest), !(await reopenedAPI.admitsWorkspaceDefaultSeatProposal) {
+            throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE")
+        }
         guard try profileIdentity() == directory, session.userId == current.principalId,
               try value(await bridge.documentState(reopened)) == value(current) else {
             throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
