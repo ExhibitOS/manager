@@ -27,6 +27,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var nativeProductImagePreparationProfile: String? = nil
     public var nativeAuthoringProposalProfile: String? = nil
     public var nativeDefaultSeatProposalProfile: String? = nil
+    public var nativeFurnishingWalkingCollisionProfile: String? = nil
     public var workspacePortalModularFitProfile: String? = nil
     public var workspaceFurnishingReusableFitProfile: String? = nil
     public var nativeFreshImagePreparationProfile: String? = nil
@@ -2340,6 +2341,23 @@ public actor AuthoringAPI {
         try Task.checkCancellation()
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next
+    }
+
+    func evaluateFurnishingWalkingCollision(in document: NativeDocumentState) async throws -> DocumentValue {
+        guard nativeSession, !authenticationBusy, document.tenantId == tenant, session?.userId == document.principalId,
+              session?.nativeFurnishingWalkingCollisionProfile == FurnishingWalkingCollisionEvaluation.profile,
+              document.pending == nil, let draft = document.draft else {
+            throw AuthoringFailure("FURNISHING_WALKING_COLLISION_UNAVAILABLE")
+        }
+        struct Input: Encodable { let draft: NativeExhibitionDraft }
+        let heldGeneration = generation
+        let body = try encoded(Input(draft: draft))
+        guard body.count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
+        let response: DocumentValue = try await request(studioPrefix + "/native-furnishing-walking-collision-evaluation",
+                                                       method: "POST", body: body)
+        try Task.checkCancellation()
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return try FurnishingWalkingCollisionEvaluation(response, in: draft).value
     }
 
     public func workspaceBenchSeatPolicy(in document: NativeDocumentState) async throws -> NativeViewportPolicy {

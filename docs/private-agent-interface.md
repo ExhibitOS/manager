@@ -227,6 +227,12 @@ Operations:
   `etag` and up to 32 existing `placementIds` to stage missing defaults on a
   clean saved head. Existing valid linked seats and viewpoints are preserved.
   Use the existing `save` operation to commit a staged change.
+- `furnishing-walking-collision-evaluate` reads the current draft revision
+  through the authenticated owner session's `furnishing-walking-collision-v1`
+  capability. It returns typed target IDs, their authored defaults, and any
+  explicit overrides. An omitted override inherits the default. Evaluation
+  makes no draft changes and reports authored settings independently of
+  whether the Viewer has loaded the relevant collision geometry.
 - `bench-prepare`: accept the existing `add-bench` command and optional fresh
   viewpoint; write the existing frame/request packet to a new `outputPath`.
 - `bench-apply`: provide its `proposalId` and a fixed shared-renderer reply at

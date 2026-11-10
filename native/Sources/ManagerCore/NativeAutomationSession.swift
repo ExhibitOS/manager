@@ -1106,6 +1106,11 @@ public actor NativeAutomationSession {
                                          "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
+        if operation == "furnishing-walking-collision-evaluate" {
+            let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
+                                         "expectedRevision", "expectedEditVersion"]
+            guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        }
         if operation == "export-static-saved-head" {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
                                          "expectedRevision", "expectedEditVersion", "outputPath", "command"]
@@ -1343,6 +1348,10 @@ public actor NativeAutomationSession {
             } else {
                 result = .object(["changed": .bool(false), "document": try value(current)])
             }
+        case "furnishing-walking-collision-evaluate":
+            guard selectedOEXFormat == nil else { throw BridgeFailure("FURNISHING_WALKING_COLLISION_UNAVAILABLE") }
+            try checkedRevision(request, current)
+            result = try await api.evaluateFurnishingWalkingCollision(in: current)
         case "workspace-frame-attach", "workspace-frame-detach":
             guard selectedOEXFormat == nil, await api.admitsWorkspaceArtworkFrames else {
                 throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
