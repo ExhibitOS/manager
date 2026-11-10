@@ -395,6 +395,8 @@ public actor AuthoringAPI {
         "375672ab366c52a8a177e2815fda65382708aba8126461a903268534918b43fe"
     private static let savedHeadMuseumCaptionManifestPin =
         "4fbd168027090f38776bd75990e27ed336db6c65d15c4af3f17bf428d140440b"
+    private static let savedHeadPreparedSignAudioManifestPin =
+        "cbf4214bbf755216e8173190ce98ee32fb3f3708bd9c6a25e394eb3ce30e0a0a"
     private static let nativePublicationCapacityManifestPin =
         "1209d5d95417d1e29f637d8ce327e78cf38ed1b32eabcb5ab6fd3e2a62a10203"
     private static let renderedSculptureThumbnailOexRuntimeManifestPin =
@@ -2293,6 +2295,7 @@ public actor AuthoringAPI {
     nonisolated static func supportsSavedHeadAuthoringRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == savedHeadModularRuntimeManifestPin || manifest == savedHeadMuseumCaptionManifestPin
+            || manifest == savedHeadPreparedSignAudioManifestPin
         #else
         false
         #endif

@@ -1639,11 +1639,14 @@ mod tests {
         assert_eq!(extended, 2_415_919_104);
         let publication = "1209d5d95417d1e29f637d8ce327e78cf38ed1b32eabcb5ab6fd3e2a62a10203";
         let captions = "4fbd168027090f38776bd75990e27ed336db6c65d15c4af3f17bf428d140440b";
+        let prepared_sign_audio = "cbf4214bbf755216e8173190ce98ee32fb3f3708bd9c6a25e394eb3ce30e0a0a";
         let caption_fixture = "31b12d9f6fac4019f39c2a9128ced09b7ee918c49ffb119beb544e5e40831ac0";
         let publication_limit = checkpoint_inventory_limit((current, publication), None);
         assert_eq!(publication_limit, 4_294_967_296);
         assert_eq!(checkpoint_inventory_limit((publication, captions), None), publication_limit);
-        for pair in [(captions, publication), (captions, captions), (current, captions), (caption_fixture, captions)] {
+        assert_eq!(checkpoint_inventory_limit((captions, prepared_sign_audio), None), publication_limit);
+        for pair in [(captions, publication), (captions, captions), (current, captions), (caption_fixture, captions),
+                     (prepared_sign_audio, captions), (publication, prepared_sign_audio), (prepared_sign_audio, prepared_sign_audio)] {
             assert_eq!(checkpoint_inventory_limit(pair, None), default);
         }
         assert_eq!(checkpoint_inventory_limit((publication, current), None), default);
