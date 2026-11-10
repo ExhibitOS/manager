@@ -389,6 +389,7 @@ public actor AuthoringAPI {
     private static let backedBenchRuntimePin = "f8d5933a2c2e361154dbcc9cb4a332144ca9217e5edb363fdd5056ee70aed702"
     private static let bottomCatalogRuntimePin = "4a0bbccc8ef04c6734407fd448f2b68e6b25a6a7d5f5b0afc33878be5aa29d4d"
     private static let carriedRestoreBenchRuntimePin = "d0209c6ac9980a1507e53fc7a5eaa2b6b254bb60b6a8a1feb2f72d98e48d2874"
+    private static let walkingCollisionRuntimePin = "62e3b790a013d9f6895eb4236db17d538ca1996f9bb031d249a675ea9de9be34"
     #endif
     public nonisolated var supportsPlacedExitDoors: Bool {
         #if DEBUG
@@ -552,7 +553,7 @@ public actor AuthoringAPI {
             || workspaceInfoStandPreparationRuntimeQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
             || Self.supportsOrdinaryNativePublicationRuntime(manifest: manifest)
             || Self.supportsDefaultSeatRuntime(manifest: manifest)
-            || Self.supportsCarriedRestoreBenchRuntime(manifest: manifest)
+            || Self.supportsCarriedRestoreBenchRuntime(manifest: manifest) || Self.supportsWalkingCollisionRuntime(manifest: manifest)
         let configuration = URLSessionConfiguration.ephemeral
         if let protocolClasses { configuration.protocolClasses = protocolClasses }
         configuration.urlCache = nil
@@ -2478,6 +2479,14 @@ public actor AuthoringAPI {
     nonisolated static func supportsCarriedRestoreBenchRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == carriedRestoreBenchRuntimePin
+        #else
+        false
+        #endif
+    }
+
+    nonisolated static func supportsWalkingCollisionRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == walkingCollisionRuntimePin
         #else
         false
         #endif

@@ -83,6 +83,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsDefaultSeatRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsCarriedRestoreBenchRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsWalkingCollisionRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: $0.manifestSHA256)
             } == true
         guard !(selectedOEX9 && selectedOEX10),
@@ -299,10 +300,15 @@ public actor NativeAutomationSession {
         if requiresDefaultSeatProfile, !admitsDefaultSeats {
             throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE")
         }
+        let walkingCollisionRuntime = AuthoringAPI.supportsWalkingCollisionRuntime(manifest: config.manifestSha256)
+        let admitsWalkingCollision = walkingCollisionRuntime && session.advertisesFurnishingWalkingCollision
+        if walkingCollisionRuntime, !admitsWalkingCollision {
+            throw AuthoringFailure("FURNISHING_WALKING_COLLISION_UNAVAILABLE")
+        }
         let admitsPreservationReadback = AuthoringAPI.supportsPreReadyPreservationReadback(manifest: config.manifestSha256)
             && session.nativeAuthoringProposalProfile == "saved-head-v1"
         guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
-                || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback
+                || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback || admitsWalkingCollision
                 || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }
@@ -379,6 +385,9 @@ public actor NativeAutomationSession {
                 || AuthoringAPI.supportsCarriedRestoreBenchRuntime(manifest: manifest)),
            !(await reopenedAPI.admitsWorkspaceDefaultSeatProposal) {
             throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE")
+        }
+        if AuthoringAPI.supportsWalkingCollisionRuntime(manifest: manifest), !session.advertisesFurnishingWalkingCollision {
+            throw AuthoringFailure("FURNISHING_WALKING_COLLISION_UNAVAILABLE")
         }
         guard try profileIdentity() == directory, session.userId == current.principalId,
               try value(await bridge.documentState(reopened)) == value(current) else {
