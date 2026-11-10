@@ -43,6 +43,10 @@ public struct AuthoringSession: Decodable, Sendable {
     public var workspacePortalFinishProfile: String? = nil
     public var roomBaseLightProfile: String? = nil
 
+    public var advertisesFurnishingWalkingCollision: Bool {
+        nativeFurnishingWalkingCollisionProfile == FurnishingWalkingCollisionEvaluation.profile
+    }
+
     public var advertisesRoomBaseLight: Bool { roomBaseLightProfile == RoomBaseLightAction.profile }
 
     public var advertisesWorkspacePortalFinish: Bool {
@@ -2352,21 +2356,47 @@ public actor AuthoringAPI {
         return next
     }
 
-    func evaluateFurnishingWalkingCollision(in document: NativeDocumentState) async throws -> DocumentValue {
+    private func furnishingWalkingCollisionDraft(_ document: NativeDocumentState) throws -> NativeExhibitionDraft {
         guard nativeSession, !authenticationBusy, document.tenantId == tenant, session?.userId == document.principalId,
-              session?.nativeFurnishingWalkingCollisionProfile == FurnishingWalkingCollisionEvaluation.profile,
+              session?.advertisesFurnishingWalkingCollision == true,
               document.pending == nil, let draft = document.draft else {
             throw AuthoringFailure("FURNISHING_WALKING_COLLISION_UNAVAILABLE")
         }
-        struct Input: Encodable { let draft: NativeExhibitionDraft }
+        return draft
+    }
+
+    private func furnishingWalkingCollisionRequest(_ operation: String, input: some Encodable) async throws -> DocumentValue {
         let heldGeneration = generation
-        let body = try encoded(Input(draft: draft))
+        let body = try encoded(input)
         guard body.count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
-        let response: DocumentValue = try await request(studioPrefix + "/native-furnishing-walking-collision-evaluation",
+        let response: DocumentValue = try await request(studioPrefix + "/native-furnishing-walking-collision-" + operation,
                                                        method: "POST", body: body)
         try Task.checkCancellation()
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
-        return try FurnishingWalkingCollisionEvaluation(response, in: draft).value
+        return response
+    }
+
+    private func furnishingWalkingCollisionEvaluation(in document: NativeDocumentState) async throws -> FurnishingWalkingCollisionEvaluation {
+        struct Input: Encodable { let draft: NativeExhibitionDraft }
+        let draft = try furnishingWalkingCollisionDraft(document)
+        let response = try await furnishingWalkingCollisionRequest("evaluation", input: Input(draft: draft))
+        return try FurnishingWalkingCollisionEvaluation(response, in: draft)
+    }
+
+    func evaluateFurnishingWalkingCollision(in document: NativeDocumentState) async throws -> DocumentValue {
+        try await furnishingWalkingCollisionEvaluation(in: document).value
+    }
+
+    public func furnishingWalkingCollisionTargets(in document: NativeDocumentState) async throws -> [FurnishingWalkingCollisionState] {
+        try await furnishingWalkingCollisionEvaluation(in: document).targets
+    }
+
+    public func prepareFurnishingWalkingCollision(target: FurnishingWalkingCollisionTarget, setting: FurnishingWalkingCollisionSetting,
+                                                 in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        let draft = try furnishingWalkingCollisionDraft(document)
+        let proposal = FurnishingWalkingCollisionProposal(draft: draft, target: target, setting: setting)
+        let response = try await furnishingWalkingCollisionRequest("proposal", input: proposal)
+        return try proposal.applying(response)
     }
 
     public func workspaceBenchSeatPolicy(in document: NativeDocumentState) async throws -> NativeViewportPolicy {

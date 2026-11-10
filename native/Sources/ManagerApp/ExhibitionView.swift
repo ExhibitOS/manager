@@ -1702,6 +1702,55 @@ final class ExhibitionModel: ObservableObject {
             while past.count > 30 || past.reduce(0, { $0 + ((try? JSONEncoder().encode($1).count) ?? 1_048_576) }) > 8 * 1024 * 1024 { past.removeFirst() }
         }
     }
+    var walkingCollisionAvailable: Bool {
+        api != nil && session?.advertisesFurnishingWalkingCollision == true
+            && !selectedBoundedPolicy && !ordinaryBoundedRuntime
+            && draft != nil && !pending && !boundedPolicyPending
+    }
+
+    private var walkingCollisionEditable: Bool {
+        walkingCollisionAvailable && !immutable && !placingArtwork && !entrancePreviewActive
+            && !formDirty && !positionDirty && !architectureDirty && !architectureApplying
+            && !viewingPlanDirty && viewingPointInput == nil && viewportController.editingContextActive
+    }
+
+    var canSetWalkingCollision: Bool { walkingCollisionEditable && !busy }
+
+    func walkingCollisionTargets(revision: UInt64) async throws -> [FurnishingWalkingCollisionState] {
+        guard walkingCollisionAvailable, let api, let base = state, base.revision == revision else {
+            throw AuthoringFailure("FURNISHING_WALKING_COLLISION_UNAVAILABLE")
+        }
+        let access = viewportAccessID
+        let rows = try await api.furnishingWalkingCollisionTargets(in: base)
+        try Task.checkCancellation()
+        guard self.api === api, access == viewportAccessID, state?.revision == revision,
+              state?.draft == base.draft, walkingCollisionAvailable else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        return rows
+    }
+
+    func setWalkingCollision(_ target: FurnishingWalkingCollisionTarget, setting: FurnishingWalkingCollisionSetting,
+                             revision: UInt64) async {
+        await work {
+            guard walkingCollisionEditable, let api, var current = state, current.revision == revision else {
+                throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            let access = viewportAccessID, context = viewportController.editingContextGeneration
+            let next = try await api.prepareFurnishingWalkingCollision(target: target, setting: setting, in: current)
+            try Task.checkCancellation()
+            guard self.api === api, access == viewportAccessID, context == viewportController.editingContextGeneration,
+                  state?.revision == revision, state?.draft == current.draft, walkingCollisionEditable else {
+                throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            guard let next else { return }
+            current.draft = next
+            try await persist(current)
+            syncFields()
+            notice = "걷기 충돌 설정을 이 Mac에 보관했습니다. 실행 취소로 되돌릴 수 있습니다."
+        }
+    }
+
     func acceptViewportCandidate(_ candidate: DocumentValue, base: NativeExhibitionDraft) async {
         await work {
             guard (!immutable || boundedPlacementReady), !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, draft == base, var value = state, var next = draft else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }

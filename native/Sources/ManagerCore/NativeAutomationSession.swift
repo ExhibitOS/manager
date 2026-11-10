@@ -1139,9 +1139,10 @@ public actor NativeAutomationSession {
                                          "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
-        if operation == "furnishing-walking-collision-evaluate" {
-            let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
-                                         "expectedRevision", "expectedEditVersion"]
+        if ["furnishing-walking-collision-evaluate", "furnishing-walking-collision-set"].contains(operation) {
+            let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
+                                       "expectedRevision", "expectedEditVersion"]
+            let expected = operation.hasSuffix("-set") ? common.union(["command"]) : common
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
         if operation == "export-static-saved-head" {
@@ -1385,6 +1386,20 @@ public actor NativeAutomationSession {
             guard selectedOEXFormat == nil else { throw BridgeFailure("FURNISHING_WALKING_COLLISION_UNAVAILABLE") }
             try checkedRevision(request, current)
             result = try await api.evaluateFurnishingWalkingCollision(in: current)
+        case "furnishing-walking-collision-set":
+            guard selectedOEXFormat == nil else { throw BridgeFailure("FURNISHING_WALKING_COLLISION_UNAVAILABLE") }
+            try checkedRevision(request, current)
+            let (target, setting) = try FurnishingWalkingCollisionProposal.command(request["command"])
+            if let draft = try await api.prepareFurnishingWalkingCollision(target: target, setting: setting, in: current) {
+                try Task.checkCancellation()
+                var next = current
+                next.draft = draft
+                result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
+            } else {
+                let latest = try await bridge.documentState(context)
+                try checkedRevision(request, latest)
+                result = .object(["changed": .bool(false), "document": try value(latest)])
+            }
         case "workspace-frame-attach", "workspace-frame-detach":
             guard selectedOEXFormat == nil, await api.admitsWorkspaceArtworkFrames else {
                 throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
