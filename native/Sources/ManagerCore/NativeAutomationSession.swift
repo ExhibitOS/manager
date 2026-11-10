@@ -77,6 +77,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsProductImageRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsFreshImageRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsLargeModelRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsInfoStandPreparationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: $0.manifestSHA256)
@@ -265,11 +266,12 @@ public actor NativeAutomationSession {
         let admitsMaterials = await api.admitsWorkspaceMaterials
         let admitsFreshImages = await api.admitsFreshImagePreparation
         let admitsLargeModels = await api.admitsLargeModelPreparation
+        let admitsInfoStandPreparation = await api.admitsWorkspaceInfoStandPreparation
         let admitsSavedHeadAuthoring = await api.admitsSavedHeadAuthoring
         let admitsRenderedSculptureThumbnailOex = await api.admitsRenderedSculptureThumbnailOex
         let admitsNativePublication = AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: config.manifestSha256)
             && session.nativePublicationProfile == "bounded-local-v1"
-        guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsSavedHeadAuthoring
+        guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
                 || admitsRenderedSculptureThumbnailOex || admitsNativePublication else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }
@@ -907,9 +909,9 @@ public actor NativeAutomationSession {
         case "workspace-furnishing-intake-create":
             let commandKeys: Set<String> = ["kind", "name", "rights", "provenance", "model"]
             guard case .object(var fields) = request["command"] else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
-            let policy: WorkspaceArtworkFramePreparationPolicy?
+            let policy: WorkspaceFurnishingPreparationPolicy?
             if let input = fields.removeValue(forKey: "preparationPolicy") {
-                guard let name = input.string, let selected = WorkspaceArtworkFramePreparationPolicy(rawValue: name) else {
+                guard let name = input.string, let selected = WorkspaceFurnishingPreparationPolicy(rawValue: name) else {
                     throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
                 }
                 policy = selected
@@ -945,9 +947,19 @@ public actor NativeAutomationSession {
             return .object(["items": try value(page.items), "nextCursor": page.nextCursor.map(DocumentValue.string) ?? .null])
         case "workspace-furnishing-intake-status", "workspace-furnishing-intake-upload",
              "workspace-furnishing-intake-complete", "workspace-furnishing-intake-cancel", "workspace-furnishing-intake-retry":
-            let command = try NativeAutomationArtworkRules.command(request, keys: ["intakeId"])
+            let command = request["command"]
+            let optional: Set<String> = operation == "workspace-furnishing-intake-status" ? ["producerManifestSHA256"] : []
+            guard case .object(let fields) = command, Set(fields.keys).subtracting(optional) == ["intakeId"] else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
             guard let id = command["intakeId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
-            let intake = try await api.workspaceFurnishingIntake(id)
+            let expected = fields["producerManifestSHA256"]
+            if let expected {
+                guard let hash = expected.string, nativeImportDigest(hash), await api.infoStandPreparationManifest == hash else {
+                    throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+                }
+            }
+            let intake = try await api.workspaceFurnishingIntake(id, requireCurrentInfoStandProducer: expected != nil)
             if operation == "workspace-furnishing-intake-status" { return try value(intake) }
             if operation == "workspace-furnishing-intake-upload" {
                 guard let path = request["inputPath"].string, let pin = inputs[path] else {
@@ -1170,10 +1182,29 @@ public actor NativeAutomationSession {
                 throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
             }
             try checkedRevision(request, current)
-            let command = try NativeAutomationArtworkRules.command(request, keys: ["id", "roomId", "furnishingId", "furnishingVersion", "position", "yaw", "scale"])
+            guard case .object(var fields) = request["command"] else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let expectedModelSHA256: String?
+            if let approved = fields.removeValue(forKey: "modelSha256") {
+                guard let hash = approved.string, nativeImportDigest(hash) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+                expectedModelSHA256 = hash
+            } else {
+                expectedModelSHA256 = nil
+            }
+            let infoStandIntakeId: String?
+            if let intake = fields.removeValue(forKey: "intakeId") {
+                guard let id = intake.string, workspaceFurnishingID(id) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+                infoStandIntakeId = id
+            } else {
+                infoStandIntakeId = nil
+            }
+            guard Set(fields.keys) == ["id", "roomId", "furnishingId", "furnishingVersion", "position", "yaw", "scale"] else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            let command = DocumentValue.object(fields)
             let placement = try JSONDecoder().decode(WorkspaceFurnishingPlacement.self, from: JSONEncoder().encode(command))
             guard try value(placement) == command else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
-            if let draft = try await api.prepareWorkspaceFurnishingPlacement(placement, in: current) {
+            if let draft = try await api.prepareWorkspaceFurnishingPlacement(placement, in: current,
+                expectedModelSHA256: expectedModelSHA256, infoStandIntakeId: infoStandIntakeId) {
                 var next = current
                 next.draft = draft
                 result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])

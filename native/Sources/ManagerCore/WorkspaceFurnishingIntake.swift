@@ -44,10 +44,13 @@ public struct WorkspaceFurnishingModel: Codable, Equatable, Sendable {
     }
 }
 
-public enum WorkspaceArtworkFramePreparationPolicy: String, Codable, Sendable {
+public enum WorkspaceFurnishingPreparationPolicy: String, Codable, Sendable {
     case omitUnusedInvalidTangent = "omit-unused-invalid-tangent-r1"
+    case normalizeLegacySignTexture = "normalize-legacy-sign-texture-r1"
 
     static let profile = "workspace-artwork-frame-preparation-v1"
+    static let infoStandProfile = "workspace-info-stand-preparation-v1"
+    static let infoStandSourceByteLimit = 4 * 1024 * 1024
 
     // The three reviewed source → v2 model pairs in ExhibitOS Spec draft.24.
     private static let models: [(source: WorkspaceFurnishingModel, renderable: WorkspaceFurnishingModel)] = [
@@ -67,9 +70,12 @@ public enum WorkspaceArtworkFramePreparationPolicy: String, Codable, Sendable {
     func renderable(for source: WorkspaceFurnishingModel) -> WorkspaceFurnishingModel? {
         switch self {
         case .omitUnusedInvalidTangent: Self.models.first { $0.source == source }?.renderable
+        case .normalizeLegacySignTexture: nil
         }
     }
 }
+
+public typealias WorkspaceArtworkFramePreparationPolicy = WorkspaceFurnishingPreparationPolicy
 
 struct WorkspaceRegisteredFrameLineage: Codable, Sendable {
     static let profile = "registered-frame-original-lineage-v1"
@@ -152,6 +158,11 @@ public struct WorkspaceFurnishingDetails: Codable, Equatable, Sendable {
     }
 
     var isValid: Bool { furnishingText(name, limit: 120) && furnishingText(provenance, limit: 1024) && model.isValid }
+
+    var canRequestInfoStandPreparation: Bool {
+        kind == .infoStand && rights.ownership == "owner"
+            && (28...WorkspaceFurnishingPreparationPolicy.infoStandSourceByteLimit).contains(model.bytes)
+    }
 }
 
 public enum WorkspaceFurnishingFitProfile: String, Codable, Sendable {
@@ -183,7 +194,7 @@ public struct WorkspaceFurnishingFit: Codable, Equatable, Sendable {
 struct WorkspaceFurnishingRequest: Encodable {
     let requestId: String
     let details: WorkspaceFurnishingDetails
-    var preparationPolicy: WorkspaceArtworkFramePreparationPolicy? = nil
+    var preparationPolicy: WorkspaceFurnishingPreparationPolicy? = nil
     var fitProfile: WorkspaceFurnishingFitProfile? = nil
 
     func encode(to encoder: Encoder) throws {
@@ -240,19 +251,27 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
     public struct Failure: Codable, Sendable { public let code: String }
     public struct Preparation: Codable, Equatable, Sendable {
         public let sourceModel: WorkspaceFurnishingModel
-        public let recipe: WorkspaceArtworkFramePreparationPolicy
+        public let recipe: WorkspaceFurnishingPreparationPolicy
         public let renderableModel: WorkspaceFurnishingModel
+        public let runtimeManifestSHA256: String?
 
-        private enum CodingKeys: String, CodingKey { case sourceModel, recipe, renderableModel }
+        private enum CodingKeys: String, CodingKey { case sourceModel, recipe, renderableModel, runtimeManifestSHA256 }
 
         public init(from decoder: Decoder) throws {
-            try Self.requireKeys(decoder, ["sourceModel", "recipe", "renderableModel"])
             let fields = try decoder.container(keyedBy: CodingKeys.self)
+            recipe = try fields.decode(WorkspaceFurnishingPreparationPolicy.self, forKey: .recipe)
+            switch recipe {
+            case .omitUnusedInvalidTangent:
+                try Self.requireKeys(decoder, ["sourceModel", "recipe", "renderableModel"])
+                runtimeManifestSHA256 = nil
+            case .normalizeLegacySignTexture:
+                try Self.requireKeys(decoder, ["sourceModel", "recipe", "renderableModel", "runtimeManifestSHA256"])
+                runtimeManifestSHA256 = try fields.decode(String.self, forKey: .runtimeManifestSHA256)
+            }
             for key in [CodingKeys.sourceModel, .renderableModel] {
                 try Self.requireKeys(fields.superDecoder(forKey: key), ["mime", "bytes", "sha256"])
             }
             sourceModel = try fields.decode(WorkspaceFurnishingModel.self, forKey: .sourceModel)
-            recipe = try fields.decode(WorkspaceArtworkFramePreparationPolicy.self, forKey: .recipe)
             renderableModel = try fields.decode(WorkspaceFurnishingModel.self, forKey: .renderableModel)
         }
 
@@ -280,7 +299,7 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
     public let retryable: Bool
     public let error: Failure?
     public let furnishing: WorkspaceFurnishing?
-    public let preparationPolicy: WorkspaceArtworkFramePreparationPolicy?
+    public let preparationPolicy: WorkspaceFurnishingPreparationPolicy?
     public let preparation: Preparation?
     public let fitProfile: WorkspaceFurnishingFitProfile?
 
@@ -299,15 +318,16 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
         error = try fields.decodeIfPresent(Failure.self, forKey: .error)
         furnishing = try fields.decodeIfPresent(WorkspaceFurnishing.self, forKey: .furnishing)
         preparationPolicy = fields.contains(.preparationPolicy)
-            ? try fields.decode(WorkspaceArtworkFramePreparationPolicy.self, forKey: .preparationPolicy) : nil
+            ? try fields.decode(WorkspaceFurnishingPreparationPolicy.self, forKey: .preparationPolicy) : nil
         preparation = fields.contains(.preparation) ? try fields.decode(Preparation.self, forKey: .preparation) : nil
         fitProfile = fields.contains(.fitProfile) ? try fields.decode(WorkspaceFurnishingFitProfile.self, forKey: .fitProfile) : nil
     }
 
     func check(id: String? = nil, requestId: String? = nil, details: WorkspaceFurnishingDetails? = nil,
-               expectedPolicy: WorkspaceArtworkFramePreparationPolicy? = nil, expectedFit: WorkspaceFurnishingFitProfile? = nil,
+               expectedPolicy: WorkspaceFurnishingPreparationPolicy? = nil, expectedFit: WorkspaceFurnishingFitProfile? = nil,
                supportedExtensionVersion: Int64 = 1,
-               admitsPreparation: Bool = false) throws {
+               admitsPreparation: Bool = false, infoStandPreparationManifest: String? = nil,
+               requireCurrentInfoStandProducer: Bool = false) throws {
         guard workspaceFurnishingID(intakeId), workspaceFurnishingID(self.requestId),
               id.map({ $0 == intakeId }) ?? true, requestId.map({ $0 == self.requestId }) ?? true,
               declaration.isValid, declaration.kind.minimumExtensionVersion <= supportedExtensionVersion,
@@ -328,18 +348,47 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
             }
             return
         }
-        guard admitsPreparation, declaration.kind == .artworkFrame,
-              let renderable = preparationPolicy.renderable(for: declaration.model),
-              (phase == .registered) == (preparation != nil) else {
+        guard preparation == nil || phase == .registered else {
             throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
+        }
+        switch preparationPolicy {
+        case .omitUnusedInvalidTangent:
+            guard admitsPreparation, declaration.kind == .artworkFrame,
+                  let renderable = preparationPolicy.renderable(for: declaration.model),
+                  (phase == .registered) == (preparation != nil),
+                  preparation.map({ $0.renderableModel == renderable }) ?? true else {
+                throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
+            }
+        case .normalizeLegacySignTexture:
+            guard let infoStandPreparationManifest, nativeImportDigest(infoStandPreparationManifest),
+                  declaration.canRequestInfoStandPreparation,
+                  preparation.map({ receipt in
+                      guard let manifest = receipt.runtimeManifestSHA256, nativeImportDigest(manifest) else { return false }
+                      return (!requireCurrentInfoStandProducer || manifest == infoStandPreparationManifest)
+                          && receipt.renderableModel.isValid
+                          && (28..<declaration.model.bytes).contains(receipt.renderableModel.bytes)
+                          && receipt.renderableModel.sha256 != declaration.model.sha256
+                  }) ?? true else {
+                throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
+            }
         }
         if let preparation {
             let expected = WorkspaceFurnishingDetails(kind: declaration.kind, name: declaration.name,
-                rights: declaration.rights, provenance: declaration.provenance, model: renderable)
+                rights: declaration.rights, provenance: declaration.provenance, model: preparation.renderableModel)
             guard preparation.recipe == preparationPolicy, preparation.sourceModel == declaration.model,
-                  preparation.renderableModel == renderable, furnishing?.details == expected else {
+                  furnishing?.details == expected else {
                 throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
             }
+        } else if let furnishing, furnishing.details != declaration {
+            throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
+        }
+    }
+
+    func checkInfoStandApproval(_ registered: WorkspaceFurnishing, currentProducer: String) throws {
+        guard phase == .registered, declaration.kind == .infoStand, furnishing == registered,
+              nativeImportDigest(currentProducer),
+              preparation.map({ $0.runtimeManifestSHA256 == currentProducer }) ?? true else {
+            throw AuthoringFailure("FURNISHING_MODEL_APPROVAL_REQUIRED")
         }
     }
 }

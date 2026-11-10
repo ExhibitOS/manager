@@ -30,6 +30,7 @@ struct WorkspaceFurnishingIntakeView: View {
     @State private var library: [WorkspaceFurnishingSummary] = []
     @State private var catalogCursor: String?
     @State private var target: WorkspaceFurnishingSummary?
+    @State private var reviewedInfoStand: (furnishing: WorkspaceFurnishing, intakeId: String)?
     @State private var room = ""
     @State private var portalOpening = ""
     @State private var x = "0"
@@ -69,6 +70,7 @@ struct WorkspaceFurnishingIntakeView: View {
                     ForEach(library) { entry in
                         Button("\(entry.name) · v\(entry.version)") {
                             target = entry
+                            reviewedInfoStand = nil
                             room = model.roomId
                             placementId = UUID().uuidString.lowercased()
                         }.disabled(!entry.rightsAvailability.display)
@@ -152,6 +154,10 @@ struct WorkspaceFurnishingIntakeView: View {
                preparationPolicy(for: descriptor) != nil {
                 Text("등록할 때 서버에서 표시용 액자 모델을 만들고 원본도 보관합니다.").foregroundStyle(.secondary)
             }
+            if kind == .infoStand && model.workspaceInfoStandPreparationAvailable {
+                Text("권리자가 등록한 안내판은 원본을 보관합니다. 호환 처리가 필요한 경우 표시용 GLB를 별도로 만들며, 배치하기 전에 등록 모델을 확인할 수 있습니다.")
+                    .foregroundStyle(.secondary)
+            }
             TextField("권리자", text: $rights.holder)
             Picker("권리 근거", selection: $rights.ownership) {
                 Text("내가 권리자").tag("owner")
@@ -177,7 +183,8 @@ struct WorkspaceFurnishingIntakeView: View {
             Text(status(intake.phase))
             Text(intake.declaration.provenance).foregroundStyle(.secondary)
             if let preparation = intake.preparation {
-                LabeledContent("보정 방식", value: "사용하지 않는 탄젠트 속성 제거")
+                LabeledContent("보정 방식", value: preparation.recipe == .normalizeLegacySignTexture
+                    ? "안내판 텍스처 호환 처리" : "사용하지 않는 탄젠트 속성 제거")
                 LabeledContent("원본 SHA-256") {
                     Text(preparation.sourceModel.sha256).font(.caption.monospaced()).textSelection(.enabled)
                 }
@@ -217,7 +224,29 @@ struct WorkspaceFurnishingIntakeView: View {
             }
             TextField("방향 (°)", text: $yaw)
             TextField("비례 크기", text: $scale)
-            Button("전시에 배치") { Task { await place(entry) } }.disabled(room.isEmpty)
+            if entry.kind == .infoStand && model.workspaceInfoStandPreparationAvailable {
+                if let reviewedInfoStand, reviewedInfoStand.furnishing.id == entry.id, reviewedInfoStand.furnishing.version == entry.version {
+                    let descriptor = reviewedInfoStand.furnishing.details.model
+                    LabeledContent("배치용 GLB · \(descriptor.bytes) B") {
+                        Text(descriptor.sha256).font(.caption.monospaced()).textSelection(.enabled)
+                    }
+                    Button("확인한 GLB 배치") {
+                        Task { await place(entry, expectedModelSHA256: descriptor.sha256, infoStandIntakeId: reviewedInfoStand.intakeId) }
+                    }
+                        .disabled(room.isEmpty)
+                } else if let intake = intakes.first(where: { $0.furnishing?.id == entry.id && $0.furnishing?.version == entry.version }) {
+                    if let preparation = intake.preparation {
+                        LabeledContent("원본 GLB · \(preparation.sourceModel.bytes) B") {
+                            Text(preparation.sourceModel.sha256).font(.caption.monospaced()).textSelection(.enabled)
+                        }
+                    }
+                    Button("배치용 GLB 확인") { Task { await reviewInfoStand(entry, intakeId: intake.id) } }
+                } else {
+                    Text("배치 모델을 확인할 수 있도록 등록 기록에서 이 안내판을 찾으세요.").foregroundStyle(.secondary)
+                }
+            } else {
+                Button("전시에 배치") { Task { await place(entry) } }.disabled(room.isEmpty)
+            }
         }
     }
 
@@ -414,7 +443,8 @@ struct WorkspaceFurnishingIntakeView: View {
             try await model.withWorkspaceFurnishingAccess(access) { api in
                 var intake: WorkspaceFurnishingIntake
                 if let selected {
-                    intake = try await api.workspaceFurnishingIntake(selected.id)
+                    intake = try await api.workspaceFurnishingIntake(selected.id,
+                        requireCurrentInfoStandProducer: selected.preparationPolicy == .normalizeLegacySignTexture && selected.phase != .registered)
                 } else if let request {
                     do {
                         intake = try await api.createWorkspaceFurnishing(requestId: request.id, details: request.details,
@@ -441,7 +471,8 @@ struct WorkspaceFurnishingIntakeView: View {
         guard let selected else { return }
         await perform {
             try await model.withWorkspaceFurnishingAccess(access) { api in
-                let current = try await api.workspaceFurnishingIntake(selected.id)
+                let current = try await api.workspaceFurnishingIntake(selected.id,
+                    requireCurrentInfoStandProducer: selected.preparationPolicy == .normalizeLegacySignTexture && selected.phase != .registered)
                 try remember(current, reportFailure: action == nil)
                 if let action { try remember(await api.workspaceFurnishingAction(current, action)) }
             }
@@ -465,14 +496,25 @@ struct WorkspaceFurnishingIntakeView: View {
         }
     }
 
-    private func place(_ entry: WorkspaceFurnishingSummary) async {
+    private func reviewInfoStand(_ entry: WorkspaceFurnishingSummary, intakeId: String) async {
+        await perform {
+            let furnishing = try await model.withWorkspaceFurnishingAccess(access) { api in
+                try await api.reviewWorkspaceInfoStand(intakeId: intakeId, furnishingId: entry.id, version: entry.version)
+            }
+            reviewedInfoStand = (furnishing, intakeId)
+        }
+    }
+
+    private func place(_ entry: WorkspaceFurnishingSummary, expectedModelSHA256: String? = nil, infoStandIntakeId: String? = nil) async {
         await perform {
             guard let x = Double(x), let y = Double(y), let z = Double(z),
                   let yaw = Double(yaw), let scale = Double(scale) else { throw AuthoringFailure("WORKSPACE_FURNISHING_INVALID") }
             let placement = WorkspaceFurnishingPlacement(id: placementId, roomId: room, furnishingId: entry.id,
                 furnishingVersion: entry.version, position: [x, y, z], yaw: yaw * .pi / 180, scale: scale)
-            if try await model.placeWorkspaceFurnishing(placement, access: access) {
+            if try await model.placeWorkspaceFurnishing(placement, access: access,
+                expectedModelSHA256: expectedModelSHA256, infoStandIntakeId: infoStandIntakeId) {
                 target = nil
+                reviewedInfoStand = nil
                 message = "배치 입력을 보관했습니다. 전시를 저장하세요."
             }
         }
