@@ -412,6 +412,53 @@ impl Reservation {
         }
         Ok(())
     }
+
+    /// Only the exact target's confirmed, durable settlement may call this.
+    /// Uncertainty never authorizes a repeated unlink.
+    pub(crate) fn retire(&self, original: (u64, &str), display: (u64, &str)) -> Result<()> {
+        self.verify(original, display)?;
+        let directory = metadata(&self.directory)?;
+        let operation = self.operation.to_string();
+        for ((role, file), (bytes, _)) in [Role::Original, Role::Display]
+            .into_iter()
+            .zip(&self.leaves)
+            .zip([original, display])
+        {
+            let before = metadata(file)?;
+            check_name(
+                &self.root,
+                &directory,
+                &operation,
+                &self.directory,
+                role.leaf(),
+                &before,
+                bytes,
+            )?;
+            let name = CString::new(role.leaf()).map_err(|_| invalid())?;
+            if unsafe { libc::unlinkat(self.directory.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+                return Err(invalid());
+            }
+            let after = metadata(file)?;
+            if !same_inode(&before, &after)
+                || after.nlink() != 0
+                || after.len() != bytes
+                || (before.mtime(), before.mtime_nsec()) != (after.mtime(), after.mtime_nsec())
+            {
+                return Err(invalid());
+            }
+        }
+        self.directory.sync_all().map_err(|_| invalid())?;
+        let current = metadata(&open_at(&self.root, &operation, libc::O_DIRECTORY)?)?;
+        if !private_directory(&current) || !same_inode(&directory, &current) {
+            return Err(invalid());
+        }
+        let name = CString::new(operation).map_err(|_| invalid())?;
+        if unsafe { libc::unlinkat(self.root.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) } != 0
+        {
+            return Err(invalid());
+        }
+        self.root.sync_all().map_err(|_| invalid())
+    }
 }
 
 #[cfg(test)]
@@ -419,6 +466,39 @@ mod tests {
     use super::*;
     use std::fs;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+
+    #[test]
+    fn exact_settled_pair_can_retire_without_touching_another_operation() {
+        let root_path = std::env::temp_dir().join(format!("adoption-retire-{}", Uuid::new_v4()));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root_path)
+            .unwrap();
+        let root = File::open(&root_path).unwrap();
+        let operation = Uuid::new_v4();
+        let stage = Reservation::create(root.try_clone().unwrap(), operation).unwrap();
+        let other = Reservation::create(root, Uuid::new_v4()).unwrap();
+        let path = root_path.join(operation.to_string());
+        let bytes = vec![b'z'; 32];
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        for role in ["original", "display"] {
+            fs::write(path.join(role), &bytes).unwrap();
+        }
+        assert!(stage.retire((32, &hash), (32, &"a".repeat(64))).is_err());
+        assert!(path.join("original").exists() && path.join("display").exists());
+        stage.retire((32, &hash), (32, &hash)).unwrap();
+        assert!(!path.exists());
+        assert!(
+            root_path
+                .join(other.operation.to_string())
+                .join("original")
+                .exists()
+        );
+        assert!(stage.retire((32, &hash), (32, &hash)).is_err());
+        drop(stage);
+        drop(other);
+        fs::remove_dir_all(root_path).unwrap();
+    }
 
     #[test]
     fn reservation_retains_exact_leaves_and_never_reopens_a_prior_operation() {

@@ -43,13 +43,26 @@ pub enum Input {
         operation_id: String,
         grant_sha256: String,
     },
+    RetainedOperation,
+    ReleasePrecommit {
+        operation_id: String,
+    },
+    SettleTarget {
+        operation_id: String,
+        grant_sha256: String,
+        retire: bool,
+    },
 }
 
 pub(crate) struct Operation {
-    reservation: Reservation,
+    operation_id: Uuid,
+    reservation: Option<Reservation>,
+    source_owner: (String, String, String),
+    target: Target,
     grant: Option<Grant>,
     preview: Option<(String, u64)>,
     commit_started: bool,
+    retirement_started: bool,
 }
 
 impl Operation {
@@ -88,19 +101,25 @@ impl Operation {
                     return Err(wire::unavailable());
                 }
                 let root = session.adoption_root()?;
-                let reservation = Reservation::create(root, Uuid::new_v4())?;
-                let operation_id = reservation.operation.to_string();
+                let id = Uuid::new_v4();
+                let operation_id = id.to_string();
                 let expires_at = wire::now_ms()?
                     .checked_add(wire::MAX_AGE_MS)
                     .ok_or_else(wire::unavailable)?;
                 // Preserve the exact reservation if either source write or the
                 // response becomes uncertain.
                 *held = Some(Self {
-                    reservation,
+                    operation_id: id,
+                    reservation: None,
+                    source_owner: owner.clone(),
+                    target: target.clone(),
                     grant: None,
                     preview: None,
                     commit_started: false,
+                    retirement_started: false,
                 });
+                let reservation = Reservation::create(root, id)?;
+                held.as_mut().ok_or_else(wire::unavailable)?.reservation = Some(reservation);
                 let response: wire::SourceStaged = session.adoption_exchange(
                     &operation_id,
                     wire::StageSource {
@@ -129,7 +148,7 @@ impl Operation {
                 }
                 let current = held.as_mut().ok_or_else(wire::unavailable)?;
                 current
-                    .reservation
+                    .stage()?
                     .verify(grant.original.identity(), grant.display.identity())?;
                 let digest = grant.digest()?;
                 let result = json!({
@@ -150,11 +169,11 @@ impl Operation {
                 let grant = current.grant.as_ref().ok_or_else(wire::unavailable)?;
                 check_target(document, expected_revision, &operation_id, grant)?;
                 let root = session.adoption_root()?;
-                if !current.reservation.matches_root(&root)? {
+                if !current.stage()?.matches_root(&root)? {
                     return Err(wire::unavailable());
                 }
                 current
-                    .reservation
+                    .stage()?
                     .verify(grant.original.identity(), grant.display.identity())?;
                 let digest = grant.digest()?;
                 let response: wire::TargetPreview =
@@ -184,11 +203,11 @@ impl Operation {
                 }
                 check_target(document, expected_revision, &operation_id, grant)?;
                 let root = session.adoption_root()?;
-                if !current.reservation.matches_root(&root)? {
+                if !current.stage()?.matches_root(&root)? {
                     return Err(wire::unavailable());
                 }
                 current
-                    .reservation
+                    .stage()?
                     .verify(grant.original.identity(), grant.display.identity())?;
                 // Neither a negative reply nor a disconnect proves retirement
                 // is safe after commit was sent.
@@ -216,34 +235,134 @@ impl Operation {
                 operation_id,
                 grant_sha256,
             } => {
-                if !crate::hash_valid(&grant_sha256) {
-                    return Err(wire::unavailable());
-                }
-                let result: wire::TargetStatus = session.adoption_exchange(
-                    &operation_id,
-                    wire::StatusTarget {
-                        grant_sha256: &grant_sha256,
-                    },
-                )?;
-                if result.grant_sha256 != grant_sha256 {
-                    return Err(wire::unavailable());
-                }
-                let outcome = match (result.outcome, result.revision, result.etag.as_deref()) {
-                    (wire::Outcome::Committed, Some(revision), Some(etag))
-                        if wire::etag(etag) == Some(revision) =>
-                    {
-                        "committed"
-                    }
-                    (wire::Outcome::Unresolved, None, None) => "unresolved",
-                    _ => return Err(wire::unavailable()),
+                let result = target_status(session, &operation_id, &grant_sha256)?;
+                let outcome = match result.outcome {
+                    wire::Outcome::Committed => "committed",
+                    wire::Outcome::Unresolved => "unresolved",
                 };
                 Ok(
                     json!({"operationId": operation_id, "grantSha256": grant_sha256, "outcome": outcome,
                           "revision": result.revision, "etag": result.etag}),
                 )
             }
+            Input::RetainedOperation => {
+                let Some(current) = held.as_ref() else {
+                    return Ok(Value::Null);
+                };
+                if !current.belongs_to(&owner) {
+                    return Err(wire::unavailable());
+                }
+                let digest = current.grant.as_ref().map(Grant::digest).transpose()?;
+                Ok(
+                    json!({"operationId": current.operation_id.to_string(), "grantSha256": digest,
+                          "reservationReady": current.reservation.is_some(),
+                          "commitAttempted": current.commit_started, "retirementAttempted": current.retirement_started}),
+                )
+            }
+            Input::ReleasePrecommit { operation_id } => {
+                let current = held.as_ref().ok_or_else(wire::unavailable)?;
+                current.check_precommit_release(&owner, &operation_id)?;
+                // An unavailable source response can leave owned work draining.
+                // This only releases the helper slot. The old UUID stays reserved.
+                *held = None;
+                Ok(json!({"operationId": operation_id, "outcome": "precommit-retained"}))
+            }
+            Input::SettleTarget {
+                operation_id,
+                grant_sha256,
+                retire,
+            } => {
+                let current = held.as_mut().ok_or_else(wire::unavailable)?;
+                let grant = current.grant.as_ref().ok_or_else(wire::unavailable)?;
+                if !current.commit_started
+                    || !current.is_target(&owner)
+                    || operation_id != grant.operation_id
+                    || grant_sha256 != grant.digest()?
+                    || (retire && current.retirement_started)
+                {
+                    return Err(wire::unavailable());
+                }
+                let result = target_status(session, &operation_id, &grant_sha256)?;
+                if result.outcome != wire::Outcome::Committed
+                    || wire::etag(&grant.target.etag).and_then(|revision| revision.checked_add(1))
+                        != result.revision
+                {
+                    return Err(wire::unavailable());
+                }
+                if retire {
+                    let root = session.adoption_root()?;
+                    if !current.stage()?.matches_root(&root)? {
+                        return Err(wire::unavailable());
+                    }
+                    current.retirement_started = true;
+                    current
+                        .stage()?
+                        .retire(grant.original.identity(), grant.display.identity())?;
+                }
+                *held = None;
+                Ok(
+                    json!({"operationId": operation_id, "grantSha256": grant_sha256, "outcome": "committed",
+                          "revision": result.revision, "etag": result.etag, "stageRetired": retire}),
+                )
+            }
         }
     }
+
+    fn stage(&self) -> Result<&Reservation> {
+        self.reservation.as_ref().ok_or_else(wire::unavailable)
+    }
+
+    fn is_target(&self, owner: &(String, String, String)) -> bool {
+        (&owner.0, &owner.1, &owner.2)
+            == (
+                &self.target.workspace_id,
+                &self.target.tenant_id,
+                &self.target.principal_id,
+            )
+    }
+
+    fn belongs_to(&self, owner: &(String, String, String)) -> bool {
+        &self.source_owner == owner || self.is_target(owner)
+    }
+
+    fn check_precommit_release(
+        &self,
+        owner: &(String, String, String),
+        operation_id: &str,
+    ) -> Result<()> {
+        if !self.belongs_to(owner)
+            || self.commit_started
+            || self.operation_id.to_string() != operation_id
+        {
+            return Err(wire::unavailable());
+        }
+        Ok(())
+    }
+}
+
+fn target_status(
+    session: &mut Session,
+    operation_id: &str,
+    grant_sha256: &str,
+) -> Result<wire::TargetStatus> {
+    if !crate::hash_valid(grant_sha256) {
+        return Err(wire::unavailable());
+    }
+    let result: wire::TargetStatus =
+        session.adoption_exchange(operation_id, wire::StatusTarget { grant_sha256 })?;
+    if result.grant_sha256 != grant_sha256 {
+        return Err(wire::unavailable());
+    }
+    match (result.outcome, result.revision, result.etag.as_deref()) {
+        (wire::Outcome::Committed, Some(revision), Some(etag))
+            if wire::etag(etag) == Some(revision) =>
+        {
+            ()
+        }
+        (wire::Outcome::Unresolved, None, None) => (),
+        _ => return Err(wire::unavailable()),
+    }
+    Ok(result)
 }
 
 fn check_target(
@@ -411,6 +530,48 @@ mod tests {
         state.draft.as_mut().unwrap()["editVersion"] = json!(3);
         state.draft.as_mut().unwrap()["candidate"]["placements"][0]["id"] = json!(fixture_id(32));
         assert!(check_target(&state, 9, &grant.operation_id, &grant).is_err());
+    }
+
+    #[test]
+    fn only_an_exact_precommit_owner_can_release_without_retiring_bytes() {
+        use std::fs::{self, DirBuilder, File};
+        use std::os::unix::fs::DirBuilderExt;
+        let root = std::env::temp_dir().join(format!("adoption-precommit-{}", Uuid::new_v4()));
+        DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let operation_id = Uuid::new_v4();
+        let target = fixture_grant(1000, 2000).target;
+        let owner = (fixture_id(9), fixture_id(10), fixture_id(11));
+        let mut operation = Operation {
+            operation_id,
+            reservation: Some(
+                Reservation::create(File::open(&root).unwrap(), operation_id).unwrap(),
+            ),
+            source_owner: owner.clone(),
+            target,
+            grant: None,
+            preview: None,
+            commit_started: false,
+            retirement_started: false,
+        };
+        let id = operation_id.to_string();
+        assert!(operation.check_precommit_release(&owner, &id).is_ok());
+        assert!(
+            operation
+                .check_precommit_release(&owner, &fixture_id(99))
+                .is_err()
+        );
+        assert!(
+            operation
+                .check_precommit_release(&(fixture_id(80), owner.1.clone(), owner.2.clone()), &id)
+                .is_err()
+        );
+        operation.commit_started = true;
+        assert!(operation.check_precommit_release(&owner, &id).is_err());
+        drop(operation);
+        assert!(
+            root.join(&id).join("original").exists() && root.join(&id).join("display").exists()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

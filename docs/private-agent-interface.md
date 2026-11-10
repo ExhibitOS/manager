@@ -436,6 +436,20 @@ dedicated adoption capability. The actions run in order.
   reconciliation. The confirmation command requires the preview retained by
   the same runtime generation and accepts only its operation ID and digest.
 
-The helper retains reserved bytes after interruptions. The operation
-supports already registered source and target selections within one managed
-helper process. Separate managed profiles require an approved operator handoff.
+- `retained_operation` returns the reserved operation ID and any available
+  grant digest to the exact source or target owner. This works when source
+  staging failed before a grant was returned.
+- `release_precommit` takes the retained `operationId` before any target
+  commit attempt. It frees the helper slot and preserves both leaves under
+  their original reservation.
+- `settle_target` takes `operationId`, `grantSha256`, and explicit
+  `retire`. It frees the helper slot only after the exact target confirms
+  a durable commit. Use `retire: true` to remove the verified reserved
+  pair and `retire: false` to preserve it. If retirement is interrupted,
+  retain the remaining evidence and reconcile via the target receipt.
+
+The helper preserves reserved bytes across interruption. A new helper can
+read the target receipt by its operation ID and grant digest. Retirement
+requires the original helper's retained file identities. The operation
+supports registered source and target selections within one managed helper
+process. Separate managed profiles require an approved operator handoff.
