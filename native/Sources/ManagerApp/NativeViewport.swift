@@ -1155,6 +1155,12 @@ struct NativeViewport: NSViewRepresentable {
                     controller.message = "편집 화면을 준비하고 있습니다."
                 } else if controller.sceneProgress != nil {
                     controller.message = "전시 작품을 불러오고 있습니다."
+                } else if report.ready,
+                          report.message == "장면의 표시 한도에 도달해 작업 공간 비품을 표시하지 못했어요. 전시 편집은 계속할 수 있습니다."
+                          || report.message == "일부 작업 공간 비품을 표시하지 못했어요. 등록 상태와 표시 권한을 확인하세요." {
+                    controller.message = report.failed > 0
+                        ? "일부 작품을 불러오지 못했습니다. " + report.message
+                        : report.message
                 } else {
                     controller.message = report.failed > 0
                         ? "일부 작품을 불러오지 못했습니다. 작업 공간과 작품 사용 권한을 확인하세요."
