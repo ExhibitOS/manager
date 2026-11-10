@@ -173,7 +173,7 @@ public actor NativeAutomationSession {
     private func waitExistingStartup(manifest: String) async throws -> NativeHostStatus {
         guard manifest == "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a"
             || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: manifest)
-            || AuthoringAPI.supportsPreparedSignStartupDrain(manifest: manifest) else {
+            || AuthoringAPI.supportsPinnedStartupDrain(manifest: manifest) else {
             return try await waitReady()
         }
         // These runtimes own their startup deadlines. Keep the helper channel

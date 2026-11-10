@@ -780,6 +780,10 @@ pub(crate) fn catalog45_same_version_restore_host_matches(tuple: (&str, &str, &s
     { let _ = tuple; false }
 }
 
+pub(crate) fn native_restore_provenance_host_matches(catalog: u32, tuple: (&str, &str, &str)) -> bool {
+    catalog == 40 || (catalog == 45 && catalog45_same_version_restore_host_matches(tuple))
+}
+
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const CATALOG46_LARGE_MODEL: RuntimeTuple = (
     "c3937794193b2262f0ad2d5dcf30cdb838e424c9",

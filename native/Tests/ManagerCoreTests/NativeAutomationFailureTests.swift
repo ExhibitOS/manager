@@ -4,6 +4,15 @@ import Darwin
 @testable import ManagerCore
 
 final class NativeAutomationFailureTests: XCTestCase {
+    #if DEBUG
+    func testPlacedExitRuntimeUsesPinnedStartupDrain() {
+        XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(
+            manifest: "1245b842efb55525ebf0c307f984391431552ce19d6f59874dbcd8435b8e39d2"
+        ))
+        XCTAssertFalse(AuthoringAPI.supportsPinnedStartupDrain(manifest: String(repeating: "0", count: 64)))
+    }
+    #endif
+
     func testPreReadyPreservationAutomationRejectsSaveAndOtherCommands() throws {
         for manifest in [
             "baf33be8865ee1c558874702ca8a772db90a9c59c3ab28759e7fc6ae8d608c86",

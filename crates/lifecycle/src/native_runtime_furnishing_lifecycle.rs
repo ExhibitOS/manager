@@ -207,7 +207,8 @@ impl Binding {
                         .is_ok_and(|value| {
                             value != 0 && value.to_string() == proof.target_system_identifier
                         })
-                    || proof.provenance.as_ref().is_some_and(|provenance| self.catalog != 40
+                || proof.provenance.as_ref().is_some_and(|provenance|
+                    !crate::native_payload::native_restore_provenance_host_matches(self.catalog, tuple)
                         || !provenance.matches(&proof.id, &proof.backup_id, &proof.archive_manifest_sha256, &proof.target_system_identifier))
             })
         {
@@ -1263,6 +1264,16 @@ mod tests {
             provenance: None,
         });
         activated.sha256().unwrap();
+        let proof: RestoreProof = serde_json::from_value(serde_json::json!({
+            "restoreId": "10000000-0000-4000-8000-000000000007",
+            "backupId": "10000000-0000-4000-8000-000000000008",
+            "authenticatedManifestSha256": "5".repeat(64),
+            "sourceDatabaseSystemId": "122", "sourceDatabaseOid": "16000",
+            "targetDatabaseSystemId": "123", "targetDatabaseOid": "16000",
+            "provenanceRowCount": 1, "provenanceTableSha256": "6".repeat(64)
+        })).unwrap();
+        activated.restore.as_mut().unwrap().provenance = Some(proof.clone());
+        activated.sha256().unwrap();
 
         let mut other_payload = activated.clone();
         other_payload.payload_manifest_sha256 = "4".repeat(64);
@@ -1282,6 +1293,7 @@ mod tests {
         first.consume(&activated).unwrap();
         assert_eq!(first.admission_kind, Admission::VerifiedRestore);
         assert_eq!(first.restore, activated.restore);
+        assert_eq!(Exchange::new(&first, b"lease").unwrap().restore_proof.as_ref(), Some(&proof));
         first.phase = Phase::Clean;
         first.sha256().unwrap();
 
@@ -1289,6 +1301,7 @@ mod tests {
         reopened.consume(&first).unwrap();
         assert_eq!(reopened.admission_kind, Admission::CleanReopen);
         assert_eq!(reopened.restore, activated.restore);
+        assert_eq!(Exchange::new(&reopened, b"new lease").unwrap().restore_proof.as_ref(), Some(&proof));
         reopened.phase = Phase::Clean;
         reopened.sha256().unwrap();
     }
