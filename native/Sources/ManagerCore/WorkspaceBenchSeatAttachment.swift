@@ -34,7 +34,10 @@ public struct WorkspaceBenchSeatAttachment: Sendable {
             .filter { $0.id == visual.placementId }
         let localFurnishings = draft.candidate["extensions"][WorkspaceFurnishingPlacement.namespace]["furnishings"].items ?? []
         let descriptor = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(furnishing))
-        guard furnishing.id == furnishingId, furnishing.version == furnishingVersion, furnishing.details.kind == .bench,
+        let kind = furnishing.details.kind
+        let galleryStoolSeat = BenchSettings.isGalleryStoolSeat(kind: .slab, width: width, depth: depth, height: height, visual: visual)
+        guard furnishing.id == furnishingId, furnishing.version == furnishingVersion,
+              kind == .bench || (kind == .stool && galleryStoolSeat && furnishing.details.model.bytes == 415_848),
               furnishing.details.model.sha256 == visual.modelSha256, placements.count == 1, let placement = placements.first,
               localFurnishings.filter({ $0["id"].string == furnishingId }) == [descriptor] else {
             throw AuthoringFailure("BENCH_SELECTION_CHANGED")
@@ -44,6 +47,9 @@ public struct WorkspaceBenchSeatAttachment: Sendable {
         let attached = existing.filter { $0.workspaceVisual?.placementId == visual.placementId }
         guard attached.isEmpty ? selected == nil : attached.count == 1 && selected?.id == benchId && selected?.workspaceVisual == visual else {
             throw AuthoringFailure("BENCH_SELECTION_CHANGED")
+        }
+        if kind == .bench && !BenchSettings.ordinarySize(width: width, depth: depth, height: height) {
+            throw BenchSettings.invalid()
         }
         let settings = try BenchSettings(id: benchId, name: furnishing.details.name, roomId: placement.roomId,
             kind: .slab, position: placement.position, yaw: placement.yaw, width: width, depth: depth, height: height,

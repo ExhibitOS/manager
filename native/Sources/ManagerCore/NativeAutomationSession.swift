@@ -1101,7 +1101,7 @@ public actor NativeAutomationSession {
             let extra: Set<String> = operation == "shared-bench-prepare" ? ["command", "outputPath"] : ["proposalId", "inputPath"]
             guard Set(fields.keys) == common.union(extra) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
-        if operation == "workspace-bench-seat-attach" {
+        if ["workspace-bench-seat-attach", "workspace-default-seat-reconcile"].contains(operation) {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
                                          "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
@@ -1321,6 +1321,22 @@ public actor NativeAutomationSession {
                 furnishingId: furnishingId, furnishingVersion: 1, modelSha256: hash,
                 width: width, depth: depth, height: height, viewpointId: viewpointId, viewpoint: viewpoint)
             if let draft = try await api.prepareWorkspaceBenchSeat(attachment, in: current) {
+                var next = current
+                next.draft = draft
+                result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
+            } else {
+                result = .object(["changed": .bool(false), "document": try value(current)])
+            }
+        case "workspace-default-seat-reconcile":
+            guard selectedOEXFormat == nil else { throw BridgeFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE") }
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["etag", "placementIds"])
+            guard let etag = current.etag, command["etag"].string == etag, let ids = command["placementIds"].items else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            let placementIds = ids.compactMap(\.string)
+            guard placementIds.count == ids.count else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            if let draft = try await api.prepareWorkspaceDefaultSeatRetrofit(placementIds: placementIds, in: current) {
                 var next = current
                 next.draft = draft
                 result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])

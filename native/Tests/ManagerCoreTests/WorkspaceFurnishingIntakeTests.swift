@@ -310,6 +310,88 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         XCTAssertThrowsError(try attachment(viewpoint: changedView).applying(furnishing, to: next))
     }
 
+    func testOnlyExactGalleryStoolCanAttachCompactWorkspaceSeat() throws {
+        let gallery = "6caca94361b540fb007c6fc605e519e436462eda43f2ec5f99da6a63108bfc60"
+        let draft = try NativeExhibitionDraft.new()
+        let room = try XCTUnwrap(draft.rooms.first?["id"].string)
+        let bench = UUID().uuidString.lowercased()
+        let camera = UUID().uuidString.lowercased()
+        let view = try BenchViewpoint(id: camera, name: "Seat", roomId: room, position: [-1, 1.16, 0], target: [-1, 1.45, -2], fov: 50)
+
+        func attach(kind: String = "stool", sha: String = gallery, bytes: Int64 = 415_848,
+                    width: Double = 0.38, scale: Double = 1) throws -> NativeExhibitionDraft {
+            var descriptor = try registered()["furnishing"]
+            descriptor["kind"] = .string(kind)
+            descriptor["model"]["sha256"] = .string(sha)
+            descriptor["model"]["bytes"] = .integer(bytes)
+            let furnishing = try JSONDecoder().decode(WorkspaceFurnishing.self, from: JSONEncoder().encode(descriptor))
+            let placement = WorkspaceFurnishingPlacement(id: placementId, roomId: room, furnishingId: furnishing.id,
+                furnishingVersion: 1, position: [-1, 0, 0], yaw: 0.125, scale: scale)
+            let placed = try XCTUnwrap(placement.applying(furnishing, to: draft, supportedExtensionVersion: 2))
+            let command = try WorkspaceBenchSeatAttachment(benchId: bench, placementId: placementId, furnishingId: furnishing.id,
+                furnishingVersion: 1, modelSha256: sha, width: width, depth: 0.38, height: 0.45, viewpointId: camera, viewpoint: view)
+            let next = try command.applying(furnishing, to: placed)
+            return try XCTUnwrap(next)
+        }
+
+        let next = try attach()
+        let seat = try XCTUnwrap(BenchSettings.list(in: next).first)
+        XCTAssertEqual(seat.width, 0.38)
+        XCTAssertEqual(seat.workspaceVisual?.modelSha256, gallery)
+        XCTAssertEqual(try BenchSettings(value: seat.value), seat)
+        XCTAssertThrowsError(try attach(kind: "bench"))
+        XCTAssertThrowsError(try attach(sha: String(repeating: "b", count: 64)))
+        XCTAssertThrowsError(try attach(bytes: 415_847))
+        XCTAssertThrowsError(try attach(width: 0.39))
+        XCTAssertThrowsError(try attach(scale: 1.1))
+    }
+
+    func testDefaultSeatProposalCombinesProspectivePlacementAndPreservesExistingLink() throws {
+        let hash = "6caca94361b540fb007c6fc605e519e436462eda43f2ec5f99da6a63108bfc60"
+        var descriptor = try registered()["furnishing"]
+        descriptor["kind"] = .string("stool")
+        descriptor["model"]["sha256"] = .string(hash)
+        descriptor["model"]["bytes"] = .integer(415_848)
+        let furnishing = try JSONDecoder().decode(WorkspaceFurnishing.self, from: JSONEncoder().encode(descriptor))
+        let draft = try NativeExhibitionDraft.new()
+        let room = try XCTUnwrap(draft.rooms.first?["id"].string)
+        let placement = WorkspaceFurnishingPlacement(id: placementId, roomId: room, furnishingId: furnishing.id,
+            furnishingVersion: 1, position: [-1, 0, 0], yaw: 0.125, scale: 0.5)
+        let placed = try XCTUnwrap(placement.applying(furnishing, to: draft, supportedExtensionVersion: 2))
+        let proposal = try WorkspaceDefaultSeatProposal(draft: placed, placementIds: [placementId])
+        let target = try XCTUnwrap(proposal.targets.first)
+        let view = try BenchViewpoint(id: target.viewpointId, name: furnishing.details.name, roomId: room,
+            position: [-1, 0.925, 0], target: [-1, 0.925, -2], fov: 50)
+        let seat = try BenchSettings(id: target.benchId, name: furnishing.details.name, roomId: room, kind: .slab,
+            position: placement.position, yaw: placement.yaw, width: 0.19, depth: 0.19, height: 0.225, material: .defaults(.wood),
+            viewpointId: view.id, workspaceVisual: .init(placementId: placementId, modelSha256: hash))
+        let addition: DocumentValue = .object(["placementId": .string(placementId), "bench": seat.value, "viewpoint": view.value])
+        let reply: DocumentValue = .object(["additions": .array([addition])])
+        let combined = try XCTUnwrap(proposal.applying(reply, to: draft))
+        XCTAssertEqual(combined.document["editVersion"], placed.document["editVersion"])
+        XCTAssertEqual(combined.candidate["extensions"][WorkspaceFurnishingPlacement.namespace],
+                       placed.candidate["extensions"][WorkspaceFurnishingPlacement.namespace])
+        XCTAssertEqual(try BenchSettings.list(in: combined), [seat])
+        XCTAssertThrowsError(try proposal.applying(.object(["additions": .array([addition, addition])]), to: draft))
+        XCTAssertThrowsError(try proposal.applying(.object(["additions": .array([])]), to: draft))
+
+        let secondId = UUID().uuidString.lowercased()
+        let secondPlacement = WorkspaceFurnishingPlacement(id: secondId, roomId: room, furnishingId: furnishing.id,
+            furnishingVersion: 1, position: [1, 0, 0], yaw: 0, scale: 1)
+        let both = try XCTUnwrap(secondPlacement.applying(furnishing, to: placed, supportedExtensionVersion: 2))
+        let multi = try WorkspaceDefaultSeatProposal(draft: both, placementIds: [placementId, secondId])
+        let first = try XCTUnwrap(multi.targets.first)
+        var partial = addition
+        partial["bench"]["id"] = .string(first.benchId)
+        partial["bench"]["viewpointId"] = .string(first.viewpointId)
+        partial["viewpoint"]["id"] = .string(first.viewpointId)
+        XCTAssertThrowsError(try multi.applying(.object(["additions": .array([partial])]), to: placed))
+
+        let repeated = try WorkspaceDefaultSeatProposal(draft: combined, placementIds: [placementId])
+        XCTAssertNil(try repeated.applying(.object(["additions": .array([])]), to: combined))
+        XCTAssertEqual(try BenchViewpoint.list(in: combined), [view])
+    }
+
     func testVisualPlacementIsRoomLocalAndReplaysExactly() throws {
         let furnishing = try XCTUnwrap(intake(registered()).furnishing)
         var draft = try NativeExhibitionDraft.new()
