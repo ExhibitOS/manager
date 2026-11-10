@@ -807,9 +807,9 @@ pub(crate) fn catalog45_same_version_restore_host_matches(tuple: (&str, &str, &s
 pub(crate) fn catalog45_carried_restore_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return tuple == (
-        "01125cc93f27ee9df27da01dc6605c0579138a3e",
+        "ded4a9a77c052650849770fc7a754c517334ee74",
         "0a0669e95010371c2dc379285930d166d4bac30506d88f89326b4264ebd0a385",
-        "ea2570531e6a988d1333f4f8a0898f972f75da24919a32e47c75fff638bdbf67",
+        "d0209c6ac9980a1507e53fc7a5eaa2b6b254bb60b6a8a1feb2f72d98e48d2874",
     );
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
@@ -2332,6 +2332,26 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    #[ignore = "requires the exact reviewed catalog 045 carried restore runtime"]
+    fn opens_reviewed_catalog45_carried_restore_payload() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_CATALOG45_CARRIED_RUNTIME").unwrap());
+        let payload = Payload::open(&root).unwrap();
+        let context = payload.context();
+        assert!(catalog45_carried_restore_payload(&payload));
+        assert!(!payload.ordinary_fresh_furnishing());
+        assert!(!catalog45_carried_restore_source(&payload));
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert!(payload.workspace_furnishing_ledger(catalog).is_ok());
+        assert!(!catalog45_carried_restore_host_matches((
+            &context.source_commit, payload.producer_sha256(),
+            "ea2570531e6a988d1333f4f8a0898f972f75da24919a32e47c75fff638bdbf67",
+        )));
+        assert!(Payload::open_workspace_v5_validation(&root, false).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the exact publication capacity, authored-seat and museum-caption payloads"]
     fn opens_reviewed_catalog45_native_publication_payloads() {
         for (tuple, variable) in CATALOG45_NATIVE_PUBLICATION_TARGETS.iter().zip([
@@ -3484,6 +3504,7 @@ impl Payload {
         let wheat_grant: Option<(&str, &str, &str)> = None;
         let pinned_portal = self.retained_furnishing_catalog().is_some()
             || self.ordinary_fresh_furnishing()
+            || catalog45_carried_restore_payload(self)
             || portal.into_iter().chain(artwork_replacement).chain(wheat_grant).chain(CATALOG40_WHEAT_DETAIL).any(|(source, producer, manifest)|
                 self.manifest.source_commit == source && self.manifest.producer_sha256 == producer
                     && self.manifest_sha256 == manifest);
@@ -3560,7 +3581,7 @@ impl Payload {
             return Err(unqualified());
         }
         let model_preparation_pinned = required_model_preparation_host_matches(tuple)
-            || self.ordinary_fresh_furnishing();
+            || self.ordinary_fresh_furnishing() || catalog45_carried_restore_host_matches(tuple);
         let model_preparation_declared = self.manifest.files.iter().any(|file|
             file.path == MODEL_PREPARATION_CAPABILITY.0 || file.path.starts_with(MODEL_PREPARATION_DIRECTORY));
         if model_preparation_declared != model_preparation_pinned {

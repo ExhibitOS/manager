@@ -1188,14 +1188,9 @@ impl Session {
         Ok(())
     }
 
-    fn workspace_furnishing_start(&self) -> Result<Option<FurnishingStart>> {
+    fn workspace_furnishing_start(&self, prior: Option<&Binding>) -> Result<Option<FurnishingStart>> {
         use std::os::unix::fs::MetadataExt;
         let Some(catalog) = self.payload.workspace_furnishing_catalog()? else { return Ok(None); };
-        // The inventory-only bootstrap has no carried proof owner-channel wire.
-        // Stage/activation remain PG-only; do not open this tuple as an editor.
-        if crate::native_payload::catalog45_carried_restore_payload(&self.payload) {
-            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
-        }
         let initialize = if self.normal_oex_selected {
             if !self.fresh_ordinary_furnishing
                 || self.payload.selected_workspace_import_version() != Some(crate::native_payload::WorkspaceImport::V7)
@@ -1229,6 +1224,16 @@ impl Session {
         self.payload.workspace_furnishing_ledger(catalog)?;
         let (workspace, tenant, principal) = self.service.personal_identity()?;
         let root = &self.service.root;
+        if crate::native_payload::catalog45_carried_restore_payload(&self.payload) {
+            if self.normal_oex_selected || !prior.is_some_and(|binding|
+                matches!(binding.phase, Phase::ActivatedRestore | Phase::Clean)
+                    && binding.restore.as_ref().is_some_and(|restore| restore.carried_provenance.is_some()))
+                || exists(&root.join(WORKSPACE_FURNISHING_INITIALIZATION))?
+            {
+                return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+            }
+            return Ok(Some(FurnishingStart::Reopen));
+        }
         if self.payload.retained_furnishing_catalog().is_some() {
             if exists(&root.join(WORKSPACE_FURNISHING_INITIALIZATION))? {
                 return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
@@ -2320,6 +2325,8 @@ const { isDeepStrictEqual } = require('node:util');
             && matches!(furnishing, Some(FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045)))
             || (self.payload.ordinary_fresh_furnishing()
                 && matches!(furnishing, Some(FurnishingStart::Initialize | FurnishingStart::Reopen)))
+            || (crate::native_payload::catalog45_carried_restore_payload(&self.payload)
+                && furnishing == Some(FurnishingStart::Reopen))
         {
             self.payload.recheck()?;
             let generation_id = Uuid::parse_str(generation).map_err(|_| err("HAYES_OPERATION_UNAVAILABLE"))?;
@@ -2611,7 +2618,7 @@ const { isDeepStrictEqual } = require('node:util');
             self.check_native_observation_fence()?;
             let has_database = exists(&self.service.root.join("native-database"))?;
             if services {
-                furnishing = self.workspace_furnishing_start()?;
+                furnishing = self.workspace_furnishing_start(prior_binding.as_ref())?;
             }
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             if self.oex_retained_cleanup.is_some() && furnishing != Some(FurnishingStart::Reopen) {
