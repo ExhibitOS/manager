@@ -15,6 +15,8 @@ pub enum Input {
     CreateRecovery { acknowledged: bool },
     CreateOexWorkspace { acknowledged: bool },
     CheckOexWorkspace,
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    RetainAbandonedOrdinaryPublicationStage { proof: super::native_publication_custody::Input },
     Select { id: String, acknowledged: bool },
     StageRestore { source: PathBuf, key_file: PathBuf },
     ActivateRestore { id: String },
